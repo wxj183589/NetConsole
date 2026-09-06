@@ -1,7 +1,7 @@
 # Interface Discovery Limited Real-device Validation Report
 
 > Phase: `PHASE 2D-B2`
-> Status: `PARTIAL` (`COMWARE7_VALIDATION=PASS`; C9 not authorized/executed)
+> Status: `PARTIAL` (`COMWARE7_VALIDATION=PASS`; no eligible C9 SW candidate; C9 role extension not authorized)
 > Scope: H3C interface discovery Shadow only
 > Real device connection: `YES` (one authorized C7 target only)
 > Production Shadow enabled: `NO`
@@ -58,6 +58,37 @@ VERSION_EVIDENCE=Version 7.1.070 Release 7756P10
 
 `DEVICE-NB10-C7-01` 是去标识化目标别名：本次绑定前只读核验其仍为 `in_service`、`included` 的宁波10号线 H3C/SW，既有 `device_facts` 为 `S10508X-G`、Comware 7，且关联 Legacy 采集成功。连接前使用既有 credential resolver/preflight，未输出凭据。实际 CLI 版本仍为 `Version 7.1.070 Release 7756P10`；未执行 C9。
 
+### 2.2 Phase 2D-B2.1 Comware 9 switch candidate completion
+
+2026-09-07 对两个授权线路的开发数据根进行了候选筛选。查询使用 SQLite `mode=ro`，只读取设备角色、状态、版本事实、模型和 Legacy 采集状态；没有扫描网络、连接设备、读取凭据字段或访问 `D:\NetConsoleData`。
+
+```text
+C9_SWITCH_CANDIDATE=NONE
+SITE=杭州10号线; 宁波10号线
+ROLE=SW
+MODEL_FAMILY=NONE
+VERSION_EVIDENCE=VERSION_EVIDENCE_INSUFFICIENT (no eligible H3C/SW Comware 9 current or historical fact)
+LEGACY_EVIDENCE=NONE (no eligible C9 switch; C9 switch validation not executed)
+STATUS=BLOCKED_ROLE_SCOPE
+```
+
+筛选事实如下：杭州10号线没有同时满足 `H3C + SW + in_service + included` 的设备；宁波10号线有 71 台符合状态/角色范围的 H3C/SW，其中当前 `device_facts` 明确为 Comware 7 的 25 台、版本未知的 46 台、Comware 9 为 0 台，`device_facts_history` 中也没有 Comware 9 的 SW 版本事实。宁波10号线符合范围且有成功 Legacy 记录的 SW 设备中，没有一台具备 C9 版本证据，因此不能猜测或生成 C9 switch alias。
+
+现有资料另显示两条授权线路各有 1 台 `in_service + included`、已有成功 Legacy 记录的 H3C Comware 9 `AC`，因此仅记录角色扩展候选，不把它们用于本轮验证：
+
+```text
+C9_SWITCH_FOUND=NO
+C9_WIRELESS_CONTROLLER_AVAILABLE=YES
+PROPOSED_ROLE_EXTENSION=wireless_controller
+ROLE_EXTENSION_REVIEW_REQUIRED=YES
+C9_ROLE_EXTENSION_AUTHORIZED=NO
+MAINTENANCE_WINDOW_APPROVED=NO (no C9-specific approval; prior C7 approval is not inherited)
+REAL_DEVICE_CONNECTION_ATTEMPTED_C9=NO
+PHASE2D_B2_C9_STATUS=BLOCKED_ROLE_SCOPE
+```
+
+本轮在候选筛选和 preflight 后停止，没有自动连接 AC、MR 或其它角色，也没有扩大线路或设备范围。后续只有取得明确的角色扩展批准（如选择 `wireless_controller`）以及独立的 C9 维护窗口批准，才可另行评估真实连接；本报告不作任何 C9 验证结论。
+
 ## 3. Existing-path reuse preflight
 
 运行前和运行中确认并复用以下现有能力：
@@ -76,10 +107,10 @@ VERSION_EVIDENCE=Version 7.1.070 Release 7756P10
 
 ## 4. Device validation matrix
 
-| Device | Version | Cycle 1 | Cycle 2 | Cycle 3 | Repo Effect | Resume | Result |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| DEVICE-NB10-C7-01 | `Version 7.1.070 Release 7756P10` / `S10508X-G` | `MATCH` | `MATCH` | `MATCH` | `NONE` | `PASS` | `PASS` |
-| C9 target `NONE` | Comware 9 | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` |
+| Device | Role | Version | Cycle 1 | Cycle 2 | Cycle 3 | Repo Effect | Resume | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| DEVICE-NB10-C7-01 | SW | `Version 7.1.070 Release 7756P10` / `S10508X-G` | `MATCH` | `MATCH` | `MATCH` | `NONE` | `PASS` | `PASS` |
+| C9 switch candidate `NONE` | SW | Comware 9 | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` | `NOT_EXECUTED` |
 
 ```text
 COMWARE7_EXECUTED=YES
@@ -128,6 +159,8 @@ COMWARE9_UNEXPECTED_WRITES=0
 COMWARE9_STOP_SHADOW=NOT_EXECUTED
 COMWARE9_LEGACY_RESUME=NOT_EXECUTED
 COMWARE9_DEVICE_RESULT=NOT_EXECUTED
+COMWARE9_CANDIDATE_STATUS=BLOCKED_ROLE_SCOPE
+COMWARE9_REAL_DEVICE_CONNECTION=NO
 ```
 
 每个 cycle 均完成了 Repository fingerprint BEFORE/AFTER、Legacy normalized interface DTO、Shadow normalized projection、compare/difference 和 effect 检查；第三个 cycle 后停止 Shadow invocation。停止后只对最后一份已保存 capture 做内存中的 Legacy-only parser health confirmation，没有执行第四次真实设备命令。
@@ -156,12 +189,16 @@ UNEXPECTED_SHADOW_WRITES=0
 
 本轮只连接了授权目标一次并执行了五条既有只读会话/查询命令：`screen-length disable` 一次、`display version` 一次、`display interface` 三次；未执行 `system-view/configure/save/reboot/reset/shutdown/undo` 或 VLAN/interface 配置命令。`D:\NetConsoleData` 未访问；`D:\NetConsoleData-dev` 只读打开，未执行 SQL 写入、production backup、schema migration、History rebuild、Process restart 或 Cutover。设备配置未观察到变化。
 
+本次 C9 候选补完未建立真实连接，不产生 C9 CLI evidence、Repository effect 或设备配置变化；C7 的历史真实验证结果保持不变。
+
 ## 6. Evidence and credential handling
 
 ```text
 RAW_EVIDENCE_LOCAL_ONLY=YES
 REAL_CAPTURE_C7=YES (raw CLI retained locally only)
+REAL_CAPTURE_C7_DEIDENTIFIED=NO
 REAL_CAPTURE_C9=NO
+REAL_CAPTURE_C9_DEIDENTIFIED=NO
 REAL_CAPTURE_DEIDENTIFIED=NO
 SECRET_SCAN=PASS (summary and raw-file credential-pattern scan)
 EVIDENCE_BUNDLE=PASS (local ignored bundle; no fixture submitted)
@@ -198,9 +235,40 @@ BASELINE_DEBT_MATCH=PASS
 
 此前一次未排除基线项的全量记录为 `4695 passed, 2 skipped, 4 deselected, 1 failed`；该历史失败为 release runtime subset 的顺序/环境敏感问题，隔离重跑通过，未归因于 B2。本轮按精确 baseline exclusions 的全量回归已通过，见上方 `FULL_SUITE`。
 
+### 7.1 Candidate-only preflight gates (2026-09-07)
+
+本次 B2.1 只有候选筛选和文档变更，没有修改生产 Python、Profile、Parser、DTO、Repository、API、UI 或任务状态机。因此按测试基线不触发 Full Suite；以下是本次候选补完后实际重跑的离线门禁，不能替代 C9 真实设备验证：
+
+```text
+REAL_CAPTURE_REGRESSION=NOT_EXECUTED (no deidentified C9 fixture)
+SHADOW_TESTS=PASS (75 passed with B1/Replay/Repository related coverage)
+B1_REHEARSAL=PASS
+REPLAY=PASS
+REPOSITORY=PASS
+DOCS_PATH=22 passed
+MAIN_CONTRACT=12 passed, 3 warnings (existing Starlette deprecation warnings)
+ARCHITECTURE=BASELINE_RETAINED (run_all reports 4/12 guard failures; baseline audit actual=7, new=0)
+BASELINE_AUDIT=PASS (ARCHITECTURE_BASELINE_NEW=0; RUFF_BASELINE_NEW=0)
+RUFF=PASS (All checks passed)
+COMPILE=PASS
+DIFF_CHECK=PASS
+CI_SELECTION=1 passed
+FULL_SUITE=NOT_RUN (docs-only change; no production-adjacent Python changed)
+NEW_FAILURES=0
+BASELINE_DEBT_MATCH=PASS
+```
+
+`ARCHITECTURE=BASELINE_RETAINED` 是对本次直接运行 `scripts/architecture/run_all.py` 非零结果的准确记录；失败项均已被 Baseline Debt Audit 识别为既有债务，本轮没有新增架构发现。此前 C7 验证记录中的全量测试结果仍保留为历史 C7 证据，不被本次 C9 候选筛选重新包装为 C9 结果。
+
 ## 8. Remaining boundary and next decision gate
 
 本轮 C7 已按批准范围完成并通过；C9 没有授权目标、没有连接、没有执行，不能据此宣称 Phase 2D-B2 完整完成。下一步若要进入 Phase 2D-C，必须重新取得独立 C9 目标/版本/维护窗口批准，并满足全量 B2 通过条件；本轮不得启用生产 Shadow 或执行 Production Cutover。
+
+```text
+REMAINING_BLOCKER_1=No eligible H3C Comware 9 SW candidate in the two authorized sites
+REMAINING_BLOCKER_2=Role extension review required before considering the existing C9 AC records
+REMAINING_BLOCKER_3=No independent C9 maintenance-window approval
+```
 
 ```text
 PHASE2D_B2_STATUS=PARTIAL
@@ -209,6 +277,10 @@ MAINTENANCE_WINDOW_APPROVED=YES
 REAL_DEVICE_CONNECTION_ATTEMPTED=YES
 COMWARE7_VALIDATION=PASS
 COMWARE9_VALIDATION=NOT_EXECUTED
+PHASE2D_B2_C9_STATUS=BLOCKED_ROLE_SCOPE
+ROLE_EXTENSION_REVIEW_REQUIRED=YES
+C9_WIRELESS_CONTROLLER_AVAILABLE=YES
+C9_ROLE_EXTENSION_AUTHORIZED=NO
 PHASE2D_C_READY=NO
 PHASE2D_READY=NO
 ```
