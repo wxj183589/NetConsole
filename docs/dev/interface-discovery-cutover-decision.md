@@ -371,3 +371,22 @@ POLICY_FAILURE_DEFAULT=LEGACY
 - `src/netconsole/repositories/device_fact_repository.py`
 - `src/netconsole/core/feature_registry.py`
 - `src/netconsole/core/feature_flags.py`
+
+## 14. Phase 2D-E preflight status
+
+本次 Phase 2D-E 仅完成 Wave 0 Production Cutover 的离线 preflight。当前执行上下文未提供本轮 `MAINTENANCE_WINDOW_APPROVED=YES`，且未提供 `WAVE0_OWNER_APPROVED=YES`，因此按 Gate 规则在 Production Backup、Restore Evidence 和 Activation 前停止。
+
+```text
+PHASE2D_E_STATUS=BLOCKED_MAINTENANCE_WINDOW
+PRODUCTION_CUTOVER_EXECUTED=NO
+PRODUCTION_BACKUP_EXECUTED=NO
+RESTORE_EVIDENCE=NOT_EXECUTED
+SCOPED_ACTIVATION_EXECUTED=NO
+PRODUCTION_PATH=LEGACY
+WAVE0_ACCEPTANCE=NOT_EXECUTED
+WAVE1_EXECUTED=NO
+PHASE2D_F_READY=NO
+PHASE2D_READY=NO
+```
+
+本次没有连接真实设备、读取或修改 Production 数据、创建备份或修改生产源码。Wave 0 目标仍仅为 `DEVICE-NB10-C7-01`；Wave 1、Comware 9、AC、无线控制器、移动路由器、ZTE、其他 C7 Switch、`neighbor.discovery` 和 `transceiver.read` 均未扩大。详细阻断记录见 `docs/dev/interface-discovery-wave0-production-cutover-report.md`。
