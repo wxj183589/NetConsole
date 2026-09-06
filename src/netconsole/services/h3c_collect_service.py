@@ -14,6 +14,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.adapters.h3c.h3c_parser import H3CParser
 from netconsole.models.device import Device
+from netconsole.models.device_detail import DevicePlatformFacts
 from netconsole.parsers.h3c.boot_loader_parser import parse_boot_loader
 from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
@@ -47,6 +48,13 @@ from netconsole.services.device_command_profile_service import (
     device_cli_output_is_unsupported,
     resolve_device_inventory_profile,
     resolve_step_command_candidates,
+)
+from netconsole.services.interface_discovery_routing import (
+    CAPABILITY_PRIMARY_ROUTE,
+    INTERFACE_DISCOVERY_CAPABILITY,
+    InterfaceDiscoveryRolloutPolicy,
+    LEGACY_ROUTE,
+    evaluate_interface_discovery_route,
 )
 from netconsole.services.netmiko_connection import (
     build_netmiko_params,
@@ -89,6 +97,9 @@ class CommandResult:
     output_size: int = 0
 
 
+InterfaceDiscoveryExecutor = Callable[[object, DeviceCommandStep], CommandResult]
+
+
 @dataclass(frozen=True)
 class CollectDeviceResult:
     success: bool
@@ -111,10 +122,16 @@ def collect_h3c_device_details(
     progress_callback: ProgressCallback | None = None,
     cancel_check: CancelCheck | None = None,
     include_zte_optical_detail: bool = False,
+    interface_discovery_route: str = LEGACY_ROUTE,
+    interface_discovery_executor: InterfaceDiscoveryExecutor | None = None,
+    interface_discovery_platform_facts: DevicePlatformFacts | None = None,
 ) -> CollectDeviceResult:
     paths = paths or PathResolver()
     repository = repository or DeviceFactRepository(Database(paths.site_db_path(site_name)))
     device.ensure_device_uuid()
+    interface_route = str(interface_discovery_route or LEGACY_ROUTE).strip().upper()
+    if interface_route not in {LEGACY_ROUTE, CAPABILITY_PRIMARY_ROUTE}:
+        interface_route = LEGACY_ROUTE
     collect_run_uuid = str(uuid4())
     started_at = _now()
     persist_raw_logs = _persist_raw_logs() or device.vendor_key == "zte"
@@ -146,6 +163,31 @@ def collect_h3c_device_details(
             context="device_collect",
             operation_id=profile.operation_id,
         )
+        if interface_route == CAPABILITY_PRIMARY_ROUTE:
+            if interface_discovery_platform_facts is None:
+                route_reason = "LEGACY_MISSING_PLATFORM_FACTS"
+                route_allowed = False
+            else:
+                route_check = evaluate_interface_discovery_route(
+                    device_uuid=device.device_uuid,
+                    operation_id=profile.operation_id,
+                    capability=INTERFACE_DISCOVERY_CAPABILITY,
+                    platform_facts=interface_discovery_platform_facts,
+                    profile=profile,
+                    policy=InterfaceDiscoveryRolloutPolicy(
+                        frozenset({str(device.device_uuid or "")}),
+                        "collector_envelope",
+                        "scoped",
+                    ),
+                )
+                route_reason = route_check.reason_code
+                route_allowed = route_check.route == CAPABILITY_PRIMARY_ROUTE
+            if not route_allowed:
+                interface_route = LEGACY_ROUTE
+                app_logger.log_warning(
+                    "INTERFACE_DISCOVERY_ROUTE_REJECTED",
+                    f"reason={route_reason}, fallback={LEGACY_ROUTE}",
+                )
     except (DeviceCommandProfileError, command_guard.CommandRejected) as exc:
         message = str(exc)
         _emit_progress(progress_callback, 100, "batch_collect.stage.failed", message=message)
@@ -253,15 +295,30 @@ def collect_h3c_device_details(
             command = step.command
             percent = 20 + int(index / total_commands * 60)
             _emit_progress(progress_callback, percent, f"batch_collect.stage.collecting_command|{index}|{total_commands}", command)
-            result = _run_step_candidates(
-                connection,
-                step,
-                profile,
-                device,
-                collect_run_uuid,
-                target.encoding,
-                cancel_check=cancel_check,
-            )
+            if (
+                step.selector == "inventory.interfaces"
+                and interface_discovery_route == CAPABILITY_PRIMARY_ROUTE
+            ):
+                result = _run_interface_discovery_with_fallback(
+                    connection,
+                    step,
+                    profile,
+                    device,
+                    collect_run_uuid,
+                    target.encoding,
+                    cancel_check=cancel_check,
+                    capability_executor=interface_discovery_executor,
+                )
+            else:
+                result = _run_step_candidates(
+                    connection,
+                    step,
+                    profile,
+                    device,
+                    collect_run_uuid,
+                    target.encoding,
+                    cancel_check=cancel_check,
+                )
             command_results.append(result)
             if (
                 device.vendor_key == "zte"
@@ -527,6 +584,156 @@ def _run_step_candidates(
         error_message="命令没有返回有效内容",
         started_at=_now(),
         ended_at=_now(),
+    )
+
+
+def _run_interface_discovery_with_fallback(
+    connection,
+    step: DeviceCommandStep,
+    profile: DeviceCommandProfile,
+    device: Device,
+    collect_run_uuid: str,
+    encoding: str,
+    *,
+    cancel_check: CancelCheck | None = None,
+    capability_executor: InterfaceDiscoveryExecutor | None = None,
+) -> CommandResult:
+    """Select one interface result before the shared Legacy writer runs."""
+
+    capability_result: CommandResult
+    try:
+        if capability_executor is None:
+            capability_result = _run_step_candidates(
+                connection,
+                step,
+                profile,
+                device,
+                collect_run_uuid,
+                encoding,
+                cancel_check=cancel_check,
+            )
+        else:
+            candidate = capability_executor(connection, step)
+            if not isinstance(candidate, CommandResult):
+                raise TypeError("interface discovery capability returned an invalid result")
+            if candidate.selector != step.selector:
+                raise TypeError("interface discovery capability returned the wrong selector")
+            guard_reason = command_guard.command_reject_reason(
+                candidate.command,
+                "device_collect",
+            )
+            if guard_reason:
+                command_guard.log_command_rejected(
+                    candidate.command,
+                    "device_collect",
+                    guard_reason,
+                )
+                raise command_guard.CommandRejected(
+                    f"{candidate.command}: {guard_reason}"
+                )
+            allowed_commands = {
+                command_guard.normalize_command(command)
+                for command in resolve_step_command_candidates(device, step)
+            }
+            if command_guard.normalize_command(candidate.command) not in allowed_commands:
+                raise TypeError("interface discovery capability returned an unexpected command")
+            capability_result = candidate
+    except command_guard.CommandRejected:
+        raise
+    except Exception:
+        capability_result = CommandResult(
+            command=step.command,
+            success=False,
+            selector=step.selector,
+            error_message="CAPABILITY_EXECUTION_ERROR",
+            started_at=_now(),
+            ended_at=_now(),
+        )
+
+    capability_valid, capability_count, capability_reason = _validate_interface_output(
+        capability_result.output if capability_result.success else ""
+    )
+    if capability_result.success and capability_valid:
+        app_logger.log_info(
+            "INTERFACE_DISCOVERY_CAPABILITY_SUCCESS",
+            _interface_discovery_detail(
+                source="capability",
+                reason="CAPABILITY_SUCCESS",
+                interface_count=capability_count,
+            ),
+        )
+        return capability_result
+
+    failure_reason = (
+        capability_reason
+        if capability_result.success
+        else "CAPABILITY_EXECUTION_ERROR"
+    )
+    app_logger.log_warning(
+        "INTERFACE_DISCOVERY_CAPABILITY_FAILED",
+        _interface_discovery_detail(
+            source="capability",
+            reason=failure_reason,
+            interface_count=capability_count,
+        ),
+    )
+    legacy_result = _run_step_candidates(
+        connection,
+        step,
+        profile,
+        device,
+        collect_run_uuid,
+        encoding,
+        cancel_check=cancel_check,
+    )
+    legacy_valid, legacy_count, legacy_reason = _validate_interface_output(
+        legacy_result.output if legacy_result.success else ""
+    )
+    app_logger.log_info(
+        "INTERFACE_DISCOVERY_FALLBACK_TO_LEGACY",
+        _interface_discovery_detail(
+            source="legacy",
+            reason=(
+                "LEGACY_FALLBACK_SUCCESS"
+                if legacy_result.success and legacy_valid
+                else legacy_reason or "LEGACY_FALLBACK_FAILED"
+            ),
+            interface_count=legacy_count,
+        ),
+    )
+    return legacy_result
+
+
+def _validate_interface_output(output: object) -> tuple[bool, int, str]:
+    if not isinstance(output, str) or not output.strip():
+        return False, 0, "INTERFACE_COUNT_ANOMALY"
+    try:
+        rows = H3CParser().parse_interfaces(output)
+    except Exception:
+        return False, 0, "CONTRACT_MISMATCH"
+    if not rows:
+        return False, 0, "INTERFACE_COUNT_ANOMALY"
+    identities: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            return False, len(rows), "CONTRACT_MISMATCH"
+        name = str(row.get("interface_name") or "").strip()
+        identity = name.casefold()
+        if not identity or identity in identities:
+            return False, len(rows), "CONTRACT_MISMATCH"
+        identities.add(identity)
+    return True, len(rows), ""
+
+
+def _interface_discovery_detail(
+    *,
+    source: str,
+    reason: str,
+    interface_count: int,
+) -> str:
+    return (
+        f"capability=interface.discovery, source={source}, reason={reason}, "
+        f"interface_count={int(interface_count or 0)}"
     )
 
 

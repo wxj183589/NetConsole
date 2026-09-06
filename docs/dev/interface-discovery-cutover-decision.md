@@ -21,7 +21,7 @@
 
 本结论不等于 Production Cutover，不等于已修改生产路由，也不等于 C9 已验证。当前正式路径仍为 Legacy。
 
-`IMPLEMENTATION_STATUS=NOT_IMPLEMENTED`
+`IMPLEMENTATION_STATUS=IMPLEMENTED_DEFAULT_OFF`
 `PRODUCTION_CUTOVER_EXECUTED=NO`
 `CURRENT_PRODUCTION_ROUTE=LEGACY`
 
@@ -335,7 +335,26 @@ PHASE2D_D_READY=YES
 PHASE2D_READY=NO
 ```
 
-`PHASE2D_D_READY=YES` 仅表示可以开始下一阶段的受控实现；下一阶段仍必须实现并验证上述 routing、fallback、single-writer、rollback、backup 和 monitoring gates。`PHASE2D_READY=NO` 表示尚未达到整体 Phase 2D 完成或生产切换条件。
+## Phase 2D-D implementation status
+
+Phase 2D-D 已在不改变生产默认行为的前提下完成最小软件实现，详细说明见 `docs/dev/interface-discovery-scoped-cutover-implementation.md`：
+
+```text
+PHASE2D_D_IMPLEMENTATION=PASS
+SCOPED_ROUTER=PASS
+MIGRATION_ENVELOPE=PASS
+DEFAULT_PRODUCTION_PATH=LEGACY
+PRODUCTION_CAPABILITY_PRIMARY_ENABLED=NO
+CAPABILITY_PRIMARY=PASS
+LEGACY_FALLBACK=PASS
+SINGLE_WRITER=PASS
+SCOPED_ROLLBACK=PASS
+POLICY_FAILURE_DEFAULT=LEGACY
+```
+
+本状态只表示代码能力和离线回归已完成；未创建生产 policy、未启用 Capability、未连接设备、未执行 Production Cutover。Phase 2D-E 仍需正式备份、维护窗口和 Wave 0 授权。
+
+`PHASE2D_D_READY=YES` 表示已满足进入 Phase 2D-D 受控实现的前置条件；当前实现已完成，但下一阶段仍必须完成正式备份、维护窗口、Wave 0 授权和 monitoring gates。`PHASE2D_READY=NO` 表示尚未达到整体 Phase 2D 完成或生产切换条件。
 
 ## 13. Source references
 

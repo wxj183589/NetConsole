@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import RLock
 from typing import Protocol
 
+from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
@@ -32,6 +33,12 @@ from netconsole.services.device_command_profile_service import (
 )
 from netconsole.services.device_collection_support import resolve_device_collection_support
 from netconsole.services.device_scope import require_current_debug_device
+from netconsole.services.interface_discovery_routing import (
+    CAPABILITY_PRIMARY_ROUTE,
+    INTERFACE_DISCOVERY_CAPABILITY,
+    evaluate_interface_discovery_route,
+    load_interface_discovery_rollout_policy,
+)
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -52,6 +59,25 @@ _OPERATION_METADATA = {
 _ACTIVE_STATES = frozenset(
     {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
 )
+
+
+def _audit_interface_discovery_route(
+    decision: object,
+    profile: DeviceCommandProfile | None,
+    *,
+    phase: str,
+) -> None:
+    app_logger.log_info(
+        "INTERFACE_DISCOVERY_ROUTE",
+        (
+            f"phase={phase}, route={getattr(decision, 'route', 'LEGACY')}, "
+            f"reason={getattr(decision, 'reason_code', 'UNKNOWN')}, "
+            f"envelope_eligible={bool(getattr(decision, 'envelope_eligible', False))}, "
+            f"activation_enabled={bool(getattr(decision, 'activation_enabled', False))}, "
+            f"policy_source={getattr(decision, 'policy_source', 'unknown')}, "
+            f"profile_id={str(profile.profile_id if profile else '')}"
+        ),
+    )
 
 
 class DeviceProcessAdapter(Protocol):
@@ -225,6 +251,16 @@ class DeviceOperationService:
             platform_facts=platform_facts,
             paths=self.paths,
         )
+        if operation_id == DEVICE_INVENTORY_OPERATION_ID:
+            decision = evaluate_interface_discovery_route(
+                device_uuid=device_uuid,
+                operation_id=operation_id,
+                capability=INTERFACE_DISCOVERY_CAPABILITY,
+                platform_facts=platform_facts,
+                profile=profile,
+                policy=load_interface_discovery_rollout_policy(self.paths),
+            )
+            _audit_interface_discovery_route(decision, profile, phase="plan")
         return device, platform_facts, profile
 
     def _start_planned(
@@ -421,7 +457,12 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
             platform=str(context.params.get("platform") or "unknown"),
             software_version=str(context.params.get("software_version") or "")
             or None,
-            software_major=None,
+            software_major=identify_device_platform(
+                vendor=device.vendor_key,
+                device_type=device.device_type,
+                software_version=context.params.get("software_version"),
+                collected_at=context.params.get("platform_collected_at"),
+            ).software_major,
             source=str(context.params.get("platform_source") or "submitted_job"),
             confidence=str(context.params.get("platform_confidence") or "unknown"),  # type: ignore[arg-type]
             collected_at=str(context.params.get("platform_collected_at") or "")
@@ -440,13 +481,24 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
         ):
             raise ValueError("提交时命令 Profile 与 Worker 校验结果不一致")
         bind_submitted_device_inventory_profile(device, profile, submitted_facts)
-        return collect_h3c_device_details(
-            device,
-            site,
-            repository=facts,
-            paths=context.paths,
-            cancel_check=context.should_cancel,
+        decision = evaluate_interface_discovery_route(
+            device_uuid=device.device_uuid,
+            operation_id=operation_id,
+            capability=INTERFACE_DISCOVERY_CAPABILITY,
+            platform_facts=submitted_facts,
+            profile=profile,
+            policy=load_interface_discovery_rollout_policy(context.paths),
         )
+        _audit_interface_discovery_route(decision, profile, phase="worker")
+        collector_kwargs: dict[str, object] = {
+            "repository": facts,
+            "paths": context.paths,
+            "cancel_check": context.should_cancel,
+        }
+        if decision.route == CAPABILITY_PRIMARY_ROUTE:
+            collector_kwargs["interface_discovery_route"] = decision.route
+            collector_kwargs["interface_discovery_platform_facts"] = submitted_facts
+        return collect_h3c_device_details(device, site, **collector_kwargs)
 
     worker_count = max(1, min(20, len(selected)))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
