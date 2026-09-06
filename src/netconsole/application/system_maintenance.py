@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -114,6 +115,7 @@ class SystemMaintenanceApplicationService:
         export_adapter: WebExportProcessAdapter,
         artifact_store: WebArtifactStore,
         desktop_action_service: DesktopActionService,
+        runtime_snapshot_provider: Callable[[], Mapping[str, object]] | None = None,
     ) -> None:
         self.paths = paths
         self.task_service = task_service
@@ -122,6 +124,7 @@ class SystemMaintenanceApplicationService:
         self.artifact_store = artifact_store
         self.desktop_action_service = desktop_action_service
         self.resolver = SystemMaintenanceResolver(paths)
+        self.runtime_snapshot_provider = runtime_snapshot_provider
 
     def current_site_id(self) -> str:
         try:
@@ -340,11 +343,21 @@ class SystemMaintenanceApplicationService:
                 "log_window_minutes": log_window_minutes,
                 "raw_sample": bool(raw_sample),
                 "git_revision": "",
-                "runtime_snapshot": {},
+                "runtime_snapshot": self._runtime_snapshot(),
                 "runtime_config": {"data_root": str(self.paths.data_root), "site_name": site_id},
             },
         )
         return self._start_export(site_id, spec, reservation, kind)
+
+    def _runtime_snapshot(self) -> dict[str, object]:
+        provider = self.runtime_snapshot_provider
+        if not callable(provider):
+            return {}
+        try:
+            value = provider()
+        except Exception:
+            return {}
+        return dict(value) if isinstance(value, Mapping) else {}
 
     def get_task(self, site_id: str, task_id: str) -> MaintenanceTaskDTO:
         site_id = self._site(site_id)

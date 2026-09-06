@@ -1036,6 +1036,18 @@ def create_app(
                 f"{_safe_error_message(str(exc))}",
             )
 
+    def diagnostic_runtime_snapshot() -> dict[str, object]:
+        service = getattr(app.state, "ground_unattended_application_service", None)
+        if service is None:
+            return {}
+        try:
+            health = service.health(site_name)
+            return {"ground_health": health.model_dump(mode="json")}
+        except Exception:
+            return {}
+
+    system_maintenance_service.runtime_snapshot_provider = diagnostic_runtime_snapshot
+
     def rebind_runtime_site(target_site_name: str) -> None:
         """在 Backend 进程内切换所有持有 Site-scoped 状态的服务。"""
 
