@@ -32,7 +32,7 @@ PHASE2D_B_READY=NO
 ### 1.2 Phase 2D-B2 authorization gate
 
 本轮 B2 preflight 已记录于
-[`interface-discovery-real-device-validation-report.md`](interface-discovery-real-device-validation-report.md)。当前执行上下文没有提供本轮明确的只读真实设备授权、C7/C9 批准目标或维护窗口授权，因此真实连接、真实命令、真实 cycle 和 REAL_CAPTURE 均保持 `NOT_EXECUTED`。该报告不授予设备连接或生产 Shadow 启用权限。
+[`interface-discovery-real-device-validation-report.md`](interface-discovery-real-device-validation-report.md)。本轮已明确授权 H3C 只读验证及杭州10号线、宁波10号线线路范围，并完成候选筛选；由于当前执行上下文没有 `MAINTENANCE_WINDOW_APPROVED=YES`，真实连接、真实命令、真实 cycle 和 REAL_CAPTURE 均保持 `NOT_EXECUTED`，状态为 `BLOCKED_MAINTENANCE_WINDOW`。该报告不授予设备连接或生产 Shadow 启用权限。
 
 ## 2. 权威边界与前置 Gate
 
