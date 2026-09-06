@@ -72,6 +72,8 @@ const {
   launchSelectedFitApTerminal,
 } = terminalLauncher
 const activeStates = new Set(activeTaskStatuses)
+const TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER_LINES = ['已上线AP', '光衰问题数'] as const
+const TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER = TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER_LINES.join('\n')
 const businessTaskTypes = new Set([
   'trackside_ap_optical_update',
   TRACKSIDE_AP_BUSINESS_EXPORT_TASK_TYPE,
@@ -232,7 +234,7 @@ const onlineStatusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
   { key: 'actual_online_count', label: '实际在线', valueType: 'number', width: 110 },
   { key: 'offline_count', label: '离线', valueType: 'number', width: 90 },
   { key: 'online_rate', label: '上线率', valueType: 'number', width: 100, displayValue: (row) => formatOnlineRate(row.online_rate) },
-  { key: 'optical_problem_count', label: '已上线AP\n光衰问题数', valueType: 'number', width: 120, displayValue: (row) => String(row.optical_problem_count ?? 0) },
+  { key: 'optical_problem_count', label: TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER, valueType: 'number', width: 120, displayValue: (row) => String(row.optical_problem_count ?? 0) },
   { key: 'status', label: '状态', valueType: 'status', width: 150, displayValue: (row) => onlineStatusLabel(row) },
   { key: 'warning', label: '告警', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text', showOverflowTooltip: true },
 ]
@@ -1267,7 +1269,10 @@ onBeforeUnmount(() => {
         <span><small>实际物理AP</small><strong>{{ metricValue(page?.physical_ap_total, ['fit_ap_resources']) }}</strong></span>
         <span><small>实际在线</small><strong>{{ metricValue(onlineOverviewValues.actualOnline, ['fit_ap_resources']) }}</strong></span>
         <span><small>上线率</small><strong>{{ onlineOverviewRate }}</strong></span>
-        <span><small>光衰问题</small><strong>{{ metricValue(onlineOverviewValues.opticalProblem, ['fit_ap_resources']) }}</strong></span>
+        <span class="online-overview-optical-problem">
+          <small v-for="line in TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER_LINES" :key="line">{{ line }}</small>
+          <strong>{{ metricValue(onlineOverviewValues.opticalProblem, ['fit_ap_resources']) }}</strong>
+        </span>
         <span><small>已关联上线</small><strong>{{ metricValue(onlineOverviewValues.matchedOnline, ['fit_ap_resources']) }}</strong></span>
         <span><small>未完成关联在线 AP</small><strong>{{ metricValue(onlineOverviewValues.unmatchedOnline, ['fit_ap_resources']) }}</strong></span>
         <span><small>实际离线</small><strong>{{ metricValue(onlineOverviewValues.offline, ['fit_ap_resources']) }}</strong></span>
@@ -1362,7 +1367,10 @@ onBeforeUnmount(() => {
           <span><small>实际在线</small><b>{{ onlineStatusSummary.actualOnlineCount }}</b></span>
           <span :class="{ 'online-status-summary-offline': onlineStatusSummary.offlineCount > 0 }"><small>离线</small><b>{{ onlineStatusSummary.offlineCount }}</b></span>
           <span><small>上线率</small><b>{{ formatOnlineRate(onlineStatusSummary.onlineRate) }}</b></span>
-          <span><small>光衰问题数</small><b>{{ onlineStatusSummary.opticalProblemCount }}</b></span>
+          <span class="online-status-summary-optical-problem">
+            <small v-for="line in TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER_LINES" :key="line">{{ line }}</small>
+            <b>{{ onlineStatusSummary.opticalProblemCount }}</b>
+          </span>
           <span><small>站点</small><b>{{ onlineStatusSummary.stationCount }}</b></span>
         </div>
         <el-alert v-if="onlineStatusError" :title="onlineStatusError" type="warning" show-icon :closable="false" />
@@ -1380,8 +1388,7 @@ onBeforeUnmount(() => {
           >
             <template #header-optical_problem_count>
               <span class="online-status-optical-problem-header" data-testid="trackside-optical-problem-header">
-                <span>已上线AP</span>
-                <span>光衰问题数</span>
+                <span v-for="line in TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER_LINES" :key="line">{{ line }}</span>
               </span>
             </template>
             <template #cell-online_rate="{ row }">{{ formatOnlineRate(row.online_rate) }}</template>
@@ -1438,7 +1445,9 @@ onBeforeUnmount(() => {
 .summary-grid article,.content-card,.online-overview,.diagnostic-summary{background:var(--el-bg-color);border:1px solid var(--el-border-color-lighter);border-radius:8px}
 .summary-grid article{height:64px;padding:9px 12px;box-sizing:border-box}.summary-grid span{color:var(--el-text-color-secondary);font-size:12px}.summary-grid strong{display:block;margin-top:4px;font-size:20px;line-height:1.15}
 .online-overview{display:flex;min-width:0;flex:none;align-items:center;gap:14px;padding:8px 12px}.online-overview-heading{display:flex;flex:none;align-items:center;gap:8px;white-space:nowrap}.online-overview-heading strong{font-size:14px}.online-overview-heading .el-button{padding:0}.online-overview-metrics{display:flex;min-width:0;flex:1;align-items:center;justify-content:space-between;gap:14px;overflow-x:auto}.online-overview-metrics span{display:flex;align-items:baseline;gap:5px;white-space:nowrap}.online-overview-metrics small{color:var(--el-text-color-secondary);font-size:12px}.online-overview-metrics strong{font-size:16px;line-height:1.2}.online-status-error{max-width:220px;overflow:hidden;color:var(--el-color-danger);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
+.online-overview-optical-problem{align-items:center!important;flex-direction:column;gap:0!important;line-height:1.15}
 .online-status-optical-problem-header{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;flex-direction:column;line-height:1.15;white-space:nowrap}
+.online-status-summary-optical-problem{align-items:center;display:inline-flex;flex-direction:column;gap:0;line-height:1.15;white-space:nowrap}
 .diagnostic-summary{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.diagnostic-title{flex:none;font-size:13px}.diagnostic-items{display:flex;min-width:0;flex:1;align-items:center;gap:4px;overflow:hidden}.diagnostic-item{border:0;background:transparent;color:var(--el-text-color-secondary);cursor:pointer;font:inherit;font-size:12px;line-height:22px;padding:0 6px;white-space:nowrap}.diagnostic-item:not(:last-child)::after{content:'|';margin-left:10px;color:var(--el-border-color)}.diagnostic-item b{font-weight:600}.diagnostic-warning{color:var(--el-color-warning)}.diagnostic-danger{color:var(--el-color-danger)}.diagnostic-toggle{flex:none;padding:0;white-space:nowrap}
 .content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:10px 12px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1;overflow:hidden}.toolbar{flex:none;margin-bottom:8px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:8px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}
 .trackside-concurrency-select{width:112px}

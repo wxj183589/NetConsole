@@ -16,7 +16,7 @@
 ### Renderer 与概览展示
 
 - 轨旁 AP 业务 Renderer 不再根据 Rx 二次计算 business abnormal，改为由 Backend canonical status 驱动 presentation，避免 DETAIL、FILTER、SUMMARY 再次分裂。
-- AP 上线情况概览表头由“光衰问题数”改为两行“已上线AP / 光衰问题数”，统计字段和统计逻辑不变。
+- AP 上线情况概览页面、Excel 导出和 WPS 云文档统一使用两行表头“已上线AP / 光衰问题数”，实际写入换行符并保持居中、自动换行和完整行高；统计字段和统计逻辑不变。
 
 ### 回归验证
 
