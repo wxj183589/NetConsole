@@ -1,0 +1,20 @@
+{
+  "fixture_id": "zte-zxr10-5960x-synthetic",
+  "operation_id": "device.inventory.collect",
+  "fixture_type": "SYNTHETIC",
+  "source_note": "复用仓库既有 ZXR10 5960X-ES 文档样例和脱敏测试邻居；不代表现场证据。",
+  "vendor": "ZTE",
+  "role": "switch",
+  "platform": "zxr10",
+  "software_version": "V2.00.20.03B07",
+  "profile_id": "zte.zxr10.switch.generic.device-inventory.v3",
+  "outputs": {
+    "inventory.version": {"file": "../zte/zte_5960x_show_version.txt"},
+    "inventory.interface_brief": {"file": "../zte/hzdt10_show_interface_brief.txt"},
+    "inventory.switchvlan_config": {"file": "../zte/hzdt10_show_running_config_switchvlan.txt"},
+    "inventory.vlan_table": {"file": "../zte/hzdt10_show_vlan.txt"},
+    "inventory.optical_brief": {"file": "../zte/zte_5960x_show_opticalinfo_brief.txt"},
+    "inventory.lldp_list": {"file": "zte_lldp_neighbor_brief_small.txt"},
+    "inventory.lldp_verbose": {"file": "zte_lldp_entry_small.txt"}
+  }
+}

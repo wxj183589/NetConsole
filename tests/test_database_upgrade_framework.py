@@ -125,6 +125,29 @@ def test_batch_upgrade_preflights_profiles_and_auto_backups_each_incompatible_da
     assert len(list(paths.database_upgrade_backups_dir.rglob("manifest.json"))) == 1
 
 
+def test_batch_backup_preserves_backup_failure_message(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    profile = MeshStorageService("demo", paths).create_mr_profile("列车07-MR-CT")
+    service = DatabaseUpgradeManagementService(paths)
+
+    def fail_backup(**_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("backup source is busy")
+
+    monkeypatch.setattr(service.backups, "create", fail_backup)
+
+    result = service.batch_backup("demo", [profile.mr_id], task_id="batch-backup-test")
+
+    assert result["failed"] == 1
+    assert result["results"] == [
+        {
+            "profile_id": profile.mr_id,
+            "profile_name": "列车07-MR-CT",
+            "status": "failed",
+            "message": "backup source is busy",
+        }
+    ]
+
+
 def test_wal_data_is_in_verified_backup_and_old_database_is_retained(tmp_path: Path) -> None:
     paths = PathResolver(data_root=tmp_path)
     active = tmp_path / "active.sqlite"
