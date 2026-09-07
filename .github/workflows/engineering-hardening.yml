@@ -28,9 +28,20 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-architecture"
+      NETCONSOLE_DATA_ROOT: "D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-architecture"
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: |
+          $targetBase = 'D:\study\NetConsole-Workspace\test-data\NetConsole'
+          New-Item -ItemType Directory -Path $targetBase -Force | Out-Null
+          $checkoutBase = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\..\test-data\NetConsole'))
+          New-Item -ItemType Directory -Path (Split-Path -Parent $checkoutBase) -Force | Out-Null
+          if (-not (Test-Path -LiteralPath $checkoutBase)) {
+            New-Item -ItemType Junction -Path $checkoutBase -Target $targetBase | Out-Null
+          }
+          New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -70,9 +81,20 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-python"
+      NETCONSOLE_DATA_ROOT: "D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-python"
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: |
+          $targetBase = 'D:\study\NetConsole-Workspace\test-data\NetConsole'
+          New-Item -ItemType Directory -Path $targetBase -Force | Out-Null
+          $checkoutBase = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\..\test-data\NetConsole'))
+          New-Item -ItemType Directory -Path (Split-Path -Parent $checkoutBase) -Force | Out-Null
+          if (-not (Test-Path -LiteralPath $checkoutBase)) {
+            New-Item -ItemType Junction -Path $checkoutBase -Target $targetBase | Out-Null
+          }
+          New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -134,7 +156,7 @@ jobs:
           cache-dependency-path: apps/desktop_renderer/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - name: Run complete Renderer test suite
-        run: pnpm exec vitest run
+        run: pnpm exec vitest run --pool=threads --no-file-parallelism --maxWorkers=1
       - name: Run Renderer typecheck
         run: pnpm exec vue-tsc -b
       - name: Build Renderer
@@ -155,6 +177,17 @@ jobs:
         working-directory: apps/desktop_electron
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: |
+          $targetBase = 'D:\study\NetConsole-Workspace\test-data\NetConsole'
+          New-Item -ItemType Directory -Path $targetBase -Force | Out-Null
+          $checkoutBase = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\..\test-data\NetConsole'))
+          New-Item -ItemType Directory -Path (Split-Path -Parent $checkoutBase) -Force | Out-Null
+          if (-not (Test-Path -LiteralPath $checkoutBase)) {
+            New-Item -ItemType Junction -Path $checkoutBase -Target $targetBase | Out-Null
+          }
+          New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -200,9 +233,20 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-main-contract"
+      NETCONSOLE_DATA_ROOT: "D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-main-contract"
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: |
+          $targetBase = 'D:\study\NetConsole-Workspace\test-data\NetConsole'
+          New-Item -ItemType Directory -Path $targetBase -Force | Out-Null
+          $checkoutBase = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\..\test-data\NetConsole'))
+          New-Item -ItemType Directory -Path (Split-Path -Parent $checkoutBase) -Force | Out-Null
+          if (-not (Test-Path -LiteralPath $checkoutBase)) {
+            New-Item -ItemType Junction -Path $checkoutBase -Target $targetBase | Out-Null
+          }
+          New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
@@ -263,9 +307,20 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-baseline-audit"
+      NETCONSOLE_DATA_ROOT: "D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-baseline-audit"
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare isolated test root
+        shell: pwsh
+        run: |
+          $targetBase = 'D:\study\NetConsole-Workspace\test-data\NetConsole'
+          New-Item -ItemType Directory -Path $targetBase -Force | Out-Null
+          $checkoutBase = [System.IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE '..\..\test-data\NetConsole'))
+          New-Item -ItemType Directory -Path (Split-Path -Parent $checkoutBase) -Force | Out-Null
+          if (-not (Test-Path -LiteralPath $checkoutBase)) {
+            New-Item -ItemType Junction -Path $checkoutBase -Target $targetBase | Out-Null
+          }
+          New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
