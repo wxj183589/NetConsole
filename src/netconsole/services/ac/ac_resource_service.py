@@ -255,6 +255,7 @@ class AcResourceService:
             raw_log_path=result.raw_log_path,
             fit_ap_resources_updated=result.fit_ap_resources_updated,
             unauthenticated_rows_updated=result.unauthenticated_rows_updated,
+            unauthenticated_status=str(getattr(result, "unauthenticated_status", "NOT_COLLECTED")),
             bbssid_rows_parsed=result.bbssid_rows_parsed,
             lldp_rows_parsed=result.lldp_rows_parsed,
             bbssid_collect_status=str(

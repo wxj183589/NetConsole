@@ -137,6 +137,7 @@ class WirelessDashboardQueryService:
             online_aps=ac.online_aps,
             offline_aps=ac.offline_aps,
             unauthenticated_aps=ac.unauthenticated_aps,
+            unauthenticated_status=ac.unauthenticated_status,
             optical_anomalies=ac.optical_anomalies,
             registered_trains=train_summary.registered_trains,
             registered_mrs=train_summary.registered_mrs,
@@ -264,6 +265,7 @@ class WirelessDashboardQueryService:
         summary.online_aps = ac.online_aps
         summary.offline_aps = ac.offline_aps
         summary.unauthenticated_aps = ac.unauthenticated_aps
+        summary.unauthenticated_status = ac.unauthenticated_status
         summary.optical_anomalies = ac.optical_anomalies
         summary.registered_trains = trains.registered_trains
         summary.registered_mrs = trains.registered_mrs
@@ -383,7 +385,7 @@ class WirelessDashboardQueryService:
         mesh = infrastructure.mesh_link
         if ac.offline_aps:
             add("ac-offline", "warning", "infrastructure", "FIT-AP 离线", f"当前已有状态中存在 {ac.offline_aps} 台离线 FIT-AP。", "/ac-management")
-        if ac.unauthenticated_aps:
+        if ac.unauthenticated_status != "UNKNOWN" and ac.unauthenticated_aps:
             add("ac-unauthenticated", "warning", "infrastructure", "FIT-AP 未认证", f"当前已有状态中存在 {ac.unauthenticated_aps} 台未认证 FIT-AP。", "/ac-management")
         for ap in infrastructure.optical_anomalies:
             severity = "critical" if ap.optical_status == "critical" else "warning"

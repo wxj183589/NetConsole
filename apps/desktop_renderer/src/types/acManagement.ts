@@ -12,6 +12,7 @@ export interface AcOverview {
   online_aps: number
   offline_aps: number
   unauthenticated_aps: number
+  unauthenticated_status?: string
   radio_total: number
   optical_anomalies: number
   updated_at: string
@@ -25,6 +26,7 @@ export interface AcManagementSummary {
   online_aps: number
   offline_aps: number
   unauthenticated_aps: number
+  unauthenticated_status?: string
   radio_total: number
   optical_anomalies: number
   updated_at: string
@@ -43,6 +45,7 @@ export interface AcAp {
   model: string
   online_time: string
   is_unauthenticated: boolean
+  unauthenticated_state?: string
   radio1_status: string
   radio2_status: string
   radio1_channel: string

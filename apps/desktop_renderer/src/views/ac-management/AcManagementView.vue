@@ -644,6 +644,19 @@ function statusLabel(value: string): string {
   return { online: '在线', offline: '离线', unauthenticated: '未认证', unknown: '无数据' }[value] || value || '无数据'
 }
 
+function unauthenticatedCountLabel(ac: { unauthenticated_aps: number; unauthenticated_status?: string } | undefined): string | number {
+  if (!ac) return '—'
+  return ac.unauthenticated_status === 'UNKNOWN' ? '未知' : ac.unauthenticated_aps
+}
+
+function unauthenticatedCountTitle(ac: { unauthenticated_status?: string } | undefined): string {
+  const status = ac?.unauthenticated_status
+  if (status === 'UNKNOWN') {
+    return '来源：display wlan ap unauthenticated；本次采集失败，当前未认证状态未知。'
+  }
+  return '来源：display wlan ap unauthenticated；命令成功且没有记录时为 0。'
+}
+
 function apOpticalPresentation(ap: AcAp) {
   return apOpticalStatusPresentation({
     backendStatus: ap.optical_status,
@@ -818,7 +831,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
       <article><span>AP 总数</span><strong>{{ store.activeAc?.ap_total || 0 }}</strong></article>
       <article class="success"><span>在线 AP</span><strong>{{ store.activeAc?.online_aps || 0 }}</strong></article>
       <article class="danger"><span>离线 AP</span><strong>{{ store.activeAc?.offline_aps || 0 }}</strong></article>
-      <article class="warning"><span>未认证 AP</span><strong>{{ store.activeAc?.unauthenticated_aps || 0 }}</strong></article>
+      <article class="warning" :title="unauthenticatedCountTitle(store.activeAc)"><span>未认证 AP（AC实时）</span><strong>{{ unauthenticatedCountLabel(store.activeAc) }}</strong></article>
       <article><span>Radio 总数</span><strong>{{ store.activeAc?.radio_total || 0 }}</strong></article>
       <article class="danger"><span>关联光衰异常</span><strong>{{ store.activeAc?.optical_anomalies || 0 }}</strong></article>
     </div>

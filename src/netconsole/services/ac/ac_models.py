@@ -83,6 +83,7 @@ class AcResourceRefreshResult:
     persisted_components: list[str] = field(default_factory=list)
     failed_components: list[str] = field(default_factory=list)
     skipped_components: list[str] = field(default_factory=list)
+    unauthenticated_status: str = "NOT_COLLECTED"
 
     def __post_init__(self) -> None:
         """兼容旧 collector 返回值，同时给 Task Center 一个稳定的组件账本。"""
@@ -100,6 +101,7 @@ class AcResourceRefreshResult:
                 or self.bbssid_rows_parsed > 0
                 or self.lldp_rows_parsed > 0
                 or self.fit_ap_snapshot_status != FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED
+                or self.unauthenticated_status != "NOT_COLLECTED"
             ):
                 persisted.append("FIT_AP")
         if not failed and not self.success:
@@ -134,6 +136,7 @@ class AcResourceRefreshResult:
                 "raw_log_path": self.raw_log_path,
                 "fit_ap_resources_updated": self.fit_ap_resources_updated,
                 "unauthenticated_rows_updated": self.unauthenticated_rows_updated,
+                "unauthenticated_status": self.unauthenticated_status,
                 "bbssid_rows_parsed": self.bbssid_rows_parsed,
                 "lldp_rows_parsed": self.lldp_rows_parsed,
                 "bbssid_collect_status": self.bbssid_collect_status,
@@ -175,6 +178,7 @@ class AcResourceRefreshResult:
             "collect_run_uuid": self.collect_run_uuid,
             "fit_ap_resources_updated": int(self.fit_ap_resources_updated),
             "unauthenticated_rows_updated": int(self.unauthenticated_rows_updated),
+            "unauthenticated_status": str(self.unauthenticated_status),
             "bbssid_rows_parsed": int(self.bbssid_rows_parsed),
             "lldp_rows_parsed": int(self.lldp_rows_parsed),
             "bbssid_collect_status": str(self.bbssid_collect_status),
@@ -205,6 +209,7 @@ class AcResourceRefreshResult:
             "success": bool(self.success),
             "fit_ap_resources_updated": int(self.fit_ap_resources_updated),
             "unauthenticated_rows_updated": int(self.unauthenticated_rows_updated),
+            "unauthenticated_status": str(self.unauthenticated_status),
             "bbssid_rows_parsed": int(self.bbssid_rows_parsed),
             "lldp_rows_parsed": int(self.lldp_rows_parsed),
             "bbssid_collect_status": str(self.bbssid_collect_status),

@@ -40,6 +40,7 @@ class WirelessDashboardSummaryDTO(ApiModel):
     online_aps: int = 0
     offline_aps: int = 0
     unauthenticated_aps: int = 0
+    unauthenticated_status: str = "UNKNOWN"
     optical_anomalies: int = 0
     registered_trains: int = 0
     registered_mrs: int = 0

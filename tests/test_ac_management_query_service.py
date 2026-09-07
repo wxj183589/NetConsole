@@ -67,6 +67,26 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert _fingerprint(db_path) == before
 
 
+def test_ac_query_service_never_exposes_unknown_snapshot_as_current_unauthenticated(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    repository = AcRepository(Database(paths.site_db_path("demo")))
+    repository.replace_fit_ap_unauthenticated(
+        "ac-1",
+        {"connected_auto_aps": 2, "snapshot_status": "UNKNOWN"},
+        [{"ap_name": "AP-Unauth", "inferred_ap_mac": "0000-0000-0003"}],
+    )
+    service = AcManagementQueryService(paths)
+
+    summary = service.get_summary("demo")
+    unauthenticated = service.list_aps("demo", status="unauthenticated")
+
+    assert summary.unauthenticated_aps == 0
+    assert summary.unauthenticated_status == "UNKNOWN"
+    assert summary.online_aps == 2
+    assert summary.offline_aps == 1
+    assert unauthenticated.total == 0
+
+
 def test_fit_ap_optical_filter_uses_current_ap_rx_not_raw_alarm_level(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     service = AcManagementQueryService(paths)

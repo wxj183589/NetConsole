@@ -122,7 +122,8 @@ AP name                        APID  State Model           Serial ID            
 """
 
     assert classify_wlan_ap_unauthenticated_snapshot(empty, []) == "SUCCESS_EMPTY"
-    assert classify_wlan_ap_unauthenticated_snapshot("SSH read timeout", []) == "FAILED"
+    assert classify_wlan_ap_unauthenticated_snapshot("Total number of connected auto APs: 0", []) == "SUCCESS_EMPTY"
+    assert classify_wlan_ap_unauthenticated_snapshot("SSH read timeout", []) == "UNKNOWN"
 
 
 def test_wlan_ap_unauthenticated_parser_skips_state_legend_before_header():
@@ -190,13 +191,13 @@ def test_fit_ap_unauthenticated_apid_does_not_match_across_ac(tmp_path):
     repository.replace_fit_ap_unauthenticated("ac-1", {"connected_auto_aps": 1}, [{"ap_name": "AP-Pending", "apid": "1"}])
 
     row = repository.list_fit_ap_resources_with_metadata("ac-2")[0]
-    assert row["register_status"] == "已手动固化或普通AP"
+    assert row["register_status"] == "状态未知"
 
 
-def test_ac_collect_optional_unauthenticated_failure_does_not_fail_resources(monkeypatch, tmp_path):
+def test_ac_collect_optional_unauthenticated_failure_clears_current_snapshot_but_does_not_fail_resources(monkeypatch, tmp_path):
     repository = make_ac_repository(tmp_path)
     repository.replace_fit_ap_unauthenticated(
-        "ac-1",
+        make_ac_device().device_uuid,
         {"connected_auto_aps": 1, "snapshot_status": "SUCCESS_WITH_ROWS"},
         [{"ap_name": "AP-Previous", "serial_number": "SN-PREVIOUS"}],
     )
@@ -213,10 +214,30 @@ def test_ac_collect_optional_unauthenticated_failure_does_not_fail_resources(mon
 
     assert result.success is True
     assert result.fit_ap_resources_updated == 1
-    assert result.unauthenticated_updated is False
+    assert result.unauthenticated_updated is True
     assert "failed" in result.unauthenticated_error
-    assert repository.list_fit_ap_unauthenticated("ac-1")[0]["ap_name"] == "AP-Previous"
-    assert repository.get_fit_ap_unauthenticated_summary("ac-1")["snapshot_status"] == "SUCCESS_WITH_ROWS"
+    assert repository.list_fit_ap_unauthenticated(make_ac_device().device_uuid) == []
+    assert repository.list_fit_ap_unauthenticated_history(make_ac_device().device_uuid)[0]["ap_name"] == "AP-Previous"
+    assert repository.get_fit_ap_unauthenticated_summary(make_ac_device().device_uuid)["snapshot_status"] == "UNKNOWN"
+
+
+def test_unknown_unauthenticated_snapshot_cannot_promote_legacy_current_row(tmp_path):
+    repository = make_ac_repository(tmp_path)
+    repository.replace_fit_ap_resources(
+        "ac-1",
+        [{"ap_uuid": "ap-legacy", "ap_name": "74ad-cba9-0600", "serial_number": "SN-LEGACY"}],
+    )
+    repository.replace_fit_ap_unauthenticated(
+        "ac-1",
+        {"snapshot_status": "UNKNOWN", "connected_auto_aps": 2},
+        [{"ap_name": "74ad-cba9-0600", "serial_number": "SN-LEGACY"}],
+    )
+
+    row = repository.list_fit_ap_resources_with_metadata("ac-1")[0]
+
+    assert row["current_unauthenticated"] is False
+    assert row["unauthenticated_state"] == "unknown"
+    assert row["register_status"] == "状态未知"
 
 
 def test_build_new_online_ap_overview_rows_uses_only_current_unauthenticated_snapshot():

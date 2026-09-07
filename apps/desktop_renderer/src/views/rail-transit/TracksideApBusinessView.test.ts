@@ -473,6 +473,13 @@ const ElementStubs = {
   }),
   ElTag: defineComponent({ template: '<span class="el-tag"><slot /></span>' }),
   ElTooltip: defineComponent({ props: { content: String }, template: '<span class="el-tooltip" :data-content="content"><slot /></span>' }),
+  ElDropdown: defineComponent({ template: '<div class="el-dropdown"><slot /><slot name="dropdown" /></div>' }),
+  ElDropdownMenu: defineComponent({ template: '<div class="el-dropdown-menu"><slot /></div>' }),
+  ElDropdownItem: defineComponent({
+    props: { disabled: Boolean, command: String },
+    emits: ['click'],
+    template: '<button :disabled="disabled" @click="$emit(\'click\')"><slot /></button>',
+  }),
   ElDialog: defineComponent({
     props: { modelValue: Boolean, title: String, draggable: Boolean, width: String, bodyClass: String, alignCenter: Boolean },
     emits: ['update:modelValue'],
@@ -589,8 +596,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).not.toContain('结果项')
     expect(buttons(wrapper, '打开任务中心')).toHaveLength(0)
     expect(wrapper.find('.business-table-host').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="trackside-core-summary"]').findAll('article')).toHaveLength(5)
-    expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('AP 上线情况概览')
+    expect(wrapper.find('[data-testid="trackside-core-summary"]').findAll('.kpi-item')).toHaveLength(8)
+    expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('在线978')
     expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('98.6%')
     expect(wrapper.find('[data-testid="trackside-diagnostic-summary"]').findAll('.diagnostic-item')).toHaveLength(5)
     expect(wrapper.find('[data-table-id="trackside-ap-business"]').attributes('data-height')).toBe('100%')
@@ -642,11 +649,10 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     const wrapper = await mountView()
 
-    expect(wrapper.text()).toContain('AP配置端口数956')
-    expect(wrapper.text()).toContain('规划AP数673')
-    expect(wrapper.text()).toContain('已识别AP端口621')
-    expect(wrapper.text()).toContain('未识别/空闲端口335')
-    expect(wrapper.text()).toContain('实际物理AP621')
+    expect(wrapper.text()).toContain('端口识别621 / 956')
+    expect(wrapper.text()).toContain('规划 AP673')
+    expect(wrapper.text()).toContain('物理 AP621')
+    expect(wrapper.text()).toContain('未识别端口 335')
     expect(wrapper.text()).toContain('空闲/未接 AP')
     expect(wrapper.find('.recognition-reason-neutral').exists()).toBe(true)
     const columns = wrapper.getComponent(NcDataTableStub).props('columns') as Array<Record<string, unknown>>
@@ -1071,13 +1077,13 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
     const overview = wrapper.get('[data-testid="trackside-online-overview"]')
-    for (const expected of ['FIT-AP 总数992', '实际在线978', '上线率98.6%', '已上线AP光衰问题数3', '已关联上线932', '未完成关联在线 AP46', '实际离线14', '状态未知0']) {
+    for (const expected of ['AC 资源992', '在线978', '98.6%', '已上线AP光衰问题数3', '已关联上线 932', '未关联在线 46', '离线14', '状态未知 0']) {
       expect(overview.text()).toContain(expected)
     }
     expect(overview.get('.online-overview-optical-problem').findAll('small').map((item) => item.text())).toEqual(['已上线AP', '光衰问题数'])
     expect(onlineStatus().items.reduce((total, row) => total + (row.optical_problem_count ?? 0), 0)).toBe(onlineStatus().optical_problem_count)
 
-    await button(wrapper, '查看站点明细').trigger('click')
+    await button(wrapper, '站点明细').trigger('click')
     await flushPromises()
     const dialog = wrapper.get('.el-dialog.online-status-dialog')
     expect(dialog.attributes('data-draggable')).toBe('true')
@@ -1127,7 +1133,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     })
     const wrapper = await mountView()
 
-    await button(wrapper, '查看站点明细').trigger('click')
+    await button(wrapper, '站点明细').trigger('click')
     await flushPromises()
     const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
       (table) => table.props('tableId') === 'trackside-ap-business-online-status',
@@ -1161,7 +1167,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     })
     const wrapper = await mountView()
 
-    await button(wrapper, '查看站点明细').trigger('click')
+    await button(wrapper, '站点明细').trigger('click')
     await flushPromises()
     const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
       (table) => table.props('tableId') === 'trackside-ap-business-online-status',
@@ -1193,7 +1199,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     })
     const wrapper = await mountView()
 
-    await button(wrapper, '查看站点明细').trigger('click')
+    await button(wrapper, '站点明细').trigger('click')
     await flushPromises()
     const detailTable = wrapper.findAllComponents(NcDataTableStub).find(
       (table) => table.props('tableId') === 'trackside-ap-business-online-status',
@@ -1211,7 +1217,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     api.getTracksideApOnlineStatus.mockResolvedValue({ ...onlineStatus(), scope_station_count: undefined })
     const wrapper = await mountView()
 
-    await button(wrapper, '查看站点明细').trigger('click')
+    await button(wrapper, '站点明细').trigger('click')
     await flushPromises()
 
     expect(wrapper.get('[data-testid="trackside-online-status-summary"]').text()).toContain('站点2')
@@ -1223,7 +1229,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     api.getTracksideApOnlineStatus.mockResolvedValue({ ...onlineStatus(), items: [], scope_station_count: undefined })
     const emptyWrapper = await mountView()
 
-    await button(emptyWrapper, '查看站点明细').trigger('click')
+    await button(emptyWrapper, '站点明细').trigger('click')
     await flushPromises()
     const emptyTable = emptyWrapper.findAllComponents(NcDataTableStub).find(
       (table) => table.props('tableId') === 'trackside-ap-business-online-status',
@@ -1234,7 +1240,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
     api.getTracksideApOnlineStatus.mockRejectedValue(new Error('online status unavailable'))
     const errorWrapper = await mountView()
-    await button(errorWrapper, '查看站点明细').trigger('click')
+    await button(errorWrapper, '站点明细').trigger('click')
     await flushPromises()
 
     expect(errorWrapper.get('.el-dialog .el-alert').text()).toContain('online status unavailable')
@@ -1359,8 +1365,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(api.listTracksideApBusiness).toHaveBeenCalledOnce()
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
     const overview = wrapper.get('[data-testid="trackside-online-overview"]')
-    expect(overview.text()).toContain('实际在线104')
-    expect(overview.text()).toContain('实际离线1')
+    expect(overview.text()).toContain('在线104')
+    expect(overview.text()).toContain('离线1')
     expect(overview.text()).toContain('已上线AP光衰问题数3')
     wrapper.unmount()
   })
@@ -1393,7 +1399,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
     expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledTimes(1)
-    expect(host.getComponent(TracksideApBusinessView).text()).toContain('实际在线104')
+    expect(host.getComponent(TracksideApBusinessView).text()).toContain('在线104')
     expect(host.getComponent(TracksideApBusinessView).text()).toContain('已上线AP光衰问题数3')
 
     ;(host.vm as unknown as { active: boolean }).active = false
@@ -1429,8 +1435,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(api.listTracksideApBusiness).toHaveBeenCalledOnce()
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
     const overview = wrapper.get('[data-testid="trackside-online-overview"]')
-    expect(overview.text()).toContain('实际在线103')
-    expect(overview.text()).toContain('实际离线2')
+    expect(overview.text()).toContain('在线103')
+    expect(overview.text()).toContain('离线2')
     expect(overview.text()).toContain('已上线AP光衰问题数4')
     wrapper.unmount()
   })
@@ -1531,10 +1537,9 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).toContain('部分数据不可用，已展示成功构建的交换机/AP 端口行。')
     expect(wrapper.text()).toContain('FIT-AP 资源：FIT_AP_RESOURCES_UNAVAILABLE')
     expect(wrapper.getComponent(NcDataTableStub).props('data')).toHaveLength(2)
-    const cards = wrapper.findAll('.summary-grid article').map((item) => item.text())
-    expect(cards).toContain('AC AP 资源加载失败')
-    expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('加载失败')
-    expect(cards).toContain('AP配置端口数2')
+    const overview = wrapper.find('[data-testid="trackside-online-overview"]').text()
+    expect(overview).toContain('AC 资源加载失败')
+    expect(overview).toContain('端口识别1 / 2')
     wrapper.unmount()
   })
 
@@ -1563,11 +1568,14 @@ describe('TracksideApBusinessView mounted behavior', () => {
       },
     })
 
-    expect(wrapper.findAll('.summary-grid strong').map((item) => item.text())).toEqual([
+    expect(wrapper.findAll('[data-testid="trackside-core-summary"] strong').map((item) => item.text())).toEqual([
       '—',
       '—',
       '—',
       '—',
+      '—',
+      '—',
+      '— / —',
       '—',
     ])
     resolvePage?.(page())
@@ -1601,9 +1609,9 @@ describe('TracksideApBusinessView mounted behavior', () => {
       '已发现候选 AP 端口，部分端口尚未关联 AP 运行态资料。',
     )
     expect(wrapper.text()).not.toContain('trackside.empty.no_fit_ap_resource')
-    expect(wrapper.text()).toContain('AC AP 资源188')
+    expect(wrapper.text()).toContain('AC 资源992')
     expect(wrapper.text()).toContain('基础资料待补充 188')
-    expect(wrapper.text()).toContain('设备管理与 AC 生成业务行；基础资料仅补充站点和工程属性')
+    expect(wrapper.text()).toContain('数据范围说明')
     wrapper.unmount()
   })
 
@@ -1769,7 +1777,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       '下载原始输出 ZIP',
     ]) expect(wrapper.text()).not.toContain(removed)
     expect(wrapper.find('.adapter-section').exists()).toBe(false)
-    expect(wrapper.text()).toContain('设备管理与 AC 生成业务行；基础资料仅补充站点和工程属性')
+    expect(wrapper.text()).toContain('数据范围说明')
     wrapper.unmount()
   })
 
@@ -2148,7 +2156,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     })
     expect(api.listTracksideApBusiness).toHaveBeenCalledTimes(1)
     expect(api.getTracksideApOnlineStatus).toHaveBeenCalledOnce()
-    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('实际在线104')
+    expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('在线104')
     expect(wrapper.get('[data-testid="trackside-online-overview"]').text()).toContain('已上线AP光衰问题数3')
     expect(wrapper.text()).not.toContain('轨旁 AP 光衰数据已刷新')
     expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('02-云龙火车站')

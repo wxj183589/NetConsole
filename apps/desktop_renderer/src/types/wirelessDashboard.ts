@@ -18,7 +18,7 @@ export interface WirelessDashboardTask {
 }
 export interface WirelessDashboardSummary {
   site_id: string; site_name: string; line_name: string
-  ap_total: number; online_aps: number; offline_aps: number; unauthenticated_aps: number; optical_anomalies: number
+  ap_total: number; online_aps: number; offline_aps: number; unauthenticated_aps: number; unauthenticated_status?: string; optical_anomalies: number
   registered_trains: number; registered_mrs: number; online_mrs: number; offline_mrs: number; stale_mrs: number
   active_online_mr_sessions: number; agent_total: number; online_agents: number; running_tasks: number
   mesh_analysis_sessions: number; alert_total: number; critical_alerts: number; warning_alerts: number

@@ -4305,18 +4305,38 @@ class AcRepository:
         if not resources:
             return resources
         current_rows = self.list_fit_ap_unauthenticated(ac_device_uuid) if ac_device_uuid else self.list_all_fit_ap_unauthenticated()
+        summary_by_ac: dict[str, dict[str, object | None]] = {}
+        if ac_device_uuid:
+            summary_by_ac[str(ac_device_uuid)] = self.get_fit_ap_unauthenticated_summary(ac_device_uuid) or {}
+        else:
+            for row in resources:
+                current_id = str(row.get("ac_device_uuid") or "").strip()
+                if current_id and current_id not in summary_by_ac:
+                    summary_by_ac[current_id] = self.get_fit_ap_unauthenticated_summary(current_id) or {}
+            for row in current_rows:
+                current_id = str(row.get("ac_device_uuid") or "").strip()
+                if current_id and current_id not in summary_by_ac:
+                    summary_by_ac[current_id] = self.get_fit_ap_unauthenticated_summary(current_id) or {}
         history_rows = self.list_fit_ap_unauthenticated_history(ac_device_uuid)
         current_index = _unauthenticated_identity_index(current_rows)
         history_index = _unauthenticated_identity_index(history_rows)
         enriched: list[dict[str, object | None]] = []
         for resource in resources:
             item = dict(resource)
+            current_id = str(item.get("ac_device_uuid") or ac_device_uuid or "").strip()
+            summary = summary_by_ac.get(current_id, {})
+            snapshot_status = str(summary.get("snapshot_status") or "").strip().upper()
+            unauthenticated_snapshot_unknown = snapshot_status not in {
+                "SUCCESS_WITH_ROWS",
+                "SUCCESS_EMPTY",
+            }
             current = _find_unauthenticated_match(item, current_index)
             history = _find_unauthenticated_match(item, history_index)
-            if current:
+            if current and not unauthenticated_snapshot_unknown:
                 item.update(
                     {
                         "is_new_online_ap": 1,
+                        "current_unauthenticated": True,
                         "new_online_source": "display wlan ap unauthenticated",
                         "new_online_status": "当前新上线Auto AP",
                         "register_status": "未固化",
@@ -4325,10 +4345,11 @@ class AcRepository:
                         "last_unauthenticated_at": current.get("collected_at"),
                     }
                 )
-            elif history:
+            elif history and not unauthenticated_snapshot_unknown:
                 item.update(
                     {
                         "is_new_online_ap": 0,
+                        "current_unauthenticated": False,
                         "new_online_source": "",
                         "new_online_status": "历史新上线",
                         "register_status": "已固化/已确认",
@@ -4337,10 +4358,24 @@ class AcRepository:
                         "last_unauthenticated_at": history.get("collected_at"),
                     }
                 )
+            elif unauthenticated_snapshot_unknown:
+                item.update(
+                    {
+                        "is_new_online_ap": 0,
+                        "current_unauthenticated": False,
+                        "new_online_source": "",
+                        "new_online_status": "未知",
+                        "register_status": "状态未知",
+                        "unauthenticated_state": "unknown",
+                        "unauthenticated_collected_at": None,
+                        "last_unauthenticated_at": history.get("collected_at") if history else None,
+                    }
+                )
             else:
                 item.update(
                     {
                         "is_new_online_ap": 0,
+                        "current_unauthenticated": False,
                         "new_online_source": "",
                         "new_online_status": "-",
                         "register_status": "已手动固化或普通AP",

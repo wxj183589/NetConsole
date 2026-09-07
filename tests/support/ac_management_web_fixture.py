@@ -255,6 +255,14 @@ def build_ac_management_fixture(
             """,
             (now, now),
         )
+        conn.execute(
+            """
+            INSERT INTO ac_fit_ap_unauthenticated_summary (
+                ac_device_uuid, connected_auto_aps, snapshot_status, collected_at, updated_at
+            ) VALUES ('ac-1', 1, 'SUCCESS_WITH_ROWS', ?, ?)
+            """,
+            (now, now),
+        )
         conn.executemany(
             """
             INSERT INTO device_interfaces (

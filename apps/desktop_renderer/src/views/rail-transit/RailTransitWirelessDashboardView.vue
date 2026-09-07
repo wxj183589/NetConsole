@@ -84,11 +84,16 @@ function metric(value: number | null | undefined): number | string {
   return data.value ? (value ?? 0) : '—'
 }
 
+function unauthenticatedMetric(value: number | null | undefined, status: string | undefined): number | string {
+  if (!data.value) return '—'
+  return status === 'UNKNOWN' ? '未知' : (value ?? 0)
+}
+
 const summaryCards = computed(() => {
   const s = data.value?.summary
   return [
     ['FIT-AP', metric(s?.ap_total), ''], ['在线 AP', metric(s?.online_aps), 'good'], ['离线 AP', metric(s?.offline_aps), 'warning'],
-    ['未认证 AP', metric(s?.unauthenticated_aps), 'warning'], ['光衰异常', metric(s?.optical_anomalies), 'danger'],
+    ['未认证 AP（AC实时）', unauthenticatedMetric(s?.unauthenticated_aps, s?.unauthenticated_status), 'warning'], ['光衰异常', metric(s?.optical_anomalies), 'danger'],
     ['列车 / MR', s ? `${s.registered_trains} / ${s.registered_mrs}` : '—', ''],
     ['MR 在线 / 离线 / 过期', s ? `${s.online_mrs} / ${s.offline_mrs} / ${s.stale_mrs}` : '—', ''],
     ['运行中采集', metric(s?.active_online_mr_sessions), 'good'], ['Agent 在线', s ? `${s.online_agents} / ${s.agent_total}` : '—', ''],
