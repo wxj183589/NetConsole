@@ -162,6 +162,7 @@ class TracksideDeviceCollectionResult:
     interface_snapshot_status: str = ""
     optical_snapshot_status: str = ""
     duration_ms: int = 0
+    error_type: str | None = None
 
 
 @dataclass
@@ -284,6 +285,7 @@ class TracksideOpticalProgressTracker:
                     "target_ip": result.target.host,
                     "device_uuid": result.target.device_uuid or "",
                     "error_message": result.error_message or "",
+                    "error_type": result.error_type or "",
                     "elapsed_ms": max(0, int(persist_elapsed_ms)),
                 },
             )
@@ -1154,9 +1156,9 @@ def _switch_failure_details(
             "device_name": result.target.name,
             "host": result.target.host,
             "stage": "trackside_ap.switch.collect",
-            "exception_type": "CollectionError",
+            "exception_type": result.error_type or "CollectionError",
             "message": str(result.error_message or "交换机采集失败"),
-            "reason_code": "device_collection_failed",
+            "reason_code": result.error_type or "device_collection_failed",
             "duration_ms": int(result.duration_ms or 0),
         }
         for result in results
@@ -1707,6 +1709,7 @@ def _collect_one_target(
         )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), target.device)
+        error_type = str(getattr(exc, "code", "") or exc.__class__.__name__)
         return TracksideDeviceCollectionResult(
             target,
             False,
@@ -1714,6 +1717,7 @@ def _collect_one_target(
             0,
             message,
             duration_ms=max(0, int((time.monotonic() - started_at) * 1000)),
+            error_type=error_type,
         )
     finally:
         if connection is not None:

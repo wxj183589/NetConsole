@@ -168,8 +168,38 @@ class HostKeyTrustService:
                 ),
             )
 
-    def trust(self, host: str, port: int, key: Any) -> HostKeyDetails:
-        details = self.inspect(host, port, key)
+    def is_trusted(
+        self,
+        host: str,
+        port: int,
+        key: Any,
+        *,
+        role: str = "target",
+    ) -> bool:
+        """Return whether the exact managed key is already trusted.
+
+        This is intentionally a read-only probe used to label a successful
+        connection as either first-use TOFU or an existing verification.  A
+        mismatch is not treated as untrusted here; ``trust`` still raises and
+        remains the single write/mismatch gate.
+        """
+
+        details = self.inspect(host, port, key, role=role)
+        known = self._lookup(self._load(), details.host, details.port)
+        if known is None:
+            return False
+        expected = known.get(details.algorithm)
+        return expected is not None and expected.asbytes() == key.asbytes()
+
+    def trust(
+        self,
+        host: str,
+        port: int,
+        key: Any,
+        *,
+        role: str = "target",
+    ) -> HostKeyDetails:
+        details = self.inspect(host, port, key, role=role)
         with locked_file(self.path):
             keys = self._load()
             name = host_key_name(details.host, details.port)
@@ -178,7 +208,16 @@ class HostKeyTrustService:
                 expected = known.get(details.algorithm)
                 if expected is not None and expected.asbytes() == key.asbytes():
                     return details
-                raise HostKeyMismatchError("设备主机密钥已变更，连接已阻止。", details.as_dict())
+                raise HostKeyMismatchError(
+                    _mismatch_key_message(details.role),
+                    details.as_dict(),
+                    key=key,
+                    code=(
+                        "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH"
+                        if details.role == "jump"
+                        else "DEVICE_FILE_TARGET_HOST_KEY_MISMATCH"
+                    ),
+                )
             keys.add(name, details.algorithm, key)
             with tempfile.NamedTemporaryFile(
                 mode="w", encoding="utf-8", dir=self.path.parent, prefix=".known_hosts.", suffix=".tmp", delete=False

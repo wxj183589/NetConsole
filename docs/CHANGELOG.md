@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 局点级 SSH Relay 现场诊断与 FIT-AP 传输路径
+
+- Target SSH 经 Jump 建连增加阶段化诊断、目标主机密钥受控 TOFU、主机密钥变更拒绝和目标认证失败收口；Jump 与 Target 主机密钥、账号凭据保持隔离，密码不写入日志。
+- 轨旁 AP 车站交换机和 FIT-AP Optical 既有 Telnet 目标统一进入 `DeviceSSHConnectionFactory`；Relay 开启时直接使用 Jump 的 direct-tcpip Channel，Relay 关闭时保持 Direct，不创建每设备 localhost 端口映射。
+- 保留 H3C 既有最小 `ssh-rsa` 兼容回退，不修改 AP 身份、轨旁业务规则、命令、解析器、光衰阈值或默认并发。
+
 ### AP 光衰业务状态统一
 
 - 统一当前有效 AP Rx 的用户可见状态：Rx < -13.90 dBm 显示“光衰大”，Rx >= -13.90 dBm 显示“正常”。

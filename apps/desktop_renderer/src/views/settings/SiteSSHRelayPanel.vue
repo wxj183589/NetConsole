@@ -84,7 +84,7 @@ function message(cause: unknown, fallback: string): string {
 <template>
   <section class="settings-band ssh-relay-panel">
     <div class="section-heading">
-      <div><h2>SSH 中转</h2><p>当前局点通过 Jump Host 访问 SSH 目标设备；不代理 Ping、SNMP 或 UDP。</p></div>
+      <div><h2>SSH 中转</h2><p v-if="form.enabled">当前局点所有设备 SSH 连接将通过该 Jump Host；不代理 Ping、SNMP 或 UDP。</p><p v-else>开启后，当前局点所有设备 SSH 连接将通过该 Jump Host；不代理 Ping、SNMP 或 UDP。</p></div>
       <el-button size="small" :loading="loading" @click="reload">重新读取</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />

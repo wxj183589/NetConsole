@@ -129,13 +129,11 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
         from netmiko import ConnectHandler as connect_handler
     except ImportError as exc:  # pragma: no cover - exercised only when dependency is missing.
         raise RuntimeError("netmiko is not installed") from exc
-    skip_site_relay = bool(kwargs.pop("_netconsole_skip_site_ssh_relay", False))
-    disable_site_relay = bool(kwargs.pop("_netconsole_disable_site_ssh_relay", False))
     relay_paths_override = kwargs.pop("_netconsole_paths", None)
     relay_site_override = str(kwargs.pop("_netconsole_site_id", "") or "").strip()
-    if not skip_site_relay and "sock" not in kwargs:
+    if "sock" not in kwargs:
         device_type = str(kwargs.get("device_type") or "").casefold()
-        if "telnet" not in device_type and not disable_site_relay:
+        if device_type:
             from netconsole.services.site_ssh_relay import (
                 DeviceSSHConnectionFactory,
                 SiteSSHRelayError,
@@ -151,34 +149,32 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
                 relay_site_id = relay_site_override or context.site_id
                 if not relay_site_id:
                     relay_site_id = active_site_id(relay_paths)
-                relay_config = SiteSSHRelayService(relay_paths).load(relay_site_id)
+                relay_service = SiteSSHRelayService(relay_paths)
+                relay_config = relay_service.load(relay_site_id)
+                with ssh_connection_context(
+                    context.collector,
+                    context.phase,
+                    device_uuid=context.device_uuid,
+                    connection_mode="jump" if relay_config.enabled else "direct",
+                    paths=relay_paths,
+                    site_id=relay_site_id,
+                    jump_host=(f"{relay_config.host}:{relay_config.port}" if relay_config.enabled else ""),
+                ):
+                    return DeviceSSHConnectionFactory(
+                        relay_paths,
+                        relay_site_id,
+                        relay_service=relay_service,
+                    ).connect(
+                        kwargs,
+                        raw_connect_handler=connect_handler,
+                        compatibility_connect=_connect_with_compatibility,
+                    )
             except SiteSSHRelayError as exc:
                 # Standalone/library callers may not have a Site Registry yet;
                 # preserve the historical direct-SSH behavior in that case.
                 if exc.code == "SITE_NOT_FOUND":
                     return _connect_with_compatibility(connect_handler, kwargs)
                 raise
-            if relay_config.enabled:
-                with ssh_connection_context(
-                    context.collector,
-                    context.phase,
-                    device_uuid=context.device_uuid,
-                    connection_mode="jump",
-                    paths=relay_paths,
-                    site_id=relay_site_id,
-                    jump_host=f"{relay_config.host}:{relay_config.port}",
-                ):
-                    try:
-                        return DeviceSSHConnectionFactory(
-                            relay_paths,
-                            relay_site_id,
-                        ).connect(
-                            kwargs,
-                            raw_connect_handler=connect_handler,
-                            compatibility_connect=_connect_with_compatibility,
-                        )
-                    except SiteSSHRelayError:
-                        raise
     return _connect_with_compatibility(connect_handler, kwargs)
 
 
@@ -810,26 +806,50 @@ def classify_connection_exception(exc: BaseException, protocol: str = "SSH") -> 
     if code in {
         "JUMP_CONNECT_FAILED",
         "JUMP_AUTH_FAILED",
+        "JUMP_HOSTKEY_FAILED",
         "JUMP_CHANNEL_FAILED",
         "TARGET_CONNECT_FAILED",
+        "TARGET_TCP_FAILED",
+        "TARGET_SSH_BANNER_FAILED",
+        "TARGET_SSH_HANDSHAKE_FAILED",
+        "TARGET_HOSTKEY_FAILED",
+        "TARGET_HOSTKEY_CHANGED",
         "TARGET_AUTH_FAILED",
+        "TARGET_SESSION_FAILED",
         "TARGET_COMMAND_FAILED",
+        "CONNECT_TIMEOUT",
     }:
         status_by_code = {
             "JUMP_CONNECT_FAILED": "jump_connect_failed",
             "JUMP_AUTH_FAILED": "jump_auth_failed",
+            "JUMP_HOSTKEY_FAILED": "jump_hostkey_failed",
             "JUMP_CHANNEL_FAILED": "jump_channel_failed",
             "TARGET_CONNECT_FAILED": "target_connect_failed",
+            "TARGET_TCP_FAILED": "target_tcp_failed",
+            "TARGET_SSH_BANNER_FAILED": "target_ssh_banner_failed",
+            "TARGET_SSH_HANDSHAKE_FAILED": "target_ssh_handshake_failed",
+            "TARGET_HOSTKEY_FAILED": "target_hostkey_failed",
+            "TARGET_HOSTKEY_CHANGED": "target_hostkey_changed",
             "TARGET_AUTH_FAILED": "target_auth_failed",
+            "TARGET_SESSION_FAILED": "target_session_failed",
             "TARGET_COMMAND_FAILED": "target_command_failed",
+            "CONNECT_TIMEOUT": "connect_timeout",
         }
         suggestion_by_code = {
             "JUMP_CONNECT_FAILED": "请检查中转服务器地址、端口、网络和 SSH 服务状态。",
             "JUMP_AUTH_FAILED": "请检查中转服务器用户名和密码。",
+            "JUMP_HOSTKEY_FAILED": "请核验中转服务器主机密钥；未知或变更的密钥不会自动放行。",
             "JUMP_CHANNEL_FAILED": "请检查中转服务器到目标设备的路由、ACL 和 SSH 转发权限。",
             "TARGET_CONNECT_FAILED": "请检查目标设备地址、SSH 端口和目标网络服务状态。",
+            "TARGET_TCP_FAILED": "请检查中转服务器到目标设备的路由、ACL、端口和 SSH 服务状态。",
+            "TARGET_SSH_BANNER_FAILED": "请检查目标设备 SSH 服务、端口、会话数和设备是否主动断开。",
+            "TARGET_SSH_HANDSHAKE_FAILED": "请检查目标设备 SSH 算法、版本和会话状态；仅对明确需要的 H3C 设备使用兼容回退。",
+            "TARGET_HOSTKEY_FAILED": "请核验目标设备主机密钥；首次使用会登记指纹，读取或保存失败时不会放行。",
+            "TARGET_HOSTKEY_CHANGED": "请核验目标设备主机密钥是否发生变化；密钥变化会被拒绝。",
             "TARGET_AUTH_FAILED": "请检查目标设备 SSH 用户名、密码和 AAA/VTY 配置。",
+            "TARGET_SESSION_FAILED": "请检查目标设备 CLI 会话、权限、会话数和设备状态。",
             "TARGET_COMMAND_FAILED": "请检查目标设备 CLI 权限、命令和设备会话状态。",
+            "CONNECT_TIMEOUT": "请检查目标设备响应、链路质量和中转服务器到目标网段的可达性。",
         }
         return ConnectionErrorClassification(
             status_by_code[code],
@@ -1098,7 +1118,24 @@ def _raise_site_relay_command_error(connection: Any, exc: BaseException) -> None
 
     if isinstance(exc, SiteSSHRelayError):
         raise exc
-    raise SiteSSHRelayError("TARGET_COMMAND_FAILED", "目标设备 SSH 命令执行失败") from exc
+    target_host = str(getattr(connection, "_netconsole_target_host", "") or "")
+    target_port = int(getattr(connection, "_netconsole_target_port", 0) or 0)
+    username = str(getattr(connection, "_netconsole_target_username", "") or "")
+    jump = str(getattr(connection, "_netconsole_jump_host", "") or "")
+    details = {
+        "stage": "TARGET_COMMAND",
+        "target": f"{target_host}:{target_port}" if target_host else "",
+        "target_host": target_host,
+        "target_port": target_port,
+        "target_username": username,
+        "jump": jump,
+        "exception": exc.__class__.__name__,
+    }
+    raise SiteSSHRelayError(
+        "TARGET_COMMAND_FAILED",
+        f"目标设备 SSH 命令执行失败（目标={details['target']}；中转={jump}；错误码=TARGET_COMMAND_FAILED）",
+        details=details,
+    ) from exc
 
 
 def extract_cli_prompt(output: str) -> str:
@@ -1162,10 +1199,6 @@ def _netmiko_params(target: ConnectionTarget) -> dict[str, object]:
         "global_delay_factor": 1,
         "fast_cli": False,
     }
-    if target.via_tunnel:
-        # Legacy per-device tunnels already provide a local socket-forwarded
-        # endpoint.  Do not compose it with the site Jump Host path.
-        params["_netconsole_skip_site_ssh_relay"] = True
     return params
 
 
