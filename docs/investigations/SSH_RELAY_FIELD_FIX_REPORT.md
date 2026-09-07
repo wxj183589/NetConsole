@@ -89,18 +89,29 @@ baseline first.
 
 ## REGRESSION_RESULT
 
-Automated targeted result: `357 passed` across Relay, Host Key, Netmiko,
-AC-management and Trackside AP web suites. This does not cover real device,
+Automated targeted result after the final direct-Channel correction: `388
+passed, 3 warnings` across Relay, File Transfer, Netmiko, File Management,
+Device Management, AC Management and Trackside AP suites. Renderer targeted
+validation passed; the Windows Production package also passed its Web
+`180 files / 1290 tests`, Electron `37 files / 298 tests`, build, NSIS,
+package-smoke, identity and SHA-256 gates. This does not cover real device,
 real-data, GUI installation or production-network acceptance. Direct mode,
 site isolation, persistence and secret-log checks are covered by code/tests;
 field confirmation remains `NOT VERIFIED`.
 
 ## PACKAGE_RESULT
 
-`PENDING` until the final committed source is packaged through the existing
-Windows Production pipeline and the produced installer is independently
-smoke-installed. An unpacked `build/` or `dist/` directory is not an
-installer deliverable.
+`PASS` for automated package generation and package smoke from source commit
+`bc0d20544e8dce004703adb7b6c01abec71a01fe`.
+
+- Artifact: `D:\study\NetConsole-Workspace\release\v1.5.5\build-0-bc0d2054\NetConsole-Full-1.5.5.0-bc0d2054-x64-setup.exe`
+- Size: `157037904` bytes
+- SHA-256: `5570af852749c47fb1028fae60937cb7d6cf8b827473437b183371cd78c898cf`
+- Manifest: `published=false`, `packaged_dirty=false`,
+  `package_smoke=PASS`, `edition_payload_verified=true`
+
+Real Windows install/upgrade/uninstall smoke remains `NOT VERIFIED`; an
+automated package pass is not an installer or field-device acceptance result.
 
 ## Boundary
 
