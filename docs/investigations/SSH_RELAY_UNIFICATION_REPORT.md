@@ -96,24 +96,26 @@ Relay、AC、车站交换机、轨旁 AP 和光衰采集。并发 1/2/4/8/16、F
 
 ## Production package
 
-The existing Windows Production pipeline will be rerun from the pushed main
-commit that contains this acceptance and changelog update. `published=false`
-remains the expected local Production-package state; it is not changed by
-hand and does not create a new product version. Final artifact values are
-recorded in `V1.5.5_RELEASE_CLOSURE_REPORT.md` after the rebuild.
+The existing Windows Production pipeline completed from pushed `main` commit
+`323f67adad1ad59016c8d51cd4ca2d10c191a996`. `published=false` remains the
+expected local Production-package state; it was not changed by hand and does
+not create a new product version. The artifact manifest and an independent
+SHA-256 recheck agree:
 
 ```text
 PRODUCT_VERSION=1.5.5
-BUILD_ID=TO_BE_FILLED_AFTER_MAIN_REBUILD
-INSTALLER_FILENAME=TO_BE_FILLED_AFTER_MAIN_REBUILD
-INSTALLER_PATH=TO_BE_FILLED_AFTER_MAIN_REBUILD
-INSTALLER_SIZE_BYTES=TO_BE_FILLED_AFTER_MAIN_REBUILD
-INSTALLER_SHA256=TO_BE_FILLED_AFTER_MAIN_REBUILD
-AUTOMATED_PACKAGE_GATE=TO_BE_FILLED_AFTER_MAIN_REBUILD
-REAL_WINDOWS_INSTALL_SMOKE=NOT VERIFIED
-REAL_DEVICE_SMOKE=NOT VERIFIED
+BUILD_ID=netconsole-1.5.5-323f67ad-20260907T090347Z-full
+INSTALLER_FILENAME=NetConsole-Full-1.5.5.0-323f67ad-x64-setup.exe
+INSTALLER_PATH=D:\study\NetConsole-Workspace\release\v1.5.5\build-0-323f67ad\NetConsole-Full-1.5.5.0-323f67ad-x64-setup.exe
+INSTALLER_SIZE_BYTES=157036650
+INSTALLER_SHA256=4a960289396004086283eb2ece6de475c366311e4f43daa43a68ba7db0db6e75
+AUTOMATED_PACKAGE_GATE=PASS
+REAL_WINDOWS_INSTALL_SMOKE=PASS_USER_REPORTED
+REAL_DEVICE_SMOKE=PASS_DECLARED_CORE_SCOPE
 ```
 
 The final installer is a deliverable for the user’s现场 validation. The
-manifest will retain `published=false` and will record the actual
-`packaged_dirty`, `package_smoke`, edition and SHA-256 values.
+manifest records `published=false`, `packaged_dirty=false`,
+`package_smoke=PASS`, `edition_payload_verified=true` and matching inner
+commit identities. The Windows and core device statuses above are based on
+the user-provided manual acceptance; unlisted sub-items remain unverified.
