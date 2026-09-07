@@ -1,5 +1,10 @@
 # 主机密钥信任
 
+说明：本页描述设备文件/SFTP consumer 的严格确认边界。站点级 SSH Relay
+的 Jump Host 是独立策略：由 `HostKeyPolicy.AUTO_REPLACE` 使用同一 managed
+known_hosts，首次自动登记，变化只替换对应 host:port 并记录旧/新指纹；目标
+设备和本页 SFTP 路径不继承该策略。
+
 正式信任事实源为 `PathResolver.global_known_hosts_path`，即数据根下的 `config/global/security/known_hosts`。该文件不随单局点导出包导出，不写仓库，不要求管理员修改 `%USERPROFILE%\\.ssh\\known_hosts`。
 
 写入使用已有原子写入和锁文件机制；未知密钥仅在当前进程内保存挑战和 Paramiko key 对象，挑战过期后失效。已保存密钥变化时连接直接阻止，不能普通一键绕过。

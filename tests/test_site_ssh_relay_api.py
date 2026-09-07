@@ -56,6 +56,17 @@ def test_site_ssh_relay_api_persists_non_secret_config_and_dpapi_ciphertext(
 ) -> None:
     monkeypatch.setattr(site_ssh_relay, "protect_windows_data", _fake_protect)
     monkeypatch.setattr(site_ssh_relay, "unprotect_windows_data", lambda data, _entropy: _fake_protect(data, b""))
+    auto_start_calls: list[str] = []
+
+    def fake_auto_start(self, site_id: str):
+        auto_start_calls.append(site_id)
+        return self.public_config(site_id)
+
+    monkeypatch.setattr(
+        site_ssh_relay.SiteSSHRelayService,
+        "auto_start_if_enabled",
+        fake_auto_start,
+    )
     client, paths = _client(tmp_path)
     with client:
         response = client.put(
@@ -73,6 +84,7 @@ def test_site_ssh_relay_api_persists_non_secret_config_and_dpapi_ciphertext(
         assert payload["enabled"] is True
         assert payload["password_configured"] is True
         assert "jump-secret" not in response.text
+        assert auto_start_calls == ["demo"]
 
         loaded = client.get("/api/v1/sites/demo/ssh-relay")
         assert loaded.status_code == 200, loaded.text

@@ -31,6 +31,11 @@ export interface SiteSSHRelay {
   revision: string
   password_configured: boolean
   complete: boolean
+  runtime_status?: string
+  runtime_message?: string
+  host_key_status?: string
+  host_key_fingerprint_sha256?: string
+  host_key_updated_at?: string
 }
 
 export interface SiteAuditSummary {
@@ -191,7 +196,7 @@ export const getDataRoot = () => apiRequest<DataRootSnapshot>('/api/v1/storage/d
 export const updateSite = (siteId: string, payload: { display_name: string; line_name: string | null; project_type: string | null }) => apiRequest<SiteRecord>(`/api/v1/sites/${encodeURIComponent(siteId)}`, { method: 'PATCH', body: JSON.stringify(payload) })
 export const getSiteSSHRelay = (siteId: string) => apiRequest<SiteSSHRelay>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay`)
 export const updateSiteSSHRelay = (siteId: string, payload: { enabled: boolean; host: string; port: number; username: string; password?: string }) => apiRequest<SiteSSHRelay>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay`, { method: 'PUT', body: JSON.stringify(payload) })
-export const testSiteSSHRelay = (siteId: string) => apiRequest<{ success: boolean; site_id: string; host: string; port: number; connection_mode: string; duration_ms: number; message: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay/test`, { method: 'POST' })
+export const testSiteSSHRelay = (siteId: string) => apiRequest<{ success: boolean; site_id: string; host: string; port: number; connection_mode: string; duration_ms: number; message: string; host_key_status?: string; host_key_fingerprint_sha256?: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay/test`, { method: 'POST' })
 export const trashSite = (siteId: string, confirmDisplayName: string) => apiRequest<SiteTrashResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/trash`, { method: 'POST', body: JSON.stringify({ confirm_display_name: confirmDisplayName }) })
 export const createSite = (payload: { site_id: string; display_name: string; remark?: string; activate?: boolean }) => apiRequest<SiteRecord>('/api/v1/sites', { method: 'POST', body: JSON.stringify(payload) })
 export const preflightSiteActivation = (siteId: string) => apiRequest<{ ready: boolean; target_site_id: string; previous_site_id: string; registry_revision?: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate/preflight`, { method: 'POST' })

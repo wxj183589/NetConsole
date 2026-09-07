@@ -8,6 +8,7 @@
 - 设备管理、AC、车站交换机、轨旁 AP、FIT-AP、Optical 和 LLDP 等内部 SSH 路径统一复用站点 Relay；Jump 与目标设备凭据隔离，连接阶段错误分类和 Target Host Key/Authentication 处理完善。
 - 核心现场人工验收已确认 PASS：Windows 安装运行、局点 SSH Relay、AC over Relay、车站交换机 over Relay、轨旁 AP over Relay 和轨旁光衰采集；Ping/ICMP、SNMP/UDP 不属于 SSH Relay 范围。
 - 外部 SecureCRT/Xshell/PuTTY 终端和独立 Windows Agent 未纳入本次人工验收范围，继续单独标记为 NOT VERIFIED。
+- Site SSH Relay Jump Host 改用受控 `AUTO_REPLACE`：首次自动登记，变化仅原子替换当前 host:port 并记录旧/新指纹；保存设置、Backend 启动和局点切换自动恢复 Relay，目标设备与 SFTP 的严格主机密钥策略不变。
 
 ### 局点级 SSH Relay 现场诊断与 FIT-AP 传输路径
 

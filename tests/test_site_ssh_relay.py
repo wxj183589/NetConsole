@@ -412,6 +412,62 @@ def test_jump_manager_reuses_transport_but_target_channels_are_independent(
     assert client.closed is True
 
 
+def test_jump_manager_publishes_current_auto_host_key_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    config = ResolvedSiteSSHRelayConfig(
+        site_id="alpha",
+        enabled=True,
+        host="10.81.40.10",
+        port=22,
+        username="jump",
+        credential_ref="site-ssh-relay-alpha",
+        revision="r1",
+        password_configured=True,
+        password="jump-secret",
+    )
+
+    class FakeTransport:
+        def is_active(self) -> bool:
+            return True
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.transport = FakeTransport()
+            self.closed = False
+            self._netconsole_host_key_event = {
+                "status": "HOST_KEY_AUTO_UPDATED",
+                "fingerprint_sha256": "SHA256:new",
+                "old_fingerprint_sha256": "SHA256:old",
+            }
+
+        def connect(self, **_kwargs: object) -> None:
+            return None
+
+        def get_transport(self) -> FakeTransport:
+            return self.transport
+
+        def close(self) -> None:
+            self.closed = True
+
+    client = FakeClient()
+    monkeypatch.setattr(site_ssh_relay, "_new_paramiko_client", lambda *_args, **_kwargs: client)
+    manager = SiteJumpSessionManager(paths, config)
+
+    manager.ensure_running()
+
+    status = manager.public_status()
+    assert status["runtime_status"] == "RUNNING"
+    assert status["runtime_message"] == "SSH 中转已连接"
+    assert status["host_key_status"] == "HOST_KEY_AUTO_UPDATED"
+    assert status["host_key_fingerprint_sha256"] == "SHA256:new"
+    assert status["host_key_updated_at"]
+    manager.close()
+    assert manager.public_status()["host_key_status"] == ""
+
+
 def test_common_netmiko_facade_selects_jump_for_active_site(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -83,10 +83,13 @@ record and are used only for the target session. Stage logs include username,
 authentication method, credential-loaded state and exception class, never a
 password or private key.
 
-Jump Host keys use the managed strict policy. Target SSH keys use managed
-role-separated TOFU: first use records the fingerprint, same key passes, and a
-changed key returns `TARGET_HOSTKEY_CHANGED`. A Jump key and a Target key are
-never treated as the same identity.
+Site SSH Relay Jump Host keys use the managed `AUTO_REPLACE` policy: first use
+records the fingerprint, the same key is verified, and a changed key is
+atomically replaced for that host:port with an audit event. Target SSH keys
+retain managed role-separated TOFU: first use records the fingerprint, same key
+passes, and a changed key returns `TARGET_HOSTKEY_CHANGED`. A Jump key and a
+Target key are never treated as the same identity. The separate SFTP/file
+consumer keeps its existing strict confirmation boundary.
 
 ## Lifecycle and concurrency
 
