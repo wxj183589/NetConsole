@@ -116,12 +116,12 @@ field confirmation remains `NOT VERIFIED`.
 
 ## PACKAGE_RESULT
 
-The formal Production package was rebuilt from pushed `main@323f67ad` through
+The formal Production package was rebuilt from pushed `main@a110e1e9` through
 the existing Windows pipeline; no old installer was renamed or relabeled.
 
-- Artifact: `D:\study\NetConsole-Workspace\release\v1.5.5\build-0-323f67ad\NetConsole-Full-1.5.5.0-323f67ad-x64-setup.exe`
-- Size: `157036650` bytes
-- SHA-256: `4a960289396004086283eb2ece6de475c366311e4f43daa43a68ba7db0db6e75`
+- Artifact: `D:\study\NetConsole-Workspace\release\v1.5.5\build-0-a110e1e9\NetConsole-Full-1.5.5.0-a110e1e9-x64-setup.exe`
+- Size: `157036427` bytes
+- SHA-256: `bed3548b299603fcb05464144926766029b0d05c0a0e2952a18ccd708b0b14fc`
 - Manifest: `published=false`, `packaged_dirty=false`,
   `package_smoke=PASS`, `edition_payload_verified=true`
 
