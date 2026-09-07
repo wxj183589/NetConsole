@@ -1,7 +1,7 @@
 # Formal Main Merge & RC Baseline Verification
 
-日期：2026-09-08  
-Agent：codex-A  
+日期：2026-09-08
+Agent：codex-A
 Codex-Thread：01a06938-7fc7-7741-a94c-c1007d93899b
 
 ## 结论
@@ -102,7 +102,9 @@ Full 与 Customer 均从 formal main 的应用代码构建，版本一致为 `1.
 
 ## Remote CI
 
-远端 workflow 已覆盖 Python、Renderer、Electron、Architecture、Main contract、Docs/path/diff、Baseline audit。运行 `34151945963` 已验证模块路径、隔离数据根、Renderer 串行化和 Electron 依赖修复，但 Python job 暴露出另一个 runner 环境差异：GitHub hosted Python `3.13` 解析为 `3.13.15`，而项目受控 Notice/打包事实源是 `3.13.9`，导致 4 个与 SBOM/干净 PyInstaller 构建事实源一致性相关的失败。该问题不是业务代码回归；CI runner 已进一步固定为项目事实源 `3.13.9`，等待同一正式主线重新验证。
+远端 workflow 已覆盖 Python、Renderer、Electron、Architecture、Main contract、Docs/path/diff、Baseline audit。运行 `34151945963` 已验证模块路径、隔离数据根、Renderer 串行化和 Electron 依赖修复，但 Python job 暴露出另一个 runner 环境差异：GitHub hosted Python `3.13` 解析为 `3.13.15`，而项目受控 Notice/打包事实源是 `3.13.9`，导致 4 个与 SBOM/干净 PyInstaller 构建事实源一致性相关的失败。该问题不是业务代码回归；CI runner 已进一步固定为项目事实源 `3.13.9`。
+
+随后运行 `34153782153` 的全部业务/架构/包相关门禁均无该环境版本失败，但 Docs/path 的 changed-diff check 发现本报告首版 Markdown 元数据行使用了 Markdown 换行空格。该类尾随空白不影响渲染，但违反仓库 diff guard，已删除并等待最终 workflow 复验。
 
 ```text
 REMOTE_MAIN_CI_REQUIRED=YES
