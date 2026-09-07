@@ -104,10 +104,14 @@ jobs:
             requirements-runtime.txt
             requirements-test.txt
             requirements-dev.txt
+      - name: Create isolated Python virtual environment
+        shell: pwsh
+        run: |
+          $venv = Join-Path $env:GITHUB_WORKSPACE '.venv-ci'
+          python -m venv $venv
+          (Join-Path $venv 'Scripts') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install Python development dependencies
         run: python -m pip install -c constraints.txt -r requirements-dev.txt
-      - name: Reinstall locked PyInstaller ownership metadata
-        run: python -m pip install --force-reinstall --no-cache-dir -c constraints.txt PyInstaller==6.21.0 pyinstaller-hooks-contrib==2026.6
       - uses: pnpm/action-setup@v4
         with:
           version: 11.19.0

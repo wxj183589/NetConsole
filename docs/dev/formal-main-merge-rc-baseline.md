@@ -108,6 +108,8 @@ Full 与 Customer 均从 formal main 的应用代码构建，版本一致为 `1.
 
 运行 `34154141237` 时 Docs/path、Architecture、Baseline、Renderer、Electron 和 Main contract 均通过；Python 全量为 4757 passed、4 skipped、4 deselected，仅 `test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs` 失败。其失败原因是 hosted runner 的 PyInstaller 已安装文件缺少 RECORD ownership，已在 Python job 增加锁定版本的 `--force-reinstall --no-cache-dir`，保持制品 ownership 校验严格，等待再次复验。
 
+`--force-reinstall` 仍会保留 hosted toolcache 的未归属残留，因此 `34156190415` 重复了同一失败。最终修复改为在 Python regression job 创建全新的 `.venv-ci`，不继承全局 site-packages；这仍保留完整的 RECORD ownership 与 runtime SBOM 校验。
+
 ```text
 REMOTE_MAIN_CI_REQUIRED=YES
 REMOTE_MAIN_CI_INITIAL_RUN=34151945963
