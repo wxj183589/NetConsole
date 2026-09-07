@@ -144,7 +144,7 @@ def get_site(request: Request, site_id: str) -> dict[str, object]:
 def get_ssh_relay(request: Request, site_id: str) -> SiteSSHRelayResponse:
     return _call(
         lambda: SiteSSHRelayResponse.model_validate(
-            _ssh_relay(request).load(site_id).to_public()
+            _ssh_relay(request).public_config(site_id)
         )
     )
 
@@ -163,8 +163,7 @@ def update_ssh_relay(
     password = payload.password.get_secret_value() if payload.password is not None else None
     return _call(
         lambda: SiteSSHRelayResponse.model_validate(
-            _ssh_relay(request)
-            .save(
+            _ssh_relay(request).save_and_start(
                 site_id,
                 enabled=payload.enabled,
                 host=payload.host,
@@ -172,7 +171,6 @@ def update_ssh_relay(
                 username=payload.username,
                 password=password,
             )
-            .to_public()
         )
     )
 

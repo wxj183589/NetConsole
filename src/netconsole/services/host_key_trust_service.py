@@ -5,6 +5,7 @@ import hashlib
 import os
 import tempfile
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,14 @@ class HostKeyChallengeError(HostKeyTrustError):
 
 class HostKeyMismatchError(HostKeyTrustError):
     code = "DEVICE_FILE_HOST_KEY_MISMATCH"
+
+
+class HostKeyPolicy(str, Enum):
+    """选择一个 consumer 的主机密钥处理策略。"""
+
+    STRICT = "STRICT"
+    TOFU = "TOFU"
+    AUTO_REPLACE = "AUTO_REPLACE"
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,21 @@ class HostKeyTrustGrant:
             and self.algorithm == str(key.get_name())
             and self.key_bytes == bytes(key.asbytes())
         )
+
+
+@dataclass(frozen=True)
+class HostKeyTrustResult:
+    details: HostKeyDetails
+    action: str
+    old_fingerprint_sha256: str = ""
+
+    @property
+    def status(self) -> str:
+        return {
+            "ADD": "HOST_KEY_AUTO_ADDED",
+            "KEEP": "HOST_KEY_VERIFIED",
+            "REPLACE": "HOST_KEY_AUTO_UPDATED",
+        }.get(self.action, "HOST_KEY_UNKNOWN")
 
 
 def host_key_name(host: str, port: int) -> str:
@@ -234,6 +258,71 @@ class HostKeyTrustService:
                 temporary_name.unlink(missing_ok=True)
         return details
 
+    def trust_or_replace(
+        self,
+        host: str,
+        port: int,
+        key: Any,
+        *,
+        role: str = "target",
+    ) -> HostKeyTrustResult:
+        """Atomically add, keep, or replace one managed host entry.
+
+        This is intentionally separate from ``trust``.  Existing consumers
+        retain the strict mismatch behavior; only an explicitly selected
+        AUTO_REPLACE consumer may call this method.
+        """
+
+        details = self.inspect(host, port, key, role=role)
+        names = _host_key_names(details.host, details.port)
+        with locked_file(self.path):
+            keys = self._load()
+            known = self._lookup(keys, details.host, details.port)
+            expected = known.get(details.algorithm) if known is not None else None
+            if expected is not None and expected.asbytes() == key.asbytes():
+                return HostKeyTrustResult(details, "KEEP", key_fingerprint_sha256(expected))
+
+            old_fingerprint = ""
+            if known is not None:
+                old_keys = [known[name] for name in known.keys()]
+                if old_keys:
+                    old_fingerprint = ",".join(
+                        key_fingerprint_sha256(old_key) for old_key in old_keys
+                    )
+
+            # Remove only the current host:port aliases.  Other Jump Hosts,
+            # target devices, and other known_hosts entries remain untouched.
+            for name in names:
+                while True:
+                    try:
+                        del keys[name]
+                    except KeyError:
+                        break
+            keys.add(names[0], details.algorithm, key)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                prefix=".known_hosts.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary:
+                temporary_name = Path(temporary.name)
+            try:
+                keys.save(str(temporary_name))
+                atomic_write_bytes(self.path, temporary_name.read_bytes())
+                try:
+                    os.chmod(self.path, 0o600)
+                except OSError:
+                    pass
+            finally:
+                temporary_name.unlink(missing_ok=True)
+        return HostKeyTrustResult(
+            details,
+            "REPLACE" if known is not None else "ADD",
+            old_fingerprint,
+        )
+
 
 def install_managed_host_key_policy(
     client: Any,
@@ -243,12 +332,18 @@ def install_managed_host_key_policy(
     *,
     role: str = "target",
     grant: HostKeyTrustGrant | tuple[HostKeyTrustGrant, ...] | None = None,
+    host_key_policy: HostKeyPolicy | str = HostKeyPolicy.STRICT,
 ) -> None:
     import paramiko
 
     checked_host = str(host or "").strip()
     checked_port = int(port or 22)
-    if trust.path.is_file():
+    selected_policy = (
+        host_key_policy
+        if isinstance(host_key_policy, HostKeyPolicy)
+        else HostKeyPolicy(str(host_key_policy).upper())
+    )
+    if selected_policy is not HostKeyPolicy.AUTO_REPLACE and trust.path.is_file():
         client.load_host_keys(str(trust.path))
 
     service = trust
@@ -270,6 +365,54 @@ def install_managed_host_key_policy(
                     key,
                 )
                 return
+            if selected_policy is HostKeyPolicy.AUTO_REPLACE:
+                result = service.trust_or_replace(
+                    checked_host,
+                    checked_port,
+                    key,
+                    role=role,
+                )
+                host_client._host_keys.add(
+                    host_key_name(checked_host, checked_port),
+                    key.get_name(),
+                    key,
+                )
+                setattr(
+                    host_client,
+                    "_netconsole_host_key_event",
+                    {
+                        "status": result.status,
+                        "action": result.action,
+                        "host": result.details.host,
+                        "port": result.details.port,
+                        "algorithm": result.details.algorithm,
+                        "fingerprint_sha256": result.details.fingerprint_sha256,
+                        "old_fingerprint_sha256": result.old_fingerprint_sha256,
+                    },
+                )
+                return
+            if selected_policy is HostKeyPolicy.TOFU:
+                details = service.trust(
+                    checked_host,
+                    checked_port,
+                    key,
+                    role=role,
+                )
+                host_client._host_keys.add(
+                    host_key_name(checked_host, checked_port),
+                    key.get_name(),
+                    key,
+                )
+                setattr(
+                    host_client,
+                    "_netconsole_host_key_event",
+                    {
+                        "status": "HOST_KEY_AUTO_ADDED",
+                        "action": "ADD",
+                        **details.as_dict(),
+                    },
+                )
+                return
             service.verify(
                 checked_host,
                 checked_port,
@@ -278,6 +421,13 @@ def install_managed_host_key_policy(
             )
 
     client.set_missing_host_key_policy(_ManagedHostKeyPolicy())
+
+
+def _host_key_names(host: str, port: int) -> tuple[str, ...]:
+    canonical = host_key_name(host, port)
+    if int(port or 22) == 22 and str(host).strip() != canonical:
+        return canonical, str(host).strip()
+    return (canonical,)
 
 
 def host_key_mismatch_error(
@@ -330,7 +480,9 @@ __all__ = [
     "HostKeyChallengeError",
     "HostKeyDetails",
     "HostKeyMismatchError",
+    "HostKeyPolicy",
     "HostKeyTrustGrant",
+    "HostKeyTrustResult",
     "HostKeyTrustError",
     "HostKeyTrustService",
     "host_key_mismatch_error",

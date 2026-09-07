@@ -42,6 +42,11 @@ class SiteSSHRelayResponse(ApiModel):
     revision: str
     password_configured: bool
     complete: bool
+    runtime_status: str = "DISABLED"
+    runtime_message: str = ""
+    host_key_status: str = ""
+    host_key_fingerprint_sha256: str = ""
+    host_key_updated_at: str = ""
 
 
 class SiteTrashRequest(ApiModel):

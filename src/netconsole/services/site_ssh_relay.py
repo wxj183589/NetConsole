@@ -23,6 +23,7 @@ from netconsole.core.sqlite_utils import connect_sqlite
 from netconsole.core.sites import SiteManager
 from netconsole.core.windows_dpapi import protect_windows_data, unprotect_windows_data
 from netconsole.services.host_key_trust_service import (
+    HostKeyPolicy,
     HostKeyTrustError,
     HostKeyTrustService,
     install_managed_host_key_policy,
@@ -40,6 +41,8 @@ SITE_RELAY_CREDENTIAL_DB_NAME = "site_ssh_credentials.sqlite3"
 DEFAULT_SSH_PORT = 22
 TARGET_HOST_KEY_UNKNOWN_CODE = "TARGET_HOSTKEY_FAILED"
 TARGET_HOST_KEY_CHANGED_CODE = "TARGET_HOSTKEY_CHANGED"
+_RELAY_RUNTIME_STATUS: dict[tuple[str, str], dict[str, object]] = {}
+_RELAY_RUNTIME_STATUS_LOCK = threading.RLock()
 
 
 def _now() -> str:
@@ -80,6 +83,39 @@ def _log_relay_stage(
     if fingerprint_sha256:
         values.append(f"fingerprint_sha256={fingerprint_sha256}")
     app_logger.log_info("ssh_relay_stage", " ".join(value for value in values if value))
+
+
+def _log_jump_host_key_event(site_id: str, event: Mapping[str, object]) -> None:
+    """Record non-secret Jump Host key lifecycle diagnostics."""
+
+    values = [
+        f"site_id={site_id}",
+        "role=jump",
+        f"host={event.get('host', '')}",
+        f"port={event.get('port', '')}",
+        f"algorithm={event.get('algorithm', '')}",
+        f"result={event.get('status', '')}",
+        f"old_fingerprint={event.get('old_fingerprint_sha256', '')}",
+        f"new_fingerprint={event.get('fingerprint_sha256', '')}",
+        f"updated_at={_now()}",
+    ]
+    app_logger.log_info("ssh_relay_host_key", " ".join(values))
+
+
+def _runtime_key(paths: PathResolver, site_id: str) -> tuple[str, str]:
+    return str(Path(paths.data_root).resolve()).casefold(), str(site_id)
+
+
+def _remember_runtime_status(paths: PathResolver, site_id: str, **status: object) -> None:
+    with _RELAY_RUNTIME_STATUS_LOCK:
+        current = dict(_RELAY_RUNTIME_STATUS.get(_runtime_key(paths, site_id), {}))
+        current.update(status)
+        _RELAY_RUNTIME_STATUS[_runtime_key(paths, site_id)] = current
+
+
+def _runtime_status(paths: PathResolver, site_id: str) -> dict[str, object]:
+    with _RELAY_RUNTIME_STATUS_LOCK:
+        return dict(_RELAY_RUNTIME_STATUS.get(_runtime_key(paths, site_id), {}))
 
 
 def _elapsed_ms(started: float) -> int:
@@ -139,6 +175,13 @@ class SiteSSHRelayConfig:
         )
 
     def to_public(self) -> dict[str, object]:
+        default_status = (
+            "DISABLED"
+            if not self.enabled
+            else "CONFIG_INCOMPLETE"
+            if not self.complete
+            else "STOPPED"
+        )
         return {
             "site_id": self.site_id,
             "enabled": self.enabled,
@@ -149,6 +192,11 @@ class SiteSSHRelayConfig:
             "revision": self.revision,
             "password_configured": self.password_configured,
             "complete": self.complete,
+            "runtime_status": default_status,
+            "runtime_message": "",
+            "host_key_status": "",
+            "host_key_fingerprint_sha256": "",
+            "host_key_updated_at": "",
         }
 
 
@@ -290,6 +338,27 @@ class SiteSSHRelayService:
             password_configured=repository.has(site_id, credential_ref),
         )
 
+    def public_config(self, site_id: str) -> dict[str, object]:
+        config = self.load(site_id)
+        payload = config.to_public()
+        runtime = _runtime_status(self.paths, str(site_id))
+        manager = _existing_manager_for(self.paths, str(site_id))
+        if manager is not None:
+            runtime.update(manager.public_status())
+        if runtime:
+            payload.update(runtime)
+        if not config.enabled:
+            payload.update(
+                runtime_status="DISABLED",
+                runtime_message="当前局点未启用 SSH 中转",
+            )
+        elif not config.complete:
+            payload.update(
+                runtime_status="CONFIG_INCOMPLETE",
+                runtime_message="SSH 中转配置不完整",
+            )
+        return payload
+
     def resolve_for_connection(self, site_id: str) -> ResolvedSiteSSHRelayConfig:
         config = self.load(site_id)
         if not config.enabled:
@@ -355,6 +424,15 @@ class SiteSSHRelayService:
             },
         )
         close_site_jump_sessions(str(site_id), self.paths)
+        _remember_runtime_status(
+            self.paths,
+            str(site_id),
+            runtime_status=("STARTING" if normalized_enabled else "DISABLED"),
+            runtime_message="" if normalized_enabled else "当前局点未启用 SSH 中转",
+            host_key_status="",
+            host_key_fingerprint_sha256="",
+            host_key_updated_at="",
+        )
         return SiteSSHRelayConfig(
             site_id=str(site_id),
             enabled=normalized_enabled,
@@ -365,6 +443,77 @@ class SiteSSHRelayService:
             revision=revision,
             password_configured=password_configured,
         )
+
+    def start(self, site_id: str) -> dict[str, object]:
+        """Start and cache the current site's Jump Transport."""
+
+        try:
+            config = self.resolve_for_connection(site_id)
+            manager = _manager_for(self.paths, config)
+            manager.ensure_running()
+            _remember_runtime_status(self.paths, str(site_id), **manager.public_status())
+            return self.public_config(site_id)
+        except SiteSSHRelayError as exc:
+            _remember_runtime_status(
+                self.paths,
+                str(site_id),
+                runtime_status=exc.code,
+                runtime_message=str(exc),
+            )
+            raise
+
+    def save_and_start(
+        self,
+        site_id: str,
+        *,
+        enabled: bool,
+        host: str,
+        port: int,
+        username: str,
+        password: str | None = None,
+    ) -> dict[str, object]:
+        """Persist settings and immediately apply an enabled Relay."""
+
+        self.save(
+            site_id,
+            enabled=enabled,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+        )
+        if enabled:
+            self.auto_start_if_enabled(site_id)
+        return self.public_config(site_id)
+
+    def auto_start_if_enabled(self, site_id: str) -> dict[str, object]:
+        """Best-effort lifecycle hook; configuration remains authoritative."""
+
+        config = self.load(site_id)
+        if not config.enabled:
+            _remember_runtime_status(
+                self.paths,
+                str(site_id),
+                runtime_status="DISABLED",
+                runtime_message="当前局点未启用 SSH 中转",
+            )
+            return self.public_config(site_id)
+        if not config.complete:
+            _remember_runtime_status(
+                self.paths,
+                str(site_id),
+                runtime_status="CONFIG_INCOMPLETE",
+                runtime_message="SSH 中转配置不完整",
+            )
+            return self.public_config(site_id)
+        try:
+            return self.start(site_id)
+        except SiteSSHRelayError as exc:
+            app_logger.log_warning(
+                "SSH_RELAY_AUTO_START_FAILED",
+                f"site_id={site_id} code={exc.code} message={str(exc)}",
+            )
+            return self.public_config(site_id)
 
     def test_jump_host(self, site_id: str) -> dict[str, object]:
         config = self.load(site_id)
@@ -394,6 +543,9 @@ class SiteSSHRelayService:
                 auth_timeout=8,
                 banner_timeout=8,
             )
+            event = dict(getattr(client, "_netconsole_host_key_event", {}) or {})
+            if event:
+                _log_jump_host_key_event(resolved.site_id, event)
             return {
                 "success": True,
                 "site_id": resolved.site_id,
@@ -402,6 +554,8 @@ class SiteSSHRelayService:
                 "connection_mode": "jump",
                 "duration_ms": max(0, int((__import__("time").monotonic() - started) * 1000)),
                 "message": "SSH 中转服务器连接正常",
+                "host_key_status": event.get("status", "HOST_KEY_VERIFIED"),
+                "host_key_fingerprint_sha256": event.get("fingerprint_sha256", ""),
             }
         except SiteSSHRelayError:
             raise
@@ -421,6 +575,11 @@ def _new_paramiko_client(paths: PathResolver, host: str, port: int, *, role: str
         host,
         port,
         role=role,
+        host_key_policy=(
+            HostKeyPolicy.AUTO_REPLACE
+            if str(role or "").casefold() == "jump"
+            else HostKeyPolicy.STRICT
+        ),
     )
     return client
 
@@ -437,18 +596,14 @@ def _classify_jump_connect_exception(exc: BaseException, host: str, port: int) -
         "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN",
         "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH",
     }:
-        changed = host_key_code.endswith("MISMATCH") or any(
-            str(getattr(item, "code", "") or "").endswith("MISMATCH")
-            for item in _exception_chain(exc)
-        ) or bad_host_key_exception
         return SiteSSHRelayError(
             "JUMP_HOSTKEY_FAILED",
-            "跳板机主机密钥已变更，连接已阻止。" if changed else "首次连接需要确认跳板机主机密钥。",
+            "跳板机主机密钥自动维护失败，连接未建立。",
             details={
                 "stage": "JUMP_SSH_HANDSHAKE",
                 "host": host,
                 "port": port,
-                "host_key_event": "changed" if changed else "unknown",
+                "host_key_event": "auto_replace_failed",
                 "exception": exc.__class__.__name__,
             },
         )
@@ -480,6 +635,9 @@ class SiteJumpSessionManager:
         self._lock = threading.RLock()
         self._client: Any | None = None
         self._transport: Any | None = None
+        self._runtime_status = "STOPPED"
+        self._runtime_message = ""
+        self._host_key_event: dict[str, object] = {}
 
     def update_config(self, config: ResolvedSiteSSHRelayConfig) -> None:
         with self._lock:
@@ -552,16 +710,29 @@ class SiteJumpSessionManager:
                     },
                 ) from exc
 
+    def ensure_running(self) -> None:
+        with self._lock:
+            self._ensure_transport_locked()
+
+    def public_status(self) -> dict[str, object]:
+        with self._lock:
+            event = dict(self._host_key_event)
+            return {
+                "runtime_status": self._runtime_status,
+                "runtime_message": self._runtime_message,
+                "host_key_status": event.get("status", ""),
+                "host_key_fingerprint_sha256": event.get("fingerprint_sha256", ""),
+                "host_key_updated_at": event.get("updated_at", ""),
+            }
+
     def _ensure_transport_locked(self) -> Any:
         if self._transport is not None and bool(self._transport.is_active()):
+            self._runtime_status = "RUNNING"
             return self._transport
         self._close_locked()
-        client = _new_paramiko_client(
-            self.paths,
-            self.config.host,
-            self.config.port,
-            role="jump",
-        )
+        self._runtime_status = "CONNECTING"
+        self._runtime_message = ""
+        client: Any | None = None
         started = time.monotonic()
         _log_relay_stage(
             "JUMP_TCP_CONNECT",
@@ -571,6 +742,12 @@ class SiteJumpSessionManager:
             username=self.config.username,
         )
         try:
+            client = _new_paramiko_client(
+                self.paths,
+                self.config.host,
+                self.config.port,
+                role="jump",
+            )
             client.connect(
                 hostname=self.config.host,
                 port=self.config.port,
@@ -585,6 +762,11 @@ class SiteJumpSessionManager:
             transport = client.get_transport()
             if transport is None or not bool(transport.is_active()):
                 raise OSError("jump transport is inactive")
+            event = dict(getattr(client, "_netconsole_host_key_event", {}) or {})
+            if event:
+                event.setdefault("updated_at", _now())
+                self._host_key_event = event
+                _log_jump_host_key_event(self.config.site_id, event)
             _log_relay_stage(
                 "JUMP_TCP_CONNECT",
                 "pass",
@@ -610,11 +792,17 @@ class SiteJumpSessionManager:
                 authentication_method="password",
                 duration_ms=_elapsed_ms(started),
             )
-        except SiteSSHRelayError:
-            client.close()
+            self._runtime_status = "RUNNING"
+            self._runtime_message = "SSH 中转已连接"
+        except SiteSSHRelayError as exc:
+            self._runtime_status = exc.code
+            self._runtime_message = str(exc)
+            if client is not None:
+                client.close()
             raise
         except Exception as exc:
-            client.close()
+            if client is not None:
+                client.close()
             stage = "JUMP_AUTH" if _is_authentication_exception(exc) else "JUMP_SSH_HANDSHAKE"
             _log_relay_stage(
                 stage,
@@ -625,7 +813,10 @@ class SiteJumpSessionManager:
                 duration_ms=_elapsed_ms(started),
                 exception=exc,
             )
-            raise _classify_jump_connect_exception(exc, self.config.host, self.config.port) from exc
+            error = _classify_jump_connect_exception(exc, self.config.host, self.config.port)
+            self._runtime_status = error.code
+            self._runtime_message = str(error)
+            raise error from exc
         self._client = client
         self._transport = transport
         return transport
@@ -637,6 +828,9 @@ class SiteJumpSessionManager:
     def _close_locked(self) -> None:
         client, self._client = self._client, None
         self._transport = None
+        self._host_key_event = {}
+        if client is not None:
+            self._runtime_status = "STOPPED"
         if client is not None:
             try:
                 client.close()
@@ -897,6 +1091,12 @@ def _trust_target_server_key(
 
 _MANAGERS: dict[tuple[str, str], SiteJumpSessionManager] = {}
 _MANAGERS_LOCK = threading.RLock()
+
+
+def _existing_manager_for(paths: PathResolver, site_id: str) -> SiteJumpSessionManager | None:
+    key = (str(Path(paths.data_root).resolve()).casefold(), str(site_id))
+    with _MANAGERS_LOCK:
+        return _MANAGERS.get(key)
 
 
 def _manager_for(paths: PathResolver, config: ResolvedSiteSSHRelayConfig) -> SiteJumpSessionManager:

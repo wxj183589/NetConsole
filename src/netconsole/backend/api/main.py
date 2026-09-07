@@ -580,12 +580,33 @@ def create_app(
                 )
                 return False
 
+        async def start_site_ssh_relay() -> None:
+            """Restore the active site's persisted Relay without changing config."""
+
+            try:
+                active_site_id = site_application_service.active_site_id()
+                status = await asyncio.to_thread(
+                    site_ssh_relay_service.auto_start_if_enabled,
+                    active_site_id,
+                )
+                app.state.ssh_relay_status = str(status.get("runtime_status") or "UNKNOWN")
+                app.state.ssh_relay_error = str(status.get("runtime_message") or "")
+            except Exception as exc:
+                app.state.ssh_relay_status = "FAILED"
+                app.state.ssh_relay_error = exc.__class__.__name__
+                app_logger.log_error(
+                    "SSH_RELAY_AUTO_START_FAILED",
+                    f"component=site_ssh_relay error={exc.__class__.__name__}: "
+                    f"{_safe_error_message(str(exc))}",
+                )
+
         async def start_deferred_runtime_services() -> None:
             try:
                 # 先让 health、静态资源与首屏完成；历史任务恢复不参与桌面首屏关键路径。
                 await asyncio.sleep(_DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS)
                 if not app.state.accepting_work:
                     return
+                await start_site_ssh_relay()
                 reconcile_tasks = getattr(task_service, "reconcile_orphaned_local_tasks", None)
                 if callable(reconcile_tasks):
                     await asyncio.to_thread(reconcile_tasks)
@@ -670,6 +691,7 @@ def create_app(
                         app.state.runtime_services_error = app.state.unattended_error or "unavailable"
                 deferred_start_task = asyncio.create_task(start_deferred_runtime_services())
             else:
+                await start_site_ssh_relay()
                 unattended_started = await start_unattended_services()
                 await agent_service.start()
                 await traffic_service.start()
@@ -789,6 +811,8 @@ def create_app(
     app.state.runtime_services_ready = False
     app.state.runtime_services_status = "starting"
     app.state.runtime_services_error = ""
+    app.state.ssh_relay_status = "starting"
+    app.state.ssh_relay_error = ""
     app.state.history_status = "retired"
     app.state.history_pending = 0
     app.state.history_error = ""
@@ -1082,6 +1106,15 @@ def create_app(
             {f"config_exports:{target}": paths.config_center_outputs_dir(target)},
         )
         app_logger.log_info("SITE_RUNTIME_REBOUND", f"site_name={target}")
+        try:
+            relay_site_id = site_application_service.active_site_id()
+            site_ssh_relay_service.auto_start_if_enabled(relay_site_id)
+        except Exception as exc:
+            app_logger.log_error(
+                "SSH_RELAY_AUTO_START_FAILED",
+                f"component=site_ssh_relay site_name={target} "
+                f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+            )
 
     site_application_service.set_runtime_rebind_handler(rebind_runtime_site)
     if desktop_session_token:
