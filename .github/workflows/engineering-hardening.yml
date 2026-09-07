@@ -20,6 +20,7 @@ env:
   NETCONSOLE_STORAGE_MODE: persistent
   PNPM_VERSION: 11.19.0
   NODE_VERSION: "24"
+  PYTHONPATH: "${{ github.workspace }}\\src"
 
 jobs:
   architecture-contract:
@@ -27,7 +28,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      NETCONSOLE_DATA_ROOT: D:\study\NetConsole-Workspace\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-architecture
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-architecture"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -69,7 +70,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      NETCONSOLE_DATA_ROOT: D:\study\NetConsole-Workspace\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-python
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-python"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -116,7 +117,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      NETCONSOLE_DATA_ROOT: D:\study\NetConsole-Workspace\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-renderer
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-renderer"
     defaults:
       run:
         working-directory: apps/desktop_renderer
@@ -148,7 +149,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      NETCONSOLE_DATA_ROOT: D:\study\NetConsole-Workspace\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-electron
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-electron"
     defaults:
       run:
         working-directory: apps/desktop_electron
@@ -163,6 +164,9 @@ jobs:
           node-version: "24"
           cache: pnpm
           cache-dependency-path: apps/desktop_electron/pnpm-lock.yaml
+      - name: Install locked Renderer dependencies
+        working-directory: apps/desktop_renderer
+        run: pnpm install --frozen-lockfile
       - run: pnpm install --frozen-lockfile
       - name: Run Electron contract tests
         run: pnpm exec vitest run
@@ -180,7 +184,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      NETCONSOLE_DATA_ROOT: D:\study\NetConsole-Workspace\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-main-contract
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-main-contract"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -205,7 +209,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      NETCONSOLE_DATA_ROOT: D:\study\NetConsole-Workspace\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-docs
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-docs"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -243,7 +247,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     env:
-      NETCONSOLE_DATA_ROOT: D:\study\NetConsole-Workspace\test-data\NetConsole\github-actions\${{ github.run_id }}-${{ github.run_attempt }}-baseline-audit
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-baseline-audit"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
