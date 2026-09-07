@@ -44,7 +44,7 @@ jobs:
           New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.9"
           cache: pip
           cache-dependency-path: |
             constraints.txt
@@ -97,7 +97,7 @@ jobs:
           New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.9"
           cache: pip
           cache-dependency-path: |
             constraints.txt
@@ -190,7 +190,7 @@ jobs:
           New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.9"
           cache: pip
           cache-dependency-path: |
             constraints.txt
@@ -249,7 +249,7 @@ jobs:
           New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.9"
           cache: pip
           cache-dependency-path: |
             constraints.txt
@@ -276,7 +276,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.9"
           cache: pip
           cache-dependency-path: |
             constraints.txt
@@ -323,7 +323,7 @@ jobs:
           New-Item -ItemType Directory -Path $env:NETCONSOLE_DATA_ROOT -Force | Out-Null
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: "3.13.9"
           cache: pip
           cache-dependency-path: |
             constraints.txt
