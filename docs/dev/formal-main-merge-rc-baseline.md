@@ -75,6 +75,11 @@ c91811f7 维护架构基线行号锚点
 dd38313a 完善主线门禁的 CI Python 环境
 d5554c11 修正 Electron 门禁的 Python 工作目录
 cbc06c88 统一 CI 测试数据根的安全映射
+1ce981e0 固定 CI Python 事实源并记录失败原因
+6d5ef9ce 修正正式报告尾随空白门禁
+eb52fbcf 修复 CI 制品归属元数据复验
+c79fc72b 隔离 CI Python 构建环境
+b2b6a18e 记录最终主线 CI 全绿
 ```
 
 CI 修复仅作用于 GitHub Actions runner：使用每次运行独立的测试根，并通过 runner-only junction 兼容既有固定测试路径；不指向生产数据，也不改变应用运行时生产路径。
@@ -100,6 +105,16 @@ CI 修复仅作用于 GitHub Actions runner：使用每次运行独立的测试�
 
 Full 与 Customer 均从 formal main 的应用代码构建，版本一致为 `1.5.5`，`PACKAGED_DIRTY=false`，安装包 smoke、Electron packaged smoke、7-Zip 提取完整性检查均通过。构建为本地 RC 验证，`PUBLISHED=false`；未执行 release、tag、publish 或自动更新发布。
 
+```text
+PACKAGE_SOURCE_HEAD=b2b6a18e691abf44c6c3f3fe65aa2579056b13ed
+FULL_ARTIFACT=dist/electron/NetConsole-Full-1.5.5.0-b2b6a18e-x64-setup.exe
+FULL_SHA256=8be965ce29c4e36ad74919132bbb0a158e3b9026321e20c158b4c1ed3026d6be
+CUSTOMER_ARTIFACT=dist/electron/NetConsole-Customer-1.5.5.0-b2b6a18e-x64-setup.exe
+CUSTOMER_SHA256=097b25fe110cb64a9969bef71b415c122ffa187145c809dfaeb3763b0ec52db9
+PACKAGE_INSTALL_SMOKE=PENDING
+PUBLISHED=false
+```
+
 ## Remote CI
 
 远端 workflow 已覆盖 Python、Renderer、Electron、Architecture、Main contract、Docs/path/diff、Baseline audit。运行 `34151945963` 已验证模块路径、隔离数据根、Renderer 串行化和 Electron 依赖修复，但 Python job 暴露出另一个 runner 环境差异：GitHub hosted Python `3.13` 解析为 `3.13.15`，而项目受控 Notice/打包事实源是 `3.13.9`，导致 4 个与 SBOM/干净 PyInstaller 构建事实源一致性相关的失败。该问题不是业务代码回归；CI runner 已进一步固定为项目事实源 `3.13.9`。
@@ -110,14 +125,17 @@ Full 与 Customer 均从 formal main 的应用代码构建，版本一致为 `1.
 
 `--force-reinstall` 仍会保留 hosted toolcache 的未归属残留，因此 `34156190415` 重复了同一失败。最终修复改为在 Python regression job 创建全新的 `.venv-ci`，不继承全局 site-packages；这仍保留完整的 RECORD ownership 与 runtime SBOM 校验。
 
-最终远端 workflow `34158073702` 全部通过：7/7 jobs success；Python 为 4758 passed、4 skipped、4 deselected，`PYTHON_REGRESSION_NEW_FAILURES=0`。该 run 证明 clean `.venv-ci` 下的 PyInstaller ownership、SBOM、clean-build 与 backend smoke 门禁通过。
+最终代码基线远端 workflow `34158073702` 全部通过：8/8 jobs success；Python 为 4758 passed、4 skipped、4 deselected，`PYTHON_REGRESSION_NEW_FAILURES=0`。该 run 证明 clean `.venv-ci` 下的 PyInstaller ownership、SBOM、clean-build 与 backend smoke 门禁通过。
+
+正式报告提交后的当前 HEAD docs-only workflow `34159817777` 也全部通过：8/8 jobs success，包含 blocking gate；该 run 与 `b2b6a18e` 精确绑定。
 
 ```text
 REMOTE_MAIN_CI_REQUIRED=YES
 REMOTE_MAIN_CI_INITIAL_RUN=34151945963
 REMOTE_MAIN_CI_INITIAL_STATUS=FAIL_ENVIRONMENT_VERSION_MISMATCH
-REMOTE_MAIN_CI_RUN=34158073702
+REMOTE_MAIN_CI_RUN=34159817777
 REMOTE_MAIN_CI_STATUS=PASS
+REMOTE_MAIN_CI_JOB_COUNT=8
 REQUIRED_CHECKS_STATUS=NOT_CONFIGURED
 ```
 
@@ -175,6 +193,7 @@ RC_ENGINEERING_GATES=PASS
 RC_PACKAGE_VALIDATION=PASS
 REAL_DEVICE_REVALIDATION_REQUIRED=YES
 REMOTE_MAIN_CI_STATUS=PASS
+REMOTE_MAIN_CI_RUN=34159817777
 PHASE2D_E1_STATUS=HOLD
 PHASE2D_E_READY=NO
 PHASE2D_READY=NO
