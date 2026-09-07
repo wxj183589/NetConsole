@@ -821,8 +821,10 @@ class FileTransferService:
                         "collect",
                         device_uuid=str(device.device_uuid or device.id or ""),
                     ):
+                        params = build_netmiko_params(prepared)
+                        params["_netconsole_skip_site_ssh_relay"] = True
                         connection = netmiko_connection.ConnectHandler(
-                            **build_netmiko_params(prepared)
+                            **params
                         )
                     for command in FILE_LIST_COMMANDS:
                         output = safe_send_command(
@@ -974,8 +976,10 @@ class FileTransferService:
                     "collect",
                     device_uuid=device_uuid,
                 ):
+                    params = build_netmiko_params(prepared)
+                    params["_netconsole_skip_site_ssh_relay"] = True
                     connection = netmiko_connection.ConnectHandler(
-                        **build_netmiko_params(prepared)
+                        **params
                     )
                 file_transfer(
                     connection,

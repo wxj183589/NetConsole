@@ -52,7 +52,8 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 ├─ db/
 │  ├─ devices.db
 │  ├─ tasks.db
-│  └─ agents.db
+│  ├─ agents.db
+│  └─ site_ssh_credentials.sqlite3  # 仅 DPAPI 密文，不保存明文 Jump 密码
 ├─ files/
 │  ├─ backups/
 │  ├─ config_center/
@@ -68,6 +69,8 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 切换局点只改变 `sites/<site>` 的业务上下文，不改变 `data_root`。局点名和稳定 `site_id` 的映射由 `config/site_registry.json` 管理；Repository、任务和历史数据继续使用受控的实际局点目录。不得以显示名称、当前工作目录或源代码位置推导局点路径。
 
 `devices.db`、`tasks.db`、`agents.db` 使用各自进程/线程独立的 SQLite 连接，保持 WAL、busy timeout、foreign keys 和幂等初始化。轨旁 AP 逐站规划的唯一事实表为 `ac_trackside_ap_plan(mode='unified')`；空表表示用户已明确清空，维护页、上线概览、PVID 核验和共享范围查询均直接返回空规划。`rail_ap_vlan_plans / groups / group_members / assignments / allocations` 只作为历史留存，不由当前读取链投影，也不再由数据库初始化根据逐站规划生成。当前逐站保存不删除这些历史表。逐站字段和唯一索引升级在数据库初始化事务内幂等执行，失败整体回滚。不可逆 schema 升级必须先备份，并更新 storage manifest；不得以删除或重建真实数据库代替迁移。
+
+`site_ssh_credentials.sqlite3` 只保存 Windows DPAPI 密文和凭据引用，不保存 Jump Host 明文密码；它按局点隔离，Relay 配置修改或切换局点时不会复用其他局点的 Transport。由于 DPAPI 绑定当前 Windows 安全上下文，跨电脑迁移不携带可用凭据，目标机器必须重新录入密码。
 
 `tasks.db` schema version 5 增加不可变 `task_results` 与按内容寻址的 `task_result_blobs`。B3 对含对象结果的 `finished/error/cancelled` 在同一 `BEGIN IMMEDIATE` 中写 result reference、blob authority、snapshot 和 terminal event；确定性 `result_id` 绑定 task、真实结果生产事件类型和 canonical JSON SHA-256。Snapshot 当前状态不能替代结果生产事件身份：legacy 数据中的 `FAILED snapshot + finished result event` 按 task/hash 读取，后续 Artifact finalization 可更新 snapshot 的兼容投影而不改写 terminal authority；event ref 仍精确校验 task、event type 和 Blob 内容。旧 full-only、dual-write 和 ref-only 数据均可读；新 runtime rows 不再把完整 body 写回 `task_results.canonical_json`。Site Return Package 以单事务合并 `task_results -> task_snapshots -> task_events -> online_mr_task_sessions`，不可变结果、事件或 mapping 冲突失败关闭。历史 backfill、ref authority、精确 retention、DELETE 和 compact 仅允许在 `D:\study` 隔离候选库演练；生产入口仍未启用。
 

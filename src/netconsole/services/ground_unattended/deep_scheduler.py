@@ -926,6 +926,7 @@ class DeepMrCollectionScheduler:
             ),
             duration_minutes=profile.maximum_collection_minutes,
             fping_required_before_collection=True,
+            paths=self.paths,
         )
         return OnlineMrStartRequest(
             site_id=self.site_id,

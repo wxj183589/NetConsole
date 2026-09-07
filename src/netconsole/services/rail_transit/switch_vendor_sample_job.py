@@ -47,6 +47,8 @@ def run_switch_vendor_sample_collect(
                 "switch_sample",
                 "collect",
                 device_uuid=str(device.device_uuid or device.id or ""),
+                paths=context.paths,
+                site_id=site_id,
             ):
                 connection = netmiko_connection.ConnectHandler(
                     **build_netmiko_params(prepared)

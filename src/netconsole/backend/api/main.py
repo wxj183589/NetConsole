@@ -125,6 +125,10 @@ from netconsole.services.site_lifecycle import (
     SiteCleanupApplicationService,
 )
 from netconsole.services.site_retention import SiteRetentionService
+from netconsole.services.site_ssh_relay import (
+    SiteSSHRelayService,
+    close_site_jump_sessions,
+)
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -468,6 +472,7 @@ def create_app(
     site_application_service = SiteApplicationService(paths, task_service)
     data_root_application_service = DataRootApplicationService(paths, site_application_service)
     site_package_service = SitePackageService(paths, site_application_service)
+    site_ssh_relay_service = SiteSSHRelayService(paths)
     web_export_adapter = WebExportProcessAdapter(task_service)
     web_artifact_store = WebArtifactStore(paths, task_service)
     system_maintenance_service = SystemMaintenanceApplicationService(
@@ -752,6 +757,13 @@ def create_app(
                         "WEB_LIFESPAN_STOP_FAILED",
                         f"component=online_mr error={exc.__class__.__name__}: {exc}",
                     )
+            try:
+                close_site_jump_sessions(paths=paths)
+            except Exception as exc:
+                app_logger.log_error(
+                    "WEB_LIFESPAN_STOP_FAILED",
+                    f"component=site_ssh_relay error={exc.__class__.__name__}: {exc}",
+                )
 
     if api_documentation_enabled is None:
         api_documentation_enabled = runtime_mode is RuntimeMode.SERVER
@@ -816,6 +828,7 @@ def create_app(
     app.state.site_application_service = site_application_service
     app.state.data_root_application_service = data_root_application_service
     app.state.site_package_service = site_package_service
+    app.state.site_ssh_relay_service = site_ssh_relay_service
     app.state.site_audit_service = SiteAuditService(paths)
     app.state.site_cleanup_application_service = SiteCleanupApplicationService(
         paths, site_application_service

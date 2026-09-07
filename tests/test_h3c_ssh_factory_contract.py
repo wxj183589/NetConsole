@@ -44,6 +44,7 @@ def test_direct_paramiko_clients_are_limited_to_non_cli_boundaries() -> None:
 
     assert direct_clients == [
         "src/netconsole/services/file_transfer_service.py",
+        "src/netconsole/services/site_ssh_relay.py",
         "src/netconsole/services/ssh_tunnel.py",
     ]
 

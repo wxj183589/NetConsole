@@ -101,6 +101,8 @@ class NetmikoShellConnection(OnlineMrConnection):
                     "mesh" if _is_mesh_config(config) else "online_mr",
                     "collect",
                     device_uuid=str(config.mr_id or config.device_id or ""),
+                    site_id=str(config.site or ""),
+                    paths=getattr(config, "paths", None),
                 ):
                     self.connection = netmiko_connection.ConnectHandler(
                         **build_netmiko_params(prepared)
@@ -115,12 +117,22 @@ class NetmikoShellConnection(OnlineMrConnection):
     def send_command(self, command: str, timeout: int) -> str:
         if self.connection is None:
             raise OnlineMrConnectionError("connection is closed")
-        output = self.connection.send_command_timing(
-            command,
-            read_timeout=timeout,
-            strip_prompt=False,
-            strip_command=False,
-        )
+        try:
+            output = self.connection.send_command_timing(
+                command,
+                read_timeout=timeout,
+                strip_prompt=False,
+                strip_command=False,
+            )
+        except Exception as exc:
+            if getattr(self.connection, "_netconsole_ssh_mode", "") == "jump":
+                from netconsole.services.site_ssh_relay import SiteSSHRelayError
+
+                raise SiteSSHRelayError(
+                    "TARGET_COMMAND_FAILED",
+                    "目标设备 SSH 命令执行失败",
+                ) from exc
+            raise
         return normalize_command_output(output)
 
     def is_alive(self) -> bool:

@@ -77,6 +77,7 @@ def run_vehicle_mr_online_collection(context: JobContext) -> dict[str, object]:
             password=password,
             command_timeout=15,
             connection_targets=tuple(connection_targets(ac)),
+            paths=context.paths,
         ),
     )
     last_error = ""

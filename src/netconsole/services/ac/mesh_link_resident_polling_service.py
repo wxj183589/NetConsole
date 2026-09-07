@@ -628,7 +628,9 @@ class AcMeshLinkResidentPollingWorkerService:
                             require_credentials=True,
                         )
                         config = AcMeshLinkRefreshWorkerService._connection_config(
-                            site, controller
+                            site,
+                            controller,
+                            paths=self.paths,
                         )
                         connection = self.connection_factory(config)
                         connection.send_command(

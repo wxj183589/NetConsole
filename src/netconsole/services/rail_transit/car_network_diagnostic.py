@@ -1515,6 +1515,8 @@ class CarNetworkDiagnosticService:
                 ConnectionTarget("SSH", H3C_NETMIKO_DEVICE_TYPE, device.primary_address, int(device.ssh_port or 22), username, password, encoding_for_vendor(device.device_vendor))
             )
         target["_netconsole_device_uuid"] = str(device.device_uuid or device.id or "")
+        target["_netconsole_paths"] = self.paths
+        target["_netconsole_site_id"] = self.site_name
         conn = ConnectHandler(**target)
         try:
             return safe_send_command(
@@ -1539,7 +1541,12 @@ class CarNetworkDiagnosticService:
                     raw[command] = self.ac_command_func(command)
             else:
                 assert self.ac_device is not None
-                raw = run_ac_commands(self.ac_device, AC_COMMANDS)
+                raw = run_ac_commands(
+                    self.ac_device,
+                    AC_COMMANDS,
+                    paths=self.paths,
+                    site_name=self.site_name,
+                )
         except Exception as exc:
             return AcApStatus(selected=True, error=str(exc), raw=raw)
         train_no = _current_train_no(self.train, self.nodes)
@@ -1556,10 +1563,20 @@ class CarNetworkDiagnosticService:
 
     def _probe_ac_mesh_links(self) -> AcProbeResult:
         if self.ac_command_func is not None:
-            return probe_ac_mesh_links(self.ac_devices, command_func=self.ac_command_func)
+            return probe_ac_mesh_links(
+                self.ac_devices,
+                command_func=self.ac_command_func,
+                paths=self.paths,
+                site_name=self.site_name,
+            )
         if not self.ac_devices:
             return AcProbeResult(enabled=True, query_success=False, error="未发现无线控制器")
-        return probe_ac_mesh_links(self.ac_devices, command_func=self.ac_command_func)
+        return probe_ac_mesh_links(
+            self.ac_devices,
+            command_func=self.ac_command_func,
+            paths=self.paths,
+            site_name=self.site_name,
+        )
 
     def _check_ssh_from_mr(
         self,
@@ -1643,6 +1660,8 @@ class CarNetworkDiagnosticService:
         params["_netconsole_device_uuid"] = str(
             device.device_uuid or device.id or ""
         ) if device is not None else ""
+        params["_netconsole_paths"] = self.paths
+        params["_netconsole_site_id"] = self.site_name
         conn = ConnectHandler(**params)
         try:
             if _is_h3c_ping_command(command):
@@ -2195,6 +2214,9 @@ def _diagnosis_suggestion(layer: str, severity: str) -> str:
 def probe_ac_mesh_links(
     ac_devices: list[Device],
     command_func: Callable[[str], str] | None = None,
+    *,
+    paths: PathResolver | None = None,
+    site_name: str = "",
 ) -> AcProbeResult:
     controllers: list[AcControllerProbe] = []
     raw_outputs: dict[str, str] = {}
@@ -2206,7 +2228,10 @@ def probe_ac_mesh_links(
         controller = AcControllerProbe("", "manual", "", True, output)
         return AcProbeResult(True, True, [controller], {"manual": output})
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(ac_devices)))) as executor:
-        futures = {executor.submit(_probe_single_ac_mesh_link, device): device for device in ac_devices}
+        futures = {
+            executor.submit(_probe_single_ac_mesh_link, device, paths, site_name): device
+            for device in ac_devices
+        }
         for future in as_completed(futures):
             controller = future.result()
             controllers.append(controller)
@@ -2217,11 +2242,22 @@ def probe_ac_mesh_links(
     return AcProbeResult(True, query_success, controllers, raw_outputs, error)
 
 
-def _probe_single_ac_mesh_link(device: Device) -> AcControllerProbe:
+def _probe_single_ac_mesh_link(
+    device: Device,
+    paths: PathResolver | None = None,
+    site_name: str = "",
+) -> AcControllerProbe:
     device_id = str(device.id or device.device_uuid or "")
     host = device.primary_address
     try:
-        output = "\n".join(run_ac_commands(device, ("display wlan mesh-link ap",)).values())
+        output = "\n".join(
+            run_ac_commands(
+                device,
+                ("display wlan mesh-link ap",),
+                paths=paths,
+                site_name=site_name,
+            ).values()
+        )
         return AcControllerProbe(device_id, device.name, host, True, output)
     except Exception as exc:
         return AcControllerProbe(device_id, device.name, host, False, error=str(exc))
@@ -2750,7 +2786,13 @@ def parse_ping_output(ip: str, output: str) -> PingResult:
     return PingResult(ip, loss < 100.0, loss, avg, text, "", transmitted, received, min_rtt, max_rtt)
 
 
-def run_ac_commands(ac: Device, commands: Iterable[str]) -> dict[str, str]:
+def run_ac_commands(
+    ac: Device,
+    commands: Iterable[str],
+    *,
+    paths: PathResolver | None = None,
+    site_name: str = "",
+) -> dict[str, str]:
     targets = connection_targets(ac)
     if targets:
         target = build_netmiko_params(targets[0])
@@ -2765,6 +2807,8 @@ def run_ac_commands(ac: Device, commands: Iterable[str]) -> dict[str, str]:
             ConnectionTarget("SSH", H3C_NETMIKO_DEVICE_TYPE, ac.primary_address, int(ac.ssh_port or 22), username, password, encoding_for_vendor(ac.device_vendor))
         )
     target["_netconsole_device_uuid"] = str(ac.device_uuid or ac.id or "")
+    target["_netconsole_paths"] = paths
+    target["_netconsole_site_id"] = site_name
     conn = ConnectHandler(**target)
     encoding = str(target.get("encoding") or "gb2312")
     try:

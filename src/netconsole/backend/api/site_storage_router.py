@@ -25,6 +25,8 @@ from netconsole.models.api.site_storage import (
     SiteTrashRequest,
     SiteTrashResponse,
     SiteUpdateRequest,
+    SiteSSHRelayUpdateRequest,
+    SiteSSHRelayResponse,
 )
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.database_upgrade.coordinator import (
@@ -41,6 +43,7 @@ from netconsole.services.site_storage import (
     SitePackageService,
     SiteStorageError,
 )
+from netconsole.services.site_ssh_relay import SiteSSHRelayError, SiteSSHRelayService
 
 
 router = APIRouter(prefix="/v1", tags=["site-and-storage"])
@@ -88,6 +91,10 @@ def _retention(request: Request) -> SiteRetentionService:
     return request.app.state.site_retention_service
 
 
+def _ssh_relay(request: Request) -> SiteSSHRelayService:
+    return request.app.state.site_ssh_relay_service
+
+
 @router.get(
     "/sites",
     summary="列出全部局点",
@@ -126,6 +133,57 @@ def active_site(request: Request) -> dict[str, object]:
 )
 def get_site(request: Request, site_id: str) -> dict[str, object]:
     return _call(lambda: _sites(request).get_site(site_id))
+
+
+@router.get(
+    "/sites/{site_id}/ssh-relay",
+    response_model=SiteSSHRelayResponse,
+    summary="读取局点 SSH 中转设置",
+    dependencies=[Depends(_desktop)],
+)
+def get_ssh_relay(request: Request, site_id: str) -> SiteSSHRelayResponse:
+    return _call(
+        lambda: SiteSSHRelayResponse.model_validate(
+            _ssh_relay(request).load(site_id).to_public()
+        )
+    )
+
+
+@router.put(
+    "/sites/{site_id}/ssh-relay",
+    response_model=SiteSSHRelayResponse,
+    summary="保存局点 SSH 中转设置",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def update_ssh_relay(
+    request: Request,
+    site_id: str,
+    payload: SiteSSHRelayUpdateRequest,
+) -> SiteSSHRelayResponse:
+    password = payload.password.get_secret_value() if payload.password is not None else None
+    return _call(
+        lambda: SiteSSHRelayResponse.model_validate(
+            _ssh_relay(request)
+            .save(
+                site_id,
+                enabled=payload.enabled,
+                host=payload.host,
+                port=payload.port,
+                username=payload.username,
+                password=password,
+            )
+            .to_public()
+        )
+    )
+
+
+@router.post(
+    "/sites/{site_id}/ssh-relay/test",
+    summary="测试 SSH 中转服务器连接",
+    dependencies=[Depends(_desktop)],
+)
+def test_ssh_relay(request: Request, site_id: str) -> dict[str, object]:
+    return _call(lambda: _ssh_relay(request).test_jump_host(site_id))
 
 
 @router.get(
@@ -646,6 +704,21 @@ def _submit(
 def _call(callback):
     try:
         return callback()
+    except SiteSSHRelayError as exc:
+        status_by_code = {
+            "SITE_NOT_FOUND": 404,
+            "JUMP_AUTH_FAILED": 502,
+            "JUMP_CONNECT_FAILED": 502,
+            "JUMP_CHANNEL_FAILED": 502,
+            "SSH_RELAY_CREDENTIAL_UNAVAILABLE": 422,
+            "SSH_RELAY_CONFIG_INCOMPLETE": 422,
+            "SSH_RELAY_PASSWORD_REQUIRED": 422,
+            "SSH_RELAY_DISABLED": 409,
+        }
+        raise HTTPException(
+            status_code=status_by_code.get(exc.code, 422),
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
     except SiteStorageError as exc:
         if exc.code == "SITE_NOT_FOUND":
             status_code = 404

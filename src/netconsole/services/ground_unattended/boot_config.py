@@ -307,7 +307,7 @@ class MrSyslogConfigService:
             raise ValueError("MR 当前不参与本次调试，已退出无人值守自动任务")
         if str(device.device_vendor or "H3C").casefold() != "h3c":
             raise ValueError("当前 Syslog Profile 仅适配 H3C MR")
-        config = _connection_config(self.site_id, device)
+        config = _connection_config(self.site_id, device, paths=self.paths)
         validate_command_list(READ_COMMANDS, "ground_unattended_syslog_read")
         checked_at = self.now_provider()
         audit_id = f"sysaudit_{uuid.uuid4().hex}"
@@ -954,7 +954,12 @@ def _validate_syslog_write_commands(
         raise ValueError("Syslog 写入 Profile 包含禁止命令")
 
 
-def _connection_config(site_id: str, device: Device) -> OnlineMrConnectionConfig:
+def _connection_config(
+    site_id: str,
+    device: Device,
+    *,
+    paths: PathResolver | None = None,
+) -> OnlineMrConnectionConfig:
     targets = tuple(connection_targets(device))
     if not targets:
         raise ValueError("设备没有可用的 SSH/Telnet 连接配置")
@@ -973,6 +978,7 @@ def _connection_config(site_id: str, device: Device) -> OnlineMrConnectionConfig
         password=first.password,
         command_timeout=20,
         connection_targets=targets,
+        paths=paths,
     )
 
 

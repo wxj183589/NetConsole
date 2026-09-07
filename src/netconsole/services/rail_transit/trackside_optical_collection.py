@@ -728,6 +728,8 @@ def collect_trackside_optical(
                         device_artifact_dir,
                         cancel_event,
                         repository,
+                        paths,
+                        site_name,
                     )
                 )
             for future in as_completed(futures):
@@ -1598,6 +1600,8 @@ def _collect_one_target(
     artifact_dir: Path | None = None,
     cancel_event: Event | None = None,
     repository: DeviceRepository | None = None,
+    paths: PathResolver | None = None,
+    site_name: str = "",
 ) -> TracksideDeviceCollectionResult:
     started_at = time.monotonic()
     connection = None
@@ -1622,6 +1626,8 @@ def _collect_one_target(
             "trackside_optical",
             "collect",
             device_uuid=str(current_device.device_uuid or ""),
+            paths=paths,
+            site_id=site_name,
         ):
             connection = netmiko_connection.ConnectHandler(
                 **build_netmiko_params(choose_connection_target(current_device))

@@ -11,6 +11,7 @@ from time import monotonic
 from typing import Any, Callable, Iterator, TypeVar
 
 from netconsole.core import app_logger
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services.connection_manager import ConnectionManager
 from netconsole.services.device_command_profile_service import (
@@ -80,6 +81,10 @@ class SshConnectionContext:
     collector: str = "unknown"
     phase: str = "connect"
     device_uuid: str = ""
+    connection_mode: str = "direct"
+    paths: PathResolver | None = None
+    site_id: str = ""
+    jump_host: str = ""
 
 
 _SSH_CONNECTION_CONTEXT: ContextVar[SshConnectionContext] = ContextVar(
@@ -94,14 +99,23 @@ def ssh_connection_context(
     phase: str,
     *,
     device_uuid: str = "",
+    connection_mode: str = "direct",
+    paths: PathResolver | None = None,
+    site_id: str = "",
+    jump_host: str = "",
 ) -> Iterator[None]:
     """为一次或多次 CLI session 建立可继承的 collector 诊断上下文。"""
 
+    parent = _SSH_CONNECTION_CONTEXT.get()
     token = _SSH_CONNECTION_CONTEXT.set(
         SshConnectionContext(
             collector=str(collector or "unknown"),
             phase=str(phase or "connect"),
             device_uuid=str(device_uuid or ""),
+            connection_mode=str(connection_mode or "direct"),
+            paths=paths if paths is not None else parent.paths,
+            site_id=str(site_id or parent.site_id or ""),
+            jump_host=str(jump_host or parent.jump_host or ""),
         )
     )
     try:
@@ -115,6 +129,56 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
         from netmiko import ConnectHandler as connect_handler
     except ImportError as exc:  # pragma: no cover - exercised only when dependency is missing.
         raise RuntimeError("netmiko is not installed") from exc
+    skip_site_relay = bool(kwargs.pop("_netconsole_skip_site_ssh_relay", False))
+    disable_site_relay = bool(kwargs.pop("_netconsole_disable_site_ssh_relay", False))
+    relay_paths_override = kwargs.pop("_netconsole_paths", None)
+    relay_site_override = str(kwargs.pop("_netconsole_site_id", "") or "").strip()
+    if not skip_site_relay and "sock" not in kwargs:
+        device_type = str(kwargs.get("device_type") or "").casefold()
+        if "telnet" not in device_type and not disable_site_relay:
+            from netconsole.services.site_ssh_relay import (
+                DeviceSSHConnectionFactory,
+                SiteSSHRelayError,
+                SiteSSHRelayService,
+                active_site_id,
+            )
+
+            context = _SSH_CONNECTION_CONTEXT.get()
+            relay_paths = relay_paths_override
+            if not isinstance(relay_paths, PathResolver):
+                relay_paths = context.paths or PathResolver()
+            try:
+                relay_site_id = relay_site_override or context.site_id
+                if not relay_site_id:
+                    relay_site_id = active_site_id(relay_paths)
+                relay_config = SiteSSHRelayService(relay_paths).load(relay_site_id)
+            except SiteSSHRelayError as exc:
+                # Standalone/library callers may not have a Site Registry yet;
+                # preserve the historical direct-SSH behavior in that case.
+                if exc.code == "SITE_NOT_FOUND":
+                    return _connect_with_compatibility(connect_handler, kwargs)
+                raise
+            if relay_config.enabled:
+                with ssh_connection_context(
+                    context.collector,
+                    context.phase,
+                    device_uuid=context.device_uuid,
+                    connection_mode="jump",
+                    paths=relay_paths,
+                    site_id=relay_site_id,
+                    jump_host=f"{relay_config.host}:{relay_config.port}",
+                ):
+                    try:
+                        return DeviceSSHConnectionFactory(
+                            relay_paths,
+                            relay_site_id,
+                        ).connect(
+                            kwargs,
+                            raw_connect_handler=connect_handler,
+                            compatibility_connect=_connect_with_compatibility,
+                        )
+                    except SiteSSHRelayError:
+                        raise
     return _connect_with_compatibility(connect_handler, kwargs)
 
 
@@ -290,12 +354,16 @@ def _ssh_detail(
         f"collector={context.collector}",
         f"phase={context.phase}",
         f"device_uuid={context.device_uuid}",
+        f"site={context.site_id}",
         f"host={params.get('host', '')}",
+        f"target_port={params.get('port', '')}",
         f"ssh_mode={mode}",
-        f"connection_mode={mode}",
+        f"connection_mode={context.connection_mode}",
         f"attempt={attempt}",
         f"result={result or ('success' if success else 'failed')}",
     ]
+    if context.connection_mode == "jump" and context.jump_host:
+        values.append(f"jump_host={context.jump_host}")
     if reason:
         values.append(f"reason={reason}")
     if exc is not None:
@@ -423,6 +491,8 @@ def test_device_connection(
     *,
     phase_callback: ConnectionPhaseCallback | None = None,
     host_key_trust: HostKeyTrustService | None = None,
+    paths: PathResolver | None = None,
+    site_id: str = "",
 ) -> ConnectionTestResult:
     targets = connection_targets(device)
     if not targets:
@@ -459,6 +529,8 @@ def test_device_connection(
                     "device_connection_test",
                     "connect",
                     device_uuid=str(device.device_uuid or ""),
+                    paths=paths,
+                    site_id=site_id,
                 ):
                     connection = ConnectHandler(**_netmiko_params(prepared))
                 _report_connection_phase(
@@ -557,7 +629,13 @@ def _report_connection_phase(
         callback(stage, message)
 
 
-def run_netmiko_with_retry(device: Device, operation: Callable[[Any, ConnectionTarget], T]) -> T:
+def run_netmiko_with_retry(
+    device: Device,
+    operation: Callable[[Any, ConnectionTarget], T],
+    *,
+    paths: PathResolver | None = None,
+    site_id: str = "",
+) -> T:
     targets = connection_targets(device)
     if not targets:
         raise RuntimeError("No SSH or Telnet connection is enabled.")
@@ -570,6 +648,8 @@ def run_netmiko_with_retry(device: Device, operation: Callable[[Any, ConnectionT
                     "device_operation",
                     "collect",
                     device_uuid=str(device.device_uuid or ""),
+                    paths=paths,
+                    site_id=site_id,
                 ):
                     connection = ConnectHandler(**_netmiko_params(prepared))
                 result = operation(connection, prepared)
@@ -587,7 +667,12 @@ def run_netmiko_with_retry(device: Device, operation: Callable[[Any, ConnectionT
     raise RuntimeError(detail or "All connection attempts failed.")
 
 
-def check_device_login_with_netmiko(device: Device) -> ConnectionCheckResult:
+def check_device_login_with_netmiko(
+    device: Device,
+    *,
+    paths: PathResolver | None = None,
+    site_id: str = "",
+) -> ConnectionCheckResult:
     started = monotonic()
     targets = connection_targets(device)
     if not targets:
@@ -601,6 +686,8 @@ def check_device_login_with_netmiko(device: Device) -> ConnectionCheckResult:
                     "device_login",
                     "connect",
                     device_uuid=str(device.device_uuid or ""),
+                    paths=paths,
+                    site_id=site_id,
                 ):
                     connection = ConnectHandler(**_netmiko_params(prepared))
                 _safe_find_prompt(connection)
@@ -721,6 +808,37 @@ def classify_connection_exception(exc: BaseException, protocol: str = "SSH") -> 
     proto = "Telnet" if str(protocol or "").casefold() == "telnet" else "SSH"
     code = str(getattr(exc, "code", "") or "")
     if code in {
+        "JUMP_CONNECT_FAILED",
+        "JUMP_AUTH_FAILED",
+        "JUMP_CHANNEL_FAILED",
+        "TARGET_CONNECT_FAILED",
+        "TARGET_AUTH_FAILED",
+        "TARGET_COMMAND_FAILED",
+    }:
+        status_by_code = {
+            "JUMP_CONNECT_FAILED": "jump_connect_failed",
+            "JUMP_AUTH_FAILED": "jump_auth_failed",
+            "JUMP_CHANNEL_FAILED": "jump_channel_failed",
+            "TARGET_CONNECT_FAILED": "target_connect_failed",
+            "TARGET_AUTH_FAILED": "target_auth_failed",
+            "TARGET_COMMAND_FAILED": "target_command_failed",
+        }
+        suggestion_by_code = {
+            "JUMP_CONNECT_FAILED": "请检查中转服务器地址、端口、网络和 SSH 服务状态。",
+            "JUMP_AUTH_FAILED": "请检查中转服务器用户名和密码。",
+            "JUMP_CHANNEL_FAILED": "请检查中转服务器到目标设备的路由、ACL 和 SSH 转发权限。",
+            "TARGET_CONNECT_FAILED": "请检查目标设备地址、SSH 端口和目标网络服务状态。",
+            "TARGET_AUTH_FAILED": "请检查目标设备 SSH 用户名、密码和 AAA/VTY 配置。",
+            "TARGET_COMMAND_FAILED": "请检查目标设备 CLI 权限、命令和设备会话状态。",
+        }
+        return ConnectionErrorClassification(
+            status_by_code[code],
+            text,
+            text,
+            code,
+            suggestion_by_code[code],
+        )
+    if code in {
         "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN",
         "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH",
         "DEVICE_FILE_JUMP_HOST_UNREACHABLE",
@@ -835,16 +953,20 @@ def safe_send_command(
     use_timing: bool = False,
     encoding: str = H3C_DEFAULT_ENCODING,
 ) -> str:
-    if use_timing and hasattr(connection, "send_command_timing"):
-        kwargs: dict[str, object] = {"read_timeout": read_timeout}
-        if strip_prompt is not None:
-            kwargs["strip_prompt"] = strip_prompt
-        if strip_command is not None:
-            kwargs["strip_command"] = strip_command
-        output = _send_with_encoding(connection.send_command_timing, command, kwargs, encoding)
-    else:
-        output = _send_with_encoding(connection.send_command, command, {"read_timeout": read_timeout}, encoding)
-    return normalize_command_output(output, encoding)
+    try:
+        if use_timing and hasattr(connection, "send_command_timing"):
+            kwargs: dict[str, object] = {"read_timeout": read_timeout}
+            if strip_prompt is not None:
+                kwargs["strip_prompt"] = strip_prompt
+            if strip_command is not None:
+                kwargs["strip_command"] = strip_command
+            output = _send_with_encoding(connection.send_command_timing, command, kwargs, encoding)
+        else:
+            output = _send_with_encoding(connection.send_command, command, {"read_timeout": read_timeout}, encoding)
+        return normalize_command_output(output, encoding)
+    except Exception as exc:
+        _raise_site_relay_command_error(connection, exc)
+        raise
 
 
 def safe_send_command_with_paging(
@@ -896,12 +1018,16 @@ def safe_send_command_with_paging(
         "strip_prompt": False,
         "strip_command": False,
     }
-    chunk = _send_with_encoding(
-        connection.send_command_timing,
-        command,
-        kwargs,
-        encoding,
-    )
+    try:
+        chunk = _send_with_encoding(
+            connection.send_command_timing,
+            command,
+            kwargs,
+            encoding,
+        )
+    except Exception as exc:
+        _raise_site_relay_command_error(connection, exc)
+        raise
     raw_chunks.append(_raw_command_output_text(chunk, encoding))
     check_limits()
     while PAGER_PROMPT_RE.search(raw_chunks[-1]):
@@ -909,12 +1035,16 @@ def safe_send_command_with_paging(
             _interrupt_device_command(connection, encoding)
             raise CommandOutputLimitExceeded("设备命令分页超过受控上限")
         page_count += 1
-        chunk = _send_with_encoding(
-            connection.send_command_timing,
-            " ",
-            kwargs,
-            encoding,
-        )
+        try:
+            chunk = _send_with_encoding(
+                connection.send_command_timing,
+                " ",
+                kwargs,
+                encoding,
+            )
+        except Exception as exc:
+            _raise_site_relay_command_error(connection, exc)
+            raise
         raw_chunks.append(_raw_command_output_text(chunk, encoding))
         check_limits()
     raw_output = "".join(raw_chunks)
@@ -959,6 +1089,16 @@ def _interrupt_device_command(connection: Any, encoding: str) -> None:
             )
     except Exception:
         pass
+
+
+def _raise_site_relay_command_error(connection: Any, exc: BaseException) -> None:
+    if getattr(connection, "_netconsole_ssh_mode", "") != "jump":
+        return
+    from netconsole.services.site_ssh_relay import SiteSSHRelayError
+
+    if isinstance(exc, SiteSSHRelayError):
+        raise exc
+    raise SiteSSHRelayError("TARGET_COMMAND_FAILED", "目标设备 SSH 命令执行失败") from exc
 
 
 def extract_cli_prompt(output: str) -> str:
@@ -1007,7 +1147,7 @@ def sanitize_sensitive_text(text: str, device: Device | None = None) -> str:
 
 
 def _netmiko_params(target: ConnectionTarget) -> dict[str, object]:
-    return {
+    params: dict[str, object] = {
         "device_type": target.device_type,
         "host": target.host,
         "username": target.username,
@@ -1022,6 +1162,11 @@ def _netmiko_params(target: ConnectionTarget) -> dict[str, object]:
         "global_delay_factor": 1,
         "fast_cli": False,
     }
+    if target.via_tunnel:
+        # Legacy per-device tunnels already provide a local socket-forwarded
+        # endpoint.  Do not compose it with the site Jump Host path.
+        params["_netconsole_skip_site_ssh_relay"] = True
+    return params
 
 
 def _is_auth_exception(exc: BaseException) -> bool:

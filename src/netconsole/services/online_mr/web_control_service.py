@@ -313,6 +313,7 @@ class OnlineMrWebControlService:
                 follow_collection=True,
             ),
             duration_minutes=request.duration_minutes or None,
+            paths=self.paths,
         )
         return OnlineMrStartRequest(
             site_id=request.site_id,

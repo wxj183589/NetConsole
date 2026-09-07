@@ -85,7 +85,14 @@ class DiagnosticDownloadService:
                     self._run_command(connection, "n", device, read_timeout=600),
                 ]
 
-            output_parts.extend(netmiko_connection.run_netmiko_with_retry(device, operation))
+            with netmiko_connection.ssh_connection_context(
+                "diagnostic_download",
+                "collect",
+                device_uuid=str(device.device_uuid or ""),
+                paths=self.paths,
+                site_id=self.site_name,
+            ):
+                output_parts.extend(netmiko_connection.run_netmiko_with_retry(device, operation))
             file_path = self._write_diagnostic_file(device, timestamp, "\n".join(output_parts))
             app_logger.log_info("DIAGNOSTIC_DOWNLOAD_SUCCESS", self._detail(device, timestamp, file_path=file_path))
             return DiagnosticDownloadResult(

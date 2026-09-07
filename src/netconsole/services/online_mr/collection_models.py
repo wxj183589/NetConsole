@@ -130,6 +130,7 @@ def collection_config_from_payload(payload: dict[str, Any], paths: PathResolver)
         fping_required_before_collection=bool(
             values.get("fping_required_before_collection", False)
         ),
+        paths=paths,
     )
 
 
