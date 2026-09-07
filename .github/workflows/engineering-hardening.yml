@@ -28,7 +28,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-architecture"
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-architecture"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -70,7 +70,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-python"
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-python"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -117,7 +117,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-renderer"
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-renderer"
     defaults:
       run:
         working-directory: apps/desktop_renderer
@@ -149,12 +149,23 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-electron"
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-electron"
     defaults:
       run:
         working-directory: apps/desktop_electron
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            constraints.txt
+            requirements-runtime.txt
+            requirements-test.txt
+            requirements-dev.txt
+      - name: Install Python development dependencies
+        run: python -m pip install -c constraints.txt -r requirements-dev.txt
       - uses: pnpm/action-setup@v4
         with:
           version: 11.19.0
@@ -168,6 +179,10 @@ jobs:
         working-directory: apps/desktop_renderer
         run: pnpm install --frozen-lockfile
       - run: pnpm install --frozen-lockfile
+      - name: Select CI Python runtime
+        shell: pwsh
+        run: |
+          "NETCONSOLE_PYTHON=$((Get-Command python).Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run Electron contract tests
         run: pnpm exec vitest run
       - name: Run Electron typecheck
@@ -184,7 +199,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-main-contract"
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-main-contract"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -209,7 +224,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-docs"
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-docs"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -247,7 +262,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     env:
-      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-baseline-audit"
+      NETCONSOLE_DATA_ROOT: "${{ github.workspace }}\\..\\..\\test-data\\NetConsole\\github-actions\\${{ github.run_id }}-${{ github.run_attempt }}-baseline-audit"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
