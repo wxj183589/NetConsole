@@ -58,14 +58,14 @@
     {
       "rule_id": "RUNTIME_PATH_CWD",
       "path": "src/netconsole/services/site_storage.py",
-      "line": 1572,
+      "line": 1580,
       "message": "production path depends on current working directory",
       "reason": "Site storage 路径需先确认真实消费者与迁移边界。"
     },
     {
       "rule_id": "RUNTIME_PATH_CWD",
       "path": "src/netconsole/services/site_storage.py",
-      "line": 3100,
+      "line": 3108,
       "message": "production path depends on current working directory",
       "reason": "Site storage 路径需先确认真实消费者与迁移边界。"
     },
