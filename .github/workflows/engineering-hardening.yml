@@ -165,6 +165,7 @@ jobs:
             requirements-test.txt
             requirements-dev.txt
       - name: Install Python development dependencies
+        working-directory: .
         run: python -m pip install -c constraints.txt -r requirements-dev.txt
       - uses: pnpm/action-setup@v4
         with:
