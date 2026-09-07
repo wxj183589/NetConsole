@@ -84,7 +84,7 @@ class DatabaseUpgradeManagementService:
                             "result_status": str(backup.get("result_status") or ""),
                             "message": "数据库备份完成",
                         })
-                    except Exception:
+                    except Exception as exc:
                         results.append({
                             "profile_id": profile_id,
                             "profile_name": str(profile.get("display_name") or ""),
@@ -304,7 +304,7 @@ class DatabaseUpgradeManagementService:
                             code="BACKUP_DELETE_FAILED",
                             message=str(exc) or "数据库备份目录删除失败",
                         )
-                    except Exception as exc:
+                    except Exception:
                         outcome = _backup_delete_outcome(
                             backup_id,
                             status="failed",

@@ -1,0 +1,20 @@
+{
+  "fixture_id": "zte-zxr10-c89e4-v1.9.0-real-redacted",
+  "operation_id": "device.inventory.collect",
+  "fixture_type": "REAL_CAPTURE",
+  "source_note": "复用仓库既有 C89E-4 V1.9.0 脱敏现场采集片段；仅覆盖文件中的命令，不外推完整设备能力。",
+  "vendor": "ZTE",
+  "role": "switch",
+  "platform": "zxr10",
+  "software_version": "V1.9.0",
+  "profile_id": "zte.zxr10.switch.generic.device-inventory.v3",
+  "outputs": {
+    "inventory.version": {"file": "../zte/real_c89e4_show_version_redacted.txt"},
+    "inventory.interface_brief": {"file": "../zte/real_c89e4_show_interface_brief_redacted.txt"},
+    "inventory.optical_brief": {"file": "../zte/real_c89e4_show_opticalinfo_brief_redacted.txt"},
+    "inventory.switchvlan_config": {"text": ""},
+    "inventory.vlan_table": {"text": ""},
+    "inventory.lldp_list": {"text": ""},
+    "inventory.lldp_verbose": {"text": ""}
+  }
+}
