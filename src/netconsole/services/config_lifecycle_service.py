@@ -117,7 +117,14 @@ class ConfigLifecycleService:
                 protocol = target.protocol
                 return self._run_command(connection, SAVE_FORCE_COMMAND, device, read_timeout=180)
 
-            save_result = netmiko_connection.run_netmiko_with_retry(device, operation)
+            with netmiko_connection.ssh_connection_context(
+                "config_lifecycle",
+                "collect",
+                device_uuid=str(device.device_uuid or ""),
+                paths=self.paths,
+                site_id=self.site_name,
+            ):
+                save_result = netmiko_connection.run_netmiko_with_retry(device, operation)
             command_results.append(save_result)
             self._write_raw_log(raw_log_file, device, timestamp, protocol, command_results)
             if not bool(save_result["success"]):
@@ -149,7 +156,14 @@ class ConfigLifecycleService:
                 saved = self._run_command(connection, SAVED_COMMAND, device, read_timeout=180)
                 return screen_result, running, saved
 
-            screen_result, running_result, saved_result = netmiko_connection.run_netmiko_with_retry(device, operation)
+            with netmiko_connection.ssh_connection_context(
+                "config_lifecycle",
+                "collect",
+                device_uuid=str(device.device_uuid or ""),
+                paths=self.paths,
+                site_id=self.site_name,
+            ):
+                screen_result, running_result, saved_result = netmiko_connection.run_netmiko_with_retry(device, operation)
             command_results.append(screen_result)
             command_results.extend([running_result, saved_result])
             self._write_raw_log(raw_log_file, device, timestamp, protocol, command_results)

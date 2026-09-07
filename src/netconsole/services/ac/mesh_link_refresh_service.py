@@ -248,7 +248,7 @@ class AcMeshLinkRefreshWorkerService:
         try:
             context.progress("profile", 1, 7, "已加载 AC 连接配置")
             context.check_cancelled()
-            config = self._connection_config(site, controller)
+            config = self._connection_config(site, controller, paths=self.paths)
             try:
                 connection = self.connection_factory(config)
             except Exception:
@@ -294,7 +294,12 @@ class AcMeshLinkRefreshWorkerService:
                     pass
 
     @staticmethod
-    def _connection_config(site: str, controller: Device) -> OnlineMrConnectionConfig:
+    def _connection_config(
+        site: str,
+        controller: Device,
+        *,
+        paths: PathResolver | None = None,
+    ) -> OnlineMrConnectionConfig:
         targets = tuple(connection_targets(controller))
         if not targets:
             raise AcMeshLinkRefreshError(
@@ -316,6 +321,7 @@ class AcMeshLinkRefreshWorkerService:
             password=first.password,
             command_timeout=20,
             connection_targets=targets,
+            paths=paths,
         )
 
     @staticmethod

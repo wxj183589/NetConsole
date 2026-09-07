@@ -580,7 +580,14 @@ def run_device_sftp_enable(context: JobContext) -> dict[str, object]:
             context.progress("device_sftp_enable", index, len(commands), f"启用设备 SFTP {index}/{len(commands)}")
         return outputs
 
-    netmiko_connection.run_netmiko_with_retry(device, operation)
+    with netmiko_connection.ssh_connection_context(
+        "device_sftp_enable",
+        "collect",
+        device_uuid=str(device.device_uuid or ""),
+        paths=context.paths,
+        site_id=site,
+    ):
+        netmiko_connection.run_netmiko_with_retry(device, operation)
     return {
         "operation_id": operation_id,
         "profile_id": profile.profile_id,

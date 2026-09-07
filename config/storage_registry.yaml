@@ -1269,6 +1269,26 @@
       "source_locations": ["src/netconsole/services/job_center/artifact_reconciliation.py", "src/netconsole/application/web_artifacts.py", "src/netconsole/services/file_management_service.py"]
     },
     {
+      "id": "site.ssh_relay.credentials",
+      "relative_path": "sites/{site_id}/db/site_ssh_credentials.sqlite3",
+      "database_name_patterns": ["site_ssh_credentials.sqlite", "site_ssh_credentials.sqlite3"],
+      "owner": "SiteSSHRelayService",
+      "code_owners": ["devices", "system-settings", "data"],
+      "data_type": "OPERATIONAL_CURRENT",
+      "authority": "site-scoped SSH Jump Host credential ciphertext protected by Windows DPAPI",
+      "producer": ["SiteSSHRelayService"],
+      "consumers": ["SSH Relay connection factory", "site settings"],
+      "retention_owner": "SiteSSHRelayService",
+      "rebuildable": false,
+      "site_package_policy": "exclude; target machine must re-enter the DPAPI-bound Jump Host password",
+      "backup_policy": "do not expose plaintext; ciphertext is user/machine-bound",
+      "migration_policy": "preserve ciphertext only on the same Windows security context; otherwise require credential re-entry",
+      "schema_version": 1,
+      "allowed_data_classes": ["OPERATIONAL_CURRENT"],
+      "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "STAGING_TEMPORARY"],
+      "source_locations": ["src/netconsole/services/site_ssh_relay.py"]
+    },
+    {
       "id": "site.metadata",
       "relative_path": "sites/{site_id}/site_meta.json",
       "owner": "SiteApplicationService",

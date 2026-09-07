@@ -378,6 +378,9 @@ class OnlineMrConnectionConfig:
     connection_method: str = ""
     collect_config_on_start: bool = False
     fping_required_before_collection: bool = False
+    # Runtime-only resolver used by the shared SSH access facade.  It is
+    # intentionally excluded from collection payloads and session metadata.
+    paths: Any = field(default=None, repr=False, compare=False)
 
 
 @dataclass

@@ -385,6 +385,8 @@ def collect_h3c_fit_ap_resources(
                 should_cancel,
                 per_command_read_timeout={commands[-1]: 180},
                 result_sink=command_results,
+                paths=paths,
+                site_id=site_name,
             )
             _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, force=True)
             _raise_if_cancelled(should_cancel)
@@ -405,6 +407,8 @@ def collect_h3c_fit_ap_resources(
                     should_cancel,
                     per_command_read_timeout={legacy_command: 120},
                     result_sink=command_results,
+                    paths=paths,
+                    site_id=site_name,
                 )
                 legacy_rows = parse_wlan_ap_radio_verbose_bbssid(legacy_outputs.get(legacy_command, ""))
                 legacy_row = legacy_rows.get(str(target_resource.get("ap_name") or ""))
@@ -459,6 +463,8 @@ def collect_h3c_fit_ap_resources(
             should_cancel,
             per_command_read_timeout=FIT_AP_RESOURCE_READ_TIMEOUTS,
             result_sink=command_results,
+            paths=paths,
+            site_id=site_name,
         )
         _write_raw_files(
             raw_log_file,
@@ -849,6 +855,8 @@ def collect_h3c_fit_ap_verbose(
                 should_cancel,
                 per_command_read_timeout={commands[-1]: 1800},
                 result_sink=command_results,
+                paths=paths,
+                site_id=site_name,
             )
             output = outputs.get(commands[-1], "")
             for row in parse_wlan_ap_verbose(output):
@@ -864,6 +872,8 @@ def collect_h3c_fit_ap_verbose(
                     "ap_detail",
                     "collect",
                     device_uuid=str(ac_device.device_uuid or ""),
+                    paths=paths,
+                    site_id=site_name,
                 ):
                     connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
                 init = _run_command(connection, "screen-length disable", ac_device, collect_run_uuid, read_timeout=15, context="ac_fit_ap_verbose_selected_collect", preserve_echo=True)
@@ -994,6 +1004,8 @@ def collect_h3c_ac_info(
             "ac_info_collect",
             progress,
             should_cancel,
+            paths=paths,
+            site_id=site_name,
         )
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
         progress("正在解析AC信息...")
@@ -1090,6 +1102,8 @@ def run_h3c_ac_action(
             read_timeout=10,
             per_command_read_timeout=per_command_read_timeout,
             detect_cli_failures=action == "enable_ap_remote_login",
+            paths=paths,
+            site_id=site_name,
         )
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
         error_message = _command_error_summary(command_results)
@@ -1158,7 +1172,12 @@ def collect_h3c_fit_ap_optical(
         _safe_log_info("FIT_AP_OPTICAL_AC_ENABLE_STARTED", _detail(ac_device, collect_run_uuid))
         _raise_if_cancelled(should_cancel)
         progress("\u6b63\u5728\u8fde\u63a5AC\u5e76\u542f\u7528AP\u63a7\u5236\u53f0...")
-        enable_results = _enable_fit_ap_console(ac_device, collect_run_uuid)
+        enable_results = _enable_fit_ap_console(
+            ac_device,
+            collect_run_uuid,
+            paths=paths,
+            site_id=site_name,
+        )
         _write_raw_files(run_dir / f"{ac_device.device_uuid}.log", run_dir / f"{ac_device.device_uuid}_commands.jsonl", ac_device, collect_run_uuid, enable_results)
         if any(not result.success for result in enable_results):
             raise RuntimeError(_command_error_summary(enable_results) or "AC enable AP console failed")
@@ -2280,7 +2299,13 @@ def _update_https_port(database: Database, ac_device: Device, collect_run_uuid: 
         return HttpsPortPersistenceResult(None, False, message)
 
 
-def _enable_fit_ap_console(ac_device: Device, collect_run_uuid: str) -> list[CommandResult]:
+def _enable_fit_ap_console(
+    ac_device: Device,
+    collect_run_uuid: str,
+    *,
+    paths: PathResolver | None = None,
+    site_id: str = "",
+) -> list[CommandResult]:
     target = choose_connection_target(ac_device)
     if target is None:
         raise RuntimeError("未启用连接方式")
@@ -2292,6 +2317,8 @@ def _enable_fit_ap_console(ac_device: Device, collect_run_uuid: str) -> list[Com
             "ac_action",
             "collect",
             device_uuid=str(ac_device.device_uuid or ""),
+            paths=paths,
+            site_id=site_id,
         ):
             connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         for command in ENABLE_FIT_AP_CONSOLE_COMMANDS:
@@ -2325,6 +2352,8 @@ def _execute_h3c_ac_command_list(
     per_command_read_timeout: dict[str, int] | None = None,
     detect_cli_failures: bool = False,
     result_sink: list[CommandResult] | None = None,
+    paths: PathResolver | None = None,
+    site_id: str = "",
 ) -> tuple[list[CommandResult], dict[str, str]]:
     target = choose_connection_target(ac_device)
     if target is None:
@@ -2339,6 +2368,8 @@ def _execute_h3c_ac_command_list(
             _ssh_collector_name(context),
             "collect",
             device_uuid=str(ac_device.device_uuid or ""),
+            paths=paths,
+            site_id=site_id,
         ):
             connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         for command in commands:
@@ -2416,6 +2447,8 @@ def _collect_single_fit_ap_optical(
             "optical",
             "collect",
             device_uuid=str(ac_device.device_uuid or ""),
+            paths=paths,
+            site_id=site_name,
         ):
             connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         command_guard.validate_command_list(FIT_AP_OPTICAL_COMMANDS, "fit_ap_optical_collect")

@@ -14,6 +14,7 @@ import { useConfirm } from '../../components/feedback/useConfirm'
 import type { FeatureRuntimeStatus, RuntimeSelfCheckItem, RuntimeSelfCheckSnapshot, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 import DatabaseUpgradePanel from '../../components/settings/DatabaseUpgradePanel.vue'
+import SiteSSHRelayPanel from './SiteSSHRelayPanel.vue'
 
 const emptyValues: SystemSettingsValues = {
   theme: 'light', language: 'zh_CN', theme_color: '#0078D4', iperf_path: '', fping_path: '', ipop_path: '',
@@ -420,6 +421,7 @@ function message(cause: unknown, fallback: string): string { return cause instan
     </section>
 
     <SiteStoragePanel ref="siteStoragePanel" :focused="siteStorageFocused" :switch-blocked="saving || anyDirty" />
+    <SiteSSHRelayPanel />
 
     <DatabaseUpgradePanel v-if="isFeatureEnabled('module.database_upgrade')" />
 

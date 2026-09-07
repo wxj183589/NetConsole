@@ -221,6 +221,8 @@ def collect_h3c_device_details(
             "device_detail",
             "collect",
             device_uuid=str(device.device_uuid or ""),
+            paths=paths,
+            site_id=site_name,
         ):
             connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         _emit_progress(progress_callback, 10, "batch_collect.stage.login_success")

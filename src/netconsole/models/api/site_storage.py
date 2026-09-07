@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from netconsole.models.api.common import ApiModel
 
@@ -22,6 +22,26 @@ class SiteUpdateRequest(ApiModel):
     display_name: str = Field(min_length=1, max_length=64)
     line_name: str | None = Field(default=None, max_length=128)
     project_type: str | None = Field(default=None, max_length=128)
+
+
+class SiteSSHRelayUpdateRequest(ApiModel):
+    enabled: bool = False
+    host: str = Field(default="", max_length=255)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(default="", max_length=128)
+    password: SecretStr | None = Field(default=None, repr=False)
+
+
+class SiteSSHRelayResponse(ApiModel):
+    site_id: str
+    enabled: bool
+    host: str
+    port: int
+    username: str
+    credential_ref: str
+    revision: str
+    password_configured: bool
+    complete: bool
 
 
 class SiteTrashRequest(ApiModel):
@@ -180,6 +200,8 @@ __all__ = [
     "DataRootPathRequest",
     "SiteActivateRequest",
     "SiteUpdateRequest",
+    "SiteSSHRelayUpdateRequest",
+    "SiteSSHRelayResponse",
     "SiteTrashRequest",
     "SiteTrashResponse",
     "SiteCreateRequest",

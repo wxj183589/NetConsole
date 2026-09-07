@@ -94,6 +94,8 @@ def refresh_h3c_device_optical(
             "optical",
             "collect",
             device_uuid=str(device.device_uuid or ""),
+            paths=paths,
+            site_id=site_name,
         ):
             connection = netmiko_connection.ConnectHandler(**build_netmiko_params(target))
         outputs: dict[str, str] = {}

@@ -157,5 +157,7 @@
   {"path":"scripts/maintenance/analyze_task_payloads_dev.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"Development data-root payload analysis uses mode=ro SQLite connections and only emits an audit report."},
   {"path":"scripts/maintenance/audit_lifecycle_dev.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"storage","reason":"Development data-root lifecycle audit uses mode=ro SQLite connections and never mutates the data root."},
   {"path":"scripts/maintenance/tasks_db_compaction.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"DEV-only candidate-first tasks.db compaction uses isolated copies, parity checks and atomic replacement; it never opens production data."},
-  {"path":"tests/test_tasks_db_compaction.py","classification":"TEST_ONLY","owner":"test","reason":"tasks.db compaction tests construct isolated SQLite fixtures only."}
+  {"path":"tests/test_tasks_db_compaction.py","classification":"TEST_ONLY","owner":"test","reason":"tasks.db compaction tests construct isolated SQLite fixtures only."},
+  {"path":"src/netconsole/services/site_ssh_relay.py","classification":"REPOSITORY_REQUIRED","owner":"system-settings","reason":"Site SSH Relay repository stores only DPAPI ciphertext in a site-scoped credential database."},
+  {"path":"tests/test_site_ssh_relay.py","classification":"TEST_ONLY","owner":"test","reason":"SSH Relay tests use isolated temporary site databases and mocked DPAPI functions."}
 ]

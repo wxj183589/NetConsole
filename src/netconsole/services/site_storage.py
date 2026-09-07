@@ -947,6 +947,14 @@ class SiteApplicationService:
             )
             self.ensure_no_active_tasks_anywhere()
             try:
+                from netconsole.services.site_ssh_relay import close_site_jump_sessions
+
+                close_site_jump_sessions(previous, self.paths)
+            except Exception:
+                # Site switching must not be blocked by best-effort cleanup of
+                # an optional SSH relay session.
+                pass
+            try:
                 self.manager.switch_site(
                     record.root_path.name, site_id=record.site_id
                 )

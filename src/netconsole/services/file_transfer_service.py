@@ -41,6 +41,25 @@ DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE = "设备文件管理为只读模式，不
 SftpProgressCallback = Callable[[str], None]
 
 
+def _file_netmiko_params(prepared: ConnectionTarget) -> tuple[dict[str, object], socket.socket | None]:
+    """Return file-list/SCP parameters without a relay-routing flag.
+
+    A legacy per-device tunnel is already a caller-owned local endpoint.  The
+    socket is supplied explicitly so the shared Netmiko facade cannot mistake
+    that endpoint for a new device target and create a second site relay.
+    """
+
+    params = build_netmiko_params(prepared)
+    if not prepared.via_tunnel:
+        return params, None
+    sock = socket.create_connection(
+        (prepared.host, prepared.port),
+        timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
+    )
+    params["sock"] = sock
+    return params, sock
+
+
 class SftpUnavailableError(RuntimeError):
     """SSH 已建立，但设备明确拒绝 SFTP 子系统请求。"""
 
@@ -813,6 +832,7 @@ class FileTransferService:
         last_error = ""
         for target in ssh_targets:
             connection = None
+            target_socket: socket.socket | None = None
             files: list[RemoteDeviceFile] = []
             try:
                 with prepared_connection_target(target) as prepared:
@@ -821,8 +841,9 @@ class FileTransferService:
                         "collect",
                         device_uuid=str(device.device_uuid or device.id or ""),
                     ):
+                        params, target_socket = _file_netmiko_params(prepared)
                         connection = netmiko_connection.ConnectHandler(
-                            **build_netmiko_params(prepared)
+                            **params
                         )
                     for command in FILE_LIST_COMMANDS:
                         output = safe_send_command(
@@ -845,6 +866,8 @@ class FileTransferService:
                         connection.disconnect()
                     except Exception:
                         pass
+                if target_socket is not None:
+                    target_socket.close()
         raise RuntimeError(last_error or "File list refresh failed.")
 
     def download_file(self, device: Device, remote_file: RemoteDeviceFile) -> FileDownloadResult:
@@ -967,6 +990,7 @@ class FileTransferService:
         except ImportError as exc:  # pragma: no cover - depends on optional runtime.
             raise RuntimeError("SCP fallback is unavailable because netmiko file_transfer is not installed.") from exc
         connection = None
+        target_socket: socket.socket | None = None
         try:
             with prepared_connection_target(target) as prepared:
                 with netmiko_connection.ssh_connection_context(
@@ -974,8 +998,9 @@ class FileTransferService:
                     "collect",
                     device_uuid=device_uuid,
                 ):
+                    params, target_socket = _file_netmiko_params(prepared)
                     connection = netmiko_connection.ConnectHandler(
-                        **build_netmiko_params(prepared)
+                        **params
                     )
                 file_transfer(
                     connection,
@@ -991,6 +1016,8 @@ class FileTransferService:
                     connection.disconnect()
                 except Exception:
                     pass
+            if target_socket is not None:
+                target_socket.close()
 
     def _relative_to_site(self, path: Path) -> str:
         return path.resolve().relative_to(self.paths.site_dir(self.site_name).resolve()).as_posix()

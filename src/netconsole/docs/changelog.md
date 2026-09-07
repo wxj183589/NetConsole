@@ -1,3 +1,8 @@
+v1.5.5 - Unreleased
+- Target SSH Relay 增加阶段化诊断、目标 Host Key 受控 TOFU、主机密钥变更拒绝和目标认证失败分类；Jump/Target 凭据隔离，密码不进入日志。
+- 轨旁 AP 车站交换机和 FIT-AP Optical 既有 Telnet 目标统一进入 `DeviceSSHConnectionFactory`；Relay 开启时直接使用 Jump direct-tcpip Channel，Relay 关闭时保持 Direct，不创建每设备 localhost 端口映射。
+- 保留 H3C 既有最小 ssh-rsa 兼容回退；未修改 AP 身份、轨旁业务规则、命令、解析器、光衰阈值或默认并发。
+
 v1.5.5 - 2026-09-03
 - 轨旁 AP 上线情况概览、Excel 导出和 WPS 云文档统一使用两行表头“已上线AP / 光衰问题数”，实际写入换行符并保持居中、自动换行和完整行高；继续复用 `optical_problem_count` 统计字段与原有统计逻辑。
 - 托盘当前局点和快速切换菜单改为从 Backend 当前 `site_id` 重新读取，离线时 fail-closed；系统设置、托盘切换和数据包导入后的自动切换共用同一协调器。

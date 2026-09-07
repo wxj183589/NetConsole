@@ -4190,6 +4190,8 @@ def run_device_connection_test(context: JobContext) -> dict[str, object]:
                     selected,
                     phase_callback=report_phase,
                     host_key_trust=HostKeyTrustService(context.paths),
+                    paths=context.paths,
+                    site_id=site,
                 )
             except Exception as exc:
                 raise RuntimeError(
