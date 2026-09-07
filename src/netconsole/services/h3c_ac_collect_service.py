@@ -191,7 +191,7 @@ class AcResourceCollectResult:
     detail_rows_updated: int = 0
     detail_failed_count: int = 0
     detail_mode: str = ""
-    unauthenticated_status: str = "not_collected"
+    unauthenticated_status: str = "NOT_COLLECTED"
     connection_record_rows_updated: int = 0
     connection_record_status: str = "not_collected"
     connection_record_error: str | None = None
@@ -607,7 +607,7 @@ def collect_h3c_fit_ap_resources(
         unauthenticated_updated = False
         unauthenticated_rows_updated = 0
         unauthenticated_error = None
-        unauthenticated_status = "not_collected"
+        unauthenticated_status = "NOT_COLLECTED"
         connection_record_rows_updated = 0
         connection_record_status = "not_collected"
         connection_record_error = None
@@ -631,58 +631,69 @@ def collect_h3c_fit_ap_resources(
                     )
                     or "display wlan ap all connection-record failed"
                 )
-        if not deep_refresh and unauth_result and unauth_result.success:
-            unauth_summary = parse_wlan_ap_unauthenticated_summary(unauth_result.output)
-            unauth_rows = parse_wlan_ap_unauthenticated_rows(
-                unauth_result.output,
-                collected_at=started_at,
-                ac_id=str(ac_device.device_uuid),
-                site_key=site_name,
-            )
-            unauthenticated_status = classify_wlan_ap_unauthenticated_snapshot(
-                unauth_result.output,
-                unauth_rows,
-            )
-            if unauthenticated_status == "FAILED":
-                unauthenticated_error = (
-                    "display wlan ap unauthenticated output is not parseable"
+        if not deep_refresh:
+            metadata = {
+                "collect_run_uuid": collect_run_uuid,
+                "raw_log_path": relative_raw_log_path,
+                "collected_at": started_at,
+                "updated_at": _now(),
+            }
+            if unauth_result and unauth_result.success:
+                unauth_summary = parse_wlan_ap_unauthenticated_summary(unauth_result.output)
+                unauth_rows = parse_wlan_ap_unauthenticated_rows(
+                    unauth_result.output,
+                    collected_at=started_at,
+                    ac_id=str(ac_device.device_uuid),
+                    site_key=site_name,
                 )
-                app_logger.log_warning(
-                    "FIT_AP_UNAUTHENTICATED_FAILED",
-                    _detail(
-                        ac_device,
-                        collect_run_uuid,
-                        error=unauthenticated_error,
-                    ),
+                unauthenticated_status = classify_wlan_ap_unauthenticated_snapshot(
+                    unauth_result.output,
+                    unauth_rows,
                 )
+                if unauthenticated_status == "UNKNOWN":
+                    unauthenticated_error = (
+                        "display wlan ap unauthenticated output is not parseable"
+                    )
+                    unauth_rows = []
+                    app_logger.log_warning(
+                        "FIT_AP_UNAUTHENTICATED_FAILED",
+                        _detail(
+                            ac_device,
+                            collect_run_uuid,
+                            error=unauthenticated_error,
+                        ),
+                    )
+                    unauth_summary = {}
+            elif unauth_result:
+                unauthenticated_error = unauth_result.error_message or "display wlan ap unauthenticated failed"
+                unauthenticated_status = "UNKNOWN"
                 unauth_rows = []
+                unauth_summary = {}
+                app_logger.log_warning("FIT_AP_UNAUTHENTICATED_FAILED", _detail(ac_device, collect_run_uuid, error=unauthenticated_error))
             else:
-                metadata = {
-                    "collect_run_uuid": collect_run_uuid,
-                    "raw_log_path": relative_raw_log_path,
-                    "collected_at": started_at,
-                    "updated_at": _now(),
-                }
-                unauth_started = time.monotonic()
-                progress(f"正在保存未认证 AP：{len(unauth_rows)} 条...")
-                repository.replace_fit_ap_unauthenticated(
-                    str(ac_device.device_uuid),
-                    {
-                        **unauth_summary,
-                        **metadata,
-                        "snapshot_status": unauthenticated_status,
-                    },
-                    [{**row, **metadata} for row in unauth_rows],
-                )
-                unauth_elapsed_ms = max(0, int((time.monotonic() - unauth_started) * 1000))
-                progress(f"未认证 AP 保存完成：{unauth_elapsed_ms / 1000:.2f}s")
-                unauthenticated_updated = True
-                unauthenticated_rows_updated = len(unauth_rows)
+                unauthenticated_error = "未认证 AP 命令未采集"
+                unauthenticated_status = "UNKNOWN"
+                unauth_rows = []
+                unauth_summary = {}
+                app_logger.log_warning("FIT_AP_UNAUTHENTICATED_FAILED", _detail(ac_device, collect_run_uuid, error=unauthenticated_error))
+
+            unauth_started = time.monotonic()
+            progress(f"正在保存未认证 AP 当前快照：{len(unauth_rows)} 条...")
+            repository.replace_fit_ap_unauthenticated(
+                str(ac_device.device_uuid),
+                {
+                    **unauth_summary,
+                    **metadata,
+                    "snapshot_status": unauthenticated_status,
+                },
+                [{**row, **metadata} for row in unauth_rows],
+            )
+            unauth_elapsed_ms = max(0, int((time.monotonic() - unauth_started) * 1000))
+            progress(f"未认证 AP 当前快照保存完成：{unauth_elapsed_ms / 1000:.2f}s")
+            unauthenticated_updated = True
+            unauthenticated_rows_updated = len(unauth_rows)
+            if unauthenticated_status in {"SUCCESS_WITH_ROWS", "SUCCESS_EMPTY"}:
                 app_logger.log_info("FIT_AP_UNAUTHENTICATED_UPDATED", _detail(ac_device, collect_run_uuid, count=len(unauth_rows)))
-        elif not deep_refresh and unauth_result:
-            unauthenticated_error = unauth_result.error_message or "display wlan ap unauthenticated failed"
-            unauthenticated_status = "FAILED"
-            app_logger.log_warning("FIT_AP_UNAUTHENTICATED_FAILED", _detail(ac_device, collect_run_uuid, error=unauthenticated_error))
         bbssid = parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", ""))
         lldp = parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", ""))
         if target_resource is not None:

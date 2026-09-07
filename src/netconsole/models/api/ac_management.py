@@ -21,6 +21,7 @@ class AcOverviewDTO(ApiModel):
     online_aps: int = 0
     offline_aps: int = 0
     unauthenticated_aps: int = 0
+    unauthenticated_status: str = "UNKNOWN"
     radio_total: int = 0
     optical_anomalies: int = 0
     updated_at: str = ""
@@ -34,6 +35,7 @@ class AcManagementSummaryDTO(ApiModel):
     online_aps: int = 0
     offline_aps: int = 0
     unauthenticated_aps: int = 0
+    unauthenticated_status: str = "UNKNOWN"
     radio_total: int = 0
     optical_anomalies: int = 0
     updated_at: str = ""
@@ -132,6 +134,7 @@ class AcApDTO(ApiModel):
     serial_number: str = Field(default="", exclude=True)
     online_time: str = ""
     is_unauthenticated: bool = False
+    unauthenticated_state: str = "UNKNOWN"
     radio1_status: str = ""
     radio2_status: str = ""
     radio1_channel: str = ""

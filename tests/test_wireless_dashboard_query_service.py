@@ -31,7 +31,7 @@ class _BaseQuery:
 class _AcQuery:
     @staticmethod
     def get_summary(site_id: str) -> AcManagementSummaryDTO:
-        return AcManagementSummaryDTO(site_id=site_id, ap_total=10, online_aps=8, offline_aps=2, unauthenticated_aps=1, optical_anomalies=1, updated_at="2026-07-14T10:01:00")
+        return AcManagementSummaryDTO(site_id=site_id, ap_total=10, online_aps=8, offline_aps=2, unauthenticated_aps=1, unauthenticated_status="SUCCESS_WITH_ROWS", optical_anomalies=1, updated_at="2026-07-14T10:01:00")
 
     @staticmethod
     def list_optical_anomalies(_site_id: str, **_kwargs) -> AcApPageDTO:

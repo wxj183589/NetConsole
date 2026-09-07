@@ -43,24 +43,28 @@ def classify_wlan_ap_unauthenticated_snapshot(
     """Classify one command output without turning parser failures into empty data."""
 
     if not is_wlan_ap_unauthenticated_output_parseable(output):
-        return "FAILED"
+        return "UNKNOWN"
     parsed_rows = rows if rows is not None else parse_wlan_ap_unauthenticated_rows(output)
     expected = parse_wlan_ap_unauthenticated_summary(output).get("connected_auto_aps")
     if expected is not None and expected != len(parsed_rows):
-        return "FAILED"
+        return "UNKNOWN"
     return "SUCCESS_WITH_ROWS" if parsed_rows else "SUCCESS_EMPTY"
 
 
 def is_wlan_ap_unauthenticated_output_parseable(output: str) -> bool:
+    text = str(output or "")
     in_ap_information = False
-    for raw_line in str(output or "").splitlines():
+    for raw_line in text.splitlines():
         line = raw_line.strip()
         if line.casefold().startswith("ap information"):
             in_ap_information = True
             continue
         if in_ap_information and _is_unauthenticated_ap_header(line):
             return True
-    return False
+    # Some H3C releases omit the empty table header and only print the
+    # command summary.  A recognized summary is still a successful empty
+    # snapshot; command errors do not contain these fields.
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in SUMMARY_FIELD_PATTERNS.values())
 
 
 def parse_wlan_ap_unauthenticated_rows(

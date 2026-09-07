@@ -191,6 +191,15 @@ class AcManagementQueryService:
             resources = repository.list_fit_ap_resources_with_metadata(ac_id)
             resources = coalesce_fit_ap_resource_rows(resources)
             unauthenticated = repository.list_fit_ap_unauthenticated(ac_id)
+            unauthenticated_summary = repository.get_fit_ap_unauthenticated_summary(ac_id) or {}
+            unauthenticated_status = str(unauthenticated_summary.get("snapshot_status") or "").strip().upper()
+            if unauthenticated_status not in {"SUCCESS_WITH_ROWS", "SUCCESS_EMPTY", "UNKNOWN"}:
+                unauthenticated_status = "UNKNOWN"
+            current_unauthenticated_count = (
+                len(unauthenticated)
+                if unauthenticated_status in {"SUCCESS_WITH_ROWS", "SUCCESS_EMPTY"}
+                else 0
+            )
             optical_by_ap = self._optical_index(repository.list_fit_ap_optical(ac_id))
             summary = dict(ac.get("summary") or {})
             anomalous_ap_ids: set[str] = set()
@@ -211,6 +220,7 @@ class AcManagementQueryService:
             total = self._int(summary.get("total_aps"), len(resources))
             updated_at = self._latest_text(
                 summary.get("updated_at"),
+                unauthenticated_summary.get("updated_at"),
                 *(row.get("updated_at") for row in resources),
             )
             management_ip = str(ac.get("primary_address") or "")
@@ -229,7 +239,8 @@ class AcManagementQueryService:
                     ap_total=total,
                     online_aps=online,
                     offline_aps=offline,
-                    unauthenticated_aps=len(unauthenticated),
+                    unauthenticated_aps=current_unauthenticated_count,
+                    unauthenticated_status=unauthenticated_status,
                     radio_total=sum(self._radio_present(row, rid) for row in resources for rid in (1, 2)),
                     optical_anomalies=len(anomalous_ap_ids),
                     updated_at=updated_at,
@@ -244,6 +255,13 @@ class AcManagementQueryService:
             online_aps=sum(item.online_aps for item in overviews),
             offline_aps=sum(item.offline_aps for item in overviews),
             unauthenticated_aps=sum(item.unauthenticated_aps for item in overviews),
+            unauthenticated_status=(
+                "UNKNOWN"
+                if any(item.unauthenticated_status == "UNKNOWN" for item in overviews)
+                else "SUCCESS_WITH_ROWS"
+                if any(item.unauthenticated_aps for item in overviews)
+                else "SUCCESS_EMPTY"
+            ),
             radio_total=sum(item.radio_total for item in overviews),
             optical_anomalies=sum(item.optical_anomalies for item in overviews),
             updated_at=self._latest_text(*(item.updated_at for item in overviews)),
@@ -929,13 +947,27 @@ class AcManagementQueryService:
             if ac_id
             else repository.list_all_fit_ap_unauthenticated()
         )
+        unauthenticated_status_by_ac: dict[str, str] = {}
+        for current_id in (
+            [str(ac_id)]
+            if ac_id
+            else sorted({str(row.get("ac_device_uuid") or "") for row in unauthenticated})
+        ):
+            snapshot_status = str(
+                (repository.get_fit_ap_unauthenticated_summary(current_id) or {}).get("snapshot_status") or ""
+            ).strip().upper()
+            unauthenticated_status_by_ac[current_id] = snapshot_status
         resources = [
             row for row in resources
             if str(row.get("ac_device_uuid") or "") in current_ac_ids
         ]
         unauthenticated = [
             row for row in unauthenticated
-            if str(row.get("ac_device_uuid") or "") in current_ac_ids
+            if (
+                str(row.get("ac_device_uuid") or "") in current_ac_ids
+                and unauthenticated_status_by_ac.get(str(row.get("ac_device_uuid") or ""))
+                in {"SUCCESS_WITH_ROWS", "SUCCESS_EMPTY"}
+            )
         ]
         resources = self._append_unmatched_unauthenticated(resources, unauthenticated)
         resources = coalesce_fit_ap_resource_rows(resources)
@@ -1008,8 +1040,21 @@ class AcManagementQueryService:
         context: dict[str, Any],
     ) -> AcApDTO:
         ac_id = str(row.get("ac_device_uuid") or "")
-        unauthenticated = bool(row.get("is_new_online_ap") or row.get("_web_unauthenticated"))
-        status = "unauthenticated" if unauthenticated else "offline" if is_fit_ap_offline(row) else self._online_status(row)
+        # Only the current command snapshot may assert AUTH_UNAUTHENTICATED.
+        # Legacy is_new_online_ap/history fields are diagnostic metadata, not a
+        # fallback for the current AC state.
+        unauthenticated = bool(row.get("current_unauthenticated") or row.get("_web_unauthenticated"))
+        offline = is_fit_ap_offline(row)
+        status = "unauthenticated" if unauthenticated else "offline" if offline else self._online_status(row)
+        unauthenticated_state = (
+            "AUTH_UNAUTHENTICATED"
+            if unauthenticated
+            else "UNKNOWN"
+            if str(row.get("unauthenticated_state") or "").strip().casefold() == "unknown"
+            else "OFFLINE"
+            if offline
+            else "ONLINE"
+        )
         mileage = format_track_mileage(row.get("mileage"), direction=str(row.get("direction") or ""))
         station_info = self._station(row, lldp, context)
         station = str(station_info["effective_station_name"] or "")
@@ -1061,6 +1106,7 @@ class AcManagementQueryService:
             serial_number=str(row.get("serial_number") or ""),
             online_time=str(row.get("online_time") or ""),
             is_unauthenticated=unauthenticated,
+            unauthenticated_state=unauthenticated_state,
             radio1_status=str(row.get("rid1_status") or ""),
             radio2_status=str(row.get("rid2_status") or ""),
             radio1_channel=str(row.get("rid1_channel") or ""),
@@ -1775,6 +1821,7 @@ class AcManagementQueryService:
                     **row,
                     "ap_uuid": f"unauth-{row.get('id') or row.get('apid') or row.get('ap_name')}",
                     "ap_mac": row.get("inferred_ap_mac"),
+                    "current_unauthenticated": True,
                     "_web_unauthenticated": True,
                 }
             )
