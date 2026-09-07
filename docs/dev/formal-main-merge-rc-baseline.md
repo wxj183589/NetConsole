@@ -106,15 +106,18 @@ Full 与 Customer 均从 formal main 的应用代码构建，版本一致为 `1.
 
 随后运行 `34153782153` 的全部业务/架构/包相关门禁均无该环境版本失败，但 Docs/path 的 changed-diff check 发现本报告首版 Markdown 元数据行使用了 Markdown 换行空格。该类尾随空白不影响渲染，但违反仓库 diff guard，已删除并等待最终 workflow 复验。
 
-运行 `34154141237` 时 Docs/path、Architecture、Baseline、Renderer、Electron 和 Main contract 均通过；Python 全量为 4757 passed、4 skipped、4 deselected，仅 `test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs` 失败。其失败原因是 hosted runner 的 PyInstaller 已安装文件缺少 RECORD ownership，已在 Python job 增加锁定版本的 `--force-reinstall --no-cache-dir`，保持制品 ownership 校验严格，等待再次复验。
+运行 `34154141237` 时 Docs/path、Architecture、Baseline、Renderer、Electron 和 Main contract 均通过；Python 全量为 4757 passed、4 skipped、4 deselected，仅 `test_clean_build_pyinstaller_output_is_clean_and_exe_smoke_runs` 失败。其失败原因是 hosted runner 的 PyInstaller 已安装文件缺少 RECORD ownership，后续 clean-venv 复验已解决。
 
 `--force-reinstall` 仍会保留 hosted toolcache 的未归属残留，因此 `34156190415` 重复了同一失败。最终修复改为在 Python regression job 创建全新的 `.venv-ci`，不继承全局 site-packages；这仍保留完整的 RECORD ownership 与 runtime SBOM 校验。
+
+最终远端 workflow `34158073702` 全部通过：7/7 jobs success；Python 为 4758 passed、4 skipped、4 deselected，`PYTHON_REGRESSION_NEW_FAILURES=0`。该 run 证明 clean `.venv-ci` 下的 PyInstaller ownership、SBOM、clean-build 与 backend smoke 门禁通过。
 
 ```text
 REMOTE_MAIN_CI_REQUIRED=YES
 REMOTE_MAIN_CI_INITIAL_RUN=34151945963
 REMOTE_MAIN_CI_INITIAL_STATUS=FAIL_ENVIRONMENT_VERSION_MISMATCH
-REMOTE_MAIN_CI_STATUS=REVALIDATION_PENDING
+REMOTE_MAIN_CI_RUN=34158073702
+REMOTE_MAIN_CI_STATUS=PASS
 REQUIRED_CHECKS_STATUS=NOT_CONFIGURED
 ```
 
@@ -171,6 +174,7 @@ FORMAL_MAIN_MERGE=PASS
 RC_ENGINEERING_GATES=PASS
 RC_PACKAGE_VALIDATION=PASS
 REAL_DEVICE_REVALIDATION_REQUIRED=YES
+REMOTE_MAIN_CI_STATUS=PASS
 PHASE2D_E1_STATUS=HOLD
 PHASE2D_E_READY=NO
 PHASE2D_READY=NO
