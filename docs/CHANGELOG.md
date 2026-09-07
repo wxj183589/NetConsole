@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### v1.5.5 SSH Relay 人工验收收口与 Production 包
+
+- 新增局点级 SSH Relay / Jump Host：局点默认关闭，人工启用后，内部设备 SSH/Telnet 连接统一经过 `DeviceSSHConnectionFactory`，Relay 使用 Jump 的 SSH `direct-tcpip`。
+- 设备管理、AC、车站交换机、轨旁 AP、FIT-AP、Optical 和 LLDP 等内部 SSH 路径统一复用站点 Relay；Jump 与目标设备凭据隔离，连接阶段错误分类和 Target Host Key/Authentication 处理完善。
+- 核心现场人工验收已确认 PASS：Windows 安装运行、局点 SSH Relay、AC over Relay、车站交换机 over Relay、轨旁 AP over Relay 和轨旁光衰采集；Ping/ICMP、SNMP/UDP 不属于 SSH Relay 范围。
+- 外部 SecureCRT/Xshell/PuTTY 终端和独立 Windows Agent 未纳入本次人工验收范围，继续单独标记为 NOT VERIFIED。
+
 ### 局点级 SSH Relay 现场诊断与 FIT-AP 传输路径
 
 - Target SSH 经 Jump 建连增加阶段化诊断、目标主机密钥受控 TOFU、主机密钥变更拒绝和目标认证失败收口；Jump 与 Target 主机密钥、账号凭据保持隔离，密码不写入日志。

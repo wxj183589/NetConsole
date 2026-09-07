@@ -1,7 +1,24 @@
 # SSH Relay Consumer Audit
 
 日期：2026-09-07
-证据边界：`CODE_INSPECTION`、`AUTOMATED_TEST`；现场设备、安装包 GUI 和生产数据验收为 `NOT VERIFIED`。
+证据边界：`CODE_INSPECTION`、`AUTOMATED_TEST` 及用户提供的核心现场人工验收结论；外部终端、独立 Agent 和未单独确认的细分项目为 `NOT VERIFIED`。
+
+## Manual acceptance status
+
+```text
+MANUAL_ACCEPTANCE=PASS
+WINDOWS_INSTALL=PASS
+SITE_SSH_RELAY=PASS
+AC_OVER_RELAY=PASS
+SWITCH_OVER_RELAY=PASS
+TRACKSIDE_AP_OVER_RELAY=PASS
+TRACKSIDE_OPTICAL_COLLECTION=PASS
+MANUAL_FIELD_VALIDATION=PASS
+```
+
+FIT-AP 独立细分、LLDP、设备管理 SSH、局点切换和重启持久化未在附件中
+单独确认；外部 SecureCRT/Xshell/PuTTY 与独立 Windows Agent 继续保持
+`NOT VERIFIED`。
 
 ## Current routing contract
 
@@ -23,11 +40,11 @@ Netmiko Telnet driver 直接绑定到 Jump Channel；Relay 路径没有 `127.0.0
 
 | Consumer | Relay OFF | Relay ON | Credential source | Host Key / protocol | Audit result |
 | --- | --- | --- | --- | --- | --- |
-| AC CLI / AC resource | Direct Netmiko facade → factory Direct | facade → `DeviceSSHConnectionFactory` → Jump `direct-tcpip` → Target SSH | AC Device record / `ConnectionManager` | Jump managed strict key；Target managed TOFU | Code/test PASS; field NOT VERIFIED |
+| AC CLI / AC resource | Direct Netmiko facade → factory Direct | facade → `DeviceSSHConnectionFactory` → Jump `direct-tcpip` → Target SSH | AC Device record / `ConnectionManager` | Jump managed strict key；Target managed TOFU | Code/test/manual PASS |
 | Device Management SSH test/detail | Same facade → factory Direct | Same facade → factory Jump | Device Management Device record | Same Jump/Target separation | Code/test PASS; field NOT VERIFIED |
-| Trackside AP Switch | Same facade → factory Direct | Same facade → factory Jump | Stable Device UUID reread; device SSH credential | Target key and stage diagnostics | Code/test PASS; field NOT VERIFIED |
+| Trackside AP Switch | Same facade → factory Direct | Same facade → factory Jump | Stable Device UUID reread; device SSH credential | Target key and stage diagnostics | Code/test/manual PASS |
 | FIT-AP / AC CLI branch | Same facade → factory Direct | Same facade → factory Jump | Selected AC/AP device record | Target SSH policy | Code/test PASS; field NOT VERIFIED |
-| FIT-AP Optical | Netmiko `hp_comware_telnet` Direct | Same factory → Jump Channel → Netmiko Telnet driver | FIT-AP Telnet credential; never Jump credential | Telnet has no SSH target key; Jump key remains strict | Code/test PASS; field NOT VERIFIED |
+| FIT-AP Optical | Netmiko `hp_comware_telnet` Direct | Same factory → Jump Channel → Netmiko Telnet driver | FIT-AP Telnet credential; never Jump credential | Telnet has no SSH target key; Jump key remains strict | Code/test; trackside optical manual PASS |
 | Optical CLI | Same facade → factory Direct | Same facade → factory Jump | Selected device record | Target SSH policy | Code path confirmed; field NOT VERIFIED |
 | LLDP CLI | Same facade → factory Direct | Same facade → factory Jump | Selected device record | Target SSH policy | Code path confirmed; field NOT VERIFIED |
 | Rail Transit / Online MR / car network SSH | Backend facade from `NetmikoShellConnection` or rail wrapper | Same facade → factory Jump when site context is available | Device / AC record | Target SSH policy | Code path confirmed; field NOT VERIFIED |
@@ -68,8 +85,8 @@ The common classifier recognizes `JUMP_CONNECT_FAILED`, `JUMP_AUTH_FAILED`,
 
 ## Verification gap
 
-No real target or Jump endpoint was contacted in the automated run. The provided
-field screenshots remain pre-fix failure evidence. Field acceptance must execute
-AC, one known-good Switch, the reported wrong-credential Switch, one FIT-AP
-Optical, LLDP, Optical, a 1–2 station sample, concurrency 1/2/4/8/16, site
-switching, restart persistence and installed-package checks in that order.
+The supplied field acceptance conclusion confirms the core Relay, Windows
+install, AC, Switch, Trackside AP and optical scope. The provided screenshots
+remain pre-fix failure evidence. FIT-AP/LLDP/device-management subitems,
+concurrency 1/2/4/8/16, site switching, restart persistence, external terminal
+and standalone Agent require separate evidence before being marked PASS.

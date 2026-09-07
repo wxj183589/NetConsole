@@ -1,7 +1,25 @@
 # SSH Relay Field Fix Report
 
 日期：2026-09-07
-结论状态：源码修复和自动化定向验证完成；真实设备、真实轨旁 AP、小批量、并发梯度和安装包 GUI 验收 `NOT VERIFIED`。
+结论状态：源码修复、自动化定向验证和附件所述核心现场人工验收完成；未单独覆盖的细分项目仍为 `NOT VERIFIED`。
+
+## MANUAL_ACCEPTANCE
+
+依据用户提供的现场验收结论记录：
+
+```text
+MANUAL_ACCEPTANCE=PASS
+WINDOWS_INSTALL=PASS
+SITE_SSH_RELAY=PASS
+AC_OVER_RELAY=PASS
+SWITCH_OVER_RELAY=PASS
+TRACKSIDE_AP_OVER_RELAY=PASS
+TRACKSIDE_OPTICAL_COLLECTION=PASS
+MANUAL_FIELD_VALIDATION=PASS
+```
+
+FIT-AP 独立细分、LLDP 独立细分、设备管理 SSH、局点切换、重启持久化、
+外部终端和独立 Agent 没有在附件中单独确认，继续保持 `NOT VERIFIED`。
 
 ## ROOT_CAUSE
 
@@ -66,19 +84,16 @@ code remains for compatibility with older callers.
 
 ## REAL_DEVICE_VALIDATION
 
-`NOT VERIFIED` in this environment. No field credential was read, changed or
-logged. Required order is: Jump control, one AC control, one switch with
-known-good credentials, one switch with the reported credential, then one
-FIT-AP. The first failing stage must be recorded, not inferred from the final
-`CollectionError` wrapper.
+核心现场范围依据用户验收结论为 `PASS`。本次工作区没有读取、改变或记录
+现场凭据；未在附件中确认的细分设备、并发梯度和错误路径仍需现场补验。
+若后续补验失败，必须记录首个失败阶段，不能只依据最终 `CollectionError`
+包装推断。
 
 ## TRACKSIDE_VALIDATION
 
-`NOT VERIFIED`. The repaired code path is unified for Trackside Switch and
-FIT-AP Optical, but the Jump must independently reach every FIT-AP target
-subnet. If it cannot, report `JUMP_TO_TARGET_NETWORK_UNREACHABLE` rather than
-calling that a software fix. Then validate 1–2 stations for switch collection,
-FIT-AP collection, LLDP, AP state and optical values before any full run.
+附件所述轨旁 AP over Relay 与光衰采集人工验收为 `PASS`。FIT-AP 细分、LLDP
+独立项和完整站点覆盖未单独列出；若后续 Jump 无法到达目标子网，应报告
+`JUMP_TO_TARGET_NETWORK_UNREACHABLE`，不能将网络不可达写成软件通过。
 
 ## CONCURRENCY_RESULT
 
@@ -101,17 +116,10 @@ field confirmation remains `NOT VERIFIED`.
 
 ## PACKAGE_RESULT
 
-`PASS` for automated package generation and package smoke from source commit
-`bc0d20544e8dce004703adb7b6c01abec71a01fe`.
-
-- Artifact: `D:\study\NetConsole-Workspace\release\v1.5.5\build-0-bc0d2054\NetConsole-Full-1.5.5.0-bc0d2054-x64-setup.exe`
-- Size: `157037904` bytes
-- SHA-256: `5570af852749c47fb1028fae60937cb7d6cf8b827473437b183371cd78c898cf`
-- Manifest: `published=false`, `packaged_dirty=false`,
-  `package_smoke=PASS`, `edition_payload_verified=true`
-
-Real Windows install/upgrade/uninstall smoke remains `NOT VERIFIED`; an
-automated package pass is not an installer or field-device acceptance result.
+The previous internal package is superseded for this release closure. The
+formal Production package will be rebuilt from the final pushed `main` and
+recorded in `V1.5.5_RELEASE_CLOSURE_REPORT.md`; no old installer is renamed
+or relabeled.
 
 ## Boundary
 

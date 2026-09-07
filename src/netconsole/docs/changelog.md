@@ -1,4 +1,7 @@
 v1.5.5 - Unreleased
+- 核心现场人工验收已确认 PASS：Windows 安装运行、局点 SSH Relay、AC over Relay、车站交换机 over Relay、轨旁 AP over Relay 和轨旁光衰采集；外部终端与独立 Windows Agent 不在本次验收范围。
+- 局点启用 Relay 后，内部设备 SSH/Telnet 统一经 `DeviceSSHConnectionFactory` 和 Jump SSH `direct-tcpip`；设备管理、AC、轨旁 AP、FIT-AP、Optical、LLDP 路径复用统一出口，Jump/Target 凭据隔离。
+- Ping/ICMP、SNMP/UDP 不属于 SSH Relay 范围；Target Host Key、认证失败和连接阶段错误分类继续按安全边界处理。
 - Target SSH Relay 增加阶段化诊断、目标 Host Key 受控 TOFU、主机密钥变更拒绝和目标认证失败分类；Jump/Target 凭据隔离，密码不进入日志。
 - 轨旁 AP 车站交换机和 FIT-AP Optical 既有 Telnet 目标统一进入 `DeviceSSHConnectionFactory`；Relay 开启时直接使用 Jump direct-tcpip Channel，Relay 关闭时保持 Direct，不创建每设备 localhost 端口映射。
 - 保留 H3C 既有最小 ssh-rsa 兼容回退；未修改 AP 身份、轨旁业务规则、命令、解析器、光衰阈值或默认并发。

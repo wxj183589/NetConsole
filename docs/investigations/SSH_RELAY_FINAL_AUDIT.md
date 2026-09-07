@@ -3,6 +3,24 @@
 日期：2026-09-07
 审计范围：`src/netconsole`、`apps/agent`、Renderer/Electron 调用边界、测试与既有 SSH 隧道模块。
 
+## Manual acceptance status
+
+依据用户提供的现场验收结论：
+
+```text
+MANUAL_ACCEPTANCE=PASS
+WINDOWS_INSTALL=PASS
+SITE_SSH_RELAY=PASS
+AC_OVER_RELAY=PASS
+SWITCH_OVER_RELAY=PASS
+TRACKSIDE_AP_OVER_RELAY=PASS
+TRACKSIDE_OPTICAL_COLLECTION=PASS
+MANUAL_FIELD_VALIDATION=PASS
+```
+
+FIT-AP 独立细分、LLDP、设备管理 SSH、局点切换、重启持久化、外部终端和
+独立 Agent 未在本次附件中单独确认，保持 `NOT VERIFIED`。
+
 ## Final conclusion
 
 Backend 内部设备 CLI 的唯一公共出口是
@@ -20,11 +38,11 @@ Target Host Key 流程，但仍遵守 Jump/Target 凭据隔离。
 
 | Consumer | Source entry | Relay OFF | Relay ON | Direct bypass | Result |
 | --- | --- | --- | --- | --- | --- |
-| AC / AC resource | `h3c_ac_collect_service.py` | shared facade → factory Direct | shared facade → factory Jump | none in Backend CLI | Code PASS; field NOT VERIFIED |
+| AC / AC resource | `h3c_ac_collect_service.py` | shared facade → factory Direct | shared facade → factory Jump | none in Backend CLI | Code PASS; manual PASS |
 | Device Management | `netmiko_connection.test_device_connection` and management jobs | same factory Direct | same factory Jump | none in Backend CLI | Code PASS; field NOT VERIFIED |
-| Trackside Switch | `trackside_optical_collection.py::_collect_one_target` | same factory Direct | same factory Jump | none in Backend CLI | Code PASS; field NOT VERIFIED |
+| Trackside Switch | `trackside_optical_collection.py::_collect_one_target` | same factory Direct | same factory Jump | none in Backend CLI | Code PASS; manual PASS |
 | FIT-AP | Trackside AC/AP CLI branch | same factory Direct | same factory Jump | none in Backend CLI | Code PASS; field NOT VERIFIED |
-| FIT-AP Optical | `hp_comware_telnet` via shared facade | Direct Telnet | same factory, Jump Channel, Telnet driver | none in Relay path | Code PASS; field NOT VERIFIED |
+| FIT-AP Optical | `hp_comware_telnet` via shared facade | Direct Telnet | same factory, Jump Channel, Telnet driver | none in Relay path | Code PASS; trackside optical manual PASS |
 | Optical | `h3c_optical_refresh_service.py` and adapters | same factory Direct | same factory Jump | none in Backend CLI | Code PASS; field NOT VERIFIED |
 | LLDP | Trackside/AC/device CLI commands | same factory Direct | same factory Jump | none in Backend CLI | Code PASS; field NOT VERIFIED |
 | Rail Transit SSH | rail wrappers and `NetmikoShellConnection` | same factory Direct | same factory Jump when site context is present | none in Backend CLI | Code PASS; field NOT VERIFIED |
@@ -96,5 +114,6 @@ recognizes:
 Automated source/tests: PASS for the changed Relay, Host Key, Netmiko, file
 transfer and Trackside paths. Full repository regression: 4684 passed, 2
 skipped, 4 unrelated baseline failures in architecture guards/version policy;
-see final task report. Real devices, field network reachability, installed GUI,
-external terminal Jump and production-data acceptance: `NOT VERIFIED`.
+see final task report. The user-reported core field scope and Windows install
+are PASS; FIT-AP/LLDP/device-management subitems, external terminal Jump and
+standalone Agent remain `NOT VERIFIED` where not separately confirmed.

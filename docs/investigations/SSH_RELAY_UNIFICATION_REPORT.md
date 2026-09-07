@@ -1,7 +1,7 @@
 # SSH Relay Unification Report
 
 日期：2026-09-07
-状态：源码统一和自动化验证完成；现场设备、真实网络和安装后 GUI 仍待现场执行。
+状态：源码统一、自动化验证和核心现场人工验收完成；外部终端、独立 Agent 及未纳入本次范围的细分项目仍待单独验证。
 
 ## ROOT CAUSE
 
@@ -12,6 +12,26 @@
    目标地址从 Windows 发起连接；隔离网络下因此表现为约 5 秒直连超时。
 3. 不同调用方缺少可审计的站点级统一出口；本次将内部 CLI 连接全部收口到
    `netmiko_connection.ConnectHandler` → `DeviceSSHConnectionFactory`。
+
+## MANUAL_ACCEPTANCE
+
+以下状态依据用户提供的 2026-09-07 现场人工验收结论记录，不扩写具体
+IP、数量或耗时：
+
+```text
+MANUAL_ACCEPTANCE=PASS
+WINDOWS_INSTALL=PASS
+SITE_SSH_RELAY=PASS
+AC_OVER_RELAY=PASS
+SWITCH_OVER_RELAY=PASS
+TRACKSIDE_AP_OVER_RELAY=PASS
+TRACKSIDE_OPTICAL_COLLECTION=PASS
+MANUAL_FIELD_VALIDATION=PASS
+```
+
+FIT-AP 细分独立项、LLDP 独立项、设备管理 SSH、局点切换和软件重启后
+持久化没有在本次附件中单独确认，继续保持 `NOT VERIFIED`。外部终端和
+独立 Windows Agent 同样保持 `NOT VERIFIED`。
 
 ## Unified design
 
@@ -59,11 +79,11 @@ were not changed. Field concurrency 1/2/4/8/16 is still `NOT VERIFIED`.
 
 ## Validation order
 
-The required field order is: AC control, reported Switch with wrong credentials,
-known-good Switch, one FIT-AP Optical, 1–2 station sample, concurrency 2/4/8/16,
-then complete Trackside AP flow, restart persistence, site switching and package
-smoke. Current environment had no field credentials or target network, so every
-real-device item is `NOT VERIFIED`; the supplied screenshots are pre-fix evidence.
+核心现场人工验收已按附件结论确认 PASS，覆盖 Windows 安装运行、局点
+Relay、AC、车站交换机、轨旁 AP 和光衰采集。并发 1/2/4/8/16、FIT-AP
+细分、LLDP 独立项、设备管理 SSH、局点切换、重启持久化、外部终端和
+独立 Agent 未在附件中单独确认，仍需按现场条件补验；此前截图仅作为
+修复前失败证据。
 
 ## Automated regression
 
@@ -76,23 +96,24 @@ real-device item is `NOT VERIFIED`; the supplied screenshots are pre-fix evidenc
 
 ## Production package
 
-The existing Windows Production pipeline completed from source commit
-`bc0d20544e8dce004703adb7b6c01abec71a01fe`. The artifact manifest and an
-independent SHA-256 recheck agree:
+The existing Windows Production pipeline will be rerun from the pushed main
+commit that contains this acceptance and changelog update. `published=false`
+remains the expected local Production-package state; it is not changed by
+hand and does not create a new product version. Final artifact values are
+recorded in `V1.5.5_RELEASE_CLOSURE_REPORT.md` after the rebuild.
 
 ```text
 PRODUCT_VERSION=1.5.5
-BUILD_ID=netconsole-1.5.5-bc0d2054-20260907T071601Z-full
-INSTALLER_FILENAME=NetConsole-Full-1.5.5.0-bc0d2054-x64-setup.exe
-INSTALLER_PATH=D:\study\NetConsole-Workspace\release\v1.5.5\build-0-bc0d2054\NetConsole-Full-1.5.5.0-bc0d2054-x64-setup.exe
-INSTALLER_SIZE_BYTES=157037904
-INSTALLER_SHA256=5570af852749c47fb1028fae60937cb7d6cf8b827473437b183371cd78c898cf
-AUTOMATED_PACKAGE_GATE=PASS
+BUILD_ID=TO_BE_FILLED_AFTER_MAIN_REBUILD
+INSTALLER_FILENAME=TO_BE_FILLED_AFTER_MAIN_REBUILD
+INSTALLER_PATH=TO_BE_FILLED_AFTER_MAIN_REBUILD
+INSTALLER_SIZE_BYTES=TO_BE_FILLED_AFTER_MAIN_REBUILD
+INSTALLER_SHA256=TO_BE_FILLED_AFTER_MAIN_REBUILD
+AUTOMATED_PACKAGE_GATE=TO_BE_FILLED_AFTER_MAIN_REBUILD
 REAL_WINDOWS_INSTALL_SMOKE=NOT VERIFIED
 REAL_DEVICE_SMOKE=NOT VERIFIED
 ```
 
-The final installer is a deliverable for the user’s现场 validation, not proof
-of AC/Switch/FIT-AP/Optical/LLDP real-network acceptance. The manifest also
-records `published=false`, `packaged_dirty=false`, `package_smoke=PASS`, and
-`edition_payload_verified=true`.
+The final installer is a deliverable for the user’s现场 validation. The
+manifest will retain `published=false` and will record the actual
+`packaged_dirty`, `package_smoke`, edition and SHA-256 values.
