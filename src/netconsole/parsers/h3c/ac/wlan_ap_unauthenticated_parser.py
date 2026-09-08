@@ -25,6 +25,9 @@ SUMMARY_FIELD_PATTERNS = {
     "sync_ap_licenses": r"Sync AP licenses:\s*(\d+)",
 }
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_H3C_PROMPT_RE = re.compile(r"(?:<[^<>\r\n]+>|\[[^\[\]\r\n]+\])")
+
 
 def parse_wlan_ap_unauthenticated_summary(output: str) -> dict[str, int | None]:
     text = str(output or "")
@@ -39,8 +42,20 @@ def parse_wlan_ap_unauthenticated_summary(output: str) -> dict[str, int | None]:
 def classify_wlan_ap_unauthenticated_snapshot(
     output: str,
     rows: list[dict[str, object | None]] | None = None,
+    *,
+    command_success: bool | None = None,
 ) -> str:
-    """Classify one command output without turning parser failures into empty data."""
+    """Classify one command result without turning parser failures into empty data.
+
+    Empty or prompt-only output is a successful empty snapshot only when the
+    command layer explicitly reports success.  A parser-only caller therefore
+    cannot accidentally convert an empty failure response into current zero.
+    """
+
+    if command_success is False:
+        return "UNKNOWN"
+    if command_success is True and _is_empty_or_prompt_only(output):
+        return "SUCCESS_EMPTY"
 
     if not is_wlan_ap_unauthenticated_output_parseable(output):
         return "UNKNOWN"
@@ -49,6 +64,14 @@ def classify_wlan_ap_unauthenticated_snapshot(
     if expected is not None and expected != len(parsed_rows):
         return "UNKNOWN"
     return "SUCCESS_WITH_ROWS" if parsed_rows else "SUCCESS_EMPTY"
+
+
+def _is_empty_or_prompt_only(output: str) -> bool:
+    normalized = _ANSI_ESCAPE_RE.sub("", str(output or "")).strip()
+    if not normalized:
+        return True
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    return bool(lines) and all(_H3C_PROMPT_RE.fullmatch(line) for line in lines)
 
 
 def is_wlan_ap_unauthenticated_output_parseable(output: str) -> bool:

@@ -1107,6 +1107,7 @@ def create_app(
         )
         app_logger.log_info("SITE_RUNTIME_REBOUND", f"site_name={target}")
         try:
+            close_site_jump_sessions(paths=paths)
             relay_site_id = site_application_service.active_site_id()
             site_ssh_relay_service.auto_start_if_enabled(relay_site_id)
         except Exception as exc:

@@ -649,6 +649,7 @@ def collect_h3c_fit_ap_resources(
                 unauthenticated_status = classify_wlan_ap_unauthenticated_snapshot(
                     unauth_result.output,
                     unauth_rows,
+                    command_success=unauth_result.success,
                 )
                 if unauthenticated_status == "UNKNOWN":
                     unauthenticated_error = (

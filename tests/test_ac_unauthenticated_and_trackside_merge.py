@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
@@ -111,7 +113,11 @@ def test_wlan_ap_unauthenticated_parser_extracts_summary_and_rows():
     assert all(row["apid"] != "=" for row in rows)
     assert all(row["model"] != "DC" for row in rows)
     assert all(row["serial_number"] != "=" for row in rows)
-    assert classify_wlan_ap_unauthenticated_snapshot(UNAUTHENTICATED_SAMPLE, rows) == "SUCCESS_WITH_ROWS"
+    assert classify_wlan_ap_unauthenticated_snapshot(
+        UNAUTHENTICATED_SAMPLE,
+        rows,
+        command_success=True,
+    ) == "SUCCESS_WITH_ROWS"
 
 
 def test_unauthenticated_parser_distinguishes_empty_and_unparseable_snapshots():
@@ -121,9 +127,17 @@ AP information:
 AP name                        APID  State Model           Serial ID            Dev-Type        Work-mode
 """
 
-    assert classify_wlan_ap_unauthenticated_snapshot(empty, []) == "SUCCESS_EMPTY"
-    assert classify_wlan_ap_unauthenticated_snapshot("Total number of connected auto APs: 0", []) == "SUCCESS_EMPTY"
-    assert classify_wlan_ap_unauthenticated_snapshot("SSH read timeout", []) == "UNKNOWN"
+    assert classify_wlan_ap_unauthenticated_snapshot(empty, [], command_success=True) == "SUCCESS_EMPTY"
+    assert classify_wlan_ap_unauthenticated_snapshot(
+        "Total number of connected auto APs: 0",
+        [],
+        command_success=True,
+    ) == "SUCCESS_EMPTY"
+    assert classify_wlan_ap_unauthenticated_snapshot("", []) == "UNKNOWN"
+    assert classify_wlan_ap_unauthenticated_snapshot("", [], command_success=True) == "SUCCESS_EMPTY"
+    assert classify_wlan_ap_unauthenticated_snapshot("<AC>", [], command_success=True) == "SUCCESS_EMPTY"
+    assert classify_wlan_ap_unauthenticated_snapshot("", [], command_success=False) == "UNKNOWN"
+    assert classify_wlan_ap_unauthenticated_snapshot("SSH read timeout", [], command_success=True) == "UNKNOWN"
 
 
 def test_wlan_ap_unauthenticated_parser_skips_state_legend_before_header():
@@ -219,6 +233,47 @@ def test_ac_collect_optional_unauthenticated_failure_clears_current_snapshot_but
     assert repository.list_fit_ap_unauthenticated(make_ac_device().device_uuid) == []
     assert repository.list_fit_ap_unauthenticated_history(make_ac_device().device_uuid)[0]["ap_name"] == "AP-Previous"
     assert repository.get_fit_ap_unauthenticated_summary(make_ac_device().device_uuid)["snapshot_status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("unauthenticated_output", ["", "<AC>"])
+def test_ac_collect_successful_empty_unauthenticated_command_clears_current_snapshot(
+    monkeypatch,
+    tmp_path,
+    unauthenticated_output,
+):
+    repository = make_ac_repository(tmp_path)
+    repository.replace_fit_ap_unauthenticated(
+        make_ac_device().device_uuid,
+        {"connected_auto_aps": 1, "snapshot_status": "SUCCESS_WITH_ROWS"},
+        [{"ap_name": "AP-Previous", "serial_number": "SN-PREVIOUS"}],
+    )
+    connection = FakeAcConnection(
+        {"display wlan ap unauthenticated": unauthenticated_output}
+    )
+    monkeypatch.setattr(
+        h3c_ac_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+
+    result = collect_h3c_ac_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        refresh_ac_overview=False,
+    )
+
+    assert result.success is True
+    assert result.unauthenticated_status == "SUCCESS_EMPTY"
+    assert result.unauthenticated_rows_updated == 0
+    assert repository.list_fit_ap_unauthenticated(make_ac_device().device_uuid) == []
+    assert repository.get_fit_ap_unauthenticated_summary(
+        make_ac_device().device_uuid
+    )["snapshot_status"] == "SUCCESS_EMPTY"
+    assert repository.list_fit_ap_unauthenticated_history(
+        make_ac_device().device_uuid
+    )[0]["ap_name"] == "AP-Previous"
 
 
 def test_unknown_unauthenticated_snapshot_cannot_promote_legacy_current_row(tmp_path):

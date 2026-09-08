@@ -13,6 +13,7 @@ from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMod
 from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.services.site_lifecycle import SiteAuditService
+from netconsole.services import site_ssh_relay
 from netconsole.services.site_storage import (
     SitePackageService,
     SiteRecord,
@@ -80,6 +81,47 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
     assert activated_payload["revision"] == activated_payload["switch_revision"]
     assert isinstance(activated_payload["runtime_revision"], str)
     assert client.get("/api/v1/sites/active").json()["site_id"] == "line-12"
+
+
+def test_runtime_rebind_closes_old_jump_manager_before_starting_new_site(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(tmp_path)
+    paths = client.app.state.paths
+    site_service = client.app.state.site_application_service
+    site_service.create_site("line-2", "二号线")
+
+    events: list[str] = []
+    old_key = (str(paths.data_root.resolve()).casefold(), "demo")
+
+    class FakeOldManager:
+        def close(self) -> None:
+            events.append("close:demo")
+
+    monkeypatch.setitem(site_ssh_relay._MANAGERS, old_key, FakeOldManager())
+    monkeypatch.setattr(site_service, "active_site_id", lambda: "line-2")
+
+    started: list[tuple[str, str]] = []
+
+    def fake_auto_start(_self, site_id: str) -> dict[str, object]:
+        assert old_key not in site_ssh_relay._MANAGERS
+        started.append((site_id, "RUNNING"))
+        events.append(f"start:{site_id}")
+        return {"runtime_status": "RUNNING"}
+
+    monkeypatch.setattr(
+        site_ssh_relay.SiteSSHRelayService,
+        "auto_start_if_enabled",
+        fake_auto_start,
+    )
+
+    rebind = site_service._runtime_rebind_handler
+    assert rebind is not None
+    rebind("line-2")
+
+    assert events == ["close:demo", "start:line-2"]
+    assert started == [("line-2", "RUNNING")]
 
 
 def test_site_export_freezes_requested_stable_context_before_worker_start(
