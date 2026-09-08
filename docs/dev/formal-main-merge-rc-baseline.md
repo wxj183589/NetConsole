@@ -201,3 +201,11 @@ PRODUCTION_PATH=LEGACY
 ```
 
 本阶段仅建立正式主线工程基线，不构成 Production Cutover 批准。下一步是经单独审批后，对受影响的 H3C 连接/采集语义执行限定设备的真实只读复核；不得自动进入 Wave 0、Wave 1、Comware 9、AC、ZTE 或其他未授权范围。
+
+## Phase 2D-E2 Finalization
+
+2026-09-08 的 E2 provenance reconciliation 已追加记录在 [RC Baseline Finalization](./rc-baseline-finalization.md)。当前正式 `github/main` 仍为 `bc9c00f09d2e6698a2c25391ea917ef3872ff98e`，其 tree 为 `fe8637f30d7a518bda483d3bc768f0d38a5c793d`；上一轮 `b2b6a18e` package source tree 不同，旧 Full/Customer installer 已降级为 `OLD_VALIDATION_ARTIFACT`。
+
+E2 已从正式 main clean tree 重建 Full/Customer：Full SHA-256 为 `869d24f342b25682bcc5f464b2007e4d5923a5f4248ec06a446010ec3f9c8f5a`，Customer SHA-256 为 `96926992897a2729fb3b56fca7d59e0d9190d56e0603d3ac5a17825c27a358cf`；包内 provenance、package smoke、版本一致性和本地 baseline-aware 回归通过。实际 NSIS 安装 smoke 因当前会话不是管理员而阻塞，upgrade fixture 不可用。
+
+E2 按要求不继承旧维护窗口批准，未连接 `DEVICE-NB10-C7-01`；因此真实 C7 RC revalidation 仍为 pending，`RC_BASELINE_READY=NO`，`PHASE2D_E2_STATUS=PASS_WITH_REAL_DEVICE_GATE`，`PHASE2D_E_READY=NO`，`PHASE2D_READY=NO`。Production Backup、Restore Evidence、Activation、Wave 0/Wave 1 均未执行。
