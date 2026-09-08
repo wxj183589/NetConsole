@@ -5,6 +5,7 @@
 - [构建与发布](./BUILD_AND_RELEASE.md)
 - [Full 与 Customer 打包](./FULL_AND_CUSTOMER_PACKAGING.md)
 - [正式包功能状态](./PACKAGED_FEATURE_MATRIX.md)
+- [v1.5.5 最终验收收口（2026-09-09）](./V1.5.5_FINAL_ACCEPTANCE_20260909.md)
 - [第三方依赖](./THIRD_PARTY_DEPENDENCIES.md)
 - [Windows Server 验收](./WINDOWS_SERVER_TEST_CHECKLIST.md)
 - [IPOP v4.1 许可说明](./IPOP_v4.1_NOTICE.md)
