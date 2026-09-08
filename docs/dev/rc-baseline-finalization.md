@@ -37,7 +37,7 @@ OLD_PACKAGE_SOURCE_HEAD=b2b6a18e691abf44c6c3f3fe65aa2579056b13ed
 OLD_PACKAGE_SOURCE_TREE=24603d744004a33bbafeb2d15a63e6cbe0f6cf02
 ```
 
-`bc9c00f0` 是当前正式 main；`ab2f4c64` 是先前的 no-ff merge commit；`b2b6a18e` 是上一轮报告收口 commit。三者 tree 均不同，且 `b2b6a18e` 与当前正式 main 之间包含报告/门禁收口差异，不能按 tree equivalent 复用旧 installer。旧包仅保留为 `OLD_VALIDATION_ARTIFACT`，不进入最终 RC provenance。
+在 2026-09-08 Phase 2D-E2 验收当时，`bc9c00f0` 是正式 main；`ab2f4c64` 是先前的 no-ff merge commit；`b2b6a18e` 是上一轮报告收口 commit。三者 tree 均不同，且 `b2b6a18e` 与当时正式 main 之间包含报告/门禁收口差异，不能按 tree equivalent 复用旧 installer。旧包仅保留为 `OLD_VALIDATION_ARTIFACT`，不进入当时的最终 RC provenance。
 
 ```text
 RC_SOURCE_HEAD=bc9c00f09d2e6698a2c25391ea917ef3872ff98e
