@@ -27,6 +27,13 @@ const TERMINAL_NOTIFICATION_BUFFER_MS = 800
 
 type NotificationKind = 'success' | 'warning' | 'failure'
 
+const TASK_NOTIFICATION_DURATION: Record<NotificationKind, number> = {
+  success: 5000,
+  warning: 8000,
+  failure: 10000,
+}
+const MAX_VISIBLE_TASK_NOTIFICATIONS = 3
+
 const store = useTaskStore()
 const workspace = useWorkspaceStore()
 const { confirm } = useConfirm()
@@ -41,6 +48,7 @@ const floatingDismissedSignature = ref('')
 const cleanupBusy = ref(false)
 const notificationStates = new Map<string, string>()
 const pendingTerminalNotifications = new Map<string, TaskItem>()
+const visibleTaskNotifications = new Set<ReturnType<typeof ElNotification>>()
 let notificationsReady = false
 let terminalNotificationTimer: number | null = null
 let removeLocalOpenListener: (() => void) | undefined
@@ -147,6 +155,8 @@ onBeforeUnmount(() => {
   if (terminalNotificationTimer !== null) window.clearTimeout(terminalNotificationTimer)
   terminalNotificationTimer = null
   pendingTerminalNotifications.clear()
+  for (const notification of visibleTaskNotifications) notification.close()
+  visibleTaskNotifications.clear()
   removeLocalOpenListener?.()
   removeNativeOpenListener?.()
   store.releasePolling(GLOBAL_POLLING_CONSUMER)
@@ -398,7 +408,7 @@ function handleTaskStateChanges(): void {
     const key = notificationKey(task)
     const previous = notificationStates.get(task.id)
     notificationStates.set(task.id, key)
-    if (previous === key || !TERMINAL_STATUSES.has(task.status)) continue
+    if (!shouldNotifyTerminal(task, previous)) continue
     queueTerminalNotification(task)
   }
   for (const id of notificationStates.keys()) {
@@ -408,6 +418,19 @@ function handleTaskStateChanges(): void {
 
 function notificationKey(task: TaskItem): string {
   return `${task.status}:${task.has_warning ? 'warning' : 'normal'}`
+}
+
+function shouldNotifyTerminal(task: TaskItem, previous: string | undefined): boolean {
+  if (!TERMINAL_STATUSES.has(task.status) || previous === notificationKey(task)) return false
+  if (!previous) return true
+
+  const [previousStatus, previousKind] = previous.split(':')
+  if (!TERMINAL_STATUSES.has(previousStatus)) return true
+
+  // A terminal task is announced once. A later warning is a single allowed
+  // escalation; progress/message/time refreshes and warning removal are not
+  // new terminal events.
+  return previousKind !== 'warning' && task.has_warning
 }
 
 function queueTerminalNotification(task: TaskItem): void {
@@ -518,9 +541,15 @@ function notifyTask(
   const foreground = document.visibilityState === 'visible' && document.hasFocus()
 
   if (foreground) {
+    if (visibleTaskNotifications.size >= MAX_VISIBLE_TASK_NOTIFICATIONS) {
+      const oldest = visibleTaskNotifications.values().next().value as ReturnType<typeof ElNotification> | undefined
+      oldest?.close()
+      if (oldest) visibleTaskNotifications.delete(oldest)
+    }
     let notification: ReturnType<typeof ElNotification> | undefined
     const showDetail = () => {
       notification?.close()
+      if (notification) visibleTaskNotifications.delete(notification)
       openDetails()
     }
     notification = ElNotification({
@@ -538,11 +567,15 @@ function notifyTask(
         }, '查看详情'),
       ]),
       type: kind === 'failure' ? 'error' : kind,
-      duration: kind === 'success' ? 5000 : 0,
+      duration: TASK_NOTIFICATION_DURATION[kind],
       position: 'top-right',
       customClass: 'nc-task-notification',
       appendTo: document.body,
+      onClose: () => {
+        if (notification) visibleTaskNotifications.delete(notification)
+      },
     })
+    visibleTaskNotifications.add(notification)
     return
   }
   if (suppressNative) return

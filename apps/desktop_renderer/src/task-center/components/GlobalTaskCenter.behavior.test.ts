@@ -222,7 +222,7 @@ describe('GlobalTaskCenter behavior', () => {
     expect(options).toMatchObject({
       title: 'MESH ZIP 批量导入分析失败',
       type: 'error',
-      duration: 0,
+      duration: 10000,
       customClass: 'nc-task-notification',
       appendTo: document.body,
     })
@@ -242,6 +242,101 @@ describe('GlobalTaskCenter behavior', () => {
     expect(detail.props('source')).toBe('notification')
     expect(mocks.notificationClose).toHaveBeenCalledOnce()
     expect(navigate).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('uses finite success and warning durations for foreground notifications', async () => {
+    vi.useFakeTimers()
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    const store = useTaskStore(pinia)
+
+    store.tasks = [{
+      ...runningTask,
+      status: 'COMPLETED',
+      progress: 100,
+      updated_time: '2026-07-29T08:02:00Z',
+      cancellable: false,
+    }]
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+    expect(mocks.notification.mock.calls[0][0]).toMatchObject({ type: 'success', duration: 5000 })
+
+    store.tasks = [{
+      ...store.tasks[0],
+      id: 'task-warning',
+      status: 'RUNNING',
+      has_warning: false,
+      updated_time: '2026-07-29T08:03:00Z',
+    }]
+    await nextTick()
+    store.tasks = [{
+      ...store.tasks[0],
+      status: 'COMPLETED',
+      has_warning: true,
+      updated_time: '2026-07-29T08:04:00Z',
+      cancellable: false,
+    }]
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+    expect(mocks.notification.mock.calls[1][0]).toMatchObject({ type: 'warning', duration: 8000 })
+    wrapper.unmount()
+  })
+
+  it('allows one terminal warning escalation without repeating on refresh or downgrade', async () => {
+    vi.useFakeTimers()
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    const store = useTaskStore(pinia)
+
+    store.tasks = [{
+      ...runningTask,
+      status: 'COMPLETED',
+      progress: 100,
+      updated_time: '2026-07-29T08:02:00Z',
+      cancellable: false,
+    }]
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+    expect(mocks.notification).toHaveBeenCalledOnce()
+
+    store.tasks = [{ ...store.tasks[0], has_warning: true, updated_time: '2026-07-29T08:03:00Z' }]
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+    expect(mocks.notification).toHaveBeenCalledTimes(2)
+
+    store.tasks = [{ ...store.tasks[0], updated_time: '2026-07-29T08:04:00Z' }]
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+    store.tasks = [{ ...store.tasks[0], has_warning: false, updated_time: '2026-07-29T08:05:00Z' }]
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+    expect(mocks.notification).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('bounds simultaneous individual task notifications to three', async () => {
+    vi.useFakeTimers()
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    const store = useTaskStore(pinia)
+
+    store.tasks = Array.from({ length: 4 }, (_, index) => ({
+      ...runningTask,
+      id: `individual-terminal-${index}`,
+      status: 'COMPLETED',
+      progress: 100,
+      updated_time: '2026-07-29T08:02:00Z',
+      cancellable: false,
+    }))
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+
+    expect(mocks.notification).toHaveBeenCalledTimes(4)
+    expect(mocks.notificationClose).toHaveBeenCalledOnce()
     wrapper.unmount()
   })
 
@@ -270,6 +365,7 @@ describe('GlobalTaskCenter behavior', () => {
     const options = mocks.notification.mock.calls[0][0]
     expect(options.title).toBe('设备连接测试 · 批量完成')
     expect(options.type).toBe('error')
+    expect(options.duration).toBe(10000)
     expect(options.message.children[0].children).toBe('共 50 个子任务：成功 48，失败 2')
     options.message.children[1].props.onClick(new MouseEvent('click'))
     await nextTick()
@@ -280,6 +376,36 @@ describe('GlobalTaskCenter behavior', () => {
     await nextTick()
     await vi.advanceTimersByTimeAsync(800)
     expect(mocks.notification).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+
+  it('uses warning duration for an aggregated warning batch', async () => {
+    vi.useFakeTimers()
+    const pinia = createPinia()
+    const wrapper = mountGlobal(pinia)
+    await flushPromises()
+    const store = useTaskStore(pinia)
+
+    store.tasks = Array.from({ length: 10 }, (_, index) => ({
+      ...runningTask,
+      id: `device-warning-${index}`,
+      type: 'device_connection_test',
+      name: `设备连接测试 · 设备-${index} · SSH`,
+      status: 'COMPLETED',
+      has_warning: index === 0,
+      updated_time: '2026-07-29T08:02:00Z',
+      cancellable: false,
+    }))
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(800)
+
+    expect(mocks.notification).toHaveBeenCalledOnce()
+    expect(mocks.notification.mock.calls[0][0]).toMatchObject({
+      type: 'warning',
+      duration: 8000,
+    })
+    expect(mocks.notification.mock.calls[0][0].message.children[0].children)
+      .toBe('共 10 个子任务：成功 9，失败 0，告警/取消 1')
     wrapper.unmount()
   })
 
