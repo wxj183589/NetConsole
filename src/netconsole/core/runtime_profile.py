@@ -143,7 +143,7 @@ def collect_host_environment_profile(*, data_root: Path | None = None, command_r
     virtualization: dict[str, ProfileValue] = {"status": _value(_UNKNOWN, "unavailable", "low")}
 
     if os.name == "nt":
-        # Windows Server 2012-compatible WMI path; no modern Storage cmdlets required.
+        # Legacy-compatible WMI path; no modern Storage cmdlets required.
         try:
             raw = runner(["wmic", "computersystem", "get", "TotalPhysicalMemory", "/value"], timeout)
             for line in raw.splitlines():

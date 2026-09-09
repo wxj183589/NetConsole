@@ -20,14 +20,9 @@ Gate 成功后在安装包旁生成同名 `.exe.release.json`，记录文件名�
 
 正式 Renderer 右上角固定显示 `v<version>+<8位短SHA>`，dirty 源码态明确追加 `-dirty`；不再只在开发模式显示 commit。`/api/health` 同时返回 `build_id`、Backend/Frontend 完整 commit、短 commit、edition、`packaged_dirty` 和 UTC build timestamp。Backend `app.log` 与 Electron `electron.log` 分别写入一条 `BUILD_IDENTITY` / `ELECTRON_BUILD_IDENTITY`，不记录令牌、凭据或物理业务路径。
 
-## Windows Server 2012 兼容事实
+## Windows 正式支持矩阵
 
-| 范围 | 证据等级 | 说明 |
-| --- | --- | --- |
-| NetConsole 主程序（Electron + Backend） | `USER_FIELD_CONFIRMED` | Windows Server 2012 x64 已有用户现场运行确认；这不是本仓库自动化或正式安装包 GUI 结果。 |
-| 独立 Windows Go Agent | `USER_FIELD_CONFIRMED` | 同一现场确认覆盖 Agent；Go 运行时、托盘、工具和 Python sidecar 的自动化 VM 记录仍缺失。 |
-| Windows Server 2012 自动化 VM | `AUTOMATION_NOT_RECORDED` | 仓库没有可引用的隔离 VM 安装、启动、健康、退出和 Agent API 记录；不得伪造测试结论。 |
-| 正式安装包 GUI 验收 | `PENDING` | 仍须按本文件安装/升级/卸载门禁执行；兼容事实不改变 `real_windows_install_status`。 |
+当前正式 Windows 目标为 Windows 10、Windows 11 和 Windows Server 2016。Windows Server 2012/2012 R2 不属于后续开发、测试、安装验收或发布 Gate 范围；历史现场记录只保留当时事实，不作为当前支持承诺。
 
 上述是证据分层，不是 OS 支持阻断条件；启动路径不按 Server 版本拒绝主程序或 Agent。未知的具体能力仍以真实探测和现有能力 API 为准。
 

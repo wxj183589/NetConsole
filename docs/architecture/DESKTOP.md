@@ -26,9 +26,9 @@ Windows 下启动时会创建 `TrayController`，图标统一由 `resolveTrayIco
 
 默认启用“关闭主窗口后驻留通知区域”。主窗口关闭会隐藏而不停止 Backend、Renderer 或后台任务；托盘和第二实例恢复只显示、还原最小化并聚焦该窗口，不调用 `loadURL/reload/maximize`，因此标签、顺序和活动页保持不变。附加工作区窗口正常销毁；所有普通窗口不可见时，托盘、Backend 和后台业务任务继续存在。只有托盘“退出 NetConsole”（以及显式系统关闭信号）进入单次受控退出：丢弃工作区会话、拒绝新窗口、关闭受管窗口和 Tray，再停止下载、Backend 与会话授权。关闭该设置后，最后一个可见普通业务窗口触发相同的受控退出。
 
-## Windows Server 2012 兼容事实
+## Windows 正式支持矩阵
 
-Windows Server 2012 x64 的 NetConsole 主程序已有用户现场运行确认，证据等级为 `USER_FIELD_CONFIRMED`。仓库没有隔离 Server 2012 自动化 VM 的安装、启动、健康和退出记录，自动化证据记为 `AUTOMATION_NOT_RECORDED`；正式安装包 GUI 验收仍为 `PENDING`。该事实不增加 Electron 或 Backend 的 OS 启动阻断，Windows 11 x64 仍是默认构建与开发目标。
+NetConsole 正式 Windows 目标为 Windows 10、Windows 11 和 Windows Server 2016。Windows Server 2012/2012 R2 不属于后续开发、测试、安装验收或发布范围；历史现场记录不构成当前支持承诺。Server 平台与无人值守运行策略是独立概念，Server 2016 同样使用统一标准安装流程。
 
 ## 当前状态
 
@@ -178,7 +178,7 @@ Backend 重启或恢复后，Main 的 `ready` 只表示新进程已通过 superv
 
 通用 API client 只允许 `GET/HEAD` 对明确的连接中断、Backend 重启和 `502/503/504` 做一次受控恢复：Electron 先重绑定，再从当前 generation 重新构造 URL 与 Header 后重试。`POST/PUT/PATCH/DELETE` 不自动重放，避免响应丢失时重复创建任务或执行写操作。Runtime 重绑定诊断只记录 host、reason、generation、耗时和端口是否变化，不记录 Origin、令牌或请求头。
 
-桌面总退出是单一受管屏障：进入 shutdown 后立即显示复用主窗口的“正在安全退出”进度页，拒绝第二实例恢复、任务中心、工作区窗口和局点切换；先等待 Desktop IPC 的下载取消与原子文件清理，再完成 Python `shutdown_received -> shutdown_complete -> child exit`，最后关闭窗口、Tray 和会话路径授权。完成事件只在 Backend 停止、窗口/Tray 收口并完成日志 flush 后记录。单实例锁保持到 Electron 进程真正结束，不在 `app.exit()` 前提前释放。Windows 注销/关机监听 `query-session-end`/`session-end`，采用 preventDefault 后的尽力收尾，不能保证操作系统提供完整主动退出预算；自动测试不能替代 Windows Server 2012、机械硬盘、RDP 多会话及正式安装包人工验收。
+桌面总退出是单一受管屏障：进入 shutdown 后立即显示复用主窗口的“正在安全退出”进度页，拒绝第二实例恢复、任务中心、工作区窗口和局点切换；先等待 Desktop IPC 的下载取消与原子文件清理，再完成 Python `shutdown_received -> shutdown_complete -> child exit`，最后关闭窗口、Tray 和会话路径授权。完成事件只在 Backend 停止、窗口/Tray 收口并完成日志 flush 后记录。单实例锁保持到 Electron 进程真正结束，不在 `app.exit()` 前提前释放。Windows 注销/关机监听 `query-session-end`/`session-end`，采用 preventDefault 后的尽力收尾，不能保证操作系统提供完整主动退出预算；自动测试不能替代 Windows Server 2016、机械硬盘、RDP 多会话及正式安装包人工验收。
 
 ## 本地 API 安全模型
 

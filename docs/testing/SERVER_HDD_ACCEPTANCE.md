@@ -32,7 +32,7 @@ $env:PYTHONPATH = "src"
 历史表 COUNT。`history_pending` 使用 outbox 当前 `COUNT(*)`，最老 pending 使用 `MIN(created_at)`。
 `--deep` 仅用于维护窗口或离线副本；`SERVER_UNATTENDED ACTIVE` 现场不得启用，避免影响
 Syslog/MR/Ping 和当前任务状态持久化。
-Windows Server 2012/2012 R2 不支持的磁盘 active time、队列和延迟返回
+Windows Server 2016 上若磁盘 active time、队列和延迟计数器不可用，返回
 `unknown`；这些字段由资源监视器/PerfMon 人工记录，脚本不会每秒启动 PowerShell。
 
 默认读取 `D:\NetConsoleData\runtime\logs\electron.log`，同时解析 Electron 的

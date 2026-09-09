@@ -33,7 +33,7 @@ def test_opaque_raid_does_not_infer_level() -> None:
         if command[:2] == ["wmic", "computersystem"]:
             return "TotalPhysicalMemory=8589934592\r\n"
         if command[:2] == ["wmic", "os"]:
-            return "Caption=Windows Server 2012 R2\r\nProductType=3\r\n"
+            return "Caption=Windows Server 2016\r\nProductType=3\r\n"
         if command[:2] == ["wmic", "cpu"]:
             return "Name=Intel Xeon\r\nNumberOfCores=4\r\nNumberOfLogicalProcessors=8\r\n"
         raise AssertionError(command)

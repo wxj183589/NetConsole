@@ -148,6 +148,10 @@ exit=0
 
 ## Final Freeze
 
+### 后续平台范围备注（2026-09-10）
+
+本报告中的 Windows Server 2012/2012 R2 `PENDING` 保留为当时现场事实。后续正式平台范围已调整为 Windows 10、Windows 11 和 Windows Server 2016；Server 2012/2012 R2 不再属于后续开发、测试、安装验收或发布目标。用户已确认 Windows Server 2016 环境运行正常。
+
 - `main` 当前为 `6ce04fcc7b4ded972f4ee48f783aa0df28836287`，工作树保持 clean，只有本报告新增待提交文档。
 - 产品 commit 和 `v1.5.6` tag 保持 `ebcd35356a136bddd016de399b89bb2c49fac6ef`，不移动、不重打。
 - Full/Customer 包保持原 SHA256、`published=false` 和 `packaged_dirty=false`；不因人工环境缺失重打包。

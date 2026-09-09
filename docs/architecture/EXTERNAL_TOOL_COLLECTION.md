@@ -54,4 +54,4 @@ child_process.spawn(executable_path, arguments, {
 - 移动/卸载程序后的重新定位；
 - 真实 UAC 接受和取消、普通 Windows 用户、不同第三方工具及系统终端路径动态变更；
 - 正式安装包包含并可调用正确架构的 helper，且 helper 启动时无控制台闪现；
-- Windows Server 2012 兼容性和没有权限/需要管理员权限的程序错误文案。
+- Windows Server 2016 兼容性和没有权限/需要管理员权限的程序错误文案。

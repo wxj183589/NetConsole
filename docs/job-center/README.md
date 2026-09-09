@@ -27,6 +27,9 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `services/job_center/runtime/task_runtime.py`：Job/取消文件、JSONL 分块解析、状态、终态和清理；提供 `TaskApplicationService`。
 - `task_application_service.py`：任务应用层、快照更新、恢复核对和跨进程协作取消。
 - `repositories/task_repository.py`：每局点 `tasks.db` 的快照、事件、WAL 和查询。
+- `services/job_center/task_authority_index.py`：数据根 `config/task-authority-index.json` 中维护
+  `site_*` 生命周期 Task ID 到原始局点的稳定查询映射；它是轻量路由索引，不是第二套任务或 SQLite authority，
+  任务快照/事件仍由原局点 `tasks.db` 保存。
 - `repositories/online_mr_task_session_repository.py`：复用同一局点 `tasks.db` 保存 Online MR Controller Task 与 Session 的最小映射，不保存连接配置或凭据。
 - 任务存储治理的只读 profiler、400 MiB 根因、连续相同 progress 的 30 秒采样、事务幂等修复和 DEV-only 结果 Blob authority/候选 compact 见 [Task Storage Governance](./TASK_STORAGE_GOVERNANCE.md)。新终态只在 `task_result_blobs` 保存完整结果，旧 `canonical_json` 仍可兼容读取；本阶段不做 Production migration、通用 retention、历史归档或 TaskHistoryStore 切换。
 - 历史 `src/netconsole/ui/job_process_manager.py` 已删除；其状态、取消和事件职责分别由永久 Service/Runtime/Adapter 承担，旧路径只在冻结迁移矩阵中追溯。

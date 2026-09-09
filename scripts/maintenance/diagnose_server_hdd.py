@@ -1,7 +1,7 @@
 """只读采集 Windows Server/HDD 现场验收所需的 NetConsole 诊断信息。
 
 该脚本不启动 Backend、不修改 SQLite、不执行 checkpoint/VACUUM/迁移，也不
-周期性启动 PowerShell。Windows Server 2012/2012 R2 缺少部分性能计数器时，
+周期性启动 PowerShell。Windows Server 环境缺少部分性能计数器时，
 相关字段明确返回 ``unknown``。
 """
 
