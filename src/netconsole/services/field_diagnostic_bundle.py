@@ -238,7 +238,7 @@ def _file_inventory(root: Path, should_cancel: CancelCallback | None) -> tuple[d
     directories: dict[str, int] = {}
     largest: list[dict[str, Any]] = []
     active: list[dict[str, Any]] = []
-    active_suffixes = (".ndjson", ".log", ".db-wal", ".db-shm", ".part", ".tmp")
+    active_suffixes = (".ndjson", ".log", "-wal", "-shm", ".part", ".tmp")
     try:
         iterator = root.rglob("*")
         for path in iterator:

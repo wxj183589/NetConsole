@@ -1577,7 +1577,6 @@ class SitePackageService:
                 "轻量包导出目标目录不可用",
                 details={
                     "destination_parent": str(destination.parent),
-                    "worker_cwd": os.getcwd(),
                 },
             ) from exc
         staging, staging_journal = self.staging_lifecycle.begin_publish_path(destination)
@@ -3105,7 +3104,6 @@ def _export_source_details(source: Path) -> dict[str, object]:
         "source_parent": str(resolved.parent),
         "source_exists": resolved.is_file(),
         "source_parent_exists": resolved.parent.is_dir(),
-        "worker_cwd": os.getcwd(),
     }
 
 

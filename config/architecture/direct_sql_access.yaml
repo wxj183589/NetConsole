@@ -64,6 +64,7 @@
   {"path":"tests/support/mesh_analysis_test_support.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 测试 fixture。"},
   {"path":"tests/test_agent_controller.py","classification":"TEST_ONLY","owner":"test","reason":"Agent 测试 fixture。"},
   {"path":"tests/test_device_compatibility.py","classification":"TEST_ONLY","owner":"test","reason":"设备兼容性测试只读断言未创建 tasks.db。"},
+  {"path":"tests/test_database_backup_batch_delete.py","classification":"TEST_ONLY","owner":"test","reason":"批量备份删除测试只在 pytest tmp_path 中构造隔离 SQLite fixture，不访问运行数据。"},
   {"path":"tests/test_device_work_scope_status.py","classification":"TEST_ONLY","owner":"test","reason":"设备当前工作状态 schema 迁移测试读取临时备份并校验完整性。"},
   {"path":"tests/test_device_repository.py","classification":"TEST_ONLY","owner":"test","reason":"设备 Repository 测试准备旧凭据状态并断言幂等修复。"},
   {"path":"tests/test_export_identity_diagnostics.py","classification":"TEST_ONLY","owner":"test","reason":"导出诊断测试 fixture。"},

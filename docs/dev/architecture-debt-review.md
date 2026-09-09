@@ -1,6 +1,6 @@
 # Architecture Guard 基线债务复核
 
-复核基线：Phase 1 记录的 7 条未豁免发现，复核日期 2026-09-04。本文只做事实分类和后续边界记录，不把分类结果直接写成大量 architecture exception，也不改变业务运行逻辑。
+复核基线：Phase 1 记录的 7 条未豁免发现，初次复核日期 2026-09-04。下表保留当时的事实分类；2026-09-09 主线收口已按精确登记或最小删除完成清零。
 
 ## 分类结果
 
@@ -23,6 +23,14 @@ LEGACY_EXCEPTION=0
 TEST_ONLY=1
 ```
 
-这 7 条是“原始 guard 发现”的分类，不等于已完成门禁清零。当前 Phase 1.5 不新增宽泛豁免；尤其 `UNREGISTERED_STORAGE` 仍应保留在债务列表中，后续由 storage owner 决定是否把局点导出 Job 作为 `site.devices.current` 的明确消费者登记，并补对应测试。
+这 7 条是“原始 guard 发现”的历史分类，不代表当前仍存在债务。
 
-本次复核未确认独立业务功能错误，因此没有新增 `DISCOVERED_BUG`。真实设备、生产数据、数据库结构和 API/UI 行为均未触碰。
+## 2026-09-09 收口结果
+
+- `tests/test_database_backup_batch_delete.py` 已按精确文件登记为 `TEST_ONLY`，仅允许 pytest 隔离 SQLite fixture。
+- `resolveMeshRssiPoint` 已按精确 symbol 和现有单测登记为 `DISPLAY_ONLY`，没有迁移业务事实或扩大 Renderer 权限。
+- 4 个只用于诊断的 `worker_cwd` 字段没有下游消费者，已删除，避免物理路径泄漏；真实 source/destination 仍来自受控解析路径。
+- `site_export` 已作为 `site.devices.current` 的 Site Package 消费者登记到 Storage Registry。
+- 更新策略断言已固定为：只有 `published=true` 且 ProductVersion 更高才提示升级；同版本 build/hash 变化不提示。
+
+验证结果：`scripts/architecture/run_all.py` 为 12/12 PASS，Ruff 全仓 PASS；`config/ci/baseline_failures.yaml` 的 Python、Architecture、Ruff 精确债务均为 0。没有新增宽泛 exception，也未访问或修改 Production 数据。

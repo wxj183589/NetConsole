@@ -159,7 +159,6 @@ def site_export(context: JobContext) -> dict[str, object]:
         storage_key=storage_key,
         data_root=str(context.paths.data_root),
         source_db=str(source_db),
-        worker_cwd=str(Path.cwd()),
     )
     package_type = str(context.params.get("package_type") or "full_migration")
     destination = str(context.params.get("destination_path") or "")
@@ -187,7 +186,6 @@ def site_export(context: JobContext) -> dict[str, object]:
             storage_key=storage_key,
             data_root=str(context.paths.data_root),
             source_db=str(source_db),
-            worker_cwd=str(Path.cwd()),
             error_code=exc.code,
             error_details=exc.details,
         )

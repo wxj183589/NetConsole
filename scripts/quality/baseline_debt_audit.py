@@ -245,7 +245,7 @@ def _compare(
 
 
 def _test_root() -> Path:
-    test_base = (ROOT.parents[1] / "test-data" / "NetConsole").resolve()
+    test_base = (ROOT.parent / "test-data" / "NetConsole").resolve()
     configured = os.environ.get("NETCONSOLE_DATA_ROOT", "").strip()
     root = Path(configured).resolve() if configured else test_base / f"baseline-debt-{uuid.uuid4().hex}"
     production = Path(r"D:\NetConsoleData").resolve()
