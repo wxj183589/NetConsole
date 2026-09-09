@@ -351,6 +351,26 @@ def test_tasks_reuse_shared_service_and_real_artifact_store(tmp_path: Path) -> N
     assert name == "app_log_all.csv"
 
 
+def test_field_diagnostic_uses_managed_artifact_and_safe_defaults(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    service, _process, export = _service(paths)
+    service.runtime_snapshot_provider = lambda: {
+        "status": "OK",
+        "raw_file": r"D:\sensitive\active.ndjson",
+    }
+
+    started = service.start_field_diagnostic("demo", sample_duration_minutes=0)
+
+    job = export.jobs[started.task_id]
+    payload = job.params["payload"]
+    assert started.artifact_name == "NetConsole-Diagnostic.zip"
+    assert job.job_type == "field_diagnostic_bundle"
+    assert payload["site_name"] == "demo"
+    assert payload["raw_sample"] is False
+    assert payload["runtime_config"] == {"site_name": "demo"}
+    assert job.output_path.startswith(str(paths.site_files_dir("demo")))
+
+
 def test_cancel_reports_when_no_adapter_owns_active_task(tmp_path: Path) -> None:
     service, process, _export = _service(_paths(tmp_path))
     task = service.start_cleanup("demo", dry_run=True)

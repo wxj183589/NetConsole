@@ -25,6 +25,7 @@ import {
   startLogExport,
   startOpenSourceExport,
   startOpenSourceScan,
+  startFieldDiagnostic,
   type AboutInfo,
   type Changelog,
   type CleanupItem,
@@ -59,6 +60,9 @@ const components = ref<OpenSourceComponent[]>([])
 const openSourceTaskId = ref('')
 const changelog = ref<Changelog>()
 const about = ref<AboutInfo>()
+const diagnosticDuration = ref<0 | 1 | 5 | 15 | 30>(5)
+const diagnosticLogWindow = ref<10 | 30 | 60>(30)
+const diagnosticRawSample = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 
 const taskBusy = computed(() => Boolean(currentTask.value && !terminalStates.has(currentTask.value.status)))
@@ -285,6 +289,27 @@ async function runOpenSourceExport(format: 'txt' | 'xlsx'): Promise<void> {
   }
 }
 
+async function runFieldDiagnostic(): Promise<void> {
+  if (taskBusy.value) return
+  try {
+    const result = await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'system.field_diagnostic',
+      suggestedName: `NetConsole-Diagnostic-${exportTimestamp()}.zip`,
+      context: { sampleDuration: diagnosticDuration.value, logWindow: diagnosticLogWindow.value },
+      submit: () => startFieldDiagnostic({
+        sample_duration_minutes: diagnosticDuration.value,
+        log_window_minutes: diagnosticLogWindow.value,
+        raw_sample: diagnosticRawSample.value,
+      }),
+    })
+    if (result.status === 'cancelled') return
+    applyTaskResult(result.task)
+    ElMessage.success('现场诊断包任务已提交，完成后将写入所选位置')
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause))
+  }
+}
+
 async function cancelCurrentTask(): Promise<void> {
   if (!currentTask.value) return
   try {
@@ -427,6 +452,10 @@ onBeforeUnmount(() => {
     <el-tabs v-model="activeTab" type="border-card" class="maintenance-tabs">
       <el-tab-pane label="运行日志" name="logs" class="maintenance-tab-pane log-tab-pane">
         <div class="toolbar">
+          <el-select v-model="diagnosticDuration" style="width: 150px" :disabled="taskBusy" aria-label="诊断采样时长"><el-option label="诊断：立即快照" :value="0" /><el-option label="诊断：1分钟" :value="1" /><el-option label="诊断：5分钟" :value="5" /><el-option label="诊断：15分钟" :value="15" /><el-option label="诊断：30分钟" :value="30" /></el-select>
+          <el-select v-model="diagnosticLogWindow" style="width: 140px" :disabled="taskBusy" aria-label="诊断日志范围"><el-option label="日志10分钟" :value="10" /><el-option label="日志30分钟" :value="30" /><el-option label="日志60分钟" :value="60" /></el-select>
+          <el-checkbox v-model="diagnosticRawSample" :disabled="taskBusy">包含 Raw 样本（敏感）</el-checkbox>
+          <el-button type="primary" :disabled="taskBusy" @click="runFieldDiagnostic">导出现场诊断包</el-button>
           <el-input v-model="keyword" clearable placeholder="搜索事件或详情" @keyup.enter="loadLogs(true)" />
           <el-select v-model="level" clearable placeholder="全部级别"><el-option label="信息" value="INFO" /><el-option label="警告" value="WARNING" /><el-option label="错误" value="ERROR" /><el-option label="调试" value="DEBUG" /><el-option label="严重" value="CRITICAL" /></el-select>
           <el-button @click="loadLogs(true)">查询</el-button>

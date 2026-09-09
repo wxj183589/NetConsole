@@ -35,6 +35,7 @@ from netconsole.services.file_contract import attach_export_metadata
 from netconsole.services.ac.fit_ap_resource_export import export_fit_ap_resource_xlsx
 from netconsole.services.trackside_ap_base_export import export_trackside_ap_base_xlsx_task
 from netconsole.services.trackside_ap_rename_export import export_trackside_ap_rename_commands_task
+from netconsole.services.field_diagnostic_bundle import collect_field_diagnostic_bundle
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
@@ -68,6 +69,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "vehicle_mr_history_xlsx",
     "trackside_ap_base_xlsx",
     "trackside_ap_rename_commands",
+    "field_diagnostic_bundle",
 }
 
 
@@ -134,6 +136,21 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
     elif job.job_type == "trackside_ap_rename_commands":
         result = export_trackside_ap_rename_commands_task(tmp_path, payload, progress_callback, should_cancel)
         row_count = int(result.get("row_count") or 0)
+    elif job.job_type == "field_diagnostic_bundle":
+        result = collect_field_diagnostic_bundle(
+            payload,
+            tmp_path,
+            progress_callback=progress_callback,
+            should_cancel=should_cancel,
+        )
+        attach_export_metadata(
+            tmp_path,
+            effective_suffix=output_path.suffix,
+            export_type=job.job_type,
+            payload=payload,
+        )
+        replace_output(tmp_path, output_path)
+        return {**result, "path": str(output_path), "size_bytes": output_path.stat().st_size}
     else:
         raise ValueError(f"不支持的通用导出任务类型：{job.job_type}")
     if should_cancel and should_cancel():

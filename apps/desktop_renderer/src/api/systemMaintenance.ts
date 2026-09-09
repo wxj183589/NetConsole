@@ -135,6 +135,14 @@ export function startOpenSourceExport(format: 'txt' | 'xlsx'): Promise<Maintenan
   return apiRequest(`${root}/exports/open-source`, { method: 'POST', body: JSON.stringify({ format }) })
 }
 
+export function startFieldDiagnostic(payload: {
+  sample_duration_minutes: 0 | 1 | 5 | 15 | 30
+  log_window_minutes: 10 | 30 | 60
+  raw_sample: boolean
+}): Promise<MaintenanceTask> {
+  return apiRequest(`${root}/exports/field-diagnostic`, { method: 'POST', body: JSON.stringify(payload) })
+}
+
 export function getMaintenanceTask(taskId: string): Promise<MaintenanceTask> {
   return apiRequest(`${root}/tasks/${encodeURIComponent(taskId)}`)
 }

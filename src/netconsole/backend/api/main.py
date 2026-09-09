@@ -40,6 +40,7 @@ from netconsole.backend.web_build import (
 )
 from netconsole.core.database import Database
 from netconsole.core.build_metadata import current_build_metadata
+from netconsole.services.field_diagnostic_bundle import safe_runtime_health
 from netconsole.core.paths import PathResolver
 from netconsole.core.performance_profiling import (
     begin_request_profile,
@@ -1070,6 +1071,18 @@ def create_app(
                 f"component=ground_unattended error={exc.__class__.__name__}: "
                 f"{_safe_error_message(str(exc))}",
             )
+
+    def diagnostic_runtime_snapshot() -> dict[str, object]:
+        service = getattr(app.state, "ground_unattended_application_service", None)
+        if service is None:
+            return {}
+        try:
+            health = service.health(site_name)
+            return safe_runtime_health(health.model_dump(mode="json"))
+        except Exception:
+            return {}
+
+    system_maintenance_service.runtime_snapshot_provider = diagnostic_runtime_snapshot
 
     def rebind_runtime_site(target_site_name: str) -> None:
         """在 Backend 进程内切换所有持有 Site-scoped 状态的服务。"""

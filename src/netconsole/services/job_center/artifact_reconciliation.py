@@ -75,6 +75,9 @@ def managed_artifact_source_root(
         "system_open_source_xlsx": paths.site_files_dir(site_id)
         / "system_maintenance"
         / "outputs",
+        "system_field_diagnostic": paths.site_files_dir(site_id)
+        / "system_maintenance"
+        / "outputs",
     }
     try:
         return roots[source]

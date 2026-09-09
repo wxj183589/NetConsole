@@ -17,6 +17,7 @@ from netconsole.models.api.system_maintenance import (
     RuntimeLogSummaryDTO,
     MaintenanceTaskDTO,
     OpenSourceExportRequest,
+    FieldDiagnosticRequest,
 )
 from netconsole.application.system_maintenance import SystemMaintenanceApplicationService, SystemMaintenanceError
 
@@ -121,6 +122,16 @@ def start_log_export(request: Request, payload: LogExportRequest) -> Maintenance
 )
 def start_open_source_export(request: Request, payload: OpenSourceExportRequest) -> MaintenanceTaskDTO:
     return _run(lambda: _service(request).start_open_source_export(_site(request), format=payload.format))
+
+
+@router.post("/exports/field-diagnostic", response_model=MaintenanceTaskDTO)
+def start_field_diagnostic(request: Request, payload: FieldDiagnosticRequest) -> MaintenanceTaskDTO:
+    return _run(lambda: _service(request).start_field_diagnostic(
+        _site(request),
+        sample_duration_minutes=payload.sample_duration_minutes,
+        log_window_minutes=payload.log_window_minutes,
+        raw_sample=payload.raw_sample,
+    ))
 
 
 @router.get("/tasks", response_model=list[MaintenanceTaskDTO])
