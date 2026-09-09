@@ -9,6 +9,7 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.ping.fping_v5_models import BACKEND, FpingV5Sample
+from netconsole.core.storage_io import StorageIOProfile
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
@@ -156,6 +157,38 @@ def test_raw_writer_flush_interval_is_independent_for_each_open_file(
     writer.write({"train_id": "train-b", "mr_role": "CW", "sample": 2}, now)
 
     assert len(b_file.read_text(encoding="utf-8").splitlines()) == 2
+    writer.close()
+
+
+def test_raw_writer_explicit_storage_profile_enables_periodic_durable_sync(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    clock = [0.0]
+    monkeypatch.setattr(syslog_runtime_module.time, "monotonic", lambda: clock[0])
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground" / "index.sqlite", site_id="site-a"
+    )
+    writer = RawStreamWriter(
+        root=repository.db_path.parent / "active" / "2026-07-28",
+        repository=repository,
+        site_id="site-a",
+        run_id="run-durable-sync",
+        run_date="2026-07-28",
+        data_type="syslog",
+        flush_records=100,
+        flush_interval_seconds=60.0,
+        storage_profile=StorageIOProfile.conservative(),
+    )
+    now = datetime.now().astimezone()
+    writer.write({"train_id": "train-b", "mr_role": "CW", "sample": 1}, now)
+    b_file = writer._files[("train-b", "CW", now.strftime("%Y-%m-%d_%H"))].path
+
+    clock[0] = 1.1
+    writer.write({"train_id": "train-a", "mr_role": "CT", "sample": 1}, now)
+
+    assert len(b_file.read_text(encoding="utf-8").splitlines()) == 1
+    assert writer.durable_sync_count == 1
     writer.close()
 
 

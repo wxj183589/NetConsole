@@ -87,6 +87,12 @@ SAFE_RUNTIME_HEALTH_FIELDS = frozenset(
         "media_confidence",
         "storage_profile",
         "profile_source",
+        "raw_flush_count",
+        "raw_batch_bytes_avg",
+        "durable_sync_count",
+        "durable_sync_latency_ms",
+        "db_batch_size",
+        "db_batch_interval_ms",
     }
 )
 

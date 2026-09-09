@@ -156,6 +156,7 @@ class RawStreamWriter:
         self.directory_name = directory_name or data_type
         self.flush_records = max(1, int(flush_records))
         self.flush_interval_seconds = max(0.1, float(flush_interval_seconds))
+        self._storage_profile_managed = storage_profile is not None
         self.storage_profile = storage_profile or StorageIOProfile.conservative()
         if storage_profile is not None:
             self.flush_interval_seconds = max(
@@ -218,12 +219,16 @@ class RawStreamWriter:
             current.record_count % self.flush_records == 0
             or time.monotonic() - current.last_flush_at
             >= self.flush_interval_seconds
-            or self._pending_bytes[current.file_id] >= self.raw_batch_bytes
+            or (
+                self._storage_profile_managed
+                and self._pending_bytes[current.file_id] >= self.raw_batch_bytes
+            )
         ):
             self._flush_one(current)
             current.flushed_record_count = current.record_count
             current.last_flush_at = time.monotonic()
-        self.durable_sync()
+        if self._storage_profile_managed:
+            self.durable_sync()
         self.last_write_duration_ms = (time.perf_counter() - started) * 1000
         return current.file_id, current.record_count
 
@@ -960,7 +965,7 @@ class SyslogUdpReceiver:
             "spool_critical_percent": self._spool_critical_percent,
             "spool_emergency_percent": self._spool_emergency_percent,
             "storage_profile": self._storage_profile.name,
-            "storage_profile_source": self._storage_profile.profile_source,
+            "profile_source": self._storage_profile.profile_source,
             "raw_flush_count": writer.flush_count if writer else 0,
             "raw_batch_bytes_avg": (
                 writer.flush_bytes_total / writer.flush_count

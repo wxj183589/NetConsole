@@ -620,6 +620,12 @@ class GroundHealthDTO(ApiModel):
     storage_profile: str = "CONSERVATIVE_STORAGE"
     profile_source: str = "AUTO"
     storage_detection_reason: str = ""
+    raw_flush_count: int = 0
+    raw_batch_bytes_avg: float = 0.0
+    durable_sync_count: int = 0
+    durable_sync_latency_ms: float = 0.0
+    db_batch_size: int = 0
+    db_batch_interval_ms: int = 0
 
 
 class GroundSyslogTransportStatusDTO(ApiModel):
