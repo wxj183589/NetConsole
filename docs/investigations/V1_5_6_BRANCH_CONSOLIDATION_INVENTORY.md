@@ -1,7 +1,9 @@
 # v1.5.6 主线分支收口清单
 
-审计时间：2026-09-09（Asia/Shanghai）  
-事实基线：`main = github/main = 6d0cd921c07d7a6a48d46b7278019fdcf4d4712f`  
+审计时间：2026-09-09（Asia/Shanghai）
+
+事实基线：`main = github/main = 6d0cd921c07d7a6a48d46b7278019fdcf4d4712f`
+
 初始物理引用：本地 6、GitHub 39、NAS 1（均排除 remote `HEAD` alias）；创建一次性 RC 后本地为 7。为避免把同名本地/远端重复当成功能分支，下表按逻辑分支合并展示，并把 SHA 不同的 `nas/main` 单列，共 41 行。所有 short SHA 均由本轮 `git rev-parse` 获取。
 
 `behind/ahead` 是 `git rev-list --left-right --count main...<ref>` 的结果；`unique` 是 `git log --cherry-pick --right-only main...<ref>` 的 patch-unique 数。`files` 优先记录 patch-unique 文件数；候选旧栈同时注明三点 diff 文件数。
@@ -85,4 +87,3 @@ Production 路径（`src/`、`apps/`、`config/`、`resources/`、`scripts/build
 - 其余普通历史分支均为 main ancestor、exact main 或 patch-equivalent；再 merge 只会产生空提交或回灌旧实现。
 - 两个 recovery 分支无条件保护；所有 GitHub 远程分支均保留。
 - 本地 branch/worktree 在最终 main、v1.5.6 gate、package 和 tag 完成前继续保护。
-
