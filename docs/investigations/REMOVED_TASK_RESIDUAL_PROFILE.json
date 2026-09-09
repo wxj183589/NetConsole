@@ -1,0 +1,99 @@
+{
+  "schema": "removed-task-residual-profile/v1",
+  "observed_at": "2026-09-10",
+  "data_root": "D:/NetConsoleData",
+  "read_only": true,
+  "selection": "task_snapshots.dismissed_at <> '' AND status IN (COMPLETED, FAILED, CANCELLED)",
+  "classification": "GUI_REMOVED_OPERATIONAL_RESIDUAL",
+  "task_count": 7207,
+  "safe_candidate_task_count": 6568,
+  "protected_task_count": 639,
+  "oldest_created_at": "2026-07-12T09:29:11.541Z",
+  "newest_created_at": "2026-09-09T16:04:25.390Z",
+  "residual_rows": {
+    "task_events": 407073,
+    "task_snapshots": 7207,
+    "task_results": 4455,
+    "task_result_blobs_distinct_referenced": 3434,
+    "task_result_blobs_shared_references": 37
+  },
+  "residual_bytes": {
+    "task_events_payload_bytes": 185504739,
+    "task_snapshots_payload_bytes": 56887357,
+    "task_results_byte_size": 168761242,
+    "task_payload_bytes": 411153338,
+    "referenced_result_blobs_compressed_bytes": 4558135
+  },
+  "tables": [
+    {
+      "table": "task_events",
+      "residual_rows": 407073,
+      "estimated_bytes": 185504739,
+      "payload_bytes": 185504739,
+      "task_count": 7207,
+      "oldest_created_at": "2026-07-12T09:29:11.541Z",
+      "newest_created_at": "2026-09-09T16:04:25.390Z",
+      "classification": "OPERATIONAL_EVENT_RESIDUAL",
+      "safe_to_retire": false,
+      "safe_candidate_task_count": 6568
+    },
+    {
+      "table": "task_snapshots",
+      "residual_rows": 7207,
+      "estimated_bytes": 56887357,
+      "payload_bytes": 56887357,
+      "task_count": 7207,
+      "oldest_created_at": "2026-07-12T09:29:11.541Z",
+      "newest_created_at": "2026-09-09T16:04:25.390Z",
+      "classification": "TERMINAL_OPERATIONAL_SNAPSHOT_RESIDUAL",
+      "safe_to_retire": false,
+      "safe_candidate_task_count": 6568
+    },
+    {
+      "table": "task_results",
+      "residual_rows": 4455,
+      "estimated_bytes": 168761242,
+      "payload_bytes": 168761242,
+      "task_count": 7207,
+      "oldest_created_at": "2026-07-12T09:29:11.541Z",
+      "newest_created_at": "2026-09-09T16:04:25.390Z",
+      "classification": "TEMPORARY_RESULT_AUTHORITY_RESIDUAL",
+      "safe_to_retire": false,
+      "safe_candidate_task_count": 6568
+    },
+    {
+      "table": "task_result_blobs",
+      "residual_rows": 3434,
+      "estimated_bytes": 4558135,
+      "payload_bytes": 4558135,
+      "task_count": 7207,
+      "oldest_created_at": "2026-07-12T09:29:11.541Z",
+      "newest_created_at": "2026-09-09T16:04:25.390Z",
+      "classification": "SHARED_RESULT_BLOB_RESIDUAL",
+      "safe_to_retire": false,
+      "shared_reference_count": 37,
+      "note": "Blob rows are preserved when still referenced by a non-removed task; orphan cleanup is performed only after approved task-result deletion."
+    },
+    {
+      "table": "task_events[event_type=progress]",
+      "residual_rows": 363546,
+      "estimated_bytes": 135448847,
+      "payload_bytes": 135448847,
+      "task_count": 7035,
+      "oldest_created_at": "2026-07-12T09:29:11.541Z",
+      "newest_created_at": "2026-09-09T16:04:25.390Z",
+      "classification": "OPERATIONAL_PROGRESS_PAYLOAD_RESIDUAL",
+      "safe_to_retire": false,
+      "safe_candidate_task_count": 6568
+    }
+  ],
+  "protected_reasons": {
+    "RESOURCE_REFERENCE": 612,
+    "DURABLE_RESULT_REFERENCE": 28,
+    "ONLINE_MR_MAPPING": 9,
+    "RESULT_ARTIFACT_REFERENCE": 8,
+    "UNACKNOWLEDGED_ATTENTION": 5
+  },
+  "byte_basis": "task_events and task_snapshots use UTF-8 payload bytes; task_results uses immutable byte_size; values are logical residual payload metrics, not post-delete physical file shrink.",
+  "production_cleanup_status": "READY_NOT_RUN"
+}

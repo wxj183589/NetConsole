@@ -5,7 +5,11 @@ import sqlite3
 from dataclasses import dataclass
 
 from netconsole.core.paths import PathResolver
-from netconsole.models.task_history_policy import ACTIVE_TASK_STATE_VALUES, TERMINAL_TASK_STATE_VALUES
+from netconsole.models.task_history_policy import (
+    ACTIVE_TASK_STATE_VALUES,
+    TERMINAL_TASK_STATE_VALUES,
+    task_requires_attention,
+)
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
 from netconsole.repositories.task_repository import TaskRepository
 
@@ -44,8 +48,11 @@ class CleanupDecision:
     status: str = ""
     reasons: tuple[str, ...] = ()
     protected_resources: tuple[str, ...] = ()
+    preserved_resources: tuple[str, ...] = ()
     event_rows: int = 0
+    event_payload_bytes: int = 0
     snapshot_rows: int = 0
+    snapshot_payload_bytes: int = 0
     result_rows: int = 0
     result_bytes: int = 0
 
@@ -56,8 +63,11 @@ class CleanupDecision:
             "status": self.status,
             "reasons": list(self.reasons),
             "protected_resources": list(self.protected_resources),
+            "preserved_resources": list(self.preserved_resources),
             "event_rows": self.event_rows,
+            "event_payload_bytes": self.event_payload_bytes,
             "snapshot_rows": self.snapshot_rows,
+            "snapshot_payload_bytes": self.snapshot_payload_bytes,
             "result_rows": self.result_rows,
             "result_bytes": self.result_bytes,
         }
@@ -75,13 +85,13 @@ class _ArtifactManifestIndex:
 
 
 class TaskCleanupService:
-    """Own explicit Task Center cleanup without deleting business authorities.
+    """Retire explicit Task Center operational rows without deleting outputs.
 
-    The service is deliberately conservative.  It only removes the three
-    task-owned current tables after a terminal task has no active mapping,
-    durable artifact/session reference, or unrecognised resource key.  Sealed
-    history, Ground data, Online MR data, and files are outside this service's
-    deletion boundary.
+    ``tasks.db`` is an operational store.  A terminal task can be retired only
+    after active mappings and unreadable/unknown references are ruled out.  A
+    verified Artifact manifest is recorded as preserved, not treated as a
+    reason to retain duplicate task metadata.  Ground/Online MR/business data,
+    application logs, and files are outside this service's deletion boundary.
     """
 
     def __init__(
@@ -113,27 +123,64 @@ class TaskCleanupService:
         eligible = [item.task_id for item in decisions if item.can_cleanup]
         deletion = self.repository.delete_task_owned_rows(eligible)
         deleted = dict(deletion["deleted"])
+        skipped = [item.to_dict() for item in decisions if not item.can_cleanup]
 
         return {
             "requested_task_ids": ids,
             "deleted_task_ids": deletion["deleted_task_ids"],
-            "skipped": [item.to_dict() for item in decisions if not item.can_cleanup],
+            "task_ids": deletion["deleted_task_ids"],
+            "skipped": skipped,
+            "matched": len(ids),
+            "dismissed": len(deletion["deleted_task_ids"]),
+            "skipped_active": sum(
+                "ACTIVE_TASK" in item.reasons for item in decisions
+            ),
+            "skipped_unacknowledged": sum(
+                "UNACKNOWLEDGED_ATTENTION" in item.reasons for item in decisions
+            ),
+            "artifacts_deleted": 0,
             "deleted": deleted,
             "orphan_blobs_removed": deletion["orphan_blobs_removed"],
             "orphan_blob_bytes_removed": deletion["orphan_blob_bytes_removed"],
+            "task_payload_bytes": deletion.get("task_payload_bytes", 0),
+            "task_events_payload_bytes": deletion.get("task_events_payload_bytes", 0),
+            "task_snapshots_payload_bytes": deletion.get(
+                "task_snapshots_payload_bytes", 0
+            ),
+            "task_results_payload_bytes": deletion.get(
+                "task_results_payload_bytes", 0
+            ),
             "external_bytes_created": 0,
-            "quick_check": deletion["quick_check"],
-            "counts": {
+            "estimated_reclaimable_bytes": deletion.get("task_payload_bytes", 0),
+            "estimated_reclaimable_payload_bytes": deletion.get(
+                "task_payload_bytes", 0
+            ),
+            "estimated_reclaimable_rows": {
                 "task_events": deleted["task_events"],
                 "task_snapshots": deleted["task_snapshots"],
                 "task_results": deleted["task_results"],
             },
+            "quick_check": deletion["quick_check"],
+            "foreign_key_check": deletion.get("foreign_key_check", "not_run"),
+            "row_counts": {
+                "task_events": deleted["task_events"],
+                "task_snapshots": deleted["task_snapshots"],
+                "task_results": deleted["task_results"],
+            },
+            "counts": {
+                "completed": 0,
+                "cancelled": 0,
+                "expired": 0,
+                "alerts": 0,
+            },
         }
 
     def dismiss_task(self, task_id: str, *, dismissed_by: str = "local-user") -> dict[str, object]:
-        """Keep the existing reversible UI dismissal under this service boundary."""
+        """Retire one terminal task; retain the old API-shaped result fields."""
 
-        return self.repository.dismiss_task(task_id, dismissed_by=dismissed_by)
+        result = self.cleanup_tasks([task_id])
+        result["dismissed_by"] = str(dismissed_by or "local-user")
+        return result
 
     def dismiss_history(
         self,
@@ -144,7 +191,13 @@ class TaskCleanupService:
         dismissed_by: str = "local-user",
         dry_run: bool = False,
     ) -> dict[str, object]:
-        """Run the current Task Center soft-hide contract, without file deletion."""
+        """Compatibility entrypoint for callers that still enumerate history.
+
+        The application service uses a read-only candidate scan followed by
+        :meth:`cleanup_tasks`, so GUI cleanup performs operational retirement.
+        This method remains for older non-GUI callers and is intentionally not
+        used by the current Task Center path.
+        """
 
         return self.repository.cleanup_history(
             cleanup_type,
@@ -192,6 +245,7 @@ class TaskCleanupService:
         status = str(values.get("status") or "").upper()
         reasons: list[str] = []
         protected: list[str] = []
+        preserved: list[str] = []
         if status in ACTIVE_TASK_STATE_VALUES:
             reasons.append("ACTIVE_TASK")
         elif status not in TERMINAL_TASK_STATE_VALUES:
@@ -208,8 +262,19 @@ class TaskCleanupService:
             values, task_id, manifest_index=manifest_index
         )
         if artifact_refs:
-            reasons.append("ARTIFACT_MANIFEST_REFERENCE")
-            protected.extend(artifact_refs)
+            if any(
+                str(reference).casefold()
+                in {
+                    "artifact_manifest_unreadable",
+                    "artifact_scope_unavailable",
+                    "artifact_scope_unknown",
+                }
+                for reference in artifact_refs
+            ):
+                reasons.append("ARTIFACT_MANIFEST_REFERENCE")
+                protected.extend(artifact_refs)
+            else:
+                preserved.extend(artifact_refs)
 
         resource_keys, valid = self._json_list(values.get("resource_keys_json"))
         if not valid:
@@ -225,21 +290,74 @@ class TaskCleanupService:
         elif result is None and str(values.get("result_id") or ""):
             reasons.append("RESULT_AUTHORITY_UNREADABLE")
         if result_valid and result is not None and self._contains_reference(result):
-            reasons.append("DURABLE_RESULT_REFERENCE")
-            protected.extend(self._reference_names(result))
+            result_references = self._reference_names(result)
+            external_references = [
+                name
+                for name in result_references
+                if str(name).casefold() not in {
+                    "artifact_id",
+                    "artifact_ref",
+                    "artifact_path",
+                    "download_ref",
+                    "output_path",
+                    "package_path",
+                    "report_path",
+                    "result_path",
+                    "path",
+                }
+            ]
+            if external_references or not artifact_refs:
+                reasons.append("DURABLE_RESULT_REFERENCE")
+                protected.extend(result_references)
+            else:
+                preserved.extend(result_references)
         summary, summary_valid = self._json_object(values.get("result_summary_json"))
         if not summary_valid:
             reasons.append("RESULT_SUMMARY_UNREADABLE")
         elif self._contains_reference(summary):
-            reasons.append("DURABLE_RESULT_SUMMARY_REFERENCE")
-            protected.extend(self._reference_names(summary))
+            summary_references = self._reference_names(summary)
+            external_references = [
+                name
+                for name in summary_references
+                if str(name).casefold()
+                not in {
+                    "artifact_id",
+                    "artifact_ref",
+                    "artifact_path",
+                    "download_ref",
+                    "output_path",
+                    "package_path",
+                    "report_path",
+                    "result_path",
+                    "path",
+                }
+            ]
+            if external_references or not artifact_refs:
+                reasons.append("DURABLE_RESULT_SUMMARY_REFERENCE")
+                protected.extend(summary_references)
+            else:
+                preserved.extend(summary_references)
+        attention_result: dict[str, object] = {}
+        if isinstance(result, dict):
+            attention_result.update(result)
+        if isinstance(summary, dict):
+            attention_result.update(summary)
+        if (
+            status in TERMINAL_TASK_STATE_VALUES
+            and task_requires_attention(
+                status,
+                error_message=str(values.get("error_message") or ""),
+                result=attention_result,
+            )
+            and not str(values.get("acknowledged_at") or "").strip()
+        ):
+            reasons.append("UNACKNOWLEDGED_ATTENTION")
         if str(values.get("result_path") or "").strip():
-            reasons.append("RESULT_ARTIFACT_REFERENCE")
-            protected.append(str(values["result_path"]))
-        if "online_mr" in str(values.get("task_type") or "").casefold():
-            reasons.append("ONLINE_MR_TASK")
-        if "ground_unattended" in str(values.get("task_type") or "").casefold():
-            reasons.append("GROUND_TASK")
+            if artifact_refs:
+                preserved.append(str(values["result_path"]))
+            else:
+                reasons.append("RESULT_ARTIFACT_REFERENCE")
+                protected.append(str(values["result_path"]))
 
         reasons = list(dict.fromkeys(reasons))
         protected = list(dict.fromkeys(protected))
@@ -249,8 +367,11 @@ class TaskCleanupService:
             status=status,
             reasons=tuple(reasons),
             protected_resources=tuple(protected),
+            preserved_resources=tuple(dict.fromkeys(preserved)),
             event_rows=int(context["event_rows"]),
+            event_payload_bytes=int(context.get("event_payload_bytes", 0)),
             snapshot_rows=1,
+            snapshot_payload_bytes=int(context.get("snapshot_payload_bytes", 0)),
             result_rows=int(context["result_rows"]),
             result_bytes=int(context["result_bytes"]),
         )
@@ -417,7 +538,18 @@ class TaskCleanupService:
             "decisions": [item.to_dict() for item in decisions],
             "eligible_count": len(eligible),
             "protected_count": len(decisions) - len(eligible),
-            "estimated_reclaimable_bytes": sum(item.result_bytes for item in eligible),
+            "estimated_reclaimable_bytes": sum(
+                item.event_payload_bytes
+                + item.snapshot_payload_bytes
+                + item.result_bytes
+                for item in eligible
+            ),
+            "estimated_reclaimable_payload_bytes": sum(
+                item.event_payload_bytes
+                + item.snapshot_payload_bytes
+                + item.result_bytes
+                for item in eligible
+            ),
             "estimated_reclaimable_rows": {
                 "task_events": sum(item.event_rows for item in eligible),
                 "task_snapshots": sum(item.snapshot_rows for item in eligible),

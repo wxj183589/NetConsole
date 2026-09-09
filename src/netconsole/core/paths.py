@@ -82,6 +82,12 @@ class PathResolver:
         return self.config_dir / "settings.json"
 
     @property
+    def task_authority_index_path(self) -> Path:
+        """Stable task-id to site authority index for lifecycle queries."""
+
+        return self.config_dir / "task-authority-index.json"
+
+    @property
     def logs_dir(self) -> Path:
         return self.runtime_dir / "logs"
 

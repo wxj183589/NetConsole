@@ -290,8 +290,8 @@ def test_task_cleanup_protects_active_references_and_deletes_only_explicit_safe_
     assert "DURABLE_RESULT_REFERENCE" in decisions["artifact-cleanup"]["reasons"]
     assert decisions["ground-cleanup"]["can_cleanup"] is False
     assert "GROUND_CURRENT_MAPPING" in decisions["ground-cleanup"]["reasons"]
-    assert decisions["manifest-cleanup"]["can_cleanup"] is False
-    assert "ARTIFACT_MANIFEST_REFERENCE" in decisions["manifest-cleanup"]["reasons"]
+    assert decisions["manifest-cleanup"]["can_cleanup"] is True
+    assert decisions["manifest-cleanup"]["preserved_resources"]
     assert decisions["active-cleanup"]["can_cleanup"] is False
     assert "ACTIVE_TASK" in decisions["active-cleanup"]["reasons"]
 
@@ -304,12 +304,12 @@ def test_task_cleanup_protects_active_references_and_deletes_only_explicit_safe_
             "active-cleanup",
         ]
     )
-    assert result["deleted_task_ids"] == ["safe-cleanup"]
+    assert result["deleted_task_ids"] == ["safe-cleanup", "manifest-cleanup"]
     assert result["quick_check"] == "ok"
     assert repository.get("safe-cleanup") is None
     assert repository.get("artifact-cleanup") is not None
     assert repository.get("ground-cleanup") is not None
-    assert repository.get("manifest-cleanup") is not None
+    assert repository.get("manifest-cleanup") is None
     assert repository.get("active-cleanup") is not None
 
 
@@ -347,14 +347,12 @@ def test_task_cleanup_scans_manifests_once_per_batch_and_keeps_preview_parity(
         item["task_id"]: item for item in preview["decisions"]
     }
     assert preview_decisions["batch-safe"]["can_cleanup"] is True
-    assert preview_decisions["batch-manifest"]["can_cleanup"] is False
-    assert "ARTIFACT_MANIFEST_REFERENCE" in preview_decisions["batch-manifest"]["reasons"]
+    assert preview_decisions["batch-manifest"]["can_cleanup"] is True
+    assert preview_decisions["batch-manifest"]["preserved_resources"]
 
     result = cleanup.cleanup_tasks(task_ids)
     assert scan_count == 2
-    skipped = {item["task_id"]: item for item in result["skipped"]}
-    assert result["deleted_task_ids"] == ["batch-safe"]
-    assert skipped["batch-manifest"]["reasons"] == preview_decisions["batch-manifest"]["reasons"]
+    assert result["deleted_task_ids"] == ["batch-safe", "batch-manifest"]
 
 
 def test_task_cleanup_fails_safe_for_unreadable_and_unknown_manifest_scope(

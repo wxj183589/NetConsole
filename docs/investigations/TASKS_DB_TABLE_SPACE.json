@@ -1,0 +1,98 @@
+{
+  "schema": "tasks-db-table-space/v1",
+  "observed_at": "2026-09-10",
+  "data_root": "D:/NetConsoleData",
+  "read_only": true,
+  "database_count": 9,
+  "total_file_bytes": 402067456,
+  "page_size": 4096,
+  "sum_page_count": 98161,
+  "sum_freelist_count": 160,
+  "sum_free_page_bytes": 655360,
+  "dbstat_available": false,
+  "allocation_method": "logical_byte_weight_estimate_without_dbstat",
+  "allocation_note": "table_bytes and index_bytes are reproducible logical allocation estimates normalized to each database file size; payload_bytes are exact UTF-8/logical payload-field sums. They are not exact SQLite page attribution.",
+  "tables": [
+    {
+      "table": "task_events",
+      "row_count": 422934,
+      "table_bytes": 271524525,
+      "index_bytes": 47769118,
+      "payload_bytes": 239754855,
+      "percentage": 79.413
+    },
+    {
+      "table": "task_snapshots",
+      "row_count": 7487,
+      "table_bytes": 69348689,
+      "index_bytes": 3033374,
+      "payload_bytes": 62981068,
+      "percentage": 18.0025
+    },
+    {
+      "table": "task_result_blobs",
+      "row_count": 3539,
+      "table_bytes": 6783011,
+      "index_bytes": 277001,
+      "payload_bytes": 6186224,
+      "percentage": 1.7559
+    },
+    {
+      "table": "task_results",
+      "row_count": 4562,
+      "table_bytes": 1469084,
+      "index_bytes": 1853238,
+      "payload_bytes": 1259725,
+      "percentage": 0.8263
+    },
+    {
+      "table": "online_mr_task_sessions",
+      "row_count": 9,
+      "table_bytes": 4163,
+      "index_bytes": 2110,
+      "payload_bytes": 3651,
+      "percentage": 0.0016
+    },
+    {
+      "table": "task_result_storage_rollout",
+      "row_count": 9,
+      "table_bytes": 1493,
+      "index_bytes": 0,
+      "payload_bytes": 719,
+      "percentage": 0.0004
+    },
+    {
+      "table": "task_schema_meta",
+      "row_count": 9,
+      "table_bytes": 474,
+      "index_bytes": 335,
+      "payload_bytes": 135,
+      "percentage": 0.0002
+    },
+    {
+      "table": "task_result_storage_rollout_audit",
+      "row_count": 3,
+      "table_bytes": 632,
+      "index_bytes": 0,
+      "payload_bytes": 532,
+      "percentage": 0.0002
+    },
+    {
+      "table": "online_mr_task_session_schema",
+      "row_count": 8,
+      "table_bytes": 196,
+      "index_bytes": 0,
+      "payload_bytes": 0,
+      "percentage": 0.0
+    },
+    {
+      "table": "task_retention_tombstones",
+      "row_count": 0,
+      "table_bytes": 0,
+      "index_bytes": 13,
+      "payload_bytes": 0,
+      "percentage": 0.0
+    }
+  ],
+  "answer": "Across the nine production site task databases, task_events is the dominant allocation (79.413%), followed by task_snapshots (18.0025%)."
+}

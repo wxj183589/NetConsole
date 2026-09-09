@@ -447,7 +447,7 @@ async function downloadArtifact(): Promise<void> {
   } else if (result.status === 'failed' && !tracksideArtifact) {
     if (result.errorCode === 'ARTIFACT_NOT_FOUND') {
       ElMessage.warning('输出文件已不存在，可能已在资源管理器中删除。')
-      await store.refreshSelected()
+      await store.refreshSelected(true)
     } else {
       ElMessage.error(result.error || 'Artifact 下载失败')
     }

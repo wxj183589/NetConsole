@@ -156,8 +156,11 @@ because automated tests pass.
 
 - History COPY/verify and query-authority transition exist, but production source deletion and
   physical replacement are not authorized.
-- Task history cleanup in the product remains preview-only while policy and rollout gates are
-  pending.
+- Task Center is a current/recent operational view. Explicit GUI removal and
+  batch cleanup now perform reference-checked operational GC of task-owned
+  rows; they do not introduce automatic age retention, a scheduler, or a
+  permanent Task Detail archive. Production data cleanup remains a separate
+  preview/authorization gate and was not run in this change.
 - Shared database-upgrade adoption is partial; domain-specific owners remain responsible until a
   dedicated adapter is implemented and tested.
 - Full Site-wide No-Reinflation, real Windows Server HDD observation, production cutover, and any

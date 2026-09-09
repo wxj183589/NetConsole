@@ -80,6 +80,7 @@ def list_tasks(
             search=search,
             warning_only=warning_only,
             limit=limit,
+            include_tasks_from_other_sites=True,
         )
     )
 
@@ -109,6 +110,7 @@ def cleanup_tasks(
             dismissed_by="local-user",
             dry_run=payload.dry_run,
             delete_artifacts=payload.delete_artifacts,
+            all_sites=not bool(payload.site_id),
         )
     except ValueError as exc:
         raise HTTPException(
@@ -159,7 +161,7 @@ def acknowledge_task(
             detail="任务不存在",
         )
     result = _task_service(request).acknowledge_history_tasks(
-        site_name=_site_id(request),
+        site_name=task.site_name,
         task_ids=[task_id],
     )
     if not result.get("task_ids"):
@@ -186,7 +188,7 @@ def dismiss_task(
         )
     result = _task_service(request).dismiss_history_task(
         task_id,
-        site_name=_site_id(request),
+        site_name=task.site_name,
     )
     if result.get("skipped_active"):
         raise HTTPException(

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from netconsole.core import app_logger
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -46,7 +47,7 @@ def _repository(tmp_path: Path) -> tuple[PathResolver, TaskRepository]:
     return paths, TaskRepository(paths.site_tasks_db_path("demo"))
 
 
-def test_cleanup_soft_dismisses_only_eligible_history_and_preserves_artifacts(
+def test_task_center_cleanup_retires_operational_rows_and_preserves_artifacts(
     tmp_path: Path,
 ) -> None:
     paths, repository = _repository(tmp_path)
@@ -102,6 +103,16 @@ def test_cleanup_soft_dismisses_only_eligible_history_and_preserves_artifacts(
         ),
     )
     repository.acknowledge_attention_tasks(task_ids=["failed-resolved"])
+    manifest_root = paths.rail_transit_root("demo") / "web_artifacts" / "manifests"
+    manifest_root.mkdir(parents=True, exist_ok=True)
+    (manifest_root / "success.json").write_text(
+        '{"task_id":"success","artifact_id":"keep.xlsx"}', encoding="utf-8"
+    )
+    app_logger.log_info(
+        "SITE_IMPORT_COMPLETED",
+        "task_id=success site_import 成功",
+        log_path=paths.app_log_path,
+    )
     with sqlite3.connect(paths.site_tasks_db_path("demo")) as conn:
         expirations = dict(
             conn.execute(
@@ -113,8 +124,12 @@ def test_cleanup_soft_dismisses_only_eligible_history_and_preserves_artifacts(
     assert expirations["warning"] == "2026-07-01T01:00:00.000Z"
     assert expirations["failed-unread"] == "2026-07-01T02:00:00.000Z"
 
-    preview = repository.cleanup_history(
+    task_service = TaskApplicationService(
+        paths=paths, site_name="demo", reconcile_on_start=False
+    )
+    preview = task_service.cleanup_history_tasks(
         "completed_and_expired",
+        site_name="demo",
         include_states=["RUNNING", "COMPLETED", "FAILED", "CANCELLED"],
         dismissed_by="test",
         dry_run=True,
@@ -140,8 +155,9 @@ def test_cleanup_soft_dismisses_only_eligible_history_and_preserves_artifacts(
         "failed-resolved",
     }
 
-    result = repository.cleanup_history(
+    result = task_service.cleanup_history_tasks(
         "completed_and_expired",
+        site_name="demo",
         include_states=["RUNNING", "COMPLETED", "FAILED", "CANCELLED"],
         dismissed_by="test",
     )
@@ -155,24 +171,27 @@ def test_cleanup_soft_dismisses_only_eligible_history_and_preserves_artifacts(
         "failed-unread",
     }
     assert artifact.read_bytes() == b"report"
-    assert repository.get("success") is not None
-    assert repository.list_events("failed-resolved")
+    assert app_logger.get_logs(
+        keyword="task_id=success", log_path=paths.app_log_path
+    ).rows
+    assert repository.get("success") is None
+    assert repository.list_events("failed-resolved") == []
     with sqlite3.connect(paths.site_tasks_db_path("demo")) as conn:
         row = conn.execute(
             """
-            SELECT dismissed_at, dismissed_by, dismiss_reason
-            FROM task_snapshots WHERE task_id = 'success'
+            SELECT COUNT(*) FROM task_snapshots WHERE task_id = 'success'
             """
         ).fetchone()
-        assert row is not None
-        assert row[0]
-        assert row[1:] == ("test", "completed_and_expired")
+        assert row == (0,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_retention_tombstones WHERE task_id='success'"
+        ).fetchone() == (1,)
 
 
 def test_failed_or_warning_task_requires_acknowledgement_before_single_dismiss(
     tmp_path: Path,
 ) -> None:
-    _paths, repository = _repository(tmp_path)
+    paths, repository = _repository(tmp_path)
     repository.save(
         _snapshot(
             "warning",
@@ -182,16 +201,17 @@ def test_failed_or_warning_task_requires_acknowledgement_before_single_dismiss(
         )
     )
 
-    blocked = repository.dismiss_task("warning", dismissed_by="test")
+    service = TaskApplicationService(paths=paths, site_name="demo", reconcile_on_start=False)
+    blocked = service.dismiss_history_task("warning", site_name="demo", dismissed_by="test")
     assert blocked["dismissed"] == 0
     assert blocked["skipped_unacknowledged"] == 1
 
     acknowledged = repository.acknowledge_attention_tasks(task_ids=["warning"])
     assert acknowledged["task_ids"] == ["warning"]
-    dismissed = repository.dismiss_task("warning", dismissed_by="test")
+    dismissed = service.dismiss_history_task("warning", site_name="demo", dismissed_by="test")
     assert dismissed["task_ids"] == ["warning"]
     assert repository.list(limit=20) == []
-    assert repository.get("warning") is not None
+    assert repository.get("warning") is None
 
 
 def test_cleanup_api_publishes_incremental_event_and_rejects_file_deletion(
@@ -313,5 +333,4 @@ def test_cleanup_api_allows_eligible_terminal_tasks_in_production(
 
     assert response.status_code == 200, response.text
     assert response.json()["task_ids"] == ["success"]
-    assert repository.get("success") is not None
-    assert repository.get("success").dismissed_at
+    assert repository.get("success") is None

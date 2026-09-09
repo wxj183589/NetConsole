@@ -20,6 +20,7 @@
 - `collect_global_storage_inventory.py`：仅按 SQLite header 识别，并以 `mode=ro&immutable=1` 审计 data-root 全局域或显式 `--scope site-root` 的单局点域；非空 WAL fail-closed，报告只能写到被审计根之外。
 - `rebuild_mesh_parsed_data.py`：在 schema 变更后从受保护 raw 日志重建 MESH 派生 SQLite；默认仅输出计划，`--apply` 必须在 NetConsole 完全退出后执行。
 - `remap_mesh_identity.py`：扫描健康的 MESH parsed 来源并规划/执行 identity-only remap；默认 dry-run，只有显式 `--apply` 才逐来源复用 `MeshSourceRebuildService` 写入，经数据库回读验证后才发布 ready。
+- `cleanup_retired_tasks.py`：默认只读预览 GUI 已从任务中心移除的 terminal task；显式 `--apply` 才复用 Task Center Operational GC 删除 tasks.db 自有 rows，不删除日志、Artifact、业务数据或当前映射。
 
 局点审计从仓库根运行，默认使用源码开发数据根；`--site-id` 可限制为一个稳定 ID 或目录名，`--output` 可指定 manifest 文件：
 

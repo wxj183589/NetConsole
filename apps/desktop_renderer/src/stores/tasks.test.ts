@@ -13,6 +13,7 @@ import {
   listTasks,
 } from '../api/tasks'
 import type { TaskItem } from '../types/task'
+import { ApiRequestError } from '../api/client'
 
 class FakeWebSocket {
   static readonly OPEN = 1
@@ -189,6 +190,83 @@ describe('Job Center polling store', () => {
     expect(getTaskLogs).toHaveBeenCalledTimes(logCalls)
     expect('requestCancel' in store).toBe(true)
     vi.useRealTimers()
+  })
+
+  it('stops status polling after a terminal snapshot', async () => {
+    vi.useFakeTimers()
+    window.setTimeout = setTimeout
+    window.clearTimeout = clearTimeout
+    window.setInterval = setInterval
+    window.clearInterval = clearInterval
+    const completed = { ...task, status: 'COMPLETED' as const, progress: 100 }
+    vi.mocked(getTask).mockResolvedValue(completed)
+    const store = useTaskStore()
+
+    store.acquirePolling('terminal-detail')
+    await store.selectTask(completed.id)
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(getTask).toHaveBeenCalledTimes(1)
+    expect(store.selected?.status).toBe('COMPLETED')
+    store.releasePolling('terminal-detail')
+    vi.useRealTimers()
+  })
+
+  it('stops log tail polling after a terminal event', async () => {
+    vi.useFakeTimers()
+    window.setTimeout = setTimeout
+    window.clearTimeout = clearTimeout
+    window.setInterval = setInterval
+    window.clearInterval = clearInterval
+    vi.mocked(getTaskLogs).mockResolvedValue({
+      task_id: task.id,
+      lines: [{
+        sequence: 2,
+        time: task.updated_time,
+        level: 'INFO',
+        type: 'finished',
+        source: 'worker',
+        message: 'COMPLETED',
+      }],
+      message: '',
+    })
+    const store = useTaskStore()
+
+    store.acquirePolling('terminal-log')
+    await store.selectTask(task.id)
+    await vi.runAllTicks()
+    const calls = vi.mocked(getTaskLogs).mock.calls.length
+    await vi.advanceTimersByTimeAsync(5000)
+
+    expect(getTaskLogs).toHaveBeenCalledTimes(calls)
+    expect(store.logs[0]?.type).toBe('finished')
+    store.releasePolling('terminal-log')
+    vi.useRealTimers()
+  })
+
+  it('keeps a confirmed terminal detail when a late 404 arrives', async () => {
+    const running = { ...task }
+    const completed = { ...task, status: 'COMPLETED' as const, progress: 100 }
+    vi.mocked(getTask).mockResolvedValueOnce(running).mockRejectedValueOnce(
+      new ApiRequestError('任务不存在', 404),
+    )
+    const store = useTaskStore()
+
+    await store.selectTask(task.id)
+    store.selected = completed
+    await store.refreshSelected()
+
+    expect(store.selected?.status).toBe('COMPLETED')
+    expect(store.detailError).toBe('')
+  })
+
+  it('shows a real 404 when no valid snapshot was ever received', async () => {
+    vi.mocked(getTask).mockRejectedValue(new ApiRequestError('任务不存在', 404))
+    const store = useTaskStore()
+
+    await expect(store.selectTask('never-existing-task-id')).rejects.toThrow('任务不存在')
+    expect(store.selected).toBeNull()
+    expect(store.detailError).toBe('任务不存在')
   })
 
   it('applies dismiss and acknowledge WebSocket events without a list refresh', async () => {

@@ -138,6 +138,25 @@ export interface TaskCleanupResult {
   artifacts_deleted: number
   task_ids: string[]
   counts: TaskCleanupCounts
+  requested_task_ids?: string[]
+  deleted_task_ids?: string[]
+  skipped?: Array<Record<string, unknown>>
+  deleted?: Record<string, number>
+  row_counts?: Record<string, number>
+  orphan_blobs_removed?: number
+  orphan_blob_bytes_removed?: number
+  task_payload_bytes?: number
+  task_events_payload_bytes?: number
+  task_snapshots_payload_bytes?: number
+  task_results_payload_bytes?: number
+  estimated_reclaimable_bytes?: number
+  estimated_reclaimable_payload_bytes?: number
+  estimated_reclaimable_rows?: Record<string, number>
+  eligible_count?: number
+  protected_count?: number
+  decisions?: Array<Record<string, unknown>>
+  quick_check?: string
+  foreign_key_check?: string
 }
 
 export interface TaskAcknowledgeResult {

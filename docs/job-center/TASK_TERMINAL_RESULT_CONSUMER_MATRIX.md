@@ -4,7 +4,8 @@
 
 本文是 Task 终态结果去重、物理 retention、索引和维护互斥的设计输入，状态为
 `DESIGN_ONLY`。B2 没有执行 `DELETE`、归档、`VACUUM`、schema/index migration，
-也没有改变用户可见保留期限。
+也没有改变用户可见保留期限；当前专项另行实现了显式 GUI operational GC，
+不等同于本文件提出的通用 retention。
 
 当前 `finished/error/cancelled` 结果通常同时进入：
 
@@ -74,8 +75,8 @@ Site Return Package 仍要求 terminal event 可解释。当前回传合并已�
 
 当前代码事实必须与未来候选区分：
 
-- `task_snapshots.expires_at` 只驱动任务历史软隐藏：成功/取消默认 7 天，失败/业务告警默认
-  30 天；快照、事件、结果和 Artifact 不因此物理删除。
+- `task_snapshots.expires_at` 仅作为既有显式 cleanup 类型的兼容筛选：成功/取消默认 7 天，
+  失败/业务告警默认 30 天；没有自动 scheduler，也不因此自动物理删除快照、事件、结果或 Artifact。
 - `SiteRetentionService` 当前存在“统一删除 90 天以前全部 task_events + VACUUM”的显式
   用户选择流程，不区分 progress、state、log 或 terminal。B2 没有调用、修改或批准该流程。
   未来分级策略必须替换/升级这个既有 owner，不能新增一个并列 retention 路径。

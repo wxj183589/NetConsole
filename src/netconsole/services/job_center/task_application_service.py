@@ -23,6 +23,7 @@ from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.job_center.runtime.task_runtime import TaskLaunch, TaskRuntime
+from netconsole.services.job_center.task_authority_index import TaskAuthorityIndex
 from netconsole.services.job_center.task_cleanup_service import TaskCleanupService
 from netconsole.services.job_center.web_export_event_safety import (
     is_web_export_task,
@@ -58,6 +59,7 @@ class TaskApplicationService:
         self.site_name = str(site_name or "demo")
         self.runtime = TaskRuntime(paths=self.paths, event_bus=event_hub or TaskEventHub())
         self._repositories: dict[str, TaskRepository] = {}
+        self._task_authority_index = TaskAuthorityIndex(self.paths)
         self._reconciled_sites: set[str] = set()
         self._job_sites: dict[str, str] = {}
         self._reconcile_on_start = bool(reconcile_on_start)
@@ -103,6 +105,7 @@ class TaskApplicationService:
         return str(
             site_name
             or self._job_sites.get(str(task_id))
+            or self._task_authority_index.resolve(str(task_id))
             or self.site_name
             or "demo"
         )
@@ -150,6 +153,11 @@ class TaskApplicationService:
         else:
             repository.save(snapshot)
         self._job_sites[job_id] = site_name
+        self._task_authority_index.bind(
+            task_id=job_id,
+            site_name=site_name,
+            task_type=runtime_job.task_type,
+        )
         try:
             return self.runtime.prepare(runtime_job)
         except Exception as exc:
@@ -220,6 +228,11 @@ class TaskApplicationService:
         if not repository.record(snapshot, event, allowed_from=()):
             raise ValueError(f"任务已存在：{task_id}")
         self._job_sites[task_id] = selected_site
+        self._task_authority_index.bind(
+            task_id=task_id,
+            site_name=selected_site,
+            task_type=task_type,
+        )
         self.events.publish_persisted(event.to_dict())
         return snapshot
 
@@ -511,6 +524,7 @@ class TaskApplicationService:
         )
         ids = list(result.get("task_ids") or [])
         if ids:
+            self._task_authority_index.remove(ids, site_name=site_name)
             self._publish_history_event(
                 "tasks.dismissed",
                 task_ids=ids,
@@ -529,22 +543,84 @@ class TaskApplicationService:
         dismissed_by: str = "local-user",
         dry_run: bool = False,
         delete_artifacts: bool = False,
+        all_sites: bool = False,
     ) -> dict[str, object]:
         if delete_artifacts:
             raise ValueError("任务中心清理不允许删除日志、采集文件或导出结果")
+        if all_sites:
+            sites = {str(site_name or self.site_name or "demo")}
+            sites.update(self._task_authority_index.sites())
+            results: list[dict[str, object]] = []
+            for selected_site in sorted(sites):
+                database = self.paths.site_tasks_db_path(selected_site)
+                if selected_site != str(site_name or self.site_name or "demo") and not database.is_file():
+                    continue
+                results.append(
+                    self.cleanup_history_tasks(
+                        cleanup_type,
+                        site_name=selected_site,
+                        include_states=include_states,
+                        exclude_states=exclude_states,
+                        dismissed_by=dismissed_by,
+                        dry_run=dry_run,
+                        delete_artifacts=False,
+                        all_sites=False,
+                    )
+                )
+            return self._merge_cleanup_results(results, dry_run=dry_run)
         repository = self.repository(site_name)
         cleanup = TaskCleanupService(
             repository,
             paths=self.paths,
             site_name=site_name,
         )
-        result = cleanup.dismiss_history(
+        candidate_scan = repository.cleanup_history(
             cleanup_type,
             include_states=include_states,
             exclude_states=exclude_states,
             dismissed_by=dismissed_by,
-            dry_run=dry_run,
+            dry_run=True,
         )
+        candidate_ids = list(candidate_scan.get("task_ids") or [])
+        preview = cleanup.preview_cleanup(candidate_ids)
+        if dry_run:
+            decisions = [
+                item for item in preview.get("decisions", []) if isinstance(item, dict)
+            ]
+            result: dict[str, object] = {
+                **preview,
+                "matched": len(candidate_ids),
+                "dismissed": 0,
+                "skipped_active": int(candidate_scan.get("skipped_active") or 0),
+                "skipped_unacknowledged": int(
+                    candidate_scan.get("skipped_unacknowledged") or 0
+                ),
+                "artifacts_deleted": 0,
+                "task_ids": [
+                    str(item["task_id"])
+                    for item in decisions
+                    if item.get("can_cleanup")
+                ],
+                "counts": dict(candidate_scan.get("counts") or {}),
+            }
+        else:
+            deletion = cleanup.cleanup_tasks(candidate_ids)
+            deleted_ids = list(deletion.get("deleted_task_ids") or [])
+            result = {
+                **deletion,
+                "matched": len(candidate_ids),
+                "dismissed": len(deleted_ids),
+                "skipped_active": int(candidate_scan.get("skipped_active") or 0)
+                + int(deletion.get("skipped_active") or 0),
+                "skipped_unacknowledged": int(
+                    candidate_scan.get("skipped_unacknowledged") or 0
+                )
+                + int(deletion.get("skipped_unacknowledged") or 0),
+                "artifacts_deleted": 0,
+                "task_ids": deleted_ids,
+                "counts": dict(candidate_scan.get("counts") or {}),
+            }
+            self._task_authority_index.remove(deleted_ids, site_name=site_name)
         ids = list(result.get("task_ids") or [])
         if ids:
             self._publish_history_event(
@@ -577,11 +653,93 @@ class TaskApplicationService:
     ) -> dict[str, object]:
         selected_site = str(site_name or self.site_name or "demo")
         repository = self.repository(selected_site)
-        return TaskCleanupService(
+        result = TaskCleanupService(
             repository,
             paths=self.paths,
             site_name=selected_site,
         ).cleanup_tasks(task_ids)
+        self._task_authority_index.remove(
+            list(result.get("deleted_task_ids") or []),
+            site_name=selected_site,
+        )
+        return result
+
+    @staticmethod
+    def _merge_cleanup_results(
+        results: list[dict[str, object]],
+        *,
+        dry_run: bool,
+    ) -> dict[str, object]:
+        """Merge per-site Operational GC results without a cross-DB transaction."""
+
+        list_fields = ("task_ids", "requested_task_ids", "deleted_task_ids", "decisions", "skipped")
+        sum_fields = (
+            "matched",
+            "dismissed",
+            "skipped_active",
+            "skipped_unacknowledged",
+            "artifacts_deleted",
+            "orphan_blobs_removed",
+            "orphan_blob_bytes_removed",
+            "task_payload_bytes",
+            "task_events_payload_bytes",
+            "task_snapshots_payload_bytes",
+            "task_results_payload_bytes",
+            "external_bytes_created",
+            "eligible_count",
+            "protected_count",
+            "estimated_reclaimable_bytes",
+            "estimated_reclaimable_payload_bytes",
+        )
+        merged: dict[str, object] = {
+            field: [] for field in list_fields
+        }
+        for field in sum_fields:
+            merged[field] = 0
+        merged["estimated_reclaimable_rows"] = {}
+        merged["deleted"] = {}
+        merged["row_counts"] = {}
+        merged["counts"] = {
+            "completed": 0,
+            "cancelled": 0,
+            "expired": 0,
+            "alerts": 0,
+        }
+        checks: list[str] = []
+        foreign_key_checks: list[str] = []
+        for result in results:
+            for field in list_fields:
+                values = result.get(field)
+                if isinstance(values, list):
+                    merged[field].extend(values)  # type: ignore[union-attr]
+            for field in sum_fields:
+                merged[field] = int(merged[field] or 0) + int(result.get(field) or 0)
+            for field in ("estimated_reclaimable_rows", "deleted", "row_counts", "counts"):
+                values = result.get(field)
+                if not isinstance(values, dict):
+                    continue
+                target = merged[field]
+                for key, value in values.items():
+                    target[key] = int(target.get(key, 0)) + int(value or 0)  # type: ignore[union-attr]
+            check = str(result.get("quick_check") or "not_run")
+            foreign_key_check = str(result.get("foreign_key_check") or "not_run")
+            if check not in {"not_run", ""}:
+                checks.append(check)
+            if foreign_key_check not in {"not_run", ""}:
+                foreign_key_checks.append(foreign_key_check)
+        merged["quick_check"] = "ok" if checks and all(item == "ok" for item in checks) else (
+            "; ".join(dict.fromkeys(checks)) if checks else "not_run"
+        )
+        merged["foreign_key_check"] = "ok" if foreign_key_checks and all(
+            item == "ok" for item in foreign_key_checks
+        ) else (
+            "; ".join(dict.fromkeys(foreign_key_checks))
+            if foreign_key_checks
+            else "not_run"
+        )
+        if not dry_run:
+            merged["task_ids"] = list(merged["deleted_task_ids"])
+        return merged
 
     def reconcile_orphaned_local_tasks(self) -> list[TaskSnapshot]:
         return self.repository().reconcile_orphaned_local_tasks(self._is_process_alive)

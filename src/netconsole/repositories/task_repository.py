@@ -1091,7 +1091,9 @@ class TaskRepository:
         def operation() -> None:
             nonlocal skipped_active, skipped_unacknowledged
             with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
+                # Preview is a read-only candidate scan.  A deferred read
+                # transaction avoids taking a writer lock on a live tasks.db.
+                conn.execute("BEGIN" if dry_run else "BEGIN IMMEDIATE")
                 rows = conn.execute(
                     """
                     SELECT task_id, status, finished_time, updated_time, error_message,
@@ -1195,7 +1197,9 @@ class TaskRepository:
             "skipped_active": skipped_active,
             "skipped_unacknowledged": skipped_unacknowledged,
             "artifacts_deleted": 0,
-            "task_ids": [] if dry_run else matched_ids,
+            # Dry-run IDs are the candidate set for the application-layer
+            # reference checks.  They are not a deletion result.
+            "task_ids": list(matched_ids),
             "counts": counts,
         }
 
@@ -1219,6 +1223,10 @@ class TaskRepository:
         orphan_blobs_removed = 0
         orphan_blob_bytes_removed = 0
         quick_check = "not_run"
+        foreign_key_check = "not_run"
+        task_events_payload_bytes = 0
+        task_snapshots_payload_bytes = 0
+        task_results_payload_bytes = 0
 
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1234,26 +1242,67 @@ class TaskRepository:
                     f"SELECT task_id, status FROM task_snapshots WHERE task_id IN ({placeholders})",
                     normalized,
                 ).fetchall()
-                deleted_ids = [
+                terminal_ids = {
                     str(row[0])
                     for row in rows
                     if str(row[1] or "").upper() in TERMINAL_TASK_STATE_VALUES
+                }
+                # Keep the caller's order stable for API/UI reconciliation.
+                deleted_ids = [
+                    task_id for task_id in normalized if task_id in terminal_ids
                 ]
                 for start in range(0, len(deleted_ids), 500):
                     chunk = deleted_ids[start : start + 500]
                     chunk_placeholders = ",".join("?" for _ in chunk)
                     if "task_events" in tables:
+                        payload_row = conn.execute(
+                            f"SELECT COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) "
+                            f"FROM task_events WHERE task_id IN ({chunk_placeholders})",
+                            chunk,
+                        ).fetchone()
+                        task_events_payload_bytes += int(payload_row[0] or 0)
                         cursor = conn.execute(
                             f"DELETE FROM task_events WHERE task_id IN ({chunk_placeholders})",
                             chunk,
                         )
                         deleted["task_events"] += max(0, int(cursor.rowcount))
                     if "task_results" in tables:
+                        payload_row = conn.execute(
+                            f"SELECT COALESCE(SUM(byte_size), 0) "
+                            f"FROM task_results WHERE task_id IN ({chunk_placeholders})",
+                            chunk,
+                        ).fetchone()
+                        task_results_payload_bytes += int(payload_row[0] or 0)
                         cursor = conn.execute(
                             f"DELETE FROM task_results WHERE task_id IN ({chunk_placeholders})",
                             chunk,
                         )
                         deleted["task_results"] += max(0, int(cursor.rowcount))
+                    snapshot_columns = {
+                        str(row[1])
+                        for row in conn.execute("PRAGMA table_info(task_snapshots)")
+                    }
+                    payload_columns = [
+                        column
+                        for column in (
+                            "result_json",
+                            "result_summary_json",
+                            "message",
+                            "error_message",
+                        )
+                        if column in snapshot_columns
+                    ]
+                    if payload_columns:
+                        payload_expression = " + ".join(
+                            f"LENGTH(CAST(COALESCE({column}, '') AS BLOB))"
+                            for column in payload_columns
+                        )
+                        payload_row = conn.execute(
+                            f"SELECT COALESCE(SUM({payload_expression}), 0) "
+                            f"FROM task_snapshots WHERE task_id IN ({chunk_placeholders})",
+                            chunk,
+                        ).fetchone()
+                        task_snapshots_payload_bytes += int(payload_row[0] or 0)
                     cursor = conn.execute(
                         f"DELETE FROM task_snapshots WHERE task_id IN ({chunk_placeholders})",
                         chunk,
@@ -1265,7 +1314,7 @@ class TaskRepository:
                             "(task_id, retired_at, reason) VALUES (?, ?, ?)",
                             [(task_id, utc_now_iso(), reason) for task_id in chunk],
                         )
-            if "task_result_blobs" in tables and "task_results" in tables:
+            if deleted_ids and "task_result_blobs" in tables and "task_results" in tables:
                 orphan_rows = conn.execute(
                     "SELECT content_sha256, compressed_bytes FROM task_result_blobs "
                     "WHERE NOT EXISTS (SELECT 1 FROM task_results "
@@ -1282,6 +1331,10 @@ class TaskRepository:
                     )
             conn.commit()
             quick_check = str(conn.execute("PRAGMA quick_check").fetchone()[0])
+            foreign_key_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+            foreign_key_check = "ok" if not foreign_key_rows else json.dumps(
+                [tuple(row) for row in foreign_key_rows], ensure_ascii=False
+            )
 
         return {
             "deleted_task_ids": deleted_ids,
@@ -1289,6 +1342,16 @@ class TaskRepository:
             "orphan_blobs_removed": orphan_blobs_removed,
             "orphan_blob_bytes_removed": orphan_blob_bytes_removed,
             "quick_check": quick_check,
+            "foreign_key_check": foreign_key_check,
+            "task_events_payload_bytes": task_events_payload_bytes,
+            "task_snapshots_payload_bytes": task_snapshots_payload_bytes,
+            "task_results_payload_bytes": task_results_payload_bytes,
+            "task_payload_bytes": (
+                task_events_payload_bytes
+                + task_snapshots_payload_bytes
+                + task_results_payload_bytes
+                + orphan_blob_bytes_removed
+            ),
         }
 
     def read_task_cleanup_context(self, task_id: str) -> dict[str, object] | None:
@@ -1370,6 +1433,17 @@ class TaskRepository:
                 if "task_events" in tables
                 else 0
             )
+            event_payload_bytes = (
+                int(
+                    conn.execute(
+                        "SELECT COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) "
+                        "FROM task_events WHERE task_id=?",
+                        (normalized,),
+                    ).fetchone()[0]
+                )
+                if "task_events" in tables
+                else 0
+            )
             result_rows = 0
             result_bytes = 0
             if "task_results" in tables:
@@ -1380,14 +1454,26 @@ class TaskRepository:
                 ).fetchone()
                 result_rows = int(result_count[0])
                 result_bytes = int(result_count[1])
+            snapshot_payload_bytes = sum(
+                len(str(row.get(column) or "").encode("utf-8"))
+                for column in (
+                    "result_json",
+                    "result_summary_json",
+                    "message",
+                    "error_message",
+                )
+                if column in row
+            )
             return {
                 "snapshot": row,
                 "online_mapping": online_mapping,
                 "result": result,
                 "result_valid": result_valid,
                 "event_rows": event_rows,
+                "event_payload_bytes": event_payload_bytes,
                 "result_rows": result_rows,
                 "result_bytes": result_bytes,
+                "snapshot_payload_bytes": snapshot_payload_bytes,
             }
 
     def enforce_terminal_history_retention(self) -> dict[str, object]:

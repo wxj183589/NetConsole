@@ -259,15 +259,16 @@ async function cleanupHistory(cleanupType: TaskCleanupType): Promise<void> {
   }
   try {
     const preview = await store.previewCleanup(cleanupType)
-    if (!preview.matched) {
+    const eligibleCount = preview.eligible_count ?? preview.matched
+    if (!eligibleCount) {
       ElMessage.info(t('job_center.cleanup.empty', '当前没有可清理的已结束任务'))
       return
     }
     await confirm({
       type: 'DANGER',
       title: t('job_center.cleanup.dialog_title', '清理任务记录'),
-      message: cleanupMessage(cleanupType, preview.matched),
-      highlight: `${preview.matched} 个`,
+      message: cleanupMessage(cleanupType, eligibleCount),
+      highlight: `${eligibleCount} 个`,
       notice: cleanupNotice(preview),
       width: 'min(468px, calc(100vw - 32px))',
       confirmText: t('job_center.cleanup.confirm', '确认清理'),
@@ -324,11 +325,18 @@ function cleanupNotice(preview: TaskCleanupResult): string {
         '{count} 个未处理的失败或警告任务将保留。',
       ).replace('{count}', String(preview.skipped_unacknowledged))
     : ''
+  const protectedCount = Math.max(
+    0,
+    (preview.protected_count ?? 0) - preview.skipped_unacknowledged,
+  )
+  const guarded = protectedCount
+    ? `${protectedCount} 个存在运行/业务引用或不可验证元数据的任务将保留。`
+    : ''
   const safety = t(
     'job_center.cleanup.no_files',
-    '不会影响运行中或等待中的任务，也不会删除日志、采集文件或导出结果。',
+    '不会影响运行中或等待中的任务；只删除 tasks.db 任务记录，不删除 Log Center 日志、采集文件或导出结果。',
   )
-  return [retained, safety].filter(Boolean).join(' ')
+  return [retained, guarded, safety].filter(Boolean).join(' ')
 }
 
 async function acknowledgeAllAlerts(): Promise<void> {
@@ -352,7 +360,7 @@ async function acknowledgeTask(task: TaskItem): Promise<void> {
 async function dismissTask(task: TaskItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
-      t('job_center.cleanup.dismiss_single', '仅从任务中心移除此记录，不会删除日志、采集文件或导出结果。'),
+      t('job_center.cleanup.dismiss_single', '将删除 tasks.db 中该任务的运行记录和事件尾日志，但不会删除 Log Center 日志、采集文件或导出结果。'),
       t('job_center.cleanup.dismiss', '从列表移除'),
       {
         confirmButtonText: t('job_center.cleanup.dismiss_confirm', '移除'),

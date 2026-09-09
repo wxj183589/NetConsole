@@ -72,7 +72,7 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 
 `site_ssh_credentials.sqlite3` 只保存 Windows DPAPI 密文和凭据引用，不保存 Jump Host 明文密码；它按局点隔离，Relay 配置修改或切换局点时不会复用其他局点的 Transport。由于 DPAPI 绑定当前 Windows 安全上下文，跨电脑迁移不携带可用凭据，目标机器必须重新录入密码。
 
-`tasks.db` schema version 5 增加不可变 `task_results` 与按内容寻址的 `task_result_blobs`。B3 对含对象结果的 `finished/error/cancelled` 在同一 `BEGIN IMMEDIATE` 中写 result reference、blob authority、snapshot 和 terminal event；确定性 `result_id` 绑定 task、真实结果生产事件类型和 canonical JSON SHA-256。Snapshot 当前状态不能替代结果生产事件身份：legacy 数据中的 `FAILED snapshot + finished result event` 按 task/hash 读取，后续 Artifact finalization 可更新 snapshot 的兼容投影而不改写 terminal authority；event ref 仍精确校验 task、event type 和 Blob 内容。旧 full-only、dual-write 和 ref-only 数据均可读；新 runtime rows 不再把完整 body 写回 `task_results.canonical_json`。Site Return Package 以单事务合并 `task_results -> task_snapshots -> task_events -> online_mr_task_sessions`，不可变结果、事件或 mapping 冲突失败关闭。历史 backfill、ref authority、精确 retention、DELETE 和 compact 仅允许在 `D:\study` 隔离候选库演练；生产入口仍未启用。
+`tasks.db` schema version 5 增加不可变 `task_results` 与按内容寻址的 `task_result_blobs`。B3 对含对象结果的 `finished/error/cancelled` 在同一 `BEGIN IMMEDIATE` 中写 result reference、blob authority、snapshot 和 terminal event；确定性 `result_id` 绑定 task、真实结果生产事件类型和 canonical JSON SHA-256。Snapshot 当前状态不能替代结果生产事件身份：legacy 数据中的 `FAILED snapshot + finished result event` 按 task/hash 读取，后续 Artifact finalization 可更新 snapshot 的兼容投影而不改写 terminal authority；event ref 仍精确校验 task、event type 和 Blob 内容。旧 full-only、dual-write 和 ref-only 数据均可读；新 runtime rows 不再把完整 body 写回 `task_results.canonical_json`。Site Return Package 以单事务合并 `task_results -> task_snapshots -> task_events -> online_mr_task_sessions`，不可变结果、事件或 mapping 冲突失败关闭。通用历史 backfill、精确 retention、跨任务批量 DELETE 和 compact 仍仅允许在 `D:\study` 隔离候选库演练；生产入口仍未启用。任务中心显式“从列表移除/清理已完成任务”属于另行定义的、逐任务引用检查后的 operational GC，不等同于通用 retention 或数据库 compact。
 
 ## devices.db 当前态与历史态（HistoryStore 退役）
 
@@ -92,7 +92,7 @@ Electron 的 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 和 `t
 
 Legacy external HistoryStore 已完成退役：不存在迁移、退役、drain、scheduler、catalog rollover 或 History maintenance CLI。正常启动、安装、Update All 和无人值守任务均不得创建或读取外部 `db/history`。
 
-Current、Recent10 和各领域有界 `*_history` 仍按其现有 repository 规则运行。`TaskHistoryStore` 是 Task Center 的任务归档能力，与 Legacy external HistoryStore 无关，保留不变。
+Current、Recent10 和各领域有界 `*_history` 仍按其现有 repository 规则运行。Task Center 不再把 `TaskHistoryStore` 作为永久任务归档能力；任务中心只保留当前/近期 operational rows，长期业务日志由 Log Center 和各领域事实源负责。
 
 ### 写入、查询与升级流程
 
@@ -197,11 +197,11 @@ API 调用方内存/Renderer 状态中流转，不写 SQLite、不修改 NDJSON�
 
 ## 清理边界
 
-局点业务数据的物理瘦身由独立的 Site Retention 用例处理，长期规则见[局点数据保留与清理](./SITE_RETENTION.md)。扫描报告位于 `<data_root>/runtime/site_retention/<site_id>/`，只保存局点相对路径、策略、证据摘要和服务端令牌；它不是业务事实源，也不允许 Renderer 回传任意路径。历史数据库备份/过时版本和已被完整会话 ZIP 覆盖的 Online MR 松散 raw 保持既有受控流程。Task history 当前只输出按 type/status/time 的 typed preview；期限为 `USER_POLICY_REQUIRED`，候选不可 apply，Task DELETE/VACUUM 未启用。当前数据库、未知数据库、MESH、无人值守、设备采集历史和人工保留数据不自动清理。
+局点业务数据的物理瘦身由独立的 Site Retention 用例处理，长期规则见[局点数据保留与清理](./SITE_RETENTION.md)。扫描报告位于 `<data_root>/runtime/site_retention/<site_id>/`，只保存局点相对路径、策略、证据摘要和服务端令牌；它不是业务事实源，也不允许 Renderer 回传任意路径。历史数据库备份/过时版本和已被完整会话 ZIP 覆盖的 Online MR 松散 raw 保持既有受控流程。Task Center 的显式移除/清理先做 typed preview 和资源引用检查，再由任务 Repository 在事务内删除安全的 task-owned rows；它不删除事件所代表的长期 Log Center 日志、Ground/Online MR 事实、raw、导出文件或 Artifact。除此之外不启用自动任务 retention、scheduler、通用历史归档或 VACUUM；当前数据库、未知数据库、MESH、无人值守、设备采集历史和人工保留数据不自动清理。
 
 自动和手动缓存清理只能处理已白名单的 `runtime/cache/`、`runtime/temp/` 与受认可的运行日志；日志 Housekeeper 每小时 best-effort 检查 `runtime/logs/`，总量超过 300 MB 时按最旧 rotated electron、app、WPS、diagnostic、archive 顺序清到 250 MB。活动 `electron.log`/`app.log`、启动/崩溃诊断、`database_upgrade_audit.jsonl`、最近 5 分钟仍可能被 WPS 占用的文件和未识别文件均受保护；不能因单个文件锁定或删除失败阻断启动。该清理不触及局点数据库、配置、raw、会话业务日志、正式 outputs、报告、备份、Agent 包、迁移材料或 `.trash/`。普通局点删除只允许把 Registry 中的一级 `sites/<site>/` 普通目录原子移动到 `.trash/`，不递归永久删除；移动和 Registry 更新任一阶段失败都必须回滚。执行前必须重新确认规范化路径位于数据根允许子树，并拒绝符号链接和路径逃逸。
 
-任务中心的“清理”不是磁盘清理。它只在当前局点 `tasks.db` 的任务快照上写入 `dismissed_at / dismissed_by / dismiss_reason`，隐藏已结束的历史记录；任务事件、日志、采集结果、会话文件、正式导出和 Artifact 均保留。真正的物理清理只能由独立数据库维护或文件管理用例按白名单、保留期和路径边界执行。
+任务中心的“清理”不是通用磁盘清理。当前 GUI 的“从列表移除”和批量“清理已完成任务”只接受终态、非活动引用、非未确认告警且资源引用可核验的任务，并在 `tasks.db` 事务内删除 task-owned 的 snapshot/event/result rows，写入 tombstone 防止旧 Worker 迟到事件复活；外部采集结果、会话文件、正式导出、Artifact、Ground/Online MR 事实及 Log Center 日志均保留。它不提供自动保留期框架、scheduler 或 VACUUM；跨任务历史 retention 仍由独立授权的数据库维护用例处理。
 
 用户可在 NetConsole 外部删除单个导出、Artifact 目录、局点目录或隔离数据根。系统不把这种外部变化回写成新的任务失败：任务列表存在时动态报告 Artifact `MISSING/INVALID`，`tasks.db` 或局点目录不存在时返回空任务状态，新的空数据根不会从旧根恢复任务。必要顶层目录仍由 `PathResolver` 启动流程按当前根创建；任何协调和下载都只解析当前数据根与当前局点下的受控相对路径，不跟随越界路径或符号链接。恢复同一文件后可再次动态识别为 `AVAILABLE`，无需持久化可用性字段。
 

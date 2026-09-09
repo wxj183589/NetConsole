@@ -131,6 +131,26 @@ class JobCenterCleanupResultDTO(ApiModel):
     artifacts_deleted: int = 0
     task_ids: list[str] = Field(default_factory=list)
     counts: JobCenterCleanupCountsDTO = Field(default_factory=JobCenterCleanupCountsDTO)
+    requested_task_ids: list[str] = Field(default_factory=list)
+    deleted_task_ids: list[str] = Field(default_factory=list)
+    skipped: list[dict[str, object]] = Field(default_factory=list)
+    deleted: dict[str, int] = Field(default_factory=dict)
+    row_counts: dict[str, int] = Field(default_factory=dict)
+    orphan_blobs_removed: int = 0
+    orphan_blob_bytes_removed: int = 0
+    task_payload_bytes: int = 0
+    task_events_payload_bytes: int = 0
+    task_snapshots_payload_bytes: int = 0
+    task_results_payload_bytes: int = 0
+    external_bytes_created: int = 0
+    estimated_reclaimable_bytes: int = 0
+    estimated_reclaimable_payload_bytes: int = 0
+    estimated_reclaimable_rows: dict[str, int] = Field(default_factory=dict)
+    eligible_count: int = 0
+    protected_count: int = 0
+    decisions: list[dict[str, object]] = Field(default_factory=list)
+    quick_check: str = "not_run"
+    foreign_key_check: str = "not_run"
 
 
 class JobCenterAcknowledgeRequest(ApiModel):

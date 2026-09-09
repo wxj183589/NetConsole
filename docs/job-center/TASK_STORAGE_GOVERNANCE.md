@@ -27,8 +27,11 @@ Package merge continue to validate the same immutable result identity.
 
 The explicit `TaskCleanupService` preview/cleanup path can remove only
 task-owned rows after reference checks and a terminal-state recheck. It never
-deletes Ground, Online MR, history, raw evidence or external Artifact files.
-Soft-dismiss remains reversible UI state and is not physical deletion.
+deletes Ground, Online MR, history, raw evidence, application Log Center
+files or external Artifact files. The current Task Center GUI routes both
+single “remove from list” and batch cleanup through this operational GC path;
+the legacy repository soft-dismiss entrypoint remains only for compatibility
+callers and is not the current GUI behavior.
 
 ## Read-only Profiler
 

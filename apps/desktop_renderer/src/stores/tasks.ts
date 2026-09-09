@@ -11,6 +11,7 @@ import {
   getTaskLogs,
   listTasks,
 } from '../api/tasks'
+import { ApiRequestError } from '../api/client'
 import { resolveWebSocketUrl } from '../platform/runtime'
 import type {
   TaskCleanupResult,
@@ -39,6 +40,8 @@ export const useTaskStore = defineStore('tasks', () => {
   let detailContextGeneration = 0
   let logContextGeneration = 0
   let activeLogRequest: { generation: number; taskId: string } | null = null
+  let detailPollingStopped = false
+  let logPollingStopped = false
   let listTimer: number | null = null
   let detailTimer: number | null = null
   let logTimer: number | null = null
@@ -95,11 +98,19 @@ export const useTaskStore = defineStore('tasks', () => {
     logError.value = ''
     logContextGeneration += 1
     activeLogRequest = null
+    detailPollingStopped = false
+    logPollingStopped = false
     setLogsExpanded(false)
     try {
       const detail = await getTask(taskId)
       if (generation !== detailContextGeneration || !detailVisible) return
       selected.value = detail
+      if (isTerminalSnapshot(detail)) {
+        detailPollingStopped = true
+        stopDetailTimer()
+      } else {
+        startDetailTimer()
+      }
       setLogsExpanded(true)
     } catch (cause) {
       if (generation !== detailContextGeneration || !detailVisible) return
@@ -110,8 +121,8 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  async function refreshSelected(): Promise<void> {
-    if (!detailVisible || !selected.value || detailBusy) return
+  async function refreshSelected(force = false): Promise<void> {
+    if (!detailVisible || !selected.value || detailBusy || (detailPollingStopped && !force)) return
     const generation = detailContextGeneration
     const taskId = selected.value.id
     detailBusy = true
@@ -123,9 +134,21 @@ export const useTaskStore = defineStore('tasks', () => {
         || selected.value?.id !== taskId
       ) return
       selected.value = detail
+      if (isTerminalSnapshot(detail)) {
+        detailPollingStopped = true
+        stopDetailTimer()
+      } else {
+        startDetailTimer()
+      }
       detailError.value = ''
     } catch (cause) {
       if (generation !== detailContextGeneration || selected.value?.id !== taskId) return
+      if (isTerminalSnapshot(selected.value) && isNotFound(cause)) {
+        detailPollingStopped = true
+        stopDetailTimer()
+        detailError.value = ''
+        return
+      }
       detailError.value = cause instanceof Error ? cause.message : '任务详情刷新失败'
     } finally {
       detailBusy = false
@@ -133,7 +156,7 @@ export const useTaskStore = defineStore('tasks', () => {
   }
 
   async function refreshLogs(): Promise<void> {
-    if (!detailVisible || !logsExpanded.value || !selected.value) return
+    if (!detailVisible || !logsExpanded.value || !selected.value || logPollingStopped) return
     const generation = logContextGeneration
     const taskId = selected.value.id
     if (activeLogRequest?.generation === generation && activeLogRequest.taskId === taskId) return
@@ -148,9 +171,19 @@ export const useTaskStore = defineStore('tasks', () => {
         || !logsExpanded.value
       ) return
       logs.value = payload.lines
+      if (hasTerminalLog(payload.lines)) {
+        logPollingStopped = true
+        stopLogTimer()
+      }
       logError.value = ''
     } catch (cause) {
       if (generation !== logContextGeneration || selected.value?.id !== taskId) return
+      if (isTerminalSnapshot(selected.value) && isNotFound(cause)) {
+        logPollingStopped = true
+        stopLogTimer()
+        logError.value = ''
+        return
+      }
       logError.value = cause instanceof Error ? cause.message : '任务日志读取失败'
     } finally {
       if (activeLogRequest === request) activeLogRequest = null
@@ -229,6 +262,8 @@ export const useTaskStore = defineStore('tasks', () => {
       setLogsExpanded(false)
       detailLoading.value = false
       selected.value = null
+      detailPollingStopped = false
+      logPollingStopped = false
       logs.value = []
       detailError.value = ''
       logError.value = ''
@@ -239,7 +274,7 @@ export const useTaskStore = defineStore('tasks', () => {
     logsExpanded.value = value
     if (logTimer !== null) window.clearInterval(logTimer)
     logTimer = null
-    if (value && pollingConsumers.size && detailVisible) {
+    if (value && pollingConsumers.size && detailVisible && !logPollingStopped) {
       void refreshLogs()
       logTimer = window.setInterval(() => void refreshLogs(), 1000)
     }
@@ -252,7 +287,7 @@ export const useTaskStore = defineStore('tasks', () => {
     if (pollingConsumers.size !== 1) return
     connectSocket()
     void refresh().finally(scheduleListRefresh)
-    detailTimer = window.setInterval(() => void refreshSelected(), 2000)
+    startDetailTimer()
     if (logsExpanded.value) setLogsExpanded(true)
   }
 
@@ -362,6 +397,38 @@ export const useTaskStore = defineStore('tasks', () => {
       logContextGeneration += 1
       activeLogRequest = null
     }
+  }
+
+  function stopDetailTimer(): void {
+    if (detailTimer !== null) window.clearInterval(detailTimer)
+    detailTimer = null
+  }
+
+  function startDetailTimer(): void {
+    if (!pollingConsumers.size || !detailVisible || detailPollingStopped || detailTimer !== null) return
+    detailTimer = window.setInterval(() => void refreshSelected(), 2000)
+  }
+
+  function stopLogTimer(): void {
+    if (logTimer !== null) window.clearInterval(logTimer)
+    logTimer = null
+  }
+
+  function isTerminalSnapshot(task: TaskItem | null): boolean {
+    return Boolean(task && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.status))
+  }
+
+  function hasTerminalLog(lines: TaskLogLine[]): boolean {
+    return lines.some((line) => {
+      if (['finished', 'error', 'cancelled'].includes(line.type)) return true
+      if (line.type !== 'state') return false
+      const state = String(line.details?.state || '').toUpperCase()
+      return ['COMPLETED', 'FAILED', 'CANCELLED'].includes(state)
+    })
+  }
+
+  function isNotFound(cause: unknown): boolean {
+    return cause instanceof ApiRequestError && cause.status === 404
   }
 
   function applyAcknowledged(taskIds: string[], acknowledgedAt: string): void {

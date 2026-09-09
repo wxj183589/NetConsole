@@ -196,7 +196,7 @@ def test_external_events_follow_active_site_after_current_site_change(
     assert _stored(service, SITE_B, task_id) is None
 
 
-def test_explicit_site_queries_work_after_restart_without_scanning_other_sites(
+def test_task_authority_index_resolves_site_task_after_restart_and_site_switch(
     tmp_path: Path,
 ) -> None:
     first = _service(tmp_path)
@@ -217,14 +217,86 @@ def test_explicit_site_queries_work_after_restart_without_scanning_other_sites(
 
     restarted = _service(tmp_path, site_name=SITE_B)
     assert restarted._job_sites == {}
-    assert restarted.get_task(task_id) is None
+    assert restarted.get_task(task_id).status is TaskState.COMPLETED
     assert restarted.get_task(task_id, site_name=SITE_A).status is TaskState.COMPLETED
     assert restarted.list_events(task_id, site_name=SITE_A)
 
     query = JobCenterQueryService(restarted.paths)
     assert [item.site_name for item in query.list_tasks(SITE_A)] == [SITE_A]
+    assert [item.site_name for item in query.list_tasks(
+        SITE_B, include_tasks_from_other_sites=True
+    )] == [SITE_A]
     assert query.get_task(SITE_A, task_id) is not None
-    assert query.get_task(SITE_B, task_id) is None
+    assert query.get_task(SITE_B, task_id).site_name == SITE_A
+
+
+def test_site_import_recent_task_survives_active_site_switch_and_keeps_logs(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, site_name=SITE_A)
+    task_id = "site-import-after-switch"
+    service.prepare(
+        BackgroundJob(
+            job_id=task_id,
+            task_type="site_import",
+            params={"site_name": SITE_A, "task_name": "导入局点"},
+        )
+    )
+    service.mark_running(task_id)
+    service.feed_stdout(
+        task_id,
+        encode_event(progress_event(task_id, "import", 1, 1, "正在导入")).encode(
+            "utf-8"
+        ),
+    )
+    service.feed_stdout(
+        task_id,
+        encode_event(finished_event(task_id, {"site_id": SITE_B})).encode("utf-8"),
+    )
+    service.complete(task_id, 0)
+    service.rebind_site(SITE_B)
+
+    query = JobCenterQueryService(service.paths)
+    task = query.get_task(SITE_B, task_id)
+    logs = query.get_logs(SITE_B, task_id)
+    assert task is not None
+    assert task.status == TaskState.COMPLETED.value
+    assert logs is not None
+    assert any(line.type == "finished" for line in logs.lines)
+    assert [item.id for item in query.list_tasks(
+        SITE_B, include_tasks_from_other_sites=True
+    )] == [task_id]
+
+
+def test_global_task_cleanup_reuses_operational_gc_for_indexed_sites(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, site_name=SITE_A)
+    for site_name, task_id in ((SITE_A, "cleanup-site-a"), (SITE_B, "cleanup-site-b")):
+        service.create_external_task(
+            task_id=task_id,
+            task_type="multisite_cleanup_test",
+            task_name=task_id,
+            source="agent",
+            site_name=site_name,
+        )
+        service.record_external_event(
+            task_id,
+            "finished",
+            {"result": {"site": site_name}},
+            source="agent",
+            site_name=site_name,
+        )
+
+    result = service.cleanup_history_tasks(
+        "completed",
+        site_name=SITE_A,
+        all_sites=True,
+    )
+
+    assert set(result["deleted_task_ids"]) == {"cleanup-site-a", "cleanup-site-b"}
+    assert _stored(service, SITE_A, "cleanup-site-a") is None
+    assert _stored(service, SITE_B, "cleanup-site-b") is None
 
 
 def test_same_task_id_is_distinguished_by_site_scoped_repository_and_query(

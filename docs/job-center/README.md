@@ -126,14 +126,14 @@ LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fpin
 
 面向 Vue 全局任务中心的 `/api/job-center` 还提供受控历史管理：
 
-- `POST /api/job-center/cleanup`：按 `completed / cancelled / expired / completed_and_expired / resolved_alerts / all_history` 预览或软清理当前局点任务；`dry_run=true` 返回相同策略下的匹配和跳过数量；
+- `POST /api/job-center/cleanup`：按 `completed / cancelled / expired / completed_and_expired / resolved_alerts / all_history` 预览或清理当前局点及已登记任务归属局点的 operational rows；`dry_run=true` 返回相同策略下的匹配、可删除和保护数量；该接口是显式操作，不是自动 retention scheduler；
 - `POST /api/job-center/acknowledge`、`POST /api/job-center/tasks/{id}/acknowledge`：将失败或业务告警标记为已处理，停止顶部提醒但仍保留在历史列表；
 - `POST /api/job-center/tasks/{id}/dismiss`：从任务中心移除单条终态记录；失败或告警必须先标记为已处理；
-- `delete_artifacts=true` 固定拒绝。任务中心历史管理不删除事件、日志、采集文件、raw、导出结果或 Artifact。
+- `delete_artifacts=true` 固定拒绝。任务中心 GC 只删除安全任务的 task-owned snapshot/event/result rows，不删除长期 Log Center 日志、Ground/Online MR 事实、采集文件、raw、导出结果或 Artifact。
 
-`tasks.db` schema v5 继续复用既有 `finished_time`，不建立重复的 `finished_at`，并为快照增加 `expires_at / acknowledged_at / dismissed_at / dismissed_by / dismiss_reason`。成功与取消默认保留 7 天，失败及业务告警默认保留 30 天；`expires_at` 由 Backend 在写入终态和旧库幂等升级时计算，Vue 不根据本机时间推断。默认任务列表只查询 `dismissed_at = ''`，软清理后的快照、事件和关联结果仍可供审计或领域关系使用。物理清理仅接受显式 preview 后的安全候选，由 Repository 在事务内删除 task-owned rows；它不删除 Ground、Online MR、历史、Artifact 或 raw 文件。
+`tasks.db` schema v5 继续复用既有 `finished_time`，不建立重复的 `finished_at`，并为快照保留 `expires_at / acknowledged_at / dismissed_at / dismissed_by / dismiss_reason` 兼容字段。`expires_at` 不是本专项新增的自动删除授权；本专项不新增保留期计算、scheduler 或永久任务归档。默认任务列表只查询未 dismiss 的当前/近期 operational rows；显式移除和清理必须先 preview、重新校验终态与引用，再由 Repository 在事务内删除 task-owned rows，并写 tombstone 防止迟到事件复活。它不删除 Ground、Online MR、长期历史事实、Artifact 或 raw 文件。
 
-清理策略在 SQLite `BEGIN IMMEDIATE` 事务内再次校验状态。`PENDING / STARTING / RUNNING / STOPPING` 永远不会更新 `dismissed_at`；未确认的 `FAILED` 或 `COMPLETED + WARNING/PARTIAL_SUCCESS` 不进入普通完成、过期或全部历史清理。清理后 Event Hub 发送 `tasks.dismissed`，确认后发送 `tasks.acknowledged`，Vue Store 按任务 ID 增量更新；这两类 UI 管理事件不写入 Worker 的五类执行事件流。
+清理策略在 SQLite `BEGIN IMMEDIATE` 事务内再次校验状态。`PENDING / STARTING / RUNNING / STOPPING` 永远不会更新或删除；未确认的 `FAILED` 或 `COMPLETED + WARNING/PARTIAL_SUCCESS` 不进入普通完成、过期或全部历史清理。清理后 Event Hub 发送 `tasks.dismissed`，确认后发送 `tasks.acknowledged`，Vue Store 按任务 ID 增量更新；这两类 UI 管理事件不写入 Worker 的五类执行事件流。
 
 本地 Worker 由宿主进程持有。正常关闭宿主会走既有取消/清理；崩溃后重启会将失去 PID 宿主的活动快照核对为 `FAILED`。任务中心不得仅依据旧数据库状态显示伪 `RUNNING`。
 
