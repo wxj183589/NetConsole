@@ -6,7 +6,7 @@
 
 | 事实 | 当前来源 | 责任 | 同步方式 |
 | --- | --- | --- | --- |
-| 产品版本 | `src/netconsole/core/version.py` 的 `APP_VERSION` | 产品版本唯一事实源；当前为 `v1.5.5` | Python、Electron 和包元数据通过既有构建/运行契约消费；本阶段不改版本代码 |
+| 产品版本 | `src/netconsole/core/version.py` 的 `APP_VERSION` | 产品版本唯一事实源；当前为 `v1.5.6` | Python、Electron 和包元数据通过既有构建/运行契约消费；正式版本仅在发布门禁通过后显式步进 |
 | 正式包功能门禁 | `docs/release/PACKAGED_FEATURE_MATRIX.md` | 说明正式 Electron 包的功能包含范围、Feature Gate 预期和验收状态 | 发布前人工审阅；本次仅把过时的 `v1.5.4` 标题修正为 `v1.5.5`，不改历史变更内容 |
 | 项目级完整更新历史 | `docs/CHANGELOG.md` | 面向仓库、发布审阅和完整历史的详细变更记录 | 发布变更时人工维护；它不是当前 Python 包构建的直接 changelog 输入 |
 | 包内精简更新日志 | `src/netconsole/docs/changelog.md` | 面向 About/包内展示的精简用户可见日志 | `scripts/build/build_config.py` 将其作为构建输入，`clean_build_spec.py` 复制到 `netconsole/assets/changelog.md`；运行时优先读取包内 asset |

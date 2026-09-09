@@ -1,4 +1,10 @@
-v1.5.5 - Unreleased
+v1.5.6 - 2026-09-09
+- 完成主线历史分支审计与有效功能收口，不回灌已被最新主线替代的旧实现。
+- Ground Syslog 增加可靠磁盘 spool、重启恢复、容量保护和归档隔离，并按当前数据卷应用保守或高速 I/O 策略。
+- 新增当前局点范围内的只读现场诊断包，复用 Task Center、受管 Artifact 和用户另存流程；Raw 内容默认关闭。
+- 收录 E3 SSH 连接路径离线契约并清零正式门禁基线债务；历史真实设备失败记录保持不变。
+
+v1.5.5 - 2026-09-09 补充收口
 - 核心现场人工验收已确认 PASS：Windows 安装运行、局点 SSH Relay、AC over Relay、车站交换机 over Relay、轨旁 AP over Relay 和轨旁光衰采集；外部终端与独立 Windows Agent 不在本次验收范围。
 - 局点启用 Relay 后，内部设备 SSH/Telnet 统一经 `DeviceSSHConnectionFactory` 和 Jump SSH `direct-tcpip`；设备管理、AC、轨旁 AP、FIT-AP、Optical、LLDP 路径复用统一出口，Jump/Target 凭据隔离。
 - Ping/ICMP、SNMP/UDP 不属于 SSH Relay 范围；Target Host Key、认证失败和连接阶段错误分类继续按安全边界处理。

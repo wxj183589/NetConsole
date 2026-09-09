@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## v1.5.6 - 2026-09-09
+
+### 主线治理与工程质量
+
+- 完成全部本地、GitHub、NAS、worktree 与 recovery 分支的逐项 Git 审计，只将仍缺失的功能语义适配到最新主线；已合入、补丁等价和受保护分支均未盲目回灌。
+- 正式收录 E3 SSH 连接路径的长期离线契约与历史根因证据，保留首次真实设备复验失败的原始结论，不把离线测试冒充真实设备通过。
+- 清零 Python、Architecture、Ruff 与版本策略的已知基线债务，并修正活动文档命名，使正式全量门禁恢复为零容忍。
+
+### Ground、存储与现场诊断
+
+- Ground Syslog 增加内存队列到受管磁盘 spool 的可靠落盘、重启恢复、容量保护与归档隔离，保持 Raw 先于解析和 SQLite 投影提交。
+- 根据当前数据根所在卷选择保守或高速存储策略，统一 Raw 刷新、耐久同步和数据库批处理参数；识别失败时安全回退保守策略。
+- 新增受管现场诊断包：只读采集当前局点和当前数据卷的有界证据，经 Task Center、Artifact 与用户另存流程导出；Raw 内容默认不采集，须用户明确选择。
+
+## v1.5.5 补充收口 - 2026-09-09
+
 ### v1.5.5 SSH Relay 人工验收收口与 Production 包
 
 - 新增局点级 SSH Relay / Jump Host：局点默认关闭，人工启用后，内部设备 SSH/Telnet 连接统一经过 `DeviceSSHConnectionFactory`，Relay 使用 Jump 的 SSH `direct-tcpip`。
