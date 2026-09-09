@@ -5,6 +5,7 @@ import hashlib
 import json
 import queue
 import re
+import shutil
 import socket
 import threading
 import time
@@ -106,6 +107,14 @@ class UdpEnvelope:
     payload: bytes
 
 
+@dataclass(frozen=True)
+class _PersistedEnvelope:
+    envelope: UdpEnvelope
+    record: dict[str, Any]
+    raw_file_id: str
+    raw_line_number: int
+
+
 @dataclass
 class _OpenRawFile:
     file_id: str
@@ -133,6 +142,7 @@ class RawStreamWriter:
         directory_name: str | None = None,
         flush_records: int = 100,
         flush_interval_seconds: float = 1.0,
+        defer_registry: bool = False,
     ) -> None:
         self.root = Path(root)
         self.repository = repository
@@ -143,6 +153,10 @@ class RawStreamWriter:
         self.directory_name = directory_name or data_type
         self.flush_records = max(1, int(flush_records))
         self.flush_interval_seconds = max(0.1, float(flush_interval_seconds))
+        self.defer_registry = bool(defer_registry)
+        self._metadata_threads: list[threading.Thread] = []
+        self._metadata_errors: dict[str, str] = {}
+        self._metadata_lock = threading.Lock()
         self._generation = uuid.uuid4().hex[:8]
         self._files: dict[tuple[str, str, str], _OpenRawFile] = {}
         self.records_written = 0
@@ -158,6 +172,11 @@ class RawStreamWriter:
         return {
             current.file_id: current.record_count for current in self._files.values()
         }
+
+    @property
+    def current_file(self) -> str:
+        current = next(reversed(self._files.values()), None)
+        return current.relative_path if current is not None else ""
 
     def write(self, record: dict[str, Any], received_at: datetime) -> tuple[str, int]:
         started = time.perf_counter()
@@ -238,8 +257,7 @@ class RawStreamWriter:
             last_flush_at=time.monotonic(),
         )
         self._files[key] = current
-        self.repository.upsert_raw_file(
-            {
+        values = {
                 "file_id": file_id,
                 "run_id": self.run_id,
                 "train_id": "" if train_id == "_unidentified" else train_id,
@@ -255,7 +273,7 @@ class RawStreamWriter:
                 "archive_status": "PENDING",
                 "parse_status": "STREAMING",
             }
-        )
+        self._submit_registry(values)
         return current
 
     def _close_one(self, key: tuple[str, str, str], ended_at: str) -> None:
@@ -265,8 +283,7 @@ class RawStreamWriter:
         current.handle.flush()
         current.handle.close()
         size = current.path.stat().st_size
-        self.repository.upsert_raw_file(
-            {
+        values = {
                 "file_id": current.file_id,
                 "run_id": self.run_id,
                 "train_id": "" if key[0] == "_unidentified" else key[0],
@@ -286,7 +303,48 @@ class RawStreamWriter:
                     else "SUMMARIZED"
                 ),
             }
+        self._submit_registry(values)
+
+    def _submit_registry(self, values: dict[str, Any]) -> None:
+        if not self.defer_registry:
+            self.repository.upsert_raw_file(values)
+            return
+        self._metadata_threads = [
+            thread for thread in self._metadata_threads if thread.is_alive()
+        ]
+        thread = threading.Thread(
+            target=self._upsert_registry_safely,
+            args=(values,),
+            name="ground-metadata-registry",
+            daemon=True,
         )
+        self._metadata_threads.append(thread)
+        thread.start()
+
+    def _upsert_registry_safely(self, values: dict[str, Any]) -> None:
+        file_id = str(values.get("file_id") or "")
+        try:
+            self.repository.upsert_raw_file(values)
+        except Exception as exc:
+            with self._metadata_lock:
+                self._metadata_errors[file_id] = f"{exc.__class__.__name__}: {exc}"
+        else:
+            with self._metadata_lock:
+                self._metadata_errors.pop(file_id, None)
+
+    def flush_metadata(self, timeout: float = 1.0) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        for thread in tuple(self._metadata_threads):
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        self._metadata_threads = [thread for thread in self._metadata_threads if thread.is_alive()]
+        with self._metadata_lock:
+            has_errors = bool(self._metadata_errors)
+        return not self._metadata_threads and not has_errors
+
+    @property
+    def metadata_error(self) -> str:
+        with self._metadata_lock:
+            return next(iter(self._metadata_errors.values()), "")
 
 
 class WmeshRealtimeParser:
@@ -463,9 +521,11 @@ class SyslogUdpReceiver:
         self.parser = parser or WmeshRealtimeParser()
         self.radio_control = GroundRadioControlCorrelationService(repository)
         self._queue: queue.Queue[UdpEnvelope] = queue.Queue(maxsize=20_000)
+        self._parser_queue: queue.Queue[_PersistedEnvelope] = queue.Queue(maxsize=20_000)
         self._stop = threading.Event()
         self._socket: socket.socket | None = None
         self._recv_thread: threading.Thread | None = None
+        self._writer_thread: threading.Thread | None = None
         self._process_thread: threading.Thread | None = None
         self._writer: RawStreamWriter | None = None
         self._run_id = ""
@@ -494,6 +554,28 @@ class SyslogUdpReceiver:
         self._batch_duration_ms = 0.0
         self._reported_dropped_count = 0
         self._reported_pressure = False
+        self._disk_spool_path: Path | None = None
+        self._parser_spool_path: Path | None = None
+        self._spool_dir: Path | None = None
+        self._disk_spool_lock = threading.Lock()
+        self._disk_spool_handle: Any | None = None
+        self._parser_spool_handle: Any | None = None
+        self._disk_spool_read_handle: Any | None = None
+        self._parser_spool_read_handle: Any | None = None
+        self._disk_spool_read_offset = 0
+        self._parser_spool_read_offset = 0
+        self._parser_spool_count = 0
+        self._parser_spool_since_flush = 0
+        self._disk_queue_count = 0
+        self._written_count = 0
+        self._parsed_count = 0
+        self._db_saved_count = 0
+        self._last_write_time = ""
+        self._raw_file_size = 0
+        self._spool_warning_percent = 70.0
+        self._spool_critical_percent = 85.0
+        self._spool_emergency_percent = 95.0
+        self._spool_guard_state = "NORMAL"
         self._ap_resolver = GroundApDisplayResolver(
             ap_identity_query_service
         )
@@ -511,6 +593,9 @@ class SyslogUdpReceiver:
         flush_interval_seconds: float,
         event_batch_size: int,
         event_batch_interval_seconds: float,
+        spool_warning_percent: float = 70.0,
+        spool_critical_percent: float = 85.0,
+        spool_emergency_percent: float = 95.0,
     ) -> None:
         if self.running and self._run_id == run_id:
             return
@@ -521,6 +606,7 @@ class SyslogUdpReceiver:
                 + ", ".join(stop_result["alive_thread_names"])
             )
         self._queue = queue.Queue(maxsize=max(100, int(queue_capacity)))
+        self._parser_queue = queue.Queue(maxsize=max(100, int(queue_capacity)))
         self._run_id = run_id
         self._stop.clear()
         self._received_count = self._unidentified_count = self._dropped_count = 0
@@ -533,6 +619,30 @@ class SyslogUdpReceiver:
         self._last_error = ""
         self._reported_dropped_count = 0
         self._reported_pressure = False
+        self._disk_queue_count = 0
+        self._written_count = 0
+        self._parsed_count = 0
+        self._db_saved_count = 0
+        self._last_write_time = ""
+        self._raw_file_size = 0
+        thresholds = (
+            float(spool_warning_percent),
+            float(spool_critical_percent),
+            float(spool_emergency_percent),
+        )
+        if any(value < 0.0 or value > 100.0 for value in thresholds):
+            raise ValueError("spool disk thresholds must be between 0 and 100")
+        if not thresholds[0] <= thresholds[1] <= thresholds[2]:
+            raise ValueError("spool disk thresholds must be ordered")
+        (
+            self._spool_warning_percent,
+            self._spool_critical_percent,
+            self._spool_emergency_percent,
+        ) = thresholds
+        self._spool_guard_state = "NORMAL"
+        self._disk_spool_read_offset = 0
+        self._parser_spool_count = 0
+        self._parser_spool_since_flush = 0
         self._event_batch_size = max(1, int(event_batch_size))
         self._event_batch_interval = max(0.1, float(event_batch_interval_seconds))
         self._writer = RawStreamWriter(
@@ -544,19 +654,42 @@ class SyslogUdpReceiver:
             data_type="syslog",
             flush_records=flush_records,
             flush_interval_seconds=flush_interval_seconds,
+            defer_registry=True,
         )
-        recover_raw_files(
-            active_dir=Path(active_dir),
-            repository=self.repository,
-            run_id=run_id,
-        )
-        self.refresh_inventory()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(0.5)
+        spool_dir = Path(active_dir) / "realtime" / "syslog" / "_spool"
+        sock: socket.socket | None = None
         try:
+            spool_dir.mkdir(parents=True, exist_ok=True)
+            self._spool_dir = spool_dir
+            self._disk_spool_path = spool_dir / f"{run_id}.ndjson"
+            self._parser_spool_path = spool_dir / f"{run_id}.parser.ndjson"
+            self._disk_spool_handle = self._disk_spool_path.open("a", encoding="utf-8", newline="\n")
+            self._parser_spool_handle = self._parser_spool_path.open("a", encoding="utf-8", newline="\n")
+            self._disk_spool_read_handle = self._disk_spool_path.open("r", encoding="utf-8")
+            self._parser_spool_read_handle = self._parser_spool_path.open("r", encoding="utf-8")
+            # Recount records left by an unclean exit so workers replay the spool.
+            self._disk_queue_count = _line_count(self._disk_spool_path)
+            self._parser_spool_count = _line_count(self._parser_spool_path)
+            recover_raw_files(
+                active_dir=Path(active_dir),
+                repository=self.repository,
+                run_id=run_id,
+            )
+            self.refresh_inventory()
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            sock.settimeout(0.5)
             sock.bind((listen_host, int(listen_port)))
         except Exception:
-            sock.close()
+            if sock is not None:
+                sock.close()
+            self._close_spool_handles()
+            self._writer = None
+            self._disk_spool_path = None
+            self._parser_spool_path = None
+            self._spool_dir = None
+            self._run_id = ""
+            self._stop.set()
             raise
         self._socket = sock
         actual = sock.getsockname()
@@ -569,70 +702,133 @@ class SyslogUdpReceiver:
             name=f"ground-syslog-recv-{self.site_id}",
             daemon=True,
         )
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name=f"ground-syslog-writer-{self.site_id}",
+            daemon=True,
+        )
         self._process_thread = threading.Thread(
             target=self._process_loop,
             name=f"ground-syslog-process-{self.site_id}",
             daemon=True,
         )
         self._recv_thread.start()
+        self._writer_thread.start()
         self._process_thread.start()
 
     @property
     def running(self) -> bool:
         return bool(self._recv_thread and self._recv_thread.is_alive())
 
-    def stop(self) -> dict[str, Any]:
+    def stop(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+        """Stop receiver, writer and parser in bounded dependency order."""
         self._stop.set()
         sock = self._socket
         self._socket = None
         if sock is not None:
             sock.close()
-        for thread in (self._recv_thread, self._process_thread):
-            if thread is not None:
-                thread.join(timeout=5)
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        if self._recv_thread is not None:
+            self._recv_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        writer_thread = self._writer_thread
+        if writer_thread is not None:
+            writer_thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        writer_finished = writer_thread is None or not writer_thread.is_alive()
+        closed_file_count = 0
+        if writer_finished and self._writer is not None:
+            self._raw_checkpoints.update(self._writer.file_checkpoints)
+            closed_file_count = self._writer.close()
+            metadata_flushed = self._writer.flush_metadata(
+                timeout=max(0.0, deadline - time.monotonic())
+            )
+            if not metadata_flushed and self._writer.metadata_error:
+                self._last_error = self._writer.metadata_error
+        else:
+            metadata_flushed = writer_finished
+        parser_thread = self._process_thread
+        if parser_thread is not None:
+            parser_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         udp_port_released = _udp_port_is_available(
             self._listen_host, self._listen_port
         )
         threads = [
             thread
-            for thread in (self._recv_thread, self._process_thread)
+            for thread in (self._recv_thread, self._writer_thread, self._process_thread)
             if thread is not None
         ]
         alive = [thread.name for thread in threads if thread.is_alive()]
-        if alive:
+        if alive or not writer_finished:
             return {
                 "success": False,
                 "udp_port_released": udp_port_released,
                 "alive_thread_names": alive,
                 "queue_empty": self._queue.empty(),
                 "queue_length": self._queue.qsize(),
-                "closed_file_count": 0,
+                "closed_file_count": closed_file_count,
                 "received_count": self._received_count,
                 "dropped_count": self._dropped_count,
             }
-        self._recv_thread = self._process_thread = None
+        self._recv_thread = self._writer_thread = self._process_thread = None
         self._drain_remaining()
-        closed_file_count = 0
-        if self._writer is not None:
-            self._raw_checkpoints.update(self._writer.file_checkpoints)
-            closed_file_count = self._writer.close()
+        with self._disk_spool_lock:
+            if self._disk_queue_count == 0 and self._disk_spool_handle is not None:
+                self._disk_spool_handle.seek(0)
+                self._disk_spool_handle.truncate()
+                self._disk_spool_handle.flush()
+            if self._parser_spool_count == 0 and self._parser_spool_handle is not None:
+                self._parser_spool_handle.seek(0)
+                self._parser_spool_handle.truncate()
+                self._parser_spool_handle.flush()
+        self._close_spool_handles()
         projection_flushed = self._flush_events()
+        self._disk_queue_count = 0
+        self._parser_spool_count = 0
         self._writer = None
+        self._disk_spool_path = None
+        self._parser_spool_path = None
+        self._spool_dir = None
         self._run_id = ""
         self._listen_address = ""
         self._listen_host = ""
         self._listen_port = 0
         return {
-            "success": self._queue.empty() and udp_port_released and projection_flushed,
+            "success": (
+                self._queue.empty()
+                and udp_port_released
+                and projection_flushed
+                and metadata_flushed
+            ),
             "udp_port_released": udp_port_released,
             "alive_thread_names": [],
             "queue_empty": self._queue.empty(),
             "queue_length": self._queue.qsize(),
             "closed_file_count": closed_file_count,
             "projection_flushed": projection_flushed,
+            "metadata_flushed": metadata_flushed,
             "received_count": self._received_count,
             "dropped_count": self._dropped_count,
         }
+
+    def _close_spool_handles(self) -> None:
+        with self._disk_spool_lock:
+            for handle in (
+                self._disk_spool_handle,
+                self._parser_spool_handle,
+                self._disk_spool_read_handle,
+                self._parser_spool_read_handle,
+            ):
+                if handle is None:
+                    continue
+                try:
+                    handle.flush()
+                except (OSError, ValueError):
+                    pass
+                try:
+                    handle.close()
+                except OSError:
+                    pass
+        self._disk_spool_handle = self._parser_spool_handle = None
+        self._disk_spool_read_handle = self._parser_spool_read_handle = None
 
     def refresh_inventory(self) -> None:
         active = self.repository.list_inventory(include_removed=False)
@@ -667,6 +863,8 @@ class SyslogUdpReceiver:
     def health_snapshot(self) -> dict[str, Any]:
         elapsed = max(0.001, time.monotonic() - self._started_monotonic) if self._started_monotonic else 1.0
         writer = self._writer
+        self._refresh_spool_guard()
+        spool_metrics = self._spool_metrics()
         return {
             "udp_running": self.running,
             "udp_listen_address": self._listen_address,
@@ -686,7 +884,106 @@ class SyslogUdpReceiver:
             "database_last_batch_duration_ms": self._batch_duration_ms,
             "open_file_count": writer.open_file_count if writer else 0,
             "last_error": self._last_error,
+            "raw_file": writer.current_file if writer else "",
+            "received": self._received_count,
+            "written": self._written_count,
+            "parsed": self._parsed_count,
+            "db_saved": self._db_saved_count,
+            "dropped": self._dropped_count,
+            "disk_queue_count": self._disk_queue_count,
+            "parser_queue_size": self._parser_queue.qsize(),
+            "parser_queue_capacity": self._parser_queue.maxsize,
+            "memory_queue_size": self._queue.qsize(),
+            "memory_queue_capacity": self._queue.maxsize,
+            "writer_alive": bool(self._writer_thread and self._writer_thread.is_alive()),
+            "parser_alive": bool(self._process_thread and self._process_thread.is_alive()),
+            "receiver_alive": bool(self._recv_thread and self._recv_thread.is_alive()),
+            "raw_file_size": self._raw_file_size,
+            "last_write_time": self._last_write_time,
+            **spool_metrics,
+            "spool_guard_state": self._spool_guard_state,
+            "spool_warning_percent": self._spool_warning_percent,
+            "spool_critical_percent": self._spool_critical_percent,
+            "spool_emergency_percent": self._spool_emergency_percent,
         }
+
+    def _spool_metrics(self) -> dict[str, int | float]:
+        spool_dir = self._spool_dir
+        if spool_dir is None:
+            return {
+                "spool_bytes": 0,
+                "spool_files": 0,
+                "disk_free_bytes": 0,
+                "disk_usage_percent": 0.0,
+            }
+        spool_bytes = 0
+        spool_files = 0
+        try:
+            for path in spool_dir.rglob("*"):
+                if path.is_file() and not path.is_symlink():
+                    spool_files += 1
+                    spool_bytes += path.stat().st_size
+            usage = shutil.disk_usage(spool_dir)
+            disk_usage_percent = (
+                ((usage.total - usage.free) / usage.total * 100.0)
+                if usage.total
+                else 0.0
+            )
+            return {
+                "spool_bytes": spool_bytes,
+                "spool_files": spool_files,
+                "disk_free_bytes": int(usage.free),
+                "disk_usage_percent": round(disk_usage_percent, 3),
+            }
+        except OSError as exc:
+            self._last_error = f"spool disk metrics failed: {exc}"
+            return {
+                "spool_bytes": spool_bytes,
+                "spool_files": spool_files,
+                "disk_free_bytes": 0,
+                "disk_usage_percent": 0.0,
+            }
+
+    def _refresh_spool_guard(self) -> None:
+        metrics = self._spool_metrics()
+        usage = float(metrics["disk_usage_percent"])
+        if usage >= self._spool_emergency_percent:
+            state = "EMERGENCY"
+        elif usage >= self._spool_critical_percent:
+            state = "CRITICAL"
+        elif usage >= self._spool_warning_percent:
+            state = "WARNING"
+        else:
+            state = "NORMAL"
+        previous = self._spool_guard_state
+        self._spool_guard_state = state
+        if state == previous:
+            return
+        if state == "NORMAL" and previous != "NORMAL":
+            code = "SYSLOG_SPOOL_DISK_RECOVERED"
+            severity = "info"
+            message = "Syslog spool 磁盘占用已恢复正常"
+        else:
+            code = f"SYSLOG_SPOOL_DISK_{state}"
+            severity = "error" if state in {"CRITICAL", "EMERGENCY"} else "warning"
+            message = f"Syslog spool 磁盘占用达到 {state} 阈值"
+        try:
+            self.repository.add_health_event(
+                run_id=self._run_id,
+                component="syslog_spool",
+                severity=severity,
+                code=code,
+                message=message,
+                details={
+                    **metrics,
+                    "spool_guard_state": state,
+                    "warning_percent": self._spool_warning_percent,
+                    "critical_percent": self._spool_critical_percent,
+                    "emergency_percent": self._spool_emergency_percent,
+                },
+            )
+        except Exception as exc:
+            self._last_error = f"{exc.__class__.__name__}: {exc}"
 
     def _next_global_receive_sequence(self) -> int:
         self._global_receive_sequence += 1
@@ -724,17 +1021,193 @@ class SyslogUdpReceiver:
             try:
                 self._queue.put_nowait(envelope)
             except queue.Full:
-                self._dropped_count += 1
+                self._spool_envelope(envelope)
 
-    def _process_loop(self) -> None:
-        while not self._stop.is_set() or not self._queue.empty():
-            try:
-                envelope = self._queue.get(timeout=0.2)
-            except queue.Empty:
-                self._flush_if_due()
+    def _spool_envelope(self, envelope: UdpEnvelope) -> None:
+        """Persist overflow before returning to recv loop; raw evidence is never dropped."""
+
+        path = self._disk_spool_path
+        if path is None:
+            self._dropped_count += 1
+            return
+        payload = {
+            "source_ip": envelope.source_ip,
+            "source_port": envelope.source_port,
+            "receive_time": envelope.receive_time,
+            "global_receive_sequence": envelope.global_receive_sequence,
+            "source_receive_sequence": envelope.source_receive_sequence,
+            "payload": base64.b64encode(envelope.payload).decode("ascii"),
+        }
+        try:
+            with self._disk_spool_lock:
+                handle = self._disk_spool_handle
+                if handle is None:
+                    raise OSError("UDP spool handle is closed")
+                handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
+                handle.flush()
+            self._disk_queue_count += 1
+        except OSError as exc:
+            self._last_error = f"{exc.__class__.__name__}: {exc}"
+            self._dropped_count += 1
+
+    def _next_spooled(self) -> UdpEnvelope | None:
+        path = self._disk_spool_path
+        if path is None or not path.exists():
+            return None
+        with self._disk_spool_lock:
+            handle = self._disk_spool_read_handle
+            if handle is None:
+                return None
+            handle.seek(self._disk_spool_read_offset)
+            line = handle.readline()
+            if not line:
+                return None
+            self._disk_spool_read_offset = handle.tell()
+        try:
+            value = json.loads(line)
+            return UdpEnvelope(
+                source_ip=str(value["source_ip"]),
+                source_port=int(value["source_port"]),
+                receive_time=str(value["receive_time"]),
+                global_receive_sequence=int(value["global_receive_sequence"]),
+                source_receive_sequence=int(value["source_receive_sequence"]),
+                payload=base64.b64decode(str(value["payload"])),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _writer_loop(self) -> None:
+        while not self._stop.is_set() or not self._queue.empty() or self._disk_queue_count:
+            # Drain durable overflow before polling the memory queue.  A
+            # timeout-first loop turns disk replay into a 20 records/sec
+            # throttle under burst load.
+            from_memory = False
+            envelope = self._next_spooled()
+            if envelope is None:
+                from_memory = True
+                try:
+                    envelope = self._queue.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+            else:
+                self._disk_queue_count = max(0, self._disk_queue_count - 1)
+            if envelope is None:
                 continue
             try:
-                self._process(envelope)
+                record, receive_time = self._build_raw_record(envelope)
+                if self._writer is None:
+                    continue
+                file_id, line_number = self._writer.write(record, receive_time)
+                self._written_count += 1
+                self._last_write_time = envelope.receive_time
+                self._raw_file_size = self._raw_file_size_for(file_id)
+                self._raw_checkpoints[file_id] = line_number
+                # Blocking here is intentional backpressure: the raw write has completed.
+                persisted = _PersistedEnvelope(envelope, record, file_id, line_number)
+                try:
+                    self._parser_queue.put_nowait(persisted)
+                except queue.Full:
+                    self._spool_persisted(persisted)
+            except Exception as exc:
+                self._last_error = f"{exc.__class__.__name__}: {exc}"
+            finally:
+                if from_memory:
+                    try:
+                        self._queue.task_done()
+                    except ValueError:
+                        pass
+
+    def _raw_file_size_for(self, file_id: str) -> int:
+        writer = self._writer
+        if writer is None:
+            return 0
+        for current in writer._files.values():
+            if current.file_id == file_id:
+                try:
+                    return current.path.stat().st_size
+                except OSError:
+                    return 0
+        return 0
+
+    def _spool_persisted(self, persisted: _PersistedEnvelope) -> None:
+        path = self._parser_spool_path
+        if path is None:
+            self._last_error = "parser spool is unavailable after raw write"
+            return
+        value = {
+            "envelope": {
+                "source_ip": persisted.envelope.source_ip,
+                "source_port": persisted.envelope.source_port,
+                "receive_time": persisted.envelope.receive_time,
+                "global_receive_sequence": persisted.envelope.global_receive_sequence,
+                "source_receive_sequence": persisted.envelope.source_receive_sequence,
+                "payload": base64.b64encode(persisted.envelope.payload).decode("ascii"),
+            },
+            "record": persisted.record,
+            "raw_file_id": persisted.raw_file_id,
+            "raw_line_number": persisted.raw_line_number,
+        }
+        with self._disk_spool_lock:
+            handle = self._parser_spool_handle
+            if handle is None:
+                raise OSError("parser spool handle is closed")
+            handle.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
+            # The reader uses a separate handle; flush every append so the
+            # final partial batch is immediately replayable and durable.
+            handle.flush()
+            self._parser_spool_since_flush += 1
+            if self._parser_spool_since_flush >= 64:
+                self._parser_spool_since_flush = 0
+        self._parser_spool_count += 1
+
+    def _next_parser_spooled(self) -> _PersistedEnvelope | None:
+        path = self._parser_spool_path
+        if path is None or not path.exists():
+            return None
+        with self._disk_spool_lock:
+            handle = self._parser_spool_read_handle
+            if handle is None:
+                return None
+            handle.seek(self._parser_spool_read_offset)
+            line = handle.readline()
+            if not line:
+                return None
+            self._parser_spool_read_offset = handle.tell()
+        self._parser_spool_count = max(0, self._parser_spool_count - 1)
+        try:
+            value = json.loads(line)
+            env = value["envelope"]
+            envelope = UdpEnvelope(
+                source_ip=str(env["source_ip"]), source_port=int(env["source_port"]),
+                receive_time=str(env["receive_time"]),
+                global_receive_sequence=int(env["global_receive_sequence"]),
+                source_receive_sequence=int(env["source_receive_sequence"]),
+                payload=base64.b64decode(str(env["payload"])),
+            )
+            return _PersistedEnvelope(
+                envelope, dict(value.get("record") or {}),
+                str(value["raw_file_id"]), int(value["raw_line_number"]),
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            self._last_error = "invalid parser spool record"
+            return None
+
+    def _process_loop(self) -> None:
+        while not self._stop.is_set() or not self._parser_queue.empty() or self._parser_spool_count:
+            # Consume disk backlog immediately; waiting on an empty memory
+            # queue first throttles spool recovery to only a few records/sec.
+            from_memory = False
+            persisted = self._next_parser_spooled()
+            if persisted is None:
+                from_memory = True
+                try:
+                    persisted = self._parser_queue.get(timeout=0.05)
+                except queue.Empty:
+                    self._flush_if_due()
+                    continue
+            try:
+                self._process(persisted.envelope, persisted)
+                self._parsed_count += 1
             except Exception as exc:
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
                 self.repository.add_health_event(
@@ -744,25 +1217,82 @@ class SyslogUdpReceiver:
                     code="SYSLOG_PROCESS_FAILED",
                     message=self._last_error,
                 )
+            finally:
+                if from_memory:
+                    self._parser_queue.task_done()
             self._flush_if_due()
 
     def _drain_remaining(self) -> None:
         while True:
             try:
-                self._process(self._queue.get_nowait())
+                persisted = self._parser_queue.get_nowait()
             except queue.Empty:
                 break
+            try:
+                self._process(persisted.envelope, persisted)
+                self._parsed_count += 1
+            finally:
+                self._parser_queue.task_done()
 
-    def _process(self, envelope: UdpEnvelope) -> None:
+    def _build_raw_record(
+        self, envelope: UdpEnvelope
+    ) -> tuple[dict[str, Any], datetime]:
+        """Build the append-only raw envelope without parser or database work."""
+
+        receive_time = datetime.fromisoformat(envelope.receive_time)
+        # Only consult the already loaded source-IP inventory for stream routing.
+        # Full parsing and AP enrichment happen in the parser worker.
+        raw_text = envelope.payload.decode("utf-8", errors="replace").strip("\x00\r\n")
+        hostname = _extract_hostname(raw_text)
+        # Inventory lookup is in-memory only and keeps the receiver free of
+        # parser/AP/database work while preserving the legacy raw identity
+        # contract for uniquely verified source/hostname pairs.
+        endpoint, identity_status = self._resolve_identity(
+            envelope.source_ip, hostname
+        )
+        facility, severity = _extract_facility_severity(raw_text)
+        record = {
+            "source_ip": envelope.source_ip,
+            "source_port": envelope.source_port,
+            "hostname": hostname,
+            "system_name": hostname,
+            "facility": facility,
+            "severity": severity,
+            "raw_bytes_base64": base64.b64encode(envelope.payload).decode("ascii"),
+            "raw_text": raw_text,
+            "receive_time": envelope.receive_time,
+            "global_receive_sequence": envelope.global_receive_sequence,
+            "source_receive_sequence": envelope.source_receive_sequence,
+            "device_time": "",
+            "device_id": (endpoint or {}).get("device_id"),
+            "device_uuid": str((endpoint or {}).get("device_uuid") or ""),
+            "mr_name": str((endpoint or {}).get("device_name") or ""),
+            "train_id": str((endpoint or {}).get("train_id") or ""),
+            "train_no": str((endpoint or {}).get("train_no") or ""),
+            "mr_role": str((endpoint or {}).get("mr_role") or ""),
+            "site_id": self.site_id,
+            "parse_status": "PENDING",
+            "identity_status": identity_status,
+            "event_type": "",
+            "event_family": "",
+        }
+        return record, receive_time
+
+    def _process(
+        self,
+        envelope: UdpEnvelope,
+        persisted: _PersistedEnvelope | None = None,
+    ) -> None:
         receive_time = datetime.fromisoformat(envelope.receive_time)
         raw_text = envelope.payload.decode("utf-8", errors="replace").strip("\x00\r\n")
         hostname = _extract_hostname(raw_text)
         facility, severity = _extract_facility_severity(raw_text)
         endpoint, identity_status = self._resolve_identity(envelope.source_ip, hostname)
-        if identity_status == "UNIDENTIFIED":
-            self._unidentified_count += 1
-        if identity_status == "IDENTITY_CONFLICT":
-            self._identity_conflict_count += 1
+        if persisted is None:
+            if identity_status == "UNIDENTIFIED":
+                self._unidentified_count += 1
+            if identity_status == "IDENTITY_CONFLICT":
+                self._identity_conflict_count += 1
         parsed = self.parser.parse(raw_text, receive_time=receive_time)
         if parsed is not None:
             parsed = self._ap_resolver.enrich_parsed(parsed)
@@ -886,10 +1416,18 @@ class SyslogUdpReceiver:
             ),
             "parsed_details": parsed_details,
         }
-        if self._writer is None:
-            return
-        file_id, line_number = self._writer.write(record, receive_time)
-        self._raw_checkpoints[file_id] = line_number
+        if persisted is None:
+            if self._writer is None:
+                return
+            file_id, line_number = self._writer.write(record, receive_time)
+            self._written_count += 1
+            self._last_write_time = envelope.receive_time
+            self._raw_file_size = self._raw_file_size_for(file_id)
+            self._raw_checkpoints[file_id] = line_number
+        else:
+            record = persisted.record
+            file_id = persisted.raw_file_id
+            line_number = persisted.raw_line_number
         if parsed is None:
             return
         use_device_time = quality not in {"CLOCK_OFFSET", "CLOCK_JUMP"} and bool(
@@ -984,6 +1522,7 @@ class SyslogUdpReceiver:
                 hostname=hostname,
                 identity_verified=True,
             )
+        self._db_saved_count += 1 if parsed is not None else 0
 
     def _resolve_identity(
         self, source_ip: str, hostname: str
@@ -1033,6 +1572,7 @@ class SyslogUdpReceiver:
         return "COMPLETE", None
 
     def _flush_if_due(self) -> None:
+        self._refresh_spool_guard()
         queue_length = self._queue.qsize()
         queue_capacity = self._queue.maxsize
         pressure = queue_length / queue_capacity if queue_capacity else 0.0
@@ -1103,7 +1643,7 @@ class SyslogUdpReceiver:
         timeline = list(self._timeline_batch)
         checkpoints = dict(self._raw_checkpoints)
         try:
-            if self._writer is not None:
+            if self._writer is not None and self._writer.open_file_count:
                 self._writer.flush_through(checkpoints)
             self.repository.commit_wmesh_projection_batch(
                 events,
@@ -1577,6 +2117,8 @@ def recover_raw_files(
         if not path.is_file() or path.is_symlink():
             continue
         relative = path.relative_to(root).as_posix()
+        if "_spool" in path.parts:
+            continue
         if relative in known:
             continue
         first = _first_json_line(path)

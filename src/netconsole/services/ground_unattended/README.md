@@ -17,7 +17,9 @@
 - `supervisor.py`：时间窗状态机、恢复、常驻 AC Poller 编排、调度和停止归档。
 - `../ac/mesh_link_resident_polling_service.py`：每个 run/controller 唯一的 resident Task、受控控制/状态
   文件、单 Worker SSH 复用、间隔热更新、立即轮询、同 Task 重连和正常停止。
-- `boot_config.py`、`syslog_runtime.py`：Information Center 只读核验、受控修复与 WMESH UDP 接收。
+- `boot_config.py`、`syslog_runtime.py`：Information Center 只读核验、受控修复与 WMESH UDP 接收；
+  Receiver、raw writer 和 parser 分线程运行，内存队列溢出进入当前 run 的受管 `_spool`。正常停止等待
+  raw、metadata 和投影收口；异常恢复按 at-least-once 重放保留 spool，不宣称 exactly-once。
 - `fleet_ping.py`、`timeline.py`：分片 Ping 生命周期、汇总和 AC/Ping 时间关联。
 - `identity.py`：将历史列车/MR 别名、端位和管理 IP 解析为稳定 Ping 查询身份；`run_id + target_ip`
   唯一时不再被漂移的 MR UUID 排除，冲突和参数不一致返回稳定错误。

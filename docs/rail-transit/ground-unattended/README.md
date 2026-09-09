@@ -82,6 +82,15 @@ Renderer 初次加载状态、运行列表、必要配置和当前页签；之�
 条或 1 秒批量提交。`syslog_server_ip` 默认留空，避免将 `0.0.0.0` 或监听地址错误下发到 MR；
 只有配置为有效 IPv4 后，Supervisor 才会安排设备配置检查。
 
+UDP 接收链路在内存队列溢出时先把完整 `UdpEnvelope` 追加到当前 run 的
+`realtime/syslog/_spool`，Raw Writer 完成 append-only NDJSON 后再交给独立 Parser Worker 和 SQLite
+投影。Parser 队列溢出也使用同一受管 spool；普通归档永不包含 `_spool`，仍有非空 spool 时禁止清理
+active 目录。正常停止会等待 Receiver、Writer、Parser 和 Registry metadata 有界收口并截断已消费
+spool；spool 写入失败才计入 `dropped`。异常退出后的恢复属于 at-least-once：保留的 spool 会重放，
+不能把“本次应用层 dropped=0”解释为跨崩溃 exactly-once，也不能替代真实多 MR、低磁盘和长时间验收。
+健康快照返回各阶段计数、队列长度、spool 字节数、磁盘余量和分级阈值；磁盘告警只记录健康事件，
+不会静默丢弃原始报文或自动删除现场数据。
+
 设置页通过 `/api/system/network/ipv4-addresses` 读取 Windows IP Helper 的本机 IPv4、网卡状态、
 前缀、网关、路由 metric 和物理/虚拟属性，并分开配置“本机 UDP 监听地址”和“MR 日志回传地址”。
 `0.0.0.0` 只允许用于监听，不能作为 MR 回传目标；保存和启动都会重新校验所选地址仍属于本机。
