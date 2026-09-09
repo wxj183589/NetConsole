@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     summary_retention_days INTEGER NOT NULL DEFAULT 180,
     storage_warning_free_gb REAL NOT NULL DEFAULT 5.0,
     storage_critical_free_gb REAL NOT NULL DEFAULT 1.0,
+    storage_io_profile TEXT NOT NULL DEFAULT 'AUTO',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -692,6 +693,7 @@ _PROFILE_MIGRATION_COLUMNS = {
     "allow_external_syslog_address": "INTEGER NOT NULL DEFAULT 0",
     "ping_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
     "syslog_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
+    "storage_io_profile": "TEXT NOT NULL DEFAULT 'AUTO'",
 }
 
 _PING_SUMMARY_MIGRATION_COLUMNS = {

@@ -15,6 +15,11 @@ from typing import Any, Callable
 from netconsole.core.database import Database
 from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
+from netconsole.core.storage_io import (
+    StorageDetection,
+    StorageIOProfile,
+    detect_storage_profile,
+)
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
@@ -186,6 +191,10 @@ class GroundUnattendedSupervisor:
         self._tick_error_count = 0
         self._tick_consecutive_failure_count = 0
         self._syslog_recovery_pending = False
+        self._storage_detection = StorageDetection(
+            data_root=str(self.paths.data_root), volume=""
+        )
+        self._storage_io_profile = StorageIOProfile.conservative()
 
     def start(self) -> None:
         with self._lock:
@@ -2436,6 +2445,10 @@ class GroundUnattendedSupervisor:
         self, run: dict[str, Any], profile: GroundUnattendedProfileDTO
     ) -> None:
         try:
+            self._storage_detection, self._storage_io_profile = detect_storage_profile(
+                self.paths.data_root,
+                mode=profile.storage_io_profile,
+            )
             self.syslog_receiver.start(
                 run_id=str(run["run_id"]),
                 run_date=str(run["run_date"]),
@@ -2449,6 +2462,7 @@ class GroundUnattendedSupervisor:
                 flush_interval_seconds=profile.raw_flush_interval_seconds,
                 event_batch_size=profile.event_batch_size,
                 event_batch_interval_seconds=profile.event_batch_interval_seconds,
+                storage_profile=self._storage_io_profile,
             )
             self.syslog_receiver.refresh_ap_identity()
             replay = getattr(self.syslog_receiver, "replay_pending_events", None)
