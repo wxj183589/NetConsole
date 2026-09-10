@@ -21,8 +21,11 @@ from netconsole.services.production_database_maintenance import (
     ProductionMaintenanceCapability,
     ProductionMaintenanceError,
     ProductionRollbackOwner,
+    actionable_pending_rollback_owners,
+    assert_single_actionable_pending_owner,
     build_exact_manifest,
     create_and_verify_rollback_scope,
+    current_resource_set_owners,
     discover_production_tasks_scope,
     normalize_rollback_resource_path,
     register_rollback_scope,
@@ -1020,10 +1023,78 @@ def test_storage_registry_has_protected_pending_production_rollback_owners() -> 
     assert all(owner.retire_state == "PROTECT" for owner in legacy)
     assert all(owner.observation_state == "PENDING_PRODUCTION_BACKUP" for owner in legacy)
     scope = [owner for owner in owners.values() if owner.resources]
-    assert len(scope) <= 1
-    if scope:
-        assert scope[0].maintenance_type == "TASK_OPERATIONAL_GC"
-        assert len(scope[0].resources) == 9
+    assert len(scope) == 3
+    assert all(owner.maintenance_type == "TASK_OPERATIONAL_GC" for owner in scope)
+    assert all(len(owner.resources) == 9 for owner in scope)
+    actionable = current_resource_set_owners(owners)
+    assert len(actionable) == 1
+    assert actionable[0].maintenance_id == "production-task-gc-20260910-r3"
+    assert len(actionable_pending_rollback_owners(owners)) == 1
+    assert_single_actionable_pending_owner(owners)
+    historical = [owner for owner in scope if owner.superseded_by]
+    assert {owner.maintenance_id for owner in historical} == {
+        "production-task-gc-20260910",
+        "production-task-gc-20260910-r2",
+    }
+    assert all(owner.evidence_verified() for owner in historical)
+    assert all(not owner.verified() for owner in historical)
+
+
+def test_actionable_pending_owner_policy_covers_zero_one_and_two(tmp_path: Path) -> None:
+    assert actionable_pending_rollback_owners({}) == ()
+    paths, _sites = _multi_site(tmp_path)
+    registry = _rollback_scope_registry(tmp_path)
+    scope = discover_production_tasks_scope(
+        paths,
+        maintenance_id="pending-one",
+        source_code_revision=HEAD,
+    )
+    register_rollback_scope(registry, scope)
+    one = ProductionMaintenanceCapability.load_rollback_owners(registry)
+    assert len(actionable_pending_rollback_owners(one)) == 1
+    assert_single_actionable_pending_owner(one)
+    two = dict(one)
+    pending = next(owner for owner in one.values() if owner.maintenance_id == "pending-one")
+    two[("scope:pending-two", "tasks.db")] = replace(
+        pending,
+        maintenance_id="pending-two",
+        backup_set_id="pending-two-tasks",
+        operation_id="pending-two",
+    )
+    with pytest.raises(ProductionMaintenanceError, match="at most one"):
+        assert_single_actionable_pending_owner(two)
+
+
+def test_registering_new_revision_supersedes_old_owner_and_keeps_evidence(
+    tmp_path: Path,
+) -> None:
+    paths, _sites = _multi_site(tmp_path)
+    registry = _rollback_scope_registry(tmp_path)
+    first_scope = discover_production_tasks_scope(
+        paths,
+        maintenance_id="production-task-gc-20260910-r1",
+        source_code_revision=HEAD,
+    )
+    register_rollback_scope(registry, first_scope)
+    create_and_verify_rollback_scope(paths, registry, first_scope)
+    second_scope = discover_production_tasks_scope(
+        paths,
+        maintenance_id="production-task-gc-20260910-r2",
+        source_code_revision=HEAD,
+    )
+    register_rollback_scope(registry, second_scope)
+    owners = ProductionMaintenanceCapability.load_rollback_owners(registry)
+    first = next(owner for owner in owners.values() if owner.maintenance_id.endswith("-r1"))
+    second = next(owner for owner in owners.values() if owner.maintenance_id.endswith("-r2"))
+    assert first.superseded_by == "production-task-gc-20260910-r2"
+    assert first.evidence_verified()
+    assert not first.verified()
+    assert second.current_execution_eligible
+    assert second.actionable_pending
+    assert len(current_resource_set_owners(owners)) == 1
+    assert len(actionable_pending_rollback_owners(owners)) == 1
+    restarted = ProductionMaintenanceCapability.load_rollback_owners(registry)
+    assert next(owner for owner in restarted.values() if owner.maintenance_id.endswith("-r1")).superseded_by
 
 
 def test_rollback_owner_contract_accepts_only_registered_data_root_owner(

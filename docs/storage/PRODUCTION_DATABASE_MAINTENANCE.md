@@ -154,6 +154,25 @@ creation → resource attachment/verification → owner `VERIFIED`。本次 9 �
 已完成该流程；旧宁波 12 号线两个 scalar `PENDING_PRODUCTION_BACKUP` 条目仍保留，
 没有被改写或吸收。不能把历史 `files/backups/**` 文件名推断成 rollback authority。
 
+### Rollback owner revision lifecycle
+
+Production `TASK_OPERATIONAL_GC` 使用 Strategy B：每个 immutable rollback revision
+保留一个 owner entry。新 revision 注册时，正式把同类、未被 supersede 的旧
+resource-set owner 写入 `superseded_by=<new maintenance_id>`；旧 owner 的
+`observation_state=VERIFIED`、backup manifest、SHA-256、size 和 `retire_state=PROTECT`
+保持不变，因此仍是可查询的历史 recovery evidence，但不再是当前 rollback authority。
+
+`PENDING_PRODUCTION_BACKUP` 的安全计数只统计当前、未 supersede、9/9 tasks resource-set
+owner 的 actionable pending 状态。旧 scalar cutover 槽位继续按兼容/保护语义保留，不能
+被冒充为当前 tasks GC owner。任何时刻当前 `TASK_OPERATIONAL_GC` 最多只能有一个
+actionable pending owner；Gate 不通过时禁止 backup、preview 或 mutation。
+
+`config/storage_registry.yaml` 是静态 owner/evidence registry，不是 append-only 的
+运行实例日志。生命周期 transition 由 `register_rollback_scope` 与
+`reconcile_rollback_owner_lifecycle` 完成；registry restart 后必须仍能区分 current
+owner 与 historical superseded evidence。历史 owner 不得因 Gate 收口而删除、改写为
+VERIFIED 或复用为新 source revision。
+
 ## 执行门
 
 mutation 入口必须同时具备：

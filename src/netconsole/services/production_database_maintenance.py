@@ -1321,6 +1321,13 @@ class ProductionRollbackOwner:
         )
 
     def verified(self) -> bool:
+        if self.superseded_by:
+            return False
+        return self.evidence_verified()
+
+    def evidence_verified(self) -> bool:
+        """Return whether this owner remains valid historical recovery evidence."""
+
         if self.resources:
             keys = [resource.key for resource in self.resources]
             return bool(
@@ -1354,6 +1361,32 @@ class ProductionRollbackOwner:
             and self.backup_size > 0
             and self.backup_relative_path
         )
+
+    @property
+    def lifecycle_state(self) -> str:
+        if self.superseded_by:
+            return "SUPERSEDED"
+        if self.observation_state == "PENDING_PRODUCTION_BACKUP":
+            return "PENDING"
+        if self.observation_state == "VERIFIED":
+            return "ACTIVE"
+        return self.observation_state
+
+    @property
+    def current_execution_eligible(self) -> bool:
+        return bool(
+            self.resources
+            and self.maintenance_type == PRODUCTION_TASK_OPERATIONAL_GC
+            and self.scope_kind == PRODUCTION_ROLLBACK_SCOPE_KIND
+            and len(self.resources) == 9
+            and not self.superseded_by
+            and self.retire_state == "PROTECT"
+            and self.observation_state in {"PENDING_PRODUCTION_BACKUP", "VERIFIED"}
+        )
+
+    @property
+    def actionable_pending(self) -> bool:
+        return self.current_execution_eligible and self.observation_state == "PENDING_PRODUCTION_BACKUP"
 
     def as_dict(self) -> dict[str, Any]:
         value: dict[str, Any] = {
@@ -1418,6 +1451,32 @@ def _scope_resources(scope: Mapping[str, Any]) -> tuple[ProductionRollbackResour
 
 def _scope_key_text(key: tuple[str, str, str]) -> str:
     return "|".join(key)
+
+
+def current_resource_set_owners(
+    owners: Mapping[tuple[str, str], ProductionRollbackOwner],
+) -> tuple[ProductionRollbackOwner, ...]:
+    return tuple(
+        owner
+        for owner in owners.values()
+        if owner.current_execution_eligible
+    )
+
+
+def actionable_pending_rollback_owners(
+    owners: Mapping[tuple[str, str], ProductionRollbackOwner],
+) -> tuple[ProductionRollbackOwner, ...]:
+    return tuple(owner for owner in current_resource_set_owners(owners) if owner.actionable_pending)
+
+
+def assert_single_actionable_pending_owner(
+    owners: Mapping[tuple[str, str], ProductionRollbackOwner],
+) -> None:
+    pending = actionable_pending_rollback_owners(owners)
+    if len(pending) > 1:
+        raise ProductionMaintenanceError(
+            "production rollback lifecycle permits at most one actionable pending owner"
+        )
 
 
 def verify_rollback_owner_scope(
@@ -1513,7 +1572,32 @@ def _write_registry_document(path: str | Path, value: Mapping[str, Any]) -> None
         for key in updated_by_key.keys() & original_by_key.keys()
         if updated_by_key[key] != original_by_key[key]
     ]
-    if removed or len(added) > 1 or len(changed) > 1 or (added and changed):
+    def is_supersede_transition(key: tuple[str, ...], new_owner_id: str = "") -> bool:
+        before = original_by_key[key]
+        after = updated_by_key[key]
+        before_without = dict(before)
+        after_without = dict(after)
+        before_superseded_by = str(before_without.pop("superseded_by", "") or "")
+        after_superseded_by = str(after_without.pop("superseded_by", "") or "")
+        return (
+            not before_superseded_by
+            and bool(after_superseded_by)
+            and (not new_owner_id or after_superseded_by == new_owner_id)
+            and before_without == after_without
+        )
+
+    append_owner_id = (
+        str(updated_by_key[added[0]].get("maintenance_id") or "")
+        if len(added) == 1
+        else ""
+    )
+    if removed or len(added) > 1:
+        raise ProductionMaintenanceError("storage registry update is not a single owner append/replace")
+    if added and any(not is_supersede_transition(key, append_owner_id) for key in changed):
+        raise ProductionMaintenanceError("storage registry lifecycle append contains a non-supersede change")
+    if not added and len(changed) > 1 and any(
+        not is_supersede_transition(key) for key in changed
+    ):
         raise ProductionMaintenanceError("storage registry update is not a single owner append/replace")
     if not added and not changed:
         return
@@ -1553,19 +1637,21 @@ def _write_registry_document(path: str | Path, value: Mapping[str, Any]) -> None
         insertion = (",\n" if has_previous else "\n") + formatted_entry(item) + "\n"
         updated_text = original_text[:insert_at] + insertion + original_text[insert_at:]
     else:
-        key = changed[0]
-        target_span = next(
-            (span for item, *span in object_spans if entry_key(item) == key),
-            None,
-        )
+        updated_text = original_text
+    spans_by_key = {
+        entry_key(item): (item_start, item_end)
+        for item, item_start, item_end in object_spans
+    }
+    for key in sorted(changed, key=lambda item: spans_by_key[item][0], reverse=True):
+        target_span = spans_by_key.get(key)
         if target_span is None:
             raise ProductionMaintenanceError("storage registry owner entry disappeared")
         item_start, item_end = target_span
         line_start = original_text.rfind("\n", 0, item_start) + 1
         updated_text = (
-            original_text[:line_start]
+            updated_text[:line_start]
             + formatted_entry(updated_by_key[key])
-            + original_text[item_end:]
+            + updated_text[item_end:]
         )
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     if temporary.exists():
@@ -1682,7 +1768,7 @@ def register_rollback_scope(
     registry_path: str | Path,
     scope: Mapping[str, Any],
 ) -> ProductionRollbackOwner:
-    """Register a resource-set intent without creating or trusting backups."""
+    """Register a resource-set intent and supersede older actionable revisions."""
 
     maintenance_id = _safe_scope_identifier(scope.get("maintenance_id"), field="maintenance_id")
     if scope.get("maintenance_type") != PRODUCTION_TASK_OPERATIONAL_GC:
@@ -1724,9 +1810,173 @@ def register_rollback_scope(
         scope_kind=PRODUCTION_ROLLBACK_SCOPE_KIND,
         resources=resources,
     )
+    transitioned = [
+        replace(existing_owner, superseded_by=maintenance_id)
+        if (
+            existing_owner.resources
+            and existing_owner.maintenance_type == PRODUCTION_TASK_OPERATIONAL_GC
+            and not existing_owner.superseded_by
+        )
+        else existing_owner
+        for existing_owner in existing
+    ]
+    lifecycle_owners = tuple(transitioned) + (owner,)
+    lifecycle_map = {
+        (f"scope:{item.maintenance_id}", item.database): item
+        for item in lifecycle_owners
+        if item.resources
+    }
+    assert_single_actionable_pending_owner(lifecycle_map)
+    for index, existing_owner in enumerate(existing):
+        if (
+            existing_owner.resources
+            and existing_owner.maintenance_type == PRODUCTION_TASK_OPERATIONAL_GC
+            and not existing_owner.superseded_by
+        ):
+            document["production_rollback_owners"][index] = replace(
+                existing_owner,
+                superseded_by=maintenance_id,
+            ).as_dict()
     document["production_rollback_owners"].append(owner.as_dict())
     _write_registry_document(registry_path, document)
     return owner
+
+
+def reconcile_rollback_owner_lifecycle(
+    registry_path: str | Path,
+    *,
+    current_maintenance_id: str,
+) -> dict[str, Any]:
+    """Mark older resource-set revisions historical without deleting evidence."""
+
+    current_id = _safe_scope_identifier(current_maintenance_id, field="maintenance_id")
+    document = _read_registry_document(registry_path)
+    owners = [
+        ProductionRollbackOwner.from_mapping(item)
+        for item in document["production_rollback_owners"]
+        if isinstance(item, Mapping)
+    ]
+    current = [
+        owner
+        for owner in owners
+        if owner.resources
+        and owner.maintenance_id == current_id
+        and not owner.superseded_by
+    ]
+    if len(current) != 1:
+        raise ProductionMaintenanceError(
+            "current rollback lifecycle requires exactly one unsuperseded owner"
+        )
+    changed = 0
+    for index, owner in enumerate(owners):
+        if (
+            owner.resources
+            and owner.maintenance_type == PRODUCTION_TASK_OPERATIONAL_GC
+            and owner.maintenance_id != current_id
+            and not owner.superseded_by
+        ):
+            document["production_rollback_owners"][index] = replace(
+                owner,
+                superseded_by=current_id,
+            ).as_dict()
+            changed += 1
+    if changed:
+        _write_registry_document(registry_path, document)
+    loaded = ProductionMaintenanceCapability.load_rollback_owners(registry_path)
+    scope_owners = [owner for owner in loaded.values() if owner.resources]
+    actionable = list(current_resource_set_owners(loaded))
+    pending = list(actionable_pending_rollback_owners(loaded))
+    assert_single_actionable_pending_owner(loaded)
+    return {
+        "current_maintenance_id": current_id,
+        "superseded_count": changed,
+        "scope_owner_count": len(scope_owners),
+        "historical_owner_count": sum(1 for owner in scope_owners if owner.superseded_by),
+        "actionable_owner_count": len(actionable),
+        "actionable_pending_owner_count": len(pending),
+    }
+
+
+def audit_rollback_owners(
+    registry_path: str | Path,
+    paths: PathResolver,
+) -> dict[str, Any]:
+    """Return an evidence-preserving audit of every registered Production owner."""
+
+    owners = ProductionMaintenanceCapability.load_rollback_owners(registry_path)
+    supersedes_by = {
+        owner.maintenance_id: [
+            previous.maintenance_id or previous.backup_set_id
+            for previous in owners.values()
+            if owner.maintenance_id and previous.superseded_by == owner.maintenance_id
+        ]
+        for owner in owners.values()
+    }
+    audited: list[dict[str, Any]] = []
+    for owner in owners.values():
+        resources = list(owner.resources)
+        backup_paths: list[str] = []
+        backup_exists = True
+        if resources:
+            for resource in resources:
+                if resource.backup_relative_path:
+                    site = SiteRegistryRepository(paths).get(resource.site_id)
+                    backup = (site.root_path / resource.backup_relative_path).resolve()
+                    backup_paths.append(str(backup))
+                    backup_exists = backup_exists and backup.is_file()
+                else:
+                    backup_exists = False
+        elif owner.backup_relative_path and owner.site_id in PRODUCTION_SITE_ALLOWLIST:
+            site = SiteRegistryRepository(paths).get(owner.site_id)
+            backup = (site.root_path / owner.backup_relative_path).resolve()
+            backup_paths.append(str(backup))
+            backup_exists = backup.is_file()
+        else:
+            backup_exists = False
+        audited.append(
+            {
+                "owner_id": owner.backup_set_id,
+                "maintenance_id": owner.maintenance_id,
+                "revision": owner.source_revision,
+                "status": owner.observation_state,
+                "lifecycle_state": owner.lifecycle_state,
+                "scope_type": owner.scope_kind,
+                "resource_count": len(resources),
+                "covered_resource_count": sum(
+                    1 for resource in resources if resource.status == "VERIFIED"
+                ),
+                "source_digest": owner.source_identity,
+                "backup_manifest": backup_paths,
+                "backup_exists": backup_exists,
+                "created_at": owner.created_at,
+                "supersedes": supersedes_by.get(owner.maintenance_id, []),
+                "superseded_by": owner.superseded_by,
+                "current_execution_eligible": owner.current_execution_eligible,
+                "historical_evidence_required": bool(owner.superseded_by),
+            }
+        )
+    scope_owners = [owner for owner in owners.values() if owner.resources]
+    actionable = list(current_resource_set_owners(owners))
+    pending = list(actionable_pending_rollback_owners(owners))
+    historical = [owner for owner in scope_owners if owner.superseded_by]
+    return {
+        "audit_type": "production-rollback-owner-lifecycle-audit-v1",
+        "registry": str(Path(registry_path).resolve()),
+        "data_root": str(paths.data_root.resolve()),
+        "total_owner_count": len(owners),
+        "pending_owner_count": sum(
+            1 for owner in owners.values() if owner.observation_state == "PENDING_PRODUCTION_BACKUP"
+        ),
+        "historical_owner_count": len(historical),
+        "actionable_owner_count": len(actionable),
+        "actionable_pending_owner_count": len(pending),
+        "current_owner": (
+            actionable[0].maintenance_id
+            if len(actionable) == 1
+            else ""
+        ),
+        "owners": audited,
+    }
 
 
 def create_and_verify_rollback_scope(
@@ -2595,11 +2845,16 @@ __all__ = [
     "ProductionManifest",
     "ProductionRollbackResource",
     "ProductionRollbackOwner",
+    "actionable_pending_rollback_owners",
+    "assert_single_actionable_pending_owner",
+    "audit_rollback_owners",
     "build_rollback_scope_manifest",
     "build_exact_manifest",
     "create_and_verify_rollback_scope",
     "discover_production_tasks_scope",
     "normalize_rollback_resource_path",
+    "current_resource_set_owners",
+    "reconcile_rollback_owner_lifecycle",
     "register_rollback_scope",
     "verify_registered_rollback_scope",
     "verify_rollback_owner_scope",

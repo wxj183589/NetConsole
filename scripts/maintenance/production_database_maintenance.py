@@ -23,6 +23,8 @@ from netconsole.services.production_database_maintenance import (
     ProductionMaintenanceCapability,
     ProductionMaintenanceError,
     build_exact_manifest,
+    audit_rollback_owners,
+    reconcile_rollback_owner_lifecycle,
     validate_bound_production_gate,
     write_exact_manifest,
 )
@@ -36,6 +38,8 @@ def _parser() -> argparse.ArgumentParser:
             "bind-gate",
             "manifest",
             "scope",
+            "audit-owners",
+            "reconcile-scope",
             "register-scope",
             "backup-scope",
             "manifest-scope",
@@ -533,6 +537,21 @@ def main(argv: list[str] | None = None) -> int:
             paths,
             maintenance_id=args.maintenance_id,
             source_code_revision=binding.current_implementation_head,
+        )
+        _write_output(output, value)
+        print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    if args.command == "audit-owners":
+        value = audit_rollback_owners(args.registry, paths)
+        _write_output(output, value)
+        print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    if args.command == "reconcile-scope":
+        if not args.maintenance_id:
+            raise SystemExit("reconcile-scope requires --maintenance-id")
+        value = reconcile_rollback_owner_lifecycle(
+            args.registry,
+            current_maintenance_id=args.maintenance_id,
         )
         _write_output(output, value)
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
