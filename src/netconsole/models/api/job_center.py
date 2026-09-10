@@ -126,6 +126,7 @@ class JobCenterCleanupCountsDTO(ApiModel):
 class JobCenterCleanupResultDTO(ApiModel):
     matched: int = 0
     dismissed: int = 0
+    dismissed_by: str = ""
     skipped_active: int = 0
     skipped_unacknowledged: int = 0
     artifacts_deleted: int = 0

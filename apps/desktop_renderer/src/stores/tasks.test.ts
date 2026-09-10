@@ -71,6 +71,7 @@ describe('Job Center polling store', () => {
     vi.mocked(cleanupTasks).mockReset().mockResolvedValue({
       matched: 1,
       dismissed: 1,
+      dismissed_by: 'local-user',
       skipped_active: 0,
       skipped_unacknowledged: 0,
       artifacts_deleted: 0,
@@ -80,6 +81,7 @@ describe('Job Center polling store', () => {
     vi.mocked(dismissTask).mockReset().mockResolvedValue({
       matched: 1,
       dismissed: 1,
+      dismissed_by: 'local-user',
       skipped_active: 0,
       skipped_unacknowledged: 0,
       artifacts_deleted: 0,

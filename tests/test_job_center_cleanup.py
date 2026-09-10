@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from netconsole.core import app_logger
@@ -14,6 +15,7 @@ from netconsole.core.runtime_environment import write_data_environment
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode, RuntimeMode
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
+from netconsole.models.api.job_center import JobCenterCleanupResultDTO
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 
@@ -45,6 +47,22 @@ def _snapshot(
 def _repository(tmp_path: Path) -> tuple[PathResolver, TaskRepository]:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
     return paths, TaskRepository(paths.site_tasks_db_path("demo"))
+
+
+def test_cleanup_result_contract_exposes_dismissed_by_and_rejects_unknown_fields() -> None:
+    result = JobCenterCleanupResultDTO.model_validate(
+        {"task_ids": ["task-1"], "dismissed_by": "local-user"}
+    )
+
+    assert result.dismissed_by == "local-user"
+    with pytest.raises(ValidationError):
+        JobCenterCleanupResultDTO.model_validate(
+            {
+                "task_ids": ["task-1"],
+                "dismissed_by": "local-user",
+                "unknown_extra": True,
+            }
+        )
 
 
 def test_task_center_cleanup_retires_operational_rows_and_preserves_artifacts(
@@ -210,6 +228,8 @@ def test_failed_or_warning_task_requires_acknowledgement_before_single_dismiss(
     assert acknowledged["task_ids"] == ["warning"]
     dismissed = service.dismiss_history_task("warning", site_name="demo", dismissed_by="test")
     assert dismissed["task_ids"] == ["warning"]
+    assert dismissed["dismissed_by"] == "test"
+    assert JobCenterCleanupResultDTO.model_validate(dismissed).dismissed_by == "test"
     assert repository.list(limit=20) == []
     assert repository.get("warning") is None
 
@@ -264,6 +284,7 @@ def test_cleanup_api_publishes_incremental_event_and_rejects_file_deletion(
         )
         assert cleanup.status_code == 200
         assert cleanup.json()["task_ids"] == ["success"]
+        assert cleanup.json()["dismissed_by"] == "local-user"
         assert [item["id"] for item in client.get("/api/job-center/tasks").json()] == [
             "running"
         ]
@@ -293,6 +314,39 @@ def test_cleanup_api_publishes_incremental_event_and_rejects_file_deletion(
         "failed": 0,
         "warning": 0,
     }
+
+
+def test_single_cleanup_api_returns_dismissed_by_and_retires_task(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    repository.save(
+        _snapshot(
+            "success",
+            TaskState.COMPLETED,
+            finished_time="2026-07-28T01:00:00Z",
+        )
+    )
+    task_service = TaskApplicationService(
+        paths=paths,
+        site_name="demo",
+        reconcile_on_start=False,
+    )
+    Database(paths.site_db_path("demo")).initialize()
+    app = create_app(
+        RuntimeMode.TEST,
+        paths=paths,
+        task_service=task_service,
+        frontend_dist=tmp_path / "missing",
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/job-center/tasks/success/dismiss")
+
+        assert response.status_code == 200
+        assert response.json()["task_ids"] == ["success"]
+        assert response.json()["dismissed_by"] == "local-user"
+        assert client.get("/api/job-center/tasks").json() == []
 
 
 def test_cleanup_api_allows_eligible_terminal_tasks_in_production(

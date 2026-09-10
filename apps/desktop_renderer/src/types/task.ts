@@ -133,6 +133,7 @@ export interface TaskCleanupCounts {
 export interface TaskCleanupResult {
   matched: number
   dismissed: number
+  dismissed_by: string
   skipped_active: number
   skipped_unacknowledged: number
   artifacts_deleted: number

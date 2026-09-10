@@ -596,6 +596,7 @@ class TaskApplicationService:
                     candidate_scan.get("skipped_unacknowledged") or 0
                 ),
                 "artifacts_deleted": 0,
+                "dismissed_by": str(dismissed_by or "local-user"),
                 "task_ids": [
                     str(item["task_id"])
                     for item in decisions
@@ -617,6 +618,7 @@ class TaskApplicationService:
                 )
                 + int(deletion.get("skipped_unacknowledged") or 0),
                 "artifacts_deleted": 0,
+                "dismissed_by": str(dismissed_by or "local-user"),
                 "task_ids": deleted_ids,
                 "counts": dict(candidate_scan.get("counts") or {}),
             }
@@ -705,6 +707,7 @@ class TaskApplicationService:
             "expired": 0,
             "alerts": 0,
         }
+        merged["dismissed_by"] = ""
         checks: list[str] = []
         foreign_key_checks: list[str] = []
         for result in results:
@@ -737,6 +740,15 @@ class TaskApplicationService:
             if foreign_key_checks
             else "not_run"
         )
+        actors = {
+            str(result.get("dismissed_by") or "")
+            for result in results
+            if str(result.get("dismissed_by") or "")
+        }
+        if len(actors) == 1:
+            merged["dismissed_by"] = actors.pop()
+        elif len(actors) > 1:
+            merged["dismissed_by"] = "mixed"
         if not dry_run:
             merged["task_ids"] = list(merged["deleted_task_ids"])
         return merged
