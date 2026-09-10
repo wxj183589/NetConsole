@@ -12,9 +12,10 @@ NetConsole 的生产数据库维护能力是独立安全边界，不复用或放
 - `PRODUCTION_CUTOVER_AUTHORIZED = FALSE`
 - `FAIL_CLOSED = TRUE`
 
-代码能力已实现，但当前 production rollback owner 仍为
-`PENDING_PRODUCTION_BACKUP`，没有 VERIFIED production rollback set，也没有生产
-cutover 授权。不得把 capability 存在、隔离 rehearsal 通过或 manifest 生成解释为
+当前 `ProductionMaintenanceCapability` 已登记一个
+`TASK_OPERATIONAL_GC` resource-set owner，覆盖 9 个 Production `tasks.db`，并已
+完成 SQLite Online Backup、quick/FK 校验和离线 rehearsal；生产 cutover 仍未授权。
+不得把 rollback capability VERIFIED、隔离 rehearsal 通过或 manifest 生成解释为
 已执行生产迁移。
 
 当前 implementation 与历史 rehearsal evidence 是两个不同身份：
@@ -33,11 +34,19 @@ source worktree 或 packaged build metadata 还必须明确 `build_dirty=false`�
 
 ## 固定作用域
 
-第一阶段只允许：
+Production capability 保留旧的单 Site/数据库 scalar owner 兼容路径，同时支持正式
+resource-set scope。`TASK_OPERATIONAL_GC` 的本次固定 scope 是 SiteRegistry 中以下
+9 个 Site ID 的 `tasks.db`：
 
-- Site ID：`legacy-dfd356e96ea0`
-- SiteRegistry display name：`宁波地铁12号线`
-- 数据库：`devices.db`、`tasks.db`
+`legacy-784dcd2b63e3`、`legacy-dfd356e96ea0`、`legacy-422faf1196ef`、
+`legacy-0d1a8935839e`、`hzl10`、`legacy-6fef62d71cfd`、
+`legacy-59b885329893`、`hzdt-09`、`sxl1`。
+
+resource-set owner 使用 `maintenance_id`、`maintenance_type`、`scope_kind` 和
+`resources[]` 表达范围；每个 resource 绑定 Site、`database_role=tasks.db`、
+DataRoot-relative source path、规范化 path、source identity/SHA/revision、size、
+schema、quick/FK 和 canonical backup identity。只有 9/9 exact coverage 才能进入
+`VERIFIED`。
 
 路径必须由当前 DataRoot 的 SiteRegistry 精确解析；不能传任意局点路径、目录或
 SQLite 文件。符号链接、越界路径、未登记 Site、显示名不一致和额外数据库一律
@@ -79,11 +88,10 @@ preflight 与进入维护锁后的第二次 source identity 校验都必须完�
 SHA、revision、row identity、plan digest 或 Git HEAD 任一不同均为
 `STALE_SOURCE` / `STALE_PLAN`，不可执行。
 
-maintenance CLI 当前只生成 `execution_status = NOT_EXECUTABLE` 的 preparation
-manifest，并默认登记 rollback owner、production backup、writer quiescence 和 cutover
-authorization 阻塞项。即使 source/candidate identity 与全部自动化测试一致，preflight
-也会拒绝该 manifest；只有在真实生产前置条件均已建立后，由受控授权流程生成无阻塞项
-的 `EXECUTABLE` manifest，才可能进入后续 gate。
+maintenance CLI 当前仍只生成 `execution_status = NOT_EXECUTABLE` 的 replacement
+preparation manifest；rollback scope 使用独立的 `scope`、`register-scope`、
+`backup-scope`、`manifest-scope` 和 `verify-scope` 受控步骤建立。即使 rollback
+owner VERIFIED，production cutover authorization 仍是独立阻断项。
 
 manifest 转为 `EXECUTABLE` 时，`generated_git_head` 必须等于运行时重新解析的
 `CURRENT_IMPLEMENTATION_HEAD`。旧 rehearsal HEAD 只能出现在 authorization evidence
@@ -97,9 +105,11 @@ WAL/SHM sidecar。
 ## Rollback owner
 
 `config/storage_registry.yaml` 的 `production_rollback_owners` 是正式 owner 注册表。
-owner 必须包含 backup set、Site、operation、database、source identity/SHA/revision、
+scalar owner 必须包含 backup set、Site、operation、database、source identity/SHA/revision、
 创建与验证时间、quick check、schema fingerprint、backup SHA/size/canonical relative
-path、observation 和 retire state。
+path、observation 和 retire state；resource-set owner 在同一 registry entry 中增加
+`maintenance_id`、`maintenance_type`、`scope_kind` 和 `resources[]`，不建立第二套
+registry。
 
 只有同时满足以下状态才是可用 rollback authority：
 
@@ -112,9 +122,10 @@ path、observation 和 retire state。
   `files/backups/production-maintenance/<backup_set_id>/database.sqlite`，并匹配登记的
   SHA-256、size 与 schema fingerprint
 
-当前登记项是具体 Site/数据库的待建立槽位，不是 VERIFIED backup。生产切换前必须
-用 SQLite Online Backup API 创建并验证 exact backup set，再更新 owner；不能把
-历史 `files/backups/**` 文件名推断成 rollback authority。
+owner 生命周期固定为：intent → requested scope registration → consistent backup
+creation → resource attachment/verification → owner `VERIFIED`。本次 9 库 owner
+已完成该流程；旧宁波 12 号线两个 scalar `PENDING_PRODUCTION_BACKUP` 条目仍保留，
+没有被改写或吸收。不能把历史 `files/backups/**` 文件名推断成 rollback authority。
 
 ## 执行门
 
