@@ -102,6 +102,33 @@ manifest 和命令输出文件均为 create-only；既有路径或 `--output` �
 `mode=ro&immutable=1`，不得因读取 source、candidate 或 rollback backup 创建或更新
 WAL/SHM sidecar。
 
+## Task Cleanup Schema Contract
+
+`TASK_OPERATIONAL_GC` 还必须通过独立的
+`TASK_CLEANUP_SCHEMA_CONTRACT`。该契约使用 `sqlite_schema`、`PRAGMA table_info`、
+`PRAGMA index_list/index_info` 和 schema metadata 只读核验，不把 `user_version` 作为
+唯一事实源。
+
+预览要求 `task_snapshots`、`task_events`、`task_results` 的清理所需字段，以及
+`idx_task_snapshots_visible_updated`、`idx_task_events_task_sequence`、
+`idx_task_results_task_created`。Apply 在此基础上硬性要求
+`task_retention_tombstones(task_id PRIMARY KEY, retired_at, reason)`。缺失、partial
+或索引不匹配时，候选可以被观察为 `SAFE_BUT_SCHEMA_BLOCKED`，但不得进入可执行
+manifest；resource-set 的 Production preflight 必须报告 `9/9
+TASK_SCHEMA_COMPATIBILITY PASS` 才能继续。
+
+schema upgrade 与 Operational GC 是两个阶段。显式 upgrade 使用现有 SQLite/Task
+repository 边界，在 `BEGIN IMMEDIATE` 中完成 tombstone 表/字段/索引修复，失败整体
+回滚、重复执行幂等；GC 不得在删除第 N 个任务时隐式创建表。GC 事务必须先验证
+apply contract，然后在同一事务中删除 task-owned rows 并写入 tombstone；任一删除或
+tombstone 写入失败都回滚全部 task/event/snapshot/result 变化。
+
+`--all-sites --apply` 必须先完成全部目标库的只读 schema preflight，再允许任何一个库
+进入 apply；任一库 blocked 时全批次不执行。
+
+当前 contract 修复的完整证据见
+`docs/development/LEGACY_TASK_TOMBSTONE_CONTRACT_ACCEPTANCE_20260910.md`。
+
 ## Rollback owner
 
 `config/storage_registry.yaml` 的 `production_rollback_owners` 是正式 owner 注册表。

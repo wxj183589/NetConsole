@@ -18,6 +18,10 @@ from typing import Any
 
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.repositories.task_cleanup_schema import (
+    TaskCleanupSchemaError,
+    inspect_task_cleanup_schema,
+)
 from netconsole.services.job_center.task_authority_index import TaskAuthorityIndex
 from netconsole.services.job_center.task_cleanup_service import TaskCleanupService
 
@@ -87,10 +91,21 @@ def _removed_candidates(database: Path) -> list[dict[str, Any]]:
 
 
 def _preview_site(paths: PathResolver, site: str, database: Path, *, apply: bool) -> dict[str, Any]:
+    schema_profile = inspect_task_cleanup_schema(database)
+    schema_ready_for_preview = bool(schema_profile.get("preview_compatible"))
+    schema_ready_for_apply = bool(schema_profile.get("apply_compatible"))
+    if apply and not schema_ready_for_apply:
+        raise TaskCleanupSchemaError(
+            "TASK_SCHEMA_COMPATIBILITY apply blocked: "
+            f"site={site} database={database}"
+        )
     candidates = _removed_candidates(database)
-    read_repository = _ReadOnlyTaskRepository(database)
-    service = TaskCleanupService(read_repository, paths=paths, site_name=site)
-    decisions = service.preview_cleanup([str(row["task_id"]) for row in candidates])
+    if schema_ready_for_preview:
+        read_repository = _ReadOnlyTaskRepository(database)
+        service = TaskCleanupService(read_repository, paths=paths, site_name=site)
+        decisions = service.preview_cleanup([str(row["task_id"]) for row in candidates])
+    else:
+        decisions = {"decisions": []}
     decision_by_id = {
         str(item["task_id"]): item
         for item in decisions.get("decisions", [])
@@ -101,6 +116,8 @@ def _preview_site(paths: PathResolver, site: str, database: Path, *, apply: bool
         task_id = str(candidate["task_id"])
         decision = decision_by_id.get(task_id, {})
         reasons = [str(value) for value in decision.get("reasons", [])]
+        if not schema_ready_for_apply:
+            reasons.append("TASK_SCHEMA_COMPATIBILITY_REQUIRED")
         rows.append(
             {
                 "task_id": task_id,
@@ -128,8 +145,14 @@ def _preview_site(paths: PathResolver, site: str, database: Path, *, apply: bool
                 + int(decision.get("result_bytes") or 0),
                 "logs_preserved": True,
                 "artifact_preserved": True,
-                "safe_to_retire": bool(decision.get("can_cleanup")),
-                "classification": "GUI_REMOVED_OPERATIONAL_RESIDUAL",
+                "safe_to_retire": bool(
+                    schema_ready_for_apply and decision.get("can_cleanup")
+                ),
+                "classification": (
+                    "GUI_REMOVED_OPERATIONAL_RESIDUAL"
+                    if schema_ready_for_apply
+                    else "SAFE_BUT_SCHEMA_BLOCKED"
+                ),
                 "reason": reasons or ["SAFE_EXPLICIT_OPERATIONAL_RETIREMENT"],
             }
         )
@@ -148,6 +171,9 @@ def _preview_site(paths: PathResolver, site: str, database: Path, *, apply: bool
         "candidates": rows,
         "candidate_count": len(rows),
         "safe_to_retire_count": sum(bool(row["safe_to_retire"]) for row in rows),
+        "schema_compatibility": schema_profile,
+        "migration_required": bool(schema_profile.get("migration_required")),
+        "cleanup_ready": schema_ready_for_apply,
         "apply": bool(apply),
         "applied": applied,
     }
@@ -176,8 +202,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.apply and data_root == PRODUCTION_DATA_ROOT and not args.allow_production:
         raise SystemExit("生产 tasks.db 仅允许显式 --allow-production --apply")
     paths = PathResolver(app_root=Path.cwd(), data_root=data_root)
+    targets = _site_databases(data_root, args.site, args.all_sites)
     reports = []
-    for site, database in _site_databases(data_root, args.site, args.all_sites):
+    if args.apply:
+        preflight_reports = [
+            _preview_site(paths, site, database, apply=False)
+            for site, database in targets
+        ]
+        blocked = [
+            str(item.get("site") or "")
+            for item in preflight_reports
+            if not bool(item.get("cleanup_ready"))
+        ]
+        if blocked:
+            raise TaskCleanupSchemaError(
+                "TASK_SCHEMA_COMPATIBILITY all-sites gate blocked: "
+                + ", ".join(blocked)
+            )
+    for site, database in targets:
         if not database.is_file():
             reports.append({"site": site, "database": str(database), "error": "tasks.db 不存在"})
             continue
@@ -192,6 +234,15 @@ def main(argv: list[str] | None = None) -> int:
         "safe_to_retire_count": sum(
             int(item.get("safe_to_retire_count") or 0) for item in reports
         ),
+        "task_schema_compatibility": {
+            "required_databases": len(reports),
+            "passed_databases": sum(
+                1 for item in reports if bool(item.get("cleanup_ready"))
+            ),
+            "status": "PASS"
+            if all(bool(item.get("cleanup_ready")) for item in reports)
+            else "BLOCKED",
+        },
     }
     encoded = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:

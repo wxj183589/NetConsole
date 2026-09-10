@@ -39,6 +39,7 @@ from netconsole.services.database_upgrade.coordinator import (
 from netconsole.services.database_upgrade.journal import DatabaseUpgradeJournal
 from netconsole.services.database_upgrade.sqlite_consistency import fsync_file
 from netconsole.services.site_storage import SiteRegistryRepository
+from netconsole.repositories.task_cleanup_schema import inspect_task_cleanup_schema
 
 
 PRODUCTION_SITE_ALLOWLIST: dict[str, str] = {
@@ -1622,6 +1623,7 @@ def discover_production_tasks_scope(
         foreign_key_check = _sqlite_foreign_key_check(database)
         if foreign_key_check != "ok":
             raise ProductionMaintenanceError(f"production tasks foreign key check failed: {site_id}")
+        task_schema_profile = inspect_task_cleanup_schema(database, immutable=True)
         relative = database.relative_to(paths.data_root.resolve()).as_posix()
         identity = _digest(
             {
@@ -1649,6 +1651,10 @@ def discover_production_tasks_scope(
                 "schema_version": str(profile["schema_version"]),
                 "quick_check": str(profile["quick_check"]),
                 "foreign_key_check": foreign_key_check,
+                "task_schema_compatibility": "PASS"
+                if task_schema_profile.get("apply_compatible")
+                else "SAFE_BUT_SCHEMA_BLOCKED",
+                "task_schema_profile": task_schema_profile,
                 "status": "PENDING_PRODUCTION_BACKUP",
             }
         )
@@ -2219,7 +2225,17 @@ class ProductionMaintenanceCapability:
             raise ProductionMaintenanceError(
                 "STALE_SOURCE: source identity changed after static preflight"
             )
-        return {
+        task_schema_profile: dict[str, Any] | None = None
+        if (
+            manifest.database == "tasks.db"
+            and manifest.plan_kind == PRODUCTION_TASK_OPERATIONAL_GC
+        ):
+            task_schema_profile = inspect_task_cleanup_schema(database, immutable=True)
+            if not bool(task_schema_profile.get("apply_compatible")):
+                raise ProductionMaintenanceError(
+                    "TASK_SCHEMA_COMPATIBILITY: production Operational GC changed to schema-blocked"
+                )
+        result = {
             "runtime_writer_stopped": True,
             "database_owner_inactive": True,
             "wal_zero": sidecars["wal_zero"],
@@ -2229,6 +2245,14 @@ class ProductionMaintenanceCapability:
             "schema_fingerprint": str(source["schema_digest"]),
             "status": "PASS",
         }
+        if task_schema_profile is not None:
+            result.update(
+                {
+                    "task_schema_compatibility": "PASS",
+                    "task_schema_profile": task_schema_profile,
+                }
+            )
+        return result
 
     def preflight(
         self,
@@ -2276,7 +2300,17 @@ class ProductionMaintenanceCapability:
         second = self._validate_source(manifest, database)
         if first["sha256"] != second["sha256"] or first["size_bytes"] != second["size_bytes"]:
             raise ProductionMaintenanceError("source identity changed during second verification")
-        return {
+        task_schema_profile: dict[str, Any] | None = None
+        if (
+            manifest.database == "tasks.db"
+            and manifest.plan_kind == PRODUCTION_TASK_OPERATIONAL_GC
+        ):
+            task_schema_profile = inspect_task_cleanup_schema(database, immutable=True)
+            if not bool(task_schema_profile.get("apply_compatible")):
+                raise ProductionMaintenanceError(
+                    "TASK_SCHEMA_COMPATIBILITY: production Operational GC is schema-blocked"
+                )
+        result = {
             "mode": mode,
             "site_id": site.site_id,
             "site_display_name": site.display_name,
@@ -2291,6 +2325,14 @@ class ProductionMaintenanceCapability:
             "second_source_verification": "PASS",
             "mutation": "NONE",
         }
+        if task_schema_profile is not None:
+            result.update(
+                {
+                    "task_schema_compatibility": "PASS",
+                    "task_schema_profile": task_schema_profile,
+                }
+            )
+        return result
 
     def execute_replace(
         self,

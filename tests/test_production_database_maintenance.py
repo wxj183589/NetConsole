@@ -266,7 +266,13 @@ def _capability(
     )
 
 
-def _manifest(tmp_path: Path, database: Path, *, candidate: Path | None = None) -> Path:
+def _manifest(
+    tmp_path: Path,
+    database: Path,
+    *,
+    candidate: Path | None = None,
+    plan_kind: str = "test",
+) -> Path:
     binding = _binding(PathResolver(data_root=tmp_path / "binding-data-root"))
     value = build_exact_manifest(
         database,
@@ -275,7 +281,7 @@ def _manifest(tmp_path: Path, database: Path, *, candidate: Path | None = None) 
         row_identity={"table": "records", "key": "id"},
         expected_count=2,
         evidence_binding=binding,
-        plan_kind="test",
+        plan_kind=plan_kind,
         execution_status="EXECUTABLE",
         blocking_prerequisites=(),
     )
@@ -1127,6 +1133,28 @@ def test_preflight_rejects_stale_source_and_requires_production_mode(tmp_path: P
             gates=_gates(paths),
         )
     with pytest.raises(ProductionMaintenanceError, match="STALE_SOURCE"):
+        capability.preflight(
+            manifest,
+            mode="production",
+            writer_quiescent=True,
+            gates=_gates(paths),
+        )
+
+
+def test_operational_gc_preflight_rejects_legacy_task_schema(
+    tmp_path: Path,
+) -> None:
+    paths, site, _ = _site(tmp_path)
+    manifest = _manifest(
+        tmp_path,
+        site / "db" / "tasks.db",
+        plan_kind="TASK_OPERATIONAL_GC",
+    )
+    capability = _capability(
+        paths,
+        source_identity=json.loads(manifest.read_text(encoding="utf-8"))["database_identity"],
+    )
+    with pytest.raises(ProductionMaintenanceError, match="TASK_SCHEMA_COMPATIBILITY"):
         capability.preflight(
             manifest,
             mode="production",

@@ -39,6 +39,10 @@ from netconsole.repositories.task_result_blob_repository import (
     ensure_blob,
     read_blob,
 )
+from netconsole.repositories.task_cleanup_schema import (
+    TaskCleanupSchemaError,
+    inspect_task_cleanup_schema_connection,
+)
 
 
 TASK_SCHEMA = """
@@ -1230,6 +1234,14 @@ class TaskRepository:
 
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if normalized:
+                schema_profile = inspect_task_cleanup_schema_connection(conn)
+                if not bool(schema_profile.get("apply_compatible")):
+                    conn.rollback()
+                    raise TaskCleanupSchemaError(
+                        "TASK_SCHEMA_COMPATIBILITY apply blocked: "
+                        f"database={self.db_path}"
+                    )
             tables = {
                 str(row[0])
                 for row in conn.execute(
@@ -1308,12 +1320,11 @@ class TaskRepository:
                         chunk,
                     )
                     deleted["task_snapshots"] += max(0, int(cursor.rowcount))
-                    if "task_retention_tombstones" in tables:
-                        conn.executemany(
-                            "INSERT OR IGNORE INTO task_retention_tombstones"
-                            "(task_id, retired_at, reason) VALUES (?, ?, ?)",
-                            [(task_id, utc_now_iso(), reason) for task_id in chunk],
-                        )
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO task_retention_tombstones"
+                        "(task_id, retired_at, reason) VALUES (?, ?, ?)",
+                        [(task_id, utc_now_iso(), reason) for task_id in chunk],
+                    )
             if deleted_ids and "task_result_blobs" in tables and "task_results" in tables:
                 orphan_rows = conn.execute(
                     "SELECT content_sha256, compressed_bytes FROM task_result_blobs "
