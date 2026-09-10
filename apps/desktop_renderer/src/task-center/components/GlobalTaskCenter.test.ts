@@ -41,7 +41,8 @@ describe('GlobalTaskCenter', () => {
   it('uses the shared centered confirmation dialog for cleanup without changing the drawer', () => {
     expect(source).toContain('const { confirm } = useConfirm()')
     expect(source).toContain("title: t('job_center.cleanup.dialog_title', '清理任务记录')")
-    expect(source).toContain('highlight: `${preview.matched} 个`')
+    expect(source).toContain('const eligibleCount = preview.eligible_count ?? preview.matched')
+    expect(source).toContain('highlight: `${eligibleCount} 个`')
     expect(source).toContain("width: 'min(468px, calc(100vw - 32px))'")
     expect(source).toContain("type: 'DANGER'")
     expect(source).toContain("confirmLoadingText: t('job_center.cleanup.loading', '正在清理…')")
