@@ -1,7 +1,7 @@
 # Task Lifecycle 主线集成验收
 
-**日期：** 2026-09-10  
-**范围：** 将 `codex-A/task-lifecycle-operational-gc` 集成到最新 `main`，并在最终集成树复验 Task Lifecycle consumer gates。  
+**日期：** 2026-09-10
+**范围：** 将 `codex-A/task-lifecycle-operational-gc` 集成到最新 `main`，并在最终集成树复验 Task Lifecycle consumer gates。
 **边界：** 本阶段不执行 Production tasks.db GC、VACUUM、candidate replace、版本步进、tag 移动、安装包重打或真实设备验收。
 
 ## INTEGRATION
