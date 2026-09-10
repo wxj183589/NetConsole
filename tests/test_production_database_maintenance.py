@@ -22,6 +22,12 @@ from netconsole.services.production_database_maintenance import (
     ProductionMaintenanceError,
     ProductionRollbackOwner,
     build_exact_manifest,
+    create_and_verify_rollback_scope,
+    discover_production_tasks_scope,
+    normalize_rollback_resource_path,
+    register_rollback_scope,
+    verify_rollback_owner_scope,
+    verify_registered_rollback_scope,
     write_exact_manifest,
 )
 from netconsole.services.database_footprint_maintenance import sqlite_quick_profile
@@ -98,6 +104,68 @@ def _site(tmp_path: Path) -> tuple[PathResolver, Path, Path]:
         encoding="utf-8",
     )
     return PathResolver(data_root=root), site, root
+
+
+def _multi_site(tmp_path: Path) -> tuple[PathResolver, list[Path]]:
+    root = tmp_path / "multi-data"
+    config = root / "config"
+    config.mkdir(parents=True)
+    site_specs = [
+        ("legacy-784dcd2b63e3", "宁波地铁10号线", "宁波地铁10号线"),
+        ("legacy-dfd356e96ea0", "宁波地铁12号线", "宁波地铁12号线"),
+        ("legacy-422faf1196ef", "宁波地铁1号线", "宁波地铁1号线"),
+        ("legacy-0d1a8935839e", "宁波地铁6号线", "宁波地铁6号线"),
+        ("hzl10", "杭州地铁10号线", "hzl10"),
+        ("legacy-6fef62d71cfd", "杭州地铁4号线-信号-A网", "杭州地铁4号线-信号-A网"),
+        ("legacy-59b885329893", "杭州地铁4号线-信号-B网", "杭州地铁4号线-信号-B网"),
+        ("hzdt-09", "杭州地铁9号线", "hzdt-09"),
+        ("sxl1", "绍兴地铁1号线", "sxl1"),
+    ]
+    records = []
+    sites: list[Path] = []
+    for site_id, display_name, directory in site_specs:
+        site = root / "sites" / directory
+        database = site / "db" / "tasks.db"
+        database.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(database)) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE task_snapshots (
+                    task_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    created_time TEXT NOT NULL
+                );
+                CREATE TABLE task_events (
+                    event_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL REFERENCES task_snapshots(task_id)
+                );
+                CREATE TABLE task_retention_tombstones (
+                    task_id TEXT PRIMARY KEY,
+                    retired_at TEXT NOT NULL,
+                    reason TEXT NOT NULL
+                );
+                INSERT INTO task_snapshots(task_id, status, created_time)
+                VALUES ('task-1', 'COMPLETED', '2026-09-10T00:00:00Z');
+                INSERT INTO task_events(event_id, task_id) VALUES ('event-1', 'task-1');
+                """
+            )
+            connection.commit()
+        records.append(
+            {
+                "site_id": site_id,
+                "display_name": display_name,
+                "relative_path": f"sites/{directory}",
+            }
+        )
+        sites.append(site)
+    (config / "site_registry.json").write_text(
+        json.dumps({"schema_version": 2, "sites": records}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (config / "application.json").write_text(
+        json.dumps({"current_site": "legacy-dfd356e96ea0"}), encoding="utf-8"
+    )
+    return PathResolver(data_root=root), sites
 
 
 def _owner(
@@ -1632,3 +1700,197 @@ def test_manifest_cli_accepts_structured_identity_and_stays_not_executable(
             writer_quiescent=True,
             gates=_gates(paths),
         )
+
+
+def _rollback_scope_registry(tmp_path: Path) -> Path:
+    registry = tmp_path / "storage_registry.yaml"
+    registry.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "production_rollback_owners": [
+                    {
+                        "owner": "ProductionMaintenanceCapability",
+                        "backup_set_id": "PENDING_PRODUCTION_BACKUP-legacy-dfd356e96ea0-tasks",
+                        "site_id": "legacy-dfd356e96ea0",
+                        "operation_id": "PENDING_PRODUCTION_CUTOVER",
+                        "database": "tasks.db",
+                        "source_identity": "a" * 64,
+                        "source_sha256": "b" * 64,
+                        "source_revision": "b" * 64,
+                        "created_at": "",
+                        "verified_at": "",
+                        "quick_check": "pending",
+                        "schema_fingerprint": "c" * 64,
+                        "rollback_required": True,
+                        "observation_state": "PENDING_PRODUCTION_BACKUP",
+                        "superseded_by": "",
+                        "retire_state": "PROTECT",
+                        "backup_sha256": "",
+                        "backup_size": 0,
+                        "backup_relative_path": (
+                            "files/backups/production-maintenance/"
+                            "PENDING_PRODUCTION_BACKUP-legacy-dfd356e96ea0-tasks/database.sqlite"
+                        ),
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return registry
+
+
+def test_resource_set_discovers_exact_nine_tasks_databases(tmp_path: Path) -> None:
+    paths, _sites = _multi_site(tmp_path)
+    scope = discover_production_tasks_scope(
+        paths,
+        maintenance_id="production-task-gc-20260910",
+        source_code_revision=HEAD,
+    )
+    assert scope["maintenance_type"] == "TASK_OPERATIONAL_GC"
+    assert scope["database_role"] == "tasks.db"
+    assert scope["resource_count"] == 9
+    assert len(scope["resources"]) == 9
+    assert {item["database_role"] for item in scope["resources"]} == {"tasks.db"}
+    assert all(item["quick_check"] == "ok" for item in scope["resources"])
+    assert all(item["foreign_key_check"] == "ok" for item in scope["resources"])
+
+
+def test_resource_set_registers_pending_before_backup_and_persists_owner(
+    tmp_path: Path,
+) -> None:
+    paths, _sites = _multi_site(tmp_path)
+    registry = _rollback_scope_registry(tmp_path)
+    scope = discover_production_tasks_scope(
+        paths,
+        maintenance_id="production-task-gc-20260910",
+        source_code_revision=HEAD,
+    )
+    pending = register_rollback_scope(registry, scope)
+    assert pending.observation_state == "PENDING_PRODUCTION_BACKUP"
+    assert not any(resource.backup_sha256 for resource in pending.resources)
+    loaded = ProductionMaintenanceCapability.load_rollback_owners(registry)
+    assert any(owner.maintenance_id == pending.maintenance_id for owner in loaded.values())
+    assert any(owner.observation_state == "PENDING_PRODUCTION_BACKUP" for owner in loaded.values())
+
+    verified = create_and_verify_rollback_scope(paths, registry, scope)
+    assert verified.observation_state == "VERIFIED"
+    assert verified.verified()
+    assert len(verified.resources) == 9
+    restarted = ProductionMaintenanceCapability.load_rollback_owners(registry)
+    persisted = [
+        owner
+        for owner in restarted.values()
+        if owner.maintenance_id == "production-task-gc-20260910"
+    ]
+    assert len(persisted) == 1
+    assert persisted[0].observation_state == "VERIFIED"
+    assert all(resource.status == "VERIFIED" for resource in persisted[0].resources)
+
+
+def test_resource_set_verifier_requires_exact_nine_and_does_not_double_count(
+    tmp_path: Path,
+) -> None:
+    paths, _sites = _multi_site(tmp_path)
+    registry = _rollback_scope_registry(tmp_path)
+    scope = discover_production_tasks_scope(
+        paths,
+        maintenance_id="production-task-gc-20260910",
+        source_code_revision=HEAD,
+    )
+    register_rollback_scope(registry, scope)
+    owner = create_and_verify_rollback_scope(paths, registry, scope)
+    report = verify_rollback_owner_scope(owner, scope["resources"])
+    assert report["requested_count"] == 9
+    assert report["covered_count"] == 9
+    assert report["missing"] == []
+    assert report["extra"] == []
+    duplicate_scope = dict(scope)
+    duplicate_scope["resources"] = list(scope["resources"][:-1]) + [scope["resources"][0]]
+    with pytest.raises(ProductionMaintenanceError, match="duplicate"):
+        verify_rollback_owner_scope(owner, duplicate_scope["resources"])
+
+    missing = verify_rollback_owner_scope(owner, scope["resources"][:-1])
+    assert missing["requested_count"] == 8
+    assert missing["covered_count"] == 8
+    assert missing["scope_complete"] is False
+
+
+def test_resource_set_verifier_rejects_wrong_role_path_and_bad_backup(
+    tmp_path: Path,
+) -> None:
+    paths, _sites = _multi_site(tmp_path)
+    registry = _rollback_scope_registry(tmp_path)
+    scope = discover_production_tasks_scope(
+        paths,
+        maintenance_id="production-task-gc-20260910",
+        source_code_revision=HEAD,
+    )
+    register_rollback_scope(registry, scope)
+    owner = create_and_verify_rollback_scope(paths, registry, scope)
+    wrong_role = dict(scope["resources"][0])
+    wrong_role["database_role"] = "devices.db"
+    wrong_role_report = verify_rollback_owner_scope(owner, [wrong_role, *scope["resources"][1:]])
+    assert wrong_role_report["covered_count"] == 8
+    assert wrong_role_report["scope_complete"] is False
+
+    normalized = normalize_rollback_resource_path(
+        r"C:\\Data\\sites\\宁波地铁12号线\\db\\tasks.db"
+    )
+    assert normalized == "c:/data/sites/宁波地铁12号线/db/tasks.db"
+
+    bad_resource = replace(owner.resources[0], quick_check="not_ok", status="VERIFIED")
+    bad_owner = replace(owner, resources=(bad_resource, *owner.resources[1:]))
+    bad_report = verify_rollback_owner_scope(bad_owner, scope["resources"])
+    assert bad_report["covered_count"] == 8
+    assert bad_report["scope_complete"] is False
+
+
+def test_registered_scope_verifier_reports_complete_only_for_verified_owner(
+    tmp_path: Path,
+) -> None:
+    paths, _sites = _multi_site(tmp_path)
+    registry = _rollback_scope_registry(tmp_path)
+    scope = discover_production_tasks_scope(
+        paths,
+        maintenance_id="production-task-gc-20260910",
+        source_code_revision=HEAD,
+    )
+    register_rollback_scope(registry, scope)
+    pending_report = verify_registered_rollback_scope(registry, scope)
+    assert pending_report["owner_status"] == "NOT_VERIFIED"
+    assert pending_report["scope_complete"] is False
+    create_and_verify_rollback_scope(paths, registry, scope)
+    verified_report = verify_registered_rollback_scope(registry, scope)
+    assert verified_report["owner_status"] == "VERIFIED"
+    assert verified_report["requested_count"] == 9
+    assert verified_report["covered_count"] == 9
+    assert verified_report["scope_complete"] is True
+
+
+def test_rollback_scope_cli_discovers_without_mutating_production_data(tmp_path: Path) -> None:
+    paths, _sites = _multi_site(tmp_path)
+    output = tmp_path / "scope.json"
+    assert production_main(
+        [
+            "scope",
+            "--data-root",
+            str(paths.data_root),
+            "--maintenance-id",
+            "production-task-gc-20260910",
+            "--output",
+            str(output),
+            "--git-head",
+            HEAD,
+            "--rehearsal-evidence-head",
+            REHEARSAL_HEAD,
+        ]
+    ) == 0
+    value = json.loads(output.read_text(encoding="utf-8"))
+    assert value["resource_count"] == 9
+    assert not any(
+        (site / "files" / "backups" / "production-maintenance").exists()
+        for site in _sites
+    )

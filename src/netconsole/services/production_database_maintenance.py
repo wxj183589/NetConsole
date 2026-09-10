@@ -17,7 +17,8 @@ import os
 import sqlite3
 import time
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -41,10 +42,20 @@ from netconsole.services.site_storage import SiteRegistryRepository
 
 
 PRODUCTION_SITE_ALLOWLIST: dict[str, str] = {
+    "legacy-784dcd2b63e3": "宁波地铁10号线",
     "legacy-dfd356e96ea0": "宁波地铁12号线",
+    "legacy-422faf1196ef": "宁波地铁1号线",
+    "legacy-0d1a8935839e": "宁波地铁6号线",
+    "hzl10": "杭州地铁10号线",
+    "legacy-6fef62d71cfd": "杭州地铁4号线-信号-A网",
+    "legacy-59b885329893": "杭州地铁4号线-信号-B网",
+    "hzdt-09": "杭州地铁9号线",
+    "sxl1": "绍兴地铁1号线",
 }
 PRODUCTION_DATABASE_ALLOWLIST = frozenset({"devices.db", "tasks.db"})
 PRODUCTION_AUTHORIZATION_TOKEN = "PRODUCTION_MAINTENANCE_AUTHORIZED"
+PRODUCTION_TASK_OPERATIONAL_GC = "TASK_OPERATIONAL_GC"
+PRODUCTION_ROLLBACK_SCOPE_KIND = "resource-set"
 DEFAULT_MANIFEST_BLOCKERS = (
     "PRODUCTION_ROLLBACK_OWNER",
     "PRODUCTION_BACKUP_VERIFIED",
@@ -159,6 +170,35 @@ def _canonical(value: object) -> str:
 
 def _digest(value: object) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def normalize_rollback_resource_path(value: str | Path) -> str:
+    """Return one stable, case-insensitive path identity for scope comparison."""
+
+    text = str(value or "").replace("\\", "/").strip()
+    if not text:
+        raise ProductionMaintenanceError("rollback resource path is empty")
+    drive, remainder = os.path.splitdrive(text)
+    normalized = f"{drive.lower()}{remainder}".replace("//", "/")
+    while "/./" in normalized:
+        normalized = normalized.replace("/./", "/")
+    if normalized.endswith("/."):
+        normalized = normalized[:-2]
+    return normalized.casefold()
+
+
+def _safe_scope_identifier(value: object, *, field: str) -> str:
+    text = str(value or "").strip()
+    if (
+        not text
+        or text in {".", ".."}
+        or any(
+            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+            for char in text
+        )
+    ):
+        raise ProductionMaintenanceError(f"{field} is unsafe")
+    return text
 
 
 def _is_sha256(value: object) -> bool:
@@ -287,6 +327,16 @@ def _sqlite_immutable_profile(path: Path) -> dict[str, Any]:
     return sqlite_quick_profile(path, immutable=True)
 
 
+def _sqlite_foreign_key_check(path: Path) -> str:
+    _assert_no_nonempty_wal(path)
+    uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
+    with closing(sqlite3.connect(uri, uri=True, timeout=30)) as connection:
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("PRAGMA busy_timeout = 30000")
+        rows = connection.execute("PRAGMA foreign_key_check").fetchall()
+    return "ok" if not rows else json.dumps([tuple(row) for row in rows], ensure_ascii=False)
+
+
 def _candidate_identity(profile: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "size_bytes": int(profile["size_bytes"]),
@@ -336,6 +386,7 @@ def _atomic_replace(source: Path, destination: Path) -> None:
 
 
 def _sqlite_backup_readonly(source: Path, destination: Path) -> dict[str, Any]:
+    _assert_no_nonempty_wal(source)
     if destination.exists():
         raise ProductionMaintenanceError("rollback destination already exists")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -358,6 +409,8 @@ def _sqlite_backup_readonly(source: Path, destination: Path) -> dict[str, Any]:
         profile = _sqlite_immutable_profile(temporary)
         if not profile["valid"]:
             raise ProductionMaintenanceError("rollback backup quick_check failed")
+        if _sqlite_foreign_key_check(temporary) != "ok":
+            raise ProductionMaintenanceError("rollback backup foreign_key_check failed")
         fsync_file(temporary)
         os.replace(temporary, destination)
     finally:
@@ -1076,6 +1129,129 @@ class ProductionManifest:
 
 
 @dataclass(frozen=True)
+class ProductionRollbackResource:
+    site_id: str
+    site: str
+    database_role: str
+    source_path: str
+    normalized_path: str
+    source_identity: str
+    source_sha256: str
+    source_revision: str
+    source_size: int
+    schema_fingerprint: str
+    quick_check: str
+    foreign_key_check: str
+    backup_relative_path: str = ""
+    backup_sha256: str = ""
+    backup_size: int = 0
+    verified_at: str = ""
+    status: str = "PENDING_PRODUCTION_BACKUP"
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ProductionRollbackResource":
+        required = (
+            "site_id",
+            "site",
+            "database_role",
+            "source_path",
+            "normalized_path",
+            "source_identity",
+            "source_sha256",
+            "source_revision",
+            "source_size",
+            "schema_fingerprint",
+            "quick_check",
+            "foreign_key_check",
+        )
+        missing = [field for field in required if field not in value]
+        if missing:
+            raise ProductionMaintenanceError(
+                "rollback resource is missing required fields: " + ", ".join(missing)
+            )
+        try:
+            source_size = int(value["source_size"])
+            backup_size = int(value.get("backup_size") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ProductionMaintenanceError("rollback resource size is invalid") from exc
+        resource = cls(
+            site_id=str(value["site_id"]),
+            site=str(value["site"]),
+            database_role=str(value["database_role"]),
+            source_path=str(value["source_path"]),
+            normalized_path=normalize_rollback_resource_path(value["normalized_path"]),
+            source_identity=str(value["source_identity"]),
+            source_sha256=str(value["source_sha256"]),
+            source_revision=str(value["source_revision"]),
+            source_size=source_size,
+            schema_fingerprint=str(value["schema_fingerprint"]),
+            quick_check=str(value["quick_check"]),
+            foreign_key_check=str(value["foreign_key_check"]),
+            backup_relative_path=str(value.get("backup_relative_path") or ""),
+            backup_sha256=str(value.get("backup_sha256") or ""),
+            backup_size=backup_size,
+            verified_at=str(value.get("verified_at") or ""),
+            status=str(value.get("status") or "PENDING_PRODUCTION_BACKUP"),
+        )
+        if (
+            resource.database_role not in PRODUCTION_DATABASE_ALLOWLIST
+            or resource.source_size <= 0
+            or not _is_sha256(resource.source_identity)
+            or not _is_sha256(resource.source_sha256)
+            or resource.source_revision != resource.source_sha256
+            or not _is_sha256(resource.schema_fingerprint)
+            or resource.normalized_path != normalize_rollback_resource_path(resource.source_path)
+        ):
+            raise ProductionMaintenanceError("rollback resource identity is invalid")
+        if resource.status not in {"PENDING_PRODUCTION_BACKUP", "VERIFIED"}:
+            raise ProductionMaintenanceError("rollback resource status is invalid")
+        return resource
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.site_id, self.database_role, self.normalized_path)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "site_id": self.site_id,
+            "site": self.site,
+            "database_role": self.database_role,
+            "source_path": self.source_path,
+            "normalized_path": self.normalized_path,
+            "source_identity": self.source_identity,
+            "source_sha256": self.source_sha256,
+            "source_revision": self.source_revision,
+            "source_size": self.source_size,
+            "schema_fingerprint": self.schema_fingerprint,
+            "quick_check": self.quick_check,
+            "foreign_key_check": self.foreign_key_check,
+            "backup_relative_path": self.backup_relative_path,
+            "backup_sha256": self.backup_sha256,
+            "backup_size": self.backup_size,
+            "verified_at": self.verified_at,
+            "status": self.status,
+        }
+
+    def verified(self) -> bool:
+        return bool(
+            self.site_id in PRODUCTION_SITE_ALLOWLIST
+            and self.database_role == "tasks.db"
+            and self.source_size > 0
+            and _is_sha256(self.source_identity)
+            and _is_sha256(self.source_sha256)
+            and self.source_revision == self.source_sha256
+            and _is_sha256(self.schema_fingerprint)
+            and self.quick_check == "ok"
+            and self.foreign_key_check == "ok"
+            and self.backup_relative_path
+            and _is_sha256(self.backup_sha256)
+            and self.backup_size > 0
+            and self.verified_at
+            and self.status == "VERIFIED"
+        )
+
+
+@dataclass(frozen=True)
 class ProductionRollbackOwner:
     backup_set_id: str
     site_id: str
@@ -1095,6 +1271,11 @@ class ProductionRollbackOwner:
     backup_sha256: str = ""
     backup_size: int = 0
     backup_relative_path: str = ""
+    owner: str = "ProductionMaintenanceCapability"
+    maintenance_id: str = ""
+    maintenance_type: str = ""
+    scope_kind: str = "single-resource"
+    resources: tuple[ProductionRollbackResource, ...] = ()
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ProductionRollbackOwner":
@@ -1128,9 +1309,34 @@ class ProductionRollbackOwner:
             backup_sha256=str(value.get("backup_sha256") or ""),
             backup_size=int(value.get("backup_size") or 0),
             backup_relative_path=str(value.get("backup_relative_path") or ""),
+            owner=str(value.get("owner") or "ProductionMaintenanceCapability"),
+            maintenance_id=str(value.get("maintenance_id") or ""),
+            maintenance_type=str(value.get("maintenance_type") or ""),
+            scope_kind=str(value.get("scope_kind") or "single-resource"),
+            resources=tuple(
+                ProductionRollbackResource.from_mapping(item)
+                for item in value.get("resources", [])
+            ),
         )
 
     def verified(self) -> bool:
+        if self.resources:
+            keys = [resource.key for resource in self.resources]
+            return bool(
+                self.owner == "ProductionMaintenanceCapability"
+                and self.maintenance_id
+                and self.maintenance_type == PRODUCTION_TASK_OPERATIONAL_GC
+                and self.scope_kind == PRODUCTION_ROLLBACK_SCOPE_KIND
+                and len(keys) == len(set(keys))
+                and len(self.resources) == 9
+                and all(resource.verified() for resource in self.resources)
+                and self.backup_set_id
+                and self.operation_id
+                and self.verified_at
+                and self.rollback_required
+                and self.observation_state == "VERIFIED"
+                and self.retire_state == "PROTECT"
+            )
         return bool(
             self.backup_set_id
             and self.operation_id
@@ -1147,6 +1353,400 @@ class ProductionRollbackOwner:
             and self.backup_size > 0
             and self.backup_relative_path
         )
+
+    def as_dict(self) -> dict[str, Any]:
+        value: dict[str, Any] = {
+            "owner": self.owner,
+            "backup_set_id": self.backup_set_id,
+            "site_id": self.site_id,
+            "operation_id": self.operation_id,
+            "database": self.database,
+            "source_identity": self.source_identity,
+            "source_sha256": self.source_sha256,
+            "source_revision": self.source_revision,
+            "backup_sha256": self.backup_sha256,
+            "backup_size": self.backup_size,
+            "backup_relative_path": self.backup_relative_path,
+            "created_at": self.created_at,
+            "verified_at": self.verified_at,
+            "quick_check": self.quick_check,
+            "schema_fingerprint": self.schema_fingerprint,
+            "rollback_required": self.rollback_required,
+            "observation_state": self.observation_state,
+            "superseded_by": self.superseded_by,
+            "retire_state": self.retire_state,
+        }
+        if self.resources:
+            value.update(
+                {
+                    "maintenance_id": self.maintenance_id,
+                    "maintenance_type": self.maintenance_type,
+                    "scope_kind": self.scope_kind,
+                    "resources": [resource.as_dict() for resource in self.resources],
+                }
+            )
+        return value
+
+    def resource_for(self, site_id: str, database: str) -> ProductionRollbackResource | None:
+        for resource in self.resources:
+            if resource.site_id == site_id and resource.database_role == database:
+                return resource
+        return None
+
+
+def _scope_resources(scope: Mapping[str, Any]) -> tuple[ProductionRollbackResource, ...]:
+    raw_resources = scope.get("resources")
+    if not isinstance(raw_resources, Sequence) or isinstance(raw_resources, (str, bytes)):
+        raise ProductionMaintenanceError("rollback scope resources must be an array")
+    resources = tuple(
+        item if isinstance(item, ProductionRollbackResource)
+        else ProductionRollbackResource.from_mapping(item)
+        for item in raw_resources
+    )
+    keys = [resource.key for resource in resources]
+    if len(keys) != len(set(keys)):
+        raise ProductionMaintenanceError("rollback scope contains duplicate resources")
+    if len(resources) != 9:
+        raise ProductionMaintenanceError("production tasks rollback scope must contain 9 resources")
+    if {resource.site_id for resource in resources} != set(PRODUCTION_SITE_ALLOWLIST):
+        raise ProductionMaintenanceError("rollback scope does not cover the production site allowlist")
+    if {resource.database_role for resource in resources} != {"tasks.db"}:
+        raise ProductionMaintenanceError("rollback scope contains a non-tasks database role")
+    return resources
+
+
+def _scope_key_text(key: tuple[str, str, str]) -> str:
+    return "|".join(key)
+
+
+def verify_rollback_owner_scope(
+    owner: ProductionRollbackOwner,
+    requested_resources: Sequence[Mapping[str, Any] | ProductionRollbackResource],
+) -> dict[str, Any]:
+    requested = tuple(
+        item if isinstance(item, ProductionRollbackResource)
+        else ProductionRollbackResource.from_mapping(item)
+        for item in requested_resources
+    )
+    requested_keys = [resource.key for resource in requested]
+    if len(requested_keys) != len(set(requested_keys)):
+        raise ProductionMaintenanceError("requested rollback scope contains duplicate resources")
+    owner_keys = [resource.key for resource in owner.resources]
+    if len(owner_keys) != len(set(owner_keys)):
+        raise ProductionMaintenanceError("registered rollback scope contains duplicate resources")
+    requested_set = set(requested_keys)
+    requested_by_key = {resource.key: resource for resource in requested}
+    covered_set = {
+        resource.key
+        for resource in owner.resources
+        if resource.key in requested_set
+        and resource.verified()
+        and resource.source_identity == requested_by_key[resource.key].source_identity
+        and resource.source_sha256 == requested_by_key[resource.key].source_sha256
+        and resource.source_size == requested_by_key[resource.key].source_size
+        and resource.schema_fingerprint == requested_by_key[resource.key].schema_fingerprint
+    }
+    missing = sorted(requested_set - covered_set)
+    extra = sorted(set(owner_keys) - requested_set)
+    scope_complete = bool(
+        owner.verified()
+        and not missing
+        and not extra
+        and len(requested) == 9
+        and len(owner.resources) == 9
+    )
+    return {
+        "maintenance_id": owner.maintenance_id,
+        "owner_status": "VERIFIED" if owner.verified() else "NOT_VERIFIED",
+        "requested_count": len(requested),
+        "covered_count": len(covered_set),
+        "missing": [_scope_key_text(key) for key in missing],
+        "extra": [_scope_key_text(key) for key in extra],
+        "scope_complete": scope_complete,
+    }
+
+
+def _read_registry_document(path: str | Path) -> dict[str, Any]:
+    source = Path(path).resolve()
+    try:
+        value = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProductionMaintenanceError(f"cannot read storage registry: {source}") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("production_rollback_owners"), list):
+        raise ProductionMaintenanceError("storage registry has no production rollback owners")
+    return value
+
+
+def _write_registry_document(path: str | Path, value: Mapping[str, Any]) -> None:
+    target = Path(path).resolve()
+    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    if temporary.exists():
+        raise ProductionMaintenanceError("storage registry temporary file already exists")
+    try:
+        temporary.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
+        )
+        fsync_file(temporary)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _find_resource_set_owner(
+    owners: Mapping[tuple[str, str], ProductionRollbackOwner],
+    maintenance_id: str,
+) -> ProductionRollbackOwner | None:
+    matches = [
+        owner
+        for owner in owners.values()
+        if owner.resources and owner.maintenance_id == maintenance_id
+    ]
+    if len(matches) > 1:
+        raise ProductionMaintenanceError("duplicate production rollback resource-set owner")
+    return matches[0] if matches else None
+
+
+def discover_production_tasks_scope(
+    paths: PathResolver,
+    *,
+    maintenance_id: str,
+    source_code_revision: str,
+) -> dict[str, Any]:
+    """Discover the exact registered production tasks.db resource set read-only."""
+
+    maintenance_id = _safe_scope_identifier(maintenance_id, field="maintenance_id")
+    if not _is_git_head(source_code_revision):
+        raise ProductionMaintenanceError("source_code_revision is invalid")
+    records = SiteRegistryRepository(paths).list()
+    by_id = {record.site_id: record for record in records}
+    if set(by_id) != set(PRODUCTION_SITE_ALLOWLIST):
+        raise ProductionMaintenanceError("SiteRegistry does not resolve the exact production site scope")
+    resources: list[dict[str, Any]] = []
+    for site_id in sorted(PRODUCTION_SITE_ALLOWLIST):
+        site = by_id[site_id]
+        expected_display = PRODUCTION_SITE_ALLOWLIST[site_id]
+        if site.display_name != expected_display:
+            raise ProductionMaintenanceError("SiteRegistry identity does not match production allowlist")
+        database = (site.root_path / "db" / "tasks.db").resolve()
+        raw_database = site.root_path / "db" / "tasks.db"
+        if raw_database.is_symlink() or database.parent != (site.root_path / "db").resolve():
+            raise ProductionMaintenanceError("production tasks database path is not a registered direct child")
+        profile = _sqlite_immutable_profile(database)
+        if not profile["valid"]:
+            raise ProductionMaintenanceError(f"production tasks database is invalid: {site_id}")
+        foreign_key_check = _sqlite_foreign_key_check(database)
+        if foreign_key_check != "ok":
+            raise ProductionMaintenanceError(f"production tasks foreign key check failed: {site_id}")
+        relative = database.relative_to(paths.data_root.resolve()).as_posix()
+        identity = _digest(
+            {
+                "site_id": site_id,
+                "database_role": "tasks.db",
+                "normalized_path": normalize_rollback_resource_path(relative),
+                "source_sha256": profile["sha256"],
+                "schema_fingerprint": profile["schema_digest"],
+                "source_revision": profile["sha256"],
+            }
+        )
+        resources.append(
+            {
+                "site_id": site_id,
+                "site": site.display_name,
+                "database_role": "tasks.db",
+                "database_path": str(database),
+                "source_path": relative,
+                "normalized_path": normalize_rollback_resource_path(relative),
+                "source_identity": identity,
+                "source_sha256": str(profile["sha256"]),
+                "source_revision": str(profile["sha256"]),
+                "source_size": int(profile["size_bytes"]),
+                "schema_fingerprint": str(profile["schema_digest"]),
+                "schema_version": str(profile["schema_version"]),
+                "quick_check": str(profile["quick_check"]),
+                "foreign_key_check": foreign_key_check,
+                "status": "PENDING_PRODUCTION_BACKUP",
+            }
+        )
+    scope_digest = _digest(
+        {
+            "maintenance_type": PRODUCTION_TASK_OPERATIONAL_GC,
+            "database_role": "tasks.db",
+            "resources": resources,
+        }
+    )
+    return {
+        "scope_version": 1,
+        "maintenance_id": maintenance_id,
+        "maintenance_type": PRODUCTION_TASK_OPERATIONAL_GC,
+        "database_role": "tasks.db",
+        "source_data_root": str(paths.data_root.resolve()),
+        "source_code_revision": source_code_revision,
+        "resource_count": len(resources),
+        "scope_digest": scope_digest,
+        "resources": resources,
+    }
+
+
+def register_rollback_scope(
+    registry_path: str | Path,
+    scope: Mapping[str, Any],
+) -> ProductionRollbackOwner:
+    """Register a resource-set intent without creating or trusting backups."""
+
+    maintenance_id = _safe_scope_identifier(scope.get("maintenance_id"), field="maintenance_id")
+    if scope.get("maintenance_type") != PRODUCTION_TASK_OPERATIONAL_GC:
+        raise ProductionMaintenanceError("rollback scope maintenance_type is invalid")
+    resources = _scope_resources(scope)
+    document = _read_registry_document(registry_path)
+    existing = [
+        ProductionRollbackOwner.from_mapping(item)
+        for item in document["production_rollback_owners"]
+        if isinstance(item, Mapping)
+    ]
+    if any(owner.maintenance_id == maintenance_id for owner in existing):
+        raise ProductionMaintenanceError("rollback scope maintenance_id is already registered")
+    scope_digest = str(scope.get("scope_digest") or "")
+    if not _is_sha256(scope_digest):
+        raise ProductionMaintenanceError("rollback scope digest is invalid")
+    if not _is_git_head(scope.get("source_code_revision")):
+        raise ProductionMaintenanceError("rollback scope source_code_revision is invalid")
+    now = datetime.now(UTC).isoformat()
+    owner = ProductionRollbackOwner(
+        backup_set_id=f"{maintenance_id}-tasks",
+        site_id="*",
+        operation_id=maintenance_id,
+        database="tasks.db",
+        source_identity=scope_digest,
+        source_sha256=scope_digest,
+        source_revision=str(scope.get("source_code_revision") or ""),
+        created_at=now,
+        verified_at="",
+        quick_check="pending",
+        schema_fingerprint=scope_digest,
+        rollback_required=True,
+        observation_state="PENDING_PRODUCTION_BACKUP",
+        superseded_by="",
+        retire_state="PROTECT",
+        owner="ProductionMaintenanceCapability",
+        maintenance_id=maintenance_id,
+        maintenance_type=PRODUCTION_TASK_OPERATIONAL_GC,
+        scope_kind=PRODUCTION_ROLLBACK_SCOPE_KIND,
+        resources=resources,
+    )
+    document["production_rollback_owners"].append(owner.as_dict())
+    _write_registry_document(registry_path, document)
+    return owner
+
+
+def create_and_verify_rollback_scope(
+    paths: PathResolver,
+    registry_path: str | Path,
+    scope: Mapping[str, Any],
+) -> ProductionRollbackOwner:
+    """Create and verify the registered resource-set using SQLite Online Backup."""
+
+    maintenance_id = _safe_scope_identifier(scope.get("maintenance_id"), field="maintenance_id")
+    requested = _scope_resources(scope)
+    owners = ProductionMaintenanceCapability.load_rollback_owners(registry_path)
+    owner = _find_resource_set_owner(owners, maintenance_id)
+    if owner is None:
+        raise ProductionMaintenanceError("rollback scope must be registered before backup creation")
+    if {resource.key for resource in owner.resources} != {
+        resource.key for resource in requested
+    }:
+        raise ProductionMaintenanceError("registered rollback scope does not match requested scope")
+    registry_document = _read_registry_document(registry_path)
+    updated_resources: list[ProductionRollbackResource] = []
+    for resource in requested:
+        site = SiteRegistryRepository(paths).get(resource.site_id)
+        if site.display_name != resource.site:
+            raise ProductionMaintenanceError("rollback resource SiteRegistry identity mismatch")
+        source = (site.root_path / "db" / resource.database_role).resolve()
+        relative = source.relative_to(paths.data_root.resolve()).as_posix()
+        if normalize_rollback_resource_path(relative) != resource.normalized_path:
+            raise ProductionMaintenanceError("rollback resource path identity mismatch")
+        source_profile = _sqlite_immutable_profile(source)
+        source_fk = _sqlite_foreign_key_check(source)
+        if (
+            not source_profile["valid"]
+            or source_fk != "ok"
+            or str(source_profile["sha256"]) != resource.source_sha256
+            or int(source_profile["size_bytes"]) != resource.source_size
+            or str(source_profile["schema_digest"]) != resource.schema_fingerprint
+        ):
+            raise ProductionMaintenanceError("rollback source changed after scope registration")
+        backup_relative = (
+            Path("files")
+            / "backups"
+            / "production-maintenance"
+            / owner.backup_set_id
+            / "database.sqlite"
+        )
+        backup = (site.root_path / backup_relative).resolve()
+        if backup.exists():
+            backup_profile = _sqlite_immutable_profile(backup)
+        else:
+            backup_profile = _sqlite_backup_readonly(source, backup)
+        backup_fk = _sqlite_foreign_key_check(backup)
+        if (
+            not backup_profile["valid"]
+            or backup_fk != "ok"
+            or str(backup_profile["schema_digest"]) != resource.schema_fingerprint
+            or backup_profile["table_counts"] != source_profile["table_counts"]
+            or int(backup_profile["size_bytes"]) <= 0
+        ):
+            raise ProductionMaintenanceError("rollback backup verification failed")
+        updated_resources.append(
+            replace(
+                resource,
+                backup_relative_path=backup_relative.as_posix(),
+                backup_sha256=str(backup_profile["sha256"]),
+                backup_size=int(backup_profile["size_bytes"]),
+                verified_at=datetime.now(UTC).isoformat(),
+                status="VERIFIED",
+            )
+        )
+    verified_at = datetime.now(UTC).isoformat()
+    updated = replace(
+        owner,
+        verified_at=verified_at,
+        quick_check="ok",
+        observation_state="VERIFIED",
+        resources=tuple(updated_resources),
+        backup_size=sum(resource.backup_size for resource in updated_resources),
+    )
+    if not updated.verified():
+        raise ProductionMaintenanceError("rollback owner did not reach VERIFIED")
+    replaced = False
+    for index, item in enumerate(registry_document["production_rollback_owners"]):
+        if isinstance(item, Mapping) and str(item.get("maintenance_id") or "") == maintenance_id:
+            registry_document["production_rollback_owners"][index] = updated.as_dict()
+            replaced = True
+            break
+    if not replaced:
+        raise ProductionMaintenanceError("registered rollback scope disappeared")
+    _write_registry_document(registry_path, registry_document)
+    return updated
+
+
+def verify_registered_rollback_scope(
+    registry_path: str | Path,
+    scope: Mapping[str, Any],
+) -> dict[str, Any]:
+    owners = ProductionMaintenanceCapability.load_rollback_owners(registry_path)
+    owner = _find_resource_set_owner(owners, str(scope.get("maintenance_id") or ""))
+    if owner is None:
+        return {
+            "maintenance_id": str(scope.get("maintenance_id") or ""),
+            "owner_status": "NOT_REGISTERED",
+            "requested_count": len(scope.get("resources") or []),
+            "covered_count": 0,
+            "missing": ["OWNER_NOT_REGISTERED"],
+            "extra": [],
+            "scope_complete": False,
+        }
+    return verify_rollback_owner_scope(owner, scope.get("resources") or [])
 
 
 def build_exact_manifest(
@@ -1261,20 +1861,18 @@ class ProductionMaintenanceCapability:
 
     @staticmethod
     def load_rollback_owners(path: str | Path) -> dict[tuple[str, str], ProductionRollbackOwner]:
-        source = Path(path).resolve()
-        try:
-            value = json.loads(source.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ProductionMaintenanceError(f"cannot read storage registry: {source}") from exc
-        raw = value.get("production_rollback_owners") if isinstance(value, dict) else None
-        if not isinstance(raw, list):
-            raise ProductionMaintenanceError("storage registry has no production rollback owners")
+        value = _read_registry_document(path)
+        raw = value["production_rollback_owners"]
         owners: dict[tuple[str, str], ProductionRollbackOwner] = {}
         for item in raw:
             if not isinstance(item, Mapping):
                 raise ProductionMaintenanceError("rollback owner entry must be an object")
             owner = ProductionRollbackOwner.from_mapping(item)
-            key = (owner.site_id, owner.database)
+            key = (
+                ("scope:" + owner.maintenance_id, owner.database)
+                if owner.resources
+                else (owner.site_id, owner.database)
+            )
             if key in owners:
                 raise ProductionMaintenanceError("duplicate production rollback owner")
             owners[key] = owner
@@ -1298,15 +1896,50 @@ class ProductionMaintenanceCapability:
 
     def _owner(self, database: str) -> ProductionRollbackOwner:
         owner = self._rollback_owners.get((self.site_id, database))
-        if owner is None:
+        scope_owners = [
+            candidate
+            for candidate in self._rollback_owners.values()
+            if candidate.resources and candidate.resource_for(self.site_id, database) is not None
+        ]
+        verified_scopes = [candidate for candidate in scope_owners if candidate.verified()]
+        if len(verified_scopes) > 1:
+            raise ProductionMaintenanceError("ambiguous production rollback resource-set owner")
+        if verified_scopes:
+            return verified_scopes[0]
+        if owner is None and not scope_owners:
             raise ProductionMaintenanceError("production rollback owner is not registered")
-        if owner.site_id != self.site_id or owner.database != database:
+        if owner is not None and (owner.site_id != self.site_id or owner.database != database):
             raise ProductionMaintenanceError("production rollback owner identity mismatch")
+        if owner is None:
+            owner = scope_owners[0]
         if not owner.verified():
             raise ProductionMaintenanceError("production rollback owner is not VERIFIED")
         return owner
 
-    def _rollback_path(self, site: Any, owner: ProductionRollbackOwner) -> Path:
+    def _rollback_path(
+        self,
+        site: Any,
+        owner: ProductionRollbackOwner,
+        database: str | None = None,
+    ) -> Path:
+        resource = (
+            owner.resource_for(site.site_id, database or "")
+            if owner.resources and database
+            else None
+        )
+        if resource is not None:
+            expected_relative = Path(resource.backup_relative_path)
+            if (
+                expected_relative.parts[:3]
+                != ("files", "backups", "production-maintenance")
+                or expected_relative.name != "database.sqlite"
+            ):
+                raise ProductionMaintenanceError("rollback owner path is not canonical")
+            raw_target = site.root_path / expected_relative
+            target = raw_target.resolve()
+            if raw_target.is_symlink():
+                raise ProductionMaintenanceError("rollback database cannot be a symlink")
+            return target
         backup_set_id = owner.backup_set_id
         if (
             not backup_set_id
@@ -1373,16 +2006,30 @@ class ProductionMaintenanceCapability:
         site: Any,
         owner: ProductionRollbackOwner,
     ) -> tuple[Path, dict[str, Any]]:
-        rollback_path = self._rollback_path(site, owner)
+        resource = owner.resource_for(site.site_id, manifest.database)
+        rollback_path = self._rollback_path(site, owner, manifest.database)
         profile = _sqlite_immutable_profile(rollback_path)
+        foreign_key_check = _sqlite_foreign_key_check(rollback_path)
+        source_identity = resource.source_identity if resource is not None else owner.source_identity
+        source_sha256 = resource.source_sha256 if resource is not None else owner.source_sha256
+        source_revision = resource.source_revision if resource is not None else owner.source_revision
+        schema_fingerprint = (
+            resource.schema_fingerprint if resource is not None else owner.schema_fingerprint
+        )
+        backup_sha256 = resource.backup_sha256 if resource is not None else owner.backup_sha256
+        backup_size = resource.backup_size if resource is not None else owner.backup_size
         if (
             not profile["valid"]
-            or owner.source_identity != manifest.database_identity
-            or owner.source_sha256 != manifest.source_sha256
-            or owner.source_revision != manifest.source_revision
-            or owner.schema_fingerprint != manifest.schema_fingerprint
-            or owner.backup_sha256 != str(profile["sha256"])
-            or owner.backup_size != int(profile["size_bytes"])
+            or foreign_key_check != "ok"
+            or (
+                resource is None
+                and source_identity != manifest.database_identity
+            )
+            or source_sha256 != manifest.source_sha256
+            or source_revision != manifest.source_revision
+            or schema_fingerprint != manifest.schema_fingerprint
+            or backup_sha256 != str(profile["sha256"])
+            or backup_size != int(profile["size_bytes"])
             or str(profile["schema_digest"]) != manifest.schema_fingerprint
             or _validate_row_identity(rollback_path, manifest.row_identity)
             != manifest.expected_count
@@ -1588,7 +2235,7 @@ class ProductionMaintenanceCapability:
                 owner = self._owner(manifest.database)
                 if owner.operation_id != operation_id:
                     raise ProductionMaintenanceError("rollback owner operation_id mismatch")
-                if rollback_path != self._rollback_path(site, owner):
+                if rollback_path != self._rollback_path(site, owner, manifest.database):
                     raise ProductionMaintenanceError("rollback path does not match registered owner")
                 self._validate_rollback_owner(manifest, site, owner)
                 journal.update("backup_verified")
@@ -1721,7 +2368,7 @@ class ProductionMaintenanceCapability:
                     != owner.schema_fingerprint
                     or str(rollback_profile["sha256"]) != owner.backup_sha256
                     or int(rollback_profile["size_bytes"]) != owner.backup_size
-                    or rollback_path != self._rollback_path(site, owner)
+                    or rollback_path != self._rollback_path(site, owner, database)
                 ):
                     raise ProductionMaintenanceError(
                         "rollback owner identity does not match rollback database"
@@ -1773,11 +2420,20 @@ __all__ = [
     "PRODUCTION_DATABASE_ALLOWLIST",
     "PRODUCTION_GATE_KEYS",
     "PRODUCTION_SITE_ALLOWLIST",
+    "PRODUCTION_TASK_OPERATIONAL_GC",
+    "PRODUCTION_ROLLBACK_SCOPE_KIND",
     "ProductionEvidenceBinding",
     "ProductionMaintenanceCapability",
     "ProductionMaintenanceError",
     "ProductionManifest",
+    "ProductionRollbackResource",
     "ProductionRollbackOwner",
     "build_exact_manifest",
+    "create_and_verify_rollback_scope",
+    "discover_production_tasks_scope",
+    "normalize_rollback_resource_path",
+    "register_rollback_scope",
+    "verify_registered_rollback_scope",
+    "verify_rollback_owner_scope",
     "write_exact_manifest",
 ]

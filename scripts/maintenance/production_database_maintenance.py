@@ -32,12 +32,24 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "command",
-        choices=("bind-gate", "manifest", "preflight", "execute", "rollback"),
+        choices=(
+            "bind-gate",
+            "manifest",
+            "scope",
+            "register-scope",
+            "backup-scope",
+            "verify-scope",
+            "preflight",
+            "execute",
+            "rollback",
+        ),
     )
     parser.add_argument("--data-root", type=Path, required=True)
-    parser.add_argument("--site-id", required=True)
+    parser.add_argument("--site-id")
     parser.add_argument("--database")
     parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--scope", type=Path)
+    parser.add_argument("--maintenance-id")
     parser.add_argument("--source", type=Path)
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--rollback", type=Path)
@@ -509,9 +521,50 @@ def main(argv: list[str] | None = None) -> int:
         _write_output(output, value)
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
+    if args.command == "scope":
+        if args.output is None or not args.maintenance_id:
+            raise SystemExit("scope requires --maintenance-id and --output")
+        from netconsole.services.production_database_maintenance import (
+            discover_production_tasks_scope,
+        )
+
+        value = discover_production_tasks_scope(
+            paths,
+            maintenance_id=args.maintenance_id,
+            source_code_revision=binding.current_implementation_head,
+        )
+        _write_output(output, value)
+        print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    if args.command in {"register-scope", "backup-scope", "verify-scope"}:
+        if args.scope is None:
+            raise SystemExit(f"{args.command} requires --scope")
+        try:
+            scope_value = json.loads(args.scope.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f"rollback scope is invalid: {args.scope}") from exc
+        if not isinstance(scope_value, dict):
+            raise SystemExit("rollback scope must contain a JSON object")
+        from netconsole.services.production_database_maintenance import (
+            create_and_verify_rollback_scope,
+            register_rollback_scope,
+            verify_registered_rollback_scope,
+        )
+
+        if args.command == "register-scope":
+            value = register_rollback_scope(args.registry, scope_value).as_dict()
+        elif args.command == "backup-scope":
+            value = create_and_verify_rollback_scope(paths, args.registry, scope_value).as_dict()
+        else:
+            value = verify_registered_rollback_scope(args.registry, scope_value)
+        _write_output(output, value)
+        print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
 
     if args.database is None and args.manifest is None:
         raise SystemExit(f"{args.command} requires --database or --manifest")
+    if not args.site_id:
+        raise SystemExit(f"{args.command} requires --site-id")
     owners = ProductionMaintenanceCapability.load_rollback_owners(args.registry)
     capability = ProductionMaintenanceCapability(
         paths,
