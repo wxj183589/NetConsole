@@ -295,14 +295,14 @@
       "source_sha256": "dd3d7c6d861563ba91f46424a43c2a1e0acc0ad440bc319480d6b25dfbef2ad5",
       "source_revision": "9837d8515a1b4a8d3fe9fe2d003639ff48ecf2d7",
       "backup_sha256": "",
-      "backup_size": 0,
+      "backup_size": 408866816,
       "backup_relative_path": "",
       "created_at": "2026-09-10T11:09:40.886843+00:00",
-      "verified_at": "",
-      "quick_check": "pending",
+      "verified_at": "2026-09-10T11:11:48.144258+00:00",
+      "quick_check": "ok",
       "schema_fingerprint": "dd3d7c6d861563ba91f46424a43c2a1e0acc0ad440bc319480d6b25dfbef2ad5",
       "rollback_required": true,
-      "observation_state": "PENDING_PRODUCTION_BACKUP",
+      "observation_state": "VERIFIED",
       "superseded_by": "",
       "retire_state": "PROTECT",
       "maintenance_id": "production-task-gc-20260910-r2",
@@ -322,11 +322,11 @@
           "schema_fingerprint": "f394bd26b1d9bba5dee6117bd12ac79c782b052f8a6718533bd6ec2b543ac613",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "51cd9b7c28df7a75679f1d4699ecd8842c6d5a9a6458356794fac6f5f896cdf5",
+          "backup_size": 176128,
+          "verified_at": "2026-09-10T11:11:44.552329+00:00",
+          "status": "VERIFIED"
         },
         {
           "site_id": "hzl10",
@@ -341,11 +341,11 @@
           "schema_fingerprint": "b7df02d2ea57dd383d99c8a478b7f28b206ece0ecae77ed2e8b66a907e17742a",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "708601cd20532c2f2464103a80b63bef9de1f3885533421541ee8c5793cc3238",
+          "backup_size": 145547264,
+          "verified_at": "2026-09-10T11:11:45.743121+00:00",
+          "status": "VERIFIED"
         },
         {
           "site_id": "legacy-0d1a8935839e",
@@ -360,11 +360,11 @@
           "schema_fingerprint": "e2211a829d8a8b745ce47e0c0b6f9871cfa9ef853a464cc1d2216873259d5492",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "8dc5b339c030d5ab81839741d1985b0cc0b66ca9fed2d54b4a7adea638c94338",
+          "backup_size": 8720384,
+          "verified_at": "2026-09-10T11:11:45.853638+00:00",
+          "status": "VERIFIED"
         },
         {
           "site_id": "legacy-422faf1196ef",
@@ -379,11 +379,11 @@
           "schema_fingerprint": "e2211a829d8a8b745ce47e0c0b6f9871cfa9ef853a464cc1d2216873259d5492",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "39f4cfdb806c58b2fe0c052524fe686ed21d042442107b436987a5c216208011",
+          "backup_size": 24997888,
+          "verified_at": "2026-09-10T11:11:46.075634+00:00",
+          "status": "VERIFIED"
         },
         {
           "site_id": "legacy-59b885329893",
@@ -398,11 +398,11 @@
           "schema_fingerprint": "21dcaef5a6eccbe68479fc4ea7a9a3bd3965c754ea42db386bf1e9ec08e43055",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "60b6c0a9aff47c03d438bb3064607832022cf6f8cd19d4e2cf14120e41540a16",
+          "backup_size": 139264,
+          "verified_at": "2026-09-10T11:11:46.106930+00:00",
+          "status": "VERIFIED"
         },
         {
           "site_id": "legacy-6fef62d71cfd",
@@ -417,11 +417,11 @@
           "schema_fingerprint": "36094b422d6c0e7569c2e519b070a158a307027750cf8d3779a21211a2c28ea1",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "784b8ef478b72edc5c222f9aa8958c393c11b55f0da853d4ffadea34a9cb8d23",
+          "backup_size": 1449984,
+          "verified_at": "2026-09-10T11:11:46.147426+00:00",
+          "status": "VERIFIED"
         },
         {
           "site_id": "legacy-784dcd2b63e3",
@@ -436,11 +436,11 @@
           "schema_fingerprint": "36094b422d6c0e7569c2e519b070a158a307027750cf8d3779a21211a2c28ea1",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "44537401c0131300c01e8e54a1eddaaf8a194721d36ac2386ff7bafd27abf7cb",
+          "backup_size": 67162112,
+          "verified_at": "2026-09-10T11:11:46.723412+00:00",
+          "status": "VERIFIED"
         },
         {
           "site_id": "legacy-dfd356e96ea0",
@@ -455,11 +455,11 @@
           "schema_fingerprint": "fc8bc38ff151e58c1dcfd40cef73878550d138a7fbc8c04ab007f4abf4270df1",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "1c5d5ebb7381e08a1d30532031cf910d0b686a989215e684db5ba6a07e55e419",
+          "backup_size": 160104448,
+          "verified_at": "2026-09-10T11:11:48.110412+00:00",
+          "status": "VERIFIED"
         },
         {
           "site_id": "sxl1",
@@ -474,11 +474,11 @@
           "schema_fingerprint": "8b96b7c726f5cd6f4f6098642ea9f47401f78a8faba41b9dfef6639496d39508",
           "quick_check": "ok",
           "foreign_key_check": "ok",
-          "backup_relative_path": "",
-          "backup_sha256": "",
-          "backup_size": 0,
-          "verified_at": "",
-          "status": "PENDING_PRODUCTION_BACKUP"
+          "backup_relative_path": "files/backups/production-maintenance/production-task-gc-20260910-r2-tasks/database.sqlite",
+          "backup_sha256": "31ed91ea17a74b27740ef743a8205edb062daa75467408ae869bf10b32cbf292",
+          "backup_size": 569344,
+          "verified_at": "2026-09-10T11:11:48.144237+00:00",
+          "status": "VERIFIED"
         }
       ]
     }
