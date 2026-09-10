@@ -1479,14 +1479,98 @@ def _read_registry_document(path: str | Path) -> dict[str, Any]:
 
 def _write_registry_document(path: str | Path, value: Mapping[str, Any]) -> None:
     target = Path(path).resolve()
+    try:
+        original_text = target.read_text(encoding="utf-8")
+        original_value = json.loads(original_text)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ProductionMaintenanceError("cannot preserve storage registry formatting") from exc
+    original_owners = original_value.get("production_rollback_owners")
+    updated_owners = value.get("production_rollback_owners")
+    if not isinstance(original_owners, list) or not isinstance(updated_owners, list):
+        raise ProductionMaintenanceError("storage registry owner list is invalid")
+
+    def entry_key(item: Mapping[str, Any]) -> tuple[str, ...]:
+        maintenance_id = str(item.get("maintenance_id") or "")
+        if maintenance_id:
+            return ("scope", maintenance_id)
+        return (
+            "legacy",
+            str(item.get("site_id") or ""),
+            str(item.get("database") or ""),
+        )
+
+    original_by_key = {
+        entry_key(item): item for item in original_owners if isinstance(item, Mapping)
+    }
+    updated_by_key = {
+        entry_key(item): item for item in updated_owners if isinstance(item, Mapping)
+    }
+    added = [key for key in updated_by_key if key not in original_by_key]
+    removed = [key for key in original_by_key if key not in updated_by_key]
+    changed = [
+        key
+        for key in updated_by_key.keys() & original_by_key.keys()
+        if updated_by_key[key] != original_by_key[key]
+    ]
+    if removed or len(added) > 1 or len(changed) > 1 or (added and changed):
+        raise ProductionMaintenanceError("storage registry update is not a single owner append/replace")
+    if not added and not changed:
+        return
+
+    marker = '"production_rollback_owners"'
+    marker_position = original_text.find(marker)
+    array_start = original_text.find("[", marker_position)
+    decoder = json.JSONDecoder()
+    _array, array_end_offset = decoder.raw_decode(original_text[array_start:])
+    array_end = array_start + array_end_offset
+    object_spans: list[tuple[Mapping[str, Any], int, int]] = []
+    position = array_start + 1
+    while position < array_end - 1:
+        while position < array_end - 1 and original_text[position] in " \t\r\n,":
+            position += 1
+        if position >= array_end - 1 or original_text[position] == "]":
+            break
+        item_start = position
+        item, item_end = decoder.raw_decode(original_text[item_start:])
+        if not isinstance(item, Mapping):
+            raise ProductionMaintenanceError("storage registry owner entry is invalid")
+        object_spans.append((item, item_start, item_start + item_end))
+        position = item_start + item_end
+
+    def formatted_entry(item: Mapping[str, Any]) -> str:
+        return "\n".join(
+            "    " + line
+            for line in json.dumps(item, ensure_ascii=False, indent=2).splitlines()
+        )
+
+    if added:
+        item = updated_by_key[added[0]]
+        insert_at = array_end - 1
+        while insert_at > array_start and original_text[insert_at - 1] in " \t\r\n":
+            insert_at -= 1
+        has_previous = bool(original_text[array_start + 1 : insert_at].strip())
+        insertion = (",\n" if has_previous else "\n") + formatted_entry(item) + "\n"
+        updated_text = original_text[:insert_at] + insertion + original_text[insert_at:]
+    else:
+        key = changed[0]
+        target_span = next(
+            (span for item, *span in object_spans if entry_key(item) == key),
+            None,
+        )
+        if target_span is None:
+            raise ProductionMaintenanceError("storage registry owner entry disappeared")
+        item_start, item_end = target_span
+        line_start = original_text.rfind("\n", 0, item_start) + 1
+        updated_text = (
+            original_text[:line_start]
+            + formatted_entry(updated_by_key[key])
+            + original_text[item_end:]
+        )
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
     if temporary.exists():
         raise ProductionMaintenanceError("storage registry temporary file already exists")
     try:
-        temporary.write_text(
-            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=False) + "\n",
-            encoding="utf-8",
-        )
+        temporary.write_text(updated_text, encoding="utf-8")
         fsync_file(temporary)
         os.replace(temporary, target)
     finally:
