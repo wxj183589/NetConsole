@@ -1749,6 +1749,47 @@ def verify_registered_rollback_scope(
     return verify_rollback_owner_scope(owner, scope.get("resources") or [])
 
 
+def build_rollback_scope_manifest(
+    paths: PathResolver,
+    owner: ProductionRollbackOwner,
+    *,
+    source_code_revision: str,
+) -> dict[str, Any]:
+    if not owner.resources or not owner.verified():
+        raise ProductionMaintenanceError("cannot manifest an unverified rollback scope")
+    if not _is_git_head(source_code_revision):
+        raise ProductionMaintenanceError("source_code_revision is invalid")
+    resources: list[dict[str, Any]] = []
+    for resource in owner.resources:
+        site = SiteRegistryRepository(paths).get(resource.site_id)
+        source = (paths.data_root / Path(resource.source_path)).resolve()
+        backup = (site.root_path / Path(resource.backup_relative_path)).resolve()
+        resources.append(
+            {
+                **resource.as_dict(),
+                "source_relative_path": resource.source_path,
+                "source_path": str(source),
+                "backup_path": str(backup),
+                "status": resource.status,
+            }
+        )
+    return {
+        "manifest_version": 1,
+        "maintenance_id": owner.maintenance_id,
+        "maintenance_type": owner.maintenance_type,
+        "rollback_owner": owner.owner,
+        "created_at": owner.created_at,
+        "verified_at": owner.verified_at,
+        "source_data_root": str(paths.data_root.resolve()),
+        "source_code_revision": source_code_revision,
+        "resource_count": len(resources),
+        "resources": resources,
+        "owner_status": "VERIFIED",
+        "scope_complete": True,
+        "rollback_total_bytes": sum(int(item["backup_size"]) for item in resources),
+    }
+
+
 def build_exact_manifest(
     database: str | Path,
     *,
@@ -2428,6 +2469,7 @@ __all__ = [
     "ProductionManifest",
     "ProductionRollbackResource",
     "ProductionRollbackOwner",
+    "build_rollback_scope_manifest",
     "build_exact_manifest",
     "create_and_verify_rollback_scope",
     "discover_production_tasks_scope",

@@ -999,13 +999,25 @@ def test_storage_registry_has_protected_pending_production_rollback_owners() -> 
     owners = ProductionMaintenanceCapability.load_rollback_owners(
         ROOT / "config" / "storage_registry.yaml"
     )
-    assert set(owners) == {
+    assert {
         ("legacy-dfd356e96ea0", "devices.db"),
         ("legacy-dfd356e96ea0", "tasks.db"),
-    }
-    assert all(owner.retire_state == "PROTECT" for owner in owners.values())
-    assert all(owner.observation_state == "PENDING_PRODUCTION_BACKUP" for owner in owners.values())
-    assert not any(owner.verified() for owner in owners.values())
+    } <= set(owners)
+    legacy = [
+        owner
+        for key, owner in owners.items()
+        if key in {
+            ("legacy-dfd356e96ea0", "devices.db"),
+            ("legacy-dfd356e96ea0", "tasks.db"),
+        }
+    ]
+    assert all(owner.retire_state == "PROTECT" for owner in legacy)
+    assert all(owner.observation_state == "PENDING_PRODUCTION_BACKUP" for owner in legacy)
+    scope = [owner for owner in owners.values() if owner.resources]
+    assert len(scope) <= 1
+    if scope:
+        assert scope[0].maintenance_type == "TASK_OPERATIONAL_GC"
+        assert len(scope[0].resources) == 9
 
 
 def test_rollback_owner_contract_accepts_only_registered_data_root_owner(

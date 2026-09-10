@@ -546,6 +546,7 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(scope_value, dict):
             raise SystemExit("rollback scope must contain a JSON object")
         from netconsole.services.production_database_maintenance import (
+            build_rollback_scope_manifest,
             create_and_verify_rollback_scope,
             register_rollback_scope,
             verify_registered_rollback_scope,
@@ -554,7 +555,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "register-scope":
             value = register_rollback_scope(args.registry, scope_value).as_dict()
         elif args.command == "backup-scope":
-            value = create_and_verify_rollback_scope(paths, args.registry, scope_value).as_dict()
+            owner = create_and_verify_rollback_scope(paths, args.registry, scope_value)
+            value = build_rollback_scope_manifest(
+                paths,
+                owner,
+                source_code_revision=binding.current_implementation_head,
+            )
         else:
             value = verify_registered_rollback_scope(args.registry, scope_value)
         _write_output(output, value)
