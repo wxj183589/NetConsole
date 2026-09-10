@@ -38,6 +38,7 @@ def _parser() -> argparse.ArgumentParser:
             "scope",
             "register-scope",
             "backup-scope",
+            "manifest-scope",
             "verify-scope",
             "preflight",
             "execute",
@@ -536,7 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         _write_output(output, value)
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
-    if args.command in {"register-scope", "backup-scope", "verify-scope"}:
+    if args.command in {"register-scope", "backup-scope", "manifest-scope", "verify-scope"}:
         if args.scope is None:
             raise SystemExit(f"{args.command} requires --scope")
         try:
@@ -556,6 +557,27 @@ def main(argv: list[str] | None = None) -> int:
             value = register_rollback_scope(args.registry, scope_value).as_dict()
         elif args.command == "backup-scope":
             owner = create_and_verify_rollback_scope(paths, args.registry, scope_value)
+            value = build_rollback_scope_manifest(
+                paths,
+                owner,
+                source_code_revision=binding.current_implementation_head,
+            )
+        elif args.command == "manifest-scope":
+            owners = ProductionMaintenanceCapability.load_rollback_owners(args.registry)
+            owner = next(
+                (
+                    item
+                    for item in owners.values()
+                    if item.resources
+                    and item.maintenance_id == str(scope_value.get("maintenance_id") or "")
+                ),
+                None,
+            )
+            if owner is None:
+                raise SystemExit("manifest-scope owner is not registered")
+            status = verify_registered_rollback_scope(args.registry, scope_value)
+            if not status.get("scope_complete"):
+                raise SystemExit("manifest-scope rollback scope is not complete")
             value = build_rollback_scope_manifest(
                 paths,
                 owner,
