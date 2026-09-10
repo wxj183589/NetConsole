@@ -141,7 +141,7 @@ def test_task_cleanup_schema_upgrade_preserves_rows_and_repairs_partial_table(
     with sqlite3.connect(partial_database) as connection:
         connection.execute("DROP TABLE task_retention_tombstones")
         connection.execute(
-            "CREATE TABLE task_retention_tombstones(" 
+            "CREATE TABLE task_retention_tombstones("
             "task_id TEXT PRIMARY KEY, retired_at TEXT NOT NULL DEFAULT '')"
         )
         connection.commit()
