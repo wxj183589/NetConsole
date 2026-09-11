@@ -20,8 +20,9 @@
 设备文件管理的远程侧严格保持只读。用户只需点击一次“连接 SFTP”；SSH 登录成功且后端明确
 确认 SFTP 子系统不可用时，页面首次显示受控确认。用户确认后，同一次连接流程提交独立的
 `config_write` 设备操作、等待任务结束、重新建立 SSH/SFTP 会话并读取根目录，不要求返回页面再次连接。
-只有设备命中精确的 `device.sftp.enable` 版本化 Command Profile 时，才允许提交该操作。
-未知厂商、角色、平台或软件版本必须失败关闭，不得猜测命令或回退到兼容入口。
+只有设备确认属于 H3C Comware V7 且命中受控的 `device.sftp.enable` family Command Profile，或其
+exact Release override 时，才允许提交该操作。未知厂商、角色、平台或 major family 必须失败关闭，
+不得猜测命令或回退到兼容入口；未登记的 Patch/Release 不单独阻断已确认的 V7 family。
 
 受控执行链固定为：
 

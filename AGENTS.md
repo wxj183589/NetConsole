@@ -70,6 +70,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - Vue、Electron 和 FastAPI Router 不得直接实现设备、数据库、采集或业务状态机；Router 只做 DTO、鉴权、Service 调用和响应映射。
 - Electron 安全基础已进入实现期；只承载窗口、进程生命周期、后续托盘/升级和白名单 Native Bridge，不提供任意命令、路径或程序执行接口，也不建立第二套 Renderer 或业务 Core。
 - 保留提交历史；不执行 `git reset`、`git checkout --`、`git clean`、`git stash`、`git push --force` 等破坏性或改写历史操作，不覆盖用户未提交修改。确需执行时必须先获得用户明确授权。
+- 设备能力解析遵循“现场运维便利优先”：先按厂商、OS family、major version 和统一 role 选择能力族，再使用 release override 表达已证实的差异。Patch/Release 未登记不能单独阻断低风险只读能力；未知厂商、无法确认目标或可能造成错误配置时必须失败关闭。可选能力应记录 warning/skip，不得把整个采集任务误报为失败。
 - 网络、磁盘、解析、压缩、大查询和批量任务不得阻塞 UI；超过 300ms 的 IO/CPU/网络任务进入 Job Center，所有导出进入独立 Export Process。
 - Vue Renderer 只负责布局、输入、轻量校验和状态绑定；Worker 不访问 DOM 或 Electron 对象，SQLite connection 不跨线程/进程共享。
 - 不擅自修改用户要求保持的设备命令、顺序或原始文本；不静默删除数据库、原始日志、会话或正式报告。

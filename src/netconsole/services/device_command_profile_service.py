@@ -3,17 +3,18 @@ from __future__ import annotations
 import json
 import ipaddress
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_environment import app_root as default_app_root
-from netconsole.models.device import Device, validate_device_vendor_type
+from netconsole.models.device import Device, normalize_device_vendor_text
 from netconsole.models.device_detail import (
     DeviceCapability,
     DevicePlatformFacts,
     identify_device_platform,
+    normalize_device_role,
 )
 from netconsole.services import command_guard
 
@@ -117,6 +118,11 @@ _DEVICE_SFTP_STEP_CONTRACT = (
     ("session.quit", "quit", "session.quit"),
 )
 _SAFE_INTERFACE_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9./:_-]{0,79}$")
+_RELEASE_SELECTOR_PATTERN = re.compile(r"^R?[0-9]{4}P[0-9]{2,4}$", re.IGNORECASE)
+H3C_COMWARE_V7_FAMILY = "h3c_comware_v7"
+H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY = (
+    "h3c_comware_v7_wireless_controller"
+)
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,23 @@ class VendorCommandProfile:
         )
 
 
+@dataclass(frozen=True)
+class H3cCapability:
+    """A capability resolved from the Comware family, not a patch release."""
+
+    capability_id: str
+    family_id: str
+    role: str
+    commands: tuple[str, ...]
+    fallback_commands: tuple[str, ...] = ()
+    optional: bool = False
+    resolution_source: str = "family"
+
+    @property
+    def candidates(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((*self.commands, *self.fallback_commands)))
+
+
 _ZTE_CLI_ERROR_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE | re.MULTILINE)
     for pattern in (
@@ -153,9 +176,12 @@ _ZTE_CLI_ERROR_PATTERNS = tuple(
     )
 )
 _VENDOR_COMMAND_PROFILES = {
-    ("H3C", "SW"): VendorCommandProfile(
+    # Session and low-risk common commands are selected by H3C + Comware
+    # family.  Device roles remain a capability boundary, but AC/MR must not
+    # masquerade as a switch merely to pass the old (H3C, SW) lookup.
+    ("H3C", "COMWARE"): VendorCommandProfile(
         vendor="H3C",
-        device_type="SW",
+        device_type="COMWARE",
         capabilities={
             "session_prepare": ("screen-length disable",),
             "session_verify": ("display clock",),
@@ -169,9 +195,9 @@ _VENDOR_COMMAND_PROFILES = {
         },
         unsupported_capabilities={},
     ),
-    ("ZTE", "SW"): VendorCommandProfile(
+    ("ZTE", "ZXR10"): VendorCommandProfile(
         vendor="ZTE",
-        device_type="SW",
+        device_type="ZXR10",
         capabilities={
             "session_verify": ("show version",),
             "version": ("show version",),
@@ -194,6 +220,108 @@ _VENDOR_COMMAND_PROFILES = {
     ),
 }
 
+_H3C_WIRELESS_CAPABILITIES: dict[str, H3cCapability] = {
+    "wlan_ap_all": H3cCapability(
+        "wlan_ap_all",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap all",),
+        optional=False,
+    ),
+    "wlan_ap_address": H3cCapability(
+        "wlan_ap_address",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap all address",),
+        fallback_commands=("display wlan ap address",),
+        optional=False,
+    ),
+    "wlan_ap_radio": H3cCapability(
+        "wlan_ap_radio",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap all radio",),
+        optional=False,
+    ),
+    "wlan_ap_radio_verbose": H3cCapability(
+        "wlan_ap_radio_verbose",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap all radio verbose filter bbssid",),
+        optional=True,
+    ),
+    "wlan_ap_connection_record": H3cCapability(
+        "wlan_ap_connection_record",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap all connection-record",),
+        optional=True,
+    ),
+    "wlan_ap_radio_type": H3cCapability(
+        "wlan_ap_radio_type",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap all radio type",),
+        optional=True,
+    ),
+    "wlan_ap_unauthenticated": H3cCapability(
+        "wlan_ap_unauthenticated",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap unauthenticated",),
+        optional=True,
+    ),
+    "wlan_ap_lldp": H3cCapability(
+        "wlan_ap_lldp",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap all lldp",),
+        optional=True,
+    ),
+    "wlan_ap_verbose_all": H3cCapability(
+        "wlan_ap_verbose_all",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap all verbose",),
+        optional=True,
+    ),
+    "wlan_ap_verbose_name": H3cCapability(
+        "wlan_ap_verbose_name",
+        H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY,
+        "wireless_controller",
+        ("display wlan ap name <name> verbose",),
+        optional=True,
+    ),
+}
+
+_H3C_COMMON_CAPABILITIES: dict[str, H3cCapability] = {
+    "cpu_usage": H3cCapability(
+        "cpu_usage", H3C_COMWARE_V7_FAMILY, "common", ("display cpu-usage",)
+    ),
+    "memory": H3cCapability(
+        "memory", H3C_COMWARE_V7_FAMILY, "common", ("display memory",)
+    ),
+    "device": H3cCapability(
+        "device", H3C_COMWARE_V7_FAMILY, "common", ("display device",)
+    ),
+    "device_manuinfo": H3cCapability(
+        "device_manuinfo",
+        H3C_COMWARE_V7_FAMILY,
+        "common",
+        ("display device manuinfo",),
+    ),
+    "https": H3cCapability(
+        "https", H3C_COMWARE_V7_FAMILY, "common", ("display ip https",), optional=True
+    ),
+    "https_port": H3cCapability(
+        "https_port",
+        H3C_COMWARE_V7_FAMILY,
+        "common",
+        ("display ip https | include port",),
+        optional=True,
+    ),
+}
+
 
 class DeviceCommandProfileError(ValueError):
     pass
@@ -204,21 +332,108 @@ class DeviceCommandProfileNotFound(DeviceCommandProfileError):
 
 
 def resolve_vendor_command_profile(device: Device) -> VendorCommandProfile:
-    vendor, device_type = validate_device_vendor_type(
-        device.device_vendor, device.device_type
-    )
+    vendor = normalize_device_vendor_text(device.device_vendor)
+    device_type = str(device.device_type or "").strip()
+    if not device_type:
+        raise DeviceCommandProfileNotFound("当前设备角色为空，无法解析命令能力")
     vendor_key = device.vendor_key
     profile_vendor = {"h3c": "H3C", "zte": "ZTE"}.get(vendor_key)
     if profile_vendor is None:
         raise DeviceCommandProfileNotFound(
-            f"当前版本尚未适配 {vendor} 命令能力"
+            f"当前设备厂商未注册命令能力: vendor={vendor}"
+        )
+    role = normalize_device_role(device_type)
+    if profile_vendor == "H3C" and role not in {
+        "switch",
+        "wireless_controller",
+        "mobile_router",
+    }:
+        raise DeviceCommandProfileNotFound(
+            f"当前设备角色未注册 H3C Comware 命令能力: role={device_type}"
+        )
+    if profile_vendor == "ZTE" and role != "switch":
+        raise DeviceCommandProfileNotFound(
+            f"当前设备角色未注册 ZTE 命令能力: role={device_type}"
+        )
+    platform = identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+        software_version=getattr(device, "software_version", None),
+    ).platform
+    platform_key = "comware" if profile_vendor == "H3C" else "zxr10"
+    if platform not in {platform_key, "unknown"}:
+        raise DeviceCommandProfileNotFound(
+            f"当前设备平台与 {profile_vendor} 命令能力不一致: platform={platform}"
         )
     try:
-        return _VENDOR_COMMAND_PROFILES[(profile_vendor, device_type)]
-    except KeyError as exc:
+        return _VENDOR_COMMAND_PROFILES[(profile_vendor, platform_key.upper())]
+    except KeyError as exc:  # pragma: no cover - catalog invariant
         raise DeviceCommandProfileNotFound(
-            f"当前版本尚未适配 {vendor} {device_type} 命令能力"
+            f"当前设备未注册命令能力: vendor={vendor}, platform={platform_key}"
         ) from exc
+
+
+def resolve_h3c_capability(
+    device: Device,
+    capability: str,
+    *,
+    software_version: str | None = None,
+) -> H3cCapability:
+    """Resolve H3C common/wireless read-only capabilities by family.
+
+    Release is retained for diagnostics and future overrides.  It is not used
+    as the default eligibility gate for a Comware major family.
+    """
+
+    if device.vendor_key != "h3c":
+        raise DeviceCommandProfileNotFound(
+            f"H3C capability requires vendor=H3C, got {device.device_vendor}"
+        )
+    role = normalize_device_role(device.device_type)
+    if role not in {"switch", "wireless_controller", "mobile_router"}:
+        raise DeviceCommandProfileNotFound(
+            f"H3C capability requires a supported role, got {device.device_type}"
+        )
+    facts = identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+        software_version=software_version,
+    )
+    major = facts.software_major or "V7"
+    if major != "V7":
+        raise DeviceCommandProfileNotFound(
+            f"H3C 无线/通用 Comware capability 当前仅支持 major=V7: major={major}"
+        )
+    family_id = f"h3c_comware_v{major.removeprefix('V')}"
+    if capability in _H3C_WIRELESS_CAPABILITIES:
+        if role != "wireless_controller":
+            raise DeviceCommandProfileNotFound(
+                f"无线控制器能力不适用于当前角色: role={role}"
+            )
+        base = _H3C_WIRELESS_CAPABILITIES[capability]
+        return replace(
+            base,
+            family_id=(
+                H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY
+                if major == "V7"
+                else f"h3c_comware_v{major.removeprefix('V')}_wireless_controller"
+            ),
+        )
+    if capability in _H3C_COMMON_CAPABILITIES:
+        base = _H3C_COMMON_CAPABILITIES[capability]
+        return replace(base, family_id=family_id, role=role)
+    common = resolve_vendor_command_profile(device)
+    try:
+        commands = common.commands_for(capability)
+    except DeviceCommandProfileNotFound:
+        raise
+    return H3cCapability(
+        capability_id=str(capability),
+        family_id=family_id,
+        role=role,
+        commands=commands,
+        resolution_source="family",
+    )
 
 
 def resolve_device_capability_commands(
@@ -377,7 +592,7 @@ def resolve_device_command_profile(
 ) -> DeviceCommandProfile:
     normalized_operation = _normalize_identifier(operation_id, "operation_id")
     normalized_vendor = _normalize_selector_value(vendor)
-    normalized_role = _normalize_selector_value(role)
+    normalized_role = _normalize_command_role(role)
     normalized_platform = _normalize_selector_value(platform)
     if not normalized_vendor or not normalized_role or not normalized_platform:
         raise DeviceCommandProfileNotFound("vendor、role 和 platform 均必须明确")
@@ -389,19 +604,31 @@ def resolve_device_command_profile(
         and _normalize_selector_value(profile.selector.role) == normalized_role
         and _normalize_selector_value(profile.selector.platform) == normalized_platform
     ]
-    version = _version_major(software_version)
-    if version:
-        exact = [
-            profile
-            for profile in candidates
-            if profile.selector.software_version != "*"
-            and profile.selector.software_version.casefold() == version.casefold()
-        ]
-        if len(exact) == 1:
-            return exact[0]
-        if len(exact) > 1:
-            raise DeviceCommandProfileError("命令 Profile selector 不唯一")
-    generic = [profile for profile in candidates if profile.selector.software_version == "*"]
+    major = _version_major(software_version)
+    release = _version_release(software_version)
+    exact = [
+        profile
+        for profile in candidates
+        if _selector_matches_release(profile.selector.software_version, release)
+    ]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        raise DeviceCommandProfileError("命令 Profile release override 不唯一")
+    family = [
+        profile
+        for profile in candidates
+        if _selector_matches_major(profile.selector.software_version, major)
+    ]
+    if len(family) == 1:
+        return family[0]
+    if len(family) > 1:
+        raise DeviceCommandProfileError("命令 Profile family selector 不唯一")
+    generic = [
+        profile
+        for profile in candidates
+        if profile.selector.software_version == "*"
+    ]
     if len(generic) == 1 and generic[0].compatibility == "generic_read_only":
         return generic[0]
     if len(generic) > 1:
@@ -428,7 +655,7 @@ def resolve_device_inventory_profile(
         software_version=software_version,
     )
     vendor = str(facts.vendor or "").strip()
-    role = str(facts.role or "").strip().casefold()
+    role = _normalize_command_role(facts.role)
     platform = str(facts.platform or "").strip().casefold()
     if vendor.casefold() not in {"h3c", "zte"}:
         raise DeviceCommandProfileNotFound(
@@ -524,7 +751,7 @@ def resolve_device_sftp_enable_profile(
         software_version=software_version,
     )
     vendor = str(facts.vendor or "").strip()
-    role = str(facts.role or "").strip().casefold()
+    role = _normalize_command_role(facts.role)
     platform = str(facts.platform or "").strip().casefold()
     if vendor.casefold() != "h3c":
         raise DeviceCommandProfileNotFound(
@@ -556,7 +783,9 @@ def bind_device_sftp_enable_commands(
     if profile.operation_id != DEVICE_SFTP_ENABLE_OPERATION_ID:
         raise DeviceCommandProfileError("绑定用户名需要 device.sftp.enable Profile")
     if profile.risk != "controlled_write" or profile.selector.software_version == "*":
-        raise DeviceCommandProfileError("SFTP 启用 Profile 必须是精确版本 controlled_write")
+        raise DeviceCommandProfileError(
+            "SFTP 启用 Profile 必须是 Comware major family 或 release override controlled_write"
+        )
     if not isinstance(username, str) or not _DEVICE_USERNAME_PATTERN.fullmatch(username):
         raise DeviceCommandProfileError("SFTP 用户名必须是 1-64 位 ASCII 字母、数字、点、下划线或短横线")
     expected = tuple(command.replace("{username}", username) for _step_id, command, _selector in _DEVICE_SFTP_STEP_CONTRACT)
@@ -679,12 +908,31 @@ def _parse_profile(row: object) -> DeviceCommandProfile:
     if len(normalized_fixture_versions) != len(set(normalized_fixture_versions)):
         raise DeviceCommandProfileError(f"{profile_id}: fixture_versions 不得重复")
     if selector.software_version != "*":
-        expected_major = selector.software_version.removeprefix("V")
-        fixture_majors = {_fixture_major(value) for value in normalized_fixture_versions}
-        if expected_major not in fixture_majors:
-            raise DeviceCommandProfileError(
-                f"{profile_id}: fixture_versions 与软件主版本 {selector.software_version} 不一致"
-            )
+        if selector.software_version.startswith("V"):
+            expected_major = selector.software_version.removeprefix("V")
+            fixture_majors = {
+                _fixture_major(value) for value in normalized_fixture_versions
+            }
+            if expected_major not in fixture_majors:
+                raise DeviceCommandProfileError(
+                    f"{profile_id}: fixture_versions 与软件主版本 {selector.software_version} 不一致"
+                )
+        else:
+            expected_release = selector.software_version.casefold()
+            fixture_releases = {
+                _version_release(value).casefold()
+                for value in normalized_fixture_versions
+            }
+            # A release override may use a fixture containing only the
+            # normalized release token.  Do not force every historical
+            # fixture to carry a full display-version line.
+            if expected_release not in fixture_releases and expected_release not in {
+                _version_release(f"Release {value}").casefold()
+                for value in normalized_fixture_versions
+            }:
+                raise DeviceCommandProfileError(
+                    f"{profile_id}: fixture_versions 与 Release override {selector.software_version} 不一致"
+                )
     real_device_status = _normalize_identifier(
         verification.get("real_device_status"), "real_device_status"
     )
@@ -855,9 +1103,17 @@ def _selector_value(value: object, field_name: str) -> str:
 
 def _software_version_selector(value: object) -> str:
     text = _required_text(value, "selector.software_version")
-    if text != "*" and not re.fullmatch(r"V[1-9][0-9]*", text, re.IGNORECASE):
+    if text != "*" and not (
+        re.fullmatch(r"V[1-9][0-9]*", text, re.IGNORECASE)
+        or _RELEASE_SELECTOR_PATTERN.fullmatch(text)
+    ):
         raise DeviceCommandProfileError("selector.software_version 格式无效")
-    return text.upper() if text != "*" else text
+    if text == "*":
+        return text
+    normalized = text.upper()
+    return normalized if normalized.startswith("V") else (
+        normalized if normalized.startswith("R") else f"R{normalized}"
+    )
 
 
 def _version_major(value: object) -> str:
@@ -866,6 +1122,48 @@ def _version_major(value: object) -> str:
     if not match:
         match = re.search(r"\bVERSION\s+([1-9][0-9]*)", text, re.IGNORECASE)
     return f"V{match.group(1)}" if match else ""
+
+
+def _version_release(value: object) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.search(
+        r"\brelease\s+(R?[0-9]{2,4}(?:[A-Z]{2})?(?:P[0-9]{1,4})?)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        match = re.search(r"\b(R?[0-9]{4}P[0-9]{2,4})\b", text, re.IGNORECASE)
+    if match is None:
+        return ""
+    release = match.group(1).upper()
+    return release if release.startswith("R") else f"R{release}"
+
+
+def _selector_matches_release(selector: str, release: str) -> bool:
+    return bool(
+        release
+        and selector != "*"
+        and selector.upper().startswith("R")
+        and selector.casefold() == release.casefold()
+    )
+
+
+def _selector_matches_major(selector: str, major: str) -> bool:
+    return bool(
+        major
+        and selector != "*"
+        and selector.upper().startswith("V")
+        and selector.casefold() == major.casefold()
+    )
+
+
+def _normalize_command_role(value: object) -> str:
+    normalized = normalize_device_role(value)
+    if normalized != "unknown":
+        return normalized
+    return _normalize_selector_value(value).replace("-", "_")
 
 
 def _fixture_major(value: object) -> str:
@@ -897,6 +1195,9 @@ def _unique_object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
 __all__ = [
     "DEVICE_INVENTORY_OPERATION_ID",
     "DEVICE_SFTP_ENABLE_OPERATION_ID",
+    "H3C_COMWARE_V7_FAMILY",
+    "H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY",
+    "H3cCapability",
     "DeviceCommandProfile",
     "DeviceCommandProfileError",
     "DeviceCommandProfileNotFound",
@@ -910,4 +1211,6 @@ __all__ = [
     "resolve_device_inventory_profile",
     "resolve_device_operation_profile",
     "resolve_device_sftp_enable_profile",
+    "resolve_h3c_capability",
+    "resolve_vendor_command_profile",
 ]

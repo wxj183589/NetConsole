@@ -120,7 +120,7 @@ class DeviceInventoryRefreshFailed(RuntimeError):
 
 
 class DeviceSftpEnableProfileUnresolved(ValueError):
-    """受控写入前无法从可信设备事实确认精确软件版本。"""
+    """受控写入前无法从可信设备事实确认 H3C Comware major family。"""
 
 
 class DeviceOperationService:
@@ -451,18 +451,20 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
 
     def collect(device: Device):
         context.check_cancelled()
+        submitted_identity = identify_device_platform(
+            vendor=device.vendor_key,
+            device_type=device.device_type,
+            software_version=context.params.get("software_version"),
+            collected_at=context.params.get("platform_collected_at"),
+        )
         submitted_facts = DevicePlatformFacts(
             vendor=str(context.params.get("platform_vendor") or ""),
             role=str(context.params.get("platform_role") or "unknown"),  # type: ignore[arg-type]
             platform=str(context.params.get("platform") or "unknown"),
             software_version=str(context.params.get("software_version") or "")
             or None,
-            software_major=identify_device_platform(
-                vendor=device.vendor_key,
-                device_type=device.device_type,
-                software_version=context.params.get("software_version"),
-                collected_at=context.params.get("platform_collected_at"),
-            ).software_major,
+            software_major=submitted_identity.software_major,
+            software_release=submitted_identity.software_release,
             source=str(context.params.get("platform_source") or "submitted_job"),
             confidence=str(context.params.get("platform_confidence") or "unknown"),  # type: ignore[arg-type]
             collected_at=str(context.params.get("platform_collected_at") or "")
@@ -527,6 +529,7 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
                     "error_message": sanitize_sensitive_text(
                         result.error_message or "", device
                     ),
+                    "warnings": [str(value) for value in getattr(result, "warnings", ())],
                 }
                 collect_run = facts.get_collect_run(result.collect_run_uuid)
                 item["collect_status"] = str(
@@ -561,6 +564,7 @@ def run_device_inventory_refresh(context: JobContext) -> dict[str, object]:
         "total": len(results),
         "success": sum(1 for item in results if item["success"]),
         "failed": sum(1 for item in results if not item["success"]),
+        "warnings": sum(len(item.get("warnings") or []) for item in results),
         "results": results,
     }
     if int(summary["failed"]) > 0:
@@ -586,12 +590,19 @@ def run_device_sftp_enable(context: JobContext) -> dict[str, object]:
         raise ValueError("受控 SFTP 启用任务参数无效")
     database = Database(context.paths.site_db_path(site))
     device = _require_device(DeviceRepository(database), values[0])
+    submitted_identity = identify_device_platform(
+        vendor=device.vendor_key,
+        device_type=device.device_type,
+        software_version=context.params.get("software_version"),
+        collected_at=context.params.get("platform_collected_at"),
+    )
     submitted_facts = DevicePlatformFacts(
         vendor=str(context.params.get("platform_vendor") or ""),
         role=str(context.params.get("platform_role") or "unknown"),  # type: ignore[arg-type]
         platform=str(context.params.get("platform") or "unknown"),
         software_version=str(context.params.get("software_version") or "") or None,
-        software_major=None,
+        software_major=submitted_identity.software_major,
+        software_release=submitted_identity.software_release,
         source=str(context.params.get("platform_source") or "submitted_job"),
         confidence=str(context.params.get("platform_confidence") or "unknown"),  # type: ignore[arg-type]
         collected_at=str(context.params.get("platform_collected_at") or "") or None,

@@ -6,7 +6,7 @@
 
 ## 总览
 
-当前清单共归档 85 条：
+当前清单共归档 88 条：
 
 | 统计口径 | 数量 | 说明 |
 | --- | ---: | --- |
@@ -57,8 +57,9 @@
 | 样例证据 | Comware `7.1.070` fixture；车载 MR 只读核心命令合同；ZXR10 5960X-ES V2.00.20.03 手册 fixture；C89E-4 V1.9.0 脱敏实机 fixture |
 | 真实设备状态 | H3C switch/无线控制器/MR `REAL_DEVICE_PENDING`；ZTE 固定七命令为 `REAL_DEVICE_VERIFIED`（仅两台 C89E-4 V1.9.0），光模块 detail 仅保留为显式 opt-in 的 `REAL_DEVICE_PENDING` 诊断能力 |
 
-`device.sftp.enable` 当前只登记 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类精确 Profile，
-风险为 `controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。命令顺序固定为：
+`device.sftp.enable` 当前使用 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类 family Profile；
+经过证实的 Release 差异可以用 exact override 覆盖，不能把 override 当作版本 allow-list。风险为
+`controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。命令顺序固定为：
 
 ```text
 system-view
@@ -70,11 +71,11 @@ quit
 
 该操作只允许在用户明确授权、SSH 登录成功且明确确认 SFTP 子系统不可用后，通过
 `Application Service -> DeviceOperationService -> Task Center -> Command Profile` 提交。
-Huawei、ZTE、未知厂商、未知角色、未知平台和未知版本均失败关闭，不猜测命令、不提供兼容 fallback。
+Huawei、ZTE、未知厂商、未知角色、未知平台和无法确认 major family 均失败关闭，不猜测命令、不提供跨厂商 fallback。
 
 每个固定 step 都包含稳定 `step_id`、顺序、输出 selector、parser/DTO contract、只读风险和验证证据。`src/netconsole/services/h3c_collect_service.py` 按 Profile 固定步骤执行：H3C switch 与无线控制器继续保持同一组通用只读命令和解析行为，单项失败保留其他成功结果；AC/FIT-AP 专用命令仍由独立业务服务管理。ZTE 先执行 `show version` 并确认 C89E 或 59X/5960X-ES，通过型号门后继续执行接口、VLAN、一次光模块摘要和两条 LLDP 命令。普通详情默认不为在线模块追加 `show opticalinfo <safe-interface>`；该模板仍受接口参数构造器和 Guard 保护，只能由显式 opt-in 的诊断路径调用。2026-07-28 的既有真实验证结论只覆盖当时实际执行的 C89E-4 固定命令，不外推到其他 ZXR10 型号。分页由通用 SSH 交互执行器处理，raw 保留分页提示而 parser 使用清理副本。未知厂商、设备角色或平台失败关闭，任何厂商都不得回退到 H3C。
 
-除 `device.sftp.enable` 外，AC、MR、配置、诊断和文件管理的其他命令尚未迁入统一 Profile，
+除 `device.sftp.enable` 外，AC、MR、配置、诊断和文件管理的其他命令尚未全部迁入统一 Profile，
 仍属于后续命令平台治理范围。不得用本切片状态替代逐域迁移和真实设备验收。
 
 命令审计对经正式 loader 验证的 Profile 只做完整规范化字符串相等，不使用前缀匹配。旧 `H3CAdapter/H3CConnection/H3CCommandProfile` 没有生产调用且依赖用户备注猜测版本，已连同未验证的 `display transceiver`、`display interface all` 分支删除；后续只有在取得真实样本、Parser 契约和设备验收后，才允许通过新版本 Profile 重新引入对应命令。

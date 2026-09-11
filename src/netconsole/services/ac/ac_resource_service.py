@@ -116,6 +116,8 @@ class AcResourceService:
             fit_ap_snapshot_status=str(
                 getattr(result, "fit_ap_snapshot_status", "NOT_COLLECTED")
             ),
+            warnings=tuple(getattr(result, "warnings", ())),
+            skipped_components=["WLAN_OPTIONAL"] if getattr(result, "warnings", ()) else [],
         )
 
     def refresh_ap_detail(
@@ -177,6 +179,8 @@ class AcResourceService:
             ),
             persisted_components=persisted_components,
             failed_components=["AP_DETAIL"] if not result.success else [],
+            warnings=tuple(getattr(result, "warnings", ())),
+            skipped_components=["WLAN_OPTIONAL"] if getattr(result, "warnings", ()) else [],
         )
 
     def refresh_fit_ap_verbose(
@@ -212,6 +216,8 @@ class AcResourceService:
             error_message=str(result.error_message or ""),
             persisted_components=["AP_DETAIL"] if result.success and result.detail_rows_updated > 0 else [],
             failed_components=["AP_DETAIL"] if not result.success else [],
+            warnings=tuple(getattr(result, "warnings", ())),
+            skipped_components=["WLAN_OPTIONAL"] if getattr(result, "warnings", ()) else [],
         )
 
     def _refresh_cli(
@@ -271,6 +277,8 @@ class AcResourceService:
             fit_ap_snapshot_status=fit_ap_snapshot_status,
             persisted_components=persisted_components,
             failed_components=["FIT_AP"] if not result.success else [],
+            warnings=tuple(getattr(result, "warnings", ())),
+            skipped_components=["WLAN_OPTIONAL"] if getattr(result, "warnings", ()) else [],
         )
 
     def _load_device(self, device_uuid: str) -> Device:

@@ -345,7 +345,17 @@ def normalize_role(value: object) -> str:
     text = str(value or "").strip().casefold().replace("_", "-")
     if text in {"sw", "switch", "交换机"}:
         return "switch"
-    if text in {"ac", "wireless-controller", "wireless_controller", "无线控制器"}:
+    if text in {
+        "ac",
+        "wireless-ac",
+        "wireless_ac",
+        "wlan-controller",
+        "wlan_controller",
+        "controller",
+        "wireless-controller",
+        "wireless_controller",
+        "无线控制器",
+    }:
         return "wireless_controller"
     if text in {"mr", "mobile-router", "mobile_router", "vehicle-mr", "vehicle_mr", "车载 mr"}:
         return "mobile_router"

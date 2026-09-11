@@ -758,6 +758,7 @@ def test_collect_service_marks_h3c_cli_error_output_as_partial(monkeypatch, tmp_
     assert result.success is True
     assert boot_loader.success is False
     assert "% Unrecognized command" in str(boot_loader.error_message)
+    assert result.warnings == ()
     assert repository.get_collect_run(result.collect_run_uuid)["status"] == "partial_success"
 
 

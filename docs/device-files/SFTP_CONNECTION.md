@@ -35,11 +35,12 @@ SSH Transport，因此 `transport_active` 只记录诊断，不能否决已认�
 1. 用户在明确的受控确认中授权本次配置写入；
 2. SSH 登录已成功；
 3. 后端明确确认 SFTP 子系统不可用，认证失败、网络失败、主机密钥失败和未知异常不得触发写操作；
-4. 设备厂商、角色、平台和完整软件版本命中精确的 `device.sftp.enable` Profile。
+4. 设备厂商、角色、平台和 major family 命中受控的 `device.sftp.enable` Profile；已证实的 Release 差异使用 exact override 优先覆盖 family Profile。
 
-未知厂商、角色、平台或版本必须失败关闭，不得回退到 H3C 命令、旧构造函数或通用命令拼接。
-当前只登记 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类精确 Profile；Huawei、ZTE 和未知
-版本不执行。缺少可信软件版本时返回 `DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED`，不执行配置命令。
+未知厂商、角色、平台或 major family 必须失败关闭，不得回退到 H3C 命令、旧构造函数或通用命令拼接。
+当前 H3C Comware V7 的交换机、无线 AC 和车载 MR 使用 family Profile；已登记的 Release 只作为
+override。Huawei、ZTE 和未知 OS 不执行。缺少足以确认 H3C Comware V7 的可信事实时返回
+`DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED`，不执行配置命令。
 Profile 风险为 `controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。
 
 2026-07-23 已在一台 H3C Comware V7 交换机上完成“识别子系统拒绝 -> 用户确认 -> 5 个受控

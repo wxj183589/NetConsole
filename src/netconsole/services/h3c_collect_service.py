@@ -14,7 +14,11 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.adapters.h3c.h3c_parser import H3CParser
 from netconsole.models.device import Device
-from netconsole.models.device_detail import DevicePlatformFacts
+from netconsole.models.device_detail import (
+    DevicePlatformFacts,
+    identify_device_platform,
+    normalize_device_role,
+)
 from netconsole.parsers.h3c.boot_loader_parser import parse_boot_loader
 from netconsole.parsers.h3c.device_parser import parse_device
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
@@ -112,6 +116,7 @@ class CollectDeviceResult:
     lldp_neighbors_updated: int
     error_message: str | None
     command_results: list[CommandResult] = field(default_factory=list)
+    warnings: tuple[str, ...] = ()
 
 
 def collect_h3c_device_details(
@@ -245,6 +250,44 @@ def collect_h3c_device_details(
             metadata=(
                 f"operation_id={profile.operation_id}, profile_id={profile.profile_id}, "
                 f"compatibility={profile.compatibility}"
+            ),
+        ),
+    )
+    platform_facts = interface_discovery_platform_facts or identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+    )
+    vendor_key = device.vendor_key
+    platform_name = str(platform_facts.platform or "unknown").casefold()
+    os_name = {
+        "comware": "Comware",
+        "zxr10": "ZXR10",
+    }.get(platform_name, platform_name or "unknown")
+    major = str(platform_facts.software_major or "unknown")
+    family_prefix = {
+        "h3c": "h3c_comware",
+        "zte": "zte_zxr10",
+    }.get(vendor_key, f"{vendor_key or 'unknown'}_{platform_name or 'unknown'}")
+    profile_selector = str(profile.selector.software_version or "*")
+    profile_source = (
+        "release_override"
+        if profile_selector.upper().startswith("R")
+        else "major_family"
+        if profile_selector.upper().startswith("V")
+        else "family_common"
+    )
+    app_logger.log_info(
+        "DEVICE_CAPABILITY_RESOLVED",
+        _detail(
+            device,
+            collect_run_uuid,
+            metadata=(
+                f"vendor={platform_facts.vendor or device.device_vendor}, "
+                f"os={os_name}, major={major}, "
+                f"release={platform_facts.software_release or 'unknown'}, "
+                f"role={normalize_device_role(device.device_type)}, "
+                f"family={family_prefix}_v{major.removeprefix('V')}, "
+                f"profile_source={profile_source}"
             ),
         ),
     )
@@ -406,6 +449,7 @@ def collect_h3c_device_details(
         if not any((write_result["facts"], write_result["interfaces"], write_result["optical_modules"], write_result["lldp_neighbors"])):
             status = "failed"
         error_message = "; ".join(write_result["parse_errors"]) or _command_error_summary(command_results)
+        warnings = _command_warning_summary(command_results)
         repository.update_collect_run_status(collect_run_uuid, status, error_message=error_message or None)
         event = "COLLECT_SUCCESS" if status == "success" else "COLLECT_PARTIAL_SUCCESS" if status == "partial_success" else "COLLECT_FAILED"
         (app_logger.log_info if status != "failed" else app_logger.log_error)(event, _detail(device, collect_run_uuid, error=error_message or "", raw_log_path=relative_raw_log_path))
@@ -430,6 +474,7 @@ def collect_h3c_device_details(
             int(write_result["lldp_neighbors"]),
             error_message or None,
             command_results,
+            warnings=warnings,
         )
     except Exception as exc:
         message = sanitize_sensitive_text(str(exc), device)
@@ -952,6 +997,26 @@ def _with_metadata(item: dict[str, object | None], metadata: dict[str, object | 
 def _command_error_summary(command_results: list[CommandResult]) -> str:
     failures = [f"{item.command}: {item.error_message}" for item in command_results if not item.success]
     return "; ".join(failures)
+
+
+def _command_warning_summary(command_results: list[CommandResult]) -> tuple[str, ...]:
+    """Turn optional/read-only command misses into operator-facing warnings."""
+
+    optional_selectors = {
+        "inventory.optical_detail",
+        "inventory.lldp_verbose",
+        "inventory.wlan_ap_radio",
+        "inventory.wlan_ap_mesh",
+        "inventory.wlan_ap_client",
+    }
+    return tuple(
+        f"{item.command}：{item.error_message or '设备未提供该可选能力'}，已跳过"
+        for item in command_results
+        if not item.success and (
+            item.selector in optional_selectors
+            or "wlan" in item.command.casefold()
+        )
+    )
 
 
 def _cli_failure_summary(output: str) -> str:

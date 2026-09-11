@@ -27,6 +27,7 @@ class DevicePlatformFacts:
     source: str
     confidence: Literal["high", "medium", "low", "unknown"]
     collected_at: str | None = None
+    software_release: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,12 +57,24 @@ class DeviceOperationTask:
 
 
 def normalize_device_role(device_type: object) -> DeviceRole:
-    value = str(device_type or "").strip().casefold().replace("-", "_")
+    value = "_".join(
+        str(device_type or "")
+        .strip()
+        .casefold()
+        .replace("-", "_")
+        .split()
+    )
     roles: dict[str, DeviceRole] = {
         "sw": "switch",
         "switch": "switch",
         "ac": "wireless_controller",
         "wireless_controller": "wireless_controller",
+        "wireless_ac": "wireless_controller",
+        "wlan_controller": "wireless_controller",
+        "wlan_ac": "wireless_controller",
+        "controller": "wireless_controller",
+        "wirelesscontroller": "wireless_controller",
+        "无线控制器": "wireless_controller",
         "cloud_ap": "access_point",
         "fit_ap": "access_point",
         "fat_ap": "access_point",
@@ -135,6 +148,7 @@ def identify_device_platform(
         source=source,
         confidence=confidence,
         collected_at=str(collected_at or "").strip() or None,
+        software_release=_software_release(version),
     )
 
 
@@ -144,6 +158,25 @@ def _software_major(value: object) -> str | None:
     if not match:
         match = re.search(r"\bVERSION\s+([1-9][0-9]*)", text, re.IGNORECASE)
     return f"V{match.group(1)}" if match else None
+
+
+def _software_release(value: object) -> str | None:
+    """Return the normalized Comware Release without making it a hard gate."""
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = re.search(
+        r"\brelease\s+(R?[0-9]{2,4}(?:[A-Z]{2})?(?:P[0-9]{1,4})?)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        match = re.search(r"\b(R?[0-9]{4}P[0-9]{2,4})\b", text, re.IGNORECASE)
+    if match is None:
+        return None
+    release = match.group(1).upper()
+    return release if release.startswith("R") else f"R{release}"
 
 
 __all__ = [

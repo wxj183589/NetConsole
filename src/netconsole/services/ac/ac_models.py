@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from netconsole.models.device_detail import normalize_device_role
 from netconsole.services.ac.fit_ap_optical_concurrency import DEFAULT_FIT_AP_OPTICAL_CONCURRENCY
 
 
-AC_DEVICE_TYPES = frozenset({"ac", "wireless_controller"})
+AC_DEVICE_TYPES = frozenset({"wireless_controller"})
 FIT_AP_SNAPSHOT_STATUS_NOT_COLLECTED = "NOT_COLLECTED"
 FIT_AP_SNAPSHOT_STATUS_SUCCESS_WITH_ROWS = "SUCCESS_WITH_ROWS"
 FIT_AP_SNAPSHOT_STATUS_SUCCESS_EMPTY = "SUCCESS_EMPTY"
@@ -21,8 +22,7 @@ FIT_AP_SNAPSHOT_STATUSES = frozenset(
 
 
 def is_ac_device_type(value: object) -> bool:
-    normalized = str(value or "").strip().casefold().replace("-", "_")
-    return normalized in AC_DEVICE_TYPES
+    return normalize_device_role(value) in AC_DEVICE_TYPES
 
 
 @dataclass(frozen=True)
@@ -84,6 +84,7 @@ class AcResourceRefreshResult:
     failed_components: list[str] = field(default_factory=list)
     skipped_components: list[str] = field(default_factory=list)
     unauthenticated_status: str = "NOT_COLLECTED"
+    warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """兼容旧 collector 返回值，同时给 Task Center 一个稳定的组件账本。"""
@@ -114,6 +115,7 @@ class AcResourceRefreshResult:
         object.__setattr__(self, "persisted_components", persisted)
         object.__setattr__(self, "failed_components", failed)
         object.__setattr__(self, "skipped_components", list(self.skipped_components))
+        object.__setattr__(self, "warnings", tuple(str(value) for value in self.warnings))
 
     @property
     def partial_success(self) -> bool:
