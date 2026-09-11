@@ -286,7 +286,7 @@ class AcResourceService:
             (
                 item
                 for item in self.device_repository.list()
-                if is_ac_device_type(item.device_type)
+                if is_ac_device_type(item.device_type, vendor=item.device_vendor)
                 and str(item.device_uuid or "") == device_uuid
             ),
             None,

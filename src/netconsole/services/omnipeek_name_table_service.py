@@ -145,7 +145,7 @@ class OmniPeekNameTableService:
         active_ac_ids = {
             str(device.device_uuid or "")
             for device in filter_current_debug_devices(self.device_repository.list())
-            if is_ac_device_type(device.device_type)
+            if is_ac_device_type(device.device_type, vendor=device.device_vendor)
         }
         return [row for row in rows if str(row.get("ac_device_uuid") or "") in active_ac_ids]
 

@@ -126,6 +126,9 @@ def test_roles_do_not_cross_match_cloud_ap_vehicle_mr_and_fit_ap() -> None:
 def test_fingerprint_normalizes_role_model_and_release_without_guessing_platform() -> None:
     assert normalize_role("SW") == "switch"
     assert normalize_role("switch") == "switch"
+    assert normalize_role("controller") == "unknown"
+    assert normalize_role("controller", vendor="Huawei", platform="vrp") == "unknown"
+    assert normalize_role("controller", vendor="H3C", platform="comware") == "wireless_controller"
     assert normalize_model(" S5560X-54F-HI ") == "S5560X-54F-HI"
     assert normalize_model("SN123456789012", serial_number="SN123456789012") == "未识别"
     assert extract_release_from_image("flash:/S5560X_HI-CMW710-SYSTEM-R6628P47.bin") == "R6628P47"

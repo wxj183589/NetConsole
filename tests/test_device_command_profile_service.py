@@ -222,9 +222,31 @@ def test_h3c_comware_v7_releases_share_the_same_family_profile(release: str) -> 
 def test_h3c_wireless_controller_role_aliases_are_centralized(alias: str) -> None:
     device = Device(name="AC", device_vendor="H3C", device_type=alias)
 
-    assert normalize_device_role(alias) == "wireless_controller"
+    assert normalize_device_role(alias, vendor="H3C", platform="Comware") == "wireless_controller"
     assert resolve_device_inventory_profile(device).selector.role == "wireless_controller"
     assert resolve_h3c_capability(device, "wlan_ap_radio").role == "wireless_controller"
+
+
+def test_command_profile_resolver_normalizes_h3c_role_alias_with_identity_context() -> None:
+    profile = resolve_device_command_profile(
+        operation_id=DEVICE_INVENTORY_OPERATION_ID,
+        vendor="H3C",
+        role="wireless_ac",
+        platform="Comware",
+        software_version="Version 7.1.064, Release R2619P08",
+    )
+
+    assert profile.selector.role == "wireless_controller"
+
+
+@pytest.mark.parametrize("vendor", ("Huawei", "ZTE"))
+def test_ambiguous_controller_alias_is_not_global(vendor: str) -> None:
+    assert normalize_device_role("controller", vendor=vendor, platform="unknown") == "unknown"
+
+
+def test_h3c_controller_alias_requires_h3c_comware_context() -> None:
+    assert normalize_device_role("controller") == "unknown"
+    assert normalize_device_role("controller", vendor="H3C", platform="Comware") == "wireless_controller"
 
 
 def test_release_override_precedes_h3c_comware_v7_family_fallback(tmp_path: Path) -> None:
@@ -289,6 +311,24 @@ def test_h3c_capability_does_not_treat_comware_v5_as_v7() -> None:
             "wlan_ap_all",
             software_version="H3C Comware Software, Version 5.2.1, Release R0001P01",
         )
+
+
+def test_h3c_comware_v7_unknown_role_does_not_fallback_to_switch() -> None:
+    device = Device(name="unknown", device_vendor="H3C", device_type="controller-unknown")
+
+    with pytest.raises(DeviceCommandProfileNotFound, match="supported role"):
+        resolve_h3c_capability(
+            device,
+            "wlan_ap_all",
+            software_version="H3C Comware Software, Version 7.1.064, Release R2619P08",
+        )
+
+
+def test_h3c_sftp_enable_requires_a_resolved_major_family() -> None:
+    device = Device(name="AC", device_vendor="H3C", device_type="wireless_controller")
+
+    with pytest.raises(DeviceCommandProfileNotFound, match="命令 Profile"):
+        resolve_device_sftp_enable_profile(device)
 
 
 @pytest.mark.parametrize("vendor", ("Huawei", "ZTE"))

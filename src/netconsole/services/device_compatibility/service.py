@@ -13,6 +13,7 @@ from typing import Iterable
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import package_resource_path
 from netconsole.parsers.h3c.version_parser import parse_comware_version_details
+from netconsole.models.device_detail import normalize_device_role as normalize_canonical_device_role
 from netconsole.services.device_command_profile_service import (
     DeviceCommandProfileError,
     load_device_command_profiles,
@@ -309,7 +310,6 @@ def scan_candidate_rows(
 
 def fingerprint_from_record(row: dict[str, object]) -> DeviceFingerprint:
     vendor = _normalize_vendor(row.get("vendor") or row.get("device_vendor"))
-    role = normalize_role(row.get("role") or row.get("device_role") or row.get("device_type"))
     model = normalize_model(row.get("model"), serial_number=row.get("serial_number"))
     version_text = next(
         (
@@ -322,6 +322,11 @@ def fingerprint_from_record(row: dict[str, object]) -> DeviceFingerprint:
     parsed_version = parse_comware_version_details(version_text)
     platform_family = _normalize_platform_family(
         row.get("platform_family") or ("comware" if parsed_version else "")
+    )
+    role = normalize_role(
+        row.get("role") or row.get("device_role") or row.get("device_type"),
+        vendor=vendor,
+        platform=platform_family,
     )
     platform_major = _platform_major(
         row.get("platform_major_version")
@@ -341,22 +346,29 @@ def fingerprint_from_record(row: dict[str, object]) -> DeviceFingerprint:
     )
 
 
-def normalize_role(value: object) -> str:
+def normalize_role(
+    value: object,
+    *,
+    vendor: object = None,
+    platform: object = None,
+) -> str:
     text = str(value or "").strip().casefold().replace("_", "-")
-    if text in {"sw", "switch", "交换机"}:
-        return "switch"
+    canonical = normalize_canonical_device_role(
+        value,
+        vendor=vendor,
+        platform=platform,
+    )
+    if canonical in {"switch", "wireless_controller", "mobile_router", "access_point"}:
+        return canonical
     if text in {
         "ac",
         "wireless-ac",
-        "wireless_ac",
         "wlan-controller",
-        "wlan_controller",
         "controller",
         "wireless-controller",
-        "wireless_controller",
         "无线控制器",
     }:
-        return "wireless_controller"
+        return "unknown"
     if text in {"mr", "mobile-router", "mobile_router", "vehicle-mr", "vehicle_mr", "车载 mr"}:
         return "mobile_router"
     if text in {"cloud-ap", "cloud ap", "cloud_ap", "mobile-router-cloud-ap", "mobile_router_cloud_ap"}:
@@ -407,7 +419,11 @@ def _parse_profile(row: object) -> DeviceCompatibilityProfile:
     profile = DeviceCompatibilityProfile(
         profile_id=_required_text(row.get("profile_id"), "profile_id"),
         vendor=_normalize_vendor(row.get("vendor")),
-        device_role=normalize_role(row.get("device_role")),
+        device_role=normalize_role(
+            row.get("device_role"),
+            vendor=_normalize_vendor(row.get("vendor")),
+            platform=_normalize_platform_family(row.get("platform_family")),
+        ),
         display_role=_required_text(row.get("display_role"), "display_role"),
         model_matchers=tuple(_string_list(row.get("model_matchers"), "model_matchers")),
         platform_family=_normalize_platform_family(row.get("platform_family")),

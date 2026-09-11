@@ -72,7 +72,10 @@ def _integer(value: object) -> int:
 
 def _require_current_ac(database: Database, ac_uuid: str):
     device = DeviceRepository(database).get_by_uuid(str(ac_uuid or "").strip())
-    if device is None or not is_ac_device_type(device.device_type):
+    if device is None or not is_ac_device_type(
+        device.device_type,
+        vendor=device.device_vendor,
+    ):
         raise ValueError("目标 AC 在当前局点不存在")
     return require_current_debug_device(device)
 

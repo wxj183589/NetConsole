@@ -342,7 +342,16 @@ def resolve_vendor_command_profile(device: Device) -> VendorCommandProfile:
         raise DeviceCommandProfileNotFound(
             f"当前设备厂商未注册命令能力: vendor={vendor}"
         )
-    role = normalize_device_role(device_type)
+    facts = identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+        software_version=getattr(device, "software_version", None),
+    )
+    role = normalize_device_role(
+        device_type,
+        vendor=device.device_vendor,
+        platform=facts.platform,
+    )
     if profile_vendor == "H3C" and role not in {
         "switch",
         "wireless_controller",
@@ -355,11 +364,7 @@ def resolve_vendor_command_profile(device: Device) -> VendorCommandProfile:
         raise DeviceCommandProfileNotFound(
             f"当前设备角色未注册 ZTE 命令能力: role={device_type}"
         )
-    platform = identify_device_platform(
-        vendor=device.device_vendor,
-        device_type=device.device_type,
-        software_version=getattr(device, "software_version", None),
-    ).platform
+    platform = facts.platform
     platform_key = "comware" if profile_vendor == "H3C" else "zxr10"
     if platform not in {platform_key, "unknown"}:
         raise DeviceCommandProfileNotFound(
@@ -389,16 +394,20 @@ def resolve_h3c_capability(
         raise DeviceCommandProfileNotFound(
             f"H3C capability requires vendor=H3C, got {device.device_vendor}"
         )
-    role = normalize_device_role(device.device_type)
-    if role not in {"switch", "wireless_controller", "mobile_router"}:
-        raise DeviceCommandProfileNotFound(
-            f"H3C capability requires a supported role, got {device.device_type}"
-        )
     facts = identify_device_platform(
         vendor=device.device_vendor,
         device_type=device.device_type,
         software_version=software_version,
     )
+    role = normalize_device_role(
+        device.device_type,
+        vendor=device.device_vendor,
+        platform=facts.platform,
+    )
+    if role not in {"switch", "wireless_controller", "mobile_router"}:
+        raise DeviceCommandProfileNotFound(
+            f"H3C capability requires a supported role, got {device.device_type}"
+        )
     major = facts.software_major or "V7"
     if major != "V7":
         raise DeviceCommandProfileNotFound(
@@ -592,8 +601,12 @@ def resolve_device_command_profile(
 ) -> DeviceCommandProfile:
     normalized_operation = _normalize_identifier(operation_id, "operation_id")
     normalized_vendor = _normalize_selector_value(vendor)
-    normalized_role = _normalize_command_role(role)
     normalized_platform = _normalize_selector_value(platform)
+    normalized_role = _normalize_command_role(
+        role,
+        vendor=vendor,
+        platform=platform,
+    )
     if not normalized_vendor or not normalized_role or not normalized_platform:
         raise DeviceCommandProfileNotFound("vendor、role 和 platform 均必须明确")
     candidates = [
@@ -1159,8 +1172,13 @@ def _selector_matches_major(selector: str, major: str) -> bool:
     )
 
 
-def _normalize_command_role(value: object) -> str:
-    normalized = normalize_device_role(value)
+def _normalize_command_role(
+    value: object,
+    *,
+    vendor: object = None,
+    platform: object = None,
+) -> str:
+    normalized = normalize_device_role(value, vendor=vendor, platform=platform)
     if normalized != "unknown":
         return normalized
     return _normalize_selector_value(value).replace("-", "_")

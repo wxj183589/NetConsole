@@ -21,7 +21,8 @@ vendor
 
 - H3C + Comware + V7 进入 `h3c_comware_v7`；
 - H3C 无线控制器能力进入 `h3c_comware_v7_wireless_controller`；
-- `AC`、`wireless_ac`、`wlan_controller`、`controller` 和 `wireless_controller` 统一为 `wireless_controller`；
+- 在 H3C/Comware 上下文中，`AC`、`wireless_ac`、`wlan_controller`、`controller` 和 `wireless_controller` 统一为 `wireless_controller`；
+- 没有 H3C/Comware 身份时，`controller` 等歧义别名保持 `unknown`，不会被误判成无线控制器；显式规范值 `wireless_controller` 保持兼容。
 - `R1608P01`、`R2619P08`、`R9999P99` 等 Release 保存为诊断元数据，不是默认 allow-list；
 - 已验证的 Release 差异可增加 selector 为 `R1608P01` 的 exact override。
 
