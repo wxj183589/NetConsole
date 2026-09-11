@@ -200,6 +200,7 @@ class AcResourceCollectResult:
     serial_identity_conflicts: int = 0
     duplicate_ap_entity_created: int = 0
     fit_ap_snapshot_status: str = "NOT_COLLECTED"
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -294,6 +295,7 @@ def collect_h3c_ac_resources(
         serial_identity_conflicts=resource_result.serial_identity_conflicts,
         duplicate_ap_entity_created=resource_result.duplicate_ap_entity_created,
         fit_ap_snapshot_status=resource_result.fit_ap_snapshot_status,
+        warnings=tuple((*resource_result.warnings, *info_result.warnings)),
     )
 
 
@@ -773,6 +775,7 @@ def collect_h3c_fit_ap_resources(
             persistence_result.serial_identity_conflicts,
             persistence_result.duplicate_ap_entity_created,
             resource_snapshot_status,
+            warnings=_optional_wlan_warnings(command_results),
         )
     except CollectionCancelled:
         message = "用户已取消更新"
@@ -2708,6 +2711,14 @@ def _raise_if_cancelled(should_cancel: CancelCheck) -> None:
 
 def _command_error_summary(command_results: list[CommandResult]) -> str:
     return "; ".join(f"{item.command}: {item.error_message}" for item in command_results if not item.success)
+
+
+def _optional_wlan_warnings(command_results: list[CommandResult]) -> tuple[str, ...]:
+    return tuple(
+        f"H3C Comware V7 AC：{result.command} 能力当前设备不支持，已跳过"
+        for result in command_results
+        if result.command in FIT_AP_RESOURCE_OPTIONAL_COMMANDS and not result.success
+    )
 
 
 _SAFE_AP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")

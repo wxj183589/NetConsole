@@ -10,12 +10,12 @@ CSV/Excel 只校验厂商非空、长度和控制字符。Huawei、华为、Mexo
 
 `resolve_device_collection_support()` 在任何 SSH/SNMP/CLI 命令之前执行。它按 `vendor_key`、设备类型和版本化 Command Profile 返回 `supported`、`driver_key`、`reason_code` 与说明：
 
-- `SUPPORTED`：明确匹配到 H3C/ZTE 的已登记 Profile。
+- `SUPPORTED`：明确匹配到 H3C/ZTE 的 family Profile 或已登记的 Release override。
 - `UNSUPPORTED_VENDOR`：厂商没有驱动。
 - `UNSUPPORTED_DEVICE_TYPE`：厂商已知但设备角色没有驱动。
 - `UNSUPPORTED_COMMAND_PROFILE`：角色已知但没有可靠命令模板。
 
-解析失败关闭，不会回退到 H3C、ZTE 或“最接近”的 Profile。新增厂商时先在 `resources/device_command_profiles.json` 注册经过验证的 Profile，再将其 vendor key 接入解析器；历史设备不需要重新导入。
+解析失败关闭，不会回退到 H3C、ZTE 或“最接近”的 Profile。H3C Comware V7 的未登记 Patch/Release 走已确认的 V7 family，不要求逐一登记；只有经过证实的差异才注册 Release override。新增厂商时先在 `resources/device_command_profiles.json` 注册经过验证的 Profile，再将其 vendor key 接入解析器；历史设备不需要重新导入。
 
 ## 任务状态
 

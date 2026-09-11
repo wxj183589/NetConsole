@@ -6,7 +6,8 @@ NetConsole 使用代码内登记的设备兼容性基线描述当前适配范围
 
 - Dashboard 只读取代码内置兼容基线摘要，不扫描用户本地数据库。
 - 正常启动、首页打开、局点切换、设备管理打开和定时任务均不会执行兼容性扫描。
-- 未登记的设备型号或软件版本进入安全降级；不得把 V5 当 V7、老 V7 当新 V7、V9 当 V7。
+- 未登记的设备型号或 Release 进入能力降级或 family fallback；不得把 V5 当 V7、V9 当 V7。H3C
+  Comware V7 的未登记 Patch/Release 仍进入 V7 family，Release 仅用于诊断和已证实差异 override。
 - Vue 页面不判断 Comware 版本，也不提交原始 CLI 文本。
 
 ## 开发期扫描
@@ -27,7 +28,7 @@ NetConsole 使用代码内登记的设备兼容性基线描述当前适配范围
 
 | 厂商 / 类型 | 当前支持 | 当前边界 |
 | --- | --- | --- |
-| H3C | 保持既有 Comware 设备管理、采集和导入导出范围 | 具体型号、Release 与真实设备状态仍以版本化 Profile 和 fixture 为准 |
+| H3C | Comware V7 按 major-family 能力解析，覆盖交换机、无线控制器和车载 MR | 具体型号与真实设备状态仍以 family Profile、可选 Release override 和 fixture 为准 |
 | ZTE ZXR10 C89E-4 V1.9.0 / SW | Profile v3 固定七条只读详情命令；普通刷新不逐端口读取光模块 detail；轨旁更新每设备只执行版本和一次 DOM brief；设备事实、接口、VLAN、光模块及 LLDP Brief/Entry 结构化解析 | 固定命令已有分阶段实机证据；已验证声明只覆盖 C89E-4 Release；配置中心、文件管理、CLI Ping、诊断包和写操作未验证 |
 | ZTE ZXR10 5960X-ES V2 / SW | 设备模型、只读 SSH 框架、命令 Profile、接口/DOM 文档样例 Parser、厂商采样 Job 和轨旁 AP 页面入口 | 版本、接口和 DOM 仍为 `DOCUMENT_SAMPLE_ONLY`；共享 LLDP Parser 已实现，但 V2 输出仍待现场复核；不能继承 C89E-4 的已验证状态 |
 | ZTE / AC | 不支持 | 导入和写入返回“当前版本尚未适配 ZTE 无线控制器” |

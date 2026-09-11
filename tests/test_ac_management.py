@@ -2720,6 +2720,7 @@ def test_h3c_ac_resource_collect_reports_optional_bbssid_failure_without_losing_
     assert command in [
         item.command for item in result.command_results if not item.success
     ]
+    assert any(command in warning for warning in result.warnings)
     raw_text = Path(result.raw_log_path).read_text(encoding="utf-8")
     assert command in raw_text
     assert "verbose output timed out" in raw_text

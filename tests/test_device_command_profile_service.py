@@ -30,6 +30,7 @@ from netconsole.services.device_command_profile_service import (
     resolve_device_operation_profile,
     resolve_device_sftp_enable_profile,
     resolve_device_capability_commands,
+    resolve_h3c_capability,
 )
 from scripts.maintenance.audit_commands import (
     load_device_profile_commands,
@@ -188,6 +189,114 @@ def test_device_resolution_accepts_h3c_and_zte_supported_roles() -> None:
     with pytest.raises(DeviceCommandProfileNotFound, match="Comware"):
         resolve_device_inventory_profile(
             h3c_switch, platform_facts=conflicting_facts
+        )
+
+
+@pytest.mark.parametrize("release", ("R1608P01", "R2619P08", "R9999P99"))
+def test_h3c_comware_v7_releases_share_the_same_family_profile(release: str) -> None:
+    device = Device(name="AC", device_vendor="H3C", device_type="AC")
+    version = f"H3C Comware Software, Version 7.1.064, Release {release}"
+
+    facts = identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+        software_version=version,
+    )
+    profile = resolve_device_inventory_profile(device, platform_facts=facts)
+    capability = resolve_h3c_capability(
+        device,
+        "wlan_ap_all",
+        software_version=version,
+    )
+
+    assert facts.software_major == "V7"
+    assert facts.software_release == release
+    assert profile.profile_id == "h3c.comware.wireless_controller.generic.device-inventory.v1"
+    assert capability.family_id == "h3c_comware_v7_wireless_controller"
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ("wireless_controller", "wireless_ac", "wlan_controller", "controller", "ac"),
+)
+def test_h3c_wireless_controller_role_aliases_are_centralized(alias: str) -> None:
+    device = Device(name="AC", device_vendor="H3C", device_type=alias)
+
+    assert normalize_device_role(alias) == "wireless_controller"
+    assert resolve_device_inventory_profile(device).selector.role == "wireless_controller"
+    assert resolve_h3c_capability(device, "wlan_ap_radio").role == "wireless_controller"
+
+
+def test_release_override_precedes_h3c_comware_v7_family_fallback(tmp_path: Path) -> None:
+    payload = json.loads(RESOURCE_PATH.read_text(encoding="utf-8"))
+    generic = next(
+        profile
+        for profile in payload["profiles"]
+        if profile["profile_id"] == "h3c.comware.wireless_controller.generic.device-inventory.v1"
+    )
+    override = deepcopy(generic)
+    override["profile_id"] = "h3c.comware.wireless_controller.r1608p01.device-inventory.v2"
+    override["profile_version"] = 2
+    override["selector"]["software_version"] = "R1608P01"
+    override["compatibility"] = "fixture_verified"
+    override["verification"]["fixture_versions"] = [
+        "Version 7.1.064, Release 1608P01"
+    ]
+    payload["profiles"].append(override)
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    (resources / RESOURCE_PATH.name).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path / "runtime")
+    device = Device(name="AC", device_vendor="H3C", device_type="wireless_controller")
+
+    exact = resolve_device_inventory_profile(
+        device,
+        software_version="Version 7.1.064, Release 1608P01",
+        paths=paths,
+    )
+    family = resolve_device_inventory_profile(
+        device,
+        software_version="Version 7.1.064, Release 2619P08",
+        paths=paths,
+    )
+
+    assert exact.selector.software_version == "R1608P01"
+    assert exact.profile_id.endswith("r1608p01.device-inventory.v2")
+    assert family.selector.software_version == "*"
+    assert family.profile_id == "h3c.comware.wireless_controller.generic.device-inventory.v1"
+
+
+def test_h3c_comware_v7_unknown_release_resolves_family_sftp_and_binds_commands() -> None:
+    device = Device(name="AC", device_vendor="H3C", device_type="wireless_ac")
+    profile = resolve_device_sftp_enable_profile(
+        device,
+        software_version="Version 7.1.064, Release R9999P99",
+    )
+
+    assert profile.selector.software_version == "V7"
+    assert bind_device_sftp_enable_commands(profile, username="netconsole-admin")[1] == "sftp server enable"
+
+
+def test_h3c_capability_does_not_treat_comware_v5_as_v7() -> None:
+    device = Device(name="AC", device_vendor="H3C", device_type="AC")
+
+    with pytest.raises(DeviceCommandProfileNotFound, match="major=V7"):
+        resolve_h3c_capability(
+            device,
+            "wlan_ap_all",
+            software_version="H3C Comware Software, Version 5.2.1, Release R0001P01",
+        )
+
+
+@pytest.mark.parametrize("vendor", ("Huawei", "ZTE"))
+def test_non_h3c_vendor_cannot_use_h3c_sftp_family(vendor: str) -> None:
+    with pytest.raises(DeviceCommandProfileNotFound, match="仅支持 H3C"):
+        resolve_device_sftp_enable_profile(
+            Device(name="device", device_vendor=vendor, device_type="SW"),
+            software_version="Version 7.1.064, Release R9999P99",
         )
 
 
