@@ -979,11 +979,14 @@ def _ac_overview_refresh(params: dict[str, Any], progress: ProgressCallback | No
     active_ac_ids = {
         str(device.device_uuid or "")
         for device in filter_current_debug_devices(device_repository.list())
-        if is_ac_device_type(device.device_type) and device.device_uuid
+        if is_ac_device_type(device.device_type, vendor=device.device_vendor) and device.device_uuid
     }
     if ac_uuid:
         ac_device = device_repository.get_by_uuid(ac_uuid)
-        if ac_device is None or not is_ac_device_type(ac_device.device_type):
+        if ac_device is None or not is_ac_device_type(
+            ac_device.device_type,
+            vendor=ac_device.device_vendor,
+        ):
             raise ValueError("目标 AC 在当前局点不存在")
         require_current_debug_device(ac_device)
     repository = AcRepository(database)
@@ -1040,11 +1043,14 @@ def _ac_fit_ap_resources_refresh(params: dict[str, Any], progress: ProgressCallb
     current_ac_ids = {
         str(device.device_uuid or "")
         for device in filter_current_debug_devices(device_repository.list())
-        if is_ac_device_type(device.device_type) and device.device_uuid
+        if is_ac_device_type(device.device_type, vendor=device.device_vendor) and device.device_uuid
     }
     if ac_uuid:
         target = device_repository.get_by_uuid(ac_uuid)
-        if target is None or not is_ac_device_type(target.device_type):
+        if target is None or not is_ac_device_type(
+            target.device_type,
+            vendor=target.device_vendor,
+        ):
             raise ValueError("目标 AC 在当前局点不存在")
         require_current_debug_device(target)
     repository = AcRepository(database)
@@ -1082,7 +1088,10 @@ def _ac_fit_ap_optical_refresh(params: dict[str, Any], progress: ProgressCallbac
     ac_uuid = str(params.get("ac_uuid") or "").strip()
     database = Database(Path(str(params.get("db_path") or "")))
     ac_device = DeviceRepository(database).get_by_uuid(ac_uuid)
-    if ac_device is None or not is_ac_device_type(ac_device.device_type):
+    if ac_device is None or not is_ac_device_type(
+        ac_device.device_type,
+        vendor=ac_device.device_vendor,
+    ):
         raise ValueError("目标 AC 在当前局点不存在")
     require_current_debug_device(ac_device)
     ac_repository = AcRepository(database)
@@ -1837,7 +1846,7 @@ def _ac_devices_refresh(params: dict[str, Any], progress: ProgressCallback | Non
         for device in filter_current_debug_devices(
             DeviceRepository(Database(Path(str(params.get("db_path") or "")))).list(vendor="H3C")
         )
-        if is_ac_device_type(device.device_type)
+        if is_ac_device_type(device.device_type, vendor=device.device_vendor)
     ]
     return {"devices": [device.to_record() for device in devices]}
 
@@ -1865,7 +1874,10 @@ def _ac_fit_ap_delete_many(params: dict[str, Any], progress: ProgressCallback | 
 
     database = Database(Path(str(params.get("db_path") or "")))
     device = DeviceRepository(database).get_by_uuid(str(params.get("ac_uuid") or "").strip())
-    if device is None or not is_ac_device_type(device.device_type):
+    if device is None or not is_ac_device_type(
+        device.device_type,
+        vendor=device.device_vendor,
+    ):
         raise ValueError("目标 AC 在当前局点不存在")
     require_current_debug_device(device)
     count = _ac_repository(params).delete_fit_aps(str(params.get("ac_uuid") or ""), [str(value) for value in params.get("names") or []])
@@ -1963,7 +1975,10 @@ def _fit_ap_detail_load(params: dict[str, Any], progress: ProgressCallback | Non
     repository = _ac_repository(params)
     ac_uuid = str(params.get("ac_uuid") or "")
     ac_device = DeviceRepository(Database(Path(str(params.get("db_path") or "")))).get_by_uuid(ac_uuid)
-    if ac_device is None or not is_ac_device_type(ac_device.device_type):
+    if ac_device is None or not is_ac_device_type(
+        ac_device.device_type,
+        vendor=ac_device.device_vendor,
+    ):
         raise ValueError("目标 AC 在当前局点不存在")
     require_current_debug_device(ac_device)
     ap_key = str(params.get("ap_key") or "")

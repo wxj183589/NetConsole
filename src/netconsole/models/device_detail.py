@@ -56,7 +56,20 @@ class DeviceOperationTask:
     reason_code: str | None = None
 
 
-def normalize_device_role(device_type: object) -> DeviceRole:
+def normalize_device_role(
+    device_type: object,
+    *,
+    vendor: object = None,
+    platform: object = None,
+) -> DeviceRole:
+    """Normalize a stored role without leaking H3C aliases to other vendors.
+
+    ``wireless_controller`` is a canonical role and remains stable for every
+    vendor.  Ambiguous legacy aliases such as ``AC`` and ``controller`` are
+    only promoted to that role when the identity is H3C/Comware.  Callers that
+    only have a role string must not infer a vendor-specific role.
+    """
+
     value = "_".join(
         str(device_type or "")
         .strip()
@@ -67,14 +80,7 @@ def normalize_device_role(device_type: object) -> DeviceRole:
     roles: dict[str, DeviceRole] = {
         "sw": "switch",
         "switch": "switch",
-        "ac": "wireless_controller",
         "wireless_controller": "wireless_controller",
-        "wireless_ac": "wireless_controller",
-        "wlan_controller": "wireless_controller",
-        "wlan_ac": "wireless_controller",
-        "controller": "wireless_controller",
-        "wirelesscontroller": "wireless_controller",
-        "无线控制器": "wireless_controller",
         "cloud_ap": "access_point",
         "fit_ap": "access_point",
         "fat_ap": "access_point",
@@ -87,7 +93,29 @@ def normalize_device_role(device_type: object) -> DeviceRole:
         "firewall": "firewall",
         "other": "other",
     }
-    return roles.get(value, "unknown")
+    if value in roles:
+        return roles[value]
+
+    vendor_key = str(vendor or "").strip().casefold()
+    platform_key = str(platform or "").strip().casefold().replace("-", "_")
+    h3c_comware = vendor_key in {"h3c", "新华三"} and platform_key in {
+        "",
+        "unknown",
+        "comware",
+        "comware_v7",
+        "comware_v9",
+    }
+    if h3c_comware and value in {
+        "ac",
+        "wireless_ac",
+        "wlan_controller",
+        "wlan_ac",
+        "controller",
+        "wirelesscontroller",
+        "无线控制器",
+    }:
+        return "wireless_controller"
+    return "unknown"
 
 
 def identify_device_platform(
@@ -121,7 +149,11 @@ def identify_device_platform(
             confidence = "high"
             break
 
-    role = normalize_device_role(device_type)
+    role = normalize_device_role(
+        device_type,
+        vendor=vendor_text,
+        platform=platform,
+    )
     if (
         platform == "unknown"
         and vendor_text.casefold() == "h3c"

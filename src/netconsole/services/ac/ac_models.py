@@ -21,8 +21,13 @@ FIT_AP_SNAPSHOT_STATUSES = frozenset(
 )
 
 
-def is_ac_device_type(value: object) -> bool:
-    return normalize_device_role(value) in AC_DEVICE_TYPES
+def is_ac_device_type(
+    value: object,
+    *,
+    vendor: object = None,
+    platform: object = None,
+) -> bool:
+    return normalize_device_role(value, vendor=vendor, platform=platform) in AC_DEVICE_TYPES
 
 
 @dataclass(frozen=True)

@@ -1427,7 +1427,10 @@ class AcWebApplicationService:
         if not target_id:
             raise AcWebActionError("TARGET_REQUIRED", "AC 动作缺少目标")
         device = DeviceRepository(Database(self.paths.site_db_path(self._site(site_id)))).get_by_uuid(target_id)
-        if device is None or not is_ac_device_type(device.device_type):
+        if device is None or not is_ac_device_type(
+            device.device_type,
+            vendor=device.device_vendor,
+        ):
             raise AcWebActionError("TARGET_NOT_AUTHORIZED", "目标 AC 在当前局点不存在")
         try:
             require_current_debug_device(device)

@@ -556,7 +556,10 @@ class AcManagementQueryService:
             current_ac_ids = {
                 str(row["device_uuid"])
                 for row in current_devices
-                if is_ac_device_type(row["device_type"])
+                if is_ac_device_type(
+                    row["device_type"],
+                    vendor=row.get("device_vendor"),
+                )
             }
             resources = [
                 row
@@ -933,7 +936,10 @@ class AcManagementQueryService:
             current_ac_ids = {
                 str(row["device_uuid"])
                 for row in self._safe_devices(conn, current_debug_only=True)
-                if is_ac_device_type(row["device_type"])
+                if is_ac_device_type(
+                    row["device_type"],
+                    vendor=row.get("device_vendor"),
+                )
             }
         if ac_id and str(ac_id) not in current_ac_ids:
             return []
@@ -1749,7 +1755,12 @@ class AcManagementQueryService:
             for row in self._safe_devices(conn, current_debug_only=True)
         }
         ids = {
-            uuid for uuid, row in devices.items() if is_ac_device_type(row.get("device_type"))
+            uuid
+            for uuid, row in devices.items()
+            if is_ac_device_type(
+                row.get("device_type"),
+                vendor=row.get("device_vendor"),
+            )
         } | (set(summaries) & set(devices))
         rows: list[dict[str, object]] = []
         for device_uuid in sorted(ids, key=lambda value: str(devices.get(value, {}).get("name") or value)):

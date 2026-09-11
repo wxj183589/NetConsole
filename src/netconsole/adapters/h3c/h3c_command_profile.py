@@ -40,6 +40,7 @@ class H3cAcCommandProfile:
             "wlan_ap_address",
             "wlan_ap_radio",
             "wlan_ap_radio_verbose",
+            "wlan_ap_connection_record",
             "wlan_ap_radio_type",
             "wlan_ap_lldp",
         )

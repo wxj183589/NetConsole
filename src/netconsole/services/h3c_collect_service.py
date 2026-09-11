@@ -285,7 +285,7 @@ def collect_h3c_device_details(
                 f"vendor={platform_facts.vendor or device.device_vendor}, "
                 f"os={os_name}, major={major}, "
                 f"release={platform_facts.software_release or 'unknown'}, "
-                f"role={normalize_device_role(device.device_type)}, "
+                f"role={normalize_device_role(device.device_type, vendor=device.device_vendor, platform=platform_facts.platform)}, "
                 f"family={family_prefix}_v{major.removeprefix('V')}, "
                 f"profile_source={profile_source}"
             ),

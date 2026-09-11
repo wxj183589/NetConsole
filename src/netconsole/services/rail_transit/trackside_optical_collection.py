@@ -1276,7 +1276,7 @@ def _collect_fit_ap_optical_subtasks(
         [
             device
             for device in repository.list(vendor="H3C", work_scope_status="included")
-            if is_ac_device_type(device.device_type)
+            if is_ac_device_type(device.device_type, vendor=device.device_vendor)
             if not _is_excluded_device(device)
         ],
         key=lambda item: rank_ac_device_for_trackside(item, summaries.get(str(item.device_uuid or ""))),
