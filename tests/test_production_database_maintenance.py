@@ -1029,7 +1029,8 @@ def test_storage_registry_has_protected_pending_production_rollback_owners() -> 
     actionable = current_resource_set_owners(owners)
     assert len(actionable) == 1
     assert actionable[0].maintenance_id == "production-task-gc-20260910-r3"
-    assert len(actionable_pending_rollback_owners(owners)) == 1
+    assert actionable[0].observation_state == "VERIFIED"
+    assert len(actionable_pending_rollback_owners(owners)) == 0
     assert_single_actionable_pending_owner(owners)
     historical = [owner for owner in scope if owner.superseded_by]
     assert {owner.maintenance_id for owner in historical} == {
@@ -1038,6 +1039,57 @@ def test_storage_registry_has_protected_pending_production_rollback_owners() -> 
     }
     assert all(owner.evidence_verified() for owner in historical)
     assert all(not owner.verified() for owner in historical)
+
+
+def test_owner_lifecycle_matrix_transitions_pending_verified_superseded_and_restart(
+    tmp_path: Path,
+) -> None:
+    paths, _sites = _multi_site(tmp_path)
+    registry = _rollback_scope_registry(tmp_path)
+
+    for revision in ("r1", "r2", "r3"):
+        maintenance_id = f"production-task-gc-20260910-{revision}"
+        scope = discover_production_tasks_scope(
+            paths,
+            maintenance_id=maintenance_id,
+            source_code_revision=HEAD,
+        )
+        pending = register_rollback_scope(registry, scope)
+        owners = ProductionMaintenanceCapability.load_rollback_owners(registry)
+        assert pending.observation_state == "PENDING_PRODUCTION_BACKUP"
+        assert len(current_resource_set_owners(owners)) == 1
+        assert len(actionable_pending_rollback_owners(owners)) == 1
+
+        verified = create_and_verify_rollback_scope(paths, registry, scope)
+        owners = ProductionMaintenanceCapability.load_rollback_owners(registry)
+        assert verified.observation_state == "VERIFIED"
+        assert verified.verified()
+        assert len(current_resource_set_owners(owners)) == 1
+        assert len(actionable_pending_rollback_owners(owners)) == 0
+        assert_single_actionable_pending_owner(owners)
+
+        restarted = ProductionMaintenanceCapability.load_rollback_owners(registry)
+        current = current_resource_set_owners(restarted)
+        assert len(current) == 1
+        assert current[0].maintenance_id == maintenance_id
+        assert current[0].observation_state == "VERIFIED"
+
+    historical = [
+        owner
+        for owner in restarted.values()
+        if owner.maintenance_id in {
+            "production-task-gc-20260910-r1",
+            "production-task-gc-20260910-r2",
+        }
+    ]
+    assert len(historical) == 2
+    assert {
+        owner.maintenance_id: owner.superseded_by for owner in historical
+    } == {
+        "production-task-gc-20260910-r1": "production-task-gc-20260910-r2",
+        "production-task-gc-20260910-r2": "production-task-gc-20260910-r3",
+    }
+    assert all(owner.evidence_verified() and not owner.verified() for owner in historical)
 
 
 def test_actionable_pending_owner_policy_covers_zero_one_and_two(tmp_path: Path) -> None:

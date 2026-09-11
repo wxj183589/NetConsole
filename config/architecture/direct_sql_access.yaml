@@ -32,6 +32,7 @@
   {"path":"scripts/maintenance/profile_tasks_db.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"tasks.db LIGHT/DEEP 只读 profiling；DEEP 仅允许 D:\\study 下且 WAL 为空的隔离 snapshot，并使用 mode=ro/immutable。"},
   {"path":"scripts/maintenance/audit_tasks_db_space.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"tasks.db 表级空间审计只读 isolated/DEV snapshot，不创建连接外的业务写入或修改数据。"},
   {"path":"scripts/maintenance/cleanup_retired_tasks.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"默认只读预览已由 GUI 移除的 tasks.db Operational rows；显式 apply 复用 TaskCleanupService/TaskRepository 并受生产授权保护。"},
+  {"path":"scripts/maintenance/produce_production_current_head_evidence.py","classification":"TEST_ONLY","owner":"storage","reason":"当前 HEAD 生产门禁编排是显式验收 harness；Production 仅执行 SQLite 只读快照/校验，其余证据生产均在隔离根完成，不执行 Production DML。"},
   {"path":"scripts/maintenance/audit_task_storage_integrity.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"job-center","reason":"Task storage integrity gate 只读检查 result/blob/reference parity；不可读或未知 ownership fail-closed。"},
   {"path":"scripts/maintenance/migrate_task_result_blobs.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"显式 task result Blob migration 只对受保护隔离候选库执行，默认 dry-run，拒绝 Production data root。"},
   {"path":"scripts/maintenance/compact_task_result_storage.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"显式 candidate-first tasks.db compact 使用 VACUUM INTO、parity/quick-check 和原子替换，不属于运行时 Service。"},
