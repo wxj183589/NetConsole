@@ -538,6 +538,16 @@ class BaseWpsAdapter:
         response: WpsHttpResponse,
     ) -> dict[str, Any]:
         result = _unwrap_wps_sync_task_response(response, target, token=token)
+        artifact_ready = result.get("artifact_ready")
+        if artifact_ready is not None and not _is_truthy_remote_flag(artifact_ready):
+            raise WpsSyncError(
+                "WPS_ARTIFACT_NOT_READY",
+                "WPS 远端任务已成功，但云文档结果尚未可读取",
+                details={
+                    "artifact_ready": artifact_ready,
+                    "document_id": target.expected_document_id,
+                },
+            )
         self._validate_common(target, result)
         if not bool(result.get("success")):
             raise _remote_result_error(target, result, token)
@@ -1387,11 +1397,17 @@ class TracksideApWpsSyncService:
                     "未完成批次包含当前请求之外的 WPS 目标",
                 )
             stored_result = run.get("result_summary")
+            timeout_recovery = (
+                str(run.get("status") or "") == "FAILED"
+                and str(run.get("error_code") or "") == "WPS_REMOTE_TASK_TIMEOUT"
+                and bool(str(run.get("remote_task_id") or "").strip())
+            )
             if (
                 str(run.get("status") or "")
                 in {"SUCCESS", "SUCCESS_WITH_WARNINGS", "FAILED"}
                 and isinstance(stored_result, Mapping)
                 and stored_result
+                and not timeout_recovery
             ):
                 results.append(dict(stored_result))
                 continue
@@ -1486,13 +1502,70 @@ class TracksideApWpsSyncService:
                     "message": str(exc),
                     **_sanitize_result(dict(exc.details)),
                 }
+                public.update(
+                    {
+                        "remote_task_id_masked": str(
+                            exc.details.get("remote_task_id_masked")
+                            or _mask_remote_task_id(str(run.get("remote_task_id") or ""))
+                        ),
+                        "remote_task_type": str(
+                            exc.details.get("remote_task_type")
+                            or run.get("remote_task_type")
+                            or ""
+                        ),
+                        "remote_task_status": str(
+                            exc.details.get("remote_task_status")
+                            or run.get("remote_task_status")
+                            or "unknown"
+                        ),
+                        "remote_task_submitted_at": str(
+                            exc.details.get("remote_task_submitted_at")
+                            or run.get("remote_task_submitted_at")
+                            or ""
+                        ),
+                        "remote_task_last_polled_at": str(
+                            exc.details.get("remote_task_last_polled_at")
+                            or run.get("remote_task_last_polled_at")
+                            or ""
+                        ),
+                    }
+                )
+                if isinstance(exc.details.get("remote_business_result"), Mapping):
+                    public["remote_business_result"] = _sanitize_result(
+                        exc.details["remote_business_result"]
+                    )
+                query_error_code = str(
+                    exc.details.get("poll_error_code")
+                    or exc.details.get("remote_query_error_code")
+                    or ""
+                )
+                query_error_message = str(
+                    exc.details.get("poll_error_message")
+                    or exc.details.get("remote_query_error_message")
+                    or ""
+                )
+                if query_error_code or query_error_message:
+                    public["remote_query_error"] = {
+                        "code": query_error_code or exc.code,
+                        "message": query_error_message or str(exc),
+                    }
                 if recoverable:
+                    recovered_poll_at = str(
+                        exc.details.get("remote_task_last_polled_at") or ""
+                    )
+                    recovered_business_result = exc.details.get("remote_business_result")
                     repository.update_remote_task_poll(
                         str(run.get("target_batch_id") or ""),
                         status="REMOTE_RESULT_UNKNOWN",
                         remote_status="unknown",
                         error_code=exc.code,
                         error_message=str(exc),
+                        polled_at=recovered_poll_at or None,
+                        remote_business_result=(
+                            recovered_business_result
+                            if isinstance(recovered_business_result, Mapping)
+                            else None
+                        ),
                     )
                 else:
                     repository.complete_target_run(
@@ -1504,7 +1577,9 @@ class TracksideApWpsSyncService:
                         remote_task_status=(
                             "failed"
                             if exc.code == "WPS_REMOTE_EXECUTION_FAILED"
-                            else "finished"
+                            else "timeout"
+                            if exc.code == "WPS_REMOTE_TASK_TIMEOUT"
+                            else str(run.get("remote_task_status") or "unknown")
                         ),
                     )
                 repository.update_target_sync(
@@ -1586,7 +1661,17 @@ class TracksideApWpsSyncService:
                 summary=summary,
             )
         if progress is not None:
-            progress("wps_complete", 100, 100, f"WPS 云文档同步完成：{status}")
+            if status in {"SUCCESS", "SUCCESS_WITH_WARNINGS"}:
+                progress("wps_complete", 100, 100, f"WPS 云文档同步完成：{status}")
+            elif status == "REMOTE_RESULT_UNKNOWN":
+                progress(
+                    "wps_remote_pending",
+                    95,
+                    100,
+                    "WPS 远端任务结果暂未确认，保留任务并等待后续查询",
+                )
+            else:
+                progress("wps_failed", 100, 100, f"WPS 云文档同步失败：{status}")
         return summary
 
     def _execute_async_target(
@@ -1603,6 +1688,10 @@ class TracksideApWpsSyncService:
         task_id = str(run.get("remote_task_id") or "")
         task_type = str(run.get("remote_task_type") or "")
         submitted_at = str(run.get("remote_task_submitted_at") or "")
+        last_polled_at = str(run.get("remote_task_last_polled_at") or "")
+        last_remote_status = str(run.get("remote_task_status") or "unknown")
+        last_query_error_code = ""
+        last_query_error_message = ""
         token = self._token(repository, target)
         if not task_id:
             if progress is not None:
@@ -1657,13 +1746,17 @@ class TracksideApWpsSyncService:
                 should_cancel()
             if self._monotonic() >= deadline:
                 raise WpsSyncError(
-                    "REMOTE_RESULT_UNKNOWN",
-                    "WPS 任务已经提交，但在总等待时间内未能确认远端执行结果",
+                    "WPS_REMOTE_TASK_TIMEOUT",
+                    "WPS 远端任务已提交，但在规定时间内无法确认远端执行结果",
                     details={
                         **_target_error_details(target, phase="REMOTE_POLL"),
                         "remote_task_id_masked": _mask_remote_task_id(task_id),
-                        "remote_task_status": "unknown",
+                        "remote_task_type": task_type,
+                        "remote_task_status": last_remote_status or "unknown",
                         "remote_task_submitted_at": submitted_at,
+                        "remote_task_last_polled_at": last_polled_at,
+                        "remote_query_error_code": last_query_error_code,
+                        "remote_query_error_message": last_query_error_message,
                     },
                 )
             try:
@@ -1673,61 +1766,96 @@ class TracksideApWpsSyncService:
                     task_id=task_id,
                 )
             except WpsSyncError as exc:
+                polled_at = _now()
+                last_polled_at = polled_at
+                last_remote_status = "unknown"
+                last_query_error_code = exc.code
+                last_query_error_message = str(exc)
                 repository.update_remote_task_poll(
                     target_batch_id,
                     status="REMOTE_RESULT_UNKNOWN",
                     remote_status="unknown",
                     error_code=exc.code,
                     error_message=str(exc),
+                    polled_at=polled_at,
+                    remote_business_result={
+                        "query_error_code": exc.code,
+                        "query_error_message": str(exc),
+                    },
                 )
                 if exc.code in {
                     "REMOTE_POLL_TEMPORARY_FAILED",
                     "WPS_REMOTE_UNAVAILABLE",
                     "WPS_REMOTE_RATE_LIMITED",
+                    "REMOTE_RESULT_UNKNOWN",
                 }:
                     if progress is not None:
                         progress(
-                            "wps_remote_poll_retry",
+                            "wps_remote_pending",
                             45,
                             100,
                             {
-                                "message": "WPS 远端任务查询暂时失败，正在继续查询",
+                                "message": "WPS 远端任务结果暂未确认，保留任务并等待后续查询",
                                 "remote_task_id_masked": _mask_remote_task_id(task_id),
                                 "remote_task_status": "unknown",
-                                "remote_task_last_polled_at": _now(),
+                                "remote_task_type": task_type,
+                                "remote_task_submitted_at": submitted_at,
+                                "remote_task_last_polled_at": polled_at,
                                 "remote_error_code": exc.code,
+                                "remote_error_message": str(exc),
                             },
                         )
                     self._wait_for_next_poll(deadline)
                     continue
                 raise WpsSyncError(
-                    "REMOTE_RESULT_UNKNOWN",
-                    "WPS 任务已经提交，当前无法确认远端执行结果",
+                    exc.code,
+                    str(exc),
                     details={
-                        **_target_error_details(target, phase="REMOTE_POLL"),
+                        **dict(exc.details),
                         "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_type": task_type,
                         "remote_task_status": "unknown",
+                        "remote_task_submitted_at": submitted_at,
+                        "remote_task_last_polled_at": polled_at,
                         "poll_error_code": exc.code,
                         "poll_error_message": str(exc),
                     },
                 ) from exc
             body = polled.body
+            polled_at = _now()
+            last_polled_at = polled_at
             if not isinstance(body, Mapping):
+                message = "WPS 远端任务查询返回结构无效"
+                repository.update_remote_task_poll(
+                    target_batch_id,
+                    status="FAILED",
+                    remote_status=last_remote_status or "unknown",
+                    error_code="WPS_REMOTE_RESPONSE_INVALID",
+                    error_message=message,
+                    polled_at=polled_at,
+                )
                 raise WpsSyncError(
-                    "REMOTE_RESULT_UNKNOWN",
-                    "WPS 远端任务查询返回结构无效",
+                    "WPS_REMOTE_RESPONSE_INVALID",
+                    message,
                     details={
                         **_target_error_details(target, phase="REMOTE_POLL"),
                         "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_type": task_type,
+                        "remote_task_status": last_remote_status or "unknown",
+                        "remote_task_submitted_at": submitted_at,
+                        "remote_task_last_polled_at": polled_at,
                     },
                 )
             remote_status = str(body.get("status") or "").strip().casefold()
-            polled_at = _now()
+            last_remote_status = remote_status or "unknown"
+            remote_business_result = _remote_business_result_from_poll(body)
             if remote_status in {"pending", "queued", "starting", "running"}:
                 repository.update_remote_task_poll(
                     target_batch_id,
                     status="REMOTE_RUNNING",
                     remote_status=remote_status,
+                    polled_at=polled_at,
+                    remote_business_result=remote_business_result,
                 )
                 if progress is not None:
                     progress(
@@ -1745,27 +1873,93 @@ class TracksideApWpsSyncService:
                     )
                 self._wait_for_next_poll(deadline)
                 continue
+            if remote_status in {
+                "failed",
+                "failure",
+                "error",
+                "cancelled",
+                "canceled",
+                "timeout",
+                "timed_out",
+            }:
+                error_code = (
+                    "WPS_REMOTE_TASK_TIMEOUT"
+                    if remote_status in {"timeout", "timed_out"}
+                    else "WPS_REMOTE_EXECUTION_FAILED"
+                )
+                message = (
+                    "WPS 远端任务已超时"
+                    if error_code == "WPS_REMOTE_TASK_TIMEOUT"
+                    else "WPS 远端任务明确失败"
+                )
+                repository.update_remote_task_poll(
+                    target_batch_id,
+                    status="FAILED",
+                    remote_status=remote_status,
+                    error_code=error_code,
+                    error_message=message,
+                    polled_at=polled_at,
+                    remote_business_result=remote_business_result,
+                )
+                raise WpsSyncError(
+                    error_code,
+                    message,
+                    details={
+                        **_target_error_details(target, phase="REMOTE_POLL"),
+                        "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_type": task_type,
+                        "remote_task_status": remote_status,
+                        "remote_task_submitted_at": submitted_at,
+                        "remote_task_last_polled_at": polled_at,
+                        "remote_business_result": remote_business_result,
+                    },
+                )
             if remote_status not in {"finished", "success", "completed"}:
+                error_code = (
+                    "REMOTE_RESULT_UNKNOWN"
+                    if remote_status in {"", "unknown", "indeterminate"}
+                    else "WPS_REMOTE_TASK_STATUS_INVALID"
+                )
+                message = (
+                    "WPS 远端任务结果暂未确认"
+                    if error_code == "REMOTE_RESULT_UNKNOWN"
+                    else f"WPS 远端任务状态无法识别：{remote_status}"
+                )
+                last_query_error_code = error_code
+                last_query_error_message = message
                 repository.update_remote_task_poll(
                     target_batch_id,
                     status="REMOTE_RESULT_UNKNOWN",
                     remote_status=remote_status or "unknown",
-                    error_code="WPS_REMOTE_TASK_STATUS_INVALID",
-                    error_message="WPS 远端任务状态无法识别",
+                    error_code=error_code,
+                    error_message=message,
+                    polled_at=polled_at,
+                    remote_business_result=remote_business_result,
                 )
-                raise WpsSyncError(
-                    "REMOTE_RESULT_UNKNOWN",
-                    f"WPS 远端任务状态无法识别：{remote_status or '未知'}",
-                    details={
-                        **_target_error_details(target, phase="REMOTE_POLL"),
-                        "remote_task_id_masked": _mask_remote_task_id(task_id),
-                        "remote_task_status": remote_status or "unknown",
-                    },
-                )
+                if progress is not None:
+                    progress(
+                        "wps_remote_pending",
+                        55,
+                        100,
+                        {
+                            "message": "WPS 远端任务结果暂未确认，保留任务并等待后续查询",
+                            "remote_task_id_masked": _mask_remote_task_id(task_id),
+                            "remote_task_type": task_type,
+                            "remote_task_status": remote_status or "unknown",
+                            "remote_task_submitted_at": submitted_at,
+                            "remote_task_last_polled_at": polled_at,
+                            "remote_error_code": error_code,
+                            "remote_error_message": message,
+                        },
+                    )
+                self._wait_for_next_poll(deadline)
+                continue
             repository.update_remote_task_poll(
                 target_batch_id,
                 status="REMOTE_FINISHED",
                 remote_status=remote_status,
+                polled_at=polled_at,
+                remote_business_result=remote_business_result,
             )
             if progress is not None:
                 progress(
@@ -1790,19 +1984,65 @@ class TracksideApWpsSyncService:
                     polled,
                 )
             except WpsSyncError as exc:
+                if exc.code in {"WPS_ARTIFACT_NOT_READY", "WPS_SCRIPT_RESULT_EMPTY"}:
+                    last_query_error_code = exc.code
+                    last_query_error_message = str(exc)
+                    repository.update_remote_task_poll(
+                        target_batch_id,
+                        status="REMOTE_ARTIFACT_PENDING",
+                        remote_status=remote_status,
+                        error_code=exc.code,
+                        error_message=str(exc),
+                        polled_at=polled_at,
+                        remote_business_result=remote_business_result,
+                    )
+                    if progress is not None:
+                        progress(
+                            "wps_artifact_pending",
+                            92,
+                            100,
+                            {
+                                "message": "WPS 远端任务已成功，但云文档结果尚未可读取，继续查询",
+                                "remote_task_id_masked": _mask_remote_task_id(task_id),
+                                "remote_task_type": task_type,
+                                "remote_task_status": remote_status,
+                                "remote_task_submitted_at": submitted_at,
+                                "remote_task_last_polled_at": polled_at,
+                                "remote_error_code": exc.code,
+                                "remote_error_message": str(exc),
+                            },
+                        )
+                    self._wait_for_next_poll(deadline)
+                    continue
                 if exc.code != "WPS_SCRIPT_EXECUTION_FAILED":
-                    raise
+                    raise WpsSyncError(
+                        exc.code,
+                        str(exc),
+                        details={
+                            **dict(exc.details),
+                            "remote_task_id_masked": _mask_remote_task_id(task_id),
+                            "remote_task_type": task_type,
+                            "remote_task_status": remote_status,
+                            "remote_task_submitted_at": submitted_at,
+                            "remote_task_last_polled_at": polled_at,
+                        },
+                    ) from exc
                 raise WpsSyncError(
                     "WPS_REMOTE_EXECUTION_FAILED",
                     str(exc),
                     details={
                         **dict(exc.details),
                         "remote_task_id_masked": _mask_remote_task_id(task_id),
+                        "remote_task_type": task_type,
                         "remote_task_status": remote_status,
+                        "remote_task_submitted_at": submitted_at,
+                        "remote_task_last_polled_at": polled_at,
                     },
                 ) from exc
             result.update(
                 {
+                    "artifact_ready": True,
+                    "remote_business_result": remote_business_result,
                     "remote_task_id_masked": _mask_remote_task_id(task_id),
                     "remote_task_type": task_type,
                     "remote_task_status": remote_status,
@@ -3350,6 +3590,15 @@ def _unwrap_wps_sync_task_response(
             "WPS 脚本返回结果为空",
             details=details,
         )
+    if isinstance(raw_result, str) and raw_result.strip().casefold() in {
+        "[undefined]",
+        "undefined",
+    }:
+        raise WpsSyncError(
+            "WPS_SCRIPT_RESULT_EMPTY",
+            "WPS 脚本结果尚未生成",
+            details=details,
+        )
     if isinstance(raw_result, Mapping):
         return dict(raw_result)
     if not isinstance(raw_result, str) or not raw_result.strip():
@@ -3615,6 +3864,39 @@ def _assert_standard_sync_readiness(target: WpsSyncTarget) -> None:
     # lock a target after a successful probe.
     if target.target_type is WpsTargetType.STANDARD_SPREADSHEET:
         _assert_runtime_identity(target)
+
+
+def _is_truthy_remote_flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "ready",
+        "success",
+    }
+
+
+def _remote_business_result_from_poll(body: Mapping[str, object]) -> dict[str, object]:
+    data = body.get("data")
+    if not isinstance(data, Mapping):
+        return {}
+    raw_result = data.get("result")
+    if isinstance(raw_result, Mapping):
+        return _sanitize_result(raw_result)
+    if raw_result is None:
+        return {}
+    if isinstance(raw_result, str):
+        try:
+            decoded = json.loads(raw_result)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, Mapping):
+            return _sanitize_result(decoded)
+    return {"raw_result": _sanitize_error(str(raw_result))}
 
 
 def _sanitize_result(value: Mapping[str, object]) -> dict[str, Any]:

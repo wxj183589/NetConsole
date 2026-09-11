@@ -46,6 +46,11 @@ from netconsole.services.wps_trackside_ap_sync import (
     parse_wps_webhook,
     workbook_dto_from_xlsx,
 )
+from netconsole.services.job_center.worker_protocol import (
+    WORKER_PROTOCOL_MAX_FRAME_BYTES,
+    WorkerProtocolFrameTooLarge,
+    encode_event_bytes,
+)
 
 TEST_WEBHOOK_DOCUMENT_ID = "549847228994"
 STALE_REMOTE_DOCUMENT_ID = TEST_WEBHOOK_DOCUMENT_ID
@@ -2164,6 +2169,7 @@ class _AsyncSyncClient(WpsAirScriptClient):
         self.submit_count = 0
         self.poll_count = 0
         self.submitted_batch_ids: list[str] = []
+        self.polled_task_ids: list[str] = []
         self.last_payload: dict[str, object] = {}
 
     def submit_async(self, target, *, token, argv):
@@ -2177,6 +2183,7 @@ class _AsyncSyncClient(WpsAirScriptClient):
 
     def poll_async_task(self, target, *, token, task_id):
         self.poll_count += 1
+        self.polled_task_ids.append(task_id)
         effect = self.effects.pop(0)
         if isinstance(effect, BaseException):
             raise effect
@@ -2184,6 +2191,15 @@ class _AsyncSyncClient(WpsAirScriptClient):
             return WpsHttpResponse(
                 status_code=200,
                 body={"status": "running", "error": "", "data": {"result": None}},
+            )
+        if effect == "unknown":
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "status": "unknown",
+                    "error": "",
+                    "data": {"result": {"remote_state": "unknown"}},
+                },
             )
         if effect == "remote_error":
             return WpsHttpResponse(
@@ -2193,6 +2209,24 @@ class _AsyncSyncClient(WpsAirScriptClient):
                     "error": "script failed",
                     "error_details": {"name": "Error", "msg": "write failed"},
                     "data": {"result": None},
+                },
+            )
+        if effect == "remote_failed_status":
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "status": "failed",
+                    "error": "",
+                    "data": {"result": {"remote_state": "failed"}},
+                },
+            )
+        if effect == "artifact_undefined":
+            return WpsHttpResponse(
+                status_code=200,
+                body={
+                    "status": "finished",
+                    "error": "",
+                    "data": {"result": "[Undefined]"},
                 },
             )
         payload = self.last_payload
@@ -2213,6 +2247,7 @@ class _AsyncSyncClient(WpsAirScriptClient):
             "business_key": payload.get("business_key"),
             "snapshot_revision": payload.get("snapshot_revision"),
             "snapshot_sha256": payload.get("snapshot_sha256"),
+            "artifact_ready": effect != "artifact_pending",
             "format_warnings": [],
         }
         return WpsHttpResponse(
@@ -2266,14 +2301,200 @@ def test_wps_full_sync_uses_async_submit_poll_and_persists_masked_remote_task(
     assert "request_payload_json" not in str(recent)
 
 
-def test_wps_poll_connection_reset_keeps_task_id_and_restart_resumes_without_submit(
+def test_wps_remote_unknown_stays_pending_until_success_without_completion_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _AsyncSyncClient(["unknown", "running", "finished"])
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    repository, _ = _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+    stages: list[str] = []
+
+    result = service.sync(
+        "hzl10",
+        target_codes=[STANDARD_TARGET_CODE],
+        progress=lambda stage, current, total, message: stages.append(stage),
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert client.submit_count == 1
+    assert client.poll_count == 3
+    assert stages.index("wps_complete") > stages.index("wps_remote_pending")
+    assert stages.index("wps_complete") > stages.index("wps_remote_running")
+    assert result["targets"][0]["artifact_ready"] is True
+    assert result["targets"][0]["remote_business_result"]["success"] is True
+    with sqlite3.connect(repository.path) as connection:
+        row = connection.execute(
+            "SELECT remote_task_id, remote_task_submitted_at, "
+            "remote_task_last_polled_at FROM wps_sync_target_runs"
+        ).fetchone()
+    assert row[0] == "GN/KU3B3+remote-task=="
+    assert row[1] and row[2]
+
+
+def test_wps_remote_unknown_then_failed_is_not_completed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _AsyncSyncClient(["unknown", "remote_error"])
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    repository, _ = _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+    stages: list[str] = []
+
+    result = service.sync(
+        "hzl10",
+        target_codes=[STANDARD_TARGET_CODE],
+        progress=lambda stage, current, total, message: stages.append(stage),
+    )
+
+    assert result["status"] == "FAILED"
+    assert result["targets"][0]["status"] == "FAILED"
+    assert result["targets"][0]["error_code"] == "WPS_REMOTE_EXECUTION_FAILED"
+    assert "wps_complete" not in stages
+    with sqlite3.connect(repository.path) as connection:
+        row = connection.execute(
+            "SELECT status, remote_task_status, remote_task_id, completed_at "
+            "FROM wps_sync_target_runs"
+        ).fetchone()
+    assert row[0] == "FAILED"
+    assert row[1] == "failed"
+    assert row[2] == "GN/KU3B3+remote-task=="
+    assert row[3]
+
+
+def test_wps_explicit_remote_failed_status_is_terminal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _AsyncSyncClient(["remote_failed_status"])
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    repository, _ = _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+
+    result = service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert result["status"] == "FAILED"
+    assert result["targets"][0]["error_code"] == "WPS_REMOTE_EXECUTION_FAILED"
+    assert result["targets"][0]["remote_business_result"]["remote_state"] == "failed"
+    with sqlite3.connect(repository.path) as connection:
+        row = connection.execute(
+            "SELECT status, remote_task_status, error_code FROM wps_sync_target_runs"
+        ).fetchone()
+    assert row == ("FAILED", "failed", "WPS_REMOTE_EXECUTION_FAILED")
+
+
+def test_wps_query_temporary_error_then_success_does_not_resubmit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _AsyncSyncClient(
+        [WpsSyncError("REMOTE_POLL_TEMPORARY_FAILED", "network reset"), "finished"]
+    )
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+
+    result = service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert result["status"] == "SUCCESS"
+    assert client.submit_count == 1
+    assert client.polled_task_ids == [
+        "GN/KU3B3+remote-task==",
+        "GN/KU3B3+remote-task==",
+    ]
+
+
+def test_wps_remote_success_waits_for_artifact_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _AsyncSyncClient(["artifact_undefined", "artifact_pending", "finished"])
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+    stages: list[str] = []
+
+    result = service.sync(
+        "hzl10",
+        target_codes=[STANDARD_TARGET_CODE],
+        progress=lambda stage, current, total, message: stages.append(stage),
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert client.submit_count == 1
+    assert client.poll_count == 3
+    assert "wps_artifact_pending" in stages
+    assert stages[-1] == "wps_complete"
+
+
+def test_wps_unknown_timeout_is_failed_and_keeps_remote_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     clock = [0.0]
-    client = _AsyncSyncClient(
-        [WpsSyncError("REMOTE_POLL_TEMPORARY_FAILED", "[WinError 10054]")]
+    client = _AsyncSyncClient(["unknown", "unknown", "unknown"])
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_max_wait_seconds=2,
+        remote_task_poll_interval_seconds=1,
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        monotonic=lambda: clock[0],
     )
+    repository, _ = _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+    stages: list[str] = []
+
+    result = service.sync(
+        "hzl10",
+        target_codes=[STANDARD_TARGET_CODE],
+        progress=lambda stage, current, total, message: stages.append(stage),
+    )
+
+    assert result["status"] == "FAILED"
+    assert result["targets"][0]["error_code"] == "WPS_REMOTE_TASK_TIMEOUT"
+    assert result["targets"][0]["remote_task_id_masked"] == "GN/KU3B3...sk=="
+    assert "wps_complete" not in stages
+    with sqlite3.connect(repository.path) as connection:
+        row = connection.execute(
+            "SELECT status, remote_task_status, remote_task_id, "
+            "remote_task_submitted_at, remote_task_last_polled_at "
+            "FROM wps_sync_target_runs"
+        ).fetchone()
+    assert row[0] == "FAILED"
+    assert row[1] == "timeout"
+    assert row[2] == "GN/KU3B3+remote-task=="
+    assert row[3] and row[4]
+
+
+def test_wps_timeout_retry_reuses_remote_task_and_original_submit_time(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    clock = [0.0]
+    client = _AsyncSyncClient(["unknown"])
     paths = PathResolver(tmp_path)
     first = TracksideApWpsSyncService(
         paths,
@@ -2286,19 +2507,288 @@ def test_wps_poll_connection_reset_keeps_task_id_and_restart_resumes_without_sub
     repository, _ = _seed_verified_wps_target(first)
     _stub_wps_sync_snapshot(monkeypatch, first)
 
-    unknown = first.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+    first_result = first.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+    first_submitted_at = first_result["targets"][0]["remote_task_submitted_at"]
+    assert first_result["status"] == "FAILED"
+    assert first_result["targets"][0]["error_code"] == "WPS_REMOTE_TASK_TIMEOUT"
 
-    assert unknown["status"] == "REMOTE_RESULT_UNKNOWN"
-    assert unknown["targets"][0]["status"] == "REMOTE_RESULT_UNKNOWN"
+    client.effects.append("finished")
+    resumed = TracksideApWpsSyncService(
+        paths,
+        client=client,
+        remote_task_max_wait_seconds=1,
+        remote_task_poll_interval_seconds=0,
+        monotonic=lambda: clock[0],
+    ).sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert resumed["status"] == "SUCCESS"
+    assert resumed["targets"][0]["remote_task_submitted_at"] == first_submitted_at
+    assert client.submit_count == 1
+    assert client.polled_task_ids == [
+        "GN/KU3B3+remote-task==",
+        "GN/KU3B3+remote-task==",
+    ]
+    with sqlite3.connect(repository.path) as connection:
+        row = connection.execute(
+            "SELECT status, remote_task_id, remote_task_submitted_at "
+            "FROM wps_sync_target_runs"
+        ).fetchone()
+    assert row == ("SUCCESS", "GN/KU3B3+remote-task==", first_submitted_at)
+
+
+@pytest.mark.parametrize("business_status", ["REMOTE_RESULT_UNKNOWN", "FAILED"])
+def test_wps_non_success_job_result_cannot_be_completed_by_normal_return(
+    monkeypatch: pytest.MonkeyPatch,
+    business_status: str,
+) -> None:
+    from netconsole.services.job_center.handlers import rail_transit_jobs
+    from netconsole.services.job_center.job_models import JobSpec
+    from netconsole.services.job_center.job_runner import run_job
+    from netconsole.services.job_center.runtime.task_runtime import TaskRuntime
+
+    class UnknownService:
+        def __init__(self, paths) -> None:
+            del paths
+
+        def sync(self, *args, **kwargs):
+            del args, kwargs
+            return {
+                "status": business_status,
+                "targets": [{"status": business_status}],
+            }
+
+    monkeypatch.setattr(rail_transit_jobs, "TracksideApWpsSyncService", UnknownService)
+    result = run_job(
+        JobSpec(
+            job_id="wps-unknown-job",
+            task_type=WPS_SYNC_TASK_TYPE,
+            params={"site_name": "hzl10"},
+        )
+    )
+    event = result.to_event()
+
+    assert result.ok is True
+    assert result.terminal_state == "FAILED"
+    assert event["type"] == "finished"
+    assert event["terminal_state"] == "FAILED"
+    assert TaskRuntime._finished_terminal_state(event).value == "FAILED"
+
+
+def _large_wps_result(status: str = "SUCCESS_WITH_WARNINGS") -> dict[str, object]:
+    return {
+        "status": status,
+        "batch_id": "wps-large-batch",
+        "site_id": "hzl10",
+        "business_key": TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        "snapshot_revision": "revision-large",
+        "snapshot_sha256": "sha-large",
+        "content_sha256": "content-large",
+        "snapshot_generated_at": "2026-09-12T10:00:00+08:00",
+        "payload_bytes": 128,
+        "sheet_count": 1,
+        "target_count": 1,
+        "success_count": 1 if status == "SUCCESS_WITH_WARNINGS" else 0,
+        "failed_count": 0,
+        "unknown_count": 0,
+        "warning_count": 1 if status == "SUCCESS_WITH_WARNINGS" else 0,
+        "partial_success": False,
+        "targets": [
+            {
+                "target_code": STANDARD_TARGET_CODE,
+                "target_name": "普通表格",
+                "target_type": "WPS_STANDARD_SPREADSHEET",
+                "target_batch_id": "wps-large-target",
+                "status": status,
+                "artifact_ready": True,
+                "remote_task_id_masked": "remote...task",
+                "remote_task_type": "open_air_script",
+                "remote_task_status": "finished",
+                "remote_task_submitted_at": "2026-09-12T10:00:01+08:00",
+                "remote_task_last_polled_at": "2026-09-12T10:00:02+08:00",
+                "remote_task_finished_at": "2026-09-12T10:00:02+08:00",
+                "remote_business_result": {
+                    "rows": [{"payload": "x" * 1_100_000}],
+                },
+                "format_results": {"font": [{"payload": "format"}] * 100},
+                "column_width_verification_report": {"items": [{"column": "A"}] * 100},
+                "format_warnings": ["warning"] * 100,
+            }
+        ],
+    }
+
+
+def test_wps_large_business_result_stays_out_of_worker_terminal_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netconsole.services.job_center.handlers import rail_transit_jobs
+    from netconsole.services.job_center.job_models import JobSpec
+    from netconsole.services.job_center.job_runner import run_job
+
+    full_result = _large_wps_result()
+
+    class LargeResultService:
+        def __init__(self, paths) -> None:
+            del paths
+
+        def sync(self, *args, **kwargs):
+            del args, kwargs
+            return full_result
+
+    monkeypatch.setattr(rail_transit_jobs, "TracksideApWpsSyncService", LargeResultService)
+
+    result = run_job(
+        JobSpec(
+            job_id="wps-large-terminal",
+            task_type=WPS_SYNC_TASK_TYPE,
+            params={"site_name": "hzl10"},
+        )
+    )
+    event = result.to_event()
+
+    assert result.ok is True
+    assert "remote_business_result" not in result.result["targets"][0]
+    assert len(encode_event_bytes(event)) < WORKER_PROTOCOL_MAX_FRAME_BYTES
+
+
+def test_wps_large_remote_business_result_remains_in_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remote_rows = [
+        {"row": index, "value": f"remote-row-{index}", "detail": "x" * 12}
+        for index in range(40_000)
+    ]
+
+    class LargeRemoteResultClient(_AsyncSyncClient):
+        def poll_async_task(self, target, *, token, task_id):
+            response = super().poll_async_task(target, token=token, task_id=task_id)
+            remote_result = json.loads(response.body["data"]["result"])
+            remote_result["rows"] = remote_rows
+            response.body["data"]["result"] = json.dumps(remote_result, ensure_ascii=False)
+            return response
+
+    client = LargeRemoteResultClient(["finished"])
+    service = TracksideApWpsSyncService(
+        PathResolver(tmp_path),
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    repository, _ = _seed_verified_wps_target(service)
+    _stub_wps_sync_snapshot(monkeypatch, service)
+
+    result = service.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
+    assert result["status"] == "SUCCESS"
+    with sqlite3.connect(repository.path) as connection:
+        stored = json.loads(
+            connection.execute(
+                "SELECT result_summary FROM wps_sync_target_runs"
+            ).fetchone()[0]
+        )
+    assert stored["remote_business_result"]["rows"] == remote_rows
+
+
+def test_wps_success_with_warnings_terminal_is_completed_and_small(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netconsole.services.job_center.handlers import rail_transit_jobs
+    from netconsole.services.job_center.job_models import JobSpec
+    from netconsole.services.job_center.job_runner import run_job
+    from netconsole.services.job_center.runtime.task_runtime import TaskRuntime
+
+    full_result = _large_wps_result("SUCCESS_WITH_WARNINGS")
+
+    class WarningService:
+        def __init__(self, paths) -> None:
+            del paths
+
+        def sync(self, *args, **kwargs):
+            del args, kwargs
+            return full_result
+
+    monkeypatch.setattr(rail_transit_jobs, "TracksideApWpsSyncService", WarningService)
+    result = run_job(
+        JobSpec(
+            job_id="wps-warning-terminal",
+            task_type=WPS_SYNC_TASK_TYPE,
+            params={"site_name": "hzl10"},
+        )
+    )
+    event = result.to_event()
+
+    assert TaskRuntime._finished_terminal_state(event).value == "COMPLETED"
+    assert len(encode_event_bytes(event)) < WORKER_PROTOCOL_MAX_FRAME_BYTES
+
+
+def test_wps_legacy_frame_overflow_does_not_trigger_a_second_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netconsole.services.job_center.handlers import rail_transit_jobs
+    from netconsole.services.job_center.job_events import finished_event
+    from netconsole.services.job_center.job_models import JobSpec
+    from netconsole.services.job_center.job_runner import run_job
+
+    full_result = _large_wps_result()
+    submit_count = 0
+
+    class CountingService:
+        def __init__(self, paths) -> None:
+            del paths
+
+        def sync(self, *args, **kwargs):
+            nonlocal submit_count
+            del args, kwargs
+            submit_count += 1
+            return full_result
+
+    with pytest.raises(WorkerProtocolFrameTooLarge):
+        encode_event_bytes(finished_event("wps-overflow-before-fix", full_result))
+
+    monkeypatch.setattr(rail_transit_jobs, "TracksideApWpsSyncService", CountingService)
+    result = run_job(
+        JobSpec(
+            job_id="wps-overflow-recovery",
+            task_type=WPS_SYNC_TASK_TYPE,
+            params={"site_name": "hzl10"},
+        )
+    )
+
+    assert result.ok is True
+    assert submit_count == 1
+    assert len(encode_event_bytes(result.to_event())) < WORKER_PROTOCOL_MAX_FRAME_BYTES
+
+
+def test_wps_poll_connection_reset_keeps_task_id_and_restart_resumes_without_submit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = _AsyncSyncClient(["unknown", RuntimeError("simulated process exit")])
+    paths = PathResolver(tmp_path)
+    first = TracksideApWpsSyncService(
+        paths,
+        client=client,
+        remote_task_poll_interval_seconds=0,
+    )
+    repository, _ = _seed_verified_wps_target(first)
+    _stub_wps_sync_snapshot(monkeypatch, first)
+
+    with pytest.raises(RuntimeError, match="simulated process exit"):
+        first.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+
     with sqlite3.connect(repository.path) as connection:
         pending = connection.execute(
-            "SELECT status, remote_task_id, completed_at FROM wps_sync_target_runs"
+            "SELECT status, remote_task_id, remote_task_status, "
+            "remote_task_submitted_at, remote_task_last_polled_at, completed_at, "
+            "result_summary "
+            "FROM wps_sync_target_runs"
         ).fetchone()
-    assert pending == (
+    assert pending[:3] == (
         "REMOTE_RESULT_UNKNOWN",
         "GN/KU3B3+remote-task==",
-        "",
+        "unknown",
     )
+    assert pending[3] and pending[4] and pending[5] == ""
+    assert json.loads(pending[6])["remote_business_result"]["remote_state"] == "unknown"
 
     client.effects.append("finished")
     resumed = TracksideApWpsSyncService(
@@ -2310,6 +2800,11 @@ def test_wps_poll_connection_reset_keeps_task_id_and_restart_resumes_without_sub
     assert resumed["status"] == "SUCCESS"
     assert client.submit_count == 1
     assert client.submitted_batch_ids == [resumed["targets"][0]["target_batch_id"]]
+    assert client.polled_task_ids == [
+        "GN/KU3B3+remote-task==",
+        "GN/KU3B3+remote-task==",
+        "GN/KU3B3+remote-task==",
+    ]
 
 
 def test_wps_submit_timeout_retries_same_target_batch_id(
@@ -2335,10 +2830,14 @@ def test_wps_submit_timeout_retries_same_target_batch_id(
     client = SubmitTimeoutClient(["finished"])
     paths = PathResolver(tmp_path)
     first = TracksideApWpsSyncService(paths, client=client)
-    _seed_verified_wps_target(first)
+    repository, _ = _seed_verified_wps_target(first)
     _stub_wps_sync_snapshot(monkeypatch, first)
 
     unknown = first.sync("hzl10", target_codes=[STANDARD_TARGET_CODE])
+    with sqlite3.connect(repository.path) as connection:
+        last_polled_at = connection.execute(
+            "SELECT remote_task_last_polled_at FROM wps_sync_target_runs"
+        ).fetchone()[0]
     resumed = TracksideApWpsSyncService(
         paths,
         client=client,
@@ -2347,6 +2846,7 @@ def test_wps_submit_timeout_retries_same_target_batch_id(
 
     assert unknown["status"] == "REMOTE_RESULT_UNKNOWN"
     assert unknown["targets"][0]["error_code"] == "ASYNC_SUBMIT_FAILED"
+    assert last_polled_at == ""
     assert resumed["status"] == "SUCCESS"
     assert client.submit_count == 2
     assert len(set(client.submitted_batch_ids)) == 1

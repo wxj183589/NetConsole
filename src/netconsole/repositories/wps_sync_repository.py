@@ -859,24 +859,39 @@ class WpsSyncRepository:
         remote_status: str,
         error_code: str = "",
         error_message: str = "",
+        polled_at: str | None = None,
+        remote_business_result: dict[str, object] | None = None,
     ) -> None:
+        updates = [
+            "status = ?",
+            "remote_task_status = ?",
+            "error_code = ?",
+            "sanitized_error_message = ?",
+        ]
+        values: list[object] = [
+            status,
+            remote_status,
+            error_code,
+            _sanitize(error_message),
+        ]
+        if polled_at is not None:
+            updates.insert(2, "remote_task_last_polled_at = ?")
+            values.insert(2, str(polled_at or _now()))
+        if remote_business_result is not None:
+            updates.append("result_summary = ?")
+            values.append(
+                json.dumps(
+                    {"remote_business_result": remote_business_result},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        values.append(target_batch_id)
         with self._connect() as connection:
             connection.execute(
-                """
-                UPDATE wps_sync_target_runs SET
-                    status = ?, remote_task_status = ?,
-                    remote_task_last_polled_at = ?, error_code = ?,
-                    sanitized_error_message = ?
-                WHERE target_batch_id = ?
-                """,
-                (
-                    status,
-                    remote_status,
-                    _now(),
-                    error_code,
-                    _sanitize(error_message),
-                    target_batch_id,
-                ),
+                f"UPDATE wps_sync_target_runs SET {', '.join(updates)} "
+                "WHERE target_batch_id = ?",
+                tuple(values),
             )
             connection.commit()
 
@@ -892,8 +907,7 @@ class WpsSyncRepository:
                 """
                 SELECT * FROM wps_sync_batches
                 WHERE site_id = ? AND business_key = ?
-                  AND completed_at = ''
-                  AND status IN ('RUNNING', 'REMOTE_RESULT_UNKNOWN')
+                  AND status IN ('RUNNING', 'REMOTE_RESULT_UNKNOWN', 'FAILED')
                 ORDER BY requested_at DESC
                 """,
                 (self.site_id, business_key),
@@ -903,6 +917,17 @@ class WpsSyncRepository:
                     "SELECT * FROM wps_sync_target_runs WHERE batch_id = ? ORDER BY target_code",
                     (batch["batch_id"],),
                 ).fetchall()
+                timeout_recovery = (
+                    str(batch["status"] or "") == "FAILED"
+                    and bool(str(batch["completed_at"] or "").strip())
+                    and any(
+                        str(run["error_code"] or "") == "WPS_REMOTE_TASK_TIMEOUT"
+                        and bool(str(run["remote_task_id"] or "").strip())
+                        for run in runs
+                    )
+                )
+                if str(batch["completed_at"] or "").strip() and not timeout_recovery:
+                    continue
                 if {str(run["target_code"]) for run in runs} != requested:
                     continue
                 if len(runs) != int(batch["target_count"] or 0):
