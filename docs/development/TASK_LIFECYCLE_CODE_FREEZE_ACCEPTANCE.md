@@ -1,8 +1,8 @@
 # NetConsole Task Lifecycle 功能代码冻结验收报告
 
-日期：2026-09-12  
-审计基线：`bd6ac6bad1118949b1f30060587f0e9ae42565df`  
-分支：`main`  
+日期：2026-09-12
+审计基线：`bd6ac6bad1118949b1f30060587f0e9ae42565df`
+分支：`main`
 代码状态：`READY_FOR_RELEASE`
 
 ## 1. 审计结论
