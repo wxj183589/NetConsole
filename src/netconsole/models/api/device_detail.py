@@ -21,6 +21,7 @@ class DevicePlatformFactsDTO(ApiModel):
     platform: str
     software_version: str | None = None
     software_major: str | None = None
+    software_release: str | None = None
     source: str
     confidence: Literal["high", "medium", "low", "unknown"]
     collected_at: str | None = None

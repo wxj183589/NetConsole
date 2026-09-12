@@ -15,12 +15,24 @@ from netconsole.models.api.ac_management import AcApDTO, AcLldpDTO, AcOpticalDTO
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.ap_identity import ApIdentityQueryService
-from netconsole.services.ac.query_service import AcManagementQueryService
+from netconsole.services.ac.query_service import AcManagementQueryService, _row_value
 from netconsole.services.config_lifecycle_service import extract_h3c_configuration_body
 
 
 def _fingerprint(path: Path) -> tuple[str, int]:
     return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
+
+
+def test_row_value_supports_sqlite_rows_dicts_and_missing_fields(tmp_path: Path) -> None:
+    connection = Database(tmp_path / "row-value.db").connect()
+    row = connection.execute("SELECT 'H3C' AS device_vendor").fetchone()
+    assert row is not None
+
+    assert _row_value(row, "device_vendor") == "H3C"
+    assert _row_value(row, "device_type") is None
+    assert _row_value({"device_type": "AC"}, "device_type") == "AC"
+    assert _row_value({}, "device_vendor", "unknown") == "unknown"
+    connection.close()
 
 
 def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_path: Path) -> None:

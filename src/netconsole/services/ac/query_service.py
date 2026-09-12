@@ -4,6 +4,7 @@ import ipaddress
 import json
 import re
 import sqlite3
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -128,6 +129,20 @@ _AP_HISTORY_FIELDS = {
         "error_message",
     ),
 }
+
+
+def _row_value(
+    row: sqlite3.Row | Mapping[str, object],
+    key: str,
+    default: object = None,
+) -> object:
+    """Read a possibly sparse sqlite row or mapping without assuming ``.get``."""
+
+    if isinstance(row, sqlite3.Row):
+        return row[key] if key in row.keys() else default
+    if isinstance(row, Mapping):
+        return row.get(key, default)
+    return default
 
 
 def fit_ap_topology_sort_key(item: AcApDTO) -> tuple[object, ...]:
@@ -515,7 +530,10 @@ class AcManagementQueryService:
             with closing(self._connect(self._db_path(site_id))) as conn:
                 if self._table_exists(conn, "ac_fit_ap_details"):
                     details = {
-                        (str(row["ac_device_uuid"] or ""), str(row["ap_uuid"] or "")): dict(row)
+                        (
+                            str(_row_value(row, "ac_device_uuid") or ""),
+                            str(_row_value(row, "ap_uuid") or ""),
+                        ): dict(row)
                         for row in conn.execute("SELECT * FROM ac_fit_ap_details")
                     }
         return [
@@ -554,11 +572,11 @@ class AcManagementQueryService:
         with closing(self._connect(db_path)) as conn:
             current_devices = self._safe_devices(conn, current_debug_only=True)
             current_ac_ids = {
-                str(row["device_uuid"])
+                str(_row_value(row, "device_uuid") or "")
                 for row in current_devices
                 if is_ac_device_type(
-                    row["device_type"],
-                    vendor=row.get("device_vendor"),
+                    _row_value(row, "device_type"),
+                    vendor=_row_value(row, "device_vendor"),
                 )
             }
             resources = [
@@ -568,7 +586,9 @@ class AcManagementQueryService:
             ]
             context = self._switch_context_for_resources(conn, resources, optical_rows)
             ac_names = {
-                str(row["device_uuid"]): str(row["name"] or row["device_uuid"])
+                str(_row_value(row, "device_uuid") or ""): str(
+                    _row_value(row, "name") or _row_value(row, "device_uuid") or ""
+                )
                 for row in current_devices
             }
         context["fit_ap_details_by_uuid"] = {
@@ -934,11 +954,11 @@ class AcManagementQueryService:
         repository = AcRepository(_ReadonlyDatabase(db_path))  # type: ignore[arg-type]
         with closing(self._connect(db_path)) as conn:
             current_ac_ids = {
-                str(row["device_uuid"])
+                str(_row_value(row, "device_uuid") or "")
                 for row in self._safe_devices(conn, current_debug_only=True)
                 if is_ac_device_type(
-                    row["device_type"],
-                    vendor=row.get("device_vendor"),
+                    _row_value(row, "device_type"),
+                    vendor=_row_value(row, "device_vendor"),
                 )
             }
         if ac_id and str(ac_id) not in current_ac_ids:
@@ -982,7 +1002,9 @@ class AcManagementQueryService:
         with closing(self._connect(db_path)) as conn:
             context = self._switch_context(conn)
             ac_names = {
-                str(row["device_uuid"]): str(row["name"] or row["device_uuid"])
+                str(_row_value(row, "device_uuid") or ""): str(
+                    _row_value(row, "name") or _row_value(row, "device_uuid") or ""
+                )
                 for row in self._safe_devices(conn, current_debug_only=True)
             }
         context["fit_ap_details_by_uuid"] = (
@@ -1481,18 +1503,18 @@ class AcManagementQueryService:
         device_name_by_uuid: dict[str, str] = {}
         station_name_by_id, station_id_by_name = self._station_reference_context(conn)
         for row in devices:
-            device_uuid = str(row["device_uuid"])
-            device_name_by_uuid[device_uuid] = str(row["name"] or device_uuid)
-            ip_by_uuid[device_uuid] = str(row["primary_address"] or "")
-            if str(row["device_type"] or "").strip().casefold() in {"sw", "switch", "交换机"}:
+            device_uuid = str(_row_value(row, "device_uuid") or "")
+            device_name_by_uuid[device_uuid] = str(_row_value(row, "name") or device_uuid)
+            ip_by_uuid[device_uuid] = str(_row_value(row, "primary_address") or "")
+            if str(_row_value(row, "device_type") or "").strip().casefold() in {"sw", "switch", "交换机"}:
                 switch_uuids.add(device_uuid)
-                station = self._clean_text(row["station"])
+                station = self._clean_text(_row_value(row, "station"))
                 if station:
                     switch_station_by_uuid[device_uuid] = station
-                station_id = self._clean_text(row["station_id"])
+                station_id = self._clean_text(_row_value(row, "station_id"))
                 if station_id:
                     switch_station_id_by_uuid[device_uuid] = station_id
-            for value in (row["name"], row["system_name"]):
+            for value in (_row_value(row, "name"), _row_value(row, "system_name")):
                 name = str(value or "").strip().casefold()
                 if name:
                     uuids_by_name.setdefault(name, set()).add(device_uuid)
@@ -1540,18 +1562,18 @@ class AcManagementQueryService:
         device_name_by_uuid: dict[str, str] = {}
         station_name_by_id, station_id_by_name = self._station_reference_context(conn)
         for row in devices:
-            device_uuid = str(row["device_uuid"])
-            device_name_by_uuid[device_uuid] = str(row["name"] or device_uuid)
-            ip_by_uuid[device_uuid] = str(row["primary_address"] or "")
-            if str(row["device_type"] or "").strip().casefold() in {"sw", "switch", "交换机"}:
+            device_uuid = str(_row_value(row, "device_uuid") or "")
+            device_name_by_uuid[device_uuid] = str(_row_value(row, "name") or device_uuid)
+            ip_by_uuid[device_uuid] = str(_row_value(row, "primary_address") or "")
+            if str(_row_value(row, "device_type") or "").strip().casefold() in {"sw", "switch", "交换机"}:
                 switch_uuids.add(device_uuid)
-                station = self._clean_text(row["station"])
+                station = self._clean_text(_row_value(row, "station"))
                 if station:
                     switch_station_by_uuid[device_uuid] = station
-                station_id = self._clean_text(row["station_id"])
+                station_id = self._clean_text(_row_value(row, "station_id"))
                 if station_id:
                     switch_station_id_by_uuid[device_uuid] = station_id
-            for value in (row["name"], row["system_name"]):
+            for value in (_row_value(row, "name"), _row_value(row, "system_name")):
                 name = str(value or "").strip().casefold()
                 if name:
                     uuids_by_name.setdefault(name, set()).add(device_uuid)
@@ -1730,8 +1752,8 @@ class AcManagementQueryService:
         by_id: dict[str, str] = {}
         by_name: dict[str, str] = {}
         for row in rows:
-            station_id = str(row["station_id"] or "").strip()
-            station_name = str(row["station_name"] or "").strip()
+            station_id = str(_row_value(row, "station_id") or "").strip()
+            station_name = str(_row_value(row, "station_name") or "").strip()
             if station_id and station_id not in by_id:
                 by_id[station_id] = station_name
             if station_name and station_name.casefold() not in by_name:
@@ -1747,11 +1769,11 @@ class AcManagementQueryService:
 
     def _ac_rows(self, conn: sqlite3.Connection) -> list[dict[str, object]]:
         summaries = {
-            str(row["ac_device_uuid"]): dict(row)
+            str(_row_value(row, "ac_device_uuid") or ""): dict(row)
             for row in conn.execute("SELECT * FROM ac_ap_summary")
         } if self._table_exists(conn, "ac_ap_summary") else {}
         devices = {
-            str(row["device_uuid"]): dict(row)
+            str(_row_value(row, "device_uuid") or ""): dict(row)
             for row in self._safe_devices(conn, current_debug_only=True)
         }
         ids = {
@@ -1787,7 +1809,7 @@ class AcManagementQueryService:
     ) -> list[sqlite3.Row]:
         where = "WHERE COALESCE(work_scope_status, 'included') = 'included'" if current_debug_only else ""
         return conn.execute(
-            "SELECT device_uuid, name, system_name, station, station_id, primary_address, https_port, device_type, work_scope_status "
+            "SELECT device_uuid, name, system_name, station, station_id, primary_address, https_port, device_type, device_vendor, work_scope_status "
             f"FROM devices {where} ORDER BY name"
         ).fetchall()
 
