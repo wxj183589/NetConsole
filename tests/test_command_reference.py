@@ -72,9 +72,10 @@ def test_command_reference_json_is_unique_and_has_non_cli_section():
     items = data["items"]
     ids = [item["id"] for item in items]
 
-    assert len(items) == 87
+    assert len(items) == 88
     assert len(ids) == len(set(ids))
     assert {
+        "ac_display_wlan_ap_address_fallback",
         "ac_display_wlan_ap_all_connection_record",
         "ac_display_wlan_ap_all_radio_type",
         "ac_display_wlan_ap_all_verbose",
