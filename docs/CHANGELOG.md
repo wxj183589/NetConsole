@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### H3C Comware V7/V9 Capability 完成收口与杭州地铁10号线真实验收（2026-09-13）
+
+- 完成 H3C Comware V7/V9 capability：先执行版本事实探测，再选择 AC、FIT-AP、LLDP、BSSID 和设备详情只读命令；未知 major 不默认 V7，Huawei、ZTE 和无 vendor 上下文不会误命中 H3C Profile。
+- AC Query Service 保持 `sqlite3.Row`、`dict` 及缺字段的兼容语义；`DevicePlatformFactsDTO.software_release` 契约贯通设备详情、兼容性和采集链路；H3C command reference 与 Resolver、Adapter、Parser、Collection、Compatibility、AC 回归测试同步完成。
+- 杭州地铁10号线 `hzl10` 真实设备 `251-无线控制器-主`（`WX3540X`，Comware `9.1.081 / R1615P01`）识别为 V9，命中 `h3c_comware_v9_wireless_controller`；SSH/bootstrap、AC、Device Detail、FIT-AP、LLDP、BSSID、连接记录、只读 API、GUI 查看/刷新和正常重启恢复均 PASS，V7 回归 PASS。
+- 既有自动化门禁：Python `4868 passed, 2 skipped`；Renderer `1300 passed`；Electron `298 passed`；Architecture `12/12`；`NEW_FAILURES=0`。
+- Production rollback、storage registry、Production GC、Task Lifecycle 及相关维护门禁保持 `OUT_OF_SCOPE`，本功能未修改其代码、数据或失败隔离逻辑。
+
 ## v1.5.7 - 2026-09-13
 
 ### Task Lifecycle、Task Event Retention、Ground 与 SQLite

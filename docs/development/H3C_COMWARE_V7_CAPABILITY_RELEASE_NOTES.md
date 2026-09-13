@@ -1,8 +1,9 @@
 # H3C Comware V7/V9 Capability 发布说明
 
 完成时间：2026-09-13
-基线：`github/main@8f5d124e88fd5c69b564ad776994b53e60260b78`
-分支：`codex-A/h3c-comware-v9-capability-20260913`
+产品测试基线：`cdd9eb53e3dbb398739879c18bb25c737ced34d1`
+最终验收文档：`github/main@f56500f2f6a641d00646af3ddbb21f6e4ef6824c`
+收口分支：`main`
 
 ## 本轮内容
 
@@ -17,12 +18,13 @@
 - Ruff：PASS
 - compileall：PASS
 - diff check：PASS
-- H3C/AC/设备详情定向测试：`204 passed, 1 warning`；AC 兼容补充回归 `244 passed`
-- Python full：`4858 passed, 2 skipped, 33 warnings`
+- H3C/AC/设备详情定向测试：PASS；V7/V9 Resolver、Adapter、Parser、Collection、Compatibility 和 AC 回归均覆盖
+- Python full：`4868 passed, 2 skipped`
 - Renderer：`1300 passed`，类型检查和构建 PASS
 - Electron：`298 passed`，类型检查和主进程构建 PASS
 - Architecture：`12/12 passed`
-- 真实设备：杭州地铁10号线 `251-无线控制器-主`，版本探测、AC/FIT-AP、BSSID/LLDP、设备详情和只读 API PASS
+- `NEW_FAILURES=0`，Full Gate PASS
+- 真实设备：杭州地铁10号线 `hzl10` 的 `251-无线控制器-主`（`WX3540X`，`9.1.081 / R1615P01`）识别为 V9；SSH/bootstrap、AC/FIT-AP、BSSID/LLDP、设备详情、只读 API、GUI 查看/刷新和正常重启恢复 PASS，V7 回归 PASS
 
 ## 明确边界
 
