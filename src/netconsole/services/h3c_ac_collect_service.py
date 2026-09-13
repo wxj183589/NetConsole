@@ -58,6 +58,11 @@ from netconsole.services.ac.ac_models import (
 )
 from netconsole.services import command_guard
 from netconsole.services import netmiko_connection
+from netconsole.services.h3c_capability_bootstrap import (
+    H3C_VERSION_PROBE_COMMAND,
+    H3cVersionProbe,
+    probe_h3c_comware_version,
+)
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.device_web_service import matching_https_port_lines, parse_https_port
 from netconsole.services.h3c_collect_service import CommandResult
@@ -375,7 +380,14 @@ def collect_h3c_fit_ap_resources(
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results, fit_ap_snapshot_status="FAILED")
 
     try:
-        profile = H3cAcCommandProfile(ac_device)
+        profile, _version_probe = _resolve_h3c_ac_profile(
+            ac_device,
+            paths=paths,
+            site_name=site_name,
+            context="ac_fit_ap_detail_collect" if deep_refresh else "ac_fit_ap_resource_collect",
+            collector="ac_resources",
+            command_results=command_results,
+        )
         if deep_refresh:
             target_name = str(target_resource.get("ap_name") or "").strip()
             if not _is_safe_ap_name(target_name):
@@ -862,7 +874,14 @@ def collect_h3c_fit_ap_verbose(
     else:
         message = ""
     try:
-        profile = H3cAcCommandProfile(ac_device)
+        profile, _version_probe = _resolve_h3c_ac_profile(
+            ac_device,
+            paths=paths,
+            site_name=site_name,
+            context="ac_fit_ap_verbose_all_collect",
+            collector="ac_fit_ap_verbose",
+            command_results=command_results,
+        )
         progress("正在连接 AC 获取 FIT-AP 详细信息...")
         outputs_by_ap: dict[str, str] = {}
         if not selected_ids:
@@ -1020,16 +1039,29 @@ def collect_h3c_ac_info(
         return AcResourceCollectResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, False, 0, None, False, False, None, message, command_results)
 
     try:
-        profile = H3cAcCommandProfile(ac_device)
+        profile, version_probe = _resolve_h3c_ac_profile(
+            ac_device,
+            paths=paths,
+            site_name=site_name,
+            context="ac_info_collect",
+            collector="ac_basic",
+            command_results=command_results,
+        )
+        info_commands = tuple(
+            command
+            for command in profile.ac_info_commands
+            if command != H3C_VERSION_PROBE_COMMAND
+        )
         command_results, outputs = _execute_h3c_ac_command_list(
             ac_device,
             collect_run_uuid,
-            profile.ac_info_commands,
+            info_commands,
             "ac_info_collect",
             progress,
             should_cancel,
             paths=paths,
             site_id=site_name,
+            initial_outputs={H3C_VERSION_PROBE_COMMAND: version_probe.output},
         )
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results)
         progress("正在解析AC信息...")
@@ -1095,9 +1127,8 @@ def run_h3c_ac_action(
     commands_file = run_dir / f"{ac_device.device_uuid}_commands.jsonl"
     result_raw_log_path = str(raw_log_file) if persist_raw_logs else ""
     command_results: list[CommandResult] = []
-    profile = H3cAcCommandProfile(ac_device)
-    action_commands = commands or getattr(profile, f"{action}_commands")
     action_context = context or f"ac_{action}"
+    action_commands = commands or ()
 
     fact_repository.create_collect_run(
         {
@@ -1118,6 +1149,15 @@ def run_h3c_ac_action(
         _write_raw_files(raw_log_file, commands_file, ac_device, collect_run_uuid, command_results, fatal_error=message)
         return AcCommandActionResult(False, str(ac_device.device_uuid), collect_run_uuid, result_raw_log_path, action, tuple(action_commands), message, command_results)
     try:
+        profile, _version_probe = _resolve_h3c_ac_profile(
+            ac_device,
+            paths=paths,
+            site_name=site_name,
+            context=action_context,
+            collector="ac_action",
+            command_results=command_results,
+        )
+        action_commands = commands or getattr(profile, f"{action}_commands")
         per_command_read_timeout = ENABLE_FIT_AP_CONSOLE_TIMEOUTS if action == "enable_ap_remote_login" else None
         command_results, _outputs = _execute_h3c_ac_command_list(
             ac_device,
@@ -2368,6 +2408,39 @@ def _enable_fit_ap_console(
             _disconnect(connection)
 
 
+def _resolve_h3c_ac_profile(
+    ac_device: Device,
+    *,
+    paths: PathResolver,
+    site_name: str,
+    context: str,
+    collector: str,
+    command_results: list[CommandResult],
+) -> tuple[H3cAcCommandProfile, H3cVersionProbe]:
+    probe = probe_h3c_comware_version(
+        ac_device,
+        paths=paths,
+        site_id=site_name,
+        collector=collector,
+        context=context,
+    )
+    now = _now()
+    command_results.append(
+        CommandResult(
+            command=H3C_VERSION_PROBE_COMMAND,
+            success=True,
+            selector="capability.version_probe",
+            output=probe.output,
+            raw_output=probe.output,
+            started_at=now,
+            ended_at=now,
+            page_count=1,
+            output_size=len(probe.output.encode("utf-8", errors="replace")),
+        )
+    )
+    return H3cAcCommandProfile(ac_device, platform_facts=probe.facts), probe
+
+
 def _execute_h3c_ac_command_list(
     ac_device: Device,
     collect_run_uuid: str,
@@ -2381,6 +2454,7 @@ def _execute_h3c_ac_command_list(
     result_sink: list[CommandResult] | None = None,
     paths: PathResolver | None = None,
     site_id: str = "",
+    initial_outputs: Mapping[str, str] | None = None,
 ) -> tuple[list[CommandResult], dict[str, str]]:
     target = choose_connection_target(ac_device)
     if target is None:
@@ -2389,7 +2463,7 @@ def _execute_h3c_ac_command_list(
     _raise_if_cancelled(should_cancel)
     connection = None
     command_results = result_sink if result_sink is not None else []
-    outputs: dict[str, str] = {}
+    outputs: dict[str, str] = dict(initial_outputs or {})
     try:
         with netmiko_connection.ssh_connection_context(
             _ssh_collector_name(context),

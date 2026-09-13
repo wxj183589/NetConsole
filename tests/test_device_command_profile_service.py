@@ -221,10 +221,15 @@ def test_h3c_comware_v7_releases_share_the_same_family_profile(release: str) -> 
 )
 def test_h3c_wireless_controller_role_aliases_are_centralized(alias: str) -> None:
     device = Device(name="AC", device_vendor="H3C", device_type=alias)
+    software_version = "H3C Comware Software, Version 7.1.070, Release R7756P20"
 
     assert normalize_device_role(alias, vendor="H3C", platform="Comware") == "wireless_controller"
     assert resolve_device_inventory_profile(device).selector.role == "wireless_controller"
-    assert resolve_h3c_capability(device, "wlan_ap_radio").role == "wireless_controller"
+    assert resolve_h3c_capability(
+        device,
+        "wlan_ap_radio",
+        software_version=software_version,
+    ).role == "wireless_controller"
 
 
 def test_command_profile_resolver_normalizes_h3c_role_alias_with_identity_context() -> None:
@@ -302,10 +307,40 @@ def test_h3c_comware_v7_unknown_release_resolves_family_sftp_and_binds_commands(
     assert bind_device_sftp_enable_commands(profile, username="netconsole-admin")[1] == "sftp server enable"
 
 
+def test_h3c_comware_v9_actual_release_resolves_wireless_capability() -> None:
+    device = Device(name="AC", device_vendor="H3C", device_type="AC")
+    version = "H3C Comware Software, Version 9.1.081, Release 1615P01"
+
+    facts = identify_device_platform(
+        vendor=device.device_vendor,
+        device_type=device.device_type,
+        software_version=version,
+    )
+    capability = resolve_h3c_capability(
+        device,
+        "wlan_ap_all",
+        software_version=version,
+    )
+
+    assert facts.platform == "comware"
+    assert facts.software_major == "V9"
+    assert facts.software_release == "R1615P01"
+    assert capability.family_id == "h3c_comware_v9_wireless_controller"
+    assert capability.commands == ("display wlan ap all",)
+
+
+def test_h3c_capability_without_software_fact_does_not_default_to_v7() -> None:
+    with pytest.raises(DeviceCommandProfileNotFound, match="H3C_COMWARE_MAJOR_UNRESOLVED"):
+        resolve_h3c_capability(
+            Device(name="AC", device_vendor="H3C", device_type="AC"),
+            "wlan_ap_all",
+        )
+
+
 def test_h3c_capability_does_not_treat_comware_v5_as_v7() -> None:
     device = Device(name="AC", device_vendor="H3C", device_type="AC")
 
-    with pytest.raises(DeviceCommandProfileNotFound, match="major=V7"):
+    with pytest.raises(DeviceCommandProfileNotFound, match="V7 或 V9"):
         resolve_h3c_capability(
             device,
             "wlan_ap_all",

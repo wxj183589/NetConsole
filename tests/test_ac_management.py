@@ -217,6 +217,8 @@ class FakeTimingConnection:
             if isinstance(value, Exception):
                 raise value
             return value
+        if command == "display version":
+            return "H3C Comware Software, Version 7.1.070, Release 6607P20"
         return f"<AC>{command}\nCommand {command} Result=Success\n<AC>"
 
     def disconnect(self):
@@ -2523,7 +2525,7 @@ def test_h3c_ac_collect_service_uses_mock_netmiko(monkeypatch, tmp_path):
     assert result.summary_updated is True
     assert result.fit_ap_resources_updated == 2
     assert result.fit_ap_snapshot_status == "SUCCESS_WITH_ROWS"
-    assert connection.commands == ["screen-length disable", *RESOURCE_COMMANDS]
+    assert connection.commands == ["display version", "screen-length disable", *RESOURCE_COMMANDS]
     assert connection.disconnected is True
     assert Path(result.raw_log_path).is_file()
     assert "display wlan ap all radio verbose filter bbssid" in Path(
@@ -2570,6 +2572,7 @@ def test_enable_ap_remote_login_uses_per_command_timeouts(monkeypatch, tmp_path)
 
     assert result.success is True
     assert connection.commands == [
+        "display version",
         "screen-length disable",
         "system-view",
         "probe",
@@ -2671,13 +2674,14 @@ def test_h3c_ac_resource_only_collect_skips_overview_commands(monkeypatch, tmp_p
     assert result.summary_updated is True
     assert result.https_port_collected is False
     assert connection.commands == [
+        "display version",
         "screen-length disable",
         *FIT_AP_RESOURCE_COMMANDS,
         *FIT_AP_RESOURCE_OPTIONAL_COMMANDS,
     ]
     assert "display cpu-usage" not in connection.commands
     assert "display memory" not in connection.commands
-    assert "display version" not in connection.commands
+    assert "display version" in connection.commands
     assert "display device" not in connection.commands
     summary = repository.get_ac_ap_summary("22222222-2222-4222-8222-222222222222")
     assert summary["total_aps"] == 2
@@ -2807,6 +2811,7 @@ def test_h3c_fit_ap_single_detail_uses_name_verbose_command(monkeypatch, tmp_pat
 
     assert result.success is True
     assert connection.commands == [
+        "display version",
         "screen-length disable",
         "display wlan ap name AP-NB12-01 verbose",
     ]
@@ -3263,6 +3268,7 @@ def test_h3c_ac_collect_service_validates_commands_before_execution(
     )
 
     assert calls == [
+        (["display version"], "ac_info_collect"),
         (["screen-length disable", *RESOURCE_COMMANDS], "ac_fit_ap_resource_collect")
     ]
 

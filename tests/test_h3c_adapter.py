@@ -4,6 +4,7 @@ from netconsole.adapters.h3c.h3c_command_profile import H3cAcCommandProfile
 from netconsole.adapters.h3c.h3c_interface_parser import classify_interface, normalize_interface
 from netconsole.adapters.h3c.h3c_parser import H3CParser
 from netconsole.models.device import Device
+from netconsole.models.device_detail import identify_device_platform
 from netconsole.utils.text_encoding import safe_decode
 
 
@@ -20,7 +21,13 @@ def test_normalize_interface_supports_h3c_logical_management_and_aliases():
 
 
 def test_ac_persist_auto_ap_commands_include_save_force_only_in_action_profile():
-    profile = H3cAcCommandProfile(Device(device_type="AC", device_vendor="H3C"))
+    device = Device(device_type="AC", device_vendor="H3C")
+    facts = identify_device_platform(
+        vendor="H3C",
+        device_type="AC",
+        software_version="H3C Comware Software, Version 9.1.081, Release 1615P01",
+    )
+    profile = H3cAcCommandProfile(device, platform_facts=facts)
 
     assert profile.persist_auto_ap_commands == (
         "system-view",

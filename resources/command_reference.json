@@ -96,7 +96,7 @@
       "comware_command": "display version",
       "zte_command": "show version",
       "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已实机验证，5960X-ES 仍为文档 fixture",
-      "notes": "2026-07-28 以只读命令验证截图中的 11 台 C89E-4；未扩展为 ZXR10 全系列承诺。"
+      "notes": "H3C Comware V7/V9 COMMON 版本探测命令；2026-07-28 的 ZTE 只读证据仍仅覆盖截图中的 11 台 C89E-4。"
     },
     {
       "id": "switch_display_device",
@@ -120,7 +120,7 @@
       "comware_command": "display device",
       "zte_command": "show hardware",
       "parser_status": "H3C 已实现；ZTE 命令已确认、Parser 待样本",
-      "notes": "未进入本次三命令详情 Profile，尚未在真实设备执行。"
+      "notes": "H3C Comware V7/V9 COMMON 只读硬件信息；具体型号/Release 仍以现场回显和 Parser 结果为准。"
     },
     {
       "id": "switch_display_device_manuinfo",
@@ -144,7 +144,7 @@
       "comware_command": "display device manuinfo",
       "zte_command": "show serial-number / show system-info",
       "parser_status": "H3C 已实现；ZTE 命令已确认、Parser 待样本",
-      "notes": "未进入本次三命令详情 Profile，尚未在真实设备执行。"
+      "notes": "H3C Comware V7/V9 COMMON 只读制造信息；缺失字段保留为空，不因版本猜测补值。"
     },
     {
       "id": "switch_display_boot_loader",
@@ -192,7 +192,7 @@
       "comware_command": "display interface",
       "zte_command": "show interface / show interface <safe-interface>",
       "parser_status": "H3C 已实现；ZTE 指定接口 Parser 有文档 fixture，全量命令待样本",
-      "notes": "现场已确认命令文本；带接口参数时必须通过严格接口名校验。"
+      "notes": "H3C Comware V7/V9 COMMON 只读接口信息；带接口参数时必须通过严格接口名校验。"
     },
     {
       "id": "switch_display_interface_brief",
@@ -216,7 +216,7 @@
       "comware_command": "display interface brief",
       "zte_command": "show interface brief",
       "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已实机验证",
-      "notes": "截图中的 10 台车站 C89E-4 各解析 100 条接口记录，核心 C89E-4 解析 150 条；分页由交互执行器处理并保留 raw。"
+      "notes": "H3C Comware V7/V9 COMMON 只读接口概要；分页由交互执行器处理并保留 raw，现场数量不外推。"
     },
     {
       "id": "switch_display_transceiver_interface",
@@ -240,7 +240,7 @@
       "comware_command": "display transceiver interface",
       "zte_command": "show opticalinfo brief",
       "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已实机验证",
-      "notes": "截图中的 10 台车站 C89E-4 各解析 100 条光模块记录，核心 C89E-4 解析 150 条；单端 Rx/Tx 是光功率，不自动称为链路光衰。"
+      "notes": "H3C Comware V7/V9 COMMON 只读光模块信息；单端 Rx/Tx 是光功率，不自动称为链路光衰。"
     },
     {
       "id": "switch_display_transceiver_manuinfo_interface",
@@ -264,7 +264,7 @@
       "comware_command": "display transceiver manuinfo interface",
       "zte_command": "show opticalinfo <safe-interface>",
       "parser_status": "H3C 已实现；ZTE 端口 DOM 基于文档样例，DOCUMENT_SAMPLE_ONLY",
-      "notes": "ZTE 端口详情同时提供模块厂商、PN、SN、温度、电压和门限。"
+      "notes": "H3C Comware V7/V9 COMMON；H3C 字段按现有 Parser 输出，ZTE 端口 DOM 仍为文档样例。"
     },
     {
       "id": "switch_display_transceiver_diagnosis_interface",
@@ -288,7 +288,7 @@
       "comware_command": "display transceiver diagnosis interface",
       "zte_command": "show opticalinfo brief / show opticalinfo <safe-interface>",
       "parser_status": "H3C 已实现；ZTE DOM 基于文档样例，DOCUMENT_SAMPLE_ONLY",
-      "notes": "ZTE Unknown 保留为 UNVERIFIED 或 DOM_UNAVAILABLE，不直接判模块故障。"
+      "notes": "H3C Comware V7/V9 COMMON；ZTE Unknown 保留为 UNVERIFIED 或 DOM_UNAVAILABLE，不直接判模块故障。"
     },
     {
       "id": "switch_display_lldp_list",
@@ -312,7 +312,7 @@
       "comware_command": "display lldp neighbor-information list",
       "zte_command": "show lldp neighbor brief",
       "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已完成 Brief 实机解析",
-      "notes": "ZTE 生产 Profile 固定使用 show lldp neighbor brief；脱敏 fixture 保留 Port ID 续行和 36 条样本结构。"
+      "notes": "H3C Comware V7/V9 COMMON LLDP 列表；ZTE 生产 Profile 固定使用 show lldp neighbor brief。"
     },
     {
       "id": "switch_display_lldp_verbose",
@@ -336,7 +336,7 @@
       "comware_command": "display lldp neighbor-information verbose",
       "zte_command": "show lldp entry",
       "parser_status": "H3C 已实现；ZTE C89E-4 V1.9.0 已完成 Entry 实机解析",
-      "notes": "ZTE 生产 Profile 固定使用 show lldp entry；支持跨行描述、管理 IPv4、PVID、TTL 和 MAC Chassis 规范化。"
+      "notes": "H3C Comware V7/V9 COMMON LLDP 详情；ZTE 生产 Profile 固定使用 show lldp entry，支持现有规范化。"
     },
     {
       "id": "switch_display_current_configuration",

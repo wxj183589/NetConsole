@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from netconsole.models.device import Device
+from netconsole.models.device_detail import DevicePlatformFacts
 from netconsole.services.device_command_profile_service import resolve_h3c_capability
 
 
@@ -11,10 +12,21 @@ class H3cAcCommandProfile:
     command ownership is centralized in the Comware family capability
     resolver.  Release strings are diagnostic metadata and do not select a
     separate allow-list unless a future override is explicitly registered.
+    A bound ``platform_facts`` value is required before device commands are
+    resolved.
     """
 
-    def __init__(self, device: Device | None = None) -> None:
+    def __init__(
+        self,
+        device: Device | None = None,
+        *,
+        platform_facts: DevicePlatformFacts | None = None,
+    ) -> None:
         self.device = device
+        self.platform_facts = platform_facts
+        self.software_version = (
+            platform_facts.software_version if platform_facts else None
+        )
         self.version = self._detect_version()
 
     @property
@@ -94,8 +106,10 @@ class H3cAcCommandProfile:
         )
 
     def _detect_version(self) -> str:
+        if self.platform_facts is not None and self.platform_facts.software_major:
+            return self.platform_facts.software_major
         if self.device is None:
-            return "V9"
+            return "unknown"
         text = " ".join(
             str(value or "")
             for value in (
@@ -108,7 +122,7 @@ class H3cAcCommandProfile:
         for version in ("V5", "V7", "V9"):
             if version in text:
                 return version
-        return "V9"
+        return "unknown"
 
     def _capability_commands(
         self,
@@ -125,7 +139,11 @@ class H3cAcCommandProfile:
                     raise KeyError(capability)
                 commands.extend(resolved_commands)
                 continue
-            resolved = resolve_h3c_capability(self.device, capability)
+            resolved = resolve_h3c_capability(
+                self.device,
+                capability,
+                software_version=self.software_version,
+            )
             command = resolved.commands[0]
             if command_suffix:
                 command = command.replace("<name>", command_suffix).replace(
