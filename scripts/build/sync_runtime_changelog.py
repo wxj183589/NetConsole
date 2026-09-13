@@ -35,7 +35,7 @@ def sync_runtime_changelog(repo_root: Path, *, check: bool = False) -> bool:
             raise ChangelogSyncError(f"runtime changelog is out of sync: {target}")
         return True
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(rendered, encoding="utf-8")
+    target.write_bytes(rendered.encode("utf-8"))
     return matches
 
 

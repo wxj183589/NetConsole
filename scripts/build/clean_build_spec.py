@@ -403,7 +403,7 @@ def write_packaged_changelog() -> Path:
     except (OSError, ChangelogSyncError) as exc:
         raise CleanBuildLockError("canonical changelog cannot be packaged safely") from exc
     PACKAGED_CHANGELOG.parent.mkdir(parents=True, exist_ok=True)
-    PACKAGED_CHANGELOG.write_text(rendered, encoding="utf-8")
+    PACKAGED_CHANGELOG.write_bytes(rendered.encode("utf-8"))
     return PACKAGED_CHANGELOG
 
 
