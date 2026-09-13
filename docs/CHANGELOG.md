@@ -2,7 +2,20 @@
 
 ## Unreleased
 
-## v1.5.6 - 2026-09-09
+## v1.5.6 - 2026-09-13
+
+### Task Lifecycle、Ground 与 SQLite 最终收口
+
+- 收口 Task Center 当前/近期任务模型、`site_import` 切换局点后的 task authority、终态任务轮询、Task Detail 跨局点访问、从列表移除和 Operational Cleanup。
+- 完成 Tombstone Contract、Cleanup DTO contract 及 Log / Artifact / Business Data 数据边界保护；普通 Task Lifecycle 不依赖 Production maintenance、rollback owner 或 Production gate。
+- 完成 Task Event Retention 真实数据验证：默认保留 7 天，支持 3 / 7 / 14 / 30 天，仅清理终态任务的运行事件；活动任务、Online MR、Ground、Task summary、Result、Artifact、Log Center 和业务数据继续保护。
+- 修复全局局点切换后 Ground 页面与 API 沿用旧局点的问题；宁波10号线 → 宁波12号线、宁波12号线 → 宁波10号线及重载验证通过。
+- 修复 `tasks.db` 旧兼容检查每次无条件重建 trigger 导致的无意义 WAL DDL；兼容检查改为幂等语义比较，正常启动不再重复写入。
+
+### 最终验证
+
+- Python：4868 passed，2 skipped；Renderer：1301 passed；Electron：298 passed；Architecture：12/12 PASS。
+- Full Gate PASS，`NEW_FAILURES=0`。
 
 ### 主线治理与工程质量
 
