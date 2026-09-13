@@ -15,11 +15,8 @@
 ### v1.5.8 正式打包记录
 
 - 修复 v1.5.8 安装包运行时更新日志资源漂移：`docs/CHANGELOG.md` 作为唯一人工维护源，构建时自动生成 `src/netconsole/docs/changelog.md`/包内资源，并由 API、Renderer 和包内 smoke 校验版本去重、顺序与内容一致性。
-- 发布准备提交：`0f94605dcbbd171491432944b6564895359e249c`；Full Gate、Renderer、Electron、Architecture、Ruff、compileall、diff check 和包内 smoke 均通过。
-- 正式制品目录：`D:\study\NetConsole-Workspace\release\v1.5.8\build-0-0f94605d`；`published=false`，未创建 tag 或 GitHub Release。
-- Full：`NetConsole-Full-1.5.8.0-0f94605d-x64-setup.exe`，`157211390` bytes，SHA-256=`4cf9a346a89d6b3a1819da351af451f40241def3a3ae0bd4c6967806bf8295f4`。
-- Customer：`NetConsole-Customer-1.5.8.0-0f94605d-x64-setup.exe`，`157211530` bytes，SHA-256=`de3019df26e91b2268ef9dba8e8a0ffac5e6ebba4b97f4fefd334192c99c768c`。
-- 双版本 release manifest 均绑定同一 Installer/Backend/Frontend commit，`packaged_dirty=false`、`package_smoke=PASS`；包内 H3C V7/V9 facts、wireless-controller 角色和兼容性 profile 资源验证通过。
+- 原发布准备提交：`0f94605dcbbd171491432944b6564895359e249c`；对应 `build-0-0f94605d` Full/Customer 制品已标记 `SUPERSEDED`，原文件保留且不得作为当前候选。
+- v1.5.8 修复后重新生成 Full/Customer 候选；构建、版本/commit identity、`packaged_dirty=false`、NOTICE、SBOM、NSIS 解包、SHA-256、runtime changelog API 和 Full/Customer edition contract 均通过，`published=false`，未创建 tag 或 GitHub Release。
 - 真实 Windows GUI 安装、启动/重启、卸载/重装尚未在管理员隔离环境执行，manifest 保持 `real_windows_install_status=PENDING`、`server_installation_status=PENDING`；不以包内 smoke 替代人工安装验收。
 - Production rollback、storage registry、Production GC、Task Lifecycle 及相关维护失败保持隔离并明确为 `OUT_OF_SCOPE`，本次发布准备未修改 Production 数据。
 
