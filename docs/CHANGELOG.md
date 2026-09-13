@@ -9,8 +9,18 @@
 - 完成 H3C Comware V7/V9 capability：先执行版本事实探测，再选择 AC、FIT-AP、LLDP、BSSID 和设备详情只读命令；未知 major 不默认 V7，Huawei、ZTE 和无 vendor 上下文不会误命中 H3C Profile。
 - AC Query Service 保持 `sqlite3.Row`、`dict` 及缺字段的兼容语义；`DevicePlatformFactsDTO.software_release` 契约贯通设备详情、兼容性和采集链路；H3C command reference 与 Resolver、Adapter、Parser、Collection、Compatibility、AC 回归测试同步完成。
 - 杭州地铁10号线 `hzl10` 真实设备 `251-无线控制器-主`（`WX3540X`，Comware `9.1.081 / R1615P01`）识别为 V9，命中 `h3c_comware_v9_wireless_controller`；SSH/bootstrap、AC、Device Detail、FIT-AP、LLDP、BSSID、连接记录、只读 API、GUI 查看/刷新和正常重启恢复均 PASS，V7 回归 PASS。
-- 既有自动化门禁：Python `4868 passed, 2 skipped`；Renderer `1300 passed`；Electron `298 passed`；Architecture `12/12`；`NEW_FAILURES=0`。
+- 既有自动化门禁：Python `4868 passed, 2 skipped`；Renderer `1301 passed`；Electron `298 passed`；Architecture `12/12`；`NEW_FAILURES=0`。
 - Production rollback、storage registry、Production GC、Task Lifecycle 及相关维护门禁保持 `OUT_OF_SCOPE`，本功能未修改其代码、数据或失败隔离逻辑。
+
+### v1.5.8 正式打包记录
+
+- 发布准备提交：`0f94605dcbbd171491432944b6564895359e249c`；Full Gate、Renderer、Electron、Architecture、Ruff、compileall、diff check 和包内 smoke 均通过。
+- 正式制品目录：`D:\study\NetConsole-Workspace\release\v1.5.8\build-0-0f94605d`；`published=false`，未创建 tag 或 GitHub Release。
+- Full：`NetConsole-Full-1.5.8.0-0f94605d-x64-setup.exe`，`157211390` bytes，SHA-256=`4cf9a346a89d6b3a1819da351af451f40241def3a3ae0bd4c6967806bf8295f4`。
+- Customer：`NetConsole-Customer-1.5.8.0-0f94605d-x64-setup.exe`，`157211530` bytes，SHA-256=`de3019df26e91b2268ef9dba8e8a0ffac5e6ebba4b97f4fefd334192c99c768c`。
+- 双版本 release manifest 均绑定同一 Installer/Backend/Frontend commit，`packaged_dirty=false`、`package_smoke=PASS`；包内 H3C V7/V9 facts、wireless-controller 角色和兼容性 profile 资源验证通过。
+- 真实 Windows GUI 安装、启动/重启、卸载/重装尚未在管理员隔离环境执行，manifest 保持 `real_windows_install_status=PENDING`、`server_installation_status=PENDING`；不以包内 smoke 替代人工安装验收。
+- Production rollback、storage registry、Production GC、Task Lifecycle 及相关维护失败保持隔离并明确为 `OUT_OF_SCOPE`，本次发布准备未修改 Production 数据。
 
 ## v1.5.7 - 2026-09-13
 
