@@ -616,6 +616,16 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
     ) {
       throw new Error(`冻结 Backend ${edition} WPS 云同步有效 Feature 状态错误：${featuresBody}`)
     }
+    const changelogResponse = await fetch(`http://127.0.0.1:${port}/api/system-maintenance/changelog`, {
+      headers: { 'X-NetConsole-Session': token },
+      signal: AbortSignal.timeout(10_000),
+    })
+    const changelogBody = await changelogResponse.text()
+    if (changelogResponse.status !== 200 || !(changelogResponse.headers.get('content-type') ?? '').includes('application/json')) {
+      throw new Error(`冻结 Backend /api/system-maintenance/changelog 请求失败：HTTP ${changelogResponse.status}, body=${changelogBody}`)
+    }
+    const changelog = JSON.parse(changelogBody)
+    validatePackagedChangelog(changelog)
     if (edition !== 'customer') {
     const url =
       `http://127.0.0.1:${port}/api/rail-transit/ground-unattended/status`
@@ -1147,6 +1157,41 @@ function validatePackagedBuildMetadata() {
   console.log(`SELF_CHECK_COMMIT=${metadata.backend_commit}`)
   console.log(`PACKAGED_BUILD_TIME=${metadata.build_time_utc}`)
   console.log(`PACKAGED_DIRTY=${String(metadata.build_dirty).toLowerCase()}`)
+}
+
+function validatePackagedChangelog(payload) {
+  const content = String(payload?.content ?? '')
+  const versions = [...content.matchAll(/^v(\d+\.\d+\.\d+)(?:\s+-\s+\d{4}-\d{2}-\d{2})?$/gmu)]
+    .map((match) => `v${match[1]}`)
+  const expected = ['v1.5.8', 'v1.5.7', 'v1.5.6']
+  if (payload?.version !== 'v1.5.8' || JSON.stringify(versions.slice(0, 3)) !== JSON.stringify(expected)) {
+    throw new Error(`冻结 Backend 更新日志版本顺序错误：${changelogBodyForError(payload)}`)
+  }
+  for (const version of expected) {
+    if (versions.filter((item) => item === version).length !== 1) {
+      throw new Error(`冻结 Backend 更新日志包含重复或缺失版本：${version}`)
+    }
+  }
+  if (!content.includes('H3C Comware V7/V9 Capability') || !content.includes('Task Lifecycle')) {
+    throw new Error('冻结 Backend 更新日志缺少 v1.5.8/v1.5.7 内容指纹。')
+  }
+  const packagedPath = resolve(
+    unpackedRoot,
+    'resources',
+    'backend',
+    '_internal',
+    'netconsole',
+    'assets',
+    'changelog.md',
+  )
+  if (content !== readFileSync(packagedPath, 'utf8')) {
+    throw new Error('冻结 Backend 更新日志 API 与包内资源内容不一致。')
+  }
+  console.log(`PACKAGED_CHANGELOG=PASS (${expected.join(' > ')})`)
+}
+
+function changelogBodyForError(payload) {
+  return JSON.stringify({ version: payload?.version, content: payload?.content })
 }
 
 function validateVersionConsistency() {

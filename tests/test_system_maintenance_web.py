@@ -16,6 +16,7 @@ from netconsole.application.system_maintenance import (
 from netconsole.application.web_artifacts import WebArtifactStore
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
+from netconsole.core.changelog import render_runtime_changelog, parse_released_sections
 from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
@@ -595,6 +596,30 @@ def test_router_exposes_strict_module_contract_and_real_artifact_task(tmp_path: 
     assert started.status_code == 200, started.text
     assert started.json()["artifact_name"] == "app_log_all.csv"
     assert started.json()["artifact_id"] not in started.json()["artifact_name"]
+
+
+def test_changelog_api_returns_canonical_released_history_in_runtime_format(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    service, _process, _export = _service(paths)
+    canonical_path = Path(__file__).resolve().parents[1] / "docs" / "CHANGELOG.md"
+    expected = render_runtime_changelog(
+        parse_released_sections(canonical_path.read_text(encoding="utf-8"))
+    )
+
+    payload = service.changelog()
+    app = create_app(RuntimeMode.SERVER, paths=paths, frontend_dist=tmp_path / "missing")
+    app.state.system_maintenance_service = service
+    with TestClient(app) as client:
+        response = client.get("/api/system-maintenance/changelog")
+
+    assert payload.version == "v1.5.8"
+    assert payload.content == expected
+    assert response.status_code == 200, response.text
+    assert response.json() == payload.model_dump()
+    assert payload.content.count("v1.5.8 - 2026-09-13") == 1
+    assert payload.content.count("v1.5.7 - 2026-09-13") == 1
+    assert payload.content.count("v1.5.6 - 2026-09-13") == 1
+    assert payload.content.index("v1.5.8") < payload.content.index("v1.5.7") < payload.content.index("v1.5.6")
 
 
 def test_cleanup_and_dependency_scan_run_in_real_shared_background_process(tmp_path: Path) -> None:

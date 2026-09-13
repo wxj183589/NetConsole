@@ -157,6 +157,24 @@ describe('SystemMaintenanceView mounted workflow', () => {
     expect(source).not.toContain('height: calc(100dvh')
   })
 
+  it('renders the backend changelog content in release order without client-side repair', async () => {
+    api.getChangelog.mockResolvedValueOnce({
+      title: '更新日志 v1.5.8',
+      version: 'v1.5.8',
+      content: 'v1.5.8 - 2026-09-13\nH3C release\n\nv1.5.7 - 2026-09-13\nTask lifecycle\n\nv1.5.6 - 2026-09-13\nHistory',
+    })
+
+    const wrapper = await mountView()
+    await flushPromises()
+
+    const text = wrapper.find('.document').text()
+    expect(text).toContain('H3C release')
+    expect(text.indexOf('v1.5.8')).toBeLessThan(text.indexOf('v1.5.7'))
+    expect(text.indexOf('v1.5.7')).toBeLessThan(text.indexOf('v1.5.6'))
+    expect(api.getChangelog).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   beforeEach(() => {
     vi.clearAllMocks()
     api.getLogs.mockResolvedValue({ items: [], page: 1, page_size: 200, total: 0, total_pages: 0 })

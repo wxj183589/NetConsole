@@ -11,9 +11,10 @@ from netconsole.application.desktop import DesktopActionService
 from netconsole.application.web_artifacts import ReservedWebArtifact, WebArtifactError, WebArtifactStore
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.core import app_logger
+from netconsole.core.changelog import ChangelogSyncError
 from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
-from netconsole.core.resources import changelog_path
+from netconsole.core.resources import read_changelog_text
 from netconsole.core.sites import SiteManager
 from netconsole.core.version import APP_AUTHOR, APP_TITLE_DISPLAY, APP_VERSION_DISPLAY, REPOSITORY_WEB_URLS
 from netconsole.models.api.system_maintenance import (
@@ -416,8 +417,8 @@ class SystemMaintenanceApplicationService:
 
     def changelog(self) -> ChangelogDTO:
         try:
-            content = changelog_path().read_text(encoding="utf-8")
-        except OSError as exc:
+            content = read_changelog_text()
+        except (OSError, ChangelogSyncError) as exc:
             raise SystemMaintenanceError("CHANGELOG_UNAVAILABLE", "更新日志暂不可用") from exc
         return ChangelogDTO(title=f"更新日志 {APP_VERSION_DISPLAY}", version=APP_VERSION_DISPLAY, content=content)
 

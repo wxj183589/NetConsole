@@ -14,6 +14,7 @@
 
 ### v1.5.8 正式打包记录
 
+- 修复 v1.5.8 安装包运行时更新日志资源漂移：`docs/CHANGELOG.md` 作为唯一人工维护源，构建时自动生成 `src/netconsole/docs/changelog.md`/包内资源，并由 API、Renderer 和包内 smoke 校验版本去重、顺序与内容一致性。
 - 发布准备提交：`0f94605dcbbd171491432944b6564895359e249c`；Full Gate、Renderer、Electron、Architecture、Ruff、compileall、diff check 和包内 smoke 均通过。
 - 正式制品目录：`D:\study\NetConsole-Workspace\release\v1.5.8\build-0-0f94605d`；`published=false`，未创建 tag 或 GitHub Release。
 - Full：`NetConsole-Full-1.5.8.0-0f94605d-x64-setup.exe`，`157211390` bytes，SHA-256=`4cf9a346a89d6b3a1819da351af451f40241def3a3ae0bd4c6967806bf8295f4`。
@@ -63,7 +64,7 @@
 - 根据当前数据根所在卷选择保守或高速存储策略，统一 Raw 刷新、耐久同步和数据库批处理参数；识别失败时安全回退保守策略。
 - 新增受管现场诊断包：只读采集当前局点和当前数据卷的有界证据，经 Task Center、Artifact 与用户另存流程导出；Raw 内容默认不采集，须用户明确选择。
 
-## v1.5.5 补充收口 - 2026-09-09
+## v1.5.5 - 2026-09-09
 
 ### v1.5.5 SSH Relay 人工验收收口与 Production 包
 
@@ -106,7 +107,7 @@
 
 - 轨旁 AP 已完成真实 WPS 云文档现场同步验收；页面、Excel、WPS 云文档数值保持一致。Python 相关测试、Renderer 测试、`vue-tsc`、Ruff 和 `git diff --check` 通过。
 
-## v1.5.5 - 2026-09-03
+### 2026-09-03 设备管理与运行时收口
 
 ### 修复
 

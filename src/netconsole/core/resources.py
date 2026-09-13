@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from netconsole.core.changelog import parse_released_sections, render_runtime_changelog
 
 def runtime_base_dir() -> Path:
     meipass = getattr(sys, "_MEIPASS", None)
@@ -42,6 +43,25 @@ def package_resource_path(*parts: str) -> Path:
 
 def changelog_path() -> Path:
     return get_changelog_path(runtime_base_dir())
+
+
+def read_changelog_text() -> str:
+    """Return the same rendered release history used by source and frozen runtimes."""
+    base = runtime_base_dir()
+    packaged = base / "netconsole" / "assets" / "changelog.md"
+    if packaged.is_file():
+        return packaged.read_text(encoding="utf-8")
+
+    if not getattr(sys, "frozen", False):
+        canonical = Path(__file__).resolve().parents[3] / "docs" / "CHANGELOG.md"
+        if canonical.is_file():
+            sections = parse_released_sections(
+                canonical.read_text(encoding="utf-8"),
+                source_name="canonical changelog",
+            )
+            return render_runtime_changelog(sections)
+
+    return changelog_path().read_text(encoding="utf-8")
 
 
 def open_source_notices_path(base_dir: Path | None = None) -> Path:

@@ -30,6 +30,11 @@ from netconsole.build.clean_build_lock import (
     validate_project_safety,
 )
 from netconsole.core.feature_flags import default_profile
+from netconsole.core.changelog import (
+    ChangelogSyncError,
+    parse_released_sections,
+    render_runtime_changelog,
+)
 from netconsole.core.version import APP_VERSION
 from scripts.build.check_runtime_deps import (
     check_python_environment,
@@ -65,6 +70,7 @@ DEVICE_COMMAND_PROFILES_SOURCE = "resources/device_command_profiles.json"
 DEVICE_COMPATIBILITY_PROFILES_SOURCE = "resources/device_compatibility_profiles.json"
 LOG_POLICY_SOURCE = "src/netconsole/resources/log_policy.json"
 PACKAGED_DEVICE_COMMAND_PROFILES = BUILD_ROOT / "packaged_assets" / "device_command_profiles.json"
+PACKAGED_CHANGELOG = BUILD_ROOT / "packaged_assets" / "changelog.md"
 PACKAGED_RUNTIME_ROOT = BUILD_ROOT / "packaged_assets" / "runtime"
 PACKAGED_BUILD_INFO_SOURCE = "resources/runtime/build_info.json"
 PACKAGED_FEATURE_FLAGS_SOURCE = "resources/runtime/feature_flags.json"
@@ -364,9 +370,8 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
     for module_file in build_runtime_subset_from_import_graph():
         relative = module_file.relative_to(SRC_ROOT)
         datas.append((str(module_file), relative.parent.as_posix()))
-    changelog = SRC_ROOT / "netconsole" / "docs" / "changelog.md"
-    if changelog.is_file():
-        datas.append((str(changelog), "netconsole/assets"))
+    changelog = write_packaged_changelog()
+    datas.append((str(changelog), "netconsole/assets"))
     for source, destination in ALLOWED_DATA:
         if source == DEVICE_COMMAND_PROFILES_SOURCE:
             source_path = write_packaged_device_command_profiles()
@@ -385,6 +390,21 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
                 continue
             datas.append((str(source_path), destination))
     return datas
+
+
+def write_packaged_changelog() -> Path:
+    source_path = ROOT / "docs" / "CHANGELOG.md"
+    try:
+        sections = parse_released_sections(
+            source_path.read_text(encoding="utf-8"),
+            source_name="canonical changelog",
+        )
+        rendered = render_runtime_changelog(sections)
+    except (OSError, ChangelogSyncError) as exc:
+        raise CleanBuildLockError("canonical changelog cannot be packaged safely") from exc
+    PACKAGED_CHANGELOG.parent.mkdir(parents=True, exist_ok=True)
+    PACKAGED_CHANGELOG.write_text(rendered, encoding="utf-8")
+    return PACKAGED_CHANGELOG
 
 
 def write_packaged_device_command_profiles() -> Path:
