@@ -60,3 +60,51 @@ GUI 前端构建和 Electron 宿主门禁均通过；本次未执行需要设备
 ## 状态
 
 `READY_FOR_RELEASE`
+
+## FINAL REAL ACCEPTANCE (2026-09-13)
+
+本节绑定当前主线 `cdd9eb53e3dbb398739879c18bb25c737ced34d1`，正式安装包构建标识为
+`v1.5.7+cdd9eb53`。本轮未修改产品代码；仅通过正式 NetConsole 流程完成只读设备采集、GUI 查看/刷新和正常重启，并保留证据：
+`diagnostic/h3c-hangzhou10-real-device-20260913-final/`。
+
+| 项目 | 结果 |
+| --- | --- |
+| CODE_SHA | `cdd9eb53e3dbb398739879c18bb25c737ced34d1` |
+| SITE | `hzl10 / 杭州地铁10号线` |
+| DEVICE / DEVICE_IP | `251-无线控制器-主 / 10.92.250.251` |
+| MODEL | `WX3540X` |
+| SOFTWARE_VERSION / SOFTWARE_RELEASE | `9.1.081 / R1615P01` |
+| REAL_DETECTED_MAJOR | `V9` |
+| CAPABILITY | `h3c_comware_v9_wireless_controller` |
+| SSH / VERSION_BOOTSTRAP | `PASS / PASS` |
+| AC_COLLECTION | `PASS`；最新正式运行 `20f87bc7-dde4-473c-a2d1-57012f235580` 成功 |
+| AC_COMMANDS_TOTAL / AC_COMMANDS_FAILED_UNEXPECTED | `9 / 0`（最新运行的只读 AC/FIT-AP 命令） |
+| DEVICE_DETAIL | `PASS`；12 个正式命令成功 |
+| INTERFACE_COUNT / OPTICAL_COUNT | `63 / 20` |
+| FIT_AP / FIT_AP_COUNT | `PASS / 870` |
+| LLDP_COUNT | `587` 条本次 AC 资源记录；当前 LLDP read model 为 627 行 |
+| BSSID_COUNT | `1174` 条非空 radio BSSID（587 个在线 AP、每 AP 2 个 radio） |
+| CONNECTION_RECORD_COUNT | `587` 条当前运行记录 |
+| AP_IDENTITY | `PASS`；10 条抽样无混用分隔符，见 `AP_IDENTITY_SAMPLE.json` |
+| SQLITE_ROW_COMPATIBILITY / DICT_COMPATIBILITY | `PASS / PASS` |
+| DEVICE_VENDOR / DEVICE_PLATFORM_FACTS / SOFTWARE_RELEASE_DTO | `H3C / PASS / PASS` |
+| HTTP_API | `PASS`；正式 GUI 会话和只读契约返回 2xx；无会话探测 401 为预期保护 |
+| GUI_AC_MANAGEMENT / GUI_AC_DETAIL | `PASS / PASS` |
+| GUI_FIT_AP / GUI_DEVICE_DETAIL / GUI_REFRESH | `PASS / PASS / PASS` |
+| RESTART_PERSISTENCE | `PASS`；软件重启后 backend、renderer、tray 均恢复 `hzl10` |
+| UNEXPECTED_BACKEND_ERRORS | `0`；启动早期空白 renderer/tray refresh 诊断在 backend ready 后恢复，非产品错误 |
+| V7_REGRESSION | `PASS`；现有 V7/V9 H3C 自动化包含在定向回归中 |
+| PRODUCTION_MANUAL_MUTATION / DEVICE_CONFIG_MUTATION | `NO / NO` |
+| CODE_CHANGED | `NO` |
+| REAL_DEVICE_ACCEPTANCE | `PASS` |
+| CODE_STATUS | `READY_FOR_RELEASE` |
+
+补充：Device Detail collector 成功日志报告 LLDP 12 条；重启后正式 GUI/Query Service 读取当前快照为 13 条。该差异来自当前快照与 collector 汇总口径，不产生错误或 500，已在证据中保留。Production rollback/storage registry、Task Lifecycle 及相关维护门禁仍为 `OUT_OF_SCOPE`，本功能未修改。
+
+### 本次只读命令矩阵
+
+AC/FIT-AP 最新正式运行的 9 个命令全部 `PASS`：
+
+`screen-length disable`、`display wlan ap all`、`display wlan ap all address`、`display wlan ap all radio`、`display wlan ap all radio verbose filter bbssid`、`display wlan ap all connection-record`、`display wlan ap all radio type`、`display wlan ap unauthenticated`、`display wlan ap all lldp`。
+
+Device Detail 正式运行的 12 个命令全部 `PASS`；包括版本 bootstrap、系统名称、设备信息、设备厂商信息、启动文件、接口、光模块、LLDP 列表及 LLDP 详情。全程未执行配置模式、save/write、undo、reset、reboot、shutdown、SFTP enable 或手工 SQL。
