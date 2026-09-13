@@ -9,6 +9,7 @@ DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 RUNTIME_HEADER = re.compile(
     r"^(?:##\s+)?(v\d+\.\d+\.\d+)(?:\s+-\s+(\d{4}-\d{2}-\d{2}))?\s*$"
 )
+LOCAL_LINK = re.compile(r"\[([^\]]+)\]\((?:\.\.?/)[^)]+\)")
 
 
 @dataclass(frozen=True)
@@ -89,8 +90,14 @@ def render_runtime_changelog(sections: tuple[ChangelogSection, ...]) -> str:
         title = section.version
         if section.date:
             title += f" - {section.date}"
-        chunks.append(f"{title}\n{section.body}" if section.body else title)
+        body = normalize_runtime_body(section.body)
+        chunks.append(f"{title}\n{body}" if body else title)
     return "\n\n".join(chunks) + "\n"
+
+
+def normalize_runtime_body(value: str) -> str:
+    """Remove links to project docs that are not shipped beside the asset."""
+    return LOCAL_LINK.sub(r"\1", _normalize_body(value))
 
 
 def _normalize_body(value: str) -> str:

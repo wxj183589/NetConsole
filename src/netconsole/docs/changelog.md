@@ -469,7 +469,7 @@ v1.4.6 - 2026-07-30
   “旧 AP → 无主链路”，不写 AP Identity 主数据。
 - 新增 50k READY ZIP Ping、500k active Ping、100k Syslog、36 MR/30 天 Registry、30 分钟页面轮询、
   10 分钟 Syslog 自动刷新和 100 次图表开关规模门；长期边界已并入
-  [地面无人值守](./rail-transit/ground-unattended/README.md)。
+  地面无人值守。
 
 ### MR/MESH 分析性能
 
@@ -493,7 +493,7 @@ v1.4.6 - 2026-07-30
 - 全部可见 Vue 路由完成导入、导出、模板、报告、Artifact 和受管下载审计。设备、AC、轨道交通、配置、网络工具、命令说明与日志的任务型导出统一为“先选择最终路径、再创建任务”，取消不提交，任务完成后不再突然弹出第二个保存窗口。
 - 新增固定导出动作注册表和共享用户目标协调器，使用 Renderer 当前会话绑定任务与 Main 授权路径；Artifact 落盘继续校验大小和 SHA-256，保存失败保留 Artifact，可在任务中心重新选择位置且不重新生成。历史 Artifact 保持用户点击后另存。
 - 导入入口统一保证用户触发、取消不预检、处理后清空 file input；OmniPeek 和局点包保留既有专用选择流程，远程 SFTP 批量下载保留受管文件区语义。Browser 开发模式只报告下载已启动，正式 Electron Bridge 缺失不回退浏览器下载。
-- 新增静态入口审计与共享协调器行为测试，禁止生产 Vue/TS 新增未登记任务导出、Renderer 下载旁路、测试输出目录或用户 Downloads 默认路径。永久规则见 [用户文件交互契约](./export/USER_FILE_INTERACTION.md)。
+- 新增静态入口审计与共享协调器行为测试，禁止生产 Vue/TS 新增未登记任务导出、Renderer 下载旁路、测试输出目录或用户 Downloads 默认路径。永久规则见 用户文件交互契约。
 
 ### 设备当前工作状态
 
@@ -946,7 +946,7 @@ v1.3.9 - 2026-07-18
 - E10B 建立九个公开架构门和统一入口，覆盖分层、禁用依赖、Direct SQL、设备命令、UI 业务逻辑、移除功能、运行路径、孤儿模块与迁移映射。Direct SQL 已对 61 个文件精确分类且 `VIOLATION=0`；限时例外已由 42 条收敛为 38 条（Python 分层 14、孤儿候选 24、状态色 0），`check_ui_business_logic.py` 当前为 0 finding / 0 waived；目录门建立时 139 个维护目录 README 0 缺失。命令目录已登记 `device.inventory.collect` 和 `device.sftp.enable` 两个稳定 Operation；SFTP 自动启用已进入统一任务链，但 E11 命令平台、E12 API v1 以及 Electron/真实设备验收均不因本项提前完成。
 - Electron main/preload 保持 sandbox、白名单 IPC、动态回环 FastAPI、会话令牌、下载退出屏障和受管 Python 生命周期；开发资源、生产资源和无效 Python 失败冒烟均通过且退出无 5173、Electron、Vite 或受管 Python 残留。
 - Browser 模式只保留源码开发、联调和诊断；Electron 是唯一正式桌面产品。Qt 源码、运行时、入口、测试环境和发布链已经删除，历史行为仅通过 Git 与冻结迁移矩阵追溯，不得恢复为回退入口。
-- 清理并归档阶段性 Codex 任务、worktree 和本地分支；CentOS 7、Windows Legacy 兼容包及旧 Qt 临时终版明确放弃，不进入 `main`。完整归档见 [Electron 对等迁移第二波归档](./archive/migrations/qt-to-electron/README.md)。
+- 清理并归档阶段性 Codex 任务、worktree 和本地分支；CentOS 7、Windows Legacy 兼容包及旧 Qt 临时终版明确放弃，不进入 `main`。完整归档见 Electron 对等迁移第二波归档。
 
 ### 数据库
 
