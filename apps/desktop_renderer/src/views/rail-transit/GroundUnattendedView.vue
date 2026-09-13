@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Box, CopyDocument, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
@@ -24,6 +24,7 @@ import { useAdaptiveTableHeight } from '../../composables/useAdaptiveTableHeight
 import { t } from '../../i18n/runtime'
 import { downloadBackendResource } from '../../platform/runtime'
 import { useWorkspaceStore } from '../../stores/workspace'
+import { LEGACY_SITE_CONTEXT_CHANGED_EVENT, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundDeepCollectionRecord, GroundDeepCollector, GroundPingSeries, GroundPingTarget, GroundProfile, GroundStatus,
   GroundHealth, GroundOperation, GroundPingSample, GroundQueryDiagnostics, GroundRun, GroundSyslogRecord,
@@ -130,6 +131,7 @@ const timelinePageSize = ref(100)
 const timelineTotal = ref(0)
 let pollTimer: number | undefined
 let disposed = false
+let siteContextReloadPending = false
 const requestControllers = new Map<string, AbortController>()
 const requestFingerprints = new Map<string, string>()
 const requestPromises = new Map<string, Promise<boolean>>()
@@ -1427,11 +1429,15 @@ function abortRequests(): void {
   requestControllers.forEach((controller) => controller.abort())
   requestControllers.clear()
   requestFingerprints.clear()
+  requestPromises.clear()
+  requestSequences.forEach((sequence, key) => requestSequences.set(key, sequence + 1))
+  requestFailureCounts.clear()
   requestNotifySequences.clear()
 }
 function handleVisibilityChange(): void {
   if (document.hidden) abortRequests()
   else {
+    siteContextReloadPending = false
     lastPollAt.clear()
     void loadAll(true)
     if (
@@ -1440,6 +1446,70 @@ function handleVisibilityChange(): void {
       && pingInitialLoadSucceeded.value
     ) void loadPingIncremental()
     if (deepWindowOpen.value && selectedDeepCollector.value && !deepPaused.value) void loadDeepRecords(false)
+  }
+}
+function resetPageStateForSiteContext(): void {
+  abortRequests()
+  lastPollAt.clear()
+  dismissedTerminalOperationIds.clear()
+  if (completedOperationTimer !== undefined) window.clearTimeout(completedOperationTimer)
+  completedOperationTimer = undefined
+  status.value = null
+  profile.value = null
+  pingPresets.value = []
+  trains.value = []
+  pingTargets.value = []
+  deepCollections.value = []
+  selectedDeepCollector.value = null
+  deepRecords.value = []
+  deepCursor.value = ''
+  timeline.value = []
+  timelineTotal.value = 0
+  archives.value = []
+  health.value = null
+  activeOperation.value = null
+  latestTerminalOperation.value = null
+  runs.value = []
+  selectedRunId.value = ''
+  pingSeries.value = null
+  selectedPingTarget.value = null
+  pingWindowOpen.value = false
+  pingInitialLoadSucceeded.value = false
+  pingBackendState.value = 'UNKNOWN'
+  pingRequestId.value = ''
+  pingErrorCode.value = ''
+  pingLastAttemptAt.value = ''
+  pingCursor.value = ''
+  pingSeenSamples.clear()
+  syslogRecords.value = []
+  syslogTotal.value = 0
+  syslogDiagnostics.value = null
+  syslogBackendState.value = 'UNKNOWN'
+  syslogRequestId.value = ''
+  syslogFailureCount.value = 0
+  syslogErrorCode.value = ''
+  selectedSyslogRecord.value = null
+  selectedSyslogRecords.value = []
+  syslogTransport.value = null
+  localIpv4Addresses.value = []
+  sourceRecommendation.value = null
+  udpPortCheck.value = null
+  selectedArchive.value = null
+  selectedTrain.value = null
+  deepWindowOpen.value = false
+  deepPaused.value = false
+  pingPaused.value = false
+  syslogDetailDrawer.value = false
+  syslogDeletePreview.value = null
+  loadIssues.value = []
+}
+function handleSiteContextChanged(): void {
+  if (disposed) return
+  siteContextReloadPending = true
+  resetPageStateForSiteContext()
+  if (!document.hidden) {
+    siteContextReloadPending = false
+    void loadAll(true)
   }
 }
 function useFullPingRange(): void {
@@ -1617,10 +1687,18 @@ function restoreDeepPingDefault(): void {
 
 onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibilityChange)
+  window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+  window.addEventListener(LEGACY_SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   void loadAll()
   void loadLocalAddresses()
   void loadPingPresets()
   schedulePoll()
+})
+onActivated(() => {
+  if (disposed || document.hidden || !siteContextReloadPending) return
+  siteContextReloadPending = false
+  lastPollAt.clear()
+  void loadAll(true)
 })
 watch(activeTab, () => {
   requestControllers.forEach((controller, key) => {
@@ -1650,6 +1728,8 @@ onDeactivated(() => {
 onBeforeUnmount(() => {
   disposed = true
   document.removeEventListener('visibilitychange', handleVisibilityChange)
+  window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
+  window.removeEventListener(LEGACY_SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   abortRequests()
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
   if (completedOperationTimer !== undefined) window.clearTimeout(completedOperationTimer)

@@ -124,6 +124,33 @@ def test_runtime_rebind_closes_old_jump_manager_before_starting_new_site(
     assert started == [("line-2", "RUNNING")]
 
 
+def test_ground_runtime_rebinds_across_site_switch_and_restart(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        site_service = client.app.state.site_application_service
+        site_service.create_site("line-10", "十号线")
+        site_service.create_site("line-12", "十二号线")
+
+        for site_id in ("line-10", "line-12", "line-10"):
+            activated = client.post(
+                f"/api/v1/sites/{site_id}/activate",
+                json={"confirmed": True},
+            )
+            assert activated.status_code == 200, activated.text
+            assert client.get("/api/v1/sites/active").json()["site_id"] == site_id
+            status = client.get("/api/rail-transit/ground-unattended/status")
+            assert status.status_code == 200, status.text
+            assert status.json()["site_id"] == site_id
+            assert client.app.state.ground_unattended_application_service.site_id == site_id
+            assert client.app.state.ground_unattended_repository.site_id == site_id
+
+    with _client(tmp_path) as restarted:
+        assert restarted.get("/api/v1/sites/active").json()["site_id"] == "line-10"
+        status = restarted.get("/api/rail-transit/ground-unattended/status")
+        assert status.status_code == 200, status.text
+        assert status.json()["site_id"] == "line-10"
+        assert restarted.app.state.ground_unattended_supervisor.site_id == "line-10"
+
+
 def test_site_export_freezes_requested_stable_context_before_worker_start(
     tmp_path: Path,
 ) -> None:

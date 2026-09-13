@@ -546,7 +546,57 @@ def create_app(
             agent_profile_controller=agent_service,
         )
 
+    ground_unattended_repository: GroundUnattendedRepository | None = None
     ground_unattended_supervisor: GroundUnattendedSupervisor | None = None
+
+    def build_ground_runtime(
+        target_site_name: str,
+    ) -> tuple[
+        GroundUnattendedRepository,
+        GroundUnattendedSupervisor,
+        GroundUnattendedApplicationService,
+    ]:
+        """为一个明确局点构造完整的 Ground 运行时组合根。"""
+
+        repository = GroundUnattendedRepository(
+            paths.ground_unattended_db_path(target_site_name),
+            site_id=target_site_name,
+        )
+        ap_identity_query = ApIdentityQueryService(
+            Database(paths.site_db_path(target_site_name))
+        )
+        supervisor: GroundUnattendedSupervisor | None = None
+        try:
+            supervisor = GroundUnattendedSupervisor(
+                paths,
+                site_id=target_site_name,
+                repository=repository,
+                base_query=app.state.rail_transit_base_data_query_service,
+                mesh_query=app.state.ac_mesh_link_query_service,
+                vehicle_query=app.state.vehicle_mr_online_query_service,
+                ac_refresh_service=ac_mesh_link_refresh_service,
+                ac_resident_service=ac_mesh_link_resident_service,
+                online_mr_application_service=online_mr_application_service,
+                online_mr_query_service=online_mr_query_service,
+                network_service=app.state.system_network_application_service,
+                ap_identity_query_service=ap_identity_query,
+            )
+            application_service = GroundUnattendedApplicationService(
+                paths,
+                site_id=target_site_name,
+                repository=repository,
+                supervisor=supervisor,
+                base_query=app.state.rail_transit_base_data_query_service,
+                desktop_action_service=desktop_action_service,
+                network_service=app.state.system_network_application_service,
+                process_adapter=web_process_adapter,
+                ap_identity_query_service=ap_identity_query,
+            )
+            return repository, supervisor, application_service
+        except Exception:
+            if supervisor is not None:
+                supervisor.close()
+            raise
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -1046,42 +1096,13 @@ def create_app(
     app.state.ground_unattended_startup_error = ""
     if ground_unattended_feature_enabled:
         try:
-            ground_unattended_repository = GroundUnattendedRepository(
-                paths.ground_unattended_db_path(site_name),
-                site_id=site_name,
-            )
-            ground_ap_identity_query = ApIdentityQueryService(
-                Database(paths.site_db_path(site_name))
-            )
-            ground_unattended_supervisor = GroundUnattendedSupervisor(
-                paths,
-                site_id=site_name,
-                repository=ground_unattended_repository,
-                base_query=app.state.rail_transit_base_data_query_service,
-                mesh_query=app.state.ac_mesh_link_query_service,
-                vehicle_query=app.state.vehicle_mr_online_query_service,
-                ac_refresh_service=ac_mesh_link_refresh_service,
-                ac_resident_service=ac_mesh_link_resident_service,
-                online_mr_application_service=online_mr_application_service,
-                online_mr_query_service=online_mr_query_service,
-                network_service=app.state.system_network_application_service,
-                ap_identity_query_service=ground_ap_identity_query,
-            )
+            (
+                ground_unattended_repository,
+                ground_unattended_supervisor,
+                app.state.ground_unattended_application_service,
+            ) = build_ground_runtime(site_name)
             app.state.ground_unattended_repository = ground_unattended_repository
             app.state.ground_unattended_supervisor = ground_unattended_supervisor
-            app.state.ground_unattended_application_service = (
-                GroundUnattendedApplicationService(
-                    paths,
-                    site_id=site_name,
-                    repository=ground_unattended_repository,
-                    supervisor=ground_unattended_supervisor,
-                    base_query=app.state.rail_transit_base_data_query_service,
-                    desktop_action_service=desktop_action_service,
-                    network_service=app.state.system_network_application_service,
-                    process_adapter=web_process_adapter,
-                    ap_identity_query_service=ground_ap_identity_query,
-                )
-            )
         except Exception as exc:
             app.state.ground_unattended_startup_error = exc.__class__.__name__
             app.state.unattended_status = "failed"
@@ -1107,7 +1128,15 @@ def create_app(
     def rebind_runtime_site(target_site_name: str) -> None:
         """在 Backend 进程内切换所有持有 Site-scoped 状态的服务。"""
 
+        nonlocal ground_unattended_repository, ground_unattended_supervisor, site_name
+
         target = str(target_site_name or "demo")
+        old_ground_supervisor = ground_unattended_supervisor
+        old_ground_started = bool(
+            getattr(app.state, "unattended_ready", False)
+            or (old_ground_supervisor is not None and old_ground_supervisor.running)
+        )
+        old_unattended_status = str(getattr(app.state, "unattended_status", "starting"))
         rebind = getattr(task_service, "rebind_site", None)
         if callable(rebind):
             rebind(target)
@@ -1138,6 +1167,30 @@ def create_app(
             "config_exports:",
             {f"config_exports:{target}": paths.config_center_outputs_dir(target)},
         )
+        if ground_unattended_feature_enabled:
+            (
+                target_ground_repository,
+                target_ground_supervisor,
+                target_ground_application_service,
+            ) = build_ground_runtime(target)
+            try:
+                if old_ground_started:
+                    target_ground_supervisor.start()
+                if old_ground_supervisor is not None:
+                    old_ground_supervisor.close()
+            except Exception:
+                target_ground_supervisor.close()
+                raise
+            ground_unattended_repository = target_ground_repository
+            ground_unattended_supervisor = target_ground_supervisor
+            app.state.ground_unattended_repository = target_ground_repository
+            app.state.ground_unattended_supervisor = target_ground_supervisor
+            app.state.ground_unattended_application_service = target_ground_application_service
+            app.state.ground_unattended_startup_error = ""
+            app.state.unattended_error = ""
+            app.state.unattended_ready = old_ground_started
+            app.state.unattended_status = "ready" if old_ground_started else old_unattended_status
+        site_name = target
         app_logger.log_info("SITE_RUNTIME_REBOUND", f"site_name={target}")
         try:
             close_site_jump_sessions(paths=paths)

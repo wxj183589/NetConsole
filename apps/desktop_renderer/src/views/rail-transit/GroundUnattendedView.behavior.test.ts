@@ -111,6 +111,7 @@ vi.mock('../../components/workspace/NcFloatingWindow.vue', async () => {
 
 import GroundUnattendedView from './GroundUnattendedView.vue'
 import { ApiRequestError } from '../../api/client'
+import { SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 
 const passthrough = defineComponent({
   inheritAttrs: false,
@@ -420,6 +421,35 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
+  it('clears cached site data and reloads after the current site changes', async () => {
+    api.getGroundStatus
+      .mockResolvedValueOnce({ ...status(), site_id: 'line-10' })
+      .mockResolvedValue({ ...status(), site_id: 'line-12' })
+    api.getGroundProfile
+      .mockResolvedValueOnce({ ...profile(), site_id: 'line-10' })
+      .mockResolvedValue({ ...profile(), site_id: 'line-12' })
+
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      status: { site_id: string } | null
+      profile: { site_id: string } | null
+    }
+    expect(view.status?.site_id).toBe('line-10')
+    expect(view.profile?.site_id).toBe('line-10')
+
+    window.dispatchEvent(new CustomEvent(SITE_CONTEXT_CHANGED_EVENT, {
+      detail: { siteId: 'line-12', displayName: '十二号线' },
+    }))
+    await flushPromises()
+
+    expect(view.status?.site_id).toBe('line-12')
+    expect(view.profile?.site_id).toBe('line-12')
+    expect(api.getGroundStatus).toHaveBeenCalledTimes(2)
+    expect(api.getGroundProfile).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
   it('preflights and opens CT and historical CW sessions through the workspace', async () => {
     api.getOnlineMrSession
       .mockResolvedValueOnce({ session_id: 'session-ct', status: 'RUNNING' })

@@ -215,6 +215,42 @@ CREATE TABLE IF NOT EXISTS task_retention_tombstones (
 );
 """
 
+TASK_RESULTS_IMMUTABLE_TRIGGER_SQL = """
+CREATE TRIGGER IF NOT EXISTS trg_task_results_immutable
+BEFORE UPDATE ON task_results
+WHEN NOT (
+    OLD.result_id = NEW.result_id
+    AND OLD.task_id = NEW.task_id
+    AND OLD.terminal_event_type = NEW.terminal_event_type
+    AND OLD.canonical_json = NEW.canonical_json
+    AND OLD.sha256 = NEW.sha256
+    AND OLD.byte_size = NEW.byte_size
+    AND OLD.schema_version = NEW.schema_version
+    AND OLD.created_time = NEW.created_time
+    AND (
+        (OLD.content_sha256 = NEW.content_sha256
+         AND OLD.blob_codec = NEW.blob_codec
+         AND OLD.blob_ready = NEW.blob_ready)
+        OR (OLD.blob_ready = 0
+            AND NEW.blob_ready = 1
+            AND NEW.content_sha256 = OLD.sha256
+            AND NEW.blob_codec = 'zlib')
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'task_results rows are immutable');
+END;
+"""
+
+
+def _normalized_sql(value: object) -> str:
+    normalized = " ".join(str(value or "").split()).casefold()
+    normalized = normalized.replace(
+        "create trigger if not exists ", "create trigger ", 1
+    )
+    return normalized.rstrip(";")
+
+
 PROGRESS_EVENT_HEARTBEAT_SECONDS = 30
 TASK_RESULT_SCHEMA_VERSION = 1
 TERMINAL_RESULT_EVENT_TYPES = frozenset({"finished", "error", "cancelled"})
@@ -2162,38 +2198,17 @@ class TaskRepository:
                 conn.execute(
                     f"ALTER TABLE task_results ADD COLUMN {column} {definition}"
                 )
-        # Older databases already have the unconditional immutable trigger.
-        # Recreate it so the migration may fill blob metadata exactly once while
-        # keeping the canonical authority row immutable thereafter.
-        conn.execute("DROP TRIGGER IF EXISTS trg_task_results_immutable")
-        conn.execute(
-            """
-            CREATE TRIGGER trg_task_results_immutable
-            BEFORE UPDATE ON task_results
-            WHEN NOT (
-                OLD.result_id = NEW.result_id
-                AND OLD.task_id = NEW.task_id
-                AND OLD.terminal_event_type = NEW.terminal_event_type
-                AND OLD.canonical_json = NEW.canonical_json
-                AND OLD.sha256 = NEW.sha256
-                AND OLD.byte_size = NEW.byte_size
-                AND OLD.schema_version = NEW.schema_version
-                AND OLD.created_time = NEW.created_time
-                AND (
-                    (OLD.content_sha256 = NEW.content_sha256
-                     AND OLD.blob_codec = NEW.blob_codec
-                     AND OLD.blob_ready = NEW.blob_ready)
-                    OR (OLD.blob_ready = 0
-                        AND NEW.blob_ready = 1
-                        AND NEW.content_sha256 = OLD.sha256
-                        AND NEW.blob_codec = 'zlib')
-                )
-            )
-            BEGIN
-                SELECT RAISE(ABORT, 'task_results rows are immutable');
-            END;
-            """
-        )
+        trigger = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='trigger' AND name='trg_task_results_immutable'"
+        ).fetchone()
+        if (
+            trigger is None
+            or _normalized_sql(trigger[0])
+            != _normalized_sql(TASK_RESULTS_IMMUTABLE_TRIGGER_SQL)
+        ):
+            conn.execute("DROP TRIGGER IF EXISTS trg_task_results_immutable")
+            conn.execute(TASK_RESULTS_IMMUTABLE_TRIGGER_SQL)
         columns = {
             "resource_keys_json": "TEXT NOT NULL DEFAULT '[]'",
             "result_id": "TEXT NOT NULL DEFAULT ''",
@@ -2224,11 +2239,12 @@ class TaskRepository:
             "ON task_snapshots(dismissed_at, updated_time DESC)"
         )
         conn.execute(
-            "INSERT INTO task_schema_meta(key, value) VALUES ('schema_version', '5') "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            "UPDATE task_schema_meta SET value = '5' "
+            "WHERE key = 'schema_version' AND value <> '5'"
         )
         conn.execute(
-            "UPDATE task_result_storage_rollout SET schema_version = 5 WHERE singleton_id = 1"
+            "UPDATE task_result_storage_rollout SET schema_version = 5 "
+            "WHERE singleton_id = 1 AND schema_version <> 5"
         )
 
     @classmethod

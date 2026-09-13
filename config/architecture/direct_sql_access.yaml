@@ -166,5 +166,6 @@
   {"path":"scripts/maintenance/tasks_db_compaction.py","classification":"MIGRATION_TOOL","owner":"job-center","reason":"DEV-only candidate-first tasks.db compaction uses isolated copies, parity checks and atomic replacement; it never opens production data."},
   {"path":"tests/test_tasks_db_compaction.py","classification":"TEST_ONLY","owner":"test","reason":"tasks.db compaction tests construct isolated SQLite fixtures only."},
   {"path":"src/netconsole/services/site_ssh_relay.py","classification":"REPOSITORY_REQUIRED","owner":"system-settings","reason":"Site SSH Relay repository stores only DPAPI ciphertext in a site-scoped credential database."},
-  {"path":"tests/test_site_ssh_relay.py","classification":"TEST_ONLY","owner":"test","reason":"SSH Relay tests use isolated temporary site databases and mocked DPAPI functions."}
+  {"path":"tests/test_site_ssh_relay.py","classification":"TEST_ONLY","owner":"test","reason":"SSH Relay tests use isolated temporary site databases and mocked DPAPI functions."},
+  {"path":"tests/test_task_repository_initialization.py","classification":"TEST_ONLY","owner":"test","reason":"TaskRepository initialization idempotency tests use isolated temporary tasks.db fixtures."}
 ]
