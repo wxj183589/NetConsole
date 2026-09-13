@@ -9,6 +9,7 @@ from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
+from netconsole.models.device_detail import identify_device_platform
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
@@ -127,14 +128,29 @@ def test_simulated_h3c_r1612p01_ac_refresh_uses_legacy_retry_and_persists(
     assert result.result["failed_components"] == []
     assert result.result["data_persisted"] is True
     assert "AC 信息已持久化" in progress
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert "disabled_algorithms" not in calls[0]
     assert calls[1]["disabled_algorithms"] == {
         "keys": ["rsa-sha2-512", "rsa-sha2-256"]
     }
-    command_profile = H3cAcCommandProfile(device)
+    version = "H3C Comware Software, Version 9.1.081, Release 1612P01"
+    command_profile = H3cAcCommandProfile(
+        device,
+        platform_facts=identify_device_platform(
+            vendor="H3C",
+            device_type="AC",
+            software_version=version,
+        ),
+    )
     assert command_profile.version == "V9"
-    assert commands == list(command_profile.ac_info_commands)
+    assert commands == [
+        "display version",
+        *(
+            command
+            for command in command_profile.ac_info_commands
+            if command != "display version"
+        ),
+    ]
 
     connection_events = [
         detail for event, detail in events if event == "ssh_connection_attempt"

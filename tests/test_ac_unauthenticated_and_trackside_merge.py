@@ -68,6 +68,8 @@ class FakeAcConnection:
             if isinstance(value, Exception):
                 raise value
             return value
+        if command == "display version":
+            return "H3C Comware Software, Version 7.1.070, Release 6607P20"
         return {
             "screen-length disable": "",
             "display wlan ap all": "AP name APID State Model Serial ID Group name Online time Clients Mode IP address\nAP-A 1 R/M WA6624X SN-A G 1:00 0 Fit 10.0.0.1\n",

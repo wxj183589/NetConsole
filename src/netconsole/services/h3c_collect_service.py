@@ -53,6 +53,7 @@ from netconsole.services.device_command_profile_service import (
     resolve_device_inventory_profile,
     resolve_step_command_candidates,
 )
+from netconsole.services.h3c_capability_bootstrap import probe_h3c_comware_version
 from netconsole.services.interface_discovery_routing import (
     CAPABILITY_PRIMARY_ROUTE,
     INTERFACE_DISCOVERY_CAPABILITY,
@@ -162,7 +163,36 @@ def collect_h3c_device_details(
     command_results: list[CommandResult] = []
     connection = None
     try:
-        profile = resolve_device_inventory_profile(device, paths=paths)
+        live_platform_facts = interface_discovery_platform_facts
+        version_probe_output = ""
+        if device.vendor_key == "h3c" and choose_connection_target(device) is not None:
+            version_probe = probe_h3c_comware_version(
+                device,
+                paths=paths,
+                site_id=site_name,
+                collector="device_detail",
+                context="device_collect",
+            )
+            live_platform_facts = version_probe.facts
+            version_probe_output = version_probe.output
+            command_results.append(
+                CommandResult(
+                    command="display version",
+                    success=True,
+                    selector="inventory.version",
+                    output=version_probe_output,
+                    raw_output=version_probe_output,
+                    started_at=_now(),
+                    ended_at=_now(),
+                    page_count=1,
+                    output_size=len(version_probe_output.encode("utf-8", errors="replace")),
+                )
+            )
+        profile = resolve_device_inventory_profile(
+            device,
+            platform_facts=live_platform_facts,
+            paths=paths,
+        )
         command_guard.validate_operation_commands(
             profile.commands,
             context="device_collect",
@@ -177,7 +207,7 @@ def collect_h3c_device_details(
                     device_uuid=device.device_uuid,
                     operation_id=profile.operation_id,
                     capability=INTERFACE_DISCOVERY_CAPABILITY,
-                    platform_facts=interface_discovery_platform_facts,
+                    platform_facts=live_platform_facts,
                     profile=profile,
                     policy=InterfaceDiscoveryRolloutPolicy(
                         frozenset({str(device.device_uuid or "")}),
@@ -253,7 +283,7 @@ def collect_h3c_device_details(
             ),
         ),
     )
-    platform_facts = interface_discovery_platform_facts or identify_device_platform(
+    platform_facts = live_platform_facts or identify_device_platform(
         vendor=device.device_vendor,
         device_type=device.device_type,
     )
@@ -335,6 +365,11 @@ def collect_h3c_device_details(
             )
             command_results.append(screen_result)
             collect_steps = profile.steps[1:]
+        if version_probe_output:
+            outputs["inventory.version"] = version_probe_output
+            collect_steps = tuple(
+                step for step in collect_steps if step.selector != "inventory.version"
+            )
         total_commands = len(collect_steps)
         for index, step in enumerate(collect_steps, start=1):
             command = step.command

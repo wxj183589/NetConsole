@@ -173,7 +173,11 @@ def test_collect_service_skips_raw_log_by_default_and_writes_repository_data(mon
     assert result.interfaces_updated == 2
     assert result.optical_modules_updated == 1
     assert result.lldp_neighbors_updated == 1
-    assert connection.commands == ["screen-length disable", *COLLECT_COMMANDS]
+    assert connection.commands == [
+        "display version",
+        "screen-length disable",
+        *(command for command in COLLECT_COMMANDS if command != "display version"),
+    ]
     assert connection.disconnected is True
     assert result.raw_log_path == ""
     assert not (tmp_path / "data" / "sites" / "demo" / "raw" / "collect" / result.collect_run_uuid).exists()
@@ -194,6 +198,42 @@ def test_collect_service_skips_raw_log_by_default_and_writes_repository_data(mon
     assert len(repository.list_interface_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 0
     assert len(repository.list_optical_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 0
     assert len(repository.list_lldp_history("11111111-1111-4111-8111-111111111111", "GigabitEthernet1/0/1")) == 0
+
+
+def test_collect_service_live_v9_probe_overrides_stale_v7_fact(monkeypatch, tmp_path):
+    connection = FakeConnection()
+    monkeypatch.setitem(
+        OUTPUTS,
+        "display version",
+        (PROJECT_ROOT / "tests" / "fixtures" / "device_cli" / "h3c_comware9" / "display_version.txt").read_text(encoding="utf-8"),
+    )
+    monkeypatch.setattr(
+        h3c_collect_service.netmiko_connection,
+        "ConnectHandler",
+        lambda **_kwargs: connection,
+    )
+    repository = make_repository(tmp_path)
+    repository.upsert_device_fact(
+        {
+            "device_uuid": "11111111-1111-4111-8111-111111111111",
+            "software_version": "H3C Comware Software, Version 7.1.070, Release R7756P20",
+            "vendor": "H3C",
+            "collected_at": "2026-09-12T00:00:00",
+        }
+    )
+
+    result = collect_h3c_device_details(
+        make_device(),
+        "demo",
+        repository=repository,
+        paths=make_paths(tmp_path),
+    )
+
+    assert result.success is True
+    assert result.command_results[0].selector == "inventory.version"
+    assert result.command_results[0].command == "display version"
+    fact = repository.get_device_fact("11111111-1111-4111-8111-111111111111")
+    assert fact["software_version"] == "Version 9.1.081 Release 1608P01"
 
 
 def test_zte_collect_uses_fixture_verified_commands_and_persists_dom(
@@ -877,7 +917,7 @@ def test_collect_service_reports_connection_command_parse_and_write_progress(mon
     assert (10, "batch_collect.stage.login_success", "", "") in progress
     assert (15, "batch_collect.stage.init_terminal", "screen-length disable", "") in progress
     command_updates = [item for item in progress if item[1].startswith("batch_collect.stage.collecting_command")]
-    assert len(command_updates) == len(COLLECT_COMMANDS)
+    assert len(command_updates) == len(COLLECT_COMMANDS) - 1
     assert command_updates[-1][0] == 80
     assert command_updates[-1][2] == COLLECT_COMMANDS[-1]
     assert any(item[1] == "batch_collect.stage.parsing" and item[0] == 85 for item in progress)

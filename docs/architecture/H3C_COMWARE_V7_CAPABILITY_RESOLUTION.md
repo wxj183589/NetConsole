@@ -1,10 +1,10 @@
-# H3C Comware V7 能力解析设计
+# H3C Comware V7/V9 能力解析设计
 
 ## 目标
 
 NetConsole 面向现场运维人员。只要不存在真实的配置、认证或跨厂商误操作风险，设备识别、能力选择和任务恢复应优先自动兼容；未登记 Patch/Release 不应成为低风险只读能力的硬门槛。
 
-本设计只覆盖 H3C Comware V7 的能力解析和现有 AC/SFTP 接入，不创建第二套无线业务模型，也不改变 FIT-AP、Radio、Mesh-Link、MR 的领域数据结构。
+本设计覆盖 H3C Comware V7/V9 的能力解析和现有 AC/SFTP 接入，不创建第二套无线业务模型，也不改变 FIT-AP、Radio、Mesh-Link、MR 的领域数据结构。
 
 ## 解析层次
 
@@ -19,8 +19,8 @@ vendor
 
 当前实现集中在 `src/netconsole/services/device_command_profile_service.py`，设备角色归一化集中在 `src/netconsole/models/device_detail.py`：
 
-- H3C + Comware + V7 进入 `h3c_comware_v7`；
-- H3C 无线控制器能力进入 `h3c_comware_v7_wireless_controller`；
+- H3C + Comware + V7/V9 分别进入 `h3c_comware_v7` / `h3c_comware_v9`；
+- H3C 无线控制器能力分别进入 `h3c_comware_v7_wireless_controller` / `h3c_comware_v9_wireless_controller`；
 - 在 H3C/Comware 上下文中，`AC`、`wireless_ac`、`wlan_controller`、`controller` 和 `wireless_controller` 统一为 `wireless_controller`；
 - 没有 H3C/Comware 身份时，`controller` 等歧义别名保持 `unknown`，不会被误判成无线控制器；显式规范值 `wireless_controller` 保持兼容。
 - `R1608P01`、`R2619P08`、`R9999P99` 等 Release 保存为诊断元数据，不是默认 allow-list；
@@ -52,7 +52,8 @@ Profile 选择优先级是：
 
 ## SFTP 安全边界
 
-`device.sftp.enable` 仍是 `controlled_write`，但 H3C Comware V7 的 `V7` selector 表示 major family，而不是完整 Release 白名单。执行前必须确认：
+`device.sftp.enable` 仍是 `controlled_write`，当前受控 selector 仍是 H3C Comware V7；AC/FIT-AP
+V9 只读能力不自动扩大写操作范围。执行前必须确认：
 
 - vendor 是 H3C；
 - platform/os family 是 Comware；
@@ -68,4 +69,4 @@ Huawei、ZTE、未知厂商、未知平台、未知 major 和认证/网络失败
 
 ## 验证状态
 
-自动化测试覆盖 V7 已知/未知 Release、role alias、override 优先级、SFTP family 安全边界和 optional WLAN warning。没有连接真实 AC；现场验证仍标记为 `REAL_DEVICE_PENDING`。
+自动化测试覆盖 V7/V9 已知 Release、role alias、现场版本 bootstrap、override 优先级、SFTP family 安全边界和 optional WLAN warning。V9 真实 AC 验收须在当前代码门禁通过后单独执行；未执行时仍标记为 `REAL_DEVICE_PENDING`。
