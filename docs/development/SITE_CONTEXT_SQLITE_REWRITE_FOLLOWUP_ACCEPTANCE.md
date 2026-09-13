@@ -62,7 +62,7 @@ SQLITE_REWRITE_CLASSIFICATION=PRODUCT_CODE_UNCONDITIONAL_TRIGGER_RECREATE_VIA_NO
 
 LOGICAL_DATA_CHANGED=NO
 
-Production 前后保持：`page_count=39088`、`freelist_count=29983`、`schema_version=84`、`data_version=2`、`quick_check=ok`、`foreign_key_check=[]`；主要任务表计数也保持：`task_snapshots=4232`、`task_events=16573`、`task_results=3858`、`task_result_blobs=2833`、`task_retention_tombstones=0`。
+目标 Production `tasks.db` 前后保持：`page_count=39088`、`freelist_count=29983`、`schema_version=84`、`data_version=2`、`quick_check=ok`、`foreign_key_check=[]`；主要任务表计数也保持：`task_snapshots=4232`、`task_events=16573`、`task_results=3858`、`task_result_blobs=2833`、`task_retention_tombstones=0`。
 
 ## 验证结果
 
@@ -94,7 +94,7 @@ VACUUM_EXECUTED=NO
 
 没有执行 Production Retention cleanup、DELETE、GC、VACUUM、VACUUM INTO、compact、candidate replace、backup restore、HistoryStore 改造或真实设备采集。
 
-本次变更不改变 Task Event Retention eligibility、Operational Cleanup、任务模型、Task Center、Production gate 或 Production maintenance 流程。Production `tasks.db` 仅用于启动/切换 GUI smoke 前后只读核对；未发生逻辑业务数据变化。
+本次变更不改变 Task Event Retention eligibility、Operational Cleanup、任务模型、Task Center、Production gate 或 Production maintenance 流程。GUI smoke 按正常切换路径临时更新当前局点指针并恢复到宁波10号线；目标 Production `tasks.db` 仅作前后核对，未发生逻辑业务数据变化。
 
 ## 风险
 
