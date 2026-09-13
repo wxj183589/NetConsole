@@ -1,3 +1,10 @@
+v1.5.7 - 2026-09-13
+- Task Lifecycle 最终收口：Task Center 当前/近期任务、`site_import` task authority、Task Detail、终态轮询、Operational Cleanup、Tombstone 和 Cleanup DTO contract 已统一。
+- Task Event Retention 默认保留 7 天，支持 3/7/14/30 天，仅清理终态任务 `task_events`；活动任务、Online MR、Ground、summary、result、Artifact、Log Center 和业务数据保持保护。
+- Ground 局点上下文已统一到 Global Current Site；宁波10号线与宁波12号线双向切换及 reload/restart 验证通过。
+- SQLite compatibility trigger 检查改为幂等语义比较，避免普通启动重复写入 WAL DDL 和无意义物理重写。
+- 最终验证：Python 4868 passed、2 skipped；Renderer 1301 passed；Electron 298 passed；Architecture 12/12 PASS；`NEW_FAILURES=0`。
+
 v1.5.6 - 2026-09-13
 - Task Lifecycle 最终收口：Task Center 当前/近期任务、site_import 局点切换后的 task authority、终态轮询、Task Detail、列表移除、Operational Cleanup、Tombstone 和 Cleanup DTO contract 已统一；普通任务流程不依赖 Production maintenance、rollback owner 或 Production gate。
 - Task Event Retention 已完成真实数据验证：默认 7 天，支持 3/7/14/30 天，仅清理终态任务运行事件；活动任务、Online MR、Ground、Task summary、Result、Artifact、Log Center 和业务数据保持保护。

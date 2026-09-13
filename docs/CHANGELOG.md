@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## v1.5.7 - 2026-09-13
+
+### Task Lifecycle、Task Event Retention、Ground 与 SQLite
+
+- 收口 Task Center 当前/近期任务模型、`site_import` task authority、Task Detail、终态轮询、Operational Cleanup、Tombstone 与 Cleanup DTO contract。
+- 完成 Task Event Retention：默认 7 天，支持 3 / 7 / 14 / 30 天，仅清理终态任务 `task_events`；活动任务、Online MR、Ground、Task summary、Result、Artifact、Log Center 和业务数据继续保护。
+- 修复局点切换后 Ground 使用旧 site context 的问题；宁波10号线 → 宁波12号线、宁波12号线 → 宁波10号线及 reload/restart 验证通过。
+- 修复 SQLite compatibility trigger 检查的幂等性，避免普通启动无条件 DDL 和无意义 WAL checkpoint 主文件重写。
+
+### 验证
+
+- Python：4868 passed，2 skipped；Renderer：1301 passed；Electron：298 passed；Architecture：12/12 PASS。
+- `NEW_FAILURES=0`，Full Gate PASS。
+
 ## v1.5.6 - 2026-09-13
 
 ### Task Lifecycle、Ground 与 SQLite 最终收口
