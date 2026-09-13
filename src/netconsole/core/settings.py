@@ -11,6 +11,18 @@ from netconsole.core.atomic_file import atomic_write_bytes, locked_file
 from netconsole.core.paths import PathResolver
 
 
+TASK_EVENT_RETENTION_DAYS_OPTIONS = (3, 7, 14, 30)
+DEFAULT_TASK_EVENT_RETENTION_DAYS = 7
+
+
+def normalize_task_event_retention_days(value: object) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_TASK_EVENT_RETENTION_DAYS
+    return normalized if normalized in TASK_EVENT_RETENTION_DAYS_OPTIONS else DEFAULT_TASK_EVENT_RETENTION_DAYS
+
+
 DEFAULT_SETTINGS = {
     "theme": "light",
     "language": "zh_CN",
@@ -20,6 +32,8 @@ DEFAULT_SETTINGS = {
     "default_concurrency": 10,
     "command_timeout": 30,
     "log_retention_days": 30,
+    "task_event_retention_days": DEFAULT_TASK_EVENT_RETENTION_DAYS,
+    "last_task_event_cleanup_at": "",
     "raw_echo_log": True,
     "download_dir": "",
     "backup_dir": "",
@@ -220,6 +234,16 @@ class SettingsStore:
 
     def set_int_value(self, key: str, value: int, minimum: int = 1, maximum: int = 99999) -> None:
         self._set_and_save(key, max(minimum, min(maximum, int(value))))
+
+    @property
+    def task_event_retention_days(self) -> int:
+        return normalize_task_event_retention_days(self.values.get("task_event_retention_days"))
+
+    def set_task_event_retention_days(self, value: int) -> None:
+        normalized = normalize_task_event_retention_days(value)
+        if normalized != int(value):
+            raise ValueError(f"unsupported task event retention days: {value}")
+        self._set_and_save("task_event_retention_days", normalized)
 
     @property
     def last_export_path(self) -> str:

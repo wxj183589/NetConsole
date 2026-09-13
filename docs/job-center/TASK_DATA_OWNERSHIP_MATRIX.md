@@ -8,7 +8,7 @@ Production 操作，也不把运行时任务查询委托给 `TaskHistoryStore`�
 |---|---|---|---|---|---|---|---|---|
 | `tasks` / `task_snapshots` | `tasks.db.task_snapshots` 当前状态、恢复指针 | 当前库内兼容记录；无运行时 HistoryStore authority | `TaskRepository`、Task Center Query | `TaskRepository` / TaskApplicationService | Task Center explicit operational GC；不启用自动 retention | 仅显式 cleanup 候选的 Repository 事务 | 不压缩业务状态；仅随明确批准的 task-owned cleanup 删除 | schema v5 兼容升级完成；运行时不依赖 HistoryStore |
 | lifecycle task authority index | `config/task-authority-index.json` 的 `site_* -> site_name` 轻量路由索引 | 无任务正文或事件历史 | Task Center Query / TaskApplicationService | TaskApplicationService 原子 JSON 替换 | 随任务物理清理移除映射 | 不单独删除业务数据；仅随已删除 Task 移除 | 不扫描所有 Site DB，不建立第二套 SQLite authority | 当前运行已接入；损坏索引按空索引 fail closed |
-| `task_events` | `tasks.db.task_events` 执行与审计事件 | 当前库内保留的事件；维护脚本可读取隔离历史证据 | `TaskRepository`、Task Center Detail | `TaskRepository` | SiteRetentionService；TaskHistoryStore 仅维护证据 | 不按旧、Completed、dismiss 或 payload 大小推断；仅随安全 Task cleanup 删除 | 不抽样、不重写事件；compact 只回收 SQLite 空页 | 运行时读 current-only；历史归档不再启动 |
+| `task_events` | `tasks.db.task_events` 执行与审计事件 | 当前库内保留的事件；维护脚本可读取隔离历史证据 | `TaskRepository`、Task Center Detail | `TaskRepository` | `TaskEventRetentionService`（自动、仅事件）；`TaskCleanupService`（显式任务 GC）；`SiteRetentionService` 仅隔离候选证据 | 自动策略只删完整生命周期已结束且超过设置 cutoff 的事件；显式 GC 仍按原引用检查删除 task-owned rows | 不抽样、不重写事件；日常 retention 不 VACUUM，compact 只回收 SQLite 空页 | 运行时读 current-only；旧事件缺失不影响任务摘要/结果详情；历史归档不启动 |
 | terminal result metadata `task_results` | 不可变 `result_id/task_id/event/hash/size` 身份元数据 | legacy full-only/dual rows 仅作当前库兼容证据 | `TaskRepository`、Query Service、Site Sync | `TaskRepository`；维护脚本仅显式离线运行 | TaskRepository / SiteRetentionService | 仅随已 preview 且无引用的 Task-owned cleanup 删除 | 新 rows 不写完整 body；旧 `canonical_json` 可保留并由 Blob-first 读取校验 | runtime current-only；无 HistoryStore fallback |
 | terminal result body `task_result_blobs` | `content_sha256` 内容寻址的 zlib Blob | 旧 `canonical_json` 仅作同库兼容来源 | `TaskResultBlobRepository`、TaskRepository | TaskRepository；migration tool 只写隔离候选 | TaskRepository orphan GC；不删仍被 ready result 引用的 Blob | 只回收无 ready 引用的 Blob；不删除业务结果 | 按内容共享压缩 Blob，hash/长度/UTF-8/JSON 失败闭合 | Blob-first runtime authority 已接入 |
 | `task_result_storage_rollout` / audit | `tasks.db` 当前 rollout 与不可变审计 | rollout audit rows | TaskResultRolloutService / diagnostics | TaskResultRolloutService / schema initialization | 不自动保留清理 | 本轮不删除 | 不 compact、不重写审计 | schema v5 初始化兼容完成 |
@@ -22,7 +22,10 @@ Production 操作，也不把运行时任务查询委托给 `TaskHistoryStore`�
 
 ## 结论
 
-- `TaskCleanupService` 负责 preview、引用判断和 fail-closed 决策；
+- `TaskEventRetentionService` 负责每日一次的终态事件保留；它只调用
+  `TaskRepository` 的事件专用 preview/事务，不接入 Production maintenance、
+  `TaskHistoryStore` 或 VACUUM。`TaskCleanupService` 仍负责 explicit GC 的
+  preview、引用判断和 fail-closed 决策；
   `TaskRepository` 负责 `task_events -> task_results -> task_snapshots` 的
   单事务物理变更、tombstone 和孤立 Blob 回收。
 - `PENDING / STARTING / RUNNING / STOPPING`、current/restart state、Online MR

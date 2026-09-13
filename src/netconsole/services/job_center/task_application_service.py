@@ -25,6 +25,7 @@ from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.job_center.runtime.task_runtime import TaskLaunch, TaskRuntime
 from netconsole.services.job_center.task_authority_index import TaskAuthorityIndex
 from netconsole.services.job_center.task_cleanup_service import TaskCleanupService
+from netconsole.services.job_center.task_event_retention_service import TaskEventRetentionService
 from netconsole.services.job_center.web_export_event_safety import (
     is_web_export_task,
     sanitize_web_export_event,
@@ -755,6 +756,26 @@ class TaskApplicationService:
 
     def reconcile_orphaned_local_tasks(self) -> list[TaskSnapshot]:
         return self.repository().reconcile_orphaned_local_tasks(self._is_process_alive)
+
+    def run_due_task_event_retention(
+        self,
+        *,
+        site_name: str | None = None,
+        force: bool = False,
+    ) -> dict[str, object]:
+        """Run automatic short-lived event retention for one active site.
+
+        This is a normal product maintenance hook, not the explicit Task
+        Center operational GC and not the Production maintenance chain.
+        """
+
+        selected_site = str(site_name or self.site_name or "demo")
+        repository = self.repository(selected_site)
+        return TaskEventRetentionService(
+            self.paths,
+            repository,
+            site_name=selected_site,
+        ).run_due(force=force)
 
     def _publish_history_event(
         self,

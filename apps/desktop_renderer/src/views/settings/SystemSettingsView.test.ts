@@ -39,7 +39,7 @@ function snapshot(): SystemSettingsSnapshot {
     theme: 'light' as const, language: 'zh_CN' as const, theme_color: '#0078D4' as const,
     iperf_path: '', fping_path: '', ipop_path: '', terminal_type: 'securecrt' as const,
     terminal_paths: { securecrt: 'C:\\tools\\SecureCRT.exe', xshell: 'C:\\tools\\Xshell.exe', putty: 'C:\\tools\\putty.exe' },
-    securecrt_sessions_root: 'C:\\sessions', ssh_port: 22, telnet_port: 23, crt_encoding: 'UTF-8' as const,
+    securecrt_sessions_root: 'C:\\sessions', ssh_port: 22, telnet_port: 23, crt_encoding: 'UTF-8' as const, task_event_retention_days: 7 as const,
   }
   return { version: 'missing', values, defaults: { ...values, terminal_paths: { putty: '', securecrt: '', xshell: '' } }, current_site_name: 'demo', current_site_path: 'C:\\data\\sites\\demo', language_status: 'BLOCKED_ON_GLOBAL_I18N' }
 }

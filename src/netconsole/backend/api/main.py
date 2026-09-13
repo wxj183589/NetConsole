@@ -601,6 +601,25 @@ def create_app(
                     f"{_safe_error_message(str(exc))}",
                 )
 
+        async def run_task_event_retention() -> None:
+            retention_runner = getattr(task_service, "run_due_task_event_retention", None)
+            if not callable(retention_runner):
+                return
+            try:
+                retention_result = await asyncio.to_thread(retention_runner)
+                app_logger.log_info(
+                    "TASK_EVENT_RETENTION",
+                    f"status={retention_result.get('status', 'unknown')} "
+                    f"deleted_event_rows={retention_result.get('deleted_event_rows', 0)}",
+                )
+            except Exception as exc:
+                # Retention is best-effort and must never make the normal
+                # runtime services unavailable.
+                app_logger.log_warning(
+                    "TASK_EVENT_RETENTION_FAILED",
+                    f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+                )
+
         async def start_deferred_runtime_services() -> None:
             try:
                 # 先让 health、静态资源与首屏完成；历史任务恢复不参与桌面首屏关键路径。
@@ -611,6 +630,7 @@ def create_app(
                 reconcile_tasks = getattr(task_service, "reconcile_orphaned_local_tasks", None)
                 if callable(reconcile_tasks):
                     await asyncio.to_thread(reconcile_tasks)
+                await run_task_event_retention()
                 await agent_service.start()
                 reconcile_traffic = getattr(traffic_service, "reconcile_local_runs", None)
                 if callable(reconcile_traffic):

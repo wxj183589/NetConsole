@@ -19,7 +19,7 @@ import SiteSSHRelayPanel from './SiteSSHRelayPanel.vue'
 const emptyValues: SystemSettingsValues = {
   theme: 'light', language: 'zh_CN', theme_color: '#0078D4', iperf_path: '', fping_path: '', ipop_path: '',
   terminal_type: 'securecrt', terminal_paths: { putty: '', securecrt: '', xshell: '' },
-  securecrt_sessions_root: '', ssh_port: 22, telnet_port: 23, crt_encoding: 'UTF-8',
+  securecrt_sessions_root: '', ssh_port: 22, telnet_port: 23, crt_encoding: 'UTF-8', task_event_retention_days: 7,
 }
 const { confirm } = useConfirm()
 const route = useRoute()
@@ -404,6 +404,21 @@ function message(cause: unknown, fallback: string): string { return cause instan
     </section>
 
     <section class="settings-band">
+      <h2>任务运行记录</h2>
+      <el-form class="settings-grid" label-position="top">
+        <el-form-item label="任务运行记录保留时间">
+          <el-select v-model="form.task_event_retention_days" data-testid="task-event-retention-days">
+            <el-option label="3 天" :value="3" />
+            <el-option label="7 天（默认）" :value="7" />
+            <el-option label="14 天" :value="14" />
+            <el-option label="30 天" :value="30" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <p class="settings-help">仅影响任务运行过程记录，不删除日志中心、任务结果、导出文件或业务数据。</p>
+    </section>
+
+    <section class="settings-band">
       <div class="section-heading">
         <h2>正式包环境自检</h2>
         <div class="inline-actions">
@@ -464,7 +479,7 @@ function message(cause: unknown, fallback: string): string { return cause instan
 </template>
 
 <style scoped>
-.settings-page{display:flex;flex-direction:column;gap:16px;max-width:1680px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control,.desktop-shell-setting{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading,.desktop-shell-setting{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p,.desktop-shell-setting p{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.self-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.self-check-grid article{padding:12px;border:1px solid var(--el-border-color-light);border-radius:6px}.self-check-grid article>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.self-check-grid p{margin:8px 0 0}.self-check-grid small{display:block;margin-top:6px;color:var(--nc-text-secondary)}.section-heading h2{margin-bottom:0}
+.settings-page{display:flex;flex-direction:column;gap:16px;max-width:1680px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control,.desktop-shell-setting{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading,.desktop-shell-setting{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p,.desktop-shell-setting p,.settings-help{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.self-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.self-check-grid article{padding:12px;border:1px solid var(--el-border-color-light);border-radius:6px}.self-check-grid article>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.self-check-grid p{margin:8px 0 0}.self-check-grid small{display:block;margin-top:6px;color:var(--nc-text-secondary)}.section-heading h2{margin-bottom:0}
 .version-facts{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:14px;margin:18px 0 0}.version-facts div{min-width:0;padding-left:12px;border-left:3px solid var(--el-border-color)}.version-facts dt{color:var(--nc-text-secondary);font-size:12px}.version-facts dd{margin:6px 0 0;font-weight:600;overflow-wrap:anywhere}
 @media(max-width:900px){.settings-toolbar,.section-heading,.desktop-shell-setting{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts,.self-check-grid,.version-facts{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}}
 </style>

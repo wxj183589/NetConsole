@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
@@ -16,6 +16,7 @@ from netconsole.application.system_maintenance import (
     SYSTEM_MAINTENANCE_WEB_OWNER,
 )
 from netconsole.core.paths import PathResolver
+from netconsole.core.settings import SettingsStore
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.job_center import (
     JobCenterArtifactDTO,
@@ -67,6 +68,7 @@ from netconsole.services.job_center.handlers.database_jobs import (
 from netconsole.models.task_history_policy import (
     business_result_has_warning,
     project_business_result,
+    TERMINAL_TASK_STATE_VALUES,
 )
 from netconsole.repositories.task_result_blob_repository import (
     TaskResultBlobError,
@@ -138,6 +140,26 @@ WORKER_PROTOCOL_RESULT_DETAIL_KEYS = (
     "worker_exit_code",
     "data_persisted",
 )
+
+
+def _was_task_event_retention_applied(paths: PathResolver, finished_time: str) -> bool:
+    """Distinguish an intentionally cleaned old tail from a never-recorded one."""
+
+    if not finished_time:
+        return False
+    try:
+        finished = datetime.fromisoformat(finished_time.replace("Z", "+00:00"))
+        cleaned = datetime.fromisoformat(
+            str(SettingsStore(paths).get_value("last_task_event_cleanup_at", ""))
+            .replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError):
+        return False
+    if finished.tzinfo is None:
+        finished = finished.replace(tzinfo=UTC)
+    if cleaned.tzinfo is None:
+        cleaned = cleaned.replace(tzinfo=UTC)
+    return cleaned.astimezone(UTC) >= finished.astimezone(UTC)
 
 
 class JobCenterQueryService:
@@ -384,9 +406,14 @@ class JobCenterQueryService:
         with closing(self._connect(db_path)) as conn:
             if not self._table_exists(conn, "task_snapshots"):
                 return None
-            exists = conn.execute("SELECT 1 FROM task_snapshots WHERE task_id = ?", (str(task_id),)).fetchone()
+            exists = conn.execute(
+                "SELECT status, finished_time FROM task_snapshots WHERE task_id = ?",
+                (str(task_id),),
+            ).fetchone()
             if exists is None:
                 return None
+            task_status = str(exists["status"] or "").upper()
+            task_finished_time = str(exists["finished_time"] or "")
             rows: list[dict[str, Any]] = []
             if self._table_exists(conn, "task_events"):
                 rows = [
@@ -412,7 +439,13 @@ class JobCenterQueryService:
             by_id.values(), key=lambda item: int(item.get("sequence") or 0)
         )[-safe_tail:]
         lines = [self._log_line(row) for row in merged]
-        return JobCenterLogTailDTO(task_id=task_id, lines=lines, message="" if lines else "暂无日志")
+        message = "" if lines else (
+            "详细运行记录已按保留策略清理"
+            if task_status in TERMINAL_TASK_STATE_VALUES
+            and _was_task_event_retention_applied(self.paths, task_finished_time)
+            else "暂无日志"
+        )
+        return JobCenterLogTailDTO(task_id=task_id, lines=lines, message=message)
 
     def _db_path(self, site_id: str, task_id: str = "") -> Path:
         selected = self._validated_site_id(site_id)

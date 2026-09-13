@@ -11,6 +11,7 @@ Theme = Literal["light", "dark", "auto"]
 Language = Literal["zh_CN", "en_US"]
 ThemeColor = Literal["#0078D4", "#2563EB", "#0891B2", "#16A34A"]
 TerminalType = Literal["putty", "securecrt", "xshell"]
+TaskEventRetentionDays = Literal[3, 7, 14, 30]
 NetworkComponentName = Literal["iperf3", "fping"]
 NetworkComponentMode = Literal["builtin", "custom"]
 NetworkComponentSource = Literal["builtin", "custom"]
@@ -41,6 +42,7 @@ class SystemSettingsValuesDTO(ApiModel):
     ssh_port: int = Field(ge=1, le=65_535)
     telnet_port: int = Field(ge=1, le=65_535)
     crt_encoding: Literal["UTF-8", "GBK"]
+    task_event_retention_days: TaskEventRetentionDays = 7
 
     @field_validator("iperf_path", "fping_path", "ipop_path", "securecrt_sessions_root")
     @classmethod
@@ -204,5 +206,6 @@ __all__ = [
     "FeatureSettingsUpdateDTO", "FeatureStateDTO", "FeatureStateUpdateDTO",
     "NetworkComponentStatusDTO", "NetworkComponentsSnapshotDTO", "NetworkComponentUpdateDTO",
     "RuntimeSelfCheckItemDTO", "RuntimeSelfCheckSnapshotDTO",
+    "TaskEventRetentionDays",
     "SystemSettingsSaveDTO", "SystemSettingsSnapshotDTO", "SystemSettingsValuesDTO",
 ]

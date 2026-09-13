@@ -412,6 +412,7 @@ function emptySystemSettingsValues(): SystemSettingsValues {
     ssh_port: 22,
     telnet_port: 23,
     crt_encoding: 'UTF-8',
+    task_event_retention_days: 7,
   }
 }
 

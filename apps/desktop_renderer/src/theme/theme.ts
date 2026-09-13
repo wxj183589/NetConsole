@@ -73,5 +73,5 @@ function notifyThemeChange(theme: ResolvedTheme, color: string): void {
 
 function syncDesktopBackground(theme: ResolvedTheme): void {
   if (typeof window === 'undefined') return
-  window.netconsoleDesktop?.reportRendererReady({ resolvedTheme: theme })
+  window.netconsoleDesktop?.reportRendererReady?.({ resolvedTheme: theme })
 }

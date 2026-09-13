@@ -98,6 +98,7 @@ function settingsSnapshot(): SystemSettingsSnapshot {
     ssh_port: 22,
     telnet_port: 23,
     crt_encoding: 'UTF-8' as const,
+    task_event_retention_days: 7 as const,
   }
   return {
     version: 'version-1',

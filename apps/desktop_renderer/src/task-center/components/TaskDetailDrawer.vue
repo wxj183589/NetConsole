@@ -874,7 +874,7 @@ function handleClosed(): void {
               <div v-for="line in businessLogSummaryLines" :key="line.key" :class="['log-line', 'business-log-summary', line.tone]">
                 <time :title="taskDateTimeTitle(store.selected.finished_time)">{{ formatTaskDateTime(store.selected.finished_time) }}</time><span>{{ line.label }}</span><p>{{ line.value }}</p>
               </div>
-              <el-empty v-if="!store.logs.length && !store.logError" description="暂无日志" :image-size="68" />
+              <el-empty v-if="!store.logs.length && !store.logError" :description="store.logMessage || '暂无日志'" :image-size="68" />
             </div>
           </template>
         </section>

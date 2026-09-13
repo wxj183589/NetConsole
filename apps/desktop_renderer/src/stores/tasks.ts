@@ -26,6 +26,7 @@ export const useTaskStore = defineStore('tasks', () => {
   const selectedDetail = ref<TaskItem | null>(null)
   const selected = selectedDetail
   const logs = ref<TaskLogLine[]>([])
+  const logMessage = ref('')
   const loading = ref(false)
   const detailLoading = ref(false)
   const error = ref('')
@@ -95,6 +96,7 @@ export const useTaskStore = defineStore('tasks', () => {
     detailLoading.value = true
     selected.value = null
     logs.value = []
+    logMessage.value = ''
     logError.value = ''
     logContextGeneration += 1
     activeLogRequest = null
@@ -171,6 +173,7 @@ export const useTaskStore = defineStore('tasks', () => {
         || !logsExpanded.value
       ) return
       logs.value = payload.lines
+      logMessage.value = payload.message || ''
       if (hasTerminalLog(payload.lines)) {
         logPollingStopped = true
         stopLogTimer()
@@ -265,6 +268,7 @@ export const useTaskStore = defineStore('tasks', () => {
       detailPollingStopped = false
       logPollingStopped = false
       logs.value = []
+      logMessage.value = ''
       detailError.value = ''
       logError.value = ''
     }
@@ -392,6 +396,7 @@ export const useTaskStore = defineStore('tasks', () => {
       detailContextGeneration += 1
       selected.value = null
       logs.value = []
+      logMessage.value = ''
       detailVisible = false
       detailLoading.value = false
       logContextGeneration += 1
@@ -452,6 +457,7 @@ export const useTaskStore = defineStore('tasks', () => {
     selected,
     selectedDetail,
     logs,
+    logMessage,
     loading,
     detailLoading,
     error,

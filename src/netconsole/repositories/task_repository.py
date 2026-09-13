@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -435,6 +435,209 @@ class TaskRepository:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=UTC)
         return parsed.astimezone(UTC)
+
+    def preview_task_event_retention(self, *, cutoff: datetime) -> dict[str, object]:
+        """Return old terminal event candidates without mutating the database.
+
+        This preview is intentionally narrower than task cleanup: it only
+        considers ``task_events`` owned by an existing terminal snapshot.
+        Snapshot, result, tombstone and external reference decisions remain
+        outside this method.
+        """
+
+        normalized_cutoff = cutoff if cutoff.tzinfo is not None else cutoff.replace(tzinfo=UTC)
+        normalized_cutoff = normalized_cutoff.astimezone(UTC)
+        result: dict[str, object] = {
+            "candidate_task_ids": [],
+            "candidates": [],
+            "protected_online_task_ids": [],
+            "skipped_invalid_finished_time": 0,
+        }
+        with self._connect() as conn:
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "task_snapshots" not in tables:
+                return result
+            online_ids = self._online_mr_mapped_task_ids(conn, tables)
+            rows = conn.execute(
+                "SELECT task_id, status, finished_time FROM task_snapshots"
+            ).fetchall()
+            candidates: list[dict[str, object]] = []
+            protected_online: list[str] = []
+            invalid_finished_time = 0
+            for raw in rows:
+                task_id = str(raw["task_id"] or "")
+                if str(raw["status"] or "").upper() not in TERMINAL_TASK_STATE_VALUES:
+                    continue
+                finished = self._event_datetime(str(raw["finished_time"] or ""))
+                if finished is None:
+                    invalid_finished_time += 1
+                    continue
+                if finished >= normalized_cutoff:
+                    continue
+                if task_id in online_ids:
+                    protected_online.append(task_id)
+                    continue
+                candidates.append(
+                    {
+                        "task_id": task_id,
+                        "status": str(raw["status"] or "").upper(),
+                        "finished_time": str(raw["finished_time"] or ""),
+                    }
+                )
+            if candidates and "task_events" in tables:
+                for start in range(0, len(candidates), 500):
+                    chunk = candidates[start : start + 500]
+                    task_ids = [str(item["task_id"]) for item in chunk]
+                    placeholders = ",".join("?" for _ in task_ids)
+                    event_rows = conn.execute(
+                        f"SELECT task_id, COUNT(*) AS event_rows, "
+                        f"COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) AS payload_bytes "
+                        f"FROM task_events WHERE task_id IN ({placeholders}) GROUP BY task_id",
+                        task_ids,
+                    ).fetchall()
+                    by_task_id = {str(row["task_id"]): row for row in event_rows}
+                    for item in chunk:
+                        event_row = by_task_id.get(str(item["task_id"]))
+                        item["event_rows"] = int(event_row["event_rows"]) if event_row else 0
+                        item["event_payload_bytes"] = int(event_row["payload_bytes"]) if event_row else 0
+            result["candidate_task_ids"] = [str(item["task_id"]) for item in candidates]
+            result["candidates"] = candidates
+            result["protected_online_task_ids"] = sorted(set(protected_online))
+            result["skipped_invalid_finished_time"] = invalid_finished_time
+        return result
+
+    def delete_task_events_for_retention(
+        self,
+        task_ids: Collection[str],
+        *,
+        cutoff: datetime,
+        protected_task_ids: Collection[str] = (),
+        event_batch_size: int = 2_000,
+        fault_injector: Callable[[int], None] | None = None,
+    ) -> dict[str, object]:
+        """Atomically delete only old events for one bounded task batch.
+
+        The caller may run multiple bounded batches. Each batch is an atomic
+        unit: a failure rolls back every event deletion in that batch, and no
+        snapshot, result, tombstone, Blob or external file is touched.
+        """
+
+        normalized = list(dict.fromkeys(str(task_id).strip() for task_id in task_ids if str(task_id).strip()))
+        protected = {str(task_id).strip() for task_id in protected_task_ids if str(task_id).strip()}
+        normalized_cutoff = cutoff if cutoff.tzinfo is not None else cutoff.replace(tzinfo=UTC)
+        normalized_cutoff = normalized_cutoff.astimezone(UTC)
+        safe_event_batch_size = max(1_000, min(int(event_batch_size), 5_000))
+        result: dict[str, object] = {
+            "requested_task_ids": normalized,
+            "deleted_task_ids": [],
+            "deleted_event_rows": 0,
+            "deleted_event_payload_bytes": 0,
+            "protected_task_ids": [],
+            "skipped_task_ids": [],
+            "event_batches": 0,
+            "quick_check": "not_run",
+            "foreign_key_check": "not_run",
+        }
+
+        def operation() -> None:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    tables = {
+                        str(row[0])
+                        for row in conn.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        ).fetchall()
+                    }
+                    if not normalized or "task_snapshots" not in tables or "task_events" not in tables:
+                        conn.commit()
+                        return
+                    online_ids = self._online_mr_mapped_task_ids(conn, tables)
+                    placeholders = ",".join("?" for _ in normalized)
+                    rows = conn.execute(
+                        f"SELECT task_id, status, finished_time FROM task_snapshots "
+                        f"WHERE task_id IN ({placeholders})",
+                        normalized,
+                    ).fetchall()
+                    by_task_id = {str(row["task_id"]): row for row in rows}
+                    eligible: list[str] = []
+                    protected_ids: list[str] = []
+                    skipped_ids: list[str] = []
+                    for task_id in normalized:
+                        row = by_task_id.get(task_id)
+                        if row is None:
+                            skipped_ids.append(task_id)
+                            continue
+                        if task_id in protected or task_id in online_ids:
+                            protected_ids.append(task_id)
+                            continue
+                        if str(row["status"] or "").upper() not in TERMINAL_TASK_STATE_VALUES:
+                            skipped_ids.append(task_id)
+                            continue
+                        finished = self._event_datetime(str(row["finished_time"] or ""))
+                        if finished is None or finished >= normalized_cutoff:
+                            skipped_ids.append(task_id)
+                            continue
+                        eligible.append(task_id)
+                    result["protected_task_ids"] = protected_ids
+                    result["skipped_task_ids"] = skipped_ids
+                    result["deleted_task_ids"] = eligible
+                    if eligible:
+                        placeholders = ",".join("?" for _ in eligible)
+                        sequences = [
+                            int(row["sequence"])
+                            for row in conn.execute(
+                                f"SELECT sequence FROM task_events WHERE task_id IN ({placeholders}) "
+                                "ORDER BY sequence ASC",
+                                eligible,
+                            ).fetchall()
+                        ]
+                        deleted_event_rows = 0
+                        deleted_payload_bytes = 0
+                        for start in range(0, len(sequences), safe_event_batch_size):
+                            sequence_chunk = sequences[start : start + safe_event_batch_size]
+                            if not sequence_chunk:
+                                continue
+                            sequence_placeholders = ",".join("?" for _ in sequence_chunk)
+                            payload_row = conn.execute(
+                                f"SELECT COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) "
+                                f"FROM task_events WHERE sequence IN ({sequence_placeholders})",
+                                sequence_chunk,
+                            ).fetchone()
+                            deleted_payload_bytes += int(payload_row[0] or 0)
+                            cursor = conn.execute(
+                                f"DELETE FROM task_events WHERE sequence IN ({sequence_placeholders})",
+                                sequence_chunk,
+                            )
+                            deleted_event_rows += max(0, int(cursor.rowcount))
+                            result["event_batches"] = int(result["event_batches"]) + 1
+                            if fault_injector is not None:
+                                fault_injector(int(result["event_batches"]))
+                        result["deleted_event_rows"] = deleted_event_rows
+                        result["deleted_event_payload_bytes"] = deleted_payload_bytes
+                    quick_check = str(conn.execute("PRAGMA quick_check").fetchone()[0])
+                    foreign_key_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+                    foreign_key_check = "ok" if not foreign_key_rows else json.dumps(
+                        [tuple(row) for row in foreign_key_rows], ensure_ascii=False
+                    )
+                    if quick_check != "ok" or foreign_key_check != "ok":
+                        raise sqlite3.DatabaseError(
+                            f"task event retention integrity check failed: {quick_check}; {foreign_key_check}"
+                        )
+                    result["quick_check"] = quick_check
+                    result["foreign_key_check"] = foreign_key_check
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+
+        run_sqlite_with_retry(operation)
+        return result
 
     def record_once(
         self,

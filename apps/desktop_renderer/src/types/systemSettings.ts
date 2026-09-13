@@ -2,6 +2,7 @@ export type SystemTheme = 'light' | 'dark' | 'auto'
 export type SystemLanguage = 'zh_CN' | 'en_US'
 export type SystemThemeColor = '#0078D4' | '#2563EB' | '#0891B2' | '#16A34A'
 export type ExternalTerminalType = 'putty' | 'securecrt' | 'xshell'
+export type TaskEventRetentionDays = 3 | 7 | 14 | 30
 
 export interface SystemSettingsValues {
   theme: SystemTheme
@@ -16,6 +17,7 @@ export interface SystemSettingsValues {
   ssh_port: number
   telnet_port: number
   crt_encoding: 'UTF-8' | 'GBK'
+  task_event_retention_days: TaskEventRetentionDays
 }
 
 export interface SystemSettingsSnapshot {

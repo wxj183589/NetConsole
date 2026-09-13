@@ -31,7 +31,12 @@ from netconsole.core.feature_registry import (
 )
 from netconsole.core.i18n import TRANSLATIONS
 from netconsole.core.paths import PathResolver
-from netconsole.core.settings import DEFAULT_SETTINGS, SettingsStore
+from netconsole.core.settings import (
+    DEFAULT_SETTINGS,
+    DEFAULT_TASK_EVENT_RETENTION_DAYS,
+    SettingsStore,
+    normalize_task_event_retention_days,
+)
 from netconsole.models.api.system_settings import (
     FeatureConfigurationTarget,
     FeatureDependencyIssueDTO,
@@ -109,6 +114,7 @@ class SettingsApplicationService:
                 "external_terminal/default_ssh_port": values["ssh_port"],
                 "external_terminal/default_telnet_port": values["telnet_port"],
                 "external_terminal/crt_encoding": values["crt_encoding"],
+                "task_event_retention_days": values["task_event_retention_days"],
                 **{key: terminal_paths[name] for name, key in _TERMINAL_KEYS.items()},
             }
             updates.update(self._legacy_component_updates(payload, self._settings))
@@ -270,6 +276,9 @@ class SettingsApplicationService:
             ssh_port=int(source["external_terminal/default_ssh_port"]),
             telnet_port=int(source["external_terminal/default_telnet_port"]),
             crt_encoding=str(source["external_terminal/crt_encoding"]),
+            task_event_retention_days=normalize_task_event_retention_days(
+                source.get("task_event_retention_days", DEFAULT_TASK_EVENT_RETENTION_DAYS)
+            ),
         )
 
     def _network_components_snapshot(self, store: SettingsStore) -> NetworkComponentsSnapshotDTO:
