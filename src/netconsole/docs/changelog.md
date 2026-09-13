@@ -1,4 +1,4 @@
-v1.5.7 - 2026-09-13
+v1.5.8 - 2026-09-13
 - Task Lifecycle 最终收口：Task Center 当前/近期任务、`site_import` task authority、Task Detail、终态轮询、Operational Cleanup、Tombstone 和 Cleanup DTO contract 已统一。
 - Task Event Retention 默认保留 7 天，支持 3/7/14/30 天，仅清理终态任务 `task_events`；活动任务、Online MR、Ground、summary、result、Artifact、Log Center 和业务数据保持保护。
 - Ground 局点上下文已统一到 Global Current Site；宁波10号线与宁波12号线双向切换及 reload/restart 验证通过。

@@ -1,7 +1,7 @@
 {
   "name": "netconsole-desktop-electron",
   "private": true,
-  "version": "1.5.7",
+  "version": "1.5.8",
   "description": "NetConsole Electron desktop host",
   "author": "WXJ",
   "type": "module",
@@ -39,7 +39,7 @@
   },
   "build": {
     "appId": "com.loveok.netconsole",
-    "productName": "NetConsole v1.5.7 by wxj",
+    "productName": "NetConsole v1.5.8 by wxj",
     "electronDist": "node_modules/electron/dist",
     "asar": true,
     "directories": {

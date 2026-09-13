@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-### H3C Comware V7/V9 Capability 完成收口与杭州地铁10号线真实验收（2026-09-13）
+## v1.5.8 - 2026-09-13
+
+### H3C Comware V7/V9 Capability 完成收口与杭州地铁10号线真实验收
 
 - 完成 H3C Comware V7/V9 capability：先执行版本事实探测，再选择 AC、FIT-AP、LLDP、BSSID 和设备详情只读命令；未知 major 不默认 V7，Huawei、ZTE 和无 vendor 上下文不会误命中 H3C Profile。
 - AC Query Service 保持 `sqlite3.Row`、`dict` 及缺字段的兼容语义；`DevicePlatformFactsDTO.software_release` 契约贯通设备详情、兼容性和采集链路；H3C command reference 与 Resolver、Adapter、Parser、Collection、Compatibility、AC 回归测试同步完成。
