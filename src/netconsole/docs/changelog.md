@@ -12,7 +12,7 @@ v1.5.8 - 2026-09-13
 - 修复 v1.5.8 安装包运行时更新日志资源漂移：`docs/CHANGELOG.md` 作为唯一人工维护源，构建时自动生成 `src/netconsole/docs/changelog.md`/包内资源，并由 API、Renderer 和包内 smoke 校验版本去重、顺序与内容一致性。
 - 原发布准备提交：`0f94605dcbbd171491432944b6564895359e249c`；对应 `build-0-0f94605d` Full/Customer 制品已标记 `SUPERSEDED`，原文件保留且不得作为当前候选。
 - v1.5.8 修复后重新生成 Full/Customer 候选；构建、版本/commit identity、`packaged_dirty=false`、NOTICE、SBOM、NSIS 解包、SHA-256、runtime changelog API 和 Full/Customer edition contract 均通过，`published=false`，未创建 tag 或 GitHub Release。
-- 真实 Windows GUI 安装、启动/重启、卸载/重装尚未在管理员隔离环境执行，manifest 保持 `real_windows_install_status=PENDING`、`server_installation_status=PENDING`；不以包内 smoke 替代人工安装验收。
+- Full / Customer 正式候选包已完成人工 Windows 安装验收，GUI 启动/运行验收通过，`v1.5.8 Installer Acceptance=PASS`；最终候选 SHA-256 与构建时记录保持不变，`Release Status=READY_FOR_RELEASE`。构建摘要和 manifest 保留构建时的 `PENDING` 原始事实，不改写历史构建记录。
 - Production rollback、storage registry、Production GC、Task Lifecycle 及相关维护失败保持隔离并明确为 `OUT_OF_SCOPE`，本次发布准备未修改 Production 数据。
 
 v1.5.7 - 2026-09-13
