@@ -1081,8 +1081,12 @@ def build_trackside_ap_business_rows(
     latest_switch_collection_attempts: Mapping[str, Mapping[str, object | None]] | None = None,
     runtime_snapshot: TracksideApRuntimeSnapshot | None = None,
     business_projection: bool = True,
+    switch_optical_history_rows: list[dict[str, object | None]] | None = None,
 ) -> list[dict[str, object | None]]:
     optical_indexes = {device_uuid: _latest_rows_by_normalized_interface(rows, "interface_name") for device_uuid, rows in optical_by_device.items()}
+    switch_optical_history_index = _latest_valid_switch_optical_history(
+        switch_optical_history_rows or []
+    )
     lldp_indexes = {
         device_uuid: _latest_rows_by_normalized_interface(
             deduplicate_lldp_snapshot_rows(
@@ -1506,6 +1510,10 @@ def build_trackside_ap_business_rows(
                         optical,
                         optical_data_status,
                         switch_collection_error,
+                        last_known_optical=switch_optical_history_index.get(
+                            (device_uuid, normalized_interface),
+                            {},
+                        ),
                     ),
                 }
             source_resources = _fit_ap_resource_sources(
@@ -1549,6 +1557,7 @@ def build_trackside_ap_business_rows(
             optical_by_device,
             latest_switch_collect_runs,
             latest_switch_collection_attempts,
+            switch_optical_history_index,
         )
     )
     result = [
@@ -2210,6 +2219,22 @@ def _switch_optical_history_by_interface(rows: list[dict[str, object | None]]) -
         if device_uuid and interface_key:
             grouped.setdefault((device_uuid, interface_key), []).append(row)
     return grouped
+
+
+def _latest_valid_switch_optical_history(
+    rows: list[dict[str, object | None]],
+) -> dict[tuple[str, str], dict[str, object | None]]:
+    latest: dict[tuple[str, str], dict[str, object | None]] = {}
+    for row in rows:
+        device_uuid = str(row.get("device_uuid") or "").strip()
+        interface_key = normalize_interface_name(row.get("interface_name")).casefold()
+        if not device_uuid or not interface_key or not _has_valid_rx_power(row.get("rx_power")):
+            continue
+        key = (device_uuid, interface_key)
+        existing = latest.get(key)
+        if existing is None or _sample_is_older(existing, row):
+            latest[key] = row
+    return latest
 
 
 def _trackside_rows_by_switch_name_interface(rows: list[dict[str, object | None]]) -> dict[tuple[str, str], dict[str, object | None]]:
@@ -3394,6 +3419,9 @@ def _offline_ledger_to_trackside_rows(
     optical_by_device: dict[str, list[dict[str, object | None]]] | None = None,
     latest_switch_collect_runs: Mapping[str, str] | None = None,
     latest_switch_collection_attempts: Mapping[str, Mapping[str, object | None]] | None = None,
+    switch_optical_history_index: Mapping[
+        tuple[str, str], Mapping[str, object | None]
+    ] | None = None,
 ) -> list[dict[str, object | None]]:
     result: list[dict[str, object | None]] = []
     interface_indexes = {device_uuid: _latest_rows_by_normalized_interface(items, "interface_name") for device_uuid, items in (interfaces_by_device or {}).items()}
@@ -3510,6 +3538,10 @@ def _offline_ledger_to_trackside_rows(
                     optical,
                     optical_data_status,
                     str(collection_attempt.get("error_message") or "").strip(),
+                    last_known_optical=(switch_optical_history_index or {}).get(
+                        (device_uuid, interface_key),
+                        {},
+                    ),
                 ),
             }
         )
@@ -3599,17 +3631,24 @@ def _switch_optical_projection(
     current_optical: Mapping[str, object | None],
     data_status: str,
     collection_error: str = "",
+    *,
+    last_known_optical: Mapping[str, object | None] | None = None,
 ) -> dict[str, object | None]:
     """Expose current optical facts separately from the last-known sample."""
 
     current = data_status == "current" and _has_valid_rx_power(
         current_optical.get("rx_power")
     )
-    last_known = (
-        stored_optical
-        if not current and _has_valid_rx_power(stored_optical.get("rx_power"))
-        else {}
-    )
+    last_known = {}
+    if not current:
+        candidates = [
+            candidate
+            for candidate in (stored_optical, last_known_optical or {})
+            if _has_valid_rx_power(candidate.get("rx_power"))
+        ]
+        for candidate in candidates:
+            if not last_known or _sample_is_older(last_known, candidate):
+                last_known = candidate
     if current:
         unavailable_reason = ""
     elif collection_error:

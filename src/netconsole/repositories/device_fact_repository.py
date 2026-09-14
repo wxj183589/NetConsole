@@ -582,6 +582,33 @@ class DeviceFactRepository:
             for device_uuid, rows in grouped.items()
         }
 
+    def list_optical_history_for_uuids(
+        self, device_uuids: list[str]
+    ) -> dict[str, list[dict[str, object | None]]]:
+        """Load the bounded optical history for a set of devices in one read."""
+
+        values = self._normalized_device_uuids(device_uuids)
+        grouped = {device_uuid: [] for device_uuid in values}
+        if not values:
+            return grouped
+        site_id = self.database.path.parent.parent.name or self.database.path.parent.name
+        placeholders = ", ".join("?" for _ in values)
+        with self.database.connect_readonly() as conn:
+            rows = conn.execute(
+                "SELECT * FROM device_optical_modules_history "
+                f"WHERE site_id=? AND device_uuid IN ({placeholders}) "
+                "ORDER BY device_uuid ASC, changed_at DESC, id DESC",
+                (site_id, *values),
+            ).fetchall()
+        for row in rows:
+            device_uuid = str(row["device_uuid"] or "").strip()
+            if device_uuid in grouped:
+                grouped[device_uuid].append(dict(row))
+        return {
+            device_uuid: _normalize_optical_rows(rows)
+            for device_uuid, rows in grouped.items()
+        }
+
     def list_optical_modules_page(
         self,
         device_uuid: str,

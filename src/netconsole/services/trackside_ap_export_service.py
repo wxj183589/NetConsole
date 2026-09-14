@@ -522,6 +522,18 @@ def _load_trackside_ap_business_snapshot_once(
         fact_repository.list_optical_modules,
         fact_repository.list_optical_modules_for_uuids,
     )
+    try:
+        switch_optical_history_by_device = fact_repository.list_optical_history_for_uuids(
+            [str(device.device_uuid or "") for device in devices]
+        )
+    except Exception as exc:
+        switch_optical_history_by_device = {}
+        source_failure(
+            "switch_optical_history",
+            "交换机光模块历史事实",
+            "SWITCH_OPTICAL_HISTORY_UNAVAILABLE",
+            exc,
+        )
     lldp_by_device = device_facts(
         "lldp",
         "交换机 LLDP 事实",
@@ -630,6 +642,11 @@ def _load_trackside_ap_business_snapshot_once(
             latest_switch_collect_runs=latest_switch_collect_runs,
             latest_switch_collection_attempts=latest_switch_collection_attempts,
             runtime_snapshot=runtime_snapshot,
+            switch_optical_history_rows=[
+                row
+                for rows_for_device in switch_optical_history_by_device.values()
+                for row in rows_for_device
+            ],
         ),
         switch_device_ids={str(device.device_uuid or "") for device in devices},
     )

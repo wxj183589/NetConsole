@@ -304,6 +304,55 @@ def test_trackside_business_does_not_reuse_historical_optical_values_after_faile
     assert rows[0]["optical_severity"] == "collection_failed"
 
 
+def test_trackside_business_exposes_last_known_from_history_when_current_optical_is_empty():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "link_status": "DOWN",
+                    "description": "To AP",
+                    "port_status": "access",
+                    "collect_run_uuid": "current-run",
+                    "collected_at": "2026-09-15T10:00:00+08:00",
+                }
+            ]
+        },
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "status": "no_module",
+                    "collect_run_uuid": "current-run",
+                    "collected_at": "2026-09-15T10:00:00+08:00",
+                }
+            ]
+        },
+        [],
+        latest_switch_collect_runs={"sw-1": "current-run"},
+        switch_optical_history_rows=[
+            {
+                "device_uuid": "sw-1",
+                "interface_name": "GigabitEthernet1/0/1",
+                "rx_power": "-36.96",
+                "tx_power": "-6.00",
+                "collected_at": "2026-09-14T16:18:26+08:00",
+            }
+        ],
+    )
+
+    assert rows[0]["link_status"] == "DOWN"
+    assert rows[0]["switch_rx_power"] is None
+    assert rows[0]["switch_optical_valid"] is False
+    assert rows[0]["switch_last_known_rx_power"] == "-36.96"
+    assert rows[0]["switch_last_known_tx_power"] == "-6.00"
+    assert rows[0]["switch_last_known_optical_updated_at"] == "2026-09-14T16:18:26+08:00"
+    assert rows[0]["switch_optical_status"] == "link_down"
+    assert rows[0]["optical_severity"] == "link_down"
+
+
 def test_trackside_business_never_collected_is_not_no_light():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(

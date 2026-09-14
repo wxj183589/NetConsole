@@ -381,6 +381,47 @@ def test_list_optical_history_orders_by_collected_at_desc(tmp_path):
     assert [item["rx_power"] for item in repository.list_optical_history("device-1", "GE1/0/1")] == ["-3.21 dBm", "-3.30 dBm"]
 
 
+def test_list_optical_history_for_uuids_reads_multiple_devices(tmp_path):
+    repository = make_repository(tmp_path)
+    repository.append_optical_history(
+        {
+            "device_uuid": "device-1",
+            "interface_name": "GE1/0/1",
+            "collected_at": "2026-06-13T10:00:00",
+            "rx_power": "-3.30 dBm",
+        }
+    )
+    repository.append_optical_history(
+        {
+            "device_uuid": "device-1",
+            "interface_name": "GE1/0/1",
+            "collected_at": "2026-06-13T10:01:00",
+            "rx_power": "-3.31 dBm",
+        }
+    )
+    repository.append_optical_history(
+        {
+            "device_uuid": "device-2",
+            "interface_name": "GE1/0/2",
+            "collected_at": "2026-06-13T11:00:00",
+            "rx_power": "-4.40 dBm",
+        }
+    )
+    repository.append_optical_history(
+        {
+            "device_uuid": "device-2",
+            "interface_name": "GE1/0/2",
+            "collected_at": "2026-06-13T11:01:00",
+            "rx_power": "-4.41 dBm",
+        }
+    )
+
+    rows = repository.list_optical_history_for_uuids(["device-2", "device-1"])
+
+    assert rows["device-1"][0]["rx_power"] == "-3.31 dBm"
+    assert rows["device-2"][0]["rx_power"] == "-4.41 dBm"
+
+
 def test_optical_history_uses_power_tolerance_and_keeps_module_changes(tmp_path):
     repository = make_repository(tmp_path)
 
