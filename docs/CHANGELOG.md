@@ -7,6 +7,7 @@
 - SSH Host Key 统一使用 managed known_hosts：UNKNOWN 自动登记，MATCH 正常继续，MISMATCH 按精确 host:port 原子替换并继续原操作；正常变化不再导致 `TARGET_HOSTKEY_CHANGED` 业务失败。
 - SSH Relay 支持自动启动、Backend 重启自动恢复、局点切换自动重绑、配置 revision 自动重连、25 秒 keepalive，以及 stale Jump Transport 自动重建并仅重试一次。
 - 当前局点启用 Site Relay 时，Backend CLI、AC、FIT-AP、LLDP、Optical、Trackside、Rail Transit、FileTransfer/SFTP 统一使用 Site Jump → direct-tcpip → target；Relay 优先于 legacy per-device tunnel，关闭时继续兼容 direct / backup / tunnel1 / tunnel2，不进行双层 Jump 嵌套。
+- 文件管理前台与后台下载统一使用 canonical Site Relay 身份；Relay 开启时浏览、SFTP 下载、重试和 SCP fallback 均忽略 device tunnel，并记录不含敏感信息的 `FILE_TRANSFER_ROUTE_SELECTED` 路由审计。
 - Jump Host 与 Target Host Key 均自动登记/替换；系统设置保留“重新获取指纹”和“删除指纹”用于现场排障，但不作为正常连接前置步骤。
 - SFTP subsystem 未开启时，对已确认支持的 H3C Comware V7/V9 自动提交 `device.sftp.enable`，成功后自动 reconnect，用户无需再次点击连接。
 - H3C WX3540X / Comware V9 的 SFTP 自动开启已经经过真实设备验证 PASS；Site SSH Relay 真实 Jump Host 现场验证仍为 `REAL_DEVICE_SSH_RELAY=PENDING`。

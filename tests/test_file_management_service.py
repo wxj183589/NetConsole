@@ -513,12 +513,16 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
             strict_host_keys=False,
             host_key_trust=None,
             trust_host_key_once=False,
+            relay_site_id="",
+            route_source="",
         ):
             self.site_name = site_name
             self.paths = fake_paths
             self.strict_host_keys = strict_host_keys
             self.host_key_trust = host_key_trust
             self.trust_host_key_once = trust_host_key_once
+            self.relay_site_id = relay_site_id
+            self.route_source = route_source
             self.connected = False
             self.disconnect_calls = 0
             self.root_path = "flash:/"
@@ -835,6 +839,7 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
     retried = restarted.retry_download("demo", recovered.task_id)
     assert retried.task_id != recovered.task_id
     assert next(job for job in captured if job.job_id == retried.task_id).params["remote_path"] == "flash:/diagfile/diag_a.tar.gz"
+    assert next(job for job in captured if job.job_id == retried.task_id).params["relay_site_id"] == "demo"
     restarted.close()
 
 

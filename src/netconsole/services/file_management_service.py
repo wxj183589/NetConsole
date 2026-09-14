@@ -74,6 +74,7 @@ from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
+from netconsole.services.site_storage import SiteRegistryRepository, SiteStorageError
 
 if TYPE_CHECKING:
     from netconsole.application.desktop import DesktopActionService
@@ -198,7 +199,7 @@ class FileManagementApplicationService:
         process_adapter: LocalProcessAdapter | None = None,
         site_name: str = "demo",
         device_resolver: DeviceResolver | None = None,
-        transfer_factory: TransferServiceFactory = FileTransferService,
+        transfer_factory: TransferServiceFactory | None = None,
         mesh_auto_import_enabled: bool = True,
         desktop_action_service: DesktopActionService | None = None,
         device_operation_service: DeviceOperationService | None = None,
@@ -208,7 +209,7 @@ class FileManagementApplicationService:
         self.task_service = task_service
         self.process_adapter = process_adapter
         self._device_resolver = device_resolver
-        self._transfer_factory = transfer_factory
+        self._transfer_factory = transfer_factory or FileTransferService
         self._mesh_auto_import_enabled = bool(mesh_auto_import_enabled)
         self._desktop_action_service = desktop_action_service
         self._device_operation_service = device_operation_service
@@ -479,7 +480,7 @@ class FileManagementApplicationService:
         transfer = self._new_transfer(site)
         try:
             root_path = normalize_remote_path(transfer.connect(device))
-        except SftpUnavailableError as exc:
+        except SftpUnavailableError:
             try:
                 transfer.disconnect()
             except Exception:
@@ -581,6 +582,9 @@ class FileManagementApplicationService:
     def _new_transfer(
         self,
         site: str,
+        *,
+        relay_site_id: str = "",
+        source: str = "interactive",
     ) -> FileTransferService:
         """创建只读 SFTP Transport；自动配置不属于 Transport 构造契约。"""
 
@@ -589,7 +593,31 @@ class FileManagementApplicationService:
             self.paths,
             strict_host_keys=True,
             host_key_trust=HostKeyTrustService(self.paths),
+            relay_site_id=self._canonical_relay_site_id(site, relay_site_id),
+            route_source=source,
         )
+
+    def _canonical_relay_site_id(self, site: str, requested: str = "") -> str:
+        """Keep filesystem site directories separate from the stable Relay identity."""
+
+        physical_site = self._site_id(site)
+        registry = SiteRegistryRepository(self.paths)
+        reference = str(requested or "").strip()
+        try:
+            record = registry.get(reference) if reference else registry.get_by_directory_name(physical_site)
+        except SiteStorageError as exc:
+            if reference:
+                raise FileManagementError("局点 Relay 身份无效") from exc
+            # Legacy installations without a registry use the physical
+            # directory as their only available identity.
+            return physical_site
+        try:
+            same_directory = record.root_path.resolve() == self.paths.site_dir(physical_site).resolve()
+        except OSError as exc:
+            raise FileManagementError("局点 Relay 身份无效") from exc
+        if not same_directory:
+            raise FileManagementError("局点 Relay 身份与文件目录不匹配")
+        return record.site_id
 
     def _enable_device_sftp(self, site: str, device: Device) -> str:
         from netconsole.services.device_operation_service import DeviceSftpEnableProfileUnresolved
@@ -1520,7 +1548,11 @@ class FileManagementApplicationService:
             modified_time=str(context.params.get("remote_modified_at") or "") or None,
             category=category,
         )
-        transfer = FileTransferService(site, context.paths, strict_host_keys=True)
+        transfer = self._new_transfer(
+            site,
+            relay_site_id=str(context.params.get("relay_site_id") or ""),
+            source="download_worker",
+        )
 
         class _JobCancelToken:
             def is_cancelled(self) -> bool:
@@ -2122,6 +2154,7 @@ class FileManagementApplicationService:
         return {
             **descriptor,
             "site_name": site,
+            "relay_site_id": self._canonical_relay_site_id(site),
             "task_name": self._descriptor_task_name(descriptor),
             "task_source": "local",
             "file_source": descriptor.get("source_kind", ""),
