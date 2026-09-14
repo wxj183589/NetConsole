@@ -655,11 +655,24 @@ class FileManagementApplicationService:
         task_id: str,
     ) -> tuple[FileTransferService, str]:
         last_error: Exception | None = None
+        app_logger.log_info(
+            "SFTP_RECONNECT_STARTED",
+            f"site={site}, task_id={task_id}, device_uuid={device.device_uuid or ''}",
+        )
         for attempt in range(4):
             try:
-                return transfer, normalize_remote_path(transfer.connect(device))
+                root_path = normalize_remote_path(transfer.connect(device))
+                app_logger.log_info(
+                    "SFTP_RECONNECT_COMPLETED",
+                    f"site={site}, task_id={task_id}, attempt={attempt + 1}, root_path={root_path}",
+                )
+                return transfer, root_path
             except SftpUnavailableError as exc:
                 last_error = exc
+                app_logger.log_warning(
+                    "SFTP_RECONNECT_ATTEMPT_FAILED",
+                    f"site={site}, task_id={task_id}, attempt={attempt + 1}, reason=sftp_unavailable",
+                )
                 transfer.disconnect()
                 if attempt < 3:
                     sleep(1.0)
@@ -667,6 +680,10 @@ class FileManagementApplicationService:
                         site,
                     )
             except HostKeyTrustError as exc:
+                app_logger.log_error(
+                    "SFTP_RECONNECT_FAILED",
+                    f"site={site}, task_id={task_id}, attempt={attempt + 1}, reason=host_key_trust_error",
+                )
                 transfer.disconnect()
                 raise DeviceFileSftpError(
                     "DEVICE_FILE_HOST_KEY_UPDATE_FAILED",
@@ -676,8 +693,20 @@ class FileManagementApplicationService:
                 ) from exc
             except Exception as exc:
                 last_error = exc
+                app_logger.log_error(
+                    "SFTP_RECONNECT_FAILED",
+                    (
+                        f"site={site}, task_id={task_id}, attempt={attempt + 1}, "
+                        f"exception_class={exc.__class__.__name__}, "
+                        f"exception_message={redact_web_task_text(sanitize_sensitive_text(str(exc), device))[:240]}"
+                    ),
+                )
                 transfer.disconnect()
                 break
+        app_logger.log_error(
+            "SFTP_RECONNECT_FAILED",
+            f"site={site}, task_id={task_id}, reason=retry_exhausted",
+        )
         raise DeviceFileSftpError(
             "DEVICE_FILE_SFTP_RECONNECT_FAILED",
             "设备侧 SFTP 已执行启用，但重新连接设备文件服务失败，请稍后重试。",

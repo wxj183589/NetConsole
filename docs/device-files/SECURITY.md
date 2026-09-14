@@ -9,7 +9,8 @@
   这不等于关闭 Host Key 读取，也不使用未持久化的 `AutoAddPolicy`。变化记录后台日志，现场无需确认。
 - 自动启用只在 SSH authentication 成功且 subsystem 明确不可用时触发。认证、网络、Host Key 持久化
   或未知设备事实失败时不会触发写命令。
-- 只允许已知 H3C Comware V7 与支持角色的 Profile；软件版本为空时先由设备 `display version` 确认 V7。
+- 只允许已知 H3C Comware V7/V9 与支持角色的 Profile；V9 使用显式 `family_compatible` controlled-write
+  Profile，不复用或假设 V7 selector；软件版本为空时先由设备 `display version` 确认 V7/V9。
   Huawei、ZTE、未知厂商/平台/角色和无法确认 major 均 fail closed。
 - 任务、DTO、事件和日志不得包含密码、Token、密钥字节或未脱敏命令回显。
 

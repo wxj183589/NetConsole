@@ -56,7 +56,7 @@ _STEP_KEYS = frozenset(
         "verification",
     }
 )
-_COMPATIBILITY_LEVELS = frozenset({"fixture_verified", "generic_read_only"})
+_COMPATIBILITY_LEVELS = frozenset({"fixture_verified", "generic_read_only", "family_compatible"})
 _PROFILE_RISK_LEVELS = frozenset({"read_only", "controlled_write"})
 _VERIFICATION_STATUSES = frozenset(
     {"fixture_verified", "behavior_preservation_only", "field_verified"}
@@ -646,7 +646,10 @@ def resolve_device_command_profile(
         for profile in candidates
         if profile.selector.software_version == "*"
     ]
-    if len(generic) == 1 and generic[0].compatibility == "generic_read_only":
+    if len(generic) == 1 and generic[0].compatibility in {
+        "generic_read_only",
+        "family_compatible",
+    }:
         return generic[0]
     if len(generic) > 1:
         raise DeviceCommandProfileError("命令 Profile generic selector 不唯一")
@@ -782,17 +785,18 @@ def resolve_device_sftp_enable_profile(
         raise DeviceCommandProfileNotFound(
             f"SFTP 启用仅支持 Comware 平台: platform={platform or 'unknown'}"
         )
-    # Some AC firmware does not expose a populated inventory version field
-    # before the first CLI session.  Select the already verified V7 family
-    # provisionally; the SFTP worker probes ``display version`` before any
-    # write and refuses the operation unless the device itself confirms V7.
-    selected_version = facts.software_version or "Comware V7"
+    major = str(facts.software_major or "").strip().upper()
+    if major and major not in H3C_COMWARE_SUPPORTED_MAJORS:
+        raise DeviceCommandProfileNotFound(
+            "SFTP 启用仅支持已确认的 Comware major=V7 或 V9: "
+            f"major={major}"
+        )
     return resolve_device_command_profile(
         operation_id=DEVICE_SFTP_ENABLE_OPERATION_ID,
         vendor=vendor,
         role=role,
         platform=platform,
-        software_version=selected_version,
+        software_version=facts.software_version,
         paths=paths,
     )
 
@@ -804,9 +808,12 @@ def bind_device_sftp_enable_commands(
 ) -> tuple[str, ...]:
     if profile.operation_id != DEVICE_SFTP_ENABLE_OPERATION_ID:
         raise DeviceCommandProfileError("绑定用户名需要 device.sftp.enable Profile")
-    if profile.risk != "controlled_write" or profile.selector.software_version == "*":
+    if profile.risk != "controlled_write" or (
+        profile.selector.software_version == "*"
+        and profile.compatibility != "family_compatible"
+    ):
         raise DeviceCommandProfileError(
-            "SFTP 启用 Profile 必须是 Comware major family 或 release override controlled_write"
+            "SFTP 启用 Profile 必须是 Comware major family 或已验证的 family-compatible controlled_write"
         )
     if not isinstance(username, str) or not _DEVICE_USERNAME_PATTERN.fullmatch(username):
         raise DeviceCommandProfileError("SFTP 用户名必须是 1-64 位 ASCII 字母、数字、点、下划线或短横线")
@@ -901,15 +908,24 @@ def _parse_profile(row: object) -> DeviceCommandProfile:
     risk = _normalize_identifier(row.get("risk"), "risk")
     if risk not in _PROFILE_RISK_LEVELS:
         raise DeviceCommandProfileError(f"{profile_id}: risk 不受支持")
-    if selector.software_version == "*" and risk == "controlled_write":
+    if selector.software_version == "*" and risk == "controlled_write" and not (
+        operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID
+        and compatibility == "family_compatible"
+    ):
         raise DeviceCommandProfileError(f"{profile_id}: controlled_write Profile 不允许通配版本")
-    if selector.software_version == "*" and compatibility != "generic_read_only":
+    if selector.software_version == "*" and compatibility not in {
+        "generic_read_only",
+        "family_compatible",
+    }:
         raise DeviceCommandProfileError(
-            f"{profile_id}: generic Profile 必须声明 generic_read_only"
+            f"{profile_id}: generic Profile 必须声明 generic_read_only 或 family_compatible"
         )
-    if selector.software_version != "*" and compatibility == "generic_read_only":
+    if selector.software_version != "*" and compatibility in {
+        "generic_read_only",
+        "family_compatible",
+    }:
         raise DeviceCommandProfileError(
-            f"{profile_id}: generic_read_only Profile 必须使用通配版本"
+            f"{profile_id}: {compatibility} Profile 必须使用通配版本"
         )
     if risk == "controlled_write" and operation_id != DEVICE_SFTP_ENABLE_OPERATION_ID:
         raise DeviceCommandProfileError(f"{profile_id}: 当前仅允许 SFTP controlled_write Profile")

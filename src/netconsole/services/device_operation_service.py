@@ -26,6 +26,7 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.device_command_profile_service import (
     DEVICE_INVENTORY_OPERATION_ID,
     DEVICE_SFTP_ENABLE_OPERATION_ID,
+    H3C_COMWARE_SUPPORTED_MAJORS,
     DeviceCommandProfile,
     bind_device_sftp_enable_commands,
     bind_submitted_device_inventory_profile,
@@ -590,15 +591,15 @@ def run_device_sftp_enable(context: JobContext) -> dict[str, object]:
         collected_at=context.params.get("platform_collected_at"),
     )
     submitted_facts = DevicePlatformFacts(
-        vendor=str(context.params.get("platform_vendor") or ""),
-        role=str(context.params.get("platform_role") or "unknown"),  # type: ignore[arg-type]
-        platform=str(context.params.get("platform") or "unknown"),
-        software_version=str(context.params.get("software_version") or "") or None,
+        vendor=submitted_identity.vendor,
+        role=submitted_identity.role,
+        platform=submitted_identity.platform,
+        software_version=submitted_identity.software_version,
         software_major=submitted_identity.software_major,
         software_release=submitted_identity.software_release,
-        source=str(context.params.get("platform_source") or "submitted_job"),
-        confidence=str(context.params.get("platform_confidence") or "unknown"),  # type: ignore[arg-type]
-        collected_at=str(context.params.get("platform_collected_at") or "") or None,
+        source=submitted_identity.source,
+        confidence=submitted_identity.confidence,
+        collected_at=submitted_identity.collected_at,
     )
     profile = resolve_device_operation_profile(
         device,
@@ -611,58 +612,176 @@ def run_device_sftp_enable(context: JobContext) -> dict[str, object]:
         or profile.profile_version != int(context.params.get("profile_version") or 0)
     ):
         raise ValueError("提交时命令 Profile 与 Worker 校验结果不一致")
-    commands = bind_device_sftp_enable_commands(
-        profile,
-        username=str(device.ssh_username or "").strip(),
-    )
-    context.progress("device_sftp_enable", 0, len(commands), "正在通过受控操作启用设备 SFTP")
+    resolved_profile = profile
+    commands = tuple(profile.commands)
+    detected_major = str(submitted_facts.software_major or "").strip().upper()
+    current_step = "sftp.preflight.version"
+    failure_logged = False
+
+    def audit(
+        message: str,
+        *,
+        current: int = 0,
+        step: str = "",
+        reason: str = "",
+        **details: object,
+    ) -> None:
+        context.structured_progress(
+            "device_sftp_enable",
+            current,
+            len(commands),
+            message,
+            step=step,
+            reason=reason,
+            detected_major=detected_major,
+            profile_id=resolved_profile.profile_id,
+            profile_version=resolved_profile.profile_version,
+            **details,
+        )
+
+    def audit_failure(step: str, reason: str, **details: object) -> None:
+        nonlocal failure_logged
+        failure_logged = True
+        audit("SFTP_ENABLE_FAILED", step=step, reason=reason, **details)
 
     def operation(connection, _target):
+        nonlocal commands, current_step, detected_major, resolved_profile
         outputs: list[str] = []
-        if not submitted_facts.software_major:
-            detected_version = safe_send_command(
-                connection,
-                "display version",
-                read_timeout=30,
-                strip_prompt=False,
-                strip_command=False,
-                use_timing=True,
-            )
-            if _detect_comware_major(detected_version) != "V7":
-                raise DeviceSftpEnableProfileUnresolved(
-                    "设备 CLI 未确认 H3C Comware V7，未执行 SFTP 配置命令。"
+        try:
+            if not submitted_facts.software_major:
+                audit("SFTP_PREFLIGHT_STARTED", step=current_step)
+                detected_version = safe_send_command(
+                    connection,
+                    "display version",
+                    read_timeout=30,
+                    strip_prompt=False,
+                    strip_command=False,
+                    use_timing=True,
                 )
-        for index, command in enumerate(commands, start=1):
-            context.check_cancelled()
-            output = safe_send_command(
-                connection,
-                command,
-                read_timeout=30,
-                strip_prompt=False,
-                strip_command=False,
-                use_timing=True,
-            )
-            lowered = output.casefold()
-            if any(marker in lowered for marker in ("% unrecognized", "% incomplete", "% ambiguous", "% wrong parameter", "% permission denied", "error:")):
-                raise RuntimeError("设备拒绝 SFTP 配置命令")
-            outputs.append(output)
-            context.progress("device_sftp_enable", index, len(commands), f"启用设备 SFTP {index}/{len(commands)}")
-        return outputs
+                detected_major = _detect_comware_major(detected_version)
+                audit(
+                    "SFTP_PREFLIGHT_VERSION",
+                    step=current_step,
+                    software_version=redact_web_task_text(
+                        sanitize_sensitive_text(detected_version, device)
+                    )[:240],
+                )
+                if detected_major not in H3C_COMWARE_SUPPORTED_MAJORS:
+                    audit_failure(
+                        current_step,
+                        "unsupported_or_unrecognized_comware_major",
+                    )
+                    raise DeviceSftpEnableProfileUnresolved(
+                        "设备 CLI 未确认受支持的 H3C Comware major，未执行 SFTP 配置命令。"
+                    )
+                detected_facts = identify_device_platform(
+                    vendor=device.vendor_key,
+                    device_type=device.device_type,
+                    software_version=detected_version,
+                )
+                resolved_profile = resolve_device_operation_profile(
+                    device,
+                    operation_id,
+                    platform_facts=detected_facts,
+                    paths=context.paths,
+                )
+                commands = bind_device_sftp_enable_commands(
+                    resolved_profile,
+                    username=str(device.ssh_username or "").strip(),
+                )
+                audit(
+                    "SFTP_PROFILE_RESOLVED",
+                    step="sftp.profile.resolve",
+                )
+            else:
+                commands = bind_device_sftp_enable_commands(
+                    resolved_profile,
+                    username=str(device.ssh_username or "").strip(),
+                )
+                audit("SFTP_PROFILE_RESOLVED", step="sftp.profile.resolve")
 
-    with netmiko_connection.ssh_connection_context(
-        "device_sftp_enable",
-        "collect",
-        device_uuid=str(device.device_uuid or ""),
-        paths=context.paths,
-        site_id=site,
-    ):
-        netmiko_connection.run_netmiko_with_retry(device, operation)
+            audit("SFTP_ENABLE_STARTED", step="sftp.enable.start")
+            for index, (step_id, command) in enumerate(
+                zip((step.step_id for step in resolved_profile.steps), commands),
+                start=1,
+            ):
+                context.check_cancelled()
+                current_step = step_id
+                audit("SFTP_ENABLE_STEP", current=index - 1, step=step_id, status="started")
+                output = safe_send_command(
+                    connection,
+                    command,
+                    read_timeout=30,
+                    strip_prompt=False,
+                    strip_command=False,
+                    use_timing=True,
+                )
+                lowered = output.casefold()
+                marker = next(
+                    (
+                        value
+                        for value in (
+                            "% unrecognized",
+                            "% incomplete",
+                            "% ambiguous",
+                            "% wrong parameter",
+                            "% permission denied",
+                            "error:",
+                        )
+                        if value in lowered
+                    ),
+                    "",
+                )
+                if marker:
+                    audit_failure(
+                        step_id,
+                        "device_rejected_command",
+                        device_output_marker=marker,
+                    )
+                    raise RuntimeError("设备拒绝 SFTP 配置命令")
+                outputs.append(output)
+                audit("SFTP_ENABLE_STEP", current=index, step=step_id, status="completed")
+            audit("SFTP_ENABLE_COMPLETED", current=len(commands), step="sftp.enable.complete")
+            return outputs
+        except Exception as exc:
+            if not failure_logged:
+                audit_failure(
+                    current_step,
+                    "command_execution_error",
+                    exception_class=exc.__class__.__name__,
+                    exception_message=redact_web_task_text(
+                        sanitize_sensitive_text(str(exc), device)
+                    )[:240],
+                )
+            raise
+
+    try:
+        with netmiko_connection.ssh_connection_context(
+            "device_sftp_enable",
+            "collect",
+            device_uuid=str(device.device_uuid or ""),
+            paths=context.paths,
+            site_id=site,
+        ):
+            netmiko_connection.run_netmiko_with_retry(device, operation)
+    except Exception as exc:
+        if not failure_logged:
+            audit_failure(
+                current_step,
+                "connection_setup_error",
+                exception_class=exc.__class__.__name__,
+                exception_message=redact_web_task_text(
+                    sanitize_sensitive_text(str(exc), device)
+                )[:240],
+            )
+        raise
     return {
         "operation_id": operation_id,
-        "profile_id": profile.profile_id,
-        "profile_version": profile.profile_version,
+        "profile_id": resolved_profile.profile_id,
+        "profile_version": resolved_profile.profile_version,
         "device_uuid": str(device.device_uuid or ""),
-        "real_device_status": profile.real_device_status,
+        "detected_major": detected_major,
+        "real_device_status": resolved_profile.real_device_status,
         "message": "设备 SFTP 启用命令已执行",
     }
 

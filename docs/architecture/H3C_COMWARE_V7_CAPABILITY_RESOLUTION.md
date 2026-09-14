@@ -52,12 +52,13 @@ Profile 选择优先级是：
 
 ## SFTP 安全边界
 
-`device.sftp.enable` 仍是 `controlled_write`，当前受控 selector 仍是 H3C Comware V7；AC/FIT-AP
-V9 只读能力不自动扩大写操作范围。执行前必须确认：
+`device.sftp.enable` 仍是 `controlled_write`，当前受控范围是 H3C Comware V7 已验证 family Profile
+以及 V7/V9 的显式 `family_compatible` Profile；AC/FIT-AP 的 V9 只读能力不自动扩大写操作范围。
+执行前必须确认：
 
 - vendor 是 H3C；
 - platform/os family 是 Comware；
-- major 是 V7；
+- major 是 V7 或 V9；
 - role 是已知的 switch、wireless_controller 或 mobile_router；
 - SSH 已认证、SFTP 子系统明确不可用且用户已授权。
 

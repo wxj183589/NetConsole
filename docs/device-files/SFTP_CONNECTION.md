@@ -23,13 +23,14 @@ SSH 登录 → 探测 SFTP subsystem
 `device.sftp.enable`；密码错误、跳板/目标不可达、认证失败、Host Key 写入失败和未知异常不会触发
 设备配置。
 
-已知 H3C Comware V7 的 `switch`、`wireless_controller`、`mobile_router` 使用对应的 family Profile；
+已知 H3C Comware V7/V9 的 `switch`、`wireless_controller`、`mobile_router` 使用对应的 family Profile；
 `wireless_ac`、`wlan_controller`、`controller`、`ac` 在 H3C Comware 上统一规范为
-`wireless_controller`。Release 字符串如 `RxxxxPxx` 或版本格式差异不阻断已确认的 V7 family。
-软件版本为空时，Worker 先在设备 CLI 执行 `display version`，只有确认 Comware V7 才执行写命令。
+`wireless_controller`。Release 字符串如 `RxxxxPxx` 或版本格式差异不阻断已确认的 V7/V9 family；
+V9 使用 `family_compatible` controlled-write Profile，不假设 V7 命令兼容性。
+软件版本为空时，Worker 先在设备 CLI 执行 `display version`，只有确认 Comware V7 或 V9 才执行写命令。
 Huawei、ZTE、未知厂商/平台/角色或无法确认 major 不会执行 H3C 命令。
 
-当前 H3C V7 SFTP enable Profile 的受控命令为：
+当前 H3C Comware V7/V9 SFTP enable Profile 的受控命令模板为：
 
 ```text
 system-view
@@ -53,5 +54,5 @@ Profile ID/version，再通过统一 `DeviceSSHConnectionFactory` 执行。任�
 `DEVICE_FILE_SFTP_ENABLE_FAILED`、`DEVICE_FILE_SFTP_RECONNECT_FAILED`。页面不显示 Paramiko、socket、
 密码或原始命令回显。
 
-真实设备上的 AC、MR 和 Host Key 轮换仍标记为 `REAL_DEVICE_PENDING`，本地测试和协议拓扑不能替代
+真实设备上的 AC、MR、SFTP controlled-write 和 Host Key 轮换仍标记为 `REAL_DEVICE_PENDING`，本地测试和协议拓扑不能替代
 现场验证。

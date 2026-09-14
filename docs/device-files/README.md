@@ -21,7 +21,7 @@ FileTransferService`，下载任务继续使用现有 Task Center。
 避免外部进程再次要求现场人员处理 NetConsole 的 Host Key 信任。
 
 支持的 H3C 角色包括 `switch`、`wireless_controller` 和 `mobile_router`；历史角色别名在 H3C Comware
-上下文中统一归一化。未知厂商、未知平台、无法确认 Comware V7 或认证/网络失败均不会执行 H3C 命令。
+上下文中统一归一化。未知厂商、未知平台、无法确认 Comware V7/V9 或认证/网络失败均不会执行 H3C 命令。
 
 ## 安全与可恢复性
 

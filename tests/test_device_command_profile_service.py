@@ -359,11 +359,12 @@ def test_h3c_comware_v7_unknown_role_does_not_fallback_to_switch() -> None:
         )
 
 
-def test_h3c_sftp_enable_uses_provisional_v7_family_when_cli_version_is_missing() -> None:
+def test_h3c_sftp_enable_uses_provisional_family_when_cli_version_is_missing() -> None:
     device = Device(name="AC", device_vendor="H3C", device_type="wireless_controller")
 
     profile = resolve_device_sftp_enable_profile(device)
-    assert profile.profile_id == "h3c.comware.wireless_controller.v7.sftp-enable.v1"
+    assert profile.profile_id == "h3c.comware.wireless_controller.family.sftp-enable.v1"
+    assert profile.compatibility == "family_compatible"
 
 
 @pytest.mark.parametrize("vendor", ("Huawei", "ZTE"))
@@ -483,15 +484,20 @@ def test_h3c_mobile_router_platform_inference_is_scoped() -> None:
     assert cloud_ap.platform == "unknown"
 
 
-def test_unified_loader_exposes_exact_v7_sftp_profiles_for_supported_roles() -> None:
+def test_unified_loader_exposes_v7_and_family_sftp_profiles_for_supported_roles() -> None:
     profiles = load_device_command_profiles()
     sftp = [profile for profile in profiles if profile.operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID]
 
-    assert len(sftp) == 3
+    v7 = [profile for profile in sftp if profile.selector.software_version == "V7"]
+    family = [profile for profile in sftp if profile.selector.software_version == "*"]
+
+    assert len(sftp) == 6
     assert {profile.selector.role for profile in sftp} == {"switch", "wireless_controller", "mobile_router"}
-    assert all(profile.selector.software_version == "V7" for profile in sftp)
+    assert len(v7) == 3
+    assert len(family) == 3
     assert all(profile.risk == "controlled_write" for profile in sftp)
-    assert all(profile.compatibility == "fixture_verified" for profile in sftp)
+    assert all(profile.compatibility == "fixture_verified" for profile in v7)
+    assert all(profile.compatibility == "family_compatible" for profile in family)
     assert all(profile.real_device_status == "real_device_pending" for profile in sftp)
     assert all(profile.commands[2] == "ssh user {username} service-type all authentication-type any" for profile in sftp)
 
@@ -523,8 +529,12 @@ def test_h3c_wireless_controller_sftp_profile_accepts_field_aliases_and_version_
         software_version=software_version,
     )
 
-    assert profile.profile_id == "h3c.comware.wireless_controller.v7.sftp-enable.v1"
-    assert profile.selector.software_version == "V7"
+    if software_version is None:
+        assert profile.profile_id == "h3c.comware.wireless_controller.family.sftp-enable.v1"
+        assert profile.selector.software_version == "*"
+    else:
+        assert profile.profile_id == "h3c.comware.wireless_controller.v7.sftp-enable.v1"
+        assert profile.selector.software_version == "V7"
 
 
 def test_sftp_profile_never_crosses_vendor_boundary() -> None:
@@ -571,11 +581,39 @@ def test_sftp_binding_revalidates_the_rendered_sequence(monkeypatch) -> None:
     assert calls == [(commands, DEVICE_SFTP_ENABLE_OPERATION_ID)]
 
 
-def test_sftp_resolution_has_no_generic_version_fallback() -> None:
-    with pytest.raises(DeviceCommandProfileNotFound):
+def test_sftp_resolution_uses_family_compatible_profile_for_v9() -> None:
+    profile = resolve_device_sftp_enable_profile(
+        Device(name="SW", device_vendor="H3C", device_type="SW"),
+        software_version="Comware V9",
+    )
+
+    assert profile.profile_id == "h3c.comware.switch.family.sftp-enable.v1"
+    assert profile.selector.software_version == "*"
+    assert profile.compatibility == "family_compatible"
+    assert bind_device_sftp_enable_commands(profile, username="admin")[1] == "sftp server enable"
+
+
+@pytest.mark.parametrize(
+    ("software_version", "expected_profile"),
+    (
+        ("Version 7.1.070, Release R2619P08", "h3c.comware.switch.v7.sftp-enable.v1"),
+        ("Version 9.1.081, Release R1615P01", "h3c.comware.switch.family.sftp-enable.v1"),
+    ),
+)
+def test_sftp_resolution_rejects_unsupported_comware_major_and_selects_supported_profile(
+    software_version: str,
+    expected_profile: str,
+) -> None:
+    profile = resolve_device_sftp_enable_profile(
+        Device(name="SW", device_vendor="H3C", device_type="SW"),
+        software_version=software_version,
+    )
+    assert profile.profile_id == expected_profile
+
+    with pytest.raises(DeviceCommandProfileNotFound, match="V7 或 V9"):
         resolve_device_sftp_enable_profile(
             Device(name="SW", device_vendor="H3C", device_type="SW"),
-            software_version="Comware V9",
+            software_version="Version 5.2.1, Release R0001P01",
         )
 
 
