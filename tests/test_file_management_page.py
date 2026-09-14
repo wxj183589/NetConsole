@@ -77,6 +77,11 @@ def test_file_transfer_reports_sftp_unavailable_without_running_device_write_com
     monkeypatch.setattr(
         service_module.TunnelManager, "open_tunnel", lambda *_args: FakeTunnelSession()
     )
+    def fake_connect(target, **_kwargs):
+        if not target.via_tunnel:
+            raise RuntimeError("direct failed")
+        return FakeSSHClient()
+
     monkeypatch.setattr(service_module, "sleep", lambda _seconds: None)
 
     device = Device(
@@ -93,6 +98,7 @@ def test_file_transfer_reports_sftp_unavailable_without_running_device_write_com
         tunnel1_username="jump",
     )
     service = FileTransferService("demo", PathResolver(tmp_path))
+    monkeypatch.setattr(service, "_connect_ssh_client", fake_connect)
 
     with pytest.raises(SftpUnavailableError, match="未启用 SFTP"):
         service.connect(device)

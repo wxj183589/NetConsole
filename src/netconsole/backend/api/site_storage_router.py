@@ -184,6 +184,24 @@ def test_ssh_relay(request: Request, site_id: str) -> dict[str, object]:
     return _call(lambda: _ssh_relay(request).test_jump_host(site_id))
 
 
+@router.post(
+    "/sites/{site_id}/ssh-relay/host-key/refresh",
+    summary="重新获取 SSH 中转主机指纹",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def refresh_ssh_relay_host_key(request: Request, site_id: str) -> dict[str, object]:
+    return _call(lambda: _ssh_relay(request).refresh_jump_host_key(site_id))
+
+
+@router.delete(
+    "/sites/{site_id}/ssh-relay/host-key",
+    summary="删除当前 SSH 中转主机指纹",
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def delete_ssh_relay_host_key(request: Request, site_id: str) -> dict[str, object]:
+    return _call(lambda: _ssh_relay(request).delete_jump_host_key(site_id))
+
+
 @router.get(
     "/sites/{site_id}/task-result-storage",
     summary="读取任务结果存储 rollout 状态",

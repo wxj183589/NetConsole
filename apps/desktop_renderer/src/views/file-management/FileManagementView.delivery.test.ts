@@ -9,7 +9,6 @@ import type { FileDownloadTask } from '../../types/fileManagement'
 const api = vi.hoisted(() => ({
   cancelFileDownload: vi.fn(),
   clearFileDownloads: vi.fn(),
-  confirmDeviceSftpSetup: vi.fn(),
   connectDeviceFiles: vi.fn(),
   createLocalDirectory: vi.fn(),
   disconnectDeviceFiles: vi.fn(),
@@ -21,7 +20,6 @@ const api = vi.hoisted(() => ({
   prepareFileDesktopAction: vi.fn(),
   retryFileDownload: vi.fn(),
   startRemoteFileDownloadBatch: vi.fn(),
-  trustDeviceHostKey: vi.fn(),
 }))
 const messages = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn(), warning: vi.fn() }))
 

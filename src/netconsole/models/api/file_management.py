@@ -81,14 +81,6 @@ class DeviceFileConnectionRequestDTO(ApiModel):
     device_id: str = Field(min_length=1, max_length=120)
 
 
-class HostKeyTrustRequestDTO(ApiModel):
-    challenge_id: str = Field(min_length=36, max_length=80, pattern=r"^hk1_[0-9a-f]{32}$")
-
-
-class SftpSetupConfirmationRequestDTO(ApiModel):
-    confirmation_id: str = Field(min_length=36, max_length=80, pattern=r"^sf1_[0-9a-f]{32}$")
-
-
 class FileRemoteDeviceDTO(ApiModel):
     device_id: str
     name: str
@@ -258,7 +250,6 @@ __all__ = [
     "FileManagementCapabilityDTO",
     "FileManagementStatusDTO",
     "FileRemoteDeviceDTO",
-    "HostKeyTrustRequestDTO",
     "LocalDirectoryCreateRequestDTO",
     "LocalFileEntryDTO",
     "LocalFilePageDTO",
@@ -266,5 +257,4 @@ __all__ = [
     "ManagedFilePageDTO",
     "RemoteFileEntryDTO",
     "RemoteFilePageDTO",
-    "SftpSetupConfirmationRequestDTO",
 ]

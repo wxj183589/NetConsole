@@ -39,7 +39,10 @@ SITE_RELAY_CREDENTIAL_REF_KEY = "ssh_relay_credential_ref"
 SITE_RELAY_REVISION_KEY = "ssh_relay_revision"
 SITE_RELAY_CREDENTIAL_DB_NAME = "site_ssh_credentials.sqlite3"
 DEFAULT_SSH_PORT = 22
-TARGET_HOST_KEY_UNKNOWN_CODE = "TARGET_HOSTKEY_FAILED"
+SITE_RELAY_KEEPALIVE_SECONDS = 25
+TARGET_HOST_KEY_UPDATE_FAILED_CODE = "TARGET_HOSTKEY_UPDATE_FAILED"
+# Compatibility labels for older persisted diagnostics and API clients.
+TARGET_HOST_KEY_UNKNOWN_CODE = TARGET_HOST_KEY_UPDATE_FAILED_CODE
 TARGET_HOST_KEY_CHANGED_CODE = "TARGET_HOSTKEY_CHANGED"
 _RELAY_RUNTIME_STATUS: dict[tuple[str, str], dict[str, object]] = {}
 _RELAY_RUNTIME_STATUS_LOCK = threading.RLock()
@@ -344,7 +347,12 @@ class SiteSSHRelayService:
         runtime = _runtime_status(self.paths, str(site_id))
         manager = _existing_manager_for(self.paths, str(site_id))
         if manager is not None:
-            runtime.update(manager.public_status())
+            for key, value in manager.public_status().items():
+                # A reconnect failure may leave the manager without a new key
+                # event; keep the last truthful refresh result visible rather
+                # than replacing it with empty fields.
+                if value not in (None, ""):
+                    runtime[key] = value
         if runtime:
             payload.update(runtime)
         if not config.enabled:
@@ -379,6 +387,12 @@ class SiteSSHRelayService:
                 "SSH 中转密码未配置，无法连接",
             )
         return ResolvedSiteSSHRelayConfig(**config.__dict__, password=password)
+
+    def open_target_channel(self, site_id: str, target_host: str, target_port: int) -> Any:
+        """Open one target channel on the site's shared Jump Transport."""
+
+        config = self.resolve_for_connection(site_id)
+        return _manager_for(self.paths, config).open_channel(target_host, target_port)
 
     def save(
         self,
@@ -529,6 +543,10 @@ class SiteSSHRelayService:
                 "SSH 中转密码未配置，无法测试连接",
             )
         resolved = ResolvedSiteSSHRelayConfig(**config.__dict__, password=password)
+        # A manual refresh must not reuse a cached transport that could still
+        # hold the previous server key.  The next normal operation will build
+        # a fresh managed session after this probe.
+        close_site_jump_sessions(str(site_id), self.paths)
         client = _new_paramiko_client(self.paths, resolved.host, resolved.port, role="jump")
         started = __import__("time").monotonic()
         try:
@@ -546,6 +564,15 @@ class SiteSSHRelayService:
             event = dict(getattr(client, "_netconsole_host_key_event", {}) or {})
             if event:
                 _log_jump_host_key_event(resolved.site_id, event)
+                _remember_runtime_status(
+                    self.paths,
+                    str(site_id),
+                    runtime_status="STOPPED",
+                    runtime_message="测试连接已完成，常驻 SSH 中转未启动",
+                    host_key_status=event.get("status", ""),
+                    host_key_fingerprint_sha256=event.get("fingerprint_sha256", ""),
+                    host_key_updated_at=_now(),
+                )
             return {
                 "success": True,
                 "site_id": resolved.site_id,
@@ -564,6 +591,42 @@ class SiteSSHRelayService:
         finally:
             client.close()
 
+    def refresh_jump_host_key(self, site_id: str) -> dict[str, object]:
+        """重新连接 Jump Host 并自动登记/替换当前 host:port 指纹。"""
+
+        result = self.test_jump_host(site_id)
+        result["message"] = "指纹已更新"
+        config = self.load(site_id)
+        if config.enabled:
+            resident = self.auto_start_if_enabled(site_id)
+            result.update(
+                runtime_status=resident.get("runtime_status", "UNKNOWN"),
+                runtime_message=resident.get("runtime_message", ""),
+            )
+        return result
+
+    def delete_jump_host_key(self, site_id: str) -> dict[str, object]:
+        """删除当前局点配置所指向的单个 Jump Host 指纹。"""
+
+        config = self.load(site_id)
+        if not config.host:
+            raise SiteSSHRelayError("SSH_RELAY_CONFIG_INCOMPLETE", "SSH 中转服务器尚未配置")
+        removed = HostKeyTrustService(self.paths).remove(config.host, config.port)
+        close_site_jump_sessions(str(site_id), self.paths)
+        _remember_runtime_status(
+            self.paths,
+            str(site_id),
+            host_key_status="HOST_KEY_UNRECORDED",
+            host_key_fingerprint_sha256="",
+            host_key_updated_at="",
+        )
+        return {
+            **self.public_config(site_id),
+            "message": "指纹已删除" if removed else "当前未记录该中转服务器指纹",
+            "host_key_status": "HOST_KEY_UNRECORDED",
+            "host_key_fingerprint_sha256": "",
+        }
+
 
 def _new_paramiko_client(paths: PathResolver, host: str, port: int, *, role: str) -> Any:
     import paramiko
@@ -575,11 +638,7 @@ def _new_paramiko_client(paths: PathResolver, host: str, port: int, *, role: str
         host,
         port,
         role=role,
-        host_key_policy=(
-            HostKeyPolicy.AUTO_REPLACE
-            if str(role or "").casefold() == "jump"
-            else HostKeyPolicy.STRICT
-        ),
+        host_key_policy=HostKeyPolicy.AUTO_REPLACE,
     )
     return client
 
@@ -649,66 +708,96 @@ class SiteJumpSessionManager:
         started = time.monotonic()
         with self._lock:
             transport = self._ensure_transport_locked()
-            _log_relay_stage(
-                "DIRECT_TCPIP_OPEN",
-                "starting",
-                target_host=str(target_host),
-                target_port=int(target_port),
-                jump_host=self.config.host,
-                jump_port=self.config.port,
-            )
-            try:
-                channel = transport.open_channel(
-                    "direct-tcpip",
-                    (str(target_host), int(target_port)),
-                    ("127.0.0.1", 0),
-                )
-                if channel is None:
-                    raise OSError("direct-tcpip channel unavailable")
+            recovery_attempted = False
+            while True:
                 _log_relay_stage(
                     "DIRECT_TCPIP_OPEN",
-                    "pass",
+                    "starting",
                     target_host=str(target_host),
                     target_port=int(target_port),
                     jump_host=self.config.host,
                     jump_port=self.config.port,
-                    duration_ms=_elapsed_ms(started),
                 )
-                _log_relay_stage(
-                    "TARGET_TCP_READY",
-                    "pass",
-                    target_host=str(target_host),
-                    target_port=int(target_port),
-                    jump_host=self.config.host,
-                    jump_port=self.config.port,
-                    duration_ms=_elapsed_ms(started),
-                )
-                return channel
-            except Exception as exc:
-                if self._transport is None or not bool(self._transport.is_active()):
-                    self._close_locked()
-                _log_relay_stage(
-                    "DIRECT_TCPIP_OPEN",
-                    "fail",
-                    target_host=str(target_host),
-                    target_port=int(target_port),
-                    jump_host=self.config.host,
-                    jump_port=self.config.port,
-                    duration_ms=_elapsed_ms(started),
-                    exception=exc,
-                )
-                raise SiteSSHRelayError(
-                    "JUMP_CHANNEL_FAILED",
-                    f"SSH 中转服务器正常，但无法连接目标设备：{target_host}:{target_port}",
-                    details={
-                        "stage": "DIRECT_TCPIP_OPEN",
-                        "target_host": target_host,
-                        "target_port": int(target_port),
-                        "jump_host": self.config.host,
-                        "jump_port": self.config.port,
-                        "exception": exc.__class__.__name__,
-                    },
-                ) from exc
+                try:
+                    channel = transport.open_channel(
+                        "direct-tcpip",
+                        (str(target_host), int(target_port)),
+                        ("127.0.0.1", 0),
+                    )
+                    if channel is None:
+                        raise OSError("direct-tcpip channel unavailable")
+                    _log_relay_stage(
+                        "DIRECT_TCPIP_OPEN",
+                        "pass",
+                        target_host=str(target_host),
+                        target_port=int(target_port),
+                        jump_host=self.config.host,
+                        jump_port=self.config.port,
+                        duration_ms=_elapsed_ms(started),
+                    )
+                    _log_relay_stage(
+                        "TARGET_TCP_READY",
+                        "pass",
+                        target_host=str(target_host),
+                        target_port=int(target_port),
+                        jump_host=self.config.host,
+                        jump_port=self.config.port,
+                        duration_ms=_elapsed_ms(started),
+                    )
+                    return channel
+                except Exception as exc:
+                    should_recover = (
+                        not recovery_attempted
+                        and _is_stale_jump_transport(transport, exc)
+                    )
+                    if should_recover:
+                        recovery_attempted = True
+                        _log_relay_stage(
+                            "JUMP_TRANSPORT_RECOVERY",
+                            "starting",
+                            target_host=str(target_host),
+                            target_port=int(target_port),
+                            jump_host=self.config.host,
+                            jump_port=self.config.port,
+                            exception=exc,
+                        )
+                        self._close_locked()
+                        transport = self._ensure_transport_locked()
+                        _log_relay_stage(
+                            "JUMP_TRANSPORT_RECOVERY",
+                            "pass",
+                            target_host=str(target_host),
+                            target_port=int(target_port),
+                            jump_host=self.config.host,
+                            jump_port=self.config.port,
+                        )
+                        continue
+                    if self._transport is None or not bool(self._transport.is_active()):
+                        self._close_locked()
+                    _log_relay_stage(
+                        "DIRECT_TCPIP_OPEN",
+                        "fail",
+                        target_host=str(target_host),
+                        target_port=int(target_port),
+                        jump_host=self.config.host,
+                        jump_port=self.config.port,
+                        duration_ms=_elapsed_ms(started),
+                        exception=exc,
+                    )
+                    raise SiteSSHRelayError(
+                        "JUMP_CHANNEL_FAILED",
+                        f"SSH 中转服务器正常，但无法连接目标设备：{target_host}:{target_port}",
+                        details={
+                            "stage": "DIRECT_TCPIP_OPEN",
+                            "target_host": target_host,
+                            "target_port": int(target_port),
+                            "jump_host": self.config.host,
+                            "jump_port": self.config.port,
+                            "exception": exc.__class__.__name__,
+                            "stale_transport_recovery": recovery_attempted,
+                            "recovery_retry_count": int(recovery_attempted),
+                        },
+                    ) from exc
 
     def ensure_running(self) -> None:
         with self._lock:
@@ -762,6 +851,9 @@ class SiteJumpSessionManager:
             transport = client.get_transport()
             if transport is None or not bool(transport.is_active()):
                 raise OSError("jump transport is inactive")
+            set_keepalive = getattr(transport, "set_keepalive", None)
+            if callable(set_keepalive):
+                set_keepalive(SITE_RELAY_KEEPALIVE_SECONDS)
             event = dict(getattr(client, "_netconsole_host_key_event", {}) or {})
             if event:
                 event.setdefault("updated_at", _now())
@@ -849,6 +941,41 @@ def _exception_chain(exc: BaseException) -> tuple[BaseException, ...]:
     return tuple(result)
 
 
+def _is_stale_jump_transport(transport: Any, exc: BaseException) -> bool:
+    """Only recover a dead Jump transport, never a target ACL/reachability error."""
+
+    text = str(exc or "").casefold()
+    target_failure_markers = (
+        "administratively prohibited",
+        "connection refused",
+        "no route to host",
+        "network is unreachable",
+        "unable to connect",
+        "connect failed",
+        "timed out",
+        "timeout",
+    )
+    if any(marker in text for marker in target_failure_markers):
+        return False
+    transport_failure_markers = (
+        "no existing session",
+        "ssh session not active",
+        "transport is not active",
+        "transport is closed",
+        "socket is closed",
+        "broken pipe",
+        "connection reset",
+        "connection aborted",
+    )
+    if any(marker in text for marker in transport_failure_markers):
+        return True
+    is_active = getattr(transport, "is_active", None)
+    try:
+        return not bool(is_active()) if callable(is_active) else False
+    except Exception:
+        return True
+
+
 def _is_bad_host_key_exception(exc: BaseException) -> bool:
     try:
         import paramiko
@@ -922,17 +1049,17 @@ def _target_error(
         code = "TARGET_AUTH_FAILED"
         return SiteSSHRelayError(code, _target_message(f"目标设备 {protocol_label} 认证失败", code, details), details={**details, "stage": "TARGET_AUTH"})
     if _is_bad_host_key_exception(exc):
-        code = TARGET_HOST_KEY_CHANGED_CODE
+        code = "TARGET_HOSTKEY_UPDATE_FAILED"
         return SiteSSHRelayError(
             code,
-            _target_message("目标设备主机密钥已变更，连接已阻止", code, details),
+            _target_message("目标设备 SSH 指纹自动更新失败，连接未建立", code, details),
             details={**details, "stage": "TARGET_HOST_KEY"},
         )
     if any(isinstance(item, HostKeyTrustError) for item in chain):
-        code = TARGET_HOST_KEY_UNKNOWN_CODE
+        code = "TARGET_HOSTKEY_UPDATE_FAILED"
         return SiteSSHRelayError(
             code,
-            _target_message("目标设备主机密钥校验失败", code, details),
+            _target_message("目标设备 SSH 指纹自动更新失败，连接未建立", code, details),
             details={**details, "stage": "TARGET_HOST_KEY"},
         )
     if any(marker in text for marker in ("error reading ssh protocol banner", "ssh protocol banner")):
@@ -1010,11 +1137,9 @@ def _trust_target_server_key(
     trust = HostKeyTrustService(paths)
     try:
         key = _target_server_key(connection)
-        details = trust.inspect(target_host, target_port, key, role="target")
-        first_use = not trust.is_trusted(target_host, target_port, key, role="target")
-        trust.trust(target_host, target_port, key, role="target")
+        result = trust.trust_or_replace(target_host, target_port, key, role="target")
+        details = result.details
     except HostKeyTrustError as exc:
-        changed = str(getattr(exc, "code", "")).endswith("MISMATCH")
         stage = "TARGET_HOST_KEY"
         _log_relay_stage(
             stage,
@@ -1028,8 +1153,8 @@ def _trust_target_server_key(
             exception=exc,
         )
         raise SiteSSHRelayError(
-            TARGET_HOST_KEY_CHANGED_CODE if changed else TARGET_HOST_KEY_UNKNOWN_CODE,
-            "目标设备主机密钥已变更，连接已阻止" if changed else "目标设备主机密钥校验失败",
+            "TARGET_HOSTKEY_UPDATE_FAILED",
+            "目标设备 SSH 指纹自动更新失败，连接未建立",
             details={
                 "stage": stage,
                 "target": f"{target_host}:{target_port}",
@@ -1057,7 +1182,7 @@ def _trust_target_server_key(
             exception=exc,
         )
         raise SiteSSHRelayError(
-            TARGET_HOST_KEY_UNKNOWN_CODE,
+            TARGET_HOST_KEY_UPDATE_FAILED_CODE,
             "目标设备主机密钥读取或保存失败",
             details={
                 "stage": "TARGET_HOST_KEY",
@@ -1073,7 +1198,30 @@ def _trust_target_server_key(
                 "exception": exc.__class__.__name__,
             },
         ) from exc
-    status = "first_use_trusted" if first_use else "verified"
+    status = result.status
+    event = {
+        "status": status,
+        "action": result.action,
+        "host": details.host,
+        "port": details.port,
+        "algorithm": details.algorithm,
+        "fingerprint_sha256": details.fingerprint_sha256,
+        "old_fingerprint_sha256": result.old_fingerprint_sha256,
+        "updated_at": _now(),
+    }
+    try:
+        setattr(connection, "_netconsole_host_key_event", event)
+    except Exception:
+        pass
+    app_logger.log_info(
+        "HOST_KEY_AUTO_REPLACED" if result.action == "REPLACE" else "HOST_KEY_AUTO_ACCEPTED",
+        (
+            f"host={details.host} port={details.port} role=target "
+            f"old_fingerprint={result.old_fingerprint_sha256} "
+            f"new_fingerprint={details.fingerprint_sha256} "
+            f"via={config.host}:{config.port}"
+        ),
+    )
     _log_relay_stage(
         "TARGET_HOST_KEY",
         "pass",
@@ -1192,16 +1340,14 @@ class DeviceSSHConnectionFactory:
         config = self.relay_service.resolve_for_connection(self.site_id)
         manager = _manager_for(self.paths, config)
         is_telnet = "telnet" in str(normalized.get("device_type") or "").casefold()
-        # Netmiko's RejectPolicy prevents the application from recording a
-        # target key on first use.  The managed known_hosts file still rejects
-        # a changed key at Paramiko's BadHostKeyException boundary; after
-        # connect we perform the explicit, role-aware TOFU write below.
+        # Target keys are recorded after the SSH handshake by the shared
+        # HostKeyTrustService.  Do not make Netmiko load a second copy of the
+        # managed file: an old target key must never block the tunnel before
+        # AUTO_REPLACE can update it.
         if not is_telnet:
             normalized.update(
                 {
                     "ssh_strict": False,
-                    "alt_host_keys": True,
-                    "alt_key_file": str(self.paths.global_known_hosts_path),
                     "use_keys": False,
                     "allow_agent": False,
                 }

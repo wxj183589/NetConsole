@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import re
 import socket
 import stat
@@ -19,12 +20,11 @@ from netconsole.services.netmiko_connection import ConnectionTarget, build_netmi
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.services.file_service import file_sha256
 from netconsole.services.host_key_trust_service import (
-    HostKeyTrustGrant,
     HostKeyTrustService,
     HostKeyTrustError,
-    host_key_mismatch_error,
     install_managed_host_key_policy,
 )
+from netconsole.services.site_ssh_relay import SiteSSHRelayError, SiteSSHRelayService
 from netconsole.services.ssh_tunnel import TunnelConnectionError
 from netconsole.utils.text_encoding import clean_h3c_device_text
 
@@ -130,34 +130,23 @@ class FileTransferService:
         site_name: str,
         paths: PathResolver | None = None,
         *,
-        strict_host_keys: bool = False,
+        strict_host_keys: bool = True,
         host_key_trust: HostKeyTrustService | None = None,
-        trust_host_key_once: HostKeyTrustGrant
-        | tuple[HostKeyTrustGrant, ...]
-        | bool
-        | None = None,
+        relay_service: SiteSSHRelayService | None = None,
     ) -> None:
         self.site_name = site_name
         self.paths = paths or PathResolver()
+        # Kept as a compatibility constructor argument. All product paths
+        # use the managed AUTO_REPLACE policy now; no consumer may silently
+        # fall back to a process-local trust cache.
         self.strict_host_keys = bool(strict_host_keys)
         self.host_key_trust = host_key_trust or HostKeyTrustService(self.paths)
-        self.trust_host_key_once = trust_host_key_once
-        if isinstance(trust_host_key_once, HostKeyTrustGrant):
-            self.host_key_grant: tuple[HostKeyTrustGrant, ...] = (
-                trust_host_key_once,
-            )
-        elif isinstance(trust_host_key_once, tuple):
-            self.host_key_grant = tuple(
-                item
-                for item in trust_host_key_once
-                if isinstance(item, HostKeyTrustGrant)
-            )
-        else:
-            self.host_key_grant = ()
+        self.relay_service = relay_service or SiteSSHRelayService(self.paths)
         self._client = None
         self._sftp = None
         self._device: Device | None = None
         self._tunnel_session: TunnelSession | None = None
+        self._relay_channel = None
         self._root_path = ""
         self._current_path = ""
         self._successful_target: ConnectionTarget | None = None
@@ -166,6 +155,8 @@ class FileTransferService:
     def connect(self, device: Device, progress_callback: SftpProgressCallback | None = None) -> str:
         self.disconnect()
         self._attempt_summaries = []
+        relay_enabled = self._site_relay_enabled()
+        relay_jump_label = self._relay_jump_label() if relay_enabled else ""
         targets = [target for target in connection_targets(device) if target.protocol.casefold() == "ssh"]
         if not targets:
             raise RuntimeError("SFTP requires SSH connection settings.")
@@ -176,18 +167,21 @@ class FileTransferService:
 
         for target in targets:
             started = monotonic()
-            failure_stage = "jump_connect" if target.via_tunnel else "target_connect"
+            failure_stage = (
+                "jump_connect"
+                if target.via_tunnel and not relay_enabled
+                else "target_connect"
+            )
             ssh_authenticated = False
             tunnel_session: TunnelSession | None = None
             try:
                 prepared = target
-                if target.via_tunnel:
+                if target.via_tunnel and not relay_enabled:
                     if target.tunnel is None:
                         raise RuntimeError("Tunnel target is missing tunnel profile")
                     tunnel_session = TunnelManager(
-                        strict_host_keys=self.strict_host_keys,
+                        strict_host_keys=True,
                         host_key_trust=self.host_key_trust,
-                        host_key_grant=self.host_key_grant,
                         connect_timeout_seconds=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
                     ).open_tunnel(  # type: ignore[arg-type]
                         target.tunnel,
@@ -210,7 +204,12 @@ class FileTransferService:
                         tunnel_label=target.tunnel_label,
                     )
                 self._emit_progress(progress_callback, "file_management.status.sftp_trying")
-                client = self._connect_ssh_client(prepared, key_host=target.host, key_port=target.port)
+                client = self._connect_ssh_client(
+                    prepared,
+                    key_host=target.host if target.via_tunnel and not relay_enabled else "",
+                    key_port=target.port if target.via_tunnel and not relay_enabled else 0,
+                    via_site_relay=relay_enabled,
+                )
                 ssh_authenticated = True
                 self._emit_progress(progress_callback, "file_management.status.ssh_login_success")
                 self._client = client
@@ -267,6 +266,7 @@ class FileTransferService:
                         success=True,
                         failure_stage="connected",
                         elapsed_ms=int((monotonic() - started) * 1000),
+                        relay_jump_label=relay_jump_label,
                     )
                 )
                 self._attempt_summaries = attempt_summaries
@@ -293,6 +293,7 @@ class FileTransferService:
                         code=exc.code,
                         message=str(exc),
                         elapsed_ms=int((monotonic() - started) * 1000),
+                        relay_jump_label=relay_jump_label,
                     )
                 )
                 unavailable_error = SftpUnavailableError(
@@ -318,6 +319,7 @@ class FileTransferService:
                             code=exc.code,
                             message=str(exc),
                             elapsed_ms=int((monotonic() - started) * 1000),
+                            relay_jump_label=relay_jump_label,
                         ),
                     ]
                     raise
@@ -340,6 +342,7 @@ class FileTransferService:
                         code=classified.code,
                         message=str(classified),
                         elapsed_ms=int((monotonic() - started) * 1000),
+                        relay_jump_label=relay_jump_label,
                     )
                 )
                 app_logger.log_error(
@@ -348,6 +351,7 @@ class FileTransferService:
                         f"device_id={device.device_uuid or device.id or ''}, device_name={device.name}, "
                         f"connection_method={target.method}, target_role={target.target_role}, "
                         f"tunnel_label={target.tunnel_label}, target={target.host}:{target.port}, "
+                        f"jump={relay_jump_label or (f'{target.tunnel.host}:{target.tunnel.port}' if target.tunnel else '')}, "
                         f"failure_stage={failure_stage}, exception_type={exc.__class__.__name__}, "
                         f"transport_active={self._transport_is_active(self._client) if self._client is not None else False}, "
                         f"ssh_authenticated={ssh_authenticated}, elapsed_ms={int((monotonic() - started) * 1000)}, "
@@ -371,28 +375,55 @@ class FileTransferService:
             details={"attempts": attempt_summaries},
         )
 
-    def _connect_ssh_client(self, target, *, key_host: str = "", key_port: int = 0):
+    def _site_relay_enabled(self) -> bool:
+        """Read the current site's Relay switch without breaking library callers."""
+
+        try:
+            return bool(self.relay_service.load(self.site_name).enabled)
+        except SiteSSHRelayError as exc:
+            if exc.code == "SITE_NOT_FOUND":
+                return False
+            raise
+
+    def _relay_jump_label(self) -> str:
+        try:
+            config = self.relay_service.load(self.site_name)
+        except SiteSSHRelayError:
+            return ""
+        return f"{config.host}:{config.port}" if config.enabled else ""
+
+    def _connect_ssh_client(
+        self,
+        target,
+        *,
+        key_host: str = "",
+        key_port: int = 0,
+        via_site_relay: bool = False,
+    ):
         import paramiko
 
         client = paramiko.SSHClient()
-        checked_host = str(key_host or target.host)
-        checked_port = int(key_port or target.port or 22)
-        if self.strict_host_keys:
-            install_managed_host_key_policy(
-                client,
-                self.host_key_trust,
-                checked_host,
-                checked_port,
-                role="target",
-                grant=self.host_key_grant,
-            )
-        else:
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        checked_host = str(target.host if via_site_relay else key_host or target.host)
+        checked_port = int(target.port if via_site_relay else key_port or target.port or 22)
+        install_managed_host_key_policy(
+            client,
+            self.host_key_trust,
+            checked_host,
+            checked_port,
+            role="target",
+            host_key_policy="AUTO_REPLACE",
+        )
         sock = None
         try:
             hostname = target.host
             port = target.port
-            if self.strict_host_keys and target.via_tunnel:
+            if via_site_relay:
+                sock = self.relay_service.open_target_channel(
+                    self.site_name,
+                    target.host,
+                    int(target.port),
+                )
+            elif target.via_tunnel:
                 sock = socket.create_connection(
                     (target.host, target.port),
                     timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
@@ -411,16 +442,39 @@ class FileTransferService:
                 allow_agent=False,
                 sock=sock,
             )
+            if via_site_relay:
+                self._relay_channel = sock
+                setattr(client, "_netconsole_ssh_mode", "jump")
+                setattr(client, "_netconsole_target_host", checked_host)
+                setattr(client, "_netconsole_target_port", checked_port)
         except paramiko.BadHostKeyException as exc:
             if sock is not None:
                 sock.close()
             client.close()
-            raise host_key_mismatch_error(
-                self.host_key_trust,
-                checked_host,
-                checked_port,
-                getattr(exc, "got_key", None),
-                role="target",
+            # Managed clients do not load an unmanaged known_hosts file, so
+            # this is only an unexpected Paramiko path.  Keep it diagnostic
+            # and distinguish persistence failure from a normal key change;
+            # normal changes are handled by AUTO_REPLACE before this point.
+            key = getattr(exc, "got_key", None)
+            details = (
+                self.host_key_trust.inspect(
+                    checked_host,
+                    checked_port,
+                    key,
+                    role="target",
+                ).as_dict()
+                if key is not None
+                else {
+                    "host": checked_host,
+                    "port": checked_port,
+                    "host_key_role": "target",
+                }
+            )
+            raise HostKeyTrustError(
+                "目标设备 SSH 指纹自动更新失败，请查看任务日志后重试。",
+                details,
+                key=key,
+                code="DEVICE_FILE_HOST_KEY_UPDATE_FAILED",
             ) from exc
         except HostKeyTrustError:
             if sock is not None:
@@ -457,9 +511,9 @@ class FileTransferService:
         if "ssh session not active" in lowered or "session not active" in lowered:
             return "SSH 登录成功，但会话在建立 SFTP 前已失效。请检查设备 SSH/SFTP 服务状态。"
         if "not found in known_hosts" in lowered or "server" in lowered and "not found" in lowered:
-            return "SFTP 主机密钥未受信任；请先核验并写入 NetConsole known_hosts。"
+            return "SFTP 主机指纹已由 NetConsole 自动登记或更新。"
         if "host key for server" in lowered and "does not match" in lowered:
-            return "SFTP 主机密钥与 known_hosts 不一致，已拒绝连接。"
+            return "SFTP 主机指纹自动更新失败，连接未建立。"
         return message
 
     @staticmethod
@@ -472,6 +526,12 @@ class FileTransferService:
     ) -> FileTransferConnectionError:
         name = exc.__class__.__name__.casefold()
         text = str(exc or "").casefold()
+        if isinstance(exc, SiteSSHRelayError):
+            return FileTransferConnectionError(
+                exc.code,
+                str(exc),
+                details={"failure_stage": exc.details.get("stage", "jump_connect"), **exc.details},
+            )
         if isinstance(exc, TunnelConnectionError):
             return FileTransferConnectionError(
                 exc.code,
@@ -546,16 +606,26 @@ class FileTransferService:
         elapsed_ms: int,
         code: str = "",
         message: str = "",
+        relay_jump_label: str = "",
     ) -> dict[str, object]:
         tunnel = target.tunnel
+        jump_host = str(getattr(tunnel, "host", "") or "")
+        jump_port = int(getattr(tunnel, "port", 0) or 0)
+        if relay_jump_label:
+            try:
+                jump_host, jump_port_text = relay_jump_label.rsplit(":", 1)
+                jump_port = int(jump_port_text)
+            except (ValueError, TypeError):
+                jump_host = relay_jump_label
+                jump_port = 0
         return {
             "connection_method": target.method,
             "target_role": target.target_role,
             "target_host": target.host,
             "target_port": int(target.port),
             "tunnel_label": target.tunnel_label,
-            "jump_host": str(getattr(tunnel, "host", "") or ""),
-            "jump_port": int(getattr(tunnel, "port", 0) or 0),
+            "jump_host": jump_host,
+            "jump_port": jump_port,
             "success": bool(success),
             "failure_stage": str(failure_stage or ""),
             "error_code": str(code or ""),
@@ -674,9 +744,15 @@ class FileTransferService:
                 self._tunnel_session.close()
             except Exception:
                 pass
+        if self._relay_channel is not None:
+            try:
+                self._relay_channel.close()
+            except Exception:
+                pass
         self._client = None
         self._sftp = None
         self._tunnel_session = None
+        self._relay_channel = None
         self._device = None
         self._root_path = ""
         self._current_path = ""
@@ -822,6 +898,7 @@ class FileTransferService:
         return self._sftp
 
     def list_files(self, device: Device) -> list[RemoteDeviceFile]:
+        relay_enabled = self._site_relay_enabled()
         targets = connection_targets(device)
         if not targets:
             raise RuntimeError("No SSH connection is enabled.")
@@ -835,13 +912,39 @@ class FileTransferService:
             target_socket: socket.socket | None = None
             files: list[RemoteDeviceFile] = []
             try:
-                with prepared_connection_target(target) as prepared:
+                target_context = (
+                    nullcontext(target)
+                    if relay_enabled
+                    else prepared_connection_target(
+                        target,
+                        host_key_trust=self.host_key_trust,
+                    )
+                )
+                with target_context as prepared:
                     with netmiko_connection.ssh_connection_context(
                         "file_management",
                         "collect",
                         device_uuid=str(device.device_uuid or device.id or ""),
+                        paths=self.paths,
+                        site_id=self.site_name,
+                        connection_mode="jump" if relay_enabled or target.via_tunnel else "direct",
+                        jump_host=(
+                            self._relay_jump_label()
+                            if relay_enabled
+                            else f"{target.tunnel.host}:{target.tunnel.port}"
+                            if target.via_tunnel and target.tunnel is not None
+                            else ""
+                        ),
                     ):
-                        params, target_socket = _file_netmiko_params(prepared)
+                        if relay_enabled:
+                            params = build_netmiko_params(prepared)
+                        else:
+                            params, target_socket = _file_netmiko_params(prepared)
+                        params["_netconsole_paths"] = self.paths
+                        params["_netconsole_site_id"] = self.site_name
+                        if target.via_tunnel and not relay_enabled:
+                            params["_netconsole_host_key_host"] = target.host
+                            params["_netconsole_host_key_port"] = target.port
                         connection = netmiko_connection.ConnectHandler(
                             **params
                         )
@@ -919,19 +1022,22 @@ class FileTransferService:
         import paramiko
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        relay_enabled = self._site_relay_enabled()
         try:
-            with prepared_connection_target(target) as prepared:
-                client.connect(
-                    hostname=prepared.host,
-                    port=prepared.port,
-                    username=prepared.username,
-                    password=prepared.password,
-                    timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
-                    banner_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
-                    auth_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
-                    look_for_keys=False,
-                    allow_agent=False,
+            target_context = (
+                nullcontext(target)
+                if relay_enabled
+                else prepared_connection_target(
+                    target,
+                    host_key_trust=self.host_key_trust,
+                )
+            )
+            with target_context as prepared:
+                client = self._connect_ssh_client(
+                    prepared,
+                    key_host=target.host if target.via_tunnel and not relay_enabled else prepared.host,
+                    key_port=target.port if target.via_tunnel and not relay_enabled else prepared.port,
+                    via_site_relay=relay_enabled,
                 )
                 sftp = client.open_sftp()
                 try:
@@ -992,13 +1098,40 @@ class FileTransferService:
         connection = None
         target_socket: socket.socket | None = None
         try:
-            with prepared_connection_target(target) as prepared:
+            relay_enabled = self._site_relay_enabled()
+            target_context = (
+                nullcontext(target)
+                if relay_enabled
+                else prepared_connection_target(
+                    target,
+                    host_key_trust=self.host_key_trust,
+                )
+            )
+            with target_context as prepared:
                 with netmiko_connection.ssh_connection_context(
                     "file_management",
                     "collect",
                     device_uuid=device_uuid,
+                    paths=self.paths,
+                    site_id=self.site_name,
+                    connection_mode="jump" if relay_enabled or target.via_tunnel else "direct",
+                    jump_host=(
+                        self._relay_jump_label()
+                        if relay_enabled
+                        else f"{target.tunnel.host}:{target.tunnel.port}"
+                        if target.via_tunnel and target.tunnel is not None
+                        else ""
+                    ),
                 ):
-                    params, target_socket = _file_netmiko_params(prepared)
+                    if relay_enabled:
+                        params = build_netmiko_params(prepared)
+                    else:
+                        params, target_socket = _file_netmiko_params(prepared)
+                    params["_netconsole_paths"] = self.paths
+                    params["_netconsole_site_id"] = self.site_name
+                    if target.via_tunnel and not relay_enabled:
+                        params["_netconsole_host_key_host"] = target.host
+                        params["_netconsole_host_key_port"] = target.port
                     connection = netmiko_connection.ConnectHandler(
                         **params
                     )

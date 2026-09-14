@@ -50,25 +50,6 @@ export function connectDeviceFiles(deviceId: string, siteId = ''): Promise<FileC
   })
 }
 
-export function confirmDeviceSftpSetup(confirmationId: string, siteId = ''): Promise<FileConnection> {
-  return apiRequest(`${root}/connections/confirm-sftp-setup${qs({ site_id: siteId })}`, {
-    method: 'POST',
-    body: JSON.stringify({ confirmation_id: confirmationId }),
-  })
-}
-
-export function trustDeviceHostKey(
-  challengeId: string,
-  persist: boolean,
-  siteId = '',
-): Promise<FileConnection> {
-  const path = persist ? `${root}/host-keys/trust` : `${root}/host-keys/trust-once`
-  return apiRequest(path + qs({ site_id: siteId }), {
-    method: 'POST',
-    body: JSON.stringify({ challenge_id: challengeId }),
-  })
-}
-
 export function disconnectDeviceFiles(connectionId: string, siteId = ''): Promise<FileConnection> {
   return apiRequest(`${root}/connections/${encodeURIComponent(connectionId)}${qs({ site_id: siteId })}`, { method: 'DELETE' })
 }

@@ -3,6 +3,10 @@
 日期：2026-09-07
 证据边界：`CODE_INSPECTION`、`AUTOMATED_TEST` 及用户提供的核心现场人工验收结论；外部终端、独立 Agent 和未单独确认的细分项目为 `NOT VERIFIED`。
 
+> 历史审计说明：本文的 Host Key 结论是旧设计快照。当前所有应用内 SSH/SFTP
+> consumer 使用统一 managed 策略：unknown 自动登记、match 继续、mismatch 原子
+> 替换并继续；最新规则见 `docs/device-files/HOST_KEY_TRUST.md`。
+
 ## Manual acceptance status
 
 ```text

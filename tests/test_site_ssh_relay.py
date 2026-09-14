@@ -17,6 +17,7 @@ from netconsole.services.site_ssh_relay import (
     SiteSSHRelayError,
     SiteSSHRelayService,
 )
+from netconsole.services.host_key_trust_service import HostKeyTrustService
 
 
 def _paths(tmp_path: Path) -> PathResolver:
@@ -83,6 +84,93 @@ def test_enabled_relay_requires_complete_configuration(tmp_path: Path) -> None:
         )
 
     assert error.value.code == "SSH_RELAY_CONFIG_INCOMPLETE"
+
+
+def test_delete_jump_host_key_is_exact_and_marks_relay_unrecorded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    monkeypatch.setattr(site_ssh_relay, "protect_windows_data", lambda data, _entropy: data)
+    monkeypatch.setattr(site_ssh_relay, "unprotect_windows_data", lambda data, _entropy: data)
+    service = SiteSSHRelayService(paths)
+    service.save(
+        "alpha",
+        enabled=True,
+        host="192.0.2.50",
+        port=2222,
+        username="jump",
+        password="secret",
+    )
+    trust = HostKeyTrustService(paths)
+    import paramiko
+
+    deleted = paramiko.RSAKey.generate(1024)
+    other = paramiko.RSAKey.generate(1024)
+    trust.trust("192.0.2.50", 2222, deleted, role="jump")
+    trust.trust("192.0.2.51", 22, other, role="target")
+
+    result = service.delete_jump_host_key("alpha")
+
+    assert result["host_key_status"] == "HOST_KEY_UNRECORDED"
+    assert trust.is_trusted("192.0.2.50", 2222, deleted, role="jump") is False
+    assert trust.trust_or_replace("192.0.2.50", 2222, deleted, role="jump").action == "ADD"
+    trust.verify("192.0.2.51", 22, other, role="target")
+
+
+def test_refresh_jump_host_key_replaces_and_publishes_current_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    monkeypatch.setattr(site_ssh_relay, "protect_windows_data", lambda data, _entropy: data)
+    monkeypatch.setattr(site_ssh_relay, "unprotect_windows_data", lambda data, _entropy: data)
+    service = SiteSSHRelayService(paths)
+    service.save(
+        "alpha",
+        enabled=True,
+        host="192.0.2.52",
+        port=2222,
+        username="jump",
+        password="secret",
+    )
+
+    class FakeClient:
+        _netconsole_host_key_event = {
+            "status": "HOST_KEY_AUTO_UPDATED",
+            "fingerprint_sha256": "SHA256:new",
+        }
+
+        class _Transport:
+            @staticmethod
+            def is_active() -> bool:
+                return True
+
+            @staticmethod
+            def set_keepalive(_seconds: int) -> None:
+                return None
+
+        def connect(self, **_kwargs: object) -> None:
+            return None
+
+        def get_transport(self):
+            return self._Transport()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(site_ssh_relay, "_new_paramiko_client", lambda *_args, **_kwargs: FakeClient())
+
+    result = service.refresh_jump_host_key("alpha")
+
+    assert result["message"] == "指纹已更新"
+    assert result["host_key_status"] == "HOST_KEY_AUTO_UPDATED"
+    assert result["host_key_fingerprint_sha256"] == "SHA256:new"
+    assert result["runtime_status"] == "RUNNING"
+    public = service.public_config("alpha")
+    assert public["host_key_status"] == "HOST_KEY_AUTO_UPDATED"
+    assert public["host_key_fingerprint_sha256"] == "SHA256:new"
+    assert public["runtime_status"] == "RUNNING"
 
 
 def test_unified_factory_keeps_direct_path_when_site_relay_is_disabled(
@@ -196,7 +284,7 @@ def test_factory_uses_one_direct_tcpip_channel_and_keeps_credentials_separate(
     assert site_ssh_relay.HostKeyTrustService(paths).is_trusted("10.82.21.11", 22, target_key)
 
 
-def test_factory_rejects_target_host_key_change_after_tofu(
+def test_factory_replaces_target_host_key_and_returns_original_connection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -255,16 +343,16 @@ def test_factory_rejects_target_host_key_change_after_tofu(
         compatibility_connect=compatibility,
     )
     current_key = key_two
-    with pytest.raises(SiteSSHRelayError) as error:
-        factory.connect(
-            {"device_type": "hp_comware", "host": "10.82.21.11", "username": "admin", "password": "secret", "port": 22},
-            raw_connect_handler=raw_connect,
-            compatibility_connect=compatibility,
-        )
+    result = factory.connect(
+        {"device_type": "hp_comware", "host": "10.82.21.11", "username": "admin", "password": "secret", "port": 22},
+        raw_connect_handler=raw_connect,
+        compatibility_connect=compatibility,
+    )
 
-    assert error.value.code == "TARGET_HOSTKEY_CHANGED"
-    assert connections[-1].disconnected is True
-    assert "secret" not in str(error.value)
+    assert result is connections[-1]
+    assert connections[-1].disconnected is False
+    assert site_ssh_relay.HostKeyTrustService(paths).is_trusted("10.82.21.11", 22, key_two)
+    assert "secret" not in str(result)
 
 
 def test_unified_factory_uses_direct_channel_for_telnet_and_preserves_target_credentials(
@@ -466,6 +554,206 @@ def test_jump_manager_publishes_current_auto_host_key_event(
     assert status["host_key_updated_at"]
     manager.close()
     assert manager.public_status()["host_key_status"] == ""
+
+
+def test_jump_manager_recovers_one_stale_transport_and_applies_keepalive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import paramiko
+
+    paths = PathResolver(data_root=tmp_path)
+    config = ResolvedSiteSSHRelayConfig(
+        site_id="alpha",
+        enabled=True,
+        host="10.81.40.10",
+        port=22,
+        username="jump",
+        credential_ref="site-ssh-relay-alpha",
+        revision="r1",
+        password_configured=True,
+        password="jump-secret",
+    )
+
+    class FakeTransport:
+        def __init__(self, *, stale: bool) -> None:
+            self.active = True
+            self.stale = stale
+            self.open_count = 0
+            self.keepalive: int | None = None
+
+        def is_active(self) -> bool:
+            return self.active
+
+        def set_keepalive(self, seconds: int) -> None:
+            self.keepalive = seconds
+
+        def open_channel(self, *_args):
+            self.open_count += 1
+            if self.stale:
+                self.active = False
+                raise paramiko.SSHException("No existing session")
+            return object()
+
+    class FakeClient:
+        def __init__(self, transport: FakeTransport) -> None:
+            self.transport = transport
+            self.closed = False
+
+        def connect(self, **_kwargs: object) -> None:
+            return None
+
+        def get_transport(self) -> FakeTransport:
+            return self.transport
+
+        def close(self) -> None:
+            self.closed = True
+
+    transports = [FakeTransport(stale=True), FakeTransport(stale=False)]
+    clients = [FakeClient(item) for item in transports]
+    monkeypatch.setattr(
+        site_ssh_relay,
+        "_new_paramiko_client",
+        lambda *_args, **_kwargs: clients.pop(0),
+    )
+    manager = SiteJumpSessionManager(paths, config)
+
+    channel = manager.open_channel("10.82.21.11", 22)
+
+    assert channel is not None
+    assert transports[0].open_count == 1
+    assert transports[1].open_count == 1
+    assert transports[0].keepalive == site_ssh_relay.SITE_RELAY_KEEPALIVE_SECONDS
+    assert transports[1].keepalive == site_ssh_relay.SITE_RELAY_KEEPALIVE_SECONDS
+    assert clients == []
+    manager.close()
+
+
+def test_jump_manager_does_not_retry_target_acl_failure_after_active_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import paramiko
+
+    paths = PathResolver(data_root=tmp_path)
+    config = ResolvedSiteSSHRelayConfig(
+        site_id="alpha",
+        enabled=True,
+        host="10.81.40.10",
+        port=22,
+        username="jump",
+        credential_ref="site-ssh-relay-alpha",
+        revision="r1",
+        password_configured=True,
+        password="jump-secret",
+    )
+
+    class FakeTransport:
+        def __init__(self) -> None:
+            self.open_count = 0
+
+        def is_active(self) -> bool:
+            return True
+
+        def set_keepalive(self, _seconds: int) -> None:
+            return None
+
+        def open_channel(self, *_args):
+            self.open_count += 1
+            raise paramiko.ChannelException(1, "Administratively prohibited")
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.transport = FakeTransport()
+
+        def connect(self, **_kwargs: object) -> None:
+            return None
+
+        def get_transport(self) -> FakeTransport:
+            return self.transport
+
+        def close(self) -> None:
+            return None
+
+    client = FakeClient()
+    monkeypatch.setattr(site_ssh_relay, "_new_paramiko_client", lambda *_args, **_kwargs: client)
+    manager = SiteJumpSessionManager(paths, config)
+
+    with pytest.raises(SiteSSHRelayError) as error:
+        manager.open_channel("10.82.21.11", 22)
+
+    assert error.value.code == "JUMP_CHANNEL_FAILED"
+    assert client.transport.open_count == 1
+    assert error.value.details["recovery_retry_count"] == 0
+    manager.close()
+
+
+def test_jump_manager_stale_recovery_retries_channel_once_then_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    config = ResolvedSiteSSHRelayConfig(
+        site_id="alpha",
+        enabled=True,
+        host="10.81.40.10",
+        port=22,
+        username="jump",
+        credential_ref="site-ssh-relay-alpha",
+        revision="r1",
+        password_configured=True,
+        password="jump-secret",
+    )
+
+    class FakeTransport:
+        def __init__(self, *, fail: bool) -> None:
+            self.fail = fail
+            self.open_count = 0
+
+        def is_active(self) -> bool:
+            return True
+
+        def set_keepalive(self, _seconds: int) -> None:
+            return None
+
+        def open_channel(self, *_args):
+            self.open_count += 1
+            if self.fail:
+                raise RuntimeError("No existing session")
+            return object()
+
+    class FakeClient:
+        def __init__(self, transport: FakeTransport) -> None:
+            self.transport = transport
+
+        def connect(self, **_kwargs: object) -> None:
+            return None
+
+        def get_transport(self) -> FakeTransport:
+            return self.transport
+
+        def close(self) -> None:
+            return None
+
+    transports = [FakeTransport(fail=True), FakeTransport(fail=True)]
+    clients = [FakeClient(item) for item in transports]
+    monkeypatch.setattr(
+        site_ssh_relay,
+        "_new_paramiko_client",
+        lambda *_args, **_kwargs: clients.pop(0),
+    )
+    manager = SiteJumpSessionManager(paths, config)
+
+    with pytest.raises(SiteSSHRelayError) as error:
+        manager.open_channel("10.82.21.11", 22)
+
+    assert error.value.code == "JUMP_CHANNEL_FAILED"
+    assert transports[0].open_count == 1
+    assert transports[1].open_count == 1
+    assert error.value.details["stale_transport_recovery"] is True
+    assert error.value.details["recovery_retry_count"] == 1
+    assert clients == []
+    manager.close()
 
 
 def test_common_netmiko_facade_selects_jump_for_active_site(

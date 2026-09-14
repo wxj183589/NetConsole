@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 import paramiko
 import pytest
 
@@ -126,6 +128,141 @@ def test_device_file_ssh_connect_uses_five_second_timeouts(tmp_path, monkeypatch
     assert connect_kwargs[0]["timeout"] == 5.0
     assert connect_kwargs[0]["banner_timeout"] == 5.0
     assert connect_kwargs[0]["auth_timeout"] == 5.0
+
+
+def test_device_file_site_relay_uses_target_channel_without_direct_socket(
+    tmp_path,
+    monkeypatch,
+):
+    connect_kwargs: list[dict[str, object]] = []
+    policy_args: list[tuple[str, int, str]] = []
+
+    class FakeChannel:
+        def close(self):
+            return None
+
+    class FakeClient:
+        def connect(self, **kwargs):
+            connect_kwargs.append(kwargs)
+
+        def close(self):
+            return None
+
+    class FakeRelayConfig:
+        enabled = True
+        host = "jump.internal"
+        port = 2222
+
+    class FakeRelayService:
+        def load(self, _site):
+            return FakeRelayConfig()
+
+        def open_target_channel(self, site_id, host, port):
+            assert site_id == "demo"
+            assert (host, port) == ("target.internal", 22)
+            return channel
+
+    channel = FakeChannel()
+    monkeypatch.setattr(paramiko, "SSHClient", FakeClient)
+
+    def fake_install(_client, _trust, host, port, *, role, host_key_policy):
+        policy_args.append((host, port, role))
+        assert host_key_policy == "AUTO_REPLACE"
+
+    monkeypatch.setattr(service_module, "install_managed_host_key_policy", fake_install)
+    monkeypatch.setattr(
+        service_module.socket,
+        "create_connection",
+        lambda *_args, **_kwargs: pytest.fail("Relay ON must not open a direct socket"),
+    )
+    service = FileTransferService(
+        "demo",
+        PathResolver(tmp_path),
+        relay_service=FakeRelayService(),
+    )
+    target = ConnectionTarget(
+        protocol="ssh",
+        device_type="hp_comware",
+        host="target.internal",
+        port=22,
+        username="admin",
+        password="secret",
+        method="tunnel1_backup",
+        via_tunnel=True,
+        target_role="backup",
+        tunnel_label="tunnel1",
+    )
+
+    service._connect_ssh_client(target, via_site_relay=True)
+
+    assert policy_args == [("target.internal", 22, "target")]
+    assert connect_kwargs[0]["hostname"] == "target.internal"
+    assert connect_kwargs[0]["port"] == 22
+    assert connect_kwargs[0]["sock"] is channel
+
+
+def test_device_file_listing_site_relay_does_not_prepare_legacy_tunnel(
+    tmp_path,
+    monkeypatch,
+):
+    target = ConnectionTarget(
+        protocol="ssh",
+        device_type="hp_comware",
+        host="target.internal",
+        port=22,
+        username="admin",
+        password="secret",
+        method="tunnel1_backup",
+        via_tunnel=True,
+        target_role="backup",
+        tunnel_label="tunnel1",
+    )
+    captured: list[dict[str, object]] = []
+
+    class FakeRelayConfig:
+        enabled = True
+        host = "jump.internal"
+        port = 2222
+
+    class FakeRelayService:
+        def load(self, _site):
+            return FakeRelayConfig()
+
+    class FakeConnection:
+        def disconnect(self):
+            return None
+
+    service = FileTransferService(
+        "demo",
+        PathResolver(tmp_path),
+        relay_service=FakeRelayService(),
+    )
+    device = Device(name="SW", primary_address="target.internal", ssh_enabled=1)
+    monkeypatch.setattr(service_module, "connection_targets", lambda _device: [target])
+    monkeypatch.setattr(
+        service_module.netmiko_connection,
+        "ConnectHandler",
+        lambda **params: (captured.append(params) or FakeConnection()),
+    )
+    monkeypatch.setattr(
+        service_module.netmiko_connection,
+        "ssh_connection_context",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        service_module,
+        "safe_send_command",
+        lambda *_args, **_kwargs: "",
+    )
+    monkeypatch.setattr(
+        service_module,
+        "_file_netmiko_params",
+        lambda *_args, **_kwargs: pytest.fail("Relay ON must not prepare a legacy tunnel"),
+    )
+
+    assert service.list_files(device) == []
+    assert captured[0]["host"] == "target.internal"
+    assert "sock" not in captured[0]
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   clearFileDownloads,
-  confirmDeviceSftpSetup,
   connectDeviceFiles,
   createLocalDirectory,
   listLocalFiles,
@@ -31,20 +30,17 @@ describe('file management API contract', () => {
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('remote_path')
   })
 
-  it('continues SFTP setup with an opaque confirmation and persistent queue actions', async () => {
+  it('starts the single-click SFTP flow and keeps queue actions opaque', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
     vi.stubGlobal('fetch', fetchMock)
 
     await connectDeviceFiles('device-1', 'demo')
-    await confirmDeviceSftpSetup('sf1_confirmation', 'demo')
     await retryFileDownload('task-1', 'demo')
     await clearFileDownloads(['COMPLETED', 'FAILED'], 'demo')
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ device_id: 'device-1' })
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/file-management/connections/confirm-sftp-setup?site_id=demo')
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ confirmation_id: 'sf1_confirmation' })
-    expect(fetchMock.mock.calls[2][0]).toBe('/api/file-management/downloads/task-1/retry?site_id=demo')
-    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({ statuses: ['COMPLETED', 'FAILED'] })
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/file-management/downloads/task-1/retry?site_id=demo')
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ statuses: ['COMPLETED', 'FAILED'] })
   })
 
   it('prepares a typed desktop action without argv, path or password', async () => {
@@ -59,13 +55,11 @@ describe('file management API contract', () => {
     expect(JSON.stringify(body)).not.toMatch(/password|argv|path/i)
   })
 
-  it('asks once only after detecting disabled SFTP and continues the same connection flow', () => {
+  it('automatically recovers disabled SFTP without a confirmation state machine', () => {
     expect(source).toContain("connectionStatus.value = '正在连接 SFTP（单条路径最多等待 5 秒，失败后自动尝试下一路径）'")
     expect(source).toContain('DEVICE_FILE_SFTP_UNAVAILABLE')
-    expect(source).toContain('设备未启用 SFTP，NetConsole 将通过受控命令启用 SFTP并重新连接。')
-    expect(source).toContain('confirmDeviceSftpSetup(confirmationId, siteId.value)')
-    expect(source).toContain("connectionStatus.value = '正在启用设备 SFTP'")
-    expect(source).toContain("connectionStatus.value = '正在重新连接 SFTP'")
+    expect(source).toContain('设备 SSH 已登录，但 SFTP 子系统不可用。')
+    expect(source).not.toContain('confirmDeviceSftpSetup')
     expect(source).not.toContain('allowSftpSetup')
     expect(source).not.toContain('sftpSetupConfirmed')
     expect(source).not.toContain('sftpSetupConfirmationPending')
@@ -104,7 +98,7 @@ describe('file management API contract', () => {
     ]) expect(source).toContain(code)
     expect(source).toContain('reason.details.task_id')
     expect(source).toContain('openTaskWindow(sftpSetupTaskId)')
-    expect(source).toContain('const SFTP_SETUP_SUCCESS_MESSAGE = \'已在设备侧启用 SFTP，并完成重新连接。\'')
+    expect(source).toContain('const SFTP_SETUP_SUCCESS_MESSAGE = \'已自动启用设备 SFTP，并完成重新连接。\'')
     expect(source).toContain('ElMessage.success(connection.value.message)')
     expect(source).toContain('connectionRouteText(connection)')
     expect(source).toContain('reason.details.attempts')

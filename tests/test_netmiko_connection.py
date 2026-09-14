@@ -93,6 +93,48 @@ def test_safe_send_command_falls_back_to_utf8_on_decode_error():
     assert calls == ["gb2312", "utf-8"]
 
 
+def test_safe_send_command_timing_preserves_h3c_config_prompt_transitions():
+    calls: list[tuple[str, dict[str, object]]] = []
+    outputs = {
+        "system-view": "system-view\r\n[AC]\r\n",
+        "sftp server enable": "sftp server enable\r\n[AC]\r\n",
+        "ssh user ops_01 service-type all authentication-type any": "ssh user ops_01 service-type all authentication-type any\r\n[AC]\r\n",
+        "return": "return\r\n<AC>\r\n",
+        "quit": "quit\r\n<AC>\r\n",
+    }
+
+    class FakeConnection:
+        def send_command_timing(self, command, **kwargs):
+            calls.append((command, kwargs))
+            return outputs[command]
+
+    commands = (
+        "system-view",
+        "sftp server enable",
+        "ssh user ops_01 service-type all authentication-type any",
+        "return",
+        "quit",
+    )
+    actual = [
+        safe_send_command(
+            FakeConnection(),
+            command,
+            strip_prompt=False,
+            strip_command=False,
+            use_timing=True,
+        )
+        for command in commands
+    ]
+
+    assert [command for command, _kwargs in calls] == list(commands)
+    assert all(
+        kwargs["strip_prompt"] is False and kwargs["strip_command"] is False
+        for _command, kwargs in calls
+    )
+    assert "[AC]" in actual[0]
+    assert "<AC>" in actual[-1]
+
+
 def test_ssh_enabled_prefers_ssh():
     device = Device(
         ip_address="10.0.0.1",

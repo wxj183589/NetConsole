@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import threading
 from typing import Protocol
 from urllib.parse import quote
 
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.core.shutdown_manager import shutdown_manager
+from netconsole.services.host_key_trust_service import HostKeyTrustService, install_managed_host_key_policy
 from netconsole.services.netmiko_connection import ConnectionTarget, connection_targets, prepared_connection_target, sanitize_sensitive_text
 from netconsole.services.settings_tool_validation import SettingsToolPathError, validate_settings_tool_path
 
@@ -173,7 +176,57 @@ def build_winscp_command(
     if password:
         auth = f"{username}:{password}"
     url = f"sftp://{auth}@{target.host}:{int(target.port)}/" if auth else f"sftp://{target.host}:{int(target.port)}/"
-    return [exe, url, "/newinstance"]
+    args = [exe, url, "/newinstance"]
+    if target.host_key_fingerprint_sha256:
+        args.append(f"/hostkey={target.host_key_fingerprint_sha256}")
+    return args
+
+
+def _preflight_winscp_host_key(
+    target: ConnectionTarget,
+    prepared: ConnectionTarget,
+    paths: PathResolver,
+) -> str:
+    """Persist the current key before starting the separate WinSCP process."""
+
+    import paramiko
+
+    client = paramiko.SSHClient()
+    sock: socket.socket | None = None
+    install_managed_host_key_policy(
+        client,
+        HostKeyTrustService(paths),
+        target.host,
+        target.port,
+        role="target",
+        host_key_policy="AUTO_REPLACE",
+    )
+    try:
+        if prepared.via_tunnel:
+            sock = socket.create_connection((prepared.host, prepared.port), timeout=5.0)
+        client.connect(
+            hostname=prepared.host,
+            port=prepared.port,
+            username=prepared.username,
+            password=prepared.password,
+            timeout=5.0,
+            banner_timeout=5.0,
+            auth_timeout=5.0,
+            look_for_keys=False,
+            allow_agent=False,
+            sock=sock,
+        )
+        event = dict(getattr(client, "_netconsole_host_key_event", {}) or {})
+        fingerprint = str(event.get("fingerprint_sha256") or "").strip()
+        if not fingerprint:
+            raise RuntimeError("未能取得设备 SSH 主机指纹")
+        return fingerprint
+    finally:
+        try:
+            client.close()
+        finally:
+            if sock is not None:
+                sock.close()
 
 
 def launch_winscp(
@@ -183,6 +236,7 @@ def launch_winscp(
     *,
     include_password: bool = True,
     preferred_target: ConnectionTarget | None = None,
+    paths: PathResolver | None = None,
 ) -> WinScpLaunchResult:
     exe = find_winscp_exe(settings)
     if not exe:
@@ -195,11 +249,24 @@ def launch_winscp(
         return WinScpLaunchResult(False, "当前设备未配置 SSH/SFTP 登录信息。", [])
     if include_password and not str(target.password or ""):
         return WinScpLaunchResult(False, "当前设备未配置 SSH 密码，无法自动登录 WinSCP。", [])
+    managed_target = target
     if target.via_tunnel:
         tunnel = ExitStack()
         try:
-            prepared = tunnel.enter_context(prepared_connection_target(target))
-            args = build_winscp_command(device, prepared, exe, include_password=include_password)
+            prepared_kwargs = (
+                {"host_key_trust": HostKeyTrustService(paths)}
+                if paths is not None
+                else {}
+            )
+            prepared = tunnel.enter_context(prepared_connection_target(target, **prepared_kwargs))
+            if paths is not None:
+                managed_target = replace(
+                    prepared,
+                    host_key_fingerprint_sha256=_preflight_winscp_host_key(target, prepared, paths),
+                )
+            else:
+                managed_target = prepared
+            args = build_winscp_command(device, managed_target, exe, include_password=include_password)
             process = subprocess.Popen(args, shell=False)
             shutdown_manager.register_process(process, "WinSCP", kind="external_tool", shutdown_policy="ignore")
         except Exception as exc:
@@ -212,7 +279,12 @@ def launch_winscp(
         thread.start()
         return WinScpLaunchResult(True, "已启动 WinSCP。", args, _safe_command(args, device))
     try:
-        args = build_winscp_command(device, target, exe, include_password=include_password)
+        if paths is not None:
+            managed_target = replace(
+                target,
+                host_key_fingerprint_sha256=_preflight_winscp_host_key(target, target, paths),
+            )
+        args = build_winscp_command(device, managed_target, exe, include_password=include_password)
         process = subprocess.Popen(args, shell=False)
         shutdown_manager.register_process(process, "WinSCP", kind="external_tool", shutdown_policy="ignore")
     except Exception as exc:

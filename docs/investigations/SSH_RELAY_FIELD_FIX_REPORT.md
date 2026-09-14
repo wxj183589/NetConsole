@@ -3,6 +3,10 @@
 日期：2026-09-07
 结论状态：源码修复、自动化定向验证和附件所述核心现场人工验收完成；未单独覆盖的细分项目仍为 `NOT VERIFIED`。
 
+> 历史审计说明：本文记录的是旧的严格 Host Key 处理快照。当前策略已改为统一
+> managed `known_hosts` 自动登记/替换并继续业务，最新规则见
+> `docs/device-files/HOST_KEY_TRUST.md`。
+
 ## MANUAL_ACCEPTANCE
 
 依据用户提供的现场验收结论记录：
