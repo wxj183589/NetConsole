@@ -782,12 +782,17 @@ def resolve_device_sftp_enable_profile(
         raise DeviceCommandProfileNotFound(
             f"SFTP 启用仅支持 Comware 平台: platform={platform or 'unknown'}"
         )
+    # Some AC firmware does not expose a populated inventory version field
+    # before the first CLI session.  Select the already verified V7 family
+    # provisionally; the SFTP worker probes ``display version`` before any
+    # write and refuses the operation unless the device itself confirms V7.
+    selected_version = facts.software_version or "Comware V7"
     return resolve_device_command_profile(
         operation_id=DEVICE_SFTP_ENABLE_OPERATION_ID,
         vendor=vendor,
         role=role,
         platform=platform,
-        software_version=facts.software_version,
+        software_version=selected_version,
         paths=paths,
     )
 
@@ -1137,7 +1142,15 @@ def _version_major(value: object) -> str:
     text = str(value or "")
     match = re.search(r"\bV([1-9][0-9]*)\b", text, re.IGNORECASE)
     if not match:
-        match = re.search(r"\bVERSION\s+([1-9][0-9]*)", text, re.IGNORECASE)
+        match = re.search(
+            r"\b(?:VERSION|COMWARE)\s+V?([1-9][0-9]*)\b",
+            text,
+            re.IGNORECASE,
+        )
+    if not match and re.search(r"\bR?[0-9]{4}P[0-9]{1,4}\b", text, re.IGNORECASE):
+        # H3C Comware release labels such as R8860P01 are V7-family
+        # identifiers even when the inventory field omits the word Version.
+        return "V7"
     return f"V{match.group(1)}" if match else ""
 
 

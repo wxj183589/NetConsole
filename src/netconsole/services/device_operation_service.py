@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import RLock
 from typing import Protocol
@@ -178,10 +179,6 @@ class DeviceOperationService:
         if not allow_excluded:
             require_current_debug_device(device)
         facts = self._platform_facts(device, self.gateway.get_fact(device_uuid))
-        if operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID and not facts.software_major:
-            raise DeviceSftpEnableProfileUnresolved(
-                "无法确认设备的软件版本，未执行 SFTP 配置命令。"
-            )
         support = resolve_device_collection_support(
             device,
             operation_id,
@@ -241,10 +238,6 @@ class DeviceOperationService:
             require_current_debug_device(device)
         fact = self.gateway.get_fact(device_uuid)
         platform_facts = self._platform_facts(device, fact)
-        if operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID and not platform_facts.software_major:
-            raise DeviceSftpEnableProfileUnresolved(
-                "无法确认设备的软件版本，未执行 SFTP 配置命令。"
-            )
         profile = resolve_device_operation_profile(
             device,
             operation_id,
@@ -626,6 +619,19 @@ def run_device_sftp_enable(context: JobContext) -> dict[str, object]:
 
     def operation(connection, _target):
         outputs: list[str] = []
+        if not submitted_facts.software_major:
+            detected_version = safe_send_command(
+                connection,
+                "display version",
+                read_timeout=30,
+                strip_prompt=False,
+                strip_command=False,
+                use_timing=True,
+            )
+            if _detect_comware_major(detected_version) != "V7":
+                raise DeviceSftpEnableProfileUnresolved(
+                    "设备 CLI 未确认 H3C Comware V7，未执行 SFTP 配置命令。"
+                )
         for index, command in enumerate(commands, start=1):
             context.check_cancelled()
             output = safe_send_command(
@@ -659,6 +665,19 @@ def run_device_sftp_enable(context: JobContext) -> dict[str, object]:
         "real_device_status": profile.real_device_status,
         "message": "设备 SFTP 启用命令已执行",
     }
+
+
+def _detect_comware_major(output: str) -> str:
+    text = str(output or "")
+    match = re.search(r"\b(?:V|VERSION\s+)([1-9][0-9]*)\b", text, re.IGNORECASE)
+    if match:
+        return f"V{match.group(1)}"
+    dotted = re.search(r"(?:^|[^0-9])([1-9][0-9]*)\.[0-9]+", text)
+    if dotted:
+        return f"V{dotted.group(1)}"
+    if re.search(r"\bR[0-9]{3,6}P[0-9]{1,3}\b", text, re.IGNORECASE):
+        return "V7"
+    return ""
 
 
 def _unique_ids(values: list[object]) -> list[str]:
