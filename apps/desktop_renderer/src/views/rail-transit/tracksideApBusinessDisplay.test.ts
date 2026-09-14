@@ -8,6 +8,7 @@ import {
   displaySwitchVendor,
   displayTracksideSnapshotTime,
   displayTracksideValue,
+  displaySwitchLastKnownOptical,
   tracksideApOpticalPresentation,
   tracksideApDeviceOpticalPresentation,
   tracksideApBusinessOpticalPresentation,
@@ -16,6 +17,7 @@ import {
   tracksideApRecognitionPresentation,
   tracksideOpticalPresentation,
   tracksideRxPresentation,
+  tracksideSwitchOpticalPresentation,
 } from './tracksideApBusinessDisplay'
 
 describe('trackside AP business display', () => {
@@ -146,7 +148,7 @@ describe('trackside AP business display', () => {
     expect(tracksideApOpticalPresentation('minor', 'fresh').label).toBe('未知')
   })
 
-  it('keeps historical power visible while marking a failed switch collection', () => {
+  it('does not present failed switch optical data as current', () => {
     expect(tracksideRxPresentation('-8.00', 'collection_failed', 'stale')).toMatchObject({
       label: '采集失败/设备不可达（数据已过期）',
       tagType: 'warning',
@@ -155,9 +157,23 @@ describe('trackside AP business display', () => {
       optical_severity: 'collection_failed',
       switch_optical_data_status: 'stale',
     })).toMatchObject({
-      label: '采集失败/设备不可达（数据已过期）',
-      tagType: 'warning',
+      label: '未知',
+      tagType: 'info',
     })
+  })
+
+  it('prioritizes port DOWN and exposes last-known optical data separately', () => {
+    expect(tracksideSwitchOpticalPresentation({
+      link_status: 'DOWN',
+      switch_optical_status: 'no_light',
+      switch_optical_data_status: 'stale',
+      switch_optical_valid: false,
+      model: 'WA6528X-E',
+    })).toMatchObject({ label: '端口 DOWN', tagType: 'danger' })
+    expect(displaySwitchLastKnownOptical({
+      switch_last_known_rx_power: '-36.96',
+      switch_last_known_optical_updated_at: '2026-09-14T16:18:26+08:00',
+    })).toContain('上次成功采集：Rx -36.96 dBm')
   })
 
   it('keeps WA6522 out of both side and combined optical alarms', () => {

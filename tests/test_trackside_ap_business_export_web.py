@@ -176,7 +176,7 @@ def test_trackside_export_contract_and_fill_matrix(tmp_path: Path) -> None:
     assert [
         abnormal.cell(row=index, column=interface_column).value
         for index in range(2, abnormal.max_row + 1)
-    ] == ["gei-0/3/0/44", "gei-0/4/0/43"]
+    ] == ["gei-0/3/0/44"]
 
     main_headers = [cell.value for cell in main[1]]
     main_interface_column = main_headers.index("接口名称") + 1

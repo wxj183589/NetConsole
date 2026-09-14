@@ -3871,7 +3871,7 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
     assert [
         abnormal_sheet.cell(row=row, column=3).value
         for row in range(2, abnormal_sheet.max_row + 1)
-    ] == ["GE1/0/2", "GE1/0/3", "GE1/0/4"]
+    ] == ["GE1/0/2", "GE1/0/3"]
     reason_column = abnormal_headers.index("异常原因") + 1
     assert abnormal_sheet.cell(row=3, column=reason_column).value == "AP侧业务光衰异常"
     detail_column = abnormal_headers.index("异常说明") + 1
@@ -3885,12 +3885,11 @@ def test_trackside_ap_business_export_adds_current_optical_abnormal_sheet(tmp_pa
         if field == "switch_optical_status"
     )
     assert source_sheet.cell(row=3, column=switch_status_column).value == "光衰大"
-    assert abnormal_sheet.cell(row=4, column=reason_column).value == "交换机侧业务光衰异常"
     online_status_column = abnormal_headers.index("AP 在线状态") + 1
     assert [
         abnormal_sheet.cell(row=row, column=online_status_column).value
         for row in range(2, abnormal_sheet.max_row + 1)
-    ] == ["在线", "在线", "离线"]
+    ] == ["在线", "在线"]
     assert (
         abnormal_sheet["A2"].fill.fgColor.rgb
         == source_sheet["A3"].fill.fgColor.rgb
@@ -3947,7 +3946,7 @@ def test_trackside_ap_business_export_empty_current_optical_abnormal_sheet(tmp_p
 
 
 def test_current_optical_abnormal_is_independent_from_ap_online_state():
-    assert is_current_optical_abnormal_row(
+    assert not is_current_optical_abnormal_row(
         {
             "link_status": "DOWN",
             "switch_rx_power": "-36.96",
@@ -4050,7 +4049,7 @@ def test_current_optical_abnormal_does_not_reuse_cache_after_explicit_no_module(
             "ap_optical_status": "-",
         }
     )
-    assert is_current_optical_abnormal_row(
+    assert not is_current_optical_abnormal_row(
         {
             "link_status": "DOWN",
             "switch_rx_power": "-36.96",
@@ -4949,6 +4948,57 @@ def test_trackside_ap_business_rows_join_interface_optical_and_fit_ap_data():
     assert rows[1]["ap_rx_power"] == "-14.35"
     assert rows[1]["ap_optical_status"] == "abnormal"
     assert rows[1]["ap_name"] == "AP10"
+
+
+def test_trackside_ap_business_rejects_optical_sample_older_than_interface_snapshot():
+    switch = Device(
+        name="SW-TIME",
+        station="Station A",
+        device_uuid="sw-time",
+    )
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-time": [
+                {
+                    "interface_name": "GigabitEthernet2/0/10",
+                    "link_status": "UP",
+                    "description": "To_AP10",
+                    "updated_at": "2026-09-14T19:40:00+08:00",
+                }
+            ]
+        },
+        {
+            "sw-time": [
+                {
+                    "interface_name": "GigabitEthernet2/0/10",
+                    "rx_power": "-36.96",
+                    "status": "no_light",
+                    "collected_at": "2026-09-14T16:18:26+08:00",
+                }
+            ]
+        },
+        [
+            {
+                "ap_uuid": "ap-time",
+                "ap_mac": "0011-2233-4455",
+                "ap_name": "AP-TIME",
+                "neighbor_device_name": "SW-TIME",
+                "neighbor_interface": "GigabitEthernet2/0/10",
+                "rx_power": "-8.00",
+            }
+        ],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["link_status"] == "UP"
+    assert rows[0]["switch_optical_data_status"] == "stale"
+    assert rows[0]["switch_optical_valid"] is False
+    assert rows[0]["switch_rx_power"] is None
+    assert rows[0]["switch_last_known_rx_power"] == "-36.96"
+    assert rows[0]["switch_optical_updated_at"] == ""
+    assert rows[0]["switch_last_known_optical_updated_at"] == "2026-09-14T16:18:26+08:00"
+    assert rows[0]["optical_severity"] == "unknown"
 
 
 def test_trackside_ap_business_keeps_same_ap_on_different_interfaces():
@@ -6387,9 +6437,9 @@ def test_fit_ap_refresh_preserves_switch_optical_owner_in_business_sequence(tmp_
     assert before_revisions["lldp_revision"] == after_revisions["lldp_revision"]
     assert before_revisions["optical_data_revision"] < after_revisions["optical_data_revision"]
 
-    # A failed switch attempt must make the old sample visibly historical and
-    # keep it out of the current anomaly population, even though persistence
-    # deliberately retains the raw Rx for diagnostics.
+    # A failed switch attempt must remove the old sample from current fields,
+    # keep it out of the current anomaly population, and expose it only as
+    # last-known diagnostics.
     failed_target = trackside_optical_collection.TracksideOpticalTarget(
         key="device:sequence",
         name=switch.name,
@@ -6416,7 +6466,9 @@ def test_fit_ap_refresh_preserves_switch_optical_owner_in_business_sequence(tmp_
         latest_switch_run="switch-r101-failed",
         collection_attempts={switch_uuid: failed_run or {}},
     )
-    assert failed_rows[0]["switch_rx_power"] == "-36.96"
+    assert failed_rows[0]["switch_rx_power"] is None
+    assert failed_rows[0]["switch_last_known_rx_power"] == "-36.96"
+    assert failed_rows[0]["switch_optical_valid"] is False
     assert failed_rows[0]["switch_optical_data_status"] == "stale"
     assert failed_rows[0]["switch_optical_status"] == "collection_failed"
     assert failed_rows[0]["optical_severity"] == "collection_failed"

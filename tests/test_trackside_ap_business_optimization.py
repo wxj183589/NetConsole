@@ -253,7 +253,7 @@ def test_trackside_business_uses_latest_current_fact_for_same_interface():
     assert rows[0]["ap_optical_status"] == "normal"
 
 
-def test_trackside_business_keeps_module_state_and_marks_combined_link_down():
+def test_trackside_business_marks_combined_link_down_before_module_state():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(
         [switch],
@@ -262,8 +262,8 @@ def test_trackside_business_keeps_module_state_and_marks_combined_link_down():
         [],
     )
 
-    assert rows[0]["switch_optical_status"] == "normal"
-    assert format_trackside_display_value("switch_optical_status", rows[0]) == "正常"
+    assert rows[0]["switch_optical_status"] == "link_down"
+    assert format_trackside_display_value("switch_optical_status", rows[0]) == "端口 DOWN"
     assert trackside_row_status(rows[0]) == "link_down"
     assert rows[0]["optical_severity"] == "link_down"
 
@@ -280,7 +280,7 @@ def test_trackside_business_keeps_link_up_with_light_normal():
     assert rows[0]["switch_optical_status"] == "normal"
 
 
-def test_trackside_business_retains_historical_optical_values_after_failed_collection():
+def test_trackside_business_does_not_reuse_historical_optical_values_after_failed_collection():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(
         [switch],
@@ -291,8 +291,13 @@ def test_trackside_business_retains_historical_optical_values_after_failed_colle
         latest_switch_collection_attempts={"sw-1": {"status": "failed", "error_message": "SSH 认证失败"}},
     )
 
-    assert rows[0]["switch_rx_power"] == "-8.00"
-    assert rows[0]["switch_tx_power"] == "-3.00"
+    assert rows[0]["switch_rx_power"] is None
+    assert rows[0]["switch_tx_power"] is None
+    assert rows[0]["switch_last_known_rx_power"] == "-8.00"
+    assert rows[0]["switch_last_known_tx_power"] == "-3.00"
+    assert rows[0]["switch_last_known_optical_updated_at"] == "2026-08-30T10:00:00+08:00"
+    assert rows[0]["switch_optical_valid"] is False
+    assert rows[0]["switch_optical_updated_at"] == ""
     assert rows[0]["switch_optical_data_status"] == "stale"
     assert rows[0]["switch_optical_status"] == "collection_failed"
     assert rows[0]["switch_optical_collection_error"] == "SSH 认证失败"
@@ -315,14 +320,14 @@ def test_trackside_business_never_collected_is_not_no_light():
 
 
 @pytest.mark.parametrize(
-    ("optical", "expected"),
+    "optical",
     [
-        ({"rx_power": None, "rx_low_warning": "-20", "rx_low_alarm": "-25"}, {"not_collected", "unknown"}),
-        ({"rx_power": "-36.00", "rx_low_warning": "-20", "rx_low_alarm": "-25"}, "no_light"),
-        ({"rx_power": "-7.77", "status": "no_module"}, "no_module"),
+        {"rx_power": None, "rx_low_warning": "-20", "rx_low_alarm": "-25"},
+        {"rx_power": "-36.00", "rx_low_warning": "-20", "rx_low_alarm": "-25"},
+        {"rx_power": "-7.77", "status": "no_module"},
     ],
 )
-def test_trackside_business_does_not_mark_link_down_without_valid_light(optical, expected):
+def test_trackside_business_prioritizes_link_down_over_optical_status(optical):
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(
         [switch],
@@ -331,12 +336,11 @@ def test_trackside_business_does_not_mark_link_down_without_valid_light(optical,
         [],
     )
 
-    expected_statuses = expected if isinstance(expected, set) else {expected}
-    assert rows[0]["switch_optical_status"] in expected_statuses
+    assert rows[0]["switch_optical_status"] == "link_down"
     assert rows[0]["optical_severity"] == "link_down"
 
 
-def test_trackside_business_keeps_switch_offline_over_link_abnormal():
+def test_trackside_business_prioritizes_link_down_over_switch_offline():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(
         [switch],
@@ -355,7 +359,7 @@ def test_trackside_business_keeps_switch_offline_over_link_abnormal():
         [],
     )
 
-    assert rows[0]["switch_optical_status"] == "offline"
+    assert rows[0]["switch_optical_status"] == "link_down"
 
 
 def test_trackside_business_keeps_ap_identity_when_ap_optical_missing():

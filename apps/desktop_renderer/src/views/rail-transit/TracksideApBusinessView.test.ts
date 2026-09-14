@@ -216,6 +216,7 @@ function page(items = rows, pageNo = 1, stationOptions = stationOptionsFor(items
     physical_ap_total: 1,
     unidentified_reason_counts: { EMPTY_CONFIGURED_PORT: 1 },
     optical_abnormal_count: 1,
+    link_down_count: items.filter((item) => item.link_status === 'DOWN').length,
     fit_ap_resource_count: 2,
     query_ms: 1,
     build_ms: 1,
@@ -596,7 +597,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.text()).not.toContain('结果项')
     expect(buttons(wrapper, '打开任务中心')).toHaveLength(0)
     expect(wrapper.find('.business-table-host').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="trackside-core-summary"]').findAll('.kpi-item')).toHaveLength(8)
+    expect(wrapper.find('[data-testid="trackside-core-summary"]').findAll('.kpi-item')).toHaveLength(9)
     expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('在线978')
     expect(wrapper.find('[data-testid="trackside-online-overview"]').text()).toContain('98.6%')
     expect(wrapper.find('[data-testid="trackside-diagnostic-summary"]').findAll('.diagnostic-item')).toHaveLength(5)
@@ -618,6 +619,28 @@ describe('TracksideApBusinessView mounted behavior', () => {
     expect(wrapper.find('[data-table-id="trackside-ap-business-task-result"]').exists()).toBe(false)
     expect(wrapper.find('input[placeholder="站点"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows DOWN as the primary switch state and keeps old Rx only in the tooltip', async () => {
+    const downRow: TracksideApBusinessRow = {
+      ...rows[0],
+      link_status: 'DOWN',
+      switch_rx_power: null,
+      switch_optical_status: 'link_down',
+      switch_optical_data_status: 'stale',
+      switch_optical_valid: false,
+      switch_last_known_rx_power: '-36.96',
+      switch_last_known_optical_updated_at: '2026-09-14T16:18:26+08:00',
+    }
+    api.listTracksideApBusiness.mockResolvedValueOnce(page([downRow]))
+
+    const wrapper = await mountView()
+
+    expect(wrapper.find('[data-metric="port-down"]').text()).toContain('端口 DOWN1')
+    expect(wrapper.find('[data-testid="trackside-switch-rx"]').text()).toBe('—')
+    expect(wrapper.find('[data-testid="trackside-switch-rx"]').attributes('title')).toContain('Rx -36.96 dBm')
+    expect(wrapper.find('[data-table-id="trackside-ap-business"]').text()).toContain('端口 DOWN')
     wrapper.unmount()
   })
 
@@ -1576,6 +1599,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       '—',
       '—',
       '— / —',
+      '—',
       '—',
     ])
     resolvePage?.(page())

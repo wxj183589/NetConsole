@@ -52,13 +52,14 @@ import {
   displayTracksideApReason,
   displayTracksideApRecognitionStatus,
   displaySwitchVendor,
+  displaySwitchLastKnownOptical,
   displayTracksideSnapshotTime,
   displayTracksideValue,
   tracksideApRecognitionPresentation,
   tracksideBusinessOpticalPresentation,
   tracksideApBusinessOpticalPresentation,
   tracksideApDeviceOpticalPresentation,
-  tracksideCanonicalOpticalPresentation,
+  tracksideSwitchOpticalPresentation,
 } from './tracksideApBusinessDisplay'
 
 const userSelectedExport = useUserSelectedExport()
@@ -378,12 +379,13 @@ const unmatchedLabel = computed(() => {
 })
 
 function switchRxPresentation(row: TracksideApBusinessRow) {
-  return tracksideCanonicalOpticalPresentation(
-    row.switch_optical_status,
-    row.switch_optical_data_status,
-    row.model,
-    row.ap_optical_applicable,
-  )
+  return tracksideSwitchOpticalPresentation(row)
+}
+
+function switchOpticalTooltip(row: TracksideApBusinessRow) {
+  const lastKnown = displaySwitchLastKnownOptical(row)
+  const reason = row.switch_optical_unavailable_reason || row.switch_optical_collection_error || ''
+  return [reason, lastKnown].filter(Boolean).join('；')
 }
 
 function apRxPresentation(row: TracksideApBusinessRow) {
@@ -1184,7 +1186,7 @@ onBeforeUnmount(() => {
 <template>
   <section class="trackside-page">
     <header class="page-heading">
-      <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>AP 与交换机两侧接收光功率统一按固定业务门限判定，任意一侧越界即计入业务光衰异常。</p></div>
+      <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>AP 与交换机两侧接收光功率沿用各自既有业务门限；交换机接口 DOWN 优先显示链路状态，当前光功率无效时显示未知。</p></div>
       <div class="actions">
         <el-button :loading="refreshing" :disabled="initialLoading" @click="refreshBusinessProjection({ forceNewRevision: true })">刷新</el-button>
         <el-button
@@ -1273,6 +1275,7 @@ onBeforeUnmount(() => {
         <span class="kpi-item kpi-online"><small>在线</small><strong>{{ metricValue(onlineOverviewValues.actualOnline, ['fit_ap_resources']) }}</strong><em>/ {{ onlineOverviewRate }}</em></span>
         <span class="kpi-item" data-metric="offline-ap"><small>离线</small><strong>{{ metricValue(onlineOverviewValues.offline, ['fit_ap_resources']) }}</strong></span>
         <span class="kpi-item" data-metric="identified-ap-ports"><small>端口识别</small><strong>{{ metricValue(page?.identified_ap_port_total, ['switch_devices', 'interfaces', 'planning']) }} / {{ metricValue(page?.configured_ap_port_total ?? page?.candidate_interface_count, ['switch_devices', 'interfaces', 'planning']) }}</strong></span>
+        <span class="kpi-item" data-metric="port-down"><small>端口 DOWN</small><strong>{{ metricValue(page?.link_down_count, ['interfaces']) }}</strong></span>
         <span class="kpi-item online-overview-optical-problem"><small v-for="line in TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER_LINES" :key="line">{{ line }}</small><strong>{{ metricValue(onlineOverviewValues.opticalProblem, ['fit_ap_resources']) }}</strong></span>
       </div>
       <div class="kpi-secondary">
@@ -1338,11 +1341,11 @@ onBeforeUnmount(() => {
           :empty-text="emptyReasonLabel(page?.empty_reason || '')"
           @selection-change="(rows: TracksideApBusinessRow[]) => selectedRows = rows"
         >
-          <template #cell-switch_rx_power="{ row }"><span data-testid="trackside-switch-rx" :class="switchRxPresentation(row).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template>
-          <template #cell-switch_tx_power="{ row }"><span data-testid="trackside-switch-tx">{{ displayTracksideValue(row.switch_tx_power) }}</span></template>
+          <template #cell-switch_rx_power="{ row }"><span data-testid="trackside-switch-rx" :title="switchOpticalTooltip(row)" :class="switchRxPresentation(row).className">{{ displayTracksideValue(row.switch_rx_power) }}</span></template>
+          <template #cell-switch_tx_power="{ row }"><span data-testid="trackside-switch-tx" :title="switchOpticalTooltip(row)">{{ displayTracksideValue(row.switch_tx_power) }}</span></template>
           <template #cell-recognition_status="{ row }"><el-tag :type="tracksideApRecognitionPresentation(row.recognition_status).tagType" :class="tracksideApRecognitionPresentation(row.recognition_status).className">{{ tracksideApRecognitionPresentation(row.recognition_status).label }}</el-tag></template>
           <template #cell-primary_reason_code="{ row }"><span data-testid="trackside-recognition-reason" :title="row.primary_reason_code || ''" :class="row.primary_reason_code === 'EMPTY_CONFIGURED_PORT' ? 'recognition-reason-neutral' : 'recognition-reason-info'">{{ displayTracksideApReason(row.primary_reason_code) }}</span></template>
-          <template #cell-switch_optical_status="{ row }"><el-tag :title="row.switch_optical_collection_error || ''" :type="switchRxPresentation(row).tagType" :class="switchRxPresentation(row).className">{{ switchRxPresentation(row).label }}</el-tag></template>
+          <template #cell-switch_optical_status="{ row }"><el-tag :title="switchOpticalTooltip(row)" :type="switchRxPresentation(row).tagType" :class="switchRxPresentation(row).className">{{ switchRxPresentation(row).label }}</el-tag></template>
           <template #cell-ap_rx_power="{ row }"><span data-testid="trackside-ap-rx" :class="apRxPresentation(row).className">{{ displayTracksideValue(row.ap_rx_power) }}</span></template>
           <template #cell-ap_tx_power="{ row }"><span data-testid="trackside-ap-tx">{{ displayTracksideValue(row.ap_tx_power) }}</span></template>
           <template #cell-ap_device_optical_status="{ row }"><el-tag :type="apDeviceOpticalPresentation(row).tagType" :class="apDeviceOpticalPresentation(row).className">{{ apDeviceOpticalPresentation(row).label }}</el-tag></template>

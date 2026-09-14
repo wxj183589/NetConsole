@@ -15,7 +15,11 @@ export interface TracksideApBusinessRow {
   switch_interface_updated_at: string; switch_optical_updated_at: string
   switch_interface_data_status: 'current' | 'stale' | 'missing' | 'unknown'
   switch_optical_data_status: 'current' | 'stale' | 'missing' | 'unknown'
+  switch_optical_valid?: boolean
   switch_optical_collection_status?: string; switch_optical_collection_error?: string
+  switch_optical_unavailable_reason?: string
+  switch_last_known_rx_power?: unknown; switch_last_known_tx_power?: unknown
+  switch_last_known_optical_updated_at?: string
   ap_uuid: string; ap_mac: string; ap_name: string; model?: string; ap_optical_applicable?: boolean; ap_terminal_ac_id?: string; ap_terminal_ap_id?: string; ap_terminal_available?: boolean; ap_terminal_unavailable_reason?: string; ap_rx_power: unknown; ap_tx_power: unknown
   ap_device_optical_status?: string; ap_business_optical_status?: string; ap_business_threshold_dbm?: number | null; ap_business_reason?: string; ap_optical_data_freshness?: string
   ap_optical_status: string
@@ -33,7 +37,7 @@ export interface TracksideApBusinessRow {
 export interface TracksideApBusinessPage {
   items: TracksideApBusinessRow[]; total: number; page: number; page_size: number; site_id: string
   station_options: string[]
-  device_count: number; candidate_interface_count: number; optical_abnormal_count: number
+  device_count: number; candidate_interface_count: number; optical_abnormal_count: number; link_down_count?: number
   configured_ap_port_total?: number; planned_ap_total?: number; identified_ap_port_total?: number
   unidentified_ap_port_total?: number; physical_ap_total?: number
   unidentified_reason_counts?: Record<string, number>

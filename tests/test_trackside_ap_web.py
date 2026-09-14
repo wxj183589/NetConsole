@@ -39,6 +39,7 @@ from netconsole.services.trackside_ap_plan_io import (
 from netconsole.services.trackside_ap_business import (
     count_current_optical_abnormal_aps,
     count_current_optical_abnormal_by_site,
+    count_current_link_down_ports,
     normalize_trackside_ap_business_row,
 )
 from netconsole.repositories.ac_repository import AcRepository, TRACKSIDE_AP_PLAN_MODE
@@ -516,9 +517,11 @@ def test_trackside_query_maps_switch_snapshot_times_and_statuses(
 
     assert page.total == 1
     assert page.items[0].switch_interface_updated_at == "2026-08-03T18:04:29"
-    assert page.items[0].switch_optical_updated_at == "2026-08-03T18:04:30"
+    assert page.items[0].switch_optical_updated_at == ""
     assert page.items[0].switch_interface_data_status == "current"
     assert page.items[0].switch_optical_data_status == "stale"
+    assert page.items[0].switch_optical_valid is False
+    assert page.items[0].switch_last_known_optical_updated_at == "2026-08-03T18:04:30"
 
 
 def _seed_trackside_switch(
@@ -943,6 +946,24 @@ def test_trackside_optical_current_rx_with_raw_unknown_is_current_abnormal() -> 
     }
 
 
+def test_trackside_optical_current_batch_without_rx_is_unknown() -> None:
+    normalized = normalize_trackside_ap_business_row(
+        _optical_current_data_boundary_row(
+            switch_rx_power=None,
+            switch_optical_status="no_module",
+            switch_device_optical_status="no_module",
+            switch_optical_valid=False,
+        )
+    )
+
+    assert normalized["switch_rx_power"] is None
+    assert normalized["switch_optical_valid"] is False
+    assert normalized["switch_optical_status"] == "unknown"
+    assert normalized["ap_business_optical_status"] == "unknown"
+    assert normalized["optical_severity"] == "unknown"
+    assert count_current_optical_abnormal_aps([normalized]) == 0
+
+
 @pytest.mark.parametrize("no_current_status", ["stale", "missing", "unknown"])
 def test_trackside_optical_stale_rx_is_not_current_abnormal(no_current_status: str) -> None:
     stale_row = _optical_current_data_boundary_row(
@@ -1015,6 +1036,104 @@ def test_trackside_optical_current_normal_rx_with_raw_unknown_is_not_alarm() -> 
         [normalized], optical_anomaly_only=True
     ) == []
     assert count_current_optical_abnormal_aps([normalized]) == 0
+
+
+@pytest.mark.parametrize(
+    ("rx_power", "switch_status"),
+    [("-8.00", "normal"), ("-36.00", "no_light")],
+)
+def test_trackside_down_port_has_priority_over_historical_optical(
+    rx_power: str,
+    switch_status: str,
+) -> None:
+    normalized = normalize_trackside_ap_business_row(
+        _optical_current_data_boundary_row(
+            link_status="DOWN",
+            switch_rx_power=rx_power,
+            switch_optical_status=switch_status,
+            switch_optical_data_status="stale",
+            switch_optical_updated_at="2026-09-14T16:18:26+08:00",
+        )
+    )
+
+    assert normalized["link_status"] == "DOWN"
+    assert normalized["switch_optical_status"] == "link_down"
+    assert normalized["optical_severity"] == "link_down"
+    assert normalized["switch_rx_power"] is None
+    assert normalized["switch_last_known_rx_power"] == rx_power
+    assert normalized["switch_optical_valid"] is False
+    assert count_current_link_down_ports([normalized]) == 1
+    assert count_current_optical_abnormal_aps([normalized]) == 0
+    assert count_current_optical_abnormal_by_site([normalized]) == {}
+
+
+def test_trackside_up_optical_timeout_is_unknown_without_reusing_last_known() -> None:
+    normalized = normalize_trackside_ap_business_row(
+        _optical_current_data_boundary_row(
+            link_status="UP",
+            switch_rx_power="-36.00",
+            switch_optical_status="abnormal",
+            switch_optical_data_status="stale",
+            switch_optical_collection_status="timeout",
+            switch_optical_updated_at="2026-09-14T16:18:26+08:00",
+        )
+    )
+
+    assert normalized["link_status"] == "UP"
+    assert normalized["switch_rx_power"] is None
+    assert normalized["switch_last_known_rx_power"] == "-36.00"
+    assert normalized["switch_optical_status"] == "collection_failed"
+    assert normalized["ap_business_optical_status"] == "unknown"
+    assert normalized["optical_severity"] == "collection_failed"
+    assert count_current_optical_abnormal_aps([normalized]) == 0
+
+
+def test_trackside_down_port_may_keep_current_diagnostic_rx_but_not_alarm() -> None:
+    normalized = normalize_trackside_ap_business_row(
+        _optical_current_data_boundary_row(
+            link_status="DOWN",
+            switch_rx_power="-36.00",
+            switch_optical_status="no_light",
+            switch_optical_data_status="current",
+            switch_optical_valid=True,
+        )
+    )
+
+    assert normalized["link_status"] == "DOWN"
+    assert normalized["switch_rx_power"] == "-36.00"
+    assert normalized["switch_optical_status"] == "link_down"
+    assert normalized["optical_severity"] == "link_down"
+    assert count_current_optical_abnormal_aps([normalized]) == 0
+
+
+def test_trackside_up_after_down_uses_new_current_optical_sample() -> None:
+    down = normalize_trackside_ap_business_row(
+        _optical_current_data_boundary_row(
+            link_status="DOWN",
+            switch_rx_power="-36.00",
+            switch_optical_status="no_light",
+            switch_optical_data_status="stale",
+            switch_optical_updated_at="2026-09-14T16:18:26+08:00",
+        )
+    )
+    recovered = normalize_trackside_ap_business_row(
+        {
+            **down,
+            "link_status": "UP",
+            "switch_rx_power": "-7.00",
+            "switch_tx_power": "-3.00",
+            "switch_optical_status": "normal",
+            "switch_device_optical_status": "normal",
+            "switch_optical_data_status": "current",
+            "switch_optical_valid": True,
+            "switch_optical_collection_status": "success",
+        }
+    )
+
+    assert recovered["link_status"] == "UP"
+    assert recovered["switch_rx_power"] == "-7.00"
+    assert recovered["switch_optical_status"] == "normal"
+    assert recovered["optical_severity"] == "normal"
 
 
 def _optical_sequence_snapshot(

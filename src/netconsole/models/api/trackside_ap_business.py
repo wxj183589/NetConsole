@@ -46,8 +46,13 @@ class TracksideApBusinessRowDTO(ApiModel):
     switch_optical_updated_at: str = ""
     switch_interface_data_status: Literal["current", "stale", "missing", "unknown"] = "unknown"
     switch_optical_data_status: Literal["current", "stale", "missing", "unknown"] = "unknown"
+    switch_optical_valid: bool = False
     switch_optical_collection_status: str = ""
     switch_optical_collection_error: str = ""
+    switch_optical_unavailable_reason: str = ""
+    switch_last_known_rx_power: Any = None
+    switch_last_known_tx_power: Any = None
+    switch_last_known_optical_updated_at: str = ""
     ap_uuid: str = ""
     ap_mac: str = ""
     ap_name: str = ""
@@ -213,6 +218,10 @@ class TracksideApBusinessPageDTO(ApiModel):
         description="未识别配置端口的唯一主原因码统计，合计等于 unidentified_ap_port_total。",
     )
     optical_abnormal_count: int = 0
+    link_down_count: int = Field(
+        default=0,
+        description="当前接口快照报告 DOWN 的轨旁 AP 业务端口数；不计入光衰异常。",
+    )
     fit_ap_resource_count: int = 0
     fit_ap_resource_total_count: int = 0
     fit_ap_matched_count: int = 0

@@ -104,6 +104,46 @@ export function tracksideCanonicalOpticalPresentation(
   )
 }
 
+const switchOpticalUnavailableStatuses = new Set([
+  'stale',
+  'missing',
+  'unknown',
+  'not_collected',
+  'collection_failed',
+])
+
+const portDownPresentation: TracksideOpticalPresentation = {
+  label: '端口 DOWN',
+  tagType: 'danger',
+  className: 'optical-link-down',
+}
+
+export function tracksideSwitchOpticalPresentation(row: {
+  link_status?: unknown
+  switch_optical_status?: unknown
+  switch_optical_data_status?: unknown
+  switch_optical_valid?: boolean
+  model?: unknown
+  ap_optical_applicable?: boolean
+}): TracksideOpticalPresentation {
+  if (!isApOpticalApplicable(row.model, row.ap_optical_applicable)) {
+    return tracksideOpticalPresentation('not_applicable')
+  }
+  if (String(row.link_status || '').trim().toUpperCase() === 'DOWN') {
+    return portDownPresentation
+  }
+  const freshness = normalizedOpticalStatus(row.switch_optical_data_status)
+  if (switchOpticalUnavailableStatuses.has(freshness) || row.switch_optical_valid === false) {
+    return tracksideOpticalPresentation('unknown')
+  }
+  return tracksideCanonicalOpticalPresentation(
+    row.switch_optical_status,
+    row.switch_optical_data_status,
+    row.model,
+    row.ap_optical_applicable,
+  )
+}
+
 export function tracksideRxPresentation(
   rxPower: unknown,
   backendStatus: unknown,
@@ -197,7 +237,20 @@ export function tracksideBusinessOpticalPresentation(row: {
   optical_severity?: unknown
   ap_optical_data_freshness?: unknown
   switch_optical_data_status?: unknown
+  link_status?: unknown
+  switch_optical_valid?: boolean
 }): TracksideOpticalPresentation {
+  if (String(row.link_status || '').trim().toUpperCase() === 'DOWN') {
+    return portDownPresentation
+  }
+  const switchFreshness = normalizedOpticalStatus(row.switch_optical_data_status)
+  if (
+    switchOpticalUnavailableStatuses.has(switchFreshness)
+    || row.switch_optical_valid === false
+    || normalizedOpticalStatus(row.optical_severity) === 'collection_failed'
+  ) {
+    return tracksideOpticalPresentation('unknown')
+  }
   const canonicalStatus = row.optical_severity || row.ap_business_optical_status
   const freshness = normalizedOpticalStatus(row.ap_optical_data_freshness) === 'stale'
     || normalizedOpticalStatus(row.switch_optical_data_status) === 'stale'
@@ -293,6 +346,18 @@ export function displayTracksideSnapshotTime(value: unknown, status: unknown): s
     return `${t('trackside.snapshot.stale', '历史数据')} · ${timestamp}`
   }
   return timestamp
+}
+
+export function displaySwitchLastKnownOptical(row: {
+  switch_last_known_rx_power?: unknown
+  switch_last_known_tx_power?: unknown
+  switch_last_known_optical_updated_at?: unknown
+}): string {
+  const rx = displayTracksideValue(row.switch_last_known_rx_power)
+  const tx = displayTracksideValue(row.switch_last_known_tx_power)
+  const at = displayTracksideValue(row.switch_last_known_optical_updated_at)
+  if (rx === '—' && tx === '—' && at === '—') return ''
+  return `上次成功采集：Rx ${rx} dBm · Tx ${tx} dBm · ${at}`
 }
 
 export function displayLldpStatus(value: unknown): string {

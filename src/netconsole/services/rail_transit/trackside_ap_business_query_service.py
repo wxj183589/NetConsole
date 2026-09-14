@@ -24,6 +24,7 @@ from netconsole.services.rail_transit.base_data_query_service import RailTransit
 from netconsole.services.trackside_ap_business import (
     build_trackside_ap_business_statistics,
     count_current_optical_abnormal_aps,
+    count_current_link_down_ports,
     normalize_trackside_ap_business_row,
     trackside_station_options,
     trackside_row_status,
@@ -158,6 +159,7 @@ class TracksideApBusinessQueryService:
             physical_ap_total=statistics.physical_ap_total,
             unidentified_reason_counts=dict(statistics.unidentified_reason_counts),
             optical_abnormal_count=count_current_optical_abnormal_aps(business_rows),
+            link_down_count=count_current_link_down_ports(business_rows),
             fit_ap_resource_count=snapshot.fit_ap_resource_count,
             fit_ap_resource_total_count=snapshot.fit_ap_resource_total_count,
             fit_ap_matched_count=snapshot.fit_ap_matched_count,
@@ -356,6 +358,21 @@ class TracksideApBusinessQueryService:
             ),
             switch_optical_collection_error=str(
                 row.get("switch_optical_collection_error") or ""
+            ),
+            switch_optical_valid=bool(
+                row.get(
+                    "switch_optical_valid",
+                    str(row.get("switch_optical_data_status") or "").casefold()
+                    == "current",
+                )
+            ),
+            switch_optical_unavailable_reason=str(
+                row.get("switch_optical_unavailable_reason") or ""
+            ),
+            switch_last_known_rx_power=row.get("switch_last_known_rx_power"),
+            switch_last_known_tx_power=row.get("switch_last_known_tx_power"),
+            switch_last_known_optical_updated_at=str(
+                row.get("switch_last_known_optical_updated_at") or ""
             ),
             ap_uuid=str(row.get("ap_uuid") or ""),
             ap_mac=str(row.get("ap_mac") or ""),
