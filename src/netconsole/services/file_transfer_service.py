@@ -133,8 +133,12 @@ class FileTransferService:
         strict_host_keys: bool = True,
         host_key_trust: HostKeyTrustService | None = None,
         relay_service: SiteSSHRelayService | None = None,
+        relay_site_id: str | None = None,
+        route_source: str = "interactive",
     ) -> None:
         self.site_name = site_name
+        self.relay_site_id = str(relay_site_id or site_name).strip() or str(site_name)
+        self.route_source = str(route_source or "interactive").strip() or "interactive"
         self.paths = paths or PathResolver()
         # Kept as a compatibility constructor argument. All product paths
         # use the managed AUTO_REPLACE policy now; no consumer may silently
@@ -167,6 +171,11 @@ class FileTransferService:
 
         for target in targets:
             started = monotonic()
+            self._log_route_selected(
+                target,
+                relay_enabled=relay_enabled,
+                relay_jump_label=relay_jump_label,
+            )
             failure_stage = (
                 "jump_connect"
                 if target.via_tunnel and not relay_enabled
@@ -379,18 +388,50 @@ class FileTransferService:
         """Read the current site's Relay switch without breaking library callers."""
 
         try:
-            return bool(self.relay_service.load(self.site_name).enabled)
+            return bool(self.relay_service.load(self.relay_site_id).enabled)
         except SiteSSHRelayError as exc:
             if exc.code == "SITE_NOT_FOUND":
+                if self.relay_site_id != self.site_name:
+                    raise FileTransferConnectionError(
+                        "SITE_RELAY_SITE_NOT_FOUND",
+                        "当前局点的 SSH Relay 身份不存在，已拒绝回退到设备隧道。",
+                        details={"site_id": self.relay_site_id, "site_directory": self.site_name},
+                    ) from exc
                 return False
             raise
 
     def _relay_jump_label(self) -> str:
-        try:
-            config = self.relay_service.load(self.site_name)
-        except SiteSSHRelayError:
-            return ""
+        config = self.relay_service.load(self.relay_site_id)
         return f"{config.host}:{config.port}" if config.enabled else ""
+
+    def _log_route_selected(
+        self,
+        target: ConnectionTarget,
+        *,
+        relay_enabled: bool,
+        relay_jump_label: str = "",
+    ) -> None:
+        if relay_enabled:
+            route_mode = "site_relay"
+            jump = relay_jump_label
+        elif target.via_tunnel:
+            route_mode = "device_tunnel"
+            jump = (
+                f"{target.tunnel.host}:{target.tunnel.port}"
+                if target.tunnel is not None
+                else ""
+            )
+        else:
+            route_mode = "direct"
+            jump = ""
+        app_logger.log_info(
+            "FILE_TRANSFER_ROUTE_SELECTED",
+            (
+                f"site_id={self.relay_site_id}, site_directory={self.site_name}, "
+                f"source={self.route_source}, route_mode={route_mode}, jump={jump}, "
+                f"target={target.host}:{target.port}, connection_method={target.method}"
+            ),
+        )
 
     def _connect_ssh_client(
         self,
@@ -419,7 +460,7 @@ class FileTransferService:
             port = target.port
             if via_site_relay:
                 sock = self.relay_service.open_target_channel(
-                    self.site_name,
+                    self.relay_site_id,
                     target.host,
                     int(target.port),
                 )
@@ -911,6 +952,11 @@ class FileTransferService:
             connection = None
             target_socket: socket.socket | None = None
             files: list[RemoteDeviceFile] = []
+            self._log_route_selected(
+                target,
+                relay_enabled=relay_enabled,
+                relay_jump_label=self._relay_jump_label() if relay_enabled else "",
+            )
             try:
                 target_context = (
                     nullcontext(target)
@@ -926,7 +972,7 @@ class FileTransferService:
                         "collect",
                         device_uuid=str(device.device_uuid or device.id or ""),
                         paths=self.paths,
-                        site_id=self.site_name,
+                        site_id=self.relay_site_id,
                         connection_mode="jump" if relay_enabled or target.via_tunnel else "direct",
                         jump_host=(
                             self._relay_jump_label()
@@ -941,7 +987,7 @@ class FileTransferService:
                         else:
                             params, target_socket = _file_netmiko_params(prepared)
                         params["_netconsole_paths"] = self.paths
-                        params["_netconsole_site_id"] = self.site_name
+                        params["_netconsole_site_id"] = self.relay_site_id
                         if target.via_tunnel and not relay_enabled:
                             params["_netconsole_host_key_host"] = target.host
                             params["_netconsole_host_key_port"] = target.port
@@ -1023,6 +1069,11 @@ class FileTransferService:
 
         client = paramiko.SSHClient()
         relay_enabled = self._site_relay_enabled()
+        self._log_route_selected(
+            target,
+            relay_enabled=relay_enabled,
+            relay_jump_label=self._relay_jump_label() if relay_enabled else "",
+        )
         try:
             target_context = (
                 nullcontext(target)
@@ -1099,6 +1150,11 @@ class FileTransferService:
         target_socket: socket.socket | None = None
         try:
             relay_enabled = self._site_relay_enabled()
+            self._log_route_selected(
+                target,
+                relay_enabled=relay_enabled,
+                relay_jump_label=self._relay_jump_label() if relay_enabled else "",
+            )
             target_context = (
                 nullcontext(target)
                 if relay_enabled
@@ -1113,7 +1169,7 @@ class FileTransferService:
                     "collect",
                     device_uuid=device_uuid,
                     paths=self.paths,
-                    site_id=self.site_name,
+                    site_id=self.relay_site_id,
                     connection_mode="jump" if relay_enabled or target.via_tunnel else "direct",
                     jump_host=(
                         self._relay_jump_label()
@@ -1128,7 +1184,7 @@ class FileTransferService:
                     else:
                         params, target_socket = _file_netmiko_params(prepared)
                     params["_netconsole_paths"] = self.paths
-                    params["_netconsole_site_id"] = self.site_name
+                    params["_netconsole_site_id"] = self.relay_site_id
                     if target.via_tunnel and not relay_enabled:
                         params["_netconsole_host_key_host"] = target.host
                         params["_netconsole_host_key_port"] = target.port

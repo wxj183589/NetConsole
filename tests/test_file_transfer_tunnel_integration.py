@@ -12,12 +12,19 @@ from time import monotonic, sleep
 import paramiko
 import pytest
 
+from netconsole.core import app_logger
+from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import SiteManager
 from netconsole.models.device import Device
-from netconsole.services.file_transfer_service import FileTransferService
+from netconsole.services.background_job import BackgroundJob
+from netconsole.services.file_management_service import FileManagementApplicationService, run_file_management_download
+from netconsole.services.file_transfer_service import FileTransferConnectionError, FileTransferService
 from netconsole.services.host_key_trust_service import HostKeyTrustService
 from netconsole.services.site_ssh_relay import SiteSSHRelayService, close_site_jump_sessions
+from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository
+from netconsole.services.job_center.job_context import JobContext
+from netconsole.repositories.device_repository import DeviceRepository
 
 
 JUMP_USERNAME = "jump"
@@ -463,3 +470,133 @@ def test_site_relay_uses_shared_jump_channel_for_real_sftp(
     finally:
         service.disconnect()
         close_site_jump_sessions(paths=paths)
+
+
+def test_worker_download_uses_canonical_site_relay_and_ignores_device_tunnel(
+    tmp_path: Path,
+    monkeypatch,
+    tunnel_topology,
+) -> None:
+    target, jump, target_key, jump_key, forwards = tunnel_topology
+    paths = PathResolver(tmp_path, tmp_path)
+    physical_site = "physical-site"
+    stable_site = "stable-site"
+    SiteManager(paths).create_site(physical_site, display_name="Physical Site")
+    registry = SiteRegistryRepository(paths)
+    physical_record = registry.get_by_directory_name(physical_site)
+    registry.register(SiteRecord(stable_site, "Stable Relay Site", physical_record.root_path))
+    registry.unregister(physical_site, physical_record.root_path)
+    assert registry.get_by_directory_name(physical_site).site_id == stable_site
+
+    SiteSSHRelayService(paths).save(
+        stable_site,
+        enabled=True,
+        host="127.0.0.1",
+        port=jump.address[1],
+        username=JUMP_USERNAME,
+        password=JUMP_PASSWORD,
+    )
+    database = Database(paths.site_db_path(physical_site))
+    device = DeviceRepository(database).create(
+        Device(
+            name="MR-worker-relay",
+            device_type="MR",
+            primary_address="192.0.2.200",
+            backup_address=TARGET_IDENTITY,
+            ssh_enabled=1,
+            ssh_port=target.address[1],
+            ssh_username=TARGET_USERNAME,
+            ssh_password=TARGET_PASSWORD,
+            tunnel1_host="127.0.0.1",
+            tunnel1_port=jump.address[1],
+            tunnel1_username=JUMP_USERNAME,
+            tunnel1_password=JUMP_PASSWORD,
+        )
+    )
+    trust = HostKeyTrustService(paths)
+    logs: list[tuple[str, str]] = []
+    monkeypatch.setattr(app_logger, "log_info", lambda event, detail="", **_kwargs: logs.append((event, detail)))
+    monkeypatch.setattr(
+        "netconsole.services.file_transfer_service.DOWNLOAD_STABLE_WAIT_SECONDS",
+        0,
+    )
+
+    target_path = paths.file_downloads_root(physical_site) / "worker-relay.bin"
+    interactive = FileManagementApplicationService(paths)._new_transfer(physical_site)
+    try:
+        root = interactive.connect(device)
+        assert interactive.list_directory(root)
+        assert interactive._tunnel_session is None
+    finally:
+        interactive.disconnect()
+
+    job = BackgroundJob(
+        job_id="worker-site-relay-download",
+        task_type="file_management_download",
+        params={
+            "site_name": physical_site,
+            "relay_site_id": stable_site,
+            "device_id": device.device_uuid,
+            "remote_entry_id": "fe1_" + "3" * 32,
+            "remote_path": "flash:/large.bin",
+            "remote_name": "large.bin",
+            "remote_category": "bin",
+            "remote_size": len(LARGE_FILE),
+            "target_relative_path": target_path.relative_to(paths.site_dir(physical_site)).as_posix(),
+            "target_kind": "device_file",
+            "app_root": str(paths.app_root),
+            "data_root": str(paths.data_root),
+        },
+    )
+
+    try:
+        result = run_file_management_download(JobContext.from_job(job))
+
+        assert result["result_kind"] == "device_file"
+        assert target_path.read_bytes() == LARGE_FILE
+        assert forwards.value == 0
+        route_logs = [detail for event, detail in logs if event == "FILE_TRANSFER_ROUTE_SELECTED"]
+        assert route_logs
+        assert all("site_id=stable-site" in detail for detail in route_logs)
+        assert all("site_directory=physical-site" in detail for detail in route_logs)
+        assert any("source=interactive" in detail for detail in route_logs)
+        assert any("source=download_worker" in detail for detail in route_logs)
+        assert all("route_mode=site_relay" in detail for detail in route_logs)
+        assert not any("route_mode=device_tunnel" in detail for detail in route_logs)
+        assert any("target=target.internal:" in detail for detail in route_logs)
+        assert any(
+            event == "ssh_relay_stage"
+            and "stage=DIRECT_TCPIP_OPEN" in detail
+            and "result=pass" in detail
+            for event, detail in logs
+        )
+        assert trust.is_trusted("127.0.0.1", jump.address[1], jump_key, role="jump")
+        assert trust.is_trusted(TARGET_IDENTITY, target.address[1], target_key, role="target")
+    finally:
+        close_site_jump_sessions(paths=paths)
+
+
+def test_site_relay_failure_does_not_fallback_to_device_tunnel(
+    tmp_path: Path,
+    tunnel_topology,
+) -> None:
+    target, jump, _target_key, _jump_key, forwards = tunnel_topology
+    paths = PathResolver(tmp_path, tmp_path)
+    SiteManager(paths).create_site("demo", display_name="Demo")
+    SiteSSHRelayService(paths).save(
+        "demo",
+        enabled=True,
+        host="127.0.0.1",
+        port=jump.address[1] + 1,
+        username=JUMP_USERNAME,
+        password=JUMP_PASSWORD,
+    )
+    service = FileTransferService("demo", paths, host_key_trust=HostKeyTrustService(paths))
+
+    with pytest.raises(FileTransferConnectionError):
+        service.connect(_device(jump.address[1], target.address[1]))
+
+    assert service._tunnel_session is None
+    assert forwards.value == 0
+    service.disconnect()
+    close_site_jump_sessions(paths=paths)

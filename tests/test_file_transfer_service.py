@@ -1,4 +1,6 @@
 from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
 
 import paramiko
 import pytest
@@ -596,6 +598,101 @@ def test_download_file_prefers_sftp_and_falls_back_to_scp(tmp_path, monkeypatch)
     assert result.success is True
     assert result.local_path == f"files/file_manager/downloads/SW-A__{device.device_uuid}/bin/SW-A_boot.bin"
     assert paths_from_result(tmp_path, "demo", result.local_path).read_text(encoding="utf-8") == "downloaded"
+
+
+def test_scp_fallback_keeps_site_relay_route_and_canonical_identity(tmp_path, monkeypatch):
+    import netmiko
+
+    captured: dict[str, object] = {}
+    logs: list[tuple[str, str]] = []
+    destination = tmp_path / "relay-scp.bin"
+    service = FileTransferService(
+        "physical-site",
+        PathResolver(tmp_path),
+        relay_site_id="stable-site",
+        route_source="download_worker",
+    )
+    target = ConnectionTarget(
+        "SSH",
+        "hp_comware",
+        "target.internal",
+        2222,
+        "device",
+        "device-password",
+        method="backup_direct",
+        via_tunnel=True,
+        tunnel=SimpleNamespace(host="wrong-device-tunnel", port=2200),
+        target_role="backup",
+        tunnel_label="tunnel1",
+    )
+
+    class FakeConnection:
+        def disconnect(self):
+            pass
+
+    def fake_connect(**params):
+        captured.update(params)
+        return FakeConnection()
+
+    def fake_file_transfer(_connection, *, dest_file, **_kwargs):
+        Path(dest_file).write_text("relay-scp", encoding="utf-8")
+
+    monkeypatch.setattr(service, "_site_relay_enabled", lambda: True)
+    monkeypatch.setattr(service, "_relay_jump_label", lambda: "relay.internal:22")
+    monkeypatch.setattr(service_module.netmiko_connection, "ConnectHandler", fake_connect)
+    monkeypatch.setattr(netmiko, "file_transfer", fake_file_transfer)
+    monkeypatch.setattr(
+        service_module.app_logger,
+        "log_info",
+        lambda event, detail="", **_kwargs: logs.append((event, detail)),
+    )
+
+    service._download_scp(target, "flash:/boot.bin", destination, device_uuid="device-1")
+
+    assert destination.read_text(encoding="utf-8") == "relay-scp"
+    assert captured["host"] == "target.internal"
+    assert captured["port"] == 2222
+    assert captured["_netconsole_site_id"] == "stable-site"
+    assert "sock" not in captured
+    route_log = next(detail for event, detail in logs if event == "FILE_TRANSFER_ROUTE_SELECTED")
+    assert "route_mode=site_relay" in route_log
+    assert "jump=relay.internal:22" in route_log
+    assert "source=download_worker" in route_log
+
+
+def test_download_retries_keep_the_same_site_relay_identity(tmp_path, monkeypatch):
+    device = Device(id=1, device_uuid=Device.new_uuid(), name="SW-A", ip_address="192.0.2.10")
+    remote = RemoteDeviceFile("boot.bin", "flash:/boot.bin", 1, None, "bin")
+    service = FileTransferService(
+        "physical-site",
+        PathResolver(tmp_path),
+        relay_site_id="stable-site",
+        route_source="download_worker",
+    )
+    seen: list[str] = []
+    scp_attempts = 0
+
+    def fake_sftp(_target, _remote_path, _local_path):
+        seen.append(service.relay_site_id)
+        raise RuntimeError("relay target temporarily unavailable")
+
+    def fake_scp(_target, _remote_path, local_path, *, device_uuid=""):
+        nonlocal scp_attempts
+        seen.append(service.relay_site_id)
+        scp_attempts += 1
+        if scp_attempts < 3:
+            raise RuntimeError("relay retry")
+        local_path.write_text("downloaded", encoding="utf-8")
+
+    monkeypatch.setattr(service, "_download_sftp", fake_sftp)
+    monkeypatch.setattr(service, "_download_scp", fake_scp)
+    monkeypatch.setattr(service_module, "DOWNLOAD_STABLE_WAIT_SECONDS", 0)
+
+    result = service.download_file(device, remote)
+
+    assert result.success is True
+    assert scp_attempts == 3
+    assert seen == ["stable-site"] * 6
 
 
 def test_batch_file_download_keeps_failures_isolated():
