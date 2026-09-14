@@ -39,6 +39,7 @@ SITE_RELAY_CREDENTIAL_REF_KEY = "ssh_relay_credential_ref"
 SITE_RELAY_REVISION_KEY = "ssh_relay_revision"
 SITE_RELAY_CREDENTIAL_DB_NAME = "site_ssh_credentials.sqlite3"
 DEFAULT_SSH_PORT = 22
+SITE_RELAY_KEEPALIVE_SECONDS = 25
 TARGET_HOST_KEY_UPDATE_FAILED_CODE = "TARGET_HOSTKEY_UPDATE_FAILED"
 # Compatibility labels for older persisted diagnostics and API clients.
 TARGET_HOST_KEY_UNKNOWN_CODE = TARGET_HOST_KEY_UPDATE_FAILED_CODE
@@ -346,7 +347,12 @@ class SiteSSHRelayService:
         runtime = _runtime_status(self.paths, str(site_id))
         manager = _existing_manager_for(self.paths, str(site_id))
         if manager is not None:
-            runtime.update(manager.public_status())
+            for key, value in manager.public_status().items():
+                # A reconnect failure may leave the manager without a new key
+                # event; keep the last truthful refresh result visible rather
+                # than replacing it with empty fields.
+                if value not in (None, ""):
+                    runtime[key] = value
         if runtime:
             payload.update(runtime)
         if not config.enabled:
@@ -381,6 +387,12 @@ class SiteSSHRelayService:
                 "SSH 中转密码未配置，无法连接",
             )
         return ResolvedSiteSSHRelayConfig(**config.__dict__, password=password)
+
+    def open_target_channel(self, site_id: str, target_host: str, target_port: int) -> Any:
+        """Open one target channel on the site's shared Jump Transport."""
+
+        config = self.resolve_for_connection(site_id)
+        return _manager_for(self.paths, config).open_channel(target_host, target_port)
 
     def save(
         self,
@@ -555,8 +567,8 @@ class SiteSSHRelayService:
                 _remember_runtime_status(
                     self.paths,
                     str(site_id),
-                    runtime_status="RUNNING",
-                    runtime_message="",
+                    runtime_status="STOPPED",
+                    runtime_message="测试连接已完成，常驻 SSH 中转未启动",
                     host_key_status=event.get("status", ""),
                     host_key_fingerprint_sha256=event.get("fingerprint_sha256", ""),
                     host_key_updated_at=_now(),
@@ -584,6 +596,13 @@ class SiteSSHRelayService:
 
         result = self.test_jump_host(site_id)
         result["message"] = "指纹已更新"
+        config = self.load(site_id)
+        if config.enabled:
+            resident = self.auto_start_if_enabled(site_id)
+            result.update(
+                runtime_status=resident.get("runtime_status", "UNKNOWN"),
+                runtime_message=resident.get("runtime_message", ""),
+            )
         return result
 
     def delete_jump_host_key(self, site_id: str) -> dict[str, object]:
@@ -689,66 +708,96 @@ class SiteJumpSessionManager:
         started = time.monotonic()
         with self._lock:
             transport = self._ensure_transport_locked()
-            _log_relay_stage(
-                "DIRECT_TCPIP_OPEN",
-                "starting",
-                target_host=str(target_host),
-                target_port=int(target_port),
-                jump_host=self.config.host,
-                jump_port=self.config.port,
-            )
-            try:
-                channel = transport.open_channel(
-                    "direct-tcpip",
-                    (str(target_host), int(target_port)),
-                    ("127.0.0.1", 0),
-                )
-                if channel is None:
-                    raise OSError("direct-tcpip channel unavailable")
+            recovery_attempted = False
+            while True:
                 _log_relay_stage(
                     "DIRECT_TCPIP_OPEN",
-                    "pass",
+                    "starting",
                     target_host=str(target_host),
                     target_port=int(target_port),
                     jump_host=self.config.host,
                     jump_port=self.config.port,
-                    duration_ms=_elapsed_ms(started),
                 )
-                _log_relay_stage(
-                    "TARGET_TCP_READY",
-                    "pass",
-                    target_host=str(target_host),
-                    target_port=int(target_port),
-                    jump_host=self.config.host,
-                    jump_port=self.config.port,
-                    duration_ms=_elapsed_ms(started),
-                )
-                return channel
-            except Exception as exc:
-                if self._transport is None or not bool(self._transport.is_active()):
-                    self._close_locked()
-                _log_relay_stage(
-                    "DIRECT_TCPIP_OPEN",
-                    "fail",
-                    target_host=str(target_host),
-                    target_port=int(target_port),
-                    jump_host=self.config.host,
-                    jump_port=self.config.port,
-                    duration_ms=_elapsed_ms(started),
-                    exception=exc,
-                )
-                raise SiteSSHRelayError(
-                    "JUMP_CHANNEL_FAILED",
-                    f"SSH 中转服务器正常，但无法连接目标设备：{target_host}:{target_port}",
-                    details={
-                        "stage": "DIRECT_TCPIP_OPEN",
-                        "target_host": target_host,
-                        "target_port": int(target_port),
-                        "jump_host": self.config.host,
-                        "jump_port": self.config.port,
-                        "exception": exc.__class__.__name__,
-                    },
-                ) from exc
+                try:
+                    channel = transport.open_channel(
+                        "direct-tcpip",
+                        (str(target_host), int(target_port)),
+                        ("127.0.0.1", 0),
+                    )
+                    if channel is None:
+                        raise OSError("direct-tcpip channel unavailable")
+                    _log_relay_stage(
+                        "DIRECT_TCPIP_OPEN",
+                        "pass",
+                        target_host=str(target_host),
+                        target_port=int(target_port),
+                        jump_host=self.config.host,
+                        jump_port=self.config.port,
+                        duration_ms=_elapsed_ms(started),
+                    )
+                    _log_relay_stage(
+                        "TARGET_TCP_READY",
+                        "pass",
+                        target_host=str(target_host),
+                        target_port=int(target_port),
+                        jump_host=self.config.host,
+                        jump_port=self.config.port,
+                        duration_ms=_elapsed_ms(started),
+                    )
+                    return channel
+                except Exception as exc:
+                    should_recover = (
+                        not recovery_attempted
+                        and _is_stale_jump_transport(transport, exc)
+                    )
+                    if should_recover:
+                        recovery_attempted = True
+                        _log_relay_stage(
+                            "JUMP_TRANSPORT_RECOVERY",
+                            "starting",
+                            target_host=str(target_host),
+                            target_port=int(target_port),
+                            jump_host=self.config.host,
+                            jump_port=self.config.port,
+                            exception=exc,
+                        )
+                        self._close_locked()
+                        transport = self._ensure_transport_locked()
+                        _log_relay_stage(
+                            "JUMP_TRANSPORT_RECOVERY",
+                            "pass",
+                            target_host=str(target_host),
+                            target_port=int(target_port),
+                            jump_host=self.config.host,
+                            jump_port=self.config.port,
+                        )
+                        continue
+                    if self._transport is None or not bool(self._transport.is_active()):
+                        self._close_locked()
+                    _log_relay_stage(
+                        "DIRECT_TCPIP_OPEN",
+                        "fail",
+                        target_host=str(target_host),
+                        target_port=int(target_port),
+                        jump_host=self.config.host,
+                        jump_port=self.config.port,
+                        duration_ms=_elapsed_ms(started),
+                        exception=exc,
+                    )
+                    raise SiteSSHRelayError(
+                        "JUMP_CHANNEL_FAILED",
+                        f"SSH 中转服务器正常，但无法连接目标设备：{target_host}:{target_port}",
+                        details={
+                            "stage": "DIRECT_TCPIP_OPEN",
+                            "target_host": target_host,
+                            "target_port": int(target_port),
+                            "jump_host": self.config.host,
+                            "jump_port": self.config.port,
+                            "exception": exc.__class__.__name__,
+                            "stale_transport_recovery": recovery_attempted,
+                            "recovery_retry_count": int(recovery_attempted),
+                        },
+                    ) from exc
 
     def ensure_running(self) -> None:
         with self._lock:
@@ -802,6 +851,9 @@ class SiteJumpSessionManager:
             transport = client.get_transport()
             if transport is None or not bool(transport.is_active()):
                 raise OSError("jump transport is inactive")
+            set_keepalive = getattr(transport, "set_keepalive", None)
+            if callable(set_keepalive):
+                set_keepalive(SITE_RELAY_KEEPALIVE_SECONDS)
             event = dict(getattr(client, "_netconsole_host_key_event", {}) or {})
             if event:
                 event.setdefault("updated_at", _now())
@@ -887,6 +939,41 @@ def _exception_chain(exc: BaseException) -> tuple[BaseException, ...]:
         result.append(current)
         current = current.__cause__ or current.__context__
     return tuple(result)
+
+
+def _is_stale_jump_transport(transport: Any, exc: BaseException) -> bool:
+    """Only recover a dead Jump transport, never a target ACL/reachability error."""
+
+    text = str(exc or "").casefold()
+    target_failure_markers = (
+        "administratively prohibited",
+        "connection refused",
+        "no route to host",
+        "network is unreachable",
+        "unable to connect",
+        "connect failed",
+        "timed out",
+        "timeout",
+    )
+    if any(marker in text for marker in target_failure_markers):
+        return False
+    transport_failure_markers = (
+        "no existing session",
+        "ssh session not active",
+        "transport is not active",
+        "transport is closed",
+        "socket is closed",
+        "broken pipe",
+        "connection reset",
+        "connection aborted",
+    )
+    if any(marker in text for marker in transport_failure_markers):
+        return True
+    is_active = getattr(transport, "is_active", None)
+    try:
+        return not bool(is_active()) if callable(is_active) else False
+    except Exception:
+        return True
 
 
 def _is_bad_host_key_exception(exc: BaseException) -> bool:

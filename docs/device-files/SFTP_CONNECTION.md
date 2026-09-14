@@ -2,11 +2,15 @@
 
 设备文件连接由 `Vue → FastAPI Router → FileManagementApplicationService → FileTransferService` 完成。
 密码只由后端 Credential Vault 组装，Renderer 不读取密码；SFTP、普通设备 SSH、设备详情采集和 SSH
-Relay 共用 managed known_hosts。
+Relay 共用 managed known_hosts。Relay ON 时文件列表、SFTP 连接、下载和 SCP
+fallback 都通过当前局点 Jump Host 的 `direct-tcpip` 到达目标；不会再创建
+第二套 per-device 隧道，也不会把 `127.0.0.1:随机端口` 当作目标身份。Relay OFF
+继续使用原有直连、备份和 legacy per-device tunnel 回退。
 
-连接层自动处理 Host Key：首次自动登记、相同继续、变化原子替换后继续。Host Key 变化会记录
-`HOST_KEY_AUTO_UPDATED` 和旧/新指纹，不进入确认状态机，也不把原来的目录刷新、下载或设备采集
-标记为失败。只有 Host Key 事实源无法更新时才返回 `DEVICE_FILE_HOST_KEY_UPDATE_FAILED`。
+连接层自动处理 Host Key：`UNKNOWN → AUTO ADD`、`MATCH → 继续`、`MISMATCH → AUTO REPLACE`
+后继续。变化会记录 `HOST_KEY_AUTO_UPDATED` 和旧/新指纹，不进入确认状态机，也不把原来的目录刷新、
+下载或设备采集标记为失败。只有 Host Key 事实源无法更新时才返回
+`DEVICE_FILE_HOST_KEY_UPDATE_FAILED`。
 
 ## 自动启用 SFTP
 
@@ -44,9 +48,9 @@ quit
 Profile ID/version，再通过统一 `DeviceSSHConnectionFactory` 执行。任务成功后由 Application Service
 立即重建 SFTP 并继续原始连接意图，不要求用户再次点击。
 
-从设备文件页面启动 WinSCP 时，后端先沿用相同的 Jump/Target managed Host Key 策略完成短 SSH 预连接，
-再把当前指纹通过 WinSCP `/hostkey` 参数传入。WinSCP 不再单独弹出 NetConsole 的 Host Key challenge；
-预连接失败会返回稳定错误，密码仍只在后端生成。
+从设备文件页面启动 WinSCP 时仍可使用其已有的直连或 legacy 临时隧道路径；WinSCP
+Site Relay 本轮未完成，不能把 `WINSCP_SITE_RELAY` 记为 PASS。SecureCRT、Xshell、PuTTY
+和独立 Agent 同样不在 Backend Site Relay 范围内。
 
 网络、跳板、认证和目标失败分别返回稳定的 `*_UNREACHABLE`、`*_AUTH_FAILED` 或
 `*_FORWARD_OPEN_FAILED`；SFTP 协商失败使用 `DEVICE_FILE_SFTP_NEGOTIATION_FAILED`，Profile 不可用
@@ -54,5 +58,5 @@ Profile ID/version，再通过统一 `DeviceSSHConnectionFactory` 执行。任�
 `DEVICE_FILE_SFTP_ENABLE_FAILED`、`DEVICE_FILE_SFTP_RECONNECT_FAILED`。页面不显示 Paramiko、socket、
 密码或原始命令回显。
 
-真实设备上的 AC、MR、SFTP controlled-write 和 Host Key 轮换仍标记为 `REAL_DEVICE_PENDING`，本地测试和协议拓扑不能替代
-现场验证。
+真实设备上的 AC、MR、SFTP controlled-write、Site Relay 和 Host Key 轮换仍标记为
+`REAL_DEVICE_PENDING`，本地测试和协议拓扑不能替代现场验证。

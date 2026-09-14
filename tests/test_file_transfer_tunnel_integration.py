@@ -13,9 +13,11 @@ import paramiko
 import pytest
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.sites import SiteManager
 from netconsole.models.device import Device
 from netconsole.services.file_transfer_service import FileTransferService
 from netconsole.services.host_key_trust_service import HostKeyTrustService
+from netconsole.services.site_ssh_relay import SiteSSHRelayService, close_site_jump_sessions
 
 
 JUMP_USERNAME = "jump"
@@ -415,3 +417,49 @@ def test_jump_and_target_host_key_changes_are_replaced_and_sftp_continues(
     assert target_service.connect(_device(jump.address[1], target.address[1])) == "flash:/"
     assert target_trust.is_trusted(TARGET_IDENTITY, target.address[1], target_key)
     target_service.disconnect()
+
+
+def test_site_relay_uses_shared_jump_channel_for_real_sftp(
+    tmp_path: Path,
+    monkeypatch,
+    tunnel_topology,
+) -> None:
+    target, jump, target_key, jump_key, forwards = tunnel_topology
+    paths = PathResolver(tmp_path, tmp_path)
+    SiteManager(paths).create_site("demo", display_name="Demo")
+    SiteSSHRelayService(paths).save(
+        "demo",
+        enabled=True,
+        host="127.0.0.1",
+        port=jump.address[1],
+        username=JUMP_USERNAME,
+        password=JUMP_PASSWORD,
+    )
+    trust = HostKeyTrustService(paths)
+    service = FileTransferService(
+        "demo",
+        paths,
+        strict_host_keys=True,
+        host_key_trust=trust,
+    )
+    monkeypatch.setattr(
+        "netconsole.services.file_transfer_service.DOWNLOAD_STABLE_WAIT_SECONDS",
+        0,
+    )
+
+    try:
+        root = service.connect(_device(jump.address[1], target.address[1]))
+        files = service.list_directory(root)
+        destination = tmp_path / "site-relay-downloaded.bin"
+        service.download(files[0].remote_path, destination, chunk_size=64 * 1024)
+
+        assert service.successful_target is not None
+        assert service._tunnel_session is None
+        assert service._relay_channel is not None
+        assert forwards.value == 1
+        assert trust.is_trusted("127.0.0.1", jump.address[1], jump_key, role="jump")
+        assert trust.is_trusted(TARGET_IDENTITY, target.address[1], target_key, role="target")
+        assert destination.read_bytes() == LARGE_FILE
+    finally:
+        service.disconnect()
+        close_site_jump_sessions(paths=paths)

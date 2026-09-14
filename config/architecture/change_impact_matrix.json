@@ -461,6 +461,43 @@
       ]
     },
     {
+      "id": "ssh-relay-and-host-key",
+      "owner": "system_settings",
+      "level": "L4",
+      "patterns": [
+        "src/netconsole/services/site_ssh_relay.py",
+        "src/netconsole/services/file_transfer_service.py",
+        "src/netconsole/services/ssh_tunnel.py",
+        "src/netconsole/services/host_key_trust_service.py",
+        "src/netconsole/services/netmiko_connection.py",
+        "src/netconsole/backend/api/site_storage_router.py",
+        "src/netconsole/backend/api/main.py",
+        "docs/device-files/HOST_KEY_TRUST.md",
+        "docs/device-files/SFTP_CONNECTION.md",
+        "docs/investigations/SSH_RELAY_FINAL_AUDIT.md"
+      ],
+      "consumers": [
+        "devices",
+        "ac_fit_ap",
+        "file_management",
+        "trackside_ap",
+        "mesh",
+        "online_mr",
+        "ground_unattended",
+        "network_tools",
+        "system_settings",
+        "electron_runtime"
+      ],
+      "compatibility_risks": [
+        "局点 Jump Transport、目标 direct-tcpip、Host Key 身份和 Relay 生命周期漂移会造成多消费者绕过中转、错误信任或跨局点复用"
+      ],
+      "suites": [
+        "python-full",
+        "electron-contract",
+        "main-contract-smoke"
+      ]
+    },
+    {
       "id": "product-architecture-governance",
       "owner": "architecture_governance",
       "level": "L4",
