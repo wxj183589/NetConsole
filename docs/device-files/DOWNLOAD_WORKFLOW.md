@@ -20,12 +20,17 @@ status + limit/offset`，活动任务优先；下载 descriptor、hidden 和 wai
 
 ```text
 远端下载 -> .part -> 大小/SHA-256 校验 -> 原子改名
-  -> 登记 device_download 来源 -> 提交统一 MESH 导入服务 -> 刷新分析来源
+  -> 下载任务 COMPLETED -> 提交独立 file_management_mesh_import 子任务
+  -> 登记 device_download 来源 -> 刷新分析来源
 ```
 
-登记或解析失败不回滚已完成下载。任务结果中的 `mesh_import_status` 单独记录 `pending`、`completed`、
+文件下载 Worker 在校验和原子落盘后立即结束，不等待 MESH 登记、解析或派生库维护；因此单并发下载队列可以
+立刻执行下一份远端文件。MESH 子任务使用独立任务 ID、独立取消/重试和独立回调，下载父任务保持
+`COMPLETED`，并通过外部事件回写分析结果。
+
+登记或解析失败不回滚已完成下载。父任务结果中的 `mesh_import_status` 单独记录 `pending`、`running`、`completed`、
 `duplicate`、`failed` 或 `repair_failed`；`repair_failed` 只表示 MESH 派生数据库维护未完成，不表示下载失败。
-页面可对已有 raw 文件执行“重新导入”或“重试自动修复”，不会重新连接设备或再次下载。
+页面可对已有 raw 文件执行“重新导入”或“重试自动修复”，只提交 `file_management_mesh_import`，不会重新连接设备或再次下载。
 相同正文按当前局点/Profile 的 SHA-256（并保留文件大小）去重；同名但内容不同的文件仍分别登记。
 
 当设备文件自动登记或解析发现当前局点的 MESH 派生数据库版本不兼容时，下载任务保持

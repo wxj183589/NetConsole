@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### SFTP 下载与 MESH 导入解耦
+
+- 车载 MR 的 SFTP 下载在大小/SHA-256 校验和原子落盘后立即完成；MESH 登记、解析和派生库维护改由独立
+  `file_management_mesh_import` Task 执行，不再占用后续 SFTP 下载的单并发队列槽位。
+- MESH 导入失败、取消、重试、重复触发和重启恢复均保留已完成 raw 文件及下载父任务 `COMPLETED` 终态；分析状态
+  通过结构化结果回写，重试只重新提交导入子任务，不重新连接设备或下载。
+
 ### SSH Relay、Host Key 与 SFTP 自动恢复
 
 - SSH Host Key 统一使用 managed known_hosts：UNKNOWN 自动登记，MATCH 正常继续，MISMATCH 按精确 host:port 原子替换并继续原操作；正常变化不再导致 `TARGET_HOSTKEY_CHANGED` 业务失败。

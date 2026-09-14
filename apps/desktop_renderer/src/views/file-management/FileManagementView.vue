@@ -145,6 +145,8 @@ const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
   DEVICE_FILE_SESSION_DISCONNECTED: '设备文件会话已断开，请重新连接。',
 }
 const MESH_IMPORT_STATUS_LABELS: Record<string, string> = {
+  pending: '等待导入',
+  running: '正在导入',
   completed: '已导入',
   duplicate: '重复，已存在',
   failed: '日志解析失败，可重试',

@@ -187,6 +187,8 @@ class FileDownloadResultDTO(ApiModel):
     remote_entry_id: str = Field(default="", pattern=r"^(|fe1_[0-9a-f]{32})$")
     target_kind: str = ""
     mesh_import_status: str = ""
+    mesh_import_task_id: str = ""
+    mesh_profile_id: str = ""
     mesh_imported_count: int = Field(default=0, ge=0)
     mesh_duplicate_count: int = Field(default=0, ge=0)
     mesh_parsed_record_count: int = Field(default=0, ge=0)
