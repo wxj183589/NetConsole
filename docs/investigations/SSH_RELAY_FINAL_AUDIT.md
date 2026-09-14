@@ -130,6 +130,7 @@ continuing.
 ## Evidence status
 
 Automated targeted source/tests: PASS (`199 passed`) for the Relay, Host Key,
+The additional `tests/test_device_sftp_operation.py` check also passed (`7 passed`).
 Netmiko, file-transfer, site-storage and Electron-runtime contract paths,
 including a real Paramiko Jump → direct-tcpip → target SFTP topology. The full
 local Gate was also executed: Renderer/Electron/architecture/main smoke passed,
