@@ -10,9 +10,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.connection_manager import TunnelProfile
 from netconsole.services.host_key_trust_service import (
     HostKeyTrustError,
-    HostKeyTrustGrant,
     HostKeyTrustService,
-    host_key_mismatch_error,
     install_managed_host_key_policy,
 )
 
@@ -95,14 +93,10 @@ class TunnelManager:
         *,
         strict_host_keys: bool = True,
         host_key_trust: HostKeyTrustService | None = None,
-        host_key_grant: HostKeyTrustGrant
-        | tuple[HostKeyTrustGrant, ...]
-        | None = None,
         connect_timeout_seconds: float = DEFAULT_TUNNEL_CONNECT_TIMEOUT_SECONDS,
     ) -> None:
         self.strict_host_keys = bool(strict_host_keys)
         self.host_key_trust = host_key_trust
-        self.host_key_grant = host_key_grant
         self.connect_timeout_seconds = float(connect_timeout_seconds)
 
     def open_tunnel(self, tunnel: TunnelProfile, remote_host: str, remote_port: int) -> TunnelSession:
@@ -111,18 +105,18 @@ class TunnelManager:
         local_host = "127.0.0.1"
         local_port = 0
         client = paramiko.SSHClient()
-        if self.strict_host_keys:
-            trust = self.host_key_trust or HostKeyTrustService(PathResolver())
-            install_managed_host_key_policy(
-                client,
-                trust,
-                tunnel.host,
-                int(tunnel.port or 22),
-                role="jump",
-                grant=self.host_key_grant,
-            )
-        else:
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # Keep the compatibility flag in the constructor, but never bypass
+        # the managed store.  Jump Host keys must be auto-added/replaced in
+        # the same data-root known_hosts used by every SSH consumer.
+        trust = self.host_key_trust or HostKeyTrustService(PathResolver())
+        install_managed_host_key_policy(
+            client,
+            trust,
+            tunnel.host,
+            int(tunnel.port or 22),
+            role="jump",
+            host_key_policy="AUTO_REPLACE",
+        )
         try:
             client.connect(
                 hostname=tunnel.host,
@@ -171,12 +165,26 @@ class TunnelManager:
             except Exception:
                 pass
             trust = self.host_key_trust or HostKeyTrustService(PathResolver())
-            raise host_key_mismatch_error(
-                trust,
-                tunnel.host,
-                int(tunnel.port or 22),
-                getattr(exc, "got_key", None),
-                role="jump",
+            key = getattr(exc, "got_key", None)
+            details = (
+                trust.inspect(
+                    tunnel.host,
+                    int(tunnel.port or 22),
+                    key,
+                    role="jump",
+                ).as_dict()
+                if key is not None
+                else {
+                    "host": tunnel.host,
+                    "port": int(tunnel.port or 22),
+                    "host_key_role": "jump",
+                }
+            )
+            raise HostKeyTrustError(
+                "跳板机 SSH 指纹自动更新失败，请查看任务日志后重试。",
+                details,
+                key=key,
+                code="DEVICE_FILE_HOST_KEY_UPDATE_FAILED",
             ) from exc
         except HostKeyTrustError:
             try:

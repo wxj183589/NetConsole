@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
@@ -11,13 +9,13 @@ from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.device_operation_service import (
     DeviceOperationService,
-    DeviceSftpEnableProfileUnresolved,
     run_device_sftp_enable,
 )
 from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
-def test_sftp_operation_refuses_write_when_software_version_is_unresolved(tmp_path: Path) -> None:
+def test_sftp_operation_starts_provisional_family_task_when_version_is_missing(tmp_path: Path) -> None:
     device = Device(
         name="SW-unknown-version",
         device_uuid=Device.new_uuid(),
@@ -34,15 +32,29 @@ def test_sftp_operation_refuses_write_when_software_version_is_unresolved(tmp_pa
         def get_fact(_device_uuid: str):
             return {"vendor": "H3C", "software_version": None}
 
+        @staticmethod
+        def current_site_id():
+            return "demo"
+
+    paths = PathResolver(tmp_path)
+    paths.ensure_site_dirs("demo")
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+
+    class FakeProcessAdapter:
+        def start_job(self, job: BackgroundJob) -> str:
+            task_service.prepare(job)
+            return job.job_id
+
     service = DeviceOperationService(
-        PathResolver(tmp_path),
+        paths,
         FakeGateway(),  # type: ignore[arg-type]
-        object(),  # type: ignore[arg-type]
-        object(),  # type: ignore[arg-type]
+        task_service,
+        FakeProcessAdapter(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(DeviceSftpEnableProfileUnresolved, match="无法确认设备的软件版本"):
-        service.start(str(device.device_uuid), "device.sftp.enable")
+    task = service.start(str(device.device_uuid), "device.sftp.enable", allow_excluded=True)
+    assert task.profile_id == "h3c.comware.switch.v7.sftp-enable.v1"
+    assert task.status in {"PENDING", "STARTING", "RUNNING"}
 
 
 def test_sftp_worker_binds_username_only_inside_worker_and_keeps_profile_order(

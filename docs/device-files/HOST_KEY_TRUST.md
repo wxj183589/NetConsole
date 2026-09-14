@@ -1,20 +1,33 @@
-# 主机密钥信任
+# 主机密钥管理
 
-说明：本页描述设备文件/SFTP consumer 的严格确认边界。站点级 SSH Relay
-的 Jump Host 是独立策略：由 `HostKeyPolicy.AUTO_REPLACE` 使用同一 managed
-known_hosts，首次自动登记，变化只替换对应 host:port 并记录旧/新指纹；目标
-设备和本页 SFTP 路径不继承该策略。
+NetConsole 面向现场运维，SSH/SFTP Host Key 不需要用户确认、复制指纹或选择“仅本次/永久信任”。
+所有 SSH consumer 使用同一个 managed known_hosts：
 
-正式信任事实源为 `PathResolver.global_known_hosts_path`，即数据根下的 `config/global/security/known_hosts`。该文件不随单局点导出包导出，不写仓库，不要求管理员修改 `%USERPROFILE%\\.ssh\\known_hosts`。
+`PathResolver.global_known_hosts_path` → 数据根下的 `config/global/security/known_hosts`。
 
-写入使用已有原子写入和锁文件机制；未知密钥仅在当前进程内保存挑战和 Paramiko key 对象，挑战过期后失效。已保存密钥变化时连接直接阻止，不能普通一键绕过。
+连接层统一采用 `AUTO_REPLACE`：
 
-跳板机按原始 `jump_host + jump_port` 管理，目标设备按原始 `target_host + target_port` 管理；经本地
-转发时不得把目标记录为 `127.0.0.1:随机端口`。两端未知密钥分别返回
-`DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN` 和 `DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN`，密钥变化分别返回对应
-`*_MISMATCH`，连接测试、设备操作与设备文件使用同一严格策略。
+| 状态 | 处理 |
+| --- | --- |
+| `UNKNOWN` | 保存当前 `host:port` 的服务端 Host Key，继续连接 |
+| `MATCH` | 继续连接 |
+| `MISMATCH` | 只原子替换当前 `host:port` 的记录，记录旧/新指纹，继续连接 |
 
-“仅本次信任”精确绑定主机、端口、算法和密钥字节。同一连接流程可以累积跳板机与目标设备两份授权，
-确认后一端时不会丢失前一端的授权，也不会把授权扩大到其他地址或端口。
+跳板机和目标设备都遵循这套规则。经过转发时，目标记录仍使用原始目标 `host:port`，不会把
+`127.0.0.1:随机端口` 写入 known_hosts。连接路径、设备 UUID、设备名、`direct/jump`、旧指纹、新指纹
+和时间写入后台日志；Host Key 变化是诊断/恢复事件，不是正常业务失败。
 
-API 只返回设备名、主机、端口、算法和 SHA256 指纹，不返回服务器绝对路径、密钥字节或凭据。
+写入由锁文件和原子替换保护；按精确 `host + port` 替换，不影响其它设备或其它跳板机。known_hosts
+损坏时保留仍可解析的行并记录恢复告警，避免单条坏记录拖垮全部 SSH/SFTP。不要求维护
+`%USERPROFILE%\\.ssh\\known_hosts`，也不使用系统 SSH、设备文件、设备采集的第二份信任事实源。
+
+## 跳板机现场维护
+
+系统设置 → SSH 中转提供“重新获取指纹”和“删除指纹”。两者只作用于当前局点配置的
+`jump_host + jump_port`：
+
+- 重新获取：连接当前跳板机，取得真实 Host Key，原子替换记录并刷新页面，显示“指纹已更新”；
+- 删除指纹：删除该精确地址，状态显示“未记录”；下一次测试或业务连接会自动重新登记。
+
+按钮只用于排障，不是正常连接的前置步骤。真正的认证失败、凭据错误、网络不可达、设备拒绝登录或
+Host Key 事实源无法写入，仍然失败。页面只显示脱敏稳定错误码，不返回密钥字节或密码。

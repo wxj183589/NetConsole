@@ -131,6 +131,8 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
         raise RuntimeError("netmiko is not installed") from exc
     relay_paths_override = kwargs.pop("_netconsole_paths", None)
     relay_site_override = str(kwargs.pop("_netconsole_site_id", "") or "").strip()
+    host_key_host_override = str(kwargs.pop("_netconsole_host_key_host", "") or "").strip()
+    host_key_port_override = int(kwargs.pop("_netconsole_host_key_port", 0) or 0)
     if "sock" not in kwargs:
         device_type = str(kwargs.get("device_type") or "").casefold()
         if device_type:
@@ -160,7 +162,7 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
                     site_id=relay_site_id,
                     jump_host=(f"{relay_config.host}:{relay_config.port}" if relay_config.enabled else ""),
                 ):
-                    return DeviceSSHConnectionFactory(
+                    connection = DeviceSSHConnectionFactory(
                         relay_paths,
                         relay_site_id,
                         relay_service=relay_service,
@@ -169,13 +171,107 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
                         raw_connect_handler=connect_handler,
                         compatibility_connect=_connect_with_compatibility,
                     )
+                    if not relay_config.enabled and getattr(connection, "_netconsole_ssh_mode", "") != "jump":
+                        return _record_direct_host_key(
+                            connection,
+                            kwargs,
+                            relay_paths,
+                            host_override=host_key_host_override,
+                            port_override=host_key_port_override,
+                        )
+                    return connection
             except SiteSSHRelayError as exc:
                 # Standalone/library callers may not have a Site Registry yet;
                 # preserve the historical direct-SSH behavior in that case.
                 if exc.code == "SITE_NOT_FOUND":
-                    return _connect_with_compatibility(connect_handler, kwargs)
+                    connection = _connect_with_compatibility(connect_handler, kwargs)
+                    return _record_direct_host_key(
+                        connection,
+                        kwargs,
+                        relay_paths,
+                        host_override=host_key_host_override,
+                        port_override=host_key_port_override,
+                    )
                 raise
-    return _connect_with_compatibility(connect_handler, kwargs)
+    connection = _connect_with_compatibility(connect_handler, kwargs)
+    context = _SSH_CONNECTION_CONTEXT.get()
+    paths = relay_paths_override if isinstance(relay_paths_override, PathResolver) else context.paths
+    return _record_direct_host_key(
+        connection,
+        kwargs,
+        paths,
+        host_override=host_key_host_override,
+        port_override=host_key_port_override,
+    )
+
+
+def _record_direct_host_key(
+    connection: Any,
+    params: dict[str, object],
+    paths: PathResolver | None,
+    *,
+    host_override: str = "",
+    port_override: int = 0,
+) -> Any:
+    """Record the target server key for direct CLI connections.
+
+    Netmiko deliberately performs the SSH handshake without strict local
+    verification so a changed operational device key can be recovered. The
+    managed service is then the single write/replace authority for both
+    direct and Jump Host paths.
+    """
+
+    if str(params.get("protocol") or "SSH").casefold() == "telnet":
+        return connection
+    if paths is None:
+        # Library callers without a runtime context are not product consumers;
+        # normal application jobs always provide PathResolver through context.
+        return connection
+    remote = getattr(connection, "remote_conn_pre", None)
+    transport = None
+    if remote is not None:
+        getter = getattr(remote, "get_transport", None)
+        transport = getter() if callable(getter) else remote
+    if transport is None:
+        transport = getattr(connection, "transport", None)
+    getter = getattr(transport, "get_remote_server_key", None)
+    key = getter() if callable(getter) else None
+    if key is None:
+        raise RuntimeError("target remote server key unavailable")
+    host = str(host_override or params.get("host") or "").strip()
+    port = int(port_override or params.get("port") or 22)
+    try:
+        result = HostKeyTrustService(paths).trust_or_replace(host, port, key, role="target")
+    except Exception:
+        disconnect = getattr(connection, "disconnect", None)
+        if callable(disconnect):
+            try:
+                disconnect()
+            except Exception:
+                pass
+        raise
+    event = {
+        "status": result.status,
+        "action": result.action,
+        "host": host,
+        "port": port,
+        "fingerprint_sha256": result.details.fingerprint_sha256,
+        "old_fingerprint_sha256": result.old_fingerprint_sha256,
+    }
+    try:
+        setattr(connection, "_netconsole_host_key_event", event)
+    except Exception:
+        pass
+    app_logger.log_info(
+        "HOST_KEY_AUTO_REPLACED" if result.action == "REPLACE" else "HOST_KEY_AUTO_ACCEPTED",
+        (
+            f"host={host} port={port} role=target "
+            f"device_uuid={getattr(_SSH_CONNECTION_CONTEXT.get(), 'device_uuid', '')} "
+            f"old_fingerprint={result.old_fingerprint_sha256} "
+            f"new_fingerprint={result.details.fingerprint_sha256}"
+        ),
+    )
+    return connection
 
 
 def _connect_with_compatibility(
@@ -447,6 +543,9 @@ class ConnectionTarget:
     tunnel: object | None = None
     target_role: str = "primary"
     tunnel_label: str = ""
+    host_key_host: str = ""
+    host_key_port: int = 0
+    host_key_fingerprint_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -715,6 +814,10 @@ def prepared_connection_target(
     if target.via_tunnel:
         if target.tunnel is None:
             raise RuntimeError("Tunnel target is missing tunnel profile")
+        if host_key_trust is None:
+            context = _SSH_CONNECTION_CONTEXT.get()
+            if context.paths is not None:
+                host_key_trust = HostKeyTrustService(context.paths)
         session = TunnelManager(
             strict_host_keys=True,
             host_key_trust=host_key_trust,
@@ -732,6 +835,9 @@ def prepared_connection_target(
             tunnel=target.tunnel,
             target_role=target.target_role,
             tunnel_label=target.tunnel_label,
+            host_key_host=target.host,
+            host_key_port=target.port,
+            host_key_fingerprint_sha256=target.host_key_fingerprint_sha256,
         )
     try:
         yield prepared
@@ -814,6 +920,7 @@ def classify_connection_exception(exc: BaseException, protocol: str = "SSH") -> 
         "TARGET_SSH_HANDSHAKE_FAILED",
         "TARGET_HOSTKEY_FAILED",
         "TARGET_HOSTKEY_CHANGED",
+        "TARGET_HOSTKEY_UPDATE_FAILED",
         "TARGET_AUTH_FAILED",
         "TARGET_SESSION_FAILED",
         "TARGET_COMMAND_FAILED",
@@ -830,6 +937,7 @@ def classify_connection_exception(exc: BaseException, protocol: str = "SSH") -> 
             "TARGET_SSH_HANDSHAKE_FAILED": "target_ssh_handshake_failed",
             "TARGET_HOSTKEY_FAILED": "target_hostkey_failed",
             "TARGET_HOSTKEY_CHANGED": "target_hostkey_changed",
+            "TARGET_HOSTKEY_UPDATE_FAILED": "target_hostkey_update_failed",
             "TARGET_AUTH_FAILED": "target_auth_failed",
             "TARGET_SESSION_FAILED": "target_session_failed",
             "TARGET_COMMAND_FAILED": "target_command_failed",
@@ -838,14 +946,15 @@ def classify_connection_exception(exc: BaseException, protocol: str = "SSH") -> 
         suggestion_by_code = {
             "JUMP_CONNECT_FAILED": "请检查中转服务器地址、端口、网络和 SSH 服务状态。",
             "JUMP_AUTH_FAILED": "请检查中转服务器用户名和密码。",
-            "JUMP_HOSTKEY_FAILED": "请核验中转服务器主机密钥；未知或变更的密钥不会自动放行。",
+            "JUMP_HOSTKEY_FAILED": "中转服务器 SSH 指纹自动登记或更新失败，请检查数据目录和运行日志。",
             "JUMP_CHANNEL_FAILED": "请检查中转服务器到目标设备的路由、ACL 和 SSH 转发权限。",
             "TARGET_CONNECT_FAILED": "请检查目标设备地址、SSH 端口和目标网络服务状态。",
             "TARGET_TCP_FAILED": "请检查中转服务器到目标设备的路由、ACL、端口和 SSH 服务状态。",
             "TARGET_SSH_BANNER_FAILED": "请检查目标设备 SSH 服务、端口、会话数和设备是否主动断开。",
             "TARGET_SSH_HANDSHAKE_FAILED": "请检查目标设备 SSH 算法、版本和会话状态；仅对明确需要的 H3C 设备使用兼容回退。",
-            "TARGET_HOSTKEY_FAILED": "请核验目标设备主机密钥；首次使用会登记指纹，读取或保存失败时不会放行。",
-            "TARGET_HOSTKEY_CHANGED": "请核验目标设备主机密钥是否发生变化；密钥变化会被拒绝。",
+            "TARGET_HOSTKEY_FAILED": "目标设备 SSH 指纹自动登记或更新失败，请检查数据目录和运行日志。",
+            "TARGET_HOSTKEY_CHANGED": "目标设备 SSH 指纹发生变化，系统会自动更新记录并继续连接。",
+            "TARGET_HOSTKEY_UPDATE_FAILED": "目标设备 SSH 指纹自动更新失败，请检查 NetConsole 数据目录和运行日志。",
             "TARGET_AUTH_FAILED": "请检查目标设备 SSH 用户名、密码和 AAA/VTY 配置。",
             "TARGET_SESSION_FAILED": "请检查目标设备 CLI 会话、权限、会话数和设备状态。",
             "TARGET_COMMAND_FAILED": "请检查目标设备 CLI 权限、命令和设备会话状态。",
@@ -1199,6 +1308,9 @@ def _netmiko_params(target: ConnectionTarget) -> dict[str, object]:
         "global_delay_factor": 1,
         "fast_cli": False,
     }
+    if target.host_key_host:
+        params["_netconsole_host_key_host"] = target.host_key_host
+        params["_netconsole_host_key_port"] = target.host_key_port
     return params
 
 

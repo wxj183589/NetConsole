@@ -4,6 +4,16 @@
 
 ## v1.5.8 - 2026-09-13
 
+### SSH/SFTP 现场运维自动恢复
+
+- 统一普通 SSH、设备详情、设备操作、SFTP、SSH Relay 和隧道的 managed Host Key 策略：首次自动登记，
+  变化按精确 host:port 原子替换并继续原业务操作；日志记录旧/新指纹，正常变化不再产生
+  `TARGET_HOSTKEY_CHANGED` 失败终态。
+- SSH 中转设置新增重新获取/删除当前跳板机指纹；设备文件移除 Host Key challenge 和 SFTP enable
+  确认状态机，明确 SFTP subsystem 不可用时自动提交已验证 Profile、等待 Task Center 成功并自动重连。
+- H3C Comware V7 SFTP Profile 统一支持 `wireless_controller` 及历史 AC 别名；未知厂商、认证失败、
+  网络失败和无法确认 V7 仍不会执行 H3C 配置命令。
+
 ### H3C Comware V7/V9 Capability 完成收口与杭州地铁10号线真实验收
 
 - 完成 H3C Comware V7/V9 capability：先执行版本事实探测，再选择 AC、FIT-AP、LLDP、BSSID 和设备详情只读命令；未知 major 不默认 V7，Huawei、ZTE 和无 vendor 上下文不会误命中 H3C Profile。

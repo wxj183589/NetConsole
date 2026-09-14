@@ -3,6 +3,11 @@
 日期：2026-09-07
 范围：共享 SSH 基础设施、局点配置、轨旁 AP、AC、设备管理、轨道交通采集及非 SSH 传输边界。
 
+> 历史审计说明：本文记录的是 2026-09-07 的严格 Host Key 设计快照。自 v1.5.8
+> 现场运维自动恢复改造后，当前策略以 `docs/device-files/HOST_KEY_TRUST.md`
+> 为准：unknown 自动登记、match 继续、mismatch 原子替换并继续；本文中“变化拒绝”
+> 的描述不代表当前实现。
+
 ## 结论
 
 NetConsole 的 Backend CLI 主栈是 Netmiko 4.7.0 + Paramiko 4.0.0。现有

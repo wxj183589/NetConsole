@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.atomic_file import atomic_write_bytes, locked_file
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 
 
@@ -34,15 +35,23 @@ class HostKeyTrustError(RuntimeError):
 
 
 class HostKeyChallengeError(HostKeyTrustError):
+    """Legacy import compatibility; production connections never create challenges."""
+
     code = "DEVICE_FILE_HOST_KEY_UNKNOWN"
 
 
 class HostKeyMismatchError(HostKeyTrustError):
+    """Legacy import compatibility; production connections auto-replace mismatches."""
+
     code = "DEVICE_FILE_HOST_KEY_MISMATCH"
 
 
 class HostKeyPolicy(str, Enum):
-    """选择一个 consumer 的主机密钥处理策略。"""
+    """统一的 managed known_hosts 处理策略。
+
+    ``STRICT`` 和 ``TOFU`` 保留为旧调用方的可解析值，但生产连接统一
+    使用 ``AUTO_REPLACE``：未知自动登记、相同继续、变化原子替换后继续。
+    """
 
     STRICT = "STRICT"
     TOFU = "TOFU"
@@ -65,31 +74,6 @@ class HostKeyDetails:
             "fingerprint_sha256": self.fingerprint_sha256,
             "host_key_role": self.role,
         }
-
-
-@dataclass(frozen=True)
-class HostKeyTrustGrant:
-    host: str
-    port: int
-    algorithm: str
-    key_bytes: bytes
-
-    @classmethod
-    def from_key(cls, host: str, port: int, key: Any) -> HostKeyTrustGrant:
-        return cls(
-            host=str(host or "").strip(),
-            port=int(port or 22),
-            algorithm=str(key.get_name()),
-            key_bytes=bytes(key.asbytes()),
-        )
-
-    def matches(self, host: str, port: int, key: Any) -> bool:
-        return (
-            self.host.casefold() == str(host or "").strip().casefold()
-            and self.port == int(port or 22)
-            and self.algorithm == str(key.get_name())
-            and self.key_bytes == bytes(key.asbytes())
-        )
 
 
 @dataclass(frozen=True)
@@ -128,7 +112,34 @@ class HostKeyTrustService:
 
         keys = paramiko.HostKeys()
         if self.path.is_file():
-            keys.load(str(self.path))
+            try:
+                keys.load(str(self.path))
+            except Exception as exc:
+                # known_hosts 是可重建的缓存事实源。逐行保留仍然有效的
+                # 记录，避免一条损坏记录让其它设备的 SSH/SFTP 全部失效。
+                recovered = paramiko.HostKeys()
+                try:
+                    from paramiko.hostkeys import HostKeyEntry
+
+                    for line_number, line in enumerate(
+                        self.path.read_text(encoding="utf-8", errors="replace").splitlines(),
+                        start=1,
+                    ):
+                        if not line.strip() or line.lstrip().startswith("#"):
+                            continue
+                        try:
+                            entry = HostKeyEntry.from_line(line, line_number)
+                        except Exception:
+                            continue
+                        if entry is not None:
+                            recovered._entries.append(entry)
+                except Exception:
+                    recovered = paramiko.HostKeys()
+                keys = recovered
+                app_logger.log_warning(
+                    "MANAGED_KNOWN_HOSTS_RECOVERED",
+                    f"path={self.path.name} exception={exc.__class__.__name__}",
+                )
         return keys
 
     @staticmethod
@@ -166,31 +177,9 @@ class HostKeyTrustService:
         *,
         role: str = "target",
     ) -> None:
-        details = self.inspect(host, port, key, role=role)
-        known = self._lookup(self._load(), details.host, details.port)
-        if known is None:
-            raise HostKeyChallengeError(
-                _unknown_key_message(details.role),
-                details.as_dict(),
-                key=key,
-                code=(
-                    "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN"
-                    if details.role == "jump"
-                    else "DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN"
-                ),
-            )
-        expected = known.get(details.algorithm)
-        if expected is None or expected.asbytes() != key.asbytes():
-            raise HostKeyMismatchError(
-                _mismatch_key_message(details.role),
-                details.as_dict(),
-                key=key,
-                code=(
-                    "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH"
-                    if details.role == "jump"
-                    else "DEVICE_FILE_TARGET_HOST_KEY_MISMATCH"
-                ),
-            )
+        # Compatibility entry point: verification is now the same automatic
+        # add/keep/replace operation used by every SSH/SFTP consumer.
+        self.trust_or_replace(host, port, key, role=role)
 
     def is_trusted(
         self,
@@ -202,10 +191,9 @@ class HostKeyTrustService:
     ) -> bool:
         """Return whether the exact managed key is already trusted.
 
-        This is intentionally a read-only probe used to label a successful
-        connection as either first-use TOFU or an existing verification.  A
-        mismatch is not treated as untrusted here; ``trust`` still raises and
-        remains the single write/mismatch gate.
+        This is intentionally a read-only probe for diagnostics and tests.
+        Normal connection paths use ``trust_or_replace`` so a mismatch is
+        repaired instead of being turned into a user-facing challenge.
         """
 
         details = self.inspect(host, port, key, role=role)
@@ -223,40 +211,10 @@ class HostKeyTrustService:
         *,
         role: str = "target",
     ) -> HostKeyDetails:
-        details = self.inspect(host, port, key, role=role)
-        with locked_file(self.path):
-            keys = self._load()
-            name = host_key_name(details.host, details.port)
-            known = self._lookup(keys, details.host, details.port)
-            if known is not None:
-                expected = known.get(details.algorithm)
-                if expected is not None and expected.asbytes() == key.asbytes():
-                    return details
-                raise HostKeyMismatchError(
-                    _mismatch_key_message(details.role),
-                    details.as_dict(),
-                    key=key,
-                    code=(
-                        "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH"
-                        if details.role == "jump"
-                        else "DEVICE_FILE_TARGET_HOST_KEY_MISMATCH"
-                    ),
-                )
-            keys.add(name, details.algorithm, key)
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", dir=self.path.parent, prefix=".known_hosts.", suffix=".tmp", delete=False
-            ) as temporary:
-                temporary_name = Path(temporary.name)
-            try:
-                keys.save(str(temporary_name))
-                atomic_write_bytes(self.path, temporary_name.read_bytes())
-                try:
-                    os.chmod(self.path, 0o600)
-                except OSError:
-                    pass
-            finally:
-                temporary_name.unlink(missing_ok=True)
-        return details
+        # ``trust`` is retained for older callers, but it is no longer a
+        # strict confirmation operation.  All writes go through the same
+        # atomic add/keep/replace implementation as normal connections.
+        return self.trust_or_replace(host, port, key, role=role).details
 
     def trust_or_replace(
         self,
@@ -266,15 +224,11 @@ class HostKeyTrustService:
         *,
         role: str = "target",
     ) -> HostKeyTrustResult:
-        """Atomically add, keep, or replace one managed host entry.
-
-        This is intentionally separate from ``trust``.  Existing consumers
-        retain the strict mismatch behavior; only an explicitly selected
-        AUTO_REPLACE consumer may call this method.
-        """
+        """Atomically add, keep, or replace one managed host entry."""
 
         details = self.inspect(host, port, key, role=role)
         names = _host_key_names(details.host, details.port)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         with locked_file(self.path):
             keys = self._load()
             known = self._lookup(keys, details.host, details.port)
@@ -299,29 +253,58 @@ class HostKeyTrustService:
                     except KeyError:
                         break
             keys.add(names[0], details.algorithm, key)
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                dir=self.path.parent,
-                prefix=".known_hosts.",
-                suffix=".tmp",
-                delete=False,
-            ) as temporary:
-                temporary_name = Path(temporary.name)
-            try:
-                keys.save(str(temporary_name))
-                atomic_write_bytes(self.path, temporary_name.read_bytes())
-                try:
-                    os.chmod(self.path, 0o600)
-                except OSError:
-                    pass
-            finally:
-                temporary_name.unlink(missing_ok=True)
+            self._save(keys)
         return HostKeyTrustResult(
             details,
             "REPLACE" if known is not None else "ADD",
             old_fingerprint,
         )
+
+    def remove(self, host: str, port: int) -> bool:
+        """Delete exactly one managed ``host:port`` entry.
+
+        This is used only by the operator-facing Jump Host maintenance action;
+        it never touches another host or port.
+        """
+
+        names = _host_key_names(str(host or "").strip(), int(port or 22))
+        if not names or not names[0]:
+            return False
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with locked_file(self.path):
+            keys = self._load()
+            removed = False
+            for name in names:
+                try:
+                    del keys[name]
+                    removed = True
+                except KeyError:
+                    continue
+            if not removed:
+                return False
+            self._save(keys)
+            return True
+
+    def _save(self, keys: Any) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=self.path.parent,
+            prefix=".known_hosts.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_name = Path(temporary.name)
+        try:
+            keys.save(str(temporary_name))
+            atomic_write_bytes(self.path, temporary_name.read_bytes())
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
+        finally:
+            temporary_name.unlink(missing_ok=True)
 
 
 def install_managed_host_key_policy(
@@ -331,8 +314,7 @@ def install_managed_host_key_policy(
     port: int,
     *,
     role: str = "target",
-    grant: HostKeyTrustGrant | tuple[HostKeyTrustGrant, ...] | None = None,
-    host_key_policy: HostKeyPolicy | str = HostKeyPolicy.STRICT,
+    host_key_policy: HostKeyPolicy | str = HostKeyPolicy.AUTO_REPLACE,
 ) -> None:
     import paramiko
 
@@ -343,29 +325,22 @@ def install_managed_host_key_policy(
         if isinstance(host_key_policy, HostKeyPolicy)
         else HostKeyPolicy(str(host_key_policy).upper())
     )
-    if selected_policy is not HostKeyPolicy.AUTO_REPLACE and trust.path.is_file():
-        client.load_host_keys(str(trust.path))
-
     service = trust
 
-    class _ManagedHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+    # A few embedded/test Paramiko facades expose SSHClient but not the base
+    # policy class.  The real Paramiko package always provides it; using
+    # ``object`` as a fallback keeps the managed policy installable without
+    # introducing an unmanaged missing-key fallback.
+    missing_policy_base = getattr(paramiko, "MissingHostKeyPolicy", object)
+
+    class _ManagedHostKeyPolicy(missing_policy_base):
         def missing_host_key(self, host_client, _hostname, key):
-            grants = (
-                grant
-                if isinstance(grant, tuple)
-                else (() if grant is None else (grant,))
-            )
-            if any(
-                item.matches(checked_host, checked_port, key)
-                for item in grants
-            ):
-                host_client._host_keys.add(
-                    host_key_name(checked_host, checked_port),
-                    key.get_name(),
-                    key,
-                )
-                return
-            if selected_policy is HostKeyPolicy.AUTO_REPLACE:
+            # Every connection uses the same persisted managed fact.
+            if selected_policy in {
+                HostKeyPolicy.AUTO_REPLACE,
+                HostKeyPolicy.STRICT,
+                HostKeyPolicy.TOFU,
+            }:
                 result = service.trust_or_replace(
                     checked_host,
                     checked_port,
@@ -391,34 +366,7 @@ def install_managed_host_key_policy(
                     },
                 )
                 return
-            if selected_policy is HostKeyPolicy.TOFU:
-                details = service.trust(
-                    checked_host,
-                    checked_port,
-                    key,
-                    role=role,
-                )
-                host_client._host_keys.add(
-                    host_key_name(checked_host, checked_port),
-                    key.get_name(),
-                    key,
-                )
-                setattr(
-                    host_client,
-                    "_netconsole_host_key_event",
-                    {
-                        "status": "HOST_KEY_AUTO_ADDED",
-                        "action": "ADD",
-                        **details.as_dict(),
-                    },
-                )
-                return
-            service.verify(
-                checked_host,
-                checked_port,
-                key,
-                role=role,
-            )
+            raise ValueError(f"不支持的 managed Host Key policy: {selected_policy}")
 
     client.set_missing_host_key_policy(_ManagedHostKeyPolicy())
 
@@ -438,6 +386,13 @@ def host_key_mismatch_error(
     *,
     role: str = "target",
 ) -> HostKeyMismatchError:
+    """Build a legacy diagnostic for old integrations only.
+
+    The managed Paramiko policy never calls this helper.  Keeping it avoids
+    breaking older plugins while making the automatic policy the only normal
+    connection behavior.
+    """
+
     normalized_role = _normalize_role(role)
     details = (
         trust.inspect(host, port, key, role=normalized_role).as_dict()
@@ -466,14 +421,14 @@ def _normalize_role(role: str) -> str:
 
 def _unknown_key_message(role: str) -> str:
     if _normalize_role(role) == "jump":
-        return "首次连接需要确认跳板机主机密钥。"
-    return "首次连接需要确认目标设备主机密钥。"
+        return "首次连接将自动登记跳板机主机密钥。"
+    return "首次连接将自动登记目标设备主机密钥。"
 
 
 def _mismatch_key_message(role: str) -> str:
     if _normalize_role(role) == "jump":
-        return "跳板机主机密钥已变更，连接已阻止。"
-    return "目标设备主机密钥已变更，连接已阻止。"
+        return "跳板机主机密钥已变化，系统将自动更新记录。"
+    return "目标设备主机密钥已变化，系统将自动更新记录。"
 
 
 __all__ = [
@@ -481,7 +436,6 @@ __all__ = [
     "HostKeyDetails",
     "HostKeyMismatchError",
     "HostKeyPolicy",
-    "HostKeyTrustGrant",
     "HostKeyTrustResult",
     "HostKeyTrustError",
     "HostKeyTrustService",

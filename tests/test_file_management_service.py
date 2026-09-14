@@ -28,15 +28,16 @@ from netconsole.repositories.mesh_mr_repository import MeshMrRepository, MeshSch
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.device_operation_service import DeviceSftpEnableProfileUnresolved
 from netconsole.services.file_transfer_service import (
+    FileTransferConnectionError,
     FileTransferService,
     RemoteDeviceFile,
     SftpUnavailableError,
     file_sha256,
     normalize_remote_path,
 )
-from netconsole.services.host_key_trust_service import HostKeyTrustGrant
 from netconsole.services.host_key_trust_service import HostKeyChallengeError
 from netconsole.services.file_management_service import (
+    DeviceFileSftpError,
     FileManagementApplicationService,
     FileReferenceNotFound,
     run_file_management_download,
@@ -199,7 +200,7 @@ def test_file_desktop_actions_are_one_time_controlled_and_winscp_passes_password
 
     winscp_calls: list[tuple[str, bool]] = []
 
-    def fake_launch_winscp(selected, _settings, _sessions=None, *, include_password=True):
+    def fake_launch_winscp(selected, _settings, _sessions=None, *, include_password=True, paths=None, **_kwargs):
         winscp_calls.append((selected.device_uuid, include_password))
         return WinScpLaunchResult(True, "已启动 WinSCP。", [])
 
@@ -837,7 +838,7 @@ def test_remote_file_web_flow_uses_session_entries_persistent_device_file_result
     restarted.close()
 
 
-def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, monkeypatch) -> None:
+def test_web_connect_does_not_enable_sftp_without_operation_service(tmp_path: Path, monkeypatch) -> None:
     import netconsole.services.file_transfer_service as transfer_module
 
     paths, _source = _fixture(tmp_path)
@@ -906,9 +907,8 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
         response = client.post("/api/file-management/connections", params={"site_id": "demo"}, json={"device_id": device.device_uuid})
 
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "DEVICE_FILE_SFTP_UNAVAILABLE"
-    assert response.json()["detail"]["details"]["confirmation_id"].startswith("sf1_")
-    assert response.json()["detail"]["message"] == "检测到设备未启用 SFTP，需要确认后通过受控命令启用并重新连接。"
+    assert response.json()["detail"]["code"] == "DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED"
+    assert "自动配置能力" in response.json()["detail"]["message"]
     assert "channel closed" not in response.text.casefold()
     assert "DEVICE_FILE_NETWORK_UNREACHABLE" not in response.text
     assert FakeSshClient.instances[0].connect_called is True
@@ -929,14 +929,14 @@ def test_web_connect_is_strict_read_only_when_sftp_is_disabled(tmp_path: Path, m
     assert "secret" not in rejected
 
 
-def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects(tmp_path: Path) -> None:
+def test_web_connect_auto_enables_sftp_runs_device_operation_then_reconnects(tmp_path: Path) -> None:
     paths, _source = _fixture(tmp_path)
     device = Device(
         id=1,
         device_uuid=Device.new_uuid(),
-        name="MR-auto-sftp",
+        name="AC-auto-sftp",
         device_vendor="H3C",
-        device_type="MR",
+        device_type="AC",
         primary_address="192.0.2.31",
         ssh_enabled=1,
         ssh_username="ops",
@@ -944,7 +944,6 @@ def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects
     )
     task_service = TaskApplicationService(paths=paths, site_name="demo")
     operation_calls: list[tuple[str, str]] = []
-    host_key = paramiko.RSAKey.generate(1024)
 
     class FakeDeviceOperationService:
         def start(self, device_uuid: str, operation_id: str, **_kwargs):
@@ -984,17 +983,6 @@ def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects
         def connect(self, _device):
             if self.index == 0:
                 raise SftpUnavailableError()
-            if self.index == 1:
-                raise HostKeyChallengeError(
-                    "SFTP 重连目标需要确认设备主机密钥。",
-                    {
-                        "host": "192.0.2.31",
-                        "port": 22,
-                        "algorithm": "ssh-ed25519",
-                        "fingerprint_sha256": "SHA256:reconnect",
-                    },
-                    key=host_key,
-                )
             return "flash:/"
 
         def disconnect(self):
@@ -1010,32 +998,114 @@ def test_web_connect_authorized_sftp_setup_runs_device_operation_then_reconnects
     )
 
     with TestClient(_app(service, remote_enabled=True)) as client:
-        requested = client.post(
+        response = client.post(
             "/api/file-management/connections",
             params={"site_id": "demo"},
             json={"device_id": device.device_uuid},
         )
-        challenged = client.post(
-            "/api/file-management/connections/confirm-sftp-setup",
-            params={"site_id": "demo"},
-            json={"confirmation_id": requested.json()["detail"]["details"]["confirmation_id"]},
-        )
-        response = client.post(
-            "/api/file-management/host-keys/trust-once",
-            params={"site_id": "demo"},
-            json={"challenge_id": challenged.json()["detail"]["details"]["challenge_id"]},
-        )
 
-    assert requested.status_code == 409
-    assert challenged.status_code == 409
-    assert challenged.json()["detail"]["code"] == "DEVICE_FILE_HOST_KEY_UNKNOWN"
     assert response.status_code == 201
-    assert response.json()["message"] == "已在设备侧启用 SFTP，并完成重新连接。"
+    assert response.json()["message"] == "已自动启用设备 SFTP，并完成重新连接。"
     assert operation_calls == [(device.device_uuid, "device.sftp.enable")]
-    assert len(FakeTransfer.instances) == 3
+    assert len(FakeTransfer.instances) == 2
 
 
-def test_confirm_sftp_setup_fails_closed_when_software_version_is_unresolved(tmp_path: Path) -> None:
+def test_web_connect_with_sftp_already_enabled_does_not_start_configuration(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    device = Device(
+        id=1,
+        device_uuid=Device.new_uuid(),
+        name="AC-sftp-ready",
+        device_vendor="H3C",
+        device_type="AC",
+        primary_address="192.0.2.34",
+        ssh_enabled=1,
+        ssh_username="ops",
+        ssh_password="secret",
+    )
+    operation_started = False
+
+    class FakeDeviceOperationService:
+        def start(self, *_args, **_kwargs):
+            nonlocal operation_started
+            operation_started = True
+            raise AssertionError("already available SFTP must not configure the device")
+
+    class FakeTransfer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        def connect(_device):
+            return "flash:/"
+
+        @staticmethod
+        def disconnect():
+            pass
+
+    service = FileManagementApplicationService(
+        paths,
+        device_resolver=lambda _site, _device_id: device,
+        transfer_factory=FakeTransfer,
+        device_operation_service=FakeDeviceOperationService(),  # type: ignore[arg-type]
+    )
+
+    result = service.connect_device("demo", device.device_uuid)
+
+    assert result.status == "CONNECTED"
+    assert result.message == "SFTP 连接成功"
+    assert operation_started is False
+
+
+def test_auth_or_network_failure_does_not_start_sftp_enable(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    for code, message in (
+        ("DEVICE_FILE_TARGET_AUTH_FAILED", "目标设备 SSH 认证失败"),
+        ("DEVICE_FILE_DIRECT_UNREACHABLE", "设备不可达"),
+    ):
+        device = Device(
+            id=1,
+            device_uuid=Device.new_uuid(),
+            name="AC-connect-failure",
+            device_vendor="H3C",
+            device_type="AC",
+            primary_address="192.0.2.35",
+            ssh_enabled=1,
+        )
+        operation_calls: list[str] = []
+
+        class FakeDeviceOperationService:
+            def start(self, _device_uuid: str, operation_id: str, **_kwargs):
+                operation_calls.append(operation_id)
+                raise AssertionError("authentication/network failure must not configure the device")
+
+        class FakeTransfer:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            @staticmethod
+            def connect(_device):
+                raise FileTransferConnectionError(code, message)
+
+            @staticmethod
+            def disconnect():
+                pass
+
+        service = FileManagementApplicationService(
+            paths,
+            device_resolver=lambda _site, _device_id: device,
+            transfer_factory=FakeTransfer,
+            device_operation_service=FakeDeviceOperationService(),  # type: ignore[arg-type]
+        )
+
+        with pytest.raises(DeviceFileSftpError) as error:
+            service.connect_device("demo", device.device_uuid)
+
+        assert error.value.code == code
+        assert operation_calls == []
+
+
+def test_auto_sftp_setup_fails_closed_when_software_version_is_unresolved(tmp_path: Path) -> None:
     paths, _source = _fixture(tmp_path)
     device = Device(
         id=1,
@@ -1077,18 +1147,14 @@ def test_confirm_sftp_setup_fails_closed_when_software_version_is_unresolved(tmp
             params={"site_id": "demo"},
             json={"device_id": device.device_uuid},
         )
-        response = client.post(
-            "/api/file-management/connections/confirm-sftp-setup",
-            params={"site_id": "demo"},
-            json={"confirmation_id": requested.json()["detail"]["details"]["confirmation_id"]},
-        )
+        response = requested
 
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED"
-    assert response.json()["detail"]["message"] == "无法确认设备的软件版本，未执行 SFTP 配置命令。"
+    assert response.json()["detail"]["message"] == "无法可靠识别 H3C Comware 版本，未执行 SFTP 配置命令。"
 
 
-def test_host_key_trust_once_continues_the_original_connection_flow(tmp_path: Path) -> None:
+def test_host_key_update_failure_is_not_a_user_confirmation_challenge(tmp_path: Path) -> None:
     paths, _source = _fixture(tmp_path)
     device = Device(
         id=1,
@@ -1131,141 +1197,14 @@ def test_host_key_trust_once_continues_the_original_connection_flow(tmp_path: Pa
         transfer_factory=FakeTransfer,
     )
     with TestClient(_app(service, remote_enabled=True)) as client:
-        challenged = client.post(
+        response = client.post(
             "/api/file-management/connections",
             params={"site_id": "demo"},
             json={"device_id": device.device_uuid},
         )
-        trusted = client.post(
-            "/api/file-management/host-keys/trust-once",
-            params={"site_id": "demo"},
-            json={"challenge_id": challenged.json()["detail"]["details"]["challenge_id"]},
-        )
-
-    assert challenged.status_code == 409
-    assert challenged.json()["detail"]["details"] == {
-        "host": "192.0.2.32",
-        "port": 22,
-        "algorithm": "ssh-ed25519",
-        "fingerprint_sha256": "SHA256:test",
-        "host_key_role": "target",
-        "challenge_id": challenged.json()["detail"]["details"]["challenge_id"],
-        "device_id": device.device_uuid,
-        "device_name": "AC-host-key",
-    }
-    assert trusted.status_code == 201
-    assert trusted.json()["message"] == "SFTP 连接成功"
-    assert FakeTransfer.instances[-1].strict_host_keys is True
-    assert len(FakeTransfer.instances[-1].trust_host_key_once) == 1
-    assert isinstance(
-        FakeTransfer.instances[-1].trust_host_key_once[0],
-        HostKeyTrustGrant,
-    )
-
-
-def test_jump_and_target_trust_once_challenges_preserve_both_exact_grants(
-    tmp_path: Path,
-) -> None:
-    paths, _source = _fixture(tmp_path)
-    device = Device(
-        id=1,
-        device_uuid=Device.new_uuid(),
-        name="MR-two-host-keys",
-        primary_address="192.0.2.40",
-        ssh_enabled=1,
-    )
-    jump_key = paramiko.RSAKey.generate(1024)
-    target_key = paramiko.RSAKey.generate(1024)
-
-    class FakeTransfer:
-        instances: list["FakeTransfer"] = []
-
-        def __init__(
-            self,
-            *_args,
-            trust_host_key_once=(),
-            **_kwargs,
-        ):
-            self.index = len(self.instances)
-            self.grants = tuple(trust_host_key_once)
-            self.instances.append(self)
-
-        def connect(self, _device):
-            if self.index == 0:
-                raise HostKeyChallengeError(
-                    "首次连接需要确认跳板机主机密钥。",
-                    {
-                        "host": "198.51.100.10",
-                        "port": 22,
-                        "algorithm": jump_key.get_name(),
-                        "fingerprint_sha256": "SHA256:jump",
-                        "host_key_role": "jump",
-                    },
-                    key=jump_key,
-                    code="DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN",
-                )
-            if self.index == 1:
-                raise HostKeyChallengeError(
-                    "首次连接需要确认目标设备主机密钥。",
-                    {
-                        "host": "192.0.2.40",
-                        "port": 22,
-                        "algorithm": target_key.get_name(),
-                        "fingerprint_sha256": "SHA256:target",
-                        "host_key_role": "target",
-                    },
-                    key=target_key,
-                    code="DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN",
-                )
-            return "flash:/"
-
-        def disconnect(self):
-            pass
-
-    service = FileManagementApplicationService(
-        paths,
-        device_resolver=lambda _site, _device_id: device,
-        transfer_factory=FakeTransfer,
-    )
-    with TestClient(_app(service, remote_enabled=True)) as client:
-        jump_challenge = client.post(
-            "/api/file-management/connections",
-            params={"site_id": "demo"},
-            json={"device_id": device.device_uuid},
-        )
-        target_challenge = client.post(
-            "/api/file-management/host-keys/trust-once",
-            params={"site_id": "demo"},
-            json={
-                "challenge_id": jump_challenge.json()["detail"]["details"][
-                    "challenge_id"
-                ]
-            },
-        )
-        connected = client.post(
-            "/api/file-management/host-keys/trust-once",
-            params={"site_id": "demo"},
-            json={
-                "challenge_id": target_challenge.json()["detail"]["details"][
-                    "challenge_id"
-                ]
-            },
-        )
-
-    assert jump_challenge.json()["detail"]["code"] == (
-        "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN"
-    )
-    assert target_challenge.json()["detail"]["code"] == (
-        "DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN"
-    )
-    assert connected.status_code == 201
-    assert [len(instance.grants) for instance in FakeTransfer.instances] == [
-        0,
-        1,
-        2,
-    ]
-    assert FakeTransfer.instances[-1].grants[0].host == "198.51.100.10"
-    assert FakeTransfer.instances[-1].grants[1].host == "192.0.2.40"
+    assert response.status_code == 502
+    assert response.json()["detail"]["code"] == "DEVICE_FILE_HOST_KEY_UPDATE_FAILED"
+    assert "challenge_id" not in response.json()["detail"].get("details", {})
 
 
 def test_expired_remote_session_is_removed_and_returns_a_stable_message(tmp_path: Path) -> None:

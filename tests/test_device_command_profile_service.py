@@ -359,11 +359,11 @@ def test_h3c_comware_v7_unknown_role_does_not_fallback_to_switch() -> None:
         )
 
 
-def test_h3c_sftp_enable_requires_a_resolved_major_family() -> None:
+def test_h3c_sftp_enable_uses_provisional_v7_family_when_cli_version_is_missing() -> None:
     device = Device(name="AC", device_vendor="H3C", device_type="wireless_controller")
 
-    with pytest.raises(DeviceCommandProfileNotFound, match="命令 Profile"):
-        resolve_device_sftp_enable_profile(device)
+    profile = resolve_device_sftp_enable_profile(device)
+    assert profile.profile_id == "h3c.comware.wireless_controller.v7.sftp-enable.v1"
 
 
 @pytest.mark.parametrize("vendor", ("Huawei", "ZTE"))
@@ -510,6 +510,29 @@ def test_sftp_operation_resolves_supported_h3c_roles_only(device_type: str) -> N
     assert profile.selector.software_version == "V7"
     assert profile.risk == "controlled_write"
     assert dispatched.profile_id == profile.profile_id
+
+
+@pytest.mark.parametrize("device_type", ("wireless_controller", "wireless_ac", "wlan_controller", "controller"))
+@pytest.mark.parametrize("software_version", (None, "Comware 7.1.070", "R8860P01", "Version 7"))
+def test_h3c_wireless_controller_sftp_profile_accepts_field_aliases_and_version_formats(
+    device_type: str,
+    software_version: str | None,
+) -> None:
+    profile = resolve_device_sftp_enable_profile(
+        Device(name="AC", device_vendor="H3C", device_type=device_type),
+        software_version=software_version,
+    )
+
+    assert profile.profile_id == "h3c.comware.wireless_controller.v7.sftp-enable.v1"
+    assert profile.selector.software_version == "V7"
+
+
+def test_sftp_profile_never_crosses_vendor_boundary() -> None:
+    with pytest.raises(DeviceCommandProfileNotFound, match="仅支持 H3C"):
+        resolve_device_sftp_enable_profile(
+            Device(name="Huawei AC", device_vendor="Huawei", device_type="AC"),
+            software_version="Comware V7",
+        )
 
 
 def test_sftp_binding_is_strict_and_rechecks_command_guard() -> None:

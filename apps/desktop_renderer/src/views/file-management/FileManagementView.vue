@@ -6,7 +6,6 @@ import { useRouter } from 'vue-router'
 import {
   cancelFileDownload,
   clearFileDownloads,
-  confirmDeviceSftpSetup,
   connectDeviceFiles,
   createLocalDirectory,
   disconnectDeviceFiles,
@@ -19,7 +18,6 @@ import {
   retryFileDownload,
   retryMeshFileImport,
   startRemoteFileDownloadBatch,
-  trustDeviceHostKey,
 } from '../../api/fileManagement'
 import { ApiRequestError } from '../../api/client'
 import { isFeatureEnabled } from '../../features'
@@ -43,11 +41,9 @@ import {
   summarizeDownloadBatches,
 } from './fileManagementModel'
 import { createFileManagementTranslator } from './fileManagementI18n'
-import { useConfirm } from '../../components/feedback/useConfirm'
 import { sortDeviceGroupNames } from '../../utils/deviceGroupOrder'
 
 const t = createFileManagementTranslator()
-const { confirm, confirmChoice } = useConfirm()
 
 const router = useRouter()
 const siteId = ref('')
@@ -125,22 +121,25 @@ const downloadTaskColumns: NcTableColumn<FileDownloadTask>[] = [
   { key: 'message', label: '信息', valueType: 'description', alignmentReason: 'long-text' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['取消', '重试', '打开', '所在目录', '导入到 MESH 分析', '查看分析'] },
 ]
-const SFTP_SETUP_SUCCESS_MESSAGE = '已在设备侧启用 SFTP，并完成重新连接。'
+const SFTP_SETUP_SUCCESS_MESSAGE = '已自动启用设备 SFTP，并完成重新连接。'
 const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
   DEVICE_FILE_DIRECT_UNREACHABLE: '设备地址直连不可达或 SSH 端口不可用。',
   DEVICE_FILE_JUMP_HOST_UNREACHABLE: '跳板机网络不可达或 SSH 端口不可用。',
   DEVICE_FILE_JUMP_HOST_AUTH_FAILED: '跳板机 SSH 认证失败，请检查隧道凭据。',
-  DEVICE_FILE_JUMP_HOST_KEY_MISMATCH: '跳板机主机密钥与已保存记录不一致，连接已阻止。',
+  DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN: '跳板机 SSH 指纹已自动登记，正在继续当前连接。',
+  DEVICE_FILE_JUMP_HOST_KEY_MISMATCH: '跳板机 SSH 指纹已自动更新，正在继续当前连接。',
   DEVICE_FILE_FORWARD_OPEN_FAILED: '跳板机已认证，但无法建立到目标设备的转发通道。',
   DEVICE_FILE_TARGET_UNREACHABLE_VIA_TUNNEL: '跳板机已连接，但经隧道无法访问目标设备。',
   DEVICE_FILE_TARGET_AUTH_FAILED: '目标设备 SSH 认证失败，请检查用户名和密码。',
-  DEVICE_FILE_TARGET_HOST_KEY_MISMATCH: '目标设备主机密钥与已保存记录不一致，连接已阻止。',
+  DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN: '目标设备 SSH 指纹已自动登记，正在继续当前操作。',
+  DEVICE_FILE_TARGET_HOST_KEY_MISMATCH: '目标设备 SSH 指纹已自动更新，正在继续当前操作。',
+  DEVICE_FILE_HOST_KEY_UPDATE_FAILED: 'SSH 指纹自动更新失败，请查看任务日志后重试。',
   DEVICE_FILE_SFTP_UNAVAILABLE: '设备 SSH 已登录，但 SFTP 子系统不可用。',
   DEVICE_FILE_SFTP_NEGOTIATION_FAILED: 'SSH 登录成功，但建立 SFTP 子系统失败。',
   DEVICE_FILE_SFTP_ENABLE_UNSUPPORTED: '当前设备厂商或版本不支持自动启用 SFTP，未执行设备配置。',
-  DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED: '无法确认设备的软件版本，未执行 SFTP 配置命令。',
+  DEVICE_FILE_SFTP_ENABLE_PROFILE_UNRESOLVED: '无法可靠识别 H3C Comware 版本，未执行 SFTP 配置命令。',
   DEVICE_FILE_SFTP_ENABLE_PENDING: '启用设备 SFTP 的受控任务仍在运行，请稍候后从任务中心查看结果。',
-  DEVICE_FILE_SFTP_ENABLE_FAILED: '设备 SFTP 自动启用失败。请查看任务日志，并检查设备权限和 Command Profile。',
+  DEVICE_FILE_SFTP_ENABLE_FAILED: '设备 SFTP 自动恢复失败，任务已记录，请稍后重试。',
   DEVICE_FILE_SFTP_RECONNECT_FAILED: '设备侧 SFTP 已启用，但重新连接失败。请查看任务，并检查 SFTP 服务和网络连通性。',
   DEVICE_FILE_REMOTE_ROOT_NOT_FOUND: '已建立 SFTP 会话，但未找到可读取的远程根目录。',
   DEVICE_FILE_SESSION_DISCONNECTED: '设备文件会话已断开，请重新连接。',
@@ -309,51 +308,7 @@ async function completeConnection(request: () => Promise<FileConnection>): Promi
     if (connection.value.message === SFTP_SETUP_SUCCESS_MESSAGE) ElMessage.success(connection.value.message)
     return true
   } catch (reason) {
-    if (
-      reason instanceof ApiRequestError
-      && ['DEVICE_FILE_HOST_KEY_UNKNOWN', 'DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN', 'DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN'].includes(reason.code)
-    ) {
-      const details = reason.details
-      const challengeId = String(details.challenge_id || '')
-      const jumpHost = details.host_key_role === 'jump'
-      const identityLabel = jumpHost ? '跳板机' : '目标设备'
-      const choice = await confirmChoice({
-        type: 'SECURITY',
-        title: `首次连接：确认${identityLabel}主机密钥`,
-        message: `设备：${String(details.device_name || selectedDevice.value?.name || '当前设备')}\n${identityLabel}地址：${String(details.host || selectedDevice.value?.address || '')}:${String(details.port || 22)}\n密钥算法：${String(details.algorithm || '未知')}\nSHA256 指纹：${String(details.fingerprint_sha256 || '未知')}`,
-        detail: `首次连接时请确认该指纹确实属于${identityLabel}。信任错误的主机密钥可能导致连接到错误设备。`,
-        confirmText: '仅本次信任',
-        secondaryText: '信任并保存',
-        acknowledgementText: '我已核对该设备指纹',
-        requireAcknowledgement: true,
-      })
-      if (choice !== 'cancel' && challengeId) {
-        connectionStatus.value = 'SSH 登录成功'
-        return completeConnection(() => trustDeviceHostKey(challengeId, choice === 'secondary', siteId.value))
-      }
-      remoteError.value = '已取消主机密钥信任，连接未建立。'
-    } else if (reason instanceof ApiRequestError && reason.code === 'DEVICE_FILE_SFTP_UNAVAILABLE') {
-      connectionStatus.value = '检测到设备未启用 SFTP'
-      const confirmationId = String(reason.details.confirmation_id || '')
-      const accepted = confirmationId && await confirm({
-        type: 'DANGER',
-        title: '确认启用设备 SFTP',
-        message: '设备未启用 SFTP，NetConsole 将通过受控命令启用 SFTP并重新连接。',
-        detail: '远程文件操作仍保持只读；不会上传、删除、重命名或创建远程目录。',
-        confirmText: '启用并继续连接',
-      })
-      if (accepted) {
-        connectionStatus.value = '正在启用设备 SFTP'
-        try {
-          const resumed = await confirmDeviceSftpSetup(confirmationId, siteId.value)
-          connectionStatus.value = '正在重新连接 SFTP'
-          return completeConnection(() => Promise.resolve(resumed))
-        } catch (setupError) {
-          return completeConnection(() => Promise.reject(setupError))
-        }
-      }
-      remoteError.value = '已取消启用设备 SFTP，连接未建立。'
-    } else if (reason instanceof ApiRequestError && reason.code in SFTP_CONNECTION_ERROR_MESSAGES) {
+    if (reason instanceof ApiRequestError && reason.code in SFTP_CONNECTION_ERROR_MESSAGES) {
       applySftpConnectionError(reason, '设备文件连接失败')
     } else {
       remoteError.value = messageOf(reason, '设备文件连接失败')

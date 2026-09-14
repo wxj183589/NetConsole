@@ -17,6 +17,7 @@ from netconsole.services.site_ssh_relay import (
     SiteSSHRelayError,
     SiteSSHRelayService,
 )
+from netconsole.services.host_key_trust_service import HostKeyTrustService
 
 
 def _paths(tmp_path: Path) -> PathResolver:
@@ -83,6 +84,79 @@ def test_enabled_relay_requires_complete_configuration(tmp_path: Path) -> None:
         )
 
     assert error.value.code == "SSH_RELAY_CONFIG_INCOMPLETE"
+
+
+def test_delete_jump_host_key_is_exact_and_marks_relay_unrecorded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    monkeypatch.setattr(site_ssh_relay, "protect_windows_data", lambda data, _entropy: data)
+    monkeypatch.setattr(site_ssh_relay, "unprotect_windows_data", lambda data, _entropy: data)
+    service = SiteSSHRelayService(paths)
+    service.save(
+        "alpha",
+        enabled=True,
+        host="192.0.2.50",
+        port=2222,
+        username="jump",
+        password="secret",
+    )
+    trust = HostKeyTrustService(paths)
+    import paramiko
+
+    deleted = paramiko.RSAKey.generate(1024)
+    other = paramiko.RSAKey.generate(1024)
+    trust.trust("192.0.2.50", 2222, deleted, role="jump")
+    trust.trust("192.0.2.51", 22, other, role="target")
+
+    result = service.delete_jump_host_key("alpha")
+
+    assert result["host_key_status"] == "HOST_KEY_UNRECORDED"
+    assert trust.is_trusted("192.0.2.50", 2222, deleted, role="jump") is False
+    assert trust.trust_or_replace("192.0.2.50", 2222, deleted, role="jump").action == "ADD"
+    trust.verify("192.0.2.51", 22, other, role="target")
+
+
+def test_refresh_jump_host_key_replaces_and_publishes_current_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    monkeypatch.setattr(site_ssh_relay, "protect_windows_data", lambda data, _entropy: data)
+    monkeypatch.setattr(site_ssh_relay, "unprotect_windows_data", lambda data, _entropy: data)
+    service = SiteSSHRelayService(paths)
+    service.save(
+        "alpha",
+        enabled=True,
+        host="192.0.2.52",
+        port=2222,
+        username="jump",
+        password="secret",
+    )
+
+    class FakeClient:
+        _netconsole_host_key_event = {
+            "status": "HOST_KEY_AUTO_UPDATED",
+            "fingerprint_sha256": "SHA256:new",
+        }
+
+        def connect(self, **_kwargs: object) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(site_ssh_relay, "_new_paramiko_client", lambda *_args, **_kwargs: FakeClient())
+
+    result = service.refresh_jump_host_key("alpha")
+
+    assert result["message"] == "指纹已更新"
+    assert result["host_key_status"] == "HOST_KEY_AUTO_UPDATED"
+    assert result["host_key_fingerprint_sha256"] == "SHA256:new"
+    public = service.public_config("alpha")
+    assert public["host_key_status"] == "HOST_KEY_AUTO_UPDATED"
+    assert public["host_key_fingerprint_sha256"] == "SHA256:new"
 
 
 def test_unified_factory_keeps_direct_path_when_site_relay_is_disabled(
@@ -196,7 +270,7 @@ def test_factory_uses_one_direct_tcpip_channel_and_keeps_credentials_separate(
     assert site_ssh_relay.HostKeyTrustService(paths).is_trusted("10.82.21.11", 22, target_key)
 
 
-def test_factory_rejects_target_host_key_change_after_tofu(
+def test_factory_replaces_target_host_key_and_returns_original_connection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -255,16 +329,16 @@ def test_factory_rejects_target_host_key_change_after_tofu(
         compatibility_connect=compatibility,
     )
     current_key = key_two
-    with pytest.raises(SiteSSHRelayError) as error:
-        factory.connect(
-            {"device_type": "hp_comware", "host": "10.82.21.11", "username": "admin", "password": "secret", "port": 22},
-            raw_connect_handler=raw_connect,
-            compatibility_connect=compatibility,
-        )
+    result = factory.connect(
+        {"device_type": "hp_comware", "host": "10.82.21.11", "username": "admin", "password": "secret", "port": 22},
+        raw_connect_handler=raw_connect,
+        compatibility_connect=compatibility,
+    )
 
-    assert error.value.code == "TARGET_HOSTKEY_CHANGED"
-    assert connections[-1].disconnected is True
-    assert "secret" not in str(error.value)
+    assert result is connections[-1]
+    assert connections[-1].disconnected is False
+    assert site_ssh_relay.HostKeyTrustService(paths).is_trusted("10.82.21.11", 22, key_two)
+    assert "secret" not in str(result)
 
 
 def test_unified_factory_uses_direct_channel_for_telnet_and_preserves_target_credentials(

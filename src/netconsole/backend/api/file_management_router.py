@@ -20,12 +20,10 @@ from netconsole.models.api.file_management import (
     FileDownloadTaskDTO,
     FileManagementStatusDTO,
     FileRemoteDeviceDTO,
-    HostKeyTrustRequestDTO,
     LocalDirectoryCreateRequestDTO,
     LocalFilePageDTO,
     ManagedFilePageDTO,
     RemoteFilePageDTO,
-    SftpSetupConfirmationRequestDTO,
 )
 from netconsole.services.file_management_service import (
     DeviceFileSftpError,
@@ -142,25 +140,6 @@ def connect_device(request: Request, payload: DeviceFileConnectionRequestDTO, si
     )
 
 
-@router.post(
-    "/connections/confirm-sftp-setup",
-    response_model=FileConnectionDTO,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("capability.file_management.remote"))],
-)
-def confirm_sftp_setup(
-    request: Request,
-    payload: SftpSetupConfirmationRequestDTO,
-    site_id: str = Query(default="", max_length=100),
-) -> FileConnectionDTO:
-    return _remote_call(
-        lambda: _service(request).confirm_sftp_setup(
-            _site_id(request, site_id),
-            payload.confirmation_id,
-        )
-    )
-
-
 @router.delete(
     "/connections/{connection_id}",
     response_model=FileConnectionDTO,
@@ -168,46 +147,6 @@ def confirm_sftp_setup(
 )
 def disconnect_device(request: Request, connection_id: str, site_id: str = Query(default="", max_length=100)) -> FileConnectionDTO:
     return _remote_call(lambda: _service(request).disconnect_device(_site_id(request, site_id), connection_id))
-
-
-@router.post(
-    "/host-keys/trust-once",
-    response_model=FileConnectionDTO,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("capability.file_management.remote"))],
-)
-def trust_host_key_once(
-    request: Request,
-    payload: HostKeyTrustRequestDTO,
-    site_id: str = Query(default="", max_length=100),
-) -> FileConnectionDTO:
-    return _remote_call(
-        lambda: _service(request).trust_host_key(
-            _site_id(request, site_id),
-            payload.challenge_id,
-            persist=False,
-        )
-    )
-
-
-@router.post(
-    "/host-keys/trust",
-    response_model=FileConnectionDTO,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_feature("capability.file_management.remote"))],
-)
-def trust_host_key(
-    request: Request,
-    payload: HostKeyTrustRequestDTO,
-    site_id: str = Query(default="", max_length=100),
-) -> FileConnectionDTO:
-    return _remote_call(
-        lambda: _service(request).trust_host_key(
-            _site_id(request, site_id),
-            payload.challenge_id,
-            persist=True,
-        )
-    )
 
 
 @router.get(

@@ -3,6 +3,10 @@
 日期：2026-09-07
 状态：源码统一、自动化验证和核心现场人工验收完成；外部终端、独立 Agent 及未纳入本次范围的细分项目仍待单独验证。
 
+> 历史审计说明：本文的 Host Key 结论属于 2026-09-07 快照。当前实现已统一为
+> managed `known_hosts` 的 unknown 自动登记、match 继续、mismatch 原子替换并继续，
+> 请以 `docs/device-files/HOST_KEY_TRUST.md` 和 `SFTP_CONNECTION.md` 为准。
+
 ## ROOT CAUSE
 
 1. 车站交换机与 AC 虽然都使用 Netmiko，但原目标连接的 Host Key 策略会

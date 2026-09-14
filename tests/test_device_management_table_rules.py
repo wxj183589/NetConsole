@@ -1,7 +1,9 @@
 from pathlib import Path
 
+import paramiko
 
 from netconsole.core.database import Database
+from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services.external_terminal import (
     ExternalTerminalConfig,
@@ -14,7 +16,9 @@ from netconsole.services.external_terminal import (
     find_winscp_exe,
     launch_external_terminal,
     launch_winscp,
+    _preflight_winscp_host_key,
 )
+from netconsole.services.host_key_trust_service import HostKeyTrustService, key_fingerprint_sha256
 from netconsole.services.netmiko_connection import (
     ConnectionTarget,
     choose_connection_target,
@@ -218,6 +222,18 @@ def test_winscp_command_uses_sftp_and_masks_password():
         "/newinstance",
     ]
 
+    managed_target = ConnectionTarget(
+        "SSH",
+        "hp_comware",
+        "10.0.0.1",
+        22,
+        "admin",
+        "sec ret",
+        host_key_fingerprint_sha256="SHA256:current",
+    )
+    managed_args = build_winscp_command(device, managed_target, r"C:\Tools\WinSCP.exe")
+    assert managed_args[-1] == "/hostkey=SHA256:current"
+
 
 def test_winscp_url_encodes_all_password_special_characters_and_safe_command_masks_them():
     password = "@:/% #中文字符"
@@ -265,6 +281,24 @@ def test_winscp_tunnel_target_uses_localhost_port():
     args = build_winscp_command(device, target, r"C:\Tools\WinSCP.exe")
 
     assert args[1] == "sftp://admin:secret@127.0.0.1:32022/"
+
+
+def test_winscp_preflight_uses_managed_host_key_and_returns_current_fingerprint(tmp_path, monkeypatch):
+    paths = PathResolver(data_root=tmp_path)
+    target = ConnectionTarget("SSH", "hp_comware", "192.0.2.60", 22, "admin", "secret")
+    key = paramiko.RSAKey.generate(1024)
+    client = paramiko.SSHClient()
+
+    def fake_connect(**_kwargs):
+        client._policy.missing_host_key(client, target.host, key)
+
+    monkeypatch.setattr(client, "connect", fake_connect)
+    monkeypatch.setattr(paramiko, "SSHClient", lambda: client)
+
+    fingerprint = _preflight_winscp_host_key(target, target, paths)
+
+    assert fingerprint == key_fingerprint_sha256(key)
+    assert HostKeyTrustService(paths).is_trusted(target.host, target.port, key)
 
 
 def test_find_winscp_exe_rejects_other_existing_programs(tmp_path, monkeypatch):

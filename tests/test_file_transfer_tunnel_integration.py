@@ -15,11 +15,7 @@ import pytest
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.services.file_transfer_service import FileTransferService
-from netconsole.services.host_key_trust_service import (
-    HostKeyTrustError,
-    HostKeyTrustGrant,
-    HostKeyTrustService,
-)
+from netconsole.services.host_key_trust_service import HostKeyTrustService
 
 
 JUMP_USERNAME = "jump"
@@ -361,7 +357,7 @@ def test_backup_target_uses_real_jump_forward_and_downloads_large_file(
     assert service._tunnel_session is None
 
 
-def test_unknown_jump_key_requires_exact_grant_before_real_sftp_connect(
+def test_unknown_jump_and_target_keys_auto_register_before_real_sftp_connect(
     tmp_path: Path,
     tunnel_topology,
 ) -> None:
@@ -370,48 +366,19 @@ def test_unknown_jump_key_requires_exact_grant_before_real_sftp_connect(
     trust = HostKeyTrustService(paths)
     device = _device(jump.address[1], target.address[1])
 
-    with pytest.raises(HostKeyTrustError) as excinfo:
-        FileTransferService(
-            "demo",
-            paths,
-            strict_host_keys=True,
-            host_key_trust=trust,
-        ).connect(device)
-
-    assert excinfo.value.code == "DEVICE_FILE_JUMP_HOST_KEY_UNKNOWN"
-    assert excinfo.value.details["host"] == "127.0.0.1"
-    assert excinfo.value.details["port"] == jump.address[1]
-    assert excinfo.value.details["host_key_role"] == "jump"
-
-    grant = HostKeyTrustGrant.from_key("127.0.0.1", jump.address[1], jump_key)
-    with pytest.raises(HostKeyTrustError) as target_challenge:
-        FileTransferService(
-            "demo",
-            paths,
-            strict_host_keys=True,
-            host_key_trust=trust,
-            trust_host_key_once=(grant,),
-        ).connect(device)
-    assert target_challenge.value.code == "DEVICE_FILE_TARGET_HOST_KEY_UNKNOWN"
-    assert target_challenge.value.details["host"] == TARGET_IDENTITY
-
-    target_grant = HostKeyTrustGrant.from_key(
-        TARGET_IDENTITY,
-        target.address[1],
-        target_key,
-    )
     service = FileTransferService(
         "demo",
         paths,
         strict_host_keys=True,
         host_key_trust=trust,
-        trust_host_key_once=(grant, target_grant),
     )
     assert service.connect(device) == "flash:/"
+    assert trust.is_trusted("127.0.0.1", jump.address[1], jump_key, role="jump")
+    assert trust.is_trusted(TARGET_IDENTITY, target.address[1], target_key)
     service.disconnect()
 
 
-def test_jump_and_target_host_key_changes_are_blocked(
+def test_jump_and_target_host_key_changes_are_replaced_and_sftp_continues(
     tmp_path: Path,
     tunnel_topology,
 ) -> None:
@@ -421,14 +388,15 @@ def test_jump_and_target_host_key_changes_are_blocked(
     jump_trust.trust("127.0.0.1", jump.address[1], paramiko.RSAKey.generate(1024))
     jump_trust.trust(TARGET_IDENTITY, target.address[1], target_key)
 
-    with pytest.raises(HostKeyTrustError) as jump_error:
-        FileTransferService(
-            "demo",
-            jump_paths,
-            strict_host_keys=True,
-            host_key_trust=jump_trust,
-        ).connect(_device(jump.address[1], target.address[1]))
-    assert jump_error.value.code == "DEVICE_FILE_JUMP_HOST_KEY_MISMATCH"
+    jump_service = FileTransferService(
+        "demo",
+        jump_paths,
+        strict_host_keys=True,
+        host_key_trust=jump_trust,
+    )
+    assert jump_service.connect(_device(jump.address[1], target.address[1])) == "flash:/"
+    assert jump_trust.is_trusted("127.0.0.1", jump.address[1], jump_key, role="jump")
+    jump_service.disconnect()
 
     target_paths = PathResolver(tmp_path / "target", tmp_path / "target")
     target_trust = HostKeyTrustService(target_paths)
@@ -438,11 +406,12 @@ def test_jump_and_target_host_key_changes_are_blocked(
         target.address[1],
         paramiko.RSAKey.generate(1024),
     )
-    with pytest.raises(HostKeyTrustError) as target_error:
-        FileTransferService(
-            "demo",
-            target_paths,
-            strict_host_keys=True,
-            host_key_trust=target_trust,
-        ).connect(_device(jump.address[1], target.address[1]))
-    assert target_error.value.code == "DEVICE_FILE_TARGET_HOST_KEY_MISMATCH"
+    target_service = FileTransferService(
+        "demo",
+        target_paths,
+        strict_host_keys=True,
+        host_key_trust=target_trust,
+    )
+    assert target_service.connect(_device(jump.address[1], target.address[1])) == "flash:/"
+    assert target_trust.is_trusted(TARGET_IDENTITY, target.address[1], target_key)
+    target_service.disconnect()

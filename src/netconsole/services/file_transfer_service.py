@@ -19,10 +19,8 @@ from netconsole.services.netmiko_connection import ConnectionTarget, build_netmi
 from netconsole.services.ssh_tunnel import TunnelManager, TunnelSession
 from netconsole.services.file_service import file_sha256
 from netconsole.services.host_key_trust_service import (
-    HostKeyTrustGrant,
     HostKeyTrustService,
     HostKeyTrustError,
-    host_key_mismatch_error,
     install_managed_host_key_policy,
 )
 from netconsole.services.ssh_tunnel import TunnelConnectionError
@@ -130,30 +128,16 @@ class FileTransferService:
         site_name: str,
         paths: PathResolver | None = None,
         *,
-        strict_host_keys: bool = False,
+        strict_host_keys: bool = True,
         host_key_trust: HostKeyTrustService | None = None,
-        trust_host_key_once: HostKeyTrustGrant
-        | tuple[HostKeyTrustGrant, ...]
-        | bool
-        | None = None,
     ) -> None:
         self.site_name = site_name
         self.paths = paths or PathResolver()
+        # Kept as a compatibility constructor argument. All product paths
+        # use the managed AUTO_REPLACE policy now; no consumer may silently
+        # fall back to a process-local trust cache.
         self.strict_host_keys = bool(strict_host_keys)
         self.host_key_trust = host_key_trust or HostKeyTrustService(self.paths)
-        self.trust_host_key_once = trust_host_key_once
-        if isinstance(trust_host_key_once, HostKeyTrustGrant):
-            self.host_key_grant: tuple[HostKeyTrustGrant, ...] = (
-                trust_host_key_once,
-            )
-        elif isinstance(trust_host_key_once, tuple):
-            self.host_key_grant = tuple(
-                item
-                for item in trust_host_key_once
-                if isinstance(item, HostKeyTrustGrant)
-            )
-        else:
-            self.host_key_grant = ()
         self._client = None
         self._sftp = None
         self._device: Device | None = None
@@ -185,9 +169,8 @@ class FileTransferService:
                     if target.tunnel is None:
                         raise RuntimeError("Tunnel target is missing tunnel profile")
                     tunnel_session = TunnelManager(
-                        strict_host_keys=self.strict_host_keys,
+                        strict_host_keys=True,
                         host_key_trust=self.host_key_trust,
-                        host_key_grant=self.host_key_grant,
                         connect_timeout_seconds=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
                     ).open_tunnel(  # type: ignore[arg-type]
                         target.tunnel,
@@ -377,22 +360,19 @@ class FileTransferService:
         client = paramiko.SSHClient()
         checked_host = str(key_host or target.host)
         checked_port = int(key_port or target.port or 22)
-        if self.strict_host_keys:
-            install_managed_host_key_policy(
-                client,
-                self.host_key_trust,
-                checked_host,
-                checked_port,
-                role="target",
-                grant=self.host_key_grant,
-            )
-        else:
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        install_managed_host_key_policy(
+            client,
+            self.host_key_trust,
+            checked_host,
+            checked_port,
+            role="target",
+            host_key_policy="AUTO_REPLACE",
+        )
         sock = None
         try:
             hostname = target.host
             port = target.port
-            if self.strict_host_keys and target.via_tunnel:
+            if target.via_tunnel:
                 sock = socket.create_connection(
                     (target.host, target.port),
                     timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
@@ -415,12 +395,30 @@ class FileTransferService:
             if sock is not None:
                 sock.close()
             client.close()
-            raise host_key_mismatch_error(
-                self.host_key_trust,
-                checked_host,
-                checked_port,
-                getattr(exc, "got_key", None),
-                role="target",
+            # Managed clients do not load an unmanaged known_hosts file, so
+            # this is only an unexpected Paramiko path.  Keep it diagnostic
+            # and distinguish persistence failure from a normal key change;
+            # normal changes are handled by AUTO_REPLACE before this point.
+            key = getattr(exc, "got_key", None)
+            details = (
+                self.host_key_trust.inspect(
+                    checked_host,
+                    checked_port,
+                    key,
+                    role="target",
+                ).as_dict()
+                if key is not None
+                else {
+                    "host": checked_host,
+                    "port": checked_port,
+                    "host_key_role": "target",
+                }
+            )
+            raise HostKeyTrustError(
+                "目标设备 SSH 指纹自动更新失败，请查看任务日志后重试。",
+                details,
+                key=key,
+                code="DEVICE_FILE_HOST_KEY_UPDATE_FAILED",
             ) from exc
         except HostKeyTrustError:
             if sock is not None:
@@ -457,9 +455,9 @@ class FileTransferService:
         if "ssh session not active" in lowered or "session not active" in lowered:
             return "SSH 登录成功，但会话在建立 SFTP 前已失效。请检查设备 SSH/SFTP 服务状态。"
         if "not found in known_hosts" in lowered or "server" in lowered and "not found" in lowered:
-            return "SFTP 主机密钥未受信任；请先核验并写入 NetConsole known_hosts。"
+            return "SFTP 主机指纹已由 NetConsole 自动登记或更新。"
         if "host key for server" in lowered and "does not match" in lowered:
-            return "SFTP 主机密钥与 known_hosts 不一致，已拒绝连接。"
+            return "SFTP 主机指纹自动更新失败，连接未建立。"
         return message
 
     @staticmethod
@@ -835,13 +833,29 @@ class FileTransferService:
             target_socket: socket.socket | None = None
             files: list[RemoteDeviceFile] = []
             try:
-                with prepared_connection_target(target) as prepared:
+                with prepared_connection_target(
+                    target,
+                    host_key_trust=self.host_key_trust,
+                ) as prepared:
                     with netmiko_connection.ssh_connection_context(
                         "file_management",
                         "collect",
                         device_uuid=str(device.device_uuid or device.id or ""),
+                        paths=self.paths,
+                        site_id=self.site_name,
+                        connection_mode="jump" if target.via_tunnel else "direct",
+                        jump_host=(
+                            f"{target.tunnel.host}:{target.tunnel.port}"
+                            if target.via_tunnel and target.tunnel is not None
+                            else ""
+                        ),
                     ):
                         params, target_socket = _file_netmiko_params(prepared)
+                        params["_netconsole_paths"] = self.paths
+                        params["_netconsole_site_id"] = self.site_name
+                        if target.via_tunnel:
+                            params["_netconsole_host_key_host"] = target.host
+                            params["_netconsole_host_key_port"] = target.port
                         connection = netmiko_connection.ConnectHandler(
                             **params
                         )
@@ -919,19 +933,15 @@ class FileTransferService:
         import paramiko
 
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
-            with prepared_connection_target(target) as prepared:
-                client.connect(
-                    hostname=prepared.host,
-                    port=prepared.port,
-                    username=prepared.username,
-                    password=prepared.password,
-                    timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
-                    banner_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
-                    auth_timeout=DEVICE_FILE_CONNECT_TIMEOUT_SECONDS,
-                    look_for_keys=False,
-                    allow_agent=False,
+            with prepared_connection_target(
+                target,
+                host_key_trust=self.host_key_trust,
+            ) as prepared:
+                client = self._connect_ssh_client(
+                    prepared,
+                    key_host=target.host if target.via_tunnel else prepared.host,
+                    key_port=target.port if target.via_tunnel else prepared.port,
                 )
                 sftp = client.open_sftp()
                 try:
@@ -992,13 +1002,29 @@ class FileTransferService:
         connection = None
         target_socket: socket.socket | None = None
         try:
-            with prepared_connection_target(target) as prepared:
+            with prepared_connection_target(
+                target,
+                host_key_trust=self.host_key_trust,
+            ) as prepared:
                 with netmiko_connection.ssh_connection_context(
                     "file_management",
                     "collect",
                     device_uuid=device_uuid,
+                    paths=self.paths,
+                    site_id=self.site_name,
+                    connection_mode="jump" if target.via_tunnel else "direct",
+                    jump_host=(
+                        f"{target.tunnel.host}:{target.tunnel.port}"
+                        if target.via_tunnel and target.tunnel is not None
+                        else ""
+                    ),
                 ):
                     params, target_socket = _file_netmiko_params(prepared)
+                    params["_netconsole_paths"] = self.paths
+                    params["_netconsole_site_id"] = self.site_name
+                    if target.via_tunnel:
+                        params["_netconsole_host_key_host"] = target.host
+                        params["_netconsole_host_key_port"] = target.port
                     connection = netmiko_connection.ConnectHandler(
                         **params
                     )

@@ -3,6 +3,10 @@
 日期：2026-09-07
 审计范围：`src/netconsole`、`apps/agent`、Renderer/Electron 调用边界、测试与既有 SSH 隧道模块。
 
+> 历史审计说明：本文中的 Host Key “严格校验/变化失败”属于旧设计快照，已被
+> v1.5.8 现场运维自动恢复改造取代。当前规则见
+> `docs/device-files/HOST_KEY_TRUST.md`，不得据此恢复确认或阻断状态机。
+
 ## Manual acceptance status
 
 依据用户提供的现场验收结论：

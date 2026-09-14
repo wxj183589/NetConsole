@@ -22,6 +22,11 @@ NetConsole 的业务确认统一由 `apps/desktop_renderer/src/components/feedba
 - `useConfirm` 的 Element Plus fallback 只在应用根确认组件尚未挂载的开发/测试阶段使用；生产页面统一由 `NcConfirmDialog` 提供。
 - 长操作的进度、取消和失败保留由 Task Center 负责，确认弹窗只负责授权，不创建第二套任务状态源。
 
+Host Key 不属于确认操作：统一 managed `known_hosts` 自动登记、匹配继续、变化原子替换并继续原业务操作。
+设备文件 SFTP 也不弹确认：只有 SSH 认证成功且 subsystem 明确不可用时，才由 Application Service 自动提交
+已验证的 `device.sftp.enable` Task Center 任务；认证、网络、设备拒绝或 Profile 无法可靠匹配时仍失败关闭。
+
 ## 迁移清单
 
-设备删除、批量删除、配置保存、SFTP 启用、主机密钥信任、外部终端密码传递、文件覆盖、局点切换/迁移和任务强停均须登记确认类型，并由对应 Application Service 做最终权限和状态校验。
+设备删除、批量删除、配置保存、外部终端密码传递、文件覆盖、局点切换/迁移和任务强停均须登记确认类型，并由对应
+Application Service 做最终权限和状态校验。SFTP 启用和 Host Key 生命周期遵循上面的自动恢复规则，不登记二次确认。

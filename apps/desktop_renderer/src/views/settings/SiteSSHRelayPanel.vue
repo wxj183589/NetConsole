@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getActiveSite, getSiteSSHRelay, testSiteSSHRelay, updateSiteSSHRelay, type SiteSSHRelay } from '../../api/siteStorage'
+import { deleteSiteSSHRelayHostKey, getActiveSite, getSiteSSHRelay, refreshSiteSSHRelayHostKey, testSiteSSHRelay, updateSiteSSHRelay, type SiteSSHRelay } from '../../api/siteStorage'
 import { ApiRequestError } from '../../api/client'
 import { LEGACY_SITE_CONTEXT_CHANGED_EVENT, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 
@@ -10,6 +10,8 @@ const siteId = ref('')
 const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
+const refreshingHostKey = ref(false)
+const deletingHostKey = ref(false)
 const error = ref('')
 const password = ref('')
 const form = reactive({ enabled: false, host: '', port: 22, username: '' })
@@ -37,7 +39,8 @@ const hostKeyLabel = computed(() => {
   if (status === 'HOST_KEY_AUTO_ADDED') return '已自动登记'
   if (status === 'HOST_KEY_AUTO_UPDATED') return '已自动更新'
   if (status === 'HOST_KEY_VERIFIED') return '已验证'
-  return relay.value?.enabled ? '待连接' : '未启用'
+  if (status === 'HOST_KEY_UNRECORDED') return '未记录'
+  return relay.value?.enabled ? '未记录' : '未启用'
 })
 
 onMounted(() => {
@@ -105,6 +108,36 @@ async function test(): Promise<void> {
   }
 }
 
+async function refreshHostKey(): Promise<void> {
+  if (!siteId.value) return
+  refreshingHostKey.value = true
+  error.value = ''
+  try {
+    await refreshSiteSSHRelayHostKey(siteId.value)
+    relay.value = await getSiteSSHRelay(siteId.value)
+    ElMessage.success('指纹已更新')
+  } catch (cause) {
+    error.value = message(cause, '中转服务器指纹更新失败')
+  } finally {
+    refreshingHostKey.value = false
+  }
+}
+
+async function deleteHostKey(): Promise<void> {
+  if (!siteId.value) return
+  deletingHostKey.value = true
+  error.value = ''
+  try {
+    await deleteSiteSSHRelayHostKey(siteId.value)
+    relay.value = await getSiteSSHRelay(siteId.value)
+    ElMessage.success('指纹已删除')
+  } catch (cause) {
+    error.value = message(cause, '中转服务器指纹删除失败')
+  } finally {
+    deletingHostKey.value = false
+  }
+}
+
 function message(cause: unknown, fallback: string): string {
   if (cause instanceof ApiRequestError) return cause.message || fallback
   return cause instanceof Error ? cause.message : fallback
@@ -127,6 +160,8 @@ function message(cause: unknown, fallback: string): string {
       <el-form-item>
         <el-button type="primary" :loading="saving" :disabled="loading" @click="save">保存设置</el-button>
         <el-button :loading="testing" :disabled="!relay?.complete || saving" @click="test">测试连接</el-button>
+        <el-button :loading="refreshingHostKey" :disabled="!relay?.complete || saving" @click="refreshHostKey">重新获取指纹</el-button>
+        <el-button :loading="deletingHostKey" :disabled="!relay?.host_key_fingerprint_sha256 || saving" @click="deleteHostKey">删除指纹</el-button>
         <el-tag v-if="relay" :type="relay.enabled ? 'success' : 'info'">{{ relay.enabled ? '已启用' : '未启用' }}</el-tag>
       </el-form-item>
     </el-form>
@@ -134,8 +169,8 @@ function message(cause: unknown, fallback: string): string {
       <div><span>运行状态</span><el-tag size="small" :type="runtimeTagType">● {{ runtimeLabel }}</el-tag></div>
       <div><span>自动运行</span><b>{{ relay.enabled ? '已开启' : '未开启' }}</b></div>
       <div><span>中转服务器</span><b>{{ relay.host ? `${relay.host}:${relay.port}` : '—' }}</b></div>
-      <div><span>主机指纹</span><b class="fingerprint" :title="`来源：Paramiko SSH Host Key；管理策略：自动`">{{ relay.host_key_fingerprint_sha256 || '尚未登记' }}</b></div>
-      <div><span>指纹管理</span><b :title="'Jump Host 使用 AUTO_REPLACE；首次自动登记，变化自动替换并继续连接。其他 SSH consumer 保持原策略。'">{{ hostKeyLabel }}</b></div>
+      <div><span>主机指纹</span><b class="fingerprint" :title="`来源：Paramiko SSH Host Key；管理策略：自动`">{{ relay.host_key_fingerprint_sha256 || '未记录' }}</b></div>
+      <div><span>指纹管理</span><b :title="'NetConsole 自动登记、替换并继续连接；按钮仅用于现场排障。'">{{ hostKeyLabel }}</b></div>
       <div><span>凭据</span><b>{{ relay.password_configured ? '密码已保存' : '未保存' }}</b></div>
     </div>
     <el-alert
