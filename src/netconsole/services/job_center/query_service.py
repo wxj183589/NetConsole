@@ -977,7 +977,7 @@ class JobCenterQueryService:
             return "devices"
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_TASK_TYPES:
             return "config"
-        if owner == "web_file_management" and task_type in {"file_management_download", "device_sftp_enable"}:
+        if owner == "web_file_management" and task_type in {"file_management_download", "file_management_mesh_import", "device_sftp_enable"}:
             return "files"
         if owner == AC_WEB_OWNER:
             return "ac"
@@ -1028,7 +1028,7 @@ class JobCenterQueryService:
                 return self._config_cancel_capability(site_name, task_id)
             except Exception:
                 return False, "配置任务取消能力检查失败"
-        if owner == "web_file_management" and task_type in {"file_management_download", "device_sftp_enable"}:
+        if owner == "web_file_management" and task_type in {"file_management_download", "file_management_mesh_import", "device_sftp_enable"}:
             return True, ""
         if owner == AC_WEB_OWNER:
             return True, ""

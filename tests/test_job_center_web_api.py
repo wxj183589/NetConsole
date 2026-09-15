@@ -1010,6 +1010,20 @@ def test_job_center_device_export_cancel_cas_blocks_terminal_overwrite(
             False,
             409,
         ),
+        (
+            "web_file_management",
+            "file_management_mesh_import",
+            "file_management_service",
+            True,
+            200,
+        ),
+        (
+            "web_file_management",
+            "file_management_mesh_import",
+            "file_management_service",
+            False,
+            409,
+        ),
     ],
 )
 def test_job_center_config_and_file_cancel_require_owner_confirmation(

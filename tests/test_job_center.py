@@ -62,6 +62,7 @@ def test_registry_contains_all_existing_task_types() -> None:
         "site_retention_apply",
         "site_retention_scan",
         "file_management_download",
+        "file_management_mesh_import",
         "mesh_mr_profiles_refresh",
         "traffic_local_iperf_server",
         "traffic_local_iperf_client",

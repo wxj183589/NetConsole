@@ -37,6 +37,7 @@ import {
   formatBytes,
   formatSpeed,
   mergeDownloadTasks,
+  meshImportTasksNeedRefresh,
   selectableRemoteFiles,
   summarizeDownloadBatches,
 } from './fileManagementModel'
@@ -80,6 +81,7 @@ const localSelectedEntryId = ref('')
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 
 const activeTasks = computed(() => activeDownloadTasks(tasks.value))
+const tasksNeedRefresh = computed(() => activeTasks.value.length > 0 || meshImportTasksNeedRefresh(tasks.value))
 const selectedDevice = computed(() => devices.value.find((device) => device.device_id === selectedDeviceId.value) || null)
 const deviceGroups = computed(() => sortDeviceGroupNames([...new Set(devices.value.map((device) => device.group_name || '未分组'))]))
 const filteredDevices = computed(() => {
@@ -145,6 +147,8 @@ const SFTP_CONNECTION_ERROR_MESSAGES: Record<string, string> = {
   DEVICE_FILE_SESSION_DISCONNECTED: '设备文件会话已断开，请重新连接。',
 }
 const MESH_IMPORT_STATUS_LABELS: Record<string, string> = {
+  pending: '等待导入',
+  running: '正在导入',
   completed: '已导入',
   duplicate: '重复，已存在',
   failed: '日志解析失败，可重试',
@@ -472,7 +476,7 @@ async function refreshTasks(): Promise<void> {
 
 function scheduleTaskRefresh(): void {
   if (refreshTimer) clearTimeout(refreshTimer)
-  refreshTimer = activeTasks.value.length ? setTimeout(() => void refreshTasks(), 1_500) : null
+  refreshTimer = tasksNeedRefresh.value ? setTimeout(() => void refreshTasks(), 1_500) : null
 }
 
 async function cancelTask(task: FileDownloadTask): Promise<void> {
