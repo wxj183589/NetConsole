@@ -35,11 +35,9 @@ PR #58 将车载 MR 的远端下载与 MESH 登记/解析/派生维护生命周�
 
 1. `tests/test_h3c_ac_refresh_simulation.py::test_simulated_h3c_r1612p01_ac_refresh_uses_legacy_retry_and_persists`
 2. `tests/test_offline_ap_ledger_async.py::test_trackside_switch_offline_forces_downstream_ap_offline_even_when_ac_run`
-3. `tests/test_online_mr_collection.py::test_netmiko_shell_connection_falls_backs_to_tunnel_and_releases_session`
+3. `tests/test_online_mr_collection.py::test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session`
 4. `tests/test_zte_optical_work_scope_integration.py::test_zte_invalid_interface_snapshot_is_not_presented_as_current`
 5. `tests/test_zte_optical_work_scope_integration.py::test_zte_connection_failure_does_not_present_old_realtime_state`
-
-> 注：第 3 项名称以实际仓库 nodeid 为准；最终判定依据是已保存的 A-B 测试日志和同一失败签名，不以本文中的人工转录作为新的测试事实来源。
 
 A-B 汇总：
 
