@@ -9,8 +9,12 @@ from pathlib import Path
 
 import pytest
 
-# conftest 会在测试模块收集前加载。测试根固定在 D 盘，并在会话结束时清理。
-_TEST_BASE_ROOT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
+# conftest 会在测试模块收集前加载。测试根固定在仓库工作区父目录的
+# test-data/NetConsole 下，并在会话结束时清理。本机 canonical checkout
+# 仍解析为 D:\study\NetConsole-Workspace\test-data\NetConsole；GitHub Actions
+# 则解析到 runner checkout 对应的隔离工作区，不依赖固定盘符或机器路径。
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_TEST_BASE_ROOT = (_REPOSITORY_ROOT.parent / "test-data" / "NetConsole").resolve()
 _TEST_RUN_ROOT = _TEST_BASE_ROOT / f"pytest-{uuid.uuid4().hex}"
 _TEST_BASETEMP_ROOT: Path | None = None
 _TEST_RUN_ROOT.mkdir(parents=True, exist_ok=False)
@@ -44,7 +48,9 @@ def pytest_configure(config):
     configured = Path(config.option.basetemp).resolve() if config.option.basetemp else _TEST_RUN_ROOT / "pytest"
     base = _TEST_BASE_ROOT.resolve()
     if configured == base or not configured.is_relative_to(base):
-        raise pytest.UsageError("pytest --basetemp 必须位于 D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\<run-id>")
+        raise pytest.UsageError(
+            f"pytest --basetemp 必须位于 {base}{os.sep}<run-id>"
+        )
     _TEST_BASETEMP_ROOT = configured
     config.option.basetemp = str(configured)
 
