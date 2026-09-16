@@ -8,7 +8,28 @@
     "resolved_finding": "REPORT_SHRINK",
     "same_product_version_decision": "PUBLISHED_HIGHER_PRODUCT_VERSION_ONLY"
   },
-  "python": [],
+  "python": [
+    {
+      "nodeid": "tests/test_h3c_ac_refresh_simulation.py::test_simulated_h3c_r1612p01_ac_refresh_uses_legacy_retry_and_persists",
+      "reason": "Pre-existing failure confirmed by exact A-B comparison on github/main@20e28531 and PR #58 feature@ec458be0 on 2026-09-16; not introduced by MESH download/import decoupling."
+    },
+    {
+      "nodeid": "tests/test_offline_ap_ledger_async.py::test_trackside_switch_offline_forces_downstream_ap_offline_even_when_ac_run",
+      "reason": "Pre-existing failure confirmed by exact A-B comparison on github/main@20e28531 and PR #58 feature@ec458be0 on 2026-09-16; not introduced by MESH download/import decoupling."
+    },
+    {
+      "nodeid": "tests/test_online_mr_collection.py::test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session",
+      "reason": "Pre-existing failure confirmed by exact A-B comparison on github/main@20e28531 and PR #58 feature@ec458be0 on 2026-09-16; not introduced by MESH download/import decoupling."
+    },
+    {
+      "nodeid": "tests/test_zte_optical_work_scope_integration.py::test_zte_invalid_interface_snapshot_is_not_presented_as_current",
+      "reason": "Pre-existing failure confirmed by exact A-B comparison on github/main@20e28531 and PR #58 feature@ec458be0 on 2026-09-16; not introduced by MESH download/import decoupling."
+    },
+    {
+      "nodeid": "tests/test_zte_optical_work_scope_integration.py::test_zte_connection_failure_does_not_present_old_realtime_state",
+      "reason": "Pre-existing failure confirmed by exact A-B comparison on github/main@20e28531 and PR #58 feature@ec458be0 on 2026-09-16; not introduced by MESH download/import decoupling."
+    }
+  ],
   "architecture": [],
   "ruff": []
 }
