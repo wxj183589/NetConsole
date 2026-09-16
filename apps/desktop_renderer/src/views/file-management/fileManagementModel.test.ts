@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { FileDownloadTask, RemoteFileEntry } from '../../types/fileManagement'
 import { createFileManagementTranslator } from './fileManagementI18n'
-import { activeDownloadTasks, formatBytes, formatSpeed, mergeDownloadTasks, selectableRemoteFiles, summarizeDownloadBatches } from './fileManagementModel'
+import { activeDownloadTasks, formatBytes, formatSpeed, mergeDownloadTasks, meshImportTasksNeedRefresh, selectableRemoteFiles, summarizeDownloadBatches } from './fileManagementModel'
 
 function task(id: string, status: FileDownloadTask['status'], updatedAt: string): FileDownloadTask {
   return {
@@ -20,6 +20,21 @@ describe('file management state model', () => {
     )
     expect(merged.map((item) => [item.task_id, item.status])).toEqual([['b', 'FAILED'], ['a', 'COMPLETED']])
     expect(activeDownloadTasks(merged)).toEqual([])
+  })
+
+  it('keeps polling a completed download while its MESH child is active', () => {
+    const completed = task('mesh-parent', 'COMPLETED', '2026-07-16T10:00:00Z')
+    completed.result = {
+      result_kind: 'device_file', file_ref: '', device_file_ref: '', name: 'meshlog.log', size_bytes: 4,
+      artifact_id: '', relative_path: 'mesh/raw/meshlog.log', sha256: 'hash', device_id: 'device-1',
+      remote_entry_id: 'entry-1', target_kind: 'mr_raw', mesh_import_status: 'running',
+      mesh_import_task_id: 'mesh-child', mesh_imported_count: 0, mesh_duplicate_count: 0, mesh_parsed_record_count: 0,
+      mesh_import_error: '',
+    }
+    expect(activeDownloadTasks([completed])).toEqual([])
+    expect(meshImportTasksNeedRefresh([completed])).toBe(true)
+    completed.result.mesh_import_status = 'completed'
+    expect(meshImportTasksNeedRefresh([completed])).toBe(false)
   })
 
   it('selects downloadable files and applies the Qt mesh-log shortcut', () => {

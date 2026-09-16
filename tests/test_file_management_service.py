@@ -41,10 +41,12 @@ from netconsole.services.file_management_service import (
     FileManagementApplicationService,
     FileReferenceNotFound,
     run_file_management_download,
+    run_file_management_mesh_import,
 )
 from netconsole.services.external_terminal import WinScpLaunchResult
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.job_registry import dispatch_job
+from netconsole.services.job_center.local_process_adapter import LocalProcessCompletion
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.mesh_storage_service import MeshStorageService
 
@@ -335,9 +337,17 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
             )
         )
         task_service.record_external_event(task_id, "finished", {"result": result}, site_name="demo")
-        before_download = {path.relative_to(paths.site_dir("demo")).as_posix() for path in paths.site_dir("demo").rglob("*") if path.is_file()}
+        before_download = {
+            path.relative_to(paths.site_dir("demo")).as_posix()
+            for path in paths.site_dir("demo").rglob("*")
+            if path.is_file() and path.name not in {"tasks.db-wal", "tasks.db-shm"}
+        }
         downloaded = client.get(f"/api/file-management/downloads/{task_id}/file", params={"site_id": "demo"})
-        after_download = {path.relative_to(paths.site_dir("demo")).as_posix() for path in paths.site_dir("demo").rglob("*") if path.is_file()}
+        after_download = {
+            path.relative_to(paths.site_dir("demo")).as_posix()
+            for path in paths.site_dir("demo").rglob("*")
+            if path.is_file() and path.name not in {"tasks.db-wal", "tasks.db-shm"}
+        }
         assert downloaded.status_code == 200
         assert downloaded.content == source.read_bytes()
         disposition = unquote(downloaded.headers["content-disposition"])
@@ -359,25 +369,45 @@ def test_file_management_api_lists_filters_and_uses_controlled_download_task(tmp
 
 
 def test_completed_mesh_import_failure_can_be_retried_and_cleared_as_failed(tmp_path: Path) -> None:
-    paths, source = _fixture(tmp_path)
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(name="MR-retry", device_type="MR", primary_address="192.0.2.57")
+    )
+    raw = paths.mesh_mr_raw_dir("demo", "MR-retry") / "meshlog.log"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text("mesh", encoding="utf-8")
+    digest = file_sha256(raw)
     task_service = TaskApplicationService(paths=paths, site_name="demo")
+    started_jobs: list[BackgroundJob] = []
 
     class FakeProcessAdapter:
-        def start_job(self, job: BackgroundJob) -> str:
+        def start_job(self, job: BackgroundJob, **_kwargs) -> str:
+            started_jobs.append(job)
             task_service.prepare(job)
             return job.job_id
+
+        def cancel_job(self, _task_id: str) -> bool:
+            return True
 
     service = FileManagementApplicationService(
         paths,
         task_service=task_service,
         process_adapter=FakeProcessAdapter(),
     )
-    file_ref = next(item.file_ref for item in service.list_files("demo").items if item.name == source.name)
+    file_ref = service.list_files("demo").items[0].file_ref
     task = service.submit_download("demo", file_ref)
+    relative = raw.relative_to(paths.site_dir("demo")).as_posix()
     result = {
-        "download_ref": file_ref,
-        "name": source.name,
-        "size_bytes": source.stat().st_size,
+        "result_kind": "device_file",
+        "device_file_ref": service._device_file_ref(task.task_id, relative, digest),
+        "name": raw.name,
+        "size_bytes": raw.stat().st_size,
+        "relative_path": relative,
+        "sha256": digest,
+        "device_id": device.device_uuid,
+        "target_kind": "mr_raw",
         "mesh_import_status": "failed",
         "mesh_import_error": "MESH 自动导入失败",
     }
@@ -391,7 +421,26 @@ def test_completed_mesh_import_failure_can_be_retried_and_cleared_as_failed(tmp_
     assert completed.result.mesh_import_status == "failed"
 
     retried = service.retry_download("demo", task.task_id)
-    assert retried.task_id != task.task_id
+    assert retried.task_id == task.task_id
+    assert retried.result is not None
+    assert retried.result.mesh_import_status == "running"
+    assert len(started_jobs) == 2
+    assert started_jobs[-1].task_type == "file_management_mesh_import"
+    assert all(job.task_type != "file_management_download" for job in started_jobs[1:])
+    assert started_jobs[-1].params["target_relative_path"] == relative
+    assert started_jobs[-1].params["expected_sha256"] == digest
+    assert started_jobs[-1].params["device_id"] == device.device_uuid
+    repeated = service.retry_mesh_import("demo", task.task_id)
+    assert repeated.task_id == task.task_id
+    assert repeated.result is not None
+    assert repeated.result.mesh_import_task_id == retried.result.mesh_import_task_id
+    assert len(started_jobs) == 2
+    task_service.record_external_event(
+        task.task_id,
+        "file_management_mesh_import",
+        {"result": {"mesh_import_task_id": retried.result.mesh_import_task_id, "mesh_import_status": "failed"}},
+        site_name="demo",
+    )
     cleared = service.clear_downloads("demo", [TaskState.FAILED.value])
     assert cleared.cleared_count == 1
     assert task.task_id not in {item.task_id for item in service.list_download_tasks("demo")}
@@ -1376,13 +1425,14 @@ def test_remote_mesh_download_target_does_not_open_incompatible_parsed_db(tmp_pa
     assert paths.mesh_mr_raw_dir("demo", profile.safe_folder_name).resolve() in target.parents
 
 
-def test_mr_mesh_download_runs_auto_import_inside_file_job(tmp_path: Path, monkeypatch) -> None:
+def test_mr_mesh_download_releases_file_job_before_mesh_import(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     database = Database(paths.site_db_path("demo"))
     database.initialize()
     device = DeviceRepository(database).create(
         Device(name="MR-02", device_type="MR", primary_address="192.0.2.53")
     )
+    MeshStorageService("demo", paths).ensure_mr_profile_identity_for_device(device)
     imported: list[Path] = []
 
     class FakeTransfer:
@@ -1411,8 +1461,16 @@ def test_mr_mesh_download_runs_auto_import_inside_file_job(tmp_path: Path, monke
             imported.extend(files)
             return SimpleNamespace(imported_count=1, duplicate_count=0, parsed_record_count=7)
 
+    class FakeMaintenance:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def repair(self, *_args, **_kwargs):
+            return None
+
     monkeypatch.setattr("netconsole.services.file_management_service.FileTransferService", FakeTransfer)
     monkeypatch.setattr("netconsole.services.file_management_service.MeshImportService", FakeImport)
+    monkeypatch.setattr("netconsole.services.file_management_service.MeshDerivedDataMaintenanceService", FakeMaintenance)
     target = paths.site_mesh_root("demo") / "MR-02" / "raw" / "MR-02-2026_07_16-meshlog.log"
     relative = target.relative_to(paths.site_dir("demo")).as_posix()
     job = BackgroundJob(
@@ -1435,13 +1493,309 @@ def test_mr_mesh_download_runs_auto_import_inside_file_job(tmp_path: Path, monke
 
     result = run_file_management_download(JobContext.from_job(job))
 
-    assert result["mesh_import_status"] == "completed"
-    assert result["mesh_imported_count"] == 1
-    assert result["mesh_parsed_record_count"] == 7
-    assert imported == [target.resolve()]
+    assert result["mesh_import_status"] == "pending"
+    assert result["mesh_import_task_id"]
+    assert imported == []
+    imported_result = run_file_management_mesh_import(
+        JobContext.from_job(
+            BackgroundJob(
+                job_id=str(result["mesh_import_task_id"]),
+                task_type="file_management_mesh_import",
+                params={
+                    **job.params,
+                    "target_relative_path": relative,
+                    "expected_sha256": result["sha256"],
+                },
+            )
+        )
+    )
+    assert imported_result["mesh_import_status"] == "completed"
+    assert imported and imported[0].resolve() == target.resolve()
 
 
-def test_mr_mesh_download_keeps_raw_when_auto_repair_cannot_complete(tmp_path: Path, monkeypatch) -> None:
+def test_mesh_import_child_does_not_hold_next_download_slot(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    device = DeviceRepository(database).create(
+        Device(name="MR-queue", device_type="MR", primary_address="192.0.2.58")
+    )
+    raw = paths.mesh_mr_raw_dir("demo", "MR-queue") / "meshlog.log"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text("mesh", encoding="utf-8")
+    digest = file_sha256(raw)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    events: list[str] = []
+    timeline: dict[str, int] = {}
+    tick = 0
+    callbacks: dict[str, object] = {}
+
+    def mark(name: str) -> None:
+        nonlocal tick
+        tick += 1
+        timeline[name] = tick
+
+    class CallbackProcessAdapter:
+        def start_job(self, job: BackgroundJob, *, on_complete=None) -> str:
+            if not callbacks:
+                events.append("download_a")
+                mark("A_DOWNLOAD_STARTED_AT")
+            elif job.task_type == "file_management_mesh_import":
+                events.append("mesh_start")
+                mark("A_MESH_IMPORT_STARTED_AT")
+            else:
+                events.append("download_b")
+                mark("B_DOWNLOAD_STARTED_AT")
+            task_service.prepare(job)
+            if on_complete is not None:
+                callbacks[job.job_id] = on_complete
+            return job.job_id
+
+    service = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        process_adapter=CallbackProcessAdapter(),
+    )
+    descriptor_a = {
+        "source_kind": "remote",
+        "batch_id": "batch-a",
+        "device_id": device.device_uuid,
+        "device_name": device.name,
+        "remote_entry_id": "fe1_" + "a" * 32,
+        "remote_path": "flash:/meshlog.log",
+        "remote_name": "meshlog.log",
+        "target_relative_path": raw.relative_to(paths.site_dir("demo")).as_posix(),
+        "target_kind": "mr_raw",
+        "mesh_auto_import": True,
+    }
+    task_a = service._start_download("demo", descriptor_a)
+    descriptor = service._task_descriptor(task_service.repository("demo"), task_a.task_id)
+    assert descriptor is not None
+    result_a = {
+        "result_kind": "device_file",
+        "device_file_ref": service._device_file_ref(task_a.task_id, descriptor["target_relative_path"], digest),
+        "name": raw.name,
+        "size_bytes": raw.stat().st_size,
+        "sha256": digest,
+        "relative_path": descriptor["target_relative_path"],
+        "device_id": device.device_uuid,
+        "remote_entry_id": descriptor["remote_entry_id"],
+        "target_kind": "mr_raw",
+        "mesh_import_task_id": descriptor["mesh_import_task_id"],
+        "mesh_import_status": "pending",
+    }
+    task_service.record_external_event(task_a.task_id, "finished", {"result": result_a}, site_name="demo")
+    download_complete = callbacks[task_a.task_id]
+    assert callable(download_complete)
+    download_complete(
+        LocalProcessCompletion(
+            job_id=task_a.task_id,
+            task_type="file_management_download",
+            exit_code=0,
+            payload={"result": result_a},
+            cancelled=False,
+            forced=False,
+        )
+    )
+
+    assert task_service.repository("demo").get(task_a.task_id).status is TaskState.COMPLETED
+    child_id = descriptor["mesh_import_task_id"]
+    assert task_service.repository("demo").get(child_id).task_type == "file_management_mesh_import"
+    descriptor_b = {
+        "source_kind": "remote",
+        "batch_id": "batch-b",
+        "device_id": device.device_uuid,
+        "device_name": device.name,
+        "remote_entry_id": "fe1_" + "b" * 32,
+        "remote_path": "flash:/diag.bin",
+        "remote_name": "diag.bin",
+        "target_relative_path": "files/file_manager/downloads/MR-queue/diag.bin",
+        "target_kind": "device_file",
+    }
+    task_b = service._start_download("demo", descriptor_b)
+    assert task_b.task_id != child_id
+    assert task_service.repository("demo").get(task_b.task_id).task_type == "file_management_download"
+    assert events == ["download_a", "mesh_start", "download_b"]
+
+    mesh_complete = callbacks[child_id]
+    assert callable(mesh_complete)
+    events.append("mesh_finish")
+    mark("A_MESH_IMPORT_FINISHED_AT")
+    mesh_complete(
+        LocalProcessCompletion(
+            job_id=child_id,
+            task_type="file_management_mesh_import",
+            exit_code=0,
+            payload={
+                "result": {
+                    "mesh_import_status": "completed",
+                    "mesh_imported_count": 1,
+                    "mesh_parsed_record_count": 7,
+                    "mesh_profile_id": "profile-queue",
+                    "mesh_session_id": "session-queue",
+                    "mesh_source_file_id": 1,
+                }
+            },
+            cancelled=False,
+            forced=False,
+        )
+    )
+    assert timeline["B_DOWNLOAD_STARTED_AT"] < timeline["A_MESH_IMPORT_FINISHED_AT"]
+    completed_a = service.download_task("demo", task_a.task_id)
+    assert completed_a is not None and completed_a.status == TaskState.COMPLETED.value
+    assert completed_a.result is not None and completed_a.result.mesh_import_status == "completed"
+
+
+def test_failed_mesh_import_callback_keeps_download_completed(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    task_service = TaskApplicationService(paths=paths, site_name="demo")
+    parent_id = "download-parent"
+    child_id = "mesh-child"
+    parent_job = BackgroundJob(
+        job_id=parent_id,
+        task_type="file_management_download",
+        params={
+            "site_name": "demo",
+            "task_name": "下载 MESH 日志",
+            "owner": "web_file_management",
+            "task_source": "local",
+        },
+    )
+    task_service.prepare(parent_job)
+    task_service.record_external_event(
+        parent_id,
+        "finished",
+        {
+            "result": {
+                "result_kind": "device_file",
+                "name": "meshlog.log",
+                "target_kind": "mr_raw",
+                "mesh_import_task_id": child_id,
+                "mesh_import_status": "pending",
+            }
+        },
+        site_name="demo",
+    )
+    service = FileManagementApplicationService(paths, task_service=task_service)
+
+    service._on_mesh_import_complete(
+        "demo",
+        parent_id,
+        child_id,
+        LocalProcessCompletion(
+            job_id=child_id,
+            task_type="file_management_mesh_import",
+            exit_code=1,
+            payload={"result": {"mesh_import_status": "failed", "mesh_import_error": "parse failed"}},
+            cancelled=False,
+            forced=False,
+        ),
+    )
+
+    parent = task_service.repository("demo").get(parent_id)
+    assert parent is not None and parent.status is TaskState.COMPLETED
+    assert parent.result is not None
+    assert parent.result["mesh_import_status"] == "failed"
+    assert parent.result["mesh_import_error"] == "parse failed"
+
+
+def test_mesh_import_recovery_restarts_orphan_without_redownloading_raw(tmp_path: Path) -> None:
+    paths, _source = _fixture(tmp_path)
+    raw = paths.mesh_mr_raw_dir("demo", "MR-recovery") / "meshlog.log"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text("recovery raw", encoding="utf-8")
+    digest = file_sha256(raw)
+    task_service = TaskApplicationService(paths=paths, site_name="demo", reconcile_on_start=False)
+    parent_id = "download-recovery-parent"
+    orphan_id = "mesh-recovery-orphan"
+    task_service.prepare(
+        BackgroundJob(
+            job_id=parent_id,
+            task_type="file_management_download",
+            params={
+                "site_name": "demo",
+                "task_name": "下载 MESH 日志",
+                "task_source": "local",
+                "owner": "web_file_management",
+            },
+        )
+    )
+    relative = raw.relative_to(paths.site_dir("demo")).as_posix()
+    task_service.record_external_event(
+        parent_id,
+        "finished",
+        {
+            "result": {
+                "result_kind": "device_file",
+                "name": raw.name,
+                "relative_path": relative,
+                "sha256": digest,
+                "device_id": "device-recovery",
+                "target_kind": "mr_raw",
+                "mesh_import_task_id": orphan_id,
+                "mesh_import_status": "running",
+            }
+        },
+        site_name="demo",
+    )
+    task_service.prepare(
+        BackgroundJob(
+            job_id=orphan_id,
+            task_type="file_management_mesh_import",
+            params={
+                "site_name": "demo",
+                "task_name": "MESH 日志导入",
+                "task_source": "local",
+                "owner": "web_file_management",
+                "parent_download_task_id": parent_id,
+                "target_relative_path": relative,
+                "target_kind": "mr_raw",
+                "expected_sha256": digest,
+            },
+        )
+    )
+    task_service.record_external_event(
+        orphan_id,
+        "state",
+        {"state": TaskState.RUNNING.value, "message": "正在导入 MESH 日志"},
+        site_name="demo",
+    )
+    started: list[BackgroundJob] = []
+
+    class RestartedProcessAdapter:
+        def start_job(self, job: BackgroundJob, *, on_complete=None) -> str:
+            started.append(job)
+            task_service.prepare(job)
+            return job.job_id
+
+        @staticmethod
+        def is_running(_task_id: str) -> bool:
+            return False
+
+    service = FileManagementApplicationService(
+        paths,
+        task_service=task_service,
+        process_adapter=RestartedProcessAdapter(),
+    )
+    service._recover_mesh_imports("demo")
+    service._recover_mesh_imports("demo")
+
+    repository = task_service.repository("demo")
+    parent = repository.get(parent_id)
+    orphan = repository.get(orphan_id)
+    children = repository.list(limit=1000)
+    assert parent is not None and parent.status is TaskState.COMPLETED
+    assert parent.result is not None and parent.result["mesh_import_status"] == "running"
+    assert parent.result["mesh_import_task_id"] != orphan_id
+    assert orphan is not None and orphan.status is TaskState.FAILED
+    assert len(started) == 1
+    assert started[0].task_type == "file_management_mesh_import"
+    assert started[0].job_id == parent.result["mesh_import_task_id"]
+    assert sum(item.task_type == "file_management_mesh_import" for item in children) == 2
+    assert raw.read_text(encoding="utf-8") == "recovery raw"
+
+
+def test_mr_mesh_import_keeps_raw_when_auto_repair_cannot_complete(tmp_path: Path, monkeypatch) -> None:
     paths, _source = _fixture(tmp_path)
     database = Database(paths.site_db_path("demo"))
     database.initialize()
@@ -1510,7 +1864,20 @@ def test_mr_mesh_download_keeps_raw_when_auto_repair_cannot_complete(tmp_path: P
         },
     )
 
-    result = run_file_management_download(JobContext.from_job(job))
+    download_result = run_file_management_download(JobContext.from_job(job))
+    result = run_file_management_mesh_import(
+        JobContext.from_job(
+            BackgroundJob(
+                job_id="mesh-import-rebuild",
+                task_type="file_management_mesh_import",
+                params={
+                    **job.params,
+                    "target_relative_path": relative,
+                    "expected_sha256": download_result["sha256"],
+                },
+            )
+        )
+    )
 
     assert result["mesh_import_status"] == "repair_failed"
     assert result["mesh_import_error_code"] == "MESH_DERIVED_DATA_REPAIR_FAILED"

@@ -1124,6 +1124,7 @@ class FileTransferService:
             raise TransferVerificationFailed(f"File size verification failed: local={local_size}, remote={expected_size}")
         tail_size = min(4096, expected_size)
         if tail_size <= 0:
+            file_sha256(part_path)
             return
         with sftp.open(remote_path, "rb") as remote_file:
             remote_file.seek(expected_size - tail_size)
@@ -1133,6 +1134,9 @@ class FileTransferService:
             local_tail = local_file.read(tail_size)
         if remote_tail != local_tail:
             raise TransferVerificationFailed("Tail verification failed.")
+        # The managed destination is published only after the complete .part has
+        # passed size, tail, and full-content hashing checks.
+        file_sha256(part_path)
 
     def _download_scp(
         self,
@@ -1148,6 +1152,7 @@ class FileTransferService:
             raise RuntimeError("SCP fallback is unavailable because netmiko file_transfer is not installed.") from exc
         connection = None
         target_socket: socket.socket | None = None
+        part_path = local_path.with_name(f"{local_path.name}.part")
         try:
             relay_enabled = self._site_relay_enabled()
             self._log_route_selected(
@@ -1194,12 +1199,18 @@ class FileTransferService:
                 file_transfer(
                     connection,
                     source_file=remote_path,
-                    dest_file=str(local_path),
+                    dest_file=str(part_path),
                     file_system="",
                     direction="get",
                     overwrite_file=True,
                 )
+                if not part_path.is_file() or part_path.stat().st_size <= 0:
+                    raise TransferVerificationFailed("SCP downloaded file is empty or missing.")
+                file_sha256(part_path)
+                part_path.replace(local_path)
         finally:
+            if part_path.exists():
+                part_path.unlink(missing_ok=True)
             if connection is not None:
                 try:
                     connection.disconnect()

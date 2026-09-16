@@ -1,6 +1,7 @@
 import type { FileDownloadTask, RemoteFileEntry } from '../../types/fileManagement'
 
 export const ACTIVE_DOWNLOAD_STATUSES = new Set(['PENDING', 'STARTING', 'RUNNING', 'STOPPING'])
+export const ACTIVE_MESH_IMPORT_STATUSES = new Set(['pending', 'running', 'rebuild_required', 'waiting_repair', 'repairing'])
 
 export function mergeDownloadTasks(current: FileDownloadTask[], incoming: FileDownloadTask[], limit = 100): FileDownloadTask[] {
   const byId = new Map(current.map((task) => [task.task_id, task]))
@@ -12,6 +13,13 @@ export function mergeDownloadTasks(current: FileDownloadTask[], incoming: FileDo
 
 export function activeDownloadTasks(tasks: FileDownloadTask[]): FileDownloadTask[] {
   return tasks.filter((task) => ACTIVE_DOWNLOAD_STATUSES.has(task.status))
+}
+
+export function meshImportTasksNeedRefresh(tasks: FileDownloadTask[]): boolean {
+  return tasks.some((task) => (
+    task.result?.target_kind === 'mr_raw'
+    && ACTIVE_MESH_IMPORT_STATUSES.has(task.result.mesh_import_status)
+  ))
 }
 
 export interface DownloadBatchSummary {

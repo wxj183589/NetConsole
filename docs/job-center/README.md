@@ -52,6 +52,10 @@ MESH 来源维护使用 typed `mesh_analysis_maintenance` Job：`identity_projec
 `file_management_download + web_file_management + local + site/status` 组合过滤，活动任务优先；本批任务
 的 descriptor、hidden、waiting 事件一次查询并聚合，不遍历其他领域历史，也不逐任务读取完整事件流。
 
+车载 MR 的下载完成后处理使用独立的 `file_management_mesh_import` Worker Task。下载任务在文件校验、原子落盘
+后即可进入 `COMPLETED` 并释放下载队列槽位；MESH 子任务通过 `file_management_mesh_import` 外部事件回写父任务
+的 `mesh_import_status`，失败、取消、重试和恢复均不把已完成下载改成 `FAILED`，也不会重新连接设备或再次下载。
+
 ## Worker Process 约束
 
 - 普通任务由 `background_worker.py` 执行，导出由 `export_worker.py` 执行。
@@ -290,8 +294,9 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
   允许根内、文件大小/mtime/指纹未变化后，复用现有 MESH 导入服务逐项登记和解析。单项损坏或解析失败以业务
   结果汇总，不影响其他候选继续处理。
 - 两个 Job 均在目录遍历、哈希和逐文件导入之间检查取消；普通页面进入只查询 catalog，不隐式启动扫描。
-- 设备下载后的精确自动导入仍属于对应文件下载 Job 的后处理阶段。下载终态与 MESH 导入业务状态分离，后处理
-  失败不把已经校验并原子落盘的下载改成失败。
+- 设备下载后的精确自动导入由独立 `file_management_mesh_import` Job 承担。下载终态与 MESH 导入业务状态分离，
+  子任务失败不把已经校验并原子落盘的下载改成失败；父任务仅通过结构化外部事件展示 `pending/running/completed/
+  duplicate/failed/repair_failed`。
 
 ## AC 资源刷新 Job
 

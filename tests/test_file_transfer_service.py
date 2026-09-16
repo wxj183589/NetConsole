@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+import io
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -488,6 +489,39 @@ def test_download_failure_has_stable_code_and_cleans_partial_file(
     assert "device-password" not in events[0][1]
 
 
+def test_download_hashes_complete_part_before_atomic_publish(tmp_path, monkeypatch):
+    payload = b"verified device file"
+    target = tmp_path / "download.bin"
+    target.write_bytes(b"previous file")
+    observed: list[tuple[str, bytes]] = []
+    service = FileTransferService("demo", PathResolver(tmp_path))
+
+    class FakeSftp:
+        @staticmethod
+        def stat(_path):
+            return SimpleNamespace(st_size=len(payload))
+
+        @staticmethod
+        def open(_path, _mode):
+            return io.BytesIO(payload)
+
+    def record_hash(path: Path) -> str:
+        observed.append((path.name, target.read_bytes()))
+        return "verified"
+
+    service._sftp = FakeSftp()
+    service._root_path = "flash:/"
+    service._current_path = "flash:/"
+    monkeypatch.setattr(service_module, "DOWNLOAD_STABLE_WAIT_SECONDS", 0)
+    monkeypatch.setattr(service_module, "file_sha256", record_hash)
+
+    service.download("flash:/download.bin", target)
+
+    assert observed == [("download.bin.part", b"previous file"), ("download.bin", payload)]
+    assert target.read_bytes() == payload
+    assert not target.with_name("download.bin.part").exists()
+
+
 def test_file_management_command_context_allows_only_dir_commands():
     assert command_guard.is_command_allowed("dir flash:/", "file_management")
     assert command_guard.is_command_allowed("dir flash:/diagfile/", "file_management")
@@ -635,6 +669,7 @@ def test_scp_fallback_keeps_site_relay_route_and_canonical_identity(tmp_path, mo
         return FakeConnection()
 
     def fake_file_transfer(_connection, *, dest_file, **_kwargs):
+        captured["dest_file"] = str(dest_file)
         Path(dest_file).write_text("relay-scp", encoding="utf-8")
 
     monkeypatch.setattr(service, "_site_relay_enabled", lambda: True)
@@ -650,6 +685,8 @@ def test_scp_fallback_keeps_site_relay_route_and_canonical_identity(tmp_path, mo
     service._download_scp(target, "flash:/boot.bin", destination, device_uuid="device-1")
 
     assert destination.read_text(encoding="utf-8") == "relay-scp"
+    assert Path(str(captured["dest_file"])).name == "relay-scp.bin.part"
+    assert not destination.with_name("relay-scp.bin.part").exists()
     assert captured["host"] == "target.internal"
     assert captured["port"] == 2222
     assert captured["_netconsole_site_id"] == "stable-site"

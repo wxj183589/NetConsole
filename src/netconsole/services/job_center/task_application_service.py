@@ -1013,6 +1013,11 @@ class TaskApplicationService:
                     "message": str(payload.get("message") or "报告完整性校验完成"),
                 }
             )
+        elif event_type == "file_management_mesh_import":
+            mesh_result = payload.get("result")
+            if isinstance(mesh_result, dict):
+                values["result"] = {**dict(values.get("result") or {}), **dict(mesh_result)}
+            values["message"] = str(payload.get("message") or values["message"])
         elif event_type == "artifact_rejected":
             state = TaskState(str(payload.get("state") or snapshot.status.value))
             result = payload.get("result")
@@ -1093,6 +1098,8 @@ class TaskApplicationService:
         payload: dict[str, Any],
     ) -> frozenset[TaskState] | set[TaskState]:
         if event_type == "artifact_finalized":
+            return {TaskState.COMPLETED}
+        if event_type == "file_management_mesh_import":
             return {TaskState.COMPLETED}
         if event_type == "artifact_rejected":
             return {snapshot.status}

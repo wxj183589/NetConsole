@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -80,6 +81,7 @@ if TYPE_CHECKING:
     from netconsole.application.desktop import DesktopActionService
     from netconsole.services.job_center.job_context import JobContext
     from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
+    from netconsole.services.job_center.local_process_adapter import LocalProcessCompletion
     from netconsole.services.job_center.task_application_service import TaskApplicationService
     from netconsole.services.device_operation_service import DeviceOperationService
 
@@ -228,6 +230,8 @@ class FileManagementApplicationService:
         self._queue_sites: set[str] = {self.site_name}
         self._queue_stop = threading.Event()
         self._queue_thread: threading.Thread | None = None
+        self._mesh_import_lock = threading.RLock()
+        self._mesh_import_dispatches: set[str] = set()
         self._owns_process_adapter = False
         if self.task_service is not None and self.process_adapter is None:
             from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
@@ -241,6 +245,12 @@ class FileManagementApplicationService:
         if self._queue_stop.is_set():
             return
         with self._queue_lock:
+            if (
+                self.task_service is not None
+                and callable(getattr(self.process_adapter, "start_job", None))
+                and callable(getattr(self.task_service, "repository", None))
+            ):
+                self._recover_mesh_imports(self.current_site_id())
             if (
                 self.task_service is not None
                 and callable(getattr(self.process_adapter, "start_job", None))
@@ -304,6 +314,13 @@ class FileManagementApplicationService:
         self.site_name = str(site_name or "demo")
         with self._queue_lock:
             self._queue_sites = {self.site_name}
+            if (
+                not self._queue_stop.is_set()
+                and self.task_service is not None
+                and callable(getattr(self.process_adapter, "start_job", None))
+                and callable(getattr(self.task_service, "repository", None))
+            ):
+                self._recover_mesh_imports(self.site_name)
 
     def current_site_id(self) -> str:
         try:
@@ -903,6 +920,20 @@ class FileManagementApplicationService:
             raise FileManagementError("下载任务当前不可停止")
         return self.download_task(site_id, task.task_id) or task
 
+    def cancel_mesh_import(self, site_id: str, task_id: str) -> bool:
+        if self.task_service is None or self.process_adapter is None:
+            return False
+        site = self._site_id(site_id)
+        snapshot = self.task_service.repository(site).get(str(task_id or ""))
+        if (
+            snapshot is None
+            or snapshot.task_type != "file_management_mesh_import"
+            or snapshot.owner != "web_file_management"
+            or snapshot.status not in ACTIVE_DOWNLOAD_STATES
+        ):
+            return False
+        return bool(self.process_adapter.cancel_job(snapshot.task_id))
+
     def desktop_action(
         self,
         action: str,
@@ -1173,6 +1204,8 @@ class FileManagementApplicationService:
         with self._queue_lock:
             self._queue_sites.add(site)
         task_id = uuid4().hex
+        if descriptor.get("target_kind") == "mr_raw" and bool(descriptor.get("mesh_auto_import")):
+            descriptor = {**descriptor, "mesh_import_task_id": uuid4().hex}
         params = self._job_params(site, descriptor)
         job = BackgroundJob(job_id=task_id, task_type="file_management_download", params=params)
         protected_descriptor = _protect_descriptor(descriptor, site, task_id)
@@ -1183,7 +1216,7 @@ class FileManagementApplicationService:
                 self._persist_waiting_download(site, task_id, params, protected_descriptor)
             else:
                 try:
-                    self.process_adapter.start_job(job)
+                    self._start_process_job(job, on_complete=self._on_download_complete)
                 except Exception as exc:
                     raise RuntimeError("文件下载任务启动失败") from exc
                 self._record_task_metadata(
@@ -1253,7 +1286,7 @@ class FileManagementApplicationService:
         task = self.download_task(site, task_id)
         if task is None:
             raise FileReferenceNotFound("下载任务不存在")
-        mesh_import_failed = task.result is not None and task.result.mesh_import_status == "failed"
+        mesh_import_failed = task.result is not None and task.result.mesh_import_status in {"failed", "repair_failed"}
         if mesh_import_failed and task.result is not None and task.result.target_kind == "mr_raw" and task.result.relative_path:
             return self.retry_mesh_import(site, task_id)
         if task.status not in {TaskState.FAILED.value, TaskState.CANCELLED.value} and not mesh_import_failed:
@@ -1280,21 +1313,36 @@ class FileManagementApplicationService:
             raise FileManagementError("只有已完成下载的 MESH 原始日志可以提交分析")
         if task.result.target_kind != "mr_raw" or not task.result.relative_path:
             raise FileManagementError("该下载结果不是受管 MESH 原始日志")
-        descriptor = self._task_descriptor(self.task_service.repository(site), task_id) if self.task_service else None
-        if descriptor is None:
-            raise FileManagementError("旧下载任务没有可恢复的下载描述")
-        retry = dict(descriptor)
-        retry.update(
-            {
-                "batch_id": str(retry.get("batch_id") or f"fb1_{uuid4().hex}"),
-                "target_relative_path": task.result.relative_path,
-                "target_kind": "mr_raw",
-                "mesh_auto_import": True,
-                "mesh_retry_only": True,
-                "expected_sha256": task.result.sha256,
-            }
-        )
-        return self._start_download(site, retry)
+        descriptor = self._task_descriptor(self.task_service.repository(site), task_id) if self.task_service else {}
+        descriptor = descriptor or {}
+        raw_path = self._safe_download_target(site, task.result.relative_path, "mr_raw")
+        if not raw_path.is_file() or raw_path.is_symlink():
+            raise FileReferenceNotFound("已下载的 MESH 原始日志不存在")
+        digest = file_sha256(raw_path)
+        if task.result.sha256 and digest != task.result.sha256:
+            raise FileManagementError("已下载的 MESH 原始日志校验失败，请重新扫描或重新下载")
+        device_id = str(task.result.device_id or descriptor.get("device_id") or "")
+        if not device_id:
+            raise FileManagementError("MESH 原始日志缺少关联设备，无法重新导入")
+        with self._mesh_import_lock:
+            current = self.task_service.repository(site).get(task_id) if self.task_service is not None else None
+            current_result = dict(current.result or {}) if current is not None else {}
+            child_id = str(current_result.get("mesh_import_task_id") or "")
+            if child_id and self._mesh_import_task_active(site, child_id):
+                return self.download_task(site, task_id) or task
+            child_id = uuid4().hex
+            self._start_mesh_import(
+                site,
+                parent_task_id=task_id,
+                child_task_id=child_id,
+                device_id=device_id,
+                device_name=str(descriptor.get("device_name") or task.device_name or ""),
+                remote_entry_id=str(descriptor.get("remote_entry_id") or task.result.remote_entry_id or ""),
+                relative_path=task.result.relative_path,
+                expected_sha256=digest,
+                display_name=str(task.result.name or descriptor.get("remote_name") or raw_path.name),
+            )
+        return self.download_task(site, task_id) or task
 
     def clear_downloads(self, site_id: str, statuses: Iterable[str]) -> FileDownloadClearDTO:
         if self.task_service is None:
@@ -1315,7 +1363,7 @@ class FileManagementApplicationService:
             if snapshot.status is TaskState.COMPLETED:
                 if TaskState.COMPLETED.value in requested:
                     pass
-                elif str((snapshot.result or {}).get("mesh_import_status") or "") != "failed":
+                elif str((snapshot.result or {}).get("mesh_import_status") or "") not in {"failed", "repair_failed"}:
                     continue
             self._record_task_metadata(site, snapshot.task_id, DOWNLOAD_HIDDEN_EVENT, {"hidden": True})
             cleared += 1
@@ -1368,6 +1416,8 @@ class FileManagementApplicationService:
                         remote_entry_id=str(result.get("remote_entry_id") or ""),
                         target_kind=str(result.get("target_kind") or descriptor.get("target_kind") or ""),
                         mesh_import_status=str(result.get("mesh_import_status") or ""),
+                        mesh_import_task_id=str(result.get("mesh_import_task_id") or ""),
+                        mesh_profile_id=str(result.get("mesh_profile_id") or ""),
                         mesh_imported_count=max(0, int(result.get("mesh_imported_count") or 0)),
                         mesh_duplicate_count=max(0, int(result.get("mesh_duplicate_count") or 0)),
                         mesh_parsed_record_count=max(0, int(result.get("mesh_parsed_record_count") or 0)),
@@ -1589,7 +1639,12 @@ class FileManagementApplicationService:
         if not output_name:
             raise FileManagementError("下载结果文件名无效")
         context.progress("file_verify", 1, 1, f"已校验 {remote_file.name}")
-        mesh_import = self._auto_import_mesh(context, site, device, output, target_kind)
+        mesh_import: dict[str, object] = {}
+        if target_kind == "mr_raw" and bool(context.params.get("mesh_auto_import")):
+            mesh_import = {
+                "mesh_import_task_id": str(context.params.get("mesh_import_task_id") or uuid4().hex),
+                "mesh_import_status": "pending",
+            }
         return {
             "result_kind": "device_file",
             "name": output_name,
@@ -1663,6 +1718,7 @@ class FileManagementApplicationService:
                         "mesh_import_status": "repair_failed",
                         "mesh_import_error_code": "MESH_DERIVED_DATA_REPAIR_FAILED",
                         "mesh_import_error": "MESH 分析数据库自动修复失败，原始日志已保留，可重试自动修复。",
+                        "mesh_profile_id": profile.mr_id,
                     }
             source_results = list(getattr(result, "source_results", []) or [])
             catalog = MeshCatalogRepository(context.paths.mesh_catalog_path(site))
@@ -1696,6 +1752,7 @@ class FileManagementApplicationService:
                 "mesh_imported_count": result.imported_count,
                 "mesh_duplicate_count": result.duplicate_count,
                 "mesh_parsed_record_count": result.parsed_record_count,
+                "mesh_profile_id": profile.mr_id,
                 "mesh_session_id": str(
                     source_result.get("session_id") or source_result.get("existing_session_id") or ""
                 ),
@@ -1716,6 +1773,327 @@ class FileManagementApplicationService:
                 "mesh_import_status": "failed",
                 "mesh_import_error": "MESH 日志格式不受支持或解析失败",
             }
+
+    def _start_process_job(
+        self,
+        job: BackgroundJob,
+        *,
+        on_complete: Callable[[LocalProcessCompletion], None] | None = None,
+    ) -> str:
+        """Start a local job while keeping small test adapters source-compatible."""
+
+        if self.process_adapter is None:
+            raise RuntimeError("文件任务宿主未接线")
+        start_job = self.process_adapter.start_job
+        if on_complete is None:
+            return start_job(job)
+        try:
+            parameters = inspect.signature(start_job).parameters.values()
+            accepts_callback = any(
+                parameter.name == "on_complete" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            accepts_callback = False
+        if accepts_callback:
+            return start_job(job, on_complete=on_complete)
+        return start_job(job)
+
+    def _on_download_complete(self, completion: LocalProcessCompletion) -> None:
+        """Submit MESH consumption only after the download task reached a terminal state."""
+
+        if completion.task_type != "file_management_download" or self.task_service is None:
+            return
+        try:
+            snapshot = self.task_service.get_task(completion.job_id)
+            if snapshot is None or snapshot.status is not TaskState.COMPLETED:
+                return
+            result = dict(snapshot.result or {})
+            if result.get("target_kind") != "mr_raw" or result.get("mesh_import_status") != "pending":
+                return
+            child_id = str(result.get("mesh_import_task_id") or uuid4().hex)
+            descriptor = self._task_descriptor(self.task_service.repository(snapshot.site_name), completion.job_id) or {}
+            device_id = str(result.get("device_id") or descriptor.get("device_id") or "")
+            if not device_id:
+                self._record_mesh_import_result(
+                    snapshot.site_name,
+                    completion.job_id,
+                    {"mesh_import_task_id": child_id, "mesh_import_status": "failed", "mesh_import_error": "下载结果缺少关联设备"},
+                    "MESH 导入任务提交失败",
+                )
+                return
+            with self._mesh_import_lock:
+                if self._mesh_import_task_active(snapshot.site_name, child_id):
+                    return
+                self._start_mesh_import(
+                    snapshot.site_name,
+                    parent_task_id=completion.job_id,
+                    child_task_id=child_id,
+                    device_id=device_id,
+                    device_name=str(descriptor.get("device_name") or ""),
+                    remote_entry_id=str(result.get("remote_entry_id") or descriptor.get("remote_entry_id") or ""),
+                    relative_path=str(result.get("relative_path") or descriptor.get("target_relative_path") or ""),
+                    expected_sha256=str(result.get("sha256") or ""),
+                    display_name=str(result.get("name") or descriptor.get("remote_name") or "MESH 日志"),
+                )
+        except Exception as exc:
+            app_logger.log_error(
+                "MESH_DOWNLOAD_IMPORT_SUBMIT_FAILED",
+                f"task={completion.job_id} error={type(exc).__name__}: {exc}",
+            )
+            try:
+                snapshot = self.task_service.get_task(completion.job_id)
+                if snapshot is not None and snapshot.status is TaskState.COMPLETED:
+                    self._record_mesh_import_result(
+                        snapshot.site_name,
+                        completion.job_id,
+                        {
+                            "mesh_import_task_id": str((snapshot.result or {}).get("mesh_import_task_id") or ""),
+                            "mesh_import_status": "failed",
+                            "mesh_import_error": "MESH 导入任务提交失败，原始日志已保留，可重试。",
+                        },
+                        "MESH 导入任务提交失败",
+                    )
+            except Exception:
+                return
+
+    def _start_mesh_import(
+        self,
+        site: str,
+        *,
+        parent_task_id: str,
+        child_task_id: str,
+        device_id: str,
+        device_name: str,
+        remote_entry_id: str,
+        relative_path: str,
+        expected_sha256: str,
+        display_name: str,
+    ) -> str:
+        if self.task_service is None or self.process_adapter is None:
+            raise RuntimeError("MESH 导入任务宿主未接线")
+        if self._mesh_import_task_active(site, child_task_id):
+            return child_task_id
+        params = {
+            "site_name": site,
+            "task_name": f"MESH 日志导入 - {display_name or '文件'}",
+            "task_source": "local",
+            "file_source": "device_download",
+            "owner": "web_file_management",
+            "app_root": str(self.paths.app_root),
+            "data_root": str(self.paths.data_root),
+            "parent_download_task_id": parent_task_id,
+            "device_id": device_id,
+            "device_name": device_name,
+            "remote_entry_id": remote_entry_id,
+            "target_relative_path": relative_path,
+            "target_kind": "mr_raw",
+            "expected_sha256": expected_sha256,
+            "mesh_auto_import": True,
+        }
+        self._record_mesh_import_result(
+            site,
+            parent_task_id,
+            {"mesh_import_task_id": child_task_id, "mesh_import_status": "running"},
+            "正在导入 MESH 日志",
+        )
+        job = BackgroundJob(job_id=child_task_id, task_type="file_management_mesh_import", params=params)
+        try:
+            self._start_process_job(
+                job,
+                on_complete=lambda completion: self._on_mesh_import_complete(
+                    site,
+                    parent_task_id,
+                    child_task_id,
+                    completion,
+                ),
+            )
+            self._mesh_import_dispatches.add(child_task_id)
+        except Exception:
+            self._record_mesh_import_result(
+                site,
+                parent_task_id,
+                {
+                    "mesh_import_task_id": child_task_id,
+                    "mesh_import_status": "failed",
+                    "mesh_import_error": "MESH 导入任务启动失败，原始日志已保留，可重试。",
+                },
+                "MESH 导入任务启动失败",
+            )
+            raise
+        return child_task_id
+
+    def _on_mesh_import_complete(
+        self,
+        site: str,
+        parent_task_id: str,
+        child_task_id: str,
+        completion: LocalProcessCompletion,
+    ) -> None:
+        self._mesh_import_dispatches.discard(child_task_id)
+        result = {}
+        if completion.payload is not None and isinstance(completion.payload.get("result"), dict):
+            result = dict(completion.payload["result"])
+        status = str(result.get("mesh_import_status") or "")
+        error = str(result.get("mesh_import_error") or "")
+        if completion.cancelled or completion.exit_code not in (0, None) or not status:
+            status = "failed"
+            error = error or "MESH 导入任务未完成，原始日志已保留，可重试。"
+        patch = {
+            "mesh_import_task_id": child_task_id,
+            "mesh_import_status": status,
+            "mesh_imported_count": max(0, int(result.get("mesh_imported_count") or 0)),
+            "mesh_duplicate_count": max(0, int(result.get("mesh_duplicate_count") or 0)),
+            "mesh_parsed_record_count": max(0, int(result.get("mesh_parsed_record_count") or 0)),
+            "mesh_import_error_code": str(result.get("mesh_import_error_code") or ""),
+            "mesh_import_error": error,
+            "mesh_profile_id": str(result.get("mesh_profile_id") or ""),
+            "mesh_session_id": str(result.get("mesh_session_id") or ""),
+            "mesh_source_file_id": result.get("mesh_source_file_id"),
+        }
+        message = {
+            "completed": "MESH 日志导入完成",
+            "duplicate": "MESH 日志已存在",
+            "repair_failed": "MESH 分析数据库自动修复失败",
+            "failed": "MESH 自动导入失败",
+        }.get(status, "MESH 日志导入完成")
+        self._record_mesh_import_result(site, parent_task_id, patch, message)
+
+    def _record_mesh_import_result(
+        self,
+        site: str,
+        parent_task_id: str,
+        result: dict[str, object],
+        message: str,
+    ) -> None:
+        if self.task_service is None:
+            return
+        self.task_service.record_external_event(
+            parent_task_id,
+            "file_management_mesh_import",
+            {"result": dict(result), "message": message},
+            source="file_management",
+            site_name=site,
+        )
+
+    def _mesh_import_task_active(self, site: str, task_id: str) -> bool:
+        if self.task_service is None or not task_id:
+            return False
+        snapshot = self.task_service.repository(site).get(task_id)
+        return snapshot is not None and snapshot.status in ACTIVE_DOWNLOAD_STATES
+
+    def _mesh_import_process_running(self, task_id: str) -> bool | None:
+        """Return worker liveness when the host can prove it, else stay conservative."""
+
+        checker = getattr(self.process_adapter, "is_running", None)
+        if not callable(checker):
+            return None
+        try:
+            return bool(checker(task_id))
+        except Exception:
+            # A liveness probe must not turn a transient host error into a
+            # duplicate import dispatch.
+            return None
+
+    def _mesh_import_child_was_orphaned(self, repository, snapshot) -> bool:
+        if snapshot.status is not TaskState.FAILED:
+            return False
+        if "未发现仍存活的本地任务宿主" in str(snapshot.error_message or ""):
+            return True
+        try:
+            return any(
+                str(event.get("source") or "") == "recovery"
+                and str(event.get("type") or "") == "error"
+                for event in repository.list_events(snapshot.task_id, limit=50)
+            )
+        except Exception:
+            return False
+
+    def _mark_orphaned_mesh_import_failed(self, site: str, task_id: str) -> bool:
+        if self.task_service is None:
+            return False
+        try:
+            snapshot = self.task_service.record_external_event(
+                task_id,
+                "error",
+                {
+                    "message": "MESH 导入 Worker 已退出，正在重新调度",
+                    "error": "MESH 导入 Worker 已退出，原始日志已保留",
+                    "cancelled": False,
+                },
+                source="recovery",
+                site_name=site,
+            )
+            return snapshot.status is TaskState.FAILED
+        except Exception as exc:
+            app_logger.log_error(
+                "MESH_DOWNLOAD_IMPORT_ORPHAN_CLOSE_FAILED",
+                f"task={task_id} error={type(exc).__name__}: {exc}",
+            )
+            return False
+
+    def _recover_mesh_imports(self, site: str) -> None:
+        if (
+            self.task_service is None
+            or self.process_adapter is None
+            or not callable(getattr(self.task_service, "repository", None))
+        ):
+            return
+        repository = self.task_service.repository(site)
+        for snapshot in repository.list(statuses={TaskState.COMPLETED}, limit=1000):
+            if not self._is_download_snapshot(snapshot):
+                continue
+            result = dict(snapshot.result or {})
+            if result.get("target_kind") != "mr_raw" or str(result.get("mesh_import_status") or "") not in {"pending", "running"}:
+                continue
+            with self._mesh_import_lock:
+                current_parent = repository.get(snapshot.task_id)
+                if current_parent is None or current_parent.status is not TaskState.COMPLETED:
+                    continue
+                current_result = dict(current_parent.result or {})
+                if str(current_result.get("mesh_import_status") or "") not in {"pending", "running"}:
+                    continue
+                child_id = str(current_result.get("mesh_import_task_id") or "")
+                child = repository.get(child_id) if child_id else None
+                if child is not None and child.status in TERMINAL_DOWNLOAD_STATES:
+                    if not self._mesh_import_child_was_orphaned(repository, child):
+                        self._on_mesh_import_complete(
+                            site,
+                            current_parent.task_id,
+                            child_id,
+                            _completion_from_snapshot(child),
+                        )
+                        continue
+                    if not self._mark_orphaned_mesh_import_failed(site, child_id):
+                        continue
+                    child_id = ""
+                elif child is not None:
+                    if child_id in self._mesh_import_dispatches:
+                        continue
+                    process_running = self._mesh_import_process_running(child_id)
+                    if process_running is not False:
+                        continue
+                    if not self._mark_orphaned_mesh_import_failed(site, child_id):
+                        continue
+                    child_id = ""
+                descriptor = self._task_descriptor(repository, current_parent.task_id) or {}
+                try:
+                    self._start_mesh_import(
+                        site,
+                        parent_task_id=current_parent.task_id,
+                        child_task_id=child_id or uuid4().hex,
+                        device_id=str(current_result.get("device_id") or descriptor.get("device_id") or ""),
+                        device_name=str(descriptor.get("device_name") or ""),
+                        remote_entry_id=str(current_result.get("remote_entry_id") or descriptor.get("remote_entry_id") or ""),
+                        relative_path=str(current_result.get("relative_path") or descriptor.get("target_relative_path") or ""),
+                        expected_sha256=str(current_result.get("sha256") or ""),
+                        display_name=str(current_result.get("name") or descriptor.get("remote_name") or "MESH 日志"),
+                    )
+                except Exception as exc:
+                    app_logger.log_error(
+                        "MESH_DOWNLOAD_IMPORT_RECOVERY_FAILED",
+                        f"task={current_parent.task_id} error={type(exc).__name__}: {exc}",
+                    )
 
     def _resolve_device(self, site: str, device_id: str) -> Device:
         value = str(device_id or "").strip()
@@ -2127,7 +2505,7 @@ class FileManagementApplicationService:
                 params=self._job_params(site, descriptor),
             )
             try:
-                self.process_adapter.start_job(job)
+                self._start_process_job(job, on_complete=self._on_download_complete)
             except Exception:
                 self.task_service.record_external_event(
                     snapshot.task_id,
@@ -2408,6 +2786,26 @@ def run_file_management_download(context: JobContext) -> dict[str, object]:
     return service.validate_for_download(context)
 
 
+def run_file_management_mesh_import(context: JobContext) -> dict[str, object]:
+    service = FileManagementApplicationService(context.paths)
+    site = service._site_id(str(context.params.get("site_name") or ""))
+    return service._import_existing_mesh(context, site)
+
+
+def _completion_from_snapshot(snapshot: TaskSnapshot) -> LocalProcessCompletion:
+    from netconsole.services.job_center.local_process_adapter import LocalProcessCompletion
+
+    status = snapshot.status
+    return LocalProcessCompletion(
+        job_id=snapshot.task_id,
+        task_type=snapshot.task_type,
+        exit_code=0 if status is TaskState.COMPLETED else 1,
+        payload={"result": dict(snapshot.result or {})},
+        cancelled=status is TaskState.CANCELLED,
+        forced=False,
+    )
+
+
 __all__ = [
     "FILE_CATEGORIES",
     "FileManagementApplicationService",
@@ -2417,4 +2815,5 @@ __all__ = [
     "REMOTE_FILES_UNAVAILABLE",
     "classify_file",
     "run_file_management_download",
+    "run_file_management_mesh_import",
 ]
