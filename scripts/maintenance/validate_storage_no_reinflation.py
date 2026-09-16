@@ -13,10 +13,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Sequence
 
+from netconsole.core.runtime_environment import test_data_root_base
 from netconsole.services.database_footprint_maintenance import assert_development_path
 
 
-TEST_DATA_ROOT = Path("D:/study/NetConsole-Workspace/test-data/NetConsole")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+TEST_DATA_ROOT = test_data_root_base(repository_root=REPOSITORY_ROOT)
 REPORT_NAME = "STORAGE_NO_REINFLATION.json"
 
 
@@ -439,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-root",
         required=True,
         type=Path,
-        help="New isolated directory below D:/study/NetConsole-Workspace/test-data/NetConsole",
+        help=f"New isolated directory below {TEST_DATA_ROOT}",
     )
     parser.add_argument(
         "--python",

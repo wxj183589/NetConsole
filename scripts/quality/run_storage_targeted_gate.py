@@ -13,9 +13,11 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from netconsole.core.runtime_environment import test_data_root_base
+
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TEST_ROOT = Path("D:/study/NetConsole-Workspace/test-data/NetConsole")
+DEFAULT_TEST_ROOT = test_data_root_base(repository_root=ROOT)
 DEFAULT_DEVELOPMENT_ROOT = Path("D:/study")
 TARGETS = (
     "tests/test_database_footprint_maintenance.py",

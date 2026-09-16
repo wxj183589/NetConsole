@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -25,7 +26,12 @@ func writeTool(t *testing.T, path string) {
 
 func testAgentDataRoot(t *testing.T) string {
 	t.Helper()
-	base := `D:\study\NetConsole-Workspace\test-data\NetConsole`
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", ".."))
+	base := filepath.Join(filepath.Dir(repositoryRoot), "test-data", "NetConsole")
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		t.Fatal(err)
 	}

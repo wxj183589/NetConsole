@@ -19,6 +19,7 @@ from scripts.quality.local_gate import (
     _workspace_command,
     execute_suites,
     isolated_test_environment,
+    remove_owned_test_root,
     resolve_revisions,
     required_suites,
     run_gate,
@@ -223,6 +224,14 @@ def test_isolation_rejects_test_base_itself(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unique child"):
         with isolated_test_environment(".", base_root=tmp_path):
             pass
+
+
+def test_cleanup_rejects_the_canonical_test_base(tmp_path: Path) -> None:
+    base = tmp_path / "NetConsoleTestData"
+    base.mkdir()
+
+    with pytest.raises(ValueError, match="owned child"):
+        remove_owned_test_root(base, base_root=base)
 
 
 def test_path_override_base_head_exit_code_and_json_report(tmp_path: Path) -> None:

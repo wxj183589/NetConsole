@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 
 from netconsole.core.version import APP_VERSION
+from netconsole.core.runtime_environment import test_data_root_base as resolve_test_data_root_base
 from scripts.build import build_edition_installers, build_installer
 
 
@@ -162,7 +163,7 @@ def test_nsis_location_validation_accepts_missing_paths_without_creating_them(
         pytest.skip("需要 Windows D: 固定磁盘执行 NSIS 规范化行为测试")
 
     makensis, plugin_dir = _find_nsis_runtime()
-    target_parent = Path("D:/study/NetConsole-Workspace/test-data/NetConsole") / f"nsis-normalize-{uuid4().hex}"
+    target_parent = resolve_test_data_root_base() / f"nsis-normalize-{uuid4().hex}"
     missing = target_parent / "missing"
     chinese_missing = target_parent / "网络设备采集数据"
     trailing_missing = f"{missing}\\"

@@ -53,7 +53,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - Windows 安装包的程序目录只保存 EXE、DLL、Python/Electron 运行时、前端资源、内置工具和只读默认配置；SQLite、局点文件、MESH 日志、报告、缓存和用户配置必须位于独立业务数据根。
 - 正式包、安装态和正式运行数据根的唯一持久化指针是安装器写入的 `HKLM\Software\NetConsole\DataRoot`，当前为 `D:\NetConsoleData`；源码/Electron 的真实开发验收显式使用长期 Authority `D:\NetConsoleData-dev`，不得把两者混同。`NETCONSOLE_DATA_ROOT` 只可作为受控显式覆盖，未配置持久根时停止启动，绝不回退 LocalAppData、用户目录、仓库、安装目录或系统 Temp。
 - 安装器必须拒绝系统盘、网络/可移动盘、程序目录、用户 Profile 与 NetConsole 必需路径发生真实冲突的目录；允许含无冲突普通文件的目录并保留原内容。升级和修复默认沿用既有根。更改根必须先完成受控迁移，再更新指针；普通卸载保留业务数据和指针。
-- 自动化测试必须显式 `RuntimeMode.TEST` 和 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>`，不得读取机器级指针或真实根。
+- 自动化测试必须显式 `RuntimeMode.TEST`，并将唯一测试根放在 `<repository-parent>\test-data\NetConsole\<run-id>`；不得读取机器级指针或真实根。
 
 ## 构建产物与正式发布目录
 

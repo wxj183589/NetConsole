@@ -56,7 +56,7 @@ Task 结果布局 benchmark 只向项目 Workspace 的按需诊断目录写报�
   --output-dir "D:\study\NetConsole-Workspace\diagnostic\tasks-db-governance\<run-id>"
 ```
 
-清理测试只在 `D:\study\NetConsole-Workspace\test-data\NetConsole\<run-id>` 构造目标，禁止对真实 `D:\NetConsoleData`、历史 `data/`、`.local/` 或 LocalAppData 目录做破坏性测试。
+清理测试只在 `<repository-parent>\test-data\NetConsole\<run-id>` 构造目标，禁止对真实 `D:\NetConsoleData`、历史 `data/`、`.local/` 或 LocalAppData 目录做破坏性测试。
 
 ## 修改规则
 

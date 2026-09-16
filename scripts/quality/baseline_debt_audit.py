@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
 
 from scripts.architecture.cli import CHECKS
 from scripts.architecture.guard_core import Finding, ROOT, apply_exceptions, load_exceptions
+from netconsole.core.runtime_environment import test_data_root_base
 
 
 MANIFEST_PATH = ROOT / "config" / "ci" / "baseline_failures.yaml"
@@ -245,13 +246,13 @@ def _compare(
 
 
 def _test_root() -> Path:
-    test_base = (ROOT.parent / "test-data" / "NetConsole").resolve()
+    test_base = test_data_root_base(repository_root=ROOT)
     configured = os.environ.get("NETCONSOLE_DATA_ROOT", "").strip()
     root = Path(configured).resolve() if configured else test_base / f"baseline-debt-{uuid.uuid4().hex}"
     production = Path(r"D:\NetConsoleData").resolve()
     if root == production or not root.is_relative_to(test_base):
         raise BaselineAuditError(
-            "NETCONSOLE_DATA_ROOT must be an isolated child of D:\\study\\NetConsole-Workspace\\test-data\\NetConsole"
+            f"NETCONSOLE_DATA_ROOT must be an isolated child of {test_base}"
         )
     root.mkdir(parents=True, exist_ok=True)
     return root

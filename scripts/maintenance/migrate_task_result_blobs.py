@@ -22,10 +22,12 @@ from netconsole.repositories.task_result_blob_repository import (
     read_blob,
     verify_task_result_authority,
 )
+from netconsole.core.runtime_environment import test_data_root_base
 
 
 DEV_ROOT = Path(r"D:\NetConsoleData-dev")
-ISOLATED_DEV_ROOT_PARENT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+ISOLATED_DEV_ROOT_PARENT = test_data_root_base(repository_root=REPOSITORY_ROOT)
 SCHEMA_COLUMNS = {
     "content_sha256": "TEXT NOT NULL DEFAULT ''",
     "blob_codec": "TEXT NOT NULL DEFAULT ''",
