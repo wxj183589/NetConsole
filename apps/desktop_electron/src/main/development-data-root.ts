@@ -16,7 +16,11 @@ export interface DesktopStorageContext {
   tempRoot: string
 }
 
-export const WINDOWS_TEST_DATA_ROOT = 'D:\\study\\NetConsole-Workspace\\test-data\\NetConsole'
+const configuredProjectRoot = process.env.NETCONSOLE_PROJECT_ROOT?.trim()
+const projectRoot = configuredProjectRoot
+  ? resolve(configuredProjectRoot)
+  : resolve(process.cwd(), '..', '..')
+export const WINDOWS_TEST_DATA_ROOT = resolve(projectRoot, '..', 'test-data', 'NetConsole')
 
 export function resolveDesktopStorageContext(
   environment: NodeJS.ProcessEnv = process.env,

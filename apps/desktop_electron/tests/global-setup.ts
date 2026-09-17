@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 export default function setup(): () => void {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
   const testBase = resolve(repositoryRoot, '..', 'test-data', 'NetConsole')
+  process.env.NETCONSOLE_PROJECT_ROOT = repositoryRoot
   mkdirSync(testBase, { recursive: true })
   const testRoot = mkdtempSync(join(testBase, 'electron-vitest-'))
   process.env.TEMP = testRoot
