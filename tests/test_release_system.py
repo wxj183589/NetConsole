@@ -1211,6 +1211,7 @@ def test_packaged_smokes_use_a_unique_isolated_data_root(tmp_path, monkeypatch) 
     assert all(root.is_relative_to(smoke_base) and root != smoke_base for root in roots)
     assert all(env["NETCONSOLE_RUNTIME_MODE"] == "test" for env in calls)
     assert all(env["NETCONSOLE_STORAGE_MODE"] == "isolated_test" for env in calls)
+    assert all(env["NETCONSOLE_PROJECT_ROOT"] == str(build_release.REPOSITORY_ROOT) for env in calls)
     assert all(not root.exists() for root in roots)
 
 

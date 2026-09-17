@@ -540,6 +540,7 @@ def _smoke_data_root_base() -> Path:
 
 def _smoke_environment(data_root: Path) -> dict[str, str]:
     env = os.environ.copy()
+    env["NETCONSOLE_PROJECT_ROOT"] = str(REPOSITORY_ROOT)
     env["NETCONSOLE_DATA_ROOT"] = str(data_root)
     env["NETCONSOLE_RUNTIME_MODE"] = "test"
     env["NETCONSOLE_STORAGE_MODE"] = "isolated_test"

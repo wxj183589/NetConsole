@@ -86,8 +86,20 @@ def test_data_root_base(repository_root: Path | None = None) -> Path:
     Test data belongs beside the repository checkout so the same rule works on
     a developer machine and on a portable CI runner. Packaged production
     startup never calls this resolver because it uses a non-test runtime mode.
+    Frozen test smoke may explicitly pass the source checkout through
+    ``NETCONSOLE_PROJECT_ROOT``; the override is ignored outside test mode so
+    a packaged production process cannot derive a test root from its cwd.
     """
 
+    if repository_root is None:
+        configured_project_root = str(
+            os.environ.get("NETCONSOLE_PROJECT_ROOT") or ""
+        ).strip()
+        configured_runtime_mode = str(
+            os.environ.get("NETCONSOLE_RUNTIME_MODE") or ""
+        ).strip().casefold()
+        if configured_project_root and configured_runtime_mode == RuntimeMode.TEST.value:
+            repository_root = Path(configured_project_root)
     return (repository_workspace_root(repository_root) / "test-data" / "NetConsole").resolve()
 
 

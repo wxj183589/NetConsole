@@ -165,6 +165,36 @@ def test_test_data_root_base_is_derived_from_repository_parent(tmp_path: Path) -
     ).resolve()
 
 
+def test_test_data_root_base_uses_explicit_project_root_for_frozen_test_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository_root = tmp_path / "repo"
+    monkeypatch.setenv("NETCONSOLE_PROJECT_ROOT", str(repository_root))
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", RuntimeMode.TEST.value)
+    monkeypatch.setattr(
+        runtime_environment,
+        "_source_project_root",
+        lambda: Path(r"D:\\frozen\\NetConsoleBackend"),
+    )
+
+    assert runtime_environment.test_data_root_base() == (
+        tmp_path / "test-data" / "NetConsole"
+    ).resolve()
+
+
+def test_test_data_root_base_ignores_project_root_outside_test_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frozen_root = tmp_path / "frozen" / "NetConsoleBackend"
+    monkeypatch.setenv("NETCONSOLE_PROJECT_ROOT", str(tmp_path / "repo"))
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", RuntimeMode.DESKTOP.value)
+    monkeypatch.setattr(runtime_environment, "_source_project_root", lambda: frozen_root)
+
+    assert runtime_environment.test_data_root_base() == (
+        frozen_root.parent / "test-data" / "NetConsole"
+    ).resolve()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows test-root contract")
 def test_test_mode_accepts_a_strict_child_of_the_canonical_base(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
