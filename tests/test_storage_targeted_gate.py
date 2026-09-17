@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.quality.run_storage_targeted_gate import (
+    DEFAULT_DEVELOPMENT_ROOT,
     TARGETS,
     TargetedGateError,
     run_storage_targeted_gate,
@@ -45,11 +46,11 @@ def test_targeted_gate_binds_head_and_cleans_isolated_root(tmp_path: Path) -> No
 def test_targeted_gate_rejects_test_base_outside_development_root(
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(TargetedGateError, match="test base.*D:/study"):
+    with pytest.raises(TargetedGateError, match="test base.*below"):
         run_storage_targeted_gate(
             run_id="outside-test-base",
             output_path=tmp_path / "reports" / "targeted.json",
-            development_root=Path("D:/study"),
+            development_root=DEFAULT_DEVELOPMENT_ROOT,
             test_base_root=Path("C:/NetConsole-targeted-unsafe"),
         )
 
@@ -64,10 +65,10 @@ def test_targeted_gate_rejects_reparse_test_base_outside_development_root(
     except OSError as exc:
         pytest.skip(f"directory symlink unavailable: {exc}")
 
-    with pytest.raises(TargetedGateError, match="test base.*D:/study"):
+    with pytest.raises(TargetedGateError, match="test base.*below"):
         run_storage_targeted_gate(
             run_id="reparse-test-base",
             output_path=tmp_path / "reports" / "targeted.json",
-            development_root=Path("D:/study"),
+            development_root=DEFAULT_DEVELOPMENT_ROOT,
             test_base_root=link,
         )

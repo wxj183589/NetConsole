@@ -13,12 +13,16 @@ from pathlib import Path
 from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import test_data_root_base
 from netconsole.repositories.mesh_mr_repository import MeshMrRepository, SCHEMA_VERSION
 from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.rail_transit.mesh_analysis_query_service import (
     MeshAnalysisQueryService,
 )
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 class CountingQueryService(MeshAnalysisQueryService):
@@ -373,7 +377,7 @@ def main() -> int:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole") / f"mesh-perf-{uuid4().hex}",
+        default=test_data_root_base(repository_root=REPOSITORY_ROOT) / f"mesh-perf-{uuid4().hex}",
     )
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()

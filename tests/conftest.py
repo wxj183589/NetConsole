@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import os
 import shutil
+import stat
 import tempfile
 import uuid
 import atexit
@@ -9,12 +11,14 @@ from pathlib import Path
 
 import pytest
 
+from netconsole.core.runtime_environment import test_data_root_base
+
 # conftest 会在测试模块收集前加载。测试根固定在仓库工作区父目录的
 # test-data/NetConsole 下，并在会话结束时清理。本机 canonical checkout
-# 仍解析为 D:\study\NetConsole-Workspace\test-data\NetConsole；GitHub Actions
+# 仍解析为当前源码检出目录父级的 test-data/NetConsole；GitHub Actions
 # 则解析到 runner checkout 对应的隔离工作区，不依赖固定盘符或机器路径。
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-_TEST_BASE_ROOT = (_REPOSITORY_ROOT.parent / "test-data" / "NetConsole").resolve()
+_TEST_BASE_ROOT = test_data_root_base(repository_root=_REPOSITORY_ROOT)
 _TEST_RUN_ROOT = _TEST_BASE_ROOT / f"pytest-{uuid.uuid4().hex}"
 _TEST_BASETEMP_ROOT: Path | None = None
 _TEST_RUN_ROOT.mkdir(parents=True, exist_ok=False)
@@ -26,6 +30,10 @@ os.environ["NETCONSOLE_DATA_ROOT"] = str(_TEST_RUN_ROOT / "session")
 
 
 def _cleanup_test_run_root() -> None:
+    # Tests may retain a short-lived SQLite connection through a local object
+    # after the test body returns. Collect those objects before fail-closed
+    # cleanup so a Windows file lock is not mistaken for an owned-path escape.
+    gc.collect()
     if os.environ.get("NETCONSOLE_PRESERVE_TEST_BASETEMP") != "1":
         _cleanup_owned_test_path(_TEST_BASETEMP_ROOT)
     _cleanup_owned_test_path(_TEST_RUN_ROOT)
@@ -34,10 +42,27 @@ def _cleanup_test_run_root() -> None:
 def _cleanup_owned_test_path(target: Path | None) -> None:
     if target is None:
         return
-    target = target.resolve()
+    candidate = Path(target)
+    if candidate.is_symlink():
+        raise RuntimeError(f"refusing to clean symlinked pytest path: {candidate}")
+    target = candidate.resolve()
     base = _TEST_BASE_ROOT.resolve()
-    if target != base and target.is_relative_to(base):
-        shutil.rmtree(target, ignore_errors=True)
+    if target == base or not target.is_relative_to(base):
+        raise RuntimeError(f"pytest cleanup path escapes the owned test root: {target}")
+    if not target.exists():
+        return
+    if not target.is_dir():
+        raise RuntimeError(f"pytest cleanup target is not a directory: {target}")
+
+    def clear_readonly_and_retry(function, path, error):
+        if not isinstance(error, PermissionError):
+            raise error
+        os.chmod(path, stat.S_IWRITE)
+        function(path)
+
+    shutil.rmtree(target, onexc=clear_readonly_and_retry)
+    if target.exists():
+        raise RuntimeError(f"pytest cleanup did not remove its owned path: {target}")
 
 
 atexit.register(_cleanup_test_run_root)

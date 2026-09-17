@@ -13,10 +13,15 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from netconsole.core.runtime_environment import (
+    repository_workspace_root,
+    test_data_root_base,
+)
+
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_TEST_ROOT = Path("D:/study/NetConsole-Workspace/test-data/NetConsole")
-DEFAULT_DEVELOPMENT_ROOT = Path("D:/study")
+DEFAULT_TEST_ROOT = test_data_root_base(repository_root=ROOT)
+DEFAULT_DEVELOPMENT_ROOT = repository_workspace_root(repository_root=ROOT)
 TARGETS = (
     "tests/test_database_footprint_maintenance.py",
     "tests/test_task_repository_storage_governance.py",
@@ -52,19 +57,23 @@ def run_storage_targeted_gate(
     runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
     root = repo_root.resolve(strict=True)
-    development = development_root.resolve(strict=True)
+    development = development_root.resolve()
     policy_root = _development_policy_root(development)
     output = output_path.resolve()
-    if output == development or not output.is_relative_to(development):
-        raise TargetedGateError("targeted gate output must remain below D:/study")
-    if output.exists():
-        raise TargetedGateError(f"refusing to overwrite targeted gate evidence: {output}")
     safe_id = str(run_id).strip()
     if not safe_id or Path(safe_id).name != safe_id:
         raise TargetedGateError("run_id must be one safe path component")
     base = test_base_root.resolve()
     if base == policy_root or not base.is_relative_to(policy_root):
-        raise TargetedGateError("targeted gate test base must remain below D:/study")
+        raise TargetedGateError(
+            f"targeted gate test base must remain below {policy_root}"
+        )
+    if output == development or not output.is_relative_to(development):
+        raise TargetedGateError(
+            f"targeted gate output must remain below {development}"
+        )
+    if output.exists():
+        raise TargetedGateError(f"refusing to overwrite targeted gate evidence: {output}")
     run_root = (base / safe_id).resolve()
     if (
         run_root == base
@@ -126,9 +135,9 @@ def run_storage_targeted_gate(
 def _development_policy_root(development: Path) -> Path:
     if os.name != "nt":
         return development
-    fixed = DEFAULT_DEVELOPMENT_ROOT.resolve(strict=True)
+    fixed = DEFAULT_DEVELOPMENT_ROOT.resolve()
     if not development.is_relative_to(fixed):
-        raise TargetedGateError("development root must remain below D:/study")
+        raise TargetedGateError(f"development root must remain below {fixed}")
     return fixed
 
 

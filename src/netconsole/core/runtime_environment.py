@@ -17,7 +17,6 @@ from netconsole.core.runtime_mode import (
 
 FORBIDDEN_RUNTIME_DIR_NAMES = frozenset({"docs", "tests", "project"})
 STORAGE_MODES = frozenset({"persistent", "isolated_test"})
-WINDOWS_TEST_DATA_ROOT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
 RUNTIME_MODE_FILE_NAME = "runtime_mode.json"
 ALLOW_PRODUCTION_WRITE_ENV = "NETCONSOLE_ALLOW_PRODUCTION_WRITE"
 
@@ -79,6 +78,41 @@ def runtime_mode() -> RuntimeMode:
     if value in {"", "server"}:
         return RuntimeMode.SERVER
     raise RuntimeError("NETCONSOLE_RUNTIME_MODE is invalid")
+
+
+def test_data_root_base(repository_root: Path | None = None) -> Path:
+    """Resolve the canonical isolated test-data base for a source checkout.
+
+    Test data belongs beside the repository checkout so the same rule works on
+    a developer machine and on a portable CI runner. Packaged production
+    startup never calls this resolver because it uses a non-test runtime mode.
+    Frozen test smoke may explicitly pass the source checkout through
+    ``NETCONSOLE_PROJECT_ROOT``; the override is ignored outside test mode so
+    a packaged production process cannot derive a test root from its cwd.
+    """
+
+    if repository_root is None:
+        configured_project_root = str(
+            os.environ.get("NETCONSOLE_PROJECT_ROOT") or ""
+        ).strip()
+        configured_runtime_mode = str(
+            os.environ.get("NETCONSOLE_RUNTIME_MODE") or ""
+        ).strip().casefold()
+        if configured_project_root and configured_runtime_mode == RuntimeMode.TEST.value:
+            repository_root = Path(configured_project_root)
+    return (repository_workspace_root(repository_root) / "test-data" / "NetConsole").resolve()
+
+
+def repository_workspace_root(repository_root: Path | None = None) -> Path:
+    """Resolve the checkout's portable workspace parent.
+
+    CI and local checkouts may live at different absolute paths.  Shared
+    maintenance/test helpers use this parent for bounded evidence and test
+    roots instead of assuming a machine-specific development directory.
+    """
+
+    source_root = Path(repository_root or _source_project_root()).expanduser().resolve()
+    return source_root.parent
 
 
 def validate_data_root(candidate: Path, *, mode: RuntimeMode | None = None) -> Path:
@@ -248,10 +282,10 @@ def _reject_temporary_data_root(candidate: Path) -> None:
 
 def _validate_windows_data_root(candidate: Path, mode: RuntimeMode) -> None:
     if mode is RuntimeMode.TEST:
-        test_root = WINDOWS_TEST_DATA_ROOT.resolve()
+        test_root = test_data_root_base()
         if candidate == test_root or not candidate.is_relative_to(test_root):
             raise RuntimeError(
-                "测试数据根必须位于 D:\\study\\NetConsole-Workspace\\test-data\\NetConsole\\<run-id>，且不能直接使用测试根目录"
+                f"测试数据根必须位于 {test_root}{os.sep}<run-id>，且不能直接使用测试根目录"
             )
         return
     system_drive = str(os.environ.get("SystemDrive") or "C:").rstrip("\\/").casefold()

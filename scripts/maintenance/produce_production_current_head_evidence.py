@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import test_data_root_base
 from netconsole.services.database_footprint_maintenance import (
     sqlite_online_backup_readonly,
     sqlite_quick_profile,
@@ -49,7 +50,7 @@ from scripts.quality.run_storage_targeted_gate import run_storage_targeted_gate
 
 ROOT = Path(__file__).resolve().parents[2]
 DEVELOPMENT_ROOT = Path(r"D:\study").resolve()
-TEST_ROOT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole").resolve()
+TEST_ROOT = test_data_root_base(repository_root=ROOT)
 DEFAULT_PRODUCTION_ROOT = Path(r"D:\NetConsoleData").resolve()
 DEFAULT_DEVELOPMENT_DATA_ROOT = Path(r"D:\NetConsoleData-dev").resolve()
 

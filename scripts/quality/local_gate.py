@@ -16,11 +16,12 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from scripts.quality.check_change_impact import DEFAULT_CONFIG, Impact, _load_config, classify
+from netconsole.core.runtime_environment import test_data_root_base
 
 
 ROOT = Path(__file__).resolve().parents[2]
 REPORT_ROOT = ROOT / ".local-reports"
-TEST_BASE_ROOT = Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
+TEST_BASE_ROOT = test_data_root_base(repository_root=ROOT)
 MODES = ("auto", "fast", "consumer", "full")
 FAST_SUITES = (
     "root-layout",

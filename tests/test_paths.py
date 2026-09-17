@@ -8,6 +8,13 @@ from netconsole.core.bootstrap import create_demo_context
 from netconsole.core.paths import PathResolver
 from netconsole.core import runtime_environment
 from netconsole.core.runtime_environment import validate_runtime_write_path
+from netconsole.core.runtime_mode import RuntimeMode
+
+
+def _portable_test_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    repository_root = tmp_path / "portable-checkout"
+    monkeypatch.setattr(runtime_environment, "_source_project_root", lambda: repository_root)
+    return repository_root, runtime_environment.test_data_root_base()
 
 
 def test_pytest_data_root_is_isolated_from_project_local_data() -> None:
@@ -145,9 +152,105 @@ def test_test_mode_rejects_real_data_root(monkeypatch):
     try:
         runtime_environment.data_root()
     except RuntimeError as exc:
-        assert r"D:\study\NetConsole-Workspace\test-data\NetConsole" in str(exc)
+        assert str(runtime_environment.test_data_root_base()) in str(exc)
     else:
         raise AssertionError("expected production data root rejection in tests")
+
+
+def test_test_data_root_base_is_derived_from_repository_parent(tmp_path: Path) -> None:
+    repository_root = tmp_path / "repo"
+
+    assert runtime_environment.test_data_root_base(repository_root) == (
+        tmp_path / "test-data" / "NetConsole"
+    ).resolve()
+
+
+def test_test_data_root_base_uses_explicit_project_root_for_frozen_test_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository_root = tmp_path / "repo"
+    monkeypatch.setenv("NETCONSOLE_PROJECT_ROOT", str(repository_root))
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", RuntimeMode.TEST.value)
+    monkeypatch.setattr(
+        runtime_environment,
+        "_source_project_root",
+        lambda: Path(r"D:\\frozen\\NetConsoleBackend"),
+    )
+
+    assert runtime_environment.test_data_root_base() == (
+        tmp_path / "test-data" / "NetConsole"
+    ).resolve()
+
+
+def test_test_data_root_base_ignores_project_root_outside_test_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    frozen_root = tmp_path / "frozen" / "NetConsoleBackend"
+    monkeypatch.setenv("NETCONSOLE_PROJECT_ROOT", str(tmp_path / "repo"))
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", RuntimeMode.DESKTOP.value)
+    monkeypatch.setattr(runtime_environment, "_source_project_root", lambda: frozen_root)
+
+    assert runtime_environment.test_data_root_base() == (
+        frozen_root.parent / "test-data" / "NetConsole"
+    ).resolve()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows test-root contract")
+def test_test_mode_accepts_a_strict_child_of_the_canonical_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, base = _portable_test_base(tmp_path, monkeypatch)
+    candidate = base / "github-actions" / "run-1" / "session"
+
+    assert runtime_environment.validate_data_root(candidate, mode=RuntimeMode.TEST) == candidate.resolve()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows test-root contract")
+@pytest.mark.parametrize(
+    "candidate_kind",
+    (
+        "base",
+        "sibling",
+        "prefix_confusion",
+        "production",
+        "development",
+        "system_temp",
+        "repository",
+        "repository_src",
+        "traversal",
+    ),
+)
+def test_test_mode_rejects_non_owned_test_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_kind: str,
+) -> None:
+    repository_root, base = _portable_test_base(tmp_path, monkeypatch)
+    candidates = {
+        "base": base,
+        "sibling": base.parent / "other-data",
+        "prefix_confusion": base.parent / "NetConsole-evil" / "run-1",
+        "production": Path(r"D:\NetConsoleData"),
+        "development": Path(r"D:\NetConsoleData-dev"),
+        "system_temp": Path(os.environ["TEMP"]) / "netconsole-test-root",
+        "repository": repository_root,
+        "repository_src": repository_root / "src",
+        "traversal": base / "run-1" / ".." / ".." / "other-data",
+    }
+
+    with pytest.raises(RuntimeError):
+        runtime_environment.validate_data_root(candidates[candidate_kind], mode=RuntimeMode.TEST)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows test-root contract")
+def test_test_mode_accepts_github_like_and_nested_run_roots(monkeypatch: pytest.MonkeyPatch) -> None:
+    repository_root = Path(r"D:\a\NetConsole\NetConsole")
+    monkeypatch.setattr(runtime_environment, "_source_project_root", lambda: repository_root)
+    base = runtime_environment.test_data_root_base()
+    candidate = base / "github-actions" / "35121458691-1-python" / "baseline-nodes" / "node-1"
+
+    assert candidate == Path(r"D:\a\NetConsole\test-data\NetConsole\github-actions\35121458691-1-python\baseline-nodes\node-1")
+    assert runtime_environment.validate_data_root(candidate, mode=RuntimeMode.TEST) == candidate.resolve()
 
 
 def test_development_data_root_rejects_source_repository(tmp_path, monkeypatch):

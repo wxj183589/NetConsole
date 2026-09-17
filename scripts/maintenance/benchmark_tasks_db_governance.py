@@ -16,9 +16,11 @@ from typing import Any
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.task_repository import TaskRepository
+from netconsole.core.runtime_environment import repository_workspace_root
 
 
-_DEVELOPMENT_ROOT = Path("D:/study").resolve()
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_DEVELOPMENT_ROOT = repository_workspace_root(repository_root=REPOSITORY_ROOT)
 
 
 def _percentiles(values: list[float]) -> dict[str, float]:
@@ -267,7 +269,7 @@ def run_benchmark(
 ) -> dict[str, Any]:
     root = Path(output_dir).resolve()
     if not root.is_relative_to(_DEVELOPMENT_ROOT):
-        raise ValueError("benchmark output must remain under D:/study")
+        raise ValueError(f"benchmark output must remain under {_DEVELOPMENT_ROOT}")
     if any(int(count) <= 0 for count in task_counts):
         raise ValueError("task counts must be positive")
     sample_counts = result_sample_counts or {"small": 100, "medium": 10, "large": 1}

@@ -21,6 +21,7 @@ from netconsole.core.feature_flags import (
     resolve_customer_unlock_password,
 )
 from netconsole.core.feature_registry import FeatureStatus, list_features
+from netconsole.core.runtime_environment import test_data_root_base
 from netconsole.services.tool_smoke_test import run_tool_smoke_tests
 from scripts.build import clean_build_spec
 from scripts.build.build_metadata import (
@@ -35,6 +36,7 @@ from scripts.build.web_frontend_meta import validate_web_frontend_meta
 
 
 BACKENDS = ("pyinstaller",)
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BUILD_EDITIONS = ("internal", "customer", "engineer", "both", "all")
 BACKEND_ALLOWED_RELEASE_ITEMS = frozenset(
     {"NetConsoleBackend.exe", "_internal", "tools"}
@@ -533,11 +535,12 @@ def _temporary_smoke_data_root(prefix: str) -> tempfile.TemporaryDirectory[str]:
 
 
 def _smoke_data_root_base() -> Path:
-    return Path(r"D:\study\NetConsole-Workspace\test-data\NetConsole")
+    return test_data_root_base(repository_root=REPOSITORY_ROOT)
 
 
 def _smoke_environment(data_root: Path) -> dict[str, str]:
     env = os.environ.copy()
+    env["NETCONSOLE_PROJECT_ROOT"] = str(REPOSITORY_ROOT)
     env["NETCONSOLE_DATA_ROOT"] = str(data_root)
     env["NETCONSOLE_RUNTIME_MODE"] = "test"
     env["NETCONSOLE_STORAGE_MODE"] = "isolated_test"

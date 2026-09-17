@@ -14,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import repository_workspace_root
 from netconsole.services.site_storage import SiteRegistryRepository
 
 
 PROFILE_FILE_NAME = "TASKS_DB_PROFILE.json"
-_DEVELOPMENT_ROOT = Path("D:/study").resolve()
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_DEVELOPMENT_ROOT = repository_workspace_root(repository_root=REPOSITORY_ROOT)
 
 
 def _connect(database: Path, *, immutable: bool) -> sqlite3.Connection:
@@ -494,7 +496,10 @@ def profile_tasks_database(database: Path, *, deep: bool) -> dict[str, Any]:
     if not database.is_file() or database.is_symlink():
         raise ValueError("tasks database must be an existing regular file")
     if deep and not database.is_relative_to(_DEVELOPMENT_ROOT):
-        raise ValueError("DEEP profiling is restricted to an isolated snapshot under D:/study")
+        raise ValueError(
+            "DEEP profiling is restricted to an isolated snapshot under "
+            f"{_DEVELOPMENT_ROOT}"
+        )
     if deep and _sidecar_size(database, "-wal"):
         raise ValueError("DEEP profiling requires an isolated snapshot with an empty WAL")
     with closing(_connect(database, immutable=deep)) as conn:
@@ -555,7 +560,7 @@ def profile_tasks_database(database: Path, *, deep: bool) -> dict[str, Any]:
 def _write_report(output_dir: Path, report: dict[str, Any]) -> Path:
     output = Path(output_dir).resolve()
     if not output.is_relative_to(_DEVELOPMENT_ROOT):
-        raise ValueError("profiling output must remain under D:/study")
+        raise ValueError(f"profiling output must remain under {_DEVELOPMENT_ROOT}")
     output.mkdir(parents=True, exist_ok=True)
     path = output / PROFILE_FILE_NAME
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -584,7 +589,7 @@ def main(argv: list[str] | None = None) -> int:
     database = (args.database or (site.root_path / "db" / "tasks.db")).resolve()
     run_id = datetime.now(UTC).astimezone().strftime("%Y%m%dT%H%M%S%z")
     output_dir = args.output_dir or (
-        Path("D:/study/NetConsole-Workspace/diagnostic/tasks-db-governance") / run_id
+        _DEVELOPMENT_ROOT / "diagnostic" / "tasks-db-governance" / run_id
     )
     report = profile_tasks_database(database, deep=args.deep)
     report.update({"site_id": site.site_id, "site_display_name": site.display_name})
