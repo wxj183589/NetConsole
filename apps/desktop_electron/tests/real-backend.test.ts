@@ -82,7 +82,10 @@ describe('real Python backend integration', () => {
         runtime = await manager.start()
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause)
-        throw new Error(`${message}\nBackend logs:\n${logs.join('\n')}`, { cause })
+        throw new Error(
+          `${message}\nConfigured test root: ${configuredTestRoot}\nBackend data root: ${dataRoot}\nBackend logs:\n${logs.join('\n')}`,
+          { cause },
+        )
       }
       const unauthorized = await fetch(`${runtime.baseUrl}/api/health`)
       const authorized = await fetch(`${runtime.baseUrl}/api/health`, {
