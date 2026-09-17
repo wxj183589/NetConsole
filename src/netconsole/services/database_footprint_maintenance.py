@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import repository_workspace_root
 from netconsole.services.database_upgrade.coordinator import (
     database_maintenance_lock,
     site_database_maintenance_key,
@@ -21,7 +22,8 @@ from netconsole.services.database_upgrade.sqlite_consistency import fsync_file, 
 from netconsole.services.site_storage import SiteRecord, SiteStorageError, validate_site_id
 
 
-DEVELOPMENT_ROOT = Path("D:/study")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+DEVELOPMENT_ROOT = repository_workspace_root(repository_root=REPOSITORY_ROOT)
 SNAPSHOT_FORMAT = "netconsole-sqlite-online-backup-v1"
 
 

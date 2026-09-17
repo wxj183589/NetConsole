@@ -88,8 +88,19 @@ def test_data_root_base(repository_root: Path | None = None) -> Path:
     startup never calls this resolver because it uses a non-test runtime mode.
     """
 
+    return (repository_workspace_root(repository_root) / "test-data" / "NetConsole").resolve()
+
+
+def repository_workspace_root(repository_root: Path | None = None) -> Path:
+    """Resolve the checkout's portable workspace parent.
+
+    CI and local checkouts may live at different absolute paths.  Shared
+    maintenance/test helpers use this parent for bounded evidence and test
+    roots instead of assuming a machine-specific development directory.
+    """
+
     source_root = Path(repository_root or _source_project_root()).expanduser().resolve()
-    return (source_root.parent / "test-data" / "NetConsole").resolve()
+    return source_root.parent
 
 
 def validate_data_root(candidate: Path, *, mode: RuntimeMode | None = None) -> Path:
