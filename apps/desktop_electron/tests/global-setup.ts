@@ -1,8 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export default function setup(): () => void {
-  const testBase = 'D:\\study\\NetConsole-Workspace\\test-data\\NetConsole'
+  const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+  const testBase = resolve(repositoryRoot, '..', 'test-data', 'NetConsole')
   mkdirSync(testBase, { recursive: true })
   const testRoot = mkdtempSync(join(testBase, 'electron-vitest-'))
   process.env.TEMP = testRoot
