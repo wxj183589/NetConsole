@@ -1362,6 +1362,117 @@ def test_fit_ap_optical_lldp_only_success_is_not_treated_as_failure(tmp_path):
     assert h3c_ac_collect_service._is_fit_ap_optical_success_row(dict(row))
 
 
+def test_trackside_fit_ap_telnet_optical_uses_no_ssh_host_key(
+    tmp_path,
+    monkeypatch,
+):
+    import netmiko
+
+    from netconsole.services import site_ssh_relay
+
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    repository = DeviceRepository(database)
+    ac = repository.create(
+        Device(
+            name="AC-FIT",
+            device_uuid="00000000-0000-4000-8000-000000000061",
+            device_type="AC",
+            device_vendor="H3C",
+            ip_address="10.0.0.51",
+            ssh_username="u",
+            ssh_password="p",
+        )
+    )
+
+    def fake_resource_collect(_ac_device, _site_name, repository=None, **_kwargs):
+        repository.replace_fit_ap_resources(
+            str(ac.device_uuid),
+            [
+                {
+                    "ap_uuid": "fit-ap-telnet-1",
+                    "ap_name": "FIT-AP-TELNET-1",
+                    "ap_ip": "10.0.0.61",
+                    "site": "",
+                }
+            ],
+        )
+        return SimpleNamespace(success=True, error_message=None)
+
+    def missing_site(_self, _site_id: str):
+        raise site_ssh_relay.SiteSSHRelayError("SITE_NOT_FOUND", "test site missing")
+
+    monkeypatch.setattr(trackside_optical_collection, "collect_h3c_ac_resources", fake_resource_collect)
+    monkeypatch.setattr(h3c_ac_collect_service, "_enable_fit_ap_console", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(site_ssh_relay.SiteSSHRelayService, "load", missing_site)
+    FakeOpticalConnection.instances = []
+    monkeypatch.setattr(netmiko, "ConnectHandler", FakeOpticalConnection)
+
+    result = collect_trackside_optical(
+        repository,
+        "demo",
+        paths,
+        [],
+        concurrency=1,
+    )
+
+    assert result.fit_ap_total == 1
+    assert result.fit_ap_optical_success_count > 0
+    assert result.fit_ap_optical_failed_count == 0
+    assert result.failure_reason_counts == {}
+    assert all(
+        "target remote server key unavailable" not in str(failure.get("message") or "")
+        for failure in result.failures
+    )
+    assert [connection.host for connection in FakeOpticalConnection.instances] == ["10.0.0.61"]
+
+
+def test_fit_ap_telnet_command_failure_reports_command_error_without_ssh_host_key(
+    tmp_path,
+    monkeypatch,
+):
+    import netmiko
+
+    from netconsole.services import site_ssh_relay
+
+    paths = PathResolver(tmp_path)
+    database = Database(paths.site_db_path("demo"))
+    database.initialize()
+    ac_device = make_ac_device()
+
+    class CommandFailingTelnetConnection(FakeOpticalConnection):
+        def send_command(self, command, **kwargs):
+            if command == "display transceiver diagnosis interface":
+                self.commands.append(command)
+                raise RuntimeError("optical command failed")
+            return super().send_command(command, **kwargs)
+
+    def missing_site(_self, _site_id: str):
+        raise site_ssh_relay.SiteSSHRelayError("SITE_NOT_FOUND", "test site missing")
+
+    monkeypatch.setattr(site_ssh_relay.SiteSSHRelayService, "load", missing_site)
+    monkeypatch.setattr(netmiko, "ConnectHandler", CommandFailingTelnetConnection)
+
+    row = h3c_ac_collect_service._collect_single_fit_ap_optical(
+        ac_device,
+        {
+            "ap_uuid": "fit-ap-command-failure",
+            "ap_name": "FIT-AP-COMMAND-FAILURE",
+            "ap_ip": "10.0.0.62",
+        },
+        "demo",
+        "fit-run-command-failure",
+        tmp_path / "fit-ap",
+        paths,
+    )
+
+    assert row["status"] == "failed"
+    assert "command_failed" in str(row["error_message"])
+    assert "optical command failed" in str(row["error_message"])
+    assert "target remote server key unavailable" not in str(row["error_message"])
+
+
 def test_fit_ap_optical_retry_targets_and_concurrency():
     resources = [
         {"ap_uuid": "ap-ok", "ap_name": "AP-OK"},

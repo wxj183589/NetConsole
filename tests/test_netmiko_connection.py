@@ -5,12 +5,16 @@ import paramiko
 import pytest
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 from netconsole.models.device import Device
-from netconsole.services import netmiko_connection
+from netconsole.services import netmiko_connection, site_ssh_relay
+from netconsole.core.paths import PathResolver
 from netconsole.services.netmiko_connection import (
+    ConnectionTarget,
     H3C_DEFAULT_ENCODING,
+    build_netmiko_params,
     choose_connection_target,
     encoding_for_vendor,
     extract_cli_prompt,
@@ -303,6 +307,7 @@ def test_connect_handler_called_with_netmiko_params(monkeypatch):
     assert result.protocol == "SSH"
     assert result.prompt == "<SW01>"
     assert calls["kwargs"] == {
+        "_netconsole_protocol": "SSH",
         "device_type": "hp_comware",
         "host": "10.0.0.52",
         "username": "admin",
@@ -321,6 +326,174 @@ def test_connect_handler_called_with_netmiko_params(monkeypatch):
     assert calls["read_timeout"] == 10
     assert calls["encoding"] == "gb2312"
     assert calls["disconnect"] is True
+
+
+@pytest.mark.parametrize("device_type", ["hp_comware_telnet", "zte_zxros_telnet"])
+def test_telnet_connection_skips_ssh_host_key_and_strips_internal_protocol(
+    monkeypatch,
+    device_type: str,
+) -> None:
+    """A successful Telnet session must never require an SSH server key."""
+
+    import netmiko
+
+    raw_kwargs: dict[str, object] = {}
+    trust_calls: list[tuple[object, ...]] = []
+
+    class FakeConnection:
+        remote_conn_pre = object()
+
+    def raw_connect_handler(**kwargs: object) -> FakeConnection:
+        raw_kwargs.update(kwargs)
+        return FakeConnection()
+
+    def missing_site(_self, _site_id: str):
+        raise site_ssh_relay.SiteSSHRelayError("SITE_NOT_FOUND", "test site missing")
+
+    def unexpected_host_key_trust(_self, *args: object, **kwargs: object):
+        trust_calls.append((*args, *kwargs.values()))
+        raise AssertionError("Telnet must not enter SSH Host Key trust")
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", raw_connect_handler)
+    monkeypatch.setattr(site_ssh_relay.SiteSSHRelayService, "load", missing_site)
+    monkeypatch.setattr(
+        netmiko_connection.HostKeyTrustService,
+        "trust_or_replace",
+        unexpected_host_key_trust,
+    )
+
+    target = ConnectionTarget(
+        protocol="Telnet",
+        device_type=device_type,
+        host="192.0.2.23",
+        port=23,
+        username="telnet-user",
+        password="telnet-password",
+    )
+    params = build_netmiko_params(target)
+    params.update(
+        {
+            "_netconsole_paths": PathResolver(),
+            "_netconsole_site_id": "test-site",
+        }
+    )
+
+    connection = netmiko_connection.ConnectHandler(**params)
+
+    assert isinstance(connection, FakeConnection)
+    assert raw_kwargs["device_type"] == device_type
+    assert "protocol" not in raw_kwargs
+    assert "_netconsole_protocol" not in raw_kwargs
+    assert "_netconsole_paths" not in raw_kwargs
+    assert trust_calls == []
+
+
+def test_ssh_connection_records_remote_key_and_strips_internal_protocol(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import netmiko
+
+    target_key = paramiko.RSAKey.generate(1024)
+    raw_kwargs: dict[str, object] = {}
+
+    class FakeConnection:
+        remote_conn_pre = SimpleNamespace(
+            get_transport=lambda: SimpleNamespace(
+                get_remote_server_key=lambda: target_key,
+            ),
+        )
+
+    def raw_connect_handler(**kwargs: object) -> FakeConnection:
+        raw_kwargs.update(kwargs)
+        return FakeConnection()
+
+    def missing_site(_self, _site_id: str):
+        raise site_ssh_relay.SiteSSHRelayError("SITE_NOT_FOUND", "test site missing")
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", raw_connect_handler)
+    monkeypatch.setattr(site_ssh_relay.SiteSSHRelayService, "load", missing_site)
+
+    target = ConnectionTarget(
+        protocol="SSH",
+        device_type="hp_comware",
+        host="192.0.2.24",
+        port=22,
+        username="ssh-user",
+        password="ssh-password",
+    )
+    params = build_netmiko_params(target)
+    params.update(
+        {
+            "_netconsole_paths": PathResolver(tmp_path),
+            "_netconsole_site_id": "test-site",
+        }
+    )
+
+    connection = netmiko_connection.ConnectHandler(**params)
+
+    assert isinstance(connection, FakeConnection)
+    assert "_netconsole_protocol" not in raw_kwargs
+    assert "_netconsole_paths" not in raw_kwargs
+    assert "_netconsole_site_id" not in raw_kwargs
+    assert netmiko_connection.HostKeyTrustService(PathResolver(tmp_path)).is_trusted(
+        "192.0.2.24",
+        22,
+        target_key,
+        role="target",
+    )
+
+
+def test_ssh_connection_without_remote_key_fails_closed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import netmiko
+
+    class FakeConnection:
+        remote_conn_pre = SimpleNamespace(
+            get_transport=lambda: SimpleNamespace(
+                get_remote_server_key=lambda: None,
+            ),
+        )
+
+    def missing_site(_self, _site_id: str):
+        raise site_ssh_relay.SiteSSHRelayError("SITE_NOT_FOUND", "test site missing")
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", lambda **_kwargs: FakeConnection())
+    monkeypatch.setattr(site_ssh_relay.SiteSSHRelayService, "load", missing_site)
+
+    target = ConnectionTarget(
+        protocol="SSH",
+        device_type="zte_zxros",
+        host="192.0.2.25",
+        port=22,
+        username="ssh-user",
+        password="ssh-password",
+    )
+    params = build_netmiko_params(target)
+    params.update(
+        {
+            "_netconsole_paths": PathResolver(tmp_path),
+            "_netconsole_site_id": "test-site",
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="target remote server key unavailable"):
+        netmiko_connection.ConnectHandler(**params)
+
+
+def test_telnet_command_failure_is_not_misclassified_as_missing_ssh_key() -> None:
+    error = site_ssh_relay.SiteSSHRelayError(
+        "TARGET_COMMAND_FAILED",
+        "FIT-AP optical command failed",
+    )
+
+    classification = netmiko_connection.classify_connection_exception(error, "Telnet")
+
+    assert classification.status == "target_command_failed"
+    assert classification.error_type == "TARGET_COMMAND_FAILED"
+    assert "target remote server key unavailable" not in classification.detail
 
 
 def test_zte_connection_uses_zxros_and_never_sends_h3c_session_commands(
