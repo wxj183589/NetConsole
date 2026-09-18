@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import netmiko
 import paramiko
@@ -49,8 +50,13 @@ class _FakeH3cR1612P01Connection:
         "display ip https | include port": "HTTPS port : 443",
     }
 
-    def __init__(self, commands: list[str]) -> None:
+    def __init__(self, commands: list[str], server_key) -> None:
         self.commands = commands
+        self.remote_conn_pre = SimpleNamespace(
+            get_transport=lambda: SimpleNamespace(
+                get_remote_server_key=lambda: server_key
+            )
+        )
 
     def send_command_timing(self, command: str, **_kwargs) -> str:
         self.commands.append(command)
@@ -83,12 +89,13 @@ def test_simulated_h3c_r1612p01_ac_refresh_uses_legacy_retry_and_persists(
     calls: list[dict[str, object]] = []
     commands: list[str] = []
     events: list[tuple[str, str]] = []
+    target_key = paramiko.RSAKey.generate(1024)
 
     def fake_connect_handler(**kwargs):
         calls.append(kwargs)
         if len(calls) == 1:
             raise paramiko.SSHException("server only offered ssh-rsa")
-        return _FakeH3cR1612P01Connection(commands)
+        return _FakeH3cR1612P01Connection(commands, target_key)
 
     monkeypatch.setattr(netmiko, "ConnectHandler", fake_connect_handler)
     monkeypatch.setattr(

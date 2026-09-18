@@ -9,6 +9,7 @@ from threading import Event
 from types import SimpleNamespace
 
 import pytest
+import paramiko
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.ap_identity_index import ApIdentityBatchResult, ApIdentityMatch
@@ -2432,8 +2433,16 @@ def test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session(tmp_
     config.connection_targets = tuple(connection_targets(device))
     calls: list[str] = []
     closed: list[bool] = []
+    target_key = paramiko.RSAKey.generate(1024)
 
     class FakeNetmiko:
+        def __init__(self, server_key) -> None:
+            self.remote_conn_pre = SimpleNamespace(
+                get_transport=lambda: SimpleNamespace(
+                    get_remote_server_key=lambda: server_key
+                )
+            )
+
         def send_command_timing(self, command, **_kwargs):
             return f"{command}\nOK"
 
@@ -2444,7 +2453,7 @@ def test_netmiko_shell_connection_falls_back_to_tunnel_and_releases_session(tmp_
         calls.append(str(params["host"]))
         if params["host"] != "127.0.0.1":
             raise RuntimeError("direct failed")
-        return FakeNetmiko()
+        return FakeNetmiko(target_key)
 
     class FakeSession:
         local_host = "127.0.0.1"
