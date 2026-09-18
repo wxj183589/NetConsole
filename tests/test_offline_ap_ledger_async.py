@@ -375,7 +375,7 @@ def test_trackside_switch_offline_forces_downstream_ap_offline_even_when_ac_run(
     assert row["offline_reason"] == "switch_offline"
     assert row["status_reason"] == "室内交换机离线，轨旁AP跟随离线"
     assert row["switch_collection_status"] == "offline"
-    assert format_trackside_display_value("switch_optical_status", row) == "交换机离线"
+    assert format_trackside_display_value("switch_optical_status", row) == "端口 DOWN"
     assert format_trackside_display_value("ap_optical_status", row) == "未知"
     assert format_trackside_display_value("link_status", row) == "DOWN"
     assert format_trackside_display_value("port_type", row) == "access"

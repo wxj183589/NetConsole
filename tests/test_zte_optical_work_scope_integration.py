@@ -458,9 +458,12 @@ def test_zte_invalid_interface_snapshot_is_not_presented_as_current(
     assert any("接口摘要状态" in warning for warning in result.warnings)
     assert row["switch_interface_data_status"] == "stale"
     assert row["link_status"] == "-"
-    assert row["switch_optical_data_status"] == "current"
-    assert row["switch_rx_power"] == "-11.7"
-    assert row["switch_interface_updated_at"] == "2026-08-02T10:00:00+08:00"
+    assert row["switch_optical_data_status"] == "stale"
+    assert row["switch_rx_power"] is None
+    assert row["switch_last_known_rx_power"] == "-11.7"
+    assert row["switch_optical_valid"] is False
+    assert row["switch_optical_updated_at"] == ""
+    assert row["switch_interface_updated_at"] is None
 
 
 def test_zte_connection_failure_does_not_present_old_realtime_state(
@@ -544,14 +547,19 @@ def test_zte_connection_failure_does_not_present_old_realtime_state(
     assert row["link_status"] == "-"
     assert row["protocol_status"] is None
     assert row["switch_optical_data_status"] == "stale"
-    assert row["switch_rx_power"] == "-7.10"
-    assert row["switch_tx_power"] == "-4.90"
+    assert row["switch_rx_power"] is None
+    assert row["switch_tx_power"] is None
+    assert row["switch_last_known_rx_power"] == "-7.10"
+    assert row["switch_last_known_tx_power"] == "-4.90"
+    assert row["switch_optical_valid"] is False
+    assert row["switch_optical_updated_at"] == ""
     assert row["switch_optical_status"] == "collection_failed"
     assert row["switch_device_optical_status"] == "collection_failed"
     assert row["switch_optical_collection_status"] == "failed"
     assert row["switch_optical_collection_error"] == "connection failed"
-    assert row["switch_interface_updated_at"] == "2026-08-02T10:00:00+08:00"
-    assert row["switch_optical_updated_at"] == "2026-08-02T10:00:00+08:00"
+    assert row["switch_interface_updated_at"] is None
+    assert row["switch_optical_updated_at"] == ""
+    assert row["switch_last_known_optical_updated_at"] == "2026-08-02T10:00:00+08:00"
 
 
 def test_zte_snapshot_rejects_count_regression_without_changing_h3c_behavior(
