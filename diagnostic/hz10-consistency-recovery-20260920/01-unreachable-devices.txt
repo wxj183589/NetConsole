@@ -1,0 +1,15 @@
+HZ10 TCP REACHABILITY AUDIT
+SCOPE=1 AC + 14 in-service HZ10 field switches selected by canonical inventory
+FAILED_TARGETS_BEFORE=14 switch targets in prior full-line result; prior task also recorded AC-side TCP failure
+PING_OK=15/15
+TCP22_OK=15/15
+TCP22_REFUSED=0
+TCP22_TIMEOUT=0
+NETWORK_UNREACHABLE=0
+AUTH_FAILURE=0
+HOSTKEY_FAILURE=0
+PRODUCT_TARGET_ERROR=0
+FORMAL_CONNECTION_TESTS=15 COMPLETED success=true
+CONNECTION_METHOD=primary_direct
+DEVICE_COMMANDS=read-only connection/diagnostic path only
+SECRETS=omitted

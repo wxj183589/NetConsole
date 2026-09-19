@@ -1,0 +1,14 @@
+COLLECT_RUN RECOVERY AUDIT
+RUNNING_BEFORE=15 historical rows
+HISTORICAL_KINDS=device_details 12; fit_ap_optical 2; fit_ap_resources 1
+HISTORICAL_START_WINDOWS=2026-07-28, 2026-08-05, 2026-09-02
+ASSOCIATED_TASK_REFERENCES=0
+ACTIVE_REAL_RUN_AT_INITIAL_AUDIT=NO
+UPDATED_AT_COLUMN=NOT_PRESENT
+STARTUP_FORMAL_RECOVERY=recovered 16 at 2026-09-20 02:39:46; cutoff 02:34:46
+BREAKDOWN_STARTUP=15 initial historical + 1 validation-created orphan
+POST_CANCEL_FORMAL_RECOVERY=recovered 1 validation-created stale run after cancellation
+TOTAL_FORMALLY_RECOVERED=17
+RUNNING_AFTER=0
+RECOVERY_METHOD=DeviceFactRepository.recover_orphaned_collect_runs via startup/repository formal mechanism
+MANUAL_SQL_MUTATION=NO

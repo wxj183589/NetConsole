@@ -1,0 +1,12 @@
+FORMAL IDENTITY REBUILD HISTORY
+METHOD=ApIdentityQueryService.rebuild_index
+MANUAL_SQL=NO
+REBUILD_1_REASON=hz10_consistency_recovery_20260920
+REBUILD_1_RESULT=revision 290; source 448929; entities 905; aliases 3157; conflicts 0; actual_bbssid 631; derived 1262; ambiguous 0
+REBUILD_2_REASON=hz10_consistency_recovery_post_stage3_20260920
+REBUILD_2_RESULT=revision 294; source 454935; entities 905; aliases 3157; conflicts 0; actual_bbssid 631; derived 1262; ambiguous 0
+REBUILD_3_REASON=hz10_consistency_recovery_post_cancel_20260920
+REBUILD_3_RESULT=revision 296; source 457938; entities 905; aliases 3157; conflicts 0; actual_bbssid 631; derived 1262; ambiguous 0
+REBUILD_4_REASON=hz10_consistency_recovery_final_20260920
+REBUILD_4_RESULT=revision 299; source 462203; entities 905; aliases 3157; conflicts 0; actual_bbssid 631; derived 1262; ambiguous 0
+ALL_REBUILDS_FORMAL=YES

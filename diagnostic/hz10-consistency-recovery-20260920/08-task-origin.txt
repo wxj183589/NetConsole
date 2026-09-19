@@ -1,0 +1,17 @@
+UNEXPECTED FULL-LINE TASK ORIGIN AUDIT
+PRIOR_FAILED_TASK_ID=rail-web-6a0c8027999949838ee82d57182edd54
+PRIOR_TASK_TYPE=trackside_ap_optical_update
+PRIOR_OWNER=web_rail_transit
+PRIOR_SOURCE=local
+PRIOR_PARAMS=scope all; requested_concurrency 64
+PRIOR_PARENT_TASK=NOT_RECORDED
+PRIOR_RETRY_OF=NOT_RECORDED
+PRIOR_RECOVERY_SOURCE=NOT_RECORDED
+PRIOR_TRIGGER_SOURCE=UNKNOWN_NOT_PERSISTED
+PRIOR_RESULT=failed device collection; no safe origin metadata
+UNEXPECTED_REPLAY_TASK_ID=rail-web-cef12c3041d4439eabc4143df4cbb68f
+UNEXPECTED_REPLAY_PARAMS=station empty; concurrency 64
+UNEXPECTED_REPLAY_ACTION=cancelled through formal task API before controlled Stage4
+REPLAY_ROOT_CAUSE=origin not persisted; task parameters show unplanned full-line concurrency-64 replay
+AUTO_REPLAY_RISK=YES_OBSERVED_ONCE; TASK_REPLAY_STORM=NO
+NO_ORIGIN_GUESS=YES

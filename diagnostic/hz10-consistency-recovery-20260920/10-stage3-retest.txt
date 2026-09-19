@@ -1,0 +1,13 @@
+STAGE3 RETEST
+EXECUTED=YES
+STATION=21-八字桥站
+SWITCH_SUCCESS=1
+SWITCH_FAILED=0
+AP_SUCCESS=0
+AP_FAILED=0
+AP_SKIPPED=1
+HOSTKEY_ERROR=0
+IDENTITY_UNRESOLVED=5 in business rows after final formal rebuild
+MAPPING_MISSING=5 business rows; task skip reason no_fit_ap_resource=1
+TASK_STATUS=PARTIAL_SUCCESS
+GATE_INTERPRETATION=device collection gate PASS; station mapping remains PARTIAL
