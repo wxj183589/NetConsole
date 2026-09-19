@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from pathlib import Path
@@ -337,6 +338,14 @@ def test_active_site_storage_stages_are_emitted_before_slow_operations(monkeypat
         def initialize(self) -> None:
             assert stages[-1] == "active_site_database_initializing"
 
+    class SlowFactRepository:
+        def __init__(self, _database) -> None:
+            pass
+
+        def recover_orphaned_collect_runs(self, *, stale_before: str):
+            assert stale_before
+            return []
+
     class SlowIdentityService:
         def __init__(self, _database) -> None:
             pass
@@ -347,6 +356,7 @@ def test_active_site_storage_stages_are_emitted_before_slow_operations(monkeypat
 
     paths = SimpleNamespace(site_db_path=lambda _site_name: Path("slow-storage.sqlite"))
     monkeypatch.setattr(api_main, "Database", SlowDatabase)
+    monkeypatch.setattr(api_main, "DeviceFactRepository", SlowFactRepository)
     monkeypatch.setattr(api_main, "ApIdentityQueryService", SlowIdentityService)
 
     api_main._initialize_active_site_database(
@@ -360,6 +370,105 @@ def test_active_site_storage_stages_are_emitted_before_slow_operations(monkeypat
         "active_site_database_ready",
         "ap_identity_index_initializing",
         "ap_identity_index_ready",
+    ]
+
+
+def test_delayed_collect_run_recovery_waits_for_idle_task_owner(monkeypatch) -> None:
+    from netconsole.backend.api import main as api_main
+
+    sleeps: list[float] = []
+    recovery_calls: list[tuple[object, tuple[object, ...]]] = []
+    state = {"continue": True, "busy": True}
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            state["busy"] = False
+
+    async def fake_to_thread(function, *args):
+        recovery_calls.append((function, args))
+        return []
+
+    monkeypatch.setattr(api_main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api_main.asyncio, "to_thread", fake_to_thread)
+    paths = SimpleNamespace()
+
+    asyncio.run(
+        api_main._schedule_collect_run_recovery(
+            paths,
+            "demo",
+            should_continue=lambda: state["continue"],
+            is_busy=lambda: state["busy"],
+            grace_seconds=301,
+            retry_seconds=60,
+        )
+    )
+
+    assert sleeps == [301, 60]
+    assert recovery_calls == [
+        (api_main._recover_active_site_collect_runs, (paths, "demo"))
+    ]
+
+
+def test_runtime_holds_backend_instance_lock_before_building_application(monkeypatch) -> None:
+    from netconsole.backend import electron_runtime
+
+    events: list[object] = []
+
+    class InstanceLock:
+        warm_handoff = False
+
+        def __init__(self, _paths, **kwargs) -> None:
+            events.append(("lock_constructed", kwargs))
+
+        def __enter__(self):
+            events.append("lock_acquired")
+            return self
+
+        def __exit__(self, *_args) -> None:
+            events.append("lock_released")
+
+    class Listener:
+        def getsockname(self):
+            return ("127.0.0.1", 43210)
+
+        def close(self) -> None:
+            events.append("listener_closed")
+
+    monkeypatch.setenv("NETCONSOLE_ACTIVE_SITE_ID", "site-new")
+    monkeypatch.setattr(
+        electron_runtime,
+        "PathResolver",
+        lambda: SimpleNamespace(data_root=Path("isolated-data-root")),
+    )
+    monkeypatch.setattr(electron_runtime, "data_environment", lambda _root: None)
+    monkeypatch.setattr(electron_runtime, "_log_host_environment_summary", lambda _paths: None)
+    monkeypatch.setattr(electron_runtime, "BackendInstanceLock", InstanceLock)
+    monkeypatch.setattr(electron_runtime, "prepare_storage_manifest", lambda _paths: None)
+    monkeypatch.setattr(electron_runtime.socket, "create_server", lambda *_args, **_kwargs: Listener())
+
+    def build_app_after_lock(*_args, **_kwargs):
+        assert events[1] == "lock_acquired"
+        events.append("application_building")
+        raise RuntimeError("stop after lock-order assertion")
+
+    monkeypatch.setattr(electron_runtime, "build_app", build_app_after_lock)
+
+    result = electron_runtime.main(
+        ["--host", "127.0.0.1", "--port", "0"],
+        stdin=io.StringIO(f'{{"session_token":"{TOKEN}"}}\n'),
+    )
+
+    assert result == 3
+    assert events == [
+        (
+            "lock_constructed",
+            {"active_site_id": "site-new", "warm_handoff_owner_id": ""},
+        ),
+        "lock_acquired",
+        "application_building",
+        "listener_closed",
+        "lock_released",
     ]
 
 

@@ -1,3 +1,5 @@
+from contextlib import contextmanager
+
 import pytest
 
 from netconsole.core.database import Database
@@ -731,3 +733,117 @@ def test_get_collect_runs_reads_multiple_attempts(tmp_path):
     assert attempts[first["collect_run_uuid"]]["status"] == "failed"
     assert attempts[second["collect_run_uuid"]]["status"] == "success"
     assert "missing" not in attempts
+
+
+def test_recover_orphaned_collect_runs_only_terminalizes_stale_running_rows(tmp_path):
+    repository = make_repository(tmp_path)
+    stale = repository.create_collect_run(
+        {
+            "collect_type": "device_details",
+            "status": "running",
+            "started_at": "2026-09-20T09:00:00",
+        }
+    )
+    recent = repository.create_collect_run(
+        {
+            "collect_type": "device_details",
+            "status": "running",
+            "started_at": "2026-09-20T10:59:00",
+        }
+    )
+    successful = repository.create_collect_run(
+        {
+            "collect_type": "device_details",
+            "status": "success",
+            "started_at": "2026-09-20T09:00:00",
+        }
+    )
+    terminal_runs = {
+        status: repository.create_collect_run(
+            {
+                "collect_type": "device_details",
+                "status": status,
+                "started_at": "2026-09-20T09:00:00",
+                "ended_at": "2026-09-20T09:30:00",
+                "error_message": f"existing-{status}",
+            }
+        )
+        for status in ("failed", "partial_success", "cancelled")
+    }
+
+    recovered = repository.recover_orphaned_collect_runs(
+        stale_before="2026-09-20T10:00:00",
+    )
+
+    assert [item["collect_run_uuid"] for item in recovered] == [stale["collect_run_uuid"]]
+    assert repository.get_collect_run(stale["collect_run_uuid"])["status"] == "failed"
+    assert repository.get_collect_run(recent["collect_run_uuid"])["status"] == "running"
+    assert repository.get_collect_run(successful["collect_run_uuid"])["status"] == "success"
+    for status, run in terminal_runs.items():
+        assert repository.get_collect_run(run["collect_run_uuid"]) == run
+
+    assert repository.recover_orphaned_collect_runs(
+        stale_before="2026-09-20T10:00:00",
+    ) == []
+
+
+def test_recover_orphaned_collect_runs_does_not_overwrite_a_concurrent_terminal_update(
+    tmp_path, monkeypatch
+):
+    repository = make_repository(tmp_path)
+    run = repository.create_collect_run(
+        {
+            "collect_type": "device_details",
+            "status": "running",
+            "started_at": "2026-09-20T09:00:00",
+        }
+    )
+    original_connect = repository.database.connect
+    raced = False
+
+    class RacingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def __enter__(self):
+            self._connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._connection.__exit__(*args)
+
+        def execute(self, sql, parameters=()):
+            nonlocal raced
+            if sql.lstrip().startswith("UPDATE collect_runs") and not raced:
+                raced = True
+                with original_connect() as competing:
+                    competing.execute(
+                        """
+                        UPDATE collect_runs
+                        SET status = 'success', ended_at = ?, error_message = ?
+                        WHERE collect_run_uuid = ? AND status = 'running'
+                        """,
+                        ("2026-09-20T11:00:00", "worker-completed", run["collect_run_uuid"]),
+                    )
+                    competing.commit()
+            return self._connection.execute(sql, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    @contextmanager
+    def racing_connect():
+        with original_connect() as connection:
+            yield RacingConnection(connection)
+
+    monkeypatch.setattr(repository.database, "connect", racing_connect)
+
+    assert repository.recover_orphaned_collect_runs(
+        stale_before="2026-09-20T10:00:00",
+    ) == []
+    assert repository.get_collect_run(run["collect_run_uuid"]) == {
+        **run,
+        "status": "success",
+        "ended_at": "2026-09-20T11:00:00",
+        "error_message": "worker-completed",
+    }

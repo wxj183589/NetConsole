@@ -7,6 +7,7 @@ import re
 import secrets
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
 from pathlib import Path
 from time import perf_counter
@@ -63,6 +64,7 @@ from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.repositories.device_detail_repository import DeviceDetailRepository
+from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
 from netconsole.services.ac.mesh_link_resident_polling_service import (
@@ -143,6 +145,8 @@ _SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
 DESKTOP_SESSION_HEADER = "x-netconsole-session"
 _DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS = 1.0
+_COLLECT_RUN_RECOVERY_GRACE_SECONDS = 5 * 60 + 1
+_COLLECT_RUN_RECOVERY_RETRY_SECONDS = 60.0
 _SLOW_API_THRESHOLD_MS = 250.0
 
 
@@ -748,6 +752,32 @@ def create_app(
             )
             else None
         )
+
+        def collect_run_recovery_busy() -> bool:
+            snapshot_factory = getattr(task_service, "active_task_snapshot", None)
+            if not callable(snapshot_factory):
+                return True
+            try:
+                snapshot = snapshot_factory()
+                return any(
+                    int(snapshot.get(field, 0) or 0) > 0
+                    for field in ("active_tasks", "active_workers")
+                )
+            except Exception as exc:
+                app_logger.log_warning(
+                    "COLLECT_RUN_ORPHAN_RECOVERY_BUSY_CHECK_FAILED",
+                    f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+                )
+                return True
+
+        collect_run_recovery_task = asyncio.create_task(
+            _schedule_collect_run_recovery(
+                paths,
+                site_name,
+                should_continue=lambda: bool(app.state.accepting_work),
+                is_busy=collect_run_recovery_busy,
+            )
+        )
         deferred_start_task: asyncio.Task[None] | None = None
         try:
             if defer_runtime_start:
@@ -787,6 +817,8 @@ def create_app(
             if auto_cleanup_task is not None:
                 auto_cleanup_task.cancel()
                 await asyncio.gather(auto_cleanup_task, return_exceptions=True)
+            collect_run_recovery_task.cancel()
+            await asyncio.gather(collect_run_recovery_task, return_exceptions=True)
             if ground_unattended_supervisor is not None:
                 try:
                     await asyncio.to_thread(ground_unattended_supervisor.close)
@@ -1378,11 +1410,67 @@ def _initialize_active_site_database(
     _emit_startup_stage(startup_stage, "active_site_database_initializing")
     database.initialize()
     _emit_startup_stage(startup_stage, "active_site_database_ready")
+    _recover_orphaned_collect_runs(database, site_name)
     # Database.initialize() may normalize legacy rows and advance the source
     # revision; refresh the read-only identity index before API consumers use it.
     _emit_startup_stage(startup_stage, "ap_identity_index_initializing")
     ApIdentityQueryService(database).ensure_index("backend_startup")
     _emit_startup_stage(startup_stage, "ap_identity_index_ready")
+
+
+def _recover_orphaned_collect_runs(
+    database: Database,
+    site_name: str,
+    *,
+    stale_before: str | None = None,
+) -> list[dict[str, object | None]]:
+    recovery_cutoff = stale_before or (
+        datetime.now() - timedelta(minutes=5)
+    ).isoformat(timespec="seconds")
+    recovered_runs = DeviceFactRepository(database).recover_orphaned_collect_runs(
+        stale_before=recovery_cutoff,
+    )
+    if recovered_runs:
+        app_logger.log_warning(
+            "COLLECT_RUN_ORPHAN_RECOVERY",
+            f"site={site_name} recovered={len(recovered_runs)} "
+            f"stale_before={recovery_cutoff}",
+        )
+    return recovered_runs
+
+
+def _recover_active_site_collect_runs(
+    paths: PathResolver,
+    site_name: str,
+) -> list[dict[str, object | None]]:
+    database = Database(paths.site_db_path(site_name))
+    if not database.exists():
+        return []
+    return _recover_orphaned_collect_runs(database, site_name)
+
+
+async def _schedule_collect_run_recovery(
+    paths: PathResolver,
+    site_name: str,
+    *,
+    should_continue: Callable[[], bool],
+    is_busy: Callable[[], bool],
+    grace_seconds: float = _COLLECT_RUN_RECOVERY_GRACE_SECONDS,
+    retry_seconds: float = _COLLECT_RUN_RECOVERY_RETRY_SECONDS,
+) -> None:
+    await asyncio.sleep(max(0.0, float(grace_seconds)))
+    while should_continue():
+        if not is_busy():
+            try:
+                await asyncio.to_thread(_recover_active_site_collect_runs, paths, site_name)
+            except Exception as exc:
+                app_logger.log_warning(
+                    "COLLECT_RUN_ORPHAN_RECOVERY_RECHECK_FAILED",
+                    f"site={site_name} error={exc.__class__.__name__}: "
+                    f"{_safe_error_message(str(exc))}",
+                )
+            return
+        await asyncio.sleep(max(0.0, float(retry_seconds)))
 
 
 def _emit_startup_stage(

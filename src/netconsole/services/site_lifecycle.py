@@ -220,6 +220,18 @@ def _is_sqlite_sidecar(path: Path) -> bool:
     return path.name.casefold().endswith(tuple(_TRANSIENT_SUFFIXES))
 
 
+def _latest_modified_at(paths: list[Path]) -> str:
+    values: list[str] = []
+    for path in paths:
+        try:
+            values.append(datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds"))
+        except OSError:
+            # SQLite may remove a transient -wal/-shm file after enumeration
+            # while the audit is closing its read-only connection.
+            continue
+    return max(values, default="")
+
+
 def _finalize_sqlite_files(root: Path) -> None:
     gc.collect()
     for path in root.rglob("*"):
@@ -487,7 +499,7 @@ class SiteAuditService:
             "total_size": sum(item["size"] for item in file_manifest),
             "file_count": len(files),
             "directory_count": len([path for path in directory.rglob("*") if path.is_dir()]),
-            "latest_modified_at": max((datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds") for path in files), default=""),
+            "latest_modified_at": _latest_modified_at(files),
             "is_current": current,
             "is_registered": record is not None,
             "is_referenced_by_bootstrap": is_bootstrap,

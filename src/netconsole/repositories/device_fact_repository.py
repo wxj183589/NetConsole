@@ -1218,6 +1218,55 @@ class DeviceFactRepository:
             conn.commit()
         return self.get_collect_run(collect_run_uuid)
 
+    def recover_orphaned_collect_runs(
+        self,
+        *,
+        stale_before: str,
+        error_message: str = "启动恢复：采集运行超过宽限期且未完成",
+    ) -> list[dict[str, object | None]]:
+        """Terminalize stale runs left by a process that no longer exists.
+
+        This is intentionally a repository-owned lifecycle operation.  It only
+        considers rows that are still ``running`` and older than the caller's
+        verified grace-period cutoff, so a just-started collection is left for
+        its worker to finish normally.
+        """
+
+        cutoff = str(stale_before or "").strip()
+        if not cutoff:
+            raise ValueError("stale_before is required")
+        ended_at = self._now()
+        recovered: list[dict[str, object | None]] = []
+        with self.database.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM collect_runs
+                WHERE status = 'running' AND started_at < ?
+                ORDER BY started_at, collect_run_uuid
+                """,
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                cursor = conn.execute(
+                    """
+                    UPDATE collect_runs
+                    SET status = 'failed', ended_at = ?, error_message = ?
+                    WHERE collect_run_uuid = ? AND status = 'running'
+                    """,
+                    (ended_at, error_message, row["collect_run_uuid"]),
+                )
+                if cursor.rowcount:
+                    item = dict(row)
+                    item.update(
+                        status="failed",
+                        ended_at=ended_at,
+                        error_message=error_message,
+                    )
+                    recovered.append(item)
+            conn.commit()
+        return recovered
+
     @classmethod
     def _payload(cls, fields: tuple[str, ...], data: dict[str, object | None]) -> dict[str, object | None]:
         return {field: data.get(field) for field in fields}

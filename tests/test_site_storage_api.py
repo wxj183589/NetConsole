@@ -12,7 +12,7 @@ from netconsole.core.runtime_environment import write_data_environment
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode, RuntimeMode
 from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
 from netconsole.models.task_state import TaskState
-from netconsole.services.site_lifecycle import SiteAuditService
+from netconsole.services.site_lifecycle import SiteAuditService, _latest_modified_at
 from netconsole.services import site_ssh_relay
 from netconsole.services.site_storage import (
     SitePackageService,
@@ -647,6 +647,21 @@ def test_site_audit_and_cleanup_prepare_are_redacted(tmp_path: Path) -> None:
         "recoverable",
         "can_delete",
     }
+
+
+def test_latest_modified_at_skips_file_removed_during_audit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    existing = tmp_path / "existing.db"
+    existing.touch()
+    vanished = tmp_path / "agents.db-shm"
+    original_stat = Path.stat
+
+    def stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == vanished:
+            raise FileNotFoundError(path)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    assert _latest_modified_at([vanished, existing])
 
 
 def test_cleanup_api_requires_audit_and_explicit_confirmation(tmp_path: Path) -> None:
