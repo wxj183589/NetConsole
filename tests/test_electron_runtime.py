@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from pathlib import Path
@@ -369,6 +370,43 @@ def test_active_site_storage_stages_are_emitted_before_slow_operations(monkeypat
         "active_site_database_ready",
         "ap_identity_index_initializing",
         "ap_identity_index_ready",
+    ]
+
+
+def test_delayed_collect_run_recovery_waits_for_idle_task_owner(monkeypatch) -> None:
+    from netconsole.backend.api import main as api_main
+
+    sleeps: list[float] = []
+    recovery_calls: list[tuple[object, tuple[object, ...]]] = []
+    state = {"continue": True, "busy": True}
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            state["busy"] = False
+
+    async def fake_to_thread(function, *args):
+        recovery_calls.append((function, args))
+        return []
+
+    monkeypatch.setattr(api_main.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(api_main.asyncio, "to_thread", fake_to_thread)
+    paths = SimpleNamespace()
+
+    asyncio.run(
+        api_main._schedule_collect_run_recovery(
+            paths,
+            "demo",
+            should_continue=lambda: state["continue"],
+            is_busy=lambda: state["busy"],
+            grace_seconds=301,
+            retry_seconds=60,
+        )
+    )
+
+    assert sleeps == [301, 60]
+    assert recovery_calls == [
+        (api_main._recover_active_site_collect_runs, (paths, "demo"))
     ]
 
 
