@@ -41,6 +41,37 @@ H3C_NETMIKO_DEVICE_TYPE = "hp_comware"
 H3C_TELNET_NETMIKO_DEVICE_TYPE = "hp_comware_telnet"
 ZTE_NETMIKO_DEVICE_TYPE = "zte_zxros"
 ZTE_TELNET_NETMIKO_DEVICE_TYPE = "zte_zxros_telnet"
+TELNET_NETMIKO_DEVICE_TYPES = frozenset(
+    {
+        H3C_TELNET_NETMIKO_DEVICE_TYPE,
+        ZTE_TELNET_NETMIKO_DEVICE_TYPE,
+    }
+)
+
+
+def _transport_protocol(
+    params: dict[str, object],
+    *,
+    protocol_override: str = "",
+) -> str:
+    """Resolve the transport without exposing protocol metadata to Netmiko.
+
+    The wrapper receives the protocol explicitly from the target builder.  The
+    device-type fallback keeps direct library callers and older tests safe,
+    while the unknown/default case remains fail-closed as SSH.
+    """
+
+    protocol = str(protocol_override or params.get("protocol") or "").strip().casefold()
+    if protocol == "telnet":
+        return "telnet"
+    if protocol == "ssh":
+        return "ssh"
+    device_type = str(params.get("device_type") or "").strip().casefold()
+    if device_type in TELNET_NETMIKO_DEVICE_TYPES:
+        return "telnet"
+    return "ssh"
+
+
 H3C_DEFAULT_ENCODING = "gb2312"
 H3C_FALLBACK_ENCODING = "utf-8"
 PROMPT_RE = re.compile(
@@ -133,6 +164,18 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
     relay_site_override = str(kwargs.pop("_netconsole_site_id", "") or "").strip()
     host_key_host_override = str(kwargs.pop("_netconsole_host_key_host", "") or "").strip()
     host_key_port_override = int(kwargs.pop("_netconsole_host_key_port", 0) or 0)
+    protocol_override = str(kwargs.pop("_netconsole_protocol", "") or "").strip()
+
+    def compatibility_connect(
+        handler: Callable[..., Any],
+        params: dict[str, object],
+    ) -> Any:
+        return _connect_with_compatibility(
+            handler,
+            params,
+            protocol_override=protocol_override,
+        )
+
     if "sock" not in kwargs:
         device_type = str(kwargs.get("device_type") or "").casefold()
         if device_type:
@@ -169,7 +212,7 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
                     ).connect(
                         kwargs,
                         raw_connect_handler=connect_handler,
-                        compatibility_connect=_connect_with_compatibility,
+                        compatibility_connect=compatibility_connect,
                     )
                     if not relay_config.enabled and getattr(connection, "_netconsole_ssh_mode", "") != "jump":
                         return _record_direct_host_key(
@@ -178,22 +221,24 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
                             relay_paths,
                             host_override=host_key_host_override,
                             port_override=host_key_port_override,
+                            protocol_override=protocol_override,
                         )
                     return connection
             except SiteSSHRelayError as exc:
                 # Standalone/library callers may not have a Site Registry yet;
                 # preserve the historical direct-SSH behavior in that case.
                 if exc.code == "SITE_NOT_FOUND":
-                    connection = _connect_with_compatibility(connect_handler, kwargs)
+                    connection = compatibility_connect(connect_handler, kwargs)
                     return _record_direct_host_key(
                         connection,
                         kwargs,
                         relay_paths,
                         host_override=host_key_host_override,
                         port_override=host_key_port_override,
+                        protocol_override=protocol_override,
                     )
                 raise
-    connection = _connect_with_compatibility(connect_handler, kwargs)
+    connection = compatibility_connect(connect_handler, kwargs)
     context = _SSH_CONNECTION_CONTEXT.get()
     paths = relay_paths_override if isinstance(relay_paths_override, PathResolver) else context.paths
     return _record_direct_host_key(
@@ -202,6 +247,7 @@ def ConnectHandler(**kwargs: object) -> Any:  # noqa: N802 - 保持 Netmiko 公�
         paths,
         host_override=host_key_host_override,
         port_override=host_key_port_override,
+        protocol_override=protocol_override,
     )
 
 
@@ -212,6 +258,7 @@ def _record_direct_host_key(
     *,
     host_override: str = "",
     port_override: int = 0,
+    protocol_override: str = "",
 ) -> Any:
     """Record the target server key for direct CLI connections.
 
@@ -221,7 +268,7 @@ def _record_direct_host_key(
     direct and Jump Host paths.
     """
 
-    if str(params.get("protocol") or "SSH").casefold() == "telnet":
+    if _transport_protocol(params, protocol_override=protocol_override) == "telnet":
         return connection
     if paths is None:
         # Library callers without a runtime context are not product consumers;
@@ -277,6 +324,8 @@ def _record_direct_host_key(
 def _connect_with_compatibility(
     connect_handler: Callable[..., Any],
     kwargs: dict[str, object],
+    *,
+    protocol_override: str = "",
 ) -> Any:
     """为所有 H3C CLI session 统一执行 normal -> legacy ssh-rsa 协商。"""
 
@@ -295,7 +344,10 @@ def _connect_with_compatibility(
             "negotiation_failed" if negotiation_failed else "failed",
             exc,
         )
-        if not negotiation_failed or not _legacy_ssh_rsa_allowed(normal_params):
+        if not negotiation_failed or not _legacy_ssh_rsa_allowed(
+            normal_params,
+            protocol_override=protocol_override,
+        ):
             raise
 
         legacy_params = _legacy_ssh_rsa_params(normal_params)
@@ -354,11 +406,15 @@ def _connect_with_compatibility(
         return connection
 
 
-def _legacy_ssh_rsa_allowed(params: dict[str, object]) -> bool:
+def _legacy_ssh_rsa_allowed(
+    params: dict[str, object],
+    *,
+    protocol_override: str = "",
+) -> bool:
     return (
         str(params.get("device_type") or "").strip().casefold()
         == H3C_NETMIKO_DEVICE_TYPE.casefold()
-        and str(params.get("protocol") or "SSH").strip().casefold() != "telnet"
+        and _transport_protocol(params, protocol_override=protocol_override) != "telnet"
     )
 
 
@@ -1294,6 +1350,7 @@ def sanitize_sensitive_text(text: str, device: Device | None = None) -> str:
 
 def _netmiko_params(target: ConnectionTarget) -> dict[str, object]:
     params: dict[str, object] = {
+        "_netconsole_protocol": target.protocol,
         "device_type": target.device_type,
         "host": target.host,
         "username": target.username,
