@@ -731,3 +731,37 @@ def test_get_collect_runs_reads_multiple_attempts(tmp_path):
     assert attempts[first["collect_run_uuid"]]["status"] == "failed"
     assert attempts[second["collect_run_uuid"]]["status"] == "success"
     assert "missing" not in attempts
+
+
+def test_recover_orphaned_collect_runs_only_terminalizes_stale_running_rows(tmp_path):
+    repository = make_repository(tmp_path)
+    stale = repository.create_collect_run(
+        {
+            "collect_type": "device_details",
+            "status": "running",
+            "started_at": "2026-09-20T09:00:00",
+        }
+    )
+    recent = repository.create_collect_run(
+        {
+            "collect_type": "device_details",
+            "status": "running",
+            "started_at": "2026-09-20T10:59:00",
+        }
+    )
+    successful = repository.create_collect_run(
+        {
+            "collect_type": "device_details",
+            "status": "success",
+            "started_at": "2026-09-20T09:00:00",
+        }
+    )
+
+    recovered = repository.recover_orphaned_collect_runs(
+        stale_before="2026-09-20T10:00:00",
+    )
+
+    assert [item["collect_run_uuid"] for item in recovered] == [stale["collect_run_uuid"]]
+    assert repository.get_collect_run(stale["collect_run_uuid"])["status"] == "failed"
+    assert repository.get_collect_run(recent["collect_run_uuid"])["status"] == "running"
+    assert repository.get_collect_run(successful["collect_run_uuid"])["status"] == "success"

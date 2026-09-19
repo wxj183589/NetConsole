@@ -337,6 +337,14 @@ def test_active_site_storage_stages_are_emitted_before_slow_operations(monkeypat
         def initialize(self) -> None:
             assert stages[-1] == "active_site_database_initializing"
 
+    class SlowFactRepository:
+        def __init__(self, _database) -> None:
+            pass
+
+        def recover_orphaned_collect_runs(self, *, stale_before: str):
+            assert stale_before
+            return []
+
     class SlowIdentityService:
         def __init__(self, _database) -> None:
             pass
@@ -347,6 +355,7 @@ def test_active_site_storage_stages_are_emitted_before_slow_operations(monkeypat
 
     paths = SimpleNamespace(site_db_path=lambda _site_name: Path("slow-storage.sqlite"))
     monkeypatch.setattr(api_main, "Database", SlowDatabase)
+    monkeypatch.setattr(api_main, "DeviceFactRepository", SlowFactRepository)
     monkeypatch.setattr(api_main, "ApIdentityQueryService", SlowIdentityService)
 
     api_main._initialize_active_site_database(
