@@ -7,6 +7,7 @@ import re
 import secrets
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
 from pathlib import Path
 from time import perf_counter
@@ -63,6 +64,7 @@ from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.repositories.device_detail_repository import DeviceDetailRepository
+from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
 from netconsole.services.ac.mesh_link_resident_polling_service import (
@@ -1378,6 +1380,16 @@ def _initialize_active_site_database(
     _emit_startup_stage(startup_stage, "active_site_database_initializing")
     database.initialize()
     _emit_startup_stage(startup_stage, "active_site_database_ready")
+    recovery_cutoff = (datetime.now() - timedelta(minutes=5)).isoformat(timespec="seconds")
+    recovered_runs = DeviceFactRepository(database).recover_orphaned_collect_runs(
+        stale_before=recovery_cutoff,
+    )
+    if recovered_runs:
+        app_logger.log_warning(
+            "COLLECT_RUN_ORPHAN_RECOVERY",
+            f"site={site_name} recovered={len(recovered_runs)} "
+            f"stale_before={recovery_cutoff}",
+        )
     # Database.initialize() may normalize legacy rows and advance the source
     # revision; refresh the read-only identity index before API consumers use it.
     _emit_startup_stage(startup_stage, "ap_identity_index_initializing")
