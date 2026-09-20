@@ -81,6 +81,27 @@ def test_job_center_point_table_generate_details_are_whitelisted() -> None:
     }
 
 
+def test_job_center_trackside_details_expose_requested_and_effective_concurrency() -> None:
+    details = JobCenterQueryService._task_details(
+        "trackside_ap_optical_update",
+        {},
+        {
+            "requested_concurrency": 512,
+            "effective_concurrency": 64,
+            "platform_concurrency_limit": 64,
+            "fit_ap_effective_concurrency": 64,
+            "raw_rows": [{"password": "must-not-leak"}],
+        },
+    )
+
+    assert details == {
+        "requested_concurrency": 512,
+        "effective_concurrency": 64,
+        "platform_concurrency_limit": 64,
+        "fit_ap_effective_concurrency": 64,
+    }
+
+
 class _FakeExportProcess:
     stdout = None
 

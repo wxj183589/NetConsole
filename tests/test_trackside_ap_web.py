@@ -1485,6 +1485,8 @@ def test_trackside_update_job_calls_existing_collection_service(monkeypatch, tmp
     assert result["skipped"][0]["reason"] == "no_station_switches"
     assert result["requested_concurrency"] == 1000
     assert result["effective_concurrency"] == 2
+    assert result["platform_concurrency_limit"] == 64
+    assert result["fit_ap_effective_concurrency"] == 2
     assert result["warning_count"] == 1
     assert result["warning_reason_counts"] == {
         "switch_interface_snapshot_invalid": 1
