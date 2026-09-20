@@ -223,7 +223,10 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 - 配置采集任务属于配置采集中心的对等范围，不在 AC 页扩展新设备命令；
 - Electron 原生另存为、打开文件/目录和真实 AC 工作流人工验收。
 
-上述能力和真实设备验收完成前保持 `PARTIAL / REAL_DEVICE_PENDING`，不得标记 `COMPLETE`。
+上述未覆盖的写动作、导出、外部终端和 Electron 原生动作仍保持 `PENDING_REAL_DEVICE` 或
+`PENDING_NO_ENV`，不得标记 `COMPLETE`。HZ10 的 AC/FIT-AP 只读采集、FIT-AP Telnet/23
+和相关 GUI 查看/刷新已有 `MANUAL_ACCEPTANCE=PASS` 的限定范围证据；connection-record、
+radio type 和整条设备链路不再笼统归为 pending，具体拆分见[真实设备能力矩阵](../development/REAL_DEVICE_CAPABILITY_MATRIX_20260920.md)。
 
 ## 定向验证
 
@@ -237,4 +240,4 @@ pnpm exec vitest run src/views/ac-management/AcManagementView.test.ts src/views/
 pnpm exec vue-tsc --noEmit -p tsconfig.app.json
 ```
 
-自动测试不连接真实 AC。connection-record、radio type 与整条设备链路标记 `REAL_DEVICE_PENDING`，不得用 Fake 结果替代现场验收。
+自动测试不连接真实 AC。没有对应现场证据的能力仍标记 `PENDING_REAL_DEVICE`，不得用 Fake 结果替代现场验收；HZ10 已通过的只读子能力仅限其记录的站点、设备和版本范围。

@@ -76,7 +76,7 @@ Customer 或 `both` 构建统一调用 Core 的客户版维护密码解析器：
 
 仓库内 `dist/` 只是 Renderer、Electron、PyInstaller、Agent、日志和 smoke 的可再生构建输出；`D:\study\NetConsole-Workspace\release` 是唯一正式制品库。普通构建清理可以删除整个 `dist/`，但不得触碰外部正式制品库。
 
-脚本会阻止脏工作树、HEAD 未与 upstream 对齐、Git/Node/Corepack/pnpm/`.venv` 不可用、依赖或磁盘预检失败以及并行打包。`preflight` 只执行环境与 Git 检查，不安装依赖、不运行测试、不生成安装包。摘要明确记录“自动构建和包内校验已通过；真实 Windows GUI 安装验收仍为 PENDING。”，自动成功不等同于真实安装验收通过。
+脚本会阻止脏工作树、HEAD 未与 upstream 对齐、Git/Node/Corepack/pnpm/`.venv` 不可用、依赖或磁盘预检失败以及并行打包。`preflight` 只执行环境与 Git 检查，不安装依赖、不运行测试、不生成安装包。摘要明确区分“自动构建和包内校验已通过”与真实 Windows 人工验收；当前 `MANUAL_GUI_ACCEPTANCE=PASS`，但修复/升级/卸载的完整安装器生命周期仍为 `PENDING_REAL_DEVICE`，自动成功不等同于完整生命周期验收通过。
 
 输出名称包含版本类型：
 

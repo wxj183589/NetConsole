@@ -55,12 +55,13 @@
 | Parser contract | H3C 结构化 parser；ZTE `netconsole.zte.zxr10-switch.v3` |
 | DTO contract | `netconsole.device-inventory.v1` / ZTE `netconsole.device-detail.v1` |
 | 样例证据 | Comware `7.1.070` fixture；车载 MR 只读核心命令合同；ZXR10 5960X-ES V2.00.20.03 手册 fixture；C89E-4 V1.9.0 脱敏实机 fixture |
-| 真实设备状态 | H3C switch/无线控制器/MR `REAL_DEVICE_PENDING`；ZTE 固定七命令为 `REAL_DEVICE_VERIFIED`（仅两台 C89E-4 V1.9.0），光模块 detail 仅保留为显式 opt-in 的 `REAL_DEVICE_PENDING` 诊断能力 |
+| 真实设备状态 | H3C switch/无线控制器为 HZ10/Comware V9 限定范围 `PASS_WITH_LIMITATION`，MR 仍 `PENDING_REAL_DEVICE`；ZTE 固定命令为 C89E-4 V1.9.0 限定范围 `PASS_WITH_LIMITATION`，光模块 detail 仍为 `PENDING_REAL_DEVICE` 诊断能力 |
 
 `device.sftp.enable` 当前使用 H3C Comware V7 的交换机、无线 AC 和车载 MR 三类 family Profile；V9
-只读能力已进入 H3C Comware major-family resolver，SFTP controlled_write 仍保持既有 V7-only
-受控边界。经过证实的 Release 差异可以用 exact override 覆盖，不能把 override 当作版本 allow-list。风险为
-`controlled_write`，真实设备状态均为 `REAL_DEVICE_PENDING`。命令顺序固定为：
+只读能力已进入 H3C Comware major-family resolver，SFTP controlled_write 使用已验证的 V7/V9
+family-compatible 受控边界。经过证实的 Release 差异可以用 exact override 覆盖，不能把 override 当作版本 allow-list。风险为
+`controlled_write`；H3C WX3540X / Comware V9 已有限定范围真实验证，MR 和其他未覆盖设备仍为
+`PENDING_REAL_DEVICE`。命令顺序固定为：
 
 ```text
 system-view

@@ -17,8 +17,15 @@
 - 文件管理前台与后台下载统一使用 canonical Site Relay 身份；Relay 开启时浏览、SFTP 下载、重试和 SCP fallback 均忽略 device tunnel，并记录不含敏感信息的 `FILE_TRANSFER_ROUTE_SELECTED` 路由审计。
 - Jump Host 与 Target Host Key 均自动登记/替换；系统设置保留“重新获取指纹”和“删除指纹”用于现场排障，但不作为正常连接前置步骤。
 - SFTP subsystem 未开启时，对已确认支持的 H3C Comware V7/V9 自动提交 `device.sftp.enable`，成功后自动 reconnect，用户无需再次点击连接。
-- H3C WX3540X / Comware V9 的 SFTP 自动开启已经经过真实设备验证 PASS；Site SSH Relay 真实 Jump Host 现场验证仍为 `REAL_DEVICE_SSH_RELAY=PENDING`。
+- H3C WX3540X / Comware V9 的 SFTP 自动开启已经经过真实设备验证 PASS；Site SSH Relay 真实 Jump Host 当前为 `PENDING_NO_ENV`，不是产品失败。
 - WinSCP Site Relay=`NOT_COMPLETED`；SecureCRT / Xshell / PuTTY=`OUT_OF_SCOPE`；独立 Agent Site Relay=`OUT_OF_SCOPE`。本次合并暂不重新打包。
+
+### 当前真实设备与人工验收状态
+
+- 当前能力矩阵见 [真实设备能力矩阵](./development/REAL_DEVICE_CAPABILITY_MATRIX_20260920.md)。正式值按能力、设备型号、Release 和现场范围拆分，不把自动化结果外推为全产品 PASS。
+- HZ10 最终现场口径为 `HZ10_FIELD_VALIDATION=PASS`、`HZ10_PRODUCTION_ACCEPTED=YES`；Stage 4 的 FIT-AP 为 `874/627/0/247`，247 条为 `connection_incomplete` 结构化跳过。
+- `MANUAL_GUI_ACCEPTANCE=PASS` 仅表示已有人工 GUI/安装启动运行证据；真实页面截图的完整尺寸/缩放/主题/中英文矩阵仍为 `FULL_VISUAL_MATRIX=PENDING`。
+- 安装器的安装启动与运行已有人工证据，但修复、升级、卸载的完整生命周期仍独立 pending；不得用 GUI PASS 替代生命周期 PASS。
 
 ## v1.5.8 - 2026-09-13
 

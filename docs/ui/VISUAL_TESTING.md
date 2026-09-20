@@ -11,4 +11,4 @@
 - 操作按钮完整且可聚焦；
 - 页面卸载后无监听器或测量任务残留。
 
-当前公共表格自动视觉矩阵已完成；设备管理、设备详情、FIT-AP、Online MR、任务中心、Traffic、Agent 和系统设置的真实页面截图基线，以及中/英文、浅/深主题组合仍为 `PENDING`。真实 Electron 人工验收继续作为独立门禁。
+当前公共表格自动视觉矩阵已完成；当前已有 `MANUAL_GUI_ACCEPTANCE=PASS` 的人工 GUI/运行证据，但设备管理、设备详情、FIT-AP、Online MR、任务中心、Traffic、Agent 和系统设置的真实页面截图基线，以及中/英文、浅/深主题组合仍为 `FULL_VISUAL_MATRIX=PENDING`。二者是不同门禁，真实 Electron 人工验收继续作为独立证据维度。

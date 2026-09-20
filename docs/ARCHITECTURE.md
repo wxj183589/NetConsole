@@ -75,7 +75,7 @@ flowchart LR
 - 系统设置仍是主题与强调色的唯一持久化事实源，不新增 localStorage、Pinia 或 Electron 配置副本。
 - `light`、`dark`、`auto` 统一作用于侧栏、顶部栏、内容区、Element Plus 浮层和图表；当前不提供隐式“深色侧栏 + 浅色内容”模式。
 - Renderer 只向受信 Main 报告解析后的 `light|dark`，不能传任意颜色或窗口参数；Main 只映射到预定义安全背景色。
-- 自动测试已经覆盖 Token、主题事件和严格 IPC 契约，但 Electron 多尺寸、多缩放和 Windows 跟随系统的最终视觉验收仍为 `PENDING`，不能由单元测试替代。
+- 自动测试已经覆盖 Token、主题事件和严格 IPC 契约；当前 `MANUAL_GUI_ACCEPTANCE=PASS`，但 Electron 多尺寸、多缩放、主题和中英文真实页面的 `FULL_VISUAL_MATRIX=PENDING`，不能由单元测试替代。
 
 ## 数据与资源
 
@@ -88,7 +88,7 @@ flowchart LR
 
 ## 当前完成边界
 
-“Qt 已删除”只表示技术栈和启动架构完成收口，不表示所有业务都通过人工或真实设备验收。当前模块状态以 Navigation Registry、Feature Registry、生产代码、测试和[正式包功能矩阵](./release/PACKAGED_FEATURE_MATRIX.md)为准；冻结迁移矩阵只用于解释历史去向。自动测试不能把 `PARTIAL`、`IMPLEMENTED_UNVERIFIED` 或 `REAL_DEVICE_PENDING` 提升为 `COMPLETE`。
+“Qt 已删除”只表示技术栈和启动架构完成收口，不表示所有业务都通过人工或真实设备验收。当前模块状态以 Navigation Registry、Feature Registry、生产代码、测试、[真实设备能力矩阵](./development/REAL_DEVICE_CAPABILITY_MATRIX_20260920.md)和[正式包功能矩阵](./release/PACKAGED_FEATURE_MATRIX.md)为准；冻结迁移矩阵只用于解释历史去向。自动测试不能把 `PARTIAL`、`IMPLEMENTED_UNVERIFIED` 或 `REAL_DEVICE_PENDING` 提升为 `COMPLETE`。
 
 ## 演进约束
 

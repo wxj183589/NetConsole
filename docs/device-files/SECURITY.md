@@ -14,5 +14,6 @@
   Huawei、ZTE、未知厂商/平台/角色和无法确认 major 均 fail closed。
 - 任务、DTO、事件和日志不得包含密码、Token、密钥字节或未脱敏命令回显。
 
-真实交换机已有受控启用和 SFTP 读取证据；AC、MR、现场 Host Key 轮换及其它未连接的真实设备范围
-继续标记为 `REAL_DEVICE_PENDING`。
+真实交换机已有受控启用和 SFTP 读取证据；H3C WX3540X / Comware V9 属于限定范围
+`PASS_WITH_LIMITATION`。真实 MR、现场 Host Key 轮换和未连接的设备范围继续保持
+`PENDING_REAL_DEVICE`，Site Relay 因缺少 Jump Host 环境保持 `PENDING_NO_ENV`。

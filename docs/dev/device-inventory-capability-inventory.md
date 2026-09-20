@@ -54,10 +54,10 @@ DeviceDetailApplicationService.refresh
 
 | Profile | Selector | Parser | DTO contract | 现场验证状态 |
 |---|---|---|---|---|
-| `h3c.comware.switch.generic.device-inventory.v1` | H3C / switch / comware / `*` | `netconsole.h3c.device-inventory.v1` | `netconsole.device-inventory.v1` | `REAL_DEVICE_PENDING` |
-| `h3c.comware.wireless_controller.generic.device-inventory.v1` | H3C / wireless_controller / comware / `*` | `netconsole.h3c.device-inventory.v1` | `netconsole.device-inventory.v1` | `REAL_DEVICE_PENDING` |
-| `zte.zxr10.switch.generic.device-inventory.v3` | ZTE / switch / zxr10 / `*` | `netconsole.zte.zxr10-switch.v3` | `netconsole.device-detail.v1` | `REAL_DEVICE_VERIFIED` |
-| `h3c.comware.mobile_router.generic.device-inventory.v1` | H3C / mobile_router / comware / `*` | `netconsole.h3c.mobile-router-device-inventory.v1` | `netconsole.device-inventory.v1` | `REAL_DEVICE_PENDING` |
+| `h3c.comware.switch.generic.device-inventory.v1` | H3C / switch / comware / `*` | `netconsole.h3c.device-inventory.v1` | `netconsole.device-inventory.v1` | `PASS_WITH_LIMITATION`（HZ10 / Comware V9 范围） |
+| `h3c.comware.wireless_controller.generic.device-inventory.v1` | H3C / wireless_controller / comware / `*` | `netconsole.h3c.device-inventory.v1` | `netconsole.device-inventory.v1` | `PASS_WITH_LIMITATION`（HZ10 / Comware V9 范围） |
+| `zte.zxr10.switch.generic.device-inventory.v3` | ZTE / switch / zxr10 / `*` | `netconsole.zte.zxr10-switch.v3` | `netconsole.device-detail.v1` | `PASS_WITH_LIMITATION`（C89E-4 V1.9.0 范围） |
+| `h3c.comware.mobile_router.generic.device-inventory.v1` | H3C / mobile_router / comware / `*` | `netconsole.h3c.mobile-router-device-inventory.v1` | `netconsole.device-inventory.v1` | `PENDING_REAL_DEVICE` |
 
 Profile 中的 `session.pagination` 只是分页准备步骤，不产生业务 DTO；它不单独构成
 迁移候选。`include_zte_optical_detail=True` 产生的
@@ -278,8 +278,8 @@ FIRST_MIGRATION_CANDIDATE=interface.discovery
    语义可能漂移。
 3. DTO 字段变化：必需 identity/category/severity 字段、归一化名称和 vendor 字段
    不能因 Capability 抽取而改变。
-4. 真实设备版本差异：当前 H3C Profile 仍为 `REAL_DEVICE_PENDING`；ZTE 现场片段
-   只覆盖文件中明确存在的命令。
+4. 真实设备版本差异：H3C 当前仅有 HZ10 / Comware V9 限定范围证据；ZTE 现场片段
+   只覆盖文件中明确存在的 C89E-4 V1.9.0 命令。
 5. Golden 不足：Synthetic 和单个 C89E-4 `REAL_CAPTURE` 不能代表全部平台、版本和
    partial/error 组合。
 6. 回滚困难：光模块和 LLDP 的 current/recent/history、保留上一快照及删除遗漏项
