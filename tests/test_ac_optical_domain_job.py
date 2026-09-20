@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -15,6 +16,7 @@ from netconsole.services.ac.ac_optical_service import AcOpticalRefreshCancelled,
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services import h3c_ac_collect_service
 from netconsole.services.h3c_ac_collect_service import FitApOpticalCollectResult
+from netconsole.services.ac.fit_ap_optical_concurrency import clamp_fit_ap_optical_concurrency
 from netconsole.services.job_center.handlers import ac_jobs
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.offline_ap_ledger import OFFLINE_AP_STATUS_TEXT
@@ -263,6 +265,56 @@ def test_fit_ap_optical_elapsed_starts_when_worker_executes(monkeypatch: pytest.
 
     assert row["status"] == "success"
     assert elapsed_ms == 1250
+
+
+def test_fit_ap_optical_requested_512_never_exceeds_effective_worker_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    resources = [
+        {"ap_uuid": f"ap-{index}", "ap_name": f"AP-{index}", "ap_ip": f"192.0.2.{index + 1}"}
+        for index in range(80)
+    ]
+    effective = clamp_fit_ap_optical_concurrency(512, len(resources), platform_limit=64)
+    active = 0
+    peak_active = 0
+    lock = threading.Lock()
+    all_workers_started = threading.Event()
+
+    def fake_collect(*_args, **_kwargs):
+        nonlocal active, peak_active
+        with lock:
+            active += 1
+            peak_active = max(peak_active, active)
+            if active == effective:
+                all_workers_started.set()
+        all_workers_started.wait(timeout=5)
+        with lock:
+            active -= 1
+        return {"status": "success"}, 0
+
+    monkeypatch.setattr(
+        h3c_ac_collect_service,
+        "_collect_single_fit_ap_optical_timed",
+        fake_collect,
+    )
+
+    rows = h3c_ac_collect_service._collect_fit_ap_optical_round(
+        _device(),
+        resources,
+        "demo",
+        "run-512",
+        tmp_path,
+        PathResolver(tmp_path),
+        concurrency=effective,
+        should_cancel=lambda: False,
+        progress_round=lambda _completed, _total: None,
+    )
+
+    assert effective == 64
+    assert all_workers_started.is_set()
+    assert len(rows) == len(resources)
+    assert peak_active <= effective
 
 
 def test_ac_optical_service_returns_structured_failure_and_checks_cancel(tmp_path: Path) -> None:

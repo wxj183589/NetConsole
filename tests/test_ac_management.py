@@ -6103,7 +6103,7 @@ def test_trackside_fit_ap_default_collection_enumerates_all_h3c_ac_roles(
         )
     )
     resource_calls: list[str] = []
-    optical_calls: list[tuple[str, int, int]] = []
+    optical_calls: list[tuple[str, int, int, int]] = []
     progress_events: list[dict[str, object]] = []
 
     def fake_resource_collect(device, *_args, **_kwargs):
@@ -6115,9 +6115,18 @@ def test_trackside_fit_ap_default_collection_enumerates_all_h3c_ac_roles(
         )
         return SimpleNamespace(success=True, error_message="")
 
-    def fake_optical_collect(*, ac_device, max_workers, concurrency_platform_limit, **_kwargs):
+    def fake_optical_collect(
+        *,
+        ac_device,
+        max_workers,
+        concurrency_platform_limit,
+        requested_concurrency,
+        **_kwargs,
+    ):
         device_uuid = str(ac_device.device_uuid)
-        optical_calls.append((device_uuid, max_workers, concurrency_platform_limit))
+        optical_calls.append(
+            (device_uuid, max_workers, concurrency_platform_limit, requested_concurrency)
+        )
         return SimpleNamespace(success=True, ac_device_uuid=device_uuid, optical_rows=[])
 
     monkeypatch.setattr(
@@ -6142,8 +6151,12 @@ def test_trackside_fit_ap_default_collection_enumerates_all_h3c_ac_roles(
 
     expected = {str(ac_a.device_uuid), str(ac_b.device_uuid)}
     assert set(resource_calls) == expected
-    assert {device_uuid for device_uuid, _max_workers, _platform_limit in optical_calls} == expected
-    assert {(max_workers, platform_limit) for _device_uuid, max_workers, platform_limit in optical_calls} == {(512, 512)}
+    assert {device_uuid for device_uuid, _max_workers, _platform_limit, _requested in optical_calls} == expected
+    expected_limit = trackside_optical_collection.fit_ap_optical_platform_concurrency_limit()
+    assert {
+        (max_workers, platform_limit, requested)
+        for _device_uuid, max_workers, platform_limit, requested in optical_calls
+    } == {(expected_limit, expected_limit, 512)}
     assert len(resource_calls) == len(optical_calls) == 2
     assert total == 2
     assert len(results) == 2
@@ -6304,6 +6317,7 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
         )
     )
     FakeOpticalConnection.instances = []
+    progress_events: list[dict[str, object]] = []
     monkeypatch.setattr(
         trackside_optical_collection.netmiko_connection,
         "ConnectHandler",
@@ -6316,12 +6330,18 @@ def test_trackside_optical_collection_runs_commands_writes_database_and_skips_ra
         PathResolver(tmp_path),
         [],
         concurrency=concurrency,
+        progress_callback=lambda _current, _total, details: progress_events.append(details),
     )
 
-    assert result.concurrency == concurrency
+    platform_limit = trackside_optical_collection.fit_ap_optical_platform_concurrency_limit()
+    planning = next(event for event in progress_events if event.get("event") == "target_planning")
+    assert planning["requested_concurrency"] == concurrency
+    assert planning["effective_concurrency"] == min(concurrency, platform_limit)
+    assert planning["platform_concurrency_limit"] == platform_limit
+    assert result.concurrency == min(concurrency, platform_limit)
     assert result.requested_concurrency == concurrency
     assert result.effective_concurrency == 2
-    assert result.platform_concurrency_limit == 512
+    assert result.platform_concurrency_limit == platform_limit
     assert result.success_count == 1
     assert result.failed_count == 1
     assert result.failure_reason_counts == {"device_collection_failed": 1}

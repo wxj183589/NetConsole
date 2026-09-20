@@ -103,6 +103,15 @@ const currentApProgress = computed(() => {
   const total = numberDetail('fit_ap_total', numberDetail('total', 0))
   return total ? `${completed} / ${total}` : '--'
 })
+const tracksideConcurrencySummary = computed(() => {
+  if (store.selected?.type !== 'trackside_ap_optical_update') return null
+  const requested = finiteDetail('requested_concurrency')
+  const effective = finiteDetail('effective_concurrency')
+  const platformLimit = finiteDetail('platform_concurrency_limit')
+  const fitApEffective = finiteDetail('fit_ap_effective_concurrency')
+  if (requested === null && effective === null && platformLimit === null && fitApEffective === null) return null
+  return { requested, effective, platformLimit, fitApEffective }
+})
 const selectedBusinessStatus = computed(() => (
   String(store.selected?.business_status || selectedDetails.value.status || '').toUpperCase()
 ))
@@ -497,6 +506,11 @@ function numberDetail(key: string, fallback = 0): number {
   return Number.isFinite(value) ? value : fallback
 }
 
+function finiteDetail(key: string): number | null {
+  const value = Number(selectedDetails.value[key])
+  return Number.isFinite(value) ? value : null
+}
+
 function phaseLabel(value: string): string {
   const labels: Record<string, string> = {
     fit_ap_optical: 'AP 侧光衰采集',
@@ -669,6 +683,12 @@ function handleClosed(): void {
           <el-descriptions-item label="状态 / 阶段">{{ store.selected.lifecycle_status || store.selected.status }} / {{ store.selected.phase || '--' }}</el-descriptions-item>
           <el-descriptions-item v-if="selectedBusinessStatus" :label="t('job_center.business_result.label', '业务结果')">{{ businessStatusLabel }}</el-descriptions-item>
           <el-descriptions-item v-if="selectedBusinessStatus" :label="t('job_center.business_result.counts', '成功 / 失败 / 跳过 / 告警')">{{ selectedBusinessCounts }}</el-descriptions-item>
+          <template v-if="tracksideConcurrencySummary">
+            <el-descriptions-item :label="t('job_center.concurrency.requested', '请求并发')">{{ tracksideConcurrencySummary.requested ?? '--' }}</el-descriptions-item>
+            <el-descriptions-item :label="t('job_center.concurrency.effective', '实际并发')">{{ tracksideConcurrencySummary.effective ?? '--' }}</el-descriptions-item>
+            <el-descriptions-item v-if="tracksideConcurrencySummary.platformLimit !== null" :label="t('job_center.concurrency.platform_limit', '平台安全上限')">{{ tracksideConcurrencySummary.platformLimit }}</el-descriptions-item>
+            <el-descriptions-item v-if="tracksideConcurrencySummary.fitApEffective !== null" :label="t('job_center.concurrency.fit_ap_effective', 'FIT-AP 实际并发')">{{ tracksideConcurrencySummary.fitApEffective }}</el-descriptions-item>
+          </template>
           <el-descriptions-item v-if="selectedPrimaryFailureReason" :label="t('job_center.business_result.primary_failure_reason', '主要失败原因')" :span="2">{{ selectedPrimaryFailureReason }}</el-descriptions-item>
           <el-descriptions-item label="进度">
             {{ selectedResident ? residentProgressLabel(store.selected) : `${store.selected.progress}%` }}

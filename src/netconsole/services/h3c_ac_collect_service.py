@@ -1204,6 +1204,7 @@ def collect_h3c_fit_ap_optical(
     target_stations: list[str] | None = None,
     persist: bool = True,
     concurrency_platform_limit: int | None = None,
+    requested_concurrency: int | None = None,
 ) -> FitApOpticalCollectResult:
     progress = progress or (lambda _message: None)
     should_cancel = should_cancel or (lambda: False)
@@ -1217,7 +1218,10 @@ def collect_h3c_fit_ap_optical(
     run_dir = paths.trackside_ap_raw_dir(site_name) / "ac" / collect_run_uuid
     fit_ap_dir = run_dir / "fit_ap"
     settings = _fit_ap_optical_collect_settings(paths)
-    requested_concurrency = _fit_ap_optical_requested_concurrency(max_workers, settings)
+    requested_concurrency = _fit_ap_optical_requested_concurrency(
+        requested_concurrency if requested_concurrency is not None else max_workers,
+        settings,
+    )
     platform_concurrency_limit = max(
         1,
         int(concurrency_platform_limit or fit_ap_optical_platform_concurrency_limit()),

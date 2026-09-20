@@ -34,6 +34,7 @@ from netconsole.services import netmiko_connection
 from netconsole.services.ap_identity.normalizers import normalize_mac
 from netconsole.services.ac.fit_ap_optical_concurrency import (
     DEFAULT_FIT_AP_OPTICAL_CONCURRENCY,
+    fit_ap_optical_platform_concurrency_limit,
 )
 from netconsole.services.ac.ac_models import is_ac_device_type
 from netconsole.services.h3c_ac_collect_service import collect_h3c_ac_resources, collect_h3c_fit_ap_optical
@@ -655,8 +656,8 @@ def collect_trackside_optical(
         directory.mkdir(parents=True, exist_ok=True)
     started_at = _now()
     cancel_event = cancel_event or Event()
-    platform_concurrency_limit = TRACKSIDE_OPTICAL_MAX_CONCURRENCY
-    concurrency_settings = _trackside_concurrency_settings(paths)
+    platform_concurrency_limit = fit_ap_optical_platform_concurrency_limit()
+    concurrency_settings = _trackside_concurrency_settings(paths, platform_concurrency_limit)
     requested_concurrency = _positive_int_setting(
         concurrency if concurrency is not None else concurrency_settings["device"],
         concurrency_settings["device"],
@@ -673,7 +674,11 @@ def collect_trackside_optical(
         platform_concurrency_limit,
     )
     max_workers = max(1, min(safe_requested_concurrency, switch_concurrency, len(targets) or 1))
-    fit_ap_requested_concurrency = min(safe_requested_concurrency, fit_ap_concurrency)
+    fit_ap_requested_concurrency = (
+        requested_concurrency
+        if concurrency is not None
+        else fit_ap_concurrency
+    )
     results: list[TracksideDeviceCollectionResult] = []
     progress_tracker = TracksideOpticalProgressTracker(
         switch_total=len(targets),
@@ -685,6 +690,11 @@ def collect_trackside_optical(
         phase="fit_ap_optical",
         event="target_planning",
         requested_concurrency=fit_ap_requested_concurrency,
+        effective_concurrency=_safe_trackside_concurrency(
+            fit_ap_requested_concurrency,
+            platform_concurrency_limit,
+        ),
+        platform_concurrency_limit=platform_concurrency_limit,
     )
 
     def ac_progress(payload: Mapping[str, object]) -> None:
@@ -707,6 +717,7 @@ def collect_trackside_optical(
             target_ap_name,
             progress_tracker.handle_fit_ap_event,
             ac_progress,
+            platform_concurrency_limit,
         )
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             stage("trackside_ap.switch.collect")
@@ -1080,19 +1091,26 @@ def _has_trackside_ap_identity(row: dict[str, object | None]) -> bool:
     return bool(_normalize_mac_text(row.get("ap_mac")))
 
 
-def _trackside_concurrency_settings(paths: PathResolver) -> dict[str, int]:
+def _trackside_concurrency_settings(
+    paths: PathResolver,
+    platform_concurrency_limit: int | None = None,
+) -> dict[str, int]:
     settings = SettingsStore(paths)
+    safe_platform_limit = max(
+        1,
+        int(platform_concurrency_limit or fit_ap_optical_platform_concurrency_limit()),
+    )
     device = _safe_trackside_concurrency(
         settings.get_value(TRACKSIDE_MAX_DEVICE_CONCURRENCY_KEY, DEFAULT_TRACKSIDE_OPTICAL_CONCURRENCY),
-        TRACKSIDE_OPTICAL_MAX_CONCURRENCY,
+        safe_platform_limit,
     )
     switch = _safe_trackside_concurrency(
         settings.get_value(TRACKSIDE_MAX_SWITCH_CONCURRENCY_KEY, device),
-        TRACKSIDE_OPTICAL_MAX_CONCURRENCY,
+        safe_platform_limit,
     )
     fit_ap = _safe_trackside_concurrency(
         settings.get_value(TRACKSIDE_MAX_FIT_AP_CONCURRENCY_KEY, device),
-        TRACKSIDE_OPTICAL_MAX_CONCURRENCY,
+        safe_platform_limit,
     )
     return {"device": device, "switch": switch, "fit_ap": fit_ap}
 
@@ -1265,7 +1283,13 @@ def _collect_fit_ap_optical_subtasks(
     target_ap_name: str | None = None,
     fit_ap_progress_callback: Callable[[Mapping[str, object]], None] | None = None,
     ac_progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+    platform_concurrency_limit: int | None = None,
 ):
+    safe_platform_limit = max(
+        1,
+        int(platform_concurrency_limit or fit_ap_optical_platform_concurrency_limit()),
+    )
+    safe_concurrency = _safe_trackside_concurrency(concurrency, safe_platform_limit)
     ac_repository = AcRepository(repository.database)
     results = []
     skipped: list[TracksideSkippedTarget] = []
@@ -1373,7 +1397,7 @@ def _collect_fit_ap_optical_subtasks(
             site_name=site_name,
             repository=ac_repository,
             paths=paths,
-            max_workers=concurrency,
+            max_workers=safe_concurrency,
             progress=lambda message: item_progress(
                 {
                     "message": str(message or ""),
@@ -1391,7 +1415,9 @@ def _collect_fit_ap_optical_subtasks(
         if "persist" in inspect.signature(collect_h3c_fit_ap_optical).parameters:
             fit_collect_kwargs["persist"] = False
         if "concurrency_platform_limit" in inspect.signature(collect_h3c_fit_ap_optical).parameters:
-            fit_collect_kwargs["concurrency_platform_limit"] = TRACKSIDE_OPTICAL_MAX_CONCURRENCY
+            fit_collect_kwargs["concurrency_platform_limit"] = safe_platform_limit
+        if "requested_concurrency" in inspect.signature(collect_h3c_fit_ap_optical).parameters:
+            fit_collect_kwargs["requested_concurrency"] = concurrency
         result = collect_h3c_fit_ap_optical(
             **fit_collect_kwargs,
         )

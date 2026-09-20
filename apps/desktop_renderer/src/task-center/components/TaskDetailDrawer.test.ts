@@ -225,6 +225,50 @@ describe('TaskDetailDrawer', () => {
     expect(await renderTriggerSource('future-trigger')).not.toContain('future-trigger')
   })
 
+  it('renders requested and effective Trackside Optical concurrency in both locales', async () => {
+    const taskId = 'trackside-concurrency-result'
+    mocks.getTask.mockResolvedValue({
+      ...task(taskId),
+      type: 'trackside_ap_optical_update',
+      status: 'COMPLETED',
+      business_status: 'SUCCESS',
+      details: {
+        status: 'SUCCESS',
+        requested_concurrency: 512,
+        effective_concurrency: 64,
+        platform_concurrency_limit: 64,
+        fit_ap_effective_concurrency: 64,
+      },
+    })
+
+    const zhWrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId },
+      global: { plugins: [createPinia()] },
+    })
+    await flushPromises()
+    let rendered = document.body.textContent || ''
+    expect(rendered).toContain('请求并发')
+    expect(rendered).toContain('实际并发')
+    expect(rendered).toContain('平台安全上限')
+    expect(rendered).toContain('512')
+    expect(rendered).toContain('64')
+    zhWrapper.unmount()
+
+    setAppLocale('en_US')
+    const enWrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId },
+      global: { plugins: [createPinia()] },
+    })
+    await flushPromises()
+    rendered = document.body.textContent || ''
+    expect(rendered).toContain('Requested concurrency')
+    expect(rendered).toContain('Effective concurrency')
+    expect(rendered).toContain('Platform safety limit')
+    expect(rendered).toContain('512')
+    expect(rendered).toContain('64')
+    enWrapper.unmount()
+  })
+
   it('renders WPS format warnings without changing the completed task lifecycle', async () => {
     mocks.getTask.mockResolvedValue({
       ...task('wps-format-warning'),

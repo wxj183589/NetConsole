@@ -105,6 +105,11 @@ TRACKSIDE_AP_RESULT_DETAIL_KEYS = (
     "snapshot_build_ms",
     "snapshot_retry_count",
     "export_render_ms",
+    "concurrency",
+    "requested_concurrency",
+    "effective_concurrency",
+    "platform_concurrency_limit",
+    "fit_ap_effective_concurrency",
 )
 WPS_SYNC_RESULT_DETAIL_KEYS = (
     "status",
