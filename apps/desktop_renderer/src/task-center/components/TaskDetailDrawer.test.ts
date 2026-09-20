@@ -2,8 +2,9 @@
 
 import { createPinia } from 'pinia'
 import { flushPromises, mount, shallowMount } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setAppLocale } from '../../i18n/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import TaskDetailDrawer from './TaskDetailDrawer.vue'
@@ -79,9 +80,12 @@ const task = (id: string): TaskItem => ({
 describe('TaskDetailDrawer', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    setAppLocale('zh_CN')
     mocks.getTaskLogs.mockResolvedValue({ task_id: '', lines: [], message: '' })
     vi.stubGlobal('WebSocket', undefined)
   })
+
+  afterEach(() => setAppLocale('zh_CN'))
 
   it('is the single full-detail implementation shared by both task-center surfaces', () => {
     expect(globalSource).toContain("import TaskDetailDrawer from './TaskDetailDrawer.vue'")
@@ -160,6 +164,65 @@ describe('TaskDetailDrawer', () => {
     expect(rendered).not.toContain('2026-07-29T08:01:00Z')
     expect(source).toContain('formatTaskDateTime(line.time)')
     wrapper.unmount()
+  })
+
+  it('renders persisted task provenance in the detail drawer', async () => {
+    mocks.getTask.mockResolvedValue({
+      ...task('task-provenance'),
+      trigger_source: 'api',
+      parent_task_id: 'parent-task',
+      retry_of_task_id: 'retry-task',
+      recovery_source: 'manual-recovery',
+    })
+
+    const wrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId: 'task-provenance' },
+      global: { plugins: [createPinia()] },
+    })
+
+    await flushPromises()
+    const rendered = document.body.textContent || ''
+    expect(rendered).toContain('API 调用')
+    expect(rendered).not.toContain('api')
+    expect(rendered).toContain('parent-task')
+    expect(rendered).toContain('retry-task')
+    expect(rendered).toContain('manual-recovery')
+    wrapper.unmount()
+  })
+
+  it('renders localized trigger source labels without exposing protocol values', async () => {
+    const renderTriggerSource = async (triggerSource: unknown) => {
+      const taskId = 'localized-trigger-source-task'
+      mocks.getTask.mockResolvedValue({
+        ...task(taskId),
+        trigger_source: triggerSource,
+      })
+      const wrapper = mount(TaskDetailDrawer, {
+        props: { modelValue: true, taskId },
+        global: { plugins: [createPinia()] },
+      })
+      await flushPromises()
+      const rendered = document.body.textContent || ''
+      wrapper.unmount()
+      return rendered
+    }
+
+    const zhApi = await renderTriggerSource('api')
+    expect(zhApi).toContain('API 调用')
+    expect(zhApi).not.toContain('api')
+
+    setAppLocale('en_US')
+    const enApi = await renderTriggerSource('api')
+    expect(enApi).toContain('API request')
+    expect(enApi).not.toContain('api')
+
+    setAppLocale('zh_CN')
+    expect(await renderTriggerSource('scheduler')).toContain('调度器')
+    expect(await renderTriggerSource('retry')).toContain('重试')
+    expect(await renderTriggerSource('recovery')).toContain('恢复')
+    expect(await renderTriggerSource('unknown')).toContain('未知')
+    expect(await renderTriggerSource('future-trigger')).toContain('未知')
+    expect(await renderTriggerSource('future-trigger')).not.toContain('future-trigger')
   })
 
   it('renders WPS format warnings without changing the completed task lifecycle', async () => {

@@ -16,6 +16,7 @@ from netconsole.models.task_snapshot import (
     TEXT_INTEGRITY_VALUES,
     TaskEvent,
     TaskSnapshot,
+    normalize_task_trigger_source,
     utc_now_iso,
 )
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
@@ -131,6 +132,10 @@ class TaskApplicationService:
             agent=self._first_text(params, "agent", "agent_name", "agent_id"),
             result_path=str(params.get("result_path") or ""),
             source=self._task_source(params.get("task_source"), default="local"),
+            trigger_source=normalize_task_trigger_source(runtime_job.trigger_source),
+            parent_task_id=str(runtime_job.parent_task_id or "").strip(),
+            retry_of_task_id=str(runtime_job.retry_of_task_id or "").strip(),
+            recovery_source=str(runtime_job.recovery_source or "").strip(),
             site_name=site_name,
             owner_pid=os.getpid(),
             resource_keys=resource_keys,
@@ -180,6 +185,10 @@ class TaskApplicationService:
         producer_version: str = "",
         producer_commit: str = "",
         text_schema_version: int | None = None,
+        trigger_source: str = "unknown",
+        parent_task_id: str = "",
+        retry_of_task_id: str = "",
+        recovery_source: str = "",
     ) -> TaskSnapshot:
         """创建不由本地 Worker 承载、但仍进入统一任务中心的任务。"""
 
@@ -202,6 +211,10 @@ class TaskApplicationService:
             device=device,
             agent=agent,
             source=self._task_source(source, default="external"),
+            trigger_source=normalize_task_trigger_source(trigger_source),
+            parent_task_id=str(parent_task_id or "").strip(),
+            retry_of_task_id=str(retry_of_task_id or "").strip(),
+            recovery_source=str(recovery_source or "").strip(),
             site_name=selected_site,
             owner_pid=0,
             text_schema_version=(

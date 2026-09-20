@@ -32,6 +32,10 @@ class TaskDTO(ApiModel):
     result_hash: str = ""
     result_summary: dict[str, Any] = Field(default_factory=dict)
     source: str = "local"
+    trigger_source: str = "unknown"
+    parent_task_id: str = ""
+    retry_of_task_id: str = ""
+    recovery_source: str = ""
     cancellable: bool = False
 
 

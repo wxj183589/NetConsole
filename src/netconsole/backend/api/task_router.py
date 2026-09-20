@@ -46,6 +46,10 @@ def task_dto(snapshot: TaskSnapshot) -> TaskDTO:
         result_hash=snapshot.result_hash,
         result_summary=snapshot.result_summary,
         source=snapshot.source,
+        trigger_source=snapshot.trigger_source,
+        parent_task_id=snapshot.parent_task_id,
+        retry_of_task_id=snapshot.retry_of_task_id,
+        recovery_source=snapshot.recovery_source,
         cancellable=snapshot.source == "local"
         and snapshot.status
         in {

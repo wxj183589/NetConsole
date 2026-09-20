@@ -2486,6 +2486,7 @@ class RailTransitWebApplicationService:
             site_id,
             "trackside_ap_optical_update",
             params,
+            trigger_source="api",
             on_complete=lambda _value: self.invalidate_trackside_ap_runtime_views(site_id),
         )
 
@@ -3964,6 +3965,10 @@ class RailTransitWebApplicationService:
         *,
         on_complete=None,
         task_id: str = "",
+        trigger_source: str = "unknown",
+        parent_task_id: str = "",
+        retry_of_task_id: str = "",
+        recovery_source: str = "",
     ) -> RailTransitTaskDTO:
         if task_type not in self._TASK_NAMES:
             raise RailTransitWebError("TASK_NOT_ALLOWED", "不支持的轨交 Web 任务")
@@ -3980,7 +3985,15 @@ class RailTransitWebApplicationService:
         }
         try:
             self.process_adapter.start_job(
-                BackgroundJob(job_id=task_id, task_type=task_type, params=job_params),
+                BackgroundJob(
+                    job_id=task_id,
+                    task_type=task_type,
+                    params=job_params,
+                    trigger_source=trigger_source,
+                    parent_task_id=parent_task_id,
+                    retry_of_task_id=retry_of_task_id,
+                    recovery_source=recovery_source,
+                ),
                 on_complete=on_complete,
             )
         except TaskResourceConflictError as exc:
@@ -4216,6 +4229,10 @@ class RailTransitWebApplicationService:
             size_bytes=int((metadata or {}).get("size_bytes") or 0),
             message=redact_web_task_text(snapshot.message),
             error_message=redact_web_task_text(snapshot.error_message),
+            trigger_source=snapshot.trigger_source,
+            parent_task_id=snapshot.parent_task_id,
+            retry_of_task_id=snapshot.retry_of_task_id,
+            recovery_source=snapshot.recovery_source,
             result_summary=result_summary,
         )
 

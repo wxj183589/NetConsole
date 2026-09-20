@@ -134,6 +134,17 @@ const en: Record<string, string> = {
   'job_center.business_result.failure_reason': 'Failure',
   'job_center.business_result.skipped_reason': 'Skipped',
   'job_center.title': 'Task Center',
+  'job_center.provenance.trigger_source': 'Trigger source',
+  'job_center.provenance.trigger_source.ui': 'User interface',
+  'job_center.provenance.trigger_source.api': 'API request',
+  'job_center.provenance.trigger_source.retry': 'Retry',
+  'job_center.provenance.trigger_source.recovery': 'Recovery',
+  'job_center.provenance.trigger_source.scheduler': 'Scheduler',
+  'job_center.provenance.trigger_source.internal': 'Internal',
+  'job_center.provenance.trigger_source.unknown': 'Unknown',
+  'job_center.provenance.parent_task': 'Parent task',
+  'job_center.provenance.retry_of': 'Retry of',
+  'job_center.provenance.recovery_source': 'Recovery source',
   'job_center.cleanup.label': 'Clean up',
   'job_center.cleanup.empty': 'No matching historical tasks',
   'job_center.cleanup.dialog_title': 'Clean up task records',
@@ -255,3 +266,19 @@ export function setAppLocale(value: SystemLanguage): void { locale.value = value
 export function currentAppLocale(): SystemLanguage { return locale.value }
 export function t(key: string, fallback = key): string { void locale.value; return locale.value === 'en_US' ? (en[key] ?? fallback) : fallback }
 export function navigationTitle(id: string, fallback: string): string { return t(`nav.${id}`, fallback) }
+
+const TASK_TRIGGER_SOURCE_LABELS: Record<string, readonly [string, string]> = {
+  ui: ['job_center.provenance.trigger_source.ui', '用户界面'],
+  api: ['job_center.provenance.trigger_source.api', 'API 调用'],
+  retry: ['job_center.provenance.trigger_source.retry', '重试'],
+  recovery: ['job_center.provenance.trigger_source.recovery', '恢复'],
+  scheduler: ['job_center.provenance.trigger_source.scheduler', '调度器'],
+  internal: ['job_center.provenance.trigger_source.internal', '内部'],
+  unknown: ['job_center.provenance.trigger_source.unknown', '未知'],
+}
+
+export function taskTriggerSourceLabel(value: unknown): string {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  const [key, fallback] = TASK_TRIGGER_SOURCE_LABELS[normalized] ?? TASK_TRIGGER_SOURCE_LABELS.unknown
+  return t(key, fallback)
+}

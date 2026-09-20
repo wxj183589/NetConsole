@@ -8,7 +8,7 @@ import NcStatusTag from '../../components/NcStatusTag.vue'
 import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
-import { t } from '../../i18n/runtime'
+import { t, taskTriggerSourceLabel } from '../../i18n/runtime'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { formatTaskDateTime, taskDateTimeTitle } from '../../utils/dateTime'
 import {
@@ -674,6 +674,10 @@ function handleClosed(): void {
             {{ selectedResident ? residentProgressLabel(store.selected) : `${store.selected.progress}%` }}
           </el-descriptions-item>
           <el-descriptions-item label="Owner / 执行端">{{ store.selected.owner || '--' }} / {{ store.selected.executor }}</el-descriptions-item>
+          <el-descriptions-item :label="t('job_center.provenance.trigger_source', '触发来源')">{{ taskTriggerSourceLabel(store.selected.trigger_source) }}</el-descriptions-item>
+          <el-descriptions-item v-if="store.selected.parent_task_id" :label="t('job_center.provenance.parent_task', '父任务')"><code>{{ store.selected.parent_task_id }}</code></el-descriptions-item>
+          <el-descriptions-item v-if="store.selected.retry_of_task_id" :label="t('job_center.provenance.retry_of', '重试来源')"><code>{{ store.selected.retry_of_task_id }}</code></el-descriptions-item>
+          <el-descriptions-item v-if="store.selected.recovery_source" :label="t('job_center.provenance.recovery_source', '恢复来源')">{{ store.selected.recovery_source }}</el-descriptions-item>
           <el-descriptions-item label="局点">{{ store.selected.site_name || '--' }}</el-descriptions-item>
           <el-descriptions-item label="设备">{{ store.selected.device_name || '--' }}（{{ store.selected.device_id || '--' }}）</el-descriptions-item>
           <el-descriptions-item label="MR">{{ store.selected.mr_name || '--' }}</el-descriptions-item>

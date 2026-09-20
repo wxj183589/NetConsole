@@ -20,6 +20,10 @@ class RailTransitTaskDTO(ApiModel):
     size_bytes: int = 0
     message: str = ""
     error_message: str = ""
+    trigger_source: str = "unknown"
+    parent_task_id: str = ""
+    retry_of_task_id: str = ""
+    recovery_source: str = ""
     result_summary: dict[str, object] = Field(default_factory=dict)
 
 

@@ -36,6 +36,31 @@ Job Center 是普通后台任务的统一调度层；Export Process 是共享同
 - `local_process_adapter.py`：纯 Python Worker 进程宿主，复用同一 `TaskApplicationService/TaskRuntime`，供非 Qt 应用层启动本地 Job；stdout/stderr 使用可用字节增量读取，不能等到 64 KiB 缓冲区填满或进程退出后才发布 JSONL 事件。Windows 下使用 Job Object 回收子进程树，并通过完成回调同步外部业务 Run 终态。`force_stop_job()` 只在业务层有界协作停止失败后立即 terminate/kill 进程树，不替代普通取消。
 - `handlers/`：AC、配置、数据库升级、设备、文件、Mesh、网络、在线 MR、轨道交通、Traffic 领域分区；网络工具无线扫描的既有任务由独立兼容 handler 承接。
 
+### Task provenance（当前活动契约）
+
+`task_snapshots` 持久化 `trigger_source`、`parent_task_id`、`retry_of_task_id` 和
+`recovery_source` 四个任务来源字段。`trigger_source` 只接受 `ui`、`api`、`retry`、
+`recovery`、`scheduler`、`internal`、`unknown`；旧任务和尚未迁移的创建入口使用
+`unknown`，不从任务参数或 task type 反推来源。字段通过 `TaskSnapshot`、
+`TaskRepository`、普通 Task API、Job Center DTO 和任务详情抽屉读取，旧 `tasks.db`
+在兼容初始化时补齐默认值，不改变任务状态、事件或恢复语义。
+
+当前 `trackside_ap_optical_update` 创建路径审计：
+
+| 路径 | file / function | caller / trigger condition | params | 用户主动 | 自动调用 |
+| --- | --- | --- | --- | --- | --- |
+| Renderer | `apps/desktop_renderer/src/views/rail-transit/TracksideApBusinessView.vue` 的更新动作 | 用户点击更新站点/AP后调用 Trackside API | scope、可选 concurrency | 是 | 否 |
+| Backend API | `src/netconsole/backend/api/trackside_ap_business_router.py` 的 `update` | `POST /api/v1/.../update` | `TracksideApUpdateRequestDTO` | 由 API 调用方决定；当前桌面入口是用户操作 | 否 |
+| Application Service | `src/netconsole/application/rail_transit/web_application_service.py` 的 `start_trackside_ap_update` / `_start_task` | API 路径校验 scope、资源锁后提交 Worker | site、scope、resource keys、concurrency | 继承 API 入口 | 否 |
+| Task persistence / Worker | `TaskApplicationService.prepare` → `LocalProcessAdapter.start_job` | 统一任务提交 | JobSpec 顶层 provenance + JSON 参数 | 继承调用方 | 否 |
+| retry | 无当前正式 retry endpoint 或 owner 能力 | `retryable=false` | 不适用 | 否 | 否 |
+| recovery / resume | `recover_tasks` 和启动 orphan reconcile 只恢复已有快照/任务状态 | 不创建新的 optical task | 不适用 | 否 | 否 |
+| startup / scheduler / page open / Job Center | 当前代码无该 task type 的自动创建入口；启动、页面读取和 Job Center 读取均为只读/恢复已有记录 | 不适用 | 不适用 | 否 | 否 |
+
+当前轨旁 AP API 任务明确记录 `trigger_source=api`；`parent_task_id`、
+`retry_of_task_id`、`recovery_source` 在未发生对应关系时保持空值。该审计不把一次
+历史未带来源的任务改写为新的事实，也不引入自动 replay。
+
 ### 数据库升级任务
 
 数据库维护统一使用 `database_upgrade`、`database_backup_validation`、`database_backup_restore`、`legacy_database_archive_migration` 和 `database_backup_delete`。Worker 只接收 `database_kind/scope/profile/backup_id` 等语义标识，不接收 Renderer 路径、SQLite connection 或 Repository。第一阶段 `database_upgrade` 仅允许 `mesh_derived`；其他数据库必须先实现独立 Adapter，不能借通用 handler 直接删除重建。

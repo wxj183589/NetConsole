@@ -218,6 +218,10 @@ class LocalProcessAdapter:
                 task_type=job.task_type,
                 params={**dict(job.params or {}), "_requires_sensitive_bootstrap": True},
                 cancel_path=job.cancel_path,
+                trigger_source=job.trigger_source,
+                parent_task_id=job.parent_task_id,
+                retry_of_task_id=job.retry_of_task_id,
+                recovery_source=job.recovery_source,
             )
         with self._service_lock:
             launch = self.task_service.prepare(prepared_job)

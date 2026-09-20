@@ -38,6 +38,10 @@ export interface TaskItem {
   owner: string
   executor: string
   source: string
+  trigger_source?: 'ui' | 'api' | 'retry' | 'recovery' | 'scheduler' | 'internal' | 'unknown'
+  parent_task_id?: string
+  retry_of_task_id?: string
+  recovery_source?: string
   device_id: string
   device_name: string
   agent: string
