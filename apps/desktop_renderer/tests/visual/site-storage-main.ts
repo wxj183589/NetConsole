@@ -19,6 +19,7 @@ window.netconsoleDesktop = {
     apiBaseUrl: window.location.origin,
     apiToken: 'visual-test-session-token-000000000000',
   }),
+  onBackendStatusChanged: () => () => undefined,
   refreshSiteContext: async () => undefined,
 } as unknown as NetConsoleDesktopBridge
 

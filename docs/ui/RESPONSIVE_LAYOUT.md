@@ -8,4 +8,4 @@ Electron 页面根区域保持 `min-width: 0` 和流式宽度，页面本身不�
 
 页面不得读取 `clientWidth/offsetWidth` 后除以列数，不得给标准表格设置小于 100% 的百分比宽度或固定 `max-width`。侧栏开合、抽屉变化、窗口最大化/恢复、语言、字体和缩放变化统一由公共组件防抖重算。
 
-阶段 7 需要覆盖 1280×720、1920×1080、2560×1440 与 100%、125%、150% 缩放；当前 `MANUAL_GUI_ACCEPTANCE=PASS`，但该工程化多尺寸/多缩放矩阵仍为 `FULL_VISUAL_MATRIX=PENDING`。
+P5 工程化矩阵覆盖 1280×720、1920×1080、2560×1440 与 100%、125%、150% 的 Playwright Chromium `deviceScaleFactor`，同时覆盖 zh-CN/en、light/dark。固定 fixture 在 1280 下断言操作仍可达、页面无横向溢出；在 1920/2560 下断言工作区利用率、表格/图表有效尺寸、Drawer/Dialog 边界和重排监听；语言、主题、侧栏和 viewport 变化均通过 DOM 事实验证。DSF 是浏览器渲染测试实现，不代表 Windows 系统级显示缩放；`MANUAL_GUI_ACCEPTANCE=PASS` 继续作为独立人工门禁。
