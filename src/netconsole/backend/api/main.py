@@ -753,29 +753,12 @@ def create_app(
             else None
         )
 
-        def collect_run_recovery_busy() -> bool:
-            snapshot_factory = getattr(task_service, "active_task_snapshot", None)
-            if not callable(snapshot_factory):
-                return True
-            try:
-                snapshot = snapshot_factory()
-                return any(
-                    int(snapshot.get(field, 0) or 0) > 0
-                    for field in ("active_tasks", "active_workers")
-                )
-            except Exception as exc:
-                app_logger.log_warning(
-                    "COLLECT_RUN_ORPHAN_RECOVERY_BUSY_CHECK_FAILED",
-                    f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
-                )
-                return True
-
         collect_run_recovery_task = asyncio.create_task(
             _schedule_collect_run_recovery(
                 paths,
                 site_name,
                 should_continue=lambda: bool(app.state.accepting_work),
-                is_busy=collect_run_recovery_busy,
+                is_busy=lambda: _collect_run_recovery_busy(task_service),
             )
         )
         deferred_start_task: asyncio.Task[None] | None = None
@@ -1447,6 +1430,28 @@ def _recover_active_site_collect_runs(
     if not database.exists():
         return []
     return _recover_orphaned_collect_runs(database, site_name)
+
+
+def _collect_run_recovery_busy(task_service: object) -> bool:
+    """Keep the delayed recovery behind the current task/worker owner."""
+
+    snapshot_factory = getattr(task_service, "active_task_snapshot", None)
+    if not callable(snapshot_factory):
+        return True
+    try:
+        snapshot = snapshot_factory()
+        if not isinstance(snapshot, dict):
+            return True
+        return any(
+            int(snapshot.get(field, 0) or 0) > 0
+            for field in ("active_tasks", "active_workers")
+        )
+    except Exception as exc:
+        app_logger.log_warning(
+            "COLLECT_RUN_ORPHAN_RECOVERY_BUSY_CHECK_FAILED",
+            f"error={exc.__class__.__name__}: {_safe_error_message(str(exc))}",
+        )
+        return True
 
 
 async def _schedule_collect_run_recovery(
