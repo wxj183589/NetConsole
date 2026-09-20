@@ -674,7 +674,11 @@ def collect_trackside_optical(
         platform_concurrency_limit,
     )
     max_workers = max(1, min(safe_requested_concurrency, switch_concurrency, len(targets) or 1))
-    fit_ap_requested_concurrency = min(safe_requested_concurrency, fit_ap_concurrency)
+    fit_ap_requested_concurrency = (
+        requested_concurrency
+        if concurrency is not None
+        else fit_ap_concurrency
+    )
     results: list[TracksideDeviceCollectionResult] = []
     progress_tracker = TracksideOpticalProgressTracker(
         switch_total=len(targets),
@@ -686,6 +690,11 @@ def collect_trackside_optical(
         phase="fit_ap_optical",
         event="target_planning",
         requested_concurrency=fit_ap_requested_concurrency,
+        effective_concurrency=_safe_trackside_concurrency(
+            fit_ap_requested_concurrency,
+            platform_concurrency_limit,
+        ),
+        platform_concurrency_limit=platform_concurrency_limit,
     )
 
     def ac_progress(payload: Mapping[str, object]) -> None:
@@ -1407,6 +1416,8 @@ def _collect_fit_ap_optical_subtasks(
             fit_collect_kwargs["persist"] = False
         if "concurrency_platform_limit" in inspect.signature(collect_h3c_fit_ap_optical).parameters:
             fit_collect_kwargs["concurrency_platform_limit"] = safe_platform_limit
+        if "requested_concurrency" in inspect.signature(collect_h3c_fit_ap_optical).parameters:
+            fit_collect_kwargs["requested_concurrency"] = concurrency
         result = collect_h3c_fit_ap_optical(
             **fit_collect_kwargs,
         )
