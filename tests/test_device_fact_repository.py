@@ -770,6 +770,10 @@ def test_recover_orphaned_collect_runs_only_terminalizes_stale_running_rows(tmp_
         )
         for status in ("failed", "partial_success", "cancelled")
     }
+    before_runs = {
+        run["collect_run_uuid"]: run
+        for run in [stale, recent, successful, *terminal_runs.values()]
+    }
 
     recovered = repository.recover_orphaned_collect_runs(
         stale_before="2026-09-20T10:00:00",
@@ -781,6 +785,28 @@ def test_recover_orphaned_collect_runs_only_terminalizes_stale_running_rows(tmp_
     assert repository.get_collect_run(successful["collect_run_uuid"])["status"] == "success"
     for status, run in terminal_runs.items():
         assert repository.get_collect_run(run["collect_run_uuid"]) == run
+
+    after_runs = {
+        run_uuid: repository.get_collect_run(run_uuid)
+        for run_uuid in before_runs
+    }
+    for run_uuid, before in before_runs.items():
+        after = after_runs[run_uuid]
+        if run_uuid != stale["collect_run_uuid"]:
+            assert after == before
+            continue
+        assert {
+            key: after[key]
+            for key in before
+            if key not in {"status", "ended_at", "error_message"}
+        } == {
+            key: before[key]
+            for key in before
+            if key not in {"status", "ended_at", "error_message"}
+        }
+        assert after["status"] == "failed"
+        assert after["ended_at"]
+        assert after["error_message"] == "启动恢复：采集运行超过宽限期且未完成"
 
     assert repository.recover_orphaned_collect_runs(
         stale_before="2026-09-20T10:00:00",

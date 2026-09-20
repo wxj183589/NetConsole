@@ -410,6 +410,33 @@ def test_delayed_collect_run_recovery_waits_for_idle_task_owner(monkeypatch) -> 
     ]
 
 
+@pytest.mark.parametrize(
+    "snapshot, expected_busy",
+    [
+        ({"active_tasks": 1, "active_workers": 0}, True),
+        ({"active_tasks": 0, "active_workers": 1}, True),
+        ({"active_tasks": 0, "active_workers": 0}, False),
+    ],
+)
+def test_collect_run_recovery_busy_guard_respects_current_task_owner(
+    snapshot: dict[str, int], expected_busy: bool
+) -> None:
+    from netconsole.backend.api import main as api_main
+
+    task_service = SimpleNamespace(active_task_snapshot=lambda: snapshot)
+
+    assert api_main._collect_run_recovery_busy(task_service) is expected_busy
+
+
+def test_collect_run_recovery_busy_guard_fails_closed_for_unavailable_owner() -> None:
+    from netconsole.backend.api import main as api_main
+
+    assert api_main._collect_run_recovery_busy(SimpleNamespace()) is True
+    assert api_main._collect_run_recovery_busy(
+        SimpleNamespace(active_task_snapshot=lambda: ["invalid"])
+    ) is True
+
+
 def test_runtime_holds_backend_instance_lock_before_building_application(monkeypatch) -> None:
     from netconsole.backend import electron_runtime
 
