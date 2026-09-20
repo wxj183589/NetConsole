@@ -29,7 +29,7 @@ Host Key 更新是后台 warning/recovery event，不是正常业务失败；只
 明确拒绝配置、命令错误或 SFTP 重连失败才结束为失败。known_hosts 使用锁和原子替换；损坏时尽量恢复
 有效行并记录诊断，不影响其它设备记录。系统不要求维护 `%USERPROFILE%\\.ssh\\known_hosts`。
 
-真实设备的 H3C AC/MR 闭环和现场 Host Key 轮换仍为 `REAL_DEVICE_PENDING`。
+H3C WX3540X / Comware V9 的受控 SFTP 自动启用与重连已有限定范围真实证据；真实 MR 文件链路、Site Relay 和现场 Host Key 轮换仍分别为 `PENDING_REAL_DEVICE`、`PENDING_NO_ENV` 和 `PENDING_REAL_DEVICE`。当前能力矩阵见 [真实设备能力矩阵](../development/REAL_DEVICE_CAPABILITY_MATRIX_20260920.md)。
 
 专题说明：
 

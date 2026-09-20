@@ -70,4 +70,4 @@ Huawei、ZTE、未知厂商、未知平台、未知 major 和认证/网络失败
 
 ## 验证状态
 
-自动化测试覆盖 V7/V9 已知 Release、role alias、现场版本 bootstrap、override 优先级、SFTP family 安全边界和 optional WLAN warning。V9 真实 AC 验收须在当前代码门禁通过后单独执行；未执行时仍标记为 `REAL_DEVICE_PENDING`。
+自动化测试覆盖 V7/V9 已知 Release、role alias、现场版本 bootstrap、override 优先级、SFTP family 安全边界和 optional WLAN warning。H3C WX3540X / Comware V9 的 AC 只读、Device Detail、FIT-AP、LLDP、BSSID 和 GUI 查看/刷新已有限定范围真实证据；更广型号/Release 以及 MR、现场 Host Key 轮换仍按[真实设备能力矩阵](../development/REAL_DEVICE_CAPABILITY_MATRIX_20260920.md)保持独立待验收。

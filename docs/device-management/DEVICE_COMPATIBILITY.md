@@ -28,7 +28,7 @@ NetConsole 使用代码内登记的设备兼容性基线描述当前适配范围
 
 | 厂商 / 类型 | 当前支持 | 当前边界 |
 | --- | --- | --- |
-| H3C | Comware V7 按 major-family 能力解析，覆盖交换机、无线控制器和车载 MR | 具体型号与真实设备状态仍以 family Profile、可选 Release override 和 fixture 为准 |
+| H3C | Comware V7/V9 按 major-family 能力解析，覆盖交换机、无线控制器和车载 MR | HZ10 的 WX3540X / Comware V9 只读 AC、FIT-AP、Device Detail、LLDP、BSSID 和 GUI 已有现场证据；其他型号/Release、MR 和受控写操作仍按能力矩阵限定 |
 | ZTE ZXR10 C89E-4 V1.9.0 / SW | Profile v3 固定七条只读详情命令；普通刷新不逐端口读取光模块 detail；轨旁更新每设备只执行版本和一次 DOM brief；设备事实、接口、VLAN、光模块及 LLDP Brief/Entry 结构化解析 | 固定命令已有分阶段实机证据；已验证声明只覆盖 C89E-4 Release；配置中心、文件管理、CLI Ping、诊断包和写操作未验证 |
 | ZTE ZXR10 5960X-ES V2 / SW | 设备模型、只读 SSH 框架、命令 Profile、接口/DOM 文档样例 Parser、厂商采样 Job 和轨旁 AP 页面入口 | 版本、接口和 DOM 仍为 `DOCUMENT_SAMPLE_ONLY`；共享 LLDP Parser 已实现，但 V2 输出仍待现场复核；不能继承 C89E-4 的已验证状态 |
 | ZTE / AC | 不支持 | 导入和写入返回“当前版本尚未适配 ZTE 无线控制器” |
@@ -40,9 +40,13 @@ C89E 实机 `show opticalinfo brief` 的 Rx/Tx 可作为单端光功率事实保
 
 命令来源仍以 `resources/device_command_profiles.json`、命令说明和后端受控命令 Guard 为准。任何新增兼容配置不得引入删除网络设备、重启网络设备、恢复出厂、清空配置、格式化存储或任意 CLI 执行入口。
 
-## H3C Comware 9.1.081 / R1612P01 现场延期验收清单
+## H3C Comware V9 当前现场状态
 
-当前无可访问的真实 H3C AC 环境，本清单只记录恢复现场后需要执行的最小验证，不代表已完成真实设备验收：
+2026-09-13 的 H3C WX3540X / Comware `9.1.081 / R1615P01` 已完成限定范围真实只读验收；2026-09-20 HZ10 最终现场口径为 `HZ10_FIELD_VALIDATION=PASS`。已通过的范围包括版本 bootstrap、AC、FIT-AP、Device Detail、LLDP、BSSID、连接记录、只读 API、GUI 查看/刷新和正常重启恢复。
+
+该结论不外推到所有 H3C 型号/Release，也不宣称 AC 写动作、MR、Site Relay 或现场 Host Key 轮换已完成；这些状态见[真实设备能力矩阵](../development/REAL_DEVICE_CAPABILITY_MATRIX_20260920.md)。下方四条保留为旧的现场延期清单，作为历史过程记录，不覆盖当前结论。
+
+### 历史延期清单（保留）
 
 1. 确认目标 TCP 22 可达，并确认设备实际提供 `ssh-rsa` host key。
 2. 对 `HZDT09X-WX3540X-AC1` 执行“更新 AC 信息”，确认日志为 normal negotiation incompatibility → `legacy_ssh_rsa` retry → success。

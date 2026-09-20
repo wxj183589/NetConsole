@@ -1,6 +1,6 @@
 # 正式 Electron 包功能矩阵
 
-本矩阵用于 v1.5.6 跨电脑交付门禁。`release included=是` 表示功能代码、页面和 API 属于正式构建契约，不代表已经完成真实 Windows/真实设备人工验收。自动测试不能替代 NSIS 安装、跨电脑导入或现场 SSH。入口实现与五类验收证据的交叉视图见[迁移矩阵事实维度验收矩阵](../archive/migrations/qt-to-electron/MIGRATION_MATRIX.md#事实维度验收矩阵)。
+本矩阵用于 v1.5.6 跨电脑交付门禁。`release included=是` 表示功能代码、页面和 API 属于正式构建契约，不代表已经完成真实 Windows/真实设备人工验收。自动测试不能替代 NSIS 安装、跨电脑导入或现场 SSH。当前人工 GUI 基线为 `MANUAL_GUI_ACCEPTANCE=PASS`，但本表仍按每个功能的独立证据维度记录，不能据此推导所有功能行均已完成；完整真实设备拆分见[真实设备能力矩阵](../development/REAL_DEVICE_CAPABILITY_MATRIX_20260920.md)。入口实现与五类验收证据的交叉视图见[迁移矩阵事实维度验收矩阵](../archive/migrations/qt-to-electron/MIGRATION_MATRIX.md#事实维度验收矩阵)。
 
 ## 功能基线解析契约
 
@@ -64,7 +64,8 @@
 | Electron tests、typecheck、build | 本分支执行 | 不适用 |
 | Backend PyInstaller、Electron unpacked package smoke | 必须从最终 clean commit 重建；包内 Backend/Web/self-check commit、UTC 时间和 dirty 状态由 smoke 与实际 HEAD 比较，结果见当次交付记录 | 不适用 |
 | NSIS 安装器构建 | 最终提交推送后生成带 Git short commit 的唯一文件名；直接从 setup.exe 复核 PE Installer 身份、内嵌数据根源码及新旧文案、Backend/Frontend commit、Unicode NSIS、双次 SHA-256，并输出 `.exe.release.json`；自动构建成功不等同安装验收 | 不适用 |
-| NSIS 安装、启动、卸载 | 无法由单元测试或 installer build 替代 | `PENDING` |
+| NSIS 安装、首次启动 | Full/Customer 安装包、package smoke 和人工启动/运行证据 | `PASS_WITH_LIMITATION`；人工 GUI 基线已通过，但不含完整生命周期 |
+| NSIS 修复、升级、卸载 | 无法由单元测试或 installer build 替代 | `PENDING_REAL_DEVICE` |
 | 数据根不存在、为空、含普通文件、合法旧根 | 自动 Gate 只能证明最终 EXE 与源码/提交一致，不能代替向导实际分支；需核对 `HKLM\Software\NetConsole\DataRoot` 和普通文件安装前后哈希 | `PENDING` |
 | 全新普通 Windows 用户、空 AppData | 环境自检逻辑与临时数据根 smoke | `PENDING` |
 | 无 Python/Node/pnpm/Git/源码 | PyInstaller/Electron 制品契约 | `PENDING` |

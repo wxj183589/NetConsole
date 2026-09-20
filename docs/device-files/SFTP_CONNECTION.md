@@ -58,5 +58,8 @@ Site Relay 本轮未完成，不能把 `WINSCP_SITE_RELAY` 记为 PASS。SecureC
 `DEVICE_FILE_SFTP_ENABLE_FAILED`、`DEVICE_FILE_SFTP_RECONNECT_FAILED`。页面不显示 Paramiko、socket、
 密码或原始命令回显。
 
-真实设备上的 AC、MR、SFTP controlled-write、Site Relay 和 Host Key 轮换仍标记为
-`REAL_DEVICE_PENDING`，本地测试和协议拓扑不能替代现场验证。
+当前验收状态按能力拆分：H3C WX3540X / Comware V9 的 SFTP controlled-write 与 reconnect
+已有限定范围真实证据；真实 MR 文件链路和目标 Host Key 轮换仍为 `PENDING_REAL_DEVICE`；
+Site Relay 的真实 Jump Host 环境不存在，标记为 `PENDING_NO_ENV`；WinSCP Site Relay
+保持 `NOT_COMPLETED`。本地测试和协议拓扑不能替代对应现场验证，完整矩阵见
+[真实设备能力矩阵](../development/REAL_DEVICE_CAPABILITY_MATRIX_20260920.md)。
