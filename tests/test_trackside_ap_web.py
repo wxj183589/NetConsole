@@ -1630,6 +1630,10 @@ def test_trackside_application_starts_scoped_update(tmp_path: Path) -> None:
     assert duplicate.task_id == update.task_id
     assert len(process.jobs) == 1
     assert update_job.task_type == "trackside_ap_optical_update"
+    assert update_job.trigger_source == "api"
+    assert update_job.parent_task_id == ""
+    assert update_job.retry_of_task_id == ""
+    assert update_job.recovery_source == ""
     assert update_job.params["station"] == "站点A"
     assert "concurrency" not in update_job.params
 

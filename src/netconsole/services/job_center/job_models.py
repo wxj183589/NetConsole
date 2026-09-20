@@ -4,6 +4,8 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from netconsole.models.task_snapshot import normalize_task_trigger_source
+
 
 @dataclass(frozen=True)
 class JobSpec:
@@ -11,6 +13,10 @@ class JobSpec:
     task_type: str = ""
     params: dict[str, Any] = field(default_factory=dict)
     cancel_path: str = ""
+    trigger_source: str = "unknown"
+    parent_task_id: str = ""
+    retry_of_task_id: str = ""
+    recovery_source: str = ""
 
     @property
     def job_type(self) -> str:
@@ -34,6 +40,10 @@ class JobSpec:
             "task_type": self.task_type,
             "params": dict(self.params or {}),
             "cancel_path": self.cancel_path,
+            "trigger_source": normalize_task_trigger_source(self.trigger_source),
+            "parent_task_id": str(self.parent_task_id or "").strip(),
+            "retry_of_task_id": str(self.retry_of_task_id or "").strip(),
+            "recovery_source": str(self.recovery_source or "").strip(),
         }
 
     @classmethod
@@ -43,6 +53,10 @@ class JobSpec:
             task_type=str(data.get("task_type") or data.get("job_type") or ""),
             params=dict(data.get("params") or {}),
             cancel_path=str(data.get("cancel_path") or ""),
+            trigger_source=normalize_task_trigger_source(data.get("trigger_source")),
+            parent_task_id=str(data.get("parent_task_id") or "").strip(),
+            retry_of_task_id=str(data.get("retry_of_task_id") or "").strip(),
+            recovery_source=str(data.get("recovery_source") or "").strip(),
         )
 
 

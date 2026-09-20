@@ -554,6 +554,20 @@ class JobCenterQueryService:
                 'legacy' AS producer_kind, 'unknown' AS producer_version,
                 'unknown' AS producer_commit,
             """
+        provenance_columns_parts: list[str] = []
+        for column, fallback in (
+            ("trigger_source", "unknown"),
+            ("parent_task_id", ""),
+            ("retry_of_task_id", ""),
+            ("recovery_source", ""),
+        ):
+            expression = (
+                f"task.{column}"
+                if self._column_exists(conn, "task_snapshots", column)
+                else "'" + fallback.replace("'", "''") + "'"
+            )
+            provenance_columns_parts.append(f"{expression} AS {column}, ")
+        provenance_columns = "".join(provenance_columns_parts)
         if self._column_exists(conn, "task_snapshots", "expires_at"):
             history_columns = """
                 task.expires_at, task.acknowledged_at, task.dismissed_at,
@@ -590,7 +604,7 @@ class JobCenterQueryService:
                    task.owner, task.source, task.device, task.agent,
                    task.created_time, task.started_time, task.finished_time,
                    task.updated_time, task.result_path, task.error_message,
-                   {integrity_columns}{history_columns}{mapping_columns}{result_column}
+                   {integrity_columns}{provenance_columns}{history_columns}{mapping_columns}{result_column}
                    {result_columns}
             FROM task_snapshots task
             {mapping_join}
@@ -848,6 +862,10 @@ class JobCenterQueryService:
             owner=owner,
             executor=redact_web_task_text(executor).upper(),
             source=redact_web_task_text(source),
+            trigger_source=redact_web_task_text(row.get("trigger_source") or "unknown"),
+            parent_task_id=redact_web_task_text(row.get("parent_task_id") or ""),
+            retry_of_task_id=redact_web_task_text(row.get("retry_of_task_id") or ""),
+            recovery_source=redact_web_task_text(row.get("recovery_source") or ""),
             device_id=redact_web_task_text(row.get("device_id") or ""),
             device_name=redact_web_task_text(
                 row.get("device_name") or row.get("device") or ""

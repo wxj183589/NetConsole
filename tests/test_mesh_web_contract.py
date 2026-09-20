@@ -161,6 +161,10 @@ def test_mesh_upload_uses_controlled_staging_derived_profile_and_cancel_cleanup(
         "message",
         "error_message",
         "result_summary",
+        "trigger_source",
+        "parent_task_id",
+        "retry_of_task_id",
+        "recovery_source",
     }
     assert (
         job.params["profile"]["relative_folder_path"]

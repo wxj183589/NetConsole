@@ -514,6 +514,70 @@ def test_task_runtime_enables_utf8_for_worker_process(tmp_path: Path) -> None:
     assert launch.environment["PYTHONIOENCODING"] == "utf-8"
 
 
+def test_task_provenance_is_persisted_and_exposed_after_service_restart(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    service.prepare(
+        BackgroundJob(
+            job_id="provenance-task",
+            task_type="trackside_ap_optical_update",
+            params={"task_name": "轨旁 AP 光衰", "site_name": "demo"},
+            trigger_source="api",
+            parent_task_id="parent-task",
+            retry_of_task_id="retry-task",
+            recovery_source="manual-recovery",
+        )
+    )
+
+    restarted = TaskApplicationService(
+        paths=PathResolver(tmp_path),
+        site_name="demo",
+        reconcile_on_start=False,
+    )
+    snapshot = restarted.get_task("provenance-task")
+    detail = JobCenterQueryService(restarted.paths).get_task("demo", "provenance-task")
+
+    assert snapshot is not None
+    assert snapshot.trigger_source == "api"
+    assert snapshot.parent_task_id == "parent-task"
+    assert snapshot.retry_of_task_id == "retry-task"
+    assert snapshot.recovery_source == "manual-recovery"
+    assert detail is not None
+    assert detail.trigger_source == "api"
+    assert detail.parent_task_id == "parent-task"
+    assert detail.retry_of_task_id == "retry-task"
+    assert detail.recovery_source == "manual-recovery"
+
+
+def test_task_provenance_schema_compatibility_backfills_legacy_database(tmp_path: Path) -> None:
+    db_path = PathResolver(tmp_path).site_tasks_db_path("demo")
+    repository = TaskRepository(db_path)
+    now = utc_now_iso()
+    repository.save(
+        TaskSnapshot(
+            task_id="legacy-provenance",
+            task_type="demo_task",
+            task_name="legacy",
+            status=TaskState.COMPLETED,
+            created_time=now,
+            finished_time=now,
+            updated_time=now,
+        )
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        for column in ("trigger_source", "parent_task_id", "retry_of_task_id", "recovery_source"):
+            connection.execute(f"ALTER TABLE task_snapshots DROP COLUMN {column}")
+
+    migrated = TaskRepository(db_path)
+    legacy = migrated.get("legacy-provenance")
+
+    assert legacy is not None
+    assert legacy.trigger_source == "unknown"
+    assert legacy.parent_task_id == ""
+    assert legacy.retry_of_task_id == ""
+    assert legacy.recovery_source == ""
+
+
 def test_structured_progress_details_persist_and_can_cap_running_progress(tmp_path: Path) -> None:
     service = _service(tmp_path)
     task_id = "structured-progress"
@@ -1202,6 +1266,15 @@ def test_task_resource_keys_are_reserved_atomically_under_parallel_prepare(tmp_p
 def test_task_rest_api_lists_details_events_and_cancel(tmp_path: Path) -> None:
     service = _service(tmp_path)
     _complete_task(service)
+    service.prepare(
+        BackgroundJob(
+            job_id="task-api-provenance",
+            task_type="demo_task",
+            params={"task_name": "带来源任务"},
+            trigger_source="api",
+            parent_task_id="parent-api-task",
+        )
+    )
     service.prepare(BackgroundJob(job_id="task-running", task_type="demo_task", params={"task_name": "运行任务"}))
     service.mark_running("task-running")
     app = _app_for_service(service, frontend_dist=tmp_path / "missing-dist")
@@ -1209,6 +1282,7 @@ def test_task_rest_api_lists_details_events_and_cancel(tmp_path: Path) -> None:
     with TestClient(app) as client:
         listing = client.get("/api/tasks")
         detail = client.get("/api/tasks/task-complete")
+        provenance = client.get("/api/tasks/task-api-provenance")
         events = client.get("/api/tasks/task-complete/events")
         cancelled = client.post("/api/tasks/task-running/cancel")
         conflict = client.post("/api/tasks/task-complete/cancel")
@@ -1216,6 +1290,9 @@ def test_task_rest_api_lists_details_events_and_cancel(tmp_path: Path) -> None:
     assert listing.status_code == 200
     assert {item["status"] for item in listing.json()} >= {"RUNNING", "COMPLETED"}
     assert detail.json()["name"] == "演示任务"
+    assert provenance.status_code == 200
+    assert provenance.json()["trigger_source"] == "api"
+    assert provenance.json()["parent_task_id"] == "parent-api-task"
     assert events.status_code == 200 and events.json()
     assert cancelled.status_code == 200 and cancelled.json()["status"] == "STOPPING"
     assert conflict.status_code == 409

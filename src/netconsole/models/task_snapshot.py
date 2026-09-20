@@ -11,6 +11,16 @@ CURRENT_TEXT_SCHEMA_VERSION = 2
 TEXT_INTEGRITY_VALUES = frozenset(
     {"ok", "current_corrupted", "historical_corrupted", "unknown_corrupted"}
 )
+TASK_TRIGGER_SOURCE_VALUES = frozenset(
+    {"ui", "api", "retry", "recovery", "scheduler", "internal", "unknown"}
+)
+
+
+def normalize_task_trigger_source(value: object, *, default: str = "unknown") -> str:
+    normalized = str(value or "").strip().casefold()
+    if normalized in TASK_TRIGGER_SOURCE_VALUES:
+        return normalized
+    return default if default in TASK_TRIGGER_SOURCE_VALUES else "unknown"
 
 
 def utc_now_iso() -> str:
@@ -42,6 +52,10 @@ class TaskSnapshot:
     result_hash: str = ""
     result_summary: dict[str, Any] = field(default_factory=dict)
     source: str = "local"
+    trigger_source: str = "unknown"
+    parent_task_id: str = ""
+    retry_of_task_id: str = ""
+    recovery_source: str = ""
     site_name: str = "demo"
     owner_pid: int = 0
     resource_keys: list[str] = field(default_factory=list)

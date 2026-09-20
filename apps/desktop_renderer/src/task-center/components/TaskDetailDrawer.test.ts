@@ -162,6 +162,29 @@ describe('TaskDetailDrawer', () => {
     wrapper.unmount()
   })
 
+  it('renders persisted task provenance in the detail drawer', async () => {
+    mocks.getTask.mockResolvedValue({
+      ...task('task-provenance'),
+      trigger_source: 'api',
+      parent_task_id: 'parent-task',
+      retry_of_task_id: 'retry-task',
+      recovery_source: 'manual-recovery',
+    })
+
+    const wrapper = mount(TaskDetailDrawer, {
+      props: { modelValue: true, taskId: 'task-provenance' },
+      global: { plugins: [createPinia()] },
+    })
+
+    await flushPromises()
+    const rendered = document.body.textContent || ''
+    expect(rendered).toContain('api')
+    expect(rendered).toContain('parent-task')
+    expect(rendered).toContain('retry-task')
+    expect(rendered).toContain('manual-recovery')
+    wrapper.unmount()
+  })
+
   it('renders WPS format warnings without changing the completed task lifecycle', async () => {
     mocks.getTask.mockResolvedValue({
       ...task('wps-format-warning'),
