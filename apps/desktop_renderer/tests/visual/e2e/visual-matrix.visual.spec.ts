@@ -22,6 +22,18 @@ async function openMatrix(page: Page, projectName: string): Promise<MatrixVarian
   return variant
 }
 
+async function expectAppliedTheme(page: Page, theme: MatrixVariant['theme']): Promise<void> {
+  const root = page.locator('html')
+  await expect(root).toHaveAttribute('data-theme', theme)
+  if (theme === 'dark') {
+    await expect(root).toHaveClass(/(?:^|\s)dark(?:\s|$)/)
+  } else {
+    await expect(root).not.toHaveClass(/(?:^|\s)dark(?:\s|$)/)
+  }
+  const pageBackground = await root.evaluate((element) => getComputedStyle(element).getPropertyValue('--nc-bg-page').trim())
+  expect(pageBackground).not.toBe('')
+}
+
 test('核心页面、导航和国际化初始状态可见且无横向溢出', async ({ page }, testInfo) => {
   const variant = await openMatrix(page, testInfo.project.name)
   const root = page.locator('[data-visual-matrix-root]')
@@ -38,6 +50,24 @@ test('核心页面、导航和国际化初始状态可见且无横向溢出', as
 
   await expect(page.locator('html')).toHaveAttribute('data-visual-locale', variant.locale)
   await expect(page.locator('html')).toHaveAttribute('data-visual-theme', variant.theme)
+  await expectAppliedTheme(page, variant.theme)
+
+  const shell = root
+  const sidebar = root.locator('[data-visual-sidebar]')
+  const expandedSidebarWidth = await sidebar.evaluate((element) => element.getBoundingClientRect().width)
+  await root.locator('[data-sidebar-toggle]').click()
+  await expect(shell).toHaveClass(/visual-matrix-shell--collapsed/)
+  const collapsedSidebarWidth = await sidebar.evaluate((element) => element.getBoundingClientRect().width)
+  expect(collapsedSidebarWidth).toBeGreaterThan(0)
+  expect(collapsedSidebarWidth).toBeLessThan(expandedSidebarWidth)
+  await expect(root.locator('.visual-matrix-sidebar-title')).toBeHidden()
+  const collapsedLayout = await root.evaluate((element) => ({
+    scrollWidth: element.scrollWidth,
+    clientWidth: element.clientWidth,
+  }))
+  expect(collapsedLayout.scrollWidth).toBeLessThanOrEqual(collapsedLayout.clientWidth + 1)
+  await root.locator('[data-sidebar-toggle]').click()
+  await expect(shell).not.toHaveClass(/visual-matrix-shell--collapsed/)
   const layout = await root.evaluate((element) => ({
     rootScrollWidth: element.scrollWidth,
     rootClientWidth: element.clientWidth,
@@ -122,6 +152,7 @@ test('语言、主题和窗口尺寸变化触发安全重排', async ({ page }, 
 
   await page.locator('[data-visual-theme-toggle]').click()
   await expect(page.locator('html')).toHaveAttribute('data-visual-theme', variant.theme === 'dark' ? 'light' : 'dark')
+  await expectAppliedTheme(page, variant.theme === 'dark' ? 'light' : 'dark')
   await expect(page.locator('[data-visual-chart]').first()).toBeVisible()
 
   const viewport = page.viewportSize()!
