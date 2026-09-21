@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 import netconsole.backend.api.main as backend_main
 import netconsole.core.paths as paths_module
 import netconsole.core.runtime_environment as runtime_environment
+import netconsole.services.ap_identity.query_service as ap_identity_query_service_module
 import netconsole.services.production_database_maintenance as production_module
 import scripts.backfill_ap_optical_treatment_events as optical_backfill
 import scripts.maintenance.backfill_trackside_ap_station_identity as station_backfill
@@ -76,6 +78,96 @@ def _production_patches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ap_schema, "data_environment", lambda _root: info)
     monkeypatch.setattr(runtime_environment, "data_environment", lambda _root=None: info)
     monkeypatch.setattr(paths_module, "data_environment", lambda _root=None: info)
+
+
+def _production_identity_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    root = tmp_path / "relocated-production"
+    _registry(root)
+    database = _database(root)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, station_id, station_name, section_id, section_name,
+                ap_point_code, ap_name, ap_vendor, ap_mac_norm, ap_mac_display,
+                created_at, updated_at
+            ) VALUES (
+                'sxl1', 'station-1', 'Station 1', 'section-1', 'Section 1',
+                'AP-001', 'AP 001', 'H3C', '487397cce9af', '4873-97cc-e9af',
+                '2026-09-22T00:00:00Z', '2026-09-22T00:00:00Z'
+            )
+            """
+        )
+        connection.commit()
+    return root, database
+
+
+def _initialize_production_fixture(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _production_patches(monkeypatch)
+    monkeypatch.setattr(
+        backend_main,
+        "_recover_orphaned_collect_runs",
+        lambda *_args, **_kwargs: [],
+    )
+    backend_main._initialize_active_site_database(
+        PathResolver(data_root=root),
+        "sxl1",
+        production_site_id="sxl1",
+    )
+
+
+def _source_snapshot(database: Path) -> tuple[object, ...]:
+    source_tables = (
+        "ap_extension_points",
+        "ac_fit_ap_resources",
+        "ac_fit_ap_metadata",
+        "devices",
+        "device_facts",
+        "ap_identity_radio_evidence",
+        "ac_fit_ap_radio_history",
+        "device_lldp_neighbors",
+        "ap_entities",
+        "ac_fit_ap_optical",
+        "trackside_ap_view_cache",
+        "ap_identity_source_state",
+    )
+    with closing(sqlite3.connect(database)) as connection:
+        return tuple(
+            (
+                table,
+                tuple(
+                    connection.execute(
+                        f"SELECT * FROM {table} ORDER BY rowid"
+                    ).fetchall()
+                ),
+            )
+            for table in source_tables
+        )
+
+
+def _identity_index_snapshot(database: Path) -> tuple[object, ...]:
+    tables = (
+        "ap_identity_entities",
+        "ap_identity_mac_aliases",
+        "ap_identity_h3c_prefixes",
+        "ap_identity_conflicts",
+        "ap_identity_index_state",
+    )
+    with closing(sqlite3.connect(database)) as connection:
+        return tuple(
+            (
+                table,
+                tuple(
+                    connection.execute(
+                        f"SELECT * FROM {table} ORDER BY 1"
+                    ).fetchall()
+                ),
+            )
+            for table in tables
+        )
 
 
 def test_test_mode_cannot_downgrade_production_or_escape_isolated_root(
@@ -315,6 +407,100 @@ def test_production_startup_current_schema_is_canonical_and_ap_index_ready(
     ]
 
 
+def test_production_startup_rebuilds_missing_identity_index_with_source_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, database = _production_identity_fixture(tmp_path)
+    before = ApIdentityQueryService(Database(database)).revision_state()
+    assert before.status == "missing"
+    assert before.current_source_revision > 0
+
+    _initialize_production_fixture(root, monkeypatch)
+
+    state = ApIdentityQueryService(Database(database)).revision_state()
+    assert state.status == "ready"
+    assert state.revision > 0
+    assert state.indexed_source_revision == state.current_source_revision
+
+
+def test_production_startup_rebuilds_stale_identity_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, database = _production_identity_fixture(tmp_path)
+    service = ApIdentityQueryService(Database(database))
+    service.ensure_index("fixture")
+    before = service.revision_state()
+
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "UPDATE ap_extension_points SET ap_name=?, updated_at=? WHERE id=1",
+            ("AP 001 changed", "2026-09-22T00:01:00Z"),
+        )
+        connection.commit()
+
+    stale = service.revision_state()
+    assert stale.status == "stale"
+    assert stale.current_source_revision > before.current_source_revision
+
+    _initialize_production_fixture(root, monkeypatch)
+
+    ready = ApIdentityQueryService(Database(database)).revision_state()
+    assert ready.status == "ready"
+    assert ready.revision > before.revision
+    assert ready.indexed_source_revision == ready.current_source_revision
+
+
+def test_production_startup_ready_identity_index_is_noop_and_source_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, database = _production_identity_fixture(tmp_path)
+    service = ApIdentityQueryService(Database(database))
+    service.ensure_index("fixture")
+    source_before = _source_snapshot(database)
+    index_before = _identity_index_snapshot(database)
+
+    _initialize_production_fixture(root, monkeypatch)
+
+    assert _source_snapshot(database) == source_before
+    assert _identity_index_snapshot(database) == index_before
+
+
+def test_production_startup_builder_failure_preserves_old_index_and_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, database = _production_identity_fixture(tmp_path)
+    service = ApIdentityQueryService(Database(database))
+    service.ensure_index("fixture")
+
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "UPDATE ap_extension_points SET ap_name=?, updated_at=? WHERE id=1",
+            ("AP 001 changed", "2026-09-22T00:02:00Z"),
+        )
+        connection.commit()
+    source_before = _source_snapshot(database)
+    index_before = _identity_index_snapshot(database)
+
+    def fail_builder(*_args, **_kwargs):
+        raise RuntimeError("synthetic AP Identity builder failure")
+
+    monkeypatch.setattr(
+        ap_identity_query_service_module,
+        "build_ap_identity_index",
+        fail_builder,
+    )
+    with pytest.raises(RuntimeError, match="synthetic AP Identity builder failure"):
+        service.rebuild_index("synthetic_failure")
+
+    assert _source_snapshot(database) == source_before
+    assert _identity_index_snapshot(database) == index_before
+    assert ApIdentityQueryService(Database(database)).revision_state().status == "stale"
+
+
 def test_production_startup_rejects_unlisted_site_before_database_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -418,12 +604,28 @@ def test_development_bootstrap_and_repeat_initialize_remain_supported(tmp_path: 
     assert database.read_bytes() == first
 
 
-def test_ap_identity_automatic_safe_only_does_not_publish_rebuild_ready(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_ap_identity_automatic_safe_only_rebuilds_derived_index_without_source_mutation(
+    tmp_path: Path,
 ) -> None:
-    database = _database(tmp_path / "isolated")
+    _root, database = _production_identity_fixture(tmp_path)
     service = ApIdentityQueryService(Database(database))
-    assert service.ensure_index("startup", automatic_safe_only=True) is None
-    monkeypatch.setattr(service.repository, "has_source_rows", lambda: True)
-    with pytest.raises(RuntimeError, match="explicit AP Identity index maintenance"):
-        service.ensure_index("startup", automatic_safe_only=True)
+    source_before = _source_snapshot(database)
+
+    result = service.ensure_index("backend_startup", automatic_safe_only=True)
+
+    assert result is not None
+    assert _source_snapshot(database) == source_before
+    state = service.revision_state()
+    assert state.status == "ready"
+    assert state.revision > 0
+    assert state.indexed_source_revision == state.current_source_revision
+
+
+def test_ap_identity_automatic_safe_only_rejects_non_startup_reason(
+    tmp_path: Path,
+) -> None:
+    _root, database = _production_identity_fixture(tmp_path)
+    service = ApIdentityQueryService(Database(database))
+
+    with pytest.raises(ValueError, match="backend_startup"):
+        service.ensure_index("source_refresh", automatic_safe_only=True)

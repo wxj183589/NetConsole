@@ -150,11 +150,14 @@ for exact matching only.
 
 Base-data writes, AC resource writes, and package import staging build or
 rebuild the Identity index explicitly. Ordinary GET, search, MESH, Vehicle MR,
-and Wireless queries are read-only and never rebuild the index. Backend startup
-does not rebuild a missing, stale, or legacy Identity index implicitly; such an
-index reports its stale/missing diagnostic until an explicit source-write
-rebuild completes. See
-[AP Identity](../AP_IDENTITY.md).
+and Wireless queries are read-only and never rebuild the index. On a canonical
+Production site with the current supported schema, Backend startup may close a
+missing or stale Identity index through the existing compatibility
+`rebuild_index` path. That path reads source rows and atomically replaces only
+derived Identity tables; it never writes AP/base-data, AC/FIT-AP, MESH raw, or
+Trackside source authority. `Database.initialize(startup_policy="production_safe")`
+still rejects maintenance-grade schema migration and database repair before
+this compatibility step. See [AP Identity](../AP_IDENTITY.md).
 
 `schema_metadata.base_data_revision` is a small monotonic counter maintained by
 SQLite triggers on the editable base-data tables. The base-data edit-session
