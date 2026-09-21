@@ -21,6 +21,11 @@ from netconsole.core.database import (
 )
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
+from netconsole.core.runtime_environment import (
+    ProductionWriteBlockedError,
+    require_non_production_data_root,
+    write_data_environment,
+)
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.production_database_maintenance import (
     ProductionMaintenanceError,
@@ -73,6 +78,40 @@ def _production_patches(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(paths_module, "data_environment", lambda _root=None: info)
 
 
+def test_test_mode_cannot_downgrade_production_or_escape_isolated_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
+    marked_production = tmp_path / "marked-production"
+    write_data_environment(
+        marked_production,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    with pytest.raises(ProductionWriteBlockedError, match="Production"):
+        require_non_production_data_root(marked_production, "p7-test")
+
+    with pytest.raises(ProductionWriteBlockedError, match="非隔离"):
+        require_non_production_data_root(Path(__file__).resolve().parents[1], "p7-test")
+
+
+def test_ap_schema_reads_production_marker_even_in_test_process_mode(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "marked-production"
+    _registry(root)
+    database = _database(root)
+    write_data_environment(
+        root,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    before = database.read_bytes()
+
+    assert ap_schema.main(
+        ["--data-dir", str(root), "--site", "sxl1"]
+    ) == 1
+    assert database.read_bytes() == before
+
+
 def test_ap_schema_production_uses_canonical_site_and_identity_bound_backup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -108,6 +147,70 @@ def test_ap_schema_production_uses_canonical_site_and_identity_bound_backup(
         assert connection.execute(
             "SELECT value FROM schema_metadata WHERE key='schema_version'"
         ).fetchone()[0] == CURRENT_SCHEMA_VERSION
+
+
+def test_ap_schema_backup_captures_committed_wal_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "relocated-production"
+    _registry(root)
+    database = _database(root)
+    connection = sqlite3.connect(database)
+    try:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        connection.execute("PRAGMA wal_autocheckpoint=0")
+        connection.execute(
+            """
+            INSERT INTO devices (
+                device_uuid, name, primary_address, created_at, updated_at
+            ) VALUES ('wal-device', 'WAL device', '192.0.2.10', 'now', 'now')
+            """
+        )
+        connection.execute(
+            "UPDATE schema_metadata SET value=? WHERE key='schema_version'",
+            ("2026.06.23.device_ap_rebuild_mac",),
+        )
+        connection.execute("DROP TABLE ap_extension_points")
+        connection.execute("DROP TABLE ap_extension_import_batches")
+        connection.commit()
+        wal_path = Path(f"{database}-wal")
+        assert wal_path.is_file() and wal_path.stat().st_size > 0
+
+        _production_patches(monkeypatch)
+        assert ap_schema.main(
+            [
+                "--data-dir",
+                str(root),
+                "--site",
+                "sxl1",
+                "--allow-production-write",
+                "--operation-id",
+                "p7-wal-schema-test",
+            ]
+        ) == 0
+    finally:
+        connection.close()
+
+    backup = next(database.parent.glob("devices.before_ap_extension_schema_*.db"))
+    with sqlite3.connect(backup) as backup_connection:
+        assert backup_connection.execute(
+            "SELECT device_uuid FROM devices WHERE device_uuid='wal-device'"
+        ).fetchone() == ("wal-device",)
+
+
+def test_production_startup_accepts_legacy_app_config_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "relocated-production"
+    _registry(root)
+    _database(root)
+    (root / "config" / "app.json").write_text(
+        json.dumps({"current_site": "sxl1"}), encoding="utf-8"
+    )
+    _production_patches(monkeypatch)
+    monkeypatch.setattr(backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: [])
+
+    assert backend_main._current_site_name(PathResolver(data_root=root)) == "sxl1"
 
 
 def test_ap_schema_production_rejects_direct_db_and_no_backup_without_mutation(

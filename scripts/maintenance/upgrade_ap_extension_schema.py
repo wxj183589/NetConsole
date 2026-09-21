@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 import hashlib
 import json
-import shutil
 import sqlite3
 import sys
 from datetime import UTC, datetime
@@ -50,6 +49,22 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sqlite_snapshot_fingerprint(path: Path) -> tuple[str, int]:
+    """Hash the SQLite-consistent image, including committed WAL pages."""
+
+    with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as connection:
+        snapshot = bytearray(connection.serialize())
+    # SQLite backup rewrites the change-counter, schema-cookie and
+    # version-valid-for header fields even when the logical page image is
+    # unchanged. Normalize only those volatile header fields so source and
+    # backup fingerprints compare the same consistent database snapshot.
+    if len(snapshot) >= 96:
+        snapshot[24:28] = b"\x00" * 4
+        snapshot[40:44] = b"\x00" * 4
+        snapshot[92:96] = b"\x00" * 4
+    return hashlib.sha256(snapshot).hexdigest(), len(snapshot)
+
+
 def _validate_operation_id(value: str) -> str:
     operation_id = str(value or "").strip()
     if not operation_id:
@@ -62,9 +77,8 @@ def _validate_operation_id(value: str) -> str:
 def _preflight(path: Path, *, force: bool) -> dict[str, object]:
     if not path.is_file() or path.is_symlink():
         raise FileNotFoundError(f"数据库不存在或为符号链接：{path}")
-    source_sha256 = _sha256(path)
-    source_size = path.stat().st_size
-    with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as conn:
+    source_sha256, source_size = _sqlite_snapshot_fingerprint(path)
+    with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         version = _schema_version(conn)
         if version == CURRENT_SCHEMA_VERSION:
@@ -110,7 +124,7 @@ def _upgrade_database_locked(
         raise ProductionMaintenanceError(
             "explicit Production authorization is required for schema mutation"
         )
-    if _sha256(db_path) != str(preflight["source_sha256"]):
+    if _sqlite_snapshot_fingerprint(db_path)[0] != str(preflight["source_sha256"]):
         raise ProductionMaintenanceError("database changed during schema preflight")
     backup_path = (
         _backup_database(
@@ -123,7 +137,7 @@ def _upgrade_database_locked(
         if backup
         else None
     )
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         version = _schema_version(conn)
         if version == CURRENT_SCHEMA_VERSION:
@@ -234,10 +248,26 @@ def _backup_database(
     backup_path = path.with_name(
         f"{path.stem}.before_ap_extension_schema{suffix}_{timestamp}_{source_sha256[:16]}{path.suffix}"
     )
-    shutil.copy2(path, backup_path)
-    if _sha256(backup_path) != source_sha256 or backup_path.stat().st_size != source_size:
+    if backup_path.exists():
+        raise ProductionMaintenanceError("identity-bound schema backup target already exists")
+    try:
+        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as source:
+            with closing(sqlite3.connect(backup_path)) as destination:
+                source.backup(destination)
+        backup_snapshot_sha256, backup_snapshot_size = _sqlite_snapshot_fingerprint(
+            backup_path
+        )
+    except Exception:
+        backup_path.unlink(missing_ok=True)
+        raise
+    if (
+        backup_snapshot_sha256 != source_sha256
+        or backup_snapshot_size != source_size
+    ):
         backup_path.unlink(missing_ok=True)
         raise ProductionMaintenanceError("identity-bound schema backup verification failed")
+    backup_sha256 = _sha256(backup_path)
+    backup_size = backup_path.stat().st_size
     backup_path.with_suffix(backup_path.suffix + ".json").write_text(
         json.dumps(
             {
@@ -247,8 +277,10 @@ def _backup_database(
                 "source_path": str(path),
                 "source_sha256": source_sha256,
                 "source_size": source_size,
-                "backup_sha256": _sha256(backup_path),
-                "backup_size": backup_path.stat().st_size,
+                "backup_snapshot_sha256": backup_snapshot_sha256,
+                "backup_snapshot_size": backup_snapshot_size,
+                "backup_sha256": backup_sha256,
+                "backup_size": backup_size,
             },
             ensure_ascii=False,
             indent=2,

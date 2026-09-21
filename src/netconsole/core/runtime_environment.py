@@ -133,15 +133,19 @@ def data_environment(data_root: Path | None = None) -> DataEnvironmentInfo:
     """Read the explicit data-root environment marker.
 
     Test roots are identified by the explicit process test mode and do not
-    write a marker file. Persistent roots must carry a valid marker; no path
-    name heuristic is used.
+    require a marker file. If an explicit target root does carry a persistent
+    marker, it still wins over the process mode so TEST cannot downgrade a
+    Production root. Persistent roots must carry a valid marker; no path name
+    heuristic is used.
     """
 
     selected_runtime_mode = runtime_mode()
-    if selected_runtime_mode is RuntimeMode.TEST:
+    if selected_runtime_mode is RuntimeMode.TEST and data_root is None:
         return DataEnvironmentInfo(DataEnvironmentMode.TEST)
     root = Path(data_root) if data_root is not None else data_root_for_environment()
     marker = root / RUNTIME_MODE_FILE_NAME
+    if selected_runtime_mode is RuntimeMode.TEST and not marker.is_file():
+        return DataEnvironmentInfo(DataEnvironmentMode.TEST)
     try:
         value = json.loads(marker.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -262,6 +266,13 @@ def require_non_production_data_root(
     """Allow an explicitly marked development/test root and fail closed otherwise."""
 
     resolved = Path(data_root).expanduser().resolve()
+    if runtime_mode() is RuntimeMode.TEST:
+        try:
+            resolved = validate_data_root(resolved, mode=RuntimeMode.TEST)
+        except RuntimeError as exc:
+            raise ProductionWriteBlockedError(
+                f"已阻止仅开发/隔离操作触及非隔离测试数据根：{operation}。"
+            ) from exc
     info = data_environment(resolved)
     if info.is_production:
         raise ProductionWriteBlockedError(

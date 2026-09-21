@@ -1379,16 +1379,24 @@ def _production_startup_site(
 
 
 def _production_configured_site_ref(paths: PathResolver) -> str:
-    try:
-        raw = json.loads(paths.app_config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, TypeError) as exc:
-        raise RuntimeError("Production active site configuration is unavailable") from exc
-    if not isinstance(raw, dict):
-        raise RuntimeError("Production active site configuration is invalid")
-    for key in ("active_site_id", "current_site"):
-        value = str(raw.get(key) or "").strip()
-        if value:
-            return value
+    config_paths = (paths.app_config_path, paths.legacy_app_config_path)
+    found_config = False
+    for config_path in config_paths:
+        if not config_path.is_file():
+            continue
+        found_config = True
+        try:
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError("Production active site configuration is invalid") from exc
+        if not isinstance(raw, dict):
+            raise RuntimeError("Production active site configuration is invalid")
+        for key in ("active_site_id", "current_site"):
+            value = str(raw.get(key) or "").strip()
+            if value:
+                return value
+    if not found_config:
+        raise RuntimeError("Production active site configuration is unavailable")
     raise RuntimeError("Production active site is not configured")
 
 
