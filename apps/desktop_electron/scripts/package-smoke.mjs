@@ -4,6 +4,10 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, wr
 import { createServer } from 'node:net'
 import { join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import {
+  assertProductionApIdentityStartupSmokeLogs,
+  parsePackageApIdentityStartupSmoke,
+} from './package-smoke-ap-identity.js'
 
 const appRoot = resolve(import.meta.dirname, '..')
 const projectRoot = resolve(appRoot, '..', '..')
@@ -13,6 +17,9 @@ const buildEdition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim
 if (!['full', 'customer'].includes(buildEdition)) {
   throw new Error(`NETCONSOLE_BUILD_EDITION 仅允许 full/customer，当前为：${buildEdition}`)
 }
+const apIdentityStartupSmokeScenarios = parsePackageApIdentityStartupSmoke(
+  process.env.NETCONSOLE_PACKAGE_AP_IDENTITY_STARTUP_SMOKE,
+)
 const qtPackagePrefixes = [
   'pyside2',
   'pyside6',
@@ -391,6 +398,7 @@ try {
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`Electron packaged smoke failed with exit code ${result.status}`)
   validatePackagedRuntimeIdentityLogs(smokeDataRoot)
+  validatePackagedApIdentityStartupSmoke(smokeRoot, apIdentityStartupSmokeScenarios)
 } finally {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
@@ -939,6 +947,92 @@ function validateFrozenDeviceDatabaseMigration(dataRoot) {
         `stderr=${result.stderr || '<empty>'}`,
       ].join('\n'),
     )
+  }
+}
+
+function validatePackagedApIdentityStartupSmoke(dataRoot, scenarios) {
+  if (scenarios.length === 0) return
+  const python = process.env.NETCONSOLE_BUILD_PYTHON
+    || resolve(projectRoot, '.venv', 'Scripts', 'python.exe')
+  const helper = resolve(projectRoot, 'scripts', 'build', 'smoke_production_ap_identity_startup.py')
+  for (const scenario of scenarios) {
+    const scenarioRoot = resolve(dataRoot, `ap-identity-startup-${scenario}`)
+    const helperEnvironment = {
+      ...process.env,
+      NETCONSOLE_RUNTIME_MODE: 'test',
+      NETCONSOLE_STORAGE_MODE: 'isolated_test',
+    }
+    const prepare = spawnSync(
+      python,
+      [helper, 'prepare', '--data-root', scenarioRoot, '--scenario', scenario],
+      {
+        cwd: projectRoot,
+        env: helperEnvironment,
+        encoding: 'utf8',
+        timeout: 30_000,
+        windowsHide: true,
+      },
+    )
+    if (prepare.error) throw prepare.error
+    if (prepare.status !== 0) {
+      throw new Error([
+        `AP Identity ${scenario} fixture prepare failed, exit=${prepare.status}`,
+        `stdout=${prepare.stdout || '<empty>'}`,
+        `stderr=${prepare.stderr || '<empty>'}`,
+      ].join('\n'))
+    }
+
+    const userDataRoot = resolve(scenarioRoot, 'runtime', 'electron', 'user-data')
+    mkdirSync(userDataRoot, { recursive: true })
+    const result = spawnSync(
+      executable,
+      [`--user-data-dir=${userDataRoot}`],
+      {
+        cwd: unpackedRoot,
+        env: {
+          ...helperEnvironment,
+          NETCONSOLE_PROJECT_ROOT: projectRoot,
+          NETCONSOLE_DATA_ROOT: scenarioRoot,
+          NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
+          NETCONSOLE_DEV_TEMP_USER_DATA_ROOT: userDataRoot,
+          NETCONSOLE_ELECTRON_SMOKE_TEST: '1',
+        },
+        encoding: 'utf8',
+        stdio: 'pipe',
+        timeout: 45_000,
+        windowsHide: true,
+      },
+    )
+    if (result.error) throw result.error
+    const electronLog = readFileSync(resolve(scenarioRoot, 'runtime', 'logs', 'electron.log'), 'utf8')
+    const backendLog = readFileSync(resolve(scenarioRoot, 'runtime', 'logs', 'app.log'), 'utf8')
+    assertProductionApIdentityStartupSmokeLogs({
+      scenario,
+      exitCode: result.status,
+      electronLog,
+      backendLog,
+    })
+
+    const verify = spawnSync(
+      python,
+      [helper, 'verify', '--data-root', scenarioRoot],
+      {
+        cwd: projectRoot,
+        env: helperEnvironment,
+        encoding: 'utf8',
+        timeout: 30_000,
+        windowsHide: true,
+      },
+    )
+    if (verify.error) throw verify.error
+    if (verify.status !== 0) {
+      throw new Error([
+        `AP Identity ${scenario} fixture verify failed, exit=${verify.status}`,
+        `stdout=${verify.stdout || '<empty>'}`,
+        `stderr=${verify.stderr || '<empty>'}`,
+      ].join('\n'))
+    }
+    console.log(`AP_IDENTITY_STARTUP_SMOKE=${scenario}:PASS`)
   }
 }
 
