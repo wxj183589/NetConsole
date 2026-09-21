@@ -91,6 +91,39 @@ PRODUCTION_GATE_KEYS = (
 )
 
 
+def _is_link_or_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    checker = getattr(path, "is_junction", None)
+    if callable(checker):
+        try:
+            if checker():
+                return True
+        except OSError:
+            return True
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return bool(attributes & 0x400)
+
+
+def _has_link_or_reparse_ancestor(path: Path, stop: Path) -> bool:
+    current = path
+    try:
+        current.relative_to(stop)
+    except ValueError:
+        return True
+    while True:
+        if _is_link_or_reparse_point(current):
+            return True
+        if current == stop:
+            return False
+        current = current.parent
+
+
 def resolve_production_site_scope(
     paths: PathResolver,
     site_id: str,
@@ -124,8 +157,20 @@ def resolve_production_site_scope(
     except SiteStorageError as exc:
         raise ProductionMaintenanceError("PRODUCTION_SITE_REGISTRY_UNAVAILABLE") from exc
 
+    data_root = paths.data_root.resolve()
+    sites_dir = paths.sites_dir
+    resolved_sites_dir = sites_dir.resolve()
     resolved_root = root.resolve()
-    if root.is_symlink() or resolved_root.parent != paths.sites_dir.resolve():
+    if (
+        _has_link_or_reparse_ancestor(root, data_root)
+        or _is_link_or_reparse_point(sites_dir)
+        or resolved_sites_dir.parent != data_root
+        or resolved_root.parent != resolved_sites_dir
+    ):
+        raise ProductionMaintenanceError("PRODUCTION_SITE_REGISTRY_IDENTITY_MISMATCH")
+    try:
+        resolved_root.relative_to(data_root)
+    except ValueError:
         raise ProductionMaintenanceError("PRODUCTION_SITE_REGISTRY_IDENTITY_MISMATCH")
     return canonical_site_id, resolved_root
 

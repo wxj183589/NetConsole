@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import scripts.maintenance.cleanup_retired_tasks as cleanup_module
+import netconsole.services.production_database_maintenance as maintenance_module
 from netconsole.core.paths import PathResolver
 from netconsole.services.production_database_maintenance import (
     PRODUCTION_SITE_ALLOWLIST,
@@ -169,9 +170,31 @@ def test_production_allowlist_provider_failure_is_fail_closed(
 
 def test_development_site_preview_resolution_remains_unchanged(tmp_path: Path) -> None:
     data_root = tmp_path / "development"
+    legacy_directory_name = "宁波地铁12号线"
 
-    targets = cleanup_module._site_databases(data_root, "dev-site", False)
+    targets = cleanup_module._site_databases(data_root, legacy_directory_name, False)
 
     assert targets == [
-        ("dev-site", data_root / "sites" / "dev-site" / "db" / "tasks.db")
+        (
+            legacy_directory_name,
+            data_root / "sites" / legacy_directory_name / "db" / "tasks.db",
+        )
     ]
+
+
+def test_production_sites_link_or_reparse_guard_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _fake_database = _production_fixture(tmp_path)
+    monkeypatch.setattr(
+        maintenance_module,
+        "_is_link_or_reparse_point",
+        lambda path: path == paths.sites_dir,
+    )
+
+    with pytest.raises(
+        ProductionMaintenanceError,
+        match="PRODUCTION_SITE_REGISTRY_IDENTITY_MISMATCH",
+    ):
+        cleanup_module._production_site_databases(paths, "sxl1", False)

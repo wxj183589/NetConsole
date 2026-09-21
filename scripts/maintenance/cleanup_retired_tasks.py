@@ -29,7 +29,6 @@ from netconsole.services.production_database_maintenance import (
     ProductionMaintenanceError,
     resolve_production_site_scope,
 )
-from netconsole.services.site_storage import SiteStorageError, validate_site_id
 
 
 DEFAULT_DATA_ROOT = Path("D:/NetConsoleData-dev").resolve()
@@ -58,16 +57,7 @@ def _site_databases(
     all_sites: bool,
 ) -> list[tuple[str, Path]]:
     if site:
-        try:
-            canonical_site_id = validate_site_id(site)
-        except SiteStorageError as exc:
-            raise SystemExit("SITE_ID_INVALID") from exc
-        return [
-            (
-                canonical_site_id,
-                data_root / "sites" / canonical_site_id / "db" / "tasks.db",
-            )
-        ]
+        return [(site, data_root / "sites" / site / "db" / "tasks.db")]
     if not all_sites:
         raise SystemExit("必须指定 --site 或 --all-sites")
     sites_root = data_root / "sites"
