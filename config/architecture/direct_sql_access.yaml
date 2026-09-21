@@ -21,6 +21,7 @@
   {"path":"src/netconsole/services/site_sync.py","classification":"REPOSITORY_REQUIRED","owner":"storage","reason":"局点包导出、回传预检合并、SQLite Backup、凭据清洗和失败恢复的存储生命周期所有者。"},
   {"path":"src/netconsole/repositories/history_store.py","classification":"REPOSITORY_REQUIRED","owner":"job-center","reason":"TaskHistoryStore 的任务归档 catalog 与月分片 Repository；不承担 Legacy external HistoryStore 的运行、迁移或 fallback。"},
   {"path":"scripts/build/smoke_frozen_device_database.py","classification":"TEST_ONLY","owner":"release","reason":"冻结 Backend 发布 smoke 在隔离测试根构造旧库，并在迁移后只读校验完整性；不参与产品运行。"},
+  {"path":"scripts/build/smoke_production_ap_identity_startup.py","classification":"TEST_ONLY","owner":"release","reason":"冻结 Electron Production-shape AP Identity startup smoke 仅在 canonical test-data run root 构造 current-schema SQLite fixture，并在启动后校验 source/index；不参与产品运行。"},
   {"path":"scripts/maintenance/benchmark_mesh_analysis_loading.py","classification":"TEST_ONLY","owner":"mesh","reason":"MESH 加载性能基准只在显式测试根构造临时 fixture，并在完成后删除；不访问正式业务数据库。"},
   {"path":"scripts/maintenance/check_online_mr_session_state.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"online-mr","reason":"只读会话诊断脚本。"},
   {"path":"scripts/maintenance/migrate_legacy_runtime_data.py","classification":"MIGRATION_TOOL","owner":"data","reason":"历史运行数据迁移脚本。"},
