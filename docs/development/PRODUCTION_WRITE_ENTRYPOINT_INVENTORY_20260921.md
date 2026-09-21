@@ -315,3 +315,18 @@ No follow-up is implemented by this audit.
 `P7_PRODUCTION_MAINTENANCE_AUDIT=PAUSED_SAFETY_BUG`
 
 `PHASE_B=PAUSED_UNTIL_UNGUARDED_ENTRIES_ARE_GUARDED_AND_VALIDATED`
+
+## Current resolution note — P7.3-C task-result authority
+
+The historical P7.3-B findings above are retained as the audit snapshot. On
+the follow-up branch `codex/task-result-rollout-production-authority-20260922`,
+the task-result rollout and ref-only closure entrypoints are being resolved by
+binding Production operations to the persisted `SiteRegistry`, the
+`PRODUCTION_SITE_ALLOWLIST`, the canonical `tasks.db` path, and the shared
+site/database maintenance lock. Ref-only plans also bind the operation,
+rollout state/revision, schema and digest scope, target preservation contract,
+candidate set, task reference protections, and backup/restore identity. The
+operation-specific capabilities are `TASK_RESULT_ROLLOUT_AUTHORIZED` and
+`TASK_RESULT_REF_ONLY_AUTHORIZED`; the generic Production maintenance token is
+not sufficient for these Production task-result operations. No database schema
+or persisted task-result value is migrated by this fix.
