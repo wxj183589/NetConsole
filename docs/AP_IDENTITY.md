@@ -215,8 +215,12 @@ MESH 分析、历史报告和页面刷新都是只读操作，数据库指纹在
 
 Backend 启动只保留缺失或过期索引的兼容性收口；`_initialize_active_site_database()`
 在数据库初始化/历史行规范化完成后调用一次 `ensure_index("backend_startup")`，
-确保启动期间可能提升的 source revision 与只读索引一致。正常来源写入不会依赖
-启动时机，也不会把启动修复当作来源写入的替代路径。
+确保启动期间可能提升的 source revision 与只读索引一致。Production 的
+`automatic_safe_only=True` 只允许复用现有 `rebuild_index` derived-only 原子替换：
+读取受保护 source rows，成功后在单事务中替换实体、alias、冲突和状态，绝不写回
+来源主数据。`Database.initialize(startup_policy="production_safe")` 仍对
+maintenance-grade schema migration、数据库修复和错误数据库路径 fail closed。
+正常来源写入不会依赖启动时机，也不会把启动修复当作来源写入的替代路径。
 
 来源 revision 监听 `ap_extension_points`、FIT-AP 当前资源、
 当前 Radio identity evidence、LLDP 历史、FIT-AP metadata、兼容 AP entity/光衰/轨旁缓存，以及

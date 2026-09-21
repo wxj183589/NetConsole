@@ -29,10 +29,6 @@ _EXACT_ALIAS_ORDER = (
 _PEER_ALIAS_ORDER = _EXACT_ALIAS_ORDER[:5]
 
 
-class ApIdentityMaintenanceRequiredError(RuntimeError):
-    """Raised when startup would need a non-trivial index rebuild."""
-
-
 class ApIdentityQueryService:
     def __init__(
         self,
@@ -99,6 +95,15 @@ class ApIdentityQueryService:
         *,
         automatic_safe_only: bool = False,
     ) -> ApIdentityBuildResult | None:
+        """Ensure the derived Identity index is current.
+
+        Production startup keeps ``automatic_safe_only=True`` as an explicit
+        policy marker.  Its only automatic write path is the existing
+        repository ``rebuild_index`` transaction, which reads source rows and
+        atomically replaces derived Identity tables; it never writes source
+        authority.
+        """
+
         state, source_revision = self.repository.index_health(site_id=self.site_id)
         indexed_source_revision = (
             int(state["source_revision"])
@@ -114,10 +119,7 @@ class ApIdentityQueryService:
             return None
         if not self.repository.has_source_rows() and state is not None:
             return None
-        if automatic_safe_only:
-            raise ApIdentityMaintenanceRequiredError(
-                "Production startup requires explicit AP Identity index maintenance"
-            )
+        del automatic_safe_only
         return self.rebuild_index(reason)
 
     def resolve_mac(

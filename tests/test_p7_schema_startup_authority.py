@@ -595,12 +595,18 @@ def test_development_bootstrap_and_repeat_initialize_remain_supported(tmp_path: 
     assert database.read_bytes() == first
 
 
-def test_ap_identity_automatic_safe_only_does_not_publish_rebuild_ready(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_ap_identity_automatic_safe_only_rebuilds_derived_index_without_source_mutation(
+    tmp_path: Path,
 ) -> None:
-    database = _database(tmp_path / "isolated")
+    _root, database = _production_identity_fixture(tmp_path)
     service = ApIdentityQueryService(Database(database))
-    assert service.ensure_index("startup", automatic_safe_only=True) is None
-    monkeypatch.setattr(service.repository, "has_source_rows", lambda: True)
-    with pytest.raises(RuntimeError, match="explicit AP Identity index maintenance"):
-        service.ensure_index("startup", automatic_safe_only=True)
+    source_before = _source_snapshot(database)
+
+    result = service.ensure_index("startup", automatic_safe_only=True)
+
+    assert result is not None
+    assert _source_snapshot(database) == source_before
+    state = service.revision_state()
+    assert state.status == "ready"
+    assert state.revision > 0
+    assert state.indexed_source_revision == state.current_source_revision
