@@ -33,16 +33,16 @@ backup/restore/rollback, file replacement, or real-data validation.
 
 ## Inventory summary
 
-The matrix contains 22 logical write-capable entries in the P7 boundary:
+The matrix contains 26 logical write-capable entries in the P7 boundary:
 
 | Status | Count | Meaning |
 | --- | ---: | --- |
 | `SAFE_CANONICAL` / `FIXED_P7_1` / `FIXED_P7_2` | 3 | Canonical Production site/database scope and operation gate are present or the P7 fix is complete |
-| `PARTIALLY_GUARDED` | 13 | Some site, operation, confirmation, transaction, or rollback control exists, but the P7 canonical Production authority is not consistently enforced |
-| `UNGUARDED` | 6 | A Production-reachable write path has no canonical Production site authority and/or no fail-closed Production operation gate |
+| `PARTIALLY_GUARDED` | 14 | Some site, operation, confirmation, transaction, or rollback control exists, but the P7 canonical Production authority is not consistently enforced |
+| `UNGUARDED` | 9 | A Production-reachable write path has no canonical Production site authority and/or no fail-closed Production operation gate |
 | `UNKNOWN` | 0 | No unresolved write family was left without a status |
 
-The six `UNGUARDED` entries are the current safety bug surface. Phase B must
+The nine `UNGUARDED` entries are the current safety bug surface. Phase B must
 remain paused until each one has an explicit disposition and the required
 follow-up is implemented and validated.
 
@@ -101,6 +101,9 @@ authority.
 | `TASK_RESULT_ROLLOUT` | `scripts/maintenance/manage_task_result_rollout.py`; `main`, `TaskResultRolloutService` | `disable-dual-write --apply`; enable path is intentionally disabled | Changes rollout state and audit/revision state in `tasks.db` | Production reachable with arbitrary `--data-root` containing a registry site | `SiteRegistry` supplies a site path, but no Production allowlist/reparse validation | `--apply` + `--allow-production-write` + expected revision + reason | CAS-style DB state transition; no independent backup/rollback owner | First state mutation is rollout CAS after the shared boolean gate | `PARTIALLY_GUARDED`; HIGH; P7.3-B |
 | `TASK_RESULT_REF_ONLY_CLOSURE` | `scripts/maintenance/close_task_result_ref_only.py`; plan/apply | Production task-result ref-only closure | Updates canonical JSON/ref-only task-result rows and trigger state | Arbitrary `--data-root`; source is only checked as `root/db/tasks.db` | Path containment and plan site ID only; no canonical Production allowlist/registry resolution | Magic authorization + plan digest; no canonical site authorization | Backup before transaction; `BEGIN IMMEDIATE`, postcheck, restore on failure | Backup is the first side effect after local path checks | `PARTIALLY_GUARDED`; HIGH; P7.3-B |
 | `AP_EXTENSION_SCHEMA_UPGRADE` | `scripts/maintenance/upgrade_ap_extension_schema.py`; `upgrade_database`, `upgrade_all_site_databases` | AP extension schema upgrade; direct `--db` or `--all-sites` | Schema metadata and AP extension schema mutation | Default/data-root may be `D:\NetConsoleData`; `--all-sites` uses `sites/*/db/devices.db` discovery | None; raw DB path or directory glob | Shared `--allow-production-write` boolean only; `--force` bypasses version precondition; `--no-backup` disables backup | Optional backup; SQLite context/commit; no complete operation journal or rollback contract | Backup is first side effect when enabled; `executescript` is first schema mutation | `UNGUARDED`; CRITICAL; P7.3-A |
+| `TASK_CLEANUP_SCHEMA_UPGRADE_SCRIPT` | `scripts/maintenance/upgrade_task_cleanup_schema.py`; `main` -> `upgrade_task_cleanup_schema` | Explicit Task Center cleanup schema upgrade; direct `--database` | Creates/alters cleanup tombstone table/indexes in `tasks.db` | Direct database path; fixed `D:\NetConsoleData` rejection can be bypassed by a relocated/overridden Production root | None; fixed literal is not canonical Production authority | No Production mode, authorization token, maintenance window, or canonical site resolution | `BEGIN IMMEDIATE`, transactional DDL, rollback on failure; no Production backup owner | SQLite transaction begins after only fixed-path check; first DDL is table/index creation | `UNGUARDED`; HIGH; P7.3-A |
+| `AP_OPTICAL_TREATMENT_BACKFILL` | `scripts/backfill_ap_optical_treatment_events.py`; `main`, `_database_path`, `_apply_plan` | AP optical treatment event/history backfill; `--apply` | Inserts event rows and updates recurrence state in `devices.db` | `--data-root`/`--database` are directly accepted; fixed `D:\NetConsoleData` rejection is bypassable after root relocation/override | None; fixed literal is not canonical Production authority | `--apply` and domain plan/conflict checks only; no canonical Production authorization | Read-only planning, then SQLite write transaction with rollback; no Production backup owner | Writable connection and transaction begin after fixed-path/file checks; first writes are event inserts/updates | `UNGUARDED`; HIGH; P7.3-A |
+| `TRACKSIDE_AP_IDENTITY_BACKFILL` | `scripts/maintenance/backfill_trackside_ap_station_identity.py`; `main` -> `build_report` | Trackside AP station/section identity backfill; `--apply` | Updates AP identity relations and writes backfill audit state | Direct `--database-copy`; existence/non-symlink and caller-supplied hash/confirmation do not prevent current Production `devices.db` | None; `database-copy` is a parameter name, not a Production scope proof | Confirmation + expected hash + `--apply`; no canonical Production authorization | `BEGIN IMMEDIATE`, hash recheck, transaction rollback; no Production backup owner | Write transaction begins after direct path checks; audit/table and relation writes follow | `UNGUARDED`; HIGH; P7.3-A |
 | `MESH_DERIVED_REBUILD_CLI` | `scripts/maintenance/rebuild_mesh_parsed_data.py`; `build_plan`, `apply_plan` | Explicit MESH parsed/derived-state repair | Rebuilds parsed/derived DB and repair journal; raw source is read-only | Direct `--data-root` + required raw `--site`; plan is built before Production gate | None; `PathResolver` plus raw site string | `--apply` + shared `--allow-production-write`; no canonical Production resolver | Hash/preflight and service repair; no CLI-bound canonical plan digest/revision gate | Service repair starts journal/staging/derived writes after only boolean gate | `UNGUARDED`; HIGH/CRITICAL; P7.3-C |
 | `MESH_IDENTITY_REMAP_CLI` | `scripts/maintenance/remap_mesh_identity.py`; `build_plan`, `apply_plan` | Explicit MESH identity/source remap and rebuild | Derived DB, source index/catalog identity projection and revision state | Direct `--data-root` + required raw `--site`; per-entry rebuild loop | None; direct site path resolution | `--apply` + shared `--allow-production-write`; no canonical resolver or per-entry revision binding | Read-only plan; per-entry exception handling; no complete rollback owner | First source/derived rebuild mutation occurs after only the boolean gate | `UNGUARDED`; HIGH/CRITICAL; P7.3-C |
 | `STORAGE_RETIREMENT_CLI` | `scripts/maintenance/retire_unmanaged_storage.py`; preview/apply | Retire unmanaged/legacy storage candidates | Copies to retirement sibling, then deletes source files and writes manifest | Arbitrary `--data-root` and plan candidates can point at a Production root | Registry/protection manifest is a data-protection input, not the canonical Production allowlist | Plan digest, candidate protection, explicit apply; no Production mode/confirmation | Copy/hash verification and copy-back rollback on failure | Creates retirement destination before source deletion; source `unlink()` follows per-file copy | `UNGUARDED`; CRITICAL; P7.3-D |
@@ -114,6 +117,7 @@ authority.
 | `HTTP_MESH_REPAIR_DELETE` | `mesh_analysis_router.py`; delete source(s), maintenance, rebuild | User-requested MESH source delete, parser maintenance, rebuild | Raw/source deletion or derived/identity rebuild depending operation | Current site and session IDs from HTTP/app context | Current SiteRegistry/app context; no P7 Production resolver in route/worker chain | Feature gates, task control, explicit confirmation and session preflight | Worker/service-specific locks and rebuild checks; no common P7 rollback owner | Task worker begins after route checks; domain service performs first mutation | `PARTIALLY_GUARDED`; HIGH; P7.3-C |
 | `HTTP_AC_EXTENSION_ROLLBACK` | `ac_management_router.py`; `/extensions/audits/{audit_id}/rollback` | AC extension import apply/rollback and local rebuild | Devices DB extension rows/files and audit state | Current site from application context | App site context and audit identity; no P7 Production allowlist | Capability feature gate + explicit confirmation + audit lookup | Audit rollback/import service owns transaction/backup as applicable | Service operation starts after audit/confirmation checks | `PARTIALLY_GUARDED`; MEDIUM/HIGH; P7.3-A |
 | `HTTP_BASE_DATA_ROLLBACK` | `rail_transit_base_data_router.py`; import apply and `/import-operations/{id}/rollback` | Rail-transit base-data import/rollback | Business DB tables and import operation state | Current site/app data root | Application site context; no P7 Production allowlist | Preview/operation ID and rollback request/confirmation | Import service transaction and operation journal | Apply/rollback transaction starts after operation validation | `PARTIALLY_GUARDED`; MEDIUM/HIGH; P7.3-A/D |
+| `STARTUP_ACTIVE_SITE_DATABASE_INITIALIZATION` | `backend/api/main.py`; `_initialize_active_site_database` -> `Database.initialize`, `ApIdentityQueryService.ensure_index` | Automatic active-site DB schema/repair initialization during backend startup | Schema scripts, additive migrations, legacy/backfill repairs, schema version/WAL state, orphan collection recovery, and AP Identity index/revision state | Active site selected through `NETCONSOLE_ACTIVE_SITE_ID`/`SiteManager` and `PathResolver`; formal Production startup is reachable | Normal SiteRegistry/PathResolver startup routing; no P7 Production allowlist, canonical DB scope, or explicit reparse authorization at this boundary | Automatic startup only; no Production authorization token, human confirmation, maintenance window, or writer-quiescence gate | Conditional pre-migration backup; `BEGIN IMMEDIATE`/commit and rollback on initialization error; AP Identity rebuild has its own transaction; no operation-level restore owner | `Database.initialize` may create/alter state after inspect; backup is first side effect for selected migrations, otherwise schema transaction is first mutation; AP Identity write transaction follows initialization | `PARTIALLY_GUARDED`; HIGH/CRITICAL; P7.3-A/F |
 | `STARTUP_UPGRADE_RECOVERY` | `backend/api/main.py` -> `recover_incomplete_upgrades()` | Automatic recovery of interrupted DB switches | Journal status, shadow/rollback/backup file moves, active DB restore | Current `PathResolver` runtime root; can be Production | Persisted journal + controlled-path checks and lock; no explicit P7 allowlist | Persisted incomplete operation is the authority; no human confirmation at startup | Designed rollback/recovery and journal state; fail status is persisted | Journal recovery lock/status update is first write; file moves follow controlled paths | `PARTIALLY_GUARDED`; MEDIUM/HIGH; P7.3-A/D |
 | `STARTUP_SITE_STAGING_RECOVERY` | `backend/api/main.py` -> `SitePackageService.recover_orphaned_staging()` | Automatic package staging cleanup/recovery | Staging files/registry/package recovery records | Current runtime root; Production is possible by normal app design | Service-controlled staging paths and package journal; no P7 allowlist | Persisted staging state and startup recovery policy | Staging recovery keeps failure diagnostics; rollback semantics are service-specific | Staging scan/recovery record precedes file cleanup | `PARTIALLY_GUARDED`; MEDIUM; P7.3-D |
 | `AUTO_TASK_EVENT_RETENTION` | `backend/api/main.py` -> `TaskApplicationService.run_due_task_event_retention()` -> `TaskEventRetentionService.run_due()` | Deferred automatic terminal task-event retention | Deletes `task_events` rows and updates retention setting | Active site task repository; can be Production | PathResolver/site application context; no canonical Production allowlist | Automatic schedule and terminal/external-owner protection; no human confirmation or Production operation token | Per-batch DB operations and fail-closed external owner reads; no backup/restore | First row delete occurs after preview/protection reads; settings update follows | `PARTIALLY_GUARDED`; HIGH for destructive Production maintenance; P7.3-B/C decision |
@@ -138,6 +142,27 @@ version and required tables before any backup or write; fail closed on helper,
 registry, provider, or path errors; bind the plan to registry/revision evidence;
 retain a tested backup/rollback owner. Expected files are the script and its
 targeted contract tests. No database migration is part of this audit.
+
+The same P7.3-A boundary also covers `upgrade_task_cleanup_schema.py`,
+`backfill_ap_optical_treatment_events.py`, and
+`backfill_trackside_ap_station_identity.py`. Their current fixed-root rejection,
+Development default, database-copy naming, confirmation, and hash checks are
+useful local safeguards, but none proves that a target is outside a relocated
+or otherwise directly addressed Production root. They must either be made
+explicitly Development/isolated-only with a fail-closed canonical check, or be
+given the same canonical Production site/database authority before any schema
+or backfill mutation.
+
+`_initialize_active_site_database()` is an automatic Production-reachable
+writer that must be handled in the same authority review. It selects the active
+site through normal startup routing, then `Database.initialize()` can run schema
+scripts, additive migrations, legacy repairs and backfills, write the schema
+version, and checkpoint WAL; `ApIdentityQueryService.ensure_index()` can then
+commit an AP Identity index/revision update. Selected migrations create a
+backup and initialization rolls back its transaction on failure, but startup
+has no explicit P7 Production authorization, maintenance window, or common
+restore owner. The follow-up must define whether startup initialization is a
+canonical automatic capability or must be separated from Production startup.
 
 ### P7.3-B — Task-result rollout and ref-only closure
 
@@ -205,11 +230,11 @@ decided explicitly rather than inheriting the P7.1 GC contract by name.
 | Pattern | Observed entries | Assessment |
 | --- | --- | --- |
 | Raw `--data-root` + raw `--site` | MESH rebuild/remap, task rollout, several migration tools | Path calculation is not site authorization; direct follow-up required |
-| Direct `--db` | AP schema upgrade, task-result tools | Must resolve canonical site/database before accepting the path |
+| Direct `--db`/`--database`/`--database-copy` | AP schema upgrade, task-result tools, cleanup-schema upgrade, AP backfills | Must resolve canonical site/database before accepting the path; argument naming does not establish Development-only scope |
 | Directory glob/discovery | AP `--all-sites`, bootstrap inspection, read-only audits | Production mutation must never expand a directory as an authority source |
 | `--all-sites` | AP schema upgrade, dev-only task tools, P7.1 GC | P7-safe meaning is allowlist expansion only; other uses need explicit disposition |
 | Environment override | `NETCONSOLE_ALLOW_PRODUCTION_WRITE` | Boolean capability must remain subordinate to canonical site and operation checks |
-| Default Production literal | AP upgrade and unified root migration | Dangerous because omission of a path can select Production |
+| Fixed-root rejection or default Production literal | Cleanup-schema upgrade, AP backfills, AP upgrade, unified root migration | A fixed path check is not relocation-safe; omission or alternate-root invocation can still select Production |
 | Reparse/link handling | Strong in P7 helper and some storage services; absent in MESH/AP/task rollout | Every mutation target and ancestor requires fail-closed checks |
 | Provider/registry unavailable | Shared boolean paths can continue if marker is present | Provider/registry failure must be a hard refusal before backup or mutation |
 | Plan built before authorization | Both MESH CLIs | Plan construction may read data, but apply must rebind scope and revision before any side effect |
@@ -222,12 +247,14 @@ decided explicitly rather than inheriting the P7.1 GC contract by name.
 | P7.1 GC | Transaction and authority-index consistency; no business-data backup | First task DB delete after canonical scope, apply, and active-task checks |
 | P7.2 compaction | External backup, candidate parity, atomic replace, restore | Candidate creation after auth and stale-source checks; source replacement later |
 | AP schema | Optional file backup, no complete rollback owner | Backup creation, or schema `executescript` with `--no-backup` |
+| Cleanup-schema/AP backfill scripts | Transaction/hash/confirmation varies; no Production backup owner | SQLite transaction or first writable connection after fixed-path/direct-file checks |
 | Task rollout/ref-only | CAS or explicit transaction; ref-only has backup/restore | Rollout CAS; ref-only backup |
 | MESH rebuild/remap | Domain hash/preflight; no common rollback owner | Repair/rebuild journal/derived/source projection write |
 | Storage retirement | Copy/hash then source deletion; copy-back on failure | Retirement destination creation |
 | Data-root migration | Staging/hash/SQLite checks and recovery cleanup | Lock/staging creation; later root publication via replace/move |
 | HTTP DB upgrade | Journal, backup validation, shadow smoke, rollback | Journal creation; active DB switch only after validation |
 | Site retention/lifecycle/import | Scan token, active-task gate, staging/trash/backup varies by operation | Report/staging/trash or archive creation |
+| Startup active-site DB initialization | Conditional pre-migration backup; DB/AP Identity transactions; no common restore owner | Backup for selected migrations, otherwise schema transaction; AP Identity write transaction follows |
 | Startup recovery | Persisted journal/locks and controlled moves | Recovery journal update or controlled artifact move |
 | Auto task-event retention | External owner protection and DB operation; no backup | First batch deletion of terminal task events |
 
@@ -239,9 +266,6 @@ entries under this audit:
 | Path/family | Reason for exclusion | Status |
 | --- | --- | --- |
 | `scripts/maintenance/migrate_task_result_blobs.py`, `compact_task_result_storage.py`, `tasks_db_compaction.py` | Apply is restricted to the Development root or an isolated test root | `NOT_PRODUCTION_WRITE` |
-| `scripts/maintenance/upgrade_task_cleanup_schema.py` | Current fixed `D:\NetConsoleData` target is explicitly rejected; guard should not be treated as a future canonical authority | `NOT_PRODUCTION_WRITE` |
-| `scripts/backfill_ap_optical_treatment_events.py` | Requires Development data and rejects Production; copy-only backfill contract | `NOT_PRODUCTION_WRITE` |
-| `scripts/maintenance/backfill_trackside_ap_station_identity.py` | Requires an explicit database copy and rejects symlinks; no Production target | `NOT_PRODUCTION_WRITE` |
 | `scripts/maintenance/audit_sites.py` and storage/profile/audit scripts | Read business state and may write an audit/report artifact; they do not mutate authoritative DB/site state | `NOT_PRODUCTION_WRITE` |
 | `scripts/maintenance/check_desktop_bootstrap.py --repair` | Repairs Electron bootstrap/config outside the Production site data authority; it does not mutate site DB or authoritative site state | `NOT_PRODUCTION_WRITE` |
 | `AppCleanupService` automatic log/cache cleanup | Deletes controlled application logs/cache, not Production site DB, schema, registry, or derived business state | `NOT_PRODUCTION_WRITE` |
