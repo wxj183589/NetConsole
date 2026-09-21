@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
+import zlib
 from pathlib import Path
 
 import pytest
@@ -53,7 +55,12 @@ def _write_registry(root: Path, *, include_unlisted: bool = False) -> None:
     )
 
 
-def _make_authority_db(path: Path, *, task_id: str = "candidate") -> None:
+def _make_authority_db(
+    path: Path,
+    *,
+    task_id: str = "candidate",
+    authority_result: dict[str, object] | None = None,
+) -> None:
     repository = TaskRepository(path)
     timestamp = "2026-09-22T01:00:00Z"
     result = {"task": task_id, "value": 1}
@@ -97,13 +104,74 @@ def _make_authority_db(path: Path, *, task_id: str = "candidate") -> None:
                 "UPDATE task_results SET canonical_json=? WHERE result_id=?",
                 (canonical, row[0]),
             )
+        if authority_result is not None:
+            row = connection.execute(
+                "SELECT result_id, content_sha256, task_id, terminal_event_type, schema_version, "
+                "created_time FROM task_results"
+            ).fetchone()
+            canonical = json.dumps(
+                authority_result,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            encoded = canonical.encode("utf-8")
+            content_sha256 = hashlib.sha256(encoded).hexdigest()
+            compressed = zlib.compress(encoded)
+            result_id = "tr-" + hashlib.sha256(
+                f"{row['task_id']}\0{row['terminal_event_type']}\0{content_sha256}".encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            connection.execute(
+                "DELETE FROM task_result_blobs WHERE content_sha256=?",
+                (row["content_sha256"],),
+            )
+            connection.execute(
+                "INSERT INTO task_result_blobs("
+                "content_sha256, codec, compressed_blob, uncompressed_bytes, "
+                "compressed_bytes, created_time, verified_at"
+                ") VALUES (?, 'zlib', ?, ?, ?, ?, ?)",
+                (
+                    content_sha256,
+                    compressed,
+                    len(encoded),
+                    len(compressed),
+                    row["created_time"],
+                    row["created_time"],
+                ),
+            )
+            connection.execute(
+                "DELETE FROM task_results WHERE result_id=?", (row["result_id"],)
+            )
+            connection.execute(
+                "INSERT INTO task_results("
+                "result_id, task_id, terminal_event_type, canonical_json, sha256, "
+                "byte_size, schema_version, created_time, content_sha256, "
+                "blob_codec, blob_ready"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'zlib', 1)",
+                (
+                    result_id,
+                    row["task_id"],
+                    row["terminal_event_type"],
+                    canonical,
+                    content_sha256,
+                    len(encoded),
+                    row["schema_version"],
+                    row["created_time"],
+                    content_sha256,
+                ),
+            )
         connection.execute(trigger)
         connection.commit()
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def _production_fixture(
-    tmp_path: Path, *, include_unlisted: bool = False
+    tmp_path: Path,
+    *,
+    include_unlisted: bool = False,
+    authority_result: dict[str, object] | None = None,
 ) -> tuple[Path, dict[str, Path]]:
     root = tmp_path / "relocated-production-root"
     write_data_environment(
@@ -115,7 +183,11 @@ def _production_fixture(
     for site_id in ("sxl1", "hzl10"):
         database = root / "sites" / site_id / "db" / "tasks.db"
         database.parent.mkdir(parents=True, exist_ok=True)
-        _make_authority_db(database, task_id=f"candidate-{site_id}")
+        _make_authority_db(
+            database,
+            task_id=f"candidate-{site_id}",
+            authority_result=authority_result if site_id == "sxl1" else None,
+        )
         databases[site_id] = database
     if include_unlisted:
         database = root / "sites" / "unlisted-site" / "db" / "tasks.db"
@@ -289,11 +361,51 @@ def test_fake_tenth_site_is_not_production_authority(tmp_path: Path) -> None:
         )
 
 
+def test_rollout_production_marker_routes_unlisted_site_to_canonical_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _databases = _production_fixture(tmp_path, include_unlisted=True)
+    monkeypatch.setenv("NETCONSOLE_ALLOW_PRODUCTION_WRITE", "1")
+
+    with pytest.raises(SystemExit, match="NOT_ALLOWLISTED"):
+        rollout_cli_main(
+            [
+                "status",
+                "--data-root",
+                str(root),
+                "--site-id",
+                "unlisted-site",
+            ]
+        )
+
+
 def test_production_registry_provider_failure_is_fail_closed(tmp_path: Path) -> None:
     root, databases = _production_fixture(tmp_path)
     (root / "config" / "site_registry.json").unlink()
 
     with pytest.raises(TaskResultClosureError, match="REGISTRY_UNAVAILABLE"):
+        build_ref_only_plan(databases["sxl1"], site_id="sxl1", data_root=root)
+
+
+def test_production_environment_marker_missing_is_fail_closed(tmp_path: Path) -> None:
+    root, databases = _production_fixture(tmp_path)
+    (root / "runtime_mode.json").unlink()
+
+    with pytest.raises(TaskResultClosureError, match="DATA_ENVIRONMENT_UNAVAILABLE"):
+        build_ref_only_plan(databases["sxl1"], site_id="sxl1", data_root=root)
+
+
+def test_canonical_result_reference_protects_ref_only_plan(tmp_path: Path) -> None:
+    root, databases = _production_fixture(
+        tmp_path,
+        authority_result={
+            "task": "candidate-sxl1",
+            "value": 1,
+            "online_mr_session_id": "session-from-canonical-result",
+        },
+    )
+
+    with pytest.raises(TaskResultClosureError, match="LONG_TERM_REFERENCE_PROTECTED"):
         build_ref_only_plan(databases["sxl1"], site_id="sxl1", data_root=root)
 
 

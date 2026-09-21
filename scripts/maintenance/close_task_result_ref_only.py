@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import data_environment
+from netconsole.core.runtime_mode import DataEnvironmentMode
 from netconsole.models.task_history_policy import (
     ACTIVE_TASK_STATE_VALUES,
     TERMINAL_TASK_STATE_VALUES,
@@ -198,6 +200,42 @@ def _protect_candidate_task_references(
     active: list[str] = []
     online: list[str] = []
     long_term: list[str] = []
+    authority_results: dict[str, dict[str, Any]] = {}
+    result_ids = sorted({str(item.get("result_id") or "") for item in candidates})
+    result_placeholders = ",".join("?" for _ in result_ids)
+    result_rows = {
+        str(row["result_id"]): row
+        for row in connection.execute(
+            f"SELECT * FROM task_results WHERE result_id IN ({result_placeholders})",
+            result_ids,
+        ).fetchall()
+    }
+    for item in candidates:
+        result_id = str(item.get("result_id") or "")
+        task_id = str(item.get("task_id") or "")
+        raw_result = result_rows.get(result_id)
+        if raw_result is None:
+            raise TaskResultClosureError(
+                f"TASK_RESULT_AUTHORITY_INVALID: missing result {result_id}"
+            )
+        try:
+            verified_result = verify_task_result_authority(
+                connection, dict(raw_result)
+            )
+        except (sqlite3.DatabaseError, TaskResultBlobError) as exc:
+            raise TaskResultClosureError(
+                f"TASK_RESULT_AUTHORITY_INVALID: {result_id}: {exc}"
+            ) from exc
+        if str(verified_result.get("task_id") or "") != task_id:
+            raise TaskResultClosureError(
+                f"TASK_RESULT_AUTHORITY_INVALID: task binding {result_id}"
+            )
+        authority = verified_result.get("result")
+        if not isinstance(authority, Mapping):
+            raise TaskResultClosureError(
+                f"TASK_RESULT_AUTHORITY_INVALID: result payload {result_id}"
+            )
+        authority_results[task_id] = dict(authority)
     online_ids: set[str] = set()
     if _table_exists(connection, "online_mr_task_sessions"):
         columns = {
@@ -249,7 +287,8 @@ def _protect_candidate_task_references(
         if task_id in online_ids:
             online.append(task_id)
         if task_has_long_term_reference(
-            resource_keys=resource_keys, result={**result, **summary}
+            resource_keys=resource_keys,
+            result={**authority_results.get(task_id, {}), **summary, **result},
         ):
             long_term.append(task_id)
     if active:
@@ -466,30 +505,23 @@ def build_ref_only_plan(
 
 def _looks_like_production_scope(root: Path, site_id: str) -> bool:
     normalized = str(site_id or "").strip().casefold()
+    if not (root / "runtime_mode.json").is_file():
+        raise TaskResultClosureError("TASK_RESULT_DATA_ENVIRONMENT_UNAVAILABLE")
+    try:
+        environment = data_environment(root)
+    except RuntimeError as exc:
+        raise TaskResultClosureError(
+            "TASK_RESULT_DATA_ENVIRONMENT_UNAVAILABLE"
+        ) from exc
+    if environment.mode not in {
+        DataEnvironmentMode.PRODUCTION,
+        DataEnvironmentMode.DEVELOPMENT,
+        DataEnvironmentMode.TEST,
+    }:
+        raise TaskResultClosureError("TASK_RESULT_DATA_ENVIRONMENT_INVALID")
     if normalized in PRODUCTION_SITE_ALLOWLIST:
         return True
-    marker = root / "runtime_mode.json"
-    if marker.is_file():
-        try:
-            value = json.loads(marker.read_text(encoding="utf-8"))
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            return True
-        if isinstance(value, Mapping) and str(value.get("mode") or "").casefold() == "production":
-            return True
-    registry = root / "config" / "site_registry.json"
-    if not registry.is_file():
-        return False
-    try:
-        value = json.loads(registry.read_text(encoding="utf-8"))
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return True
-    sites = value.get("sites") if isinstance(value, Mapping) else None
-    return isinstance(sites, list) and any(
-        isinstance(item, Mapping)
-        and str(item.get("site_id") or "").strip().casefold()
-        in PRODUCTION_SITE_ALLOWLIST
-        for item in sites
-    )
+    return environment.is_production
 
 
 def _resolve_task_result_target(

@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 import scripts.maintenance.close_task_result_ref_only as ref_only
 
+from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
 from netconsole.models.task_snapshot import TaskEvent, TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.task_repository import TaskRepository
@@ -19,6 +21,10 @@ from scripts.maintenance.close_task_result_ref_only import (
 
 
 def _make_db(path: Path) -> None:
+    write_data_environment(
+        path.parents[3],
+        DataEnvironmentInfo(DataEnvironmentMode.DEVELOPMENT),
+    )
     repository = TaskRepository(path)
     timestamp = "2026-08-29T01:00:00Z"
     for index in range(2):

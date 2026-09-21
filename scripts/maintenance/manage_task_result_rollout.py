@@ -6,7 +6,10 @@ import argparse
 import json
 from pathlib import Path
 
-from netconsole.core.runtime_environment import require_data_root_write_allowed
+from netconsole.core.runtime_environment import (
+    data_environment,
+    require_data_root_write_allowed,
+)
 from netconsole.core.paths import PathResolver
 from netconsole.services.database_upgrade.coordinator import (
     database_maintenance_lock,
@@ -57,6 +60,17 @@ def _parser() -> argparse.ArgumentParser:
 
 def _production_scope_required(args: argparse.Namespace) -> bool:
     site_id = str(args.site_id or "").strip().casefold()
+    root = Path(args.data_root).expanduser()
+    marker = root / "runtime_mode.json"
+    if marker.is_file():
+        try:
+            environment = data_environment(root)
+        except RuntimeError as exc:
+            raise SystemExit(
+                f"PRODUCTION_DATA_ENVIRONMENT_INVALID: {root}"
+            ) from exc
+        if environment.is_production:
+            return True
     return bool(args.allow_production_write) or site_id in PRODUCTION_SITE_ALLOWLIST
 
 
