@@ -120,23 +120,32 @@ def _initialize_production_fixture(
 
 
 def _source_snapshot(database: Path) -> tuple[object, ...]:
+    source_tables = (
+        "ap_extension_points",
+        "ac_fit_ap_resources",
+        "ac_fit_ap_metadata",
+        "devices",
+        "device_facts",
+        "ap_identity_radio_evidence",
+        "ac_fit_ap_radio_history",
+        "device_lldp_neighbors",
+        "ap_entities",
+        "ac_fit_ap_optical",
+        "trackside_ap_view_cache",
+        "ap_identity_source_state",
+    )
     with closing(sqlite3.connect(database)) as connection:
-        source_rows = connection.execute(
-            """
-            SELECT id, site_id, station_id, ap_name, ap_mac_norm,
-                   ap_mac_display, updated_at
-            FROM ap_extension_points
-            ORDER BY id
-            """
-        ).fetchall()
-        source_revision = connection.execute(
-            """
-            SELECT site_id, revision, updated_at
-            FROM ap_identity_source_state
-            ORDER BY site_id
-            """
-        ).fetchall()
-    return tuple(source_rows), tuple(source_revision)
+        return tuple(
+            (
+                table,
+                tuple(
+                    connection.execute(
+                        f"SELECT * FROM {table} ORDER BY rowid"
+                    ).fetchall()
+                ),
+            )
+            for table in source_tables
+        )
 
 
 def _identity_index_snapshot(database: Path) -> tuple[object, ...]:
@@ -602,7 +611,7 @@ def test_ap_identity_automatic_safe_only_rebuilds_derived_index_without_source_m
     service = ApIdentityQueryService(Database(database))
     source_before = _source_snapshot(database)
 
-    result = service.ensure_index("startup", automatic_safe_only=True)
+    result = service.ensure_index("backend_startup", automatic_safe_only=True)
 
     assert result is not None
     assert _source_snapshot(database) == source_before
@@ -610,3 +619,13 @@ def test_ap_identity_automatic_safe_only_rebuilds_derived_index_without_source_m
     assert state.status == "ready"
     assert state.revision > 0
     assert state.indexed_source_revision == state.current_source_revision
+
+
+def test_ap_identity_automatic_safe_only_rejects_non_startup_reason(
+    tmp_path: Path,
+) -> None:
+    _root, database = _production_identity_fixture(tmp_path)
+    service = ApIdentityQueryService(Database(database))
+
+    with pytest.raises(ValueError, match="backend_startup"):
+        service.ensure_index("source_refresh", automatic_safe_only=True)

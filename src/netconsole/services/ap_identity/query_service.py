@@ -98,12 +98,17 @@ class ApIdentityQueryService:
         """Ensure the derived Identity index is current.
 
         Production startup keeps ``automatic_safe_only=True`` as an explicit
-        policy marker.  Its only automatic write path is the existing
-        repository ``rebuild_index`` transaction, which reads source rows and
-        atomically replaces derived Identity tables; it never writes source
-        authority.
+        policy.  It is only valid for ``reason="backend_startup"``; that
+        automatic path is the existing repository ``rebuild_index``
+        transaction, which reads source rows and atomically replaces derived
+        Identity tables without writing source authority.  Explicit callers
+        keep the existing source-write event reasons when the flag is false.
         """
 
+        if automatic_safe_only and reason != "backend_startup":
+            raise ValueError(
+                "automatic_safe_only requires reason='backend_startup'"
+            )
         state, source_revision = self.repository.index_health(site_id=self.site_id)
         indexed_source_revision = (
             int(state["source_revision"])
@@ -119,7 +124,6 @@ class ApIdentityQueryService:
             return None
         if not self.repository.has_source_rows() and state is not None:
             return None
-        del automatic_safe_only
         return self.rebuild_index(reason)
 
     def resolve_mac(
