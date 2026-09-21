@@ -175,6 +175,44 @@ def resolve_production_site_scope(
     return canonical_site_id, resolved_root
 
 
+def resolve_production_database_scope(
+    paths: PathResolver,
+    site_id: str,
+    database: str,
+) -> tuple[str, Path, SiteRecord]:
+    """Resolve one allowlisted production database from the canonical site.
+
+    The returned path is derived from the persisted registry record, never from
+    a caller-provided directory or basename.  This keeps production-capable
+    maintenance tools on the same site and database boundary.
+    """
+
+    name = str(database)
+    if Path(name).name != name or name not in PRODUCTION_DATABASE_ALLOWLIST:
+        raise ProductionMaintenanceError(
+            "PRODUCTION_DATABASE_NOT_ALLOWLISTED: database is not in the production allowlist"
+        )
+    canonical_site_id, site_root = resolve_production_site_scope(paths, site_id)
+    database_dir = site_root / "db"
+    raw_target = database_dir / name
+    target = raw_target.resolve()
+    if (
+        _has_link_or_reparse_ancestor(raw_target, paths.data_root.resolve())
+        or target.parent != database_dir.resolve()
+    ):
+        raise ProductionMaintenanceError(
+            "PRODUCTION_DATABASE_REGISTRY_IDENTITY_MISMATCH"
+        )
+    if not target.is_file() or target.stat().st_size <= 0:
+        raise ProductionMaintenanceError("PRODUCTION_DATABASE_UNAVAILABLE")
+    site = SiteRecord(
+        site_id=canonical_site_id,
+        display_name=PRODUCTION_SITE_ALLOWLIST[canonical_site_id],
+        root_path=site_root,
+    )
+    return canonical_site_id, target, site
+
+
 _HEX64 = frozenset("0123456789abcdef")
 _FINAL_GATE_REQUIRED_SUITES: dict[str, frozenset[str]] = {
     "targeted": frozenset({"storage-targeted"}),
@@ -2351,23 +2389,9 @@ class ProductionMaintenanceCapability:
         return owners
 
     def _site_and_database(self, database: str) -> tuple[Path, Any]:
-        name = Path(str(database)).name
-        if Path(str(database)).name != str(database) or name not in PRODUCTION_DATABASE_ALLOWLIST:
-            raise ProductionMaintenanceError("database is not in the production allowlist")
-        canonical_site_id, site_root = resolve_production_site_scope(
-            self.paths, self.site_id
+        _canonical_site_id, target, site = resolve_production_database_scope(
+            self.paths, self.site_id, database
         )
-        site = SiteRecord(
-            site_id=canonical_site_id,
-            display_name=PRODUCTION_SITE_ALLOWLIST[canonical_site_id],
-            root_path=site_root,
-        )
-        target = (site_root / "db" / name).resolve()
-        raw_target = site_root / "db" / name
-        if raw_target.is_symlink() or target.parent != (site_root / "db").resolve():
-            raise ProductionMaintenanceError("production database path is not a registered direct child")
-        if not target.is_file() or target.stat().st_size <= 0:
-            raise ProductionMaintenanceError("production database is missing or empty")
         return target, site
 
     def _owner(self, database: str) -> ProductionRollbackOwner:
@@ -2951,6 +2975,7 @@ __all__ = [
     "current_resource_set_owners",
     "reconcile_rollback_owner_lifecycle",
     "resolve_production_site_scope",
+    "resolve_production_database_scope",
     "register_rollback_scope",
     "verify_registered_rollback_scope",
     "verify_rollback_owner_scope",
