@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from netconsole.services.site_storage import (
     SiteRecord,
     SiteRegistryRepository,
 )
+from netconsole.services.production_database_maintenance import PRODUCTION_SITE_ALLOWLIST
 
 
 TOKEN = "site-storage-session-token-123456"
@@ -31,6 +33,36 @@ def _client(tmp_path: Path, *, production: bool = False) -> TestClient:
         write_data_environment(
             paths.data_root,
             DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+        )
+        paths.config_dir.mkdir(parents=True, exist_ok=True)
+        paths.ensure_site_dirs("demo")
+        Database(paths.site_db_path("demo")).initialize()
+        paths.ensure_site_dirs("sxl1")
+        Database(paths.site_db_path("sxl1")).initialize()
+        (paths.config_dir / "site_registry.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "sites": [
+                        {
+                            "site_id": "sxl1",
+                            "display_name": PRODUCTION_SITE_ALLOWLIST["sxl1"],
+                            "relative_path": "sites/sxl1",
+                        },
+                        {
+                            "site_id": "demo",
+                            "display_name": "演示局点",
+                            "relative_path": "sites/demo",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        paths.app_config_path.write_text(
+            json.dumps({"active_site_id": "sxl1", "current_site": "sxl1"}),
+            encoding="utf-8",
         )
     app = create_app(
         RuntimeMode.DESKTOP,
