@@ -98,6 +98,7 @@ def _production_identity_fixture(tmp_path: Path) -> tuple[Path, Path]:
             )
             """
         )
+        connection.commit()
     return root, database
 
 
@@ -428,6 +429,7 @@ def test_production_startup_rebuilds_stale_identity_index(
             "UPDATE ap_extension_points SET ap_name=?, updated_at=? WHERE id=1",
             ("AP 001 changed", "2026-09-22T00:01:00Z"),
         )
+        connection.commit()
 
     stale = service.revision_state()
     assert stale.status == "stale"
@@ -470,6 +472,7 @@ def test_production_startup_builder_failure_preserves_old_index_and_state(
             "UPDATE ap_extension_points SET ap_name=?, updated_at=? WHERE id=1",
             ("AP 001 changed", "2026-09-22T00:02:00Z"),
         )
+        connection.commit()
     source_before = _source_snapshot(database)
     index_before = _identity_index_snapshot(database)
 
@@ -482,7 +485,7 @@ def test_production_startup_builder_failure_preserves_old_index_and_state(
         fail_builder,
     )
     with pytest.raises(RuntimeError, match="synthetic AP Identity builder failure"):
-        _initialize_production_fixture(root, monkeypatch)
+        service.rebuild_index("synthetic_failure")
 
     assert _source_snapshot(database) == source_before
     assert _identity_index_snapshot(database) == index_before
