@@ -196,8 +196,9 @@ cleanup is permitted.
 `tasks.db` gate. It is candidate-first, creates an external recovery copy, runs `VACUUM INTO`
 only on a closed candidate, verifies every user table and task-result authority plus related
 orphan checks, and atomically replaces only the target database when the configured freelist
-threshold is met. Runtime logs, unrelated sites, and retirement candidates are not part of its
-source digest.
+threshold is met. Preview and apply resolve the target through the canonical Production
+SiteRegistry/allowlist database boundary; there is no directory-discovery or all-sites bypass.
+Runtime logs, unrelated sites, and retirement candidates are not part of its source digest.
 
 An ownership scan that observes external production changes must stop only the affected target
 operation. The old and new target records, exact changed paths and hashes, and missing provenance

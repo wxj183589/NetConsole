@@ -1,10 +1,10 @@
 """Candidate-first physical compaction for an authorized production tasks.db.
 
 This is deliberately separate from the development-root compactor. It accepts
-one digest-bound plan for one registered site, creates an external recovery
-copy before replacement, validates every user table and task-result authority
-on the candidate, and restores the recovery copy if post-replace verification
-fails.
+one digest-bound plan for one allowlisted, Registry-registered site, creates an
+external recovery copy before replacement, validates every user table and
+task-result authority on the candidate, and restores the recovery copy if
+post-replace verification fails.
 """
 
 from __future__ import annotations
@@ -32,6 +32,10 @@ from netconsole.services.database_upgrade.coordinator import (
     database_maintenance_lock,
     site_database_maintenance_key,
 )
+from netconsole.services.production_database_maintenance import (
+    _has_link_or_reparse_ancestor,
+    resolve_production_database_scope,
+)
 from scripts.maintenance.audit_task_storage_integrity import audit_database
 
 
@@ -45,6 +49,41 @@ MIN_FREELIST_PERCENT = 5.0
 
 class TaskResultCompactionError(RuntimeError):
     """A production compaction gate failed closed."""
+
+
+def _authorized_tasks_database(
+    data_root: str | Path,
+    site_id: str,
+) -> tuple[Path, str, Path]:
+    """Return one immutable authorization snapshot for a production tasks.db."""
+
+    try:
+        root = Path(data_root).resolve(strict=True)
+        if root != PRODUCTION_ROOT.resolve():
+            raise TaskResultCompactionError(
+                "production compaction requires D:\\NetConsoleData"
+            )
+        paths = PathResolver(data_root=root)
+        canonical_site_id, target, _site = resolve_production_database_scope(
+            paths, site_id, "tasks.db"
+        )
+    except TaskResultCompactionError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise TaskResultCompactionError(str(exc)) from exc
+    return root, canonical_site_id, target
+
+
+def _assert_candidate_path_is_safe(path: Path, root: Path) -> None:
+    """Reject a staging reparse point before any backup or candidate write."""
+
+    resolved_root = root.resolve(strict=True)
+    if _has_link_or_reparse_ancestor(path.parent, resolved_root):
+        raise TaskResultCompactionError("compaction staging path is unsafe")
+    try:
+        path.resolve().relative_to(resolved_root)
+    except ValueError as exc:
+        raise TaskResultCompactionError("compaction staging path is outside production root") from exc
 
 
 def _canonical(value: object) -> bytes:
@@ -336,19 +375,16 @@ def build_compaction_plan(
     data_root: str | Path,
     generated_at: str | None = None,
 ) -> dict[str, Any]:
-    root = Path(data_root).resolve(strict=True)
+    root, canonical_site_id, authorized_path = _authorized_tasks_database(
+        data_root, site_id
+    )
     path = Path(tasks_db).resolve(strict=True)
-    if root != PRODUCTION_ROOT.resolve():
-        raise TaskResultCompactionError("production compaction requires D:\\NetConsoleData")
-    sites_root = (root / "sites").resolve(strict=True)
-    site_directory = path.parent.parent
-    if (
-        path.name != "tasks.db"
-        or site_directory.parent != sites_root
-        or path.parent.name != "db"
-    ):
-        raise TaskResultCompactionError("target is not a registered direct-child tasks.db")
-    snapshot = _snapshot(site_id, path, root)
+    if path != authorized_path:
+        raise TaskResultCompactionError(
+            "target is not the canonical registered tasks.db"
+        )
+    site_directory = authorized_path.parent.parent
+    snapshot = _snapshot(canonical_site_id, authorized_path, root)
     profile = snapshot["profile"]
     recommended = bool(
         int(profile["freelist_bytes"]) >= MIN_FREELIST_BYTES
@@ -357,11 +393,11 @@ def build_compaction_plan(
     body: dict[str, Any] = {
         "schema": PLAN_SCHEMA,
         "generated_at": generated_at or datetime.now(UTC).isoformat(),
-        "site_id": str(site_id),
+        "site_id": canonical_site_id,
         "site_directory": site_directory.name,
         "data_root": str(root),
         "digest_scope": TARGET_SCOPE,
-        "database": str(path),
+        "database": str(authorized_path),
         "source": snapshot,
         "threshold": {
             "freelist_bytes": MIN_FREELIST_BYTES,
@@ -463,15 +499,24 @@ def apply_compaction_plan(
     actual_digest = str(body.pop("plan_digest") or "")
     if actual_digest != expected_plan_digest or _digest(body) != actual_digest:
         raise TaskResultCompactionError("TASK_RESULT_COMPACTION_PLAN_DIGEST_MISMATCH")
-    root = Path(str(raw["data_root"])).resolve(strict=True)
-    source = Path(str(raw["database"])).resolve(strict=True)
-    sites_root = (root / "sites").resolve(strict=True)
-    expected_source = (sites_root / str(raw["site_directory"]) / "db" / "tasks.db").resolve()
+    try:
+        plan_data_root = str(raw["data_root"])
+        plan_site_id = str(raw["site_id"])
+        plan_database = str(raw["database"])
+        plan_site_directory = str(raw["site_directory"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TaskResultCompactionError("compaction plan target is malformed") from exc
+    root, canonical_site_id, source = _authorized_tasks_database(
+        plan_data_root, plan_site_id
+    )
+    try:
+        planned_source = Path(plan_database).resolve(strict=True)
+    except OSError as exc:
+        raise TaskResultCompactionError("compaction plan database is unavailable") from exc
     if (
-        root != PRODUCTION_ROOT.resolve()
-        or source.name != "tasks.db"
-        or source.parent.parent.parent != sites_root
-        or source != expected_source
+        plan_site_id != canonical_site_id
+        or plan_site_directory != source.parent.parent.name
+        or planned_source != source
     ):
         raise TaskResultCompactionError("invalid production tasks.db target")
     if not bool(raw.get("physical_compaction_recommended")):
@@ -486,31 +531,32 @@ def apply_compaction_plan(
     backup = Path(backup_path).resolve()
     if backup.is_relative_to(root):
         raise TaskResultCompactionError("compaction backup must be outside production root")
-    expected_snapshot = raw.get("source")
-    if not isinstance(expected_snapshot, Mapping):
-        raise TaskResultCompactionError("compaction source snapshot is missing")
-    current = _snapshot(str(raw["site_id"]), source, root)
-    if not _snapshot_matches(current, expected_snapshot):
-        raise TaskResultCompactionError("STALE_SOURCE: target tasks.db changed after preview")
-    source_before = current
-    backup_record = _backup(source, backup)
     operation_id = (
         f"task-result-compact-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}-"
         f"{uuid.uuid4().hex[:8]}"
     )
     candidate = _candidate_path(root, operation_id)
+    _assert_candidate_path_is_safe(candidate, root)
+    expected_snapshot = raw.get("source")
+    if not isinstance(expected_snapshot, Mapping):
+        raise TaskResultCompactionError("compaction source snapshot is missing")
+    current = _snapshot(canonical_site_id, source, root)
+    if not _snapshot_matches(current, expected_snapshot):
+        raise TaskResultCompactionError("STALE_SOURCE: target tasks.db changed after preview")
+    source_before = current
+    backup_record = _backup(source, backup)
     resolver = PathResolver(data_root=root)
     switched = False
     try:
         with database_maintenance_lock(
-            resolver, site_database_maintenance_key(str(raw["site_id"]))
+            resolver, site_database_maintenance_key(canonical_site_id)
         ):
-            current = _snapshot(str(raw["site_id"]), source, root)
+            current = _snapshot(canonical_site_id, source, root)
             if not _snapshot_matches(current, expected_snapshot):
                 raise TaskResultCompactionError("STALE_SOURCE: target changed before candidate build")
             source_before = current
             _build_candidate(source, candidate)
-            candidate_snapshot = _snapshot(str(raw["site_id"]), candidate, root)
+            candidate_snapshot = _snapshot(canonical_site_id, candidate, root)
             if _logical(candidate_snapshot) != _logical(expected_snapshot):
                 raise TaskResultCompactionError("TASK_COMPACT_LOGICAL_PARITY_FAILED")
             if int(candidate_snapshot["profile"]["physical_bytes"]) >= int(
@@ -525,7 +571,7 @@ def apply_compaction_plan(
             _remove_inactive_sidecars(source)
             os.replace(candidate, source)
             switched = True
-            after = _snapshot(str(raw["site_id"]), source, root)
+            after = _snapshot(canonical_site_id, source, root)
             if _logical(after) != _logical(expected_snapshot):
                 raise TaskResultCompactionError("TASK_COMPACT_POSTCHECK_FAILED")
     except Exception as exc:
@@ -588,34 +634,43 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.command == "preview":
-        plan = build_compaction_plan(
-            args.tasks_db,
-            site_id=args.site_id,
-            data_root=args.data_root,
-        )
-        output = write_compaction_plan(plan, args.output)
+    try:
+        if args.command == "preview":
+            plan = build_compaction_plan(
+                args.tasks_db,
+                site_id=args.site_id,
+                data_root=args.data_root,
+            )
+            output = write_compaction_plan(plan, args.output)
+            print(
+                json.dumps(
+                    {"status": "PASS", "plan": str(output), **plan},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
         print(
             json.dumps(
-                {"status": "PASS", "plan": str(output), **plan},
+                apply_compaction_plan(
+                    args.plan,
+                    expected_plan_digest=args.expected_plan_digest,
+                    backup_path=args.backup,
+                    authorization=args.authorization,
+                ),
                 ensure_ascii=False,
                 indent=2,
             )
         )
         return 0
-    print(
-        json.dumps(
-            apply_compaction_plan(
-                args.plan,
-                expected_plan_digest=args.expected_plan_digest,
-                backup_path=args.backup,
-                authorization=args.authorization,
-            ),
-            ensure_ascii=False,
-            indent=2,
+    except TaskResultCompactionError as exc:
+        print(
+            json.dumps(
+                {"status": "REJECTED", "error": str(exc)},
+                ensure_ascii=False,
+            )
         )
-    )
-    return 0
+        return 2
 
 
 if __name__ == "__main__":

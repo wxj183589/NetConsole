@@ -63,6 +63,12 @@ SiteRegistry 的 canonical `site_id`；`--all-sites` 只展开该 allowlist。�
 路径遍历、绝对路径、Registry 缺失或损坏均在打开可写数据库前 fail-closed。开发/隔离
 rehearsal 仍保留原有局点路径解析，不被 Production allowlist 限制。
 
+`scripts/maintenance/compact_task_result_production.py` 的 preview/apply 也复用同一
+`resolve_production_database_scope`：`tasks.db` 必须由 canonical SiteRegistry 和
+`PRODUCTION_SITE_ALLOWLIST` 同时解析，plan 中的 `site_directory` 不能授权任意目录。
+该入口没有 `--all-sites`；未登记局点、Registry/provider 异常、路径穿越、绝对路径和
+站点/数据库/candidate staging reparse point 均在 backup、`VACUUM INTO` 或替换前失败关闭。
+
 Task Blob rollout 的 `RESULT_REF_AUTHORITY` 只在物理 schema、结果引用、Blob、父任务
 关系和内容哈希全部审计通过时才可作为候选证据。迁移会在批次失败时回滚该批次，且
 不会通过脚本直接翻转 rollout 状态；生产 `tasks.db` 仍须在受控切换门内替换。
