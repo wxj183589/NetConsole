@@ -9,19 +9,18 @@
 | `PY_LAYER_CORE_REVERSE` | 7 | D: 应迁移依赖方向 | 保留，均有实际跨层依赖和对应 architecture guard；不得在本轮顺手重构。 |
 | `PY_LAYER_REPOSITORIES_REVERSE` | 5 | D: 应迁移依赖方向 | 保留，HistoryStore/AP Identity/领域模型依赖仍是共享契约热点。 |
 | `PY_LAYER_SERVICES_REVERSE` | 4 | D: 应迁移依赖方向 | 保留，属于兼容 Service/Application adapter 方向问题。 |
-| `ORPHAN_SERVICE_MODULE` | 21 | C/B：静态分析误判或维护/测试入口 | 20 个由测试、诊断、动态任务注册或兼容入口证明仍可执行；一个明确为 maintenance CLI-only。 |
+| `ORPHAN_SERVICE_MODULE` | 20 | C/B：静态分析误判或维护/测试入口 | 20 个由测试、诊断、动态任务注册或兼容入口证明仍可执行；Production authority provider 已有 Backend 的只读 scope consumer。 |
 | `WEB_STATUS_COLOR_TOKEN` | 1 | F: 过时风险已受局部 override 约束 | 保留到压缩样式清理完成；测试验证 `--nc-warning` 覆盖。 |
 
-总数为 38；Legacy HistoryStore maintenance 已退役并删除对应 exception。其余条目仍采用证据化分类和到期 owner，
+总数为 37；Legacy HistoryStore maintenance 已退役并删除对应 exception。其余条目仍采用证据化分类和到期 owner，
 而不是把静态 finding 改成未检查。
 
-## Maintenance CLI-only entries
+## Production maintenance boundary
 
-以下条目必须保留，且不得接入 Backend startup、自动调度或默认路径：
+Production maintenance capability 仍保持显式 CLI/人工维护边界；Backend startup 只读取同一模块的 canonical site/database scope helper，
+不调用 rollback owner、manifest、replacement 或 Production mutation capability：
 
-- `src/netconsole/services/production_database_maintenance.py`：仅由
-  `scripts/maintenance/production_database_maintenance.py`/人工维护流程调用；生产 mutation
-  gates 仍 fail-closed。
+- `src/netconsole/services/production_database_maintenance.py`：scope resolution 可被启动只读复用；生产 mutation gates 仍 fail-closed。
 
 ## Evidence policy
 
