@@ -57,6 +57,12 @@ SQLite 文件。符号链接、越界路径、未登记 Site、显示名不一�
 删除、移动或纳入全局迁移。候选路径解析还会拒绝符号链接、越界路径、重复
 `site_id` 和缺失的登记目录。
 
+`scripts/maintenance/cleanup_retired_tasks.py` 的 Production `--apply` 复用同一
+canonical site-scope guard：只接受 `PRODUCTION_SITE_ALLOWLIST` 中、且存在于持久
+SiteRegistry 的 canonical `site_id`；`--all-sites` 只展开该 allowlist。未登记、别名、
+路径遍历、绝对路径、Registry 缺失或损坏均在打开可写数据库前 fail-closed。开发/隔离
+rehearsal 仍保留原有局点路径解析，不被 Production allowlist 限制。
+
 Task Blob rollout 的 `RESULT_REF_AUTHORITY` 只在物理 schema、结果引用、Blob、父任务
 关系和内容哈希全部审计通过时才可作为候选证据。迁移会在批次失败时回滚该批次，且
 不会通过脚本直接翻转 rollout 状态；生产 `tasks.db` 仍须在受控切换门内替换。

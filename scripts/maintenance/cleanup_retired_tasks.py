@@ -24,10 +24,14 @@ from netconsole.repositories.task_cleanup_schema import (
 )
 from netconsole.services.job_center.task_authority_index import TaskAuthorityIndex
 from netconsole.services.job_center.task_cleanup_service import TaskCleanupService
+from netconsole.services.production_database_maintenance import (
+    PRODUCTION_SITE_ALLOWLIST,
+    ProductionMaintenanceError,
+    resolve_production_site_scope,
+)
 
 
 DEFAULT_DATA_ROOT = Path("D:/NetConsoleData-dev").resolve()
-PRODUCTION_DATA_ROOT = Path("D:/NetConsoleData").resolve()
 
 
 class _ReadOnlyTaskRepository(TaskRepository):
@@ -47,7 +51,11 @@ class _ReadOnlyTaskRepository(TaskRepository):
         return connection
 
 
-def _site_databases(data_root: Path, site: str | None, all_sites: bool) -> list[tuple[str, Path]]:
+def _site_databases(
+    data_root: Path,
+    site: str | None,
+    all_sites: bool,
+) -> list[tuple[str, Path]]:
     if site:
         return [(site, data_root / "sites" / site / "db" / "tasks.db")]
     if not all_sites:
@@ -60,6 +68,29 @@ def _site_databases(data_root: Path, site: str | None, all_sites: bool) -> list[
         for item in sorted(sites_root.iterdir(), key=lambda path: path.name.casefold())
         if item.is_dir() and (item / "db" / "tasks.db").is_file()
     ]
+
+
+def _production_site_databases(
+    paths: PathResolver,
+    site: str | None,
+    all_sites: bool,
+) -> list[tuple[str, Path]]:
+    if site:
+        site_ids = [site]
+    elif all_sites:
+        site_ids = sorted(PRODUCTION_SITE_ALLOWLIST)
+    else:
+        raise SystemExit("必须指定 --site 或 --all-sites")
+
+    targets: list[tuple[str, Path]] = []
+    for site_ref in site_ids:
+        canonical_site_id, site_root = resolve_production_site_scope(paths, site_ref)
+        targets.append((canonical_site_id, site_root / "db" / "tasks.db"))
+    return targets
+
+
+def _is_production_scope(paths: PathResolver) -> bool:
+    return paths.data_environment.is_production
 
 
 def _removed_candidates(database: Path) -> list[dict[str, Any]]:
@@ -199,10 +230,18 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     data_root = args.data_root.resolve()
-    if args.apply and data_root == PRODUCTION_DATA_ROOT and not args.allow_production:
-        raise SystemExit("生产 tasks.db 仅允许显式 --allow-production --apply")
     paths = PathResolver(app_root=Path.cwd(), data_root=data_root)
-    targets = _site_databases(data_root, args.site, args.all_sites)
+    production_scope = _is_production_scope(paths)
+    if args.apply and production_scope and not args.allow_production:
+        raise SystemExit("生产 tasks.db 仅允许显式 --allow-production --apply")
+    try:
+        targets = (
+            _production_site_databases(paths, args.site, args.all_sites)
+            if production_scope
+            else _site_databases(data_root, args.site, args.all_sites)
+        )
+    except ProductionMaintenanceError as exc:
+        raise SystemExit(str(exc)) from exc
     reports = []
     if args.apply:
         preflight_reports = [
@@ -227,8 +266,9 @@ def main(argv: list[str] | None = None) -> int:
     report = {
         "schema": "retired-task-operational-gc/v1",
         "data_root": str(data_root),
+        "production_scope": production_scope,
         "read_only_preview": not args.apply,
-        "production_apply_guard": data_root == PRODUCTION_DATA_ROOT,
+        "production_apply_guard": production_scope,
         "sites": reports,
         "candidate_count": sum(int(item.get("candidate_count") or 0) for item in reports),
         "safe_to_retire_count": sum(

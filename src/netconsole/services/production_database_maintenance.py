@@ -38,7 +38,12 @@ from netconsole.services.database_upgrade.coordinator import (
 )
 from netconsole.services.database_upgrade.journal import DatabaseUpgradeJournal
 from netconsole.services.database_upgrade.sqlite_consistency import fsync_file
-from netconsole.services.site_storage import SiteRegistryRepository
+from netconsole.services.site_storage import (
+    SiteRegistryRepository,
+    SiteRecord,
+    SiteStorageError,
+    validate_site_id,
+)
 from netconsole.repositories.task_cleanup_schema import inspect_task_cleanup_schema
 
 
@@ -84,6 +89,92 @@ PRODUCTION_GATE_KEYS = (
     "no_reinflation",
     "full",
 )
+
+
+def _is_link_or_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    checker = getattr(path, "is_junction", None)
+    if callable(checker):
+        try:
+            if checker():
+                return True
+        except OSError:
+            return True
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return bool(attributes & 0x400)
+
+
+def _has_link_or_reparse_ancestor(path: Path, stop: Path) -> bool:
+    current = path
+    try:
+        current.relative_to(stop)
+    except ValueError:
+        return True
+    while True:
+        if _is_link_or_reparse_point(current):
+            return True
+        if current == stop:
+            return False
+        current = current.parent
+
+
+def resolve_production_site_scope(
+    paths: PathResolver,
+    site_id: str,
+) -> tuple[str, Path]:
+    """Resolve one production site from the persisted canonical registry.
+
+    This is intentionally read-only and does not use lazy directory discovery.
+    A production mutation must never treat a directory or database file as
+    evidence that the site is authorized.
+    """
+
+    try:
+        canonical_site_id = validate_site_id(site_id)
+    except SiteStorageError as exc:
+        raise ProductionMaintenanceError("PRODUCTION_SITE_NOT_ALLOWLISTED") from exc
+    if canonical_site_id not in PRODUCTION_SITE_ALLOWLIST:
+        raise ProductionMaintenanceError("PRODUCTION_SITE_NOT_ALLOWLISTED")
+
+    registry = SiteRegistryRepository(paths)
+    try:
+        raw_record = registry.raw_record(canonical_site_id)
+        if raw_record is None:
+            raise ProductionMaintenanceError("PRODUCTION_SITE_REGISTRY_UNAVAILABLE")
+        if str(raw_record.get("display_name") or "") != PRODUCTION_SITE_ALLOWLIST[
+            canonical_site_id
+        ]:
+            raise ProductionMaintenanceError(
+                "PRODUCTION_SITE_REGISTRY_IDENTITY_MISMATCH"
+            )
+        root = registry.registered_root_path(canonical_site_id)
+    except SiteStorageError as exc:
+        raise ProductionMaintenanceError("PRODUCTION_SITE_REGISTRY_UNAVAILABLE") from exc
+
+    data_root = paths.data_root.resolve()
+    sites_dir = paths.sites_dir
+    resolved_sites_dir = sites_dir.resolve()
+    resolved_root = root.resolve()
+    if (
+        _has_link_or_reparse_ancestor(root, data_root)
+        or _is_link_or_reparse_point(sites_dir)
+        or resolved_sites_dir.parent != data_root
+        or resolved_root.parent != resolved_sites_dir
+    ):
+        raise ProductionMaintenanceError("PRODUCTION_SITE_REGISTRY_IDENTITY_MISMATCH")
+    try:
+        resolved_root.relative_to(data_root)
+    except ValueError:
+        raise ProductionMaintenanceError("PRODUCTION_SITE_REGISTRY_IDENTITY_MISMATCH")
+    return canonical_site_id, resolved_root
+
+
 _HEX64 = frozenset("0123456789abcdef")
 _FINAL_GATE_REQUIRED_SUITES: dict[str, frozenset[str]] = {
     "targeted": frozenset({"storage-targeted"}),
@@ -2263,13 +2354,17 @@ class ProductionMaintenanceCapability:
         name = Path(str(database)).name
         if Path(str(database)).name != str(database) or name not in PRODUCTION_DATABASE_ALLOWLIST:
             raise ProductionMaintenanceError("database is not in the production allowlist")
-        site = SiteRegistryRepository(self.paths).get(self.site_id)
-        expected_display = PRODUCTION_SITE_ALLOWLIST[self.site_id]
-        if site.display_name != expected_display:
-            raise ProductionMaintenanceError("SiteRegistry identity does not match production allowlist")
-        target = (site.root_path / "db" / name).resolve()
-        raw_target = site.root_path / "db" / name
-        if raw_target.is_symlink() or target.parent != (site.root_path / "db").resolve():
+        canonical_site_id, site_root = resolve_production_site_scope(
+            self.paths, self.site_id
+        )
+        site = SiteRecord(
+            site_id=canonical_site_id,
+            display_name=PRODUCTION_SITE_ALLOWLIST[canonical_site_id],
+            root_path=site_root,
+        )
+        target = (site_root / "db" / name).resolve()
+        raw_target = site_root / "db" / name
+        if raw_target.is_symlink() or target.parent != (site_root / "db").resolve():
             raise ProductionMaintenanceError("production database path is not a registered direct child")
         if not target.is_file() or target.stat().st_size <= 0:
             raise ProductionMaintenanceError("production database is missing or empty")
@@ -2855,6 +2950,7 @@ __all__ = [
     "normalize_rollback_resource_path",
     "current_resource_set_owners",
     "reconcile_rollback_owner_lifecycle",
+    "resolve_production_site_scope",
     "register_rollback_scope",
     "verify_registered_rollback_scope",
     "verify_rollback_owner_scope",
