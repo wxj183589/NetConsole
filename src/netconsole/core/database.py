@@ -68,8 +68,31 @@ _DATABASE_INITIALIZE_LOCKS: dict[str, threading.RLock] = {}
 _DATABASE_INITIALIZE_LOCKS_GUARD = threading.Lock()
 
 
+def _execute_sql_script_in_transaction(
+    conn: sqlite3.Connection,
+    script: str,
+) -> None:
+    """Execute a schema script without executescript's implicit pre-commit."""
+
+    pending: list[str] = []
+    for line in str(script or "").splitlines(keepends=True):
+        pending.append(line)
+        statement = "".join(pending)
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                conn.execute(statement)
+            pending.clear()
+    trailing = "".join(pending).strip()
+    if trailing:
+        conn.execute(trailing)
+
+
 class DatabaseSchemaMismatchError(RuntimeError):
     """Raised when an existing database is not safe for additive schema updates."""
+
+
+class DatabaseMaintenanceRequiredError(RuntimeError):
+    """Raised when startup would need an explicit maintenance migration."""
 
 
 class DeviceAddressMigrationError(RuntimeError):
@@ -2571,7 +2594,9 @@ class Database:
         connection.execute("PRAGMA query_only = ON")
         return connection
 
-    def initialize(self) -> None:
+    def initialize(self, *, startup_policy: str = "default") -> None:
+        if startup_policy not in {"default", "production_safe"}:
+            raise ValueError(f"unknown database startup policy: {startup_policy}")
         with _database_initialize_lock(self.path):
             existed = self.exists()
             conn: sqlite3.Connection | None = None
@@ -2587,6 +2612,10 @@ class Database:
             maintenance_required = True
             initialize_started = monotonic()
             try:
+                if startup_policy == "production_safe" and not existed:
+                    raise DatabaseMaintenanceRequiredError(
+                        "Production startup requires an existing canonical database"
+                    )
                 conn = self.connect()
                 stage = "configure"
                 if existed:
@@ -2626,6 +2655,23 @@ class Database:
                             checkpoint=False,
                         )
                         return
+                    if startup_policy == "production_safe" and not (
+                        schema_version_before == CURRENT_SCHEMA_VERSION
+                        and self._production_safe_identity_schema_transition(
+                            conn,
+                            identity_schema_migration=identity_schema_migration,
+                            address_migration=address_migration,
+                            classification_migration=classification_migration,
+                            fit_ap_entity_resource_scope_migration=(
+                                fit_ap_entity_resource_scope_migration
+                            ),
+                            trackside_ap_location_migration=trackside_ap_location_migration,
+                            rail_base_identity_migration=rail_base_identity_migration,
+                        )
+                    ):
+                        raise DatabaseMaintenanceRequiredError(
+                            "Production startup requires explicit database maintenance"
+                        )
                     if (
                         address_migration
                         or classification_migration
@@ -2653,10 +2699,10 @@ class Database:
                     if existed
                     else self._all_schema_scripts()
                 )
+                conn.execute("BEGIN IMMEDIATE")
                 self._prepare_legacy_schema_compatibility(conn)
-                conn.executescript(
-                    "BEGIN IMMEDIATE;\n" + "\n".join(schema_scripts)
-                )
+                for schema_script in schema_scripts:
+                    _execute_sql_script_in_transaction(conn, schema_script)
                 stage = "additive_updates"
                 self._apply_additive_schema_updates(conn)
                 stage = "fit_ap_entity_resource_scope_migration"
@@ -2744,6 +2790,45 @@ class Database:
                 if conn is not None:
                     conn.close()
 
+    def _production_safe_identity_schema_transition(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        identity_schema_migration: bool,
+        address_migration: bool,
+        classification_migration: bool,
+        fit_ap_entity_resource_scope_migration: bool,
+        trackside_ap_location_migration: bool,
+        rail_base_identity_migration: bool,
+    ) -> bool:
+        """Allow only empty-source, additive Identity schema bootstrap at startup."""
+
+        if not identity_schema_migration or any(
+            (
+                address_migration,
+                classification_migration,
+                fit_ap_entity_resource_scope_migration,
+                trackside_ap_location_migration,
+                rail_base_identity_migration,
+                self._requires_legacy_schema_compatibility_repair(conn),
+                self._requires_device_credential_state_repair(conn),
+            )
+        ):
+            return False
+        for table in (
+            "ap_extension_points",
+            "ac_fit_ap_resources",
+            "ap_entities",
+            "trackside_ap_view_cache",
+            "ac_fit_ap_radio_history",
+            "ac_fit_ap_lldp_history",
+        ):
+            if self._table_exists(conn, table) and conn.execute(
+                f"SELECT 1 FROM {self._quote_identifier(table)} LIMIT 1"
+            ).fetchone():
+                return False
+        return True
+
     def _schema_scripts_for_existing_database(self, conn: sqlite3.Connection) -> tuple[str, ...]:
         if not self._table_exists(conn, "schema_metadata"):
             raise DatabaseSchemaMismatchError(self._schema_mismatch_message())
@@ -2815,7 +2900,7 @@ class Database:
                 conn.execute(
                     "DROP " + "TABLE " + self._quote_identifier(table_name)
                 )
-            conn.executescript(target_schema)
+            _execute_sql_script_in_transaction(conn, target_schema)
 
     def _requires_legacy_schema_compatibility_repair(
         self, conn: sqlite3.Connection

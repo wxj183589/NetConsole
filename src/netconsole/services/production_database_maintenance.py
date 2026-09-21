@@ -175,6 +175,40 @@ def resolve_production_site_scope(
     return canonical_site_id, resolved_root
 
 
+def resolve_production_site_scope_by_directory(
+    paths: PathResolver,
+    directory_name: str,
+) -> tuple[str, Path]:
+    """Resolve a production site from its persisted directory binding.
+
+    Startup commonly has a directory name after the legacy current-site
+    pointer has been read, while the production authority is the stable site
+    id.  This lookup intentionally reads only persisted registry records and
+    then delegates the actual path/allowlist/reparse checks to
+    :func:`resolve_production_site_scope`; it never invokes the registry's
+    lazy directory discovery.
+    """
+
+    wanted = str(directory_name or "").strip().casefold()
+    if not wanted or Path(wanted).name != wanted or wanted in {".", ".."}:
+        raise ProductionMaintenanceError("PRODUCTION_SITE_NOT_ALLOWLISTED")
+    registry = SiteRegistryRepository(paths)
+    matches: list[str] = []
+    for site_id in PRODUCTION_SITE_ALLOWLIST:
+        raw_record = registry.raw_record(site_id)
+        if raw_record is None:
+            continue
+        relative = str(raw_record.get("relative_path") or f"sites/{site_id}")
+        relative_path = Path(relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise ProductionMaintenanceError("PRODUCTION_SITE_REGISTRY_UNAVAILABLE")
+        if relative_path.name.casefold() == wanted:
+            matches.append(site_id)
+    if len(matches) != 1:
+        raise ProductionMaintenanceError("PRODUCTION_SITE_NOT_ALLOWLISTED")
+    return resolve_production_site_scope(paths, matches[0])
+
+
 def resolve_production_database_scope(
     paths: PathResolver,
     site_id: str,
@@ -210,6 +244,30 @@ def resolve_production_database_scope(
         display_name=PRODUCTION_SITE_ALLOWLIST[canonical_site_id],
         root_path=site_root,
     )
+    return canonical_site_id, target, site
+
+
+def assert_canonical_production_database_path(
+    paths: PathResolver,
+    site_id: str,
+    database: str,
+    requested_path: str | Path,
+) -> tuple[str, Path, SiteRecord]:
+    """Bind a caller-supplied path to the canonical site database.
+
+    A direct path is never an authority.  It is accepted only as a redundant
+    assertion that exactly matches the path derived from the persisted
+    Production site registry and the database allowlist.
+    """
+
+    canonical_site_id, target, site = resolve_production_database_scope(
+        paths, site_id, database
+    )
+    requested = Path(requested_path).expanduser().resolve()
+    if requested != target:
+        raise ProductionMaintenanceError(
+            "PRODUCTION_DATABASE_PATH_NOT_CANONICAL"
+        )
     return canonical_site_id, target, site
 
 
@@ -2975,7 +3033,9 @@ __all__ = [
     "current_resource_set_owners",
     "reconcile_rollback_owner_lifecycle",
     "resolve_production_site_scope",
+    "resolve_production_site_scope_by_directory",
     "resolve_production_database_scope",
+    "assert_canonical_production_database_path",
     "register_rollback_scope",
     "verify_registered_rollback_scope",
     "verify_rollback_owner_scope",

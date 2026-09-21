@@ -29,6 +29,10 @@ _EXACT_ALIAS_ORDER = (
 _PEER_ALIAS_ORDER = _EXACT_ALIAS_ORDER[:5]
 
 
+class ApIdentityMaintenanceRequiredError(RuntimeError):
+    """Raised when startup would need a non-trivial index rebuild."""
+
+
 class ApIdentityQueryService:
     def __init__(
         self,
@@ -90,7 +94,10 @@ class ApIdentityQueryService:
         )
 
     def ensure_index(
-        self, reason: str = "missing_index_compat"
+        self,
+        reason: str = "missing_index_compat",
+        *,
+        automatic_safe_only: bool = False,
     ) -> ApIdentityBuildResult | None:
         state, source_revision = self.repository.index_health(site_id=self.site_id)
         indexed_source_revision = (
@@ -107,6 +114,10 @@ class ApIdentityQueryService:
             return None
         if not self.repository.has_source_rows() and state is not None:
             return None
+        if automatic_safe_only:
+            raise ApIdentityMaintenanceRequiredError(
+                "Production startup requires explicit AP Identity index maintenance"
+            )
         return self.rebuild_index(reason)
 
     def resolve_mac(

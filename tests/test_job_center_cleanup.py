@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from netconsole.models.task_state import TaskState
 from netconsole.models.api.job_center import JobCenterCleanupResultDTO
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.production_database_maintenance import PRODUCTION_SITE_ALLOWLIST
 
 
 def _snapshot(
@@ -357,6 +359,27 @@ def test_cleanup_api_allows_eligible_terminal_tasks_in_production(
     write_data_environment(
         paths.data_root,
         DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    (paths.config_dir / "site_registry.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "sites": [
+                    {
+                        "site_id": "sxl1",
+                        "display_name": PRODUCTION_SITE_ALLOWLIST["sxl1"],
+                        "relative_path": "sites/demo",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (paths.config_dir / "application.json").write_text(
+        json.dumps({"active_site_id": "sxl1", "current_site": "demo"}),
+        encoding="utf-8",
     )
     repository.save(
         _snapshot(

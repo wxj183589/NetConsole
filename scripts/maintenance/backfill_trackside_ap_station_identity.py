@@ -17,12 +17,18 @@ import sys
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
+from netconsole.core.runtime_environment import (
+    ProductionWriteBlockedError,
+    data_root_for_path,
+    require_non_production_data_root,
+)
 from netconsole.services.ap_identity.normalizers import normalize_mac
 
 
-def _args() -> argparse.Namespace:
+def _args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="回填轨旁 AP station_id（默认 dry-run）")
     parser.add_argument("--database-copy", required=True, help="只读验证或受控 apply 使用的 SQLite 副本路径")
+    parser.add_argument("--data-root", default="", help="受控 Development/Test 数据根；默认从副本路径解析")
     parser.add_argument("--site", default="", help="限定 site_id")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="只输出候选，不写库（默认）")
@@ -34,7 +40,31 @@ def _args() -> argparse.Namespace:
     )
     parser.add_argument("--json-output", default="", help="将报告写入 JSON 文件")
     parser.add_argument("--revision-hash", default="", help="apply 前要求数据库序列化哈希等于该值")
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def _development_database(args: argparse.Namespace) -> Path:
+    raw_database = Path(args.database_copy).expanduser()
+    if raw_database.is_symlink():
+        raise SystemExit("数据库副本不存在或为符号链接")
+    database = raw_database.resolve()
+    root = (
+        Path(args.data_root).expanduser().resolve()
+        if str(args.data_root or "").strip()
+        else data_root_for_path(database)
+    )
+    if database == root or not database.is_relative_to(root):
+        raise SystemExit("数据库副本不在受控数据根内")
+    try:
+        require_non_production_data_root(
+            root, "backfill_trackside_ap_station_identity"
+        )
+    except ProductionWriteBlockedError as exc:
+        raise SystemExit(str(exc)) from exc
+    site = str(args.site or "").strip()
+    if site and (Path(site).name != site or site in {".", ".."}):
+        raise SystemExit("site 必须是单一局点标识")
+    return database
 
 
 def _db_hash(conn: sqlite3.Connection) -> str:
@@ -781,10 +811,10 @@ def _human_report(report: dict[str, Any]) -> str:
     )
 
 
-def main() -> int:
-    args = _args()
+def main(argv: list[str] | None = None) -> int:
+    args = _args(argv)
     report = build_report(
-        Path(args.database_copy).resolve(),
+        _development_database(args),
         str(args.site or "").strip(),
         apply=bool(args.apply),
         expected_hash=str(args.revision_hash or "").strip(),

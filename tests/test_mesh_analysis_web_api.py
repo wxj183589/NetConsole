@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import sqlite3
 import zipfile
 from pathlib import Path
@@ -17,6 +18,7 @@ from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMod
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
 from netconsole.services.mesh_chart_payload import MeshChartSelectionLimitError
+from netconsole.services.production_database_maintenance import PRODUCTION_SITE_ALLOWLIST
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from tests.support.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
@@ -279,6 +281,22 @@ def test_mesh_raw_link_export_api_binds_selected_source_to_typed_task(
     paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     paths.config_dir.mkdir(parents=True, exist_ok=True)
     paths.app_config_path.write_text('{"current_site":"demo"}', encoding="utf-8")
+    (paths.config_dir / "site_registry.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "sites": [
+                    {
+                        "site_id": "sxl1",
+                        "display_name": PRODUCTION_SITE_ALLOWLIST["sxl1"],
+                        "relative_path": "sites/demo",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     write_data_environment(
         paths.data_root,
         DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
