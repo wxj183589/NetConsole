@@ -255,6 +255,21 @@ def require_production_write_allowed(
         )
 
 
+def require_non_production_data_root(
+    data_root: Path,
+    operation: str,
+) -> DataEnvironmentInfo:
+    """Allow an explicitly marked development/test root and fail closed otherwise."""
+
+    resolved = Path(data_root).expanduser().resolve()
+    info = data_environment(resolved)
+    if info.is_production:
+        raise ProductionWriteBlockedError(
+            f"已阻止仅开发/隔离操作触及 Production 数据根：{operation}。"
+        )
+    return info
+
+
 def desktop_storage_mode() -> str:
     value = str(os.environ.get("NETCONSOLE_STORAGE_MODE") or "persistent").strip()
     if value not in STORAGE_MODES:

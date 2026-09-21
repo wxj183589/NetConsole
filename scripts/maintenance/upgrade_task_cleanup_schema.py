@@ -6,10 +6,12 @@ import argparse
 import json
 from pathlib import Path
 
+from netconsole.core.runtime_environment import (
+    ProductionWriteBlockedError,
+    data_root_for_path,
+    require_non_production_data_root,
+)
 from netconsole.repositories.task_cleanup_schema import upgrade_task_cleanup_schema
-
-
-PRODUCTION_DATA_ROOT = Path("D:/NetConsoleData").resolve()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -18,11 +20,21 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _development_database(path: Path) -> Path:
+    database = Path(path).expanduser().resolve()
+    root = data_root_for_path(database)
+    if database == root or not database.is_relative_to(root):
+        raise SystemExit("数据库不在受控数据根内")
+    try:
+        require_non_production_data_root(root, "upgrade_task_cleanup_schema")
+    except ProductionWriteBlockedError as exc:
+        raise SystemExit(str(exc)) from exc
+    return database
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    database = args.database.resolve()
-    if database.is_relative_to(PRODUCTION_DATA_ROOT):
-        raise SystemExit("Production tasks.db migration is not allowed by this development command")
+    database = _development_database(args.database)
     print(
         json.dumps(
             upgrade_task_cleanup_schema(database),

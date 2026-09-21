@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import os
 import re
 import secrets
@@ -72,6 +73,12 @@ from netconsole.services.ac.mesh_link_resident_polling_service import (
 )
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.production_database_maintenance import (
+    ProductionMaintenanceError,
+    assert_canonical_production_database_path,
+    resolve_production_site_scope,
+    resolve_production_site_scope_by_directory,
+)
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
 from netconsole.services.command_reference_application_service import CommandReferenceApplicationService
@@ -1354,12 +1361,65 @@ def _log_build_identity(app: FastAPI) -> None:
     )
 
 
+def _production_startup_site(
+    paths: PathResolver,
+    site_ref: str,
+) -> tuple[str, str]:
+    """Resolve Production startup from persisted canonical site authority."""
+
+    try:
+        canonical_site_id, site_root = resolve_production_site_scope(paths, site_ref)
+    except ProductionMaintenanceError:
+        canonical_site_id, site_root = resolve_production_site_scope_by_directory(
+            paths, site_ref
+        )
+    if not site_root.is_dir():
+        raise RuntimeError("Production canonical site root is unavailable")
+    return site_root.name, canonical_site_id
+
+
+def _production_configured_site_ref(paths: PathResolver) -> str:
+    try:
+        raw = json.loads(paths.app_config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError("Production active site configuration is unavailable") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("Production active site configuration is invalid")
+    for key in ("active_site_id", "current_site"):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            return value
+    raise RuntimeError("Production active site is not configured")
+
+
+def _paths_are_production(paths: PathResolver) -> bool:
+    environment = getattr(paths, "data_environment", None)
+    return bool(environment is not None and environment.is_production)
+
+
 def _current_site_name(
     paths: PathResolver,
     *,
     startup_stage: Callable[[str], None] | None = None,
 ) -> str:
+    production = _paths_are_production(paths)
     preferred = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or "").strip()
+    if production:
+        site_ref = preferred or _production_configured_site_ref(paths)
+        try:
+            selected, site_id = _production_startup_site(paths, site_ref)
+            _initialize_active_site_database(
+                paths,
+                selected,
+                production_site_id=site_id,
+                startup_stage=startup_stage,
+            )
+            SiteManager(paths).set_current_site_reference(selected, site_id=site_id)
+            return selected
+        except (ProductionMaintenanceError, SiteStorageError, ValueError) as exc:
+            raise RuntimeError(
+                f"Production active site is not canonical: {type(exc).__name__}"
+            ) from exc
     if preferred:
         try:
             selected = SiteRegistryRepository(paths).resolve_directory_name(preferred)
@@ -1385,19 +1445,45 @@ def _initialize_active_site_database(
     paths: PathResolver,
     site_name: str,
     *,
+    production_site_id: str | None = None,
     startup_stage: Callable[[str], None] | None = None,
 ) -> None:
-    database = Database(paths.site_db_path(site_name))
+    production = _paths_are_production(paths)
+    database_path = paths.site_db_path(site_name)
+    if production:
+        site_id = production_site_id
+        if not site_id:
+            try:
+                _selected, site_id = _production_startup_site(paths, site_name)
+            except (ProductionMaintenanceError, SiteStorageError, ValueError) as exc:
+                raise RuntimeError("Production active site is not canonical") from exc
+        try:
+            _canonical_site_id, _canonical_database, _site = assert_canonical_production_database_path(
+                paths, site_id, "devices.db", database_path
+            )
+        except ProductionMaintenanceError as exc:
+            raise RuntimeError("Production active database is not canonical") from exc
+    database = Database(database_path)
     if not database.exists():
         raise RuntimeError("当前局点设备数据库不存在，Backend 未启动")
     _emit_startup_stage(startup_stage, "active_site_database_initializing")
-    database.initialize()
+    if production:
+        database.initialize(startup_policy="production_safe")
+    else:
+        database.initialize()
     _emit_startup_stage(startup_stage, "active_site_database_ready")
     _recover_orphaned_collect_runs(database, site_name)
     # Database.initialize() may normalize legacy rows and advance the source
     # revision; refresh the read-only identity index before API consumers use it.
     _emit_startup_stage(startup_stage, "ap_identity_index_initializing")
-    ApIdentityQueryService(database).ensure_index("backend_startup")
+    identity_service = ApIdentityQueryService(database)
+    if production:
+        identity_service.ensure_index(
+            "backend_startup",
+            automatic_safe_only=True,
+        )
+    else:
+        identity_service.ensure_index("backend_startup")
     _emit_startup_stage(startup_stage, "ap_identity_index_ready")
 
 

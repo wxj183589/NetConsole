@@ -16,9 +16,13 @@ import sqlite3
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
+from netconsole.core.runtime_environment import (
+    ProductionWriteBlockedError,
+    data_root_for_path,
+    require_non_production_data_root,
+)
 
 DEVELOPMENT_DATA_ROOT = Path(r"D:\NetConsoleData-dev")
-PRODUCTION_DATA_ROOT = Path(r"D:\NetConsoleData")
 DEFAULT_EVIDENCE_DIR = (
     Path(__file__).resolve().parents[2]
     / "diagnostic"
@@ -27,15 +31,15 @@ DEFAULT_EVIDENCE_DIR = (
 EVENT_TABLE = "ap_optical_treatment_events"
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="AP 光衰 Treatment Event History 回填（默认 dry-run）"
     )
     parser.add_argument("--site", required=True, help="限定 Development site，例如 hzl10")
     parser.add_argument(
         "--data-root",
-        default=str(DEVELOPMENT_DATA_ROOT),
-        help="数据根；默认且 apply 允许的真实根为 D:\\NetConsoleData-dev",
+        default="",
+        help="数据根；未指定 --database 时默认为 D:\\NetConsoleData-dev",
     )
     parser.add_argument(
         "--database",
@@ -51,7 +55,7 @@ def _parse_args() -> argparse.Namespace:
     mode.add_argument("--dry-run", action="store_true", help="只规划，不写 DB（默认）")
     mode.add_argument("--apply", action="store_true", help="应用到指定 Development DB")
     parser.add_argument("--json-output", default="", help="可选的报告 JSON 输出路径")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _text(value: object) -> str:
@@ -752,19 +756,40 @@ def _apply_plan(conn: sqlite3.Connection, plan: dict[str, Any], now: str) -> Non
 
 def _database_path(args: argparse.Namespace) -> Path:
     if args.database:
-        path = Path(args.database).resolve()
+        raw_path = Path(args.database).expanduser()
+        if raw_path.is_symlink():
+            raise SystemExit("Development 数据库不存在或为符号链接")
+        path = raw_path.resolve()
+        root = (
+            Path(args.data_root).expanduser().resolve()
+            if args.data_root
+            else data_root_for_path(path)
+        )
+        if path == root or not path.is_relative_to(root):
+            raise SystemExit("数据库不在受控数据根内")
     else:
-        root = Path(args.data_root).resolve()
-        path = root / "sites" / args.site / "db" / "devices.db"
-    if PRODUCTION_DATA_ROOT.resolve() == path or PRODUCTION_DATA_ROOT.resolve() in path.parents:
-        raise SystemExit("拒绝访问 Production 数据库：D:\\NetConsoleData")
+        root = (
+            Path(args.data_root).expanduser().resolve()
+            if args.data_root
+            else DEVELOPMENT_DATA_ROOT.resolve()
+        )
+        site = str(args.site or "").strip()
+        if not site or Path(site).name != site or site in {".", ".."}:
+            raise SystemExit("site 必须是单一局点目录名")
+        path = root / "sites" / site / "db" / "devices.db"
+        if path.resolve() != path:
+            raise SystemExit("拒绝跨 reparse/link 边界访问数据库")
+    try:
+        require_non_production_data_root(root, "backfill_ap_optical_treatment_events")
+    except ProductionWriteBlockedError as exc:
+        raise SystemExit(str(exc)) from exc
     if not path.is_file() or path.is_symlink():
         raise SystemExit(f"Development 数据库不存在或为符号链接：{path}")
     return path
 
 
-def main() -> int:
-    args = _parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     database = _database_path(args)
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     conn = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
