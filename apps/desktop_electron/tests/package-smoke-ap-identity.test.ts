@@ -7,15 +7,15 @@ import {
 
 const electronLog = [
   'ELECTRON_BACKEND_READY',
-  'ELECTRON_BACKEND_STARTUP_STAGE stage=active_site_database_initializing',
-  'ELECTRON_BACKEND_STARTUP_STAGE stage=active_site_database_ready',
-  'ELECTRON_BACKEND_STARTUP_STAGE stage=ap_identity_index_initializing',
-  'ELECTRON_BACKEND_STARTUP_STAGE stage=ap_identity_index_ready',
-  'ELECTRON_STARTUP_TIMELINE event=backend.health_ready',
-  'ELECTRON_STARTUP_TIMELINE event=renderer.mounted',
-  'ELECTRON_STARTUP_TIMELINE event=desktop.interactive',
+  'ELECTRON_BACKEND_STARTUP_STAGE | stage=active_site_database_initializing',
+  'ELECTRON_BACKEND_STARTUP_STAGE | stage=active_site_database_ready',
+  'ELECTRON_BACKEND_STARTUP_STAGE | stage=ap_identity_index_initializing',
+  'ELECTRON_BACKEND_STARTUP_STAGE | stage=ap_identity_index_ready',
+  'ELECTRON_STARTUP_TIMELINE | event=backend.health_ready',
+  'ELECTRON_STARTUP_TIMELINE | event=renderer.mounted',
+  'ELECTRON_STARTUP_TIMELINE | event=desktop.interactive',
   'ELECTRON_MAIN_WINDOW_STARTUP_SMOKE_PASSED',
-  'ELECTRON_SMOKE_RENDERER_READY phase=interactive health_ok=true',
+  'ELECTRON_SMOKE_RENDERER_READY | phase=interactive health_ok=true',
   'STARTUP_PERFORMANCE_SUMMARY',
   'ELECTRON_SMOKE_RENDERER_STABLE',
 ].join('\n')
@@ -45,5 +45,15 @@ describe('package AP Identity startup smoke contract', () => {
       electronLog: `${electronLog}\nELECTRON_BACKEND_START_FAILED`,
       backendLog,
     })).toThrow()
+  })
+
+  it('does not accept detail markers without the logger separator', () => {
+    const legacyElectronLog = electronLog.replaceAll(' | ', ' ')
+    expect(() => assertProductionApIdentityStartupSmokeLogs({
+      scenario: 'missing',
+      exitCode: 0,
+      electronLog: legacyElectronLog,
+      backendLog,
+    })).toThrow(/Electron smoke log missing/)
   })
 })
