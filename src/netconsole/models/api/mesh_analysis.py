@@ -265,6 +265,7 @@ class MeshLocalScanOpenResultDTO(ApiModel):
 
 class MeshRebuildRequestDTO(ApiModel):
     explicit_confirmation: bool = False
+    production_authorization: str = ""
 
 
 class MeshAnalysisParamsDTO(ApiModel):
@@ -313,6 +314,7 @@ class MeshSourceDeleteRequestDTO(ApiModel):
     delete_parsed_data: bool = True
     delete_generated_reports: bool = True
     explicit_confirmation: bool = False
+    production_authorization: str = ""
 
 
 class MeshSourcesDeleteRequestDTO(MeshSourceDeleteRequestDTO):
@@ -322,6 +324,7 @@ class MeshSourcesDeleteRequestDTO(MeshSourceDeleteRequestDTO):
 class MeshMaintenanceRequestDTO(ApiModel):
     kind: Literal["identity_projection_refresh", "parser_rebuild"]
     explicit_confirmation: bool = False
+    production_authorization: str = ""
 
 
 class MeshAnalysisSummaryDTO(ApiModel):

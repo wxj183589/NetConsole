@@ -330,3 +330,34 @@ operation-specific capabilities are `TASK_RESULT_ROLLOUT_AUTHORIZED` and
 `TASK_RESULT_REF_ONLY_AUTHORIZED`; the generic Production maintenance token is
 not sufficient for these Production task-result operations. No database schema
 or persisted task-result value is migrated by this fix.
+
+## Current resolution note — P7.3-D MESH write authority
+
+The historical matrix above remains unchanged as the 2026-09-21 audit
+snapshot. The current P7.3-D implementation reclassifies the following three
+logical entrypoints:
+
+| Entry | Current classification | Current contract |
+| --- | --- | --- |
+| `MESH_DERIVED_REBUILD_CLI` | `SAFE_CANONICAL` | Persisted canonical Production site, derived-rebuild capability, immutable plan/digest, RAW file-set/hash plus source/index/parsed/parser binding, site-level MESH lock, service staging/journal validation and stale-plan rejection |
+| `MESH_IDENTITY_REMAP_CLI` | `SAFE_CANONICAL` | Separate identity-remap capability, fixed AP Identity revision and normalized peer-set digest, strict identity-only service with no RAW/parser fallback or AP Identity rebuild, identity-fact sentinel validation and SQLite snapshot rollback |
+| `HTTP_MESH_REPAIR_DELETE` | `SAFE_CANONICAL_FAIL_CLOSED` | Request-supplied operation token, canonical source TaskSpec, worker lock-time revalidation, strict identity-only maintenance, derived rebuild without Production RAW recovery, single-source parsed-only delete; Production raw/archive and batch delete remain fail closed pending durable owners |
+
+The generic `NETCONSOLE_ALLOW_PRODUCTION_WRITE`/boolean remains operator
+intent only. It cannot mint an operation token, authorize a raw path, or make
+an unlisted site authoritative. Retry uses the persisted immutable TaskSpec
+and revalidates current state; orphaned destructive jobs are not automatically
+replayed after recovery.
+
+Rolling the already validated P7.3-B schema/startup and P7.3-C task-result
+resolution notes together with this MESH resolution gives the current count:
+
+- `WRITE_ENTRYPOINT_COUNT=26`
+- `SAFE_AFTER=10`
+- `PARTIAL_AFTER=10`
+- `UNGUARDED_AFTER=6`
+- `UNKNOWN_AFTER=0`
+
+This count does not resume Phase B. Storage migration/retirement, remaining
+HTTP database/AC/base-data rollback authority, startup recovery and automatic
+retention remain separate follow-ups.

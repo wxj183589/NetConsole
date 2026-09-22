@@ -4,6 +4,7 @@ import gc
 import hashlib
 import json
 import re
+import shutil
 import sqlite3
 import zipfile
 from contextlib import closing
@@ -23,6 +24,7 @@ from netconsole.services.mesh_analysis_params_service import load_site_mesh_anal
 from netconsole.services.mesh_import_limits import MESH_SINGLE_FILE_MAX_BYTES
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_source_locator import MeshSourceLocation, MeshSourceLocator
+from netconsole.services.ap_identity.normalizers import normalize_mac_key
 
 
 ProgressCallback = Callable[[str, int, int, str], None]
@@ -46,6 +48,7 @@ class MeshSourceRebuildService:
         session_id: str,
         *,
         force_reparse: bool = False,
+        allow_raw_recovery: bool = True,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
     ) -> dict[str, object]:
@@ -108,7 +111,7 @@ class MeshSourceRebuildService:
         self._check_cancel(should_cancel)
         recovered = False
         raw_path = location.raw_path
-        if raw_path is None and location.recoverable:
+        if raw_path is None and location.recoverable and allow_raw_recovery:
             if progress:
                 progress("mesh_source_restore", 0, 3, "正在从受保护 ZIP 归档恢复原始 MESH 日志")
             raw_path = self._restore_from_bundle(site_id, profile.mr_id, profile_root, raw_root, source, location)
@@ -267,6 +270,180 @@ class MeshSourceRebuildService:
             "identity_remap": dict(remap),
             "message": _identity_remap_completion_message(remap),
         }
+
+    def remap_identity_only(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        expected_identity_index_revision: int,
+        expected_peer_keys: set[str] | frozenset[str],
+        progress: ProgressCallback | None = None,
+        should_cancel: CancelCallback | None = None,
+    ) -> dict[str, object]:
+        """Refresh only the identity projection of a healthy parsed detail.
+
+        This entry point is intentionally separate from ``rebuild_source``:
+        missing, corrupt, or old detail databases fail closed instead of
+        falling through to raw/bundle/parser recovery.
+        """
+
+        profile, source, index_path = self._source_readonly(site_id, session_id)
+        safe_folder_name = str(profile["safe_folder_name"])
+        profile_root = self.paths.mesh_mr_root(site_id, safe_folder_name).resolve()
+        parsed_root = self.paths.mesh_mr_parsed_dir(site_id, safe_folder_name).resolve()
+        self._require_inside(parsed_root, profile_root)
+        detail_path = self._existing_healthy_detail_path(parsed_root, source)
+        if detail_path is None:
+            raise RuntimeError(
+                "MESH identity-only remap requires a healthy parsed detail; refusing raw fallback"
+            )
+
+        live_detail = MeshMrRepository(detail_path, read_only=True)
+        actual_peer_keys = {
+            key
+            for peer in live_detail.distinct_peer_macs()
+            if (key := normalize_mac_key(peer))
+        }
+        expected_keys = {
+            key
+            for peer in expected_peer_keys
+            if (key := normalize_mac_key(peer))
+        }
+        if actual_peer_keys != expected_keys:
+            raise RuntimeError("MESH identity-only remap peer set changed after plan")
+
+        mapping_service = MeshPeerMappingService(site_id, self.paths)
+        expected_revision = int(expected_identity_index_revision)
+        if mapping_service.current_identity_revision() != expected_revision:
+            raise RuntimeError("MESH identity-only remap identity revision changed after plan")
+        before = live_detail.summary()
+        if progress:
+            progress("mesh_identity_remap", 1, 1, "正在按计划 Identity revision 重映射当前 MESH 来源")
+        self._check_cancel(should_cancel)
+        backup = parsed_root / f".{detail_path.name}.{uuid4().hex}.backup.sqlite"
+        repository = MeshSourceIndexRepository(index_path, migrate_schema=False)
+        candidate: MeshMrRepository | None = None
+        try:
+            self._copy_sqlite_snapshot(detail_path, backup)
+            candidate = MeshMrRepository(detail_path)
+            mapping_service.refresh_repository(
+                candidate,
+                ensure_identity_index=False,
+                expected_identity_revision=expected_revision,
+            )
+            remap = mapping_service.last_remap_summary
+            actual_revision = int(remap.get("identity_index_revision") or 0)
+            if actual_revision != expected_revision:
+                raise RuntimeError("MESH identity-only remap identity revision no longer matches plan")
+            _require_verified_identity_remap(
+                remap,
+                expected_link_count=int(before.get("link_record_count") or 0),
+            )
+            candidate.update_identity_mapping_metadata(
+                identity_index_revision=actual_revision,
+                identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
+                identity_mapping_status=str(remap.get("identity_mapping_status") or "unknown"),
+            )
+            self._checkpoint(detail_path)
+            candidate_after = MeshMrRepository(detail_path, read_only=True).summary()
+            if int(candidate_after.get("link_record_count") or 0) != int(before.get("link_record_count") or 0):
+                raise RuntimeError("MESH identity-only remap changed source link count")
+            repository.update_identity_mapping(
+                int(source["id"]),
+                identity_index_revision=actual_revision,
+                identity_mapped_at=str(remap.get("identity_mapped_at") or ""),
+                identity_mapping_status=str(remap.get("identity_mapping_status") or "unknown"),
+            )
+            after = MeshMrRepository(detail_path, read_only=True).summary()
+        except Exception as operation_error:
+            # Drop repository objects before replacing the live SQLite file on
+            # Windows; their last read connection may still hold a WAL handle.
+            candidate = None
+            live_detail = None
+            gc.collect()
+            rollback_errors: list[str] = []
+            if backup.exists():
+                try:
+                    self._restore_sqlite_snapshot(backup, detail_path)
+                except Exception as exc:  # pragma: no cover - catastrophic I/O path
+                    rollback_errors.append(f"detail={exc}")
+            try:
+                repository.restore_source_metadata(int(source["id"]), source)
+            except Exception as exc:  # pragma: no cover - catastrophic I/O path
+                rollback_errors.append(f"source_metadata={exc}")
+            if rollback_errors:
+                raise RuntimeError(
+                    "MESH identity-only remap rollback failed: "
+                    + "; ".join(rollback_errors)
+                ) from operation_error
+            raise
+        finally:
+            gc.collect()
+            backup.unlink(missing_ok=True)
+            self._remove_sidecars(backup)
+        return {
+            "archive_sha256": str(source.get("archive_sha256") or ""),
+            "raw_archived_count": 0,
+            "parsed_source_count": 1,
+            "parsed_record_count": int(after.get("link_record_count") or 0),
+            "issue_count": int(source.get("issue_count") or 0),
+            "created_session_ids": [session_id],
+            "recovery_source": "identity_only_remap",
+            "identity_remap": dict(remap),
+            "message": _identity_remap_completion_message(remap),
+        }
+
+    def _source_readonly(
+        self,
+        site_id: str,
+        session_id: str,
+    ) -> tuple[dict[str, object], dict[str, object], Path]:
+        match = _SESSION_RE.fullmatch(session_id)
+        if not match:
+            raise ValueError("MESH 来源标识无效")
+        catalog_path = self.paths.mesh_catalog_path(site_id).resolve()
+        with sqlite3.connect(f"{catalog_path.as_uri()}?mode=ro", uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                "SELECT * FROM mr_profiles WHERE mr_id = ?",
+                (match.group("mr_id"),),
+            ).fetchone()
+        if row is None:
+            raise ValueError("MESH Profile 不存在")
+        profile = dict(row)
+        index_path = self.paths.mesh_mr_db_path(
+            site_id,
+            str(profile["safe_folder_name"]),
+        ).resolve()
+        with sqlite3.connect(f"{index_path.as_uri()}?mode=ro", uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                "SELECT * FROM source_files WHERE id = ?",
+                (int(match.group("source_id")),),
+            ).fetchone()
+        if row is None:
+            raise ValueError("MESH 来源不存在")
+        return profile, dict(row), index_path
+
+    @staticmethod
+    def _copy_sqlite_snapshot(source: Path, target: Path) -> None:
+        target.unlink(missing_ok=True)
+        MeshSourceRebuildService._remove_sidecars(target)
+        shutil.copy2(source, target)
+        for suffix in ("-wal", "-shm"):
+            source_sidecar = source.with_name(source.name + suffix)
+            if source_sidecar.exists():
+                shutil.copy2(source_sidecar, target.with_name(target.name + suffix))
+
+    @staticmethod
+    def _restore_sqlite_snapshot(source: Path, target: Path) -> None:
+        MeshSourceRebuildService._remove_sidecars(target)
+        shutil.copy2(source, target)
+        for suffix in ("-wal", "-shm"):
+            source_sidecar = source.with_name(source.name + suffix)
+            if source_sidecar.exists():
+                shutil.copy2(source_sidecar, target.with_name(target.name + suffix))
 
     def _source(self, site_id: str, session_id: str):
         match = _SESSION_RE.fullmatch(session_id)

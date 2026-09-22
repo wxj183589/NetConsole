@@ -80,6 +80,8 @@ class MeshPeerMappingService:
         repo,
         *,
         source_file_ids: set[int] | None = None,
+        ensure_identity_index: bool = True,
+        expected_identity_revision: int | None = None,
     ) -> int:
         """用同一 Identity snapshot 完成有限次数的来源投影。
 
@@ -96,9 +98,17 @@ class MeshPeerMappingService:
         last_current_revision: int | None = None
         for attempt in range(self._MAX_STABLE_PROJECTION_ATTEMPTS):
             service = self._get_query_service()
-            if service is not None:
+            if service is not None and ensure_identity_index:
                 service.ensure_index("mesh_peer_mapping_refresh")
             revision_before_batch = self.current_identity_revision()
+            if (
+                expected_identity_revision is not None
+                and revision_before_batch != int(expected_identity_revision)
+            ):
+                raise MeshIdentityRevisionUnstable(
+                    "MESH AP Identity revision 与维护计划不一致："
+                    f"expected={int(expected_identity_revision)}, current={revision_before_batch}"
+                )
             if selected_source_ids is None:
                 peer_macs = repo.distinct_peer_macs()
             else:
@@ -133,6 +143,14 @@ class MeshPeerMappingService:
                 )
             current_revision = self.current_identity_revision()
             last_current_revision = current_revision
+            if (
+                expected_identity_revision is not None
+                and current_revision != int(expected_identity_revision)
+            ):
+                raise MeshIdentityRevisionUnstable(
+                    "MESH AP Identity revision 在 projection 期间变化："
+                    f"expected={int(expected_identity_revision)}, current={current_revision}"
+                )
             if revision != current_revision:
                 if attempt + 1 < self._MAX_STABLE_PROJECTION_ATTEMPTS:
                     continue

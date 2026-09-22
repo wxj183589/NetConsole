@@ -180,6 +180,27 @@ def _current_site_id(request: Request) -> str:
     return request.app.state.online_mr_api_facade.current_site_id()
 
 
+_MESH_MUTATION_CONFLICT_CODES = frozenset(
+    {
+        "MESH_SOURCE_TASK_RUNNING",
+        "TASK_RESOURCE_BUSY",
+        "MESH_PRODUCTION_AUTHORITY_REQUIRED",
+        "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED",
+        "MESH_PRODUCTION_BATCH_DELETE_UNSUPPORTED",
+        "MESH_SOURCE_PLAN_STALE",
+        "MESH_SOURCE_PLAN_DIGEST_INVALID",
+    }
+)
+
+
+def _mesh_mutation_status_code(error: RailTransitWebError) -> int:
+    if error.code.endswith("NOT_FOUND"):
+        return status.HTTP_404_NOT_FOUND
+    if error.code in _MESH_MUTATION_CONFLICT_CODES:
+        return status.HTTP_409_CONFLICT
+    return status.HTTP_422_UNPROCESSABLE_ENTITY
+
+
 def _site_id(request: Request, supplied: str) -> str:
     value = supplied or _service(request).current_site_id()
     try:
@@ -1041,17 +1062,11 @@ def delete_source(
             delete_parsed_data=payload.delete_parsed_data,
             delete_generated_reports=payload.delete_generated_reports,
             explicit_confirmation=payload.explicit_confirmation,
+            production_authorization=payload.production_authorization,
         )
     except RailTransitWebError as exc:
-        status_code = (
-            status.HTTP_404_NOT_FOUND
-            if exc.code.endswith("NOT_FOUND")
-            else status.HTTP_409_CONFLICT
-            if exc.code == "MESH_SOURCE_TASK_RUNNING"
-            else status.HTTP_422_UNPROCESSABLE_ENTITY
-        )
         raise HTTPException(
-            status_code=status_code,
+            status_code=_mesh_mutation_status_code(exc),
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 
@@ -1078,17 +1093,11 @@ def delete_sources(
             delete_parsed_data=payload.delete_parsed_data,
             delete_generated_reports=payload.delete_generated_reports,
             explicit_confirmation=payload.explicit_confirmation,
+            production_authorization=payload.production_authorization,
         )
     except RailTransitWebError as exc:
-        status_code = (
-            status.HTTP_404_NOT_FOUND
-            if exc.code.endswith("NOT_FOUND")
-            else status.HTTP_409_CONFLICT
-            if exc.code == "MESH_SOURCE_TASK_RUNNING"
-            else status.HTTP_422_UNPROCESSABLE_ENTITY
-        )
         raise HTTPException(
-            status_code=status_code,
+            status_code=_mesh_mutation_status_code(exc),
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 
@@ -1114,16 +1123,11 @@ def maintain_session(
             session_id,
             kind=payload.kind,
             explicit_confirmation=payload.explicit_confirmation,
+            production_authorization=payload.production_authorization,
         )
     except RailTransitWebError as exc:
         raise HTTPException(
-            status_code=(
-                status.HTTP_404_NOT_FOUND
-                if exc.code.endswith("NOT_FOUND")
-                else status.HTTP_409_CONFLICT
-                if exc.code == "MESH_SOURCE_TASK_RUNNING"
-                else status.HTTP_422_UNPROCESSABLE_ENTITY
-            ),
+            status_code=_mesh_mutation_status_code(exc),
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 
@@ -1143,10 +1147,11 @@ def rebuild_session(request: Request, session_id: str, payload: MeshRebuildReque
             _current_site_id(request),
             session_id,
             explicit_confirmation=payload.explicit_confirmation,
+            production_authorization=payload.production_authorization,
         )
     except RailTransitWebError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND if exc.code.endswith("NOT_FOUND") else status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=_mesh_mutation_status_code(exc),
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 

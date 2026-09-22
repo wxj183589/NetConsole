@@ -3,6 +3,7 @@ from __future__ import annotations
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
+from netconsole.core.runtime_environment import production_write_allowed
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
 from netconsole.services.mesh_derived_data_maintenance_service import (
     MeshDerivedDataMaintenanceService,
@@ -20,10 +21,160 @@ from netconsole.services.mesh_sources_delete_service import (
 )
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.mesh_local_scan_service import MeshLocalScanService
+from netconsole.services.mesh_write_authority import (
+    MESH_DERIVED_REBUILD_OPERATION,
+    MESH_IDENTITY_REMAP_OPERATION,
+    MESH_SOURCE_DELETE_OPERATION,
+    MeshProductionAuthorizationError,
+    build_mesh_write_plan,
+    mesh_operation_lock,
+    mesh_source_revisions,
+    mesh_source_plan_facts,
+    require_mesh_write_authority,
+    resolve_mesh_production_scope,
+    validate_mesh_write_plan,
+)
+from netconsole.services.rail_transit.mesh_analysis_query_service import (
+    MeshAnalysisQueryService,
+)
 
 mesh_log_import = legacy_handler(legacy_tasks._mesh_log_import)
 mesh_derived_rebuild = legacy_handler(legacy_tasks._mesh_derived_rebuild)
 mesh_mr_profiles_refresh = legacy_handler(legacy_tasks._mesh_mr_profiles_refresh)
+
+
+def _mesh_worker_preflight(
+    context: JobContext,
+    *,
+    operation: str,
+    session_id: str,
+    maintenance_kind: str = "",
+    force_reparse: bool = False,
+    delete_raw_archive: bool = False,
+    delete_parsed_data: bool = True,
+    delete_generated_reports: bool = True,
+    expected_plan: dict[str, object] | None = None,
+) -> tuple[object, dict[str, object], dict[str, object]]:
+    params = dict(context.params)
+    supplied_plan = (
+        expected_plan if expected_plan is not None else params.get("mesh_write_plan")
+    )
+    plan = dict(supplied_plan) if isinstance(supplied_plan, dict) else None
+    site_ref = str(
+        (plan or {}).get("canonical_site_id")
+        or params.get("mesh_canonical_site_id")
+        or params.get("site_name")
+        or ""
+    )
+    scope = resolve_mesh_production_scope(context.paths, site_ref)
+    authorization_token = str(params.get("mesh_authorization_token") or "")
+    if (
+        ("explicit_confirmation" not in params and scope.is_production)
+        or (
+            "explicit_confirmation" in params
+            and not bool(params.get("explicit_confirmation"))
+        )
+    ):
+        raise MeshProductionAuthorizationError("MESH_SOURCE_CONFIRMATION_REQUIRED")
+    require_mesh_write_authority(
+        context.paths,
+        scope.canonical_site_id,
+        operation=operation,
+        allow_production_write=production_write_allowed(),
+        authorization_token=authorization_token,
+    )
+    if scope.is_production and delete_raw_archive:
+        raise MeshProductionAuthorizationError(
+            "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED"
+        )
+
+    query = MeshAnalysisQueryService(context.paths, schedule_catalog_index=False)
+    current = query._context(scope.directory_name, session_id)
+    revisions = mesh_source_revisions(
+        current.mr_id,
+        current.source_id,
+        current.source,
+    )
+    facts = mesh_source_plan_facts(context.paths, scope, current)
+    raw_sha256 = str(facts["raw_sha256"])
+    content_sha256 = str(current.source.get("content_sha256") or "")
+    identity_index_revision = int(current.source.get("identity_index_revision") or 0)
+    peer_set_digest = (
+        str(facts["peer_set_digest"])
+        if operation == MESH_IDENTITY_REMAP_OPERATION
+        else ""
+    )
+    identity_snapshot_revision = (
+        int(facts["identity_snapshot_revision"])
+        if operation == MESH_IDENTITY_REMAP_OPERATION
+        else 0
+    )
+    if scope.is_production and operation == MESH_DERIVED_REBUILD_OPERATION and not raw_sha256:
+        raise MeshProductionAuthorizationError("MESH_PRODUCTION_RAW_SOURCE_REQUIRED")
+    if operation == MESH_IDENTITY_REMAP_OPERATION and not str(facts["parsed_sha256"]):
+        raise MeshProductionAuthorizationError("MESH_IDENTITY_DETAIL_REQUIRED")
+    if plan is None:
+        if scope.is_production:
+            raise MeshProductionAuthorizationError("MESH_SOURCE_PLAN_REQUIRED")
+        plan = build_mesh_write_plan(
+            scope,
+            profile_id=current.mr_id,
+            source_id=current.source_id,
+            operation=operation,
+            explicit_confirmation=True,
+            **revisions,
+            safe_folder_name=str(facts["safe_folder_name"]),
+            source_index_sha256=str(facts["source_index_sha256"]),
+            parsed_sha256=str(facts["parsed_sha256"]),
+            peer_set_digest=peer_set_digest,
+            identity_snapshot_revision=identity_snapshot_revision,
+            raw_sha256=raw_sha256,
+            content_sha256=content_sha256,
+            identity_index_revision=identity_index_revision,
+            maintenance_kind=maintenance_kind,
+            force_reparse=force_reparse,
+            delete_raw_archive=delete_raw_archive,
+            delete_parsed_data=delete_parsed_data,
+            delete_generated_reports=delete_generated_reports,
+        )
+    else:
+        validate_mesh_write_plan(
+            plan,
+            scope,
+            operation=operation,
+            profile_id=current.mr_id,
+            source_id=current.source_id,
+            explicit_confirmation=True,
+            **revisions,
+            safe_folder_name=str(facts["safe_folder_name"]),
+            source_index_sha256=str(facts["source_index_sha256"]),
+            parsed_sha256=str(facts["parsed_sha256"]),
+            peer_set_digest=peer_set_digest,
+            identity_snapshot_revision=identity_snapshot_revision,
+            raw_sha256=raw_sha256,
+            content_sha256=content_sha256,
+            identity_index_revision=identity_index_revision,
+            maintenance_kind=maintenance_kind,
+            force_reparse=force_reparse,
+            delete_raw_archive=delete_raw_archive,
+            delete_parsed_data=delete_parsed_data,
+            delete_generated_reports=delete_generated_reports,
+        )
+    aliases = {
+        "mesh_plan_digest": plan["plan_digest"],
+        "mesh_canonical_site_id": plan["canonical_site_id"],
+        "mesh_profile_id": plan["profile_id"],
+        "mesh_source_id": plan["source_id"],
+        "mesh_operation": plan["operation"],
+    }
+    for key, expected in aliases.items():
+        if (
+            key not in params and scope.is_production
+        ) or (
+            key in params and str(params.get(key) or "") != str(expected)
+        ):
+            raise MeshProductionAuthorizationError("MESH_SOURCE_TASK_BINDING_INVALID")
+    return scope, plan, facts
 
 
 def mesh_schema_rebuild(context: JobContext) -> dict[str, object]:
@@ -42,64 +193,166 @@ def mesh_schema_rebuild(context: JobContext) -> dict[str, object]:
 
 def mesh_source_rebuild(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    site_name = str(context.params.get("site_name") or "")
     session_id = str(context.params.get("session_id") or "")
-    try:
-        result = MeshSourceRebuildService(context.paths).rebuild_source(
-            site_name,
-            session_id,
+    scope, plan, _facts = _mesh_worker_preflight(
+        context,
+        operation=MESH_DERIVED_REBUILD_OPERATION,
+        session_id=session_id,
+        force_reparse=True,
+    )
+    with mesh_operation_lock(
+        context.paths,
+        scope,
+        MESH_DERIVED_REBUILD_OPERATION,
+        profile_id=str(plan["profile_id"]),
+        source_id=str(plan["source_id"]),
+    ):
+        scope, plan, _facts = _mesh_worker_preflight(
+            context,
+            operation=MESH_DERIVED_REBUILD_OPERATION,
+            session_id=session_id,
             force_reparse=True,
-            progress=context.progress,
-            should_cancel=context.should_cancel,
+            expected_plan=plan,
         )
-    except MeshSourceRebuildCancelled as exc:
-        raise BackgroundTaskCancelled(str(exc)) from exc
-    MeshCatalogRepository(
-        context.paths.mesh_catalog_path(site_name)
-    ).mark_session_index_dirty(session_id)
+        context.check_cancelled()
+        try:
+            result = MeshSourceRebuildService(context.paths).rebuild_source(
+                scope.directory_name,
+                session_id,
+                force_reparse=True,
+                allow_raw_recovery=not scope.is_production,
+                progress=context.progress,
+                should_cancel=context.should_cancel,
+            )
+        except MeshSourceRebuildCancelled as exc:
+            raise BackgroundTaskCancelled(str(exc)) from exc
+        MeshCatalogRepository(
+            context.paths.mesh_catalog_path(scope.directory_name)
+        ).mark_session_index_dirty(session_id)
     return result
 
 
 def mesh_analysis_source_delete(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     params = dict(context.params)
-    result = MeshSourceDeleteService(context.paths).delete_source(
-        str(params.get("site_name") or ""),
-        str(params.get("session_id") or ""),
-        delete_raw_archive=bool(params.get("delete_raw_archive")),
-        delete_parsed_data=bool(params.get("delete_parsed_data", True)),
-        delete_generated_reports=bool(params.get("delete_generated_reports", True)),
+    session_id = str(params.get("session_id") or "")
+    delete_raw_archive = bool(params.get("delete_raw_archive"))
+    delete_parsed_data = bool(params.get("delete_parsed_data", True))
+    delete_generated_reports = bool(params.get("delete_generated_reports", True))
+    scope, plan, _facts = _mesh_worker_preflight(
+        context,
+        operation=MESH_SOURCE_DELETE_OPERATION,
+        session_id=session_id,
+        delete_raw_archive=delete_raw_archive,
+        delete_parsed_data=delete_parsed_data,
+        delete_generated_reports=delete_generated_reports,
     )
+    with mesh_operation_lock(
+        context.paths,
+        scope,
+        MESH_SOURCE_DELETE_OPERATION,
+        profile_id=str(plan["profile_id"]),
+        source_id=str(plan["source_id"]),
+    ):
+        scope, plan, _facts = _mesh_worker_preflight(
+            context,
+            operation=MESH_SOURCE_DELETE_OPERATION,
+            session_id=session_id,
+            delete_raw_archive=delete_raw_archive,
+            delete_parsed_data=delete_parsed_data,
+            delete_generated_reports=delete_generated_reports,
+            expected_plan=plan,
+        )
+        context.check_cancelled()
+        result = MeshSourceDeleteService(context.paths).delete_source(
+            scope.directory_name,
+            session_id,
+            delete_raw_archive=bool(plan["delete_raw_archive"]),
+            delete_parsed_data=bool(plan["delete_parsed_data"]),
+            delete_generated_reports=bool(plan["delete_generated_reports"]),
+        )
     context.progress("mesh_analysis_source_delete", 1, 1, "MESH 来源删除完成")
     return result
 
 
 def mesh_analysis_maintenance(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    site_name = str(context.params.get("site_name") or "")
     session_id = str(context.params.get("session_id") or "")
-    kind = str(context.params.get("maintenance_kind") or "")
+    params = dict(context.params)
+    kind = str(params.get("maintenance_kind") or "")
     if kind not in {"identity_projection_refresh", "parser_rebuild"}:
         raise ValueError("不支持的 MESH 来源维护类型")
-    try:
-        result = MeshSourceRebuildService(context.paths).rebuild_source(
-            site_name,
-            session_id,
-            force_reparse=bool(context.params.get("force_reparse")),
-            progress=context.progress,
-            should_cancel=context.should_cancel,
+    expected_force_reparse = kind == "parser_rebuild"
+    if bool(params.get("force_reparse")) != expected_force_reparse:
+        raise ValueError("MESH_MAINTENANCE_PARAMS_INVALID")
+    operation = (
+        MESH_IDENTITY_REMAP_OPERATION
+        if kind == "identity_projection_refresh"
+        else MESH_DERIVED_REBUILD_OPERATION
+    )
+    scope, plan, _facts = _mesh_worker_preflight(
+        context,
+        operation=operation,
+        session_id=session_id,
+        maintenance_kind=kind,
+        force_reparse=expected_force_reparse,
+    )
+    with mesh_operation_lock(
+        context.paths,
+        scope,
+        operation,
+        profile_id=str(plan["profile_id"]),
+        source_id=str(plan["source_id"]),
+    ):
+        scope, plan, facts = _mesh_worker_preflight(
+            context,
+            operation=operation,
+            session_id=session_id,
+            maintenance_kind=kind,
+            force_reparse=expected_force_reparse,
+            expected_plan=plan,
         )
-    except MeshSourceRebuildCancelled as exc:
-        raise BackgroundTaskCancelled(str(exc)) from exc
-    MeshCatalogRepository(
-        context.paths.mesh_catalog_path(site_name)
-    ).mark_session_index_dirty(session_id)
+        context.check_cancelled()
+        try:
+            if operation == MESH_IDENTITY_REMAP_OPERATION:
+                result = MeshSourceRebuildService(context.paths).remap_identity_only(
+                    scope.directory_name,
+                    session_id,
+                    expected_identity_index_revision=int(
+                        plan["identity_snapshot_revision"]
+                    ),
+                    expected_peer_keys=set(facts["peer_keys"]),
+                    progress=context.progress,
+                    should_cancel=context.should_cancel,
+                )
+            else:
+                result = MeshSourceRebuildService(context.paths).rebuild_source(
+                    scope.directory_name,
+                    session_id,
+                    force_reparse=True,
+                    allow_raw_recovery=not scope.is_production,
+                    progress=context.progress,
+                    should_cancel=context.should_cancel,
+                )
+        except MeshSourceRebuildCancelled as exc:
+            raise BackgroundTaskCancelled(str(exc)) from exc
+        MeshCatalogRepository(
+            context.paths.mesh_catalog_path(scope.directory_name)
+        ).mark_session_index_dirty(session_id)
     return {**result, "maintenance_kind": kind}
 
 
 def mesh_analysis_sources_delete(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     params = dict(context.params)
+    scope = resolve_mesh_production_scope(
+        context.paths,
+        str(params.get("site_name") or ""),
+    )
+    if scope.is_production:
+        raise MeshProductionAuthorizationError(
+            "MESH_PRODUCTION_BATCH_DELETE_UNSUPPORTED"
+        )
     raw_session_ids = params.get("session_ids")
     session_ids = (
         [str(item) for item in raw_session_ids]
@@ -108,7 +361,7 @@ def mesh_analysis_sources_delete(context: JobContext) -> dict[str, object]:
     )
     try:
         return MeshSourcesDeleteService(context.paths).delete_sources(
-            str(params.get("site_name") or ""),
+            scope.directory_name,
             session_ids,
             delete_raw_archive=bool(params.get("delete_raw_archive")),
             delete_parsed_data=bool(params.get("delete_parsed_data", True)),

@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Mapping
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import (
     data_root as default_data_root,
-    require_data_root_write_allowed,
 )
-from netconsole.repositories.mesh_mr_repository import MeshMrRepository
+from netconsole.repositories.mesh_mr_repository import PARSER_VERSION, MeshMrRepository
 from netconsole.services.ap_identity.normalizers import normalize_mac, normalize_mac_key
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
 from netconsole.services.mesh_source_rebuild_service import MeshSourceRebuildService
+from netconsole.services.mesh_write_authority import (
+    MESH_IDENTITY_REMAP_AUTHORIZED,
+    MESH_IDENTITY_REMAP_OPERATION,
+    MeshProductionSiteScope,
+    mesh_operation_lock,
+    require_mesh_profile_scope,
+    require_mesh_write_authority,
+    resolve_mesh_production_scope,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,17 @@ class MeshIdentityRemapPlanEntry:
     expected_changed_link_rows: int
     identity_index_revision: int
     peer_keys: frozenset[str]
+    peer_set_digest: str = ""
+    canonical_site_id: str = ""
+    site_directory_name: str = ""
+    index_sha256: str = ""
+    index_schema: str = ""
+    source_revision: str = ""
+    parsed_db_sha256: str = ""
+    parsed_schema: str = ""
+    parser_schema: str = PARSER_VERSION
+    operation: str = MESH_IDENTITY_REMAP_OPERATION
+    plan_digest: str = ""
 
 
 def build_plan(
@@ -45,9 +65,11 @@ def build_plan(
     profile_filter: str = "",
     source_filter: int | None = None,
 ) -> list[MeshIdentityRemapPlanEntry]:
-    profiles = _load_profiles_readonly(paths.mesh_catalog_path(site_name))
+    scope = resolve_mesh_production_scope(paths, site_name)
+    site_directory_name = scope.directory_name
+    profiles = _load_profiles_readonly(paths.mesh_catalog_path(site_directory_name))
     entries: list[MeshIdentityRemapPlanEntry] = []
-    mapping_service = MeshPeerMappingService(site_name, paths)
+    mapping_service = MeshPeerMappingService(site_directory_name, paths)
     revision = mapping_service.current_identity_revision()
     for profile in profiles:
         if profile_filter and profile_filter not in {
@@ -56,12 +78,13 @@ def build_plan(
             profile["safe_folder_name"],
         }:
             continue
+        require_mesh_profile_scope(paths, scope, profile["safe_folder_name"])
         profile_root = paths.mesh_mr_root(
-            site_name,
+            site_directory_name,
             profile["safe_folder_name"],
         ).resolve()
         source_index = paths.mesh_mr_db_path(
-            site_name,
+            site_directory_name,
             profile["safe_folder_name"],
         ).resolve()
         _require_inside(source_index, profile_root, "source index")
@@ -72,7 +95,7 @@ def build_plan(
             session_id = f"{profile['mr_id']}:{source_id}"
             detail_path = _detail_path(profile_root, source)
             if detail_path is None:
-                entries.append(
+                entries.append(_bind_entry(
                     MeshIdentityRemapPlanEntry(
                         session_id=session_id,
                         profile_id=profile["mr_id"],
@@ -90,8 +113,12 @@ def build_plan(
                         expected_changed_link_rows=0,
                         identity_index_revision=revision,
                         peer_keys=frozenset(),
-                    )
-                )
+                    ),
+                    scope=scope,
+                    source_index=source_index,
+                    source=source,
+                    detail_path=None,
+                ))
                 continue
             try:
                 repo = MeshMrRepository(detail_path, read_only=True)
@@ -100,7 +127,7 @@ def build_plan(
                 current = _current_status_counts(detail_path)
                 expected, changed = _expected_projection(detail_path, mappings)
             except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
-                entries.append(
+                entries.append(_bind_entry(
                     MeshIdentityRemapPlanEntry(
                         session_id=session_id,
                         profile_id=profile["mr_id"],
@@ -118,10 +145,14 @@ def build_plan(
                         expected_changed_link_rows=0,
                         identity_index_revision=revision,
                         peer_keys=frozenset(),
-                    )
-                )
+                    ),
+                    scope=scope,
+                    source_index=source_index,
+                    source=source,
+                    detail_path=detail_path,
+                ))
                 continue
-            entries.append(
+            entries.append(_bind_entry(
                 MeshIdentityRemapPlanEntry(
                     session_id=session_id,
                     profile_id=profile["mr_id"],
@@ -149,8 +180,12 @@ def build_plan(
                         for peer in peers
                         if (key := normalize_mac_key(peer))
                     ),
-                )
-            )
+                ),
+                scope=scope,
+                source_index=source_index,
+                source=source,
+                detail_path=detail_path,
+            ))
     return entries
 
 
@@ -158,44 +193,65 @@ def apply_plan(
     paths: PathResolver,
     site_name: str,
     entries: list[MeshIdentityRemapPlanEntry],
+    *,
+    allow_production_write: bool = False,
+    authorization_token: str = "",
 ) -> dict[str, object]:
+    scope = require_mesh_write_authority(
+        paths,
+        site_name,
+        operation=MESH_IDENTITY_REMAP_OPERATION,
+        allow_production_write=allow_production_write,
+        authorization_token=authorization_token,
+    )
     service = MeshSourceRebuildService(paths)
     results: list[dict[str, object]] = []
     succeeded = failed = skipped = 0
-    for entry in entries:
-        if not entry.eligible:
-            skipped += 1
+    with mesh_operation_lock(
+        paths,
+        scope,
+        MESH_IDENTITY_REMAP_OPERATION,
+    ):
+        _validate_plan(paths, scope, entries)
+        for entry in entries:
+            if not entry.eligible:
+                skipped += 1
+                results.append(
+                    {
+                        "session_id": entry.session_id,
+                        "status": "skipped",
+                        "detail": entry.detail,
+                    }
+                )
+                continue
+            try:
+                result = service.remap_identity_only(
+                    scope.directory_name,
+                    entry.session_id,
+                    expected_identity_index_revision=entry.identity_index_revision,
+                    expected_peer_keys=entry.peer_keys,
+                )
+            except Exception as exc:
+                failed += 1
+                results.append(
+                    {
+                        "session_id": entry.session_id,
+                        "status": "failed",
+                        "detail": str(exc),
+                    }
+                )
+                continue
+            succeeded += 1
             results.append(
                 {
                     "session_id": entry.session_id,
-                    "status": "skipped",
-                    "detail": entry.detail,
+                    "status": "succeeded",
+                    "identity_remap": result.get("identity_remap") or {},
                 }
             )
-            continue
-        try:
-            result = service.rebuild_source(site_name, entry.session_id)
-        except Exception as exc:
-            failed += 1
-            results.append(
-                {
-                    "session_id": entry.session_id,
-                    "status": "failed",
-                    "detail": str(exc),
-                }
-            )
-            continue
-        succeeded += 1
-        results.append(
-            {
-                "session_id": entry.session_id,
-                "status": "succeeded",
-                "identity_remap": result.get("identity_remap") or {},
-            }
-        )
     return {
         "mode": "applied",
-        "site": site_name,
+        "site": scope.canonical_site_id,
         "sources_scanned": len(entries),
         "succeeded": succeeded,
         "failed": failed,
@@ -215,8 +271,10 @@ def manifest(
         for peer in entry.peer_keys
     }
     return {
+        "schema_version": 2,
         "mode": "dry-run",
-        "site": site_name,
+        "site": next((entry.canonical_site_id for entry in entries if entry.canonical_site_id), site_name),
+        "operation": MESH_IDENTITY_REMAP_OPERATION,
         "sources_scanned": len(entries),
         "eligible_sources": sum(1 for entry in entries if entry.eligible),
         "distinct_peers": len(distinct_peer_keys),
@@ -245,6 +303,150 @@ def manifest(
             for entry in entries
         ],
     }
+
+
+def _bind_entry(
+    entry: MeshIdentityRemapPlanEntry,
+    *,
+    scope: MeshProductionSiteScope,
+    source_index: Path,
+    source: Mapping[str, object],
+    detail_path: Path | None,
+) -> MeshIdentityRemapPlanEntry:
+    bound = replace(
+        entry,
+        canonical_site_id=scope.canonical_site_id,
+        site_directory_name=scope.directory_name,
+        index_sha256=_sha256(source_index),
+        index_schema=_sqlite_schema(source_index),
+        source_revision=_source_revision(source_index, source),
+        parsed_db_sha256=_sha256(detail_path) if detail_path is not None and detail_path.is_file() else "",
+        parsed_schema=_sqlite_schema(detail_path) if detail_path is not None else "",
+        parser_schema=PARSER_VERSION,
+        operation=MESH_IDENTITY_REMAP_OPERATION,
+        peer_set_digest=_peer_set_digest(entry.peer_keys),
+        plan_digest="",
+    )
+    return replace(bound, plan_digest=_plan_digest(bound))
+
+
+def _validate_plan(
+    paths: PathResolver,
+    scope: MeshProductionSiteScope,
+    entries: list[MeshIdentityRemapPlanEntry],
+) -> None:
+    mapping_service = MeshPeerMappingService(scope.directory_name, paths)
+    for entry in entries:
+        if entry.operation != MESH_IDENTITY_REMAP_OPERATION:
+            raise RuntimeError("MESH identity remap plan operation mismatch")
+        if entry.parser_schema != PARSER_VERSION:
+            raise RuntimeError("MESH identity remap parser schema changed")
+        if entry.canonical_site_id != scope.canonical_site_id:
+            raise RuntimeError("MESH identity remap plan canonical site changed")
+        if entry.site_directory_name != scope.directory_name:
+            raise RuntimeError("MESH identity remap plan site directory changed")
+        if not entry.plan_digest or _plan_digest(entry) != entry.plan_digest:
+            raise RuntimeError("MESH identity remap plan digest invalid or changed")
+        profile_root = paths.mesh_mr_root(scope.directory_name, entry.profile_name).resolve()
+        source_index = paths.mesh_mr_db_path(scope.directory_name, entry.profile_name).resolve()
+        # Profile display names are not filesystem identities.  Resolve the
+        # profile from the catalog/index and use the stored safe folder name.
+        profiles = _load_profiles_readonly(paths.mesh_catalog_path(scope.directory_name))
+        profile = next((item for item in profiles if item["mr_id"] == entry.profile_id), None)
+        if profile is None:
+            raise RuntimeError("MESH identity remap Profile changed")
+        profile_root = paths.mesh_mr_root(scope.directory_name, profile["safe_folder_name"]).resolve()
+        source_index = paths.mesh_mr_db_path(scope.directory_name, profile["safe_folder_name"]).resolve()
+        if not profile_root.is_relative_to(scope.site_root):
+            raise RuntimeError("MESH identity remap Profile crossed canonical site")
+        sources = _load_sources_readonly(source_index)
+        source = next((item for item in sources if int(item.get("id") or 0) == entry.source_file_id), None)
+        if source is None or _source_revision(source_index, source) != entry.source_revision:
+            raise RuntimeError(f"MESH identity remap source revision changed: {entry.session_id}")
+        detail_path = _detail_path(profile_root, source)
+        if not entry.eligible or detail_path is None:
+            continue
+        actual_keys = _peer_keys(detail_path)
+        if (
+            _sha256(source_index) != entry.index_sha256
+            or _sqlite_schema(source_index) != entry.index_schema
+            or _sha256(detail_path) != entry.parsed_db_sha256
+            or _sqlite_schema(detail_path) != entry.parsed_schema
+            or actual_keys != set(entry.peer_keys)
+            or _peer_set_digest(actual_keys) != entry.peer_set_digest
+        ):
+            raise RuntimeError(f"MESH identity remap parsed/index identity changed: {entry.session_id}")
+        if mapping_service.current_identity_revision() != entry.identity_index_revision:
+            raise RuntimeError("MESH identity remap expected identity revision changed")
+
+
+def _peer_keys(path: Path) -> set[str]:
+    repo = MeshMrRepository(path, read_only=True)
+    return {
+        key
+        for peer in repo.distinct_peer_macs()
+        if (key := normalize_mac_key(peer))
+    }
+
+
+def _sha256(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_schema(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True) as connection:
+            rows = connection.execute(
+                "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name"
+            ).fetchall()
+            return hashlib.sha256(json.dumps(rows, default=str, sort_keys=True).encode()).hexdigest()
+    except sqlite3.Error:
+        return "invalid"
+
+
+def _source_revision(path: Path, source: Mapping[str, object]) -> str:
+    values = {
+        key: source.get(key)
+        for key in (
+            "id",
+            "sha256",
+            "raw_sha256",
+            "content_sha256",
+            "parsed_db_path",
+            "parsed_relative_path",
+            "parser_version",
+            "identity_index_revision",
+            "identity_mapped_at",
+            "identity_mapping_status",
+        )
+    }
+    values["index_sha256"] = _sha256(path)
+    return hashlib.sha256(
+        json.dumps(values, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _plan_digest(entry: MeshIdentityRemapPlanEntry) -> str:
+    payload = asdict(entry)
+    payload["peer_keys"] = sorted(entry.peer_keys)
+    payload["plan_digest"] = ""
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _peer_set_digest(peer_keys: set[str] | frozenset[str]) -> str:
+    return hashlib.sha256(
+        json.dumps(sorted(peer_keys), ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _load_profiles_readonly(path: Path) -> list[dict[str, str]]:
@@ -395,10 +597,28 @@ def main() -> int:
         action="store_true",
         help="明确授权对 production 数据根执行身份重建",
     )
+    parser.add_argument(
+        "--authorization-token",
+        default="",
+        help=(
+            "MESH operation-specific production capability token "
+            f"(expected: {MESH_IDENTITY_REMAP_AUTHORIZED})"
+        ),
+    )
     args = parser.parse_args()
     if args.source is not None and not args.profile:
         parser.error("--source 必须与 --profile 一起使用")
     paths = PathResolver(data_root=(args.data_root or default_data_root()).resolve())
+    if args.apply:
+        scope = require_mesh_write_authority(
+            paths,
+            args.site,
+            operation=MESH_IDENTITY_REMAP_OPERATION,
+            allow_production_write=args.allow_production_write,
+            authorization_token=args.authorization_token,
+        )
+    else:
+        scope = resolve_mesh_production_scope(paths, args.site)
     planned = build_plan(
         paths,
         args.site,
@@ -406,15 +626,16 @@ def main() -> int:
         source_filter=args.source,
     )
     if args.apply:
-        require_data_root_write_allowed(
-            paths.data_root,
-            "remap_mesh_identity",
+        result = apply_plan(
+            paths,
+            args.site,
+            planned,
             allow_production_write=args.allow_production_write,
+            authorization_token=args.authorization_token,
         )
-        result = apply_plan(paths, args.site, planned)
         _print(result)
         return 1 if result["failed"] else 0
-    _print(manifest(planned, site_name=args.site))
+    _print(manifest(planned, site_name=scope.canonical_site_id))
     return 0
 
 

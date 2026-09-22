@@ -18,6 +18,9 @@ from netconsole.repositories.mesh_mr_repository import (
     MeshIdentityRemapValidationError,
     MeshMrRepository,
 )
+from netconsole.repositories.mesh_source_index_repository import (
+    MeshSourceIndexRepository,
+)
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_runner import run_job
 from netconsole.services.mesh_bundle_import_service import MeshBundleImportService
@@ -113,6 +116,7 @@ def test_source_rebuild_prefers_identity_only_remap_for_healthy_detail(
     detail = Path(str(source["parsed_db_path"]))
     raw = Path(str(source["archived_path"]))
     raw_before = sha256_file(raw)
+    raw_mtime_before = raw.stat().st_mtime_ns
     with sqlite3.connect(detail) as connection:
         facts_before = connection.execute(
             """
@@ -120,6 +124,9 @@ def test_source_rebuild_prefers_identity_only_remap_for_healthy_detail(
                    local_tx_busy, peer_tx_busy, link_state, record_fingerprint
             FROM mesh_links ORDER BY id
             """
+        ).fetchall()
+        switch_events_before = connection.execute(
+            "SELECT * FROM switch_events ORDER BY id"
         ).fetchall()
         link_count_before = connection.execute(
             "SELECT COUNT(*) FROM mesh_links"
@@ -140,6 +147,7 @@ def test_source_rebuild_prefers_identity_only_remap_for_healthy_detail(
     assert rebuilt["recovery_source"] == "identity_only_remap"
     assert rebuilt["raw_archived_count"] == 0
     assert sha256_file(raw) == raw_before
+    assert raw.stat().st_mtime_ns == raw_mtime_before
     with sqlite3.connect(detail) as connection:
         facts_after = connection.execute(
             """
@@ -148,8 +156,262 @@ def test_source_rebuild_prefers_identity_only_remap_for_healthy_detail(
             FROM mesh_links ORDER BY id
             """
         ).fetchall()
+        switch_events_after = connection.execute(
+            "SELECT * FROM switch_events ORDER BY id"
+        ).fetchall()
         assert connection.execute("SELECT COUNT(*) FROM mesh_links").fetchone()[0] == link_count_before
     assert facts_after == facts_before
+    assert switch_events_after == switch_events_before
+
+
+def test_explicit_identity_only_mode_fails_closed_when_detail_is_missing(
+    tmp_path: Path,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    with sqlite3.connect(detail) as connection:
+        peers = {
+            str(row[0]).replace(":", "").replace("-", "").lower()
+            for row in connection.execute(
+                "SELECT DISTINCT peer_mac_normalized FROM mesh_links"
+            )
+            if row[0]
+        }
+    with sqlite3.connect(paths.mesh_mr_db_path("demo", profile.safe_folder_name)) as connection:
+        connection.execute(
+            "UPDATE source_files SET parsed_db_path = ?, parsed_relative_path = ? WHERE id = ?",
+            (str(detail.with_name("missing-detail.sqlite")), "parsed/missing-detail.sqlite", int(source["id"])),
+        )
+
+    with pytest.raises(RuntimeError, match="identity-only"):
+        MeshSourceRebuildService(paths).remap_identity_only(
+            "demo",
+            f"{profile.mr_id}:{source['id']}",
+            expected_identity_index_revision=0,
+            expected_peer_keys=peers,
+        )
+
+
+def test_explicit_identity_only_mode_rejects_identity_revision_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    with sqlite3.connect(detail) as connection:
+        peers = {
+            str(row[0]).replace(":", "").replace("-", "").lower()
+            for row in connection.execute(
+                "SELECT DISTINCT peer_mac_normalized FROM mesh_links"
+            )
+            if row[0]
+        }
+
+    monkeypatch.setattr(
+        MeshPeerMappingService,
+        "current_identity_revision",
+        lambda _self: 999,
+    )
+    with pytest.raises(RuntimeError, match="identity revision changed"):
+        MeshSourceRebuildService(paths).remap_identity_only(
+            "demo",
+            f"{profile.mr_id}:{source['id']}",
+            expected_identity_index_revision=0,
+            expected_peer_keys=peers,
+        )
+
+
+def test_explicit_identity_only_mode_rejects_peer_set_drift(
+    tmp_path: Path,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    with pytest.raises(RuntimeError, match="peer set changed"):
+        MeshSourceRebuildService(paths).remap_identity_only(
+            "demo",
+            f"{profile.mr_id}:{source['id']}",
+            expected_identity_index_revision=0,
+            expected_peer_keys={"001122334455"},
+        )
+
+
+def test_explicit_identity_only_mode_never_rebuilds_ap_identity_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    with sqlite3.connect(detail) as connection:
+        peers = {
+            str(row[0]).replace(":", "").replace("-", "").lower()
+            for row in connection.execute(
+                "SELECT DISTINCT peer_mac_normalized FROM mesh_links"
+            )
+            if row[0]
+        }
+
+    def forbidden_ensure_index(*_args, **_kwargs):
+        raise AssertionError("identity-only remap must not rebuild AP Identity")
+
+    monkeypatch.setattr(
+        "netconsole.services.ap_identity.query_service.ApIdentityQueryService.ensure_index",
+        forbidden_ensure_index,
+    )
+
+    result = MeshSourceRebuildService(paths).remap_identity_only(
+        "demo",
+        f"{profile.mr_id}:{source['id']}",
+        expected_identity_index_revision=0,
+        expected_peer_keys=peers,
+    )
+
+    assert result["recovery_source"] == "identity_only_remap"
+
+
+def test_explicit_identity_only_mode_rolls_back_after_projection_validation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    raw = Path(str(source["archived_path"]))
+    raw_before = sha256_file(raw)
+    raw_mtime_before = raw.stat().st_mtime_ns
+    with sqlite3.connect(detail) as connection:
+        peers = {
+            str(row[0]).replace(":", "").replace("-", "").lower()
+            for row in connection.execute(
+                "SELECT DISTINCT peer_mac_normalized FROM mesh_links"
+            )
+            if row[0]
+        }
+        before_mapping = connection.execute(
+            "SELECT * FROM mesh_peer_mapping ORDER BY peer_mac_normalized"
+        ).fetchall()
+        before_cache = connection.execute(
+            "SELECT * FROM mesh_peer_resolve_cache ORDER BY peer_mac"
+        ).fetchall()
+        before_links = connection.execute(
+            "SELECT id, peer_ap_name, peer_ap_mac, peer_site, peer_section, "
+            "peer_location, peer_direction, peer_identity_status, peer_identity_source "
+            "FROM mesh_links ORDER BY id"
+        ).fetchall()
+
+    with sqlite3.connect(paths.mesh_mr_db_path("demo", profile.safe_folder_name)) as connection:
+        before_source_metadata = connection.execute(
+            "SELECT identity_index_revision, identity_mapped_at, identity_mapping_status "
+            "FROM source_files WHERE id = ?",
+            (int(source["id"]),),
+        ).fetchone()
+
+    def fail_after_projection(*_args, **_kwargs):
+        raise RuntimeError("synthetic identity validation failure")
+
+    monkeypatch.setattr(
+        "netconsole.services.mesh_source_rebuild_service._require_verified_identity_remap",
+        fail_after_projection,
+    )
+    with pytest.raises(RuntimeError, match="synthetic identity validation failure"):
+        MeshSourceRebuildService(paths).remap_identity_only(
+            "demo",
+            f"{profile.mr_id}:{source['id']}",
+            expected_identity_index_revision=0,
+            expected_peer_keys=peers,
+        )
+
+    with sqlite3.connect(detail) as connection:
+        assert connection.execute(
+            "SELECT * FROM mesh_peer_mapping ORDER BY peer_mac_normalized"
+        ).fetchall() == before_mapping
+        assert connection.execute(
+            "SELECT * FROM mesh_peer_resolve_cache ORDER BY peer_mac"
+        ).fetchall() == before_cache
+        assert connection.execute(
+            "SELECT id, peer_ap_name, peer_ap_mac, peer_site, peer_section, "
+            "peer_location, peer_direction, peer_identity_status, peer_identity_source "
+            "FROM mesh_links ORDER BY id"
+        ).fetchall() == before_links
+    with sqlite3.connect(paths.mesh_mr_db_path("demo", profile.safe_folder_name)) as connection:
+        assert connection.execute(
+            "SELECT identity_index_revision, identity_mapped_at, identity_mapping_status "
+            "FROM source_files WHERE id = ?",
+            (int(source["id"]),),
+        ).fetchone() == before_source_metadata
+    assert sha256_file(raw) == raw_before
+    assert raw.stat().st_mtime_ns == raw_mtime_before
+
+
+def test_identity_only_mode_restores_source_metadata_after_post_commit_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    index_path = paths.mesh_mr_db_path("demo", profile.safe_folder_name)
+    index = MeshMrRepository(index_path)
+    source = index.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    peers = set(MeshMrRepository(detail, read_only=True).distinct_peer_macs())
+    with sqlite3.connect(index_path) as connection:
+        metadata_before = connection.execute(
+            "SELECT identity_index_revision, identity_mapped_at, identity_mapping_status "
+            "FROM source_files WHERE id = ?",
+            (int(source["id"]),),
+        ).fetchone()
+    detail_before = sha256_file(detail)
+
+    monkeypatch.setattr(
+        MeshPeerMappingService,
+        "current_identity_revision",
+        lambda _self: 8,
+    )
+    original_build_rows = MeshPeerMappingService.build_rows
+
+    def build_rows_at_revision(self, peer_macs):
+        rows = original_build_rows(self, peer_macs)
+        self._last_batch_identity_revision = 8
+        return rows
+
+    monkeypatch.setattr(
+        MeshPeerMappingService,
+        "build_rows",
+        build_rows_at_revision,
+    )
+    original_update = MeshSourceIndexRepository.update_identity_mapping
+
+    def update_then_fail(self, source_file_id: int, **kwargs) -> None:
+        original_update(self, source_file_id, **kwargs)
+        raise RuntimeError("synthetic post-metadata failure")
+
+    monkeypatch.setattr(
+        MeshSourceIndexRepository,
+        "update_identity_mapping",
+        update_then_fail,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic post-metadata failure"):
+        MeshSourceRebuildService(paths).remap_identity_only(
+            "demo",
+            f"{profile.mr_id}:{source['id']}",
+            expected_identity_index_revision=8,
+            expected_peer_keys=peers,
+        )
+
+    with sqlite3.connect(index_path) as connection:
+        assert connection.execute(
+            "SELECT identity_index_revision, identity_mapped_at, identity_mapping_status "
+            "FROM source_files WHERE id = ?",
+            (int(source["id"]),),
+        ).fetchone() == metadata_before
+    assert sha256_file(detail) == detail_before
 
 
 def test_new_mesh_import_uses_current_parser_without_upgrade_prompt(
@@ -492,13 +754,13 @@ def test_identity_remap_maintenance_apply_isolates_source_failures(
     )
     calls: list[str] = []
 
-    def rebuild_source(_self, _site: str, session_id: str):
+    def remap_identity_only(_self, _site: str, session_id: str, **_kwargs):
         calls.append(session_id)
         if session_id == plan[0].session_id:
             raise RuntimeError("synthetic failure")
         return {"identity_remap": {"validation_status": "passed"}}
 
-    monkeypatch.setattr(MeshSourceRebuildService, "rebuild_source", rebuild_source)
+    monkeypatch.setattr(MeshSourceRebuildService, "remap_identity_only", remap_identity_only)
 
     result = apply_identity_remap_plan(paths, "demo", plan)
 
@@ -506,6 +768,49 @@ def test_identity_remap_maintenance_apply_isolates_source_failures(
     assert result["succeeded"] == 1
     assert result["failed"] == 1
     assert result["skipped"] == 0
+
+
+def test_identity_remap_apply_rejects_source_revision_drift_before_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    plan = build_identity_remap_plan(paths, "demo", profile_filter=profile.mr_id)
+    source = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name)).list_source_files()[0]
+    with sqlite3.connect(paths.mesh_mr_db_path("demo", profile.safe_folder_name)) as connection:
+        connection.execute(
+            "UPDATE source_files SET identity_index_revision = identity_index_revision + 1 WHERE id = ?",
+            (int(source["id"]),),
+        )
+
+    called = False
+
+    def should_not_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("stale plan must fail before identity-only service")
+
+    monkeypatch.setattr(MeshSourceRebuildService, "remap_identity_only", should_not_run)
+    with pytest.raises(RuntimeError, match="source revision changed"):
+        apply_identity_remap_plan(paths, "demo", plan)
+    assert called is False
+
+
+def test_identity_remap_plan_rejects_detail_hash_drift_before_mutation(
+    tmp_path: Path,
+) -> None:
+    paths, profile, _result = _preview(tmp_path)
+    repository = MeshMrRepository(paths.mesh_mr_db_path("demo", profile.safe_folder_name))
+    source = repository.list_source_files()[0]
+    detail = Path(str(source["parsed_db_path"]))
+    plan = build_identity_remap_plan(paths, "demo", profile_filter=profile.mr_id)
+    raw_before = sha256_file(Path(str(source["archived_path"])))
+    detail.write_bytes(detail.read_bytes() + b"\n")
+
+    with pytest.raises(RuntimeError, match="parsed/index identity changed"):
+        apply_identity_remap_plan(paths, "demo", plan)
+
+    assert sha256_file(Path(str(source["archived_path"]))) == raw_before
 
 
 def test_identity_remap_finishes_successfully_when_cancel_arrives_after_commit(

@@ -23,6 +23,7 @@ from netconsole.application.web_export_process_adapter import WebExportProcessAd
 from netconsole.core.database import Database
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import production_write_allowed
 from netconsole.core.sites import SiteManager
 from netconsole.models.api.online_mr import (
     OnlineMrDownsampleMode,
@@ -85,6 +86,17 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text, sanitize_web_export_snapshot
 from netconsole.services.mesh_storage_service import MeshStorageService
+from netconsole.services.mesh_write_authority import (
+    MESH_DERIVED_REBUILD_OPERATION,
+    MESH_IDENTITY_REMAP_OPERATION,
+    MESH_SOURCE_DELETE_OPERATION,
+    MeshProductionAuthorizationError,
+    build_mesh_write_plan,
+    mesh_source_revisions,
+    mesh_source_plan_facts,
+    require_mesh_write_authority,
+    resolve_mesh_production_scope,
+)
 from netconsole.services.mesh_import_limits import (
     MESH_SINGLE_FILE_MAX_BYTES,
     MESH_SINGLE_FILE_MAX_LABEL,
@@ -3560,21 +3572,38 @@ class RailTransitWebApplicationService:
         ).mark_session_index_dirty(session_id)
         return MeshArtifactDeleteResultDTO(artifact_id=artifact_id, name=name, deleted_files=deleted)
 
-    def start_mesh_rebuild(self, site_id: str, session_id: str, *, explicit_confirmation: bool) -> RailTransitTaskDTO:
-        site_id = self._site(site_id)
+    def start_mesh_rebuild(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        explicit_confirmation: bool,
+        production_authorization: str = "",
+    ) -> RailTransitTaskDTO:
         if not explicit_confirmation:
             raise RailTransitWebError("CONFIRMATION_REQUIRED", "重建 MESH 派生数据库前必须显式确认")
-        try:
-            self.mesh_query_service._context(site_id, session_id)
-        except MeshAnalysisQueryError as exc:
-            raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
+        scope = self._mesh_scope(site_id)
+        site_id = scope.directory_name
+        context = self._mesh_context(site_id, session_id)
+        authorization_token, plan = self._mesh_source_write_plan(
+            scope,
+            context,
+            operation=MESH_DERIVED_REBUILD_OPERATION,
+            explicit_confirmation=True,
+            force_reparse=True,
+            production_authorization=production_authorization,
+        )
         return self._start_task(
             site_id,
             "mesh_source_rebuild",
             {
                 "session_id": session_id,
                 "explicit_confirmation": True,
-                "resource_keys": [f"mesh_source:{session_id}"],
+                **self._mesh_plan_task_params(plan, authorization_token),
+                "resource_keys": self._mesh_source_delete_resource_keys(
+                    site_id,
+                    [session_id],
+                ),
                 "audit": {"source": "electron_mesh_analysis", "action": "rebuild_source"},
             },
         )
@@ -3588,8 +3617,8 @@ class RailTransitWebApplicationService:
         delete_parsed_data: bool,
         delete_generated_reports: bool,
         explicit_confirmation: bool,
+        production_authorization: str = "",
     ) -> RailTransitTaskDTO:
-        site_id = self._site(site_id)
         if not explicit_confirmation:
             raise RailTransitWebError(
                 "CONFIRMATION_REQUIRED",
@@ -3600,10 +3629,21 @@ class RailTransitWebApplicationService:
                 "DELETE_SCOPE_INVALID",
                 "MESH 来源删除必须包含解析结果",
             )
-        try:
-            self.mesh_query_service._context(site_id, session_id)
-        except MeshAnalysisQueryError as exc:
-            raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
+        scope = self._mesh_scope(site_id)
+        site_id = scope.directory_name
+        context = self._mesh_context(site_id, session_id)
+        authorization_token, plan = self._mesh_source_write_plan(
+            scope,
+            context,
+            operation=MESH_SOURCE_DELETE_OPERATION,
+            explicit_confirmation=True,
+            delete_raw_archive=bool(delete_raw_archive),
+            delete_parsed_data=True,
+            delete_generated_reports=bool(
+                delete_generated_reports or delete_raw_archive
+            ),
+            production_authorization=production_authorization,
+        )
         active = self.task_service.repository(site_id).list(
             statuses={
                 TaskState.PENDING,
@@ -3647,8 +3687,11 @@ class RailTransitWebApplicationService:
                 "session_id": session_id,
                 "delete_raw_archive": bool(delete_raw_archive),
                 "delete_parsed_data": True,
-                "delete_generated_reports": bool(delete_generated_reports),
+                "delete_generated_reports": bool(
+                    delete_generated_reports or delete_raw_archive
+                ),
                 "explicit_confirmation": True,
+                **self._mesh_plan_task_params(plan, authorization_token),
                 "resource_keys": self._mesh_source_delete_resource_keys(
                     site_id,
                     [session_id],
@@ -3670,8 +3713,8 @@ class RailTransitWebApplicationService:
         delete_parsed_data: bool,
         delete_generated_reports: bool,
         explicit_confirmation: bool,
+        production_authorization: str = "",
     ) -> RailTransitTaskDTO:
-        site_id = self._site(site_id)
         if not explicit_confirmation:
             raise RailTransitWebError(
                 "CONFIRMATION_REQUIRED",
@@ -3712,6 +3755,31 @@ class RailTransitWebApplicationService:
                 "MESH_SESSION_INVALID",
                 "MESH 来源标识无效",
             )
+        scope = self._mesh_scope(site_id)
+        site_id = scope.directory_name
+        if scope.is_production:
+            try:
+                require_mesh_write_authority(
+                    self.paths,
+                    scope.canonical_site_id,
+                    operation=MESH_SOURCE_DELETE_OPERATION,
+                    allow_production_write=production_write_allowed(),
+                    authorization_token=production_authorization,
+                )
+            except (MeshProductionAuthorizationError, RuntimeError) as exc:
+                raise RailTransitWebError(
+                    "MESH_PRODUCTION_AUTHORITY_REQUIRED",
+                    str(exc) or "MESH Production write authority is required",
+                ) from exc
+            if delete_raw_archive:
+                raise RailTransitWebError(
+                    "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED",
+                    "Production MESH raw/archive 删除在 durable rollback owner 完成前禁止",
+                )
+            raise RailTransitWebError(
+                "MESH_PRODUCTION_BATCH_DELETE_UNSUPPORTED",
+                "Production MESH 批量来源删除在逐来源计划绑定完成前禁止",
+            )
         return self._start_task(
             site_id,
             "mesh_analysis_sources_delete",
@@ -3742,8 +3810,8 @@ class RailTransitWebApplicationService:
         *,
         kind: str,
         explicit_confirmation: bool,
+        production_authorization: str = "",
     ) -> RailTransitTaskDTO:
-        site_id = self._site(site_id)
         if not explicit_confirmation:
             raise RailTransitWebError(
                 "CONFIRMATION_REQUIRED",
@@ -3758,10 +3826,23 @@ class RailTransitWebApplicationService:
                 "MESH_MAINTENANCE_KIND_INVALID",
                 "不支持的 MESH 来源维护类型",
             )
-        try:
-            self.mesh_query_service._context(site_id, session_id)
-        except MeshAnalysisQueryError as exc:
-            raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
+        scope = self._mesh_scope(site_id)
+        site_id = scope.directory_name
+        context = self._mesh_context(site_id, session_id)
+        operation = (
+            MESH_IDENTITY_REMAP_OPERATION
+            if normalized_kind == "identity_projection_refresh"
+            else MESH_DERIVED_REBUILD_OPERATION
+        )
+        authorization_token, plan = self._mesh_source_write_plan(
+            scope,
+            context,
+            operation=operation,
+            explicit_confirmation=True,
+            maintenance_kind=normalized_kind,
+            force_reparse=normalized_kind == "parser_rebuild",
+            production_authorization=production_authorization,
+        )
         return self._start_task(
             site_id,
             "mesh_analysis_maintenance",
@@ -3770,6 +3851,7 @@ class RailTransitWebApplicationService:
                 "maintenance_kind": normalized_kind,
                 "force_reparse": normalized_kind == "parser_rebuild",
                 "explicit_confirmation": True,
+                **self._mesh_plan_task_params(plan, authorization_token),
                 "resource_keys": self._mesh_source_delete_resource_keys(
                     site_id,
                     [session_id],
@@ -3781,6 +3863,140 @@ class RailTransitWebApplicationService:
                 },
             },
         )
+
+    def _mesh_scope(self, site_ref: str):
+        try:
+            scope = resolve_mesh_production_scope(self.paths, site_ref)
+            if not scope.is_production:
+                # Preserve the existing development/test site validation while
+                # allowing Production callers to use canonical registry IDs.
+                normalized = self._site(site_ref)
+                if normalized != scope.directory_name:
+                    scope = resolve_mesh_production_scope(self.paths, normalized)
+            return scope
+        except RailTransitWebError:
+            raise
+        except Exception as exc:
+            raise RailTransitWebError(
+                "MESH_PRODUCTION_AUTHORITY_REQUIRED",
+                str(exc) or "MESH Production scope cannot be proven",
+            ) from exc
+
+    def _mesh_context(self, site_id: str, session_id: str):
+        try:
+            return self.mesh_query_service._context(site_id, session_id)
+        except MeshAnalysisQueryError as exc:
+            raise RailTransitWebError("MESH_SESSION_NOT_FOUND", str(exc)) from exc
+
+    def _mesh_source_write_plan(
+        self,
+        scope,
+        context,
+        *,
+        operation: str,
+        explicit_confirmation: bool,
+        maintenance_kind: str = "",
+        force_reparse: bool = False,
+        delete_raw_archive: bool = False,
+        delete_parsed_data: bool = True,
+        delete_generated_reports: bool = True,
+        production_authorization: str = "",
+    ) -> tuple[str, dict[str, object]]:
+        if scope.is_production and delete_raw_archive:
+            raise RailTransitWebError(
+                "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED",
+                "Production MESH raw/archive 删除在 durable rollback owner 完成前禁止",
+            )
+        authorization_token = (
+            str(production_authorization or "") if scope.is_production else ""
+        )
+        try:
+            require_mesh_write_authority(
+                self.paths,
+                scope.canonical_site_id,
+                operation=operation,
+                allow_production_write=production_write_allowed(),
+                authorization_token=authorization_token,
+            )
+        except (MeshProductionAuthorizationError, RuntimeError) as exc:
+            raise RailTransitWebError(
+                "MESH_PRODUCTION_AUTHORITY_REQUIRED",
+                str(exc) or "MESH Production write authority is required",
+            ) from exc
+        revisions = mesh_source_revisions(
+            context.mr_id,
+            context.source_id,
+            context.source,
+        )
+        try:
+            facts = mesh_source_plan_facts(self.paths, scope, context)
+        except (MeshProductionAuthorizationError, OSError, RuntimeError, ValueError) as exc:
+            raise RailTransitWebError(
+                "MESH_SOURCE_PLAN_INVALID",
+                str(exc) or "MESH source facts cannot be bound",
+            ) from exc
+        if (
+            scope.is_production
+            and operation == MESH_DERIVED_REBUILD_OPERATION
+            and not str(facts["raw_sha256"])
+        ):
+            raise RailTransitWebError(
+                "MESH_PRODUCTION_RAW_SOURCE_REQUIRED",
+                "Production MESH rebuild requires an existing canonical raw source",
+            )
+        if (
+            operation == MESH_IDENTITY_REMAP_OPERATION
+            and not str(facts["parsed_sha256"])
+        ):
+            raise RailTransitWebError(
+                "MESH_IDENTITY_DETAIL_REQUIRED",
+                "MESH identity remap requires an existing parsed detail database",
+            )
+        plan = build_mesh_write_plan(
+            scope,
+            profile_id=context.mr_id,
+            source_id=context.source_id,
+            operation=operation,
+            explicit_confirmation=explicit_confirmation,
+            **revisions,
+            safe_folder_name=str(facts["safe_folder_name"]),
+            source_index_sha256=str(facts["source_index_sha256"]),
+            parsed_sha256=str(facts["parsed_sha256"]),
+            peer_set_digest=(
+                str(facts["peer_set_digest"])
+                if operation == MESH_IDENTITY_REMAP_OPERATION
+                else ""
+            ),
+            identity_snapshot_revision=(
+                int(facts["identity_snapshot_revision"])
+                if operation == MESH_IDENTITY_REMAP_OPERATION
+                else 0
+            ),
+            raw_sha256=str(facts["raw_sha256"]),
+            content_sha256=str(context.source.get("content_sha256") or ""),
+            identity_index_revision=int(context.source.get("identity_index_revision") or 0),
+            maintenance_kind=maintenance_kind,
+            force_reparse=force_reparse,
+            delete_raw_archive=delete_raw_archive,
+            delete_parsed_data=delete_parsed_data,
+            delete_generated_reports=delete_generated_reports,
+        )
+        return authorization_token, plan
+
+    @staticmethod
+    def _mesh_plan_task_params(
+        plan: Mapping[str, object],
+        authorization_token: str,
+    ) -> dict[str, object]:
+        return {
+            "mesh_write_plan": dict(plan),
+            "mesh_plan_digest": str(plan.get("plan_digest") or ""),
+            "mesh_canonical_site_id": str(plan.get("canonical_site_id") or ""),
+            "mesh_profile_id": str(plan.get("profile_id") or ""),
+            "mesh_source_id": str(plan.get("source_id") or ""),
+            "mesh_operation": str(plan.get("operation") or ""),
+            "mesh_authorization_token": str(authorization_token or ""),
+        }
 
     def _mesh_source_delete_resource_keys(
         self,

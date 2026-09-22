@@ -271,6 +271,7 @@ def test_mesh_source_delete_api_submits_confirmed_scope_to_application_service(
             "delete_parsed_data": True,
             "delete_generated_reports": True,
             "explicit_confirmation": True,
+            "production_authorization": "",
         }
     ]
 
