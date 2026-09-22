@@ -202,3 +202,11 @@ MESH catalog、Profile `mesh.sqlite` 与来源 detail SQLite 分别保存会话�
 - RSSI 拖动期间上下图只同步 preview 且不发查询，结束后只提交最后窗口；窗口请求并行、成组发布、Abort/乱序 last-wins，失败和 413 保留旧图与当前 viewport；
 - 大表导出取消、WPS/Excel 占用、临时文件清理和源证据回溯。
 - 来源级 parsed-only、raw+parsed、外部原文件保护、跨来源隔离、失败补偿、重复删除幂等、活动任务阻断及删除后重新导入。
+
+## 10. Production maintenance authority
+
+- RAW、PARSED/DERIVED、IDENTITY PROJECTION 与 REVISION/METADATA 是四个独立写层。rebuild 只读 RAW 并受控替换派生结果；identity remap 只改 identity projection 与对应 revision metadata，不得解析、恢复、改名或改写 RAW。
+- Production rebuild、identity remap 与 source delete 分别要求 `MESH_DERIVED_REBUILD_AUTHORIZED`、`MESH_IDENTITY_REMAP_AUTHORIZED`、`MESH_SOURCE_DELETE_AUTHORIZED`。通用 Production 布尔开关只表达 operator intent，不能替代 persisted SiteRegistry、allowlist、canonical path、source identity 或 plan authority。
+- CLI 与 HTTP/Job Center 计划必须绑定 canonical site/profile/source、operation、source/catalog revision、实际 RAW/parsed identity、parser 或 Identity revision、peer set（identity remap）及稳定 plan digest。worker 在 canonical site 级 MESH lock 内重新读取并验证；任何 drift、provider failure、越界路径或 reparse point 都拒绝并要求重新计划。
+- Production identity remap 固定一个已有 AP Identity revision，不调用 `ensure_index()`，不触发 AP Identity rebuild；投影与 detail/source metadata 失败时恢复维护前 SQLite snapshot。RSSI、Busy、链路行数、ACTIVE/STANDBY 与 switch facts 必须保持不变。
+- Production raw/archive source delete 在 durable recovery owner 完成前 fail closed；Production batch source delete 在逐来源 immutable plan 完成前 fail closed。单来源 parsed-only delete 仍需独立 delete capability、显式确认、引用/active-task 保护、plan revalidation 与同一 MESH lock。Development/isolated 行为保持原有能力。

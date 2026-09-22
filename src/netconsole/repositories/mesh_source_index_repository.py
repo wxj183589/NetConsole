@@ -41,10 +41,12 @@ _SOURCE_COLUMNS = {
 class MeshSourceIndexRepository:
     """只维护 MESH 索引中的来源元数据，不迁移旧派生业务表。"""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, migrate_schema: bool = True) -> None:
         self.path = path
         if not path.is_file():
             raise ValueError("MESH 来源索引不存在")
+        if not migrate_schema:
+            return
         with self._connect() as connection:
             initialize_sqlite_wal(connection)
             # Serialize schema compatibility checks across worker processes.
@@ -289,6 +291,9 @@ class MeshSourceIndexRepository:
                     "archive_sha256",
                     "bundle_member_id",
                     "bundle_member_sha256",
+                    "identity_index_revision",
+                    "identity_mapped_at",
+                    "identity_mapping_status",
                 )
                 if field in columns
             )

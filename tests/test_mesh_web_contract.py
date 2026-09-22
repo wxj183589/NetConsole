@@ -40,6 +40,11 @@ from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.mesh_analysis_params_service import save_site_mesh_analysis_params
 
 from netconsole.services.rail_transit.mesh_ap_location_service import MeshApLocationSnapshot
+from netconsole.services.mesh_write_authority import (
+    MeshProductionAuthorizationError,
+    MeshProductionSiteScope,
+)
+import netconsole.application.rail_transit.web_application_service as web_application_module
 
 def _service(paths: PathResolver, mesh_query=None):
     paths.ensure_site_dirs("demo")
@@ -192,6 +197,12 @@ def test_mesh_rebuild_reuses_job_center_and_requires_confirmation(tmp_path: Path
     assert normal.jobs[started.task_id].task_type == "mesh_source_rebuild"
     assert normal.jobs[started.task_id].params["session_id"] == session_id
     assert normal.jobs[started.task_id].params["explicit_confirmation"] is True
+    rebuild_job = normal.jobs[started.task_id]
+    rebuild_plan = rebuild_job.params["mesh_write_plan"]
+    assert rebuild_plan["operation"] == "mesh_derived_rebuild"
+    assert rebuild_plan["force_reparse"] is True
+    assert rebuild_job.params["mesh_plan_digest"] == rebuild_plan["plan_digest"]
+    assert rebuild_job.params["mesh_canonical_site_id"] == "demo"
 
 
 def test_mesh_maintenance_is_explicit_and_keeps_identity_refresh_separate_from_reparse(
@@ -229,8 +240,112 @@ def test_mesh_maintenance_is_explicit_and_keeps_identity_refresh_separate_from_r
     assert identity_job.task_type == parser_job.task_type == "mesh_analysis_maintenance"
     assert identity_job.params["maintenance_kind"] == "identity_projection_refresh"
     assert identity_job.params["force_reparse"] is False
+    assert identity_job.params["mesh_write_plan"]["operation"] == "mesh_identity_remap"
+    assert identity_job.params["mesh_write_plan"]["force_reparse"] is False
     assert parser_job.params["maintenance_kind"] == "parser_rebuild"
     assert parser_job.params["force_reparse"] is True
+    assert parser_job.params["mesh_write_plan"]["operation"] == "mesh_derived_rebuild"
+    assert parser_job.params["mesh_write_plan"]["force_reparse"] is True
+
+
+def test_mesh_source_delete_binds_source_plan_and_preserves_parsed_only_scope(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    service, normal, _export, _tasks = _service(paths, mesh_query=mesh_query)
+
+    started = service.start_mesh_source_delete(
+        "demo",
+        session_id,
+        delete_raw_archive=False,
+        delete_parsed_data=True,
+        delete_generated_reports=True,
+        explicit_confirmation=True,
+    )
+
+    job = normal.jobs[started.task_id]
+    plan = job.params["mesh_write_plan"]
+    assert plan["operation"] == "mesh_source_delete"
+    assert plan["delete_raw_archive"] is False
+    assert plan["delete_parsed_data"] is True
+    assert plan["explicit_confirmation"] is True
+    assert job.params["mesh_authorization_token"] == ""
+
+
+def test_production_raw_delete_fails_closed_before_task_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    service, normal, _export, _tasks = _service(paths, mesh_query=mesh_query)
+    scope = MeshProductionSiteScope(
+        canonical_site_id="sxl1",
+        directory_name="demo",
+        site_root=paths.site_dir("demo"),
+        is_production=True,
+    )
+    monkeypatch.setattr(web_application_module, "resolve_mesh_production_scope", lambda *_args, **_kwargs: scope)
+
+    with pytest.raises(RailTransitWebError) as error:
+        service.start_mesh_source_delete(
+            "sxl1",
+            session_id,
+            delete_raw_archive=True,
+            delete_parsed_data=True,
+            delete_generated_reports=True,
+            explicit_confirmation=True,
+        )
+
+    assert error.value.code == "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED"
+    assert normal.jobs == {}
+
+
+def test_production_parsed_delete_does_not_mint_its_own_operation_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    mesh_query = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    service, normal, _export, _tasks = _service(paths, mesh_query=mesh_query)
+    scope = MeshProductionSiteScope(
+        canonical_site_id="sxl1",
+        directory_name="demo",
+        site_root=paths.site_dir("demo"),
+        is_production=True,
+    )
+    observed: list[str] = []
+
+    monkeypatch.setattr(
+        web_application_module,
+        "resolve_mesh_production_scope",
+        lambda *_args, **_kwargs: scope,
+    )
+
+    def reject_missing_token(*_args, **kwargs):
+        observed.append(str(kwargs.get("authorization_token") or ""))
+        raise MeshProductionAuthorizationError("MESH_SOURCE_DELETE_AUTHORIZED")
+
+    monkeypatch.setattr(
+        web_application_module,
+        "require_mesh_write_authority",
+        reject_missing_token,
+    )
+
+    with pytest.raises(RailTransitWebError) as error:
+        service.start_mesh_source_delete(
+            "sxl1",
+            session_id,
+            delete_raw_archive=False,
+            delete_parsed_data=True,
+            delete_generated_reports=True,
+            explicit_confirmation=True,
+        )
+
+    assert error.value.code == "MESH_PRODUCTION_AUTHORITY_REQUIRED"
+    assert observed == [""]
+    assert normal.jobs == {}
 
 
 def test_mesh_upload_staging_accepts_gzip_logs_and_preserves_parser_suffix(

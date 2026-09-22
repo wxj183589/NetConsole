@@ -1046,7 +1046,7 @@
       "schema_version": "mesh catalog",
       "allowed_data_classes": ["OPERATIONAL_CURRENT"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "BACKUP_ROLLBACK"],
-      "source_locations": ["src/netconsole/repositories/mesh_catalog_repository.py", "src/netconsole/repositories/mesh_catalog_schema.py", "src/netconsole/repositories/mesh_source_index_repository.py", "src/netconsole/services/mesh_catalog_index_service.py"]
+      "source_locations": ["src/netconsole/repositories/mesh_catalog_repository.py", "src/netconsole/repositories/mesh_catalog_schema.py", "src/netconsole/repositories/mesh_source_index_repository.py", "src/netconsole/services/mesh_catalog_index_service.py", "scripts/maintenance/rebuild_mesh_parsed_data.py"]
     },
     {
       "id": "site.mesh.aggregate",
@@ -1149,7 +1149,7 @@
           "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_peer_mapping_service.py", "src/netconsole/services/mesh_source_rebuild_service.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_source_rebuild_service.py", "src/netconsole/services/mesh_source_delete_service.py"]
+      "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_source_rebuild_service.py", "src/netconsole/services/mesh_source_delete_service.py", "scripts/maintenance/rebuild_mesh_parsed_data.py"]
     },
     {
       "id": "site.mesh.raw",
