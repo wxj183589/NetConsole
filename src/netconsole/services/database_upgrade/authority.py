@@ -20,7 +20,10 @@ from netconsole.core.runtime_environment import (
     require_data_root_write_allowed,
 )
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
-from netconsole.services.database_upgrade.sqlite_consistency import validate_sqlite
+from netconsole.services.database_upgrade.sqlite_consistency import (
+    sqlite_logical_identity,
+    validate_sqlite,
+)
 from netconsole.services.mesh_derived_data_maintenance_service import (
     MeshDerivedDataMaintenanceService,
 )
@@ -33,7 +36,7 @@ DATABASE_BACKUP_RESTORE_AUTHORIZED = "DATABASE_BACKUP_RESTORE_AUTHORIZED"
 DATABASE_BACKUP_DELETE_AUTHORIZED = "DATABASE_BACKUP_DELETE_AUTHORIZED"
 LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED = "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED"
 
-AUTHORITY_SCHEMA_VERSION = 1
+AUTHORITY_SCHEMA_VERSION = 2
 READ_ONLY_VALIDATION = "READ_ONLY_VALIDATION"
 
 _OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
@@ -222,17 +225,27 @@ def _database_identity(path: Path, schema_version: str = "") -> dict[str, Any]:
         return {"exists": False, "size_bytes": 0, "sha256": "", "schema_version": schema_version}
     try:
         validation = validate_sqlite(resolved)
+        if not validation.get("valid"):
+            raise ValueError(str(validation.get("error") or "SQLite target is invalid"))
+        logical = sqlite_logical_identity(resolved)
     except Exception as exc:
         raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_UNREADABLE") from exc
     return {
         "exists": True,
-        "size_bytes": int(resolved.stat().st_size),
-        "sha256": _sha256(resolved),
+        "identity_format": str(logical.get("identity_format") or ""),
+        "size_bytes": int(logical.get("size_bytes") or 0),
+        "sha256": str(logical.get("sha256") or ""),
         "schema_version": str(validation.get("schema_version") or schema_version),
     }
 
 
-def _backup_binding(paths: PathResolver, site: _SiteBinding, backup_id: str) -> dict[str, Any]:
+def _backup_binding(
+    paths: PathResolver,
+    site: _SiteBinding,
+    backup_id: str,
+    *,
+    operation: str,
+) -> dict[str, Any]:
     backup_key = str(backup_id or "").strip()
     if not backup_key:
         raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_REQUIRED")
@@ -271,11 +284,22 @@ def _backup_binding(paths: PathResolver, site: _SiteBinding, backup_id: str) -> 
     backup_sha256 = _sha256(database_path) if backup_exists else ""
     declared_size = int(item.get("database_size") or 0)
     declared_sha256 = str(item.get("database_sha256") or "")
-    if backup_size != declared_size or backup_sha256 != declared_sha256:
+    declared_identity = {
+        "exists": bool(declared_size > 0 and declared_sha256),
+        "size_bytes": declared_size,
+        "sha256": declared_sha256,
+    }
+    observed_identity = {
+        "exists": backup_exists,
+        "size_bytes": backup_size,
+        "sha256": backup_sha256,
+    }
+    if operation != READ_ONLY_VALIDATION and observed_identity != declared_identity:
         raise DatabaseMaintenanceAuthorityError("BACKUP_CONTENT_STALE")
     manifest_sha256 = _sha256(manifest_path)
     body = {
         "backup_id": backup_key,
+        "operation": operation,
         "canonical_site_id": site.canonical_site_id,
         "site_directory_name": site.directory_name,
         "database_kind": "mesh_derived",
@@ -287,17 +311,15 @@ def _backup_binding(paths: PathResolver, site: _SiteBinding, backup_id: str) -> 
         "manifest_sha256": manifest_sha256,
         "database_sha256": str(item.get("database_sha256") or ""),
         "database_size": int(item.get("database_size") or 0),
-        "backup_identity": {
-            "exists": backup_exists,
-            "size_bytes": backup_size,
-            "sha256": backup_sha256,
-        },
+        "declared_identity": declared_identity,
+        "observed_identity": observed_identity,
         "old_schema_version": str(item.get("old_schema_version") or ""),
         "target_schema_version": str(item.get("target_schema_version") or ""),
         "result_status": str(item.get("result_status") or ""),
         "authority_status": str(item.get("authority_status") or ""),
-        "target_identity": _database_identity(target_path),
     }
+    if operation == "DATABASE_BACKUP_RESTORE":
+        body["target_identity"] = _database_identity(target_path)
     return {**body, "backup_digest": _digest(body)}
 
 
@@ -334,7 +356,10 @@ def build_database_task_authority(
         selected_backups = list(dict.fromkeys(str(value).strip() for value in backup_ids if str(value).strip()))
         if not selected_backups:
             raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_REQUIRED")
-        backups = [_backup_binding(paths, site, value) for value in selected_backups]
+        backups = [
+            _backup_binding(paths, site, value, operation=operation)
+            for value in selected_backups
+        ]
     body: dict[str, Any] = {
         "schema_version": AUTHORITY_SCHEMA_VERSION,
         "task_type": str(task_type),
@@ -363,6 +388,9 @@ def revalidate_database_task_authority(
     paths: PathResolver,
     task_type: str,
     params: Mapping[str, Any],
+    *,
+    profile_ids: Iterable[str] | None = None,
+    backup_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Re-resolve every target immediately before the worker calls a mutator."""
 
@@ -421,6 +449,15 @@ def revalidate_database_task_authority(
         }
         if not expected_profiles or expected_profiles != actual_profiles:
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        selected_profiles = (
+            {str(value).strip() for value in profile_ids if str(value).strip()}
+            if profile_ids is not None
+            else actual_profiles
+        )
+        if not selected_profiles or not selected_profiles.issubset(actual_profiles):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    else:
+        selected_profiles = set()
     if str(task_type) in _BACKUP_TASKS:
         expected_backups = {
             str(value).strip()
@@ -434,9 +471,18 @@ def revalidate_database_task_authority(
         }
         if not expected_backups or expected_backups != actual_backups:
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        selected_backups = (
+            {str(value).strip() for value in backup_ids if str(value).strip()}
+            if backup_ids is not None
+            else actual_backups
+        )
+        if not selected_backups or not selected_backups.issubset(actual_backups):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
     for expected in authority.get("scopes") or ():
         if not isinstance(expected, Mapping):
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        if str(task_type) in _PROFILE_TASKS and str(expected.get("profile_id") or "") not in selected_profiles:
+            continue
         actual = _profile_scope(paths, site, str(expected.get("profile_id") or ""))
         _compare(
             "DATABASE_TARGET_STALE",
@@ -459,7 +505,14 @@ def revalidate_database_task_authority(
     for expected in authority.get("backups") or ():
         if not isinstance(expected, Mapping):
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
-        actual = _backup_binding(paths, site, str(expected.get("backup_id") or ""))
+        if str(task_type) in _BACKUP_TASKS and str(expected.get("backup_id") or "") not in selected_backups:
+            continue
+        actual = _backup_binding(
+            paths,
+            site,
+            str(expected.get("backup_id") or ""),
+            operation=operation,
+        )
         _compare(
             "DATABASE_BACKUP_STALE",
             expected,
@@ -467,19 +520,31 @@ def revalidate_database_task_authority(
             (
                 "canonical_site_id",
                 "site_directory_name",
+                "backup_id",
+                "operation",
+                "database_kind",
+                "scope_type",
                 "scope_id",
+                "profile_id",
                 "backup_relative_path",
                 "target_database_relative_path",
                 "manifest_sha256",
                 "database_sha256",
                 "database_size",
-                "backup_identity",
-                "target_identity",
+                "declared_identity",
+                "observed_identity",
                 "result_status",
                 "authority_status",
                 "backup_digest",
             ),
         )
+        if operation == "DATABASE_BACKUP_RESTORE":
+            _compare(
+                "DATABASE_BACKUP_STALE",
+                expected,
+                actual,
+                ("target_identity",),
+            )
         if (
             str(task_type) in {"database_backup_delete", "database_backup_batch_delete"}
             and str(actual.get("result_status") or "").upper() not in {"VALID_BACKUP", "DUPLICATE_BACKUP"}

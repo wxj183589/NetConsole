@@ -21,8 +21,14 @@ DATABASE_UPGRADE_TASK_TYPES = frozenset(
 )
 DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES = frozenset({"database_backup_delete", "database_backup_batch_delete"})
 
-def _authorize(context: JobContext) -> None:
-    revalidate_database_task_authority(context.paths, context.task_type, context.params)
+def _authorize(context: JobContext, *, profile_ids=None, backup_ids=None) -> None:
+    revalidate_database_task_authority(
+        context.paths,
+        context.task_type,
+        context.params,
+        profile_ids=profile_ids,
+        backup_ids=backup_ids,
+    )
 
 
 def database_upgrade(context: JobContext) -> dict[str, object]:
@@ -40,6 +46,10 @@ def database_upgrade(context: JobContext) -> dict[str, object]:
         profile_ids=[profile_id],
         progress=context.progress,
         should_cancel=context.should_cancel,
+        before_mutation=lambda selected_profile_id: _authorize(
+            context,
+            profile_ids=[selected_profile_id],
+        ),
     )
 
 
@@ -56,6 +66,10 @@ def database_batch_upgrade(context: JobContext) -> dict[str, object]:
         task_id=context.job_id,
         progress=context.progress,
         should_cancel=context.should_cancel,
+        before_mutation=lambda selected_profile_id: _authorize(
+            context,
+            profile_ids=[selected_profile_id],
+        ),
     )
     context.progress("database_batch_upgrade", int(result["total"]), int(result["total"]), "批量数据库升级完成")
     return result
@@ -74,6 +88,10 @@ def database_batch_backup(context: JobContext) -> dict[str, object]:
         task_id=context.job_id,
         progress=context.progress,
         should_cancel=context.should_cancel,
+        before_mutation=lambda selected_profile_id: _authorize(
+            context,
+            profile_ids=[selected_profile_id],
+        ),
     )
     context.progress("database_batch_backup", int(result["total"]), int(result["total"]), "批量数据库备份完成")
     return result
@@ -85,6 +103,10 @@ def database_backup_validation(context: JobContext) -> dict[str, object]:
     result = DatabaseUpgradeManagementService(context.paths).validate_backup(
         str(context.params.get("backup_id") or ""),
         site_id=str(context.params.get("site_name") or ""),
+        before_mutation=lambda: _authorize(
+            context,
+            backup_ids=[str(context.params.get("backup_id") or "")],
+        ),
     )
     context.progress("database_backup_validation", 1, 1, "数据库备份验证完成")
     return result
@@ -107,6 +129,7 @@ def database_backup_restore(context: JobContext) -> dict[str, object]:
         site_id=str(context.params.get("site_name") or ""),
         progress=context.progress,
         should_cancel=context.should_cancel,
+        before_mutation=lambda: _authorize(context),
     )
     context.progress("database_backup_restore", 1, 1, "数据库备份恢复完成")
     return result
@@ -119,6 +142,10 @@ def database_backup_delete(context: JobContext) -> dict[str, object]:
         str(context.params.get("backup_id") or ""),
         confirmed=bool(context.params.get("confirmed")),
         site_id=str(context.params.get("site_name") or ""),
+        before_mutation=lambda selected_backup_id: _authorize(
+            context,
+            backup_ids=[selected_backup_id],
+        ),
     )
     context.progress("database_backup_delete", 1, 1, "数据库备份已删除")
     return result
@@ -133,6 +160,10 @@ def database_backup_batch_delete(context: JobContext) -> dict[str, object]:
         site_id=str(context.params.get("site_id") or context.params.get("site_name") or ""),
         task_id=context.job_id,
         progress=context.progress,
+        before_mutation=lambda selected_backup_id: _authorize(
+            context,
+            backup_ids=[selected_backup_id],
+        ),
     )
     context.structured_progress(
         "database_backup_batch_delete",

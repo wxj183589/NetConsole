@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import gc
+import json
 import os
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +114,63 @@ def sqlite_backup(source: Path, destination: Path) -> None:
         if source_connection is not None:
             source_connection.close()
         temporary.unlink(missing_ok=True)
+
+
+def sqlite_logical_identity(path: Path) -> dict[str, Any]:
+    """Return a stable identity for the logical SQLite contents.
+
+    The source is opened read-only and copied through SQLite's Backup API into
+    an isolated temporary file.  Hashing a canonical dump of that snapshot
+    deliberately avoids treating WAL/checkpoint layout as database content.
+    """
+
+    source = path.resolve()
+    if not source.is_file() or source.stat().st_size <= 0:
+        raise ValueError("源 SQLite 数据库不存在或为空")
+    with tempfile.TemporaryDirectory(prefix="netconsole-sqlite-identity-") as temporary_dir:
+        snapshot = Path(temporary_dir) / "snapshot.sqlite"
+        source_connection: sqlite3.Connection | None = None
+        target_connection: sqlite3.Connection | None = None
+        try:
+            source_uri = f"{source.as_uri()}?mode=ro"
+            source_connection = sqlite3.connect(source_uri, uri=True, timeout=30)
+            source_connection.execute("PRAGMA query_only = ON")
+            target_connection = sqlite3.connect(snapshot)
+            source_connection.backup(target_connection)
+            target_connection.commit()
+        finally:
+            if target_connection is not None:
+                target_connection.close()
+            if source_connection is not None:
+                source_connection.close()
+        validation = validate_sqlite(snapshot)
+        if not validation.get("valid"):
+            raise ValueError(str(validation.get("error") or "SQLite logical snapshot 校验失败"))
+        connection: sqlite3.Connection | None = None
+        try:
+            snapshot_uri = f"{snapshot.resolve().as_uri()}?mode=ro"
+            connection = sqlite3.connect(snapshot_uri, uri=True, timeout=30)
+            connection.execute("PRAGMA query_only = ON")
+            metadata = {
+                "application_id": int(connection.execute("PRAGMA application_id").fetchone()[0] or 0),
+                "encoding": str(connection.execute("PRAGMA encoding").fetchone()[0] or ""),
+                "user_version": int(connection.execute("PRAGMA user_version").fetchone()[0] or 0),
+            }
+            dump = "\n".join(connection.iterdump()) + "\n"
+        finally:
+            if connection is not None:
+                connection.close()
+    canonical = json.dumps(
+        {"metadata": metadata, "dump": dump},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "identity_format": "sqlite-logical-v1",
+        "size_bytes": len(canonical),
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+    }
 
 
 def validate_sqlite(path: Path) -> dict[str, Any]:
