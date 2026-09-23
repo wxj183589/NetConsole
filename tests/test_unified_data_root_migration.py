@@ -5,7 +5,18 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from scripts.maintenance.migrate_unified_data_root import ALLOWED_TARGET_ROOTS, migrate
+import pytest
+
+from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
+from scripts.maintenance.migrate_unified_data_root import UnifiedStorageMigrationError
+from scripts.maintenance.migrate_unified_data_root import (
+    ALLOWED_TARGET_ROOTS,
+    migrate,
+    recover_abandoned_staging,
+)
+from netconsole.services.storage_production_authority import DATA_ROOT_MIGRATION_AUTHORIZED
+from netconsole.services.storage_production_authority import resolve_storage_root_authority
 
 
 def _database(path: Path, value: str) -> None:
@@ -72,3 +83,103 @@ def test_unified_migration_preserves_conflicts_and_never_changes_sources(tmp_pat
     assert json.loads((target / "runtime" / "electron" / "user-data" / "bootstrap.json").read_text(encoding="utf-8"))["data_root"] == str(target.resolve())
     assert not any((target / "staging").iterdir())
     assert {item.name for item in target.iterdir()} == ALLOWED_TARGET_ROOTS
+
+
+def test_production_unified_migration_requires_authority_before_target_creation(tmp_path: Path) -> None:
+    primary = tmp_path / "relocated-production"
+    (primary / "data" / "sites" / "line-1").mkdir(parents=True)
+    (primary / "sites" / "line-1").mkdir(parents=True)
+    write_data_environment(
+        primary,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    (primary / "config").mkdir(parents=True, exist_ok=True)
+    (primary / "config" / "site_registry.json").write_text(
+        json.dumps({"sites": [{"site_id": "line-1", "relative_path": "sites/line-1"}]}),
+        encoding="utf-8",
+    )
+    (primary / "config" / "storage-manifest.json").write_text(
+        json.dumps({"data_root": str(primary.resolve()), "installation_id": "test"}),
+        encoding="utf-8",
+    )
+    target = tmp_path / "new-unified-root"
+
+    with pytest.raises(UnifiedStorageMigrationError, match="PRODUCTION_OPERATOR_INTENT_REQUIRED"):
+        migrate(target, primary, [])
+    assert not target.exists()
+
+    report = migrate(
+        target,
+        primary,
+        [],
+        allow_production_write=True,
+        authorization_token=DATA_ROOT_MIGRATION_AUTHORIZED,
+    )
+    assert report.status == "completed"
+    assert report.root_authority["environment"] == "production"
+
+
+def test_recovery_uses_verified_source_authority_for_unmarked_target(tmp_path: Path) -> None:
+    source = tmp_path / "relocated-production"
+    (source / "sites" / "line-1").mkdir(parents=True)
+    write_data_environment(
+        source,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    (source / "config").mkdir(parents=True, exist_ok=True)
+    (source / "config" / "site_registry.json").write_text(
+        json.dumps({"sites": [{"site_id": "line-1", "relative_path": "sites/line-1"}]}),
+        encoding="utf-8",
+    )
+    (source / "config" / "storage-manifest.json").write_text(
+        json.dumps({"data_root": str(source.resolve()), "installation_id": "install-1"}),
+        encoding="utf-8",
+    )
+    authority = resolve_storage_root_authority(source)
+    target = tmp_path / "new-root-without-marker"
+    staging = target / "staging" / "migration-1"
+    staging.mkdir(parents=True)
+    (staging / "manifest.json").write_text(
+        json.dumps(
+            {
+                "migration_id": "migration-1",
+                "operation": "DATA_ROOT_MIGRATION",
+                "root_authority": authority.to_dict(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    (staging / "source.json").write_text(
+        json.dumps({"primary": str(source.resolve())}), encoding="utf-8"
+    )
+    (staging / "target.json").write_text(
+        json.dumps({"data_root": str(target.resolve())}), encoding="utf-8"
+    )
+    (staging / "status.json").write_text(json.dumps({"status": "copying"}), encoding="utf-8")
+    (staging / "operation.lock").write_text(json.dumps({"pid": 0}), encoding="utf-8")
+    (staging / "payload.bin").write_bytes(b"staged")
+
+    record = recover_abandoned_staging(
+        target,
+        "migration-1",
+        allow_production_write=True,
+        authorization_token=DATA_ROOT_MIGRATION_AUTHORIZED,
+    )
+
+    assert record["operation_id"] == "migration-1"
+    assert not staging.exists()
+    assert (target / "migrations" / "staging-recovery" / "migration-1.json").is_file()
+
+
+def test_recovery_unknown_staging_is_protected_before_removal(tmp_path: Path) -> None:
+    target = tmp_path / "unknown-root"
+    staging = target / "staging" / "unknown"
+    staging.mkdir(parents=True)
+    (staging / "manifest.json").write_text(
+        json.dumps({"migration_id": "unknown", "operation": "DATA_ROOT_MIGRATION"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(UnifiedStorageMigrationError, match="staging target identity mismatch"):
+        recover_abandoned_staging(target, "unknown")
+    assert staging.exists()

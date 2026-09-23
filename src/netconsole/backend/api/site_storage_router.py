@@ -44,6 +44,8 @@ from netconsole.services.site_storage import (
     SiteStorageError,
 )
 from netconsole.services.site_ssh_relay import SiteSSHRelayError, SiteSSHRelayService
+from netconsole.services.site_operation_authority import require_site_operation
+from netconsole.services.storage_production_authority import StorageAuthorityError
 
 
 router = APIRouter(prefix="/v1", tags=["site-and-storage"])
@@ -95,6 +97,18 @@ def _ssh_relay(request: Request) -> SiteSSHRelayService:
     return request.app.state.site_ssh_relay_service
 
 
+def _require_site_operation(
+    request: Request, operation: str, authorization_token: str = ""
+) -> None:
+    try:
+        require_site_operation(request.app.state.paths.data_root, operation, authorization_token)
+    except StorageAuthorityError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": str(exc), "message": "当前数据根需要该操作的显式授权"},
+        ) from exc
+
+
 @router.get(
     "/sites",
     summary="列出全部局点",
@@ -113,12 +127,14 @@ def list_sites(request: Request) -> list[dict[str, object]]:
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def create_site(request: Request, payload: SiteCreateRequest) -> dict[str, object]:
+    _require_site_operation(request, "SITE_CREATE", payload.authorization_token)
     return _call(
         lambda: _sites(request).create_site(
             payload.site_id,
             payload.display_name,
             remark=payload.remark,
             activate=payload.activate,
+            authorization_token=payload.authorization_token,
         )
     )
 
@@ -223,12 +239,14 @@ def task_result_storage_status(
 def update_site(
     request: Request, site_id: str, payload: SiteUpdateRequest
 ) -> dict[str, object]:
+    _require_site_operation(request, "SITE_UPDATE", payload.authorization_token)
     return _call(
         lambda: _sites(request).update_site_info(
             site_id,
             display_name=payload.display_name,
             line_name=payload.line_name,
             project_type=payload.project_type,
+            authorization_token=payload.authorization_token,
         )
     )
 
@@ -243,9 +261,12 @@ def update_site(
 def trash_site(
     request: Request, site_id: str, payload: SiteTrashRequest
 ) -> SiteTrashResponse:
+    _require_site_operation(request, "SITE_TRASH", payload.authorization_token)
     result = _call(
         lambda: _cleanup(request).trash_site(
-            site_id, confirm_display_name=payload.confirm_display_name
+            site_id,
+            confirm_display_name=payload.confirm_display_name,
+            authorization_token=payload.authorization_token,
         )
     )
     return SiteTrashResponse.model_validate(result)
@@ -345,6 +366,7 @@ def apply_site_retention(
                 "message": "执行数据清理前必须明确确认",
             },
         )
+    _require_site_operation(request, "SITE_RETENTION_APPLY", payload.authorization_token)
     _call(lambda: _sites(request).get_site(site_id))
     _call(lambda: _retention(request).validate_scan(site_id, payload.scan_token))
     _call(lambda: _sites(request).ensure_no_active_tasks(site_id))
@@ -355,6 +377,7 @@ def apply_site_retention(
             "site_id": site_id,
             "scan_token": payload.scan_token,
             "candidate_ids": payload.candidate_ids,
+            "authorization_token": payload.authorization_token,
         },
     )
 
@@ -396,6 +419,7 @@ def apply_site_cleanup(
                 "message": "清理前必须明确确认",
             },
         )
+    _require_site_operation(request, "SITE_CLEANUP_APPLY", payload.authorization_token)
     plan = _call(lambda: _cleanup(request).load_plan(payload.cleanup_token))
     if plan.get("site_id") != site_id:
         raise HTTPException(
@@ -409,7 +433,11 @@ def apply_site_cleanup(
     return _submit(
         request,
         "site_cleanup_apply",
-        {"site_id": site_id, "cleanup_token": payload.cleanup_token},
+        {
+            "site_id": site_id,
+            "cleanup_token": payload.cleanup_token,
+            "authorization_token": payload.authorization_token,
+        },
     )
 
 
@@ -432,6 +460,7 @@ def restore_site_cleanup(
                 "message": "恢复前必须明确确认",
             },
         )
+    _require_site_operation(request, "SITE_CLEANUP_RESTORE", payload.authorization_token)
     plan = _call(lambda: _cleanup(request).load_plan(cleanup_token))
     if str(plan.get("status") or "") != "applied":
         raise HTTPException(
@@ -445,7 +474,11 @@ def restore_site_cleanup(
     return _submit(
         request,
         "site_cleanup_restore",
-        {"site_id": str(plan.get("site_id") or ""), "cleanup_token": cleanup_token},
+        {
+            "site_id": str(plan.get("site_id") or ""),
+            "cleanup_token": cleanup_token,
+            "authorization_token": payload.authorization_token,
+        },
     )
 
 
@@ -466,6 +499,7 @@ def rebuild_demo(request: Request, payload: SiteDemoRebuildRequest) -> SiteTaskR
                 "message": "重建前必须明确确认",
             },
         )
+    _require_site_operation(request, "SITE_CLEANUP_APPLY", payload.authorization_token)
     if payload.allow_user_data:
         raise HTTPException(
             status_code=409,
@@ -490,7 +524,13 @@ def rebuild_demo(request: Request, payload: SiteDemoRebuildRequest) -> SiteTaskR
         )
     _call(_sites(request).ensure_no_active_tasks_anywhere)
     return _submit(
-        request, "site_demo_rebuild", {"site_id": "demo", "allow_user_data": False}
+        request,
+        "site_demo_rebuild",
+        {
+            "site_id": "demo",
+            "allow_user_data": False,
+            "authorization_token": payload.authorization_token,
+        },
     )
 
 
@@ -518,7 +558,12 @@ def activate_site(
             status_code=422,
             detail={"code": "SITE_SWITCH_BLOCKED", "message": "切换局点前必须确认"},
         )
-    return _call(lambda: _sites(request).switch_site(site_id))
+    _require_site_operation(request, "SITE_ACTIVATE", payload.authorization_token)
+    return _call(
+        lambda: _sites(request).switch_site(
+            site_id, authorization_token=payload.authorization_token
+        )
+    )
 
 
 @router.post(
@@ -532,12 +577,17 @@ def activate_site(
 def migrate_site(
     request: Request, site_id: str, payload: DataRootPathRequest
 ) -> SiteTaskResponse:
+    _require_site_operation(request, "SITE_MIGRATE", payload.authorization_token)
     _call(lambda: _sites(request).get_site(site_id))
     _call(lambda: _sites(request).ensure_no_active_tasks(site_id))
     return _submit(
         request,
         "site_migration",
-        {"site_id": site_id, "destination_root": payload.path},
+        {
+            "site_id": site_id,
+            "destination_root": payload.path,
+            "authorization_token": payload.authorization_token,
+        },
     )
 
 
@@ -591,6 +641,7 @@ def inspect_site_package(
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def import_site(request: Request, payload: SiteImportRequest) -> SiteTaskResponse:
+    _require_site_operation(request, "SITE_IMPORT", payload.authorization_token)
     _call(
         lambda: _packages(request).inspect_package(
             Path(payload.package_path),
@@ -648,10 +699,16 @@ def plan_data_root_migration(
 def migrate_data_root(
     request: Request, payload: DataRootPathRequest
 ) -> SiteTaskResponse:
+    _require_site_operation(request, "DATA_ROOT_HTTP_MIGRATION", payload.authorization_token)
     _call(lambda: _storage(request).validate(Path(payload.path)))
     _call(_sites(request).ensure_no_active_tasks_anywhere)
     return _submit(
-        request, "site_data_root_migration", {"destination_root": payload.path}
+        request,
+        "site_data_root_migration",
+        {
+            "destination_root": payload.path,
+            "authorization_token": payload.authorization_token,
+        },
     )
 
 

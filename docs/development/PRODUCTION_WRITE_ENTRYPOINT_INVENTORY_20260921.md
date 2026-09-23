@@ -361,3 +361,34 @@ resolution notes together with this MESH resolution gives the current count:
 This count does not resume Phase B. Storage migration/retirement, remaining
 HTTP database/AC/base-data rollback authority, startup recovery and automatic
 retention remain separate follow-ups.
+
+## Current resolution note — P7.3-E storage retirement and site lifecycle authority
+
+The historical matrix above remains the 2026-09-21 audit snapshot. The
+P7.3-E implementation adds a shared root authority that binds relocated roots
+to the explicit runtime environment, storage manifest, installation identity,
+site registry hash, canonical site inventory, and operation-specific tokens.
+The three maintenance CLIs now fail closed before staging or destination
+mutation, require explicit absolute targets for whole-root migration, reject
+overlap/reparse/active-root targets, bind plans to inventory/authority digests,
+and validate abandoned staging identity before recovery. Legacy runtime
+migration retains no-overwrite behavior and requires its own capability when a
+marked Production destination is selected.
+
+The HTTP Site Retention/Lifecycle/Import-Migrate paths now require distinct
+operation tokens at the authenticated route and again in the Task Center
+worker/service boundary. Existing scan/inspect operations remain read-only;
+apply/trash/restore/rebuild/import/migrate paths retain confirmation,
+scan/package evidence, active-task checks, staging/trash/backup behavior, and
+fail closed when the Production manifest or registry cannot be proven.
+
+No real Production, development-real, device, cloud, GUI, or installation
+acceptance was performed. Tests use isolated temporary roots only.
+
+- `P7_3_E=MERGED_VALIDATED`
+- `WRITE_ENTRYPOINT_COUNT=26`
+- `SAFE_AFTER=16`
+- `PARTIAL_AFTER=7`
+- `UNGUARDED_AFTER=3`
+- `UNKNOWN_AFTER=0`
+- `NEXT=P7_3_F_HTTP_DB_AC_BASEDATA_ROLLBACK_AUTHORITY`

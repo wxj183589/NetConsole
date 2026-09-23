@@ -12,16 +12,19 @@ class SiteCreateRequest(ApiModel):
     display_name: str = Field(min_length=1, max_length=128)
     remark: str = Field(default="", max_length=500)
     activate: bool = False
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteActivateRequest(ApiModel):
     confirmed: bool = True
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteUpdateRequest(ApiModel):
     display_name: str = Field(min_length=1, max_length=64)
     line_name: str | None = Field(default=None, max_length=128)
     project_type: str | None = Field(default=None, max_length=128)
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteSSHRelayUpdateRequest(ApiModel):
@@ -51,6 +54,7 @@ class SiteSSHRelayResponse(ApiModel):
 
 class SiteTrashRequest(ApiModel):
     confirm_display_name: str = Field(min_length=1, max_length=128)
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteTrashResponse(ApiModel):
@@ -91,10 +95,12 @@ class SiteImportRequest(ApiModel):
     conflict_resolutions: list[SiteConflictResolution] = Field(
         default_factory=list, max_length=2_000
     )
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class DataRootPathRequest(ApiModel):
     path: str = Field(min_length=1, max_length=32_767)
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteTaskResponse(ApiModel):
@@ -105,15 +111,18 @@ class SiteTaskResponse(ApiModel):
 class SiteCleanupApplyRequest(ApiModel):
     cleanup_token: str = Field(min_length=16, max_length=128)
     confirmed: bool = False
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteCleanupRestoreRequest(ApiModel):
     confirmed: bool = False
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteDemoRebuildRequest(ApiModel):
     confirmed: bool = False
     allow_user_data: bool = False
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteAuditSummaryResponse(ApiModel):
@@ -162,6 +171,7 @@ class SiteRetentionExecuteRequest(ApiModel):
     scan_token: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
     candidate_ids: list[str] = Field(min_length=1, max_length=500)
     confirmed: bool = False
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteRetentionCandidateResponse(ApiModel):

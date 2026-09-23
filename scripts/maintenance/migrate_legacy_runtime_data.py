@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Iterable
 
 from netconsole.core.runtime_environment import data_root as default_data_root
+from netconsole.services.storage_production_authority import (
+    StorageAuthorityError,
+    require_storage_operation,
+    resolve_storage_root_authority,
+)
 
 
 SQLITE_HEADER = b"SQLite format 3\x00"
@@ -114,11 +119,33 @@ def apply_plan(
     entries: Iterable[MigrationEntry],
     *,
     skip_conflicts: bool = False,
+    allow_production_write: bool = False,
+    authorization_token: str = "",
+    expected_plan_digest: str | None = None,
 ) -> list[MigrationEntry]:
     repo = repo_root.resolve()
     destination = destination_root.resolve()
     _require_outside(destination, repo, "destination")
     plan = list(entries)
+    try:
+        if destination.exists() and _is_reparse_point(destination):
+            raise StorageAuthorityError("TARGET_REPARSE_OR_JUNCTION")
+        if destination.exists():
+            marked = (destination / "runtime_mode.json").is_file() or (
+                destination / "config" / "storage-manifest.json"
+            ).is_file()
+            if marked or str(os.environ.get("NETCONSOLE_RUNTIME_MODE") or "").casefold() != "test":
+                authority = resolve_storage_root_authority(destination)
+                require_storage_operation(
+                    authority,
+                    "LEGACY_RUNTIME_MIGRATION",
+                    allow_production_write=allow_production_write,
+                    authorization_token=authorization_token,
+                )
+    except StorageAuthorityError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if expected_plan_digest is not None and expected_plan_digest != plan_digest(repo, destination, plan):
+        raise RuntimeError("LEGACY_RUNTIME_PLAN_DIGEST_MISMATCH")
     blocking_actions = {"unsafe"} if skip_conflicts else {"conflict", "unsafe"}
     blocking = [entry for entry in plan if entry.action in blocking_actions]
     if blocking:
@@ -162,11 +189,20 @@ def apply_plan(
     return applied
 
 
-def manifest(entries: Iterable[MigrationEntry], *, applied: bool, destination_root: Path) -> dict[str, object]:
+def manifest(
+    entries: Iterable[MigrationEntry],
+    *,
+    applied: bool,
+    destination_root: Path,
+    repo_root: Path | None = None,
+) -> dict[str, object]:
     items = list(entries)
     counts = Counter(item.action for item in items)
+    plan_digest_value = plan_digest(repo_root, destination_root, items) if repo_root is not None else ""
     return {
         "schema_version": 1,
+        "operation": "LEGACY_RUNTIME_MIGRATION",
+        "plan_digest": plan_digest_value,
         "mode": "applied" if applied else "dry-run",
         "destination": str(destination_root.resolve()),
         "summary": {
@@ -176,6 +212,18 @@ def manifest(entries: Iterable[MigrationEntry], *, applied: bool, destination_ro
         },
         "entries": [asdict(item) for item in items],
     }
+
+
+def plan_digest(repo_root: Path, destination_root: Path, entries: Iterable[MigrationEntry]) -> str:
+    payload = {
+        "operation": "LEGACY_RUNTIME_MIGRATION",
+        "repo_root": str(repo_root.resolve()),
+        "destination_root": str(destination_root.resolve()),
+        "entries": [asdict(item) for item in entries],
+    }
+    return hashlib.sha256(
+        (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
 
 
 def _walk_files(root: Path) -> Iterable[Path]:
@@ -309,15 +357,31 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--apply", action="store_true", help="执行无覆盖复制；默认仅生成计划")
     parser.add_argument("--skip-conflicts", action="store_true", help="保留并跳过冲突目标，不覆盖任何文件")
+    parser.add_argument("--allow-production-write", action="store_true")
+    parser.add_argument("--authorization-token", default="")
     args = parser.parse_args()
     destination = (args.destination or default_data_root()).resolve()
     planned = build_plan(args.repo_root, destination)
     blocking = [entry for entry in planned if entry.action in {"conflict", "unsafe"}]
     if args.apply and (not blocking or (args.skip_conflicts and all(entry.action != "unsafe" for entry in blocking))):
-        result = apply_plan(args.repo_root, destination, planned, skip_conflicts=args.skip_conflicts)
-        _write_manifest(manifest(result, applied=True, destination_root=destination), args.manifest)
+        result = apply_plan(
+            args.repo_root,
+            destination,
+            planned,
+            skip_conflicts=args.skip_conflicts,
+            allow_production_write=args.allow_production_write,
+            authorization_token=args.authorization_token,
+            expected_plan_digest=plan_digest(args.repo_root, destination, planned),
+        )
+        _write_manifest(
+            manifest(result, applied=True, destination_root=destination, repo_root=args.repo_root),
+            args.manifest,
+        )
         return 0
-    _write_manifest(manifest(planned, applied=False, destination_root=destination), args.manifest)
+    _write_manifest(
+        manifest(planned, applied=False, destination_root=destination, repo_root=args.repo_root),
+        args.manifest,
+    )
     return 2 if blocking else 0
 
 

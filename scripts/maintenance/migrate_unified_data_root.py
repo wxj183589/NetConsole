@@ -16,6 +16,12 @@ from typing import Iterable, Sequence
 
 from netconsole.core.storage_manifest import CURRENT_STORAGE_SCHEMA_VERSION
 from netconsole.core.version import APP_VERSION
+from netconsole.services.storage_production_authority import (
+    StorageAuthorityError,
+    assert_safe_external_target,
+    require_storage_operation,
+    resolve_storage_root_authority,
+)
 
 
 ALLOWED_TARGET_ROOTS = frozenset({"config", "sites", "runtime", "agents", "migrations", "staging"})
@@ -62,6 +68,7 @@ class SourceSummary:
     bytes: int
     databases: int
     latest_modified_at: str
+    inventory_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,6 +100,9 @@ class MigrationReport:
     sources: list[SourceSummary] = field(default_factory=list)
     files: list[FileDecision] = field(default_factory=list)
     databases: list[DatabaseCheck] = field(default_factory=list)
+    operation: str = "DATA_ROOT_MIGRATION"
+    root_authority: dict[str, object] = field(default_factory=dict)
+    plan_digest: str = ""
 
     def summary(self) -> dict[str, object]:
         actions: dict[str, int] = {}
@@ -109,6 +119,9 @@ class MigrationReport:
             "completed_at": self.completed_at,
             "source_count": len(self.sources),
             "database_count": len(self.databases),
+            "operation": self.operation,
+            "root_authority": self.root_authority,
+            "plan_digest": self.plan_digest,
             "actions": actions,
             "bytes_by_action": bytes_by_action,
         }
@@ -116,12 +129,14 @@ class MigrationReport:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="审计并迁移 NetConsole 历史数据根")
-    parser.add_argument("--target", type=Path, default=Path(r"D:\NetConsoleData"))
+    parser.add_argument("--target", type=Path, default=None)
     parser.add_argument("--primary", type=Path)
     parser.add_argument("--source", type=Path, action="append", default=[])
     parser.add_argument("--desktop-bootstrap", type=Path)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--recover-abandoned-staging")
+    parser.add_argument("--allow-production-write", action="store_true")
+    parser.add_argument("--authorization-token", default="")
     parser.add_argument("--output", type=Path)
     return parser.parse_args(argv)
 
@@ -132,7 +147,7 @@ def audit_sources(primary: Path, sources: Iterable[Path]) -> list[SourceSummary]
         source_id = "primary" if index == 0 else f"source-{index}"
         root = Path(source).expanduser().resolve()
         if not root.is_dir():
-            values.append(SourceSummary(source_id, str(root), False, 0, 0, 0, ""))
+            values.append(SourceSummary(source_id, str(root), False, 0, 0, 0, "", ""))
             continue
         files = list(_iter_files(root))
         latest = max((item.stat().st_mtime for item in files), default=0.0)
@@ -149,6 +164,7 @@ def audit_sources(primary: Path, sources: Iterable[Path]) -> list[SourceSummary]
                     if latest
                     else ""
                 ),
+                inventory_digest=_inventory_digest(root, files),
             )
         )
     return values
@@ -160,10 +176,30 @@ def migrate(
     sources: Iterable[Path],
     *,
     desktop_bootstrap: Path | None = None,
+    allow_production_write: bool = False,
+    authorization_token: str = "",
 ) -> MigrationReport:
     destination = Path(target).expanduser().resolve()
     primary_root = Path(primary).expanduser().resolve()
     secondary_roots = [Path(item).expanduser().resolve() for item in sources]
+    try:
+        authority = resolve_storage_root_authority(primary_root)
+        require_storage_operation(
+            authority,
+            "DATA_ROOT_MIGRATION",
+            allow_production_write=allow_production_write,
+            authorization_token=authorization_token,
+        )
+        assert_safe_external_target(primary_root, destination)
+        for source in secondary_roots:
+            if source.is_dir() and (
+                (source / "runtime_mode.json").is_file()
+                or (source / "config" / "storage-manifest.json").is_file()
+            ):
+                if resolve_storage_root_authority(source).is_production:
+                    raise StorageAuthorityError("SECONDARY_PRODUCTION_SOURCE_NOT_ALLOWED")
+    except StorageAuthorityError as exc:
+        raise UnifiedStorageMigrationError(str(exc)) from exc
     _validate_migration_roots(destination, primary_root, secondary_roots)
     root_lock = _MigrationRootLock(destination)
     root_lock.acquire()
@@ -177,6 +213,7 @@ def migrate(
         primary_source=str(primary_root),
         created_at=_now(),
         sources=audit_sources(primary_root, secondary_roots),
+        root_authority=authority.to_dict(),
     )
     known: dict[str, FileDecision] = {}
     try:
@@ -237,6 +274,7 @@ def migrate(
                 )
         _migrate_desktop_bootstrap(payload, destination, desktop_bootstrap)
         _normalize_target_configuration(payload)
+        report.plan_digest = _plan_digest(report)
         _write_storage_manifest(payload, migration_id, destination)
         _write_operation(staging, report, "verifying")
         report.databases = _verify_databases(payload)
@@ -264,7 +302,13 @@ def migrate(
         root_lock.release()
 
 
-def recover_abandoned_staging(target: Path, operation_id: str) -> dict[str, object]:
+def recover_abandoned_staging(
+    target: Path,
+    operation_id: str,
+    *,
+    allow_production_write: bool = False,
+    authorization_token: str = "",
+) -> dict[str, object]:
     destination = Path(target).expanduser().resolve()
     safe_id = str(operation_id or "").strip()
     if not safe_id or Path(safe_id).name != safe_id:
@@ -273,13 +317,44 @@ def recover_abandoned_staging(target: Path, operation_id: str) -> dict[str, obje
     staging_root = (destination / "staging").resolve()
     if staging == staging_root or not staging.is_relative_to(staging_root) or not staging.is_dir():
         raise UnifiedStorageMigrationError("staging 操作不存在")
+    manifest = _read_json(staging / "manifest.json")
+    if str(manifest.get("migration_id") or "") != safe_id:
+        raise UnifiedStorageMigrationError("staging manifest identity mismatch")
+    if str(manifest.get("operation") or "") != "DATA_ROOT_MIGRATION":
+        raise UnifiedStorageMigrationError("staging operation identity mismatch")
+    target_record = _read_json(staging / "target.json")
+    if Path(str(target_record.get("data_root") or "")).expanduser().resolve() != destination:
+        raise UnifiedStorageMigrationError("staging target identity mismatch")
+    source_record = _read_json(staging / "source.json")
+    root_snapshot = manifest.get("root_authority")
+    if not isinstance(root_snapshot, dict):
+        raise UnifiedStorageMigrationError("staging root authority missing")
+    source_root_value = str(root_snapshot.get("root") or "").strip()
+    if not source_root_value:
+        raise UnifiedStorageMigrationError("staging source authority missing")
+    try:
+        source_root = Path(source_root_value).expanduser().resolve(strict=True)
+        if Path(str(source_record.get("primary") or "")).expanduser().resolve() != source_root:
+            raise StorageAuthorityError("STAGING_SOURCE_IDENTITY_MISMATCH")
+        authority = resolve_storage_root_authority(source_root)
+        if authority.to_dict() != root_snapshot:
+            raise StorageAuthorityError("STAGING_ROOT_AUTHORITY_STALE")
+        # A new target intentionally has no runtime_mode.json yet.  Reuse the
+        # verified source authority for the root-level capability instead of
+        # treating the unmarked staging target as an independent environment.
+        require_storage_operation(
+            authority,
+            "DATA_ROOT_MIGRATION",
+            allow_production_write=allow_production_write,
+            authorization_token=authorization_token,
+        )
+    except StorageAuthorityError as exc:
+        raise UnifiedStorageMigrationError(str(exc)) from exc
     owner = _read_json(staging / "operation.lock")
     pid = int(str(owner.get("pid") or "0"))
     if pid > 0 and _pid_exists(pid):
         raise UnifiedStorageMigrationError("staging 操作仍在运行，禁止清理")
     migrations = destination / "migrations"
-    if not migrations.is_dir():
-        raise UnifiedStorageMigrationError("尚未完成有效迁移，必须保留中断 staging")
     files = list(_iter_files(staging))
     record = {
         "operation_id": safe_id,
@@ -315,6 +390,39 @@ def _iter_files(root: Path) -> Iterable[Path]:
             raise UnifiedStorageMigrationError(f"迁移来源包含符号链接或 junction：{path}")
         if path.is_file():
             yield path
+
+
+def _inventory_digest(root: Path, files: Iterable[Path] | None = None) -> str:
+    records: list[dict[str, object]] = []
+    for path in sorted(files or list(_iter_files(root)), key=lambda item: item.relative_to(root).as_posix().casefold()):
+        relative = path.relative_to(root)
+        stat = path.stat()
+        records.append(
+            {
+                "path": relative.as_posix(),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "sha256": _sha256(path),
+            }
+        )
+    return hashlib.sha256(
+        (json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
+
+
+def _plan_digest(report: MigrationReport) -> str:
+    payload = {
+        "operation": report.operation,
+        "migration_id": report.migration_id,
+        "target": report.target,
+        "primary_source": report.primary_source,
+        "sources": [asdict(item) for item in report.sources],
+        "files": [asdict(item) for item in report.files],
+        "root_authority": report.root_authority,
+    }
+    return hashlib.sha256(
+        (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    ).hexdigest()
 
 
 def _map_legacy_relative_path(relative: Path, source_id: str) -> Path | None:
@@ -489,7 +597,16 @@ def _write_operation(staging: Path, report: MigrationReport, status: str) -> Non
     staging.mkdir(parents=True, exist_ok=True)
     report.status = status
     common = {"schema_version": 1, "updated_at": _now()}
-    _atomic_json(staging / "manifest.json", {**common, "migration_id": report.migration_id})
+    _atomic_json(
+        staging / "manifest.json",
+        {
+            **common,
+            "migration_id": report.migration_id,
+            "operation": report.operation,
+            "plan_digest": report.plan_digest,
+            "root_authority": report.root_authority,
+        },
+    )
     _atomic_json(staging / "source.json", {**common, "primary": report.primary_source})
     _atomic_json(staging / "target.json", {**common, "data_root": report.target})
     _atomic_json(staging / "status.json", {**common, "status": status})
@@ -558,15 +675,31 @@ def _now() -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.target is None:
+        raise SystemExit("--target is required")
     if args.recover_abandoned_staging:
-        result = recover_abandoned_staging(args.target, args.recover_abandoned_staging)
+        result = recover_abandoned_staging(
+            args.target,
+            args.recover_abandoned_staging,
+            allow_production_write=args.allow_production_write,
+            authorization_token=args.authorization_token,
+        )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.primary is None:
         raise SystemExit("--primary is required unless --recover-abandoned-staging is used")
     summaries = audit_sources(args.primary, args.source)
     if not args.execute:
-        payload = {"target": str(args.target.expanduser().resolve()), "sources": [asdict(item) for item in summaries]}
+        try:
+            authority = resolve_storage_root_authority(args.primary)
+        except StorageAuthorityError as exc:
+            raise SystemExit(str(exc)) from exc
+        payload = {
+            "operation": "DATA_ROOT_MIGRATION",
+            "target": str(args.target.expanduser().resolve()),
+            "root_authority": authority.to_dict(),
+            "sources": [asdict(item) for item in summaries],
+        }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         if args.output:
             _atomic_json(args.output.expanduser().resolve(), payload)
@@ -576,6 +709,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.primary,
         args.source,
         desktop_bootstrap=args.desktop_bootstrap,
+        allow_production_write=args.allow_production_write,
+        authorization_token=args.authorization_token,
     )
     print(json.dumps(report.summary(), ensure_ascii=False, indent=2))
     if args.output:

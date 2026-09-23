@@ -34,6 +34,8 @@ from netconsole.services.site_storage import (
     SiteStorageError,
     storage_lock,
 )
+from netconsole.services.site_operation_authority import require_site_operation
+from netconsole.services.storage_production_authority import StorageAuthorityError
 
 
 BACKUP_ARCHIVE_DAYS = 30
@@ -194,9 +196,18 @@ class SiteRetentionService:
         scan_token: str,
         candidate_ids: list[str],
         current_job_id: str = "",
+        authorization_token: str = "",
         check_cancel: Callable[[], None] | None = None,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> dict[str, object]:
+        try:
+            require_site_operation(
+                self.paths.data_root, "SITE_RETENTION_APPLY", authorization_token
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         record = self.registry.get(site_id)
         root = record.root_path.resolve()
         self._assert_site_root(root)

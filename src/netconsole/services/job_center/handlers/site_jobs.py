@@ -9,6 +9,8 @@ from netconsole.services.site_lifecycle import (
     SiteCleanupApplicationService,
 )
 from netconsole.services.site_retention import SiteRetentionService
+from netconsole.services.site_operation_authority import require_site_operation
+from netconsole.services.storage_production_authority import StorageAuthorityError
 from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
@@ -42,6 +44,19 @@ SITE_STORAGE_NONCANCELLABLE_TASK_TYPES = frozenset(
 )
 
 
+def _require_operation(context: JobContext, operation: str) -> None:
+    try:
+        require_site_operation(
+            context.paths.data_root,
+            operation,
+            str(context.params.get("authorization_token") or ""),
+        )
+    except StorageAuthorityError as exc:
+        raise SiteStorageError(
+            "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+        ) from exc
+
+
 def site_audit(context: JobContext) -> dict[str, object]:
     result = SiteAuditService(context.paths).audit_all(
         site_id=str(context.params.get("site_id") or "") or None,
@@ -65,8 +80,10 @@ def site_audit(context: JobContext) -> dict[str, object]:
 
 def site_cleanup_apply(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _require_operation(context, "SITE_CLEANUP_APPLY")
     result = SiteCleanupApplicationService(context.paths).apply_cleanup(
-        str(context.params.get("cleanup_token") or "")
+        str(context.params.get("cleanup_token") or ""),
+        authorization_token=str(context.params.get("authorization_token") or ""),
     )
     context.progress("recycle", 1, 1, "局点已移入受控回收区")
     return result
@@ -74,8 +91,10 @@ def site_cleanup_apply(context: JobContext) -> dict[str, object]:
 
 def site_cleanup_restore(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _require_operation(context, "SITE_CLEANUP_RESTORE")
     result = SiteCleanupApplicationService(context.paths).restore_cleanup(
-        str(context.params.get("cleanup_token") or "")
+        str(context.params.get("cleanup_token") or ""),
+        authorization_token=str(context.params.get("authorization_token") or ""),
     )
     context.progress("restore", 1, 1, "局点已从回收区恢复")
     return result
@@ -92,6 +111,7 @@ def site_retention_scan(context: JobContext) -> dict[str, object]:
 
 
 def site_retention_apply(context: JobContext) -> dict[str, object]:
+    _require_operation(context, "SITE_RETENTION_APPLY")
     result = SiteRetentionService(context.paths).apply(
         str(context.params.get("site_id") or ""),
         scan_token=str(context.params.get("scan_token") or ""),
@@ -100,6 +120,7 @@ def site_retention_apply(context: JobContext) -> dict[str, object]:
             for value in context.params.get("candidate_ids", [])
             if str(value).strip()
         ],
+        authorization_token=str(context.params.get("authorization_token") or ""),
         current_job_id=context.job_id,
         check_cancel=context.check_cancelled,
         progress=lambda current, total, message: context.progress(
@@ -118,6 +139,7 @@ def site_retention_apply(context: JobContext) -> dict[str, object]:
 
 def site_demo_rebuild(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _require_operation(context, "SITE_CLEANUP_APPLY")
     result = DemoSiteSeedService(context.paths).seed(
         replace=True,
         allow_user_data=bool(context.params.get("allow_user_data")),
@@ -129,8 +151,10 @@ def site_demo_rebuild(context: JobContext) -> dict[str, object]:
 
 def site_data_root_migration(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _require_operation(context, "DATA_ROOT_HTTP_MIGRATION")
     result = DataRootApplicationService(context.paths).migrate(
         Path(str(context.params.get("destination_root") or "")),
+        authorization_token=str(context.params.get("authorization_token") or ""),
         check_cancel=context.check_cancelled,
     )
     context.progress("verify", 1, 1, "数据根迁移完成")
@@ -205,9 +229,11 @@ def site_export(context: JobContext) -> dict[str, object]:
 
 def site_migration(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _require_operation(context, "SITE_MIGRATE")
     result = SiteApplicationService(context.paths).migrate_site(
         str(context.params.get("site_id") or ""),
         Path(str(context.params.get("destination_root") or "")),
+        authorization_token=str(context.params.get("authorization_token") or ""),
         check_cancel=context.check_cancelled,
     )
     context.progress("verify", 1, 1, "局点迁移完成")
@@ -216,6 +242,7 @@ def site_migration(context: JobContext) -> dict[str, object]:
 
 def site_import(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _require_operation(context, "SITE_IMPORT")
     sites = SiteApplicationService(context.paths)
     result = SitePackageService(context.paths, sites).import_site(
         Path(str(context.params.get("package_path") or "")),
@@ -228,6 +255,7 @@ def site_import(context: JobContext) -> dict[str, object]:
             for item in context.params.get("conflict_resolutions", [])
             if isinstance(item, dict)
         ],
+        authorization_token=str(context.params.get("authorization_token") or ""),
     )
     context.progress("publish", 1, 1, "局点包导入完成")
     return result

@@ -39,6 +39,7 @@ describe('site storage retention API', () => {
           scan_token: 'a'.repeat(64),
           candidate_ids: ['candidate-1'],
           confirmed: true,
+          authorization_token: 'SITE_RETENTION_APPLY_AUTHORIZED',
         }),
       },
     )

@@ -16,6 +16,8 @@ from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.sites import DEFAULT_SITE, SiteManager
 from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository, SiteStorageError, storage_lock
+from netconsole.services.site_operation_authority import require_site_operation
+from netconsole.services.storage_production_authority import StorageAuthorityError
 
 
 AUDIT_SCHEMA_VERSION = 1
@@ -664,8 +666,18 @@ class SiteCleanupApplicationService:
         self._recover_incomplete_transactions()
 
     def trash_site(
-        self, site_id: str, *, confirm_display_name: str
+        self,
+        site_id: str,
+        *,
+        confirm_display_name: str,
+        authorization_token: str = "",
     ) -> dict[str, Any]:
+        try:
+            require_site_operation(self.paths.data_root, "SITE_TRASH", authorization_token)
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         record = self.registry.get(site_id)
         if str(confirm_display_name or "") != record.display_name:
             raise SiteStorageError(
@@ -843,7 +855,17 @@ class SiteCleanupApplicationService:
         _atomic_json(path, plan)
         return {**plan, "manifest_path": _relative(self.paths.data_root, path)}
 
-    def apply_cleanup(self, cleanup_token: str) -> dict[str, Any]:
+    def apply_cleanup(
+        self, cleanup_token: str, *, authorization_token: str = ""
+    ) -> dict[str, Any]:
+        try:
+            require_site_operation(
+                self.paths.data_root, "SITE_CLEANUP_APPLY", authorization_token
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         plan = self.load_plan(cleanup_token)
         if str(plan.get("status") or "") != "prepared" or _is_expired(str(plan.get("expires_at") or "")):
             raise SiteStorageError("SITE_CLEANUP_TOKEN_INVALID", "清理确认已失效，请重新准备")
@@ -940,7 +962,17 @@ class SiteCleanupApplicationService:
                 raise SiteStorageError("SITE_CLEANUP_FAILED", "局点回收失败，已恢复原目录") from exc
         return {"cleanup_token": cleanup_token, "site_id": site_id, "recycle_path": _relative(self.paths.data_root, moved), "recoverable": True}
 
-    def restore_cleanup(self, cleanup_token: str) -> dict[str, Any]:
+    def restore_cleanup(
+        self, cleanup_token: str, *, authorization_token: str = ""
+    ) -> dict[str, Any]:
+        try:
+            require_site_operation(
+                self.paths.data_root, "SITE_CLEANUP_RESTORE", authorization_token
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         plan = self.load_plan(cleanup_token)
         if str(plan.get("status") or "") != "applied":
             raise SiteStorageError("SITE_CLEANUP_RESTORE_INVALID", "该回收记录当前不可恢复")
