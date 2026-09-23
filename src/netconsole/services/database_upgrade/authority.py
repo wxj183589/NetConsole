@@ -37,7 +37,7 @@ DATABASE_BACKUP_RESTORE_AUTHORIZED = "DATABASE_BACKUP_RESTORE_AUTHORIZED"
 DATABASE_BACKUP_DELETE_AUTHORIZED = "DATABASE_BACKUP_DELETE_AUTHORIZED"
 LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED = "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED"
 
-AUTHORITY_SCHEMA_VERSION = 4
+AUTHORITY_SCHEMA_VERSION = 5
 READ_ONLY_VALIDATION = "READ_ONLY_VALIDATION"
 
 _OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
@@ -302,6 +302,8 @@ def _backup_binding(
     if operation == "DATABASE_BACKUP_RESTORE" and target_path != expected_target:
         raise DatabaseMaintenanceAuthorityError("BACKUP_TARGET_MISMATCH")
     backup_exists = database_path.is_file()
+    manifest_stat = manifest_path.stat()
+    database_stat = database_path.stat() if backup_exists else None
     backup_size = int(database_path.stat().st_size) if include_content_identity and backup_exists else 0
     backup_sha256 = _sha256(database_path) if include_content_identity and backup_exists else ""
     declared_size = int(item.get("database_size") or 0)
@@ -339,6 +341,9 @@ def _backup_binding(
         "backup_relative_path": database_relative_path.rsplit("/", 1)[0],
         "target_database_relative_path": target_relative_path,
         "manifest_sha256": manifest_sha256,
+        "manifest_size_bytes": int(manifest_stat.st_size),
+        "manifest_mtime_ns": int(manifest_stat.st_mtime_ns),
+        "database_mtime_ns": int(database_stat.st_mtime_ns) if database_stat is not None else 0,
         "database_sha256": str(item.get("database_sha256") or ""),
         "database_size": int(item.get("database_size") or 0),
         "declared_identity": declared_identity,
@@ -402,7 +407,11 @@ def build_database_task_authority(
             for value in selected_backups
         ]
     legacy_archives = (
-        legacy_archive_bindings(paths, site.directory_name)
+        legacy_archive_bindings(
+            paths,
+            site.directory_name,
+            include_content_identity=not defer_identity,
+        )
         if str(task_type) == "legacy_database_archive_migration"
         else []
     )
@@ -519,8 +528,28 @@ def materialize_database_task_authority(
                 "profile_id",
                 "backup_relative_path",
                 "target_database_relative_path",
+                "database_sha256",
+                "database_size",
+                "declared_identity",
+                "result_status",
+                "authority_status",
+                "manifest_size_bytes",
+                "manifest_mtime_ns",
+                "database_mtime_ns",
             ),
         )
+    if task_type == "legacy_database_archive_migration":
+        expected_archives = list(authority.get("legacy_archives") or ())
+        actual_archives = list(materialized.get("legacy_archives") or ())
+        if len(expected_archives) != len(actual_archives):
+            raise DatabaseMaintenanceAuthorityError("LEGACY_ARCHIVE_STALE")
+        for expected, actual in zip(expected_archives, actual_archives, strict=True):
+            _compare(
+                "LEGACY_ARCHIVE_STALE",
+                expected,
+                actual,
+                ("source_relative_path", "profile_name", "size_bytes", "modified_ns"),
+            )
     return materialized
 
 

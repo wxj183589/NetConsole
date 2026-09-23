@@ -579,6 +579,44 @@ def test_invalid_backup_can_be_authorized_for_explicit_delete(tmp_path: Path) ->
     )
 
 
+def test_deferred_backup_authority_rejects_changed_submit_declaration(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, database = _mesh_profile(paths)
+    backup = DatabaseBackupStore(paths).create(
+        source_path=database,
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id=f"demo:{profile.safe_folder_name}",
+        task_id="deferred-declaration",
+        old_version="old",
+        target_version="new",
+        strategy="SCHEMA_MIGRATION",
+    )
+    backup_id = str(backup["backup_id"])
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_backup_delete",
+        site_ref="demo",
+        backup_ids=[backup_id],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_BACKUP_DELETE_AUTHORIZED,
+        defer_identity=True,
+    )
+    manifest_path = Path(str(backup["path"])) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["database_size"] = int(manifest["database_size"]) + 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(DatabaseMaintenanceAuthorityError, match="DATABASE_BACKUP_STALE"):
+        materialize_database_task_authority(
+            paths,
+            authority,
+            authorization_token=DATABASE_BACKUP_DELETE_AUTHORIZED,
+        )
+
+
 def test_validation_worker_rejects_second_backup_change_after_submit(tmp_path: Path) -> None:
     from netconsole.core.paths import PathResolver
 
@@ -758,6 +796,52 @@ def test_legacy_archive_authority_binds_and_revalidates_candidates(tmp_path: Pat
                 "database_authority": authority,
             },
         )
+
+
+def test_deferred_legacy_archive_authority_hashes_only_in_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, _database_path = _mesh_profile(paths)
+    archive = paths.site_mesh_root("demo") / profile.safe_folder_name / "mesh.sqlite.rollback_deferred"
+    _database(archive, "legacy")
+
+    calls: list[Path] = []
+
+    def tracked_sha256(path: Path) -> str:
+        calls.append(path)
+        from netconsole.services.database_upgrade.sqlite_consistency import sha256_file
+
+        return sha256_file(path)
+
+    monkeypatch.setattr(
+        "netconsole.services.database_upgrade.history.sha256_file",
+        tracked_sha256,
+    )
+    authority = build_database_task_authority(
+        paths,
+        task_type="legacy_database_archive_migration",
+        site_ref="demo",
+        database_kind="mesh_derived",
+        authorization_token=LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
+        defer_identity=True,
+    )
+
+    assert calls == []
+    assert authority["identity_deferred"] is True
+    assert authority["legacy_archives"][0]["sha256"] == ""
+    assert int(authority["legacy_archives"][0]["size_bytes"]) > 0
+
+    materialized = materialize_database_task_authority(
+        paths,
+        authority,
+        authorization_token=LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
+    )
+    assert len(calls) == 1
+    assert materialized["identity_deferred"] is False
+    assert len(materialized["legacy_archives"][0]["sha256"]) == 64
 
 
 def test_restore_authority_revalidation_allows_its_own_validation_write(tmp_path: Path) -> None:

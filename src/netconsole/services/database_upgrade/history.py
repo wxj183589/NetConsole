@@ -40,26 +40,46 @@ def legacy_archive_candidates(paths: PathResolver, site_id: str) -> list[Path]:
     return sorted(candidates, key=lambda item: str(item).casefold())
 
 
-def legacy_archive_binding(paths: PathResolver, site_id: str, source: Path) -> dict[str, Any]:
+def legacy_archive_binding(
+    paths: PathResolver,
+    site_id: str,
+    source: Path,
+    *,
+    include_content_identity: bool = True,
+) -> dict[str, Any]:
     root = paths.site_mesh_root(site_id).resolve()
     if source.is_symlink() or not source.is_file():
         raise FileNotFoundError(str(source))
     resolved = source.resolve()
     relative_path = resolved.relative_to(root).as_posix()
-    size_bytes = resolved.stat().st_size
+    stat = resolved.stat()
+    size_bytes = stat.st_size
     return {
         "source_relative_path": relative_path,
         "profile_name": resolved.parent.name,
         "size_bytes": size_bytes,
-        "sha256": sha256_file(resolved) if size_bytes else "",
+        "modified_ns": int(stat.st_mtime_ns),
+        "sha256": sha256_file(resolved) if include_content_identity and size_bytes else "",
     }
 
 
-def legacy_archive_bindings(paths: PathResolver, site_id: str) -> list[dict[str, Any]]:
+def legacy_archive_bindings(
+    paths: PathResolver,
+    site_id: str,
+    *,
+    include_content_identity: bool = True,
+) -> list[dict[str, Any]]:
     bindings: list[dict[str, Any]] = []
     for source in legacy_archive_candidates(paths, site_id):
         try:
-            bindings.append(legacy_archive_binding(paths, site_id, source))
+            bindings.append(
+                legacy_archive_binding(
+                    paths,
+                    site_id,
+                    source,
+                    include_content_identity=include_content_identity,
+                )
+            )
         except (FileNotFoundError, OSError, ValueError):
             continue
     return bindings

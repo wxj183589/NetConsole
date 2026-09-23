@@ -149,6 +149,7 @@ def organize_legacy_archives(
         task_type="legacy_database_archive_migration",
         site_id=site_id,
         authorization_token=authorization_token,
+        defer_identity=True,
     )
     return _submit(
         request,
