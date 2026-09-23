@@ -5,7 +5,13 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+import pytest
+
+from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
+from scripts.maintenance.migrate_unified_data_root import UnifiedStorageMigrationError
 from scripts.maintenance.migrate_unified_data_root import ALLOWED_TARGET_ROOTS, migrate
+from netconsole.services.storage_production_authority import DATA_ROOT_MIGRATION_AUTHORIZED
 
 
 def _database(path: Path, value: str) -> None:
@@ -72,3 +78,37 @@ def test_unified_migration_preserves_conflicts_and_never_changes_sources(tmp_pat
     assert json.loads((target / "runtime" / "electron" / "user-data" / "bootstrap.json").read_text(encoding="utf-8"))["data_root"] == str(target.resolve())
     assert not any((target / "staging").iterdir())
     assert {item.name for item in target.iterdir()} == ALLOWED_TARGET_ROOTS
+
+
+def test_production_unified_migration_requires_authority_before_target_creation(tmp_path: Path) -> None:
+    primary = tmp_path / "relocated-production"
+    (primary / "data" / "sites" / "line-1").mkdir(parents=True)
+    (primary / "sites" / "line-1").mkdir(parents=True)
+    write_data_environment(
+        primary,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    (primary / "config").mkdir(parents=True, exist_ok=True)
+    (primary / "config" / "site_registry.json").write_text(
+        json.dumps({"sites": [{"site_id": "line-1", "relative_path": "sites/line-1"}]}),
+        encoding="utf-8",
+    )
+    (primary / "config" / "storage-manifest.json").write_text(
+        json.dumps({"data_root": str(primary.resolve()), "installation_id": "test"}),
+        encoding="utf-8",
+    )
+    target = tmp_path / "new-unified-root"
+
+    with pytest.raises(UnifiedStorageMigrationError, match="PRODUCTION_OPERATOR_INTENT_REQUIRED"):
+        migrate(target, primary, [])
+    assert not target.exists()
+
+    report = migrate(
+        target,
+        primary,
+        [],
+        allow_production_write=True,
+        authorization_token=DATA_ROOT_MIGRATION_AUTHORIZED,
+    )
+    assert report.status == "completed"
+    assert report.root_authority["environment"] == "production"

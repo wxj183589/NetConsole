@@ -55,6 +55,8 @@ from netconsole.services.site_package_staging import (
     SitePackageStagingLifecycle,
     SitePackageStagingRecovery,
 )
+from netconsole.services.site_operation_authority import require_site_operation
+from netconsole.services.storage_production_authority import StorageAuthorityError
 
 
 class SiteStorageError(RuntimeError):
@@ -1010,8 +1012,17 @@ class SiteApplicationService:
         destination_root: Path,
         *,
         check_cancel: Callable[[], None] | None = None,
+        authorization_token: str = "",
     ) -> dict[str, object]:
         """把单个局点复制到另一个受控数据根；源目录始终保留。"""
+        try:
+            require_site_operation(
+                self.paths.data_root, "SITE_MIGRATE", authorization_token
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         record = self.registry.get(site_id)
         destination_root = Path(destination_root).expanduser().resolve()
         if destination_root == self.paths.data_root.resolve():
@@ -1175,8 +1186,22 @@ class DataRootApplicationService:
         }
 
     def migrate(
-        self, target: Path, *, check_cancel: Callable[[], None] | None = None
+        self,
+        target: Path,
+        *,
+        check_cancel: Callable[[], None] | None = None,
+        authorization_token: str = "",
     ) -> dict[str, object]:
+        try:
+            require_site_operation(
+                self.paths.data_root,
+                "DATA_ROOT_HTTP_MIGRATION",
+                authorization_token,
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         destination = self._validate_target(target)
         if destination == self.paths.data_root.resolve():
             raise SiteStorageError("DATA_ROOT_INVALID", "目标数据根与当前路径相同")
@@ -2260,7 +2285,16 @@ class SitePackageService:
         replace_site_id: str | None = None,
         raw_only: bool = False,
         conflict_resolutions: list[dict[str, object]] | None = None,
+        authorization_token: str = "",
     ) -> dict[str, object]:
+        try:
+            require_site_operation(
+                self.paths.data_root, "SITE_IMPORT", authorization_token
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         info = self.inspect_package(
             package,
             target_site_id=site_id or replace_site_id,

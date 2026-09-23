@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from contextlib import closing
+from pathlib import Path
 
+import pytest
+
+from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
+from scripts.maintenance.migrate_legacy_runtime_data import (
+    apply_plan,
+    build_plan,
+    plan_digest,
+)
 from scripts.maintenance.clean_test_artifacts import apply_cleanup, build_cleanup_plan
-from scripts.maintenance.migrate_legacy_runtime_data import apply_plan, build_plan
 
 
 def test_migration_plan_maps_only_runtime_roots_and_reports_conflicts(tmp_path):
@@ -55,6 +65,41 @@ def test_migration_apply_can_preserve_conflicts_without_overwrite(tmp_path):
 
     assert (destination / "data" / "config" / "settings.json").read_text(encoding="utf-8") == "primary"
     assert any(entry.action == "conflict" for entry in result)
+
+
+def test_production_legacy_destination_requires_explicit_authority(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    destination = tmp_path / "production-destination"
+    _write(repo / ".local" / "data" / "config" / "settings.json", "primary")
+    destination.mkdir()
+    write_data_environment(
+        destination,
+        DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+    (destination / "config").mkdir()
+    (destination / "sites" / "line-1").mkdir(parents=True)
+    (destination / "config" / "site_registry.json").write_text(
+        json.dumps({"sites": [{"site_id": "line-1", "relative_path": "sites/line-1"}]}),
+        encoding="utf-8",
+    )
+    (destination / "config" / "storage-manifest.json").write_text(
+        json.dumps({"data_root": str(destination.resolve()), "installation_id": "test"}),
+        encoding="utf-8",
+    )
+    plan = build_plan(repo, destination)
+    with pytest.raises(RuntimeError, match="PRODUCTION_OPERATOR_INTENT_REQUIRED"):
+        apply_plan(repo, destination, plan)
+    assert not (destination / "data").exists()
+
+    result = apply_plan(
+        repo,
+        destination,
+        plan,
+        allow_production_write=True,
+        authorization_token="LEGACY_RUNTIME_MIGRATION_AUTHORIZED",
+        expected_plan_digest=plan_digest(repo, destination, plan),
+    )
+    assert {entry.action for entry in result} == {"copied"}
 
 
 def test_cleanup_plan_only_removes_explicit_top_level_test_artifacts(tmp_path):

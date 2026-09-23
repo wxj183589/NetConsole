@@ -60,6 +60,17 @@ def _client(tmp_path: Path, *, production: bool = False) -> TestClient:
             ),
             encoding="utf-8",
         )
+        (paths.config_dir / "storage-manifest.json").write_text(
+            json.dumps(
+                {
+                    "format_version": 1,
+                    "data_root": str(paths.data_root.resolve()),
+                    "installation_id": "test-production-installation",
+                    "schema_version": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
         paths.app_config_path.write_text(
             json.dumps({"active_site_id": "sxl1", "current_site": "sxl1"}),
             encoding="utf-8",
@@ -328,9 +339,19 @@ def test_site_trash_allows_non_current_demo_with_exact_confirmation_in_productio
     activated = client.post("/api/v1/sites/line-1/activate", json={"confirmed": True})
     assert activated.status_code == 200, activated.text
 
-    deleted = client.post(
+    blocked = client.post(
         "/api/v1/sites/demo/trash",
         json={"confirm_display_name": "演示局点"},
+    )
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"]["code"] == "SITE_OPERATION_AUTHORIZATION_REQUIRED"
+
+    deleted = client.post(
+        "/api/v1/sites/demo/trash",
+        json={
+            "confirm_display_name": "演示局点",
+            "authorization_token": "SITE_TRASH_AUTHORIZED",
+        },
     )
 
     assert deleted.status_code == 200, deleted.text

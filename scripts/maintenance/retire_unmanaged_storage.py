@@ -18,6 +18,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from netconsole.services.storage_production_authority import (
+    StorageAuthorityError,
+    require_storage_operation,
+    resolve_storage_root_authority,
+)
+
 
 ALLOWED_CLASSIFICATIONS = frozenset({"UNMANAGED_EXTERNAL", "LEGACY_MANAGED"})
 PLAN_SCHEMA = "storage-retirement-plan/v2"
@@ -213,6 +219,10 @@ def build_retirement_plan(
     generated_at: str | None = None,
 ) -> dict[str, Any]:
     root = Path(data_root).resolve(strict=True)
+    try:
+        authority = resolve_storage_root_authority(root)
+    except StorageAuthorityError as exc:
+        raise StorageRetirementError(str(exc)) from exc
     destination = Path(retirement_dir).resolve(strict=False)
     if destination.parent != root.parent or not destination.name.startswith(
         f"{root.name}-retired-"
@@ -260,6 +270,8 @@ def build_retirement_plan(
         "data_root": str(root),
         "retirement_dir": str(destination),
         "digest_scope": TARGET_SCOPE,
+        "operation": "STORAGE_RETIREMENT",
+        "root_authority": authority.to_dict(),
         "protection": protection,
         "candidate_roots": sorted(candidate_roots),
         "candidates": records,
@@ -315,6 +327,8 @@ def apply_retirement_plan(
     *,
     expected_plan_digest: str,
     retired_at: str | None = None,
+    allow_production_write: bool = False,
+    authorization_token: str = "",
 ) -> dict[str, Any]:
     plan = json.loads(Path(plan_path).read_text(encoding="utf-8"))
     if not isinstance(plan, Mapping) or plan.get("schema") != PLAN_SCHEMA:
@@ -324,6 +338,19 @@ def apply_retirement_plan(
     if actual_digest != expected_plan_digest or _digest(body) != actual_digest:
         raise StorageRetirementError("RETIRE_PLAN_DIGEST_MISMATCH")
     root = Path(str(plan["data_root"])).resolve(strict=True)
+    try:
+        authority = resolve_storage_root_authority(root)
+        planned_authority = plan.get("root_authority")
+        if not isinstance(planned_authority, Mapping) or dict(planned_authority) != authority.to_dict():
+            raise StorageRetirementError("STALE_PLAN: storage root authority changed")
+        require_storage_operation(
+            authority,
+            "STORAGE_RETIREMENT",
+            allow_production_write=allow_production_write,
+            authorization_token=authorization_token,
+        )
+    except StorageAuthorityError as exc:
+        raise StorageRetirementError(str(exc)) from exc
     destination = Path(str(plan["retirement_dir"])).resolve(strict=False)
     if destination.parent != root.parent or not destination.name.startswith(f"{root.name}-retired-"):
         raise StorageRetirementError("invalid retirement sibling")
@@ -431,6 +458,8 @@ def _parser() -> argparse.ArgumentParser:
     apply = subparsers.add_parser("apply")
     apply.add_argument("--plan", type=Path, required=True)
     apply.add_argument("--expected-plan-digest", required=True)
+    apply.add_argument("--allow-production-write", action="store_true")
+    apply.add_argument("--authorization-token", default="")
     return parser
 
 
@@ -441,7 +470,12 @@ def main(argv: list[str] | None = None) -> int:
         output = write_retirement_plan(plan, args.output)
         print(json.dumps({"status": "PASS", "plan": str(output), **plan}, ensure_ascii=False, indent=2))
         return 0
-    print(json.dumps(apply_retirement_plan(args.plan, expected_plan_digest=args.expected_plan_digest), ensure_ascii=False, indent=2))
+    print(json.dumps(apply_retirement_plan(
+        args.plan,
+        expected_plan_digest=args.expected_plan_digest,
+        allow_production_write=args.allow_production_write,
+        authorization_token=args.authorization_token,
+    ), ensure_ascii=False, indent=2))
     return 0
 
 
