@@ -127,12 +127,14 @@ def list_sites(request: Request) -> list[dict[str, object]]:
     dependencies=[Depends(_desktop), Depends(_persistent_storage)],
 )
 def create_site(request: Request, payload: SiteCreateRequest) -> dict[str, object]:
+    _require_site_operation(request, "SITE_CREATE", payload.authorization_token)
     return _call(
         lambda: _sites(request).create_site(
             payload.site_id,
             payload.display_name,
             remark=payload.remark,
             activate=payload.activate,
+            authorization_token=payload.authorization_token,
         )
     )
 
@@ -237,12 +239,14 @@ def task_result_storage_status(
 def update_site(
     request: Request, site_id: str, payload: SiteUpdateRequest
 ) -> dict[str, object]:
+    _require_site_operation(request, "SITE_UPDATE", payload.authorization_token)
     return _call(
         lambda: _sites(request).update_site_info(
             site_id,
             display_name=payload.display_name,
             line_name=payload.line_name,
             project_type=payload.project_type,
+            authorization_token=payload.authorization_token,
         )
     )
 
@@ -554,7 +558,12 @@ def activate_site(
             status_code=422,
             detail={"code": "SITE_SWITCH_BLOCKED", "message": "切换局点前必须确认"},
         )
-    return _call(lambda: _sites(request).switch_site(site_id))
+    _require_site_operation(request, "SITE_ACTIVATE", payload.authorization_token)
+    return _call(
+        lambda: _sites(request).switch_site(
+            site_id, authorization_token=payload.authorization_token
+        )
+    )
 
 
 @router.post(

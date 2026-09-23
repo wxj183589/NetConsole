@@ -830,7 +830,16 @@ class SiteApplicationService:
         display_name: str,
         line_name: object = None,
         project_type: object = None,
+        authorization_token: str = "",
     ) -> dict[str, object]:
+        try:
+            require_site_operation(
+                self.paths.data_root, "SITE_UPDATE", authorization_token
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         wanted = validate_site_id(site_id)
         name = normalize_site_display_name(display_name)
         normalized_line = normalize_optional_site_info(
@@ -885,7 +894,16 @@ class SiteApplicationService:
         *,
         remark: str = "",
         activate: bool = False,
+        authorization_token: str = "",
     ) -> dict[str, object]:
+        try:
+            require_site_operation(
+                self.paths.data_root, "SITE_CREATE", authorization_token
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         site_id = validate_site_id(site_id)
         display_name = validate_display_name(display_name)
         with storage_lock(self.paths, "site-mutation"):
@@ -928,7 +946,7 @@ class SiteApplicationService:
                     SiteRecord(site_id, display_name, final, remark=remark)
                 )
                 if activate:
-                    self.switch_site(site_id)
+                    self.switch_site(site_id, authorization_token=authorization_token)
                 return self.get_site(record.site_id)
             except SiteStorageError:
                 shutil.rmtree(staging, ignore_errors=True)
@@ -937,7 +955,15 @@ class SiteApplicationService:
                 shutil.rmtree(staging, ignore_errors=True)
                 raise SiteStorageError("SITE_CREATE_FAILED", "局点创建失败") from exc
 
-    def switch_site(self, site_id: str) -> dict[str, object]:
+    def switch_site(self, site_id: str, *, authorization_token: str = "") -> dict[str, object]:
+        try:
+            require_site_operation(
+                self.paths.data_root, "SITE_ACTIVATE", authorization_token
+            )
+        except StorageAuthorityError as exc:
+            raise SiteStorageError(
+                "SITE_OPERATION_AUTHORIZATION_REQUIRED", str(exc)
+            ) from exc
         site_id = validate_site_id(site_id)
         with storage_lock(self.paths, "site-switch"):
             record = self.registry.get(site_id)

@@ -333,10 +333,18 @@ def test_site_trash_allows_non_current_demo_with_exact_confirmation_in_productio
     client = _client(tmp_path, production=True)
     created = client.post(
         "/api/v1/sites",
-        json={"site_id": "line-1", "display_name": "一号线", "activate": False},
+        json={
+            "site_id": "line-1",
+            "display_name": "一号线",
+            "activate": False,
+            "authorization_token": "SITE_CREATE_AUTHORIZED",
+        },
     )
     assert created.status_code == 201, created.text
-    activated = client.post("/api/v1/sites/line-1/activate", json={"confirmed": True})
+    activated = client.post(
+        "/api/v1/sites/line-1/activate",
+        json={"confirmed": True, "authorization_token": "SITE_ACTIVATE_AUTHORIZED"},
+    )
     assert activated.status_code == 200, activated.text
 
     blocked = client.post(

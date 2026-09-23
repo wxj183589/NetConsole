@@ -12,16 +12,19 @@ class SiteCreateRequest(ApiModel):
     display_name: str = Field(min_length=1, max_length=128)
     remark: str = Field(default="", max_length=500)
     activate: bool = False
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteActivateRequest(ApiModel):
     confirmed: bool = True
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteUpdateRequest(ApiModel):
     display_name: str = Field(min_length=1, max_length=64)
     line_name: str | None = Field(default=None, max_length=128)
     project_type: str | None = Field(default=None, max_length=128)
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class SiteSSHRelayUpdateRequest(ApiModel):
