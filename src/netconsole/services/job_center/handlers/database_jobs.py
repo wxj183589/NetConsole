@@ -34,18 +34,28 @@ def _authorize(
     profile_ids=None,
     backup_ids=None,
     validate_profile_targets: bool = True,
+    materialize_backup_ids=None,
 ) -> None:
     authority = context.params.get("database_authority")
+    params = context.params
     if isinstance(authority, Mapping) and bool(authority.get("identity_deferred")):
-        context.params["database_authority"] = materialize_database_task_authority(
+        materialized = materialize_database_task_authority(
             context.paths,
             authority,
             authorization_token=str(context.params.get("authorization_token") or ""),
+            backup_ids=materialize_backup_ids,
         )
+        if materialize_backup_ids is None:
+            context.params["database_authority"] = materialized
+            params = context.params
+        else:
+            params = dict(context.params)
+            params["database_authority"] = materialized
+            params["backup_ids"] = list(materialize_backup_ids)
     revalidate_database_task_authority(
         context.paths,
         context.task_type,
-        context.params,
+        params,
         profile_ids=profile_ids,
         backup_ids=backup_ids,
         validate_profile_targets=validate_profile_targets,
@@ -54,7 +64,11 @@ def _authorize(
 
 def _authorize_batch_delete_item(context: JobContext, selected_backup_id: str) -> None:
     try:
-        _authorize(context, backup_ids=[selected_backup_id])
+        _authorize(
+            context,
+            backup_ids=[selected_backup_id],
+            materialize_backup_ids=[selected_backup_id],
+        )
     except DatabaseMaintenanceAuthorityError as exc:
         raise DatabaseBackupDeleteError(exc.code, str(exc)) from exc
 

@@ -408,6 +408,22 @@ def test_database_identity_cleans_managed_snapshot_root(tmp_path: Path) -> None:
     assert list(paths.temp_dir.glob("netconsole-sqlite-identity-*")) == []
 
 
+def test_database_identity_rejects_reparse_temp_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from netconsole.core.paths import PathResolver
+    from netconsole.services.database_upgrade import sqlite_consistency
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    _profile, database = _mesh_profile(paths)
+    monkeypatch.setattr(
+        sqlite_consistency,
+        "_is_reparse_point",
+        lambda path: Path(path) == paths.temp_dir,
+    )
+
+    with pytest.raises(ValueError, match="reparse point"):
+        sqlite_consistency.sqlite_logical_identity(database, temp_dir=paths.temp_dir)
+
+
 def test_worker_rejects_wal_only_target_change_after_submit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

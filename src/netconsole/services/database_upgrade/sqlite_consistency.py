@@ -120,12 +120,48 @@ def sqlite_backup(source: Path, destination: Path) -> None:
 
 _IDENTITY_SNAPSHOT_PREFIX = "netconsole-sqlite-identity-"
 _IDENTITY_SNAPSHOT_MAX_AGE_SECONDS = 24 * 60 * 60
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
+
+def _is_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _assert_no_reparse_points(path: Path) -> None:
+    current = Path(path)
+    while True:
+        if _is_reparse_point(current):
+            raise ValueError("SQLite logical identity temp path must not contain a reparse point")
+        if current.parent == current:
+            return
+        current = current.parent
+
+
+def _prepare_identity_temp_root(temp_dir: Path | None, source: Path) -> Path:
+    root = Path(temp_dir) if temp_dir is not None else source.parent / ".netconsole-sqlite-identity"
+    root = root.absolute()
+    _assert_no_reparse_points(root)
+    root.mkdir(parents=True, exist_ok=True)
+    _assert_no_reparse_points(root)
+    try:
+        return root.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("SQLite logical identity temp root is not accessible") from exc
 
 
 def _cleanup_stale_identity_snapshots(root: Path) -> None:
     cutoff = time.time() - _IDENTITY_SNAPSHOT_MAX_AGE_SECONDS
     for candidate in root.glob(f"{_IDENTITY_SNAPSHOT_PREFIX}*"):
         try:
+            _assert_no_reparse_points(candidate)
             if candidate.is_dir() and candidate.stat().st_mtime < cutoff:
                 shutil.rmtree(candidate)
         except OSError:
@@ -171,15 +207,16 @@ def sqlite_logical_identity(path: Path, *, temp_dir: Path | None = None) -> dict
     source = path.resolve()
     if not source.is_file() or source.stat().st_size <= 0:
         raise ValueError("源 SQLite 数据库不存在或为空")
-    temporary_root = Path(temp_dir) if temp_dir is not None else source.parent / ".netconsole-sqlite-identity"
-    if temporary_root.exists() and temporary_root.is_symlink():
-        raise ValueError("SQLite logical identity temp root must not be a symlink")
-    temporary_root.mkdir(parents=True, exist_ok=True)
+    temporary_root = _prepare_identity_temp_root(temp_dir, source)
     _cleanup_stale_identity_snapshots(temporary_root)
     with tempfile.TemporaryDirectory(
         dir=temporary_root,
         prefix=_IDENTITY_SNAPSHOT_PREFIX,
     ) as temporary_dir:
+        temporary_path = Path(temporary_dir)
+        _assert_no_reparse_points(temporary_path)
+        if temporary_path.resolve(strict=True).parent != temporary_root:
+            raise ValueError("SQLite logical identity snapshot escaped its managed temp root")
         snapshot = Path(temporary_dir) / "snapshot.sqlite"
         source_connection: sqlite3.Connection | None = None
         target_connection: sqlite3.Connection | None = None

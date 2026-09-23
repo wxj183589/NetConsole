@@ -431,6 +431,7 @@ def materialize_database_task_authority(
     authority: Mapping[str, Any],
     *,
     authorization_token: str = "",
+    backup_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Complete a lightweight queued authority inside the Job boundary."""
 
@@ -441,9 +442,15 @@ def materialize_database_task_authority(
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
     task_type = str(authority.get("task_type") or "")
     profile_scopes = authority.get("scopes") or ()
-    backup_bindings = authority.get("backups") or ()
+    backup_bindings = list(authority.get("backups") or ())
     if not all(isinstance(item, Mapping) for item in (*profile_scopes, *backup_bindings)):
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    selected_backup_ids = list(dict.fromkeys(str(value).strip() for value in backup_ids or () if str(value).strip()))
+    if backup_ids is not None:
+        by_backup_id = {str(item.get("backup_id") or ""): item for item in backup_bindings}
+        if any(value not in by_backup_id for value in selected_backup_ids):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_STALE")
+        backup_bindings = [by_backup_id[value] for value in selected_backup_ids]
     materialized = build_database_task_authority(
         paths,
         task_type=task_type,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -225,6 +226,46 @@ def test_batch_delete_keeps_processing_items_when_one_authority_binding_is_stale
     assert result["items"][1]["code"] == "DELETED"
     assert Path(str(first["path"])).exists()
     assert not Path(str(second["path"])).exists()
+
+
+def test_deferred_batch_delete_materializes_each_item_independently(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    first = _create_backup(paths, tmp_path, "deferred-missing")
+    second = _create_backup(paths, tmp_path, "deferred-fresh")
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_backup_batch_delete",
+        site_ref="demo",
+        backup_ids=[str(first["backup_id"]), str(second["backup_id"])],
+        authorization_token=DATABASE_BACKUP_DELETE_AUTHORIZED,
+        defer_identity=True,
+    )
+    shutil.rmtree(Path(str(first["path"])))
+    context = JobContext(
+        job_id="batch-deferred-item",
+        task_type="database_backup_batch_delete",
+        params={
+            "backup_ids": [str(first["backup_id"]), str(second["backup_id"])],
+            "confirmed": True,
+            "site_id": "demo",
+            "database_kind": "mesh_derived",
+            "authorization_token": DATABASE_BACKUP_DELETE_AUTHORIZED,
+            "database_authority": authority,
+        },
+        progress_callback=lambda *_args: None,
+        should_cancel=lambda: False,
+        paths=paths,
+    )
+
+    result = database_backup_batch_delete(context)
+
+    assert result["deleted"] == 1
+    assert result["failed"] == 1
+    assert result["items"][0]["code"] == "BACKUP_NOT_FOUND"
+    assert result["items"][1]["code"] == "DELETED"
+    assert not Path(str(second["path"])).exists()
+
+
 def test_job_center_details_keep_batch_delete_summary_bounded() -> None:
     details = JobCenterQueryService._task_details(
         "database_backup_batch_delete",
