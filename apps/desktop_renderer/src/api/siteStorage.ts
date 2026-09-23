@@ -190,17 +190,33 @@ export interface SiteConflictResolution {
   manual_value?: unknown
 }
 
+// These are operation capability labels, not session credentials.  The
+// backend still requires the authenticated local Desktop session and the
+// explicit Production-write process flag before accepting them.
+export const SITE_OPERATION_AUTHORIZATION = {
+  create: 'SITE_CREATE_AUTHORIZED',
+  update: 'SITE_UPDATE_AUTHORIZED',
+  activate: 'SITE_ACTIVATE_AUTHORIZED',
+  trash: 'SITE_TRASH_AUTHORIZED',
+  retentionApply: 'SITE_RETENTION_APPLY_AUTHORIZED',
+  cleanupApply: 'SITE_CLEANUP_APPLY_AUTHORIZED',
+  cleanupRestore: 'SITE_CLEANUP_RESTORE_AUTHORIZED',
+  import: 'SITE_IMPORT_AUTHORIZED',
+  migrate: 'SITE_MIGRATE_AUTHORIZED',
+  dataRootMigration: 'DATA_ROOT_HTTP_MIGRATION_AUTHORIZED',
+} as const
+
 export const listSites = () => apiRequest<SiteRecord[]>('/api/v1/sites')
 export const getActiveSite = () => apiRequest<SiteRecord>('/api/v1/sites/active')
 export const getDataRoot = () => apiRequest<DataRootSnapshot>('/api/v1/storage/data-root')
-export const updateSite = (siteId: string, payload: { display_name: string; line_name: string | null; project_type: string | null }) => apiRequest<SiteRecord>(`/api/v1/sites/${encodeURIComponent(siteId)}`, { method: 'PATCH', body: JSON.stringify(payload) })
+export const updateSite = (siteId: string, payload: { display_name: string; line_name: string | null; project_type: string | null }, authorizationToken = SITE_OPERATION_AUTHORIZATION.update) => apiRequest<SiteRecord>(`/api/v1/sites/${encodeURIComponent(siteId)}`, { method: 'PATCH', body: JSON.stringify({ ...payload, authorization_token: authorizationToken }) })
 export const getSiteSSHRelay = (siteId: string) => apiRequest<SiteSSHRelay>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay`)
 export const updateSiteSSHRelay = (siteId: string, payload: { enabled: boolean; host: string; port: number; username: string; password?: string }) => apiRequest<SiteSSHRelay>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay`, { method: 'PUT', body: JSON.stringify(payload) })
 export const testSiteSSHRelay = (siteId: string) => apiRequest<{ success: boolean; site_id: string; host: string; port: number; connection_mode: string; duration_ms: number; message: string; host_key_status?: string; host_key_fingerprint_sha256?: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay/test`, { method: 'POST' })
 export const refreshSiteSSHRelayHostKey = (siteId: string) => apiRequest<{ message: string; host_key_status?: string; host_key_fingerprint_sha256?: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay/host-key/refresh`, { method: 'POST' })
 export const deleteSiteSSHRelayHostKey = (siteId: string) => apiRequest<{ message: string; host_key_status?: string; host_key_fingerprint_sha256?: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay/host-key`, { method: 'DELETE' })
-export const trashSite = (siteId: string, confirmDisplayName: string) => apiRequest<SiteTrashResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/trash`, { method: 'POST', body: JSON.stringify({ confirm_display_name: confirmDisplayName }) })
-export const createSite = (payload: { site_id: string; display_name: string; remark?: string; activate?: boolean }) => apiRequest<SiteRecord>('/api/v1/sites', { method: 'POST', body: JSON.stringify(payload) })
+export const trashSite = (siteId: string, confirmDisplayName: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.trash) => apiRequest<SiteTrashResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/trash`, { method: 'POST', body: JSON.stringify({ confirm_display_name: confirmDisplayName, authorization_token: authorizationToken }) })
+export const createSite = (payload: { site_id: string; display_name: string; remark?: string; activate?: boolean }, authorizationToken = SITE_OPERATION_AUTHORIZATION.create) => apiRequest<SiteRecord>('/api/v1/sites', { method: 'POST', body: JSON.stringify({ ...payload, authorization_token: authorizationToken }) })
 export const preflightSiteActivation = (siteId: string) => apiRequest<{ ready: boolean; target_site_id: string; previous_site_id: string; registry_revision?: string }>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate/preflight`, { method: 'POST' })
 export interface SiteActivationResult {
   site_id: string
@@ -214,18 +230,19 @@ export interface SiteActivationResult {
   runtime_revision?: string
 }
 
-export const activateSite = (siteId: string) => apiRequest<SiteActivationResult>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate`, { method: 'POST', body: JSON.stringify({ confirmed: true }) })
+export const activateSite = (siteId: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.activate) => apiRequest<SiteActivationResult>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate`, { method: 'POST', body: JSON.stringify({ confirmed: true, authorization_token: authorizationToken }) })
 export const inspectSitePackage = (packagePath: string, targetSiteId = '') => apiRequest<SitePackageInspection>('/api/v1/sites/import/inspect', { method: 'POST', body: JSON.stringify({ package_path: packagePath, target_site_id: targetSiteId }) })
 export const exportSite = (siteId: string, destinationPath: string, packageType: SitePackageType = 'full_migration') => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/export`, { method: 'POST', body: JSON.stringify({ destination_path: destinationPath, package_type: packageType }) })
-export const importSite = (payload: { package_path: string; site_id?: string; display_name?: string; replace_site_id?: string; raw_only?: boolean; conflict_resolutions?: SiteConflictResolution[] }) => apiRequest<SiteTaskResponse>('/api/v1/sites/import', { method: 'POST', body: JSON.stringify(payload) })
+export const importSite = (payload: { package_path: string; site_id?: string; display_name?: string; replace_site_id?: string; raw_only?: boolean; conflict_resolutions?: SiteConflictResolution[] }, authorizationToken = SITE_OPERATION_AUTHORIZATION.import) => apiRequest<SiteTaskResponse>('/api/v1/sites/import', { method: 'POST', body: JSON.stringify({ ...payload, authorization_token: authorizationToken }) })
 export const validateDataRoot = (path: string) => apiRequest<{ valid: boolean; path: string; free_bytes: number }>('/api/v1/storage/data-root/validate', { method: 'POST', body: JSON.stringify({ path }) })
-export const migrateDataRoot = (path: string) => apiRequest<SiteTaskResponse>('/api/v1/storage/data-root/migrate', { method: 'POST', body: JSON.stringify({ path }) })
-export const migrateSite = (siteId: string, destinationRoot: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/migrate`, { method: 'POST', body: JSON.stringify({ destination_root: destinationRoot }) })
+export const migrateDataRoot = (path: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.dataRootMigration) => apiRequest<SiteTaskResponse>('/api/v1/storage/data-root/migrate', { method: 'POST', body: JSON.stringify({ path, authorization_token: authorizationToken }) })
+export const migrateSite = (siteId: string, destinationRoot: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.migrate) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/migrate`, { method: 'POST', body: JSON.stringify({ destination_root: destinationRoot, authorization_token: authorizationToken }) })
 export const auditSite = (siteId: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/audit`, { method: 'POST' })
 export const getLatestSiteAudit = (siteId: string) => apiRequest<SiteAuditSummary>(`/api/v1/sites/${encodeURIComponent(siteId)}/audit/latest`)
 export const scanSiteRetention = (siteId: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/retention/scan`, { method: 'POST' })
 export const getLatestSiteRetention = (siteId: string) => apiRequest<SiteRetentionReport>(`/api/v1/sites/${encodeURIComponent(siteId)}/retention/latest`)
-export const applySiteRetention = (siteId: string, scanToken: string, candidateIds: string[]) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/retention/apply`, { method: 'POST', body: JSON.stringify({ scan_token: scanToken, candidate_ids: candidateIds, confirmed: true }) })
+export const applySiteRetention = (siteId: string, scanToken: string, candidateIds: string[], authorizationToken = SITE_OPERATION_AUTHORIZATION.retentionApply) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/retention/apply`, { method: 'POST', body: JSON.stringify({ scan_token: scanToken, candidate_ids: candidateIds, confirmed: true, authorization_token: authorizationToken }) })
 export const prepareSiteCleanup = (siteId: string) => apiRequest<SiteCleanupPlan>(`/api/v1/sites/${encodeURIComponent(siteId)}/cleanup/prepare`, { method: 'POST' })
-export const applySiteCleanup = (siteId: string, cleanupToken: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/cleanup/apply`, { method: 'POST', body: JSON.stringify({ cleanup_token: cleanupToken, confirmed: true }) })
-export const rebuildDemoSite = (allowUserData = false) => apiRequest<SiteTaskResponse>('/api/v1/sites/demo/rebuild', { method: 'POST', body: JSON.stringify({ confirmed: true, allow_user_data: allowUserData }) })
+export const applySiteCleanup = (siteId: string, cleanupToken: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.cleanupApply) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/cleanup/apply`, { method: 'POST', body: JSON.stringify({ cleanup_token: cleanupToken, confirmed: true, authorization_token: authorizationToken }) })
+export const restoreSiteCleanup = (cleanupToken: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.cleanupRestore) => apiRequest<SiteTaskResponse>(`/api/v1/sites/recycle/${encodeURIComponent(cleanupToken)}/restore`, { method: 'POST', body: JSON.stringify({ confirmed: true, authorization_token: authorizationToken }) })
+export const rebuildDemoSite = (allowUserData = false, authorizationToken = SITE_OPERATION_AUTHORIZATION.cleanupApply) => apiRequest<SiteTaskResponse>('/api/v1/sites/demo/rebuild', { method: 'POST', body: JSON.stringify({ confirmed: true, allow_user_data: allowUserData, authorization_token: authorizationToken }) })

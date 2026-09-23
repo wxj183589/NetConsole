@@ -310,16 +310,6 @@ def recover_abandoned_staging(
     authorization_token: str = "",
 ) -> dict[str, object]:
     destination = Path(target).expanduser().resolve()
-    try:
-        authority = resolve_storage_root_authority(destination)
-        require_storage_operation(
-            authority,
-            "DATA_ROOT_MIGRATION",
-            allow_production_write=allow_production_write,
-            authorization_token=authorization_token,
-        )
-    except StorageAuthorityError as exc:
-        raise UnifiedStorageMigrationError(str(exc)) from exc
     safe_id = str(operation_id or "").strip()
     if not safe_id or Path(safe_id).name != safe_id:
         raise UnifiedStorageMigrationError("staging operation id 无效")
@@ -330,13 +320,41 @@ def recover_abandoned_staging(
     manifest = _read_json(staging / "manifest.json")
     if str(manifest.get("migration_id") or "") != safe_id:
         raise UnifiedStorageMigrationError("staging manifest identity mismatch")
+    if str(manifest.get("operation") or "") != "DATA_ROOT_MIGRATION":
+        raise UnifiedStorageMigrationError("staging operation identity mismatch")
+    target_record = _read_json(staging / "target.json")
+    if Path(str(target_record.get("data_root") or "")).expanduser().resolve() != destination:
+        raise UnifiedStorageMigrationError("staging target identity mismatch")
+    source_record = _read_json(staging / "source.json")
+    root_snapshot = manifest.get("root_authority")
+    if not isinstance(root_snapshot, dict):
+        raise UnifiedStorageMigrationError("staging root authority missing")
+    source_root_value = str(root_snapshot.get("root") or "").strip()
+    if not source_root_value:
+        raise UnifiedStorageMigrationError("staging source authority missing")
+    try:
+        source_root = Path(source_root_value).expanduser().resolve(strict=True)
+        if Path(str(source_record.get("primary") or "")).expanduser().resolve() != source_root:
+            raise StorageAuthorityError("STAGING_SOURCE_IDENTITY_MISMATCH")
+        authority = resolve_storage_root_authority(source_root)
+        if authority.to_dict() != root_snapshot:
+            raise StorageAuthorityError("STAGING_ROOT_AUTHORITY_STALE")
+        # A new target intentionally has no runtime_mode.json yet.  Reuse the
+        # verified source authority for the root-level capability instead of
+        # treating the unmarked staging target as an independent environment.
+        require_storage_operation(
+            authority,
+            "DATA_ROOT_MIGRATION",
+            allow_production_write=allow_production_write,
+            authorization_token=authorization_token,
+        )
+    except StorageAuthorityError as exc:
+        raise UnifiedStorageMigrationError(str(exc)) from exc
     owner = _read_json(staging / "operation.lock")
     pid = int(str(owner.get("pid") or "0"))
     if pid > 0 and _pid_exists(pid):
         raise UnifiedStorageMigrationError("staging 操作仍在运行，禁止清理")
     migrations = destination / "migrations"
-    if not migrations.is_dir():
-        raise UnifiedStorageMigrationError("尚未完成有效迁移，必须保留中断 staging")
     files = list(_iter_files(staging))
     record = {
         "operation_id": safe_id,
