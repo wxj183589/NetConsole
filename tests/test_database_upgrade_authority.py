@@ -82,6 +82,49 @@ def test_database_task_authority_uses_operation_specific_capabilities(tmp_path: 
     assert restore["scope_kind"] == "backup"
 
 
+def test_backup_validation_uses_production_write_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from netconsole.core.paths import PathResolver
+    from netconsole.core.runtime_environment import (
+        DataEnvironmentInfo,
+        DataEnvironmentMode,
+        ProductionWriteBlockedError,
+    )
+    import netconsole.services.database_upgrade.authority as authority_module
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, database = _mesh_profile(paths)
+    backup = DatabaseBackupStore(paths).create(
+        source_path=database,
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id=f"demo:{profile.safe_folder_name}",
+        task_id="production-validation-guard",
+        old_version="old",
+        target_version="new",
+        strategy="SCHEMA_MIGRATION",
+    )
+    monkeypatch.setattr(
+        authority_module,
+        "data_environment",
+        lambda _root: DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True),
+    )
+
+    def blocked(*_args, **_kwargs):
+        raise ProductionWriteBlockedError("blocked")
+
+    monkeypatch.setattr(authority_module, "require_data_root_write_allowed", blocked)
+    with pytest.raises(DatabaseMaintenanceAuthorityError, match="DATABASE_PRODUCTION_WRITE_NOT_ALLOWED"):
+        build_database_task_authority(
+            paths,
+            task_type="database_backup_validation",
+            site_ref="demo",
+            backup_ids=[str(backup["backup_id"])],
+            database_kind="mesh_derived",
+        )
+
+
 def test_deferred_authority_materializes_database_identity_inside_worker_boundary(tmp_path: Path) -> None:
     from netconsole.core.paths import PathResolver
 

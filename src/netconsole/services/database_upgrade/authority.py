@@ -377,10 +377,7 @@ def build_database_task_authority(
     if not operation:
         raise DatabaseMaintenanceAuthorityError("DATABASE_TASK_TYPE_UNSUPPORTED")
     site = _site_binding(paths, site_ref)
-    if operation != READ_ONLY_VALIDATION:
-        _require_operation(paths, task_type, authorization_token)
-    else:
-        data_environment(paths.data_root)
+    _require_operation(paths, task_type, authorization_token)
     scopes = []
     if str(task_type) in _PROFILE_TASKS:
         selected = list(dict.fromkeys(str(value).strip() for value in profile_ids if str(value).strip()))
@@ -591,8 +588,7 @@ def revalidate_database_task_authority(
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
     if str(params.get("database_kind") or "mesh_derived") != "mesh_derived":
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
-    if operation != READ_ONLY_VALIDATION:
-        _require_operation(paths, task_type, str(params.get("authorization_token") or ""))
+    _require_operation(paths, task_type, str(params.get("authorization_token") or ""))
     unsigned_authority = {
         key: value for key, value in authority.items() if str(key) != "authority_digest"
     }
