@@ -4,8 +4,10 @@ import hashlib
 import gc
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -116,7 +118,49 @@ def sqlite_backup(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def sqlite_logical_identity(path: Path) -> dict[str, Any]:
+_IDENTITY_SNAPSHOT_PREFIX = "netconsole-sqlite-identity-"
+_IDENTITY_SNAPSHOT_MAX_AGE_SECONDS = 24 * 60 * 60
+
+
+def _cleanup_stale_identity_snapshots(root: Path) -> None:
+    cutoff = time.time() - _IDENTITY_SNAPSHOT_MAX_AGE_SECONDS
+    for candidate in root.glob(f"{_IDENTITY_SNAPSHOT_PREFIX}*"):
+        try:
+            if candidate.is_dir() and candidate.stat().st_mtime < cutoff:
+                shutil.rmtree(candidate)
+        except OSError:
+            continue
+
+
+def _stream_canonical_sqlite_identity(
+    connection: sqlite3.Connection,
+    metadata: dict[str, Any],
+) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    size_bytes = 0
+
+    def update(value: str) -> None:
+        nonlocal size_bytes
+        encoded = value.encode("utf-8")
+        digest.update(encoded)
+        size_bytes += len(encoded)
+
+    update('{"dump":"')
+    first_line = True
+    for line in connection.iterdump():
+        if not first_line:
+            update(r"\n")
+        first_line = False
+        escaped = json.dumps(line, ensure_ascii=False)[1:-1]
+        update(escaped)
+    update(r"\n")
+    update('","metadata":')
+    update(json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    update("}")
+    return size_bytes, digest.hexdigest()
+
+
+def sqlite_logical_identity(path: Path, *, temp_dir: Path | None = None) -> dict[str, Any]:
     """Return a stable identity for the logical SQLite contents.
 
     The source is opened read-only and copied through SQLite's Backup API into
@@ -127,7 +171,15 @@ def sqlite_logical_identity(path: Path) -> dict[str, Any]:
     source = path.resolve()
     if not source.is_file() or source.stat().st_size <= 0:
         raise ValueError("源 SQLite 数据库不存在或为空")
-    with tempfile.TemporaryDirectory(prefix="netconsole-sqlite-identity-") as temporary_dir:
+    temporary_root = Path(temp_dir) if temp_dir is not None else source.parent / ".netconsole-sqlite-identity"
+    if temporary_root.exists() and temporary_root.is_symlink():
+        raise ValueError("SQLite logical identity temp root must not be a symlink")
+    temporary_root.mkdir(parents=True, exist_ok=True)
+    _cleanup_stale_identity_snapshots(temporary_root)
+    with tempfile.TemporaryDirectory(
+        dir=temporary_root,
+        prefix=_IDENTITY_SNAPSHOT_PREFIX,
+    ) as temporary_dir:
         snapshot = Path(temporary_dir) / "snapshot.sqlite"
         source_connection: sqlite3.Connection | None = None
         target_connection: sqlite3.Connection | None = None
@@ -156,20 +208,14 @@ def sqlite_logical_identity(path: Path) -> dict[str, Any]:
                 "encoding": str(connection.execute("PRAGMA encoding").fetchone()[0] or ""),
                 "user_version": int(connection.execute("PRAGMA user_version").fetchone()[0] or 0),
             }
-            dump = "\n".join(connection.iterdump()) + "\n"
+            size_bytes, digest = _stream_canonical_sqlite_identity(connection, metadata)
         finally:
             if connection is not None:
                 connection.close()
-    canonical = json.dumps(
-        {"metadata": metadata, "dump": dump},
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
     return {
         "identity_format": "sqlite-logical-v1",
-        "size_bytes": len(canonical),
-        "sha256": hashlib.sha256(canonical).hexdigest(),
+        "size_bytes": size_bytes,
+        "sha256": digest,
     }
 
 

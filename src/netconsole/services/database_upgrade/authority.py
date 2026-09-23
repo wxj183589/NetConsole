@@ -200,7 +200,11 @@ def _profile_scope(paths: PathResolver, site: _SiteBinding, profile_id: str) -> 
         raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")
     catalog = paths.mesh_catalog_path(site.directory_name)
     descriptor_revision = _sha256(catalog) if catalog.is_file() else ""
-    database_identity = _database_identity(database_path, str(profile.get("current_version") or "missing"))
+    database_identity = _database_identity(
+        database_path,
+        str(profile.get("current_version") or "missing"),
+        temp_dir=paths.temp_dir,
+    )
     body = {
         "canonical_site_id": site.canonical_site_id,
         "site_directory_name": site.directory_name,
@@ -220,7 +224,12 @@ def _profile_scope(paths: PathResolver, site: _SiteBinding, profile_id: str) -> 
     return {**body, "scope_digest": _digest(body)}
 
 
-def _database_identity(path: Path, schema_version: str = "") -> dict[str, Any]:
+def _database_identity(
+    path: Path,
+    schema_version: str = "",
+    *,
+    temp_dir: Path | None = None,
+) -> dict[str, Any]:
     resolved = path.resolve(strict=False)
     if not resolved.is_file():
         return {"exists": False, "size_bytes": 0, "sha256": "", "schema_version": schema_version}
@@ -228,7 +237,10 @@ def _database_identity(path: Path, schema_version: str = "") -> dict[str, Any]:
         validation = validate_sqlite(resolved)
         if not validation.get("valid"):
             raise ValueError(str(validation.get("error") or "SQLite target is invalid"))
-        logical = sqlite_logical_identity(resolved)
+        logical = sqlite_logical_identity(
+            resolved,
+            temp_dir=temp_dir,
+        )
     except Exception as exc:
         raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_UNREADABLE") from exc
     return {
@@ -320,7 +332,7 @@ def _backup_binding(
         "authority_status": str(item.get("authority_status") or ""),
     }
     if operation == "DATABASE_BACKUP_RESTORE":
-        body["target_identity"] = _database_identity(target_path)
+        body["target_identity"] = _database_identity(target_path, temp_dir=paths.temp_dir)
     return {**body, "backup_digest": _digest(body)}
 
 
@@ -362,7 +374,7 @@ def build_database_task_authority(
             for value in selected_backups
         ]
     legacy_archives = (
-        legacy_archive_bindings(paths, site.canonical_site_id)
+        legacy_archive_bindings(paths, site.directory_name)
         if str(task_type) == "legacy_database_archive_migration"
         else []
     )
@@ -444,7 +456,7 @@ def revalidate_database_task_authority(
     if str(authority.get("database_kind") or "") != "mesh_derived":
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
     if str(task_type) == "legacy_database_archive_migration":
-        actual_archives = legacy_archive_bindings(paths, site.canonical_site_id)
+        actual_archives = legacy_archive_bindings(paths, site.directory_name)
         if authority.get("legacy_archives") != actual_archives:
             raise DatabaseMaintenanceAuthorityError("LEGACY_ARCHIVE_STALE")
     if str(task_type) in _PROFILE_TASKS:

@@ -132,8 +132,13 @@ def legacy_database_archive_migration(context: JobContext) -> dict[str, object]:
         if isinstance(authority, dict)
         else None
     )
+    site_ref = (
+        str(authority.get("site_directory_name") or "")
+        if isinstance(authority, dict)
+        else ""
+    ) or str(context.params.get("site_id") or "")
     result = DatabaseUpgradeManagementService(context.paths).organize_legacy(
-        str(context.params.get("site_id") or ""),
+        site_ref,
         authorized_archives=authorized_archives,
     )
     context.progress("legacy_database_archive_migration", 1, 1, "历史数据库归档整理完成")

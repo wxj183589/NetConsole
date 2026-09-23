@@ -243,21 +243,35 @@ def test_database_identity_tracks_wal_logical_commit_and_checkpoint_stability(tm
         connection.execute("CREATE TABLE marker(value TEXT NOT NULL)")
         connection.commit()
         main_before = database.read_bytes()
-        identity_before = _database_identity(database)
+        identity_before = _database_identity(database, temp_dir=tmp_path / "runtime" / "temp")
         assert database.read_bytes() == main_before
 
         connection.execute("INSERT INTO marker(value) VALUES ('wal-only')")
         connection.commit()
         main_after_commit = database.read_bytes()
-        identity_after_commit = _database_identity(database)
+        identity_after_commit = _database_identity(database, temp_dir=tmp_path / "runtime" / "temp")
         assert main_after_commit == main_before
         assert identity_after_commit != identity_before
 
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        identity_after_checkpoint = _database_identity(database)
+        identity_after_checkpoint = _database_identity(database, temp_dir=tmp_path / "runtime" / "temp")
         assert identity_after_checkpoint == identity_after_commit
     finally:
         connection.close()
+
+
+def test_database_identity_cleans_managed_snapshot_root(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+    from netconsole.services.database_upgrade.authority import _database_identity
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    _profile, database = _mesh_profile(paths)
+
+    identity = _database_identity(database, temp_dir=paths.temp_dir)
+
+    assert identity["identity_format"] == "sqlite-logical-v1"
+    assert paths.temp_dir.is_dir()
+    assert list(paths.temp_dir.glob("netconsole-sqlite-identity-*")) == []
 
 
 def test_worker_rejects_wal_only_target_change_after_submit(
