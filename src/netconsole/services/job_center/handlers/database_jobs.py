@@ -25,13 +25,20 @@ DATABASE_UPGRADE_TASK_TYPES = frozenset(
 )
 DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES = frozenset({"database_backup_delete", "database_backup_batch_delete"})
 
-def _authorize(context: JobContext, *, profile_ids=None, backup_ids=None) -> None:
+def _authorize(
+    context: JobContext,
+    *,
+    profile_ids=None,
+    backup_ids=None,
+    validate_profile_targets: bool = True,
+) -> None:
     revalidate_database_task_authority(
         context.paths,
         context.task_type,
         context.params,
         profile_ids=profile_ids,
         backup_ids=backup_ids,
+        validate_profile_targets=validate_profile_targets,
     )
 
 
@@ -88,7 +95,7 @@ def database_batch_upgrade(context: JobContext) -> dict[str, object]:
 
 def database_batch_backup(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    _authorize(context)
+    _authorize(context, validate_profile_targets=False)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:

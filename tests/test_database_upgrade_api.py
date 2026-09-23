@@ -97,11 +97,16 @@ def test_batch_database_actions_deduplicate_selection_and_require_upgrade_confir
     assert backed_up.status_code == 202, backed_up.text
     assert process.jobs[-1].task_type == "database_batch_backup"
     assert process.jobs[-1].params["profile_ids"] == [first.mr_id, second.mr_id]
+    assert process.jobs[-1].params["resource_keys"] == [
+        "database-backup-center:demo",
+        "mesh-import:demo",
+        "database-upgrade-batch:demo",
+    ]
 
 
 def test_restore_and_delete_require_confirmation_and_submit_immutable_authority(tmp_path: Path) -> None:
     client, paths, process = _client(tmp_path)
-    database = tmp_path / "data" / "sites" / "demo" / "files" / "mesh.sqlite"
+    database = paths.mesh_mr_db_path("demo", "列车07-MR-CT")
     database.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(database)) as connection:
         connection.execute("CREATE TABLE marker(value TEXT)")

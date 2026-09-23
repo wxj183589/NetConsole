@@ -9,6 +9,7 @@ import pytest
 
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.database_upgrade.authority import (
+    DATABASE_BACKUP_CREATE_AUTHORIZED,
     DATABASE_BACKUP_DELETE_AUTHORIZED,
     DATABASE_BACKUP_RESTORE_AUTHORIZED,
     LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
@@ -132,6 +133,49 @@ def test_worker_rejects_database_authority_tampering_before_service(
     assert called["value"] is False
 
 
+def test_batch_backup_keeps_processing_profiles_when_one_target_is_stale(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    first, first_database = _mesh_profile(paths, "列车07-MR-CT")
+    second, _second_database = _mesh_profile(paths, "列车08-MR-CT")
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_batch_backup",
+        site_ref="demo",
+        profile_ids=[first.mr_id, second.mr_id],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_BACKUP_CREATE_AUTHORIZED,
+    )
+    _database(first_database, "changed-after-submit")
+
+    result = run_job(
+        BackgroundJob(
+            job_id="database-batch-backup-stale-item",
+            task_type="database_batch_backup",
+            params={
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+                "site_name": "demo",
+                "site_id": "demo",
+                "profile_ids": [first.mr_id, second.mr_id],
+                "database_kind": "mesh_derived",
+                "authorization_token": DATABASE_BACKUP_CREATE_AUTHORIZED,
+                "database_authority": authority,
+            },
+        )
+    )
+
+    assert result.ok is True
+    assert result.result["failed"] == 1
+    assert result.result["success"] == 1
+    statuses = {item["profile_id"]: item["status"] for item in result.result["results"]}
+    assert statuses == {first.mr_id: "failed", second.mr_id: "success"}
+    assert "DATABASE_TARGET_STALE" in next(
+        item["message"] for item in result.result["results"] if item["profile_id"] == first.mr_id
+    )
+
+
 def test_worker_rejects_target_database_changed_after_submit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -183,6 +227,35 @@ def test_worker_rejects_target_database_changed_after_submit(
     assert result.ok is False
     assert result.error == "DATABASE_TARGET_STALE"
     assert called["value"] is False
+
+
+def test_restore_authority_rejects_mesh_target_mismatch_outside_production(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, _database_path = _mesh_profile(paths)
+    wrong_target = paths.data_root / "sites" / "demo" / "files" / "wrong.sqlite"
+    _database(wrong_target, "wrong-target")
+    backup = DatabaseBackupStore(paths).create(
+        source_path=wrong_target,
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id=f"demo:{profile.safe_folder_name}",
+        task_id="wrong-target-restore",
+        old_version="old",
+        target_version="new",
+        strategy="SCHEMA_MIGRATION",
+    )
+
+    with pytest.raises(DatabaseMaintenanceAuthorityError, match="BACKUP_TARGET_MISMATCH"):
+        build_database_task_authority(
+            paths,
+            task_type="database_backup_restore",
+            site_ref="demo",
+            backup_ids=[str(backup["backup_id"])],
+            database_kind="mesh_derived",
+            authorization_token=DATABASE_BACKUP_RESTORE_AUTHORIZED,
+        )
 
 
 def test_backup_authority_rejects_cross_site_and_manifest_path_tamper(tmp_path: Path) -> None:

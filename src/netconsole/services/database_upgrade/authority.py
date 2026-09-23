@@ -290,7 +290,7 @@ def _backup_binding(
     target_relative_path = target_path.relative_to(site.site_root).as_posix()
     safe_folder_name = scope_id[len(prefix) :]
     expected_target = paths.mesh_mr_db_path(site.directory_name, safe_folder_name).resolve()
-    if site.is_production and target_path != expected_target:
+    if operation == "DATABASE_BACKUP_RESTORE" and target_path != expected_target:
         raise DatabaseMaintenanceAuthorityError("BACKUP_TARGET_MISMATCH")
     backup_exists = database_path.is_file()
     backup_size = int(database_path.stat().st_size) if backup_exists else 0
@@ -410,8 +410,14 @@ def revalidate_database_task_authority(
     *,
     profile_ids: Iterable[str] | None = None,
     backup_ids: Iterable[str] | None = None,
+    validate_profile_targets: bool = True,
 ) -> dict[str, Any]:
-    """Re-resolve every target immediately before the worker calls a mutator."""
+    """Re-resolve every target immediately before the worker calls a mutator.
+
+    Batch backup uses ``validate_profile_targets=False`` for its initial
+    structural authority check, then revalidates each Profile inside its
+    maintenance lock so one stale Profile remains an item-level failure.
+    """
 
     authority = params.get("database_authority")
     if not isinstance(authority, Mapping):
@@ -472,13 +478,16 @@ def revalidate_database_task_authority(
         }
         if not expected_profiles or expected_profiles != actual_profiles:
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
-        selected_profiles = (
-            {str(value).strip() for value in profile_ids if str(value).strip()}
-            if profile_ids is not None
-            else actual_profiles
-        )
-        if not selected_profiles or not selected_profiles.issubset(actual_profiles):
-            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        if validate_profile_targets:
+            selected_profiles = (
+                {str(value).strip() for value in profile_ids if str(value).strip()}
+                if profile_ids is not None
+                else actual_profiles
+            )
+            if not selected_profiles or not selected_profiles.issubset(actual_profiles):
+                raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        else:
+            selected_profiles = actual_profiles
     else:
         selected_profiles = set()
     if str(task_type) in _BACKUP_TASKS:
@@ -501,30 +510,31 @@ def revalidate_database_task_authority(
         )
         if not selected_backups or not selected_backups.issubset(actual_backups):
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
-    for expected in authority.get("scopes") or ():
-        if not isinstance(expected, Mapping):
-            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
-        if str(task_type) in _PROFILE_TASKS and str(expected.get("profile_id") or "") not in selected_profiles:
-            continue
-        actual = _profile_scope(paths, site, str(expected.get("profile_id") or ""))
-        _compare(
-            "DATABASE_TARGET_STALE",
-            expected,
-            actual,
-            (
-                "canonical_site_id",
-                "site_directory_name",
-                "profile_id",
-                "safe_folder_name",
-                "database_relative_path",
-                "database_path",
-                "descriptor_revision",
-                "current_schema_version",
-                "target_schema_version",
-                "database_identity",
-                "scope_digest",
-            ),
-        )
+    if validate_profile_targets:
+        for expected in authority.get("scopes") or ():
+            if not isinstance(expected, Mapping):
+                raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+            if str(task_type) in _PROFILE_TASKS and str(expected.get("profile_id") or "") not in selected_profiles:
+                continue
+            actual = _profile_scope(paths, site, str(expected.get("profile_id") or ""))
+            _compare(
+                "DATABASE_TARGET_STALE",
+                expected,
+                actual,
+                (
+                    "canonical_site_id",
+                    "site_directory_name",
+                    "profile_id",
+                    "safe_folder_name",
+                    "database_relative_path",
+                    "database_path",
+                    "descriptor_revision",
+                    "current_schema_version",
+                    "target_schema_version",
+                    "database_identity",
+                    "scope_digest",
+                ),
+            )
     for expected in authority.get("backups") or ():
         if not isinstance(expected, Mapping):
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")

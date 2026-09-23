@@ -121,7 +121,11 @@ def start_database_batch_backup(request: Request, payload: DatabaseBatchRequest)
         "database_batch_backup",
         {"database_kind": payload.database_kind, "profile_ids": selected, "site_id": site_id,
          "authorization_token": payload.authorization_token, "database_authority": authority},
-        resource_keys=[f"database-backup-center:{site_id}", f"database-upgrade-batch:{site_id}"],
+        resource_keys=[
+            f"database-backup-center:{site_id}",
+            f"mesh-import:{site_id}",
+            f"database-upgrade-batch:{site_id}",
+        ],
     )
 
 
