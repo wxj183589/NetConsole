@@ -1,0 +1,502 @@
+"""HTTP database-maintenance authority and immutable worker scope.
+
+This module is deliberately limited to the database-upgrade family.  It uses
+the existing canonical MESH site resolver and leaves the upgrade coordinator,
+journal, lock and backup transaction machinery as the mutation owners.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable, Mapping
+
+from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import (
+    data_environment,
+    production_write_allowed,
+    require_data_root_write_allowed,
+)
+from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
+from netconsole.services.database_upgrade.sqlite_consistency import validate_sqlite
+from netconsole.services.mesh_derived_data_maintenance_service import (
+    MeshDerivedDataMaintenanceService,
+)
+from netconsole.services.mesh_production_authority import resolve_mesh_production_scope
+
+
+DATABASE_UPGRADE_AUTHORIZED = "DATABASE_UPGRADE_AUTHORIZED"
+DATABASE_BACKUP_CREATE_AUTHORIZED = "DATABASE_BACKUP_CREATE_AUTHORIZED"
+DATABASE_BACKUP_RESTORE_AUTHORIZED = "DATABASE_BACKUP_RESTORE_AUTHORIZED"
+DATABASE_BACKUP_DELETE_AUTHORIZED = "DATABASE_BACKUP_DELETE_AUTHORIZED"
+LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED = "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED"
+
+AUTHORITY_SCHEMA_VERSION = 1
+READ_ONLY_VALIDATION = "READ_ONLY_VALIDATION"
+
+_OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
+    "database_upgrade": ("DATABASE_UPGRADE", DATABASE_UPGRADE_AUTHORIZED),
+    "database_batch_upgrade": ("DATABASE_UPGRADE", DATABASE_UPGRADE_AUTHORIZED),
+    "database_batch_backup": ("DATABASE_BACKUP_CREATE", DATABASE_BACKUP_CREATE_AUTHORIZED),
+    "database_backup_validation": (READ_ONLY_VALIDATION, ""),
+    "legacy_database_archive_migration": (
+        "LEGACY_DATABASE_ARCHIVE_MIGRATION",
+        LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
+    ),
+    "database_backup_restore": ("DATABASE_BACKUP_RESTORE", DATABASE_BACKUP_RESTORE_AUTHORIZED),
+    "database_backup_delete": ("DATABASE_BACKUP_DELETE", DATABASE_BACKUP_DELETE_AUTHORIZED),
+    "database_backup_batch_delete": ("DATABASE_BACKUP_DELETE", DATABASE_BACKUP_DELETE_AUTHORIZED),
+}
+_PROFILE_TASKS = frozenset({"database_upgrade", "database_batch_upgrade", "database_batch_backup"})
+_BACKUP_TASKS = frozenset(
+    {
+        "database_backup_validation",
+        "database_backup_restore",
+        "database_backup_delete",
+        "database_backup_batch_delete",
+    }
+)
+
+
+class DatabaseMaintenanceAuthorityError(ValueError):
+    """A database maintenance scope or operation failed closed."""
+
+    def __init__(self, code: str, message: str | None = None) -> None:
+        self.code = str(code)
+        super().__init__(message or self.code)
+
+
+@dataclass(frozen=True)
+class _SiteBinding:
+    canonical_site_id: str
+    directory_name: str
+    site_root: Path
+    is_production: bool
+    descriptor_revision: str
+
+
+def _canonical(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _is_reparse(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        return bool(int(getattr(path.lstat(), "st_file_attributes", 0) or 0) & 0x400)
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _assert_contained(path: Path, root: Path, code: str) -> Path:
+    resolved_root = root.resolve()
+    raw = Path(path)
+    current = raw
+    while True:
+        if _is_reparse(current):
+            raise DatabaseMaintenanceAuthorityError(code)
+        if current == resolved_root:
+            break
+        if current.parent == current:
+            raise DatabaseMaintenanceAuthorityError(code)
+        current = current.parent
+    resolved = raw.resolve(strict=False)
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise DatabaseMaintenanceAuthorityError(code) from exc
+    return resolved
+
+
+def _relative(path: Path, root: Path, code: str) -> str:
+    resolved = _assert_contained(path, root, code)
+    return resolved.relative_to(root.resolve()).as_posix()
+
+
+def _site_binding(paths: PathResolver, site_ref: str) -> _SiteBinding:
+    try:
+        scope = resolve_mesh_production_scope(paths, str(site_ref or ""))
+    except Exception as exc:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_SITE_NOT_CANONICAL") from exc
+    site_root = _assert_contained(scope.site_root, paths.data_root, "DATABASE_SITE_PATH_INVALID")
+    derived_root = paths.site_dir(scope.directory_name).resolve()
+    if site_root != derived_root:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_SITE_DESCRIPTOR_MISMATCH")
+    registry = paths.data_root / "config" / "site_registry.json"
+    descriptor_revision = _sha256(registry) if registry.is_file() else ""
+    return _SiteBinding(
+        canonical_site_id=str(scope.canonical_site_id),
+        directory_name=str(scope.directory_name),
+        site_root=site_root,
+        is_production=bool(scope.is_production),
+        descriptor_revision=descriptor_revision,
+    )
+
+
+def _require_operation(
+    paths: PathResolver,
+    task_type: str,
+    authorization_token: str,
+) -> tuple[str, str]:
+    try:
+        operation, capability = _OPERATION_BY_TASK[str(task_type)]
+    except KeyError as exc:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_TASK_TYPE_UNSUPPORTED") from exc
+    if not data_environment(paths.data_root).is_production:
+        return operation, capability
+    try:
+        require_data_root_write_allowed(
+            paths.data_root,
+            f"DATABASE_{operation}",
+            allow_production_write=production_write_allowed(),
+        )
+    except Exception as exc:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_WRITE_NOT_ALLOWED") from exc
+    if str(authorization_token or "") != capability:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_OPERATION_AUTHORIZATION_REQUIRED")
+    return operation, capability
+
+
+def _profile_scope(paths: PathResolver, site: _SiteBinding, profile_id: str) -> dict[str, Any]:
+    profile_key = str(profile_id or "").strip()
+    if not profile_key:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_REQUIRED")
+    inspection = MeshDerivedDataMaintenanceService(paths).inspect(
+        site.directory_name,
+        profile_ids=[profile_key],
+    )
+    matches = [
+        dict(item)
+        for item in inspection.get("profiles", [])
+        if isinstance(item, Mapping) and str(item.get("mr_id") or "") == profile_key
+    ]
+    if len(matches) != 1:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_NOT_FOUND")
+    profile = matches[0]
+    safe_folder_name = str(profile.get("safe_folder_name") or "").strip()
+    if not safe_folder_name or Path(safe_folder_name).name != safe_folder_name:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_DESCRIPTOR_INVALID")
+    database_path = paths.mesh_mr_db_path(site.directory_name, safe_folder_name)
+    database_relative_path = _relative(database_path, site.site_root, "DATABASE_DESCRIPTOR_PATH_INVALID")
+    if not database_relative_path.endswith("/mesh.sqlite"):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")
+    catalog = paths.mesh_catalog_path(site.directory_name)
+    descriptor_revision = _sha256(catalog) if catalog.is_file() else ""
+    database_identity = _database_identity(database_path, str(profile.get("current_version") or "missing"))
+    body = {
+        "canonical_site_id": site.canonical_site_id,
+        "site_directory_name": site.directory_name,
+        "profile_id": profile_key,
+        "safe_folder_name": safe_folder_name,
+        "database_kind": "mesh_derived",
+        "scope_type": "site_profile",
+        "scope_id": f"{site.directory_name}:{safe_folder_name}",
+        "database_path": str(database_path.resolve()),
+        "database_relative_path": database_relative_path,
+        "descriptor_revision": descriptor_revision,
+        "site_descriptor_revision": site.descriptor_revision,
+        "current_schema_version": str(profile.get("current_version") or "missing"),
+        "target_schema_version": str(profile.get("required_version") or ""),
+        "database_identity": database_identity,
+    }
+    return {**body, "scope_digest": _digest(body)}
+
+
+def _database_identity(path: Path, schema_version: str = "") -> dict[str, Any]:
+    resolved = path.resolve(strict=False)
+    if not resolved.is_file():
+        return {"exists": False, "size_bytes": 0, "sha256": "", "schema_version": schema_version}
+    try:
+        validation = validate_sqlite(resolved)
+    except Exception as exc:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_UNREADABLE") from exc
+    return {
+        "exists": True,
+        "size_bytes": int(resolved.stat().st_size),
+        "sha256": _sha256(resolved),
+        "schema_version": str(validation.get("schema_version") or schema_version),
+    }
+
+
+def _backup_binding(paths: PathResolver, site: _SiteBinding, backup_id: str) -> dict[str, Any]:
+    backup_key = str(backup_id or "").strip()
+    if not backup_key:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_REQUIRED")
+    store = DatabaseBackupStore(paths)
+    try:
+        item = store.read(backup_key)
+    except FileNotFoundError as exc:
+        raise DatabaseMaintenanceAuthorityError("BACKUP_NOT_FOUND") from exc
+    if str(item.get("database_kind") or "") != "mesh_derived":
+        raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+    scope_type = str(item.get("scope_type") or "")
+    scope_id = str(item.get("scope_id") or "")
+    prefix = f"{site.directory_name}:"
+    if scope_type != "site_profile" or not scope_id.startswith(prefix):
+        raise DatabaseMaintenanceAuthorityError("BACKUP_SITE_MISMATCH")
+    backup_dir = _assert_contained(Path(str(item.get("path") or "")), store.root, "BACKUP_PATH_INVALID")
+    manifest_path = backup_dir / "manifest.json"
+    database_path = backup_dir / "database.sqlite"
+    if not manifest_path.is_file():
+        raise DatabaseMaintenanceAuthorityError("BACKUP_MANIFEST_INVALID")
+    declared = str(item.get("backup_database_path") or "").strip()
+    if not declared or Path(declared).resolve() != database_path:
+        raise DatabaseMaintenanceAuthorityError("BACKUP_PATH_INVALID")
+    database_relative_path = _relative(database_path, store.root, "BACKUP_PATH_INVALID")
+    target_raw = str(item.get("original_database_path") or "").strip()
+    if not target_raw:
+        raise DatabaseMaintenanceAuthorityError("BACKUP_TARGET_INVALID")
+    target_path = _assert_contained(Path(target_raw), site.site_root, "BACKUP_TARGET_INVALID")
+    target_relative_path = target_path.relative_to(site.site_root).as_posix()
+    safe_folder_name = scope_id[len(prefix) :]
+    expected_target = paths.mesh_mr_db_path(site.directory_name, safe_folder_name).resolve()
+    if site.is_production and target_path != expected_target:
+        raise DatabaseMaintenanceAuthorityError("BACKUP_TARGET_MISMATCH")
+    backup_exists = database_path.is_file()
+    backup_size = int(database_path.stat().st_size) if backup_exists else 0
+    backup_sha256 = _sha256(database_path) if backup_exists else ""
+    declared_size = int(item.get("database_size") or 0)
+    declared_sha256 = str(item.get("database_sha256") or "")
+    if backup_size != declared_size or backup_sha256 != declared_sha256:
+        raise DatabaseMaintenanceAuthorityError("BACKUP_CONTENT_STALE")
+    manifest_sha256 = _sha256(manifest_path)
+    body = {
+        "backup_id": backup_key,
+        "canonical_site_id": site.canonical_site_id,
+        "site_directory_name": site.directory_name,
+        "database_kind": "mesh_derived",
+        "scope_type": scope_type,
+        "scope_id": scope_id,
+        "profile_id": safe_folder_name,
+        "backup_relative_path": database_relative_path.rsplit("/", 1)[0],
+        "target_database_relative_path": target_relative_path,
+        "manifest_sha256": manifest_sha256,
+        "database_sha256": str(item.get("database_sha256") or ""),
+        "database_size": int(item.get("database_size") or 0),
+        "backup_identity": {
+            "exists": backup_exists,
+            "size_bytes": backup_size,
+            "sha256": backup_sha256,
+        },
+        "old_schema_version": str(item.get("old_schema_version") or ""),
+        "target_schema_version": str(item.get("target_schema_version") or ""),
+        "result_status": str(item.get("result_status") or ""),
+        "authority_status": str(item.get("authority_status") or ""),
+        "target_identity": _database_identity(target_path),
+    }
+    return {**body, "backup_digest": _digest(body)}
+
+
+def build_database_task_authority(
+    paths: PathResolver,
+    *,
+    task_type: str,
+    site_ref: str,
+    profile_ids: Iterable[str] = (),
+    backup_ids: Iterable[str] = (),
+    database_kind: str = "mesh_derived",
+    authorization_token: str = "",
+) -> dict[str, Any]:
+    """Build a JSON-safe immutable authority snapshot before queuing a job."""
+
+    if str(database_kind or "") != "mesh_derived":
+        raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+    operation, capability = _OPERATION_BY_TASK.get(str(task_type), ("", ""))
+    if not operation:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_TASK_TYPE_UNSUPPORTED")
+    site = _site_binding(paths, site_ref)
+    if operation != READ_ONLY_VALIDATION:
+        _require_operation(paths, task_type, authorization_token)
+    else:
+        data_environment(paths.data_root)
+    scopes = []
+    if str(task_type) in _PROFILE_TASKS:
+        selected = list(dict.fromkeys(str(value).strip() for value in profile_ids if str(value).strip()))
+        if not selected:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_REQUIRED")
+        scopes = [_profile_scope(paths, site, value) for value in selected]
+    backups = []
+    if str(task_type) in _BACKUP_TASKS:
+        selected_backups = list(dict.fromkeys(str(value).strip() for value in backup_ids if str(value).strip()))
+        if not selected_backups:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_REQUIRED")
+        backups = [_backup_binding(paths, site, value) for value in selected_backups]
+    body: dict[str, Any] = {
+        "schema_version": AUTHORITY_SCHEMA_VERSION,
+        "task_type": str(task_type),
+        "operation": operation,
+        "operation_authority": capability,
+        "database_kind": "mesh_derived",
+        "canonical_site_id": site.canonical_site_id,
+        "site_directory_name": site.directory_name,
+        "site_root_relative_path": site.site_root.relative_to(paths.data_root.resolve()).as_posix(),
+        "site_descriptor_revision": site.descriptor_revision,
+        "is_production": site.is_production,
+        "scope_kind": "profile" if scopes else "backup" if backups else "site",
+        "scopes": scopes,
+        "backups": backups,
+    }
+    return {**body, "authority_digest": _digest(body)}
+
+
+def _compare(label: str, expected: Mapping[str, Any], actual: Mapping[str, Any], fields: Iterable[str]) -> None:
+    for field in fields:
+        if expected.get(field) != actual.get(field):
+            raise DatabaseMaintenanceAuthorityError(label)
+
+
+def revalidate_database_task_authority(
+    paths: PathResolver,
+    task_type: str,
+    params: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Re-resolve every target immediately before the worker calls a mutator."""
+
+    authority = params.get("database_authority")
+    if not isinstance(authority, Mapping):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    if int(authority.get("schema_version") or 0) != AUTHORITY_SCHEMA_VERSION:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    if str(authority.get("task_type") or "") != str(task_type):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    operation, capability = _OPERATION_BY_TASK.get(str(task_type), ("", ""))
+    if not operation or str(authority.get("operation") or "") != operation:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    if str(authority.get("operation_authority") or "") != capability:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    if str(params.get("database_kind") or "mesh_derived") != "mesh_derived":
+        raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+    if operation != READ_ONLY_VALIDATION:
+        _require_operation(paths, task_type, str(params.get("authorization_token") or ""))
+    unsigned_authority = {
+        key: value for key, value in authority.items() if str(key) != "authority_digest"
+    }
+    if str(authority.get("authority_digest") or "") != _digest(unsigned_authority):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    site = _site_binding(paths, str(authority.get("canonical_site_id") or authority.get("site_directory_name") or ""))
+    _compare(
+        "DATABASE_SITE_SCOPE_STALE",
+        authority,
+        {
+            "canonical_site_id": site.canonical_site_id,
+            "site_directory_name": site.directory_name,
+            "site_descriptor_revision": site.descriptor_revision,
+            "is_production": site.is_production,
+            "site_root_relative_path": site.site_root.relative_to(paths.data_root.resolve()).as_posix(),
+        },
+        (
+            "canonical_site_id",
+            "site_directory_name",
+            "site_descriptor_revision",
+            "is_production",
+            "site_root_relative_path",
+        ),
+    )
+    if str(authority.get("database_kind") or "") != "mesh_derived":
+        raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+    if str(task_type) in _PROFILE_TASKS:
+        expected_profiles = {
+            str(value).strip()
+            for value in params.get("profile_ids") or [params.get("profile_id")]
+            if str(value).strip()
+        }
+        actual_profiles = {
+            str(item.get("profile_id") or "")
+            for item in authority.get("scopes") or ()
+            if isinstance(item, Mapping)
+        }
+        if not expected_profiles or expected_profiles != actual_profiles:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    if str(task_type) in _BACKUP_TASKS:
+        expected_backups = {
+            str(value).strip()
+            for value in params.get("backup_ids") or [params.get("backup_id")]
+            if str(value).strip()
+        }
+        actual_backups = {
+            str(item.get("backup_id") or "")
+            for item in authority.get("backups") or ()
+            if isinstance(item, Mapping)
+        }
+        if not expected_backups or expected_backups != actual_backups:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    for expected in authority.get("scopes") or ():
+        if not isinstance(expected, Mapping):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        actual = _profile_scope(paths, site, str(expected.get("profile_id") or ""))
+        _compare(
+            "DATABASE_TARGET_STALE",
+            expected,
+            actual,
+            (
+                "canonical_site_id",
+                "site_directory_name",
+                "profile_id",
+                "safe_folder_name",
+                "database_relative_path",
+                "database_path",
+                "descriptor_revision",
+                "current_schema_version",
+                "target_schema_version",
+                "database_identity",
+                "scope_digest",
+            ),
+        )
+    for expected in authority.get("backups") or ():
+        if not isinstance(expected, Mapping):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        actual = _backup_binding(paths, site, str(expected.get("backup_id") or ""))
+        _compare(
+            "DATABASE_BACKUP_STALE",
+            expected,
+            actual,
+            (
+                "canonical_site_id",
+                "site_directory_name",
+                "scope_id",
+                "backup_relative_path",
+                "target_database_relative_path",
+                "manifest_sha256",
+                "database_sha256",
+                "database_size",
+                "backup_identity",
+                "target_identity",
+                "result_status",
+                "authority_status",
+                "backup_digest",
+            ),
+        )
+        if (
+            str(task_type) in {"database_backup_delete", "database_backup_batch_delete"}
+            and str(actual.get("result_status") or "").upper() not in {"VALID_BACKUP", "DUPLICATE_BACKUP"}
+        ):
+            raise DatabaseMaintenanceAuthorityError("BACKUP_UNKNOWN_PROTECTED")
+    return dict(authority)
+
+
+__all__ = [
+    "AUTHORITY_SCHEMA_VERSION",
+    "DATABASE_BACKUP_CREATE_AUTHORIZED",
+    "DATABASE_BACKUP_DELETE_AUTHORIZED",
+    "DATABASE_BACKUP_RESTORE_AUTHORIZED",
+    "DATABASE_UPGRADE_AUTHORIZED",
+    "DatabaseMaintenanceAuthorityError",
+    "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED",
+    "READ_ONLY_VALIDATION",
+    "build_database_task_authority",
+    "revalidate_database_task_authority",
+]

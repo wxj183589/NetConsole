@@ -35,9 +35,23 @@ describe('database upgrade API client', () => {
       '/api/database-upgrades/backups/backup%20%2F%201/delete',
       '/api/database-upgrades/backups/batch-delete',
     ])
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ database_kind: 'mesh_derived', profile_id: 'profile / 07' })
-    expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toEqual({ confirmed: true })
-    expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({ confirmed: true })
-    expect(JSON.parse(fetchMock.mock.calls[7][1].body)).toEqual({ backup_ids: ['backup / 1', 'backup-2'], confirmed: true })
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      database_kind: 'mesh_derived',
+      profile_id: 'profile / 07',
+      authorization_token: 'DATABASE_UPGRADE_AUTHORIZED',
+    })
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body)).toEqual({
+      confirmed: true,
+      authorization_token: 'DATABASE_BACKUP_RESTORE_AUTHORIZED',
+    })
+    expect(JSON.parse(fetchMock.mock.calls[6][1].body)).toEqual({
+      confirmed: true,
+      authorization_token: 'DATABASE_BACKUP_DELETE_AUTHORIZED',
+    })
+    expect(JSON.parse(fetchMock.mock.calls[7][1].body)).toEqual({
+      backup_ids: ['backup / 1', 'backup-2'],
+      confirmed: true,
+      authorization_token: 'DATABASE_BACKUP_DELETE_AUTHORIZED',
+    })
   })
 })

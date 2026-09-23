@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from netconsole.services.database_upgrade.authority import revalidate_database_task_authority
 from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
 from netconsole.services.job_center.job_context import JobContext
 from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
@@ -20,9 +21,13 @@ DATABASE_UPGRADE_TASK_TYPES = frozenset(
 )
 DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES = frozenset({"database_backup_delete", "database_backup_batch_delete"})
 
+def _authorize(context: JobContext) -> None:
+    revalidate_database_task_authority(context.paths, context.task_type, context.params)
+
 
 def database_upgrade(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     database_kind = str(context.params.get("database_kind") or "")
     if database_kind != "mesh_derived":
         raise ValueError("当前阶段仅 MESH 派生数据库已接入统一升级框架")
@@ -40,6 +45,7 @@ def database_upgrade(context: JobContext) -> dict[str, object]:
 
 def database_batch_upgrade(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:
@@ -57,6 +63,7 @@ def database_batch_upgrade(context: JobContext) -> dict[str, object]:
 
 def database_batch_backup(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:
@@ -74,6 +81,7 @@ def database_batch_backup(context: JobContext) -> dict[str, object]:
 
 def database_backup_validation(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).validate_backup(
         str(context.params.get("backup_id") or ""),
         site_id=str(context.params.get("site_name") or ""),
@@ -84,6 +92,7 @@ def database_backup_validation(context: JobContext) -> dict[str, object]:
 
 def legacy_database_archive_migration(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).organize_legacy(str(context.params.get("site_id") or ""))
     context.progress("legacy_database_archive_migration", 1, 1, "历史数据库归档整理完成")
     return result
@@ -91,6 +100,7 @@ def legacy_database_archive_migration(context: JobContext) -> dict[str, object]:
 
 def database_backup_restore(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).restore_backup(
         str(context.params.get("backup_id") or ""),
         confirmed=bool(context.params.get("confirmed")),
@@ -104,6 +114,7 @@ def database_backup_restore(context: JobContext) -> dict[str, object]:
 
 def database_backup_delete(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).delete_backup(
         str(context.params.get("backup_id") or ""),
         confirmed=bool(context.params.get("confirmed")),
@@ -115,6 +126,7 @@ def database_backup_delete(context: JobContext) -> dict[str, object]:
 
 def database_backup_batch_delete(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).delete_backups(
         [str(value) for value in context.params.get("backup_ids") or []],
         confirmed=bool(context.params.get("confirmed")),

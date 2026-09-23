@@ -1081,7 +1081,13 @@ class AcWebApplicationService:
                 return self._apply_result(operation.model_dump())
         return self._apply_result(audit)
 
-    def rollback_extension(self, site_id: str, audit_id: str, explicit_confirmation: bool) -> AcExtensionRollbackResultDTO:
+    def rollback_extension(
+        self,
+        site_id: str,
+        audit_id: str,
+        explicit_confirmation: bool,
+        authorization_token: str = "",
+    ) -> AcExtensionRollbackResultDTO:
         site_id = self._site(site_id)
         with self._lock(f"import:{site_id}:{audit_id}"):
             try:
@@ -1089,6 +1095,8 @@ class AcWebApplicationService:
                     site_id=site_id,
                     operation_id=audit_id,
                     explicit_confirmation=explicit_confirmation,
+                    authorization_token=authorization_token,
+                    expected_operation_type="AC_EXTENSION_IMPORT",
                 )
             except BaseDataImportError as exc:
                 self._import_error(exc)

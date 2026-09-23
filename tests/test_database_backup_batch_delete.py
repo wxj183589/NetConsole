@@ -6,6 +6,10 @@ from contextlib import closing
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
+from netconsole.services.database_upgrade.authority import (
+    DATABASE_BACKUP_DELETE_AUTHORIZED,
+    build_database_task_authority,
+)
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
 from netconsole.services.database_upgrade.journal import DatabaseUpgradeJournal
 from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
@@ -27,7 +31,7 @@ def _create_database(path: Path, value: str) -> None:
 
 
 def _create_backup(paths: PathResolver, tmp_path: Path, value: str) -> dict[str, object]:
-    source = tmp_path / f"{value}.sqlite"
+    source = paths.site_dir("demo") / "files" / f"{value}.sqlite"
     _create_database(source, value)
     return DatabaseBackupStore(paths).create(
         source_path=source,
@@ -147,6 +151,13 @@ def test_batch_delete_preserves_active_database_guard(tmp_path: Path, monkeypatc
 def test_batch_delete_handler_exposes_counts_and_released_bytes(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     backup = _create_backup(paths, tmp_path, "handler")
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_backup_batch_delete",
+        site_ref="demo",
+        backup_ids=[str(backup["backup_id"])],
+        authorization_token=DATABASE_BACKUP_DELETE_AUTHORIZED,
+    )
     progress: list[tuple[str, int, int, object]] = []
     context = JobContext(
         job_id="batch-task",
@@ -155,6 +166,9 @@ def test_batch_delete_handler_exposes_counts_and_released_bytes(tmp_path: Path) 
             "backup_ids": [str(backup["backup_id"])],
             "confirmed": True,
             "site_id": "demo",
+            "database_kind": "mesh_derived",
+            "authorization_token": DATABASE_BACKUP_DELETE_AUTHORIZED,
+            "database_authority": authority,
         },
         progress_callback=lambda stage, current, total, message: progress.append((stage, current, total, message)),
         should_cancel=lambda: False,
