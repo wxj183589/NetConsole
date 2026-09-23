@@ -24,6 +24,7 @@ from netconsole.services.database_upgrade.sqlite_consistency import (
     sqlite_logical_identity,
     validate_sqlite,
 )
+from netconsole.services.database_upgrade.history import legacy_archive_bindings
 from netconsole.services.mesh_derived_data_maintenance_service import (
     MeshDerivedDataMaintenanceService,
 )
@@ -36,7 +37,7 @@ DATABASE_BACKUP_RESTORE_AUTHORIZED = "DATABASE_BACKUP_RESTORE_AUTHORIZED"
 DATABASE_BACKUP_DELETE_AUTHORIZED = "DATABASE_BACKUP_DELETE_AUTHORIZED"
 LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED = "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED"
 
-AUTHORITY_SCHEMA_VERSION = 2
+AUTHORITY_SCHEMA_VERSION = 3
 READ_ONLY_VALIDATION = "READ_ONLY_VALIDATION"
 
 _OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
@@ -360,6 +361,11 @@ def build_database_task_authority(
             _backup_binding(paths, site, value, operation=operation)
             for value in selected_backups
         ]
+    legacy_archives = (
+        legacy_archive_bindings(paths, site.canonical_site_id)
+        if str(task_type) == "legacy_database_archive_migration"
+        else []
+    )
     body: dict[str, Any] = {
         "schema_version": AUTHORITY_SCHEMA_VERSION,
         "task_type": str(task_type),
@@ -374,6 +380,7 @@ def build_database_task_authority(
         "scope_kind": "profile" if scopes else "backup" if backups else "site",
         "scopes": scopes,
         "backups": backups,
+        "legacy_archives": legacy_archives,
     }
     return {**body, "authority_digest": _digest(body)}
 
@@ -436,6 +443,10 @@ def revalidate_database_task_authority(
     )
     if str(authority.get("database_kind") or "") != "mesh_derived":
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+    if str(task_type) == "legacy_database_archive_migration":
+        actual_archives = legacy_archive_bindings(paths, site.canonical_site_id)
+        if authority.get("legacy_archives") != actual_archives:
+            raise DatabaseMaintenanceAuthorityError("LEGACY_ARCHIVE_STALE")
     if str(task_type) in _PROFILE_TASKS:
         expected_profiles = {
             str(value).strip()

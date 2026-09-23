@@ -11,6 +11,7 @@ from netconsole.services.background_job import BackgroundJob
 from netconsole.services.database_upgrade.authority import (
     DATABASE_BACKUP_DELETE_AUTHORIZED,
     DATABASE_BACKUP_RESTORE_AUTHORIZED,
+    LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
     DATABASE_UPGRADE_AUTHORIZED,
     DatabaseMaintenanceAuthorityError,
     build_database_task_authority,
@@ -503,6 +504,40 @@ def test_old_database_authority_schema_fails_closed(tmp_path: Path) -> None:
                 "profile_ids": [profile.mr_id],
                 "site_id": "demo",
                 "authorization_token": DATABASE_UPGRADE_AUTHORIZED,
+                "database_authority": authority,
+            },
+        )
+
+
+def test_legacy_archive_authority_binds_and_revalidates_candidates(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, _database_path = _mesh_profile(paths)
+    archive = paths.site_mesh_root("demo") / profile.safe_folder_name / "mesh.sqlite.rollback_authority"
+    _database(archive, "legacy")
+
+    authority = build_database_task_authority(
+        paths,
+        task_type="legacy_database_archive_migration",
+        site_ref="demo",
+        database_kind="mesh_derived",
+        authorization_token=LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
+    )
+
+    assert authority["legacy_archives"][0]["source_relative_path"].endswith(
+        "mesh.sqlite.rollback_authority"
+    )
+    _database(archive, "changed-after-submit")
+
+    with pytest.raises(DatabaseMaintenanceAuthorityError, match="LEGACY_ARCHIVE_STALE"):
+        revalidate_database_task_authority(
+            paths,
+            "legacy_database_archive_migration",
+            {
+                "database_kind": "mesh_derived",
+                "site_id": "demo",
+                "authorization_token": LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
                 "database_authority": authority,
             },
         )
