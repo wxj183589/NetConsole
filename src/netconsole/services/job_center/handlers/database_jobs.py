@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from netconsole.services.database_upgrade.authority import (
     DatabaseMaintenanceAuthorityError,
+    materialize_database_task_authority,
     revalidate_database_task_authority,
 )
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupDeleteError
@@ -32,6 +35,13 @@ def _authorize(
     backup_ids=None,
     validate_profile_targets: bool = True,
 ) -> None:
+    authority = context.params.get("database_authority")
+    if isinstance(authority, Mapping) and bool(authority.get("identity_deferred")):
+        context.params["database_authority"] = materialize_database_task_authority(
+            context.paths,
+            authority,
+            authorization_token=str(context.params.get("authorization_token") or ""),
+        )
     revalidate_database_task_authority(
         context.paths,
         context.task_type,

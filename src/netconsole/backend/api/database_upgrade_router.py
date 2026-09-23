@@ -56,6 +56,7 @@ def start_database_upgrade(request: Request, payload: DatabaseUpgradeRequest) ->
         profile_ids=[payload.profile_id],
         database_kind=payload.database_kind,
         authorization_token=payload.authorization_token,
+        defer_identity=True,
     )
     return _submit(
         request,
@@ -89,6 +90,7 @@ def start_database_batch_upgrade(request: Request, payload: DatabaseBatchRequest
         profile_ids=selected,
         database_kind=payload.database_kind,
         authorization_token=payload.authorization_token,
+        defer_identity=True,
     )
     return _submit(
         request,
@@ -115,6 +117,7 @@ def start_database_batch_backup(request: Request, payload: DatabaseBatchRequest)
         profile_ids=selected,
         database_kind=payload.database_kind,
         authorization_token=payload.authorization_token,
+        defer_identity=True,
     )
     return _submit(
         request,
@@ -201,6 +204,7 @@ def restore_backup(
         site_id=site_id,
         backup_ids=[backup_id],
         authorization_token=payload.authorization_token,
+        defer_identity=True,
     )
     return _submit(
         request,
@@ -331,6 +335,7 @@ def _build_authority(
     backup_ids: list[str] | tuple[str, ...] = (),
     database_kind: str = "mesh_derived",
     authorization_token: str = "",
+    defer_identity: bool = False,
 ) -> dict[str, object]:
     try:
         return build_database_task_authority(
@@ -341,6 +346,7 @@ def _build_authority(
             backup_ids=backup_ids,
             database_kind=database_kind,
             authorization_token=authorization_token,
+            defer_identity=defer_identity,
         )
     except DatabaseMaintenanceAuthorityError as exc:
         code = str(exc.code)

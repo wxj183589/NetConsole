@@ -12,10 +12,11 @@ from netconsole.services.database_upgrade.authority import (
     DATABASE_BACKUP_CREATE_AUTHORIZED,
     DATABASE_BACKUP_DELETE_AUTHORIZED,
     DATABASE_BACKUP_RESTORE_AUTHORIZED,
-    LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
     DATABASE_UPGRADE_AUTHORIZED,
+    LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
     DatabaseMaintenanceAuthorityError,
     build_database_task_authority,
+    materialize_database_task_authority,
     revalidate_database_task_authority,
 )
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
@@ -79,6 +80,66 @@ def test_database_task_authority_uses_operation_specific_capabilities(tmp_path: 
     assert Path(upgrade["scopes"][0]["database_path"]).resolve() == database.resolve()
     assert restore["operation_authority"] == DATABASE_BACKUP_RESTORE_AUTHORIZED
     assert restore["scope_kind"] == "backup"
+
+
+def test_deferred_authority_materializes_database_identity_inside_worker_boundary(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, _database_path = _mesh_profile(paths)
+    deferred = build_database_task_authority(
+        paths,
+        task_type="database_upgrade",
+        site_ref="demo",
+        profile_ids=[profile.mr_id],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_UPGRADE_AUTHORIZED,
+        defer_identity=True,
+    )
+
+    assert deferred["identity_deferred"] is True
+    assert deferred["scopes"][0]["database_identity"] == {"deferred": True}
+
+    materialized = materialize_database_task_authority(
+        paths,
+        deferred,
+        authorization_token=DATABASE_UPGRADE_AUTHORIZED,
+    )
+
+    assert materialized["identity_deferred"] is False
+    assert materialized["scopes"][0]["database_identity"]["identity_format"] == "sqlite-logical-v1"
+
+
+def test_batch_upgrade_revalidation_ignores_its_own_catalog_pending_marker(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+    from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    first, _first_database = _mesh_profile(paths, "列车07-MR-CT")
+    second, _second_database = _mesh_profile(paths, "列车08-MR-CT")
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_batch_upgrade",
+        site_ref="demo",
+        profile_ids=[first.mr_id, second.mr_id],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_UPGRADE_AUTHORIZED,
+    )
+    MeshCatalogRepository(paths.mesh_catalog_path("demo")).mark_index_pending()
+
+    assert revalidate_database_task_authority(
+        paths,
+        "database_batch_upgrade",
+        {
+            "database_kind": "mesh_derived",
+            "site_id": "demo",
+            "site_name": "demo",
+            "profile_ids": [first.mr_id, second.mr_id],
+            "authorization_token": DATABASE_UPGRADE_AUTHORIZED,
+            "database_authority": authority,
+        },
+        profile_ids=[second.mr_id],
+    )
 
 
 def test_worker_rejects_database_authority_tampering_before_service(

@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
@@ -61,6 +62,29 @@ def test_database_status_and_upgrade_submission_are_scoped_to_current_site(tmp_p
     assert process.jobs[-1].params["site_id"] == "demo"
     assert process.jobs[-1].params["profile_id"] == profile.mr_id
     assert process.jobs[-1].params["owner"] == "database-upgrade"
+
+
+def test_profile_upgrade_submission_defers_sqlite_identity_to_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _paths, process = _client(tmp_path)
+    profile = MeshStorageService("demo", _paths).create_mr_profile("列车07-MR-CT")
+
+    def unexpected_http_snapshot(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("SQLite logical identity must be materialized by the worker")
+
+    monkeypatch.setattr(
+        "netconsole.services.database_upgrade.authority._database_identity",
+        unexpected_http_snapshot,
+    )
+
+    submitted = client.post(
+        "/api/database-upgrades/upgrade",
+        json={"database_kind": "mesh_derived", "profile_id": profile.mr_id},
+    )
+
+    assert submitted.status_code == 202, submitted.text
+    assert process.jobs[-1].params["database_authority"]["identity_deferred"] is True
 
 
 def test_batch_database_actions_deduplicate_selection_and_require_upgrade_confirmation(

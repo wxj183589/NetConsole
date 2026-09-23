@@ -37,7 +37,7 @@ DATABASE_BACKUP_RESTORE_AUTHORIZED = "DATABASE_BACKUP_RESTORE_AUTHORIZED"
 DATABASE_BACKUP_DELETE_AUTHORIZED = "DATABASE_BACKUP_DELETE_AUTHORIZED"
 LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED = "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED"
 
-AUTHORITY_SCHEMA_VERSION = 3
+AUTHORITY_SCHEMA_VERSION = 4
 READ_ONLY_VALIDATION = "READ_ONLY_VALIDATION"
 
 _OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
@@ -175,7 +175,13 @@ def _require_operation(
     return operation, capability
 
 
-def _profile_scope(paths: PathResolver, site: _SiteBinding, profile_id: str) -> dict[str, Any]:
+def _profile_scope(
+    paths: PathResolver,
+    site: _SiteBinding,
+    profile_id: str,
+    *,
+    include_database_identity: bool = True,
+) -> dict[str, Any]:
     profile_key = str(profile_id or "").strip()
     if not profile_key:
         raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_REQUIRED")
@@ -198,12 +204,14 @@ def _profile_scope(paths: PathResolver, site: _SiteBinding, profile_id: str) -> 
     database_relative_path = _relative(database_path, site.site_root, "DATABASE_DESCRIPTOR_PATH_INVALID")
     if not database_relative_path.endswith("/mesh.sqlite"):
         raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")
-    catalog = paths.mesh_catalog_path(site.directory_name)
-    descriptor_revision = _sha256(catalog) if catalog.is_file() else ""
-    database_identity = _database_identity(
-        database_path,
-        str(profile.get("current_version") or "missing"),
-        temp_dir=paths.temp_dir,
+    database_identity = (
+        _database_identity(
+            database_path,
+            str(profile.get("current_version") or "missing"),
+            temp_dir=paths.temp_dir,
+        )
+        if include_database_identity
+        else {"deferred": True}
     )
     body = {
         "canonical_site_id": site.canonical_site_id,
@@ -215,7 +223,6 @@ def _profile_scope(paths: PathResolver, site: _SiteBinding, profile_id: str) -> 
         "scope_id": f"{site.directory_name}:{safe_folder_name}",
         "database_path": str(database_path.resolve()),
         "database_relative_path": database_relative_path,
-        "descriptor_revision": descriptor_revision,
         "site_descriptor_revision": site.descriptor_revision,
         "current_schema_version": str(profile.get("current_version") or "missing"),
         "target_schema_version": str(profile.get("required_version") or ""),
@@ -258,6 +265,7 @@ def _backup_binding(
     backup_id: str,
     *,
     operation: str,
+    include_target_identity: bool = True,
 ) -> dict[str, Any]:
     backup_key = str(backup_id or "").strip()
     if not backup_key:
@@ -331,7 +339,7 @@ def _backup_binding(
         "result_status": str(item.get("result_status") or ""),
         "authority_status": str(item.get("authority_status") or ""),
     }
-    if operation == "DATABASE_BACKUP_RESTORE":
+    if operation == "DATABASE_BACKUP_RESTORE" and include_target_identity:
         body["target_identity"] = _database_identity(target_path, temp_dir=paths.temp_dir)
     return {**body, "backup_digest": _digest(body)}
 
@@ -345,6 +353,7 @@ def build_database_task_authority(
     backup_ids: Iterable[str] = (),
     database_kind: str = "mesh_derived",
     authorization_token: str = "",
+    defer_identity: bool = False,
 ) -> dict[str, Any]:
     """Build a JSON-safe immutable authority snapshot before queuing a job."""
 
@@ -363,14 +372,23 @@ def build_database_task_authority(
         selected = list(dict.fromkeys(str(value).strip() for value in profile_ids if str(value).strip()))
         if not selected:
             raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_REQUIRED")
-        scopes = [_profile_scope(paths, site, value) for value in selected]
+        scopes = [
+            _profile_scope(paths, site, value, include_database_identity=not defer_identity)
+            for value in selected
+        ]
     backups = []
     if str(task_type) in _BACKUP_TASKS:
         selected_backups = list(dict.fromkeys(str(value).strip() for value in backup_ids if str(value).strip()))
         if not selected_backups:
             raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_REQUIRED")
         backups = [
-            _backup_binding(paths, site, value, operation=operation)
+            _backup_binding(
+                paths,
+                site,
+                value,
+                operation=operation,
+                include_target_identity=not defer_identity,
+            )
             for value in selected_backups
         ]
     legacy_archives = (
@@ -393,8 +411,107 @@ def build_database_task_authority(
         "scopes": scopes,
         "backups": backups,
         "legacy_archives": legacy_archives,
+        "identity_deferred": bool(defer_identity),
     }
     return {**body, "authority_digest": _digest(body)}
+
+
+def materialize_database_task_authority(
+    paths: PathResolver,
+    authority: Mapping[str, Any],
+    *,
+    authorization_token: str = "",
+) -> dict[str, Any]:
+    """Complete a lightweight queued authority inside the Job boundary."""
+
+    if not isinstance(authority, Mapping) or not bool(authority.get("identity_deferred")):
+        return dict(authority) if isinstance(authority, Mapping) else {}
+    unsigned = {key: value for key, value in authority.items() if str(key) != "authority_digest"}
+    if str(authority.get("authority_digest") or "") != _digest(unsigned):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    task_type = str(authority.get("task_type") or "")
+    profile_scopes = authority.get("scopes") or ()
+    backup_bindings = authority.get("backups") or ()
+    if not all(isinstance(item, Mapping) for item in (*profile_scopes, *backup_bindings)):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    materialized = build_database_task_authority(
+        paths,
+        task_type=task_type,
+        site_ref=str(authority.get("site_directory_name") or ""),
+        profile_ids=[str(item.get("profile_id") or "") for item in profile_scopes],
+        backup_ids=[str(item.get("backup_id") or "") for item in backup_bindings],
+        database_kind=str(authority.get("database_kind") or ""),
+        authorization_token=authorization_token,
+        defer_identity=False,
+    )
+    for field in (
+        "schema_version",
+        "task_type",
+        "operation",
+        "operation_authority",
+        "database_kind",
+        "canonical_site_id",
+        "site_directory_name",
+        "site_root_relative_path",
+        "site_descriptor_revision",
+        "is_production",
+        "scope_kind",
+    ):
+        if authority.get(field) != materialized.get(field):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_SITE_SCOPE_STALE")
+    expected_scopes = {str(item.get("profile_id") or ""): item for item in profile_scopes}
+    actual_scopes = {str(item.get("profile_id") or ""): item for item in materialized.get("scopes") or ()}
+    if set(expected_scopes) != set(actual_scopes):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_STALE")
+    for profile_id, expected in expected_scopes.items():
+        _compare(
+            "DATABASE_TARGET_STALE",
+            expected,
+            actual_scopes[profile_id],
+            (
+                "canonical_site_id",
+                "site_directory_name",
+                "profile_id",
+                "safe_folder_name",
+                "database_kind",
+                "scope_type",
+                "scope_id",
+                "database_path",
+                "database_relative_path",
+                "target_schema_version",
+                "site_descriptor_revision",
+            ),
+        )
+    expected_backups = {str(item.get("backup_id") or ""): item for item in backup_bindings}
+    actual_backups = {str(item.get("backup_id") or ""): item for item in materialized.get("backups") or ()}
+    if set(expected_backups) != set(actual_backups):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_STALE")
+    for backup_id, expected in expected_backups.items():
+        _compare(
+            "DATABASE_BACKUP_STALE",
+            expected,
+            actual_backups[backup_id],
+            (
+                "backup_id",
+                "operation",
+                "canonical_site_id",
+                "site_directory_name",
+                "database_kind",
+                "scope_type",
+                "scope_id",
+                "profile_id",
+                "backup_relative_path",
+                "target_database_relative_path",
+                "manifest_sha256",
+                "database_sha256",
+                "database_size",
+                "declared_identity",
+                "observed_identity",
+                "result_status",
+                "authority_status",
+            ),
+        )
+    return materialized
 
 
 def _compare(label: str, expected: Mapping[str, Any], actual: Mapping[str, Any], fields: Iterable[str]) -> None:
@@ -430,6 +547,8 @@ def revalidate_database_task_authority(
     if not operation or str(authority.get("operation") or "") != operation:
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
     if str(authority.get("operation_authority") or "") != capability:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    if bool(authority.get("identity_deferred")):
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
     if str(params.get("database_kind") or "mesh_derived") != "mesh_derived":
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
@@ -528,7 +647,6 @@ def revalidate_database_task_authority(
                     "safe_folder_name",
                     "database_relative_path",
                     "database_path",
-                    "descriptor_revision",
                     "current_schema_version",
                     "target_schema_version",
                     "database_identity",
@@ -596,5 +714,6 @@ __all__ = [
     "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED",
     "READ_ONLY_VALIDATION",
     "build_database_task_authority",
+    "materialize_database_task_authority",
     "revalidate_database_task_authority",
 ]
