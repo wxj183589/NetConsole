@@ -266,6 +266,7 @@ def _backup_binding(
     *,
     operation: str,
     include_target_identity: bool = True,
+    include_content_identity: bool = True,
 ) -> dict[str, Any]:
     backup_key = str(backup_id or "").strip()
     if not backup_key:
@@ -301,8 +302,8 @@ def _backup_binding(
     if operation == "DATABASE_BACKUP_RESTORE" and target_path != expected_target:
         raise DatabaseMaintenanceAuthorityError("BACKUP_TARGET_MISMATCH")
     backup_exists = database_path.is_file()
-    backup_size = int(database_path.stat().st_size) if backup_exists else 0
-    backup_sha256 = _sha256(database_path) if backup_exists else ""
+    backup_size = int(database_path.stat().st_size) if include_content_identity and backup_exists else 0
+    backup_sha256 = _sha256(database_path) if include_content_identity and backup_exists else ""
     declared_size = int(item.get("database_size") or 0)
     declared_sha256 = str(item.get("database_sha256") or "")
     declared_identity = {
@@ -310,14 +311,22 @@ def _backup_binding(
         "size_bytes": declared_size,
         "sha256": declared_sha256,
     }
-    observed_identity = {
-        "exists": backup_exists,
-        "size_bytes": backup_size,
-        "sha256": backup_sha256,
-    }
-    if operation != READ_ONLY_VALIDATION and observed_identity != declared_identity:
+    observed_identity = (
+        {
+            "exists": backup_exists,
+            "size_bytes": backup_size,
+            "sha256": backup_sha256,
+        }
+        if include_content_identity
+        else {"deferred": True}
+    )
+    if (
+        include_content_identity
+        and operation not in {READ_ONLY_VALIDATION, "DATABASE_BACKUP_DELETE"}
+        and observed_identity != declared_identity
+    ):
         raise DatabaseMaintenanceAuthorityError("BACKUP_CONTENT_STALE")
-    manifest_sha256 = _sha256(manifest_path)
+    manifest_sha256 = _sha256(manifest_path) if include_content_identity else ""
     body = {
         "backup_id": backup_key,
         "operation": operation,
@@ -388,6 +397,7 @@ def build_database_task_authority(
                 value,
                 operation=operation,
                 include_target_identity=not defer_identity,
+                include_content_identity=not defer_identity,
             )
             for value in selected_backups
         ]
@@ -502,13 +512,6 @@ def materialize_database_task_authority(
                 "profile_id",
                 "backup_relative_path",
                 "target_database_relative_path",
-                "manifest_sha256",
-                "database_sha256",
-                "database_size",
-                "declared_identity",
-                "observed_identity",
-                "result_status",
-                "authority_status",
             ),
         )
     return materialized
@@ -696,9 +699,16 @@ def revalidate_database_task_authority(
                 actual,
                 ("target_identity",),
             )
-        if (
-            str(task_type) in {"database_backup_delete", "database_backup_batch_delete"}
-            and str(actual.get("result_status") or "").upper() not in {"VALID_BACKUP", "DUPLICATE_BACKUP"}
+        if str(task_type) in {"database_backup_delete", "database_backup_batch_delete"} and (
+            str(actual.get("result_status") or "").upper()
+            not in {
+                "VALID_BACKUP",
+                "DUPLICATE_BACKUP",
+                "INVALID_DATABASE",
+                "ZERO_BYTE_ARCHIVE",
+                "NO_EXISTING_DATABASE",
+                "CREATION_FAILED",
+            }
         ):
             raise DatabaseMaintenanceAuthorityError("BACKUP_UNKNOWN_PROTECTED")
     return dict(authority)

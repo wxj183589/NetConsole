@@ -221,7 +221,7 @@ def test_batch_delete_keeps_processing_items_when_one_authority_binding_is_stale
     assert result["deleted"] == 1
     assert result["failed"] == 1
     assert result["partial_success"] is True
-    assert result["items"][0]["code"] == "BACKUP_CONTENT_STALE"
+    assert result["items"][0]["code"] == "DATABASE_BACKUP_STALE"
     assert result["items"][1]["code"] == "DELETED"
     assert Path(str(first["path"])).exists()
     assert not Path(str(second["path"])).exists()

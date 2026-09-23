@@ -173,6 +173,7 @@ def validate_backup(request: Request, backup_id: str) -> DatabaseTaskReferenceDT
         site_id=site_id,
         backup_ids=[backup_id],
         authorization_token="",
+        defer_identity=True,
     )
     return _submit(
         request,
@@ -236,6 +237,7 @@ def delete_backup(
         site_id=site_id,
         backup_ids=[backup_id],
         authorization_token=payload.authorization_token,
+        defer_identity=True,
     )
     return _submit(
         request,
@@ -268,6 +270,7 @@ def delete_backups(
         site_id=site_id,
         backup_ids=selected,
         authorization_token=payload.authorization_token,
+        defer_identity=True,
     )
     return _submit(
         request,

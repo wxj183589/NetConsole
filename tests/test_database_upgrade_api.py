@@ -87,6 +87,47 @@ def test_profile_upgrade_submission_defers_sqlite_identity_to_worker(
     assert process.jobs[-1].params["database_authority"]["identity_deferred"] is True
 
 
+def test_backup_validation_submission_defers_backup_hash_to_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from netconsole.services.database_upgrade import authority as authority_module
+
+    client, paths, process = _client(tmp_path)
+    database = paths.mesh_mr_db_path("demo", "列车07-MR-CT")
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE marker(value TEXT)")
+        connection.commit()
+    backup = DatabaseBackupStore(paths).create(
+        source_path=database,
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id="demo:列车07-MR-CT",
+        task_id="deferred-validation",
+        old_version="old",
+        target_version="new",
+        strategy="SCHEMA_MIGRATION",
+    )
+
+    original_hash = authority_module._sha256
+
+    def unexpected_http_hash(path: Path) -> str:
+        if path.name in {"database.sqlite", "manifest.json"}:
+            raise AssertionError("backup content hash must be materialized by the worker")
+        return original_hash(path)
+
+    monkeypatch.setattr(
+        authority_module,
+        "_sha256",
+        unexpected_http_hash,
+    )
+
+    submitted = client.post(f"/api/database-upgrades/backups/{backup['backup_id']}/validate")
+
+    assert submitted.status_code == 202, submitted.text
+    assert process.jobs[-1].params["database_authority"]["identity_deferred"] is True
+
+
 def test_batch_database_actions_deduplicate_selection_and_require_upgrade_confirmation(
     tmp_path: Path,
 ) -> None:

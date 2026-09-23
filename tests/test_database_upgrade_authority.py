@@ -510,6 +510,59 @@ def test_validation_binds_observed_mismatch_and_reports_corrupt_backup(tmp_path:
     assert validation["restorable"] is False
 
 
+def test_invalid_backup_can_be_authorized_for_explicit_delete(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, database = _mesh_profile(paths)
+    backup = DatabaseBackupStore(paths).create(
+        source_path=database,
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id=f"demo:{profile.safe_folder_name}",
+        task_id="delete-invalid-backup",
+        old_version="old",
+        target_version="new",
+        strategy="SCHEMA_MIGRATION",
+    )
+    backup_database = Path(str(backup["path"])) / "database.sqlite"
+    backup_database.write_bytes(backup_database.read_bytes()[:100])
+    validated = DatabaseUpgradeManagementService(paths).validate_backup(
+        str(backup["backup_id"]), site_id="demo"
+    )
+    assert validated["result_status"] == "INVALID_DATABASE"
+
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_backup_delete",
+        site_ref="demo",
+        backup_ids=[str(backup["backup_id"])],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_BACKUP_DELETE_AUTHORIZED,
+        defer_identity=True,
+    )
+    materialized = materialize_database_task_authority(
+        paths,
+        authority,
+        authorization_token=DATABASE_BACKUP_DELETE_AUTHORIZED,
+    )
+
+    assert materialized["backups"][0]["observed_identity"]["sha256"] != materialized["backups"][0]["declared_identity"]["sha256"]
+    assert revalidate_database_task_authority(
+        paths,
+        "database_backup_delete",
+        {
+            "database_kind": "mesh_derived",
+            "backup_id": str(backup["backup_id"]),
+            "backup_ids": [str(backup["backup_id"])],
+            "site_id": "demo",
+            "site_name": "demo",
+            "authorization_token": DATABASE_BACKUP_DELETE_AUTHORIZED,
+            "database_authority": materialized,
+        },
+    )
+
+
 def test_validation_worker_rejects_second_backup_change_after_submit(tmp_path: Path) -> None:
     from netconsole.core.paths import PathResolver
 
