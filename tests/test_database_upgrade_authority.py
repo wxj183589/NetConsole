@@ -204,11 +204,24 @@ def test_restore_rejects_path_separator_in_backup_scope_id(tmp_path: Path) -> No
         )
 
 
-def test_deferred_authority_materializes_database_identity_inside_worker_boundary(tmp_path: Path) -> None:
+def test_deferred_authority_materializes_database_identity_inside_worker_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from netconsole.core.paths import PathResolver
+    from netconsole.services.mesh_derived_data_maintenance_service import (
+        MeshDerivedDataMaintenanceService,
+    )
 
     paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
     profile, _database_path = _mesh_profile(paths)
+    original_inspect = MeshDerivedDataMaintenanceService.inspect
+    inspect_calls = {"value": 0}
+
+    def counted_inspect(self, *args, **kwargs):
+        inspect_calls["value"] += 1
+        return original_inspect(self, *args, **kwargs)
+
+    monkeypatch.setattr(MeshDerivedDataMaintenanceService, "inspect", counted_inspect)
     deferred = build_database_task_authority(
         paths,
         task_type="database_upgrade",
@@ -222,6 +235,7 @@ def test_deferred_authority_materializes_database_identity_inside_worker_boundar
     assert deferred["identity_deferred"] is True
     assert deferred["scopes"][0]["database_identity"] == {"deferred": True}
     assert deferred["scopes"][0]["database_observation"]["identity_format"] == "sqlite-observation-v1"
+    assert inspect_calls["value"] == 0
 
     materialized = materialize_database_task_authority(
         paths,
@@ -231,6 +245,7 @@ def test_deferred_authority_materializes_database_identity_inside_worker_boundar
 
     assert materialized["identity_deferred"] is False
     assert materialized["scopes"][0]["database_identity"]["identity_format"] == "sqlite-logical-v1"
+    assert inspect_calls["value"] == 1
 
     _database(_database_path, "changed-after-submit")
     with pytest.raises(DatabaseMaintenanceAuthorityError, match="DATABASE_TARGET_STALE"):
