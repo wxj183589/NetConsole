@@ -275,11 +275,40 @@ def _profile_scope(
         "database_path": str(database_path.resolve()),
         "database_relative_path": database_relative_path,
         "site_descriptor_revision": site.descriptor_revision,
+        "database_observation": _database_observation(
+            database_path,
+            str(profile.get("current_version") or "missing"),
+        ),
         "current_schema_version": str(profile.get("current_version") or "missing"),
         "target_schema_version": str(profile.get("required_version") or ""),
         "database_identity": database_identity,
     }
     return {**body, "scope_digest": _digest(body)}
+
+
+def _database_observation(path: Path, schema_version: str = "") -> dict[str, Any]:
+    """Capture a cheap, WAL-aware target observation for queued authorities."""
+
+    resolved = path.resolve(strict=False)
+
+    def stat_pair(candidate: Path) -> tuple[int, int]:
+        try:
+            info = candidate.stat()
+        except OSError:
+            return 0, 0
+        return int(info.st_size), int(info.st_mtime_ns)
+
+    size_bytes, mtime_ns = stat_pair(resolved)
+    wal_size_bytes, wal_mtime_ns = stat_pair(resolved.with_name(resolved.name + "-wal"))
+    return {
+        "identity_format": "sqlite-observation-v1",
+        "exists": bool(size_bytes > 0),
+        "size_bytes": size_bytes,
+        "mtime_ns": mtime_ns,
+        "wal_size_bytes": wal_size_bytes,
+        "wal_mtime_ns": wal_mtime_ns,
+        "schema_version": str(schema_version or ""),
+    }
 
 
 def _database_identity(
@@ -506,6 +535,7 @@ def materialize_database_task_authority(
     paths: PathResolver,
     authority: Mapping[str, Any],
     *,
+    profile_ids: Iterable[str] | None = None,
     authorization_token: str = "",
     backup_ids: Iterable[str] | None = None,
 ) -> dict[str, Any]:
@@ -521,6 +551,14 @@ def materialize_database_task_authority(
     backup_bindings = list(authority.get("backups") or ())
     if not all(isinstance(item, Mapping) for item in (*profile_scopes, *backup_bindings)):
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    selected_profile_ids = list(
+        dict.fromkeys(str(value).strip() for value in profile_ids or () if str(value).strip())
+    )
+    if profile_ids is not None:
+        by_profile_id = {str(item.get("profile_id") or ""): item for item in profile_scopes}
+        if any(value not in by_profile_id for value in selected_profile_ids):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_STALE")
+        profile_scopes = [by_profile_id[value] for value in selected_profile_ids]
     selected_backup_ids = list(dict.fromkeys(str(value).strip() for value in backup_ids or () if str(value).strip()))
     if backup_ids is not None:
         by_backup_id = {str(item.get("backup_id") or ""): item for item in backup_bindings}
@@ -571,6 +609,8 @@ def materialize_database_task_authority(
                 "scope_id",
                 "database_path",
                 "database_relative_path",
+                "current_schema_version",
+                "database_observation",
                 "target_schema_version",
                 "site_descriptor_revision",
             ),
@@ -635,6 +675,7 @@ def revalidate_database_task_authority(
     profile_ids: Iterable[str] | None = None,
     backup_ids: Iterable[str] | None = None,
     validate_profile_targets: bool = True,
+    allow_deferred_identity: bool = False,
 ) -> dict[str, Any]:
     """Re-resolve every target immediately before the worker calls a mutator.
 
@@ -655,7 +696,8 @@ def revalidate_database_task_authority(
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
     if str(authority.get("operation_authority") or "") != capability:
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
-    if bool(authority.get("identity_deferred")):
+    identity_deferred = bool(authority.get("identity_deferred"))
+    if identity_deferred and not allow_deferred_identity:
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
     if str(params.get("database_kind") or "mesh_derived") != "mesh_derived":
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
@@ -686,6 +728,22 @@ def revalidate_database_task_authority(
     )
     if str(authority.get("database_kind") or "") != "mesh_derived":
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+    if identity_deferred:
+        if str(task_type) not in {"database_batch_upgrade", "database_batch_backup"}:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        expected_profiles = {
+            str(value).strip()
+            for value in params.get("profile_ids") or [params.get("profile_id")]
+            if str(value).strip()
+        }
+        actual_profiles = {
+            str(item.get("profile_id") or "")
+            for item in authority.get("scopes") or ()
+            if isinstance(item, Mapping)
+        }
+        if not expected_profiles or expected_profiles != actual_profiles:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+        return dict(authority)
     if (
         str(task_type) == "legacy_database_archive_migration"
         and bool(authority.get("legacy_archive_discovery_deferred"))

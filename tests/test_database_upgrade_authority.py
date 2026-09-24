@@ -221,6 +221,7 @@ def test_deferred_authority_materializes_database_identity_inside_worker_boundar
 
     assert deferred["identity_deferred"] is True
     assert deferred["scopes"][0]["database_identity"] == {"deferred": True}
+    assert deferred["scopes"][0]["database_observation"]["identity_format"] == "sqlite-observation-v1"
 
     materialized = materialize_database_task_authority(
         paths,
@@ -230,6 +231,14 @@ def test_deferred_authority_materializes_database_identity_inside_worker_boundar
 
     assert materialized["identity_deferred"] is False
     assert materialized["scopes"][0]["database_identity"]["identity_format"] == "sqlite-logical-v1"
+
+    _database(_database_path, "changed-after-submit")
+    with pytest.raises(DatabaseMaintenanceAuthorityError, match="DATABASE_TARGET_STALE"):
+        materialize_database_task_authority(
+            paths,
+            deferred,
+            authorization_token=DATABASE_UPGRADE_AUTHORIZED,
+        )
 
 
 def test_batch_upgrade_revalidation_ignores_its_own_catalog_pending_marker(tmp_path: Path) -> None:
@@ -1041,14 +1050,21 @@ def test_batch_upgrade_initial_authority_leaves_stale_profiles_to_item_callback(
     )
     _database(first_database, "changed-after-submit")
     called = {"value": False}
+    callback_failures: list[tuple[str, str]] = []
 
     class RecordingService:
         def __init__(self, _paths):
             pass
 
-        def batch_upgrade(self, *_args, **_kwargs):
+        def batch_upgrade(self, _site_id, selected_profile_ids, **kwargs):
             called["value"] = True
-            return {"total": 2}
+            before_mutation = kwargs["before_mutation"]
+            for selected_profile_id in selected_profile_ids:
+                try:
+                    before_mutation(selected_profile_id)
+                except Exception as exc:
+                    callback_failures.append((selected_profile_id, str(exc)))
+            return {"total": len(selected_profile_ids), "failed": len(callback_failures)}
 
     monkeypatch.setattr(
         "netconsole.services.job_center.handlers.database_jobs.DatabaseUpgradeManagementService",
@@ -1073,6 +1089,8 @@ def test_batch_upgrade_initial_authority_leaves_stale_profiles_to_item_callback(
 
     assert result.ok is True
     assert called["value"] is True
+    assert callback_failures == [(first.mr_id, "DATABASE_TARGET_STALE")]
+    assert result.result["failed"] == 1
 
 
 def test_restore_authority_revalidation_allows_its_own_validation_write(tmp_path: Path) -> None:

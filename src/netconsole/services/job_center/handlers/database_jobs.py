@@ -35,23 +35,32 @@ def _authorize(
     backup_ids=None,
     validate_profile_targets: bool = True,
     materialize_backup_ids=None,
+    allow_deferred_identity: bool = False,
 ) -> None:
     authority = context.params.get("database_authority")
     params = context.params
-    if isinstance(authority, Mapping) and bool(authority.get("identity_deferred")):
+    if (
+        isinstance(authority, Mapping)
+        and bool(authority.get("identity_deferred"))
+        and not allow_deferred_identity
+    ):
         materialized = materialize_database_task_authority(
             context.paths,
             authority,
+            profile_ids=profile_ids,
             authorization_token=str(context.params.get("authorization_token") or ""),
             backup_ids=materialize_backup_ids,
         )
-        if materialize_backup_ids is None:
+        if profile_ids is None and materialize_backup_ids is None:
             context.params["database_authority"] = materialized
             params = context.params
         else:
             params = dict(context.params)
             params["database_authority"] = materialized
-            params["backup_ids"] = list(materialize_backup_ids)
+            if profile_ids is not None:
+                params["profile_ids"] = list(profile_ids)
+            if materialize_backup_ids is not None:
+                params["backup_ids"] = list(materialize_backup_ids)
     revalidate_database_task_authority(
         context.paths,
         context.task_type,
@@ -59,6 +68,7 @@ def _authorize(
         profile_ids=profile_ids,
         backup_ids=backup_ids,
         validate_profile_targets=validate_profile_targets,
+        allow_deferred_identity=allow_deferred_identity,
     )
 
 
@@ -97,7 +107,7 @@ def database_upgrade(context: JobContext) -> dict[str, object]:
 
 def database_batch_upgrade(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    _authorize(context, validate_profile_targets=False)
+    _authorize(context, validate_profile_targets=False, allow_deferred_identity=True)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:
@@ -119,7 +129,7 @@ def database_batch_upgrade(context: JobContext) -> dict[str, object]:
 
 def database_batch_backup(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    _authorize(context, validate_profile_targets=False)
+    _authorize(context, validate_profile_targets=False, allow_deferred_identity=True)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:
