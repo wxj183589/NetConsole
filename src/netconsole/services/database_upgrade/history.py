@@ -4,7 +4,7 @@ import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 from netconsole.core.atomic_file import atomic_write_bytes
@@ -15,24 +15,106 @@ from netconsole.services.database_upgrade.coordinator import database_maintenanc
 from netconsole.services.database_upgrade.sqlite_consistency import sha256_file, validate_sqlite
 
 
+_LEGACY_ARCHIVE_PATTERNS = (
+    "mesh.sqlite.legacy_*",
+    "mesh.sqlite.schema_archive_*",
+    "mesh.sqlite.rollback_*",
+)
+
+
+def legacy_archive_candidates(paths: PathResolver, site_id: str) -> list[Path]:
+    root = paths.site_mesh_root(site_id).resolve()
+    if not root.is_dir() or root.is_symlink():
+        return []
+    candidates: list[Path] = []
+    seen: set[str] = set()
+    for pattern in _LEGACY_ARCHIVE_PATTERNS:
+        for source in root.rglob(pattern):
+            if not source.is_file() or source.is_symlink():
+                continue
+            key = str(source.resolve()).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(source)
+    return sorted(candidates, key=lambda item: str(item).casefold())
+
+
+def legacy_archive_binding(
+    paths: PathResolver,
+    site_id: str,
+    source: Path,
+    *,
+    include_content_identity: bool = True,
+) -> dict[str, Any]:
+    root = paths.site_mesh_root(site_id).resolve()
+    if source.is_symlink() or not source.is_file():
+        raise FileNotFoundError(str(source))
+    resolved = source.resolve()
+    relative_path = resolved.relative_to(root).as_posix()
+    stat = resolved.stat()
+    size_bytes = stat.st_size
+    return {
+        "source_relative_path": relative_path,
+        "profile_name": resolved.parent.name,
+        "size_bytes": size_bytes,
+        "modified_ns": int(stat.st_mtime_ns),
+        "sha256": sha256_file(resolved) if include_content_identity and size_bytes else "",
+    }
+
+
+def legacy_archive_bindings(
+    paths: PathResolver,
+    site_id: str,
+    *,
+    include_content_identity: bool = True,
+) -> list[dict[str, Any]]:
+    bindings: list[dict[str, Any]] = []
+    for source in legacy_archive_candidates(paths, site_id):
+        try:
+            bindings.append(
+                legacy_archive_binding(
+                    paths,
+                    site_id,
+                    source,
+                    include_content_identity=include_content_identity,
+                )
+            )
+        except (FileNotFoundError, OSError, ValueError):
+            continue
+    return bindings
+
+
 class LegacyDatabaseArchiveService:
     """一次性整理历史 MESH 归档；有效和无效文件都保留，不自动删除。"""
 
-    _PATTERNS = ("mesh.sqlite.legacy_*", "mesh.sqlite.schema_archive_*", "mesh.sqlite.rollback_*")
+    _PATTERNS = _LEGACY_ARCHIVE_PATTERNS
 
     def __init__(self, paths: PathResolver, *, backup_store: DatabaseBackupStore | None = None) -> None:
         self.paths = paths
         self.backups = backup_store or DatabaseBackupStore(paths)
 
-    def organize_mesh_archives(self, site_id: str, *, profile_id: str = "") -> dict[str, Any]:
+    def organize_mesh_archives(
+        self,
+        site_id: str,
+        *,
+        profile_id: str = "",
+        authorized_archives: Iterable[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         root = self.paths.site_mesh_root(site_id).resolve()
         if not root.is_dir() or root.is_symlink():
             return {"site_id": str(site_id), "found_count": 0, "moved_count": 0, "invalid_count": 0, "items": []}
         recovered_count = self._recover_in_progress(site_id)
-        candidates: list[Path] = []
-        for pattern in self._PATTERNS:
-            candidates.extend(path for path in root.rglob(pattern) if path.is_file() and not path.is_symlink())
-        seen: set[str] = set()
+        authorized_by_path = (
+            {
+                str(item.get("source_relative_path") or ""): dict(item)
+                for item in authorized_archives
+                if isinstance(item, Mapping) and str(item.get("source_relative_path") or "")
+            }
+            if authorized_archives is not None
+            else None
+        )
+        candidates = legacy_archive_candidates(self.paths, site_id)
         items: list[dict[str, Any]] = []
         existing_by_digest = {
             str(item.get("database_sha256") or ""): str(item.get("backup_id") or "")
@@ -40,17 +122,42 @@ class LegacyDatabaseArchiveService:
             if str(item.get("database_sha256") or "")
             and str(item.get("result_status") or "") in {"VALID_BACKUP", "DUPLICATE_BACKUP"}
         }
-        for source in sorted(candidates, key=lambda item: str(item).casefold()):
-            key = str(source.resolve()).casefold()
-            if key in seen:
-                continue
-            seen.add(key)
+        for source in candidates:
             profile_scope = str(profile_id or source.parent.name or "unknown")
             scope_id = f"{site_id}:{profile_scope}"
             lock_key = f"database-upgrade:site_profile:{scope_id}"
             with database_maintenance_lock(self.paths, lock_key):
                 if not source.is_file() or source.is_symlink():
                     continue
+                if authorized_by_path is not None:
+                    relative_path = source.resolve().relative_to(root).as_posix()
+                    expected = authorized_by_path.get(relative_path)
+                    if expected is None:
+                        items.append(
+                            {
+                                "original_database_path": str(source),
+                                "source_relative_path": relative_path,
+                                "result_status": "UNAUTHORIZED_ARCHIVE",
+                                "error_message": "该历史归档未包含在提交时的 authority 快照中",
+                                "moved": False,
+                            }
+                        )
+                        continue
+                    try:
+                        actual = legacy_archive_binding(self.paths, site_id, source)
+                    except (FileNotFoundError, OSError, ValueError):
+                        continue
+                    if actual != expected:
+                        items.append(
+                            {
+                                "original_database_path": str(source),
+                                **actual,
+                                "result_status": "LEGACY_ARCHIVE_STALE",
+                                "error_message": "历史归档在 authority 快照后发生变化",
+                                "moved": False,
+                            }
+                        )
+                        continue
                 item = self._organize_one(
                     source,
                     scope_id=scope_id,
@@ -234,4 +341,9 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     atomic_write_bytes(path, payload)
 
 
-__all__ = ["LegacyDatabaseArchiveService"]
+__all__ = [
+    "LegacyDatabaseArchiveService",
+    "legacy_archive_binding",
+    "legacy_archive_bindings",
+    "legacy_archive_candidates",
+]

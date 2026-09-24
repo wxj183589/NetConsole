@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
+from netconsole.services.database_upgrade.authority import (
+    DatabaseMaintenanceAuthorityCancelled,
+    DatabaseMaintenanceAuthorityError,
+    materialize_database_task_authority,
+    revalidate_database_task_authority,
+)
+from netconsole.services.database_upgrade.backup_store import DatabaseBackupDeleteError
 from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
-from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
 
 
@@ -20,9 +29,76 @@ DATABASE_UPGRADE_TASK_TYPES = frozenset(
 )
 DATABASE_UPGRADE_NONCANCELLABLE_TASK_TYPES = frozenset({"database_backup_delete", "database_backup_batch_delete"})
 
+def _authorize(
+    context: JobContext,
+    *,
+    profile_ids=None,
+    backup_ids=None,
+    validate_profile_targets: bool = True,
+    materialize_backup_ids=None,
+    allow_deferred_identity: bool = False,
+) -> None:
+    authority = context.params.get("database_authority")
+    params = context.params
+    def cancel_check() -> None:
+        if context.should_cancel is not None and context.should_cancel():
+            raise DatabaseMaintenanceAuthorityCancelled("后台任务已取消")
+
+    if (
+        isinstance(authority, Mapping)
+        and bool(authority.get("identity_deferred"))
+        and not allow_deferred_identity
+    ):
+        try:
+            materialized = materialize_database_task_authority(
+                context.paths,
+                authority,
+                profile_ids=profile_ids,
+                authorization_token=str(context.params.get("authorization_token") or ""),
+                backup_ids=materialize_backup_ids,
+                cancel_check=cancel_check,
+            )
+        except DatabaseMaintenanceAuthorityCancelled as exc:
+            raise BackgroundTaskCancelled(str(exc)) from exc
+        if profile_ids is None and materialize_backup_ids is None:
+            context.params["database_authority"] = materialized
+            params = context.params
+        else:
+            params = dict(context.params)
+            params["database_authority"] = materialized
+            if profile_ids is not None:
+                params["profile_ids"] = list(profile_ids)
+            if materialize_backup_ids is not None:
+                params["backup_ids"] = list(materialize_backup_ids)
+    try:
+        revalidate_database_task_authority(
+            context.paths,
+            context.task_type,
+            params,
+            profile_ids=profile_ids,
+            backup_ids=backup_ids,
+            validate_profile_targets=validate_profile_targets,
+            allow_deferred_identity=allow_deferred_identity,
+            cancel_check=cancel_check,
+        )
+    except DatabaseMaintenanceAuthorityCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
+
+
+def _authorize_batch_delete_item(context: JobContext, selected_backup_id: str) -> None:
+    try:
+        _authorize(
+            context,
+            backup_ids=[selected_backup_id],
+            materialize_backup_ids=[selected_backup_id],
+        )
+    except DatabaseMaintenanceAuthorityError as exc:
+        raise DatabaseBackupDeleteError(exc.code, str(exc)) from exc
+
 
 def database_upgrade(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     database_kind = str(context.params.get("database_kind") or "")
     if database_kind != "mesh_derived":
         raise ValueError("当前阶段仅 MESH 派生数据库已接入统一升级框架")
@@ -35,11 +111,16 @@ def database_upgrade(context: JobContext) -> dict[str, object]:
         profile_ids=[profile_id],
         progress=context.progress,
         should_cancel=context.should_cancel,
+        before_mutation=lambda selected_profile_id: _authorize(
+            context,
+            profile_ids=[selected_profile_id],
+        ),
     )
 
 
 def database_batch_upgrade(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context, validate_profile_targets=False, allow_deferred_identity=True)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:
@@ -50,6 +131,10 @@ def database_batch_upgrade(context: JobContext) -> dict[str, object]:
         task_id=context.job_id,
         progress=context.progress,
         should_cancel=context.should_cancel,
+        before_mutation=lambda selected_profile_id: _authorize(
+            context,
+            profile_ids=[selected_profile_id],
+        ),
     )
     context.progress("database_batch_upgrade", int(result["total"]), int(result["total"]), "批量数据库升级完成")
     return result
@@ -57,6 +142,7 @@ def database_batch_upgrade(context: JobContext) -> dict[str, object]:
 
 def database_batch_backup(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context, validate_profile_targets=False, allow_deferred_identity=True)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:
@@ -67,6 +153,10 @@ def database_batch_backup(context: JobContext) -> dict[str, object]:
         task_id=context.job_id,
         progress=context.progress,
         should_cancel=context.should_cancel,
+        before_mutation=lambda selected_profile_id: _authorize(
+            context,
+            profile_ids=[selected_profile_id],
+        ),
     )
     context.progress("database_batch_backup", int(result["total"]), int(result["total"]), "批量数据库备份完成")
     return result
@@ -74,9 +164,14 @@ def database_batch_backup(context: JobContext) -> dict[str, object]:
 
 def database_backup_validation(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).validate_backup(
         str(context.params.get("backup_id") or ""),
         site_id=str(context.params.get("site_name") or ""),
+        before_mutation=lambda: _authorize(
+            context,
+            backup_ids=[str(context.params.get("backup_id") or "")],
+        ),
     )
     context.progress("database_backup_validation", 1, 1, "数据库备份验证完成")
     return result
@@ -84,19 +179,36 @@ def database_backup_validation(context: JobContext) -> dict[str, object]:
 
 def legacy_database_archive_migration(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    result = DatabaseUpgradeManagementService(context.paths).organize_legacy(str(context.params.get("site_id") or ""))
+    _authorize(context)
+    authority = context.params.get("database_authority")
+    authorized_archives = (
+        authority.get("legacy_archives")
+        if isinstance(authority, dict)
+        else None
+    )
+    site_ref = (
+        str(authority.get("site_directory_name") or "")
+        if isinstance(authority, dict)
+        else ""
+    ) or str(context.params.get("site_id") or "")
+    result = DatabaseUpgradeManagementService(context.paths).organize_legacy(
+        site_ref,
+        authorized_archives=authorized_archives,
+    )
     context.progress("legacy_database_archive_migration", 1, 1, "历史数据库归档整理完成")
     return result
 
 
 def database_backup_restore(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).restore_backup(
         str(context.params.get("backup_id") or ""),
         confirmed=bool(context.params.get("confirmed")),
         site_id=str(context.params.get("site_name") or ""),
         progress=context.progress,
         should_cancel=context.should_cancel,
+        before_mutation=lambda: _authorize(context),
     )
     context.progress("database_backup_restore", 1, 1, "数据库备份恢复完成")
     return result
@@ -104,10 +216,15 @@ def database_backup_restore(context: JobContext) -> dict[str, object]:
 
 def database_backup_delete(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).delete_backup(
         str(context.params.get("backup_id") or ""),
         confirmed=bool(context.params.get("confirmed")),
         site_id=str(context.params.get("site_name") or ""),
+        before_mutation=lambda selected_backup_id: _authorize(
+            context,
+            backup_ids=[selected_backup_id],
+        ),
     )
     context.progress("database_backup_delete", 1, 1, "数据库备份已删除")
     return result
@@ -115,12 +232,16 @@ def database_backup_delete(context: JobContext) -> dict[str, object]:
 
 def database_backup_batch_delete(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    backup_ids = [str(value) for value in context.params.get("backup_ids") or []]
+    if not backup_ids:
+        _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).delete_backups(
-        [str(value) for value in context.params.get("backup_ids") or []],
+        backup_ids,
         confirmed=bool(context.params.get("confirmed")),
         site_id=str(context.params.get("site_id") or context.params.get("site_name") or ""),
         task_id=context.job_id,
         progress=context.progress,
+        before_mutation=lambda selected_backup_id: _authorize_batch_delete_item(context, selected_backup_id),
     )
     context.structured_progress(
         "database_backup_batch_delete",

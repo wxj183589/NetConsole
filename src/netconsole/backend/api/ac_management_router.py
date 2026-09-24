@@ -342,7 +342,12 @@ def extension_import_apply(request: Request, payload: AcExtensionApplyRequestDTO
 )
 def extension_rollback(request: Request, audit_id: str, payload: AcExtensionRollbackRequestDTO) -> AcExtensionRollbackResultDTO:
     try:
-        return _web_service(request).rollback_extension(_web_site_id(request), audit_id, payload.explicit_confirmation)
+        return _web_service(request).rollback_extension(
+            _web_site_id(request),
+            audit_id,
+            payload.explicit_confirmation,
+            payload.authorization_token,
+        )
     except AcWebActionError as exc:
         _raise_web_error(exc)
 
@@ -813,9 +818,23 @@ def _raise_web_error(exc: AcWebActionError) -> None:
         "PLAN_SITE_MISMATCH", "TARGET_STALE", "ALREADY_APPLIED", "BASE_DATA_DATABASE_CHANGED",
         "BASE_DATA_ROLLBACK_CONFLICT", "BASE_DATA_IMPORT_CONFLICT", "BASE_DATA_BLOCKING_ISSUES",
         "AC_ACTION_RUNNING",
+        "BASE_DATA_OPERATION_MISMATCH", "ROLLBACK_AUDIT_SITE_MISMATCH",
     }
     not_found = {"PLAN_NOT_FOUND", "ARTIFACT_INVALID", "TASK_NOT_FOUND"}
-    status_code = status.HTTP_409_CONFLICT if exc.code in conflicts else status.HTTP_404_NOT_FOUND if exc.code in not_found else status.HTTP_422_UNPROCESSABLE_ENTITY
+    forbidden = {
+        "ROLLBACK_PRODUCTION_WRITE_NOT_ALLOWED",
+        "ROLLBACK_OPERATION_AUTHORIZATION_REQUIRED",
+        "ROLLBACK_SITE_NOT_CANONICAL",
+    }
+    status_code = (
+        status.HTTP_403_FORBIDDEN
+        if exc.code in forbidden
+        else status.HTTP_409_CONFLICT
+        if exc.code in conflicts
+        else status.HTTP_404_NOT_FOUND
+        if exc.code in not_found
+        else status.HTTP_422_UNPROCESSABLE_ENTITY
+    )
     raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 
 

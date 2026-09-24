@@ -373,6 +373,7 @@ class AcExtensionApplyResultDTO(ApiModel):
 
 class AcExtensionRollbackRequestDTO(ApiModel):
     explicit_confirmation: bool = False
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class AcExtensionRollbackResultDTO(ApiModel):

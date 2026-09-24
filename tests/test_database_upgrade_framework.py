@@ -11,7 +11,10 @@ import pytest
 from netconsole.core.paths import PathResolver
 from netconsole.services.database_upgrade.coordinator import DatabaseUpgradeCoordinator
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
-from netconsole.services.database_upgrade.history import LegacyDatabaseArchiveService
+from netconsole.services.database_upgrade.history import (
+    LegacyDatabaseArchiveService,
+    legacy_archive_bindings,
+)
 from netconsole.services.database_upgrade.journal import DatabaseUpgradeJournal, recover_incomplete_upgrades
 from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
 from netconsole.services.database_upgrade.models import DatabaseDescriptor, DatabaseUpgradeStrategy
@@ -476,6 +479,27 @@ def test_legacy_archive_organizer_marks_duplicate_content_without_deleting_backu
     assert Path(str(existing["path"]), "database.sqlite").is_file()
     assert Path(str(duplicate["path"]), "database.sqlite").is_file()
     assert not legacy.exists()
+
+
+def test_legacy_archive_organizer_does_not_move_new_unbound_candidate(tmp_path: Path) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    profile_root = paths.site_mesh_root("demo") / "列车07-MR-CT"
+    profile_root.mkdir(parents=True)
+    bound = profile_root / "mesh.sqlite.rollback_bound"
+    _create_database(bound, value="bound")
+    authority_archives = legacy_archive_bindings(paths, "demo")
+    unbound = profile_root / "mesh.sqlite.rollback_unbound"
+    _create_database(unbound, value="unbound")
+
+    result = LegacyDatabaseArchiveService(paths).organize_mesh_archives(
+        "demo",
+        authorized_archives=authority_archives,
+    )
+
+    assert bound.exists() is False
+    assert unbound.exists() is True
+    assert result["moved_count"] == 1
+    assert any(item["result_status"] == "UNAUTHORIZED_ARCHIVE" for item in result["items"])
 
 
 def test_legacy_archive_organizer_marks_prepared_orphan_and_retries_source(tmp_path: Path) -> None:

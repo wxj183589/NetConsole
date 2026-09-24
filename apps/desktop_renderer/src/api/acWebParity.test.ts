@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { acFitApResourceArtifactDownloadRequest, deleteAcFitAps, exportAcExtensions, getAcExternalTerminalOptions, getAcOmniPeekPreview, getAcWebTask, importAcFitApMetadata, openAcFitApExternalTerminal, recoverAcWebTasks, saveAcFitApMetadata, startAcFitApResourceExport, startAcLocalRebuild, startAcOmniPeekExport, startAcOmniPeekPreview, startAcResourceRefresh } from './acWebParity'
+import { acFitApResourceArtifactDownloadRequest, deleteAcFitAps, exportAcExtensions, getAcExternalTerminalOptions, getAcOmniPeekPreview, getAcWebTask, importAcFitApMetadata, openAcFitApExternalTerminal, recoverAcWebTasks, rollbackAcExtension, saveAcFitApMetadata, startAcFitApResourceExport, startAcLocalRebuild, startAcOmniPeekExport, startAcOmniPeekPreview, startAcResourceRefresh } from './acWebParity'
 
 describe('AC Web parity API client', () => {
   it('submits only the local rebuild target and exposes task recovery', async () => {
@@ -30,6 +30,19 @@ describe('AC Web parity API client', () => {
     expect(fetchMock.mock.calls[5][1].method).toBe('POST')
     expect(fetchMock.mock.calls[6][0]).toBe('/api/ac-management/web-tasks/task-1')
     expect(fetchMock.mock.calls[7][0]).toBe('/api/ac-management/web-tasks/recover')
+  })
+
+  it('injects the AC rollback capability by default', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await rollbackAcExtension('audit / 1')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/ac-management/extensions/audits/audit%20%2F%201/rollback')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      explicit_confirmation: true,
+      authorization_token: 'AC_EXTENSION_ROLLBACK_AUTHORIZED',
+    })
   })
 
   it('submits only current AC/AP scope for OmniPeek and semantic terminal type', async () => {

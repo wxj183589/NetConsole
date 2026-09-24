@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
@@ -63,6 +64,70 @@ def test_database_status_and_upgrade_submission_are_scoped_to_current_site(tmp_p
     assert process.jobs[-1].params["owner"] == "database-upgrade"
 
 
+def test_profile_upgrade_submission_defers_sqlite_identity_to_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _paths, process = _client(tmp_path)
+    profile = MeshStorageService("demo", _paths).create_mr_profile("列车07-MR-CT")
+
+    def unexpected_http_snapshot(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError("SQLite logical identity must be materialized by the worker")
+
+    monkeypatch.setattr(
+        "netconsole.services.database_upgrade.authority._database_identity",
+        unexpected_http_snapshot,
+    )
+
+    submitted = client.post(
+        "/api/database-upgrades/upgrade",
+        json={"database_kind": "mesh_derived", "profile_id": profile.mr_id},
+    )
+
+    assert submitted.status_code == 202, submitted.text
+    assert process.jobs[-1].params["database_authority"]["identity_deferred"] is True
+
+
+def test_backup_validation_submission_defers_backup_hash_to_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from netconsole.services.database_upgrade import authority as authority_module
+
+    client, paths, process = _client(tmp_path)
+    database = paths.mesh_mr_db_path("demo", "列车07-MR-CT")
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("CREATE TABLE marker(value TEXT)")
+        connection.commit()
+    backup = DatabaseBackupStore(paths).create(
+        source_path=database,
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id="demo:列车07-MR-CT",
+        task_id="deferred-validation",
+        old_version="old",
+        target_version="new",
+        strategy="SCHEMA_MIGRATION",
+    )
+
+    original_hash = authority_module._sha256
+
+    def unexpected_http_hash(path: Path) -> str:
+        if path.name in {"database.sqlite", "manifest.json"}:
+            raise AssertionError("backup content hash must be materialized by the worker")
+        return original_hash(path)
+
+    monkeypatch.setattr(
+        authority_module,
+        "_sha256",
+        unexpected_http_hash,
+    )
+
+    submitted = client.post(f"/api/database-upgrades/backups/{backup['backup_id']}/validate")
+
+    assert submitted.status_code == 202, submitted.text
+    assert process.jobs[-1].params["database_authority"]["identity_deferred"] is True
+
+
 def test_batch_database_actions_deduplicate_selection_and_require_upgrade_confirmation(
     tmp_path: Path,
 ) -> None:
@@ -97,11 +162,16 @@ def test_batch_database_actions_deduplicate_selection_and_require_upgrade_confir
     assert backed_up.status_code == 202, backed_up.text
     assert process.jobs[-1].task_type == "database_batch_backup"
     assert process.jobs[-1].params["profile_ids"] == [first.mr_id, second.mr_id]
+    assert process.jobs[-1].params["resource_keys"] == [
+        "database-backup-center:demo",
+        "mesh-import:demo",
+        "database-upgrade-batch:demo",
+    ]
 
 
-def test_restore_and_delete_require_confirmation_and_submit_backup_id_only(tmp_path: Path) -> None:
+def test_restore_and_delete_require_confirmation_and_submit_immutable_authority(tmp_path: Path) -> None:
     client, paths, process = _client(tmp_path)
-    database = tmp_path / "data" / "sites" / "demo" / "files" / "mesh.sqlite"
+    database = paths.mesh_mr_db_path("demo", "列车07-MR-CT")
     database.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(database)) as connection:
         connection.execute("CREATE TABLE marker(value TEXT)")
@@ -121,15 +191,12 @@ def test_restore_and_delete_require_confirmation_and_submit_backup_id_only(tmp_p
     assert client.post(f"/api/database-upgrades/backups/{backup_id}/restore", json={"confirmed": False}).status_code == 422
     restored = client.post(f"/api/database-upgrades/backups/{backup_id}/restore", json={"confirmed": True})
     assert restored.status_code == 202, restored.text
-    assert process.jobs[-1].params == {
-        "backup_id": backup_id,
-        "confirmed": True,
-        "site_name": "demo",
-        "task_name": "恢复数据库备份",
-        "owner": "database-upgrade",
-        "resource_keys": [f"database-backup:{backup_id}", "mesh-import:demo"],
-        "resource_conflict_message": "当前数据库或备份已有维护任务正在执行",
-    }
+    params = process.jobs[-1].params
+    assert params["backup_id"] == backup_id
+    assert params["confirmed"] is True
+    assert params["database_kind"] == "mesh_derived"
+    assert params["database_authority"]["canonical_site_id"] == "demo"
+    assert params["resource_keys"] == [f"database-backup:{backup_id}", "mesh-import:demo"]
 
     assert client.post(f"/api/database-upgrades/backups/{backup_id}/delete", json={"confirmed": False}).status_code == 422
     deleted = client.post(f"/api/database-upgrades/backups/{backup_id}/delete", json={"confirmed": True})
@@ -166,15 +233,8 @@ def test_batch_delete_requires_confirmation_and_submits_one_scoped_job(tmp_path:
         "/api/database-upgrades/backups/batch-delete",
         json={"backup_ids": [backup_id, "missing", backup_id], "confirmed": True},
     )
-    assert submitted.status_code == 202, submitted.text
-    assert len(process.jobs) == 1
-    assert process.jobs[0].task_type == "database_backup_batch_delete"
-    assert process.jobs[0].params["backup_ids"] == [backup_id, "missing"]
-    assert process.jobs[0].params["site_id"] == "demo"
-    assert process.jobs[0].params["resource_keys"] == [
-        "database-backup-center:demo",
-        "database-upgrade-batch:demo",
-    ]
+    assert submitted.status_code == 404, submitted.text
+    assert process.jobs == []
 
 
 def test_backup_actions_reject_a_backup_from_another_site(tmp_path: Path) -> None:
