@@ -243,6 +243,7 @@ def sqlite_logical_identity(
             target_connection = sqlite3.connect(snapshot)
             source_connection.backup(
                 target_connection,
+                pages=256,
                 progress=lambda *_args: should_cancel() if should_cancel is not None else None,
             )
             target_connection.commit()

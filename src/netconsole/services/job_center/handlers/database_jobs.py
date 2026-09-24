@@ -70,15 +70,19 @@ def _authorize(
                 params["profile_ids"] = list(profile_ids)
             if materialize_backup_ids is not None:
                 params["backup_ids"] = list(materialize_backup_ids)
-    revalidate_database_task_authority(
-        context.paths,
-        context.task_type,
-        params,
-        profile_ids=profile_ids,
-        backup_ids=backup_ids,
-        validate_profile_targets=validate_profile_targets,
-        allow_deferred_identity=allow_deferred_identity,
-    )
+    try:
+        revalidate_database_task_authority(
+            context.paths,
+            context.task_type,
+            params,
+            profile_ids=profile_ids,
+            backup_ids=backup_ids,
+            validate_profile_targets=validate_profile_targets,
+            allow_deferred_identity=allow_deferred_identity,
+            cancel_check=cancel_check,
+        )
+    except DatabaseMaintenanceAuthorityCancelled as exc:
+        raise BackgroundTaskCancelled(str(exc)) from exc
 
 
 def _authorize_batch_delete_item(context: JobContext, selected_backup_id: str) -> None:

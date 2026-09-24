@@ -728,6 +728,7 @@ def revalidate_database_task_authority(
     backup_ids: Iterable[str] | None = None,
     validate_profile_targets: bool = True,
     allow_deferred_identity: bool = False,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Re-resolve every target immediately before the worker calls a mutator.
 
@@ -856,7 +857,12 @@ def revalidate_database_task_authority(
                 raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
             if str(task_type) in _PROFILE_TASKS and str(expected.get("profile_id") or "") not in selected_profiles:
                 continue
-            actual = _profile_scope(paths, site, str(expected.get("profile_id") or ""))
+            actual = _profile_scope(
+                paths,
+                site,
+                str(expected.get("profile_id") or ""),
+                cancel_check=cancel_check,
+            )
             _compare(
                 "DATABASE_TARGET_STALE",
                 expected,
