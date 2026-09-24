@@ -691,6 +691,48 @@ def test_deferred_backup_authority_rejects_changed_submit_declaration(tmp_path: 
         )
 
 
+def test_batch_delete_builds_one_backup_index_for_selected_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, database = _mesh_profile(paths)
+    store = DatabaseBackupStore(paths)
+    backups = [
+        store.create(
+            source_path=database,
+            database_kind="mesh_derived",
+            scope_type="site_profile",
+            scope_id=f"demo:{profile.safe_folder_name}",
+            task_id=f"batch-index-{index}",
+            old_version="old",
+            target_version="new",
+            strategy="SCHEMA_MIGRATION",
+        )
+        for index in range(2)
+    ]
+    original_list = DatabaseBackupStore.list
+    calls = {"value": 0}
+
+    def counted_list(self, *args, **kwargs):
+        calls["value"] += 1
+        return original_list(self, *args, **kwargs)
+
+    monkeypatch.setattr(DatabaseBackupStore, "list", counted_list)
+    build_database_task_authority(
+        paths,
+        task_type="database_backup_batch_delete",
+        site_ref="demo",
+        backup_ids=[str(item["backup_id"]) for item in backups],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_BACKUP_DELETE_AUTHORIZED,
+        defer_identity=True,
+    )
+
+    assert calls["value"] == 1
+
+
 def test_validation_worker_rejects_second_backup_change_after_submit(tmp_path: Path) -> None:
     from netconsole.core.paths import PathResolver
 
@@ -906,6 +948,7 @@ def test_deferred_legacy_archive_authority_hashes_only_in_worker(
     assert calls == []
     assert authority["identity_deferred"] is True
     assert authority["legacy_archives"] == []
+    assert authority["legacy_archive_discovery_deferred"] is True
 
     materialized = materialize_database_task_authority(
         paths,
@@ -914,7 +957,21 @@ def test_deferred_legacy_archive_authority_hashes_only_in_worker(
     )
     assert len(calls) == 1
     assert materialized["identity_deferred"] is False
+    assert materialized["legacy_archive_discovery_deferred"] is False
     assert len(materialized["legacy_archives"][0]["sha256"]) == 64
+
+    _database(archive, "changed-after-worker-discovery")
+    with pytest.raises(DatabaseMaintenanceAuthorityError, match="LEGACY_ARCHIVE_STALE"):
+        revalidate_database_task_authority(
+            paths,
+            "legacy_database_archive_migration",
+            {
+                "database_kind": "mesh_derived",
+                "site_id": "demo",
+                "authorization_token": LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED,
+                "database_authority": materialized,
+            },
+        )
 
 
 def test_batch_upgrade_initial_authority_leaves_stale_profiles_to_item_callback(

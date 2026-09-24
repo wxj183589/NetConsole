@@ -267,15 +267,21 @@ def _backup_binding(
     operation: str,
     include_target_identity: bool = True,
     include_content_identity: bool = True,
+    backup_items: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     backup_key = str(backup_id or "").strip()
     if not backup_key:
         raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_REQUIRED")
     store = DatabaseBackupStore(paths)
-    try:
-        item = store.read(backup_key)
-    except FileNotFoundError as exc:
-        raise DatabaseMaintenanceAuthorityError("BACKUP_NOT_FOUND") from exc
+    if backup_items is None:
+        try:
+            item = store.read(backup_key)
+        except FileNotFoundError as exc:
+            raise DatabaseMaintenanceAuthorityError("BACKUP_NOT_FOUND") from exc
+    else:
+        item = backup_items.get(backup_key)
+        if item is None:
+            raise DatabaseMaintenanceAuthorityError("BACKUP_NOT_FOUND")
     if str(item.get("database_kind") or "") != "mesh_derived":
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
     scope_type = str(item.get("scope_type") or "")
@@ -398,6 +404,11 @@ def build_database_task_authority(
         selected_backups = list(dict.fromkeys(str(value).strip() for value in backup_ids if str(value).strip()))
         if not selected_backups:
             raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_REQUIRED")
+        backup_index = {
+            str(item.get("backup_id") or ""): item
+            for item in DatabaseBackupStore(paths).list(database_kind="mesh_derived")
+            if str(item.get("backup_id") or "")
+        }
         backups = [
             _backup_binding(
                 paths,
@@ -406,6 +417,7 @@ def build_database_task_authority(
                 operation=operation,
                 include_target_identity=not defer_identity,
                 include_content_identity=not defer_identity,
+                backup_items=backup_index,
             )
             for value in selected_backups
         ]
@@ -431,6 +443,9 @@ def build_database_task_authority(
         "scopes": scopes,
         "backups": backups,
         "legacy_archives": legacy_archives,
+        "legacy_archive_discovery_deferred": bool(
+            str(task_type) == "legacy_database_archive_migration" and defer_identity
+        ),
         "identity_deferred": bool(defer_identity),
     }
     return {**body, "authority_digest": _digest(body)}
@@ -620,6 +635,11 @@ def revalidate_database_task_authority(
     )
     if str(authority.get("database_kind") or "") != "mesh_derived":
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+    if (
+        str(task_type) == "legacy_database_archive_migration"
+        and bool(authority.get("legacy_archive_discovery_deferred"))
+    ):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
     if str(task_type) == "legacy_database_archive_migration":
         actual_archives = legacy_archive_bindings(paths, site.directory_name)
         if authority.get("legacy_archives") != actual_archives:
