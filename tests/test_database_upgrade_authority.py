@@ -125,6 +125,37 @@ def test_backup_validation_uses_production_write_guard(
         )
 
 
+def test_restore_rejects_path_separator_in_backup_scope_id(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, database = _mesh_profile(paths)
+    backup = DatabaseBackupStore(paths).create(
+        source_path=database,
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id=f"demo:{profile.safe_folder_name}",
+        task_id="restore-scope-guard",
+        old_version="old",
+        target_version="new",
+        strategy="SCHEMA_MIGRATION",
+    )
+    manifest_path = Path(str(backup["path"])) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["scope_id"] = f"demo:{profile.safe_folder_name}/../other"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(DatabaseMaintenanceAuthorityError, match="BACKUP_SCOPE_INVALID"):
+        build_database_task_authority(
+            paths,
+            task_type="database_backup_restore",
+            site_ref="demo",
+            backup_ids=[str(backup["backup_id"])],
+            database_kind="mesh_derived",
+            authorization_token=DATABASE_BACKUP_RESTORE_AUTHORIZED,
+        )
+
+
 def test_deferred_authority_materializes_database_identity_inside_worker_boundary(tmp_path: Path) -> None:
     from netconsole.core.paths import PathResolver
 

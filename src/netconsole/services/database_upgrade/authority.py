@@ -298,6 +298,12 @@ def _backup_binding(
     target_path = _assert_contained(Path(target_raw), site.site_root, "BACKUP_TARGET_INVALID")
     target_relative_path = target_path.relative_to(site.site_root).as_posix()
     safe_folder_name = scope_id[len(prefix) :]
+    if (
+        not safe_folder_name
+        or safe_folder_name in {".", ".."}
+        or Path(safe_folder_name).name != safe_folder_name
+    ):
+        raise DatabaseMaintenanceAuthorityError("BACKUP_SCOPE_INVALID")
     expected_target = paths.mesh_mr_db_path(site.directory_name, safe_folder_name).resolve()
     if operation == "DATABASE_BACKUP_RESTORE" and target_path != expected_target:
         raise DatabaseMaintenanceAuthorityError("BACKUP_TARGET_MISMATCH")
