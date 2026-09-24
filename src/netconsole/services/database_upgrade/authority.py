@@ -11,7 +11,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
@@ -72,6 +72,10 @@ class DatabaseMaintenanceAuthorityError(ValueError):
     def __init__(self, code: str, message: str | None = None) -> None:
         self.code = str(code)
         super().__init__(message or self.code)
+
+
+class DatabaseMaintenanceAuthorityCancelled(DatabaseMaintenanceAuthorityError):
+    """The worker cancellation token was raised during authority materialization."""
 
 
 @dataclass(frozen=True)
@@ -234,10 +238,13 @@ def _profile_scope(
     profile_id: str,
     *,
     include_database_identity: bool = True,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     profile_key = str(profile_id or "").strip()
     if not profile_key:
         raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_REQUIRED")
+    if cancel_check is not None:
+        cancel_check()
     if include_database_identity:
         inspection = MeshDerivedDataMaintenanceService(paths).inspect(
             site.directory_name,
@@ -265,6 +272,7 @@ def _profile_scope(
             database_path,
             str(profile.get("current_version") or "missing"),
             temp_dir=paths.temp_dir,
+            cancel_check=cancel_check,
         )
         if include_database_identity
         else {"deferred": True}
@@ -345,18 +353,22 @@ def _database_identity(
     schema_version: str = "",
     *,
     temp_dir: Path | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     resolved = path.resolve(strict=False)
     if not resolved.is_file():
         return {"exists": False, "size_bytes": 0, "sha256": "", "schema_version": schema_version}
     try:
-        validation = validate_sqlite(resolved)
+        validation = validate_sqlite(resolved, should_cancel=cancel_check)
         if not validation.get("valid"):
             raise ValueError(str(validation.get("error") or "SQLite target is invalid"))
         logical = sqlite_logical_identity(
             resolved,
             temp_dir=temp_dir,
+            should_cancel=cancel_check,
         )
+    except DatabaseMaintenanceAuthorityError:
+        raise
     except Exception as exc:
         raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_UNREADABLE") from exc
     return {
@@ -489,6 +501,7 @@ def build_database_task_authority(
     database_kind: str = "mesh_derived",
     authorization_token: str = "",
     defer_identity: bool = False,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Build a JSON-safe immutable authority snapshot before queuing a job."""
 
@@ -505,7 +518,13 @@ def build_database_task_authority(
         if not selected:
             raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_REQUIRED")
         scopes = [
-            _profile_scope(paths, site, value, include_database_identity=not defer_identity)
+            _profile_scope(
+                paths,
+                site,
+                value,
+                include_database_identity=not defer_identity,
+                cancel_check=cancel_check,
+            )
             for value in selected
         ]
     backups = []
@@ -567,6 +586,7 @@ def materialize_database_task_authority(
     profile_ids: Iterable[str] | None = None,
     authorization_token: str = "",
     backup_ids: Iterable[str] | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Complete a lightweight queued authority inside the Job boundary."""
 
@@ -575,6 +595,8 @@ def materialize_database_task_authority(
     unsigned = {key: value for key, value in authority.items() if str(key) != "authority_digest"}
     if str(authority.get("authority_digest") or "") != _digest(unsigned):
         raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
+    if cancel_check is not None:
+        cancel_check()
     task_type = str(authority.get("task_type") or "")
     profile_scopes = authority.get("scopes") or ()
     backup_bindings = list(authority.get("backups") or ())
@@ -603,6 +625,7 @@ def materialize_database_task_authority(
         database_kind=str(authority.get("database_kind") or ""),
         authorization_token=authorization_token,
         defer_identity=False,
+        cancel_check=cancel_check,
     )
     for field in (
         "schema_version",

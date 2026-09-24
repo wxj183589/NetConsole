@@ -9,13 +9,18 @@ import sqlite3
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(path: Path, *, should_cancel: Callable[[], None] | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+        while True:
+            if should_cancel is not None:
+                should_cancel()
+            chunk = source.read(1024 * 1024)
+            if not chunk:
+                break
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -171,6 +176,8 @@ def _cleanup_stale_identity_snapshots(root: Path) -> None:
 def _stream_canonical_sqlite_identity(
     connection: sqlite3.Connection,
     metadata: dict[str, Any],
+    *,
+    should_cancel: Callable[[], None] | None = None,
 ) -> tuple[int, str]:
     digest = hashlib.sha256()
     size_bytes = 0
@@ -184,6 +191,8 @@ def _stream_canonical_sqlite_identity(
     update('{"dump":"')
     first_line = True
     for line in connection.iterdump():
+        if should_cancel is not None:
+            should_cancel()
         if not first_line:
             update(r"\n")
         first_line = False
@@ -196,7 +205,12 @@ def _stream_canonical_sqlite_identity(
     return size_bytes, digest.hexdigest()
 
 
-def sqlite_logical_identity(path: Path, *, temp_dir: Path | None = None) -> dict[str, Any]:
+def sqlite_logical_identity(
+    path: Path,
+    *,
+    temp_dir: Path | None = None,
+    should_cancel: Callable[[], None] | None = None,
+) -> dict[str, Any]:
     """Return a stable identity for the logical SQLite contents.
 
     The source is opened read-only and copied through SQLite's Backup API into
@@ -205,6 +219,8 @@ def sqlite_logical_identity(path: Path, *, temp_dir: Path | None = None) -> dict
     """
 
     source = path.resolve()
+    if should_cancel is not None:
+        should_cancel()
     if not source.is_file() or source.stat().st_size <= 0:
         raise ValueError("源 SQLite 数据库不存在或为空")
     temporary_root = _prepare_identity_temp_root(temp_dir, source)
@@ -225,14 +241,17 @@ def sqlite_logical_identity(path: Path, *, temp_dir: Path | None = None) -> dict
             source_connection = sqlite3.connect(source_uri, uri=True, timeout=30)
             source_connection.execute("PRAGMA query_only = ON")
             target_connection = sqlite3.connect(snapshot)
-            source_connection.backup(target_connection)
+            source_connection.backup(
+                target_connection,
+                progress=lambda *_args: should_cancel() if should_cancel is not None else None,
+            )
             target_connection.commit()
         finally:
             if target_connection is not None:
                 target_connection.close()
             if source_connection is not None:
                 source_connection.close()
-        validation = validate_sqlite(snapshot)
+        validation = validate_sqlite(snapshot, should_cancel=should_cancel)
         if not validation.get("valid"):
             raise ValueError(str(validation.get("error") or "SQLite logical snapshot 校验失败"))
         connection: sqlite3.Connection | None = None
@@ -245,7 +264,11 @@ def sqlite_logical_identity(path: Path, *, temp_dir: Path | None = None) -> dict
                 "encoding": str(connection.execute("PRAGMA encoding").fetchone()[0] or ""),
                 "user_version": int(connection.execute("PRAGMA user_version").fetchone()[0] or 0),
             }
-            size_bytes, digest = _stream_canonical_sqlite_identity(connection, metadata)
+            size_bytes, digest = _stream_canonical_sqlite_identity(
+                connection,
+                metadata,
+                should_cancel=should_cancel,
+            )
         finally:
             if connection is not None:
                 connection.close()
@@ -256,12 +279,22 @@ def sqlite_logical_identity(path: Path, *, temp_dir: Path | None = None) -> dict
     }
 
 
-def validate_sqlite(path: Path) -> dict[str, Any]:
+def validate_sqlite(
+    path: Path,
+    *,
+    should_cancel: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    if should_cancel is not None:
+        should_cancel()
     result: dict[str, Any] = {
         "path": str(path),
         "exists": path.is_file(),
         "size_bytes": path.stat().st_size if path.is_file() else 0,
-        "sha256": sha256_file(path) if path.is_file() and path.stat().st_size > 0 else "",
+        "sha256": (
+            sha256_file(path, should_cancel=should_cancel)
+            if path.is_file() and path.stat().st_size > 0
+            else ""
+        ),
         "quick_check": "missing",
         "integrity_check": "missing",
         "schema_version": "unknown",
@@ -284,6 +317,8 @@ def validate_sqlite(path: Path) -> dict[str, Any]:
         return result
     connection: sqlite3.Connection | None = None
     try:
+        if should_cancel is not None:
+            should_cancel()
         uri = f"{path.resolve().as_uri()}?mode=ro"
         connection = sqlite3.connect(uri, uri=True, timeout=30)
         connection.execute("PRAGMA query_only = ON")
@@ -324,6 +359,8 @@ def validate_sqlite(path: Path) -> dict[str, Any]:
         for field, table in count_tables.items():
             if table in result["table_names"]:
                 result[field] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
+        if should_cancel is not None:
+            should_cancel()
         result["valid"] = result["quick_check"] == "ok" and result["integrity_check"] == "ok"
     except sqlite3.Error as exc:
         result["error"] = str(exc)

@@ -256,6 +256,49 @@ def test_deferred_authority_materializes_database_identity_inside_worker_boundar
         )
 
 
+def test_deferred_authority_materialization_honors_worker_cancellation(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, _database_path = _mesh_profile(paths)
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_upgrade",
+        site_ref="demo",
+        profile_ids=[profile.mr_id],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_UPGRADE_AUTHORIZED,
+        defer_identity=True,
+    )
+    calls = {"value": 0}
+
+    def should_cancel() -> bool:
+        calls["value"] += 1
+        return calls["value"] >= 2
+
+    result = run_job(
+        BackgroundJob(
+            job_id="database-authority-cancelled",
+            task_type="database_upgrade",
+            params={
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+                "site_name": "demo",
+                "site_id": "demo",
+                "profile_id": profile.mr_id,
+                "database_kind": "mesh_derived",
+                "authorization_token": DATABASE_UPGRADE_AUTHORIZED,
+                "database_authority": authority,
+            },
+        ),
+        should_cancel=should_cancel,
+    )
+
+    assert result.ok is False
+    assert result.cancelled is True
+    assert result.error == "后台任务已取消"
+
+
 def test_batch_upgrade_revalidation_ignores_its_own_catalog_pending_marker(tmp_path: Path) -> None:
     from netconsole.core.paths import PathResolver
     from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository

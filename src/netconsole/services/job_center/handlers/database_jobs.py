@@ -3,13 +3,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from netconsole.services.database_upgrade.authority import (
+    DatabaseMaintenanceAuthorityCancelled,
     DatabaseMaintenanceAuthorityError,
     materialize_database_task_authority,
     revalidate_database_task_authority,
 )
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupDeleteError
 from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
-from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
 
 
@@ -39,18 +40,26 @@ def _authorize(
 ) -> None:
     authority = context.params.get("database_authority")
     params = context.params
+    def cancel_check() -> None:
+        if context.should_cancel is not None and context.should_cancel():
+            raise DatabaseMaintenanceAuthorityCancelled("后台任务已取消")
+
     if (
         isinstance(authority, Mapping)
         and bool(authority.get("identity_deferred"))
         and not allow_deferred_identity
     ):
-        materialized = materialize_database_task_authority(
-            context.paths,
-            authority,
-            profile_ids=profile_ids,
-            authorization_token=str(context.params.get("authorization_token") or ""),
-            backup_ids=materialize_backup_ids,
-        )
+        try:
+            materialized = materialize_database_task_authority(
+                context.paths,
+                authority,
+                profile_ids=profile_ids,
+                authorization_token=str(context.params.get("authorization_token") or ""),
+                backup_ids=materialize_backup_ids,
+                cancel_check=cancel_check,
+            )
+        except DatabaseMaintenanceAuthorityCancelled as exc:
+            raise BackgroundTaskCancelled(str(exc)) from exc
         if profile_ids is None and materialize_backup_ids is None:
             context.params["database_authority"] = materialized
             params = context.params
