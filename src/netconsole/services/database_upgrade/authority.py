@@ -37,7 +37,7 @@ DATABASE_BACKUP_RESTORE_AUTHORIZED = "DATABASE_BACKUP_RESTORE_AUTHORIZED"
 DATABASE_BACKUP_DELETE_AUTHORIZED = "DATABASE_BACKUP_DELETE_AUTHORIZED"
 LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED = "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED"
 
-AUTHORITY_SCHEMA_VERSION = 5
+AUTHORITY_SCHEMA_VERSION = 6
 READ_ONLY_VALIDATION = "READ_ONLY_VALIDATION"
 
 _OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
@@ -131,6 +131,54 @@ def _relative(path: Path, root: Path, code: str) -> str:
     return resolved.relative_to(root.resolve()).as_posix()
 
 
+def _site_descriptor_revision(
+    paths: PathResolver,
+    canonical_site_id: str,
+    directory_name: str,
+) -> str:
+    registry = paths.data_root / "config" / "site_registry.json"
+    if not registry.is_file():
+        return ""
+    try:
+        document = json.loads(registry.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    records = document.get("sites") if isinstance(document, Mapping) else None
+    if not isinstance(records, list):
+        return ""
+    wanted_id = str(canonical_site_id or "").casefold()
+    wanted_directory = str(directory_name or "").casefold()
+    record: Mapping[str, Any] | None = next(
+        (
+            item
+            for item in records
+            if isinstance(item, Mapping)
+            and str(item.get("site_id") or "").casefold() == wanted_id
+        ),
+        None,
+    )
+    if record is None:
+        record = next(
+            (
+                item
+                for item in records
+                if isinstance(item, Mapping)
+                and Path(str(item.get("relative_path") or "")).name.casefold()
+                == wanted_directory
+            ),
+            None,
+        )
+    if record is None:
+        return ""
+    return _digest(
+        {
+            "canonical_site_id": str(canonical_site_id),
+            "directory_name": str(directory_name),
+            "record": dict(record),
+        }
+    )
+
+
 def _site_binding(paths: PathResolver, site_ref: str) -> _SiteBinding:
     try:
         scope = resolve_mesh_production_scope(paths, str(site_ref or ""))
@@ -140,8 +188,11 @@ def _site_binding(paths: PathResolver, site_ref: str) -> _SiteBinding:
     derived_root = paths.site_dir(scope.directory_name).resolve()
     if site_root != derived_root:
         raise DatabaseMaintenanceAuthorityError("DATABASE_SITE_DESCRIPTOR_MISMATCH")
-    registry = paths.data_root / "config" / "site_registry.json"
-    descriptor_revision = _sha256(registry) if registry.is_file() else ""
+    descriptor_revision = _site_descriptor_revision(
+        paths,
+        str(scope.canonical_site_id),
+        str(scope.directory_name),
+    )
     return _SiteBinding(
         canonical_site_id=str(scope.canonical_site_id),
         directory_name=str(scope.directory_name),

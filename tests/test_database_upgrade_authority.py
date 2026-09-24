@@ -82,6 +82,54 @@ def test_database_task_authority_uses_operation_specific_capabilities(tmp_path: 
     assert restore["scope_kind"] == "backup"
 
 
+def test_authority_ignores_unrelated_site_registry_changes(tmp_path: Path) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    profile, _database = _mesh_profile(paths)
+    paths.config_dir.mkdir(parents=True, exist_ok=True)
+    registry_path = paths.config_dir / "site_registry.json"
+    registry = {
+        "schema_version": 2,
+        "updated_at": "initial",
+        "sites": [
+            {
+                "site_id": "demo",
+                "display_name": "Demo",
+                "relative_path": "sites/demo",
+            },
+            {
+                "site_id": "other",
+                "display_name": "Other",
+                "relative_path": "sites/other",
+            },
+        ],
+    }
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_upgrade",
+        site_ref="demo",
+        profile_ids=[profile.mr_id],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_UPGRADE_AUTHORIZED,
+    )
+
+    registry["updated_at"] = "changed"
+    registry["sites"][1]["display_name"] = "Other renamed"
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    revalidate_database_task_authority(
+        paths,
+        "database_upgrade",
+        {
+            "database_kind": "mesh_derived",
+            "authorization_token": DATABASE_UPGRADE_AUTHORIZED,
+            "profile_ids": [profile.mr_id],
+            "database_authority": authority,
+        },
+    )
+
+
 def test_backup_validation_uses_production_write_guard(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
