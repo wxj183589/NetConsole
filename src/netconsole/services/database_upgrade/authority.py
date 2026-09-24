@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from netconsole.core.paths import PathResolver
+from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.repositories.mesh_mr_repository import SCHEMA_VERSION as MESH_SCHEMA_VERSION
 from netconsole.core.runtime_environment import (
     data_environment,
@@ -299,27 +299,16 @@ def _lightweight_profile_descriptor(
     catalog_path = paths.mesh_catalog_path(site_directory_name).resolve(strict=False)
     if not catalog_path.is_file():
         raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_NOT_FOUND")
-    connection: sqlite3.Connection | None = None
-    try:
-        connection = sqlite3.connect(f"{catalog_path.as_uri()}?mode=ro", uri=True, timeout=5)
-        row = connection.execute(
-            "SELECT mr_id, display_name, safe_folder_name FROM mr_profiles WHERE mr_id = ?",
-            (profile_id,),
-        ).fetchone()
-    except sqlite3.Error as exc:
-        raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_NOT_FOUND") from exc
-    finally:
-        if connection is not None:
-            connection.close()
-    if row is None:
+    profile = MeshCatalogRepository(catalog_path).get_profile(profile_id)
+    if profile is None:
         raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_NOT_FOUND")
-    safe_folder_name = str(row[2] or "").strip()
+    safe_folder_name = str(profile.safe_folder_name or "").strip()
     if not safe_folder_name or Path(safe_folder_name).name != safe_folder_name:
         raise DatabaseMaintenanceAuthorityError("DATABASE_PROFILE_DESCRIPTOR_INVALID")
     database_path = paths.mesh_mr_db_path(site_directory_name, safe_folder_name)
     return {
-        "mr_id": str(row[0] or ""),
-        "display_name": str(row[1] or ""),
+        "mr_id": str(profile.mr_id or ""),
+        "display_name": str(profile.display_name or ""),
         "safe_folder_name": safe_folder_name,
         "current_version": MeshDerivedDataMaintenanceService._schema_version(database_path),
         "required_version": MESH_SCHEMA_VERSION,
