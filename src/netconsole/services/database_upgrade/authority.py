@@ -410,11 +410,9 @@ def build_database_task_authority(
             for value in selected_backups
         ]
     legacy_archives = (
-        legacy_archive_bindings(
-            paths,
-            site.directory_name,
-            include_content_identity=not defer_identity,
-        )
+        []
+        if defer_identity
+        else legacy_archive_bindings(paths, site.directory_name)
         if str(task_type) == "legacy_database_archive_migration"
         else []
     )
@@ -544,15 +542,16 @@ def materialize_database_task_authority(
     if task_type == "legacy_database_archive_migration":
         expected_archives = list(authority.get("legacy_archives") or ())
         actual_archives = list(materialized.get("legacy_archives") or ())
-        if len(expected_archives) != len(actual_archives):
-            raise DatabaseMaintenanceAuthorityError("LEGACY_ARCHIVE_STALE")
-        for expected, actual in zip(expected_archives, actual_archives, strict=True):
-            _compare(
-                "LEGACY_ARCHIVE_STALE",
-                expected,
-                actual,
-                ("source_relative_path", "profile_name", "size_bytes", "modified_ns"),
-            )
+        if expected_archives:
+            if len(expected_archives) != len(actual_archives):
+                raise DatabaseMaintenanceAuthorityError("LEGACY_ARCHIVE_STALE")
+            for expected, actual in zip(expected_archives, actual_archives, strict=True):
+                _compare(
+                    "LEGACY_ARCHIVE_STALE",
+                    expected,
+                    actual,
+                    ("source_relative_path", "profile_name", "size_bytes", "modified_ns"),
+                )
     return materialized
 
 

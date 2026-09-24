@@ -905,8 +905,7 @@ def test_deferred_legacy_archive_authority_hashes_only_in_worker(
 
     assert calls == []
     assert authority["identity_deferred"] is True
-    assert authority["legacy_archives"][0]["sha256"] == ""
-    assert int(authority["legacy_archives"][0]["size_bytes"]) > 0
+    assert authority["legacy_archives"] == []
 
     materialized = materialize_database_task_authority(
         paths,
@@ -916,6 +915,59 @@ def test_deferred_legacy_archive_authority_hashes_only_in_worker(
     assert len(calls) == 1
     assert materialized["identity_deferred"] is False
     assert len(materialized["legacy_archives"][0]["sha256"]) == 64
+
+
+def test_batch_upgrade_initial_authority_leaves_stale_profiles_to_item_callback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from netconsole.core.paths import PathResolver
+
+    paths = PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data")
+    first, first_database = _mesh_profile(paths, "列车07-MR-CT")
+    second, _second_database = _mesh_profile(paths, "列车08-MR-CT")
+    authority = build_database_task_authority(
+        paths,
+        task_type="database_batch_upgrade",
+        site_ref="demo",
+        profile_ids=[first.mr_id, second.mr_id],
+        database_kind="mesh_derived",
+        authorization_token=DATABASE_UPGRADE_AUTHORIZED,
+        defer_identity=True,
+    )
+    _database(first_database, "changed-after-submit")
+    called = {"value": False}
+
+    class RecordingService:
+        def __init__(self, _paths):
+            pass
+
+        def batch_upgrade(self, *_args, **_kwargs):
+            called["value"] = True
+            return {"total": 2}
+
+    monkeypatch.setattr(
+        "netconsole.services.job_center.handlers.database_jobs.DatabaseUpgradeManagementService",
+        RecordingService,
+    )
+    result = run_job(
+        BackgroundJob(
+            job_id="database-batch-upgrade-stale-item",
+            task_type="database_batch_upgrade",
+            params={
+                "app_root": str(paths.app_root),
+                "data_root": str(paths.data_root),
+                "site_name": "demo",
+                "site_id": "demo",
+                "profile_ids": [first.mr_id, second.mr_id],
+                "database_kind": "mesh_derived",
+                "authorization_token": DATABASE_UPGRADE_AUTHORIZED,
+                "database_authority": authority,
+            },
+        )
+    )
+
+    assert result.ok is True
+    assert called["value"] is True
 
 
 def test_restore_authority_revalidation_allows_its_own_validation_write(tmp_path: Path) -> None:

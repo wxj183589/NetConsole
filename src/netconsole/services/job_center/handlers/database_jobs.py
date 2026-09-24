@@ -97,7 +97,7 @@ def database_upgrade(context: JobContext) -> dict[str, object]:
 
 def database_batch_upgrade(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    _authorize(context)
+    _authorize(context, validate_profile_targets=False)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:
