@@ -74,9 +74,26 @@ describe('Electron-only packaging', () => {
   it('adds a separate, validated business-data-root page to the existing NSIS installer', () => {
     const script = readFileSync(resolve(appRoot, 'build', 'installer-data-root.nsh'), 'utf8')
 
+    expect(script).toContain('Page custom NetConsoleInstallModePageCreate NetConsoleInstallModePageLeave')
     expect(script).toContain('Page custom NetConsoleDataRootPageCreate NetConsoleDataRootPageLeave')
     expect(script).toContain('!ifndef BUILD_UNINSTALLER')
     expect(script).toContain('选择 NetConsole 数据存放位置')
+    expect(script).toContain('NetConsoleRefreshInstallModeDescription')
+    expect(script).toContain('NetConsoleRefreshDataRootPageText')
+    expect(script).toContain('NetConsoleInstallModeReuseClicked')
+    expect(script).toContain('NetConsoleInstallModeFreshClicked')
+    expect(script).toContain('NetConsoleInstallModeMigrateClicked')
+    expect(script).toContain('沿用已有数据（推荐）')
+    expect(script).toContain('全新安装')
+    expect(script).toContain('迁移已有数据（高级）')
+    expect(script).not.toContain('沿用已有数据（推荐，REUSE_EXISTING_DATA）')
+    expect(script).not.toContain('全新安装（FRESH_CLEAN_INSTALL）')
+    expect(script).not.toContain('迁移已有数据（高级，MIGRATE_EXISTING_DATA）')
+    expect(script).toContain('NetConsoleDataRootPageModeLabel')
+    expect(script).toContain('NetConsoleDataRootPageSourceLabel')
+    expect(script).toContain('EnableWindow $NetConsoleDataRootInput 0')
+    expect(script).toContain('NetConsoleDataRootBrowseButton')
+    expect(script).toContain('NetConsole v${NETCONSOLE_INSTALLER_APP_VERSION}')
     expect(script).toContain('GetDriveTypeW')
     expect(script).toContain('禁止将业务数据存放在系统盘')
     expect(script).toContain('REUSE_EXISTING_DATA')
@@ -111,6 +128,14 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('StrCmp $NetConsoleDataRootFindName ".netconsole-installer-rename-test.tmp"')
     expect(script).not.toContain('StrCpy $NetConsoleDataRoot "$NetConsoleDataRoot\\NetConsoleData"')
     expect(script).not.toContain('是否在其中创建 NetConsoleData 子目录')
+
+    const dataPage = script.slice(
+      script.indexOf('Function NetConsoleDataRootPageCreate'),
+      script.indexOf('Function NetConsoleBrowseDataRoot'),
+    )
+    expect(dataPage).not.toContain('NETCONSOLE_INSTALLER_BUILD_ID')
+    expect(dataPage).not.toContain('NETCONSOLE_INSTALLER_GIT_SHORT')
+    expect(dataPage).not.toContain('NETCONSOLE_INSTALLER_BUILD_TIME')
 
     const leaveFunction = script.slice(script.indexOf('Function NetConsoleDataRootPageLeave'))
     const locationIndex = leaveFunction.indexOf('Call NetConsoleValidateDataRootLocation')
@@ -151,7 +176,7 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('VIAddVersionKey /LANG=1033 "InstallerPolicySHA256"')
     expect(script).toContain('netconsole-installer-build.json')
     expect(script).toContain('netconsole-installer-data-root.nsh')
-    expect(script).toContain('安装器：v${NETCONSOLE_INSTALLER_APP_VERSION}')
+    expect(script).toContain('NetConsole v${NETCONSOLE_INSTALLER_APP_VERSION} · ${NETCONSOLE_INSTALLER_EDITION} 安装器')
     expect(script).toContain('WriteRegStr HKLM "Software\\NetConsole" "DataRoot"')
     expect(script).not.toContain('DeleteRegKey HKLM "Software\\NetConsole"')
   })

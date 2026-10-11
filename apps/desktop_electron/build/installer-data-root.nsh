@@ -220,6 +220,12 @@ Var NetConsoleInstallMode
 Var NetConsoleInstallModeReuseRadio
 Var NetConsoleInstallModeFreshRadio
 Var NetConsoleInstallModeMigrateRadio
+Var NetConsoleInstallModePageMode
+Var NetConsoleInstallModeHistoryLabel
+Var NetConsoleInstallModeDescriptionLabel
+Var NetConsoleDataRootPageModeLabel
+Var NetConsoleDataRootPageSourceLabel
+Var NetConsoleDataRootBrowseButton
 Var NetConsoleEnvironmentDataRoot
 !endif
 
@@ -286,44 +292,97 @@ Function NetConsoleInstallModePageCreate
   ${If} $NetConsoleExistingDataRoot == ""
     Abort
   ${EndIf}
+  StrCpy $NetConsoleInstallModePageMode "$NetConsoleInstallMode"
   nsDialogs::Create 1018
   Pop $0
   ${If} $0 == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 26u "检测到以前登记的 NetConsole 数据目录。请选择安装方式；原数据目录不会因选择清洁安装而被删除。"
+  ${NSD_CreateLabel} 0 0 100% 20u "请选择安装方式。原数据目录不会因选择全新安装而被删除。"
   Pop $0
-  ${NSD_CreateLabel} 0 30u 100% 38u "历史 DataRoot：$NetConsoleExistingDataRoot。安装器会在执行阶段验证 Manifest、SiteRegistry、活动局点和 devices.db。"
+  ${NSD_CreateLabel} 0 24u 100% 30u ""
+  Pop $NetConsoleInstallModeHistoryLabel
+  ${NSD_CreateLabel} 0 58u 100% 12u "安装方式："
   Pop $0
-  ${NSD_CreateRadioButton} 0 76u 100% 16u "沿用已有数据（推荐，REUSE_EXISTING_DATA）"
+  ${NSD_CreateRadioButton} 0 74u 100% 18u "沿用已有数据（推荐）"
   Pop $NetConsoleInstallModeReuseRadio
-  ${NSD_CreateRadioButton} 0 96u 100% 28u "全新安装（FRESH_CLEAN_INSTALL）：忽略旧 DataRoot、旧局点和 bootstrap，选择空白新根"
+  ${NSD_OnClick} $NetConsoleInstallModeReuseRadio NetConsoleInstallModeReuseClicked
+  ${NSD_CreateRadioButton} 0 96u 100% 18u "全新安装"
   Pop $NetConsoleInstallModeFreshRadio
-  ${NSD_CreateRadioButton} 0 130u 100% 28u "迁移已有数据（高级，MIGRATE_EXISTING_DATA）：明确复制并验证旧根，失败时保留原根"
+  ${NSD_OnClick} $NetConsoleInstallModeFreshRadio NetConsoleInstallModeFreshClicked
+  ${NSD_CreateRadioButton} 0 118u 100% 18u "迁移已有数据（高级）"
   Pop $NetConsoleInstallModeMigrateRadio
-  ${NSD_Check} $NetConsoleInstallModeReuseRadio
+  ${NSD_OnClick} $NetConsoleInstallModeMigrateRadio NetConsoleInstallModeMigrateClicked
+  ${NSD_CreateLabel} 0 142u 100% 30u ""
+  Pop $NetConsoleInstallModeDescriptionLabel
+  Call NetConsoleRefreshInstallModeHistory
+  Call NetConsoleRefreshInstallModeDescription
+  ${If} $NetConsoleInstallModePageMode == "FRESH_CLEAN_INSTALL"
+    ${NSD_Check} $NetConsoleInstallModeFreshRadio
+  ${ElseIf} $NetConsoleInstallModePageMode == "MIGRATE_EXISTING_DATA"
+    ${NSD_Check} $NetConsoleInstallModeMigrateRadio
+  ${Else}
+    ${NSD_Check} $NetConsoleInstallModeReuseRadio
+  ${EndIf}
   nsDialogs::Show
 FunctionEnd
 
 Function NetConsoleInstallModePageLeave
+  StrCpy $1 "$NetConsoleInstallModePageMode"
   ${NSD_GetState} $NetConsoleInstallModeReuseRadio $0
-  IntCmp $0 1 NetConsoleInstallModePageReuse NetConsoleInstallModePageCheckFresh NetConsoleInstallModePageCheckFresh
+  ${If} $0 == 1
+    StrCpy $NetConsoleInstallMode "REUSE_EXISTING_DATA"
+  ${Else}
+    ${NSD_GetState} $NetConsoleInstallModeFreshRadio $0
+    ${If} $0 == 1
+      StrCpy $NetConsoleInstallMode "FRESH_CLEAN_INSTALL"
+    ${Else}
+      StrCpy $NetConsoleInstallMode "MIGRATE_EXISTING_DATA"
+    ${EndIf}
+  ${EndIf}
+  ${If} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
+    StrCpy $NetConsoleDataRoot "$NetConsoleExistingDataRoot"
+  ${ElseIf} $NetConsoleInstallMode == "FRESH_CLEAN_INSTALL"
+    ${If} $1 != "FRESH_CLEAN_INSTALL"
+      StrCpy $NetConsoleDataRoot ""
+    ${EndIf}
+  ${ElseIf} $1 == "REUSE_EXISTING_DATA"
+    StrCpy $NetConsoleDataRoot ""
+  ${EndIf}
+FunctionEnd
 
-  NetConsoleInstallModePageCheckFresh:
-  ${NSD_GetState} $NetConsoleInstallModeFreshRadio $0
-  IntCmp $0 1 NetConsoleInstallModePageFresh NetConsoleInstallModePageMigrate NetConsoleInstallModePageMigrate
-
-  NetConsoleInstallModePageMigrate:
-  StrCpy $NetConsoleInstallMode "MIGRATE_EXISTING_DATA"
+Function NetConsoleRefreshInstallModeHistory
+  IfFileExists "$NetConsoleExistingDataRoot\." NetConsoleInstallModeHistoryAvailable NetConsoleInstallModeHistoryMissing
+NetConsoleInstallModeHistoryAvailable:
+  ${NSD_SetText} $NetConsoleInstallModeHistoryLabel "历史数据目录：$NetConsoleExistingDataRoot"
   Return
+NetConsoleInstallModeHistoryMissing:
+  ${NSD_SetText} $NetConsoleInstallModeHistoryLabel "历史数据目录：$NetConsoleExistingDataRoot$\r$\n状态：历史数据目录不可访问"
+FunctionEnd
 
-  NetConsoleInstallModePageReuse:
-  StrCpy $NetConsoleInstallMode "REUSE_EXISTING_DATA"
-  Return
+Function NetConsoleRefreshInstallModeDescription
+  ${If} $NetConsoleInstallModePageMode == "FRESH_CLEAN_INSTALL"
+    ${NSD_SetText} $NetConsoleInstallModeDescriptionLabel "模式说明：创建独立的新数据环境，原来的数据库和文件不会删除。"
+  ${ElseIf} $NetConsoleInstallModePageMode == "MIGRATE_EXISTING_DATA"
+    ${NSD_SetText} $NetConsoleInstallModeDescriptionLabel "模式说明：将已有数据安全迁移至新位置，旧目录保留。"
+  ${Else}
+    ${NSD_SetText} $NetConsoleInstallModeDescriptionLabel "模式说明：使用原来的局点和历史记录，安装时验证数据完整性。"
+  ${EndIf}
+FunctionEnd
 
-  NetConsoleInstallModePageFresh:
-  StrCpy $NetConsoleInstallMode "FRESH_CLEAN_INSTALL"
-  StrCpy $NetConsoleDataRoot ""
+Function NetConsoleInstallModeReuseClicked
+  StrCpy $NetConsoleInstallModePageMode "REUSE_EXISTING_DATA"
+  Call NetConsoleRefreshInstallModeDescription
+FunctionEnd
+
+Function NetConsoleInstallModeFreshClicked
+  StrCpy $NetConsoleInstallModePageMode "FRESH_CLEAN_INSTALL"
+  Call NetConsoleRefreshInstallModeDescription
+FunctionEnd
+
+Function NetConsoleInstallModeMigrateClicked
+  StrCpy $NetConsoleInstallModePageMode "MIGRATE_EXISTING_DATA"
+  Call NetConsoleRefreshInstallModeDescription
 FunctionEnd
 
 Function NetConsoleDataRootCheckBusinessData
@@ -442,21 +501,45 @@ Function NetConsoleDataRootPageCreate
   ${If} $0 == error
     Abort
   ${EndIf}
-  ${NSD_CreateLabel} 0 0 100% 28u "NetConsole 会在此目录保存局点数据库、MR 原始日志、采集文件、分析结果、报告和备份，数据量可能持续增长。请选择容量充足的非系统固定磁盘。"
+  ${NSD_CreateLabel} 0 0 100% 18u "数据目录"
   Pop $0
-  ${NSD_CreateLabel} 0 34u 100% 12u "数据存放位置（建议至少 100 GB 可用空间）："
+  ${NSD_CreateLabel} 0 22u 100% 12u ""
+  Pop $NetConsoleDataRootPageModeLabel
+  ${NSD_CreateLabel} 0 38u 100% 30u ""
+  Pop $NetConsoleDataRootPageSourceLabel
+  ${NSD_CreateLabel} 0 72u 100% 12u "目标数据目录："
   Pop $0
-  ${NSD_CreateText} 0 50u 76% 12u "$NetConsoleDataRoot"
+  ${NSD_CreateText} 0 88u 76% 14u "$NetConsoleDataRoot"
   Pop $NetConsoleDataRootInput
-  ${NSD_CreateButton} 79% 50u 21% 12u "浏览..."
-  Pop $0
-  ${NSD_OnClick} $0 NetConsoleBrowseDataRoot
-  ${NSD_CreateLabel} 0 72u 100% 36u ""
+  ${NSD_CreateButton} 79% 88u 21% 14u "浏览..."
+  Pop $NetConsoleDataRootBrowseButton
+  ${NSD_OnClick} $NetConsoleDataRootBrowseButton NetConsoleBrowseDataRoot
+  ${NSD_CreateLabel} 0 108u 100% 28u ""
   Pop $NetConsoleDataRootStatus
-  ${NSD_CreateLabel} 0 112u 100% 12u "安装器：v${NETCONSOLE_INSTALLER_APP_VERSION} · ${NETCONSOLE_INSTALLER_GIT_SHORT} · ${NETCONSOLE_INSTALLER_BUILD_TIME} · ${NETCONSOLE_INSTALLER_BUILD_ID}"
+  ${NSD_CreateLabel} 0 142u 100% 10u "NetConsole v${NETCONSOLE_INSTALLER_APP_VERSION} · ${NETCONSOLE_INSTALLER_EDITION} 安装器"
   Pop $0
+  Call NetConsoleRefreshDataRootPageText
   Call NetConsoleRefreshDataRootStatus
   nsDialogs::Show
+FunctionEnd
+
+Function NetConsoleRefreshDataRootPageText
+  ${If} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
+    ${NSD_SetText} $NetConsoleDataRootPageModeLabel "安装方式：沿用已有数据（推荐）"
+    ${NSD_SetText} $NetConsoleDataRootPageSourceLabel "当前数据目录：$NetConsoleExistingDataRoot$\r$\n安装器将验证原局点、历史记录和 devices.db。"
+    EnableWindow $NetConsoleDataRootInput 0
+    EnableWindow $NetConsoleDataRootBrowseButton 0
+  ${ElseIf} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
+    ${NSD_SetText} $NetConsoleDataRootPageModeLabel "安装方式：迁移已有数据（高级）"
+    ${NSD_SetText} $NetConsoleDataRootPageSourceLabel "源数据目录：$NetConsoleExistingDataRoot$\r$\n请选择新的目标目录；源目录保留。"
+    EnableWindow $NetConsoleDataRootInput 1
+    EnableWindow $NetConsoleDataRootBrowseButton 1
+  ${Else}
+    ${NSD_SetText} $NetConsoleDataRootPageModeLabel "安装方式：全新安装"
+    ${NSD_SetText} $NetConsoleDataRootPageSourceLabel "请选择新的空白目标目录。旧局点、旧 bootstrap 和旧数据库不会被使用。"
+    EnableWindow $NetConsoleDataRootInput 1
+    EnableWindow $NetConsoleDataRootBrowseButton 1
+  ${EndIf}
 FunctionEnd
 
 Function NetConsoleBrowseDataRoot
@@ -472,7 +555,7 @@ FunctionEnd
 Function NetConsoleRefreshDataRootStatus
   ${NSD_GetText} $NetConsoleDataRootInput $NetConsoleDataRoot
   ${If} $NetConsoleDataRoot == ""
-    ${NSD_SetText} $NetConsoleDataRootStatus "尚未选择数据目录。安装不会写入 C 盘或 AppData。"
+    ${NSD_SetText} $NetConsoleDataRootStatus "尚未选择数据目录。"
     Return
   ${EndIf}
   Call NetConsoleValidateDataRootLocation
@@ -483,31 +566,32 @@ Function NetConsoleRefreshDataRootStatus
   Call NetConsoleDataRootCheckBusinessData
   ${If} $NetConsoleInstallMode == "FRESH_CLEAN_INSTALL"
     ${If} $NetConsoleDataRootBusinessData == "1"
-      ${NSD_SetText} $NetConsoleDataRootStatus "目标包含现有或不明确的 NetConsole 数据：清洁安装拒绝覆盖，请选择新根。"
+      ${NSD_SetText} $NetConsoleDataRootStatus "清洁安装目标包含 NetConsole 数据：请选择新的空白目录。"
       Return
     ${EndIf}
   ${ElseIf} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
     ${If} $NetConsoleDataRootExists != "1"
-      ${NSD_SetText} $NetConsoleDataRootStatus "历史数据目录不可访问：请恢复原磁盘，或返回选择全新安装。"
+      ${NSD_SetText} $NetConsoleDataRootStatus "历史数据目录不可访问：请返回选择安装方式。"
       Return
     ${EndIf}
-    ${NSD_SetText} $NetConsoleDataRootStatus "已选择沿用已有数据：安装执行时将严格验证 Manifest、SiteRegistry、活动局点和 devices.db。"
+    ${NSD_SetText} $NetConsoleDataRootStatus "沿用模式：将验证 Manifest、Registry、活动局点和 devices.db。"
     Return
   ${ElseIf} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
     ${If} $NetConsoleDataRootBusinessData == "1"
-      ${NSD_SetText} $NetConsoleDataRootStatus "迁移目标包含现有 NetConsole 数据：为避免合并覆盖，请选择无冲突的新目标。"
+      ${NSD_SetText} $NetConsoleDataRootStatus "迁移目标已有 NetConsole 数据：请选择无冲突目录。"
       Return
     ${EndIf}
   ${EndIf}
   Call NetConsoleDataRootCheckEntries
   ${If} $NetConsoleDataRootHasEntries == "1"
-    ${NSD_SetText} $NetConsoleDataRootStatus "目录包含现有普通文件：安装器将保留这些文件；仅在 NetConsole 必需路径发生真实冲突时停止。"
+    DetailPrint "目录包含现有普通文件：安装器将保留这些文件；仅在 NetConsole 必需路径发生真实冲突时停止。"
+    ${NSD_SetText} $NetConsoleDataRootStatus "目录含普通文件；安装器将保留这些文件。"
     Return
   ${EndIf}
   ${If} $NetConsoleDataRootExists == "1"
-    ${NSD_SetText} $NetConsoleDataRootStatus "空目录：将直接使用此目录作为 NetConsole 数据根。"
+    ${NSD_SetText} $NetConsoleDataRootStatus "空目录：可作为 NetConsole 数据根。"
   ${Else}
-    ${NSD_SetText} $NetConsoleDataRootStatus "目录不存在：将在此精确路径创建 NetConsole 数据根，不会追加子目录。"
+    ${NSD_SetText} $NetConsoleDataRootStatus "目录不存在：安装器将按此路径创建数据根。"
   ${EndIf}
 FunctionEnd
 
