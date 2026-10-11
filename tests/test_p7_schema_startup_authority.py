@@ -68,8 +68,39 @@ def _registry(root: Path, *, site_id: str = "sxl1", directory: str | None = None
     return path
 
 
-def _database(root: Path, site_id: str = "sxl1") -> Path:
-    path = root / "sites" / site_id / "db" / "devices.db"
+def _registry_many(root: Path, entries: list[tuple[str, str | None]]) -> Path:
+    config = root / "config"
+    config.mkdir(parents=True, exist_ok=True)
+    path = config / "site_registry.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "sites": [
+                    {
+                        "site_id": site_id,
+                        "display_name": production_module.PRODUCTION_SITE_ALLOWLIST.get(
+                            site_id, site_id
+                        ),
+                        "relative_path": f"sites/{directory or site_id}",
+                    }
+                    for site_id, directory in entries
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _database(
+    root: Path,
+    site_id: str = "sxl1",
+    *,
+    directory: str | None = None,
+) -> Path:
+    path = root / "sites" / (directory or site_id) / "db" / "devices.db"
     path.parent.mkdir(parents=True, exist_ok=True)
     Database(path).initialize()
     return path
@@ -305,6 +336,204 @@ def test_production_startup_accepts_legacy_app_config_fallback(
     monkeypatch.setattr(backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: [])
 
     assert backend_main._current_site_name(PathResolver(data_root=root)) == "sxl1"
+
+
+def test_formal_application_config_wins_over_stale_legacy_app_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "formal-over-legacy"
+    _registry_many(root, [("line-a", None), ("line-b", None)])
+    _database(root, "line-a")
+    _database(root, "line-b")
+    (root / "config" / "application.json").write_text(
+        json.dumps({"active_site_id": "line-b", "current_site": "line-b"}),
+        encoding="utf-8",
+    )
+    (root / "config" / "app.json").write_text(
+        json.dumps({"current_site": "line-a"}), encoding="utf-8"
+    )
+    _production_patches(monkeypatch)
+    monkeypatch.setattr(backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: [])
+    paths = PathResolver(data_root=root)
+
+    assert backend_main._current_site_name(paths) == "line-b"
+    diagnostics = backend_main._production_startup_site(paths).diagnostics
+    legacy = next(item for item in diagnostics if item["source_file"] == "app.json")
+    assert legacy["canonical_site_id"] == "line-a"
+    assert legacy["consistent_with_selected"] is False
+    assert legacy["reason"] == "legacy_hint_ignored_by_formal_configuration"
+
+
+def test_formal_application_config_wins_over_electron_bootstrap_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "formal-over-bootstrap"
+    _registry_many(root, [("line-a", None), ("line-b", None)])
+    _database(root, "line-a")
+    _database(root, "line-b")
+    (root / "config" / "application.json").write_text(
+        json.dumps({"active_site_id": "line-b", "current_site": "line-b"}),
+        encoding="utf-8",
+    )
+    _production_patches(monkeypatch)
+    monkeypatch.setenv("NETCONSOLE_ACTIVE_SITE_ID", "line-a")
+    monkeypatch.delenv("NETCONSOLE_ACTIVE_SITE_MODE", raising=False)
+    monkeypatch.setattr(backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: [])
+    paths = PathResolver(data_root=root)
+
+    assert backend_main._current_site_name(paths) == "line-b"
+    bootstrap = next(
+        item
+        for item in backend_main._production_startup_site(paths).diagnostics
+        if item["source_file"] == "electron-bootstrap"
+    )
+    assert bootstrap["canonical_site_id"] == "line-a"
+    assert bootstrap["reason"] == "bootstrap_hint_ignored_by_formal_configuration"
+
+
+def test_formal_active_site_id_accepts_current_site_physical_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "formal-physical-directory"
+    _registry_many(root, [("line-b", "physical-line-b")])
+    _database(root, "line-b", directory="physical-line-b")
+    (root / "config" / "application.json").write_text(
+        json.dumps({"active_site_id": "line-b", "current_site": "physical-line-b"}),
+        encoding="utf-8",
+    )
+    _production_patches(monkeypatch)
+    monkeypatch.setattr(backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: [])
+
+    assert backend_main._current_site_name(PathResolver(data_root=root)) == "physical-line-b"
+
+
+def test_formal_application_fields_conflict_closed_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "formal-conflict"
+    _registry_many(root, [("line-a", None), ("line-b", None)])
+    _database(root, "line-a")
+    _database(root, "line-b")
+    (root / "config" / "application.json").write_text(
+        json.dumps({"active_site_id": "line-a", "current_site": "line-b"}),
+        encoding="utf-8",
+    )
+    _production_patches(monkeypatch)
+
+    with pytest.raises(backend_main.ActiveSiteStartupError) as caught:
+        backend_main._current_site_name(PathResolver(data_root=root))
+
+    assert caught.value.code == "ACTIVE_SITE_AMBIGUOUS"
+    assert {
+        (item["source_file"], item["field"], item["canonical_site_id"])
+        for item in caught.value.diagnostics
+    } >= {
+        ("application.json", "active_site_id", "line-a"),
+        ("application.json", "current_site", "line-b"),
+    }
+
+
+def test_legacy_config_is_used_before_bootstrap_hint_when_application_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "legacy-over-bootstrap"
+    _registry_many(root, [("line-a", None), ("line-b", None)])
+    _database(root, "line-a")
+    _database(root, "line-b")
+    (root / "config" / "app.json").write_text(
+        json.dumps({"current_site": "line-a"}), encoding="utf-8"
+    )
+    _production_patches(monkeypatch)
+    monkeypatch.setenv("NETCONSOLE_ACTIVE_SITE_ID", "line-b")
+    monkeypatch.delenv("NETCONSOLE_ACTIVE_SITE_MODE", raising=False)
+    monkeypatch.setattr(backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: [])
+
+    assert backend_main._current_site_name(PathResolver(data_root=root)) == "line-a"
+
+
+def test_missing_active_config_recovers_a_unique_registered_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "unique-registered-recovery"
+    _registry(root, site_id="line-a")
+    _database(root, "line-a")
+    _production_patches(monkeypatch)
+    monkeypatch.delenv("NETCONSOLE_ACTIVE_SITE_ID", raising=False)
+    monkeypatch.delenv("NETCONSOLE_ACTIVE_SITE_MODE", raising=False)
+    monkeypatch.setattr(backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: [])
+    paths = PathResolver(data_root=root)
+
+    assert backend_main._current_site_name(paths) == "line-a"
+    assert json.loads(paths.app_config_path.read_text(encoding="utf-8"))["active_site_id"] == "line-a"
+
+
+def test_missing_active_config_with_multiple_registered_sites_requires_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "multiple-registered-recovery"
+    _registry_many(root, [("line-a", None), ("line-b", None)])
+    _database(root, "line-a")
+    _database(root, "line-b")
+    _production_patches(monkeypatch)
+    monkeypatch.delenv("NETCONSOLE_ACTIVE_SITE_ID", raising=False)
+    monkeypatch.delenv("NETCONSOLE_ACTIVE_SITE_MODE", raising=False)
+
+    with pytest.raises(backend_main.ActiveSiteStartupError) as caught:
+        backend_main._current_site_name(PathResolver(data_root=root))
+
+    assert caught.value.code == "ACTIVE_SITE_AMBIGUOUS"
+    assert not (root / "config" / "application.json").exists()
+
+
+def test_authorized_switch_target_wins_and_remains_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "authorized-switch"
+    _registry_many(root, [("line-a", None), ("line-b", None)])
+    _database(root, "line-a")
+    _database(root, "line-b")
+    (root / "config" / "application.json").write_text(
+        json.dumps({"active_site_id": "line-a", "current_site": "line-a"}),
+        encoding="utf-8",
+    )
+    _production_patches(monkeypatch)
+    monkeypatch.setenv("NETCONSOLE_ACTIVE_SITE_ID", "line-b")
+    monkeypatch.setenv("NETCONSOLE_ACTIVE_SITE_MODE", "authorized_switch")
+    monkeypatch.setattr(backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: [])
+    paths = PathResolver(data_root=root)
+
+    assert backend_main._current_site_name(paths) == "line-b"
+    config = json.loads(paths.app_config_path.read_text(encoding="utf-8"))
+    assert config["active_site_id"] == "line-b"
+    assert config["current_site"] == "line-b"
+
+    monkeypatch.delenv("NETCONSOLE_ACTIVE_SITE_ID")
+    monkeypatch.delenv("NETCONSOLE_ACTIVE_SITE_MODE")
+    assert backend_main._current_site_name(paths) == "line-b"
+
+
+def test_failed_authorized_switch_does_not_rewrite_previous_formal_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "failed-authorized-switch"
+    _registry_many(root, [("line-a", None), ("line-b", None)])
+    _database(root, "line-a")
+    (root / "sites" / "line-b").mkdir(parents=True)
+    application = root / "config" / "application.json"
+    application.write_text(
+        json.dumps({"active_site_id": "line-a", "current_site": "line-a"}),
+        encoding="utf-8",
+    )
+    before = application.read_bytes()
+    _production_patches(monkeypatch)
+    monkeypatch.setenv("NETCONSOLE_ACTIVE_SITE_ID", "line-b")
+    monkeypatch.setenv("NETCONSOLE_ACTIVE_SITE_MODE", "authorized_switch")
+
+    with pytest.raises(backend_main.ActiveSiteStartupError) as caught:
+        backend_main._current_site_name(PathResolver(data_root=root))
+
+    assert caught.value.code == "ACTIVE_SITE_DATABASE_MISSING"
+    assert application.read_bytes() == before
 
 
 def test_production_startup_accepts_a_valid_registered_site_outside_maintenance_allowlist(

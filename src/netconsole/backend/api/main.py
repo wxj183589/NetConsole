@@ -9,6 +9,7 @@ import secrets
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -1357,17 +1358,76 @@ def _log_build_identity(app: FastAPI) -> None:
     )
 
 
+@dataclass(frozen=True)
+class _ProductionSiteReference:
+    source_file: str
+    field: str
+    value: str
+    kind: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.source_file}:{self.field}"
+
+
+@dataclass(frozen=True)
+class _ProductionSiteReferenceSnapshot:
+    references: tuple[_ProductionSiteReference, ...]
+    application_present: bool
+    read_diagnostics: tuple[dict[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class _ProductionStartupContext:
+    site_name: str
+    site_id: str
+    database_path: Path
+    selected_source: str
+    diagnostics: tuple[dict[str, object], ...] = ()
+
+
+def _format_active_site_reference_diagnostic(value: dict[str, object]) -> str:
+    return " ".join(
+        (
+            f"来源={value.get('source_file', '')}",
+            f"字段={value.get('field', '')}",
+            f"引用={value.get('reference', '')}",
+            f"canonical_site_id={value.get('canonical_site_id') or 'none'}",
+            f"物理目录={value.get('physical_directory') or 'none'}",
+            f"存在={str(bool(value.get('exists'))).lower()}",
+            f"legacy_hint={str(bool(value.get('legacy_hint'))).lower()}",
+            f"与活动局点一致={str(value.get('consistent_with_selected')).lower()}",
+            f"原因={value.get('reason', '')}",
+        )
+    )
+
+
 class ActiveSiteStartupError(RuntimeError):
     """Raised when the persisted Production active-site contract is unsafe."""
 
-    def __init__(self, code: str, message: str, *, data_root: Path) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        data_root: Path,
+        diagnostics: list[dict[str, object]] | tuple[dict[str, object], ...] = (),
+    ) -> None:
         self.code = code
         self.data_root = data_root
+        self.diagnostics = tuple(diagnostics)
+        diagnostic_text = ""
+        if self.diagnostics:
+            diagnostic_text = "\n局点引用诊断：\n" + "\n".join(
+                f"- {_format_active_site_reference_diagnostic(item)}"
+                for item in self.diagnostics
+            )
         super().__init__(
             "NetConsole 无法读取当前局点配置。\n"
             f"数据目录：{data_root}\n"
             f"错误码：{code}\n"
             f"原因：{message}\n"
+            f"{diagnostic_text}\n"
             "现有业务数据未被删除或重建。请检查数据目录配置，或执行受控恢复。"
         )
 
@@ -1378,12 +1438,18 @@ def _raise_active_site_startup_error(
     message: str,
     *,
     cause: BaseException | None = None,
+    diagnostics: list[dict[str, object]] | tuple[dict[str, object], ...] = (),
 ) -> NoReturn:
     app_logger.log_error(
         code,
         f"stage=active_site_startup data_root={paths.data_root} reason={message}",
     )
-    error = ActiveSiteStartupError(code, message, data_root=paths.data_root)
+    error = ActiveSiteStartupError(
+        code,
+        message,
+        data_root=paths.data_root,
+        diagnostics=diagnostics,
+    )
     if cause is not None:
         raise error from cause
     raise error
@@ -1399,18 +1465,36 @@ def _startup_path_is_link_or_reparse(path: Path) -> bool:
     return bool(attributes & 0x400)
 
 
-def _read_production_site_refs(paths: PathResolver) -> list[tuple[str, str]]:
-    refs: list[tuple[str, str]] = []
-    if paths.config_dir.exists() and _startup_path_is_link_or_reparse(paths.config_dir):
+def _read_production_site_reference_snapshot(
+    paths: PathResolver,
+) -> _ProductionSiteReferenceSnapshot:
+    refs: list[_ProductionSiteReference] = []
+    read_diagnostics: list[dict[str, object]] = []
+    if _startup_path_is_link_or_reparse(paths.config_dir):
         _raise_active_site_startup_error(
             paths,
             "ACTIVE_SITE_CONFIG_INVALID",
             "config 目录不得是符号链接或 Reparse Point",
         )
+    application_present = paths.app_config_path.exists() or _startup_path_is_link_or_reparse(
+        paths.app_config_path
+    )
     for config_path in (paths.app_config_path, paths.legacy_app_config_path):
-        if not config_path.exists():
+        config_path_is_link = _startup_path_is_link_or_reparse(config_path)
+        if not config_path.exists() and not config_path_is_link:
             continue
-        if not config_path.is_file() or _startup_path_is_link_or_reparse(config_path):
+        is_application = config_path == paths.app_config_path
+        strict = is_application or not application_present
+        if not config_path.is_file() or config_path_is_link:
+            if not strict:
+                read_diagnostics.append(
+                    {
+                        "source_file": config_path.name,
+                        "field": "<file>",
+                        "reason": "legacy_hint_unreadable_ignored",
+                    }
+                )
+                continue
             _raise_active_site_startup_error(
                 paths,
                 "ACTIVE_SITE_CONFIG_MISSING",
@@ -1419,6 +1503,16 @@ def _read_production_site_refs(paths: PathResolver) -> list[tuple[str, str]]:
         try:
             raw = json.loads(config_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, TypeError) as exc:
+            if not strict:
+                read_diagnostics.append(
+                    {
+                        "source_file": config_path.name,
+                        "field": "<json>",
+                        "reason": "legacy_hint_invalid_ignored",
+                        "error_type": exc.__class__.__name__,
+                    }
+                )
+                continue
             _raise_active_site_startup_error(
                 paths,
                 "ACTIVE_SITE_CONFIG_INVALID",
@@ -1426,6 +1520,15 @@ def _read_production_site_refs(paths: PathResolver) -> list[tuple[str, str]]:
                 cause=exc,
             )
         if not isinstance(raw, dict):
+            if not strict:
+                read_diagnostics.append(
+                    {
+                        "source_file": config_path.name,
+                        "field": "<root>",
+                        "reason": "legacy_hint_invalid_ignored",
+                    }
+                )
+                continue
             _raise_active_site_startup_error(
                 paths,
                 "ACTIVE_SITE_CONFIG_INVALID",
@@ -1436,19 +1539,64 @@ def _read_production_site_refs(paths: PathResolver) -> list[tuple[str, str]]:
             if value is None or str(value).strip() == "":
                 continue
             if not isinstance(value, str):
+                if not strict:
+                    read_diagnostics.append(
+                        {
+                            "source_file": config_path.name,
+                            "field": key,
+                            "reason": "legacy_hint_field_invalid_ignored",
+                        }
+                    )
+                    continue
                 _raise_active_site_startup_error(
                     paths,
                     "ACTIVE_SITE_CONFIG_INVALID",
                     f"{config_path.name} 的 {key} 必须是文本",
                 )
-            refs.append((f"{config_path.name}:{key}", value.strip()))
-    return refs
+            refs.append(
+                _ProductionSiteReference(
+                    config_path.name,
+                    key,
+                    value.strip(),
+                    "formal_active"
+                    if is_application and key == "active_site_id"
+                    else "formal_compat"
+                    if is_application
+                    else "legacy_hint",
+                )
+            )
+
+    bootstrap_site_id = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or "").strip()
+    if bootstrap_site_id:
+        mode = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_MODE") or "").strip().casefold()
+        refs.append(
+            _ProductionSiteReference(
+                "electron-bootstrap" if mode != "authorized_switch" else "site-switch",
+                "active_site_id",
+                bootstrap_site_id,
+                "authorized_switch" if mode == "authorized_switch" else "bootstrap_hint",
+            )
+        )
+    return _ProductionSiteReferenceSnapshot(
+        tuple(refs),
+        application_present,
+        tuple(read_diagnostics),
+    )
+
+
+def _read_production_site_refs(paths: PathResolver) -> list[tuple[str, str]]:
+    """Return all startup references for compatibility with existing callers."""
+
+    snapshot = _read_production_site_reference_snapshot(paths)
+    return [(reference.label, reference.value) for reference in snapshot.references]
 
 
 def _production_configured_site_ref(paths: PathResolver) -> str:
-    refs = _read_production_site_refs(paths)
-    if refs:
-        return refs[0][1]
+    snapshot = _read_production_site_reference_snapshot(paths)
+    for kind in ("formal_active", "formal_compat", "legacy_hint"):
+        for reference in snapshot.references:
+            if reference.kind == kind:
+                return reference.value
     _raise_active_site_startup_error(
         paths,
         "ACTIVE_SITE_CONFIG_MISSING",
@@ -1457,9 +1605,15 @@ def _production_configured_site_ref(paths: PathResolver) -> str:
 
 
 def _startup_site_entries(paths: PathResolver) -> list[Path]:
+    if _startup_path_is_link_or_reparse(paths.sites_dir):
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_REGISTRY_INVALID",
+            "sites 目录不可安全读取",
+        )
     if not paths.sites_dir.exists():
         return []
-    if not paths.sites_dir.is_dir() or _startup_path_is_link_or_reparse(paths.sites_dir):
+    if not paths.sites_dir.is_dir():
         _raise_active_site_startup_error(
             paths,
             "ACTIVE_SITE_REGISTRY_INVALID",
@@ -1486,6 +1640,12 @@ def _strict_production_records(
     paths: PathResolver,
 ) -> tuple[SiteRegistryRepository, list[SiteRecord]]:
     registry = SiteRegistryRepository(paths)
+    if _startup_path_is_link_or_reparse(registry.path):
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_REGISTRY_INVALID",
+            "site_registry.json 不得是符号链接或 Reparse Point",
+        )
     try:
         records = registry.persisted_records()
     except SiteStorageError as exc:
@@ -1559,6 +1719,60 @@ def _resolve_startup_reference(
     return next(iter(unique.values()))
 
 
+def _startup_reference_diagnostics(
+    references: list[_ProductionSiteReference],
+    records: list[SiteRecord],
+    *,
+    selected_site_id: str | None = None,
+    reasons: dict[str, str] | None = None,
+) -> list[dict[str, object]]:
+    reason_by_label = reasons or {}
+    diagnostics: list[dict[str, object]] = []
+    for reference in references:
+        matches = [
+            record
+            for record in records
+            if record.site_id.casefold() == reference.value.casefold()
+            or record.root_path.name.casefold() == reference.value.casefold()
+        ]
+        unique = {record.site_id: record for record in matches}
+        record = next(iter(unique.values())) if len(unique) == 1 else None
+        if len(unique) > 1:
+            reason = "reference_resolves_to_multiple_sites"
+        elif record is None:
+            reason = "reference_not_found"
+        else:
+            reason = reason_by_label.get(reference.label, "reference_resolved")
+        diagnostics.append(
+            {
+                "source_file": reference.source_file,
+                "field": reference.field,
+                "reference": reference.value,
+                "canonical_site_id": record.site_id if record is not None else None,
+                "physical_directory": str(record.root_path) if record is not None else "",
+                "exists": bool(record is not None and record.root_path.is_dir()),
+                "legacy_hint": reference.kind in {"legacy_hint", "bootstrap_hint"},
+                "consistent_with_selected": (
+                    None
+                    if selected_site_id is None or record is None
+                    else record.site_id == selected_site_id
+                ),
+                "reason": reason,
+            }
+        )
+    return diagnostics
+
+
+def _log_startup_reference_diagnostics(
+    diagnostics: list[dict[str, object]],
+) -> None:
+    for diagnostic in diagnostics:
+        app_logger.log_info(
+            "ACTIVE_SITE_REFERENCE_DIAGNOSTIC",
+            json.dumps(diagnostic, ensure_ascii=False, separators=(",", ":")),
+        )
+
+
 def _validate_startup_database(paths: PathResolver, record: SiteRecord) -> Path:
     root = record.root_path
     if not root.is_dir() or _startup_path_is_link_or_reparse(root):
@@ -1605,13 +1819,30 @@ def _validate_startup_database(paths: PathResolver, record: SiteRecord) -> Path:
 def _production_startup_site(
     paths: PathResolver,
     site_ref: str | None = None,
-) -> tuple[str, str]:
+) -> _ProductionStartupContext:
     """Resolve ordinary Production startup from persisted SiteRegistry data."""
 
-    refs = _read_production_site_refs(paths)
-    if site_ref:
-        refs.insert(0, ("bootstrap", site_ref))
-    registry, records = _recover_legacy_registry(paths, refs)
+    snapshot = _read_production_site_reference_snapshot(paths)
+    references = list(snapshot.references)
+    if site_ref and not any(
+        reference.kind in {"authorized_switch", "bootstrap_hint"}
+        and reference.value == site_ref
+        for reference in references
+    ):
+        references.append(
+            _ProductionSiteReference(
+                "electron-bootstrap",
+                "active_site_id",
+                site_ref,
+                "bootstrap_hint",
+            )
+        )
+    recovery_refs = [
+        (reference.label, reference.value)
+        for reference in references
+        if reference.kind != "bootstrap_hint"
+    ]
+    registry, records = _recover_legacy_registry(paths, recovery_refs)
     del registry
     if not records:
         _raise_active_site_startup_error(
@@ -1620,41 +1851,189 @@ def _production_startup_site(
             "数据根中没有已登记的局点",
         )
 
-    selected: SiteRecord | None = None
-    resolved_refs: dict[str, SiteRecord] = {}
-    for source, reference in refs:
-        try:
-            match = _resolve_startup_reference(records, reference)
-        except ValueError as exc:
+    reasons: dict[str, str] = {}
+    diagnostics = list(snapshot.read_diagnostics)
+
+    def resolve_group(
+        group: list[_ProductionSiteReference],
+        *,
+        group_name: str,
+    ) -> SiteRecord | None:
+        resolved_refs: dict[str, SiteRecord] = {}
+        for reference in group:
+            source = reference.label
+            value = reference.value
+            try:
+                match = _resolve_startup_reference(records, value)
+            except ValueError as exc:
+                reasons[source] = f"{group_name}_reference_ambiguous"
+                all_diagnostics = diagnostics + _startup_reference_diagnostics(
+                    references,
+                    records,
+                    reasons=reasons,
+                )
+                _log_startup_reference_diagnostics(all_diagnostics)
+                _raise_active_site_startup_error(
+                    paths,
+                    "ACTIVE_SITE_AMBIGUOUS",
+                    f"{source} 无法唯一对应一个局点：{value}",
+                    cause=exc,
+                    diagnostics=all_diagnostics,
+                )
+            if match is None:
+                reasons[source] = f"{group_name}_reference_not_found"
+                all_diagnostics = diagnostics + _startup_reference_diagnostics(
+                    references,
+                    records,
+                    reasons=reasons,
+                )
+                _log_startup_reference_diagnostics(all_diagnostics)
+                _raise_active_site_startup_error(
+                    paths,
+                    "ACTIVE_SITE_CONFIG_MISSING",
+                    f"{source} 无法在持久化 Registry 中解析：{value}",
+                    diagnostics=all_diagnostics,
+                )
+            resolved_refs[source] = match
+        resolved_ids = {record.site_id for record in resolved_refs.values()}
+        if len(resolved_ids) > 1:
+            for source in resolved_refs:
+                reasons[source] = f"{group_name}_fields_conflict"
+            all_diagnostics = diagnostics + _startup_reference_diagnostics(
+                references,
+                records,
+                reasons=reasons,
+            )
+            _log_startup_reference_diagnostics(all_diagnostics)
             _raise_active_site_startup_error(
                 paths,
                 "ACTIVE_SITE_AMBIGUOUS",
-                f"{source} 无法唯一对应一个局点：{reference}",
-                cause=exc,
+                f"{group_name} 的配置字段指向不同局点",
+                diagnostics=all_diagnostics,
             )
-        if match is not None:
-            resolved_refs[source] = match
-    resolved_ids = {record.site_id for record in resolved_refs.values()}
-    if len(resolved_ids) > 1:
-        _raise_active_site_startup_error(
-            paths,
-            "ACTIVE_SITE_AMBIGUOUS",
-            "application.json、legacy app.json 与启动参数指向不同局点",
-        )
-    if resolved_refs:
-        selected = next(iter(resolved_refs.values()))
+        return next(iter(resolved_refs.values())) if resolved_refs else None
+
+    authorized_refs = [
+        reference for reference in references if reference.kind == "authorized_switch"
+    ]
+    formal_refs = [
+        reference
+        for reference in references
+        if reference.kind in {"formal_active", "formal_compat"}
+    ]
+    legacy_refs = [
+        reference for reference in references if reference.kind == "legacy_hint"
+    ]
+    bootstrap_refs = [
+        reference for reference in references if reference.kind == "bootstrap_hint"
+    ]
+
+    selected: SiteRecord | None = None
+    selected_source = "registry_unique_recovery"
+    if authorized_refs:
+        selected = resolve_group(authorized_refs, group_name="已授权局点切换")
+        selected_source = authorized_refs[0].label
+        for reference in formal_refs:
+            reasons.setdefault(reference.label, "formal_configuration_overridden_by_authorized_switch")
+        for reference in legacy_refs:
+            reasons.setdefault(reference.label, "legacy_hint_ignored_by_authorized_switch")
+        for reference in bootstrap_refs:
+            reasons.setdefault(reference.label, "bootstrap_hint_ignored_by_authorized_switch")
+    elif snapshot.application_present:
+        if formal_refs:
+            selected = resolve_group(formal_refs, group_name="application.json")
+            selected_source = next(
+                (
+                    reference.label
+                    for reference in formal_refs
+                    if reference.kind == "formal_active"
+                ),
+                formal_refs[0].label,
+            )
+            for reference in legacy_refs:
+                reasons.setdefault(reference.label, "legacy_hint_ignored_by_formal_configuration")
+            for reference in bootstrap_refs:
+                reasons.setdefault(reference.label, "bootstrap_hint_ignored_by_formal_configuration")
+        else:
+            diagnostics.extend(
+                _startup_reference_diagnostics(references, records, reasons=reasons)
+            )
+            _log_startup_reference_diagnostics(diagnostics)
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_CONFIG_MISSING",
+                "application.json 存在，但没有 active_site_id 或 current_site",
+                diagnostics=diagnostics,
+            )
+    elif legacy_refs:
+        selected = resolve_group(legacy_refs, group_name="legacy app.json")
+        selected_source = legacy_refs[0].label
+        for reference in bootstrap_refs:
+            reasons.setdefault(reference.label, "bootstrap_hint_ignored_by_legacy_configuration")
     elif len(records) == 1:
-        # A stale/missing bootstrap is recoverable when the Registry has one
-        # unambiguous site.  The config is written only after DB startup passes.
         selected = records[0]
+        for reference in bootstrap_refs:
+            reasons.setdefault(reference.label, "bootstrap_hint_not_authority_registry_unique")
     else:
+        reasons.update(
+            {
+                reference.label: "bootstrap_hint_not_authority_multiple_candidates"
+                for reference in bootstrap_refs
+            }
+        )
+        diagnostics.extend(
+            _startup_reference_diagnostics(references, records, reasons=reasons)
+        )
+        _log_startup_reference_diagnostics(diagnostics)
         _raise_active_site_startup_error(
             paths,
             "ACTIVE_SITE_AMBIGUOUS",
-            "数据根包含多个局点，但没有唯一的 active_site_id/current_site",
+            "数据根包含多个局点，但没有可验证的正式活动局点或已授权切换目标",
+            diagnostics=diagnostics,
         )
+
+    if selected is None:
+        diagnostics.extend(
+            _startup_reference_diagnostics(references, records, reasons=reasons)
+        )
+        _log_startup_reference_diagnostics(diagnostics)
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_CONFIG_MISSING",
+            "无法确定当前局点",
+            diagnostics=diagnostics,
+        )
+
+    for reference in references:
+        if reference.label not in reasons:
+            if reference.kind == "formal_active" and reference.value:
+                reasons[reference.label] = "formal_active_selected"
+            elif reference.kind == "formal_compat":
+                reasons[reference.label] = "formal_compat_consistent"
+            elif reference.kind == "legacy_hint":
+                reasons[reference.label] = "legacy_hint_selected"
+            elif reference.kind == "bootstrap_hint":
+                reasons[reference.label] = "bootstrap_hint_ignored"
+            else:
+                reasons[reference.label] = "reference_resolved"
+    diagnostics.extend(
+        _startup_reference_diagnostics(
+            references,
+            records,
+            selected_site_id=selected.site_id,
+            reasons=reasons,
+        )
+    )
+    _log_startup_reference_diagnostics(diagnostics)
+
     database_path = _validate_startup_database(paths, selected)
-    return database_path.parent.parent.name, selected.site_id
+    return _ProductionStartupContext(
+        site_name=selected.root_path.name,
+        site_id=selected.site_id,
+        database_path=database_path,
+        selected_source=selected_source,
+        diagnostics=tuple(diagnostics),
+    )
 
 
 def _paths_are_production(paths: PathResolver) -> bool:
@@ -1670,15 +2049,18 @@ def _current_site_name(
     production = _paths_are_production(paths)
     preferred = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or "").strip()
     if production:
-        selected, site_id = _production_startup_site(paths, preferred or None)
+        startup_context = _production_startup_site(paths, preferred or None)
         _initialize_active_site_database(
             paths,
-            selected,
-            production_site_id=site_id,
+            startup_context.site_name,
+            production_context=startup_context,
             startup_stage=startup_stage,
         )
-        SiteManager(paths).set_current_site_reference(selected, site_id=site_id)
-        return selected
+        SiteManager(paths).set_current_site_reference(
+            startup_context.site_name,
+            site_id=startup_context.site_id,
+        )
+        return startup_context.site_name
     if preferred:
         try:
             selected = SiteRegistryRepository(paths).resolve_directory_name(preferred)
@@ -1705,17 +2087,27 @@ def _initialize_active_site_database(
     site_name: str,
     *,
     production_site_id: str | None = None,
+    production_context: _ProductionStartupContext | None = None,
     startup_stage: Callable[[str], None] | None = None,
 ) -> None:
     production = _paths_are_production(paths)
     database_path = paths.site_db_path(site_name)
     if production:
-        selected, site_id = _production_startup_site(paths, production_site_id or site_name)
-        site_name = selected
-        database_path = _validate_startup_database(
-            paths,
-            SiteRecord(site_id, site_id, paths.site_dir(site_name)),
-        )
+        if production_context is None:
+            production_context = _production_startup_site(
+                paths,
+                production_site_id or site_name,
+            )
+        if production_context.site_name != site_name:
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_CONTEXT_CHANGED",
+                "启动过程中当前局点目录发生变化，已停止数据库初始化",
+                diagnostics=list(production_context.diagnostics),
+            )
+        site_name = production_context.site_name
+        site_id = production_context.site_id
+        database_path = production_context.database_path
     database = Database(database_path)
     if not database.exists():
         if production:
@@ -1738,6 +2130,15 @@ def _initialize_active_site_database(
                 f"当前局点数据库不满足安全启动条件：{site_id}",
                 cause=exc,
             )
+        if production_context is not None:
+            expected_database_path = paths.site_db_path(site_name).resolve()
+            if expected_database_path != production_context.database_path.resolve():
+                _raise_active_site_startup_error(
+                    paths,
+                    "ACTIVE_SITE_CONTEXT_CHANGED",
+                    "数据库初始化前后目标局点身份或路径发生变化",
+                    diagnostics=list(production_context.diagnostics),
+                )
     else:
         database.initialize()
     _emit_startup_stage(startup_stage, "active_site_database_ready")
