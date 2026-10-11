@@ -128,9 +128,71 @@ Function NetConsoleClearDataRootPointers
   SetRegView 64
 FunctionEnd
 
+!ifdef BUILD_UNINSTALLER
+; electron-builder expands customUnInit/customUnInstall inside the NSIS
+; uninstaller section.  NSIS requires calls from that section to target an
+; un.* function, so keep the same narrow registry-only logic in that namespace.
+Function un.NetConsoleReadDataRootViews
+  StrCpy $NetConsoleExistingDataRoot64 ""
+  StrCpy $NetConsoleExistingDataRoot32 ""
+  StrCpy $NetConsoleExistingDataRoot ""
+  StrCpy $NetConsoleRegistryViewConflict "0"
+  SetRegView 64
+  ReadRegStr $NetConsoleExistingDataRoot64 HKLM "Software\NetConsole" "DataRoot"
+  SetRegView 32
+  ReadRegStr $NetConsoleExistingDataRoot32 HKLM "Software\NetConsole" "DataRoot"
+  ${If} $NetConsoleExistingDataRoot64 != ""
+  ${AndIf} $NetConsoleExistingDataRoot32 != ""
+    StrCmp "$NetConsoleExistingDataRoot64" "$NetConsoleExistingDataRoot32" un.NetConsoleRegistryViewsSame un.NetConsoleRegistryViewsConflict
+  ${EndIf}
+  Goto un.NetConsoleRegistryViewsSelect
+
+  un.NetConsoleRegistryViewsSame:
+  Goto un.NetConsoleRegistryViewsSelect
+
+  un.NetConsoleRegistryViewsConflict:
+  StrCpy $NetConsoleRegistryViewConflict "1"
+
+  un.NetConsoleRegistryViewsSelect:
+  ${If} $NetConsoleExistingDataRoot64 != ""
+    StrCpy $NetConsoleExistingDataRoot "$NetConsoleExistingDataRoot64"
+  ${Else}
+    StrCpy $NetConsoleExistingDataRoot "$NetConsoleExistingDataRoot32"
+  ${EndIf}
+  SetRegView 64
+FunctionEnd
+
+Function un.NetConsoleClearDataRootPointers
+  StrCpy $NetConsoleDataRootPointerResult "ok"
+  SetRegView 64
+  ${If} $NetConsoleExistingDataRoot64 != ""
+    ClearErrors
+    DeleteRegValue HKLM "Software\NetConsole" "DataRoot"
+    IfErrors un.NetConsoleClearDataRootPointersFailed
+  ${EndIf}
+  SetRegView 32
+  ${If} $NetConsoleExistingDataRoot32 != ""
+    ClearErrors
+    DeleteRegValue HKLM "Software\NetConsole" "DataRoot"
+    IfErrors un.NetConsoleClearDataRootPointersFailed
+  ${EndIf}
+  Call un.NetConsoleReadDataRootViews
+  ${If} $NetConsoleExistingDataRoot64 != ""
+  ${OrIf} $NetConsoleExistingDataRoot32 != ""
+    Goto un.NetConsoleClearDataRootPointersFailed
+  ${EndIf}
+  SetRegView 64
+  Return
+
+  un.NetConsoleClearDataRootPointersFailed:
+  StrCpy $NetConsoleDataRootPointerResult "清洁卸载未能清除 NetConsole DataRoot 指针"
+  SetRegView 64
+FunctionEnd
+!endif
+
 !macro customUnInit
   SetRegView 64
-  Call NetConsoleReadDataRootViews
+  Call un.NetConsoleReadDataRootViews
   StrCpy $NetConsoleUninstallDataRoot "$NetConsoleExistingDataRoot"
   StrCpy $NetConsoleUninstallMode "NORMAL_UNINSTALL"
   ; electron-builder invokes the old uninstaller with /S /KEEP_APP_DATA and
@@ -155,7 +217,7 @@ FunctionEnd
 
 !macro customUnInstall
   ${If} $NetConsoleUninstallMode == "CLEAN_UNINSTALL"
-    Call NetConsoleClearDataRootPointers
+    Call un.NetConsoleClearDataRootPointers
     ${If} $NetConsoleDataRootPointerResult != "ok"
       MessageBox MB_ICONSTOP "$NetConsoleDataRootPointerResult。业务数据未删除；请以管理员身份重试。"
       Abort

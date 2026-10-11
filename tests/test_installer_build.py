@@ -96,6 +96,10 @@ def test_installer_policy_has_explicit_reuse_clean_migrate_and_uninstall_modes()
     assert "Function NetConsolePublishDataRootPointer" in source
     assert "Function NetConsoleRestoreDataRootPointer" in source
     assert "Function NetConsoleClearDataRootPointers" in source
+    assert "Function un.NetConsoleReadDataRootViews" in source
+    assert "Function un.NetConsoleClearDataRootPointers" in source
+    assert "Call un.NetConsoleReadDataRootViews" in source
+    assert "Call un.NetConsoleClearDataRootPointers" in source
     assert "SetRegView 64" in source
     assert "SetRegView 32" in source
     assert "DeleteRegValue HKLM \"Software\\NetConsole\" \"DataRoot\"" in source
