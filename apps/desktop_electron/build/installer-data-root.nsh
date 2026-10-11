@@ -19,7 +19,9 @@
 Var NetConsoleExistingDataRoot
 Var NetConsoleExistingDataRoot64
 Var NetConsoleExistingDataRoot32
+!ifndef BUILD_UNINSTALLER
 Var NetConsoleDataRoot
+!endif
 Var NetConsoleRegistryViewConflict
 Var NetConsoleDataRootPointerResult
 Var NetConsoleUninstallMode
