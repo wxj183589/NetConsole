@@ -105,35 +105,6 @@ Function NetConsolePublishDataRootPointer
 FunctionEnd
 !endif
 
-!ifndef BUILD_UNINSTALLER
-Function NetConsoleClearDataRootPointers
-  StrCpy $NetConsoleDataRootPointerResult "ok"
-  SetRegView 64
-  ${If} $NetConsoleExistingDataRoot64 != ""
-    ClearErrors
-    DeleteRegValue HKLM "Software\NetConsole" "DataRoot"
-    IfErrors NetConsoleClearDataRootPointersFailed
-  ${EndIf}
-  SetRegView 32
-  ${If} $NetConsoleExistingDataRoot32 != ""
-    ClearErrors
-    DeleteRegValue HKLM "Software\NetConsole" "DataRoot"
-    IfErrors NetConsoleClearDataRootPointersFailed
-  ${EndIf}
-  Call NetConsoleReadDataRootViews
-  ${If} $NetConsoleExistingDataRoot64 != ""
-  ${OrIf} $NetConsoleExistingDataRoot32 != ""
-    Goto NetConsoleClearDataRootPointersFailed
-  ${EndIf}
-  SetRegView 64
-  Return
-
-  NetConsoleClearDataRootPointersFailed:
-  StrCpy $NetConsoleDataRootPointerResult "清洁卸载未能清除 NetConsole DataRoot 指针"
-  SetRegView 64
-FunctionEnd
-!endif
-
 !ifdef BUILD_UNINSTALLER
 ; electron-builder expands customUnInit/customUnInstall inside the NSIS
 ; uninstaller section.  NSIS requires calls from that section to target an

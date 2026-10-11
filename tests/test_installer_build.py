@@ -95,7 +95,6 @@ def test_installer_policy_has_explicit_reuse_clean_migrate_and_uninstall_modes()
     assert "--mode clean-install" in source
     assert "Function NetConsolePublishDataRootPointer" in source
     assert "Function NetConsoleRestoreDataRootPointer" in source
-    assert "Function NetConsoleClearDataRootPointers" in source
     assert "Function un.NetConsoleReadDataRootViews" in source
     assert "Function un.NetConsoleClearDataRootPointers" in source
     assert "Call un.NetConsoleReadDataRootViews" in source
