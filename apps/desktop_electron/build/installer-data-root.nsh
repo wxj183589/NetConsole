@@ -24,7 +24,6 @@ Var NetConsoleDataRoot
 !endif
 Var NetConsoleRegistryViewConflict
 Var NetConsoleDataRootPointerResult
-Var NetConsoleUninstallMode
 Var NetConsoleUninstallDataRoot
 
 !ifndef BUILD_UNINSTALLER
@@ -171,7 +170,7 @@ FunctionEnd
   SetRegView 64
   Call un.NetConsoleReadDataRootViews
   StrCpy $NetConsoleUninstallDataRoot "$NetConsoleExistingDataRoot"
-  StrCpy $NetConsoleUninstallMode "NORMAL_UNINSTALL"
+  StrCpy $NetConsoleDataRootPointerResult "NORMAL_UNINSTALL"
   ; electron-builder invokes the old uninstaller with /S /KEEP_APP_DATA and
   ; --updated during upgrade/repair. Silent lifecycle is always normal and
   ; never presents a clean-uninstall choice.
@@ -181,11 +180,11 @@ FunctionEnd
   Abort
 
   NetConsoleUninstallNormal:
-  StrCpy $NetConsoleUninstallMode "NORMAL_UNINSTALL"
+  StrCpy $NetConsoleDataRootPointerResult "NORMAL_UNINSTALL"
   Return
 
   NetConsoleUninstallClean:
-  StrCpy $NetConsoleUninstallMode "CLEAN_UNINSTALL"
+  StrCpy $NetConsoleDataRootPointerResult "CLEAN_UNINSTALL"
   Return
 
   NetConsoleUninstallSilent:
@@ -193,7 +192,7 @@ FunctionEnd
 !macroend
 
 !macro customUnInstall
-  ${If} $NetConsoleUninstallMode == "CLEAN_UNINSTALL"
+  ${If} $NetConsoleDataRootPointerResult == "CLEAN_UNINSTALL"
     Call un.NetConsoleClearDataRootPointers
     ${If} $NetConsoleDataRootPointerResult != "ok"
       MessageBox MB_ICONSTOP "$NetConsoleDataRootPointerResult。业务数据未删除；请以管理员身份重试。"
