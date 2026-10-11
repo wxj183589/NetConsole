@@ -15,6 +15,25 @@ DATA_ROOT_REGISTRY_VALUE = "DataRoot"
 MINIMUM_DATA_ROOT_FREE_BYTES = 10 * 1024**3
 RECOMMENDED_DATA_ROOT_FREE_BYTES = 100 * 1024**3
 
+_CLEAN_INSTALL_PROTECTED_ENTRIES = frozenset(
+    {
+        "agents",
+        "app.json",
+        "application.json",
+        "backups",
+        "bootstrap.json",
+        "config",
+        "data",
+        "devices.db",
+        "migrations",
+        "runtime",
+        "runtime_mode.json",
+        "site_registry.json",
+        "sites",
+        "staging",
+    }
+)
+
 
 class DataRootConfigurationError(RuntimeError):
     """Raised when persistent NetConsole storage has not been configured."""
@@ -80,6 +99,9 @@ def validate_installation_data_root(
     """
 
     from netconsole.core.runtime_environment import app_root, validate_data_root
+
+    raw_candidate = Path(candidate).expanduser()
+    _reject_reparse_path_or_ancestor(raw_candidate)
     from netconsole.core.runtime_mode import RuntimeMode
 
     root = validate_data_root(Path(candidate), mode=RuntimeMode.DESKTOP)
@@ -107,8 +129,54 @@ def validate_installation_data_root(
     return root
 
 
-def prepare_installation_data_root(
+def validate_existing_installation_data_root(
     candidate: Path, *, installation_root: Path | None = None
+) -> Path:
+    """Validate an already registered root without creating or repairing it.
+
+    Reinstall/upgrade must never turn a missing or damaged historical pointer
+    into a new empty installation.  This path performs the normal fixed-drive
+    and filesystem checks, then reuses the existing Production startup
+    authority to verify the manifest, Registry, active site and devices.db.
+    """
+
+    raw_candidate = Path(candidate).expanduser()
+    _reject_reparse_path_or_ancestor(raw_candidate)
+    if not raw_candidate.exists() or not raw_candidate.is_dir():
+        raise DataRootConfigurationError(
+            "历史数据目录不可访问；请恢复原磁盘，或改选全新安装"
+        )
+    root = validate_installation_data_root(
+        raw_candidate, installation_root=installation_root
+    )
+    from netconsole.backend.api.main import _production_startup_site
+    from netconsole.core.paths import PathResolver
+    from netconsole.services.storage_production_authority import (
+        resolve_storage_root_authority,
+    )
+
+    resolve_storage_root_authority(root)
+    if not (root / "config" / "site_registry.json").is_file():
+        raise DataRootConfigurationError(
+            "历史数据目录缺少 site_registry.json；不会自动生成新的空局点"
+        )
+    previous_data_root = os.environ.get("NETCONSOLE_DATA_ROOT")
+    os.environ["NETCONSOLE_DATA_ROOT"] = str(root)
+    try:
+        _production_startup_site(PathResolver(data_root=root))
+    finally:
+        if previous_data_root is None:
+            os.environ.pop("NETCONSOLE_DATA_ROOT", None)
+        else:
+            os.environ["NETCONSOLE_DATA_ROOT"] = previous_data_root
+    return root
+
+
+def prepare_installation_data_root(
+    candidate: Path,
+    *,
+    installation_root: Path | None = None,
+    clean_install: bool = False,
 ) -> Path:
     """Validate and initialize the selected root before the installer publishes it.
 
@@ -121,6 +189,8 @@ def prepare_installation_data_root(
     root = validate_installation_data_root(
         candidate, installation_root=installation_root
     )
+    if clean_install:
+        _reject_existing_netconsole_business_data(root)
     from netconsole.core.paths import PathResolver
     from netconsole.core.runtime_environment import write_data_environment
     from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
@@ -150,13 +220,67 @@ def prepare_installation_data_root(
     try:
         from netconsole.services.site_storage import SiteApplicationService
 
-        SiteApplicationService(paths).initialize_first_run_site()
+        SiteApplicationService(paths).initialize_first_run_site(
+            allow_unrelated_root_entries=clean_install
+        )
     finally:
         if previous_data_root is None:
             os.environ.pop("NETCONSOLE_DATA_ROOT", None)
         else:
             os.environ["NETCONSOLE_DATA_ROOT"] = previous_data_root
     return root
+
+
+def _reject_existing_netconsole_business_data(root: Path) -> None:
+    """Keep clean install independent from old NetConsole storage.
+
+    Ordinary non-NetConsole files are intentionally allowed by the existing
+    installer policy and are preserved.  Known NetConsole layout, legacy
+    configuration and ambiguous runtime markers are protected instead of
+    being overwritten or silently adopted.
+    """
+
+    try:
+        entries = tuple(root.iterdir())
+    except OSError as exc:
+        raise DataRootConfigurationError("清洁安装目标目录无法读取") from exc
+    protected = [
+        entry.name
+        for entry in entries
+        if entry.name.casefold() in _CLEAN_INSTALL_PROTECTED_ENTRIES
+        or entry.name.casefold().startswith("netconsole")
+    ]
+    if protected:
+        raise DataRootConfigurationError(
+            "清洁安装目标包含现有或不明确的 NetConsole 数据，拒绝覆盖："
+            + ", ".join(sorted(protected, key=str.casefold))
+        )
+
+
+def _reject_reparse_path_or_ancestor(candidate: Path) -> None:
+    """Reject junctions/reparse points before Path.resolve() can hide them."""
+
+    if not candidate.is_absolute():
+        return
+    current = candidate
+    while True:
+        if _is_reparse_point(current):
+            raise DataRootConfigurationError(
+                "数据目录或其父路径不得是符号链接或 Reparse Point"
+            )
+        if current.parent == current:
+            return
+        current = current.parent
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+    except (FileNotFoundError, OSError):
+        return False
+    return bool(attributes & 0x400)
 
 
 def _require_windows_fixed_drive(root: Path) -> None:
@@ -288,6 +412,7 @@ __all__ = [
     "MINIMUM_DATA_ROOT_FREE_BYTES",
     "RECOMMENDED_DATA_ROOT_FREE_BYTES",
     "prepare_installation_data_root",
+    "validate_existing_installation_data_root",
     "read_machine_data_root",
     "resolve_persistent_data_root",
     "validate_installation_data_root",

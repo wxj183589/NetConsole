@@ -16,9 +16,157 @@
   VIAddVersionKey /LANG=1033 "InstallerPolicySHA256" "${NETCONSOLE_INSTALLER_POLICY_SHA256}"
 !macroend
 
-!ifndef BUILD_UNINSTALLER
-Var NetConsoleDataRoot
 Var NetConsoleExistingDataRoot
+Var NetConsoleExistingDataRoot64
+Var NetConsoleExistingDataRoot32
+Var NetConsoleDataRoot
+Var NetConsoleRegistryViewConflict
+Var NetConsoleDataRootPointerResult
+Var NetConsoleUninstallMode
+Var NetConsoleUninstallDataRoot
+
+Function NetConsoleReadDataRootViews
+  StrCpy $NetConsoleExistingDataRoot64 ""
+  StrCpy $NetConsoleExistingDataRoot32 ""
+  StrCpy $NetConsoleExistingDataRoot ""
+  StrCpy $NetConsoleRegistryViewConflict "0"
+  SetRegView 64
+  ReadRegStr $NetConsoleExistingDataRoot64 HKLM "Software\NetConsole" "DataRoot"
+  SetRegView 32
+  ReadRegStr $NetConsoleExistingDataRoot32 HKLM "Software\NetConsole" "DataRoot"
+  ${If} $NetConsoleExistingDataRoot64 != ""
+  ${AndIf} $NetConsoleExistingDataRoot32 != ""
+    StrCmp "$NetConsoleExistingDataRoot64" "$NetConsoleExistingDataRoot32" NetConsoleRegistryViewsSame NetConsoleRegistryViewsConflict
+  ${EndIf}
+  Goto NetConsoleRegistryViewsSelect
+
+  NetConsoleRegistryViewsSame:
+  Goto NetConsoleRegistryViewsSelect
+
+  NetConsoleRegistryViewsConflict:
+  StrCpy $NetConsoleRegistryViewConflict "1"
+
+  NetConsoleRegistryViewsSelect:
+  ${If} $NetConsoleExistingDataRoot64 != ""
+    StrCpy $NetConsoleExistingDataRoot "$NetConsoleExistingDataRoot64"
+  ${Else}
+    StrCpy $NetConsoleExistingDataRoot "$NetConsoleExistingDataRoot32"
+  ${EndIf}
+  SetRegView 64
+FunctionEnd
+
+Function NetConsoleRestoreDataRootPointer
+  SetRegView 64
+  ${If} $NetConsoleExistingDataRoot64 != ""
+    WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleExistingDataRoot64"
+  ${Else}
+    DeleteRegValue HKLM "Software\NetConsole" "DataRoot"
+  ${EndIf}
+  SetRegView 32
+  ${If} $NetConsoleExistingDataRoot32 != ""
+    WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleExistingDataRoot32"
+  ${Else}
+    DeleteRegValue HKLM "Software\NetConsole" "DataRoot"
+  ${EndIf}
+  SetRegView 64
+FunctionEnd
+
+Function NetConsolePublishDataRootPointer
+  StrCpy $NetConsoleDataRootPointerResult "ok"
+  SetRegView 64
+  ClearErrors
+  WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleDataRoot"
+  IfErrors NetConsolePublishDataRootPointerFailed
+  SetRegView 32
+  ClearErrors
+  WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleDataRoot"
+  IfErrors NetConsolePublishDataRootPointerFailed
+
+  SetRegView 64
+  ReadRegStr $0 HKLM "Software\NetConsole" "DataRoot"
+  StrCmp "$0" "$NetConsoleDataRoot" 0 NetConsolePublishDataRootPointerFailedReadback
+  SetRegView 32
+  ReadRegStr $0 HKLM "Software\NetConsole" "DataRoot"
+  StrCmp "$0" "$NetConsoleDataRoot" 0 NetConsolePublishDataRootPointerFailedReadback
+  SetRegView 64
+  Return
+
+  NetConsolePublishDataRootPointerFailedReadback:
+  StrCpy $NetConsoleDataRootPointerResult "Registry DataRoot 回读与安装器选择不一致"
+  Call NetConsoleRestoreDataRootPointer
+  Return
+
+  NetConsolePublishDataRootPointerFailed:
+  StrCpy $NetConsoleDataRootPointerResult "Registry DataRoot 写入失败"
+  Call NetConsoleRestoreDataRootPointer
+FunctionEnd
+
+Function NetConsoleClearDataRootPointers
+  StrCpy $NetConsoleDataRootPointerResult "ok"
+  SetRegView 64
+  ${If} $NetConsoleExistingDataRoot64 != ""
+    ClearErrors
+    DeleteRegValue HKLM "Software\NetConsole" "DataRoot"
+    IfErrors NetConsoleClearDataRootPointersFailed
+  ${EndIf}
+  SetRegView 32
+  ${If} $NetConsoleExistingDataRoot32 != ""
+    ClearErrors
+    DeleteRegValue HKLM "Software\NetConsole" "DataRoot"
+    IfErrors NetConsoleClearDataRootPointersFailed
+  ${EndIf}
+  Call NetConsoleReadDataRootViews
+  ${If} $NetConsoleExistingDataRoot64 != ""
+  ${OrIf} $NetConsoleExistingDataRoot32 != ""
+    Goto NetConsoleClearDataRootPointersFailed
+  ${EndIf}
+  SetRegView 64
+  Return
+
+  NetConsoleClearDataRootPointersFailed:
+  StrCpy $NetConsoleDataRootPointerResult "清洁卸载未能清除 NetConsole DataRoot 指针"
+  SetRegView 64
+FunctionEnd
+
+!macro customUnInit
+  SetRegView 64
+  Call NetConsoleReadDataRootViews
+  StrCpy $NetConsoleUninstallDataRoot "$NetConsoleExistingDataRoot"
+  StrCpy $NetConsoleUninstallMode "NORMAL_UNINSTALL"
+  ; electron-builder invokes the old uninstaller with /S /KEEP_APP_DATA and
+  ; --updated during upgrade/repair. Silent lifecycle is always normal and
+  ; never presents a clean-uninstall choice.
+  IfSilent NetConsoleUninstallSilent
+  MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON1 "请选择卸载方式：$\r$\n$\r$\n是：普通卸载（默认），保留业务数据和 DataRoot 指针。$\r$\n否：继续选择清洁卸载。" IDYES NetConsoleUninstallNormal
+  MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 "清洁卸载将清除 NetConsole 自有的机器级 DataRoot 指针，但不会删除业务数据、数据库、日志、备份或任何其他应用数据。$\r$\n$\r$\n历史数据目录：$NetConsoleUninstallDataRoot$\r$\n请确认已记录该路径。是否继续？" IDYES NetConsoleUninstallClean
+  Abort
+
+  NetConsoleUninstallNormal:
+  StrCpy $NetConsoleUninstallMode "NORMAL_UNINSTALL"
+  Return
+
+  NetConsoleUninstallClean:
+  StrCpy $NetConsoleUninstallMode "CLEAN_UNINSTALL"
+  Return
+
+  NetConsoleUninstallSilent:
+  DetailPrint "自动升级/修复：NORMAL_UNINSTALL，保留业务数据和 DataRoot 指针。"
+!macroend
+
+!macro customUnInstall
+  ${If} $NetConsoleUninstallMode == "CLEAN_UNINSTALL"
+    Call NetConsoleClearDataRootPointers
+    ${If} $NetConsoleDataRootPointerResult != "ok"
+      MessageBox MB_ICONSTOP "$NetConsoleDataRootPointerResult。业务数据未删除；请以管理员身份重试。"
+      Abort
+    ${EndIf}
+    DetailPrint "CLEAN_UNINSTALL：仅清除 NetConsole DataRoot 指针；业务数据保留。"
+  ${Else}
+    DetailPrint "NORMAL_UNINSTALL：保留 NetConsole DataRoot 指针和业务数据。"
+  ${EndIf}
+!macroend
+
+!ifndef BUILD_UNINSTALLER
 Var NetConsoleDataRootChanged
 Var NetConsoleDataRootInput
 Var NetConsoleDataRootStatus
@@ -38,37 +186,156 @@ Var NetConsoleDataRootNormalized
 Var NetConsoleDataRootDriveRoot
 Var NetConsoleDataRootDriveType
 Var NetConsoleDataRootExists
+Var NetConsoleDataRootBusinessData
+Var NetConsoleDataRootPathsMatch
+Var NetConsoleDataRootExistingNormalized
+Var NetConsoleDataRootSelectedNormalized
 Var NetConsolePerformanceMode
+Var NetConsoleInstallMode
+Var NetConsoleInstallModeReuseRadio
+Var NetConsoleInstallModeFreshRadio
+Var NetConsoleInstallModeMigrateRadio
+Var NetConsoleEnvironmentDataRoot
 !endif
 
+!ifndef BUILD_UNINSTALLER
 !macro customInit
   DetailPrint "Installer identity: app=${NETCONSOLE_INSTALLER_APP_VERSION} commit=${NETCONSOLE_INSTALLER_GIT_COMMIT} build_time=${NETCONSOLE_INSTALLER_BUILD_TIME} build_id=${NETCONSOLE_INSTALLER_BUILD_ID} policy=${NETCONSOLE_INSTALLER_POLICY}"
   InitPluginsDir
   File /oname=$PLUGINSDIR\netconsole-installer-build.json "${NETCONSOLE_INSTALLER_MANIFEST_PATH}"
   File /oname=$PLUGINSDIR\netconsole-installer-data-root.nsh "${NETCONSOLE_INSTALLER_POLICY_SOURCE_PATH}"
-  ReadRegStr $NetConsoleExistingDataRoot HKLM "Software\NetConsole" "DataRoot"
+  Call NetConsoleReadDataRootViews
+  ${If} $NetConsoleRegistryViewConflict == "1"
+    Abort "检测到 64 位和 32 位 Registry View 中的 NetConsole DataRoot 不一致。请先核对两个指针；安装器不会猜测或覆盖任何数据。"
+  ${EndIf}
+  ReadEnvStr $NetConsoleEnvironmentDataRoot "NETCONSOLE_DATA_ROOT"
   ${If} $NetConsoleExistingDataRoot != ""
     StrCpy $NetConsoleDataRoot "$NetConsoleExistingDataRoot"
+    StrCpy $NetConsoleInstallMode "REUSE_EXISTING_DATA"
   ${Else}
-    ; D: is only a suggestion when it is an actual fixed disk.  The page blocks
-    ; the install until a non-system fixed disk has been selected and validated.
-    StrCpy $0 "D:\"
-    System::Call 'kernel32::GetDriveTypeW(w r0)i.r1'
-    ${If} $1 == 3
-      StrCpy $NetConsoleDataRoot "D:\NetConsoleData"
-    ${Else}
-      StrCpy $NetConsoleDataRoot ""
-    ${EndIf}
+    StrCpy $NetConsoleInstallMode "FRESH_CLEAN_INSTALL"
+    Call NetConsoleSelectDefaultDataRoot
   ${EndIf}
   StrCpy $NetConsoleDataRootChanged "0"
-  ; Installer mode selection is intentionally removed. Runtime policy starts
-  ; in standard mode; unattended collection remains an in-app capability.
   StrCpy $NetConsolePerformanceMode "standard"
 !macroend
 
 !macro customPageAfterChangeDir
+  Page custom NetConsoleInstallModePageCreate NetConsoleInstallModePageLeave
   Page custom NetConsoleDataRootPageCreate NetConsoleDataRootPageLeave
 !macroend
+
+Function NetConsoleSelectDefaultDataRoot
+  StrCpy $NetConsoleDataRoot ""
+  ReadEnvStr $5 "SystemDrive"
+  ${If} $5 == ""
+    StrCpy $5 "C:"
+  ${EndIf}
+  StrCpy $5 "$5" 2
+  ; Prefer D: only when it is really present and fixed. Otherwise enumerate
+  ; actual logical drives and never fabricate a missing drive path.
+  StrCpy $0 "D:\"
+  System::Call 'kernel32::GetDriveTypeW(w r0)i.r1'
+  ${If} $1 == 3
+    StrCpy $NetConsoleDataRoot "D:\NetConsoleData"
+    Return
+  ${EndIf}
+  System::Call 'kernel32::GetLogicalDriveStringsW(i ${NSIS_MAX_STRLEN}, w .r0)i.r1'
+  StrCpy $2 "0"
+  NetConsoleSelectDefaultDataRootLoop:
+  StrCpy $3 "$0" 3 $2
+  StrCmp $3 "" NetConsoleSelectDefaultDataRootDone
+  System::Call 'kernel32::GetDriveTypeW(w r3)i.r4'
+  StrCmp $4 3 0 NetConsoleSelectDefaultDataRootNext
+  StrCpy $6 "$3" 2
+  StrCmp "$6" "$5" NetConsoleSelectDefaultDataRootNext
+  StrCpy $NetConsoleDataRoot "$3NetConsoleData"
+  Return
+  NetConsoleSelectDefaultDataRootNext:
+  IntOp $2 $2 + 4
+  Goto NetConsoleSelectDefaultDataRootLoop
+  NetConsoleSelectDefaultDataRootDone:
+FunctionEnd
+
+Function NetConsoleInstallModePageCreate
+  ${If} $NetConsoleExistingDataRoot == ""
+    Abort
+  ${EndIf}
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+  ${NSD_CreateLabel} 0 0 100% 26u "检测到以前登记的 NetConsole 数据目录。请选择安装方式；原数据目录不会因选择清洁安装而被删除。"
+  Pop $0
+  ${NSD_CreateLabel} 0 30u 100% 38u "历史 DataRoot：$NetConsoleExistingDataRoot。安装器会在执行阶段验证 Manifest、SiteRegistry、活动局点和 devices.db。"
+  Pop $0
+  ${NSD_CreateRadioButton} 0 76u 100% 16u "沿用已有数据（推荐，REUSE_EXISTING_DATA）"
+  Pop $NetConsoleInstallModeReuseRadio
+  ${NSD_CreateRadioButton} 0 96u 100% 28u "全新安装（FRESH_CLEAN_INSTALL）：忽略旧 DataRoot、旧局点和 bootstrap，选择空白新根"
+  Pop $NetConsoleInstallModeFreshRadio
+  ${NSD_CreateRadioButton} 0 130u 100% 28u "迁移已有数据（高级，MIGRATE_EXISTING_DATA）：明确复制并验证旧根，失败时保留原根"
+  Pop $NetConsoleInstallModeMigrateRadio
+  ${NSD_Check} $NetConsoleInstallModeReuseRadio
+  nsDialogs::Show
+FunctionEnd
+
+Function NetConsoleInstallModePageLeave
+  ${NSD_GetState} $NetConsoleInstallModeReuseRadio $0
+  IntCmp $0 1 NetConsoleInstallModePageReuse NetConsoleInstallModePageCheckFresh NetConsoleInstallModePageCheckFresh
+
+  NetConsoleInstallModePageCheckFresh:
+  ${NSD_GetState} $NetConsoleInstallModeFreshRadio $0
+  IntCmp $0 1 NetConsoleInstallModePageFresh NetConsoleInstallModePageMigrate NetConsoleInstallModePageMigrate
+
+  NetConsoleInstallModePageMigrate:
+  StrCpy $NetConsoleInstallMode "MIGRATE_EXISTING_DATA"
+  Return
+
+  NetConsoleInstallModePageReuse:
+  StrCpy $NetConsoleInstallMode "REUSE_EXISTING_DATA"
+  Return
+
+  NetConsoleInstallModePageFresh:
+  StrCpy $NetConsoleInstallMode "FRESH_CLEAN_INSTALL"
+  StrCpy $NetConsoleDataRoot ""
+FunctionEnd
+
+Function NetConsoleDataRootCheckBusinessData
+  StrCpy $NetConsoleDataRootBusinessData "0"
+  IfFileExists "$NetConsoleDataRoot\config\." NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\sites\." NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\runtime\." NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\agents\." NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\migrations\." NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\staging\." NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\backups\." NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\data\." NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\runtime_mode.json" NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\application.json" NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\app.json" NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\bootstrap.json" NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\devices.db" NetConsoleDataRootBusinessDataFound
+  IfFileExists "$NetConsoleDataRoot\site_registry.json" NetConsoleDataRootBusinessDataFound
+  Return
+  NetConsoleDataRootBusinessDataFound:
+  StrCpy $NetConsoleDataRootBusinessData "1"
+FunctionEnd
+
+Function NetConsoleDataRootPathsMatch
+  StrCpy $NetConsoleDataRootPathsMatch "0"
+  StrCpy $0 "$NetConsoleExistingDataRoot"
+  System::Call 'kernel32::GetFullPathNameW(w r0, i ${NSIS_MAX_STRLEN}, w .r1, p 0)i.r2'
+  StrCmp $2 0 NetConsoleDataRootPathsMatchDone
+  StrCpy $NetConsoleDataRootExistingNormalized "$1"
+  StrCpy $0 "$NetConsoleDataRoot"
+  System::Call 'kernel32::GetFullPathNameW(w r0, i ${NSIS_MAX_STRLEN}, w .r1, p 0)i.r2'
+  StrCmp $2 0 NetConsoleDataRootPathsMatchDone
+  StrCpy $NetConsoleDataRootSelectedNormalized "$1"
+  StrCmp "$NetConsoleDataRootExistingNormalized" "$NetConsoleDataRootSelectedNormalized" 0 NetConsoleDataRootPathsMatchDone
+  StrCpy $NetConsoleDataRootPathsMatch "1"
+  NetConsoleDataRootPathsMatchDone:
+FunctionEnd
 
 !macro customInstall
   Call NetConsoleValidateDataRootLocation
@@ -76,12 +343,23 @@ Var NetConsolePerformanceMode
     DetailPrint "DataRoot location validation failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
     Abort "数据目录位置校验失败：$NetConsoleDataRootProbeResult（错误来源：$NetConsoleDataRootProbeErrorSource；错误码：$NetConsoleDataRootProbeErrorCode）。请选择非系统盘上的本地固定磁盘目录。"
   ${EndIf}
+  ${If} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
+    ${If} $NetConsoleDataRootExists != "1"
+      Abort "历史数据目录不可访问。请恢复原磁盘后重试；安装器不会创建空替代目录。"
+    ${EndIf}
+  ${EndIf}
+  ${If} $NetConsoleEnvironmentDataRoot != ""
+    StrCmp "$NetConsoleEnvironmentDataRoot" "$NetConsoleDataRoot" +2 0
+      Abort "检测到 NETCONSOLE_DATA_ROOT 与安装器选择不一致：请先清除该环境变量，避免 Backend/Electron 使用旧数据根。"
+  ${EndIf}
+
   ; A relocation is never a pointer-only update.  The packaged helper stages,
   ; verifies SQLite files and publishes the new root before this registry value
-  ; changes.  The source root remains untouched on every failure path.
-  ${If} $NetConsoleDataRootChanged == "1"
-    IfFileExists "$NetConsoleExistingDataRoot\*.*" +2 0
-      Abort "已配置的数据目录当前不可用。请恢复磁盘连接或重新选择数据目录。"
+  ; changes.  This branch is reachable only after the user explicitly chose
+  ; MIGRATE_EXISTING_DATA; selecting a different path alone is not enough.
+  ${If} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
+    IfFileExists "$NetConsoleExistingDataRoot\." +2 0
+      Abort "历史数据目录当前不可访问。请恢复原磁盘后重试；清洁安装请返回并明确选择全新安装。"
     DetailPrint "正在迁移现有 NetConsole 数据；旧数据将保留为只读备份。"
     ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --migrate-data-root --source "$NetConsoleExistingDataRoot" --target "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
     ${If} $0 != 0
@@ -93,10 +371,22 @@ Var NetConsolePerformanceMode
     DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
     Abort "数据目录校验失败：$NetConsoleDataRootProbeResult（错误来源：$NetConsoleDataRootProbeErrorSource；错误码：$NetConsoleDataRootProbeErrorCode）。请关闭 NetConsole、Agent 和 Backend 后重试；不要删除已有数据。"
   ${EndIf}
-  ; This command validates the selected root and creates/checks the storage
-  ; manifest plus the first empty registered site before the registry pointer
-  ; is published. First launch therefore never owns data-root initialization.
-  ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
+  ${If} $NetConsoleInstallMode == "FRESH_CLEAN_INSTALL"
+    Call NetConsoleDataRootCheckBusinessData
+    ${If} $NetConsoleDataRootBusinessData == "1"
+      Abort "清洁安装目标包含现有或不明确的 NetConsole 数据。请选择空白新根；原数据不会被删除。"
+    ${EndIf}
+  ${EndIf}
+
+  ; Reuse validates the existing Production authority without creating a new
+  ; site. Clean install initializes only the independently selected target.
+  ${If} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR"' $0
+  ${ElseIf} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR"' $0
+  ${Else}
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode clean-install --installation-root "$INSTDIR"' $0
+  ${EndIf}
   ${If} $0 != 0
     Abort "Backend 数据根初始化或兼容性校验失败（退出代码 $0）。请检查安装日志；不要删除已有数据。"
   ${EndIf}
@@ -110,7 +400,10 @@ Var NetConsolePerformanceMode
   ${If} $0 != 0
     DetailPrint "Host environment profile collection skipped: exit_code=$0"
   ${EndIf}
-  WriteRegStr HKLM "Software\NetConsole" "DataRoot" "$NetConsoleDataRoot"
+  Call NetConsolePublishDataRootPointer
+  ${If} $NetConsoleDataRootPointerResult != "ok"
+    Abort "NetConsole DataRoot 指针发布或回读失败：$NetConsoleDataRootPointerResult。旧指针已保留或恢复，安装未完成。"
+  ${EndIf}
 !macroend
 
 ; electron-builder compiles an intermediate uninstaller with this include too.
@@ -162,9 +455,25 @@ Function NetConsoleRefreshDataRootStatus
     ${NSD_SetText} $NetConsoleDataRootStatus "$NetConsoleDataRootProbeResult（$NetConsoleDataRootProbeErrorSource 错误码 $NetConsoleDataRootProbeErrorCode）"
     Return
   ${EndIf}
-  IfFileExists "$NetConsoleDataRoot\config\storage-manifest.json" 0 +3
-    ${NSD_SetText} $NetConsoleDataRootStatus "发现现有 NetConsole 数据：将继续使用，不会覆盖局点和采集文件。"
+  Call NetConsoleDataRootCheckBusinessData
+  ${If} $NetConsoleInstallMode == "FRESH_CLEAN_INSTALL"
+    ${If} $NetConsoleDataRootBusinessData == "1"
+      ${NSD_SetText} $NetConsoleDataRootStatus "目标包含现有或不明确的 NetConsole 数据：清洁安装拒绝覆盖，请选择新根。"
+      Return
+    ${EndIf}
+  ${ElseIf} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
+    ${If} $NetConsoleDataRootExists != "1"
+      ${NSD_SetText} $NetConsoleDataRootStatus "历史数据目录不可访问：请恢复原磁盘，或返回选择全新安装。"
+      Return
+    ${EndIf}
+    ${NSD_SetText} $NetConsoleDataRootStatus "已选择沿用已有数据：安装执行时将严格验证 Manifest、SiteRegistry、活动局点和 devices.db。"
     Return
+  ${ElseIf} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
+    ${If} $NetConsoleDataRootBusinessData == "1"
+      ${NSD_SetText} $NetConsoleDataRootStatus "迁移目标包含现有 NetConsole 数据：为避免合并覆盖，请选择无冲突的新目标。"
+      Return
+    ${EndIf}
+  ${EndIf}
   Call NetConsoleDataRootCheckEntries
   ${If} $NetConsoleDataRootHasEntries == "1"
     ${NSD_SetText} $NetConsoleDataRootStatus "目录包含现有普通文件：安装器将保留这些文件；仅在 NetConsole 必需路径发生真实冲突时停止。"
@@ -225,8 +534,16 @@ Function NetConsoleValidateDataRootLocation
   DetailPrint "DataRoot drive root: $NetConsoleDataRootDriveRoot"
   DetailPrint "DataRoot GetDriveTypeW: $NetConsoleDataRootDriveType"
   ${If} $NetConsoleDataRootDriveType != 3
-    StrCpy $NetConsoleDataRootProbeResult "数据目录必须位于本地固定磁盘，不能使用 U 盘、光驱或临时映射盘"
-    StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_NOT_FIXED_DRIVE"
+    ${If} $NetConsoleDataRootDriveType == 1
+      StrCpy $NetConsoleDataRootProbeResult "数据目录所在磁盘不可访问，请恢复原磁盘或选择其他磁盘"
+      StrCpy $NetConsoleDataRootProbeErrorCode "DRIVE_NO_ROOT_DIR"
+    ${ElseIf} $NetConsoleDataRootDriveType == 4
+      StrCpy $NetConsoleDataRootProbeResult "数据目录不能位于网络映射盘"
+      StrCpy $NetConsoleDataRootProbeErrorCode "DRIVE_REMOTE"
+    ${Else}
+      StrCpy $NetConsoleDataRootProbeResult "数据目录必须位于本地固定磁盘，不能使用 U 盘、光驱或临时映射盘"
+      StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_NOT_FIXED_DRIVE"
+    ${EndIf}
     StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
     Return
   ${EndIf}
@@ -484,8 +801,40 @@ Function NetConsoleDataRootPageLeave
     MessageBox MB_ICONSTOP "数据目录位置校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\n错误来源：$NetConsoleDataRootProbeErrorSource$\r$\n错误码：$NetConsoleDataRootProbeErrorCode"
     Abort
   ${EndIf}
+  Call NetConsoleDataRootCheckBusinessData
+  Call NetConsoleDataRootPathsMatch
+  ${If} $NetConsoleInstallMode == "FRESH_CLEAN_INSTALL"
+    ${If} $NetConsoleDataRootPathsMatch == "1"
+      MessageBox MB_ICONSTOP "清洁安装不能选择原有业务数据根。请选择新的空白目标，或返回选择沿用已有数据。"
+      Abort
+    ${EndIf}
+    ${If} $NetConsoleDataRootBusinessData == "1"
+      MessageBox MB_ICONSTOP "清洁安装目标包含现有或不明确的 NetConsole 数据。不会删除或覆盖原数据，请选择新根。"
+      Abort
+    ${EndIf}
+  ${ElseIf} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
+    ${If} $NetConsoleDataRootPathsMatch != "1"
+      MessageBox MB_ICONSTOP "沿用已有数据模式不执行迁移。请选择原 DataRoot，或返回明确选择迁移已有数据。"
+      Abort
+    ${EndIf}
+    ${If} $NetConsoleDataRootExists != "1"
+      MessageBox MB_ICONSTOP "历史数据目录不可访问。请恢复原磁盘后重试，或返回选择全新安装；安装器不会创建空替代目录。"
+      Abort
+    ${EndIf}
+  ${Else}
+    ${If} $NetConsoleDataRootPathsMatch == "1"
+      MessageBox MB_ICONSTOP "迁移目标不能与源 DataRoot 相同，请选择新的目标目录。"
+      Abort
+    ${EndIf}
+    ${If} $NetConsoleDataRootBusinessData == "1"
+      MessageBox MB_ICONSTOP "迁移目标包含现有 NetConsole 数据，为避免覆盖请另选无冲突目标。"
+      Abort
+    ${EndIf}
+    StrCpy $NetConsoleDataRootChanged "1"
+  ${EndIf}
+
   ; Enumerate before the capability probe for diagnostics only. Ordinary files
-  ; are preserved and do not block installation unless the Backend later finds
+  ; are preserved and do not block installation unless the selected mode finds
   ; a real conflict with a required NetConsole path.
   Call NetConsoleDataRootCheckEntries
   Call NetConsoleRunDataRootProbe
@@ -494,12 +843,8 @@ Function NetConsoleDataRootPageLeave
     MessageBox MB_ICONSTOP "数据目录校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\n错误来源：$NetConsoleDataRootProbeErrorSource$\r$\n错误码：$NetConsoleDataRootProbeErrorCode$\r$\n$\r$\n请关闭 NetConsole、Agent 和 Backend 后重试，并检查目录权限或文件系统。不要删除已有数据。"
     Abort
   ${EndIf}
-  ${If} $NetConsoleExistingDataRoot != ""
-  ${AndIf} $NetConsoleExistingDataRoot != $NetConsoleDataRoot
-    MessageBox MB_ICONEXCLAMATION|MB_YESNO "当前数据目录：$NetConsoleExistingDataRoot$\r$\n新数据目录：$NetConsoleDataRoot$\r$\n$\r$\n继续将执行完整复制、SQLite 校验和原子发布；旧目录将保留，绝不自动删除。是否继续？" IDYES +2
-      Abort
-    StrCpy $NetConsoleDataRootChanged "1"
-  ${EndIf}
 FunctionEnd
+
+!endif
 
 !endif

@@ -16,6 +16,7 @@ from netconsole.core import data_root_configuration
 from netconsole.core.data_root_configuration import (
     DataRootConfigurationError,
     prepare_installation_data_root,
+    validate_existing_installation_data_root,
     validate_installation_data_root,
 )
 from netconsole.core import runtime_environment
@@ -313,6 +314,67 @@ def test_installation_preparation_preserves_unrelated_files_in_a_nonempty_direct
     assert (target / "config" / "storage-manifest.json").is_file()
     assert (target / "sites").is_dir()
     assert not (target / "config" / "site_registry.json").exists()
+
+
+def test_clean_install_rejects_existing_netconsole_business_data_without_touching_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "existing"
+    (target / "config").mkdir(parents=True)
+    manifest = target / "config" / "storage-manifest.json"
+    manifest.write_text('{"keep": true}\n', encoding="utf-8")
+
+    with pytest.raises(DataRootConfigurationError, match="清洁安装目标包含"):
+        prepare_installation_data_root(target, clean_install=True)
+
+    assert manifest.read_text(encoding="utf-8") == '{"keep": true}\n'
+
+
+def test_clean_install_preserves_unrelated_files_and_creates_a_new_installation_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "fresh"
+    unrelated = target / "operator-notes.txt"
+    target.mkdir()
+    unrelated.write_text("keep", encoding="utf-8")
+
+    prepare_installation_data_root(target, clean_install=True)
+
+    manifest = json.loads(
+        (target / "config" / "storage-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["installation_id"]
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+    assert json.loads(
+        (target / "config" / "site_registry.json").read_text(encoding="utf-8")
+    )["sites"]
+
+
+def test_existing_root_validation_does_not_create_a_missing_historical_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "missing-old-root"
+
+    with pytest.raises(DataRootConfigurationError, match="历史数据目录不可访问"):
+        validate_existing_installation_data_root(target)
+
+    assert not target.exists()
+
+
+def test_existing_root_validation_reuses_the_persisted_production_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("需要 Windows Backend 依赖执行 Production startup 校验")
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "existing"
+    prepare_installation_data_root(target)
+    monkeypatch.setattr(data_root_configuration.sys, "platform", "win32")
+
+    assert validate_existing_installation_data_root(target) == target.resolve()
 
 
 @pytest.mark.parametrize(

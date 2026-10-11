@@ -799,7 +799,9 @@ class SiteApplicationService:
 
         self._runtime_rebind_handler = handler
 
-    def initialize_first_run_site(self) -> SiteRecord | None:
+    def initialize_first_run_site(
+        self, *, allow_unrelated_root_entries: bool = False
+    ) -> SiteRecord | None:
         """为真正空的数据根创建一个没有业务设备的首个局点。
 
         这是安装器/首启专用的内部路径，不替代带有 Production 操作授权的
@@ -821,7 +823,7 @@ class SiteApplicationService:
                 "staging",
                 "runtime_mode.json",
             }
-            if any(
+            if not allow_unrelated_root_entries and any(
                 entry.name not in allowed_root_entries
                 for entry in self.paths.data_root.iterdir()
             ):

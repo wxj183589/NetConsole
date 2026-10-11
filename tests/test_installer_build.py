@@ -80,6 +80,29 @@ def test_policy_source_requires_new_text_and_rejects_old_text() -> None:
         )
 
 
+def test_installer_policy_has_explicit_reuse_clean_migrate_and_uninstall_modes() -> None:
+    source = build_installer.INSTALLER_POLICY_SOURCE.read_text(encoding="utf-8")
+
+    for mode in (
+        "REUSE_EXISTING_DATA",
+        "FRESH_CLEAN_INSTALL",
+        "MIGRATE_EXISTING_DATA",
+        "NORMAL_UNINSTALL",
+        "CLEAN_UNINSTALL",
+    ):
+        assert mode in source
+    assert "--mode reuse" in source
+    assert "--mode clean-install" in source
+    assert "Function NetConsolePublishDataRootPointer" in source
+    assert "Function NetConsoleRestoreDataRootPointer" in source
+    assert "Function NetConsoleClearDataRootPointers" in source
+    assert "SetRegView 64" in source
+    assert "SetRegView 32" in source
+    assert "DeleteRegValue HKLM \"Software\\NetConsole\" \"DataRoot\"" in source
+    assert "CLEAN_UNINSTALL：仅清除 NetConsole DataRoot 指针；业务数据保留。" in source
+    assert "MIGRATE_EXISTING_DATA; selecting a different path alone is not enough" in source
+
+
 def test_prepare_identity_uses_unique_commit_artifact_and_source_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

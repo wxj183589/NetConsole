@@ -4,6 +4,10 @@ NetConsole v1.5.6 的正式桌面产品只有 Electron + Vue + Python Backend。
 
 安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后，由打包 Backend 在空根或含无冲突普通文件的目录中原子初始化标准结构与 `storage-manifest.json`，或验证已有 manifest 兼容性，最后才写入 `HKLM\Software\NetConsole\DataRoot`。初始化/兼容性校验失败不得发布指针，也不得覆盖已有 manifest 或普通文件。发布 smoke 在唯一 `<repository-parent>\test-data\NetConsole\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
 
+安装器的数据流程固定为三态：`REUSE_EXISTING_DATA` 沿用并严格验证已有根，不生成空局点；`FRESH_CLEAN_INSTALL` 忽略旧 DataRoot、旧 `application.json/app.json`、Electron bootstrap 和旧局点，只在新目标不存在已知 NetConsole 结构时初始化新的 manifest、installation_id、空 demo 局点、SiteRegistry、application.json 和 devices.db；`MIGRATE_EXISTING_DATA` 只有在用户明确选择时才调用受控 DataRoot Migration。用户仅改变路径不会隐式触发迁移；有效旧根不能被清洁安装覆盖，未知 NetConsole 结构 fail-closed，普通非 NetConsole 文件保留。
+
+普通卸载 `NORMAL_UNINSTALL` 删除程序文件但保留业务数据和 `HKLM\Software\NetConsole\DataRoot`。人工确认后的 `CLEAN_UNINSTALL` 只清除 NetConsole 自有的 32/64 位 Registry View 中的 `DataRoot` 值和已明确登记的安装状态，不删除数据根、数据库、日志、备份、Agent 或未知注册表项。electron-builder 升级/修复调用旧卸载器时使用静默保留数据路径，不显示清洁卸载选择；旧版卸载器不会因新安装包更新而获得新行为，因此新安装器在安装初始化时独立检测遗留指针。新指针只有在目标校验、Backend 初始化/兼容性验证和双视图回读成功后发布，失败时恢复旧值。
+
 NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候选目录和实际条目，再执行可写/重命名预检；探测成功后禁止重新使用普通目录非空规则。待创建路径的语法规范化必须调用 Win32 `GetFullPathNameW`，不得使用会要求路径存在的 NSIS 内置 `GetFullPathName`，且规范化阶段不得创建目录。NSIS 预检和安装后的 Backend 复验必须使用候选数据根内部的唯一临时文件，完成 flush/close、同目录文件重命名、内容回读和清理。禁止固定源/目标文件名、目录级 Rename、从安装器临时目录跨卷移动或使用现有业务文件作为探测对象。失败日志只记录步骤、错误来源和对应 Win32 或内部错误码，不写用户配置内容；测试修复包使用独立 artifact 名称，不能覆盖同版本既有正式安装包。
 
 正式 NSIS 构建只能从已提交、工作区 clean 且 `HEAD` 已推送到当前 upstream 的状态开始。`pnpm package` 会清理白名单内的 `dist/electron/`、`dist/_build/` 和 `apps/desktop_electron/dist/`，为 electron-builder 分配本轮独立临时目录，并生成 `NetConsole-<version>-<git-short>-x64-setup.exe`；固定名称 `NetConsole-<version>-x64-setup.exe` 或同名唯一制品在构建前存在时直接失败，避免覆盖旧包后仅按修改时间误判。

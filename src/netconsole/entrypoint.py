@@ -130,10 +130,27 @@ def _validate_data_root_from_installer(arguments: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="NetConsoleBackend.exe --validate-data-root")
     parser.add_argument("data_root", type=Path)
     parser.add_argument("--installation-root", type=Path)
+    parser.add_argument(
+        "--mode",
+        choices=("reuse", "clean-install"),
+        default="clean-install",
+    )
     values = parser.parse_args(arguments)
-    from netconsole.core.data_root_configuration import prepare_installation_data_root
+    from netconsole.core.data_root_configuration import (
+        prepare_installation_data_root,
+        validate_existing_installation_data_root,
+    )
 
-    prepare_installation_data_root(values.data_root, installation_root=values.installation_root)
+    if values.mode == "reuse":
+        validate_existing_installation_data_root(
+            values.data_root, installation_root=values.installation_root
+        )
+    else:
+        prepare_installation_data_root(
+            values.data_root,
+            installation_root=values.installation_root,
+            clean_install=True,
+        )
     return 0
 
 
