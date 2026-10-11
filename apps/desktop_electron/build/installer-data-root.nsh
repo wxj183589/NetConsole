@@ -25,6 +25,7 @@ Var NetConsoleDataRootPointerResult
 Var NetConsoleUninstallMode
 Var NetConsoleUninstallDataRoot
 
+!ifndef BUILD_UNINSTALLER
 Function NetConsoleReadDataRootViews
   StrCpy $NetConsoleExistingDataRoot64 ""
   StrCpy $NetConsoleExistingDataRoot32 ""
@@ -55,7 +56,6 @@ Function NetConsoleReadDataRootViews
   SetRegView 64
 FunctionEnd
 
-!ifndef BUILD_UNINSTALLER
 Function NetConsoleRestoreDataRootPointer
   SetRegView 64
   ${If} $NetConsoleExistingDataRoot64 != ""
