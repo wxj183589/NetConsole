@@ -55,6 +55,7 @@ Function NetConsoleReadDataRootViews
   SetRegView 64
 FunctionEnd
 
+!ifndef BUILD_UNINSTALLER
 Function NetConsoleRestoreDataRootPointer
   SetRegView 64
   ${If} $NetConsoleExistingDataRoot64 != ""
@@ -100,6 +101,7 @@ Function NetConsolePublishDataRootPointer
   StrCpy $NetConsoleDataRootPointerResult "Registry DataRoot 写入失败"
   Call NetConsoleRestoreDataRootPointer
 FunctionEnd
+!endif
 
 Function NetConsoleClearDataRootPointers
   StrCpy $NetConsoleDataRootPointerResult "ok"
