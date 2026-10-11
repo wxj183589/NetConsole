@@ -263,6 +263,42 @@ def _has_reparse_ancestor(path: Path, *, stop: Path) -> bool:
         current = current.parent
 
 
+def _remove_owned_first_run_site(
+    site_root: Path,
+    *,
+    sites_dir: Path,
+    ownership_marker: Path,
+    ownership_token: str,
+) -> None:
+    """Remove only a site directory proven to be created by this attempt.
+
+    First-run initialization is allowed to create ``sites/demo`` directly for
+    compatibility with the existing SiteManager API.  The marker is created
+    before that call and is required before cleanup; an existing site directory
+    or a reparse-point path is never removed by this rollback path.
+    """
+
+    if not site_root.exists():
+        return
+    if (
+        site_root.parent.resolve() != sites_dir.resolve()
+        or site_root.name != DEFAULT_SITE
+        or ownership_marker.parent != site_root
+        or not ownership_marker.is_file()
+    ):
+        raise OSError("首次初始化局点缺少可验证的归属标记")
+    if _has_reparse_ancestor(site_root, stop=sites_dir):
+        raise OSError("首次初始化局点路径包含 Reparse Point")
+    for entry in site_root.rglob("*"):
+        if _is_reparse_or_symlink(entry):
+            raise OSError("首次初始化局点内容包含 Reparse Point")
+    if ownership_marker.read_text(encoding="utf-8") != ownership_token:
+        raise OSError("首次初始化局点归属标记不匹配")
+    shutil.rmtree(site_root)
+    if site_root.exists():
+        raise OSError("首次初始化局点目录清理后仍存在")
+
+
 def validate_site_id(value: str) -> str:
     site_id = str(value or "").strip().casefold()
     if not _SITE_ID_RE.fullmatch(site_id) or site_id in {".", ".."}:
@@ -830,20 +866,27 @@ class SiteApplicationService:
                 return None
             self.paths.sites_dir.mkdir(parents=True, exist_ok=True)
             existing_entries = list(self.paths.sites_dir.iterdir())
+            site_root = self.paths.site_dir(DEFAULT_SITE)
+            if site_root.exists() and not self.paths.app_config_path.exists() and not self.paths.legacy_app_config_path.exists():
+                raise SiteStorageError(
+                    "FIRST_RUN_INCOMPLETE_SITE",
+                    "首个局点目录已存在但缺少可验证的应用配置；不会静默发布或覆盖该目录",
+                )
             if existing_entries or self.paths.app_config_path.exists() or self.paths.legacy_app_config_path.exists():
                 return None
 
-            site_root = self.paths.site_dir(DEFAULT_SITE)
             registry_before = self.registry.path.read_bytes() if self.registry.path.exists() else None
             application_before = (
                 self.paths.app_config_path.read_bytes()
                 if self.paths.app_config_path.exists()
                 else None
             )
-            created_site = False
+            ownership_token = uuid.uuid4().hex
+            ownership_marker = site_root / f".netconsole-first-run-owned-{ownership_token}.marker"
             try:
+                site_root.mkdir(parents=False, exist_ok=False)
+                ownership_marker.write_text(ownership_token, encoding="ascii")
                 self.manager.init_site_database(DEFAULT_SITE, with_demo_data=False)
-                created_site = True
                 self.manager.save_site_metadata(
                     DEFAULT_SITE,
                     {
@@ -861,10 +904,21 @@ class SiteApplicationService:
                     "FIRST_RUN_INITIALIZED",
                     f"site_id={record.site_id} data_root={self.paths.data_root}",
                 )
+                ownership_marker.unlink()
                 return record
             except Exception as exc:
-                if created_site:
-                    shutil.rmtree(site_root, ignore_errors=True)
+                try:
+                    _remove_owned_first_run_site(
+                        site_root,
+                        sites_dir=self.paths.sites_dir,
+                        ownership_marker=ownership_marker,
+                        ownership_token=ownership_token,
+                    )
+                except OSError as cleanup_error:
+                    app_logger.log_error(
+                        "FIRST_RUN_INITIALIZATION_SITE_CLEANUP_FAILED",
+                        f"data_root={self.paths.data_root} error_type={cleanup_error.__class__.__name__}",
+                    )
                 try:
                     if registry_before is None:
                         self.registry.path.unlink(missing_ok=True)

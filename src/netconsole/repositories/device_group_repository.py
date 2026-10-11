@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 from datetime import datetime
 import re
 
@@ -48,7 +49,7 @@ class DeviceGroupRepository:
 
     def list(self) -> list[DeviceGroup]:
         def _list_rows():
-            with self.database.connect() as conn:
+            with closing(self.database.connect()) as conn:
                 return conn.execute(
                     """
                 SELECT * FROM device_groups
@@ -65,7 +66,7 @@ class DeviceGroupRepository:
         )
 
     def get(self, group_id: int) -> DeviceGroup:
-        with self.database.connect() as conn:
+        with closing(self.database.connect()) as conn:
             row = conn.execute("SELECT * FROM device_groups WHERE id = ? AND site_id = ?", (group_id, self.site_id)).fetchone()
         if row is None:
             raise KeyError(f"Device group not found: {group_id}")
@@ -74,7 +75,7 @@ class DeviceGroupRepository:
     def create(self, name: str, sort_order: int = 100) -> DeviceGroup:
         clean = normalize_group_name(name)
         now = datetime.now().isoformat(timespec="seconds")
-        with self.database.connect() as conn:
+        with closing(self.database.connect()) as conn:
             if self.exists_name(clean):
                 raise DuplicateGroupName(clean)
             cursor = conn.execute(
@@ -87,7 +88,7 @@ class DeviceGroupRepository:
     def rename(self, group_id: int, name: str) -> DeviceGroup:
         clean = normalize_group_name(name)
         now = datetime.now().isoformat(timespec="seconds")
-        with self.database.connect() as conn:
+        with closing(self.database.connect()) as conn:
             row = conn.execute(
                 "SELECT id FROM device_groups WHERE site_id = ? AND LOWER(name) = LOWER(?) AND id <> ?",
                 (self.site_id, clean, group_id),
@@ -102,30 +103,30 @@ class DeviceGroupRepository:
         return self.get(group_id)
 
     def delete(self, group_id: int) -> None:
-        with self.database.connect() as conn:
+        with closing(self.database.connect()) as conn:
             conn.execute("UPDATE devices SET group_id = NULL WHERE group_id = ?", (group_id,))
             conn.execute("DELETE FROM device_groups WHERE id = ? AND site_id = ?", (group_id, self.site_id))
             conn.commit()
 
     def count_devices(self, group_id: int) -> int:
-        with self.database.connect() as conn:
+        with closing(self.database.connect()) as conn:
             row = conn.execute("SELECT COUNT(*) AS count FROM devices WHERE group_id = ?", (group_id,)).fetchone()
         return int(row["count"] if row else 0)
 
     def counts(self) -> dict[int, int]:
-        with self.database.connect() as conn:
+        with closing(self.database.connect()) as conn:
             rows = conn.execute("SELECT group_id, COUNT(*) AS count FROM devices WHERE group_id IS NOT NULL GROUP BY group_id").fetchall()
         return {int(row["group_id"]): int(row["count"]) for row in rows if row["group_id"] is not None}
 
     def exists_name(self, name: str) -> bool:
         clean = normalize_group_name(name)
-        with self.database.connect() as conn:
+        with closing(self.database.connect()) as conn:
             row = conn.execute("SELECT 1 FROM device_groups WHERE site_id = ? AND LOWER(name) = LOWER(?) LIMIT 1", (self.site_id, clean)).fetchone()
         return row is not None
 
     def find_by_name(self, name: str) -> DeviceGroup | None:
         clean = normalize_group_name(name)
-        with self.database.connect() as conn:
+        with closing(self.database.connect()) as conn:
             row = conn.execute(
                 "SELECT * FROM device_groups WHERE site_id = ? AND LOWER(name) = LOWER(?) LIMIT 1",
                 (self.site_id, clean),
