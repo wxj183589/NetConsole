@@ -21,10 +21,9 @@ Var NetConsoleExistingDataRoot64
 Var NetConsoleExistingDataRoot32
 !ifndef BUILD_UNINSTALLER
 Var NetConsoleDataRoot
-!endif
 Var NetConsoleRegistryViewConflict
+!endif
 Var NetConsoleDataRootPointerResult
-Var NetConsoleUninstallDataRoot
 
 !ifndef BUILD_UNINSTALLER
 Function NetConsoleReadDataRootViews
@@ -112,22 +111,11 @@ Function un.NetConsoleReadDataRootViews
   StrCpy $NetConsoleExistingDataRoot64 ""
   StrCpy $NetConsoleExistingDataRoot32 ""
   StrCpy $NetConsoleExistingDataRoot ""
-  StrCpy $NetConsoleRegistryViewConflict "0"
   SetRegView 64
   ReadRegStr $NetConsoleExistingDataRoot64 HKLM "Software\NetConsole" "DataRoot"
   SetRegView 32
   ReadRegStr $NetConsoleExistingDataRoot32 HKLM "Software\NetConsole" "DataRoot"
-  ${If} $NetConsoleExistingDataRoot64 != ""
-  ${AndIf} $NetConsoleExistingDataRoot32 != ""
-    StrCmp "$NetConsoleExistingDataRoot64" "$NetConsoleExistingDataRoot32" un.NetConsoleRegistryViewsSame un.NetConsoleRegistryViewsConflict
-  ${EndIf}
   Goto un.NetConsoleRegistryViewsSelect
-
-  un.NetConsoleRegistryViewsSame:
-  Goto un.NetConsoleRegistryViewsSelect
-
-  un.NetConsoleRegistryViewsConflict:
-  StrCpy $NetConsoleRegistryViewConflict "1"
 
   un.NetConsoleRegistryViewsSelect:
   ${If} $NetConsoleExistingDataRoot64 != ""
@@ -169,14 +157,13 @@ FunctionEnd
 !macro customUnInit
   SetRegView 64
   Call un.NetConsoleReadDataRootViews
-  StrCpy $NetConsoleUninstallDataRoot "$NetConsoleExistingDataRoot"
   StrCpy $NetConsoleDataRootPointerResult "NORMAL_UNINSTALL"
   ; electron-builder invokes the old uninstaller with /S /KEEP_APP_DATA and
   ; --updated during upgrade/repair. Silent lifecycle is always normal and
   ; never presents a clean-uninstall choice.
   IfSilent NetConsoleUninstallSilent
   MessageBox MB_ICONQUESTION|MB_YESNO|MB_DEFBUTTON1 "请选择卸载方式：$\r$\n$\r$\n是：普通卸载（默认），保留业务数据和 DataRoot 指针。$\r$\n否：继续选择清洁卸载。" IDYES NetConsoleUninstallNormal
-  MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 "清洁卸载将清除 NetConsole 自有的机器级 DataRoot 指针，但不会删除业务数据、数据库、日志、备份或任何其他应用数据。$\r$\n$\r$\n历史数据目录：$NetConsoleUninstallDataRoot$\r$\n请确认已记录该路径。是否继续？" IDYES NetConsoleUninstallClean
+  MessageBox MB_ICONEXCLAMATION|MB_YESNO|MB_DEFBUTTON2 "清洁卸载将清除 NetConsole 自有的机器级 DataRoot 指针，但不会删除业务数据、数据库、日志、备份或任何其他应用数据。$\r$\n$\r$\n历史数据目录：$NetConsoleExistingDataRoot$\r$\n请确认已记录该路径。是否继续？" IDYES NetConsoleUninstallClean
   Abort
 
   NetConsoleUninstallNormal:
