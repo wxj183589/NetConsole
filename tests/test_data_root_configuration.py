@@ -16,12 +16,14 @@ from netconsole.core import data_root_configuration
 from netconsole.core.sites import SiteManager
 from netconsole.core.data_root_configuration import (
     DataRootConfigurationError,
-    prepare_installation_data_root,
-    validate_existing_installation_data_root,
     validate_installation_data_root,
 )
 from netconsole.core import runtime_environment
 from netconsole.services import site_storage
+from netconsole.services.installation_data_root import (
+    prepare_installation_data_root,
+    validate_existing_installation_data_root,
+)
 from netconsole.services.site_storage import SiteRegistryRepository, SiteStorageError
 
 
@@ -562,8 +564,14 @@ def test_existing_root_validation_reuses_the_persisted_production_authority(
     target = tmp_path / "existing"
     prepare_installation_data_root(target)
     monkeypatch.setattr(data_root_configuration.sys, "platform", "win32")
+    from netconsole.backend.api.main import _production_startup_site
 
-    assert validate_existing_installation_data_root(target) == target.resolve()
+    assert (
+        validate_existing_installation_data_root(
+            target, startup_site_resolver=_production_startup_site
+        )
+        == target.resolve()
+    )
 
 
 @pytest.mark.parametrize(

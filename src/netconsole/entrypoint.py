@@ -136,14 +136,17 @@ def _validate_data_root_from_installer(arguments: list[str]) -> int:
         default="clean-install",
     )
     values = parser.parse_args(arguments)
-    from netconsole.core.data_root_configuration import (
+    from netconsole.backend.api.main import _production_startup_site
+    from netconsole.services.installation_data_root import (
         prepare_installation_data_root,
         validate_existing_installation_data_root,
     )
 
     if values.mode == "reuse":
         validate_existing_installation_data_root(
-            values.data_root, installation_root=values.installation_root
+            values.data_root,
+            installation_root=values.installation_root,
+            startup_site_resolver=_production_startup_site,
         )
     else:
         prepare_installation_data_root(

@@ -6,7 +6,6 @@ import json
 import os
 import re
 import secrets
-import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -141,6 +140,7 @@ from netconsole.services.site_storage import (
     SiteRegistryRepository,
     SiteStorageError,
 )
+from netconsole.core.sqlite_utils import SqliteIntegrityError, check_sqlite_integrity
 from netconsole.services.storage_audit import StorageAuditService
 
 
@@ -1793,21 +1793,15 @@ def _validate_startup_database(paths: PathResolver, record: SiteRecord) -> Path:
             f"当前局点设备数据库不存在或为空：{record.site_id}",
         )
     try:
-        connection = sqlite3.connect(
-            f"file:{database_path.as_posix()}?mode=ro", uri=True
-        )
-        try:
-            check = connection.execute("PRAGMA quick_check").fetchone()
-        finally:
-            connection.close()
-    except (OSError, sqlite3.DatabaseError) as exc:
+        check = check_sqlite_integrity(database_path)
+    except SqliteIntegrityError as exc:
         _raise_active_site_startup_error(
             paths,
             "ACTIVE_SITE_DATABASE_CORRUPT",
             f"当前局点设备数据库无法读取：{record.site_id}",
             cause=exc,
         )
-    if not check or str(check[0]).casefold() != "ok":
+    if not check:
         _raise_active_site_startup_error(
             paths,
             "ACTIVE_SITE_DATABASE_CORRUPT",

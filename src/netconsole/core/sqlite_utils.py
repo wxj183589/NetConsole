@@ -17,6 +17,28 @@ DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 10_000
 T = TypeVar("T")
 
 
+class SqliteIntegrityError(RuntimeError):
+    """Raised when a read-only SQLite integrity probe cannot complete."""
+
+
+def check_sqlite_integrity(path: str | Path) -> bool:
+    """Run a read-only quick check and close the connection before returning."""
+
+    database_path = Path(path)
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            f"file:{database_path.as_posix()}?mode=ro", uri=True
+        )
+        result = connection.execute("PRAGMA quick_check").fetchone()
+    except (OSError, sqlite3.DatabaseError) as exc:
+        raise SqliteIntegrityError(str(exc)) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    return bool(result and str(result[0]).casefold() == "ok")
+
+
 def connect_sqlite(
     path: str | Path,
     *,
