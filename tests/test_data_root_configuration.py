@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import namedtuple
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -71,6 +72,35 @@ def test_installation_preparation_initializes_a_manifest_before_first_launch(
     assert payload["schema_version"] == 1
     assert (target / "sites").is_dir()
     assert not list(target.glob(".netconsole-install-probe-*"))
+
+
+def test_installation_preparation_initializes_one_empty_registered_site_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "NetConsoleData"
+
+    assert prepare_installation_data_root(target) == target.resolve()
+    registry = json.loads(
+        (target / "config" / "site_registry.json").read_text(encoding="utf-8")
+    )
+    assert [item["site_id"] for item in registry["sites"]] == ["demo"]
+    application = json.loads(
+        (target / "config" / "application.json").read_text(encoding="utf-8")
+    )
+    assert application["current_site"] == "demo"
+    assert application["active_site_id"] == "demo"
+    database = target / "sites" / "demo" / "db" / "devices.db"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM devices").fetchone() == (0,)
+    before = {
+        path: path.read_bytes()
+        for path in (database, target / "config" / "site_registry.json")
+    }
+
+    assert prepare_installation_data_root(target) == target.resolve()
+    assert {path: path.read_bytes() for path in before} == before
 
 
 def test_installation_preparation_does_not_replace_an_invalid_existing_manifest(
@@ -282,6 +312,7 @@ def test_installation_preparation_preserves_unrelated_files_in_a_nonempty_direct
     assert (unrelated.read_bytes(), unrelated.stat().st_mtime_ns) == before
     assert (target / "config" / "storage-manifest.json").is_file()
     assert (target / "sites").is_dir()
+    assert not (target / "config" / "site_registry.json").exists()
 
 
 @pytest.mark.parametrize(

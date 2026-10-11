@@ -54,7 +54,9 @@ def _registry(root: Path, *, site_id: str = "sxl1", directory: str | None = None
                 "sites": [
                     {
                         "site_id": site_id,
-                        "display_name": production_module.PRODUCTION_SITE_ALLOWLIST[site_id],
+                        "display_name": production_module.PRODUCTION_SITE_ALLOWLIST.get(
+                            site_id, site_id
+                        ),
                         "relative_path": f"sites/{directory}",
                     }
                 ],
@@ -305,6 +307,67 @@ def test_production_startup_accepts_legacy_app_config_fallback(
     assert backend_main._current_site_name(PathResolver(data_root=root)) == "sxl1"
 
 
+def test_production_startup_accepts_a_valid_registered_site_outside_maintenance_allowlist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "relocated-production"
+    _registry(root, site_id="line-one")
+    _database(root, site_id="line-one")
+    _production_patches(monkeypatch)
+    monkeypatch.setattr(
+        backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: []
+    )
+
+    assert backend_main._current_site_name(PathResolver(data_root=root)) == "line-one"
+
+
+def test_production_startup_initializes_an_empty_root_without_demo_devices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "fresh-production"
+    root.mkdir()
+    _production_patches(monkeypatch)
+    monkeypatch.setattr(
+        backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: []
+    )
+    paths = PathResolver(data_root=root)
+
+    assert backend_main._current_site_name(paths) == "demo"
+    assert backend_main._current_site_name(paths) == "demo"
+    with sqlite3.connect(paths.site_db_path("demo")) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM devices").fetchone() == (0,)
+    assert json.loads(paths.app_config_path.read_text(encoding="utf-8"))["active_site_id"] == "demo"
+
+
+def test_production_startup_recovers_unique_legacy_site_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "legacy-production"
+    _database(root, site_id="legacy-line")
+    _production_patches(monkeypatch)
+    monkeypatch.setattr(
+        backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: []
+    )
+    paths = PathResolver(data_root=root)
+
+    assert backend_main._current_site_name(paths) == "legacy-line"
+    assert (root / "config" / "site_registry.json").is_file()
+    assert json.loads(paths.app_config_path.read_text(encoding="utf-8"))["current_site"] == "legacy-line"
+
+
+def test_production_startup_rejects_ambiguous_legacy_sites_without_writing_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "ambiguous-production"
+    _database(root, site_id="line-one")
+    _database(root, site_id="line-two")
+    _production_patches(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="ACTIVE_SITE_AMBIGUOUS"):
+        backend_main._current_site_name(PathResolver(data_root=root))
+    assert not (root / "config" / "application.json").exists()
+
+
 def test_ap_schema_production_rejects_direct_db_and_no_backup_without_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -501,7 +564,7 @@ def test_production_startup_builder_failure_preserves_old_index_and_state(
     assert ApIdentityQueryService(Database(database)).revision_state().status == "stale"
 
 
-def test_production_startup_rejects_unlisted_site_before_database_access(
+def test_production_startup_does_not_apply_maintenance_allowlist_to_corrupt_site(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "relocated-production"
@@ -527,7 +590,7 @@ def test_production_startup_rejects_unlisted_site_before_database_access(
     fake_database.parent.mkdir(parents=True)
     fake_database.write_bytes(b"sentinel")
     _production_patches(monkeypatch)
-    with pytest.raises(RuntimeError, match="canonical"):
+    with pytest.raises(RuntimeError, match="ACTIVE_SITE_DATABASE_CORRUPT"):
         backend_main._initialize_active_site_database(
             PathResolver(data_root=root),
             "fake-tenth-site",

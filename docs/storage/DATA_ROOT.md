@@ -6,7 +6,7 @@ Windows 的 electron-builder NSIS 向导先选择程序安装位置，再显示�
 
 安装器先规范化路径并在零写入状态下识别目录状态：不存在、空目录、合法旧数据根以及含普通文件的目录都允许继续，普通文件会原样保留。只有 NetConsole 必需路径 `config/`、`sites/`、`runtime/`、`agents/`、`migrations/`、`staging/` 或 `config/storage-manifest.json` 已被错误类型文件/符号链接占用，才按真实路径冲突停止。随后执行可写与重命名探测；探测成功后不得再按“目录非空”拒绝。探测只在候选根内部创建带唯一后缀的 `.netconsole-install-probe-*.tmp`，写入固定短内容、刷新并关闭句柄后，在同一目录重命名为 `.tmp.renamed`，回读内容并删除本轮探测文件。探测不使用安装器 `%TEMP%`、不跨卷移动、不重命名数据根、也不读取或覆盖现有数据库和采集文件。失败提示记录具体步骤和 Win32 错误码，并区分目录创建/写入、权限、占用、文件系统重命名能力、回读和清理；已有数据根中的历史探测残留不得导致新探测名称冲突。
 
-安装器在发布机器级指针前调用打包 Backend 完成候选根校验，并在空根中原子创建完整目录结构和 `config/storage-manifest.json`；已有 manifest 只做兼容性校验，损坏、根不一致或版本不兼容时安装失败且原文件不被覆盖。校验和初始化全部成功后，唯一持久化路径指针才写入 `HKLM\Software\NetConsole\DataRoot`。manifest 记录 `format_version`、`data_root`、`created_at`、`last_opened_at`、`installation_id`、schema 和迁移兼容字段。运行时优先使用显式 `NETCONSOLE_DATA_ROOT`，否则读取该机器级指针；未配置时停止启动，绝不回退 LocalAppData、用户目录、安装目录、仓库或 C 盘。
+安装器在发布机器级指针前调用打包 Backend 完成候选根校验，并在真正空根中原子创建完整目录结构、`config/storage-manifest.json`、一个已登记但不含示例设备的空局点及 `application.json`；该首启初始化幂等且失败会回滚已创建的局点/配置。已有 manifest 只做兼容性校验，损坏、根不一致或版本不兼容时安装失败且原文件不被覆盖。校验和初始化全部成功后，唯一持久化路径指针才写入 `HKLM\Software\NetConsole\DataRoot`。manifest 记录 `format_version`、`data_root`、`created_at`、`last_opened_at`、`installation_id`、schema 和迁移兼容字段。运行时优先使用显式 `NETCONSOLE_DATA_ROOT`，否则读取该机器级指针；未配置时停止启动，绝不回退 LocalAppData、用户目录、安装目录、仓库或 C 盘。
 
 空目录直接初始化为新数据根；已有 manifest 或 `config/` + `sites/` 的合法根会原样复用；含无冲突普通文件的目录在保留原文件的同时创建 NetConsole 必需结构。安装器不会自动拼接 `NetConsoleData` 子目录，也不会删除、改名或覆盖用户已有文件。枚举会输出实际条目并跳过 `.`、`..` 和旧 v1.4.3 固定名称探测残留，便于诊断 Windows 空目录或历史探测状态。升级/修复默认继续使用已登记根；选择不同根时，打包后的 Backend 在更新注册表前执行 sibling staging、SQLite 校验和原子发布，旧根保持不删除。普通卸载保留数据根及其机器级指针。
 
@@ -42,6 +42,8 @@ D:\NetConsoleData
 自动化测试必须以 `RuntimeMode.TEST` 显式设置 `NETCONSOLE_DATA_ROOT=<repository-parent>/test-data/NetConsole/<run-id>`。未设置、直接使用测试根、或位于该根以外都会失败；测试结束仅清理自己的 `run-id`。源码真实开发验收由调用方显式选择 `D:\NetConsoleData-dev`，不得用测试根替代长期开发 Authority。
 
 Electron 在 `app.whenReady()` 前将 `userData`、`sessionData`、`cache`、`logs`、`crashDumps` 与 `temp` 全部重定向到 `runtime/`。同一根的主 Backend 使用 `runtime/locks/netconsole-backend.lock` 排他运行；锁记录 PID、启动时间、版本、可执行文件和数据根。仍存活的持锁进程不会被删除锁文件，陈旧锁由文件锁机制安全回收。
+
+普通 Production 桌面启动以 `config/site_registry.json`、`config/application.json`（兼容 legacy `config/app.json`）和已存在的 `sites/<目录>/db/devices.db` 为事实源，不使用 Production 维护命令的静态 Allowlist。缺少 bootstrap 时，单一有效 Registry 记录可受控恢复；多个局点没有唯一引用、Registry 损坏、路径越界/Reparse Point、数据库缺失或损坏时 fail-closed，并返回 `ACTIVE_SITE_*` 诊断码。维护命令的 Allowlist、能力令牌和目标校验仍只约束高风险 Production 维护操作。
 
 `config/storage-manifest.json` 记录 `format_version`、`data_root`、`installation_id`、创建/最近打开时间、schema 版本、最低应用版本、最近打开版本和最近迁移。遇到更高 schema、根不一致或版本不兼容时 Backend 停止启动；不可逆迁移必须先生成完整备份，并在开发版获得明确确认后才能执行。普通查询、界面调整和只读分析不会触发迁移。
 

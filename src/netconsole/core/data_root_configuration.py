@@ -137,6 +137,25 @@ def prepare_installation_data_root(
                 readonly_warning=True,
             ),
         )
+    # The installer owns first-run initialization.  It creates only one
+    # empty, registered site and is a no-op for an existing data root; normal
+    # Production startup still performs its own strict registry/database
+    # validation and never uses the maintenance allowlist.
+    # site_storage imports the process logger, whose legacy module-level
+    # resolver expects a configured root.  The installer has not published
+    # HKLM yet, so provide the candidate only for this short-lived validation
+    # process; the real pointer is still written by NSIS after this returns.
+    previous_data_root = os.environ.get("NETCONSOLE_DATA_ROOT")
+    os.environ["NETCONSOLE_DATA_ROOT"] = str(root)
+    try:
+        from netconsole.services.site_storage import SiteApplicationService
+
+        SiteApplicationService(paths).initialize_first_run_site()
+    finally:
+        if previous_data_root is None:
+            os.environ.pop("NETCONSOLE_DATA_ROOT", None)
+        else:
+            os.environ["NETCONSOLE_DATA_ROOT"] = previous_data_root
     return root
 
 

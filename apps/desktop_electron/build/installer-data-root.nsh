@@ -94,8 +94,8 @@ Var NetConsolePerformanceMode
     Abort "数据目录校验失败：$NetConsoleDataRootProbeResult（错误来源：$NetConsoleDataRootProbeErrorSource；错误码：$NetConsoleDataRootProbeErrorCode）。请关闭 NetConsole、Agent 和 Backend 后重试；不要删除已有数据。"
   ${EndIf}
   ; This command validates the selected root and creates/checks the storage
-  ; manifest before the registry pointer is published. First launch therefore
-  ; never owns data-root initialization.
+  ; manifest plus the first empty registered site before the registry pointer
+  ; is published. First launch therefore never owns data-root initialization.
   ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
   ${If} $0 != 0
     Abort "Backend 数据根初始化或兼容性校验失败（退出代码 $0）。请检查安装日志；不要删除已有数据。"

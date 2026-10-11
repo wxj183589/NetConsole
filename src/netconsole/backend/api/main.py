@@ -6,13 +6,14 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
 from pathlib import Path
 from time import perf_counter
-from typing import Callable
+from typing import Callable, NoReturn
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -73,12 +74,6 @@ from netconsole.services.ac.mesh_link_resident_polling_service import (
 )
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_identity import ApIdentityQueryService
-from netconsole.services.production_database_maintenance import (
-    ProductionMaintenanceError,
-    assert_canonical_production_database_path,
-    resolve_production_site_scope,
-    resolve_production_site_scope_by_directory,
-)
 from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
 from netconsole.services.command_reference_application_service import CommandReferenceApplicationService
@@ -141,6 +136,7 @@ from netconsole.services.site_storage import (
     DataRootApplicationService,
     SiteApplicationService,
     SitePackageService,
+    SiteRecord,
     SiteRegistryRepository,
     SiteStorageError,
 )
@@ -1361,43 +1357,304 @@ def _log_build_identity(app: FastAPI) -> None:
     )
 
 
-def _production_startup_site(
-    paths: PathResolver,
-    site_ref: str,
-) -> tuple[str, str]:
-    """Resolve Production startup from persisted canonical site authority."""
+class ActiveSiteStartupError(RuntimeError):
+    """Raised when the persisted Production active-site contract is unsafe."""
 
-    try:
-        canonical_site_id, site_root = resolve_production_site_scope(paths, site_ref)
-    except ProductionMaintenanceError:
-        canonical_site_id, site_root = resolve_production_site_scope_by_directory(
-            paths, site_ref
+    def __init__(self, code: str, message: str, *, data_root: Path) -> None:
+        self.code = code
+        self.data_root = data_root
+        super().__init__(
+            "NetConsole 无法读取当前局点配置。\n"
+            f"数据目录：{data_root}\n"
+            f"错误码：{code}\n"
+            f"原因：{message}\n"
+            "现有业务数据未被删除或重建。请检查数据目录配置，或执行受控恢复。"
         )
-    if not site_root.is_dir():
-        raise RuntimeError("Production canonical site root is unavailable")
-    return site_root.name, canonical_site_id
 
 
-def _production_configured_site_ref(paths: PathResolver) -> str:
-    config_paths = (paths.app_config_path, paths.legacy_app_config_path)
-    found_config = False
-    for config_path in config_paths:
-        if not config_path.is_file():
+def _raise_active_site_startup_error(
+    paths: PathResolver,
+    code: str,
+    message: str,
+    *,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    app_logger.log_error(
+        code,
+        f"stage=active_site_startup data_root={paths.data_root} reason={message}",
+    )
+    error = ActiveSiteStartupError(code, message, data_root=paths.data_root)
+    if cause is not None:
+        raise error from cause
+    raise error
+
+
+def _startup_path_is_link_or_reparse(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = os.lstat(path).st_file_attributes
+    except (AttributeError, FileNotFoundError, OSError):
+        return False
+    return bool(attributes & 0x400)
+
+
+def _read_production_site_refs(paths: PathResolver) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    if paths.config_dir.exists() and _startup_path_is_link_or_reparse(paths.config_dir):
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_CONFIG_INVALID",
+            "config 目录不得是符号链接或 Reparse Point",
+        )
+    for config_path in (paths.app_config_path, paths.legacy_app_config_path):
+        if not config_path.exists():
             continue
-        found_config = True
+        if not config_path.is_file() or _startup_path_is_link_or_reparse(config_path):
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_CONFIG_MISSING",
+                f"局点配置文件不可读取：{config_path.name}",
+            )
         try:
             raw = json.loads(config_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError, TypeError) as exc:
-            raise RuntimeError("Production active site configuration is invalid") from exc
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_CONFIG_INVALID",
+                f"局点配置文件格式无效：{config_path.name}",
+                cause=exc,
+            )
         if not isinstance(raw, dict):
-            raise RuntimeError("Production active site configuration is invalid")
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_CONFIG_INVALID",
+                f"局点配置文件结构无效：{config_path.name}",
+            )
         for key in ("active_site_id", "current_site"):
-            value = str(raw.get(key) or "").strip()
-            if value:
-                return value
-    if not found_config:
-        raise RuntimeError("Production active site configuration is unavailable")
-    raise RuntimeError("Production active site is not configured")
+            value = raw.get(key)
+            if value is None or str(value).strip() == "":
+                continue
+            if not isinstance(value, str):
+                _raise_active_site_startup_error(
+                    paths,
+                    "ACTIVE_SITE_CONFIG_INVALID",
+                    f"{config_path.name} 的 {key} 必须是文本",
+                )
+            refs.append((f"{config_path.name}:{key}", value.strip()))
+    return refs
+
+
+def _production_configured_site_ref(paths: PathResolver) -> str:
+    refs = _read_production_site_refs(paths)
+    if refs:
+        return refs[0][1]
+    _raise_active_site_startup_error(
+        paths,
+        "ACTIVE_SITE_CONFIG_MISSING",
+        "未找到 current_site 或 active_site_id",
+    )
+
+
+def _startup_site_entries(paths: PathResolver) -> list[Path]:
+    if not paths.sites_dir.exists():
+        return []
+    if not paths.sites_dir.is_dir() or _startup_path_is_link_or_reparse(paths.sites_dir):
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_REGISTRY_INVALID",
+            "sites 目录不可安全读取",
+        )
+    entries = list(paths.sites_dir.iterdir())
+    for entry in entries:
+        if _startup_path_is_link_or_reparse(entry):
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_REGISTRY_INVALID",
+                f"sites 下存在符号链接或 Reparse Point：{entry.name}",
+            )
+        if not entry.is_dir():
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_REGISTRY_INVALID",
+                f"sites 下存在未登记的非目录项：{entry.name}",
+            )
+    return entries
+
+
+def _strict_production_records(
+    paths: PathResolver,
+) -> tuple[SiteRegistryRepository, list[SiteRecord]]:
+    registry = SiteRegistryRepository(paths)
+    try:
+        records = registry.persisted_records()
+    except SiteStorageError as exc:
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_REGISTRY_INVALID",
+            str(exc),
+            cause=exc,
+        )
+    entries = _startup_site_entries(paths)
+    roots = {record.root_path.resolve() for record in records}
+    unknown = [entry for entry in entries if entry.resolve() not in roots]
+    if unknown:
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_REGISTRY_INVALID",
+            f"存在未登记的局点目录：{unknown[0].name}",
+        )
+    return registry, records
+
+
+def _recover_legacy_registry(
+    paths: PathResolver,
+    refs: list[tuple[str, str]],
+) -> tuple[SiteRegistryRepository, list[SiteRecord]]:
+    registry = SiteRegistryRepository(paths)
+    if registry.path.exists():
+        return _strict_production_records(paths)
+    entries = _startup_site_entries(paths)
+    if not entries:
+        try:
+            SiteApplicationService(paths).initialize_first_run_site()
+        except SiteStorageError as exc:
+            _raise_active_site_startup_error(
+                paths, exc.code, str(exc), cause=exc
+            )
+        return _strict_production_records(paths)
+    if len(entries) > 1 and not refs:
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_AMBIGUOUS",
+            "旧数据根包含多个局点，但没有可验证的当前局点引用",
+        )
+    try:
+        # The legacy discovery path is used only when no Registry exists and
+        # only after the direct-child inventory above has passed.  It upgrades
+        # the unique/explicitly referenced legacy installation to the Registry.
+        registry.list()
+    except SiteStorageError as exc:
+        _raise_active_site_startup_error(
+            paths, "ACTIVE_SITE_REGISTRY_INVALID", str(exc), cause=exc
+        )
+    return _strict_production_records(paths)
+
+
+def _resolve_startup_reference(
+    records: list[SiteRecord], reference: str
+) -> SiteRecord | None:
+    wanted = reference.casefold()
+    matches = [
+        record
+        for record in records
+        if record.site_id.casefold() == wanted
+        or record.root_path.name.casefold() == wanted
+    ]
+    if not matches:
+        return None
+    unique = {record.site_id: record for record in matches}
+    if len(unique) != 1:
+        raise ValueError("reference resolves to multiple sites")
+    return next(iter(unique.values()))
+
+
+def _validate_startup_database(paths: PathResolver, record: SiteRecord) -> Path:
+    root = record.root_path
+    if not root.is_dir() or _startup_path_is_link_or_reparse(root):
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_CONFIG_MISSING",
+            f"当前局点目录不存在或不可安全读取：{record.site_id}",
+        )
+    database_path = root / "db" / "devices.db"
+    if (
+        not database_path.is_file()
+        or _startup_path_is_link_or_reparse(database_path)
+        or database_path.stat().st_size == 0
+    ):
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_DATABASE_MISSING",
+            f"当前局点设备数据库不存在或为空：{record.site_id}",
+        )
+    try:
+        connection = sqlite3.connect(
+            f"file:{database_path.as_posix()}?mode=ro", uri=True
+        )
+        try:
+            check = connection.execute("PRAGMA quick_check").fetchone()
+        finally:
+            connection.close()
+    except (OSError, sqlite3.DatabaseError) as exc:
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_DATABASE_CORRUPT",
+            f"当前局点设备数据库无法读取：{record.site_id}",
+            cause=exc,
+        )
+    if not check or str(check[0]).casefold() != "ok":
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_DATABASE_CORRUPT",
+            f"当前局点设备数据库完整性检查失败：{record.site_id}",
+        )
+    return database_path
+
+
+def _production_startup_site(
+    paths: PathResolver,
+    site_ref: str | None = None,
+) -> tuple[str, str]:
+    """Resolve ordinary Production startup from persisted SiteRegistry data."""
+
+    refs = _read_production_site_refs(paths)
+    if site_ref:
+        refs.insert(0, ("bootstrap", site_ref))
+    registry, records = _recover_legacy_registry(paths, refs)
+    del registry
+    if not records:
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_CONFIG_MISSING",
+            "数据根中没有已登记的局点",
+        )
+
+    selected: SiteRecord | None = None
+    resolved_refs: dict[str, SiteRecord] = {}
+    for source, reference in refs:
+        try:
+            match = _resolve_startup_reference(records, reference)
+        except ValueError as exc:
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_AMBIGUOUS",
+                f"{source} 无法唯一对应一个局点：{reference}",
+                cause=exc,
+            )
+        if match is not None:
+            resolved_refs[source] = match
+    resolved_ids = {record.site_id for record in resolved_refs.values()}
+    if len(resolved_ids) > 1:
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_AMBIGUOUS",
+            "application.json、legacy app.json 与启动参数指向不同局点",
+        )
+    if resolved_refs:
+        selected = next(iter(resolved_refs.values()))
+    elif len(records) == 1:
+        # A stale/missing bootstrap is recoverable when the Registry has one
+        # unambiguous site.  The config is written only after DB startup passes.
+        selected = records[0]
+    else:
+        _raise_active_site_startup_error(
+            paths,
+            "ACTIVE_SITE_AMBIGUOUS",
+            "数据根包含多个局点，但没有唯一的 active_site_id/current_site",
+        )
+    database_path = _validate_startup_database(paths, selected)
+    return database_path.parent.parent.name, selected.site_id
 
 
 def _paths_are_production(paths: PathResolver) -> bool:
@@ -1413,21 +1670,15 @@ def _current_site_name(
     production = _paths_are_production(paths)
     preferred = str(os.environ.get("NETCONSOLE_ACTIVE_SITE_ID") or "").strip()
     if production:
-        site_ref = preferred or _production_configured_site_ref(paths)
-        try:
-            selected, site_id = _production_startup_site(paths, site_ref)
-            _initialize_active_site_database(
-                paths,
-                selected,
-                production_site_id=site_id,
-                startup_stage=startup_stage,
-            )
-            SiteManager(paths).set_current_site_reference(selected, site_id=site_id)
-            return selected
-        except (ProductionMaintenanceError, SiteStorageError, ValueError) as exc:
-            raise RuntimeError(
-                f"Production active site is not canonical: {type(exc).__name__}"
-            ) from exc
+        selected, site_id = _production_startup_site(paths, preferred or None)
+        _initialize_active_site_database(
+            paths,
+            selected,
+            production_site_id=site_id,
+            startup_stage=startup_stage,
+        )
+        SiteManager(paths).set_current_site_reference(selected, site_id=site_id)
+        return selected
     if preferred:
         try:
             selected = SiteRegistryRepository(paths).resolve_directory_name(preferred)
@@ -1459,24 +1710,34 @@ def _initialize_active_site_database(
     production = _paths_are_production(paths)
     database_path = paths.site_db_path(site_name)
     if production:
-        site_id = production_site_id
-        if not site_id:
-            try:
-                _selected, site_id = _production_startup_site(paths, site_name)
-            except (ProductionMaintenanceError, SiteStorageError, ValueError) as exc:
-                raise RuntimeError("Production active site is not canonical") from exc
-        try:
-            _canonical_site_id, _canonical_database, _site = assert_canonical_production_database_path(
-                paths, site_id, "devices.db", database_path
-            )
-        except ProductionMaintenanceError as exc:
-            raise RuntimeError("Production active database is not canonical") from exc
+        selected, site_id = _production_startup_site(paths, production_site_id or site_name)
+        site_name = selected
+        database_path = _validate_startup_database(
+            paths,
+            SiteRecord(site_id, site_id, paths.site_dir(site_name)),
+        )
     database = Database(database_path)
     if not database.exists():
+        if production:
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_DATABASE_MISSING",
+                f"当前局点设备数据库不存在：{site_id}",
+            )
         raise RuntimeError("当前局点设备数据库不存在，Backend 未启动")
     _emit_startup_stage(startup_stage, "active_site_database_initializing")
     if production:
-        database.initialize(startup_policy="production_safe")
+        try:
+            database.initialize(startup_policy="production_safe")
+        except Exception as exc:
+            if isinstance(exc, ActiveSiteStartupError):
+                raise
+            _raise_active_site_startup_error(
+                paths,
+                "ACTIVE_SITE_DATABASE_UNAVAILABLE",
+                f"当前局点数据库不满足安全启动条件：{site_id}",
+                cause=exc,
+            )
     else:
         database.initialize()
     _emit_startup_stage(startup_stage, "active_site_database_ready")
