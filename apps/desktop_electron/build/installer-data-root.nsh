@@ -103,6 +103,7 @@ Function NetConsolePublishDataRootPointer
 FunctionEnd
 !endif
 
+!ifndef BUILD_UNINSTALLER
 Function NetConsoleClearDataRootPointers
   StrCpy $NetConsoleDataRootPointerResult "ok"
   SetRegView 64
@@ -129,6 +130,7 @@ Function NetConsoleClearDataRootPointers
   StrCpy $NetConsoleDataRootPointerResult "清洁卸载未能清除 NetConsole DataRoot 指针"
   SetRegView 64
 FunctionEnd
+!endif
 
 !ifdef BUILD_UNINSTALLER
 ; electron-builder expands customUnInit/customUnInstall inside the NSIS
