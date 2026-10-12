@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import os
 
-from netconsole.services.agent.local_self_check import LocalAgentSelfCheck, LocalAgentSelfCheckReport
+from scripts.maintenance.agent.local_self_check import LocalAgentSelfCheck, LocalAgentSelfCheckReport
 
 
 def _parser() -> argparse.ArgumentParser:

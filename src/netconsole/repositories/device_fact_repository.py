@@ -9,14 +9,14 @@ from netconsole.core.optical_severity_engine import (
     is_zte_optical_record,
     normalize_zte_optical_record,
 )
-from netconsole.services.current_history_retention import (
+from netconsole.core.storage.current_history_retention import (
     list_device_fact_recent,
     record_device_fact_change,
 )
-from netconsole.services.interface_retention import (
+from netconsole.core.storage.interface_retention import (
     upsert_interface_current_and_history,
 )
-from netconsole.services.device_state_retention import (
+from netconsole.core.storage.device_state_retention import (
     upsert_device_lldp_current_and_history,
     upsert_device_optical_current_and_history,
 )

@@ -46,6 +46,10 @@ from netconsole.services.job_center.web_export_event_safety import sanitize_web_
 from netconsole.services.system_maintenance_redaction import redact_system_maintenance_text
 from netconsole.services.log_display import display_log_row
 from netconsole.services.log_housekeeper import LogHousekeeper
+from netconsole.services.job_center.system_maintenance_contract import (
+    SYSTEM_MAINTENANCE_TASK_TYPES,
+    SYSTEM_MAINTENANCE_WEB_OWNER,
+)
 
 
 class SystemMaintenanceError(RuntimeError):
@@ -89,18 +93,6 @@ class SystemMaintenanceResolver:
             return self.DIRECTORIES[str(kind)]
         except KeyError as exc:
             raise SystemMaintenanceError("DIRECTORY_KIND_INVALID", "目录类型无效") from exc
-
-
-SYSTEM_MAINTENANCE_WEB_OWNER = "web_system_maintenance"
-SYSTEM_MAINTENANCE_TASK_TYPES = frozenset(
-    {
-        "system_maintenance_cleanup",
-        "open_source_notice_scan",
-        "web_export_app_logs_csv",
-        "web_export_open_source_notices",
-        "web_export_field_diagnostic_bundle",
-    }
-)
 
 
 class SystemMaintenanceApplicationService:

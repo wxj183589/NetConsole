@@ -15,17 +15,17 @@ from netconsole.models.device_address import normalize_ip_address
 from netconsole.repositories.ap_management_vlan_repository import (
     ApManagementVlanRepository,
 )
-from netconsole.services.ap_extension_import import normalize_ap_mac
-from netconsole.services.rail_transit.trackside_ap_location import (
+from netconsole.core.sources.ap_extension_import import normalize_ap_mac
+from netconsole.core.sources.rail_transit.trackside_ap_location import (
     default_participates_in_mainline,
     normalize_location_class,
     parse_participates_in_mainline,
     validate_location_participation,
 )
-from netconsole.services.rail_transit.station_source_utils import (
+from netconsole.core.sources.rail_transit.station_source_utils import (
     format_station_display_name,
 )
-from netconsole.services.rail_transit.station_ordering import (
+from netconsole.core.sources.rail_transit.station_ordering import (
     canonicalize_trackside_ap_plan_rows,
 )
 from netconsole.utils.mileage import parse_track_mileage

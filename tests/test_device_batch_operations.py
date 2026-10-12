@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from netconsole.models.device import Device
-from netconsole.services.device_batch_operations import (
+from tests.support.legacy_device_batch_operations import (
     BATCH_COLLECT_DEFAULT_CONCURRENCY,
     BATCH_COLLECT_MAX_CONCURRENCY,
     BATCH_CONNECTION_DEFAULT_CONCURRENCY,

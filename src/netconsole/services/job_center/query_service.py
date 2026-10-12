@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from netconsole.application.system_maintenance import (
+from netconsole.services.job_center.system_maintenance_contract import (
     SYSTEM_MAINTENANCE_TASK_TYPES,
     SYSTEM_MAINTENANCE_WEB_OWNER,
 )

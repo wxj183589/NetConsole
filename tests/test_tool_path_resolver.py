@@ -161,7 +161,7 @@ def test_resolver_finds_nuitka_onefile_extracted_tools(tmp_path: Path, monkeypat
     fake_file = package_root / "src" / "netconsole" / "services" / "tool_path_resolver.py"
     fake_file.parent.mkdir(parents=True, exist_ok=True)
     fake_file.write_text("", encoding="utf-8")
-    monkeypatch.setattr("netconsole.services.tool_path_resolver.__file__", str(fake_file))
+    monkeypatch.setattr("netconsole.core.tool_path_resolver.__file__", str(fake_file))
 
     assert resolve_tool_path("fping", PathResolver(tmp_path / "app"), project_root=tmp_path / "missing") == fping.resolve()
 

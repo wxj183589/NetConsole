@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.services.optical_retention import (
+from netconsole.core.storage.optical_retention import (
     build_optical_projection,
     update_ap_optical_treatment,
     upsert_optical_current_and_history,

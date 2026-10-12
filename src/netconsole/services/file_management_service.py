@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable
 from uuid import uuid4
 
-from netconsole.application.desktop.actions import DesktopActionResolutionError
+from netconsole.services.desktop_actions import DesktopActionResolutionError
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -78,7 +78,7 @@ from netconsole.services.netmiko_connection import sanitize_sensitive_text
 from netconsole.services.site_storage import SiteRegistryRepository, SiteStorageError
 
 if TYPE_CHECKING:
-    from netconsole.application.desktop import DesktopActionService
+    from netconsole.services.desktop_actions import DesktopActionService
     from netconsole.services.job_center.job_context import JobContext
     from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
     from netconsole.services.job_center.local_process_adapter import LocalProcessCompletion

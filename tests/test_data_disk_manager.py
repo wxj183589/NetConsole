@@ -1,4 +1,4 @@
-from netconsole.services.data_disk_manager import clean_data_disk, scan_data_disk
+from tests.support.legacy_data_disk_manager import clean_data_disk, scan_data_disk
 
 
 def test_data_disk_manager_cleans_cache_without_touching_any_logs(tmp_path):

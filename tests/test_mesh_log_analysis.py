@@ -23,7 +23,7 @@ from netconsole.services import mesh_import_service
 from netconsole.services.mesh_log_analysis_service import MeshLogAnalysisService
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_peer_mapping_service import MeshPeerMappingService
-from netconsole.services.mesh_link_analyzer import MeshLinkAnalyzer
+from netconsole.core.storage.mesh_link_analyzer import MeshLinkAnalyzer
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
