@@ -74,6 +74,8 @@ function createManager(options: {
   logger?: (event: string, detail?: string) => void
   awaitProcessExit?: boolean
   environment?: NodeJS.ProcessEnv
+  activeSiteId?: string
+  activeSiteMode?: 'startup_hint' | 'authorized_switch'
   runtimeMode?: 'desktop-development' | 'desktop-packaged'
   announcedPort?: number
   startupFailure?: string
@@ -106,6 +108,8 @@ function createManager(options: {
     argumentsPrefix: ['-m', 'netconsole.backend.electron_runtime'],
     projectRoot: 'C:\\NetConsole',
     dataRoot: 'D:\\NetConsoleData',
+    ...(options.activeSiteId ? { activeSiteId: options.activeSiteId } : {}),
+    ...(options.activeSiteMode ? { activeSiteMode: options.activeSiteMode } : {}),
     runtimeMode: options.runtimeMode ?? 'desktop-development',
     pythonPath: 'C:\\NetConsole\\src',
     startupTimeoutMs: options.startupTimeoutMs ?? 50,
@@ -184,6 +188,22 @@ describe('PythonBackendManager', () => {
 
     expect(child.signals).toEqual([])
     expect(manager.getStatus()).toEqual({ state: 'stopped' })
+  })
+
+  it('passes an authorized site switch separately from an ordinary startup hint', async () => {
+    const ordinary = createManager({ activeSiteId: 'site-a' })
+    await ordinary.manager.start()
+    const ordinaryEnvironment = ordinary.spawnCalls[0].options.env as NodeJS.ProcessEnv
+    expect(ordinaryEnvironment.NETCONSOLE_ACTIVE_SITE_ID).toBe('site-a')
+    expect(ordinaryEnvironment.NETCONSOLE_ACTIVE_SITE_MODE).toBeUndefined()
+    await ordinary.manager.stop()
+
+    const authorized = createManager({ activeSiteId: 'site-b', activeSiteMode: 'authorized_switch' })
+    await authorized.manager.start()
+    const authorizedEnvironment = authorized.spawnCalls[0].options.env as NodeJS.ProcessEnv
+    expect(authorizedEnvironment.NETCONSOLE_ACTIVE_SITE_ID).toBe('site-b')
+    expect(authorizedEnvironment.NETCONSOLE_ACTIVE_SITE_MODE).toBe('authorized_switch')
+    await authorized.manager.stop()
   })
 
   it('records the packaged build identity returned by backend health', async () => {

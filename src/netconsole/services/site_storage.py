@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import time
 import uuid
@@ -239,6 +240,65 @@ def _relative_inside(root: Path, child: Path) -> bool:
         return False
 
 
+def _is_reparse_or_symlink(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    try:
+        attributes = os.lstat(path).st_file_attributes
+    except (AttributeError, FileNotFoundError, OSError):
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _has_reparse_ancestor(path: Path, *, stop: Path) -> bool:
+    current = path
+    stop_resolved = stop.resolve()
+    while True:
+        if _is_reparse_or_symlink(current):
+            return True
+        if current == stop_resolved:
+            return False
+        if current.parent == current:
+            return False
+        current = current.parent
+
+
+def _remove_owned_first_run_site(
+    site_root: Path,
+    *,
+    sites_dir: Path,
+    ownership_marker: Path,
+    ownership_token: str,
+) -> None:
+    """Remove only a site directory proven to be created by this attempt.
+
+    First-run initialization is allowed to create ``sites/demo`` directly for
+    compatibility with the existing SiteManager API.  The marker is created
+    before that call and is required before cleanup; an existing site directory
+    or a reparse-point path is never removed by this rollback path.
+    """
+
+    if not site_root.exists():
+        return
+    if (
+        site_root.parent.resolve() != sites_dir.resolve()
+        or site_root.name != DEFAULT_SITE
+        or ownership_marker.parent != site_root
+        or not ownership_marker.is_file()
+    ):
+        raise OSError("首次初始化局点缺少可验证的归属标记")
+    if _has_reparse_ancestor(site_root, stop=sites_dir):
+        raise OSError("首次初始化局点路径包含 Reparse Point")
+    for entry in site_root.rglob("*"):
+        if _is_reparse_or_symlink(entry):
+            raise OSError("首次初始化局点内容包含 Reparse Point")
+    if ownership_marker.read_text(encoding="utf-8") != ownership_token:
+        raise OSError("首次初始化局点归属标记不匹配")
+    shutil.rmtree(site_root)
+    if site_root.exists():
+        raise OSError("首次初始化局点目录清理后仍存在")
+
+
 def validate_site_id(value: str) -> str:
     site_id = str(value or "").strip().casefold()
     if not _SITE_ID_RE.fullmatch(site_id) or site_id in {".", ".."}:
@@ -422,6 +482,65 @@ class SiteRegistryRepository:
         """重新扫描 Registry 与受控局点目录，避免依赖进程级列表缓存。"""
 
         return self.list()
+
+    def persisted_records(self) -> list[SiteRecord]:
+        """严格读取已持久化的 Registry，不发现或写入历史目录。
+
+        Production 启动必须使用这个只读边界。普通的 ``list`` API 为了兼容
+        旧数据会惰性发现目录；启动阶段不能把未知目录静默变成业务权威。
+        """
+
+        if _has_reparse_ancestor(self.path, stop=self.paths.data_root):
+            raise SiteStorageError(
+                "SITE_REGISTRY_INVALID", "局点 Registry 路径不得经过符号链接或 Reparse Point"
+            )
+        if not self.path.exists():
+            return []
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise SiteStorageError(
+                "SITE_REGISTRY_INVALID", "局点 Registry 无法读取或不是有效 JSON"
+            ) from exc
+        if not isinstance(raw, dict) or not isinstance(raw.get("sites"), list):
+            raise SiteStorageError("SITE_REGISTRY_INVALID", "局点 Registry 结构无效")
+
+        records: list[SiteRecord] = []
+        seen_ids: set[str] = set()
+        seen_roots: set[Path] = set()
+        for item in raw["sites"]:
+            if not isinstance(item, dict):
+                raise SiteStorageError("SITE_REGISTRY_INVALID", "局点 Registry 包含无效记录")
+            try:
+                site_id = validate_site_id(str(item.get("site_id") or ""))
+                display_name = validate_display_name(
+                    str(item.get("display_name") or site_id)
+                )
+                root = self._resolve_persisted_root(
+                    str(item.get("relative_path") or f"sites/{site_id}")
+                )
+            except SiteStorageError:
+                raise
+            if site_id in seen_ids or root in seen_roots:
+                raise SiteStorageError("SITE_REGISTRY_INVALID", "局点 Registry 存在重复记录")
+            seen_ids.add(site_id)
+            seen_roots.add(root)
+            records.append(
+                SiteRecord(
+                    site_id=site_id,
+                    display_name=display_name,
+                    root_path=root,
+                    created_at=str(item.get("created_at") or ""),
+                    updated_at=str(item.get("updated_at") or ""),
+                    remark=str(item.get("remark") or ""),
+                    line_name=_read_optional_site_info(item.get("line_name")),
+                    project_type=_read_optional_site_info(item.get("project_type")),
+                )
+            )
+        return sorted(
+            records,
+            key=lambda item: (item.site_id != DEFAULT_SITE, item.display_name.casefold()),
+        )
 
     def revision(self) -> str:
         """返回当前 Registry 内容版本，供 API/Renderer 判断缓存是否过期。"""
@@ -678,6 +797,28 @@ class SiteRegistryRepository:
             raise SiteStorageError("SITE_REGISTRY_CONFLICT", "Registry 局点路径越界")
         return candidate
 
+    def _resolve_persisted_root(self, relative: str) -> Path:
+        relative_path = Path(relative)
+        if (
+            relative_path.is_absolute()
+            or any(part in {"", ".", ".."} for part in relative_path.parts)
+            or len(relative_path.parts) != 2
+            or relative_path.parts[0].casefold() != "sites"
+        ):
+            raise SiteStorageError(
+                "SITE_REGISTRY_INVALID", "Registry 局点路径必须是 sites 下的直接子目录"
+            )
+        candidate = self.paths.data_root / relative_path
+        if _has_reparse_ancestor(candidate, stop=self.paths.data_root):
+            raise SiteStorageError(
+                "SITE_REGISTRY_INVALID", "Registry 局点路径不得经过符号链接或 Reparse Point"
+            )
+        resolved = candidate.resolve()
+        sites_root = self.paths.sites_dir.resolve()
+        if resolved.parent != sites_root or not _relative_inside(self.paths.data_root, resolved):
+            raise SiteStorageError("SITE_REGISTRY_INVALID", "Registry 局点路径越界")
+        return resolved
+
 
 class SiteApplicationService:
     def __init__(self, paths: PathResolver, task_service: object | None = None) -> None:
@@ -693,6 +834,113 @@ class SiteApplicationService:
         """绑定宿主运行时的 SiteContext 热重绑定回调。"""
 
         self._runtime_rebind_handler = handler
+
+    def initialize_first_run_site(
+        self, *, allow_unrelated_root_entries: bool = False
+    ) -> SiteRecord | None:
+        """为真正空的数据根创建一个没有业务设备的首个局点。
+
+        这是安装器/首启专用的内部路径，不替代带有 Production 操作授权的
+        ``create_site``。任何已有 Registry、局点目录或应用配置都会保留并
+        交由启动恢复逻辑处理，避免覆盖升级把未知数据误判为新安装。
+        """
+
+        with storage_lock(self.paths, "first-run-initialization"):
+            records = self.registry.persisted_records()
+            if records:
+                return None
+            allowed_root_entries = {
+                "agents",
+                "backups",
+                "config",
+                "migrations",
+                "runtime",
+                "sites",
+                "staging",
+                "runtime_mode.json",
+            }
+            if not allow_unrelated_root_entries and any(
+                entry.name not in allowed_root_entries
+                for entry in self.paths.data_root.iterdir()
+            ):
+                return None
+            self.paths.sites_dir.mkdir(parents=True, exist_ok=True)
+            existing_entries = list(self.paths.sites_dir.iterdir())
+            site_root = self.paths.site_dir(DEFAULT_SITE)
+            if site_root.exists() and not self.paths.app_config_path.exists() and not self.paths.legacy_app_config_path.exists():
+                raise SiteStorageError(
+                    "FIRST_RUN_INCOMPLETE_SITE",
+                    "首个局点目录已存在但缺少可验证的应用配置；不会静默发布或覆盖该目录",
+                )
+            if existing_entries or self.paths.app_config_path.exists() or self.paths.legacy_app_config_path.exists():
+                return None
+
+            registry_before = self.registry.path.read_bytes() if self.registry.path.exists() else None
+            application_before = (
+                self.paths.app_config_path.read_bytes()
+                if self.paths.app_config_path.exists()
+                else None
+            )
+            ownership_token = uuid.uuid4().hex
+            ownership_marker = site_root / f".netconsole-first-run-owned-{ownership_token}.marker"
+            try:
+                site_root.mkdir(parents=False, exist_ok=False)
+                ownership_marker.write_text(ownership_token, encoding="ascii")
+                self.manager.init_site_database(DEFAULT_SITE, with_demo_data=False)
+                self.manager.save_site_metadata(
+                    DEFAULT_SITE,
+                    {
+                        "display_name": "默认局点",
+                        "remark": "安装初始化的空局点，不包含示例设备",
+                    },
+                )
+                record = self.registry.register(
+                    SiteRecord(DEFAULT_SITE, "默认局点", site_root)
+                )
+                self.manager.set_current_site_reference(
+                    site_root.name, site_id=record.site_id
+                )
+                app_logger.log_info(
+                    "FIRST_RUN_INITIALIZED",
+                    f"site_id={record.site_id} data_root={self.paths.data_root}",
+                )
+                ownership_marker.unlink()
+                return record
+            except Exception as exc:
+                try:
+                    _remove_owned_first_run_site(
+                        site_root,
+                        sites_dir=self.paths.sites_dir,
+                        ownership_marker=ownership_marker,
+                        ownership_token=ownership_token,
+                    )
+                except OSError as cleanup_error:
+                    app_logger.log_error(
+                        "FIRST_RUN_INITIALIZATION_SITE_CLEANUP_FAILED",
+                        f"data_root={self.paths.data_root} error_type={cleanup_error.__class__.__name__}",
+                    )
+                try:
+                    if registry_before is None:
+                        self.registry.path.unlink(missing_ok=True)
+                    else:
+                        _atomic_bytes(self.registry.path, registry_before)
+                    if application_before is None:
+                        self.paths.app_config_path.unlink(missing_ok=True)
+                    else:
+                        _atomic_bytes(self.paths.app_config_path, application_before)
+                except OSError as rollback_error:
+                    app_logger.log_error(
+                        "FIRST_RUN_INITIALIZATION_ROLLBACK_FAILED",
+                        f"data_root={self.paths.data_root} error_type={rollback_error.__class__.__name__}",
+                    )
+                app_logger.log_error(
+                    "FIRST_RUN_INITIALIZATION_FAILED",
+                    f"data_root={self.paths.data_root} error_type={exc.__class__.__name__}",
+                )
+                raise SiteStorageError(
+                    "FIRST_RUN_INITIALIZATION_FAILED",
+                    "首次启动初始化失败，未覆盖现有业务数据",
+                ) from exc
 
     def list_sites(self) -> list[dict[str, object]]:
         active = self.active_site_id()

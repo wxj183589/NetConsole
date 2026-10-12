@@ -192,6 +192,7 @@ async function startDesktop(): Promise<void> {
     projectRoot: config.projectRoot,
     dataRoot,
     ...(activeSiteId ? { activeSiteId } : {}),
+    activeSiteMode: warmReplacement ? 'authorized_switch' : 'startup_hint',
     runtimeMode: config.runtimeMode,
     storageMode: config.storageMode,
     pythonPath: config.backendPythonPath,

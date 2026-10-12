@@ -6,7 +6,6 @@ import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -14,7 +13,6 @@ DATA_ROOT_REGISTRY_KEY = r"SOFTWARE\NetConsole"
 DATA_ROOT_REGISTRY_VALUE = "DataRoot"
 MINIMUM_DATA_ROOT_FREE_BYTES = 10 * 1024**3
 RECOMMENDED_DATA_ROOT_FREE_BYTES = 100 * 1024**3
-
 
 class DataRootConfigurationError(RuntimeError):
     """Raised when persistent NetConsole storage has not been configured."""
@@ -80,6 +78,9 @@ def validate_installation_data_root(
     """
 
     from netconsole.core.runtime_environment import app_root, validate_data_root
+
+    raw_candidate = Path(candidate).expanduser()
+    _reject_reparse_path_or_ancestor(raw_candidate)
     from netconsole.core.runtime_mode import RuntimeMode
 
     root = validate_data_root(Path(candidate), mode=RuntimeMode.DESKTOP)
@@ -107,37 +108,30 @@ def validate_installation_data_root(
     return root
 
 
-def prepare_installation_data_root(
-    candidate: Path, *, installation_root: Path | None = None
-) -> Path:
-    """Validate and initialize the selected root before the installer publishes it.
+def _reject_reparse_path_or_ancestor(candidate: Path) -> None:
+    """Reject junctions/reparse points before Path.resolve() can hide them."""
 
-    Existing manifests are compatibility-checked by ``prepare_storage_manifest``
-    and are never replaced.  A new root receives its manifest while the
-    installer can still fail clearly, instead of deferring initialization to
-    the first Electron launch.
-    """
+    if not candidate.is_absolute():
+        return
+    current = candidate
+    while True:
+        if _is_reparse_point(current):
+            raise DataRootConfigurationError(
+                "数据目录或其父路径不得是符号链接或 Reparse Point"
+            )
+        if current.parent == current:
+            return
+        current = current.parent
 
-    root = validate_installation_data_root(
-        candidate, installation_root=installation_root
-    )
-    from netconsole.core.paths import PathResolver
-    from netconsole.core.runtime_environment import write_data_environment
-    from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
-    from netconsole.core.storage_manifest import prepare_storage_manifest
 
-    paths = PathResolver(data_root=root)
-    prepare_storage_manifest(paths)
-    if not paths.runtime_mode_path.exists():
-        write_data_environment(
-            root,
-            DataEnvironmentInfo(
-                DataEnvironmentMode.PRODUCTION,
-                created_time=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                readonly_warning=True,
-            ),
-        )
-    return root
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+    except (FileNotFoundError, OSError):
+        return False
+    return bool(attributes & 0x400)
 
 
 def _require_windows_fixed_drive(root: Path) -> None:
@@ -268,7 +262,6 @@ __all__ = [
     "DataRootConfigurationError",
     "MINIMUM_DATA_ROOT_FREE_BYTES",
     "RECOMMENDED_DATA_ROOT_FREE_BYTES",
-    "prepare_installation_data_root",
     "read_machine_data_root",
     "resolve_persistent_data_root",
     "validate_installation_data_root",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import namedtuple
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -12,12 +13,18 @@ from uuid import UUID
 import pytest
 
 from netconsole.core import data_root_configuration
+from netconsole.core.sites import SiteManager
 from netconsole.core.data_root_configuration import (
     DataRootConfigurationError,
-    prepare_installation_data_root,
     validate_installation_data_root,
 )
 from netconsole.core import runtime_environment
+from netconsole.services import site_storage
+from netconsole.services.installation_data_root import (
+    prepare_installation_data_root,
+    validate_existing_installation_data_root,
+)
+from netconsole.services.site_storage import SiteRegistryRepository, SiteStorageError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +78,221 @@ def test_installation_preparation_initializes_a_manifest_before_first_launch(
     assert payload["schema_version"] == 1
     assert (target / "sites").is_dir()
     assert not list(target.glob(".netconsole-install-probe-*"))
+
+
+def test_installation_preparation_initializes_one_empty_registered_site_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "NetConsoleData"
+
+    assert prepare_installation_data_root(target) == target.resolve()
+    registry = json.loads(
+        (target / "config" / "site_registry.json").read_text(encoding="utf-8")
+    )
+    assert [item["site_id"] for item in registry["sites"]] == ["demo"]
+    application = json.loads(
+        (target / "config" / "application.json").read_text(encoding="utf-8")
+    )
+    assert application["current_site"] == "demo"
+    assert application["active_site_id"] == "demo"
+    database = target / "sites" / "demo" / "db" / "devices.db"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM devices").fetchone() == (0,)
+    before = {
+        path: path.read_bytes()
+        for path in (database, target / "config" / "site_registry.json")
+    }
+
+    assert prepare_installation_data_root(target) == target.resolve()
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_first_run_failure_after_site_database_return_rolls_back_owned_site_and_retries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "failure-after-init"
+    original_init = SiteManager.init_site_database
+
+    def fail_after_database_init(
+        manager: SiteManager, site_name: str, with_demo_data: bool = False
+    ):
+        original_init(manager, site_name, with_demo_data=with_demo_data)
+        raise OSError("injected failure after database initialization")
+
+    monkeypatch.setattr(SiteManager, "init_site_database", fail_after_database_init)
+    with pytest.raises(SiteStorageError, match="首次启动初始化失败"):
+        prepare_installation_data_root(target)
+
+    assert not (target / "sites" / "demo").exists()
+    assert not (target / "config" / "site_registry.json").exists()
+    assert not (target / "config" / "application.json").exists()
+    assert not list((target / "sites").glob(".netconsole-first-run-owned-*.marker"))
+
+    monkeypatch.setattr(SiteManager, "init_site_database", original_init)
+    prepare_installation_data_root(target)
+    assert (target / "sites" / "demo" / "db" / "devices.db").is_file()
+    assert json.loads(
+        (target / "config" / "site_registry.json").read_text(encoding="utf-8")
+    )["sites"]
+
+
+def test_first_run_failure_after_sites_directory_creation_does_not_publish_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "failure-after-site-dirs"
+    original_init = SiteManager.init_site_database
+
+    def fail_after_site_dirs(
+        manager: SiteManager, site_name: str, with_demo_data: bool = False
+    ):
+        manager.ensure_site_dirs(site_name)
+        raise OSError("injected failure after site directory creation")
+
+    monkeypatch.setattr(SiteManager, "init_site_database", fail_after_site_dirs)
+    with pytest.raises(SiteStorageError, match="首次启动初始化失败"):
+        prepare_installation_data_root(target)
+
+    assert not (target / "sites" / "demo").exists()
+    assert not (target / "config" / "site_registry.json").exists()
+    assert not (target / "config" / "application.json").exists()
+    assert not list((target / "sites").glob(".netconsole-first-run-owned-*.marker"))
+
+    monkeypatch.setattr(SiteManager, "init_site_database", original_init)
+    prepare_installation_data_root(target)
+    assert (target / "sites" / "demo" / "db" / "devices.db").is_file()
+
+
+def test_first_run_failure_after_registry_write_removes_only_owned_site(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "failure-after-registry"
+    original_register = SiteRegistryRepository.register
+
+    def fail_after_registry_write(repository, record):
+        original_register(repository, record)
+        raise OSError("injected failure after registry write")
+
+    monkeypatch.setattr(SiteRegistryRepository, "register", fail_after_registry_write)
+    with pytest.raises(SiteStorageError, match="首次启动初始化失败"):
+        prepare_installation_data_root(target)
+
+    assert not (target / "sites" / "demo").exists()
+    assert not (target / "config" / "site_registry.json").exists()
+    assert not (target / "config" / "application.json").exists()
+
+
+def test_first_run_failure_after_application_write_rolls_back_registry_and_site(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "failure-after-application"
+    original_set_current = SiteManager.set_current_site_reference
+
+    def fail_after_application_write(manager, site_name: str, *, site_id: str = ""):
+        original_set_current(manager, site_name, site_id=site_id)
+        raise OSError("injected failure after application write")
+
+    monkeypatch.setattr(SiteManager, "set_current_site_reference", fail_after_application_write)
+    with pytest.raises(SiteStorageError, match="首次启动初始化失败"):
+        prepare_installation_data_root(target)
+
+    assert not (target / "sites" / "demo").exists()
+    assert not (target / "config" / "site_registry.json").exists()
+    assert not (target / "config" / "application.json").exists()
+
+
+def test_first_run_rollback_failure_is_logged_and_retry_stays_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "rollback-failure"
+    events: list[str] = []
+
+    def fail_after_site_dirs(
+        manager: SiteManager, site_name: str, with_demo_data: bool = False
+    ):
+        manager.ensure_site_dirs(site_name)
+        raise OSError("injected failure before database initialization")
+
+    def fail_cleanup(*args, **kwargs):
+        raise OSError("injected cleanup failure")
+
+    monkeypatch.setattr(SiteManager, "init_site_database", fail_after_site_dirs)
+    monkeypatch.setattr(site_storage, "_remove_owned_first_run_site", fail_cleanup)
+    monkeypatch.setattr(
+        site_storage.app_logger,
+        "log_error",
+        lambda event, detail="", **kwargs: events.append(event),
+    )
+
+    with pytest.raises(SiteStorageError, match="首次启动初始化失败"):
+        prepare_installation_data_root(target)
+
+    assert "FIRST_RUN_INITIALIZATION_SITE_CLEANUP_FAILED" in events
+    assert (target / "sites" / "demo").is_dir()
+    assert not (target / "config" / "site_registry.json").exists()
+    assert not (target / "config" / "application.json").exists()
+
+    with pytest.raises(SiteStorageError, match="缺少可验证的应用配置"):
+        prepare_installation_data_root(target)
+
+
+def test_first_run_does_not_touch_preexisting_site_when_initialization_is_skipped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "failure-with-existing-site"
+    site_root = target / "sites" / "site-a"
+    sentinel = site_root / "user-data.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("keep", encoding="utf-8")
+
+    original_init = SiteManager.init_site_database
+    called = False
+
+    def fail_if_initialized(
+        manager: SiteManager, site_name: str, with_demo_data: bool = False
+    ):
+        nonlocal called
+        called = True
+        return original_init(manager, site_name, with_demo_data=with_demo_data)
+
+    monkeypatch.setattr(SiteManager, "init_site_database", fail_if_initialized)
+    prepare_installation_data_root(target)
+
+    assert called is False
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert not (target / "config" / "site_registry.json").exists()
+    assert not (target / "config" / "application.json").exists()
+
+
+def test_first_run_rejects_incomplete_demo_site_instead_of_silent_retry_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "incomplete-demo"
+    partial = target / "sites" / "demo" / "partial.marker"
+    partial.parent.mkdir(parents=True)
+    partial.write_text("incomplete", encoding="utf-8")
+
+    with pytest.raises(SiteStorageError, match="缺少可验证的应用配置"):
+        prepare_installation_data_root(target)
+
+    assert partial.read_text(encoding="utf-8") == "incomplete"
+    assert not (target / "config" / "site_registry.json").exists()
+    assert not (target / "config" / "application.json").exists()
 
 
 def test_installation_preparation_does_not_replace_an_invalid_existing_manifest(
@@ -282,6 +504,74 @@ def test_installation_preparation_preserves_unrelated_files_in_a_nonempty_direct
     assert (unrelated.read_bytes(), unrelated.stat().st_mtime_ns) == before
     assert (target / "config" / "storage-manifest.json").is_file()
     assert (target / "sites").is_dir()
+    assert not (target / "config" / "site_registry.json").exists()
+
+
+def test_clean_install_rejects_existing_netconsole_business_data_without_touching_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "existing"
+    (target / "config").mkdir(parents=True)
+    manifest = target / "config" / "storage-manifest.json"
+    manifest.write_text('{"keep": true}\n', encoding="utf-8")
+
+    with pytest.raises(DataRootConfigurationError, match="清洁安装目标包含"):
+        prepare_installation_data_root(target, clean_install=True)
+
+    assert manifest.read_text(encoding="utf-8") == '{"keep": true}\n'
+
+
+def test_clean_install_preserves_unrelated_files_and_creates_a_new_installation_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "fresh"
+    unrelated = target / "operator-notes.txt"
+    target.mkdir()
+    unrelated.write_text("keep", encoding="utf-8")
+
+    prepare_installation_data_root(target, clean_install=True)
+
+    manifest = json.loads(
+        (target / "config" / "storage-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["installation_id"]
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+    assert json.loads(
+        (target / "config" / "site_registry.json").read_text(encoding="utf-8")
+    )["sites"]
+
+
+def test_existing_root_validation_does_not_create_a_missing_historical_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "missing-old-root"
+
+    with pytest.raises(DataRootConfigurationError, match="历史数据目录不可访问"):
+        validate_existing_installation_data_root(target)
+
+    assert not target.exists()
+
+
+def test_existing_root_validation_reuses_the_persisted_production_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("需要 Windows Backend 依赖执行 Production startup 校验")
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "existing"
+    prepare_installation_data_root(target)
+    monkeypatch.setattr(data_root_configuration.sys, "platform", "win32")
+    from netconsole.backend.api.main import _production_startup_site
+
+    assert (
+        validate_existing_installation_data_root(
+            target, startup_site_resolver=_production_startup_site
+        )
+        == target.resolve()
+    )
 
 
 @pytest.mark.parametrize(

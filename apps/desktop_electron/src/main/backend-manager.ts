@@ -61,6 +61,7 @@ export interface PythonBackendManagerOptions {
   projectRoot: string
   dataRoot: string
   activeSiteId?: string
+  activeSiteMode?: 'startup_hint' | 'authorized_switch'
   warmHandoffOwnerId?: string
   runtimeMode: 'desktop-development' | 'desktop-packaged'
   storageMode?: DesktopStorageMode
@@ -209,6 +210,7 @@ export class PythonBackendManager {
     if (!/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/.test(activeSiteId)) throw new TypeError('activeSiteId is invalid')
     this.options.dataRoot = dataRoot
     this.options.activeSiteId = activeSiteId
+    this.options.activeSiteMode = 'authorized_switch'
   }
 
   private async startInternal(): Promise<BackendRuntimeInfo> {
@@ -255,6 +257,9 @@ export class PythonBackendManager {
       NETCONSOLE_DATA_ROOT: this.options.dataRoot,
       NETCONSOLE_STORAGE_MODE: this.options.storageMode ?? 'persistent',
       ...(this.options.activeSiteId ? { NETCONSOLE_ACTIVE_SITE_ID: this.options.activeSiteId } : {}),
+      ...(this.options.activeSiteId && this.options.activeSiteMode === 'authorized_switch'
+        ? { NETCONSOLE_ACTIVE_SITE_MODE: 'authorized_switch' }
+        : {}),
       NETCONSOLE_RUNTIME_MODE: this.options.storageMode === 'isolated_test' ? 'test' : this.options.runtimeMode,
     }
     if (this.options.pythonPath) {
@@ -266,6 +271,7 @@ export class PythonBackendManager {
       delete environment.PYTHONPATH
     }
     if (!this.options.activeSiteId) delete environment.NETCONSOLE_ACTIVE_SITE_ID
+    if (this.options.activeSiteMode !== 'authorized_switch') delete environment.NETCONSOLE_ACTIVE_SITE_MODE
     delete environment.NETCONSOLE_DEV_SESSION_TOKEN
 
     let child: ManagedChildProcess | undefined
