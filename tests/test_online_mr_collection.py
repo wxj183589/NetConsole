@@ -44,7 +44,7 @@ from netconsole.services.fping_legacy_parser import (
 )
 from netconsole.services.fping_v5 import detect_fping_version, find_fping_tool
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_tasks import run_background_task
+from tests.support.legacy_background_tasks import run_background_task
 from netconsole.services.online_mr_collector import NetmikoShellConnection, RepeatSshSession
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.services.network_tools.iperf_parser import parse_iperf_lines, read_iperf_text
@@ -56,7 +56,7 @@ from netconsole.services.online_mr_terminal_log_parser import parse_active_link_
 from netconsole.services.online_mr.core.event_model import EVENT_BUSY_SAMPLE, EVENT_FPING_V5_SAMPLE, EVENT_MESH_SAMPLE, OnlineMrEvent
 from netconsole.services.online_mr.core.realtime_model import RealtimeAggregator, build_realtime_state
 from netconsole.services.online_mr.core.realtime_cache import OnlineMrRawEvent, OnlineMrRealtimeCache
-from netconsole.services.online_mr.core.realtime_parser import OnlineMrRealtimeParser
+from tests.support.legacy_online_mr_realtime_parser import OnlineMrRealtimeParser
 from netconsole.services.online_mr.parser.event_parser_engine import EventParserEngine
 from netconsole.services.online_mr.realtime.sliding_window_buffer import SlidingWindowBuffer
 from netconsole.services.mesh_storage_service import MeshStorageService

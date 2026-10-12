@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.device_address import normalize_ip_address
 from netconsole.models.api.rail_transit_base_data import (
     BaseDataChangeDTO,

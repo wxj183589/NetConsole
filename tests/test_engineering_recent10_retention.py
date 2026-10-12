@@ -3,12 +3,12 @@ from __future__ import annotations
 import sqlite3
 
 from netconsole.core.database import Database
-from netconsole.services.device_state_retention import (
+from netconsole.core.storage.device_state_retention import (
     upsert_device_lldp_current_and_history,
     upsert_device_optical_current_and_history,
 )
-from netconsole.services.interface_retention import upsert_interface_current_and_history
-from netconsole.services.radio_retention import upsert_radio_current_and_history
+from netconsole.core.storage.interface_retention import upsert_interface_current_and_history
+from netconsole.core.storage.radio_retention import upsert_radio_current_and_history
 
 
 def _database(tmp_path) -> Database:

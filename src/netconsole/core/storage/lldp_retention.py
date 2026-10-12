@@ -5,8 +5,8 @@ import json
 from datetime import datetime
 from typing import Any
 
-from netconsole.services.ap_identity.normalizers import normalize_mac_key
-from netconsole.services.fit_ap_link_info import (
+from netconsole.core.ap_identity.normalizers import normalize_mac_key
+from netconsole.core.sources.fit_ap_link_info import (
     format_h3c_mac,
     normalize_interface_key,
     normalize_lldp_payload,

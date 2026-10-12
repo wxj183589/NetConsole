@@ -22,6 +22,7 @@ from scripts.architecture.checks import (
 from scripts.architecture.cli import CHECKS
 from scripts.architecture.guard_core import (
     ROOT,
+    ExceptionEntry,
     Finding,
     apply_exceptions,
     load_exceptions,
@@ -346,7 +347,15 @@ def test_exception_schema_rejects_expired_and_wildcard_entries(
 
 
 def test_exception_matching_is_exact_by_rule_and_path() -> None:
-    exception = load_exceptions()[0]
+    exception = ExceptionEntry(
+        rule_id="DEMO",
+        path="src/netconsole/demo.py",
+        reason="单元测试覆盖精确匹配。",
+        owner="architecture",
+        created_at=date(2026, 1, 1),
+        expires_at=date(2027, 1, 1),
+        test="tests/architecture/test_architecture_guards.py",
+    )
     findings = [
         Finding(exception.rule_id, exception.path, 1, "matched"),
         Finding(exception.rule_id, f"{exception.path}.other", 1, "different path"),

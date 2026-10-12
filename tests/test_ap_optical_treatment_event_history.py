@@ -7,7 +7,7 @@ from openpyxl import load_workbook
 
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.services.optical_retention import (
+from netconsole.core.storage.optical_retention import (
     update_ap_optical_treatment,
     upsert_optical_current_and_history,
 )

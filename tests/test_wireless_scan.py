@@ -19,7 +19,7 @@ from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.network_tools.hybrid_wireless_scanner import HybridWirelessScanner, merge_wireless_networks
 from netconsole.services.network_tools.wireless_channel_analyzer import band_from_frequency, frequency_to_channel, normalize_mac, rssi_level
 from netconsole.services.network_tools.wireless_ie_parser import WirelessInformationElementParser
-from netconsole.services.network_tools.wireless_mimo_parser import parse_channel_width_from_ie_blob, parse_mimo_from_ie_blob
+from tests.support.legacy_wireless_mimo_parser import parse_channel_width_from_ie_blob, parse_mimo_from_ie_blob
 from netconsole.services.network_tools.wireless_scan_service import WIRELESS_SCAN_EXPORT_COLUMNS, WIRELESS_SCAN_DISPLAY_COLUMNS, WirelessScanService, export_wireless_scan_xlsx, result_to_row
 
 

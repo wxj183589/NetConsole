@@ -29,7 +29,7 @@ from netconsole.core.optical_rx_threshold import (
 )
 from netconsole.core.paths import PathResolver
 from netconsole.core.performance_profiling import ProfilingConnection, profile_repository
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.core.sources.ap_source import compute_ap_status
 from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.models.api.ac_management import (

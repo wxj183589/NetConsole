@@ -7,7 +7,7 @@ from pathlib import Path
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import desktop_storage_mode
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 
 
 WRITE_FEATURE_ID = "capability.rail_base_data.write"

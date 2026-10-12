@@ -4,7 +4,7 @@ import pytest
 
 from netconsole.core.database import Database, DatabaseSchemaMismatchError
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.device import Device
 from netconsole.repositories.device_group_repository import DEFAULT_DEVICE_GROUPS, DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository

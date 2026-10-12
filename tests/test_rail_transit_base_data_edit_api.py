@@ -12,7 +12,7 @@ from netconsole.application.rail_transit.base_data_application_service import (
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.runtime_mode import RuntimeMode
-from netconsole.core.sites import SiteManager
+from netconsole.repositories import rail_transit_base_data_repository as base_data_repository_module
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataCompensationError,
     RailTransitBaseDataConstraintError,
@@ -396,7 +396,7 @@ def test_metadata_compensation_failure_is_not_silently_swallowed(tmp_path: Path,
     def fail_restore(*_args, **_kwargs) -> None:
         raise OSError("restore failed")
 
-    monkeypatch.setattr(SiteManager, "save_site_metadata", fail_save)
+    monkeypatch.setattr(base_data_repository_module, "save_site_metadata", fail_save)
     monkeypatch.setattr(repository, "_restore_metadata_file", fail_restore)
 
     with pytest.raises(RailTransitBaseDataCompensationError, match="compensation failed"):

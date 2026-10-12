@@ -19,7 +19,7 @@ from netconsole.services.export.export_task_builders import (
     table_csv_source_spec,
     table_csv_spec,
 )
-from netconsole.services.export_task_models import ExportJob
+from tests.support.legacy_export_task_models import ExportJob
 from netconsole.services.trackside_ap_business import (
     TRACKSIDE_AP_BUSINESS_COLUMNS,
     TracksideApExportCancelled,

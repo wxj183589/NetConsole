@@ -11,13 +11,13 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-from netconsole.application.system_maintenance import (
+from netconsole.services.job_center.system_maintenance_contract import (
     SYSTEM_MAINTENANCE_TASK_TYPES,
     SYSTEM_MAINTENANCE_WEB_OWNER,
 )
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.job_center import (
     JobCenterArtifactDTO,
     JobCenterLogLineDTO,

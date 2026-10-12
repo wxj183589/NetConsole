@@ -955,6 +955,18 @@ def export_omnipeek_name_table_task(path: Path, payload: Mapping[str, Any], prog
 
 
 def export_online_mr_report_xlsx(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
+    if bool(payload.get("compatibility_format")):
+        # The legacy detail workbook remains an explicit ExportJob-compatible
+        # format.  The default report stays on the current exporter.
+        from netconsole.services.online_mr_analysis_report_exporter import OnlineMrAnalysisReportExporter
+
+        session_dir = Path(str(payload.get("session_dir") or ""))
+        _emit(progress, "online_mr_compat_report_prepare", 1, 2, "正在读取兼容报告数据")
+        _check_cancel(should_cancel)
+        output_path = OnlineMrAnalysisReportExporter().export(session_dir, path)
+        _emit(progress, "online_mr_compat_report_done", 2, 2, "兼容报告导出完成")
+        return 1 if output_path.exists() else 0
+
     from netconsole.services.vehicle_mr_offline_excel_report import VehicleMrOfflineExcelReportExporter
 
     session_dir = Path(str(payload.get("session_dir") or ""))

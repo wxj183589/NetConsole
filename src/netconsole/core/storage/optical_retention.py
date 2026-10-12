@@ -6,8 +6,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import uuid4
 
-from netconsole.services.ap_business_optical import evaluate_ap_business_rx
-from netconsole.services.ap_identity.normalizers import normalize_mac_key
+from netconsole.core.ap_identity.normalizers import normalize_mac_key
+from netconsole.core.sources.ap_business_optical import evaluate_ap_business_rx
 
 
 OPTICAL_HISTORY_LIMIT = 10

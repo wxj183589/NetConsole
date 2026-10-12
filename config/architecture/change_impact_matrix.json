@@ -320,7 +320,7 @@
       "level": "L4",
       "patterns": [
         "src/netconsole/core/database.py",
-        "src/netconsole/services/current_history_retention.py",
+        "src/netconsole/core/storage/current_history_retention.py",
         "src/netconsole/repositories/ac_repository.py",
         "src/netconsole/repositories/device_fact_repository.py",
         "src/netconsole/repositories/task_repository.py",

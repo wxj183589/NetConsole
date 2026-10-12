@@ -151,6 +151,17 @@ def launch_ipop(
     return ExternalToolLaunchResult(True, "IPOP v4.1 已启动。", executable)
 
 
+def launch_ipop_as_admin(paths: PathResolver | None = None) -> ExternalToolLaunchResult:
+    """Compatibility name kept at the supported external-tool service boundary.
+
+    The old ``external_tool_launcher`` module did not elevate or add any
+    behavior; it only forwarded to :func:`launch_ipop`.  Keeping the name
+    here preserves that callable without maintaining a second service facade.
+    """
+
+    return launch_ipop(paths)
+
+
 def _start_detached_process(executable: Path) -> bool:
     creation_flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
         subprocess, "CREATE_NEW_PROCESS_GROUP", 0

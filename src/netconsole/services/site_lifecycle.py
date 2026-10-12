@@ -14,7 +14,7 @@ from typing import Any
 
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import DEFAULT_SITE, SiteManager
+from netconsole.services.site_manager import DEFAULT_SITE, SiteManager
 from netconsole.services.site_storage import SiteRecord, SiteRegistryRepository, SiteStorageError, storage_lock
 from netconsole.services.site_operation_authority import require_site_operation
 from netconsole.services.storage_production_authority import StorageAuthorityError

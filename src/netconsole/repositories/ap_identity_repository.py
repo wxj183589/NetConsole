@@ -12,8 +12,8 @@ from netconsole.models.ap_identity_index import (
     ApIdentityBuildResult,
     ApIdentityIndexBuild,
 )
-from netconsole.services.ap_identity.normalizers import normalize_mac_key
-from netconsole.services.ap_topology import AP_TOPOLOGY_PROJECTION_VERSION
+from netconsole.core.ap_identity.normalizers import normalize_mac_key
+from netconsole.core.ap_topology import AP_TOPOLOGY_PROJECTION_VERSION
 
 
 IndexBuilder = Callable[

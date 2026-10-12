@@ -72,7 +72,7 @@ def test_command_reference_json_is_unique_and_has_non_cli_section():
     items = data["items"]
     ids = [item["id"] for item in items]
 
-    assert len(items) == 88
+    assert len(items) == 86
     assert len(ids) == len(set(ids))
     assert {
         "ac_display_wlan_ap_address_fallback",

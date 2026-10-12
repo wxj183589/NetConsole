@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.feature_access import require_feature
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.ac_mesh_link import AcMeshLinkRefreshRequestDTO, AcMeshLinkRefreshResponseDTO
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.vehicle_mr_online import (

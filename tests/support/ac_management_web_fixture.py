@@ -7,7 +7,7 @@ from pathlib import Path
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.services.radio_retention import upsert_radio_current_and_history
+from netconsole.core.storage.radio_retention import upsert_radio_current_and_history
 
 
 def sync_ac_management_optical_current(db_path: Path, ac_device_uuid: str = "ac-1") -> None:

@@ -8,7 +8,7 @@ from netconsole.application.rail_transit.mesh_derived_data_repair_coordinator im
     MeshDerivedDataRepairCoordinator,
 )
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter

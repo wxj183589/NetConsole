@@ -4,10 +4,10 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from uuid import uuid4
 
-from netconsole.application.web_artifacts import WebArtifactError, WebArtifactStore
-from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
+from netconsole.services.web_artifacts import WebArtifactError, WebArtifactStore
+from netconsole.services.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.command_reference import (
     CommandReferenceDTO,
     CommandReferenceFiltersDTO,

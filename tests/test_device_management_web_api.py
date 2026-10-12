@@ -34,7 +34,7 @@ from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.infrastructure.desktop import LocalDesktopAdapter
 from netconsole.models.api.device_management import (
     DeviceExportRequestDTO,

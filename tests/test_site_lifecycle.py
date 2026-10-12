@@ -8,7 +8,7 @@ import pytest
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.core.runtime_environment import write_data_environment
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
 from netconsole.services.site_lifecycle import DEMO_MAX_BYTES, DEMO_SEED_VERSION, DemoSiteSeedService, SiteAuditService, SiteCleanupApplicationService

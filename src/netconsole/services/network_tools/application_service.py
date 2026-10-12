@@ -11,7 +11,7 @@ from typing import Any, Iterable
 import uuid
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.models.traffic_test import ExecutionTargetDTO, TcpPortTestConfig, TrafficRun

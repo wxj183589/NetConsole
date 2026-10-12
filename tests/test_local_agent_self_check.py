@@ -11,7 +11,7 @@ from netconsole.models.agent_traffic import (
     AgentTaskResultDTO,
 )
 from netconsole.services.agent.http_client import AgentClientError, AgentProbeResult
-from netconsole.services.agent.local_self_check import LocalAgentSelfCheck
+from scripts.maintenance.agent.local_self_check import LocalAgentSelfCheck
 
 
 class FakeLocalAgentClient:

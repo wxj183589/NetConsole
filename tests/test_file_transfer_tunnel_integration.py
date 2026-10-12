@@ -15,7 +15,7 @@ import pytest
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.device import Device
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.file_management_service import FileManagementApplicationService, run_file_management_download

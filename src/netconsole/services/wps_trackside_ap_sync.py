@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.core.version import APP_VERSION
 from netconsole.models.wps_sync import (
     TRACKSIDE_AP_WPS_BUSINESS_KEY,

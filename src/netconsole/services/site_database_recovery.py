@@ -9,6 +9,9 @@ from typing import Callable
 from netconsole.core.paths import PathResolver
 
 
+SITE_DATABASE_RECOVERY_AUTHORIZATION = "SITE_DATABASE_RECOVERY_AUTHORIZED"
+
+
 class SiteDatabaseRecoveryService:
     def __init__(
         self,
@@ -46,15 +49,22 @@ class SiteDatabaseRecoveryService:
             backups.append(backup_path)
         return backups
 
-    def backup_and_remove_databases(self) -> list[Path]:
+    def backup_and_remove_databases(self, *, authorization: str = "") -> list[Path]:
+        self._require_authorization(authorization)
         databases = self.list_databases()
         backups = self._backup_databases(databases)
         if len(backups) != len(databases):
             raise RuntimeError("局点数据库备份不完整，已取消重建")
-        self.remove_databases(databases)
+        self.remove_databases(databases, authorization=authorization)
         return backups
 
-    def remove_databases(self, databases: list[Path] | None = None) -> None:
+    def remove_databases(
+        self,
+        databases: list[Path] | None = None,
+        *,
+        authorization: str = "",
+    ) -> None:
+        self._require_authorization(authorization)
         sites_dir = self.paths.sites_dir.resolve()
         for database_path in databases if databases is not None else self.list_databases():
             resolved = database_path.resolve()
@@ -68,3 +78,8 @@ class SiteDatabaseRecoveryService:
                     if attempt == 2:
                         raise
                     sleep(self._retry_delay_seconds)
+
+    @staticmethod
+    def _require_authorization(authorization: str) -> None:
+        if authorization != SITE_DATABASE_RECOVERY_AUTHORIZATION:
+            raise PermissionError("局点数据库恢复/删除需要显式维护授权")

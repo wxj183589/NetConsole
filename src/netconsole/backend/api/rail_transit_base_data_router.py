@@ -11,7 +11,7 @@ from netconsole.application.rail_transit.base_data_application_service import (
     RailTransitBaseDataApplicationError,
     RailTransitBaseDataApplicationService,
 )
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
     DataQualityEntityGroupPageDTO,
     DataQualityIssuePageDTO,

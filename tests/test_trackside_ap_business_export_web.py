@@ -18,7 +18,7 @@ from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.i18n import I18n
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository

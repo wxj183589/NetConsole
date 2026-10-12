@@ -20,16 +20,16 @@ from typing import BinaryIO, Protocol
 import uuid
 from threading import RLock
 
-from netconsole.application.desktop import DesktopActionService, RegisteredLaunch
-from netconsole.application.web_artifacts import WebArtifactError, WebArtifactStore
-from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
+from netconsole.services.desktop_actions import DesktopActionService, RegisteredLaunch
+from netconsole.services.web_artifacts import WebArtifactError, WebArtifactStore
+from netconsole.services.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.performance_profiling import profile_repository
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore, normalize_external_terminal_type
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.device_management import (
     DeviceCapabilityDTO,
     DeviceBatchRefreshItemDTO,

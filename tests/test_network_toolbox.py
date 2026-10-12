@@ -13,7 +13,7 @@ from netconsole.services.network_tools.toolbox.ip_calc import (
     wildcard_calculate,
 )
 from netconsole.services.network_tools.toolbox.ping_tools import _decode_output, _ping_args, parse_ping_output, run_single_ping, run_tcp_ping
-from netconsole.services.network_tools.toolbox.route_tools import normalize_routes, parse_powershell_routes_json
+from tests.support.legacy_route_tools import normalize_routes, parse_powershell_routes_json
 from netconsole.services.windows_network_manager import NetworkAdapterInfo, RouteInfo
 
 
