@@ -19,7 +19,7 @@ from typing import Any, Callable
 from uuid import UUID
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDTO,
     MeshAnalysisSessionDetailDTO,

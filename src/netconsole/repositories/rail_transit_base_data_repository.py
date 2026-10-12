@@ -10,22 +10,26 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import configure_sqlite_connection
-from netconsole.core.sites import SiteManager
+from netconsole.core.site_identity import (
+    load_site_metadata,
+    save_site_metadata,
+    validate_site_name,
+)
 from netconsole.models.device_address import normalize_ip_address
 from netconsole.repositories.ap_management_vlan_repository import (
     ApManagementVlanRepository,
 )
-from netconsole.services.ap_extension_import import normalize_ap_mac
-from netconsole.services.rail_transit.trackside_ap_location import (
+from netconsole.core.sources.ap_extension_import import normalize_ap_mac
+from netconsole.core.sources.rail_transit.trackside_ap_location import (
     default_participates_in_mainline,
     normalize_location_class,
     parse_participates_in_mainline,
     validate_location_participation,
 )
-from netconsole.services.rail_transit.station_source_utils import (
+from netconsole.core.sources.rail_transit.station_source_utils import (
     format_station_display_name,
 )
-from netconsole.services.rail_transit.station_ordering import (
+from netconsole.core.sources.rail_transit.station_ordering import (
     canonicalize_trackside_ap_plan_rows,
 )
 from netconsole.utils.mileage import parse_track_mileage
@@ -215,7 +219,7 @@ class RailTransitBaseDataRepository:
     def base_data_revision(self, site_id: str) -> str:
         """Return a revision covering both the SQLite facts and site metadata."""
         database_revision = self._sqlite_database_hash(site_id)
-        metadata = SiteManager(self.paths).load_site_metadata(site_id)
+        metadata = load_site_metadata(self.paths, site_id)
         payload = json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(f"{database_revision}\n{payload}".encode("utf-8")).hexdigest()
 
@@ -237,9 +241,8 @@ class RailTransitBaseDataRepository:
     ) -> dict[str, Any]:
         """Read one subpage's editable rows from one read-only SQLite snapshot."""
 
-        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        site_id = validate_site_name(site_id)
         path = self._database_path(site_id)
-        site_manager = SiteManager(self.paths)
         ap_fields = ("id", *AP_MERGE_FIELDS, "created_at", "updated_at")
         device_fields = (
             "id",
@@ -276,7 +279,7 @@ class RailTransitBaseDataRepository:
         needs_plan_rows = scope in {"all", "trackside_ap_planning"}
 
         for _attempt in range(3):
-            metadata_before = site_manager.load_site_metadata(site_id)
+            metadata_before = load_site_metadata(self.paths, site_id)
             with self._read_connection(path) as connection:
                 connection.execute("BEGIN")
                 revision_row = connection.execute(
@@ -309,7 +312,7 @@ class RailTransitBaseDataRepository:
                     if needs_plan_rows else []
                 )
                 connection.commit()
-            metadata_after = site_manager.load_site_metadata(site_id)
+            metadata_after = load_site_metadata(self.paths, site_id)
             metadata_payload = json.dumps(
                 metadata_before,
                 ensure_ascii=False,
@@ -392,7 +395,7 @@ class RailTransitBaseDataRepository:
             )
 
     def preview_clear_station_section_base_data(self, site_id: str) -> dict[str, int | str]:
-        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        site_id = validate_site_name(site_id)
         with self._read_connection(self._database_path(site_id)) as connection:
             self._require_table(connection)
             counts = self._clear_impact_counts(connection)
@@ -401,7 +404,7 @@ class RailTransitBaseDataRepository:
     def clear_station_section_base_data(
         self, site_id: str, expected_revision: str
     ) -> dict[str, int | str]:
-        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        site_id = validate_site_name(site_id)
         connection = sqlite3.connect(self._database_path(site_id), timeout=30.0)
         connection.row_factory = sqlite3.Row
         configure_sqlite_connection(connection, foreign_keys=True)
@@ -583,7 +586,6 @@ class RailTransitBaseDataRepository:
     ) -> dict[str, int | str]:
         path = self._database_path(site_id)
         changes = list(changes)
-        site_manager = SiteManager(self.paths)
         metadata_path = self._metadata_path(site_id)
         metadata_backup = metadata_path.read_bytes() if metadata_path.is_file() else None
         metadata_changes = [
@@ -591,7 +593,7 @@ class RailTransitBaseDataRepository:
             for change in changes
             if str(change.get("entity_type") or "") == "site_metadata"
         ]
-        current_metadata = site_manager.load_site_metadata(site_id)
+        current_metadata = load_site_metadata(self.paths, site_id)
         metadata_applied = False
         connection = sqlite3.connect(path, timeout=30.0)
         connection.row_factory = sqlite3.Row
@@ -658,7 +660,7 @@ class RailTransitBaseDataRepository:
                 metadata = dict(current_metadata)
                 metadata.update(metadata_changes[-1])
                 metadata_applied = True
-                site_manager.save_site_metadata(site_id, metadata)
+                save_site_metadata(self.paths, site_id, metadata)
             connection.commit()
         except Exception as original_error:
             connection.rollback()
@@ -2122,7 +2124,7 @@ class RailTransitBaseDataRepository:
         return path
 
     def _metadata_path(self, site_id: str) -> Path:
-        site_id = SiteManager(self.paths).validate_site_name(site_id)
+        site_id = validate_site_name(site_id)
         site_root = self.paths.site_dir(site_id).resolve()
         data_root = self.paths.data_root.resolve()
         if data_root not in site_root.parents:

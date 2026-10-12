@@ -9,7 +9,7 @@ from typing import Iterable
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.device import Device
 from netconsole.models.omnipeek_name_table import (
     DEFAULT_OMNIPEEK_COLORS,

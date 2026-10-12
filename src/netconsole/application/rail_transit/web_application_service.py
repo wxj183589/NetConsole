@@ -24,7 +24,7 @@ from netconsole.core.database import Database
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import production_write_allowed
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.online_mr import (
     OnlineMrDownsampleMode,
     OnlineMrManualNoteDTO,

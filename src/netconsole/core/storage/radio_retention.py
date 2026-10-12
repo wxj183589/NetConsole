@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from netconsole.services.ap_extension_import import normalize_ap_mac
+from netconsole.core.sources.ap_extension_import import normalize_ap_mac
 
 RADIO_HISTORY_LIMIT = 10
 RADIO_RETENTION_AUTHORITY = "bounded_v1"

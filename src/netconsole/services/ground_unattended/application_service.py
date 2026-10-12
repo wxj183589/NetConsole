@@ -14,7 +14,7 @@ from typing import Any, Protocol
 from netconsole.core.database import Database
 from netconsole.core.model_projection import project_row_for_model
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.ground_unattended import (
     GroundApIdentityDiagnosticsDTO,
     GroundActionResponseDTO,

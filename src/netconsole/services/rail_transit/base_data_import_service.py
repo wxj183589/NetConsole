@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.models.api.rail_transit_base_data import (
     DataQualityIssueDTO,

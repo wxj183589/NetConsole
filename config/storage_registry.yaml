@@ -709,7 +709,7 @@
           "consumers": ["Device Management", "AC", "Trackside AP", "AP Identity", "Ground", "AP optical event export", "Site Package"],
           "lifecycle_owner": "owning repository, OpticalRetentionService and SiteRetentionService",
           "rebuildable": false,
-          "source_locations": ["src/netconsole/core/database.py", "src/netconsole/repositories/device_repository.py", "src/netconsole/repositories/ac_repository.py", "src/netconsole/repositories/device_fact_repository.py", "src/netconsole/repositories/ap_identity_repository.py", "src/netconsole/repositories/rail_transit_base_data_repository.py", "src/netconsole/services/current_history_retention.py", "src/netconsole/services/optical_retention.py", "src/netconsole/services/trackside_ap_export_service.py", "src/netconsole/backend/api/main.py", "scripts/backfill_ap_optical_treatment_events.py"]
+          "source_locations": ["src/netconsole/core/database.py", "src/netconsole/repositories/device_repository.py", "src/netconsole/repositories/ac_repository.py", "src/netconsole/repositories/device_fact_repository.py", "src/netconsole/repositories/ap_identity_repository.py", "src/netconsole/repositories/rail_transit_base_data_repository.py", "src/netconsole/core/storage/current_history_retention.py", "src/netconsole/core/storage/optical_retention.py", "src/netconsole/services/trackside_ap_export_service.py", "src/netconsole/backend/api/main.py", "scripts/backfill_ap_optical_treatment_events.py"]
         },
         {
           "tables": ["ac_fit_ap_lldp_history", "ac_fit_ap_optical_history", "ac_fit_ap_radio_history", "ac_fit_ap_resource_history", "ac_fit_ap_unauthenticated_history", "ac_station_online_summary_history", "ap_lldp_history", "ap_optical_history", "device_facts_history", "device_interfaces_history", "device_lldp_neighbors_history", "device_optical_modules_history"],
@@ -1324,7 +1324,7 @@
           "source_locations": ["src/netconsole/repositories/online_mr_diagnosis_repository.py", "src/netconsole/services/online_mr_session_store.py", "src/netconsole/services/online_mr/parsed_database_upgrade.py", "src/netconsole/services/online_mr/parsed_database_contract.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/online_mr_diagnosis_repository.py", "src/netconsole/repositories/online_mr_parsed_database_metadata.py", "src/netconsole/services/online_mr/db/event_db_writer.py", "src/netconsole/services/online_mr/offline/replay_engine.py", "src/netconsole/services/online_mr/parsed_database_upgrade.py", "src/netconsole/services/online_mr/parsed_database_contract.py", "src/netconsole/services/online_mr/query_service.py", "src/netconsole/services/online_mr/session_lifecycle.py", "src/netconsole/services/online_mr_analysis_report_exporter.py", "src/netconsole/services/online_mr_chart_builder.py", "src/netconsole/services/rail_transit/online_mr_diagnosis_parser.py", "src/netconsole/services/vehicle_mr_offline_analysis.py", "src/netconsole/services/vehicle_mr_offline_excel_report.py"]
+      "source_locations": ["src/netconsole/repositories/online_mr_diagnosis_repository.py", "src/netconsole/repositories/online_mr_parsed_database_metadata.py", "src/netconsole/services/online_mr/db/event_db_writer.py", "src/netconsole/services/online_mr/offline/replay_engine.py", "src/netconsole/services/online_mr/parsed_database_upgrade.py", "src/netconsole/services/online_mr/parsed_database_contract.py", "src/netconsole/services/online_mr/query_service.py", "src/netconsole/services/online_mr/session_lifecycle.py", "src/netconsole/services/online_mr_analysis_report_exporter.py", "src/netconsole/services/online_mr_chart_builder.py", "src/netconsole/services/rail_transit/online_mr_diagnosis_parser.py", "src/netconsole/services/vehicle_mr_offline_excel_report.py"]
     },
     {
       "id": "site.online_mr.session_parsed_candidate",
@@ -3348,7 +3348,7 @@
       "schema_version": "unknown",
       "allowed_data_classes": ["UNKNOWN"],
       "forbidden_data_classes": [],
-      "source_locations": ["src/netconsole/services/site_database_recovery.py"]
+      "source_locations": ["src/netconsole/services/site_database_recovery.py", "src/netconsole/services/maintenance/site_database_recovery.py", "scripts/maintenance/recover_site_databases.py"]
     },
     {
       "id": "site.legacy.snmp",

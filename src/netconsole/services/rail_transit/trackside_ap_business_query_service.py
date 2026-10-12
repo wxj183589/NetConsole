@@ -5,7 +5,7 @@ from collections.abc import Mapping, Sequence
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.core.performance_profiling import profile_repository
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.trackside_ap_business import (
     TracksideApBusinessPageDTO,
     TracksideApBusinessRowDTO,
@@ -21,6 +21,7 @@ from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.device_scope import filter_current_debug_devices
 from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.trackside_optical_history import TracksideOpticalHistoryService
 from netconsole.services.trackside_ap_business import (
     build_trackside_ap_business_statistics,
     count_current_optical_abnormal_aps,
@@ -51,6 +52,25 @@ class TracksideApBusinessQueryService:
 
     def current_site_id(self) -> str:
         return self.base_query.current_site_id()
+
+    def interface_history(
+        self,
+        site_id: str,
+        device_uuid: str,
+        interface_name: str,
+        *,
+        page: int = 1,
+        page_size: int = 200,
+    ) -> tuple[list[dict[str, object | None]], int]:
+        """Read bounded optical history through the trackside query boundary."""
+
+        repository = DeviceRepository(Database(self.paths.site_db_path(site_id)))
+        return TracksideOpticalHistoryService(repository).query_interface_history(
+            device_uuid,
+            interface_name,
+            page=page,
+            page_size=page_size,
+        )
 
     def list_switch_adapters(
         self, site_id: str

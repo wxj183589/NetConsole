@@ -29,14 +29,14 @@ from netconsole.models.mesh_log_models import (
     summarize_parse_issues,
 )
 from netconsole.models.mesh_analysis_params import MeshAnalysisParams, mesh_analysis_params_from_json, normalize_mesh_analysis_params
-from netconsole.services.mesh_link_analyzer import MeshLinkAnalyzer
+from netconsole.core.storage.mesh_link_analyzer import MeshLinkAnalyzer
 from netconsole.repositories.mesh_catalog_repository import dt_text
-from netconsole.services.ap_identity.normalizers import (
+from netconsole.core.ap_identity.normalizers import (
     format_mac,
     normalize_mac,
     normalize_mac_key,
 )
-from netconsole.services.mesh_rssi_stats import calc_numeric_stats
+from netconsole.core.storage.mesh_rssi_stats import calc_numeric_stats
 
 
 SCHEMA_VERSION = "meshlog_compact_v3_tagged_samples"

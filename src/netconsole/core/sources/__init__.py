@@ -1,1 +1,1 @@
-"""Data sources for the unified state architecture."""
+"""Canonical pure source parsers and projections shared by repositories."""

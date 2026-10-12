@@ -7,7 +7,7 @@ from netconsole.application.rail_transit.web_application_service import (
     RailTransitWebApplicationService,
     RailTransitWebError,
 )
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.wps_sync import (
     WpsSyncConnectionTestDTO,

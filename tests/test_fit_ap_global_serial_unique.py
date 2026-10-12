@@ -15,7 +15,7 @@ from netconsole.core.database import (
     FitApSerialGlobalConflictError,
 )
 from netconsole.repositories.ac_repository import AcRepository
-from netconsole.services.lldp_retention import upsert_lldp_current_and_history
+from netconsole.core.storage.lldp_retention import upsert_lldp_current_and_history
 
 
 RESOURCE_SERIAL_INDEX = "idx_ac_fit_ap_resources_serial_identity_ac"

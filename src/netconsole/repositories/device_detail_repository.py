@@ -5,7 +5,7 @@ from typing import Protocol
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.core.site_identity import current_site_name, validate_site_name
 from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -107,9 +107,9 @@ class DeviceDetailRepository:
         selected = (
             self.site_resolver()
             if self.site_resolver is not None
-            else self.site_name or SiteManager(self.paths).get_current_site()
+            else self.site_name or current_site_name(self.paths)
         )
-        return SiteManager(self.paths).validate_site_name(str(selected or "demo"))
+        return validate_site_name(str(selected or "demo"))
 
     def get_device(self, device_uuid: str) -> Device | None:
         repositories = self._repositories()

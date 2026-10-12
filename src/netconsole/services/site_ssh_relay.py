@@ -20,7 +20,7 @@ from typing import Any, Callable, Mapping
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.core.windows_dpapi import protect_windows_data, unprotect_windows_data
 from netconsole.services.host_key_trust_service import (
     HostKeyPolicy,

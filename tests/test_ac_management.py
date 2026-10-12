@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from netconsole.core.bootstrap import create_demo_context
+from netconsole.services.demo_context import create_demo_context
 from netconsole.core.database import Database
 from netconsole.core.feature_flags import FeatureGate
 from netconsole.core.i18n import I18n

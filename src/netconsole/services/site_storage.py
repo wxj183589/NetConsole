@@ -29,7 +29,7 @@ from netconsole.core.device_credential_store import (
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import persistent_storage
-from netconsole.core.sites import DEFAULT_SITE, SiteManager
+from netconsole.services.site_manager import DEFAULT_SITE, SiteManager
 from netconsole.core.version import APP_VERSION
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState

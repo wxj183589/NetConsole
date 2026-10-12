@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from netconsole.services.online_mr_parser import parse_mesh_link_text, summarize_active
+from netconsole.core.mr_collect.parser.online_mr_parser import parse_mesh_link_text, summarize_active
 
 
 def parse(raw_text: str, collected_at: datetime | None = None) -> dict[str, object]:

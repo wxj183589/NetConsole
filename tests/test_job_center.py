@@ -13,7 +13,7 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.background_tasks import (
+from tests.support.legacy_background_tasks import (
     BackgroundTaskCancelled,
     run_background_task,
 )

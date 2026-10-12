@@ -17,8 +17,8 @@ from netconsole.parsers.h3c.ac.state_mapper import classify_fit_ap_state
 from netconsole.parsers.h3c.ac.wlan_ap_unauthenticated_parser import (
     WLAN_AP_UNAUTHENTICATED_SOURCE,
 )
-from netconsole.services.ap_extension_import import normalize_ap_mac
-from netconsole.services.fit_ap_link_info import (
+from netconsole.core.sources.ap_extension_import import normalize_ap_mac
+from netconsole.core.sources.fit_ap_link_info import (
     merge_lldp_payload,
     normalize_interface_key,
     normalize_lldp_payload,
@@ -26,10 +26,10 @@ from netconsole.services.fit_ap_link_info import (
     resolve_fit_ap_link_info,
     resolve_optical_match_status,
 )
-from netconsole.services.rail_transit.station_ordering import (
+from netconsole.core.sources.rail_transit.station_ordering import (
     canonicalize_trackside_ap_plan_rows,
 )
-from netconsole.services.current_history_retention import (
+from netconsole.core.storage.current_history_retention import (
     count_station_online_summary_recent,
     list_fit_ap_resource_recent,
     list_fit_ap_unauthenticated_recent,
@@ -39,17 +39,17 @@ from netconsole.services.current_history_retention import (
     unauthenticated_identity_key,
     upsert_station_online_summary,
 )
-from netconsole.services.radio_retention import (
+from netconsole.core.storage.radio_retention import (
     upsert_radio_current_and_history,
 )
-from netconsole.services.lldp_retention import (
+from netconsole.core.storage.lldp_retention import (
     upsert_lldp_current_and_history,
 )
-from netconsole.services.optical_retention import (
+from netconsole.core.storage.optical_retention import (
     update_ap_optical_treatment,
     upsert_optical_current_and_history,
 )
-from netconsole.services.trackside_ap_business import parse_vlan_set
+from netconsole.core.sources.vlan import parse_vlan_set
 from netconsole.utils.mileage import parse_mileage_to_meters
 from netconsole.utils.station_normalize import normalize_station_value
 

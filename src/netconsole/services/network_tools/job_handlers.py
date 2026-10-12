@@ -14,7 +14,7 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.services.export.export_job import ExportJob
 from netconsole.services.export.export_task_builders import result_file_rows_source
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext

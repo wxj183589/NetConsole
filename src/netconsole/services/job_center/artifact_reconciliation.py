@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 
 
 class ArtifactAvailability(str, Enum):

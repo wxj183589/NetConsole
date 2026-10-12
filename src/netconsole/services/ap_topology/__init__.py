@@ -1,17 +1,4 @@
-"""Shared AP topology evidence resolution."""
+"""Compatibility exports for the canonical core AP topology resolver."""
 
-from .resolver import (
-    AP_TOPOLOGY_PROJECTION_VERSION,
-    ApTopologyEvidence,
-    ResolvedApTopology,
-    ResolvedTopologyField,
-    resolve_ap_topology,
-)
-
-__all__ = [
-    "AP_TOPOLOGY_PROJECTION_VERSION",
-    "ApTopologyEvidence",
-    "ResolvedApTopology",
-    "ResolvedTopologyField",
-    "resolve_ap_topology",
-]
+from netconsole.core.ap_topology import *  # noqa: F403
+from netconsole.core.ap_topology import __all__ as __all__

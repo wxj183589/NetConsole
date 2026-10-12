@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Mapping
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.mesh_analysis_params import (
     MESH_ANALYSIS_PARAMS_METADATA_KEY,
     MeshAnalysisParams,

@@ -12,7 +12,7 @@ from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.core.ping.fping_v5_models import FpingV5CheckResult, FpingV5Paths, FpingV5Sample
 from netconsole.core.ping.fping_v5_parser import parse_fping_v5_json_line
 from netconsole.core.paths import PathResolver
-from netconsole.services.tool_path_resolver import resolve_network_tool
+from netconsole.core.tool_path_resolver import resolve_network_tool
 
 
 def resolve_fping_v5_paths(project_root: Path | None = None, fping_path: Path | None = None) -> FpingV5Paths:

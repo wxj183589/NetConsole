@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.online_mr import OnlineMrBusinessTable
 from netconsole.models.api.online_mr_agent_control import OnlineMrAgentWebStartRequestDTO
 from netconsole.models.api.online_mr_control import OnlineMrWebStartRequestDTO

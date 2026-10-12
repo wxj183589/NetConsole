@@ -18,9 +18,11 @@ class SSHClient:
     def connect(self) -> None:
         if self.connection is not None:
             return
-        from netconsole.services.online_mr_collector import NetmikoShellConnection
-
-        factory = self.connection_factory or (lambda cfg: NetmikoShellConnection(cfg))
+        factory = self.connection_factory
+        if factory is None:
+            raise RuntimeError(
+                "MR SSHClient requires an injected connection_factory from the service boundary"
+            )
         self.connection = factory(self.config)
         self.state["connected"] = True
 

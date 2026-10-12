@@ -17,7 +17,7 @@ from netconsole.services.ap_identity.normalizers import normalize_mac_key
 from netconsole.services import vehicle_mr_online as vehicle_mr_online_service
 from netconsole.services.export.export_handlers import run_generic_export_handler
 from netconsole.services.export.export_task_builders import vehicle_mr_history_xlsx_spec
-from netconsole.services.export_task_models import ExportJob
+from tests.support.legacy_export_task_models import ExportJob
 from netconsole.services.vehicle_mr_online import (
     H3CComwareV9VehicleMrMeshLinkParser,
     MatchedAp,
