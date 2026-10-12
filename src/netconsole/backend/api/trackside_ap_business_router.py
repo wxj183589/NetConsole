@@ -15,7 +15,7 @@ from netconsole.application.rail_transit.web_application_service import RailTran
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.core import app_logger
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.trackside_ap_business import (
     ApManagementVlanAutoGroupRequestDTO,

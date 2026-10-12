@@ -224,7 +224,7 @@ def main() -> int:
 
             return run_background_worker(sys.argv[2:])
         if os.environ.get("NETCONSOLE_RUNTIME_SMOKE_TEST") == "1":
-            from netconsole.core.bootstrap import create_demo_context
+            from netconsole.services.demo_context import create_demo_context
 
             context = create_demo_context()
             _write_runtime_smoke_log(context)

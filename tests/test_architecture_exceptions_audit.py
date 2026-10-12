@@ -12,16 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_exception_inventory_matches_audit_document() -> None:
     entries = load_exceptions(today=date(2026, 9, 30))
-    assert len(entries) == 8
+    assert len(entries) == 0
     counts = Counter(item.rule_id for item in entries)
-    assert counts == Counter(
-        {
-            "ORPHAN_SERVICE_MODULE": 6,
-            "PY_LAYER_CORE_REVERSE": 2,
-        }
-    )
+    assert counts == Counter()
     audit = (ROOT / "docs/architecture/ARCHITECTURE_EXCEPTIONS.md").read_text(encoding="utf-8")
-    assert "总数为 8" in audit
+    assert "总数为 0" in audit
     assert "Production maintenance boundary" in audit
 
 

@@ -17,7 +17,7 @@ from netconsole.services.job_center.system_maintenance_contract import (
 )
 from netconsole.core.paths import PathResolver
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.job_center import (
     JobCenterArtifactDTO,
     JobCenterLogLineDTO,

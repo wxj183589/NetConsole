@@ -60,7 +60,7 @@ from netconsole.core.runtime_profile import (
     read_host_environment_profile,
     read_runtime_performance_mode,
 )
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.core.version import APP_NAME, APP_VERSION
 from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDesktopAdapter
 from netconsole.models.api.common import ErrorDetail, ErrorResponse

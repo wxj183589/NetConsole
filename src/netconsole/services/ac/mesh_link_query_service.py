@@ -11,7 +11,7 @@ from pathlib import Path
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.ac_management import AcApDetailDTO, AcRadioDTO
 from netconsole.models.api.ac_mesh_link import (
     AcMeshLinkPageDTO,

@@ -26,7 +26,7 @@ from netconsole.core.database import Database
 
 from netconsole.core.runtime_mode import RuntimeMode
 
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 
 from netconsole.models.api.ac_management import AcLocalRebuildRequestDTO, AcRefreshRequestDTO
 

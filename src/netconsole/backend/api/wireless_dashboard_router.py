@@ -6,7 +6,7 @@ from typing import TypeVar
 from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from netconsole.backend.api.error_mapping import map_api_errors
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.wireless_dashboard import (
     WirelessDashboardAgentsDTO,
     WirelessDashboardAlertsDTO,

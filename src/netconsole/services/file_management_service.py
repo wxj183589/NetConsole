@@ -21,7 +21,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.windows_dpapi import protect_windows_data, unprotect_windows_data
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.file_management import (
     FileConnectionDTO,
     FileDesktopActionDTO,

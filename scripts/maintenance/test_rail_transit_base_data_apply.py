@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.services.rail_transit.base_data_import_service import (
     BaseDataImportError,
     RailTransitBaseDataImportService,

@@ -13,7 +13,7 @@ from openpyxl.styles import Alignment, Border, Color, Font, PatternFill, Side
 import pytest
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.wps_sync import (
     TRACKSIDE_AP_WPS_BUSINESS_KEY,
     WpsFreezeMode,

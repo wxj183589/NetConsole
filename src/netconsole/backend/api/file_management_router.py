@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.file_management import (
     DeviceFileConnectionRequestDTO,
     FileConnectionDTO,

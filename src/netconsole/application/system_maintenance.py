@@ -15,7 +15,7 @@ from netconsole.core.changelog import ChangelogSyncError
 from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
 from netconsole.core.resources import read_changelog_text
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.core.version import APP_AUTHOR, APP_TITLE_DISPLAY, APP_VERSION_DISPLAY, REPOSITORY_WEB_URLS
 from netconsole.models.api.system_maintenance import (
     AboutDTO,

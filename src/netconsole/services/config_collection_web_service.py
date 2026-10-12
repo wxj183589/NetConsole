@@ -16,7 +16,7 @@ from uuid import uuid4
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.config_collection import (
     ConfigConfirmationDTO,
     ConfigDirectoryDTO,

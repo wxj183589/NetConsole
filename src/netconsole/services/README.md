@@ -18,7 +18,8 @@
 - `device_detail_query_service.py`：从设备快照、任务和现有业务 Query Service 组合设备详情只读 DTO。
 - `device_operation_service.py`：校验 Operation ID、设备平台与 Profile 后，把设备刷新提交到现有 Task Center。
 - `device_command_profile_service.py`：从版本化资源选择命令 Profile；未命中或未验证时失败关闭。
-- `site_database_recovery.py`：局点数据库结构异常时的受控备份与重建文件流程。
+- `site_database_recovery.py`：保留旧导入契约的局点数据库备份/恢复安全边界；删除操作必须带显式维护授权。
+- `maintenance/site_database_recovery.py`：不参与普通启动的独立维护入口，执行前必须提供授权和备份-before-remove 证据。
 
 ## 依赖关系
 

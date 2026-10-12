@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from netconsole.application.rail_transit.web_application_service import RailTransitWebApplicationService, RailTransitWebError
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_web import (
     CarNetworkPointPreviewDTO,
     CarNetworkPointTableDTO,

@@ -13,7 +13,7 @@ from threading import RLock
 from typing import Callable
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TERMINAL_TASK_STATES
 from netconsole.services.ac.mesh_link_refresh_service import (

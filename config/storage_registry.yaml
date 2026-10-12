@@ -3348,7 +3348,7 @@
       "schema_version": "unknown",
       "allowed_data_classes": ["UNKNOWN"],
       "forbidden_data_classes": [],
-      "source_locations": ["src/netconsole/services/site_database_recovery.py"]
+      "source_locations": ["src/netconsole/services/site_database_recovery.py", "src/netconsole/services/maintenance/site_database_recovery.py", "scripts/maintenance/recover_site_databases.py"]
     },
     {
       "id": "site.legacy.snmp",

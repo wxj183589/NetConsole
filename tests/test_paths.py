@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from netconsole.core.bootstrap import create_demo_context
+from netconsole.services.demo_context import create_demo_context
 from netconsole.core.paths import PathResolver
 from netconsole.core import runtime_environment
 from netconsole.core.runtime_environment import validate_runtime_write_path

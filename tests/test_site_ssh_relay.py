@@ -7,7 +7,7 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.sqlite_utils import connect_sqlite
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.services import site_ssh_relay
 from netconsole.services.netmiko_connection import classify_connection_exception
 from netconsole.services.site_ssh_relay import (

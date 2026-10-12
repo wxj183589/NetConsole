@@ -1,4 +1,4 @@
-﻿from netconsole.core.bootstrap import create_demo_context
+from netconsole.services.demo_context import create_demo_context
 import pytest
 
 from netconsole.core.database import CURRENT_SCHEMA_VERSION, Database, DatabaseSchemaMismatchError

@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.task_state import TERMINAL_TASK_STATES, TaskState
 from netconsole.services.job_center.artifact_reconciliation import (
     ArtifactReconciliationService,

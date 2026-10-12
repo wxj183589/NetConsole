@@ -50,7 +50,7 @@ def test_router_boundary_rejects_runtime_dependencies_and_construction(
         "import sqlite3, zipfile, paramiko\n"
         "from netconsole.core.database import Database\n"
         "from netconsole.core.paths import PathResolver\n"
-        "from netconsole.core.sites import SiteManager\n"
+        "from netconsole.services.site_manager import SiteManager\n"
         "from netconsole.repositories.device_repository import DeviceRepository\n"
         "from netconsole.parsers.cli import CommandParser\n"
         "from netconsole.services.demo import DemoApplicationService\n"

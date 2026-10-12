@@ -5,7 +5,10 @@ from datetime import datetime
 import pytest
 
 from netconsole.core.paths import PathResolver
-from netconsole.services.site_database_recovery import SiteDatabaseRecoveryService
+from netconsole.services.site_database_recovery import (
+    SITE_DATABASE_RECOVERY_AUTHORIZATION,
+    SiteDatabaseRecoveryService,
+)
 
 
 def _service(tmp_path) -> SiteDatabaseRecoveryService:
@@ -44,7 +47,9 @@ def test_site_database_recovery_removes_sources_only_after_backup(tmp_path) -> N
     database.parent.mkdir(parents=True)
     database.write_bytes(b"devices")
 
-    backups = service.backup_and_remove_databases()
+    backups = service.backup_and_remove_databases(
+        authorization=SITE_DATABASE_RECOVERY_AUTHORIZATION
+    )
 
     assert len(backups) == 1
     assert backups[0].read_bytes() == b"devices"
@@ -66,7 +71,9 @@ def test_site_database_recovery_uses_one_database_snapshot(tmp_path, monkeypatch
 
     monkeypatch.setattr(service, "list_databases", list_once)
 
-    service.backup_and_remove_databases()
+    service.backup_and_remove_databases(
+        authorization=SITE_DATABASE_RECOVERY_AUTHORIZATION
+    )
 
     assert calls == 1
 
@@ -83,7 +90,9 @@ def test_site_database_recovery_keeps_sources_when_backup_fails(tmp_path, monkey
     monkeypatch.setattr("netconsole.services.site_database_recovery.shutil.copy2", fail_copy)
 
     with pytest.raises(OSError, match="backup failed"):
-        service.backup_and_remove_databases()
+        service.backup_and_remove_databases(
+            authorization=SITE_DATABASE_RECOVERY_AUTHORIZATION
+        )
 
     assert database.read_bytes() == b"devices"
 
@@ -94,6 +103,14 @@ def test_site_database_recovery_rejects_paths_outside_site_database_dirs(tmp_pat
     outside.write_bytes(b"protected")
 
     with pytest.raises(ValueError, match="拒绝删除"):
-        service.remove_databases([outside])
+        service.remove_databases(
+            [outside], authorization=SITE_DATABASE_RECOVERY_AUTHORIZATION
+        )
 
     assert outside.read_bytes() == b"protected"
+
+
+def test_site_database_recovery_requires_explicit_authorization(tmp_path) -> None:
+    service = _service(tmp_path)
+    with pytest.raises(PermissionError, match="显式维护授权"):
+        service.remove_databases([])

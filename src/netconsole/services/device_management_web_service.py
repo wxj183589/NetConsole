@@ -29,7 +29,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.performance_profiling import profile_repository
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore, normalize_external_terminal_type
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.device_management import (
     DeviceCapabilityDTO,
     DeviceBatchRefreshItemDTO,

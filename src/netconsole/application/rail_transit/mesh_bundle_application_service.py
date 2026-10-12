@@ -13,7 +13,7 @@ from netconsole.application.rail_transit.mesh_derived_data_repair_coordinator im
     MeshDerivedDataRepairCoordinator,
 )
 from netconsole.core.paths import PathResolver
-from netconsole.core.sites import SiteManager
+from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.repositories.mesh_catalog_repository import MeshCatalogRepository
 from netconsole.services.background_job import BackgroundJob
