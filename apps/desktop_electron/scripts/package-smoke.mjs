@@ -1267,8 +1267,8 @@ function validatePackagedChangelog(payload) {
       throw new Error(`冻结 Backend 更新日志包含重复或缺失版本：${version}`)
     }
   }
-  if (!content.includes('H3C Comware V7/V9 Capability') || !content.includes('Task Lifecycle')) {
-    throw new Error('冻结 Backend 更新日志缺少 v1.5.9/v1.5.8 内容指纹。')
+  if (!content.includes('SFTP 下载与 MESH 导入解耦') || !content.includes('H3C Comware V7/V9 Capability') || !content.includes('Task Lifecycle')) {
+    throw new Error('冻结 Backend 更新日志缺少 v1.5.9/v1.5.8/v1.5.7 内容指纹。')
   }
   const packagedPath = resolve(
     unpackedRoot,

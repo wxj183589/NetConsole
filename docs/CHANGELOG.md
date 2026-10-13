@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.5.9 - 2026-10-13
+
 ### SFTP 下载与 MESH 导入解耦
 
 - 车载 MR 的 SFTP 下载在大小/SHA-256 校验和原子落盘后立即完成；MESH 登记、解析和派生库维护改由独立
@@ -26,8 +28,6 @@
 - HZ10 最终现场口径为 `HZ10_FIELD_VALIDATION=PASS`、`HZ10_PRODUCTION_ACCEPTED=YES`；Stage 4 的 FIT-AP 为 `874/627/0/247`，247 条为 `connection_incomplete` 结构化跳过。
 - `MANUAL_GUI_ACCEPTANCE=PASS` 仅表示已有人工 GUI/安装启动运行证据；真实页面截图的完整尺寸/缩放/主题/中英文矩阵仍为 `FULL_VISUAL_MATRIX=PENDING`。
 - 安装器的安装启动与运行已有人工证据，但修复、升级、卸载的完整生命周期仍独立 pending；不得用 GUI PASS 替代生命周期 PASS。
-
-## v1.5.9 - 2026-10-13
 
 ### 版本递增与正式发布
 
