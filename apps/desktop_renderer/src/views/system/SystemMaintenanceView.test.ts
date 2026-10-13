@@ -159,9 +159,9 @@ describe('SystemMaintenanceView mounted workflow', () => {
 
   it('renders the backend changelog content in release order without client-side repair', async () => {
     api.getChangelog.mockResolvedValueOnce({
-      title: '更新日志 v1.5.8',
-      version: 'v1.5.8',
-      content: 'v1.5.8 - 2026-09-13\nH3C release\n\nv1.5.7 - 2026-09-13\nTask lifecycle\n\nv1.5.6 - 2026-09-13\nHistory',
+      title: '更新日志 v1.5.9',
+      version: 'v1.5.9',
+      content: 'v1.5.9 - 2026-10-13\nRelease identity\n\nv1.5.8 - 2026-09-13\nH3C release\n\nv1.5.7 - 2026-09-13\nTask lifecycle\n\nv1.5.6 - 2026-09-13\nHistory',
     })
 
     const wrapper = await mountView()
@@ -169,6 +169,7 @@ describe('SystemMaintenanceView mounted workflow', () => {
 
     const text = wrapper.find('.document').text()
     expect(text).toContain('H3C release')
+    expect(text.indexOf('v1.5.9')).toBeLessThan(text.indexOf('v1.5.8'))
     expect(text.indexOf('v1.5.8')).toBeLessThan(text.indexOf('v1.5.7'))
     expect(text.indexOf('v1.5.7')).toBeLessThan(text.indexOf('v1.5.6'))
     expect(api.getChangelog).toHaveBeenCalledTimes(1)
