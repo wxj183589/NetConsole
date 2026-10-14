@@ -109,6 +109,17 @@ def test_development_data_root_reads_the_machine_wide_installer_configuration(tm
     assert runtime_environment.data_root() == Path(r"D:\NetConsoleData")
 
 
+def test_explicit_development_environment_root_remains_authoritative(monkeypatch):
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", r"D:\NetConsoleData-dev")
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    monkeypatch.setattr(
+        "netconsole.core.data_root_configuration.read_machine_data_root",
+        lambda: Path(r"D:\NetConsoleData"),
+    )
+
+    assert runtime_environment.data_root() == Path(r"D:\NetConsoleData-dev")
+
+
 def test_development_data_root_requires_machine_configuration_or_explicit_override(monkeypatch):
     monkeypatch.delenv("NETCONSOLE_DATA_ROOT", raising=False)
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
