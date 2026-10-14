@@ -27,6 +27,7 @@ def _snapshot(
     task_id: str,
     status: TaskState,
     *,
+    task_type: str = "cleanup_test",
     finished_time: str = "",
     error_message: str = "",
     result: dict[str, object] | None = None,
@@ -35,7 +36,7 @@ def _snapshot(
     updated_time = finished_time or "2026-07-29T01:00:00Z"
     return TaskSnapshot(
         task_id=task_id,
-        task_type="cleanup_test",
+        task_type=task_type,
         task_name=task_id,
         status=status,
         created_time="2026-07-01T00:00:00Z",
@@ -308,6 +309,161 @@ def test_cleanup_distinguishes_historical_resource_keys_from_durable_references(
     assert repository.get("durable-mesh-reference") is not None
     assert repository.get("unknown-resource-owner") is not None
     assert repository.get("active-resource-lock") is not None
+
+
+@pytest.mark.parametrize(
+    ("task_type", "resource_keys"),
+    [
+        (
+            "database_upgrade",
+            ["mesh-import:demo", "database-upgrade:demo:profile-1"],
+        ),
+        (
+            "database_batch_upgrade",
+            ["mesh-import:demo", "database-upgrade-batch:demo"],
+        ),
+        (
+            "database_backup_restore",
+            ["database-backup:backup-1", "mesh-import:demo"],
+        ),
+    ],
+)
+def test_database_maintenance_locks_are_historical_after_terminal_completion(
+    tmp_path: Path,
+    task_type: str,
+    resource_keys: list[str],
+) -> None:
+    paths, repository = _repository(tmp_path)
+    repository.save(
+        _snapshot(
+            f"{task_type}-historical-lock",
+            TaskState.COMPLETED,
+            task_type=task_type,
+            finished_time="2026-07-28T01:00:00Z",
+            result={"failed": 0, "partial": False, "success": 1},
+            resource_keys=resource_keys,
+        )
+    )
+
+    cleanup = TaskCleanupService(repository, paths=paths, site_name="demo")
+    task_id = f"{task_type}-historical-lock"
+    decision = cleanup.preview_cleanup([task_id])["decisions"][0]
+
+    assert decision["can_cleanup"] is True
+    assert "HISTORICAL_RESOURCE_KEY" in decision["reasons"]
+    assert "DURABLE_RESOURCE_REFERENCE" not in decision["reasons"]
+    assert "RESOURCE_REFERENCE" not in decision["reasons"]
+
+    result = cleanup.cleanup_tasks([task_id])
+    assert result["deleted_task_ids"] == [task_id]
+    assert repository.get(task_id) is None
+    assert cleanup.cleanup_tasks([task_id])["deleted_task_ids"] == []
+    assert TaskRepository(paths.site_tasks_db_path("demo")).get(task_id) is None
+
+
+def test_database_maintenance_mesh_session_reference_remains_protected(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    task_id = "database-batch-upgrade-with-mesh-session"
+    repository.save(
+        _snapshot(
+            task_id,
+            TaskState.COMPLETED,
+            task_type="database_batch_upgrade",
+            finished_time="2026-07-28T01:00:00Z",
+            resource_keys=[
+                "mesh-import:demo",
+                "database-upgrade-batch:demo",
+                "mesh_session:session-1",
+            ],
+        )
+    )
+
+    cleanup = TaskCleanupService(repository, paths=paths, site_name="demo")
+    decision = cleanup.preview_cleanup([task_id])["decisions"][0]
+
+    assert decision["can_cleanup"] is False
+    assert "DURABLE_RESOURCE_REFERENCE" in decision["reasons"]
+    assert "mesh_session:session-1" in decision["protected_resources"]
+
+
+def test_running_database_maintenance_lock_is_not_cleanup_eligible(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    task_id = "running-database-batch-upgrade"
+    repository.save(
+        _snapshot(
+            task_id,
+            TaskState.RUNNING,
+            task_type="database_batch_upgrade",
+            resource_keys=["mesh-import:demo", "database-upgrade-batch:demo"],
+        )
+    )
+
+    decision = TaskCleanupService(repository, paths=paths, site_name="demo").preview_cleanup(
+        [task_id]
+    )["decisions"][0]
+
+    assert decision["can_cleanup"] is False
+    assert "ACTIVE_TASK" in decision["reasons"]
+    assert "ACTIVE_RESOURCE_LOCK" in decision["reasons"]
+
+
+def test_failed_database_maintenance_can_be_removed_after_acknowledgement(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    task_id = "failed-database-batch-upgrade"
+    repository.save(
+        _snapshot(
+            task_id,
+            TaskState.FAILED,
+            task_type="database_batch_upgrade",
+            finished_time="2026-07-28T01:00:00Z",
+            error_message="database upgrade failed",
+            resource_keys=["mesh-import:demo", "database-upgrade-batch:demo"],
+        )
+    )
+    cleanup = TaskCleanupService(repository, paths=paths, site_name="demo")
+
+    blocked = cleanup.preview_cleanup([task_id])["decisions"][0]
+    assert blocked["can_cleanup"] is False
+    assert "UNACKNOWLEDGED_ATTENTION" in blocked["reasons"]
+
+    repository.acknowledge_attention_tasks(task_ids=[task_id])
+    ready = cleanup.preview_cleanup([task_id])["decisions"][0]
+    assert ready["can_cleanup"] is True
+    assert repository.get(task_id).status == TaskState.FAILED
+
+    result = cleanup.cleanup_tasks([task_id])
+    assert result["deleted_task_ids"] == [task_id]
+    assert repository.get(task_id) is None
+
+
+def test_ordinary_mesh_import_resource_key_remains_durable(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    task_id = "ordinary-mesh-import"
+    repository.save(
+        _snapshot(
+            task_id,
+            TaskState.COMPLETED,
+            task_type="mesh_import",
+            finished_time="2026-07-28T01:00:00Z",
+            resource_keys=["mesh-import:demo"],
+        )
+    )
+
+    decision = TaskCleanupService(repository, paths=paths, site_name="demo").preview_cleanup(
+        [task_id]
+    )["decisions"][0]
+
+    assert decision["can_cleanup"] is False
+    assert "DURABLE_RESOURCE_REFERENCE" in decision["reasons"]
+    assert "RESOURCE_REFERENCE" in decision["reasons"]
 
 
 def test_acknowledged_partial_result_can_be_removed_without_rewriting_status(

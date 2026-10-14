@@ -55,6 +55,27 @@ _HISTORICAL_RESOURCE_KEY_PREFIXES = (
     "mesh-derived-repair:",
 )
 
+# Database maintenance uses ``mesh-import`` as a shared execution lock while
+# it upgrades or restores MESH-derived databases.  It is not, by itself, a
+# durable MESH source/session owner for these task types.  Keep the generic
+# ``mesh-import`` long-term rule for ordinary MESH import tasks below.
+_DATABASE_MAINTENANCE_TASK_TYPES = frozenset(
+    {
+        "database_upgrade",
+        "database_batch_upgrade",
+        "database_batch_backup",
+        "database_backup_validation",
+        "legacy_database_archive_migration",
+        "database_backup_restore",
+        "database_backup_delete",
+        "database_backup_batch_delete",
+    }
+)
+_DATABASE_MAINTENANCE_RESOURCE_KEY_PREFIXES = (
+    "mesh-import:",
+    "database-upgrade:",
+)
+
 
 @dataclass(frozen=True)
 class CleanupDecision:
@@ -296,7 +317,8 @@ class TaskCleanupService:
             reasons.append("RESOURCE_METADATA_UNREADABLE")
         elif resource_keys:
             historical_keys, durable_keys, unknown_keys = self._classify_resource_keys(
-                resource_keys
+                resource_keys,
+                task_type=str(values.get("task_type") or ""),
             )
             if status in ACTIVE_TASK_STATE_VALUES:
                 reasons.append("ACTIVE_RESOURCE_LOCK")
@@ -562,15 +584,25 @@ class TaskCleanupService:
     @staticmethod
     def _classify_resource_keys(
         resource_keys: list[object],
+        *,
+        task_type: str = "",
     ) -> tuple[list[str], list[str], list[str]]:
         historical: list[str] = []
         durable: list[str] = []
         unknown: list[str] = []
+        database_maintenance = str(task_type or "").strip().casefold() in {
+            value.casefold() for value in _DATABASE_MAINTENANCE_TASK_TYPES
+        }
         for value in resource_keys:
             key = str(value).strip()
             normalized = key.casefold()
-            if normalized.startswith(_HISTORICAL_RESOURCE_KEY_PREFIXES) or normalized.endswith(
-                ":ac_config_write"
+            if (
+                normalized.startswith(_HISTORICAL_RESOURCE_KEY_PREFIXES)
+                or normalized.endswith(":ac_config_write")
+                or (
+                    database_maintenance
+                    and normalized.startswith(_DATABASE_MAINTENANCE_RESOURCE_KEY_PREFIXES)
+                )
             ):
                 historical.append(key)
             elif task_has_long_term_reference(resource_keys=(key,)):

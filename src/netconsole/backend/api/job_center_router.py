@@ -69,7 +69,11 @@ def _cleanup_conflict_message(result: dict[str, object]) -> str:
     reasons: set[str] = set()
     for item in result.get("skipped", []):
         if isinstance(item, dict):
-            reasons.update(str(reason) for reason in item.get("reasons", []) or [])
+            reasons.update(
+                str(reason)
+                for reason in item.get("reasons", []) or []
+                if str(reason) != "RESOURCE_REFERENCE"
+            )
     labels = {
         "ACTIVE_RESOURCE_LOCK": "活动资源锁",
         "ONLINE_MR_MAPPING": "Online MR 会话关联",

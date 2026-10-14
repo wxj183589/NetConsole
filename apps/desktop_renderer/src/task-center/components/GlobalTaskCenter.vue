@@ -363,6 +363,7 @@ function cleanupReasonSummary(preview: TaskCleanupResult): string {
     const reasons = Array.isArray(decision.reasons) ? decision.reasons : []
     for (const reason of reasons) {
       const key = String(reason)
+      if (key === 'RESOURCE_REFERENCE') continue
       counts.set(key, (counts.get(key) ?? 0) + 1)
     }
   }
