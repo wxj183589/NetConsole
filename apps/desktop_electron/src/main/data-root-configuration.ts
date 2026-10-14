@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from 'node:path'
 
 export const DATA_ROOT_REGISTRY_KEY = 'HKLM\\Software\\NetConsole'
 export const DATA_ROOT_REGISTRY_VALUE = 'DataRoot'
+const LEGACY_DEVELOPMENT_DATA_ROOT = 'D:\\NetConsoleData-dev'
 
 export type DesktopDataRootSource = 'environment' | 'machine_configuration'
 
@@ -22,13 +23,22 @@ export function resolveDesktopDataRootConfiguration(options: {
   queryRegistry?: RegistryQuery
 } = {}): DesktopDataRootResolution {
   const environment = options.environment ?? process.env
+  const platform = options.platform ?? process.platform
   const explicit = environment.NETCONSOLE_DATA_ROOT?.trim()
-  if (explicit) return { dataRoot: requireAbsolutePath(explicit), source: 'environment' }
+  if (explicit) {
+    const explicitRoot = requireAbsolutePath(explicit)
+    if (platform === 'win32' && isLegacyDevelopmentDataRoot(explicitRoot)) {
+      const machineRoot = readMachineDataRoot(options.queryRegistry ?? defaultRegistryQuery)
+      if (machineRoot && !isLegacyDevelopmentDataRoot(machineRoot)) {
+        return { dataRoot: machineRoot, source: 'machine_configuration' }
+      }
+    }
+    return { dataRoot: explicitRoot, source: 'environment' }
+  }
 
   if ((environment.NETCONSOLE_RUNTIME_MODE ?? '').trim().toLowerCase() === 'test') {
     throw new Error('测试模式必须显式设置 NETCONSOLE_DATA_ROOT')
   }
-  const platform = options.platform ?? process.platform
   if (platform !== 'win32') {
     throw new Error('NETCONSOLE_DATA_ROOT must be configured outside Windows')
   }
@@ -37,6 +47,11 @@ export function resolveDesktopDataRootConfiguration(options: {
     throw new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置。')
   }
   return { dataRoot: machineRoot, source: 'machine_configuration' }
+}
+
+function isLegacyDevelopmentDataRoot(value: string): boolean {
+  return value.replaceAll('/', '\\').replace(/[\\]+$/, '').toLowerCase()
+    === LEGACY_DEVELOPMENT_DATA_ROOT.toLowerCase()
 }
 
 export function readMachineDataRoot(queryRegistry: RegistryQuery = defaultRegistryQuery): string | undefined {

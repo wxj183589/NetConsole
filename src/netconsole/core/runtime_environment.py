@@ -135,8 +135,11 @@ def data_environment(data_root: Path | None = None) -> DataEnvironmentInfo:
     Test roots are identified by the explicit process test mode and do not
     require a marker file. If an explicit target root does carry a persistent
     marker, it still wins over the process mode so TEST cannot downgrade a
-    Production root. Persistent roots must carry a valid marker; no path name
-    heuristic is used.
+    Production root. Persistent roots normally carry a valid marker. For
+    compatibility with existing business roots created before the marker
+    contract, a root with a verified storage manifest and standard directory
+    layout may start without writing a new marker; it is treated as a
+    non-production persistent root.
     """
 
     selected_runtime_mode = runtime_mode()
@@ -146,6 +149,13 @@ def data_environment(data_root: Path | None = None) -> DataEnvironmentInfo:
     marker = root / RUNTIME_MODE_FILE_NAME
     if selected_runtime_mode is RuntimeMode.TEST and not marker.is_file():
         return DataEnvironmentInfo(DataEnvironmentMode.TEST)
+    if not marker.exists():
+        if _has_verified_unmarked_persistent_layout(root):
+            return DataEnvironmentInfo(DataEnvironmentMode.DEVELOPMENT)
+        raise RuntimeError(
+            f"数据根缺少 {RUNTIME_MODE_FILE_NAME}，且未发现可验证的持久化存储清单：{root}。"
+            "请确认数据目录包含原有业务目录和 config/storage-manifest.json。"
+        )
     try:
         value = json.loads(marker.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -169,6 +179,26 @@ def data_environment(data_root: Path | None = None) -> DataEnvironmentInfo:
     if mode is DataEnvironmentMode.PRODUCTION and not readonly_warning:
         raise RuntimeError("production 数据根必须启用 readonly_warning")
     return DataEnvironmentInfo(mode, created_from, created_time, readonly_warning)
+
+
+def _has_verified_unmarked_persistent_layout(root: Path) -> bool:
+    required_directories = ("config", "sites", "runtime")
+    if not all((root / name).is_dir() for name in required_directories):
+        return False
+    manifest = root / "config" / "storage-manifest.json"
+    try:
+        value = json.loads(manifest.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(value, dict):
+        return False
+    configured_root = str(value.get("data_root") or "").strip()
+    if not configured_root:
+        return False
+    try:
+        return Path(configured_root).expanduser().resolve() == root.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
 def data_root_for_environment() -> Path:

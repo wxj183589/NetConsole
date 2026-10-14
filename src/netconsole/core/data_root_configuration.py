@@ -13,6 +13,7 @@ DATA_ROOT_REGISTRY_KEY = r"SOFTWARE\NetConsole"
 DATA_ROOT_REGISTRY_VALUE = "DataRoot"
 MINIMUM_DATA_ROOT_FREE_BYTES = 10 * 1024**3
 RECOMMENDED_DATA_ROOT_FREE_BYTES = 100 * 1024**3
+LEGACY_DEVELOPMENT_DATA_ROOT = r"D:\NetConsoleData-dev"
 
 class DataRootConfigurationError(RuntimeError):
     """Raised when persistent NetConsole storage has not been configured."""
@@ -55,7 +56,12 @@ def read_machine_data_root() -> Path | None:
 def resolve_persistent_data_root(*, test_mode: bool) -> DataRootConfiguration:
     configured = str(os.environ.get("NETCONSOLE_DATA_ROOT") or "").strip()
     if configured:
-        return DataRootConfiguration(Path(configured).expanduser(), "environment")
+        configured_path = Path(configured).expanduser()
+        if _is_legacy_development_data_root(configured_path):
+            machine_root = read_machine_data_root()
+            if machine_root is not None and not _is_legacy_development_data_root(machine_root):
+                return DataRootConfiguration(machine_root, "machine_configuration")
+        return DataRootConfiguration(configured_path, "environment")
     if test_mode:
         raise DataRootConfigurationError("测试模式必须显式设置 NETCONSOLE_DATA_ROOT")
     configured_machine_root = read_machine_data_root()
@@ -132,6 +138,13 @@ def _is_reparse_point(path: Path) -> bool:
     except (FileNotFoundError, OSError):
         return False
     return bool(attributes & 0x400)
+
+
+def _is_legacy_development_data_root(candidate: Path) -> bool:
+    if sys.platform != "win32":
+        return False
+    value = str(candidate).replace("/", "\\").rstrip("\\").casefold()
+    return value == LEGACY_DEVELOPMENT_DATA_ROOT.casefold()
 
 
 def _require_windows_fixed_drive(root: Path) -> None:
@@ -262,6 +275,7 @@ __all__ = [
     "DataRootConfigurationError",
     "MINIMUM_DATA_ROOT_FREE_BYTES",
     "RECOMMENDED_DATA_ROOT_FREE_BYTES",
+    "LEGACY_DEVELOPMENT_DATA_ROOT",
     "read_machine_data_root",
     "resolve_persistent_data_root",
     "validate_installation_data_root",

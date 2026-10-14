@@ -17,8 +17,24 @@ from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMod
 
 def test_persistent_root_requires_an_explicit_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
-    with pytest.raises(RuntimeError, match="受控初始化/环境标记流程"):
+    with pytest.raises(RuntimeError, match="可验证的持久化存储清单"):
         data_environment(tmp_path)
+
+
+def test_unmarked_persistent_root_with_verified_storage_manifest_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    for name in ("config", "sites", "runtime"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "config" / "storage-manifest.json").write_text(
+        json.dumps({"data_root": str(tmp_path.resolve())}), encoding="utf-8"
+    )
+
+    info = data_environment(tmp_path)
+
+    assert info.mode is DataEnvironmentMode.DEVELOPMENT
+    assert info.readonly_warning is False
 
 
 def test_environment_marker_round_trip_and_path_resolver_view(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
