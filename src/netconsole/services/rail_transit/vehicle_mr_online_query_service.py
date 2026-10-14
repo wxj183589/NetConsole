@@ -395,6 +395,21 @@ class VehicleMrOnlineQueryService:
         online_status = self._online_status(
             mesh.online_status if mesh else ("stale" if persisted.seen else "unknown")
         )
+        # A Mesh-Link row can identify the current AP before its topology is enriched.
+        # Reuse a previous station only when it belongs to that same AP; a train
+        # may already have moved to a different AP since the persisted snapshot.
+        station_name = (mesh.station or "").strip() if mesh else ""
+        if not station_name:
+            if mesh is None:
+                station_name = (persisted.station or "").strip() or (
+                    base.station if base else ""
+                )
+            elif (
+                (mesh.peer_ap_name or "").strip()
+                and (mesh.peer_ap_name or "").strip().casefold()
+                == (persisted.ap_name or "").strip().casefold()
+            ):
+                station_name = (persisted.station or "").strip()
         return VehicleMrEndStateDTO(
             endpoint=endpoint,
             mr_id=(mesh.mr_device_id or mesh.mr_id or None)
@@ -410,9 +425,7 @@ class VehicleMrOnlineQueryService:
             current_ap_mac=(mesh.peer_ap_mac or None) if mesh else None,
             mesh_radio=(mesh.mesh_radio or None) if mesh else None,
             rssi_dbm=mesh.rssi if mesh else persisted.rssi,
-            station_name=(mesh.station or None)
-            if mesh
-            else (persisted.station or None) or (base.station if base else None),
+            station_name=station_name or None,
             section_name=(mesh.section or None) if mesh else None,
             mileage=(mesh.mileage or None) if mesh else None,
             direction=(mesh.line_side or None) if mesh else None,
