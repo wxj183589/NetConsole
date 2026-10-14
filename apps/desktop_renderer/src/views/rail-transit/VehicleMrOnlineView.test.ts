@@ -43,7 +43,7 @@ describe('vehicle MR online view', () => {
     expect(source).toContain('display(row.ct.rssi_dbm)')
     expect(source).toContain('display(row.tc.rssi_dbm)')
     expect(source).toContain('display(endpoint.rssi_dbm)')
-    expect(source).not.toMatch(/display\\((?:row\\.(?:ct|tc)|endpoint)\\.rssi_dbm,\\s*['"] dBm['"]\\)/)
+    expect(source).not.toMatch(/display\((?:row\.(?:ct|tc)|endpoint)\.rssi_dbm,\s*['"] dBm['"]\)/)
   })
 
   it('uses typed data tables without changing editable mapping slots', () => {
