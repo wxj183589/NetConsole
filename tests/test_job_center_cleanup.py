@@ -19,6 +19,7 @@ from netconsole.models.task_state import TaskState
 from netconsole.models.api.job_center import JobCenterCleanupResultDTO
 from netconsole.repositories.task_repository import TaskRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_cleanup_service import TaskCleanupService
 from netconsole.services.production_database_maintenance import PRODUCTION_SITE_ALLOWLIST
 
 
@@ -29,6 +30,7 @@ def _snapshot(
     finished_time: str = "",
     error_message: str = "",
     result: dict[str, object] | None = None,
+    resource_keys: list[str] | None = None,
 ) -> TaskSnapshot:
     updated_time = finished_time or "2026-07-29T01:00:00Z"
     return TaskSnapshot(
@@ -42,6 +44,7 @@ def _snapshot(
         updated_time=updated_time,
         error_message=error_message,
         result=dict(result or {}),
+        resource_keys=list(resource_keys or []),
         site_name="demo",
     )
 
@@ -234,6 +237,131 @@ def test_failed_or_warning_task_requires_acknowledgement_before_single_dismiss(
     assert JobCenterCleanupResultDTO.model_validate(dismissed).dismissed_by == "test"
     assert repository.list(limit=20) == []
     assert repository.get("warning") is None
+
+
+def test_cleanup_distinguishes_historical_resource_keys_from_durable_references(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    repository.save(
+        _snapshot(
+            "historical-lock",
+            TaskState.COMPLETED,
+            finished_time="2026-07-28T01:00:00Z",
+            resource_keys=["site:demo|ac:ac-1|fit_ap_optical"],
+        )
+    )
+    repository.save(
+        _snapshot(
+            "durable-mesh-reference",
+            TaskState.COMPLETED,
+            finished_time="2026-07-28T01:00:00Z",
+            resource_keys=["mesh_source:session-1:1"],
+        )
+    )
+    repository.save(
+        _snapshot(
+            "unknown-resource-owner",
+            TaskState.COMPLETED,
+            finished_time="2026-07-28T01:00:00Z",
+            resource_keys=["vendor-specific-resource:1"],
+        )
+    )
+    active = _snapshot(
+        "active-resource-lock",
+        TaskState.RUNNING,
+        resource_keys=["site:demo|ac:ac-2|fit_ap_optical"],
+    )
+    repository.save(active)
+
+    cleanup = TaskCleanupService(repository, paths=paths, site_name="demo")
+    decisions = {
+        item["task_id"]: item
+        for item in cleanup.preview_cleanup(
+            [
+                "historical-lock",
+                "durable-mesh-reference",
+                "unknown-resource-owner",
+                "active-resource-lock",
+            ]
+        )["decisions"]
+    }
+
+    assert decisions["historical-lock"]["can_cleanup"] is True
+    assert "HISTORICAL_RESOURCE_KEY" in decisions["historical-lock"]["reasons"]
+    assert decisions["durable-mesh-reference"]["can_cleanup"] is False
+    assert "DURABLE_RESOURCE_REFERENCE" in decisions["durable-mesh-reference"]["reasons"]
+    assert decisions["unknown-resource-owner"]["can_cleanup"] is False
+    assert "RESOURCE_OWNERSHIP_UNKNOWN" in decisions["unknown-resource-owner"]["reasons"]
+    assert decisions["active-resource-lock"]["can_cleanup"] is False
+    assert "ACTIVE_RESOURCE_LOCK" in decisions["active-resource-lock"]["reasons"]
+
+    result = cleanup.cleanup_tasks(
+        [
+            "historical-lock",
+            "durable-mesh-reference",
+            "unknown-resource-owner",
+            "active-resource-lock",
+        ]
+    )
+    assert result["deleted_task_ids"] == ["historical-lock"]
+    assert repository.get("durable-mesh-reference") is not None
+    assert repository.get("unknown-resource-owner") is not None
+    assert repository.get("active-resource-lock") is not None
+
+
+def test_acknowledged_partial_result_can_be_removed_without_rewriting_status(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    repository.save(
+        _snapshot(
+            "partial-result",
+            TaskState.COMPLETED,
+            finished_time="2026-07-28T01:00:00Z",
+            result={"business_outcome": "PARTIAL_SUCCESS", "failed_count": 1},
+        )
+    )
+    service = TaskApplicationService(paths=paths, site_name="demo", reconcile_on_start=False)
+
+    blocked = service.dismiss_history_task("partial-result", site_name="demo")
+    assert blocked["dismissed"] == 0
+    assert blocked["skipped_unacknowledged"] == 1
+
+    acknowledged = service.acknowledge_history_tasks(
+        site_name="demo", task_ids=["partial-result"]
+    )
+    assert acknowledged["task_ids"] == ["partial-result"]
+    dismissed = service.dismiss_history_task("partial-result", site_name="demo")
+    assert dismissed["task_ids"] == ["partial-result"]
+    assert repository.get("partial-result") is None
+
+
+def test_corrupted_resource_metadata_is_explicitly_protected(
+    tmp_path: Path,
+) -> None:
+    paths, repository = _repository(tmp_path)
+    repository.save(
+        _snapshot(
+            "corrupted-resource-metadata",
+            TaskState.COMPLETED,
+            finished_time="2026-07-28T01:00:00Z",
+        )
+    )
+    with sqlite3.connect(paths.site_tasks_db_path("demo")) as connection:
+        connection.execute(
+            "UPDATE task_snapshots SET resource_keys_json=? WHERE task_id=?",
+            ("{not-json", "corrupted-resource-metadata"),
+        )
+        connection.commit()
+
+    cleanup = TaskCleanupService(repository, paths=paths, site_name="demo")
+    preview = cleanup.preview_cleanup(["corrupted-resource-metadata"])
+    decision = preview["decisions"][0]
+    assert decision["can_cleanup"] is False
+    assert "RESOURCE_METADATA_UNREADABLE" in decision["reasons"]
+    assert cleanup.cleanup_tasks(["corrupted-resource-metadata"])["deleted_task_ids"] == []
+    assert repository.get("corrupted-resource-metadata") is not None
 
 
 def test_cleanup_api_publishes_incremental_event_and_rejects_file_deletion(

@@ -299,6 +299,40 @@ def test_global_task_cleanup_reuses_operational_gc_for_indexed_sites(
     assert _stored(service, SITE_B, "cleanup-site-b") is None
 
 
+def test_global_acknowledge_covers_indexed_sites_without_changing_single_site_scope(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, site_name=SITE_A)
+    for site_name, task_id in ((SITE_A, "alert-site-a"), (SITE_B, "alert-site-b")):
+        service.create_external_task(
+            task_id=task_id,
+            task_type="multisite_alert_test",
+            task_name=task_id,
+            source="agent",
+            site_name=site_name,
+        )
+        service.record_external_event(
+            task_id,
+            "error",
+            {"error": "agent failed"},
+            source="agent",
+            site_name=site_name,
+        )
+
+    current_only = service.acknowledge_history_tasks(
+        site_name=SITE_A, all_alerts=True
+    )
+    assert current_only["task_ids"] == ["alert-site-a"]
+    assert not _stored(service, SITE_B, "alert-site-b").acknowledged_at
+
+    global_result = service.acknowledge_history_tasks(
+        site_name=SITE_A, all_alerts=True, all_sites=True
+    )
+    assert global_result["task_ids"] == ["alert-site-b"]
+    assert _stored(service, SITE_A, "alert-site-a").acknowledged_at
+    assert _stored(service, SITE_B, "alert-site-b").acknowledged_at
+
+
 def test_same_task_id_is_distinguished_by_site_scoped_repository_and_query(
     tmp_path: Path,
 ) -> None:

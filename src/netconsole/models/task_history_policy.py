@@ -34,6 +34,8 @@ LONG_TERM_TASK_RESOURCE_PREFIXES = (
     "ground-unattended:",
     "ground_unattended:",
     "mesh-import:",
+    "mesh_catalog:",
+    "mesh_profile:",
     "mesh-source:",
     "mesh_source:",
     "mesh-session:",

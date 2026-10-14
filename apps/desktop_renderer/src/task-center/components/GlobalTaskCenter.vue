@@ -261,7 +261,7 @@ async function cleanupHistory(cleanupType: TaskCleanupType): Promise<void> {
     const preview = await store.previewCleanup(cleanupType)
     const eligibleCount = preview.eligible_count ?? preview.matched
     if (!eligibleCount) {
-      ElMessage.info(t('job_center.cleanup.empty', '当前没有可清理的已结束任务'))
+      ElMessage.info(cleanupBlockedNotice(preview))
       return
     }
     await confirm({
@@ -330,13 +330,53 @@ function cleanupNotice(preview: TaskCleanupResult): string {
     (preview.protected_count ?? 0) - preview.skipped_unacknowledged,
   )
   const guarded = protectedCount
-    ? `${protectedCount} 个存在运行/业务引用或不可验证元数据的任务将保留。`
+    ? `${protectedCount} 个存在运行/业务引用或不可验证元数据的任务将保留。${cleanupReasonSummary(preview)}`
     : ''
   const safety = t(
     'job_center.cleanup.no_files',
     '不会影响运行中或等待中的任务；只删除 tasks.db 任务记录，不删除 Log Center 日志、采集文件或导出结果。',
   )
   return [retained, guarded, safety].filter(Boolean).join(' ')
+}
+
+function cleanupReasonSummary(preview: TaskCleanupResult): string {
+  const labels: Record<string, string> = {
+    ACTIVE_TASK: '活动任务',
+    ACTIVE_RESOURCE_LOCK: '活动资源锁',
+    UNACKNOWLEDGED_ATTENTION: '未处理告警',
+    ONLINE_MR_MAPPING: 'Online MR 会话关联',
+    GROUND_CURRENT_MAPPING: '地面无人值守关联',
+    DURABLE_RESOURCE_REFERENCE: '长期业务引用',
+    DURABLE_RESULT_REFERENCE: '持久结果引用',
+    DURABLE_RESULT_SUMMARY_REFERENCE: '结果摘要引用',
+    ARTIFACT_MANIFEST_REFERENCE: 'Artifact 清单不可验证',
+    RESULT_ARTIFACT_REFERENCE: '结果文件引用不可验证',
+    RESOURCE_METADATA_UNREADABLE: '资源元数据损坏',
+    RESULT_METADATA_UNREADABLE: '结果元数据损坏',
+    RESULT_AUTHORITY_UNREADABLE: '结果权威记录不可读',
+    RESOURCE_OWNERSHIP_UNKNOWN: '资源归属未知',
+    TASK_NOT_FOUND: '任务已清理或不存在',
+  }
+  const counts = new Map<string, number>()
+  for (const decision of preview.decisions ?? []) {
+    if (decision.can_cleanup) continue
+    const reasons = Array.isArray(decision.reasons) ? decision.reasons : []
+    for (const reason of reasons) {
+      const key = String(reason)
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+  }
+  const detail = [...counts.entries()]
+    .map(([reason, count]) => `${labels[reason] ?? reason} ${count} 条`)
+    .join('、')
+  return detail ? `保留原因：${detail}。` : ''
+}
+
+function cleanupBlockedNotice(preview: TaskCleanupResult): string {
+  const detail = cleanupReasonSummary(preview)
+  return detail
+    ? `当前没有可清理的已结束任务。${detail}`
+    : t('job_center.cleanup.empty', '当前没有可清理的已结束任务')
 }
 
 async function acknowledgeAllAlerts(): Promise<void> {

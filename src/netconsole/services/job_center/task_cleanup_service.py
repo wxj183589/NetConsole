@@ -8,6 +8,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.models.task_history_policy import (
     ACTIVE_TASK_STATE_VALUES,
     TERMINAL_TASK_STATE_VALUES,
+    task_has_long_term_reference,
     task_requires_attention,
 )
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
@@ -38,6 +39,20 @@ _REFERENCE_KEYS = frozenset(
         "mesh_source_id",
         "mesh_source_ids",
     }
+)
+
+# These keys are concurrency scopes written by TaskApplicationService owners.
+# They remain useful for active-task conflict detection, but after a terminal
+# task has closed they are not ownership proof for a durable business record.
+_HISTORICAL_RESOURCE_KEY_PREFIXES = (
+    "site:",
+    "wps:",
+    "ac-fit-ap-export:",
+    "database-backup:",
+    "database-backup-center:",
+    "database-upgrade:",
+    "database-upgrade-batch:",
+    "mesh-derived-repair:",
 )
 
 
@@ -280,8 +295,25 @@ class TaskCleanupService:
         if not valid:
             reasons.append("RESOURCE_METADATA_UNREADABLE")
         elif resource_keys:
-            reasons.append("RESOURCE_REFERENCE")
-            protected.extend(str(value) for value in resource_keys)
+            historical_keys, durable_keys, unknown_keys = self._classify_resource_keys(
+                resource_keys
+            )
+            if status in ACTIVE_TASK_STATE_VALUES:
+                reasons.append("ACTIVE_RESOURCE_LOCK")
+                reasons.append("RESOURCE_REFERENCE")
+                protected.extend(str(value) for value in resource_keys)
+            else:
+                if historical_keys:
+                    reasons.append("HISTORICAL_RESOURCE_KEY")
+                    preserved.extend(str(value) for value in historical_keys)
+                if durable_keys:
+                    reasons.append("DURABLE_RESOURCE_REFERENCE")
+                    reasons.append("RESOURCE_REFERENCE")
+                    protected.extend(str(value) for value in durable_keys)
+                if unknown_keys:
+                    reasons.append("RESOURCE_OWNERSHIP_UNKNOWN")
+                    reasons.append("RESOURCE_REFERENCE")
+                    protected.extend(str(value) for value in unknown_keys)
 
         result = context["result"]
         result_valid = bool(context["result_valid"])
@@ -361,9 +393,12 @@ class TaskCleanupService:
 
         reasons = list(dict.fromkeys(reasons))
         protected = list(dict.fromkeys(protected))
+        blocking_reasons = [
+            reason for reason in reasons if reason != "HISTORICAL_RESOURCE_KEY"
+        ]
         return CleanupDecision(
             task_id=task_id,
-            can_cleanup=not reasons,
+            can_cleanup=not blocking_reasons,
             status=status,
             reasons=tuple(reasons),
             protected_resources=tuple(protected),
@@ -518,7 +553,31 @@ class TaskCleanupService:
             parsed = json.loads(raw)
         except (TypeError, ValueError, json.JSONDecodeError):
             return [], False
-        return (list(parsed), True) if isinstance(parsed, list) else ([], False)
+        if not isinstance(parsed, list):
+            return [], False
+        if any(not isinstance(item, str) or not item.strip() for item in parsed):
+            return [], False
+        return list(parsed), True
+
+    @staticmethod
+    def _classify_resource_keys(
+        resource_keys: list[object],
+    ) -> tuple[list[str], list[str], list[str]]:
+        historical: list[str] = []
+        durable: list[str] = []
+        unknown: list[str] = []
+        for value in resource_keys:
+            key = str(value).strip()
+            normalized = key.casefold()
+            if normalized.startswith(_HISTORICAL_RESOURCE_KEY_PREFIXES) or normalized.endswith(
+                ":ac_config_write"
+            ):
+                historical.append(key)
+            elif task_has_long_term_reference(resource_keys=(key,)):
+                durable.append(key)
+            else:
+                unknown.append(key)
+        return historical, durable, unknown
 
     @staticmethod
     def _normalize_ids(task_ids: list[str] | tuple[str, ...] | set[str]) -> list[str]:
