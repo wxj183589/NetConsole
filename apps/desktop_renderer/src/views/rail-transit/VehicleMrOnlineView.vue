@@ -337,9 +337,9 @@ onBeforeUnmount(stopPolling)
       <NcDataTable v-loading="loading" table-id="rail-vehicle-mr-online-trains" route-key="/rail-transit/train-online" :data="page?.items || []" :columns="trainColumns" height="calc(100vh - 480px)" empty-text="暂无列车在线状态" highlight-current-row @current-change="(row: VehicleMrTrainState | undefined) => selectedTrain = row || null" @row-dblclick="openDetail">
         <template #cell-overall_status="{ row }"><el-tag :type="statusType(row.overall_status)">{{ statusText[row.overall_status] }}</el-tag></template>
         <template #cell-ct_ap="{ row }"><NcOverflowTooltip :text="display(row.ct.current_ap_name)">{{ display(row.ct.current_ap_name) }}</NcOverflowTooltip></template>
-        <template #cell-ct_station_rssi="{ row }"><NcOverflowTooltip :text="`${display(row.ct.station_name)} / ${display(row.ct.rssi_dbm, ' dBm')}`">{{ display(row.ct.station_name) }} / {{ display(row.ct.rssi_dbm, ' dBm') }}</NcOverflowTooltip></template>
+        <template #cell-ct_station_rssi="{ row }"><NcOverflowTooltip :text="`${display(row.ct.station_name)} / ${display(row.ct.rssi_dbm)}`">{{ display(row.ct.station_name) }} / {{ display(row.ct.rssi_dbm) }}</NcOverflowTooltip></template>
         <template #cell-tc_ap="{ row }"><NcOverflowTooltip :text="display(row.tc.current_ap_name)">{{ display(row.tc.current_ap_name) }}</NcOverflowTooltip></template>
-        <template #cell-tc_station_rssi="{ row }"><NcOverflowTooltip :text="`${display(row.tc.station_name)} / ${display(row.tc.rssi_dbm, ' dBm')}`">{{ display(row.tc.station_name) }} / {{ display(row.tc.rssi_dbm, ' dBm') }}</NcOverflowTooltip></template>
+        <template #cell-tc_station_rssi="{ row }"><NcOverflowTooltip :text="`${display(row.tc.station_name)} / ${display(row.tc.rssi_dbm)}`">{{ display(row.tc.station_name) }} / {{ display(row.tc.rssi_dbm) }}</NcOverflowTooltip></template>
         <template #cell-policy="{ row }">{{ policyText[row.policy || ''] || display(row.policy) }}</template>
         <template #cell-actions="{ row }"><el-button link type="primary" @click="openDetail(row)">通信详情</el-button></template>
       </NcDataTable><div class="pagination"><span>共 {{ page?.total || 0 }} 列车</span><el-pagination :current-page="filters.page" :page-size="filters.page_size" layout="prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadTrains() }" /></div>
@@ -361,7 +361,7 @@ onBeforeUnmount(stopPolling)
             <el-descriptions :column="2" border>
               <el-descriptions-item label="MR 名称">{{ display(endpoint.mr_name) }}</el-descriptions-item><el-descriptions-item label="当前轨旁 AP">{{ display(endpoint.current_ap_name) }}</el-descriptions-item>
               <el-descriptions-item label="AP MAC">{{ display(endpoint.current_ap_mac) }}</el-descriptions-item><el-descriptions-item label="Mesh Radio">{{ display(endpoint.mesh_radio) }}</el-descriptions-item>
-              <el-descriptions-item label="RSSI">{{ display(endpoint.rssi_dbm, ' dBm') }}</el-descriptions-item><el-descriptions-item label="匹配状态">{{ matchText[endpoint.match_status] }}</el-descriptions-item>
+              <el-descriptions-item label="RSSI">{{ display(endpoint.rssi_dbm) }}</el-descriptions-item><el-descriptions-item label="匹配状态">{{ matchText[endpoint.match_status] }}</el-descriptions-item>
               <el-descriptions-item label="站点">{{ display(endpoint.station_name) }}</el-descriptions-item><el-descriptions-item label="区间">{{ display(endpoint.section_name) }}</el-descriptions-item>
               <el-descriptions-item label="里程">{{ display(endpoint.mileage) }}</el-descriptions-item><el-descriptions-item label="方向">{{ display(endpoint.direction) }}</el-descriptions-item>
               <el-descriptions-item label="轨旁 AP 室外侧收光">{{ display(endpoint.outdoor_optical_power) }}</el-descriptions-item><el-descriptions-item label="轨旁 AP 室内侧收光">{{ display(endpoint.indoor_optical_power) }}</el-descriptions-item>
