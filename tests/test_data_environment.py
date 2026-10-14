@@ -33,8 +33,8 @@ def test_unmarked_persistent_root_with_verified_storage_manifest_is_accepted(
 
     info = data_environment(tmp_path)
 
-    assert info.mode is DataEnvironmentMode.DEVELOPMENT
-    assert info.readonly_warning is False
+    assert info.mode is DataEnvironmentMode.PRODUCTION
+    assert info.readonly_warning is True
 
 
 def test_environment_marker_round_trip_and_path_resolver_view(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
