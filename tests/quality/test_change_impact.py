@@ -37,6 +37,8 @@ def test_registry_loads_and_references_current_evidence() -> None:
         (("src/netconsole/services/device_operation_service.py",), "L2"),
         (("apps/desktop_renderer/src/components/table/NcDataTable.vue",), "L3"),
         (("src/netconsole/core/feature_registry.py",), "L4"),
+        (("scripts/quality/local_gate.py",), "L4"),
+        (("scripts/check_workspace_layout.py",), "L4"),
     ],
 )
 def test_classify_uses_highest_registered_risk(paths: tuple[str, ...], expected_level: str) -> None:

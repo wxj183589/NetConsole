@@ -52,10 +52,12 @@ D:\study\NetConsole-Workspace\worktrees\<task-id-or-branch-name>
 
 | 用途 | 规范路径 |
 | --- | --- |
-| 共享样本和隔离测试运行数据 | `test-data\fixtures\`、`test-data\mesh\`、`test-data\device\`、`test-data\integration\` |
+| 共享样本 | `test-data\fixtures\`、`test-data\mesh\`、`test-data\device\`、`test-data\integration\` |
+| 自动化测试隔离运行根 | `test-data\NetConsole\<run-id>\`；Local Gate、CI 和测试契约固定使用此路径 |
 | 历史测试证据 | `test-data\historical\`，保持原状 |
+| 仓库内可再生构建输出 | `NetConsole\dist\`；Renderer、Electron、PyInstaller、Agent、日志和 smoke 构建链的普通输出固定在这里 |
 | 正式发布制品 | `release\<version>\` |
-| 临时构建输出 | `temp\build\<task-id>\` |
+| Workspace 级临时构建/暂存 | `temp\build\<task-id>\`；仅用于仓库外 staging 或明确任务隔离，不复制仓库 `dist\` 的普通输出 |
 | 安装器验收临时目录 | `temp\installer-test\<task-id>\` |
 | 临时分析 | `temp\analysis\<task-id>\` |
 | 构建日志 | `reports\build\<task-id>\` |
