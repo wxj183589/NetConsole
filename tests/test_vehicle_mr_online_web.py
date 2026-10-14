@@ -110,7 +110,6 @@ def test_vehicle_mr_query_maps_persisted_ct_tc_state(monkeypatch, tmp_path: Path
     assert service.list_events("demo", "train-1").items[0]["ap_name"] == "AP-CT"
 
 
-
 def test_vehicle_mr_station_fallback_requires_unchanged_ap(tmp_path: Path) -> None:
     service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
         PathResolver(app_root=tmp_path, data_root=tmp_path)
