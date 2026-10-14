@@ -500,24 +500,56 @@ class TaskApplicationService:
         site_name: str,
         task_ids: list[str] | None = None,
         all_alerts: bool = False,
+        all_sites: bool = False,
     ) -> dict[str, object]:
-        repository = self.repository(site_name)
-        result = repository.acknowledge_attention_tasks(
-            task_ids=task_ids,
-            acknowledge_all=all_alerts,
-        )
-        ids = list(result.get("task_ids") or [])
-        if ids:
-            self._publish_history_event(
-                "tasks.acknowledged",
-                task_ids=ids,
-                site_name=site_name,
-                payload={
-                    "acknowledged_at": str(result.get("acknowledged_at") or ""),
-                    "summary": repository.visible_attention_summary(),
-                },
+        selected_site = str(site_name or self.site_name or "demo")
+        sites = {selected_site}
+        if all_sites:
+            sites.update(self._task_authority_index.sites())
+        results: list[dict[str, object]] = []
+        for selected in sorted(sites):
+            database = self.paths.site_tasks_db_path(selected)
+            if selected != selected_site and not database.is_file():
+                continue
+            repository = self.repository(selected)
+            result = repository.acknowledge_attention_tasks(
+                task_ids=task_ids,
+                acknowledge_all=all_alerts,
             )
-        return result
+            results.append(result)
+            ids = list(result.get("task_ids") or [])
+            if ids:
+                self._publish_history_event(
+                    "tasks.acknowledged",
+                    task_ids=ids,
+                    site_name=selected,
+                    payload={
+                        "acknowledged_at": str(result.get("acknowledged_at") or ""),
+                        "summary": repository.visible_attention_summary(),
+                    },
+                )
+        return self._merge_acknowledge_results(results)
+
+    @staticmethod
+    def _merge_acknowledge_results(
+        results: list[dict[str, object]],
+    ) -> dict[str, object]:
+        acknowledged_ids: list[str] = []
+        timestamps: list[str] = []
+        for result in results:
+            acknowledged_ids.extend(
+                str(task_id)
+                for task_id in result.get("task_ids", [])
+                if str(task_id).strip()
+            )
+            timestamp = str(result.get("acknowledged_at") or "")
+            if timestamp:
+                timestamps.append(timestamp)
+        return {
+            "acknowledged": len(acknowledged_ids),
+            "task_ids": list(dict.fromkeys(acknowledged_ids)),
+            "acknowledged_at": max(timestamps) if timestamps else "",
+        }
 
     def dismiss_history_task(
         self,
