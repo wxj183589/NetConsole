@@ -530,7 +530,10 @@
       "level": "L4",
       "patterns": [
         "config/architecture/change_impact_matrix.json",
-        "scripts/quality/check_change_impact.py"
+        "scripts/quality/check_change_impact.py",
+        "scripts/quality/local_gate.py",
+        "scripts/check_workspace_layout.py",
+        ".github/workflows/engineering-hardening.yml"
       ],
       "consumers": [
         "architecture_governance",

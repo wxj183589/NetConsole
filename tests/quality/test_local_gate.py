@@ -135,6 +135,8 @@ def test_consumer_and_full_build_renderer_before_python(tmp_path: Path) -> None:
 def test_fast_and_full_gate_enforce_repository_root_layout() -> None:
     assert "root-layout" in FAST_SUITES
     assert "root-layout" in FULL_SUITES
+    assert "workspace-layout" in FAST_SUITES
+    assert "workspace-layout" in FULL_SUITES
 
 
 def test_unstartable_subprocess_returns_nonzero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

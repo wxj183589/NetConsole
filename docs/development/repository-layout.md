@@ -6,6 +6,8 @@
 
 本文件与 `AGENTS.md` 是强制约束；README 只提供简明导航。目录职责不明确时先审计内容、Git 跟踪状态、代码引用、测试引用和构建引用，再决定位置。
 
+Workspace 顶层目录、Codex Worktree、测试数据、构建/报告输出和链接边界由唯一权威规则 [`workspace-layout.md`](./workspace-layout.md) 固定；本文件只负责仓库内部目录职责，不重复维护 Workspace 规则。
+
 ## 1.1 项目 Workspace 与 Authority
 
 | 名称 | Canonical 路径 | 用途 |

@@ -25,6 +25,7 @@ TEST_BASE_ROOT = test_data_root_base(repository_root=ROOT)
 MODES = ("auto", "fast", "consumer", "full")
 FAST_SUITES = (
     "root-layout",
+    "workspace-layout",
     "change-impact",
     "ruff-changed",
     "python-direct",
@@ -35,6 +36,7 @@ FAST_SUITES = (
 )
 FULL_SUITES = (
     "root-layout",
+    "workspace-layout",
     "renderer-full",
     "python-full",
     "electron-contract",
@@ -296,6 +298,16 @@ def _root_layout(context: GateContext) -> Sequence[CommandStep]:
     )
 
 
+def _workspace_layout(context: GateContext) -> Sequence[CommandStep]:
+    del context
+    return (
+        CommandStep(
+            "workspace-layout",
+            (sys.executable, "-m", "scripts.check_workspace_layout"),
+        ),
+    )
+
+
 def _ruff_changed(context: GateContext) -> Sequence[CommandStep]:
     paths = tuple(path for path in context.changed_paths if path.endswith(".py") and (ROOT / path).is_file())
     return (CommandStep("ruff-changed", (sys.executable, "-m", "ruff", "check", *paths)),) if paths else ()
@@ -378,6 +390,7 @@ def _git_diff_check(context: GateContext) -> Sequence[CommandStep]:
 
 SUITE_EXECUTORS: dict[str, Executor] = {
     "root-layout": _root_layout,
+    "workspace-layout": _workspace_layout,
     "python-full": _python_full,
     "renderer-full": _renderer_full,
     "electron-contract": _electron_contract,
