@@ -13,7 +13,6 @@ DATA_ROOT_REGISTRY_KEY = r"SOFTWARE\NetConsole"
 DATA_ROOT_REGISTRY_VALUE = "DataRoot"
 MINIMUM_DATA_ROOT_FREE_BYTES = 10 * 1024**3
 RECOMMENDED_DATA_ROOT_FREE_BYTES = 100 * 1024**3
-
 class DataRootConfigurationError(RuntimeError):
     """Raised when persistent NetConsole storage has not been configured."""
 
