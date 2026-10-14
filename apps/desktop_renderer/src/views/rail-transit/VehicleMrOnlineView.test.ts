@@ -43,7 +43,7 @@ describe('vehicle MR online view', () => {
     expect(source).toContain('display(endpoint.rssi_dbm)')
     expect(source).toContain('display(row.ct.station_name)')
     expect(source).toContain('display(row.tc.station_name)')
-    expect(source).not.toMatch(/display\\((?:row\\.(?:ct|tc)|endpoint)\\.rssi_dbm,\\s*['"] dBm['"]\\)/)
+    expect(source).not.toMatch(/display\((?:row\.(?:ct|tc)|endpoint)\.rssi_dbm,\s*['"] dBm['"]\)/)
     expect(source).not.toContain(' dBm')
   })
 
