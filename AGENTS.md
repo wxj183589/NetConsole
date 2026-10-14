@@ -23,6 +23,12 @@
 
 D:\NetConsoleData-dev 的完整内容不得复制到 .local、diagnostic、acceptance、validation、test-data、worktree 或 tmp。隔离测试只能使用明确的测试根；需要真实开发验收时直接使用该 Authority，并按任务边界保护其业务数据。D:\study\fping 是独立的上游 GitHub 项目 checkout，不属于 NetConsole Workspace，不得移动、清理、改写或纳入本项目治理。
 
+## Git 对象与临时文件收口
+
+- 主仓库 Git 临时对象只在实际 `git-common-dir\objects` 下按精确名称 `tmp_obj_*`、`tmp_pack_*` 盘点；正式 `pack-*.pack`、`pack-*.idx`、`pack-*.rev`、`*.keep`、标签、远程跟踪和 `refs/archive/` 均不得作为临时物处理。
+- 回收前必须逐文件确认路径未越界、元数据稳定、独占只读打开成功、无活动 Git 写入进程，并验证 `status`、`HEAD`/`github/main`、Worktree、`show-ref` 和 `fsck --connectivity-only --no-reflogs`。来源或依赖不明确时保留。
+- 只可通过同卷受控隔离目录逐文件移动，隔离后复核，再逐文件精确删除并执行最终 Git 检查。不得运行 `git gc --prune=now`、`git prune`、激进 repack、`git clean -fdx`、`git reset --hard`，不得删除远程分支或标签。
+
 ## 语言与编码
 
 - 默认使用中文回复，保留中文 UI、注释和日志。
