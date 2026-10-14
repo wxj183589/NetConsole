@@ -261,7 +261,6 @@ __all__ = [
     "DataRootConfigurationError",
     "MINIMUM_DATA_ROOT_FREE_BYTES",
     "RECOMMENDED_DATA_ROOT_FREE_BYTES",
-    "LEGACY_DEVELOPMENT_DATA_ROOT",
     "read_machine_data_root",
     "resolve_persistent_data_root",
     "validate_installation_data_root",
