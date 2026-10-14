@@ -18,14 +18,14 @@ describe('desktop machine data-root configuration', () => {
     expect(result).toEqual({ dataRoot: 'E:\\ManualNetConsoleData', source: 'environment' })
   })
 
-  it('ignores the retired development root when the installer pointer is available', () => {
+  it('preserves an explicit development root for isolated real-data validation', () => {
     const result = resolveDesktopDataRootConfiguration({
       platform: 'win32',
       environment: { NETCONSOLE_DATA_ROOT: 'D:\\NetConsoleData-dev' },
       queryRegistry: () => ({ status: 0, stdout: '    DataRoot    REG_SZ    D:\\NetConsoleData\r\n' }),
     })
 
-    expect(result).toEqual({ dataRoot: 'D:\\NetConsoleData', source: 'machine_configuration' })
+    expect(result).toEqual({ dataRoot: 'D:\\NetConsoleData-dev', source: 'environment' })
   })
 
   it('reads the 64-bit HKLM pointer written by the installer', () => {

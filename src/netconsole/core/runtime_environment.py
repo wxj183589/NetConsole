@@ -139,7 +139,8 @@ def data_environment(data_root: Path | None = None) -> DataEnvironmentInfo:
     compatibility with existing business roots created before the marker
     contract, a root with a verified storage manifest and standard directory
     layout may start without writing a new marker; it is treated as a
-    non-production persistent root.
+    production persistent root so production write and authority gates remain
+    fail-closed.
     """
 
     selected_runtime_mode = runtime_mode()
@@ -151,7 +152,7 @@ def data_environment(data_root: Path | None = None) -> DataEnvironmentInfo:
         return DataEnvironmentInfo(DataEnvironmentMode.TEST)
     if not marker.exists():
         if _has_verified_unmarked_persistent_layout(root):
-            return DataEnvironmentInfo(DataEnvironmentMode.DEVELOPMENT)
+            return DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True)
         raise RuntimeError(
             f"数据根缺少 {RUNTIME_MODE_FILE_NAME}，且未发现可验证的持久化存储清单：{root}。"
             "请确认数据目录包含原有业务目录和 config/storage-manifest.json。"
