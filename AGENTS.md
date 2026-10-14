@@ -13,7 +13,7 @@
 
 | 名称 | 路径 | 边界 |
 | --- | --- | --- |
-| WORKSPACE | D:\study\NetConsole-Workspace | NetConsole 源码、项目级制品和按需诊断的统一 Workspace |
+| WORKSPACE | D:\study\NetConsole-Workspace | NetConsole 源码、项目级制品和按需诊断的统一 Workspace；目录规则见 [`docs/development/workspace-layout.md`](./docs/development/workspace-layout.md) |
 | REPO | D:\study\NetConsole-Workspace\NetConsole | 当前 Git 主仓库 |
 | DEVSTATUS | D:\study\NetConsole-Workspace\NetConsole-DevStatus | 仅用于开发状态和交接，不是代码、数据库或备份仓库 |
 | RELEASE | D:\study\NetConsole-Workspace\release | 稳定正式发布制品；按版本和 build 身份保存，不覆盖既有目录 |
@@ -114,7 +114,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 ## 仓库目录约束
 
-- 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先更新 [仓库目录规范](./docs/development/repository-layout.md) 并说明唯一职责。
+- 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先检查并按需更新唯一权威 [Workspace 目录规范](./docs/development/workspace-layout.md) 和仓库内部 [目录规范](./docs/development/repository-layout.md)，说明唯一职责并获得用户明确确认。
 - 任务生成的 report、audit、acceptance、migration、handoff、benchmark、test evidence、investigation result、spec、baseline 或 diagnostic summary，如果用户未明确指定输出路径，禁止直接写入仓库根目录；创建前必须先检查 [仓库目录规范](./docs/development/repository-layout.md)，默认归入 `docs/development/`、`docs/architecture/`、`docs/investigations/`、`docs/archive/` 或对应领域目录。任务要求生成 `XXX_REPORT.md` 不等于允许创建根目录裸文件。
 - Electron、Web、Agent 分别进入 `apps/desktop_electron`、`apps/desktop_renderer`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。不得重新创建 `apps/desktop` 或 `src/netconsole/ui`；`apps/desktop_electron` 只放 main/preload/shared 和必要打包元数据，不复制 Vue 或 Python Core。
 - 不为符合架构示意图创建空的 `domain/application/infrastructure` 层，也不机械搬移现有包；按真实用例逐步收敛依赖。
@@ -127,6 +127,10 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 - 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。除标准 `apps/desktop_electron`、`apps/desktop_renderer` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent/tools`、`apps/desktop`、`apps/agent/tools`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
 - 修改 Agent 构建、工具、配置或路径时，必须同步检查 `apps/agent/README.md`、`docs/agent/README.md`、`docs/release/BUILD_AND_RELEASE.md`、`resources/tools/README.md` 和 `docs/development/repository-layout.md`；重要文档链接必须在提交前验证。
 - 目录职责不明确时先审计内容、Git 跟踪状态和引用关系，不得先新建目录或静默删除数据。
+
+## Workspace 目录规则是强制开发约束
+
+任何开发代理在创建目录、Git Worktree、测试副本或构建输出之前，必须检查 [`docs/development/workspace-layout.md`](./docs/development/workspace-layout.md)，并运行 `python -m scripts.check_workspace_layout`。未经用户明确批准，不得新增 Workspace 或主仓库顶层目录；发现规则冲突时必须停止并请求确认，不得自行绕过。历史例外只允许保留，不允许未经批准继续扩展。
 
 ## Skill 路由
 
