@@ -186,6 +186,40 @@ def test_trackside_business_merges_same_ap_by_identity():
     assert rows[0]["source_ac_device_uuids"] == ["active", "standby"]
 
 
+def test_fit_ap_identity_merge_preserves_nonempty_fields_from_lower_priority_row():
+    rows = merge_fit_ap_rows_by_identity(
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+                "ap_ip": "10.0.0.1",
+                "rx_power": "-7.00",
+                "neighbor_device_name": "SW1",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+                "updated_at": "2026-10-14T09:00:00",
+            },
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+                "ap_ip": "10.0.0.2",
+                "tx_power": "-2.00",
+                "updated_at": "2026-10-14T10:00:00",
+            },
+        ]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ap_ip"] == "10.0.0.2"
+    assert rows[0]["rx_power"] == "-7.00"
+    assert rows[0]["tx_power"] == "-2.00"
+    assert rows[0]["neighbor_device_name"] == "SW1"
+    assert rows[0]["neighbor_interface"] == "GigabitEthernet1/0/1"
+
+
 def test_trackside_business_uses_latest_current_fact_for_same_interface():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(

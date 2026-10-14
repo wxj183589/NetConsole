@@ -1557,12 +1557,18 @@ def merge_fit_ap_rows_by_identity(rows: list[dict[str, object | None]]) -> list[
             passthrough.append(dict(row))
             continue
         existing = merged.get(key)
-        if existing is None or _fit_ap_prefer_score(row) >= _fit_ap_prefer_score(existing):
-            merged[key] = {**existing, **row} if existing else dict(row)
+        if existing is None:
+            merged[key] = dict(row)
+            continue
+        if _fit_ap_prefer_score(row) >= _fit_ap_prefer_score(existing):
+            preferred, fallback = row, existing
         else:
-            for field, value in row.items():
-                if _is_missing_display(existing.get(field)) and not _is_missing_display(value):
-                    existing[field] = value
+            preferred, fallback = existing, row
+        merged_row = dict(preferred)
+        for field, value in fallback.items():
+            if _is_missing_display(merged_row.get(field)) and not _is_missing_display(value):
+                merged_row[field] = value
+        merged[key] = merged_row
     return [*merged.values(), *passthrough]
 
 
