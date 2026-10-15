@@ -65,6 +65,34 @@ def _site_id(request: Request) -> str:
     return _service(request).current_site_id()
 
 
+def _cleanup_conflict_message(result: dict[str, object]) -> str:
+    reasons: set[str] = set()
+    for item in result.get("skipped", []):
+        if isinstance(item, dict):
+            reasons.update(
+                str(reason)
+                for reason in item.get("reasons", []) or []
+                if str(reason) != "RESOURCE_REFERENCE"
+            )
+    labels = {
+        "ACTIVE_RESOURCE_LOCK": "活动资源锁",
+        "ONLINE_MR_MAPPING": "Online MR 会话关联",
+        "GROUND_CURRENT_MAPPING": "地面无人值守关联",
+        "DURABLE_RESOURCE_REFERENCE": "长期业务引用",
+        "DURABLE_RESULT_REFERENCE": "持久结果引用",
+        "DURABLE_RESULT_SUMMARY_REFERENCE": "结果摘要引用",
+        "ARTIFACT_MANIFEST_REFERENCE": "Artifact 清单不可验证",
+        "RESULT_ARTIFACT_REFERENCE": "结果文件引用不可验证",
+        "RESOURCE_METADATA_UNREADABLE": "资源元数据损坏",
+        "RESULT_METADATA_UNREADABLE": "结果元数据损坏",
+        "RESULT_AUTHORITY_UNREADABLE": "结果权威记录不可读",
+        "RESOURCE_OWNERSHIP_UNKNOWN": "资源归属未知",
+        "TASK_NOT_FOUND": "任务已清理或不存在",
+    }
+    detail = "、".join(labels.get(reason, reason) for reason in sorted(reasons))
+    return f"任务未移除，受保护原因：{detail}。" if detail else "任务已从任务中心移除或当前不可清理"
+
+
 @router.get("/tasks", response_model=list[JobCenterTaskDTO])
 def list_tasks(
     request: Request,
@@ -134,6 +162,7 @@ def acknowledge_tasks(
         site_name=_site_id(request),
         task_ids=payload.task_ids,
         all_alerts=payload.all_alerts,
+        all_sites=payload.all_alerts,
     )
     return JobCenterAcknowledgeResultDTO.model_validate(result)
 
@@ -201,10 +230,7 @@ def dismiss_task(
             detail="请先将失败或告警任务标记为已处理",
         )
     if not result.get("task_ids"):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="任务已从任务中心移除或当前不可清理",
-        )
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_cleanup_conflict_message(result))
     return JobCenterCleanupResultDTO.model_validate(result)
 
 

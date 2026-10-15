@@ -22,13 +22,15 @@ export function resolveDesktopDataRootConfiguration(options: {
   queryRegistry?: RegistryQuery
 } = {}): DesktopDataRootResolution {
   const environment = options.environment ?? process.env
+  const platform = options.platform ?? process.platform
   const explicit = environment.NETCONSOLE_DATA_ROOT?.trim()
-  if (explicit) return { dataRoot: requireAbsolutePath(explicit), source: 'environment' }
+  if (explicit) {
+    return { dataRoot: requireAbsolutePath(explicit), source: 'environment' }
+  }
 
   if ((environment.NETCONSOLE_RUNTIME_MODE ?? '').trim().toLowerCase() === 'test') {
     throw new Error('测试模式必须显式设置 NETCONSOLE_DATA_ROOT')
   }
-  const platform = options.platform ?? process.platform
   if (platform !== 'win32') {
     throw new Error('NETCONSOLE_DATA_ROOT must be configured outside Windows')
   }
