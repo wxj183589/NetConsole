@@ -186,6 +186,182 @@ def test_trackside_business_merges_same_ap_by_identity():
     assert rows[0]["source_ac_device_uuids"] == ["active", "standby"]
 
 
+def test_fit_ap_identity_merge_preserves_nonempty_fields_from_lower_priority_row():
+    rows = merge_fit_ap_rows_by_identity(
+        [
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+                "ap_ip": "10.0.0.1",
+                "rx_power": "-7.00",
+                "neighbor_device_name": "SW1",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+                "updated_at": "2026-10-14T09:00:00",
+            },
+            {
+                "ap_uuid": "ap-1",
+                "ap_name": "AP1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+                "ap_ip": "10.0.0.2",
+                "tx_power": "-2.00",
+                "updated_at": "2026-10-14T10:00:00",
+            },
+        ]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ap_ip"] == "10.0.0.2"
+    assert rows[0]["rx_power"] == "-7.00"
+    assert rows[0]["tx_power"] == "-2.00"
+    assert rows[0]["neighbor_device_name"] == "SW1"
+    assert rows[0]["neighbor_interface"] == "GigabitEthernet1/0/1"
+
+
+def test_fit_ap_identity_merge_preserves_zero_false_and_alternating_fields():
+    rows = merge_fit_ap_rows_by_identity(
+        [
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+                "rx_power": "-7.00",
+                "neighbor_device_name": "SW1",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+                "lldp_confidence": 85,
+                "is_online": True,
+                "updated_at": "2026-10-14T09:00:00",
+            },
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+                "ap_ip": "10.0.0.2",
+                "rx_power": None,
+                "neighbor_device_name": "",
+                "lldp_confidence": 0,
+                "is_online": False,
+                "updated_at": "2026-10-14T10:00:00",
+            },
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_mac": "0011-2233-4455",
+                "state": "R/M",
+                "ap_ip": "10.0.0.2",
+                "tx_power": "-2.00",
+                "updated_at": "2026-10-14T11:00:00",
+            },
+        ]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ap_ip"] == "10.0.0.2"
+    assert rows[0]["rx_power"] == "-7.00"
+    assert rows[0]["tx_power"] == "-2.00"
+    assert rows[0]["neighbor_device_name"] == "SW1"
+    assert rows[0]["neighbor_interface"] == "GigabitEthernet1/0/1"
+    assert rows[0]["lldp_confidence"] == 0
+    assert rows[0]["is_online"] is False
+
+
+def test_fit_ap_identity_merge_does_not_resurrect_runtime_facts_after_current_offline():
+    rows = merge_fit_ap_rows_by_identity(
+        [
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_mac": "0011-2233-4455",
+                "ap_name": "AP1",
+                "state": "R/M",
+                "ap_ip": "10.0.0.1",
+                "rx_power": "-7.00",
+                "neighbor_device_name": "SW1",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+                "updated_at": "2026-10-14T09:00:00",
+            },
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_mac": "0011-2233-4455",
+                "ap_name": "AP1",
+                "state": "I",
+                "ap_ip": None,
+                "rx_power": None,
+                "neighbor_device_name": "",
+                "neighbor_interface": "",
+                "updated_at": "2026-10-14T10:00:00",
+            },
+        ]
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["state"] == "I"
+    assert rows[0]["ap_ip"] is None
+    assert rows[0]["rx_power"] is None
+    assert rows[0]["neighbor_device_name"] == ""
+    assert rows[0]["neighbor_interface"] == ""
+
+
+def test_trackside_business_does_not_promote_historical_optical_to_current_offline_ap():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "port_status": "access"}]},
+        {"sw-1": []},
+        [],
+        {"sw-1": []},
+        fit_ap_resource_rows=[
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_name": "AP1",
+                "ap_mac": "0011-2233-4455",
+                "state": "I",
+                "ap_ip": None,
+            }
+        ],
+        historical_lldp_rows=[
+            {
+                "ap_mac": "0011-2233-4455",
+                "neighbor_device_name": "SW1",
+                "neighbor_interface": "GigabitEthernet1/0/1",
+                "ap_rx_power": "-7.00",
+            }
+        ],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["is_ap_offline"] is True
+    assert rows[0]["data_source"] == "historical_lldp"
+    assert rows[0]["ap_rx_power"] is None
+
+
+def test_fit_ap_identity_merge_keeps_identity_scope_and_ambiguity_boundaries():
+    rows = merge_fit_ap_rows_by_identity(
+        [
+            {"ac_device_uuid": "ac-a", "ap_name": "AP1", "ap_mac": "001122334455", "rx_power": "-7"},
+            {"ac_device_uuid": "ac-a", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "tx_power": "-2"},
+            {"ac_device_uuid": "ac-b", "ap_name": "AP1", "ap_mac": "0011-2233-4455", "rx_power": "-8"},
+            {"ac_device_uuid": "ac-a", "ap_name": "AP1", "ap_mac": "00aa-bbcc-ddee", "rx_power": "-9"},
+            {"ac_device_uuid": "ac-a", "ap_name": "AP-UNKNOWN", "rx_power": "-10"},
+            {"ac_device_uuid": "ac-a", "ap_name": "AP-UNKNOWN", "rx_power": "-11"},
+        ]
+    )
+
+    assert len(rows) == 5
+    merged = next(row for row in rows if row.get("ap_mac") == "0011-2233-4455")
+    assert merged["rx_power"] == "-7"
+    assert merged["tx_power"] == "-2"
+    assert sum(row.get("ac_device_uuid") == "ac-b" for row in rows) == 1
+    assert sum(row.get("ap_mac") == "00aa-bbcc-ddee" for row in rows) == 1
+    assert sum(row.get("ap_name") == "AP-UNKNOWN" for row in rows) == 2
+
+
 def test_trackside_business_uses_latest_current_fact_for_same_interface():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(
