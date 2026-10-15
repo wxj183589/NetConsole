@@ -1,94 +1,105 @@
-# NetConsole 实际采集数据优先治理审计
+# NetConsole 实际采集数据优先治理 Phase 1 审计
 
-日期：2026-10-14
+日期：2026-10-15
 审计分支：`codex-A/actual-data-priority-field-merge-20261014`
-审计基线：`d7b36fbc`（`main`，与 `github/main` 一致）
+最新 main 基线：`c5ca5f67`
+PR：[#84](https://github.com/wxj183589/NetConsole/pull/84)，保持 OPEN
 
-## 结论摘要
+## 结论
 
-本阶段完成 Phase 1 审计，并对已确认的一个字段级合并缺陷完成最小修复：
+已确认根因是 `merge_fit_ap_rows_by_identity()` 在较高优先级记录胜出时使用整行覆盖。较新记录的空值会抹掉另一条同身份记录中的有效光衰、LLDP 或接口字段。
 
-- `merge_fit_ap_rows_by_identity()` 在较高优先级记录胜出时，原实现整行覆盖，可能用新记录的空字段抹掉另一条记录中仍有效的光衰或 LLDP 字段。
-- 现改为“首选记录保留非空值，回退记录仅补首选记录缺失字段”，不改变身份键、状态判定、接口、数据库结构或导出列。
-- 页面、导出、统计和设备详情的既有业务规则未被替换；当前页/导出快照链路保持不变。
+PR #84 的字段级补缺方向正确，但原提交仍有两个遗漏：
 
-本阶段不宣称全项目治理完成。审计发现的跨模块来源语义收敛和兼容路径统一，仍需按下文风险清单分阶段处理。
+1. `_is_missing_display()` 使用 `str(value or "")`，会把数值 `0` 和布尔 `False` 当成缺失；这会覆盖例如 `lldp_confidence=0` 的当前清理事实。
+2. 当前记录明确离线时，不能从较早在线记录恢复 IP、光衰、LLDP、Radio 或连接状态等运行态。
 
-## 当前来源边界
+本次最小修复保留首选记录的非缺失字段，仅从可信同身份的当前记录补稳定身份/资料字段；`0`、`0.0` 和 `False` 均视为有效值。两条记录都有明确状态时按采集/更新时间选择较新状态。当前明确离线时不回填运行态字段。
 
-| 模块 | 当前主要入口/生产者 | 当前实际优先级与保护 | 本阶段结论 |
-| --- | --- | --- | --- |
-| AC/FIT-AP | `AcManagementQueryService`、`AcRepository`、AC 采集任务 | 当前 FIT-AP 资源、当前 LLDP、当前光衰由 AC 域读取；身份合并限定 AC 作用域和稳定 MAC/序列号，歧义不猜测 | 已有规则可复用；未扩大接口 |
-| 轨旁 AP 业务 | `TracksideApBusinessQueryService.list_rows()`、`load_trackside_ap_business_snapshot()`、`build_trackside_ap_business_rows()` | 当前交换机接口/光衰/LLDP 和 AC 当前资源优先；历史 LLDP/离线台账仅作有标识的回退；规划资料用于范围、目标和补充，不覆盖实际端口事实 | 修复字段级合并缺陷；页面和导出仍使用统一快照 |
-| 轨旁 AP 导出 | `build_trackside_ap_business_export_snapshot()`、`export_trackside_ap_business_from_snapshot()` | 与页面共用业务快照和修订号，导出列结构未改 | 回归通过 |
-| 轨道交通基础资料 | `RailTransitBaseDataQueryService`、`source_policy.py` | 正式资料写入仍保持人工/既有数据库优先；运行态通过 `include_runtime=True` 附加展示；FIT-AP 管理 IP 保持 runtime-only，不自动写回正式身份 | 不修改正式资料和写入策略 |
-| 列车在线 / Vehicle MR | `VehicleMrOnlineQueryService`、Mesh-Link 查询 | 当前 Mesh/AP 状态和基础资料在现有服务内分层处理；并行 PR #83 尚未合并，本分支不重复修改其 CT/TC 站点回退和 RSSI 文件 | 保留待合并变更边界 |
-| MESH / Online MR | 原始 MESH、Online MR 查询与分析服务 | 原始 RSSI、时间、Peer/链路事实保持独立；身份和站点作为关联补充 | 本阶段未改原始数据和命令流程 |
-| 地面无人值守 | Syslog 原始接收、设备身份解析、Supervisor 状态机 | 原始记录和完整 MAC 身份边界独立；未将 Ping 或基础资料提升为 Mesh 在线事实 | 本阶段未改状态机 |
-| 设备管理兼容路径 | `DeviceManagementWebService._trackside_ap_business()`、Job Center 旧任务处理器 | 仍使用同一业务行构建器，但部分兼容/后台路径不经过 Web 页面使用的冻结业务快照 | 记录为后续收敛项，避免本阶段扩大公共详情接口变更 |
+历史 LLDP/光衰不进入该合并函数。轨旁业务仍由独立历史路径消费，并通过 `data_source=historical_lldp`、stale/current 字段表达来源；历史值不会被伪装为当前在线值。
 
-## 已确认并修复的问题
+## 来源和身份边界
 
-文件：`src/netconsole/services/trackside_ap_business.py`
-函数：`merge_fit_ap_rows_by_identity()`
+- `merge_fit_ap_rows_by_identity()` 的生产输入是 `ac_fit_ap_resources` 与 `ac_fit_ap_optical` 的 Current 投影，不读取历史表。
+- 合并键保持 AC 作用域，并优先使用 `ap_uuid`、规范化 MAC 或序列号；同名无强身份记录不合并。
+- 同一 MAC 出现在不同 AC 时保持分离；MAC、序列号、AP 名称、Radio/BSSID 和 LLDP 拓扑不互相折叠。
+- 当前 FIT-AP 状态仍由 AC Current 决定；光衰阈值、在线/离线判断、AP Identity 关联、DTO/API 和 Excel 列均未改动。
+- 基础资料仍只作为既有补充来源，不把运行态写回正式资料。
 
-原逻辑在新记录优先时执行整行覆盖：
+## 修改文件
 
-```text
-preferred row + empty field  -> empty field
-```
+- `src/netconsole/services/trackside_ap_business.py`
+  - 字段级合并保护有效零值/布尔值。
+  - 明确离线时不恢复旧运行态字段。
+- `tests/test_trackside_ap_business_optimization.py`
+  - 补充交替缺失、多条重复、零值/False、当前离线、AC/MAC/名称边界、历史值隔离测试。
+- `docs/investigations/actual_data_priority_audit_20261014.md`
+  - 更新根因、审计边界和正式数据只读统计。
 
-这不符合字段级来源决策：同一身份的较新记录可以决定它实际提供的字段，但不能抹掉另一条可信记录中仍存在、且本条没有提供的字段。
+未修改采集器、设备管理、AP Identity 基础规则、数据库 Schema、公共 DTO/REST API、导出列、MESH、Online MR、Ground、Task Center 或 Electron Runtime。
 
-现逻辑为：
+## 字段合并前后差异
 
-```text
-preferred row 的非空字段优先
-preferred row 缺失字段 <- fallback row 的非空字段
-```
+| 情况 | 旧逻辑 | 当前逻辑 |
+| --- | --- | --- |
+| 首选记录有值 | 整行覆盖 | 首选非缺失字段优先 |
+| 首选记录为空、回退记录有值 | 可能清空或只在低优先级分支补值 | 仅同身份可信记录按字段补缺 |
+| `0` / `False` | 被当成缺失 | 保留为有效值 |
+| 当前明确离线 | 可能恢复旧 IP/光衰/LLDP | 保留离线事实，不回填运行态 |
+| 历史 LLDP/光衰 | 不应进入该函数 | 继续走历史/stale 独立路径 |
+| 同 AC 重复身份 | 可能整行丢字段 | 字段级合并 |
+| 跨 AC 同 MAC、同名不同 MAC、无身份 | 不应合并 | 保持独立或原样透传 |
 
-回归测试：`tests/test_trackside_ap_business_optimization.py::test_fit_ap_identity_merge_preserves_nonempty_fields_from_lower_priority_row`，覆盖新记录保留新 IP/Tx，同时保留旧记录有效 Rx 和 LLDP 邻居字段。
+## 正式数据只读统计
 
-该修复不改变：
+查询范围为 `D:\NetConsoleData\sites` 下宁波和杭州目录；SQLite 使用只读 URI 打开，仅执行 SELECT/PRAGMA。未执行 UPDATE、DELETE、VACUUM、迁移、重建、采集或设备连接。
 
-- AP 身份键和 AC 作用域；
-- 在线/离线、光衰阈值、LLDP 匹配和统计判定；
-- API DTO、数据库表、字段类型和 Excel 导出列；
-- 采集器、设备会话、任务中心、Electron Runtime。
+`当前值与历史值冲突` 的口径是：当前资源/光衰与对应身份最近一条历史记录在状态、IP、Rx/Tx 或 LLDP/接口字段上同时有值且不相等的记录数；资源维度与光衰维度分别计数后相加，可能同一 AP 在两个维度各计一次。该冲突是历史变化证据，不代表把历史值提升为 Current。
 
-## 审计发现的剩余风险
+| 局点 | Current FIT-AP 原始/合并后 | 同 AC 重复身份组/记录 | 同 MAC 多 AC | 身份歧义组/记录 | 当前-历史冲突 | 合并后状态变化 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 杭州 `hzdt-09` | 148 / 148 | 0 / 0 | 0 | 0 / 0 | 0 | 0 |
+| 杭州 `hzl10` | 932 / 932 | 0 / 0 | 0 | 0 / 0 | 448 | 0 |
+| 杭州地铁4号线-信号-A网 | 0 / 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 |
+| 杭州地铁4号线-信号-B网 | 0 / 0 | 0 / 0 | 0 | 0 / 0 | 0 | 0 |
+| 宁波地铁10号线 | 914 / 914 | 0 / 0 | 0 | 0 / 0 | 1030 | 0 |
+| 宁波地铁12号线 | 994 / 994 | 0 / 0 | 0 | 0 / 0 | 0 | 0 |
+| 宁波地铁1号线 | 685 / 685 | 0 / 0 | 0 | 0 / 0 | 546 | 0 |
+| 宁波地铁6号线 | 602 / 602 | 0 / 0 | 0 | 0 / 0 | 0 | 0 |
 
-1. `DeviceManagementWebService._trackside_ap_business()`、`legacy_tasks._ac_trackside_business_refresh()` 和 `legacy_tasks._device_detail_load_all()` 仍是兼容/后台构建路径。它们使用业务行构建器，但没有完全复用页面和导出使用的冻结 `TracksideApBusinessSnapshot`。后续若统一来源修订号、页面/详情/后台结果一致性，应逐个消费者补充审计和回归，不能直接替换公共接口。
-2. `source_policy.py` 主要约束正式基础资料导入/写入，不是运行态页面的全局优先级表。不能为了表面统一而把 AC 当前 IP、AP 名称或 LLDP 事实直接写入正式资料，也不能倒置已有人工资料保护规则。
-3. 设备详情兼容路径存在异常时保留空站点名称的保护分支。该分支需要后续明确错误可见性和来源状态，当前不在本阶段改动，避免把兼容详情接口改成隐式全量快照查询。
-4. 千级 FIT-AP 真实数据、现场设备、Electron GUI 安装和跨机器验收未在本阶段执行；自动化测试不能替代这些验收。
-5. PR #83（`chatgpt/train-online-station-rssi-20261014`）在审计时仍为 OPEN，不能把其未合并内容计入本分支完成范围。
+当前数据没有出现同 AC 重复身份，因此本次字段保留修复在现场 Current 行上未产生数量变化；这不替代隔离重复数据回归。
 
-## 数据安全与回滚
+### 字段有效数
 
-- 未读取、复制、覆盖或写入 `D:\NetConsoleData`、`D:\NetConsoleData-dev`。
-- 未执行数据库迁移、数据修复、正式资料修改、采集日志修改或导出列变更。
-- 代码改动为单文件局部逻辑，测试改动为单个回归用例；可通过回滚本提交独立撤销。
-- 未连接真实设备，未执行配置命令。
+正式数据上旧逻辑与新逻辑的有效 Rx、Tx、LLDP 和接口字段数量完全相同。原因是当前八个局点均没有同 AC 重复身份；新逻辑没有人为增加历史字段。
 
-## 测试证据
+## 性能
 
-基线阶段已通过：
+- 正式数据只读合并耗时（资源+光衰当前行合并，20 次中位数）：`hzdt-09 3.750 ms`、`hzl10 16.804 ms`、宁波10号线 `23.422 ms`、宁波12号线 `25.705 ms`、宁波1号线 `17.161 ms`、宁波6号线 `15.471 ms`。
+- 隔离千级基准：1000 条记录、500 个 AP 身份、每个身份两条交替缺失记录；合并后 500 条。20 次中位数 `3.087 ms`，最大 `4.407 ms`。
+- 算法仍是单次内存索引和字段遍历，没有新增数据库查询、N+1 访问或持久化内存增长。
 
-- AP Identity 相关：`103 passed`；
-- Trackside/AC 相关组合：`172 passed`、`102 passed`；
-- Mesh、Online MR、Ground Unattended 等领域组合：`335 passed`。
+## 回归和未完成项
 
-本阶段改动后通过：
+已完成：
 
-- `tests/test_trackside_ap_business_optimization.py`：`24 passed`；
-- 轨旁 AP 快照、范围、Web、运行一致性、统计组合：`200 passed`；
-- 轨旁 AP 导出、AC 查询/Web、设备管理 Web、未认证 AP 合并：`153 passed`，18 个既有弃用警告；
-- AC 管理、轨旁 AP 维护/身份影子/WPS/导出/基础资料回填组合：`413 passed`，1 个既有弃用警告；
-- `git diff --check`：通过。
+- `tests/test_trackside_ap_business_optimization.py`：`28 passed`。
+- 修改范围 Ruff：PASS。
+- `git diff --check`：PASS。
+- 正式数据只读统计：完成；正式数据库未修改。
 
-未执行：完整全仓库 Gate、真实设备采集、千级真实 FIT-AP 性能、GUI 安装和现场验收。
+已完成分支验证：
 
-## 下一阶段建议
+- 相关 AC/Trackside/AP Identity consumer：`418 passed, 3 warnings`。
+- Python 全量：`5133 passed, 2 skipped, 33 warnings`。
+- Renderer Vitest：`181 files / 1310 tests passed`；typecheck、build：PASS。
+- Electron：`38 files / 303 tests passed`；typecheck、main build：PASS。
+- Architecture Green Gates：`8/8 PASS`；Main Contract Smoke：`12 passed`；Baseline-aware Python：`5133 passed, 2 skipped, 33 warnings`，`NEW_FAILURES=0`。
+- `git diff --check`：PASS。
 
-优先对剩余兼容/后台消费者做 L3 Consumer Audit，先为每个消费者补“当前值、字段缺失、历史回退、来源状态、页面/导出一致性”测试，再决定是否把它们接入冻结快照；不建议在未完成消费者审计前引入全局数据来源框架或修改公共 Query Service 接口。
+推送后的 GitHub CI 尚待远端完成；真实设备采集、Windows GUI、安装/升级、现场 Excel/WPS 和跨机器验收仍为人工/PENDING，不由自动化或只读数据库统计替代。
+
+## 后续仅登记
+
+- PR #78：后续审查数据库升级、备份/回滚、AC 扩展回滚和基础资料回滚 Authority；本阶段未移植代码。
+- PR #83：本阶段不重新修改 RSSI，也未引入其额外站点安全回退逻辑。
