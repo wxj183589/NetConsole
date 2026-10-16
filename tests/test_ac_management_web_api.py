@@ -154,6 +154,7 @@ def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path
         "/api/ac-management/actions/plans",
         "/api/ac-management/actions/plans/{plan_id}/confirm",
         "/api/ac-management/actions/plans/{plan_id}/execute",
+        "/api/ac-management/actions/plans/{plan_id}/reconcile",
     }
     assert {(path, method) for path, method in routes if method == "PUT"} == {
         ("/api/ac-management/fit-aps/omnipeek/preferences", "PUT"),

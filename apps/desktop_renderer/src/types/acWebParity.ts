@@ -60,6 +60,11 @@ export interface AcActionPlan {
   status: string
   command_summary: string[]
   task_id: string
+  stored_status?: string
+  effective_status?: string
+  reconciliation_status?: string
+  reconciliation_reason?: string
+  evidence_level?: string
 }
 
 export interface AcActionAudit {
@@ -75,6 +80,11 @@ export interface AcActionAudit {
   executor: string
   real_device_task: boolean
   audit: boolean
+  stored_status?: string
+  effective_status?: string
+  reconciliation_status?: string
+  reconciliation_reason?: string
+  evidence_level?: string
 }
 
 export type AcOmniPeekRadioMode = 'auto' | 'r1_only' | 'r2_only' | 'r1_r2' | 'none'

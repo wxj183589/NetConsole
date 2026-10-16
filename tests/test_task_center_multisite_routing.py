@@ -6,6 +6,7 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.task_state import TaskState
+from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
 from netconsole.repositories.task_repository import TaskRepository, TaskRetiredError
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, progress_event
@@ -266,6 +267,34 @@ def test_site_import_recent_task_survives_active_site_switch_and_keeps_logs(
     assert [item.id for item in query.list_tasks(
         SITE_B, include_tasks_from_other_sites=True
     )] == [task_id]
+
+
+def test_rebind_site_reconciles_target_site_orphaned_tasks(tmp_path: Path) -> None:
+    service = _service(tmp_path, site_name=SITE_A)
+    now = utc_now_iso()
+    task_id = "orphaned-after-site-switch"
+    TaskRepository(service.paths.site_tasks_db_path(SITE_B)).save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type="site_switch_recovery_test",
+            task_name="切换局点恢复",
+            status=TaskState.RUNNING,
+            created_time=now,
+            updated_time=now,
+            source="local",
+            site_name=SITE_B,
+            owner_pid=999999,
+        )
+    )
+    # A cross-site read may open the repository before the runtime switch;
+    # opening it must not count as having completed recovery.
+    service.repository(SITE_B)
+
+    service.rebind_site(SITE_B)
+
+    restored = _stored(service, SITE_B, task_id)
+    assert restored is not None
+    assert restored.status is TaskState.FAILED
 
 
 def test_global_task_cleanup_reuses_operational_gc_for_indexed_sites(
