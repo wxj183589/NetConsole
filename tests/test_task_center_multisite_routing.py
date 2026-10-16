@@ -286,6 +286,9 @@ def test_rebind_site_reconciles_target_site_orphaned_tasks(tmp_path: Path) -> No
             owner_pid=999999,
         )
     )
+    # A cross-site read may open the repository before the runtime switch;
+    # opening it must not count as having completed recovery.
+    service.repository(SITE_B)
 
     service.rebind_site(SITE_B)
 

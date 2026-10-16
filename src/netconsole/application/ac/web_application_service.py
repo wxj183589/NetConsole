@@ -1440,20 +1440,28 @@ class AcWebApplicationService:
             if (
                 reconciliation.can_persist_terminal
                 and reconciliation.effective_status in _TERMINAL_PLAN_STATUSES
-                and plan.get("status") != reconciliation.effective_status
             ):
                 previous_status = str(plan.get("status") or "")
-                plan["status"] = reconciliation.effective_status
-                plan["status_reconciliation"] = {
-                    "from_status": previous_status,
-                    "to_status": reconciliation.effective_status,
-                    "task_id": str(plan.get("task_id") or ""),
-                    "evidence_level": reconciliation.evidence_level,
-                    "reason": reconciliation.reconciliation_reason,
-                    "source": "task_center",
-                    "reconciled_at": datetime.now(timezone.utc).isoformat(),
-                }
-                self._save_plan(plan)
+                task_id = str(plan.get("task_id") or "")
+                existing_audit = plan.get("status_reconciliation")
+                audit_matches = (
+                    isinstance(existing_audit, Mapping)
+                    and str(existing_audit.get("to_status") or "")
+                    == reconciliation.effective_status
+                    and str(existing_audit.get("task_id") or "") == task_id
+                )
+                if plan.get("status") != reconciliation.effective_status or not audit_matches:
+                    plan["status"] = reconciliation.effective_status
+                    plan["status_reconciliation"] = {
+                        "from_status": previous_status,
+                        "to_status": reconciliation.effective_status,
+                        "task_id": task_id,
+                        "evidence_level": reconciliation.evidence_level,
+                        "reason": reconciliation.reconciliation_reason,
+                        "source": "task_center",
+                        "reconciled_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    self._save_plan(plan)
             return self._plan_dto(plan, reconciliation)
 
     def action_audit(self, site_id: str, plan_id: str) -> dict[str, object]:

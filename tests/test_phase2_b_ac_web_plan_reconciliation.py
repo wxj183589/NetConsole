@@ -269,6 +269,25 @@ def test_explicit_reconcile_persists_only_verified_terminal_result_once(tmp_path
     assert len(saved) == 1
 
 
+def test_reconcile_adds_missing_audit_to_already_terminal_plan(tmp_path: Path) -> None:
+    snapshot = _snapshot(TaskState.COMPLETED, result={"plan_id": PLAN_ID})
+    service = _service(snapshot)
+    plan_path = tmp_path / f"{PLAN_ID}.json"
+    plan_path.write_text(json.dumps(_plan("COMPLETED")), encoding="utf-8")
+    service._plan_path = lambda _plan_id: plan_path
+    service._save_plan = lambda value: plan_path.write_text(
+        json.dumps(value), encoding="utf-8"
+    )
+    service._site = lambda site_id: site_id
+
+    service.reconcile_action_plan("demo", PLAN_ID)
+
+    stored = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert stored["status"] == "COMPLETED"
+    assert stored["status_reconciliation"]["task_id"] == TASK_ID
+    assert stored["status_reconciliation"]["source"] == "task_center"
+
+
 def test_missing_or_unknown_reconciliation_does_not_write_plan() -> None:
     service = _service(None)
     plan = _plan()

@@ -22,7 +22,7 @@ Phase 2-B 将协调拆成两层：
 
 - P1：已接入真实 Task Center 生命周期。Backend 先创建并持久化 AC Web Task，再由事件总线在终态事件落库后触发计划协调；Task cleanup 在删除快照前执行 AC 专属同步守门并发出有界 `tasks.before_cleanup` 事件；启动、Worker 恢复和局点切换通过同一协调事件补偿。非 AC Web 任务、其他局点、其他 owner/source/type 和 `plan_id` 冲突均拒绝协调。
 - P2：Renderer 不再把动作计划的状态码、协调码或原因码作为主文案展示；`runtime.ts` 提供中英文 i18n 映射和未知值兜底，`UNKNOWN_OR_UNVERIFIED` 保持“结果无法核验”，不使用成功色语义。
-- 历史边界：未带 `plan_id` 的旧 AC Task 只在清理/终态恢复时对最多 256 个计划文件做一次有界、唯一 `task_id` 反向关联；无关联、超出范围、歧义或协调失败均保留 Task 证据。Task 快照已被清理且没有此前保存的 `status_reconciliation` 时，仍保持 `UNKNOWN_OR_UNVERIFIED`，本次不会扫描或补写旧计划。
+- 历史边界：未带 `plan_id` 的旧 AC Task 只在清理/终态恢复时对最多 256 个计划文件做一次有界、唯一 `task_id` 反向关联；无关联、超出范围、歧义或协调失败均保留 Task 证据。已是终态但缺少匹配审计的计划会在核验成功后补写 `status_reconciliation`。Task 快照已被清理且没有此前保存的 `status_reconciliation` 时，仍保持 `UNKNOWN_OR_UNVERIFIED`，本次不会扫描或补写旧计划。
 
 ## 正式数据只读核对
 
@@ -47,13 +47,13 @@ Phase 2-B 将协调拆成两层：
 ## 验证记录
 
 - AC Web/Task lifecycle 定向回归：新增自动终态协调、完成/失败/取消、重复回调幂等、恢复作用域、清理前回调和 i18n 映射测试；具体最新结果以 PR #88 当前提交报告为准。
-- Python 全量（工作树源码、隔离测试根）：5165 passed，2 skipped，33 warnings。
+- Python 全量（工作树源码、隔离测试根）：5166 passed，2 skipped，33 warnings。
 - Renderer：181 files / 1311 tests；`vue-tsc -b` 和 build 通过。
 - Electron：38 files / 303 tests；typecheck、Main/Preload build 通过。
 - Main Contract：12 passed，3 warnings。
 - Architecture：12/12 passed；Ruff、docs/path、diff-check 通过。
 - L4 Local Quality Gate：除 Python 阶段 3 个 Windows 文件锁/并发基线失败外，其余套件通过；失败节点为 Mesh resident 状态文件读取、Demo site 重建和设备兼容性 Demo seed，未触及本次 AC Web 计划协调代码。
-- Baseline-aware Python：`PYTHON_BASELINE_RETAINED=0`，`NEW_FAILURES=0`；本地全量 5165 passed，2 skipped。
+- Baseline-aware Python：`PYTHON_BASELINE_RETAINED=0`，`NEW_FAILURES=0`；本地全量 5166 passed，2 skipped。
 - 隔离 1000 条纯分类基准：约 0.002 秒；不扫描 Task 历史、不写数据库。
 
 ## 后续边界

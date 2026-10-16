@@ -63,7 +63,7 @@ class TaskApplicationService:
         self.runtime = TaskRuntime(paths=self.paths, event_bus=event_hub or TaskEventHub())
         self._repositories: dict[str, TaskRepository] = {}
         self._task_authority_index = TaskAuthorityIndex(self.paths)
-        self._reconciled_sites: set[str] = set()
+        self._recovered_sites: set[str] = set()
         self._job_sites: dict[str, str] = {}
         self._before_cleanup_guards: list[
             Callable[[str, list[tuple[str, TaskSnapshot | None]]], Collection[str] | None]
@@ -83,7 +83,7 @@ class TaskApplicationService:
         """切换当前局点默认作用域；已完成任务仍按其记录的局点读取。"""
 
         self.site_name = str(site_name or "demo")
-        if self.site_name not in self._reconciled_sites:
+        if self.site_name not in self._recovered_sites:
             # Site switching is a runtime lifecycle boundary too.  Recover
             # only the target site's bounded active-task set after all Task
             # event subscribers have been attached; never scan other sites.
@@ -114,11 +114,10 @@ class TaskApplicationService:
         if repository is None:
             repository = TaskRepository(self.paths.site_tasks_db_path(site))
             self._repositories[site] = repository
-        if site not in self._reconciled_sites:
-            self._reconciled_sites.add(site)
-            if self._reconcile_on_start:
-                changed = repository.reconcile_orphaned_local_tasks(self._is_process_alive)
-                self._publish_recovered_terminal_tasks(changed)
+        if self._reconcile_on_start and site not in self._recovered_sites:
+            self._recovered_sites.add(site)
+            changed = repository.reconcile_orphaned_local_tasks(self._is_process_alive)
+            self._publish_recovered_terminal_tasks(changed)
         return repository
 
     def _task_site(self, task_id: str, site_name: str | None = None) -> str:
@@ -857,6 +856,7 @@ class TaskApplicationService:
             self._is_process_alive,
             is_locally_hosted,
         )
+        self._recovered_sites.add(selected_site)
         self._publish_recovered_terminal_tasks(changed)
         return changed
 
@@ -996,6 +996,7 @@ class TaskApplicationService:
             lambda task_id: self.runtime.is_running(task_id)
             or task_id in self._job_sites,
         )
+        self._recovered_sites.add(str(site_name or self.site_name or "demo"))
         self._publish_recovered_terminal_tasks(reconciled)
         blocking = repository.list(statuses=set(_ACTIVE_TASK_STATES), limit=1000)
         return blocking, reconciled
