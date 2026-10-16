@@ -161,7 +161,7 @@ MAIN_CONTRACT=PASS; 12 passed, 3 warnings
 BASELINE_NEW_FAILURES=1 unrelated tests/test_release_system.py::test_clean_build_runtime_subset_copies_only_imported_modules_and_assets in full run; isolated tests/test_release_system.py 68 passed; no Phase2-D changed-path failure
 
 PRODUCT_CODE_CHANGED=YES
-PR_CREATED=PENDING
+PR_CREATED=YES; PR #89 https://github.com/wxj183589/NetConsole/pull/89; head=8080ebae
 MAIN_MERGE=NO
 ```
 
@@ -192,4 +192,4 @@ Renderer/Electron 未改动，因此未重复运行前端测试、类型检查�
 
 ## 后续审查建议
 
-建议先审查本分支的 P2-1/P2-3/P2-4 最小修复和隔离测试，再决定是否创建独立 Phase 2-D PR。PR #78、PR #83 不属于本次移植范围；本分支不自动合并 main、不发布、不打 Tag、不构建安装包。
+建议审查 PR #89 的 P2-1/P2-3/P2-4 最小修复和隔离测试。PR #78、PR #83 不属于本次移植范围；本分支不自动合并 main、不发布、不打 Tag、不构建安装包。
