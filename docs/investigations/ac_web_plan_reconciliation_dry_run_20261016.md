@@ -1,6 +1,6 @@
 # Phase 2-C：历史 AC Web 动作计划受控协调预演（Dry-Run）
 
-- Dry-Run 时间：`2026-10-16T14:43:41Z` 至 `2026-10-16T14:43:42Z`
+- Dry-Run 时间：`2026-10-16T14:45:24Z` 至 `2026-10-16T14:45:25Z`
 - 最新 main：`c22323d683f92873fa4e9ebb00854ee0f9a434fb`
 - 数据根：`D:\NetConsoleData`（仅只读）
 - 计划目录：`D:\NetConsoleData\runtime\cache\ac_web_action_plans`（由 `PathResolver` 解析）
@@ -82,6 +82,14 @@
 4. 先记录可审计的 before/after 状态及操作者、原因、时间、代码版本；失败时保留诊断证据，不把已完成 Task 改回活动状态。
 5. 回退范围仅限计划终态/审计字段，不能撤销已发送到设备的动作；任何设备动作重试必须另行授权，且不属于本次协调。
 6. 未知记录不做自动协调；历史 tombstone 仅证明历史已清理，不证明成功、失败或取消。
+
+## 产品代码范围与阻断风险
+
+本轮不修改 PR #88 产品代码，不增加生产批量协调入口，不改变 Task Center、计划文件格式、数据库 Schema、设备命令或 WPS 行为；仅新增只读审计脚本、隔离测试和脱敏报告。
+
+对允许后续审查的候选，`status_reconciliation` 预期仅包含 `from_status=EXECUTING`、目标终态、脱敏 Task 引用、`evidence_level`、PR #88 分类原因、`source=task_center` 和协调时间；不改写 command_summary、token、digest、target_id 或 action_id。
+
+当前阻断风险为 `5` 条历史证据已清理且无法核验，风险 HIGH；其余候选仍需逐条人工确认并在正式写入前重新读取。当前没有发现必须在 Phase 2-C 审计分支修复的产品代码缺陷。
 
 ## 当前结论与后续授权
 
