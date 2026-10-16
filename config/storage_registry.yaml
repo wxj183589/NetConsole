@@ -1087,7 +1087,7 @@
           "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_peer_mapping_service.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_analysis_report.py", "src/netconsole/services/mesh_derived_data_maintenance_service.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_report_process.py", "src/netconsole/services/mesh_source_rebuild_service.py", "src/netconsole/services/mesh_bundle_import_service.py", "src/netconsole/services/rail_transit/mesh_analysis_query_service.py", "scripts/maintenance/remap_mesh_identity.py", "scripts/maintenance/analyze_task_payloads_dev.py"]
+      "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_analysis_report.py", "src/netconsole/services/mesh_derived_data_maintenance_service.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_report_process.py", "src/netconsole/services/mesh_source_rebuild_service.py", "src/netconsole/services/mesh_bundle_import_service.py", "src/netconsole/services/rail_transit/mesh_analysis_query_service.py", "src/netconsole/services/database_upgrade/authority.py", "scripts/maintenance/remap_mesh_identity.py", "scripts/maintenance/analyze_task_payloads_dev.py"]
     },
     {
       "id": "site.mesh.legacy_analysis",
@@ -2165,7 +2165,7 @@
       "schema_version": 1,
       "allowed_data_classes": ["BACKUP_ROLLBACK"],
       "forbidden_data_classes": ["OPERATIONAL_CURRENT", "HISTORICAL_RAW_FACT", "ARTIFACT_OR_RAW_FILE"],
-      "source_locations": ["src/netconsole/services/database_upgrade/backup_store.py", "src/netconsole/services/database_upgrade/backup_lifecycle.py", "src/netconsole/services/mesh_parsed_rebuild_service.py"]
+      "source_locations": ["src/netconsole/services/database_upgrade/backup_store.py", "src/netconsole/services/database_upgrade/backup_lifecycle.py", "src/netconsole/services/database_upgrade/authority.py", "src/netconsole/services/mesh_parsed_rebuild_service.py"]
     },
     {
       "id": "site.backups.database_upgrade_invalid_legacy",

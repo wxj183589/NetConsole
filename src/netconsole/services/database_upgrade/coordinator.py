@@ -4,7 +4,7 @@ import hashlib
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
@@ -70,6 +70,7 @@ class DatabaseUpgradeCoordinator:
         task_id: str | None = None,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        before_mutation: Callable[[], None] | None = None,
     ) -> DatabaseUpgradeResult:
         operation_id = str(task_id or descriptor.task_id or f"dbu-op-{uuid4().hex}")
         self.registry.register(descriptor)
@@ -86,6 +87,7 @@ class DatabaseUpgradeCoordinator:
                 journal=journal,
                 progress=progress,
                 should_cancel=should_cancel,
+                before_mutation=before_mutation,
             )
 
     def _upgrade_locked(
@@ -97,6 +99,7 @@ class DatabaseUpgradeCoordinator:
         journal: DatabaseUpgradeJournal,
         progress: ProgressCallback | None,
         should_cancel: CancelCallback | None,
+        before_mutation: Callable[[], None] | None,
     ) -> DatabaseUpgradeResult:
         checkpoint: dict[str, Any] = {}
         backup: dict[str, Any] | None = None
@@ -121,6 +124,8 @@ class DatabaseUpgradeCoordinator:
         )
         try:
             self._check_cancel(should_cancel)
+            if before_mutation is not None:
+                before_mutation()
             if descriptor.strategy.value == "MANUAL_INTERVENTION_REQUIRED":
                 raise RuntimeError("数据库升级需要人工介入，自动升级已停止")
             if close_hook:

@@ -525,6 +525,8 @@ def import_operation_rollback(
             site_id=_site_id(request, site_id),
             operation_id=operation_id,
             explicit_confirmation=payload.explicit_confirmation,
+            authorization_token=payload.authorization_token,
+            expected_operation_type="BASE_DATA_IMPORT",
         )
     except BaseDataImportError as exc:
         _raise_import_error(exc)
@@ -593,6 +595,9 @@ def _raise_import_error(exc: BaseDataImportError, *, not_found: bool = False) ->
         "BASE_DATA_REAL_WRITE_NOT_AUTHORIZED",
         "ISOLATED_TEST_READONLY",
         "BASE_DATA_ROLLBACK_DISABLED",
+        "ROLLBACK_PRODUCTION_WRITE_NOT_ALLOWED",
+        "ROLLBACK_OPERATION_AUTHORIZATION_REQUIRED",
+        "ROLLBACK_SITE_NOT_CANONICAL",
     }:
         status_code = status.HTTP_403_FORBIDDEN
     elif exc.code in {
@@ -601,6 +606,8 @@ def _raise_import_error(exc: BaseDataImportError, *, not_found: bool = False) ->
         "BASE_DATA_BLOCKING_ISSUES",
         "BASE_DATA_IMPORT_CONFLICT",
         "BASE_DATA_ROLLBACK_CONFLICT",
+        "BASE_DATA_OPERATION_MISMATCH",
+        "ROLLBACK_AUDIT_SITE_MISMATCH",
     }:
         status_code = status.HTTP_409_CONFLICT
     else:

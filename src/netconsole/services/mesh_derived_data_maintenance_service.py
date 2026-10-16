@@ -213,6 +213,7 @@ class MeshDerivedDataMaintenanceService:
         include_missing: bool = False,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        before_mutation: Callable[[str], None] | None = None,
     ) -> dict[str, object]:
         normalized_profile_ids = (
             None
@@ -279,6 +280,11 @@ class MeshDerivedDataMaintenanceService:
                 allow_empty_raw=True,
                 raw_files=registered_raw_files,
                 source_metadata=registered_sources,
+                before_mutation=(
+                    (lambda profile_id=mr_id: before_mutation(profile_id))
+                    if before_mutation is not None
+                    else None
+                ),
             )
             missing_sources = [
                 dict(item)

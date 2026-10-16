@@ -45,6 +45,7 @@ class MeshParsedRebuildService:
         allow_empty_raw: bool = False,
         raw_files: list[Path] | None = None,
         source_metadata: Iterable[Mapping[str, object]] | None = None,
+        before_mutation: Callable[[], None] | None = None,
     ) -> dict[str, object]:
         storage = MeshStorageService(site_id, self.paths)
         profile = storage.catalog.get_profile(mr_id)
@@ -101,6 +102,7 @@ class MeshParsedRebuildService:
             descriptor,
             progress=progress,
             should_cancel=should_cancel,
+            before_mutation=before_mutation,
         )
         return {
             "mr_id": profile.mr_id,

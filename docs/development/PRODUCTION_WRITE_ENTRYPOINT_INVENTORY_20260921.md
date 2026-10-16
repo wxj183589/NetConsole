@@ -392,3 +392,36 @@ acceptance was performed. Tests use isolated temporary roots only.
 - `UNGUARDED_AFTER=3`
 - `UNKNOWN_AFTER=0`
 - `NEXT=P7_3_F_HTTP_DB_AC_BASEDATA_ROLLBACK_AUTHORITY`
+
+## Current resolution note — P7.3-F HTTP DB/AC/base-data rollback authority
+
+The historical matrix and the P7.3-E note above remain unchanged snapshots.
+P7.3-F adds the following current contracts without touching startup recovery,
+automatic retention, installer paths, AP schema maintenance, or MESH
+source/identity authority:
+
+| Entry | Current classification | Current contract |
+| --- | --- | --- |
+| `HTTP_DATABASE_UPGRADE_BACKUP` | `SAFE_CANONICAL_FAIL_CLOSED` | Only `mesh_derived` is accepted. HTTP submission binds the canonical MESH site, profile/backup identity, descriptor revision, target path, manifest/content hash, task parameters, operation-specific capability and authority digest; the worker re-resolves all of them immediately before the existing coordinator/backup mutation. Read-only backup validation remains scope-bound but does not require a destructive capability. |
+| `HTTP_AC_EXTENSION_ROLLBACK` | `SAFE_CANONICAL_FAIL_CLOSED` | AC rollback keeps its existing per-site lock, confirmation, audit/hash/row conflict checks and transaction; it now resolves the canonical Production registry site before mutation and requires `AC_EXTENSION_ROLLBACK_AUTHORIZED` plus the generic Production write gate. AC apply remains a `NORMAL_PRODUCT_WRITE` exception: preview digest, optimistic database hash, confirmation, transaction and audit remain the authority, without an extra maintenance token. |
+| `HTTP_BASE_DATA_ROLLBACK` | `SAFE_CANONICAL_FAIL_CLOSED` | Base-data rollback now uses the same shared canonical site authority, a `BASE_DATA_ROLLBACK_AUTHORIZED` capability, a cross-process site rollback lock, operation-type/site binding and the existing database-after-import plus row-version conflict checks. Base-data apply remains a `NORMAL_PRODUCT_WRITE` exception with preview/hash/confirmation/transaction/audit controls; AC local rebuild remains a derived local rebuild and is not promoted to Production maintenance. |
+
+Renderer clients inject the operation constants by default; callers do not
+type raw capability strings in UI components. DB worker authority is
+immutable at the task boundary and rejects changed target paths, profile or
+backup sets, descriptors, manifests, content hashes, or authority digests
+before invoking a mutator. No generic database adapter, device database or
+tasks database was added.
+
+No real Production or development-real data was opened or modified. Tests use
+isolated temporary roots, including a registry-bound Production fixture; no
+device, cloud, GUI or installer acceptance is implied.
+
+- `P7_3_F=IMPLEMENTED_LOCAL_VALIDATED`
+- `WRITE_ENTRYPOINT_COUNT=26`
+- `SAFE_AFTER=19`
+- `PARTIAL_AFTER=4`
+- `UNGUARDED_AFTER=3`
+- `UNKNOWN_AFTER=0`
+- `P7_PRODUCTION_MAINTENANCE_AUDIT=PAUSED_SAFETY_BUG`
+- `NEXT=P7_3_G_STARTUP_RECOVERY_RETENTION_AUTHORITY`

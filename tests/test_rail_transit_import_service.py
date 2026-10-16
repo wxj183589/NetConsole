@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import netconsole.services.rail_transit.base_data_import_service as base_data_import_module
 from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 from netconsole.models.api.rail_transit_base_data import ImportPreviewRowDTO
 from netconsole.repositories.rail_transit_base_data_repository import RailTransitBaseDataRepository
@@ -16,6 +17,7 @@ from netconsole.services.rail_transit.base_data_import_service import (
     RailTransitBaseDataImportService,
 )
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard
+from netconsole.services.database_upgrade.coordinator import site_database_maintenance_key
 
 
 def _service(paths, *, repository=None, write_enabled: bool = True, rollback_enabled: bool = True):
@@ -65,6 +67,28 @@ def test_apply_is_disabled_by_default_and_rejects_changed_database(tmp_path: Pat
     with pytest.raises(BaseDataImportError) as changed_error:
         enabled.apply_merge_plan(stale_plan, confirmed=True)
     assert changed_error.value.code == "BASE_DATA_DATABASE_CHANGED"
+
+
+def test_apply_and_rollback_share_the_site_database_maintenance_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    service = _service(paths)
+    lock_keys: list[str] = []
+
+    @contextmanager
+    def record_lock(_paths, key: str):
+        lock_keys.append(key)
+        yield
+
+    monkeypatch.setattr(base_data_import_module, "database_maintenance_lock", record_lock)
+    audit = service.apply_merge_plan(_plan(service, _create_row(1, "12")), confirmed=True)
+    service.rollback_import(site_id="demo", operation_id=audit["operation_id"], explicit_confirmation=True)
+
+    assert lock_keys == [site_database_maintenance_key("demo"), site_database_maintenance_key("demo")]
 
 
 def test_import_policy_encapsulates_guard_status_and_source_rules(tmp_path: Path) -> None:
