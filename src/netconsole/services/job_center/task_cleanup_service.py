@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 
 from netconsole.core.paths import PathResolver
@@ -137,7 +137,7 @@ class TaskCleanupService:
         *,
         paths: PathResolver | None = None,
         site_name: str = "",
-        before_delete: Callable[[list[str]], None] | None = None,
+        before_delete: Callable[[list[str]], Collection[str] | None] | None = None,
     ) -> None:
         self.repository = repository
         self.paths = paths
@@ -160,13 +160,30 @@ class TaskCleanupService:
         ids = self._normalize_ids(task_ids)
         decisions = self._decisions(ids)
         eligible = [item.task_id for item in decisions if item.can_cleanup]
+        blocked_by_guard: list[str] = []
         if eligible and self.before_delete is not None:
-            self.before_delete(list(eligible))
+            allowed = self.before_delete(list(eligible))
+            if allowed is not None:
+                allowed_ids = {str(task_id).strip() for task_id in allowed if str(task_id).strip()}
+                blocked_by_guard = [task_id for task_id in eligible if task_id not in allowed_ids]
+                eligible = [task_id for task_id in eligible if task_id in allowed_ids]
         deletion = self.repository.delete_task_owned_rows(eligible)
         deleted = dict(deletion["deleted"])
         skipped = [item.to_dict() for item in decisions if not item.can_cleanup]
+        skipped.extend(
+            {
+                "task_id": task_id,
+                "can_cleanup": False,
+                "status": next(
+                    (item.status for item in decisions if item.task_id == task_id),
+                    "",
+                ),
+                "reasons": ["PRE_DELETE_GUARD"],
+            }
+            for task_id in blocked_by_guard
+        )
 
-        return {
+        result = {
             "requested_task_ids": ids,
             "deleted_task_ids": deletion["deleted_task_ids"],
             "task_ids": deletion["deleted_task_ids"],
@@ -215,6 +232,9 @@ class TaskCleanupService:
                 "alerts": 0,
             },
         }
+        if blocked_by_guard:
+            result["skipped_pre_delete_guard"] = len(blocked_by_guard)
+        return result
 
     def dismiss_task(self, task_id: str, *, dismissed_by: str = "local-user") -> dict[str, object]:
         """Retire one terminal task; retain the old API-shaped result fields."""

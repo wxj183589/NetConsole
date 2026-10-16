@@ -4,7 +4,7 @@ import json
 import os
 import uuid
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import asdict
 from typing import Any
 
@@ -65,6 +65,9 @@ class TaskApplicationService:
         self._task_authority_index = TaskAuthorityIndex(self.paths)
         self._reconciled_sites: set[str] = set()
         self._job_sites: dict[str, str] = {}
+        self._before_cleanup_guards: list[
+            Callable[[str, list[tuple[str, TaskSnapshot | None]]], Collection[str] | None]
+        ] = []
         self._reconcile_on_start = bool(reconcile_on_start)
         self._shutdown_lock = threading.RLock()
         self._resource_guard = threading.Lock()
@@ -80,6 +83,26 @@ class TaskApplicationService:
         """切换当前局点默认作用域；已完成任务仍按其记录的局点读取。"""
 
         self.site_name = str(site_name or "demo")
+        if self.site_name not in self._reconciled_sites:
+            # Site switching is a runtime lifecycle boundary too.  Recover
+            # only the target site's bounded active-task set after all Task
+            # event subscribers have been attached; never scan other sites.
+            self.reconcile_orphaned_local_tasks(site_name=self.site_name)
+
+    def register_before_cleanup_guard(
+        self,
+        guard: Callable[[str, list[tuple[str, TaskSnapshot | None]]], Collection[str] | None],
+    ) -> Callable[[], None]:
+        with self._shutdown_lock:
+            if guard not in self._before_cleanup_guards:
+                self._before_cleanup_guards.append(guard)
+
+        def unsubscribe() -> None:
+            with self._shutdown_lock:
+                if guard in self._before_cleanup_guards:
+                    self._before_cleanup_guards.remove(guard)
+
+        return unsubscribe
 
     @property
     def events(self) -> TaskEventHub:
@@ -886,7 +909,7 @@ class TaskApplicationService:
         self,
         site_name: str,
         task_ids: list[str] | tuple[str, ...] | set[str],
-    ) -> None:
+    ) -> list[str]:
         ids = list(
             dict.fromkeys(
                 str(task_id).strip()
@@ -895,7 +918,27 @@ class TaskApplicationService:
             )
         )
         if not ids:
-            return
+            return []
+        repository = self.repository(site_name)
+        candidates = [(task_id, repository.get(task_id)) for task_id in ids]
+        with self._shutdown_lock:
+            guards = tuple(self._before_cleanup_guards)
+        allowed_ids = set(ids)
+        for guard in guards:
+            try:
+                result = guard(str(site_name or self.site_name or "demo"), candidates)
+            except Exception as exc:
+                app_logger.log_warning(
+                    "TASK_PRE_DELETE_GUARD_FAILED",
+                    f"site={site_name}; error={exc.__class__.__name__}",
+                )
+                result = ()
+            if result is not None:
+                allowed_ids.intersection_update(
+                    str(task_id).strip()
+                    for task_id in result
+                    if str(task_id).strip()
+                )
         self.events.publish_persisted(
             {
                 "id": uuid.uuid4().hex,
@@ -909,6 +952,7 @@ class TaskApplicationService:
                 },
             }
         )
+        return [task_id for task_id in ids if task_id in allowed_ids]
 
     def _publish_recovered_terminal_tasks(
         self,

@@ -13,6 +13,7 @@ from netconsole.application.ac.web_application_service import (
     AcWebApplicationService,
     classify_ac_action_plan_status,
 )
+from netconsole.core.paths import PathResolver
 from netconsole.models.task_state import TaskState
 from netconsole.services.job_center.runtime.task_event_hub import TaskEventHub
 from netconsole.services.job_center.runtime.task_runtime import TaskRuntime
@@ -436,6 +437,57 @@ def test_coordination_failure_is_logged_without_rewriting_task_state() -> None:
     assert service.task_service.repository("demo").snapshot.status is TaskState.FAILED
 
 
+def test_legacy_task_without_plan_id_uses_bounded_plan_reverse_link(tmp_path: Path) -> None:
+    service = object.__new__(AcWebApplicationService)
+    service.paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    plan_path = service.paths.runtime_cache_dir / "ac_web_action_plans" / f"{PLAN_ID}.json"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(json.dumps(_plan()), encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+    service.reconcile_action_plan = lambda site_id, plan_id: calls.append((site_id, plan_id))
+
+    service._reconcile_terminal_task(
+        _snapshot(TaskState.FAILED, result={}),
+        correlation_plan_id="",
+        trigger="recovery",
+    )
+
+    assert calls == [("demo", PLAN_ID)]
+
+
+def test_cleanup_guard_blocks_ac_task_when_reconciliation_fails() -> None:
+    service = object.__new__(AcWebApplicationService)
+    service.reconcile_action_plan = lambda _site_id, _plan_id: (_ for _ in ()).throw(
+        RuntimeError("fixture failure")
+    )
+    snapshot = _snapshot(TaskState.COMPLETED, result={"plan_id": PLAN_ID})
+
+    allowed = service._before_cleanup_guard("demo", [(TASK_ID, snapshot)])
+
+    assert allowed == set()
+
+
+def test_cleanup_guard_allows_non_ac_tasks_and_verified_legacy_task(tmp_path: Path) -> None:
+    service = object.__new__(AcWebApplicationService)
+    service.paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    plan_path = service.paths.runtime_cache_dir / "ac_web_action_plans" / f"{PLAN_ID}.json"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text(json.dumps(_plan()), encoding="utf-8")
+    service.reconcile_action_plan = lambda site_id, plan_id: SimpleNamespace(
+        status="COMPLETED", task_id=TASK_ID
+    )
+
+    allowed = service._before_cleanup_guard(
+        "demo",
+        [
+            ("ordinary-task", _snapshot(TaskState.COMPLETED, task_type="other")),
+            (TASK_ID, _snapshot(TaskState.COMPLETED, result={})),
+        ],
+    )
+
+    assert allowed == {"ordinary-task", TASK_ID}
+
+
 def test_terminal_event_handler_rejects_non_ac_task_and_cross_site_task() -> None:
     calls: list[tuple[str, str]] = []
     service = object.__new__(AcWebApplicationService)
@@ -513,3 +565,35 @@ def test_cleanup_callback_runs_before_terminal_task_rows_are_deleted() -> None:
 
     assert result["deleted_task_ids"] == [TASK_ID]
     assert order == [("before_delete", [TASK_ID]), ("delete", [TASK_ID])]
+
+
+def test_cleanup_callback_can_fail_closed_for_unverified_task() -> None:
+    class _CleanupRepository:
+        def delete_task_owned_rows(self, task_ids: list[str]) -> dict[str, object]:
+            return {
+                "deleted": {"task_events": 0, "task_snapshots": 0, "task_results": 0},
+                "deleted_task_ids": list(task_ids),
+                "orphan_blobs_removed": 0,
+                "orphan_blob_bytes_removed": 0,
+                "quick_check": "ok",
+                "foreign_key_check": "ok",
+                "task_payload_bytes": 0,
+                "task_events_payload_bytes": 0,
+                "task_snapshots_payload_bytes": 0,
+                "task_results_payload_bytes": 0,
+            }
+
+    cleanup = TaskCleanupService(
+        _CleanupRepository(),
+        before_delete=lambda _task_ids: [],
+    )
+    cleanup._decisions = lambda task_ids: [
+        CleanupDecision(task_id=task_id, can_cleanup=True, status=TaskState.COMPLETED.value)
+        for task_id in task_ids
+    ]
+
+    result = cleanup.cleanup_tasks([TASK_ID])
+
+    assert result["deleted_task_ids"] == []
+    assert result["skipped_pre_delete_guard"] == 1
+    assert result["skipped"][0]["reasons"] == ["PRE_DELETE_GUARD"]

@@ -219,8 +219,9 @@ AC Web 动作计划的 `status` 查询以 Task Center 为执行结果权威，�
 作为有效状态。Task 缺失、已被 tombstone 清理、局点/身份不匹配或证据冲突时显示
 `UNKNOWN_OR_UNVERIFIED`，不推断为失败或完成，也不重新执行设备命令。刚提交任务的短暂启动竞态
 只在计划内提交时间窗口显示 `EXECUTING`。AC Web 动作 Task 创建时会保留受限的 `plan_id` 关联证据；
-Task Center 的完成、失败、取消事件、孤儿恢复，以及终态 Task 清理前，均由 AC Web 生命周期订阅者
-自动调用逐计划协调，在删除终态快照前尽可能保存 `status_reconciliation`。该协调仍只写入已验证的终态，
+Task Center 的完成、失败、取消事件、孤儿恢复、局点切换，以及终态 Task 清理前，均由 AC Web 生命周期订阅者
+自动调用逐计划协调，在删除终态快照前尽可能保存 `status_reconciliation`；清理前协调失败时保留该 AC Task 证据。
+未带 `plan_id` 的旧 AC Task 只做有界且唯一的 `task_id` 反向关联，无法核验时也保留证据。该协调仍只写入已验证的终态，
 不会重新执行设备命令，也不会把 Task 状态改回活动态。显式
 `POST /api/ac-management/actions/plans/{plan_id}/reconcile` 保留为有界的人工或诊断重试入口；历史
 Task 已被清理且没有已保存终态审计时，仍显示 `UNKNOWN_OR_UNVERIFIED`，不补写旧计划。

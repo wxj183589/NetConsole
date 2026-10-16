@@ -11,6 +11,7 @@ import time
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
 from uuid import uuid4
 
@@ -88,6 +89,7 @@ _UNKNOWN_OR_UNVERIFIED = "UNKNOWN_OR_UNVERIFIED"
 _TERMINAL_PLAN_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
 _ACTIVE_TASK_STATUSES = {"PENDING", "STARTING", "RUNNING", "STOPPING"}
 _TASK_START_GRACE_SECONDS = 10.0
+_LEGACY_PLAN_LOOKUP_LIMIT = 256
 
 
 @dataclass(frozen=True)
@@ -340,6 +342,12 @@ class AcWebApplicationService:
         events = getattr(task_service, "events", None)
         subscribe = getattr(events, "subscribe", None)
         self._task_event_unsubscribe = subscribe(self._handle_task_event) if callable(subscribe) else None
+        register_cleanup_guard = getattr(task_service, "register_before_cleanup_guard", None)
+        self._task_cleanup_guard_unsubscribe = (
+            register_cleanup_guard(self._before_cleanup_guard)
+            if callable(register_cleanup_guard)
+            else None
+        )
 
     def current_site_id(self) -> str:
         try:
@@ -441,6 +449,10 @@ class AcWebApplicationService:
             return
         plan_id = result_plan_id or str(correlation_plan_id or "").strip()
         if not plan_id:
+            plan_id = self._legacy_plan_id_for_task(
+                str(snapshot.site_name or ""), str(snapshot.task_id or "")
+            )
+        if not plan_id:
             return
         try:
             self.reconcile_action_plan(str(snapshot.site_name or ""), plan_id)
@@ -454,6 +466,95 @@ class AcWebApplicationService:
                 f"site={snapshot.site_name}; trigger={trigger}; "
                 f"error={exc.__class__.__name__}",
             )
+
+    def _before_cleanup_guard(
+        self,
+        site_id: str,
+        candidates: list[tuple[str, object | None]],
+    ) -> set[str]:
+        """Persist AC plan proof before Task Center can delete its snapshot.
+
+        The callback is synchronous and fail-closed for AC action tasks.  It
+        deliberately accepts only the cleanup candidate set, and legacy plan
+        lookup is bounded; a missing or ambiguous legacy association retains
+        the Task evidence instead of making an unverified plan look terminal.
+        """
+
+        allowed: set[str] = set()
+        for task_id, snapshot in candidates:
+            task_id = str(task_id or "").strip()
+            if snapshot is None or not self._is_ac_action_task(snapshot):
+                allowed.add(task_id)
+                continue
+            if getattr(snapshot, "status", None) not in TERMINAL_TASK_STATES:
+                allowed.add(task_id)
+                continue
+            result = getattr(snapshot, "result", {})
+            result_mapping = result if isinstance(result, Mapping) else {}
+            plan_id = str(result_mapping.get("plan_id") or "").strip()
+            if not plan_id:
+                plan_id = self._legacy_plan_id_for_task(site_id, task_id)
+            if not plan_id:
+                app_logger.log_warning(
+                    "AC_ACTION_PLAN_CLEANUP_GUARD_BLOCKED",
+                    f"task_id={task_id}; site={site_id}; reason=PLAN_ID_UNAVAILABLE",
+                )
+                continue
+            try:
+                reconciled = self.reconcile_action_plan(site_id, plan_id)
+                if (
+                    str(getattr(reconciled, "status", "")) in _TERMINAL_PLAN_STATUSES
+                    and str(getattr(reconciled, "task_id", "")) == task_id
+                ):
+                    allowed.add(task_id)
+                else:
+                    app_logger.log_warning(
+                        "AC_ACTION_PLAN_CLEANUP_GUARD_BLOCKED",
+                        f"task_id={task_id}; site={site_id}; reason=UNVERIFIED_RECONCILIATION",
+                    )
+            except Exception as exc:
+                app_logger.log_warning(
+                    "AC_ACTION_PLAN_CLEANUP_GUARD_BLOCKED",
+                    f"task_id={task_id}; site={site_id}; error={exc.__class__.__name__}",
+                )
+        return allowed
+
+    def _is_ac_action_task(self, snapshot: object) -> bool:
+        return (
+            str(getattr(snapshot, "task_type", "") or "") == "ac_command_action_execute"
+            and str(getattr(snapshot, "owner", "") or "") == self._OWNER
+            and str(getattr(snapshot, "source", "") or "") == "local"
+        )
+
+    def _legacy_plan_id_for_task(self, site_id: str, task_id: str) -> str:
+        """Find one legacy plan link without an unbounded startup scan."""
+
+        if not site_id or not task_id:
+            return ""
+        root = (self.paths.runtime_cache_dir / "ac_web_action_plans").resolve()
+        try:
+            candidates = list(islice(root.glob("ac-plan-*.json"), _LEGACY_PLAN_LOOKUP_LIMIT))
+        except OSError:
+            return ""
+        matches: list[str] = []
+        for path in candidates:
+            try:
+                plan = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(plan, Mapping):
+                continue
+            plan_id = str(plan.get("plan_id") or "").strip()
+            if (
+                _PLAN_ID.fullmatch(plan_id)
+                and plan_id == path.stem
+                and str(plan.get("site_id") or "").strip() == site_id
+                and str(plan.get("task_id") or "").strip() == task_id
+            ):
+                matches.append(plan_id)
+                if len(matches) > 1:
+                    return ""
+        return matches[0] if len(matches) == 1 else ""
 
     def list_extensions(self, site_id: str, *, search: str = "", page: int = 1, page_size: int = 50) -> AcExtensionPageDTO:
         site_id = self._site(site_id)
