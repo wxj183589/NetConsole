@@ -25,9 +25,10 @@ class LegacyDatabaseArchiveService:
         self.backups = backup_store or DatabaseBackupStore(paths)
 
     def organize_mesh_archives(self, site_id: str, *, profile_id: str = "") -> dict[str, Any]:
-        root = self.paths.site_mesh_root(site_id).resolve()
-        if not root.is_dir() or root.is_symlink():
+        raw_root = self.paths.site_mesh_root(site_id)
+        if _is_link_or_reparse_point(raw_root) or not raw_root.is_dir():
             return {"site_id": str(site_id), "found_count": 0, "moved_count": 0, "invalid_count": 0, "items": []}
+        root = raw_root.resolve()
         recovered_count = self._recover_in_progress(site_id)
         candidates: list[Path] = []
         for pattern in self._PATTERNS:
@@ -41,6 +42,8 @@ class LegacyDatabaseArchiveService:
             and str(item.get("result_status") or "") in {"VALID_BACKUP", "DUPLICATE_BACKUP"}
         }
         for source in sorted(candidates, key=lambda item: str(item).casefold()):
+            if not _is_within_root(source, root):
+                continue
             key = str(source.resolve()).casefold()
             if key in seen:
                 continue
@@ -49,7 +52,14 @@ class LegacyDatabaseArchiveService:
             scope_id = f"{site_id}:{profile_scope}"
             lock_key = f"database-upgrade:site_profile:{scope_id}"
             with database_maintenance_lock(self.paths, lock_key):
-                if not source.is_file() or source.is_symlink():
+                current_root = self.paths.site_mesh_root(site_id)
+                if (
+                    _is_link_or_reparse_point(current_root)
+                    or not current_root.is_dir()
+                    or not _is_within_root(source, current_root.resolve())
+                    or not source.is_file()
+                    or source.is_symlink()
+                ):
                     continue
                 item = self._organize_one(
                     source,
@@ -232,6 +242,33 @@ class LegacyDatabaseArchiveService:
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     payload = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     atomic_write_bytes(path, payload)
+
+
+def _is_link_or_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    checker = getattr(path, "is_junction", None)
+    if callable(checker):
+        try:
+            if checker():
+                return True
+        except OSError:
+            return True
+    try:
+        attributes = int(getattr(path.lstat(), "st_file_attributes", 0) or 0)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return bool(attributes & 0x400)
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
 
 
 __all__ = ["LegacyDatabaseArchiveService"]

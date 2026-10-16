@@ -10,27 +10,29 @@ from uuid import uuid4
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.services.site_manager import SiteManager
-from netconsole.models.device_address import normalize_ip_address
 from netconsole.models.api.rail_transit_base_data import (
     BaseDataChangeDTO,
     BaseDataClearPreviewDTO,
     BaseDataClearResultDTO,
+    BaseDataEditScope,
     BaseDataEditSessionDTO,
     BaseDataEditSnapshotDTO,
-    BaseDataEditScope,
     BaseDataSaveResultDTO,
     BaseDataValidationIssueDTO,
     BaseDataValidationResultDTO,
+    SectionDTO,
+    SectionGenerationPreviewDTO,
+    SectionGenerationPreviewRequestDTO,
     StationConflictGroupDTO,
     StationConflictMemberDTO,
     StationConflictPreviewDTO,
     StationDeletePreflightDTO,
     StationDeletePreflightItemDTO,
     StationReferenceSummaryDTO,
-    SectionGenerationPreviewDTO,
-    SectionGenerationPreviewRequestDTO,
-    SectionDTO,
+)
+from netconsole.models.device_address import normalize_ip_address
+from netconsole.repositories.ap_management_vlan_repository import (
+    ApManagementVlanRevisionConflict,
 )
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataCompensationError,
@@ -38,8 +40,15 @@ from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRepository,
     RailTransitBaseDataRevisionConflict,
 )
-from netconsole.repositories.ap_management_vlan_repository import (
-    ApManagementVlanRevisionConflict,
+from netconsole.services.ap_extension_import import normalize_ap_mac
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.database_upgrade.coordinator import (
+    database_maintenance_lock,
+    site_database_maintenance_key,
+)
+from netconsole.services.rail_transit.ap_line_side_service import (
+    derive_ap_line_side,
+    line_side_metadata,
 )
 from netconsole.services.rail_transit.ap_management_vlan_planning import (
     REALLOCATION_ONLY_UNLOCKED,
@@ -47,21 +56,16 @@ from netconsole.services.rail_transit.ap_management_vlan_planning import (
     project_legacy_station_rows,
     stable_legacy_station_id,
 )
-from netconsole.services.ap_extension_import import normalize_ap_mac
-from netconsole.services.ap_identity import ApIdentityQueryService
-from netconsole.services.rail_transit.trackside_ap_location import (
-    default_participates_in_mainline,
-    normalize_location_class,
-    parse_participates_in_mainline,
-    validate_location_participation,
+from netconsole.services.rail_transit.base_data_query_service import (
+    RailTransitBaseDataQueryService,
 )
-from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
-from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, BaseDataWriteGuardError
-from netconsole.services.rail_transit.ap_line_side_service import (
-    derive_ap_line_side,
-    line_side_metadata,
+from netconsole.services.rail_transit.base_data_write_guard import (
+    BaseDataWriteGuard,
+    BaseDataWriteGuardError,
 )
-from netconsole.services.rail_transit.section_generation_service import SectionGenerationService
+from netconsole.services.rail_transit.section_generation_service import (
+    SectionGenerationService,
+)
 from netconsole.services.rail_transit.station_source_utils import (
     DEFAULT_MAIN_PATH_CODE,
     DEFAULT_STATION_SOURCE_GROUP,
@@ -72,13 +76,19 @@ from netconsole.services.rail_transit.station_source_utils import (
     parse_station_source_value,
     station_structure_defaults,
 )
+from netconsole.services.rail_transit.trackside_ap_location import (
+    default_participates_in_mainline,
+    normalize_location_class,
+    parse_participates_in_mainline,
+    validate_location_participation,
+)
+from netconsole.services.site_manager import SiteManager
 from netconsole.services.trackside_ap_plan_io import (
     normalize_trackside_plan_row,
     normalize_trackside_plan_rows,
 )
 from netconsole.services.vehicle_mr_online import parse_train_identity
 from netconsole.utils.mileage import parse_track_mileage
-
 
 _SENSITIVE_KEYS = {
     "password", "username", "token", "secret", "community", "credential",
@@ -370,6 +380,20 @@ class RailTransitBaseDataApplicationService:
         *,
         explicit_confirmation: bool,
     ) -> BaseDataClearResultDTO:
+        with database_maintenance_lock(self.paths, site_database_maintenance_key(site_id)):
+            return self._clear_all_locked(
+                site_id,
+                base_revision,
+                explicit_confirmation=explicit_confirmation,
+            )
+
+    def _clear_all_locked(
+        self,
+        site_id: str,
+        base_revision: str,
+        *,
+        explicit_confirmation: bool,
+    ) -> BaseDataClearResultDTO:
         site_id = SiteManager(self.paths).validate_site_name(site_id)
         try:
             self.guard.authorize_apply(site_id, explicit_confirmation=explicit_confirmation)
@@ -495,6 +519,24 @@ class RailTransitBaseDataApplicationService:
         return BaseDataValidationResultDTO(valid=not any(issue.blocking for issue in issues), issues=issues), normalized
 
     def save_changes(
+        self,
+        site_id: str,
+        base_revision: str,
+        changes: Iterable[BaseDataChangeDTO],
+        *,
+        scope: BaseDataEditScope = "all",
+        explicit_confirmation: bool,
+    ) -> BaseDataSaveResultDTO:
+        with database_maintenance_lock(self.paths, site_database_maintenance_key(site_id)):
+            return self._save_changes_locked(
+                site_id,
+                base_revision,
+                changes,
+                scope=scope,
+                explicit_confirmation=explicit_confirmation,
+            )
+
+    def _save_changes_locked(
         self,
         site_id: str,
         base_revision: str,

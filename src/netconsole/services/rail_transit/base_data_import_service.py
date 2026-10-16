@@ -10,8 +10,6 @@ from uuid import UUID, uuid4
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.services.site_manager import SiteManager
-from netconsole.services.ap_extension_import import normalize_ap_mac
 from netconsole.models.api.rail_transit_base_data import (
     DataQualityIssueDTO,
     FieldProvenanceDTO,
@@ -31,13 +29,11 @@ from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRepository,
     RailTransitBaseDataRollbackConflict,
 )
-from netconsole.services.rail_transit.source_policy import (
-    SOURCE_PRIORITIES,
-    field_action,
-    import_policy_rows,
-    is_blocking_issue,
-    is_runtime_field,
-    match_trackside_ap,
+from netconsole.services.ap_extension_import import normalize_ap_mac
+from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.services.database_upgrade.coordinator import (
+    database_maintenance_lock,
+    site_database_maintenance_key,
 )
 from netconsole.services.rail_transit.base_data_preview_store import (
     BaseDataPreviewStore,
@@ -47,8 +43,15 @@ from netconsole.services.rail_transit.base_data_write_guard import (
     BaseDataWriteGuard,
     BaseDataWriteGuardError,
 )
-from netconsole.services.ap_identity import ApIdentityQueryService
-
+from netconsole.services.rail_transit.source_policy import (
+    SOURCE_PRIORITIES,
+    field_action,
+    import_policy_rows,
+    is_blocking_issue,
+    is_runtime_field,
+    match_trackside_ap,
+)
+from netconsole.services.site_manager import SiteManager
 
 PREVIEW_TTL_MINUTES = 15
 _SOURCE_TRACKING_FIELDS = {"source_file", "source_sheet", "source_row", "raw_payload_json"}
@@ -283,6 +286,22 @@ class RailTransitBaseDataImportService:
         owner: str = "",
         decisions: list[MergeFieldDecisionDTO] | None = None,
     ) -> dict[str, Any]:
+        with database_maintenance_lock(self.paths, site_database_maintenance_key(plan.site_id)):
+            return self._apply_merge_plan_locked(
+                plan,
+                confirmed=confirmed,
+                owner=owner,
+                decisions=decisions,
+            )
+
+    def _apply_merge_plan_locked(
+        self,
+        plan: MergePlanDTO,
+        *,
+        confirmed: bool,
+        owner: str = "",
+        decisions: list[MergeFieldDecisionDTO] | None = None,
+    ) -> dict[str, Any]:
         try:
             self.guard.authorize_apply(plan.site_id, explicit_confirmation=confirmed)
         except BaseDataWriteGuardError as exc:
@@ -412,6 +431,20 @@ class RailTransitBaseDataImportService:
         site_id: str,
         operation_id: str,
         explicit_confirmation: bool = False,
+    ) -> dict[str, Any]:
+        with database_maintenance_lock(self.paths, site_database_maintenance_key(site_id)):
+            return self._rollback_import_locked(
+                site_id=site_id,
+                operation_id=operation_id,
+                explicit_confirmation=explicit_confirmation,
+            )
+
+    def _rollback_import_locked(
+        self,
+        *,
+        site_id: str,
+        operation_id: str,
+        explicit_confirmation: bool,
     ) -> dict[str, Any]:
         try:
             self.guard.authorize_rollback(site_id, explicit_confirmation=explicit_confirmation)

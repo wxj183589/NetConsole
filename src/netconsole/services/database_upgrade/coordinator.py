@@ -7,8 +7,12 @@ from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
-from netconsole.core.paths import PathResolver
 from netconsole.core.interprocess_lock import interprocess_file_lock
+from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import (
+    production_write_allowed,
+    require_data_root_write_allowed,
+)
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
 from netconsole.services.database_upgrade.journal import DatabaseUpgradeJournal
 from netconsole.services.database_upgrade.models import (
@@ -17,13 +21,15 @@ from netconsole.services.database_upgrade.models import (
     DatabaseUpgradeResult,
     ProgressCallback,
 )
-from netconsole.services.database_upgrade.registry import DatabaseUpgradeRegistry, database_upgrade_registry_for
+from netconsole.services.database_upgrade.registry import (
+    DatabaseUpgradeRegistry,
+    database_upgrade_registry_for,
+)
 from netconsole.services.database_upgrade.sqlite_consistency import (
     checkpoint_wal,
     sqlite_backup,
     validate_sqlite,
 )
-
 
 _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -71,6 +77,11 @@ class DatabaseUpgradeCoordinator:
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
     ) -> DatabaseUpgradeResult:
+        require_data_root_write_allowed(
+            self.paths.data_root,
+            "database_upgrade",
+            allow_production_write=production_write_allowed(),
+        )
         operation_id = str(task_id or descriptor.task_id or f"dbu-op-{uuid4().hex}")
         self.registry.register(descriptor)
         active_path = descriptor.database_path.resolve()
