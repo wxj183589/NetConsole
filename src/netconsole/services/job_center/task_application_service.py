@@ -4,6 +4,7 @@ import json
 import os
 import uuid
 import threading
+from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
@@ -93,7 +94,8 @@ class TaskApplicationService:
         if site not in self._reconciled_sites:
             self._reconciled_sites.add(site)
             if self._reconcile_on_start:
-                repository.reconcile_orphaned_local_tasks(self._is_process_alive)
+                changed = repository.reconcile_orphaned_local_tasks(self._is_process_alive)
+                self._publish_recovered_terminal_tasks(changed)
         return repository
 
     def _task_site(self, task_id: str, site_name: str | None = None) -> str:
@@ -120,6 +122,18 @@ class TaskApplicationService:
         site_name = str(params.get("site_name") or self.site_name or "demo")
         resource_keys = self._resource_keys(params)
         now = utc_now_iso()
+        initial_result: dict[str, object] = {}
+        if (
+            runtime_job.task_type == "ac_command_action_execute"
+            and str(params.get("owner") or "") == "web_ac"
+            and self._task_source(params.get("task_source"), default="local") == "local"
+        ):
+            plan_id = str(params.get("plan_id") or "").strip()
+            if plan_id:
+                # Keep only the bounded correlation key in the snapshot so a
+                # restart/recovery can still reconcile the plan before Task
+                # retention removes the terminal evidence.
+                initial_result["plan_id"] = plan_id
         snapshot = TaskSnapshot(
             task_id=job_id,
             task_type=runtime_job.task_type,
@@ -127,6 +141,7 @@ class TaskApplicationService:
             status=TaskState.PENDING,
             created_time=now,
             updated_time=now,
+            result=initial_result,
             owner=str(params.get("owner") or "local"),
             device=self._first_text(params, "device", "device_name", "device_uuid", "device_id"),
             agent=self._first_text(params, "agent", "agent_name", "agent_id"),
@@ -563,6 +578,9 @@ class TaskApplicationService:
             repository,
             paths=self.paths,
             site_name=site_name,
+            before_delete=lambda task_ids: self._publish_before_task_cleanup(
+                site_name, task_ids
+            ),
         )
         result = cleanup.dismiss_task(
             task_id,
@@ -619,6 +637,9 @@ class TaskApplicationService:
             repository,
             paths=self.paths,
             site_name=site_name,
+            before_delete=lambda task_ids: self._publish_before_task_cleanup(
+                site_name, task_ids
+            ),
         )
         candidate_scan = repository.cleanup_history(
             cleanup_type,
@@ -705,6 +726,9 @@ class TaskApplicationService:
             repository,
             paths=self.paths,
             site_name=selected_site,
+            before_delete=lambda task_ids: self._publish_before_task_cleanup(
+                selected_site, task_ids
+            ),
         ).cleanup_tasks(task_ids)
         self._task_authority_index.remove(
             list(result.get("deleted_task_ids") or []),
@@ -799,8 +823,19 @@ class TaskApplicationService:
             merged["task_ids"] = list(merged["deleted_task_ids"])
         return merged
 
-    def reconcile_orphaned_local_tasks(self) -> list[TaskSnapshot]:
-        return self.repository().reconcile_orphaned_local_tasks(self._is_process_alive)
+    def reconcile_orphaned_local_tasks(
+        self,
+        *,
+        site_name: str | None = None,
+        is_locally_hosted: Callable[[str], bool] | None = None,
+    ) -> list[TaskSnapshot]:
+        selected_site = str(site_name or self.site_name or "demo")
+        changed = self.repository(selected_site).reconcile_orphaned_local_tasks(
+            self._is_process_alive,
+            is_locally_hosted,
+        )
+        self._publish_recovered_terminal_tasks(changed)
+        return changed
 
     def run_due_task_event_retention(
         self,
@@ -847,6 +882,64 @@ class TaskApplicationService:
             }
         )
 
+    def _publish_before_task_cleanup(
+        self,
+        site_name: str,
+        task_ids: list[str] | tuple[str, ...] | set[str],
+    ) -> None:
+        ids = list(
+            dict.fromkeys(
+                str(task_id).strip()
+                for task_id in task_ids
+                if str(task_id).strip()
+            )
+        )
+        if not ids:
+            return
+        self.events.publish_persisted(
+            {
+                "id": uuid.uuid4().hex,
+                "task_id": "",
+                "type": "tasks.before_cleanup",
+                "time": utc_now_iso(),
+                "source": "job_center",
+                "payload": {
+                    "site_id": str(site_name or self.site_name or "demo"),
+                    "task_ids": ids,
+                },
+            }
+        )
+
+    def _publish_recovered_terminal_tasks(
+        self,
+        snapshots: list[TaskSnapshot],
+    ) -> None:
+        for snapshot in snapshots:
+            if snapshot.status not in TERMINAL_TASK_STATES:
+                continue
+            result = dict(snapshot.result or {})
+            payload: dict[str, object] = {
+                "job_id": snapshot.task_id,
+                "task_id": snapshot.task_id,
+                "task_type": snapshot.task_type,
+                "site_id": snapshot.site_name,
+                "state": snapshot.status.value,
+                "result": result,
+            }
+            plan_id = str(result.get("plan_id") or "").strip()
+            if plan_id:
+                payload["plan_id"] = plan_id
+            self.events.publish_persisted(
+                {
+                    "id": uuid.uuid4().hex,
+                    "task_id": snapshot.task_id,
+                    "type": "state",
+                    "time": snapshot.updated_time or utc_now_iso(),
+                    "source": "recovery",
+                    "payload": payload,
+                }
+            )
+
     def list_site_blocking_tasks(
         self,
         site_name: str,
@@ -859,6 +952,7 @@ class TaskApplicationService:
             lambda task_id: self.runtime.is_running(task_id)
             or task_id in self._job_sites,
         )
+        self._publish_recovered_terminal_tasks(reconciled)
         blocking = repository.list(statuses=set(_ACTIVE_TASK_STATES), limit=1000)
         return blocking, reconciled
 
@@ -1007,6 +1101,9 @@ class TaskApplicationService:
                 values["started_time"] = event_time
             if values["status"] in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
                 values["finished_time"] = event_time
+                values["result"] = self._merge_plan_correlation(
+                    dict(values.get("result") or {}), payload
+                )
         elif event_type == "progress":
             if total > 0:
                 progress = max(0, min(round(current * 100 / total), 100))
@@ -1020,7 +1117,9 @@ class TaskApplicationService:
                     progress = 99
                 values["progress"] = progress
         elif event_type == "finished":
-            result = dict(payload.get("result") or {})
+            result = self._merge_plan_correlation(
+                dict(payload.get("result") or {}), payload
+            )
             values.update(
                 {
                     "status": self._finished_event_state(payload),
@@ -1032,22 +1131,28 @@ class TaskApplicationService:
             )
         elif event_type == "error":
             result = payload.get("result")
+            result_mapping = self._merge_plan_correlation(
+                dict(result) if isinstance(result, dict) else {}, payload
+            )
             values.update(
                 {
                     "status": TaskState.FAILED,
                     "finished_time": event_time,
                     "error_message": str(payload.get("error") or payload.get("message") or "任务失败"),
-                    **({"result": dict(result)} if isinstance(result, dict) else {}),
+                    **({"result": result_mapping} if result_mapping else {}),
                 }
             )
         elif event_type == "cancelled":
             result = payload.get("result")
+            result_mapping = self._merge_plan_correlation(
+                dict(result) if isinstance(result, dict) else {}, payload
+            )
             values.update(
                 {
                     "status": TaskState.CANCELLED,
                     "finished_time": event_time,
                     "error_message": str(payload.get("error") or payload.get("message") or "任务已取消"),
-                    **({"result": dict(result)} if isinstance(result, dict) else {}),
+                    **({"result": result_mapping} if result_mapping else {}),
                 }
             )
         elif event_type == "artifact_finalized":
@@ -1080,6 +1185,15 @@ class TaskApplicationService:
             )
         self._apply_text_integrity(values, payload, event_time)
         return TaskSnapshot(**values)
+
+    @staticmethod
+    def _merge_plan_correlation(
+        result: dict[str, Any], payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        plan_id = str(payload.get("plan_id") or "").strip()
+        if plan_id and not str(result.get("plan_id") or "").strip():
+            result["plan_id"] = plan_id
+        return result
 
     @staticmethod
     def _apply_text_integrity(

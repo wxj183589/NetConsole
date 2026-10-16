@@ -20,6 +20,11 @@ import {
   startAcLocalRebuild,
 } from '../../api/acWebParity'
 import { isFeatureEnabled } from '../../features'
+import {
+  acActionPlanReasonLabel,
+  acActionPlanReconciliationLabel,
+  acActionPlanStatusLabel,
+} from '../../i18n/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type { AcActionAudit, AcActionPlan, AcExtension, AcExtensionPreview, AcWebTask } from '../../types/acWebParity'
@@ -276,14 +281,14 @@ onBeforeUnmount(stopPolling)
     <el-alert type="warning" title="本地重算只读取当前数据库与缓存，不连接真实 AC。" show-icon :closable="false" />
     <el-alert v-if="isFeatureEnabled('capability.ac.dangerous_actions')" type="error" title="AC 写操作会连接真实设备；必须先核对固定命令预览并完成二次确认。" show-icon :closable="false" />
     <el-alert
-      :title="task ? `AC 任务 · ${task.action} · ${task.status}` : 'AC 任务 · 暂无记录'"
+      :title="task ? `AC 任务 · ${task.action} · ${acActionPlanStatusLabel(task.status)}` : 'AC 任务 · 暂无记录'"
       :description="task ? (task.error_message || task.message || task.task_id) : '停止、日志与 Artifact 操作统一在任务窗口完成'"
       type="info"
       show-icon
       :closable="false"
     ><el-button link type="primary" @click="openTaskWindow">打开任务中心</el-button></el-alert>
-    <el-card v-if="actionPlan" shadow="never" class="plan"><template #header>AC 动作计划 {{ actionPlan.plan_id }} · {{ actionPlan.status }}</template><p>审计摘要：{{ actionPlan.plan_digest }}</p><p v-if="actionPlan.reconciliation_status && actionPlan.reconciliation_status !== 'NOT_EVALUATED'">协调：{{ actionPlan.reconciliation_status }}<span v-if="actionPlan.reconciliation_reason"> · {{ actionPlan.reconciliation_reason }}</span></p><pre>{{ actionPlan.command_summary.join('\n') }}</pre></el-card>
-    <el-card v-if="actionAudit" shadow="never" class="plan"><template #header>AC 动作审计 · {{ actionAudit.status }}</template><el-descriptions :column="3" border><el-descriptions-item label="目标">{{ actionAudit.target_id }}</el-descriptions-item><el-descriptions-item label="动作">{{ actionAudit.action_id }}</el-descriptions-item><el-descriptions-item label="任务状态">{{ actionAudit.task_status || '—' }}</el-descriptions-item><el-descriptions-item label="协调证据">{{ actionAudit.reconciliation_status || '—' }}<span v-if="actionAudit.reconciliation_reason"> · {{ actionAudit.reconciliation_reason }}</span></el-descriptions-item><el-descriptions-item label="执行器">{{ actionAudit.executor }}</el-descriptions-item><el-descriptions-item label="Task">{{ actionAudit.task_id || '—' }}</el-descriptions-item><el-descriptions-item label="摘要">{{ actionAudit.plan_digest }}</el-descriptions-item></el-descriptions></el-card>
+    <el-card v-if="actionPlan" shadow="never" class="plan"><template #header>AC 动作计划 {{ actionPlan.plan_id }} · {{ acActionPlanStatusLabel(actionPlan.status) }}</template><p>审计摘要：{{ actionPlan.plan_digest }}</p><p v-if="actionPlan.reconciliation_status && actionPlan.reconciliation_status !== 'NOT_EVALUATED'">协调：{{ acActionPlanReconciliationLabel(actionPlan.reconciliation_status) }}<span v-if="actionPlan.reconciliation_reason"> · {{ acActionPlanReasonLabel(actionPlan.reconciliation_reason) }}</span></p><pre>{{ actionPlan.command_summary.join('\n') }}</pre></el-card>
+    <el-card v-if="actionAudit" shadow="never" class="plan"><template #header>AC 动作审计 · {{ acActionPlanStatusLabel(actionAudit.status) }}</template><el-descriptions :column="3" border><el-descriptions-item label="目标">{{ actionAudit.target_id }}</el-descriptions-item><el-descriptions-item label="动作">{{ actionAudit.action_id }}</el-descriptions-item><el-descriptions-item label="任务状态">{{ actionAudit.task_status ? acActionPlanStatusLabel(actionAudit.task_status) : '—' }}</el-descriptions-item><el-descriptions-item label="协调证据">{{ actionAudit.reconciliation_status ? acActionPlanReconciliationLabel(actionAudit.reconciliation_status) : '—' }}<span v-if="actionAudit.reconciliation_reason"> · {{ acActionPlanReasonLabel(actionAudit.reconciliation_reason) }}</span></el-descriptions-item><el-descriptions-item label="执行器">{{ actionAudit.executor }}</el-descriptions-item><el-descriptions-item label="Task">{{ actionAudit.task_id || '—' }}</el-descriptions-item><el-descriptions-item label="摘要">{{ actionAudit.plan_digest }}</el-descriptions-item></el-descriptions></el-card>
     <div class="grid">
       <el-card shadow="never"><template #header>AP 扩展导入预览 / 回滚</template><input type="file" accept=".csv,.xlsx" :disabled="!isFeatureEnabled('capability.ac.extensions.preview')" @change="chooseFile"><el-alert v-if="extensionPreview" class="preview" type="info" :title="`${extensionPreview.file_name} · ${extensionPreview.row_count} 行 · 摘要 ${extensionPreview.preview_digest}`" :closable="false" /><div class="actions"><el-button type="primary" :loading="taskBusy" :disabled="!extensionPreview || !isFeatureEnabled('capability.ac.extensions.apply')" @click="applyExtension">确认写入</el-button><el-button :loading="taskBusy" :disabled="!lastAuditId || !isFeatureEnabled('capability.ac.extensions.rollback')" @click="rollbackExtension">回滚最近导入</el-button></div></el-card>
       <el-card shadow="never"><template #header>AP 扩展信息（{{ extensions.length }}）</template><NcDataTable table-id="ac-extension-records" route-key="/ac-management/parity" :data="extensions" :columns="extensionColumns" :height="320" empty-text="暂无 AP 扩展信息" /></el-card>

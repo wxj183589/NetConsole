@@ -431,7 +431,10 @@ def create_app(
         task_service = TaskApplicationService(
             paths=paths,
             site_name=site_name,
-            reconcile_on_start=not defer_runtime_start,
+            # AC Web subscribes to terminal Task events below.  Defer the
+            # bounded orphan recovery until that subscriber is attached so a
+            # recovered AC action can persist its plan audit as well.
+            reconcile_on_start=False,
         )
     if agent_service is None:
         agent_service = AgentControllerService(paths=paths, site_name=site_name)
@@ -1086,6 +1089,10 @@ def create_app(
         artifact_store=web_artifact_store,
         desktop_action_service=desktop_action_service,
     )
+    if not defer_runtime_start:
+        reconcile_tasks = getattr(task_service, "reconcile_orphaned_local_tasks", None)
+        if callable(reconcile_tasks):
+            reconcile_tasks()
     app.state.rail_transit_web_application_service = RailTransitWebApplicationService(
         paths,
         task_service,

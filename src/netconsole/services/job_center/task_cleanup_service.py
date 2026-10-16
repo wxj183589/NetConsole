@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from netconsole.core.paths import PathResolver
@@ -136,10 +137,12 @@ class TaskCleanupService:
         *,
         paths: PathResolver | None = None,
         site_name: str = "",
+        before_delete: Callable[[list[str]], None] | None = None,
     ) -> None:
         self.repository = repository
         self.paths = paths
         self.site_name = str(site_name or "")
+        self.before_delete = before_delete
 
     def can_cleanup(self, task_id: str) -> dict[str, object]:
         decision = self._decision(str(task_id or ""))
@@ -157,6 +160,8 @@ class TaskCleanupService:
         ids = self._normalize_ids(task_ids)
         decisions = self._decisions(ids)
         eligible = [item.task_id for item in decisions if item.can_cleanup]
+        if eligible and self.before_delete is not None:
+            self.before_delete(list(eligible))
         deletion = self.repository.delete_task_owned_rows(eligible)
         deleted = dict(deletion["deleted"])
         skipped = [item.to_dict() for item in decisions if not item.can_cleanup]

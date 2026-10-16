@@ -18,6 +18,7 @@ from netconsole.application.web_artifacts import WebArtifactError, WebArtifactSt
 from netconsole.application.web_export_process_adapter import WebExportProcessAdapter
 from netconsole.application.desktop.actions import DesktopActionService, RegisteredLaunch
 from netconsole.core.database import Database
+from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.settings import SettingsStore, normalize_external_terminal_type
@@ -336,6 +337,9 @@ class AcWebApplicationService:
         self.export_adapter = export_adapter
         self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
         self.desktop_action_service = desktop_action_service
+        events = getattr(task_service, "events", None)
+        subscribe = getattr(events, "subscribe", None)
+        self._task_event_unsubscribe = subscribe(self._handle_task_event) if callable(subscribe) else None
 
     def current_site_id(self) -> str:
         try:
@@ -344,6 +348,112 @@ class AcWebApplicationService:
             return self._site(str(value or ""))
         except (OSError, TypeError, ValueError, json.JSONDecodeError, AcWebActionError) as exc:
             raise AcWebActionError("SITE_CONTEXT_INVALID", "当前局点上下文无效") from exc
+
+    def _handle_task_event(self, event: dict[str, object]) -> None:
+        """Coordinate only AC Web action tasks after Task Center persistence."""
+
+        event_type = str(event.get("type") or "")
+        payload = event.get("payload")
+        payload_mapping = payload if isinstance(payload, Mapping) else {}
+        if event_type == "tasks.before_cleanup":
+            site_id = str(payload_mapping.get("site_id") or "").strip()
+            task_ids = payload_mapping.get("task_ids")
+            if not site_id or not isinstance(task_ids, (list, tuple, set)):
+                return
+            for task_id in task_ids:
+                snapshot = self._task_snapshot_for_reconciliation(
+                    str(task_id or ""), site_id
+                )
+                self._reconcile_terminal_task(
+                    snapshot,
+                    correlation_plan_id="",
+                    trigger="before_cleanup",
+                    event_site_id=site_id,
+                )
+            return
+
+        if event_type not in {"finished", "error", "cancelled", "state"}:
+            return
+        if event_type == "state" and str(payload_mapping.get("state") or "") not in _TERMINAL_PLAN_STATUSES:
+            return
+        task_id = str(
+            event.get("task_id")
+            or payload_mapping.get("task_id")
+            or payload_mapping.get("job_id")
+            or ""
+        ).strip()
+        if not task_id:
+            return
+        site_id = str(payload_mapping.get("site_id") or "").strip()
+        snapshot = self._task_snapshot_for_reconciliation(task_id, site_id)
+        self._reconcile_terminal_task(
+            snapshot,
+            correlation_plan_id=str(payload_mapping.get("plan_id") or "").strip(),
+            trigger=event_type,
+            event_site_id=site_id,
+        )
+
+    def _task_snapshot_for_reconciliation(self, task_id: str, site_id: str = ""):
+        if not task_id:
+            return None
+        try:
+            getter = getattr(self.task_service, "get_task", None)
+            if callable(getter):
+                return getter(task_id, site_name=site_id or None)
+            repository = self.task_service.repository(
+                site_id or str(getattr(self.task_service, "site_name", "demo") or "demo")
+            )
+            return repository.get(task_id)
+        except Exception as exc:
+            app_logger.log_warning(
+                "AC_ACTION_PLAN_TERMINAL_TASK_READ_FAILED",
+                f"task_id={task_id}; site={site_id}; error={exc.__class__.__name__}",
+            )
+            return None
+
+    def _reconcile_terminal_task(
+        self,
+        snapshot,
+        *,
+        correlation_plan_id: str,
+        trigger: str,
+        event_site_id: str = "",
+    ) -> None:
+        if snapshot is None:
+            return
+        if (
+            str(getattr(snapshot, "task_type", "") or "") != "ac_command_action_execute"
+            or str(getattr(snapshot, "owner", "") or "") != self._OWNER
+            or str(getattr(snapshot, "source", "") or "") != "local"
+        ):
+            return
+        snapshot_site_id = str(getattr(snapshot, "site_name", "") or "").strip()
+        if event_site_id and snapshot_site_id != event_site_id:
+            return
+        result = getattr(snapshot, "result", {})
+        result_mapping = result if isinstance(result, Mapping) else {}
+        result_plan_id = str(result_mapping.get("plan_id") or "").strip()
+        if correlation_plan_id and result_plan_id and correlation_plan_id != result_plan_id:
+            app_logger.log_warning(
+                "AC_ACTION_PLAN_TERMINAL_RECONCILIATION_SKIPPED",
+                f"task_id={snapshot.task_id}; trigger={trigger}; reason=PLAN_ID_CORRELATION_CONFLICT",
+            )
+            return
+        plan_id = result_plan_id or str(correlation_plan_id or "").strip()
+        if not plan_id:
+            return
+        try:
+            self.reconcile_action_plan(str(snapshot.site_name or ""), plan_id)
+        except Exception as exc:
+            # The Task terminal state is already durable.  Keep the failure
+            # diagnostic and leave the plan eligible for cleanup/startup/manual
+            # retry; never convert the Task back to an active state.
+            app_logger.log_warning(
+                "AC_ACTION_PLAN_TERMINAL_RECONCILIATION_FAILED",
+                f"task_id={snapshot.task_id}; plan_id={plan_id}; "
+                f"site={snapshot.site_name}; trigger={trigger}; "
+                f"error={exc.__class__.__name__}",
+            )
 
     def list_extensions(self, site_id: str, *, search: str = "", page: int = 1, page_size: int = 50) -> AcExtensionPageDTO:
         site_id = self._site(site_id)
@@ -1472,17 +1582,27 @@ class AcWebApplicationService:
         )
 
     def _reconcile_owned_orphans(self, site_id: str):
+        # Recovery is bounded by the current site and is routed through the
+        # TaskApplicationService so recovered terminal snapshots emit the same
+        # lifecycle event as normal worker completion.  Non-AC/local owners
+        # are marked as hosted for this AC-specific pass and are left to their
+        # own recovery owner; no task is retried or re-executed here.
         repository = self.task_service.repository(site_id)
         active = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
-        owned_pids = {
-            item.owner_pid
+        ac_owned_task_ids = {
+            item.task_id
             for item in repository.list(statuses=active, limit=1000)
-            if item.site_name == site_id and self._authorized_task(item) and item.owner_pid > 0
+            if item.site_name == site_id and self._authorized_task(item)
         }
-        if not owned_pids:
-            return []
-        return repository.reconcile_orphaned_local_tasks(
-            lambda pid: True if pid not in owned_pids else self.task_service._is_process_alive(pid)
+
+        def is_ac_task_locally_hosted(task_id: str) -> bool:
+            if task_id not in ac_owned_task_ids:
+                return True
+            return False
+
+        return self.task_service.reconcile_orphaned_local_tasks(
+            site_name=site_id,
+            is_locally_hosted=is_ac_task_locally_hosted,
         )
 
     def _cleanup_task_runtime(self, site_id: str, task_id: str) -> None:

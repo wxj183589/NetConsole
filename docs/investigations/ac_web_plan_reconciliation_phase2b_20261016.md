@@ -4,7 +4,7 @@
 
 基线：`main / 5b657137`
 
-范围：AC Web 固定动作计划与 Task Center 状态协调，不包含设备采集、设备配置、WPS 同步、Task 清理或计划批量修复。
+范围：AC Web 固定动作计划与 Task Center 状态协调，以及终态落盘前的最小生命周期接入；不包含设备采集、设备配置、WPS 同步、Task 历史批量清理或正式计划批量修复。
 
 ## 结论
 
@@ -14,8 +14,15 @@ Phase 2-B 将协调拆成两层：
 
 1. `classify_ac_action_plan_status()` 是纯分类函数，只读取计划和单个 Task 快照，不扫描 Task 历史、不执行命令、不修改文件。
 2. GET 计划、审计接口返回 `stored_status`、`effective_status`、`reconciliation_status`、`reconciliation_reason` 和 `evidence_level`。当前 Task 缺失、被 tombstone 清理、局点/所有者/来源/类型不匹配或 `plan_id` 冲突时，显示 `UNKNOWN_OR_UNVERIFIED`。
-3. 仅在同一计划的显式 `POST /actions/plans/{plan_id}/reconcile` 中，才允许把已验证的 Task 终态原子写回计划，并保留原状态、任务 ID、证据等级、来源和时间戳。未知或活动状态不写回。
-4. 任务刚提交而快照尚未可见时，使用计划内的短启动窗口显示 `EXECUTING`；窗口外改为未知，避免把永久缺失伪装成活动任务。
+3. AC Web 动作 Task 创建时仅在 Task 快照中保留受限的 `plan_id` 关联证据；Worker 的完成、失败、取消事件、孤儿恢复事件，以及 Task 清理前回调，均由 `AcWebApplicationService` 的订阅者自动调用逐计划协调。协调只接受同局点、`owner=web_ac`、`source=local`、受控任务类型和一致 `plan_id`，并在 Task 终态证据被删除前写入 `status_reconciliation`。
+4. 显式 `POST /actions/plans/{plan_id}/reconcile` 仍保留为有界的人工/诊断重试入口；未知或活动状态不写回，协调异常不改变已经持久化的 Task 终态。
+5. 任务刚提交而快照尚未可见时，使用计划内的短启动窗口显示 `EXECUTING`；窗口外改为未知，避免把永久缺失伪装成活动任务。
+
+## PR #88 评审收口
+
+- P1：已接入真实 Task Center 生命周期。Backend 先创建并持久化 AC Web Task，再由事件总线在终态事件落库后触发计划协调；Task cleanup 在删除快照前发出有界 `tasks.before_cleanup` 事件；启动/Worker 恢复通过同一协调事件补偿。非 AC Web 任务、其他局点、其他 owner/source/type 和 `plan_id` 冲突均拒绝协调。
+- P2：Renderer 不再把动作计划的状态码、协调码或原因码作为主文案展示；`runtime.ts` 提供中英文 i18n 映射和未知值兜底，`UNKNOWN_OR_UNVERIFIED` 保持“结果无法核验”，不使用成功色语义。
+- 历史边界：Task 快照已被清理且没有此前保存的 `status_reconciliation` 时，仍保持 `UNKNOWN_OR_UNVERIFIED`，本次不会扫描或补写旧计划。
 
 ## 正式数据只读核对
 
@@ -39,7 +46,7 @@ Phase 2-B 将协调拆成两层：
 
 ## 验证记录
 
-- AC Web 定向回归：30 passed；新增隔离分类/显式协调测试覆盖状态、证据、作用域、tombstone、启动竞态、幂等和 GET 只读行为。
+- AC Web/Task lifecycle 定向回归：新增自动终态协调、完成/失败/取消、重复回调幂等、恢复作用域、清理前回调和 i18n 映射测试；具体最新结果以 PR #88 当前提交报告为准。
 - Python 全量（工作树源码、隔离测试根）：5149 passed，2 skipped，33 warnings。
 - Renderer：181 files / 1310 tests；`vue-tsc -b` 和 build 通过。
 - Electron：38 files / 303 tests；typecheck、Main/Preload build 通过。
@@ -51,4 +58,4 @@ Phase 2-B 将协调拆成两层：
 
 ## 后续边界
 
-仍需单独覆盖并人工确认：任务启动失败、Worker 崩溃后的恢复、Backend 重启恢复、Task 清理前后协调顺序、历史保留策略、资源冲突、GUI 实际显示和真实 AC 写操作。Phase 2-B 不自动处理这 21 条正式计划，也不把历史终态批量写入正式数据。
+仍需人工确认：GUI 实际显示、真实 AC 写操作和 Electron 原生交互。自动化已覆盖启动失败/完成/失败/取消的关联证据、受限恢复、清理前顺序、重复终态回调、作用域拒绝和历史未知边界；Phase 2-B 不自动处理这 21 条正式计划，也不把历史终态批量写入正式数据。

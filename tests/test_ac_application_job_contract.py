@@ -264,6 +264,7 @@ def test_action_plan_persists_revalidates_target_and_starts_real_fixed_command_t
     assert job.params["command_sequence"] == list(executed.command_summary)
     assert job.params["resource_keys"] == ["demo:ac-1:ac_config_write"]
     assert snapshot is not None and snapshot.source == "local" and snapshot.owner == "web_ac"
+    assert snapshot is not None and snapshot.result["plan_id"] == valid.plan_id
     normal.complete(
         executed.task_id,
         {
@@ -274,6 +275,9 @@ def test_action_plan_persists_revalidates_target_and_starts_real_fixed_command_t
             "collect_run_uuid": "run-action-1",
         },
     )
+    persisted_plan = json.loads(restarted._plan_path(valid.plan_id).read_text(encoding="utf-8"))
+    assert persisted_plan["status"] == "COMPLETED"
+    assert persisted_plan["status_reconciliation"]["source"] == "task_center"
     assert restarted.preview_action_plan("demo", valid.plan_id).status == "COMPLETED"
     audit = restarted.action_audit("demo", valid.plan_id)
     assert audit["executor"] == "LOCAL"
