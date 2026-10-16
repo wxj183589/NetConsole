@@ -1042,6 +1042,15 @@ class TaskRepository:
                 else None
             )
 
+    def has_retention_tombstone(self, task_id: str) -> bool:
+        """Return whether a task id was explicitly retired by retention cleanup."""
+
+        normalized = str(task_id or "").strip()
+        if not normalized:
+            return False
+        with self._connect() as conn:
+            return self._is_retention_tombstoned(conn, normalized)
+
     def list(
         self,
         *,

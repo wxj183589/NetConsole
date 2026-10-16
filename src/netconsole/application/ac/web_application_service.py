@@ -8,7 +8,8 @@ import re
 import secrets
 import threading
 import time
-from dataclasses import replace
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -82,6 +83,190 @@ ACTION_DEFINITIONS = {
     "enable_ap_remote_login": ("开启 AP 远程登录", ("screen-length disable", "system-view", "probe", "wlan ap-execute all exec-console enable", "return", "quit")),
 }
 _PLAN_ID = re.compile(r"^ac-plan-[0-9a-f]{32}$")
+_UNKNOWN_OR_UNVERIFIED = "UNKNOWN_OR_UNVERIFIED"
+_TERMINAL_PLAN_STATUSES = {"COMPLETED", "FAILED", "CANCELLED"}
+_ACTIVE_TASK_STATUSES = {"PENDING", "STARTING", "RUNNING", "STOPPING"}
+_TASK_START_GRACE_SECONDS = 10.0
+
+
+@dataclass(frozen=True)
+class AcActionPlanReconciliation:
+    """Read-only evidence classification for one action plan and its Task."""
+
+    effective_status: str
+    reconciliation_status: str
+    reconciliation_reason: str
+    evidence_level: str
+    snapshot: object | None = None
+    can_persist_terminal: bool = False
+
+
+def classify_ac_action_plan_status(
+    plan: Mapping[str, object],
+    snapshot: object | None,
+    *,
+    expected_site_id: str | None = None,
+    tombstoned: bool = False,
+    allowed_task_types: Collection[str] = (),
+    now: float | None = None,
+    startup_grace_seconds: float = _TASK_START_GRACE_SECONDS,
+) -> AcActionPlanReconciliation:
+    """Classify a plan without changing the plan file or Task Center.
+
+    A terminal Task is usable proof only when its identity and scope agree with
+    the plan.  A missing Task is intentionally unknown, except for the narrow
+    submission grace window and an explicit prior terminal reconciliation audit.
+    """
+
+    stored_status = str(plan.get("status") or "")
+    plan_id = str(plan.get("plan_id") or "").strip()
+    site_id = str(plan.get("site_id") or "").strip()
+    task_id = str(plan.get("task_id") or "").strip()
+    if not plan_id or not site_id or (expected_site_id is not None and site_id != str(expected_site_id)):
+        return AcActionPlanReconciliation(
+            _UNKNOWN_OR_UNVERIFIED,
+            _UNKNOWN_OR_UNVERIFIED,
+            "PLAN_IDENTITY_INVALID",
+            "NONE",
+        )
+    if not task_id:
+        return AcActionPlanReconciliation(
+            stored_status,
+            "NOT_EVALUATED",
+            "PLAN_HAS_NO_TASK",
+            "PLAN_ONLY",
+        )
+
+    if snapshot is None:
+        if stored_status == "START_FAILED" and not tombstoned:
+            return AcActionPlanReconciliation(
+                "START_FAILED",
+                "PLAN_ONLY",
+                "TASK_START_FAILED",
+                "PLAN_ONLY",
+            )
+        reconciliation = plan.get("status_reconciliation")
+        if isinstance(reconciliation, Mapping):
+            audit_task_id = str(reconciliation.get("task_id") or "").strip()
+            audited_status = str(reconciliation.get("to_status") or "").strip()
+            if audit_task_id == task_id and audited_status in _TERMINAL_PLAN_STATUSES and stored_status == audited_status:
+                return AcActionPlanReconciliation(
+                    audited_status,
+                    "VERIFIED_TERMINAL_AUDIT",
+                    "PLAN_RECONCILIATION_AUDIT",
+                    "PLAN_AUDIT",
+                )
+        if tombstoned:
+            return AcActionPlanReconciliation(
+                _UNKNOWN_OR_UNVERIFIED,
+                _UNKNOWN_OR_UNVERIFIED,
+                "TASK_HISTORY_CLEANED",
+                "TOMBSTONE",
+            )
+        submitted_at = _safe_float(plan.get("task_submitted_at"))
+        current_time = time.time() if now is None else float(now)
+        if submitted_at is not None and 0 <= current_time - submitted_at <= startup_grace_seconds:
+            return AcActionPlanReconciliation(
+                "EXECUTING",
+                "STARTING",
+                "TASK_SNAPSHOT_PENDING",
+                "PLAN_SUBMISSION",
+            )
+        return AcActionPlanReconciliation(
+            _UNKNOWN_OR_UNVERIFIED,
+            _UNKNOWN_OR_UNVERIFIED,
+            "TASK_NOT_FOUND",
+            "NONE",
+        )
+
+    snapshot_task_id = str(getattr(snapshot, "task_id", "") or "").strip()
+    if snapshot_task_id != task_id:
+        return AcActionPlanReconciliation(
+            _UNKNOWN_OR_UNVERIFIED,
+            _UNKNOWN_OR_UNVERIFIED,
+            "TASK_ID_MISMATCH",
+            "NONE",
+            snapshot,
+        )
+    if str(getattr(snapshot, "site_name", "") or "").strip() != site_id:
+        return AcActionPlanReconciliation(
+            _UNKNOWN_OR_UNVERIFIED,
+            _UNKNOWN_OR_UNVERIFIED,
+            "TASK_SITE_MISMATCH",
+            "NONE",
+            snapshot,
+        )
+    if str(getattr(snapshot, "owner", "") or "") != "web_ac":
+        return AcActionPlanReconciliation(
+            _UNKNOWN_OR_UNVERIFIED,
+            _UNKNOWN_OR_UNVERIFIED,
+            "TASK_OWNER_MISMATCH",
+            "NONE",
+            snapshot,
+        )
+    if str(getattr(snapshot, "source", "") or "") != "local":
+        return AcActionPlanReconciliation(
+            _UNKNOWN_OR_UNVERIFIED,
+            _UNKNOWN_OR_UNVERIFIED,
+            "TASK_SOURCE_MISMATCH",
+            "NONE",
+            snapshot,
+        )
+    task_type = str(getattr(snapshot, "task_type", "") or "")
+    if allowed_task_types and task_type not in allowed_task_types:
+        return AcActionPlanReconciliation(
+            _UNKNOWN_OR_UNVERIFIED,
+            _UNKNOWN_OR_UNVERIFIED,
+            "TASK_TYPE_MISMATCH",
+            "NONE",
+            snapshot,
+        )
+
+    result = getattr(snapshot, "result", {})
+    result_mapping = result if isinstance(result, Mapping) else {}
+    result_plan_id = str(result_mapping.get("plan_id") or "").strip()
+    if result_plan_id and result_plan_id != plan_id:
+        return AcActionPlanReconciliation(
+            _UNKNOWN_OR_UNVERIFIED,
+            _UNKNOWN_OR_UNVERIFIED,
+            "PLAN_ID_MISMATCH",
+            "NONE",
+            snapshot,
+        )
+    evidence_level = "DIRECT_PLAN_ID" if result_plan_id else "TASK_ID_SCOPE"
+    task_status = getattr(snapshot, "status", "")
+    task_status_value = str(getattr(task_status, "value", task_status) or "")
+    if task_status_value in _ACTIVE_TASK_STATUSES:
+        return AcActionPlanReconciliation(
+            "EXECUTING",
+            "VERIFIED_ACTIVE",
+            "TASK_ACTIVE",
+            evidence_level,
+            snapshot,
+        )
+    if task_status_value in _TERMINAL_PLAN_STATUSES:
+        return AcActionPlanReconciliation(
+            task_status_value,
+            "VERIFIED_TERMINAL",
+            "TASK_TERMINAL",
+            evidence_level,
+            snapshot,
+            can_persist_terminal=True,
+        )
+    return AcActionPlanReconciliation(
+        _UNKNOWN_OR_UNVERIFIED,
+        _UNKNOWN_OR_UNVERIFIED,
+        "TASK_STATUS_UNKNOWN",
+        evidence_level,
+        snapshot,
+    )
+
+
+def _safe_float(value: object) -> float | None:
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 class AcWebActionError(ValueError):
@@ -951,10 +1136,16 @@ class AcWebApplicationService:
         with self._lock(plan_id):
             plan = self._plan_data(plan_id, site_id)
             if float(plan["expires_at"]) <= time.time() and plan["status"] == "PREVIEW":
-                plan["status"] = "EXPIRED"
-                self._save_plan(plan)
-            self._refresh_plan_status(site_id, plan)
-            return self._plan_dto(plan)
+                return self._plan_dto(
+                    plan,
+                    AcActionPlanReconciliation(
+                        "EXPIRED",
+                        "PLAN_ONLY",
+                        "PLAN_EXPIRED",
+                        "PLAN_ONLY",
+                    ),
+                )
+            return self._plan_dto(plan, self._refresh_plan_status(site_id, plan))
 
     def confirm_action_plan(self, site_id: str, plan_id: str, plan_digest: str, confirm_token: str) -> AcActionPlanDTO:
         site_id = self._site(site_id)
@@ -982,6 +1173,7 @@ class AcWebApplicationService:
             task_id = f"ac-web-action-{uuid4().hex}"
             plan["status"] = "EXECUTING"
             plan["task_id"] = task_id
+            plan["task_submitted_at"] = time.time()
             self._save_plan(plan)
             try:
                 self.process_adapter.start_job(
@@ -1012,26 +1204,65 @@ class AcWebApplicationService:
             except TaskResourceConflictError as exc:
                 plan["status"] = "CONFIRMED"
                 plan["task_id"] = ""
+                plan.pop("task_submitted_at", None)
                 self._save_plan(plan)
                 raise AcWebActionError("AC_ACTION_RUNNING", "当前 AC 已有配置写任务正在运行") from exc
             except Exception:
                 plan["status"] = "START_FAILED"
+                plan.pop("task_submitted_at", None)
                 self._save_plan(plan)
                 raise
             return self._plan_dto(plan)
+
+    def reconcile_action_plan(self, site_id: str, plan_id: str) -> AcActionPlanDTO:
+        """Explicitly persist a trusted terminal Task result for one plan.
+
+        Ordinary GET/audit paths remain read-only.  This method is the narrow,
+        per-plan recovery entrance and never persists an unknown or active
+        classification.
+        """
+
+        site_id = self._site(site_id)
+        with self._lock(plan_id):
+            plan = self._plan_data(plan_id, site_id)
+            reconciliation = self._refresh_plan_status(site_id, plan)
+            if (
+                reconciliation.can_persist_terminal
+                and reconciliation.effective_status in _TERMINAL_PLAN_STATUSES
+                and plan.get("status") != reconciliation.effective_status
+            ):
+                previous_status = str(plan.get("status") or "")
+                plan["status"] = reconciliation.effective_status
+                plan["status_reconciliation"] = {
+                    "from_status": previous_status,
+                    "to_status": reconciliation.effective_status,
+                    "task_id": str(plan.get("task_id") or ""),
+                    "evidence_level": reconciliation.evidence_level,
+                    "reason": reconciliation.reconciliation_reason,
+                    "source": "task_center",
+                    "reconciled_at": datetime.now(timezone.utc).isoformat(),
+                }
+                self._save_plan(plan)
+            return self._plan_dto(plan, reconciliation)
 
     def action_audit(self, site_id: str, plan_id: str) -> dict[str, object]:
         site_id = self._site(site_id)
         with self._lock(plan_id):
             plan = self._plan_data(plan_id, site_id)
-            snapshot = self._refresh_plan_status(site_id, plan)
+            reconciliation = self._refresh_plan_status(site_id, plan)
+            snapshot = reconciliation.snapshot
             return {
                 "plan_id": plan["plan_id"],
                 "target_id": plan["target_id"],
                 "action_id": plan["action_id"],
                 "commands": list(plan["commands"]),
                 "plan_digest": plan["digest"],
-                "status": plan["status"],
+                "status": reconciliation.effective_status,
+                "stored_status": plan["status"],
+                "effective_status": reconciliation.effective_status,
+                "reconciliation_status": reconciliation.reconciliation_status,
+                "reconciliation_reason": reconciliation.reconciliation_reason,
+                "evidence_level": reconciliation.evidence_level,
                 "task_id": plan["task_id"],
                 "task_status": snapshot.status.value if snapshot is not None else "",
                 "result_summary": self._result_summary(snapshot.result) if snapshot is not None else {},
@@ -1446,22 +1677,26 @@ class AcWebApplicationService:
         if self._fingerprint(current) != plan.get("target_fingerprint"):
             raise AcWebActionError("TARGET_STALE", "目标 AC 已变化，请重新创建动作计划")
 
-    def _refresh_plan_status(self, site_id: str, plan: dict[str, object]):
+    def _refresh_plan_status(self, site_id: str, plan: dict[str, object]) -> AcActionPlanReconciliation:
         task_id = str(plan.get("task_id") or "")
         if not task_id:
-            return None
-        snapshot = self.task_service.repository(site_id).get(task_id)
-        if snapshot is None or not self._authorized_task(snapshot):
-            return None
-        status = {
-            TaskState.COMPLETED: "COMPLETED",
-            TaskState.FAILED: "FAILED",
-            TaskState.CANCELLED: "CANCELLED",
-        }.get(snapshot.status, "EXECUTING")
-        if plan.get("status") != status:
-            plan["status"] = status
-            self._save_plan(plan)
-        return snapshot
+            return classify_ac_action_plan_status(
+                plan,
+                None,
+                expected_site_id=site_id,
+                allowed_task_types=self._TASK_ACTIONS,
+            )
+        repository = self.task_service.repository(site_id)
+        snapshot = repository.get(task_id)
+        tombstone_reader = getattr(repository, "has_retention_tombstone", None)
+        tombstoned = bool(tombstone_reader(task_id)) if callable(tombstone_reader) and snapshot is None else False
+        return classify_ac_action_plan_status(
+            plan,
+            snapshot,
+            expected_site_id=site_id,
+            tombstoned=tombstoned,
+            allowed_task_types=self._TASK_ACTIONS,
+        )
 
     def _plan_data(self, plan_id: str, site_id: str) -> dict[str, object]:
         path = self._plan_path(plan_id)
@@ -1546,7 +1781,17 @@ class AcWebApplicationService:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _plan_dto(plan: dict[str, object]) -> AcActionPlanDTO:
+    def _plan_dto(
+        plan: dict[str, object],
+        reconciliation: AcActionPlanReconciliation | None = None,
+    ) -> AcActionPlanDTO:
+        stored_status = str(plan["status"])
+        effective = reconciliation or AcActionPlanReconciliation(
+            stored_status,
+            "NOT_EVALUATED",
+            "PLAN_ONLY",
+            "PLAN_ONLY",
+        )
         return AcActionPlanDTO(
             plan_id=str(plan["plan_id"]),
             target_id=str(plan["target_id"]),
@@ -1555,9 +1800,14 @@ class AcWebApplicationService:
             plan_digest=str(plan["digest"]),
             confirm_token=str(plan["token"]),
             expires_at=float(plan["expires_at"]),
-            status=str(plan["status"]),
+            status=effective.effective_status,
             command_summary=[str(value) for value in plan["commands"]],
             task_id=str(plan.get("task_id") or ""),
+            stored_status=stored_status,
+            effective_status=effective.effective_status,
+            reconciliation_status=effective.reconciliation_status,
+            reconciliation_reason=effective.reconciliation_reason,
+            evidence_level=effective.evidence_level,
         )
 
     @staticmethod

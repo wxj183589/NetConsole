@@ -1,0 +1,54 @@
+# AC Web 动作计划状态协调 Phase 2-B
+
+日期：2026-10-16
+
+基线：`main / 5b657137`
+
+范围：AC Web 固定动作计划与 Task Center 状态协调，不包含设备采集、设备配置、WPS 同步、Task 清理或计划批量修复。
+
+## 结论
+
+原实现的 `GET /actions/plans/{plan_id}` 和审计查询会调用 `_refresh_plan_status()`；当 Task 终态更可信时，该方法直接把状态写回计划 JSON。它同时只按 Task ID、所有者、来源和类型做有限校验，没有显式拒绝错误局点，也没有把缺失 Task 表达为可见的未知状态。这样既让普通查询产生持久化副作用，也可能把不完整或错误作用域的 Task 误当成计划结果。
+
+Phase 2-B 将协调拆成两层：
+
+1. `classify_ac_action_plan_status()` 是纯分类函数，只读取计划和单个 Task 快照，不扫描 Task 历史、不执行命令、不修改文件。
+2. GET 计划、审计接口返回 `stored_status`、`effective_status`、`reconciliation_status`、`reconciliation_reason` 和 `evidence_level`。当前 Task 缺失、被 tombstone 清理、局点/所有者/来源/类型不匹配或 `plan_id` 冲突时，显示 `UNKNOWN_OR_UNVERIFIED`。
+3. 仅在同一计划的显式 `POST /actions/plans/{plan_id}/reconcile` 中，才允许把已验证的 Task 终态原子写回计划，并保留原状态、任务 ID、证据等级、来源和时间戳。未知或活动状态不写回。
+4. 任务刚提交而快照尚未可见时，使用计划内的短启动窗口显示 `EXECUTING`；窗口外改为未知，避免把永久缺失伪装成活动任务。
+
+## 正式数据只读核对
+
+仅通过文件读取和 SQLite `mode=ro` 连接核对 `D:\NetConsoleData`，未调用业务服务、未启动任务、未执行采集或配置命令：
+
+| 项目 | 结果 |
+| --- | ---: |
+| 有效计划 JSON | 40 |
+| `EXECUTING` 计划 | 21 |
+| `COMPLETED` 计划 | 19 |
+| Task 数据库 | 9 |
+| Task 快照 | 7469 |
+| Task retention tombstone | 499 |
+| `EXECUTING` 对应同局点、授权、终态 `COMPLETED` | 15 |
+| `EXECUTING` 对应同局点、授权、终态 `FAILED` | 2 |
+| `EXECUTING` 缺失且有 tombstone | 4 |
+| 发现跨局点或授权冲突 | 0 |
+| 当前在线/离线业务状态 | 未触碰 |
+
+上述 21 条计划均未修改；本次没有清理 Task、更新计划 JSON、写数据库、启动设备任务或同步 WPS。
+
+## 验证记录
+
+- AC Web 定向回归：30 passed；新增隔离分类/显式协调测试覆盖状态、证据、作用域、tombstone、启动竞态、幂等和 GET 只读行为。
+- Python 全量（工作树源码、隔离测试根）：5149 passed，2 skipped，33 warnings。
+- Renderer：181 files / 1310 tests；`vue-tsc -b` 和 build 通过。
+- Electron：38 files / 303 tests；typecheck、Main/Preload build 通过。
+- Main Contract：12 passed，3 warnings。
+- Architecture：12/12 passed；Ruff、docs/path、diff-check 通过。
+- L4 Local Quality Gate：除 Python 阶段 3 个 Windows 文件锁/并发基线失败外，其余套件通过；失败节点为 Mesh resident 状态文件读取、Demo site 重建和设备兼容性 Demo seed，未触及本次 AC Web 计划协调代码。
+- Baseline-aware Python：5149 passed，2 skipped；`NEW_FAILURES=0`。
+- 隔离 1000 条纯分类基准：约 0.002 秒；不扫描 Task 历史、不写数据库。
+
+## 后续边界
+
+仍需单独覆盖并人工确认：任务启动失败、Worker 崩溃后的恢复、Backend 重启恢复、Task 清理前后协调顺序、历史保留策略、资源冲突、GUI 实际显示和真实 AC 写操作。Phase 2-B 不自动处理这 21 条正式计划，也不把历史终态批量写入正式数据。

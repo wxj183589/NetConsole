@@ -211,6 +211,17 @@ display wlan mesh-link switch-history  # 仅布尔开关启用
 远程登录、任意命令、SNMP SET、删除或配置下发接口；AC/FIT-AP 页面写动作只允许
 `ACTION_DEFINITIONS` 中两项固定计划，不复用 Mesh-Link 接口。
 
+AC Web 动作计划的 `status` 查询以 Task Center 为执行结果权威，但 GET 计划和审计接口只读查询，
+不会为了把 Task 的终态回填到计划 JSON 而产生写入。返回同时包含 `stored_status`、
+`effective_status`、`reconciliation_status`、`reconciliation_reason` 和 `evidence_level`：
+只有同一 `task_id`、同一 `site_id`、`owner=web_ac`、`source=local`、受控任务类型且结果
+`plan_id` 精确匹配（或保留有强 Task 作用域证据）时，Task 的完成、失败、取消或活动状态才可
+作为有效状态。Task 缺失、已被 tombstone 清理、局点/身份不匹配或证据冲突时显示
+`UNKNOWN_OR_UNVERIFIED`，不推断为失败或完成，也不重新执行设备命令。刚提交任务的短暂启动竞态
+只在计划内提交时间窗口显示 `EXECUTING`。需要持久化终态时，必须调用逐计划的显式
+`POST /api/ac-management/actions/plans/{plan_id}/reconcile`；该入口只写入已验证的终态并保留
+来源、原状态、任务 ID、证据等级和时间戳审计信息，未知或活动状态不写入。
+
 原始回显位于当前局点 `files/rail_transit/ac_mesh_link/snapshots/<session_id>/raw/`。Worker 先在 `.staging` 完整写入 UTF-8 raw 和无绝对路径的 metadata，再原子移动到正式目录并在单个 SQLite 事务中写入结构化快照。数据库提交失败时 raw 转入受控 `failures/<task_id>`，最新成功快照保持不变。命令明确返回零条链路时生成有效空快照；空回显、命令错误或格式无法识别时任务失败，不把全部 MR 改成离线。
 
 ## 尚未完成或验收的 Electron 能力

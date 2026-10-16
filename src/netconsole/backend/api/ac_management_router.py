@@ -715,6 +715,18 @@ def execute_action_plan(request: Request, plan_id: str) -> AcActionPlanDTO:
         _raise_web_error(exc)
 
 
+@router.post(
+    "/actions/plans/{plan_id}/reconcile",
+    response_model=AcActionPlanDTO,
+    dependencies=[Depends(require_feature("capability.ac.dangerous_actions"))],
+)
+def reconcile_action_plan(request: Request, plan_id: str) -> AcActionPlanDTO:
+    try:
+        return _web_service(request).reconcile_action_plan(_web_site_id(request), plan_id)
+    except AcWebActionError as exc:
+        _raise_web_error(exc)
+
+
 @router.get(
     "/actions/plans/{plan_id}/audit",
     dependencies=[Depends(require_feature("capability.ac.dangerous_actions"))],
