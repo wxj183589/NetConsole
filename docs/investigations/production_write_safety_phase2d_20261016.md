@@ -4,15 +4,16 @@
 
 审计基线为 `github/main` / `c22323d683f92873fa4e9ebb00854ee0f9a434fb`。PR #78 仍未合并，本次没有移植其 31 个文件，也没有修改正式数据根 `D:\NetConsoleData`。
 
-本次确认并修复三项当前 main 缺口：
+本次确认并修复三项当前 main 缺口，并在 PR #89 收口时修正一项由本 PR 引入的 P1：
 
 1. 基础资料直接编辑、清空与导入/回滚没有共用同一局点维护锁。
 2. 历史 MESH 归档在解析根路径后才检查 symlink，根目录 symlink 可以把扫描范围带到允许根目录外。
-3. 数据库升级、备份、恢复、删除和历史归档等生产写操作的 API/Worker 路径缺少统一的后端生产写 Gate 复核。
+3. 数据库升级、备份、恢复、删除和历史归档等生产写操作的 API/Worker 路径缺少统一的业务级维护复核。
+4. PR #89 曾把仅供独立 Maintenance CLI 使用的生产写开关错误施加到 Electron GUI 及共享数据库/MESH 服务。
 
 未确认当前 main 存在 PR #78 所描述的 deferred backup authority 缺陷：当前 main 没有该 deferred authority 入口；现有实际备份中心使用 SQLite Backup API、manifest SHA-256、size 和恢复前校验。相同 size/mtime 的内容替换在隔离测试中被内容哈希拒绝。
 
-没有发现 P0/P1 级别问题。生产写 Gate 修复改变的是生产环境下的拒绝边界：未显式以 `--allow-production-write` 启动时，数据库维护任务不会入队或执行；测试/开发数据根行为保持兼容。
+P1 已确认并修复：正常 Electron GUI 不再依赖 `--allow-production-write`；独立 Maintenance CLI 仍必须显式通过该开关或等价环境授权。测试/开发数据根行为保持兼容。剩余风险仅包括既有的操作令牌信任边界和归档移动窗口，不把它们伪装成强认证或原子 no-follow 能力。
 
 ## 当前 main 与 PR #78 对照
 
@@ -21,7 +22,7 @@
 | 基础资料维护锁 | SQLite `BEGIN IMMEDIATE` 和 revision/hash；直接编辑/清空未复用数据库维护锁，导入/回滚也未复用 | 导入/回滚增加 `database_maintenance_lock`，直接编辑/清空仍不是完整覆盖 | 已在直接编辑、清空、导入、回滚公共入口补同一局点锁 |
 | Backup Identity | `DatabaseBackupStore` manifest 保存 SHA-256、size、SQLite 校验；`validate()` 复核实际内容 | 新增 DatabaseUpgradeAuthority、deferred identity 和 worker 二次授权 | 当前实际路径已具备内容绑定；未移植 PR #78 的 deferred authority |
 | 归档路径最终复核 | 根路径 `resolve()` 后检查 symlink；移动后复核 SHA/size | 增加候选 authority 快照和绑定校验 | 修复原始根 reparse 拒绝、候选/锁内 resolved containment；仍保留移动前后文件句柄级绑定的后续设计风险 |
-| Capability Token / 生产写权限 | Feature Gate、Electron session、显式确认；数据库维护路径此前没有统一生产写 Gate | 操作 token、canonical site scope、worker 二次 authority | 复用现有后端生产写 Gate，在 API 入队和管理服务/Coordinator 执行时双重检查；literal token 仍不被当作认证凭据 |
+| Capability Token / 生产写权限 | Feature Gate、Electron session、显式确认；数据库维护与部分 MESH 路径曾误依赖 CLI 环境开关 | 操作 token、canonical site scope、worker 二次 authority | GUI 由业务授权、确认、局点/资源校验和操作 token 控制；独立 CLI 在入口执行显式生产写 Gate；literal token 仍不被当作认证凭据 |
 
 PR #78 当前 head 为 `259d235b151d0c6d25a65bab13002fa84c235404`，状态为 OPEN、未合并；其 31 文件差异仅作为对照，没有 cherry-pick 或整体移植。
 
@@ -95,23 +96,25 @@ root = self.paths.site_mesh_root(site_id).resolve()
 
 隔离测试覆盖：根 symlink 越界、嵌套 symlink、移动前内容替换、正常有效/零字节归档及恢复已有回归。仍有一个设计边界：普通路径 API 在最终检查与 `shutil.move` 之间不能提供 Windows 文件句柄级 no-follow 原子绑定；若未来要抵御恶意同机进程在该极窄窗口反复替换父目录，应单独设计 handle-based move，不在本次扩大。
 
-## P2-4：Capability Token 信任边界
+## P2-4：Capability Token 信任边界与 P1 GUI 门禁误用
 
 ### 现状
 
 - Electron 到 Backend 的 WebHost session token 由 Middleware 使用 constant-time compare 校验。
 - Feature Gate 负责功能暴露，不等于生产写认证。
 - `SITE_*_AUTHORIZED`、MESH operation label 等 literal capability label 不是秘密，也不能抵御已取得本机回环访问能力的恶意进程。
-- 当前 main 数据库升级路由此前仅由 Feature Gate、显式确认和任务入队控制，管理服务/Coordinator 没有统一复核生产写环境开关。
+- PR #89 新增的 Router、ManagementService 和 Coordinator Gate 会使正式 Electron 的 `--electron-backend` 进程在生产根下错误拒绝正常维护；这是本 PR 的 P1。
+- MESH 共享 `require_mesh_write_authority()` 在 PR #89 之前也把通用环境开关作为 GUI Worker 的前置条件，和现有 DataRoot 规范不一致；本次一并拆分其 CLI 入口门禁。
 
 ### 最小修复
 
-复用既有 `require_data_root_write_allowed()` 和 `NETCONSOLE_ALLOW_PRODUCTION_WRITE`：
+修复后的权限边界为：
 
-- API 入队前对 upgrade、batch backup、archive organize、backup validate/restore/delete 执行后端 Gate。
-- `DatabaseUpgradeManagementService` 在对应 Worker/Service 入口再次复核。
-- `DatabaseUpgradeCoordinator` 在实际升级 mutation 前再次复核。
-- 测试/开发根保持可用；生产根必须由受控进程显式以 `--allow-production-write` 启动。
+- GUI Router 保留 Feature Gate、明确确认、当前局点/备份身份校验和 Task Center 资源锁，不调用 CLI 生产写 Gate。
+- `DatabaseUpgradeManagementService` 与共享 `DatabaseUpgradeCoordinator` 不再读取 CLI 生产写开关；事务、维护锁、revision/hash、SQLite/Backup Identity 校验保持不变。
+- GUI MESH 保留 canonical Site、操作类型、计划 digest、来源 revision、显式确认和 Worker 二次复核；共享 MESH 权限函数不再强制 CLI 环境变量。
+- `rebuild_mesh_parsed_data.py` 与 `remap_mesh_identity.py` 在独立 CLI 的 apply 入口显式调用 `require_data_root_write_allowed()`，生产根仍需 `--allow-production-write`，并继续要求操作专用 token。
+- `NETCONSOLE_ALLOW_PRODUCTION_WRITE` 不传播到 Electron GUI 或普通 ApplicationService。
 
 没有新增 Token Framework、OAuth、Electron IPC 大改或公共请求 DTO 字段。当前安全模型仍不承诺抵御已取得本机高权限或调试端口的恶意进程；如要覆盖该威胁，应后续设计短期、操作绑定、Backend 签发的凭据。
 
@@ -123,7 +126,7 @@ root = self.paths.site_mesh_root(site_id).resolve()
 - 备份内容在 size/mtime 不变时仍被 SHA-256 拒绝。
 - 归档内容替换在移动后被标记为无效。
 - 嵌套 symlink 和 MESH 根 reparse point 不得越界。
-- Production 根未开启进程写 Gate 时拒绝数据库维护。
+- Production GUI 数据库维护在未设置 CLI 开关时仍可进入原有业务流程；独立 MESH CLI 在未授权时拒绝，显式授权和正确操作 token 才可继续。
 
 正式数据根、正式备份、任务中心、计划文件和真实设备均未参与测试。
 
@@ -145,23 +148,27 @@ PR78_MERGED=NO
 BASE_DATA_LOCK_RESULT=CONFIRMED_DEFECT_FIXED
 BACKUP_IDENTITY_RESULT=NOT_APPLICABLE_FOR_DEFERRED_AUTHORITY; CURRENT_BACKUP_HASH_PASS
 ARCHIVE_TOCTOU_RESULT=ROOT_REPARSE_CONFIRMED_AND_FIXED; CONTENT_RACE_REJECTED
-CAPABILITY_TOKEN_RESULT=PRODUCTION_GATE_DEFENSE_GAP_FIXED; LITERAL_LABEL_NOT_AUTH
+CAPABILITY_TOKEN_RESULT=CLI_GATE_SCOPE_CORRECTED; GUI_GATE_REMOVED; LITERAL_LABEL_NOT_AUTH
 
-CONFIRMED_DEFECTS=P2-1 direct base-data paths lacked shared site lock; P2-3 resolved MESH root symlink escaped boundary; P2-4 database maintenance lacked unified backend production write gate
+CONFIRMED_DEFECTS=P2-1 direct base-data paths lacked shared site lock; P2-3 resolved MESH root symlink escaped boundary; PR89-P1 GUI incorrectly depended on CLI production write gate
 DEFENSE_GAPS=literal capability labels are not authentication; final archive move has no handle-bound no-follow atomic primitive
 DESIGN_RISKS=future deferred backup needs pre-submit and worker identity binding; stronger same-host threat model needs short-lived backend-signed operation credentials
 NOT_REPRODUCED=multi-process adversarial parent replacement and Windows junction replacement were not claimed as reproduced; no P0/P1 evidence
 NOT_APPLICABLE=PR78 DatabaseUpgradeAuthority/deferred candidate flow is not in current main; Renderer/Electron UI did not change
 
-PYTHON_TESTS=Phase2D 7 passed; affected regression 105 passed, 2 warnings; full clean-venv run 5172 passed, 2 skipped, 33 warnings, 1 unrelated release-system failure; release-system file isolated rerun 68 passed
-RENDERER_TESTS=NOT_RUN; no Renderer files changed
-ELECTRON_TESTS=NOT_RUN; no Electron files changed
-ARCHITECTURE_GATE=PASS; Architecture Green Gates 8/8; storage targeted 239 passed; architecture baseline new failures 0; Ruff baseline new failures 0; diff check PASS
+PYTHON_TESTS=Focused gate 64 passed, 1 warning; Full Gate Python 5173 passed, 2 skipped, 33 warnings; NEW_FAILURES=0; previous release-system order failure not reproduced in the final full run
+RENDERER_TESTS=PASS; 181 files / 1311 passed; vue-tsc and Vite build PASS
+ELECTRON_TESTS=PASS; 38 files / 303 passed; TypeScript and Main/Preload build PASS
+ARCHITECTURE_GATE=PASS; Architecture Green Gates 12/12; storage/maintenance covered by full Python; architecture baseline new failures 0; Ruff baseline new failures 0; diff check PASS
 MAIN_CONTRACT=PASS; 12 passed, 3 warnings
-BASELINE_NEW_FAILURES=1 unrelated tests/test_release_system.py::test_clean_build_runtime_subset_copies_only_imported_modules_and_assets in full run; isolated tests/test_release_system.py 68 passed; no Phase2-D changed-path failure
+BASELINE_NEW_FAILURES=0; baseline debt audit all checks PASS; prior tests/test_release_system.py order failure not reproduced by final Full Gate
 
 PRODUCT_CODE_CHANGED=YES
-PR_CREATED=YES; PR #89 https://github.com/wxj183589/NetConsole/pull/89; head=8080ebae
+P1_GUI_PRODUCTION_WRITE_GATE=FIXED
+GUI_DATABASE_MAINTENANCE=PASS_ISOLATED
+GUI_MESH_MAINTENANCE=PASS_CONTRACT
+CLI_PRODUCTION_WRITE_GUARD=PASS_ISOLATED
+PR_CREATED=YES; PR #89 https://github.com/wxj183589/NetConsole/pull/89; head=PENDING_COMMIT
 MAIN_MERGE=NO
 ```
 
@@ -188,7 +195,7 @@ DEVICE_CONFIG_MUTATION=NO
 WPS_REMOTE_WRITE=NO
 ```
 
-Renderer/Electron 未改动，因此未重复运行前端测试、类型检查或构建；本次产品变更全部位于 Backend/Service/History 和架构登记。全量 Python 的唯一失败不涉及变更文件，单文件复跑通过，需在后续完整 Gate/CI 环境中继续观察其顺序相关性。
+本次 P1 修复涉及 Backend/Service/MESH Worker/独立维护 CLI 调用边界，但未修改 Renderer/Electron 页面、DTO、Schema 或设备命令；Full Gate 已重新覆盖所有共享消费者。此前一次 release-system 顺序失败在最终全量执行中未复现，未修改 Release 系统；若未来再次出现，应继续收集顺序证据。
 
 ## 后续审查建议
 

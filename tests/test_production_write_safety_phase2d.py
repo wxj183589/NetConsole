@@ -11,7 +11,7 @@ import pytest
 from netconsole.application.rail_transit.base_data_application_service import (
     RailTransitBaseDataApplicationService,
 )
-from netconsole.core.runtime_environment import ProductionWriteBlockedError
+from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import ImportPreviewRowDTO
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRepository,
@@ -19,12 +19,17 @@ from netconsole.repositories.rail_transit_base_data_repository import (
 from netconsole.services.database_upgrade import history as history_module
 from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
 from netconsole.services.database_upgrade.coordinator import (
+    DatabaseUpgradeCoordinator,
     database_maintenance_lock,
     site_database_maintenance_key,
 )
 from netconsole.services.database_upgrade.history import LegacyDatabaseArchiveService
 from netconsole.services.database_upgrade.management_service import (
     DatabaseUpgradeManagementService,
+)
+from netconsole.services.database_upgrade.models import (
+    DatabaseDescriptor,
+    DatabaseUpgradeStrategy,
 )
 from netconsole.services.rail_transit.base_data_import_service import (
     RailTransitBaseDataImportService,
@@ -247,15 +252,39 @@ def test_legacy_archive_rejects_reparse_point_at_mesh_root(tmp_path: Path) -> No
     assert outside_archive.is_file()
 
 
-def test_database_maintenance_rejects_production_without_process_write_gate(tmp_path: Path, monkeypatch) -> None:
+def test_gui_database_maintenance_does_not_require_cli_write_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     (tmp_path / "runtime_mode.json").write_text(
         '{"mode":"production","readonly_warning":true}',
         encoding="utf-8",
     )
-    from netconsole.core.paths import PathResolver
-
     paths = PathResolver(data_root=tmp_path)
     monkeypatch.delenv("NETCONSOLE_ALLOW_PRODUCTION_WRITE", raising=False)
 
-    with pytest.raises(ProductionWriteBlockedError):
-        DatabaseUpgradeManagementService(paths).organize_legacy("demo")
+    service = DatabaseUpgradeManagementService(paths)
+    monkeypatch.setattr(
+        service.history,
+        "organize_mesh_archives",
+        lambda site_id: {"site_id": site_id, "moved_count": 0},
+    )
+    assert service.organize_legacy("demo") == {"site_id": "demo", "moved_count": 0}
+
+    marker = object()
+
+    def fake_upgrade_locked(self, descriptor, **kwargs):
+        assert descriptor.database_path == tmp_path / "active.sqlite"
+        return marker
+
+    monkeypatch.setattr(DatabaseUpgradeCoordinator, "_upgrade_locked", fake_upgrade_locked)
+    descriptor = DatabaseDescriptor(
+        database_kind="test",
+        scope_type="global",
+        scope_id="phase2d-gui",
+        database_path=tmp_path / "active.sqlite",
+        target_version="v2",
+        strategy=DatabaseUpgradeStrategy.SCHEMA_MIGRATION,
+        adapter=object(),
+    )
+    assert DatabaseUpgradeCoordinator(paths).upgrade(descriptor) is marker

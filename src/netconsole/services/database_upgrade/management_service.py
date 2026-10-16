@@ -11,10 +11,6 @@ from uuid import uuid4
 
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import (
-    production_write_allowed,
-    require_data_root_write_allowed,
-)
 from netconsole.services.database_upgrade.backup_lifecycle import BackupLifecycleService
 from netconsole.services.database_upgrade.backup_store import (
     DatabaseBackupDeleteError,
@@ -54,7 +50,6 @@ class DatabaseUpgradeManagementService:
     ) -> dict[str, Any]:
         """Create checked backups serially and retain a result for every Profile."""
 
-        self._authorize_production_write("database_batch_backup")
         selected = _unique_profile_ids(profile_ids)
         inspection = self._mesh_inspection(site_id)
         profiles = {
@@ -118,7 +113,6 @@ class DatabaseUpgradeManagementService:
     ) -> dict[str, Any]:
         """Preflight then repair each incompatible Profile one at a time."""
 
-        self._authorize_production_write("database_batch_upgrade")
         selected = _unique_profile_ids(profile_ids)
         inspection = self._mesh_inspection(site_id)
         profiles = {
@@ -233,7 +227,6 @@ class DatabaseUpgradeManagementService:
         return item
 
     def validate_backup(self, backup_id: str, *, site_id: str | None = None) -> dict[str, Any]:
-        self._authorize_production_write("database_backup_validation")
         with self._backup_action_lock(backup_id):
             item = self.read_backup(backup_id, site_id=site_id)
             result = self.backups.validate(str(item["backup_id"]))
@@ -245,13 +238,11 @@ class DatabaseUpgradeManagementService:
             return result
 
     def organize_legacy(self, site_id: str) -> dict[str, Any]:
-        self._authorize_production_write("legacy_database_archive_migration")
         result = self.history.organize_mesh_archives(site_id)
         self._audit("legacy_database_archive_migration", result)
         return result
 
     def delete_backup(self, backup_id: str, *, confirmed: bool = False, site_id: str | None = None) -> dict[str, Any]:
-        self._authorize_production_write("database_backup_delete")
         if not confirmed:
             raise ValueError("删除数据库备份前必须明确确认")
         with self.backups.lifecycle_lock():
@@ -270,7 +261,6 @@ class DatabaseUpgradeManagementService:
     ) -> dict[str, Any]:
         """Delete selected backups item-by-item while retaining partial results."""
 
-        self._authorize_production_write("database_backup_batch_delete")
         if not confirmed:
             raise ValueError("批量删除数据库备份前必须明确确认")
         selected = _unique_backup_ids(backup_ids)
@@ -356,7 +346,6 @@ class DatabaseUpgradeManagementService:
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
-        self._authorize_production_write("database_backup_restore")
         if not confirmed:
             raise ValueError("恢复数据库备份前必须明确确认")
         with self._backup_action_lock(backup_id):
@@ -411,13 +400,6 @@ class DatabaseUpgradeManagementService:
         )
 
         return MeshDerivedDataMaintenanceService(self.paths).inspect(site_id)
-
-    def _authorize_production_write(self, operation: str) -> None:
-        require_data_root_write_allowed(
-            self.paths.data_root,
-            operation,
-            allow_production_write=production_write_allowed(),
-        )
 
     def _active_mesh_paths(self, scope_id: str) -> tuple[Path, ...]:
         site_id = scope_id.split(":", 1)[0]

@@ -5,11 +5,6 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from netconsole.backend.api.feature_access import require_feature
-from netconsole.core.runtime_environment import (
-    ProductionWriteBlockedError,
-    production_write_allowed,
-    require_data_root_write_allowed,
-)
 from netconsole.models.api.database_upgrade import (
     DatabaseBackupActionRequest,
     DatabaseBackupBatchDeleteRequest,
@@ -35,20 +30,6 @@ def _site_id(request: Request) -> str:
     return str(request.app.state.site_application_service.active_site_directory_name())
 
 
-def _authorize_write(request: Request, operation: str) -> None:
-    try:
-        require_data_root_write_allowed(
-            request.app.state.paths.data_root,
-            operation,
-            allow_production_write=production_write_allowed(),
-        )
-    except ProductionWriteBlockedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="DATABASE_PRODUCTION_WRITE_NOT_ALLOWED",
-        ) from exc
-
-
 @router.get("")
 def list_database_upgrades(request: Request) -> dict[str, object]:
     return _run(lambda: _service(request).list_status(_site_id(request)))
@@ -61,7 +42,6 @@ def list_database_upgrades(request: Request) -> dict[str, object]:
     dependencies=[Depends(require_feature("capability.database_upgrade.start"))],
 )
 def start_database_upgrade(request: Request, payload: DatabaseUpgradeRequest) -> DatabaseTaskReferenceDTO:
-    _authorize_write(request, "database_upgrade")
     site_id = _site_id(request)
     snapshot = _run(lambda: _service(request).list_status(site_id))
     if not any(str(item.get("mr_id") or "") == payload.profile_id for item in snapshot.get("databases", [])):
@@ -85,7 +65,6 @@ def start_database_upgrade(request: Request, payload: DatabaseUpgradeRequest) ->
     dependencies=[Depends(require_feature("capability.database_upgrade.start"))],
 )
 def start_database_batch_upgrade(request: Request, payload: DatabaseBatchRequest) -> DatabaseTaskReferenceDTO:
-    _authorize_write(request, "database_batch_upgrade")
     if not payload.confirmed:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="批量升级数据库前必须明确确认")
     site_id = _site_id(request)
@@ -105,7 +84,6 @@ def start_database_batch_upgrade(request: Request, payload: DatabaseBatchRequest
     dependencies=[Depends(require_feature("capability.database_upgrade.start"))],
 )
 def start_database_batch_backup(request: Request, payload: DatabaseBatchRequest) -> DatabaseTaskReferenceDTO:
-    _authorize_write(request, "database_batch_backup")
     site_id = _site_id(request)
     selected = _validate_batch_profiles(request, site_id, payload.profile_ids)
     return _submit(
@@ -123,7 +101,6 @@ def start_database_batch_backup(request: Request, payload: DatabaseBatchRequest)
     dependencies=[Depends(require_feature("capability.database_upgrade.legacy_archive_organize"))],
 )
 def organize_legacy_archives(request: Request) -> DatabaseTaskReferenceDTO:
-    _authorize_write(request, "legacy_database_archive_migration")
     site_id = _site_id(request)
     return _submit(
         request,
@@ -140,7 +117,6 @@ def organize_legacy_archives(request: Request) -> DatabaseTaskReferenceDTO:
     dependencies=[Depends(require_feature("capability.database_upgrade.backup_validate"))],
 )
 def validate_backup(request: Request, backup_id: str) -> DatabaseTaskReferenceDTO:
-    _authorize_write(request, "database_backup_validation")
     _run(lambda: _service(request).read_backup(backup_id, site_id=_site_id(request)))
     return _submit(
         request,
@@ -161,7 +137,6 @@ def restore_backup(
     backup_id: str,
     payload: DatabaseBackupActionRequest,
 ) -> DatabaseTaskReferenceDTO:
-    _authorize_write(request, "database_backup_restore")
     if not payload.confirmed:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="恢复数据库备份前必须明确确认")
     site_id = _site_id(request)
@@ -185,7 +160,6 @@ def delete_backup(
     backup_id: str,
     payload: DatabaseBackupActionRequest,
 ) -> DatabaseTaskReferenceDTO:
-    _authorize_write(request, "database_backup_delete")
     if not payload.confirmed:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="删除数据库备份前必须明确确认")
     _run(lambda: _service(request).read_backup(backup_id, site_id=_site_id(request)))
@@ -207,7 +181,6 @@ def delete_backups(
     request: Request,
     payload: DatabaseBackupBatchDeleteRequest,
 ) -> DatabaseTaskReferenceDTO:
-    _authorize_write(request, "database_backup_batch_delete")
     if not payload.confirmed:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="批量删除数据库备份前必须明确确认")
     selected = list(dict.fromkeys(str(value).strip() for value in payload.backup_ids if str(value).strip()))

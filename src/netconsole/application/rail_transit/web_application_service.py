@@ -23,7 +23,6 @@ from netconsole.application.web_export_process_adapter import WebExportProcessAd
 from netconsole.core.database import Database
 from netconsole.core import app_logger
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import production_write_allowed
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.online_mr import (
     OnlineMrDownsampleMode,
@@ -3763,7 +3762,6 @@ class RailTransitWebApplicationService:
                     self.paths,
                     scope.canonical_site_id,
                     operation=MESH_SOURCE_DELETE_OPERATION,
-                    allow_production_write=production_write_allowed(),
                     authorization_token=production_authorization,
                 )
             except (MeshProductionAuthorizationError, RuntimeError) as exc:
@@ -3915,7 +3913,6 @@ class RailTransitWebApplicationService:
                 self.paths,
                 scope.canonical_site_id,
                 operation=operation,
-                allow_production_write=production_write_allowed(),
                 authorization_token=authorization_token,
             )
         except (MeshProductionAuthorizationError, RuntimeError) as exc:
