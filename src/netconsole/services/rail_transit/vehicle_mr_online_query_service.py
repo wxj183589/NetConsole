@@ -406,7 +406,9 @@ class VehicleMrOnlineQueryService:
             )
         else:
             station_name = self._station_value(mesh.station)
-            if station_name is None and self._safe_same_ap_fallback(mesh, persisted):
+            if self._station_is_missing(mesh.station) and self._safe_same_ap_fallback(
+                mesh, persisted
+            ):
                 station_name = self._station_value(persisted.station)
         return VehicleMrEndStateDTO(
             endpoint=endpoint,
@@ -445,6 +447,21 @@ class VehicleMrOnlineQueryService:
         if not text or is_empty_station(text) or text.casefold() == UNKNOWN_STATION.casefold():
             return None
         return text
+
+    @staticmethod
+    def _station_is_missing(value: object) -> bool:
+        """Return whether the current source omitted station evidence.
+
+        ``未知车站`` is an explicit current unknown sentinel, not an invitation
+        to promote a historical station.  Other existing empty-value markers
+        retain their main semantics and may use the conservative same-AP
+        fallback.
+        """
+
+        text = str(value or "").strip()
+        return text.casefold() != UNKNOWN_STATION.casefold() and (
+            not text or is_empty_station(text)
+        )
 
     @staticmethod
     def _safe_same_ap_fallback(

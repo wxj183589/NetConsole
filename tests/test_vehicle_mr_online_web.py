@@ -255,7 +255,7 @@ def test_vehicle_mr_station_unknown_sentinel_and_conflicting_endpoints_are_not_r
     service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
         PathResolver(app_root=tmp_path, data_root=tmp_path)
     )
-    persisted = VehicleMrEndState(seen=True, station="未知车站", ap_name="AP-A")
+    persisted = VehicleMrEndState(seen=True, station="历史站", ap_name="AP-A")
     ct = service._endpoint("CT", persisted, _vehicle_mr_mesh("AP-A", "未知车站"))
     tc = service._endpoint(
         "TC",
