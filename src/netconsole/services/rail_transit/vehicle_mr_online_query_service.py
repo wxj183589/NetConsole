@@ -24,9 +24,11 @@ from netconsole.services.rail_transit.train_identity import (
     train_identity_matches,
 )
 from netconsole.services.vehicle_mr_online import (
+    UNKNOWN_STATION,
     VehicleMrOnlineStore,
     VehicleMrTrainState,
     is_ac_device,
+    is_empty_station,
 )
 from netconsole.services.device_scope import filter_current_debug_devices
 
@@ -395,6 +397,19 @@ class VehicleMrOnlineQueryService:
         online_status = self._online_status(
             mesh.online_status if mesh else ("stale" if persisted.seen else "unknown")
         )
+        if mesh is None:
+            # Keep main's existing no-current-Mesh semantics.  A historical
+            # state or base-data station is not promoted to a current Mesh
+            # fact by this fallback.
+            station_name = (persisted.station or None) or (
+                base.station if base else None
+            )
+        else:
+            station_name = self._station_value(mesh.station)
+            if self._station_is_missing(mesh.station) and self._safe_same_ap_fallback(
+                mesh, persisted
+            ):
+                station_name = self._station_value(persisted.station)
         return VehicleMrEndStateDTO(
             endpoint=endpoint,
             mr_id=(mesh.mr_device_id or mesh.mr_id or None)
@@ -410,9 +425,7 @@ class VehicleMrOnlineQueryService:
             current_ap_mac=(mesh.peer_ap_mac or None) if mesh else None,
             mesh_radio=(mesh.mesh_radio or None) if mesh else None,
             rssi_dbm=mesh.rssi if mesh else persisted.rssi,
-            station_name=(mesh.station or None)
-            if mesh
-            else (persisted.station or None) or (base.station if base else None),
+            station_name=station_name,
             section_name=(mesh.section or None) if mesh else None,
             mileage=(mesh.mileage or None) if mesh else None,
             direction=(mesh.line_side or None) if mesh else None,
@@ -427,6 +440,44 @@ class VehicleMrOnlineQueryService:
             else (persisted.last_seen_at or None),
             data_status=self._data_status(mesh.data_status if mesh else "no_data"),
         )
+
+    @staticmethod
+    def _station_value(value: object) -> str | None:
+        text = str(value or "").strip()
+        if not text or is_empty_station(text) or text.casefold() == UNKNOWN_STATION.casefold():
+            return None
+        return text
+
+    @staticmethod
+    def _station_is_missing(value: object) -> bool:
+        """Return whether the current source omitted station evidence.
+
+        ``未知车站`` is an explicit current unknown sentinel, not an invitation
+        to promote a historical station.  Other existing empty-value markers
+        retain their main semantics and may use the conservative same-AP
+        fallback.
+        """
+
+        text = str(value or "").strip()
+        return text.casefold() != UNKNOWN_STATION.casefold() and (
+            not text or is_empty_station(text)
+        )
+
+    @staticmethod
+    def _safe_same_ap_fallback(
+        mesh: AcMeshMrStatusDTO, persisted: object
+    ) -> bool:
+        # The current DTO has a reliable AP name even when topology enrichment
+        # has not supplied station data.  Any identity warning makes that
+        # evidence ambiguous, so historical station data must remain unknown.
+        if str(mesh.match_warning or "").strip():
+            return False
+        match_method = str(mesh.match_method or "").strip().casefold()
+        if "ambig" in match_method or "conflict" in match_method:
+            return False
+        current_ap = str(mesh.peer_ap_name or "").strip()
+        persisted_ap = str(getattr(persisted, "ap_name", "") or "").strip()
+        return bool(current_ap and persisted_ap) and current_ap.casefold() == persisted_ap.casefold()
 
     def _mesh_rows(self, site_id: str) -> list[AcMeshMrStatusDTO]:
         first = self.mesh_query.list_mrs(site_id, page=1, page_size=200)

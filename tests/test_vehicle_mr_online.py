@@ -184,6 +184,81 @@ def test_train_status_online_partial_offline_and_unregistered() -> None:
     assert by_id["NBL12-LC19"].status == "在线"
 
 
+def test_build_train_states_preserves_same_ap_last_known_station_only() -> None:
+    registered = {"列车06": VehicleMrTrainState("列车06", "06", True)}
+    previous = {
+        "列车06": VehicleMrTrainState(
+            "列车06",
+            "06",
+            True,
+            tc1=VehicleMrEndState(
+                seen=True,
+                station="历史站",
+                ap_name="AP-A",
+            ),
+        )
+    }
+    current = VehicleMrMeshParseResult(
+        "22:01:49",
+        [
+            VehicleMrMeshLink(
+                "AP-A",
+                "NBL12-LC06-MR-CT",
+                local_mac="0011-2233-4455",
+                rssi=50,
+            )
+        ],
+    )
+
+    same_ap = build_train_states(
+        registered,
+        current,
+        {"mac:001122334455": MatchedAp("AP-A", UNKNOWN_STATION)},
+        previous,
+    )
+    changed_ap = build_train_states(
+        registered,
+        current,
+        {"mac:001122334455": MatchedAp("AP-B", UNKNOWN_STATION)},
+        previous,
+    )
+
+    assert same_ap[0].tc1.station == "历史站"
+    assert changed_ap[0].tc1.station == UNKNOWN_STATION
+
+
+def test_build_train_states_preserves_same_ap_station_for_empty_markers() -> None:
+    registered = {"列车06": VehicleMrTrainState("列车06", "06", True)}
+    previous = {
+        "列车06": VehicleMrTrainState(
+            "列车06",
+            "06",
+            True,
+            tc1=VehicleMrEndState(seen=True, station="历史站", ap_name="AP-A"),
+        )
+    }
+    current = VehicleMrMeshParseResult(
+        "22:01:50",
+        [
+            VehicleMrMeshLink(
+                "AP-A",
+                "NBL12-LC06-MR-CT",
+                local_mac="0011-2233-4455",
+                rssi=50,
+            )
+        ],
+    )
+
+    result = build_train_states(
+        registered,
+        current,
+        {"mac:001122334455": MatchedAp("AP-A", "-")},
+        previous,
+    )
+
+    assert result[0].tc1.station == "历史站"
+
+
 def test_registered_train_no_merges_ac_peer_with_different_prefix() -> None:
     registered = {"列车06": VehicleMrTrainState("列车06", "06", True)}
     result = VehicleMrMeshParseResult(

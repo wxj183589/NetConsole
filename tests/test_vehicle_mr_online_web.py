@@ -110,6 +110,163 @@ def test_vehicle_mr_query_maps_persisted_ct_tc_state(monkeypatch, tmp_path: Path
     assert service.list_events("demo", "train-1").items[0]["ap_name"] == "AP-CT"
 
 
+def _vehicle_mr_mesh(
+    ap_name: str,
+    station: str = "",
+    *,
+    online_status: str = "online",
+    data_status: str = "fresh",
+    match_warning: str = "",
+) -> AcMeshMrStatusDTO:
+    return AcMeshMrStatusDTO(
+        mr_id="mr-01",
+        train_no="01",
+        car_end="CT",
+        online_status=online_status,
+        peer_ap_name=ap_name,
+        station=station,
+        match_warning=match_warning,
+        data_status=data_status,
+    )
+
+
+@pytest.mark.parametrize(
+    ("current_ap", "current_station", "persisted_ap", "persisted_station", "warning", "expected"),
+    [
+        ("AP-A", "车站A", "AP-A", "车站B", "", "车站A"),  # T01
+        ("AP-A", "", "AP-A", "车站A", "", "车站A"),  # T02
+        ("AP-B", "", "AP-A", "车站A", "", None),  # T03
+        ("", "", "AP-A", "车站A", "", None),  # T04
+        ("AP-A", "", "AP-A", "", "", None),  # T05
+        ("AP-A", "", "", "车站A", "", None),  # T06
+        ("AP-A", "车站B", "AP-A", "车站A", "", "车站B"),  # T07
+        (" ap-a ", "", "AP-A", "车站A", "", "车站A"),  # T08
+        ("AP-A-1", "", "AP-A", "车站A", "", None),  # T09
+        ("AP-A", "", "AP-A", "车站A", "身份匹配存在歧义", None),  # T10
+    ],
+)
+def test_vehicle_mr_station_fallback_is_exact_and_conservative(
+    current_ap: str,
+    current_station: str,
+    persisted_ap: str,
+    persisted_station: str,
+    warning: str,
+    expected: str | None,
+    tmp_path: Path,
+) -> None:
+    service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    persisted = VehicleMrEndState(
+        seen=True,
+        station=persisted_station,
+        ap_name=persisted_ap,
+        rssi=-55,
+    )
+
+    result = service._endpoint(
+        "CT",
+        persisted,
+        _vehicle_mr_mesh(current_ap, current_station, match_warning=warning),
+    )
+
+    assert result.station_name == expected
+
+
+def test_vehicle_mr_station_fallback_keeps_ct_tc_evidence_separate(tmp_path: Path) -> None:
+    service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    train = VehicleMrTrainState(
+        train_id="train-1",
+        train_no="01",
+        is_registered=True,
+        tc1=VehicleMrEndState(seen=True, station="CT历史站", ap_name="AP-CT"),
+        tc2=VehicleMrEndState(seen=True, station="TC历史站", ap_name="AP-TC"),
+    )
+    result = service._train(
+        train,
+        {
+            ("train:01", "CT"): _vehicle_mr_mesh("AP-CT"),
+            ("train:01", "TC"): _vehicle_mr_mesh("AP-OTHER"),
+        },
+    )
+
+    assert result.ct.station_name == "CT历史站"
+    assert result.tc.station_name is None
+    assert result.current_station == "CT历史站"
+
+
+def test_vehicle_mr_current_station_keeps_conflicting_endpoints_visible(tmp_path: Path) -> None:
+    service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    train = VehicleMrTrainState(
+        train_id="train-1",
+        train_no="01",
+        is_registered=True,
+    )
+    result = service._train(
+        train,
+        {
+            ("train:01", "CT"): _vehicle_mr_mesh("AP-CT", "CT当前站"),
+            ("train:01", "TC"): _vehicle_mr_mesh("AP-TC", "TC当前站"),
+        },
+    )
+
+    assert result.current_station == "CT当前站 / TC当前站"
+
+
+def test_vehicle_mr_station_fallback_preserves_main_no_mesh_semantics(tmp_path: Path) -> None:
+    service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    persisted = VehicleMrEndState(seen=True, station="历史站", ap_name="AP-A")
+
+    result = service._endpoint("CT", persisted, None)
+
+    assert result.station_name == "历史站"
+    assert result.online_status == "STALE"
+    assert result.data_status == "NO_DATA"
+
+
+def test_vehicle_mr_station_fallback_does_not_promote_stale_mesh_to_fresh(
+    tmp_path: Path,
+) -> None:
+    service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    persisted = VehicleMrEndState(seen=True, station="历史站", ap_name="AP-A")
+
+    result = service._endpoint(
+        "CT",
+        persisted,
+        _vehicle_mr_mesh("AP-A", data_status="stale"),
+    )
+
+    assert result.station_name == "历史站"
+    assert result.online_status == "ONLINE"
+    assert result.data_status == "STALE"
+
+
+def test_vehicle_mr_station_unknown_sentinel_and_conflicting_endpoints_are_not_reused(
+    tmp_path: Path,
+) -> None:
+    service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    persisted = VehicleMrEndState(seen=True, station="历史站", ap_name="AP-A")
+    ct = service._endpoint("CT", persisted, _vehicle_mr_mesh("AP-A", "未知车站"))
+    tc = service._endpoint(
+        "TC",
+        VehicleMrEndState(seen=True, station="TC站", ap_name="AP-TC"),
+        _vehicle_mr_mesh("AP-TC", "TC站"),
+    )
+
+    assert ct.station_name is None
+    assert tc.station_name == "TC站"
+
+
 @pytest.mark.parametrize(
     ("ct_status", "tc_status", "expected"),
     [
