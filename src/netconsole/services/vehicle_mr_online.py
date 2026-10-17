@@ -694,7 +694,7 @@ def build_train_states(
         if (
             matched is not None
             and (
-                not matched_station
+                is_empty_station(matched_station)
                 or matched_station.casefold() == UNKNOWN_STATION.casefold()
             )
             and previous_end is not None
