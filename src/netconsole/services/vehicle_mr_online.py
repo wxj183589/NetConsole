@@ -680,10 +680,41 @@ def build_train_states(
         if state.online_policy == ONLINE_POLICY_AUTO and identity.online_policy != ONLINE_POLICY_AUTO:
             state.online_policy = normalize_online_policy(identity.online_policy)
         matched = match_ap(link.local_ap_name, identity_snapshot, link.local_mac)
+        previous_state = previous.get(canonical_train_id) or _find_previous_by_train_no(
+            previous, identity.train_no
+        )
+        previous_end = None
+        if previous_state:
+            previous_end = previous_state.tc1 if identity.car_end == "CT" else previous_state.tc2
+        matched_ap_name = matched.ap_name if matched else link.local_ap_name
+        current_ap_name = matched_ap_name.strip()
+        previous_ap_name = previous_end.ap_name.strip() if previous_end else ""
+        matched_station = str(matched.station if matched else UNKNOWN_STATION).strip()
+        previous_station = str(previous_end.station if previous_end else "").strip()
+        if (
+            matched is not None
+            and (
+                not matched_station
+                or matched_station.casefold() == UNKNOWN_STATION.casefold()
+            )
+            and previous_end is not None
+            and previous_end.seen
+            and previous_station
+            and previous_station.casefold() != UNKNOWN_STATION.casefold()
+            and not is_empty_station(previous_station)
+            and current_ap_name
+            and previous_ap_name
+            and current_ap_name.casefold() == previous_ap_name.casefold()
+        ):
+            # The current identity snapshot can prove the same AP while its
+            # topology station is temporarily absent.  Keep the last known
+            # station in the bounded current projection so the read-only
+            # Query Service can apply its same-AP fallback after persistence.
+            matched_station = previous_station
         end_state = VehicleMrEndState(
             seen=True,
-            station=matched.station if matched else UNKNOWN_STATION,
-            ap_name=matched.ap_name if matched else link.local_ap_name,
+            station=matched_station,
+            ap_name=matched_ap_name,
             rssi=link.rssi,
             last_seen_at=parse_result.ac_time,
             match_method=matched.match_method if matched else "unmatched",
