@@ -13,6 +13,7 @@ import os
 import sys
 from pathlib import Path
 
+from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 
 
@@ -87,6 +88,56 @@ def require_diagnostic_test_root(
         _blocked("data_root exists but is not a directory")
 
     return candidate
+
+
+def create_diagnostic_path_resolver(
+    data_root: str | os.PathLike[str] | None,
+    *,
+    repository_root: str | os.PathLike[str] | None,
+    runtime_mode: RuntimeMode | str | None,
+    app_root: str | os.PathLike[str] | None = None,
+    production_root: str | os.PathLike[str] | None = None,
+) -> PathResolver:
+    """Create a ``PathResolver`` bound to the validated diagnostic root.
+
+    A diagnostic caller must use this entry point instead of constructing
+    ``PathResolver`` positionally.  The explicit keyword binding and the
+    post-construction equality check make a validated root and the actual
+    resolver root one invariant before a repository or store is created.
+    """
+
+    validated_root = require_diagnostic_test_root(
+        data_root,
+        repository_root=repository_root,
+        runtime_mode=runtime_mode,
+        production_root=production_root,
+    )
+    try:
+        paths = PathResolver(
+            app_root=Path(app_root).expanduser() if app_root is not None else None,
+            data_root=validated_root,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        _blocked(f"PathResolver rejected the validated diagnostic root: {exc}")
+    return require_diagnostic_path_resolver(paths, validated_root)
+
+
+def require_diagnostic_path_resolver(
+    paths: PathResolver,
+    validated_root: str | os.PathLike[str],
+) -> PathResolver:
+    """Reject a resolver whose actual root differs from the guarded root."""
+
+    if not isinstance(paths, PathResolver):
+        _blocked("diagnostic paths must be a PathResolver")
+    expected = _resolve_path(validated_root, "validated data_root")
+    actual = _resolve_path(paths.data_root, "PathResolver.data_root")
+    if actual != expected:
+        _blocked(
+            "validated data_root does not match PathResolver.data_root: "
+            f"expected={expected}, actual={actual}"
+        )
+    return paths
 
 
 def _normalise_runtime_mode(value: RuntimeMode | str | None) -> RuntimeMode | None:
@@ -165,5 +216,7 @@ def _blocked(reason: str) -> None:
 __all__ = [
     "DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED",
     "DiagnosticDataRootBlockedError",
+    "create_diagnostic_path_resolver",
     "require_diagnostic_test_root",
+    "require_diagnostic_path_resolver",
 ]

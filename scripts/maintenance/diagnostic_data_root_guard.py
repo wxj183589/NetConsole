@@ -9,11 +9,15 @@ maintenance callers.
 from netconsole.tools.diagnostic_data_root_guard import (
     DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED,
     DiagnosticDataRootBlockedError,
+    create_diagnostic_path_resolver,
     require_diagnostic_test_root,
+    require_diagnostic_path_resolver,
 )
 
 __all__ = [
     "DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED",
     "DiagnosticDataRootBlockedError",
+    "create_diagnostic_path_resolver",
     "require_diagnostic_test_root",
+    "require_diagnostic_path_resolver",
 ]

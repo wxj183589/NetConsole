@@ -32,7 +32,24 @@ seed_vehicle_mr_scenario.py
   -> sqlite3.connect(db_path)
 ```
 
-当前正确调用应使用显式关键字：`PathResolver(data_root=ROOT)`，并且在此之前调用 `require_diagnostic_test_root(...)`。
+当前正确调用应使用诊断专用安全构造入口：
+
+```python
+from netconsole.tools.diagnostic_data_root_guard import (
+    create_diagnostic_path_resolver,
+)
+
+paths = create_diagnostic_path_resolver(
+    data_root=test_root,
+    repository_root=repository_root,
+    runtime_mode=RuntimeMode.TEST,
+)
+```
+
+该入口先调用 `require_diagnostic_test_root()`，再只用关键字构造
+`PathResolver(data_root=validated_root)`，最后比较
+`validated_root == paths.data_root`。不一致统一抛出
+`DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED`，因此不会进入 Store、Repository、目录创建或 SQLite 连接。
 
 ## 影响范围与证据等级
 
@@ -59,6 +76,11 @@ seed_vehicle_mr_scenario.py
 
 `scripts/maintenance/diagnostic_data_root_guard.py` 仅保留兼容转发。这样工作区外按文件路径启动的一次性诊断脚本可以从已安装的 `netconsole` 包导入守卫，不依赖诊断脚本目录或仓库根恰好位于 `sys.path`。
 
+Guard 不能自动拦截完全绕过它的任意 Python 代码；因此事故脚本
+`seed_vehicle_mr_scenario.py` 已实际改为调用
+`create_diagnostic_path_resolver()`，而不是只在旁边调用 Guard 后再自行构造
+`PathResolver`。未来工作区外诊断必须使用该入口或等价的受控仓库内启动器。
+
 `require_diagnostic_test_root()` 在任何 Repository、目录创建或 SQLite 连接前执行以下 fail-closed 校验：
 
 - `data_root`、`repository_root`、`runtime_mode` 必须显式提供；运行模式必须是 `TEST`。
@@ -73,7 +95,7 @@ seed_vehicle_mr_scenario.py
 
 ## 负面测试
 
-新增 `tests/test_diagnostic_data_root_guard.py`，共 `20 passed`，覆盖：
+新增 `tests/test_diagnostic_data_root_guard.py`，共 `26 passed`，覆盖：
 
 - 缺失/空/相对 root、非法 Runtime；
 - 正式根、正式根子目录、正式根父目录、测试根本身；
@@ -82,7 +104,10 @@ seed_vehicle_mr_scenario.py
 - 生产写入授权环境变量仍被拒绝；
 - 被拒绝时 `mkdir` 与 `sqlite3.connect` 均未调用；
 - 正常 TEST run root 及 SQLite 初始化通过；
-- 工作区外按文件路径启动的脚本可从已安装包导入 guard 并完成校验。
+- 原始 `PathResolver(ROOT)` 位置参数错误在 Store 前被识别为 root mismatch；
+- 正确关键字构造后的 `VehicleMrOnlineStore` 只在 TEST 根初始化；
+- 工作区外按文件路径启动的脚本可从源码包导入 guard 并完成校验；
+- 通过 Wheel 构建、隔离 Python 环境安装后，工作区外脚本可导入 guard 和安全 PathResolver 工厂，并分别通过 TEST 根与模拟生产根拒绝测试。
 
 受影响正常运行代码未改动；Data Environment、Desktop runtime 和 PR #89 维护授权回归需在安全 PR CI 中继续验证。
 
