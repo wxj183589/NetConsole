@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -165,3 +168,48 @@ def test_normal_test_root_and_sqlite_initialization_are_allowed(tmp_path: Path) 
     assert mkdir_calls == [root]
     assert sqlite_calls == [root / "fixture.sqlite"]
     assert (root / "fixture.sqlite").is_file()
+
+
+def test_guard_is_importable_from_workspace_external_script(tmp_path: Path) -> None:
+    _, repository, test_base, production = _roots(tmp_path)
+    external_dir = tmp_path / "workspace-reports" / "diagnostic"
+    external_dir.mkdir(parents=True)
+    script = external_dir / "one_off_diagnostic.py"
+    script.write_text(
+        """
+from pathlib import Path
+import sys
+
+from netconsole.tools.diagnostic_data_root_guard import require_diagnostic_test_root
+
+root = require_diagnostic_test_root(
+    sys.argv[1],
+    repository_root=sys.argv[2],
+    runtime_mode="test",
+    production_root=sys.argv[3],
+)
+print(root)
+""".strip(),
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    source_root = Path(__file__).parents[1] / "src"
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(source_root), environment.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            str(test_base / "external-run"),
+            str(repository),
+            str(production),
+        ],
+        cwd=external_dir,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(test_base / "external-run")
