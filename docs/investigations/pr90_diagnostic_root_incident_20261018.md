@@ -55,7 +55,9 @@ seed_vehicle_mr_scenario.py
 
 ## 防复发保护
 
-新增：`scripts/maintenance/diagnostic_data_root_guard.py`
+新增：`src/netconsole/tools/diagnostic_data_root_guard.py`
+
+`scripts/maintenance/diagnostic_data_root_guard.py` 仅保留兼容转发。这样工作区外按文件路径启动的一次性诊断脚本可以从已安装的 `netconsole` 包导入守卫，不依赖诊断脚本目录或仓库根恰好位于 `sys.path`。
 
 `require_diagnostic_test_root()` 在任何 Repository、目录创建或 SQLite 连接前执行以下 fail-closed 校验：
 
@@ -71,7 +73,7 @@ seed_vehicle_mr_scenario.py
 
 ## 负面测试
 
-新增 `tests/test_diagnostic_data_root_guard.py`，共 `19 passed`，覆盖：
+新增 `tests/test_diagnostic_data_root_guard.py`，共 `20 passed`，覆盖：
 
 - 缺失/空/相对 root、非法 Runtime；
 - 正式根、正式根子目录、正式根父目录、测试根本身；
@@ -79,7 +81,8 @@ seed_vehicle_mr_scenario.py
 - Symlink 指向正式根；
 - 生产写入授权环境变量仍被拒绝；
 - 被拒绝时 `mkdir` 与 `sqlite3.connect` 均未调用；
-- 正常 TEST run root 及 SQLite 初始化通过。
+- 正常 TEST run root 及 SQLite 初始化通过；
+- 工作区外按文件路径启动的脚本可从已安装包导入 guard 并完成校验。
 
 受影响正常运行代码未改动；Data Environment、Desktop runtime 和 PR #89 维护授权回归需在安全 PR CI 中继续验证。
 
