@@ -10,6 +10,7 @@ checkout being their Python module root.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -63,7 +64,7 @@ def require_diagnostic_test_root(
     if not candidate_input.is_absolute():
         _blocked("data_root must be an absolute path")
 
-    source_root = _resolve_path(repository_root, "repository_root")
+    source_root = _require_repository_root(repository_root)
     configured_production_root = _resolve_production_root(production_root)
     _reject_reparse_ancestors(candidate_input)
 
@@ -166,6 +167,44 @@ def _resolve_production_root(
     if configured is None:
         _blocked("cannot determine the configured production data root")
     return _resolve_path(configured, "production_root")
+
+
+def _require_repository_root(
+    value: str | os.PathLike[str] | None,
+) -> Path:
+    candidate = _resolve_path(value, "repository_root")
+    if not candidate.is_dir():
+        _blocked("repository_root must be an existing checkout directory")
+
+    required_files = (
+        candidate / "pyproject.toml",
+        candidate / "src" / "netconsole" / "core" / "paths.py",
+        candidate / "src" / "netconsole" / "tools" / "diagnostic_data_root_guard.py",
+    )
+    if any(not path.is_file() for path in required_files):
+        _blocked("repository_root is not a NetConsole checkout")
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except OSError as exc:
+        _blocked(f"cannot verify repository_root checkout: {exc}")
+    if result.returncode != 0:
+        _blocked("repository_root is not a Git checkout")
+    try:
+        git_root = Path(result.stdout.strip()).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        _blocked(f"cannot resolve verified repository_root checkout: {exc}")
+    if git_root != candidate:
+        _blocked(
+            "repository_root must be the Git checkout root: "
+            f"expected={candidate}, actual={git_root}"
+        )
+    return candidate
 
 
 def _resolve_path(value: str | os.PathLike[str] | None, label: str) -> Path:

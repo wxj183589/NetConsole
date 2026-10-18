@@ -88,6 +88,7 @@ Guard 不能自动拦截完全绕过它的任意 Python 代码；因此事故脚
 - 缺失、空值、相对路径、路径穿越、正式根/正式根子目录/正式根父目录和大小写/分隔符变体均拒绝。
 - 解析并拒绝已有 Symlink/Junction/Reparse Point 路径，避免链接越界。
 - `NETCONSOLE_ALLOW_PRODUCTION_WRITE=1` 不得绕过诊断保护。
+- `repository_root` 必须是存在的 NetConsole checkout，包含 canonical project markers，且 `git -C <root> rev-parse --show-toplevel` 必须返回该根；伪造或误识别目录在计算 TEST base 前拒绝。
 - 无法确定机器正式根时拒绝继续，而不是猜测或回退。
 - 统一错误码为 `DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED`。
 
@@ -95,7 +96,7 @@ Guard 不能自动拦截完全绕过它的任意 Python 代码；因此事故脚
 
 ## 负面测试
 
-新增 `tests/test_diagnostic_data_root_guard.py`，共 `26 passed`，覆盖：
+新增 `tests/test_diagnostic_data_root_guard.py`，共 `27 passed`，覆盖：
 
 - 缺失/空/相对 root、非法 Runtime；
 - 正式根、正式根子目录、正式根父目录、测试根本身；
@@ -103,11 +104,12 @@ Guard 不能自动拦截完全绕过它的任意 Python 代码；因此事故脚
 - Symlink 指向正式根；
 - 生产写入授权环境变量仍被拒绝；
 - 被拒绝时 `mkdir` 与 `sqlite3.connect` 均未调用；
+- 误识别/伪造 `repository_root` 在计算 TEST base 前被拒绝；
 - 正常 TEST run root 及 SQLite 初始化通过；
 - 原始 `PathResolver(ROOT)` 位置参数错误在 Store 前被识别为 root mismatch；
 - 正确关键字构造后的 `VehicleMrOnlineStore` 只在 TEST 根初始化；
 - 工作区外按文件路径启动的脚本可从源码包导入 guard 并完成校验；
-- 通过 Wheel 构建、隔离 Python 环境安装后，工作区外脚本可导入 guard 和安全 PathResolver 工厂，并分别通过 TEST 根与模拟生产根拒绝测试。
+- 通过临时源码副本构建 Wheel、隔离 Python 环境安装后，工作区外脚本可导入 guard 和安全 PathResolver 工厂，并分别通过 TEST 根与模拟生产根拒绝测试；共享 checkout 不产生或清理 Wheel build 目录。
 
 受影响正常运行代码未改动；Data Environment、Desktop runtime 和 PR #89 维护授权回归需在安全 PR CI 中继续验证。
 

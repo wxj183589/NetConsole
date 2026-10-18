@@ -31,6 +31,19 @@ def _roots(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     repository.mkdir(parents=True)
     test_base.mkdir(parents=True)
     production.mkdir()
+    (repository / "pyproject.toml").write_text("[project]\nname = 'fixture'\n", encoding="utf-8")
+    (repository / "src" / "netconsole" / "core").mkdir(parents=True)
+    (repository / "src" / "netconsole" / "tools").mkdir(parents=True)
+    (repository / "src" / "netconsole" / "core" / "paths.py").write_text("", encoding="utf-8")
+    (repository / "src" / "netconsole" / "tools" / "diagnostic_data_root_guard.py").write_text(
+        "", encoding="utf-8"
+    )
+    subprocess.run(
+        ["git", "init", "--quiet", str(repository)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     return workspace, repository, test_base, production
 
 
@@ -234,6 +247,22 @@ def test_missing_repository_root_is_blocked(tmp_path: Path) -> None:
     assert error.value.code == DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED
 
 
+def test_misidentified_repository_root_is_blocked(tmp_path: Path) -> None:
+    _, _, test_base, production = _roots(tmp_path)
+    fake_repository = tmp_path / "fake-repository"
+    fake_repository.mkdir()
+    fake_root = test_base / "misidentified-run"
+    with pytest.raises(DiagnosticDataRootBlockedError) as error:
+        require_diagnostic_test_root(
+            fake_root,
+            repository_root=fake_repository,
+            runtime_mode=RuntimeMode.TEST,
+            production_root=production,
+        )
+    assert error.value.code == DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED
+    assert not (fake_repository / "src").exists()
+
+
 def test_nested_test_root_is_blocked(tmp_path: Path) -> None:
     _, repository, test_base, production = _roots(tmp_path)
     _assert_blocked(test_base / "run-1" / "nested", repository, production)
@@ -295,42 +324,43 @@ print(root)
 
 
 def test_guard_is_importable_from_a_real_wheel_install(
-    tmp_path: Path, request: pytest.FixtureRequest
+    tmp_path: Path,
 ) -> None:
-    _, repository, test_base, production = _roots(tmp_path)
     source_root = Path(__file__).parents[1]
     wheel_dir = tmp_path / "wheel"
     wheel_dir.mkdir()
-    build_dir = source_root / "build"
-    assert not build_dir.exists(), "wheel test refuses to remove a pre-existing build"
-
-    def cleanup_build_dir() -> None:
-        if build_dir.exists():
-            shutil.rmtree(build_dir)
-
-    request.addfinalizer(cleanup_build_dir)
-    try:
-        wheel_build = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "wheel",
-                ".",
-                "--no-deps",
-                "--no-build-isolation",
-                "--wheel-dir",
-                str(wheel_dir),
-            ],
-            cwd=source_root,
-            env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    finally:
-        if build_dir.exists():
-            shutil.rmtree(build_dir)
+    wheel_source = tmp_path / "wheel-source"
+    wheel_source.mkdir()
+    shutil.copy2(source_root / "pyproject.toml", wheel_source / "pyproject.toml")
+    shutil.copytree(source_root / "src", wheel_source / "src")
+    subprocess.run(
+        ["git", "init", "--quiet", str(wheel_source)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    test_base = wheel_source.parent / "test-data" / "NetConsole"
+    test_base.mkdir(parents=True)
+    production = tmp_path / "NetConsoleData"
+    production.mkdir()
+    wheel_build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            ".",
+            "--no-deps",
+            "--no-build-isolation",
+            "--wheel-dir",
+            str(wheel_dir),
+        ],
+        cwd=wheel_source,
+        env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert wheel_build.returncode == 0, wheel_build.stderr
     wheels = sorted(wheel_dir.glob("netconsole-*.whl"))
     assert len(wheels) == 1
@@ -383,13 +413,13 @@ print(DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED)
         key: value for key, value in os.environ.items() if key != "PYTHONPATH"
     }
     environment["NETCONSOLE_RUNTIME_MODE"] = "test"
-    environment["NETCONSOLE_PROJECT_ROOT"] = str(repository)
+    environment["NETCONSOLE_PROJECT_ROOT"] = str(wheel_source)
     valid = subprocess.run(
         [
             str(installed_python),
             str(script),
             str(test_base / "wheel-run"),
-            str(repository),
+            str(wheel_source),
             str(production),
         ],
         cwd=external_dir,
@@ -406,7 +436,7 @@ print(DIAGNOSTIC_PRODUCTION_DATA_ROOT_BLOCKED)
             str(installed_python),
             str(script),
             str(production),
-            str(repository),
+            str(wheel_source),
             str(production),
         ],
         cwd=external_dir,
