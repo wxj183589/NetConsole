@@ -4,7 +4,6 @@ import json
 import subprocess
 import sys
 import threading
-import time
 import zipfile
 from pathlib import Path
 
@@ -195,21 +194,24 @@ def test_online_mr_collection_paths_cover_existing_raw_log_contract(
 def test_online_mr_collection_service_stops_packages_and_keeps_raw_logs(
     tmp_path: Path,
 ) -> None:
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(data_root=tmp_path)
     connection = FakeConnection()
     service = OnlineMrCollectionService(
         OnlineMrSessionStore(paths),
         connection_factory=lambda _config: connection,
     )
     progress: list[tuple[str, str]] = []
-    deadline = time.monotonic() + 0.4
+    stop_requested = threading.Event()
+
+    def record_progress(stage: str, _current: int, _total: int, message: str) -> None:
+        progress.append((stage, message))
+        if stage == "online_mr_started":
+            stop_requested.set()
 
     result = service.run(
         _config(),
-        progress=lambda stage, _current, _total, message: progress.append(
-            (stage, message)
-        ),
-        should_cancel=lambda: time.monotonic() >= deadline,
+        progress=record_progress,
+        should_cancel=stop_requested.is_set,
         package_on_stop=True,
     )
 
@@ -236,10 +238,18 @@ def test_online_mr_collection_service_stops_packages_and_keeps_raw_logs(
 def test_application_collection_flushes_traffic_before_collector_close_and_package(
     tmp_path: Path,
 ) -> None:
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(data_root=tmp_path)
     order: list[str] = []
+    init_complete = threading.Event()
+    traffic_started = threading.Event()
 
     class OrderedConnection(FakeConnection):
+        def send_command(self, command: str, timeout: int) -> str:
+            result = super().send_command(command, timeout)
+            if command == INIT_COMMANDS[-1]:
+                init_complete.set()
+            return result
+
         def close(self) -> None:
             order.append("collector-close")
             super().close()
@@ -247,6 +257,7 @@ def test_application_collection_flushes_traffic_before_collector_close_and_packa
     class TrafficCoordinator:
         def start_for_session(self, _session, _config):
             order.append("traffic-start")
+            traffic_started.set()
             return {"flush_complete": False}
 
         def stop_traffic_for_session(self, _session_id):
@@ -276,28 +287,171 @@ def test_application_collection_flushes_traffic_before_collector_close_and_packa
         traffic_coordinator=TrafficCoordinator(),
         packager=Packager(),
     )
-    deadline = time.monotonic() + 0.25
-
     result = service.run(
         _config(),
-        should_cancel=lambda: time.monotonic() >= deadline,
+        should_cancel=lambda: init_complete.is_set() and traffic_started.is_set(),
         manage_traffic=True,
     )
 
     assert result["status"] == "STOPPED"
+    assert order.count("traffic-stop") == 1
     assert order.index("traffic-flush") < order.index("collector-close")
     assert order.index("collector-close") < order.index("traffic-finalize")
     assert order[-1] == "package"
 
 
+def test_application_collection_cancels_starting_traffic_before_ssh_returns(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    connection_started = threading.Event()
+    release_connection = threading.Event()
+    release_traffic_start = threading.Event()
+    traffic_started = threading.Event()
+    traffic_stopped = threading.Event()
+    traffic_stop_calls: list[str] = []
+    cancel_requested = threading.Event()
+    result_holder: list[dict[str, object]] = []
+
+    def blocking_connection_factory(_config: OnlineMrConnectionConfig) -> FakeConnection:
+        connection_started.set()
+        assert release_connection.wait(5.0)
+        return FakeConnection()
+
+    class TrafficCoordinator:
+        def start_for_session(self, _session, _config):
+            traffic_started.set()
+            assert release_traffic_start.wait(5.0)
+            return {"flush_complete": False, "warnings": []}
+
+        def stop_traffic_for_session(self, _session_id):
+            traffic_stop_calls.append("stop")
+            traffic_stopped.set()
+
+        def flush_traffic_outputs(self, _session_id, *, timeout_seconds):
+            assert timeout_seconds > 0
+            return []
+
+        def finalize_traffic_outputs(self, _session_id):
+            return {"flush_complete": True, "warnings": []}
+
+    service = OnlineMrCollectionService(
+        OnlineMrSessionStore(paths),
+        connection_factory=blocking_connection_factory,
+        traffic_coordinator=TrafficCoordinator(),
+    )
+
+    def run() -> None:
+        result_holder.append(
+            service.run(
+                _config(),
+                should_cancel=cancel_requested.is_set,
+                manage_traffic=True,
+                package_on_stop=False,
+            )
+        )
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert connection_started.wait(2.0)
+    assert traffic_started.wait(2.0)
+    cancel_requested.set()
+    assert traffic_stopped.wait(2.0)
+    release_traffic_start.set()
+    release_connection.set()
+    worker.join(5.0)
+
+    assert not worker.is_alive()
+    assert result_holder[0]["status"] == "STOPPED"
+    assert len(traffic_stop_calls) == 2
+
+
+def test_application_collection_failure_closes_collector_before_traffic_finalize_and_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    order: list[str] = []
+
+    class OrderedConnection(FakeConnection):
+        def close(self) -> None:
+            order.append("collector-close")
+            super().close()
+
+    connection = OrderedConnection()
+
+    class TrafficCoordinator:
+        def start_for_session(self, _session, _config):
+            order.append("traffic-start")
+            return {"flush_complete": False, "warnings": []}
+
+        def stop_traffic_for_session(self, _session_id):
+            order.append("traffic-stop")
+
+        def flush_traffic_outputs(self, _session_id, *, timeout_seconds):
+            assert timeout_seconds > 0
+            order.append("traffic-flush")
+            return []
+
+        def finalize_traffic_outputs(self, _session_id):
+            order.append("traffic-finalize")
+            return {"flush_complete": True, "warnings": []}
+
+    class Packager:
+        def package(self, _session_dir):
+            order.append("package")
+            return tmp_path / "session.zip"
+
+    def fail_run_forever(
+        self,
+        snapshot_callback=None,
+        stream_event_callback=None,
+        should_cancel=None,
+        before_stop=None,
+    ):
+        del snapshot_callback, stream_event_callback, should_cancel
+        self.status = "FAILED"
+        self.session.finish("FAILED", self.stats.as_dict())
+        if before_stop is not None:
+            before_stop()
+        self.close_resources()
+
+    monkeypatch.setattr(
+        "netconsole.services.online_mr_collector.OnlineMrCollector.run_forever",
+        fail_run_forever,
+    )
+    service = OnlineMrCollectionService(
+        OnlineMrSessionStore(paths),
+        connection_factory=lambda _config: connection,
+        traffic_coordinator=TrafficCoordinator(),
+        packager=Packager(),
+    )
+
+    with pytest.raises(RuntimeError, match="在线 MR 采集异常结束"):
+        service.run(_config(), manage_traffic=True)
+
+    assert order.index("traffic-stop") < order.index("traffic-flush")
+    assert order.index("traffic-flush") < order.index("collector-close")
+    assert order.index("collector-close") < order.index("traffic-finalize")
+    assert order.index("traffic-finalize") < order.index("package")
+    assert order.count("traffic-stop") == 1
+
+
 def test_required_fping_reaches_running_before_ssh_connection_starts(
     tmp_path: Path,
 ) -> None:
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(data_root=tmp_path)
     order: list[str] = []
+    init_complete = threading.Event()
     config = _config()
     config.fping = FpingConfig(enabled=True, target="192.0.2.20")
     config.fping_required_before_collection = True
+
+    class InitCompleteConnection(FakeConnection):
+        def send_command(self, command: str, timeout: int) -> str:
+            result = super().send_command(command, timeout)
+            if command == INIT_COMMANDS[-1]:
+                init_complete.set()
+            return result
 
     class RequiredTrafficCoordinator:
         def start_for_session(self, _session, received_config):
@@ -320,18 +474,16 @@ def test_required_fping_reaches_running_before_ssh_connection_starts(
     def connection_factory(_config):
         assert order == ["fping-running"]
         order.append("ssh-connect")
-        return FakeConnection()
+        return InitCompleteConnection()
 
     service = OnlineMrCollectionService(
         OnlineMrSessionStore(paths),
         connection_factory=connection_factory,
         traffic_coordinator=RequiredTrafficCoordinator(),
     )
-    deadline = time.monotonic() + 0.15
-
     result = service.run(
         config,
-        should_cancel=lambda: time.monotonic() >= deadline,
+        should_cancel=init_complete.is_set,
         manage_traffic=True,
     )
 
@@ -349,7 +501,7 @@ def test_required_fping_reaches_running_before_ssh_connection_starts(
 def test_application_collection_duration_limit_uses_same_stop_and_flush_path(
     tmp_path: Path,
 ) -> None:
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(data_root=tmp_path)
     order: list[str] = []
 
     def duration_clock() -> float:
@@ -390,7 +542,7 @@ def test_application_collection_duration_limit_uses_same_stop_and_flush_path(
 def test_online_mr_collection_service_emits_session_created_before_connection_failure(
     tmp_path: Path,
 ) -> None:
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(data_root=tmp_path)
     progress: list[tuple[str, str]] = []
     order: list[str] = []
 
@@ -438,9 +590,10 @@ def test_online_mr_collection_service_emits_session_created_before_connection_fa
 def test_application_collection_starts_traffic_before_ssh_initialization(
     tmp_path: Path,
 ) -> None:
-    paths = PathResolver(tmp_path)
+    paths = PathResolver(data_root=tmp_path)
     order: list[str] = []
     traffic_started = threading.Event()
+    init_complete = threading.Event()
 
     class TrafficCoordinator:
         def start_for_session(self, _session, _config):
@@ -460,21 +613,26 @@ def test_application_collection_starts_traffic_before_ssh_initialization(
             order.append("traffic-finalize")
             return {"flush_complete": True, "warnings": []}
 
+    class InitCompleteConnection(FakeConnection):
+        def send_command(self, command: str, timeout: int) -> str:
+            result = super().send_command(command, timeout)
+            if command == INIT_COMMANDS[-1]:
+                init_complete.set()
+            return result
+
     def connect_after_traffic(_config: OnlineMrConnectionConfig):
         assert traffic_started.wait(1.0)
         order.append("connect")
-        return FakeConnection()
+        return InitCompleteConnection()
 
     service = OnlineMrCollectionService(
         OnlineMrSessionStore(paths),
         connection_factory=connect_after_traffic,
         traffic_coordinator=TrafficCoordinator(),
     )
-    deadline = time.monotonic() + 0.25
-
     result = service.run(
         _config(),
-        should_cancel=lambda: time.monotonic() >= deadline,
+        should_cancel=lambda: init_complete.is_set() and traffic_started.is_set(),
         manage_traffic=True,
         package_on_stop=False,
     )

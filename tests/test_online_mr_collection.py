@@ -1170,6 +1170,28 @@ def test_run_forever_does_not_create_second_session_after_explicit_start(tmp_pat
     assert [path.name for path in sessions] == [meta.session_id]
 
 
+def test_run_forever_failure_calls_before_stop_before_closing_resources(tmp_path: Path) -> None:
+    collector, connection = _collector(tmp_path)
+    collector.start()
+    collector._uses_default_connection_factory = True
+    collector._run_streaming_collectors = lambda _snapshot, _should_cancel: (_ for _ in ()).throw(
+        RuntimeError("stream failed")
+    )
+    order: list[str] = []
+
+    def before_stop() -> None:
+        order.append("before-stop")
+        assert collector.status == "FAILED"
+        assert connection.closed is False
+
+    collector.run_forever(before_stop=before_stop)
+
+    assert order == ["before-stop"]
+    assert collector.status == "FAILED"
+    assert collector.cancelled is True
+    assert connection.closed is True
+
+
 def test_fping_tool_discovery_from_project_resources(tmp_path: Path) -> None:
     exe = tmp_path / "resources" / "tools" / "windows-x64" / "fping" / "fping.exe"
     exe.parent.mkdir(parents=True)
