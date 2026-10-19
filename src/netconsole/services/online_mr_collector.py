@@ -562,6 +562,7 @@ class OnlineMrCollector:
         snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None,
         stream_event_callback: Callable[[OnlineMrEvent], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        before_stop: Callable[[], None] | None = None,
     ) -> None:
         try:
             if self.session is None:
@@ -585,20 +586,29 @@ class OnlineMrCollector:
                 self.session.finish(STATE_FAILED, self.stats.as_dict())
         finally:
             if self.status not in {STATE_STOPPED, STATE_FORCED_STOPPED, STATE_FAILED}:
-                self.stop()
+                try:
+                    if before_stop is not None:
+                        before_stop()
+                finally:
+                    self.stop()
 
     def stop(self) -> None:
         self.request_stop()
-        self._join_stream_threads(3)
-        self._stop_collector_output_writer()
-        self._stop_device_terminal_writer()
-        self._close_stream_connections()
-        self._close_main_connection()
+        self.close_resources()
         if self.session:
             self.session.finish(STATE_STOPPED, self.stats.as_dict())
             if self.realtime_cache:
                 self.realtime_cache.close_session(self.session.meta.session_id)
         self.status = STATE_STOPPED
+
+    def close_resources(self) -> None:
+        """关闭采集线程和连接，但保留当前会话状态。"""
+
+        self._join_stream_threads(3)
+        self._stop_collector_output_writer()
+        self._stop_device_terminal_writer()
+        self._close_stream_connections()
+        self._close_main_connection()
 
     def fail_start(self, error_message: str) -> None:
         """收口已创建会话的启动失败，不进入正常停止语义。"""

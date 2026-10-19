@@ -49,6 +49,8 @@ class OnlineMrCollectionService:
         stop_reason = ["collector_ended"]
         duration_deadline: list[float | None] = [None]
         traffic_started = Event()
+        traffic_stop_flushed = Event()
+        traffic_finalized = Event()
         traffic_start_thread: Thread | None = None
         startup_started = self.clock()
 
@@ -65,12 +67,6 @@ class OnlineMrCollectionService:
         def monitor_cancel() -> None:
             while not monitor_stop.wait(0.1):
                 if requested_stop():
-                    if manage_traffic and collector.session is not None and traffic_started.is_set():
-                        coordinator.stop_traffic_for_session(collector.session.meta.session_id)
-                        coordinator.flush_traffic_outputs(
-                            collector.session.meta.session_id,
-                            timeout_seconds=traffic_flush_timeout_seconds,
-                        )
                     collector.request_stop()
                     return
         last_progress = 0.0
@@ -99,6 +95,46 @@ class OnlineMrCollectionService:
                 emit("online_mr_startup_stage", json.dumps(payload, ensure_ascii=False))
 
         coordinator = self.traffic_coordinator or OnlineMrTrafficCoordinator(self.store.paths)
+
+        def stop_and_flush_traffic() -> None:
+            if (
+                not manage_traffic
+                or collector.session is None
+                or not traffic_started.is_set()
+                or traffic_stop_flushed.is_set()
+            ):
+                return
+            traffic_stop_flushed.set()
+            session_id = collector.session.meta.session_id
+            coordinator.stop_traffic_for_session(session_id)
+            warnings.extend(
+                coordinator.flush_traffic_outputs(
+                    session_id,
+                    timeout_seconds=traffic_flush_timeout_seconds,
+                )
+            )
+
+        def finalize_traffic() -> None:
+            nonlocal traffic_summary
+            if (
+                not manage_traffic
+                or collector.session is None
+                or not traffic_started.is_set()
+                or traffic_finalized.is_set()
+            ):
+                return
+            traffic_finalized.set()
+            traffic_summary = coordinator.finalize_traffic_outputs(
+                collector.session.meta.session_id
+            )
+
+        def before_collector_stop() -> None:
+            if traffic_start_thread is not None:
+                traffic_start_thread.join(timeout=traffic_flush_timeout_seconds)
+                if traffic_start_thread.is_alive():
+                    warnings.append("Traffic 启动线程仍在运行，停止阶段将继续尝试回收")
+            # Collector.stop() closes SSH only after this callback returns.
+            stop_and_flush_traffic()
 
         def start_traffic_async(session) -> None:
             nonlocal traffic_start_thread, traffic_summary
@@ -157,6 +193,9 @@ class OnlineMrCollectionService:
                 else:
                     start_traffic_async(collector.session)
 
+        package_path = ""
+        traffic_summary: dict[str, object] = {}
+        warnings: list[str] = []
         collector = OnlineMrCollector(
             config,
             self.store,
@@ -174,9 +213,6 @@ class OnlineMrCollectionService:
             last_progress = now
             emit("online_mr_status", json.dumps(snapshot_to_payload(snapshot), ensure_ascii=False))
 
-        package_path = ""
-        traffic_summary: dict[str, object] = {}
-        warnings: list[str] = []
         try:
             try:
                 meta = collector.start()
@@ -204,6 +240,7 @@ class OnlineMrCollectionService:
             collector.run_forever(
                 on_snapshot,
                 should_cancel=(lambda: collector.cancelled) if manage_traffic else should_cancel,
+                before_stop=before_collector_stop,
             )
             session = collector.session
             if traffic_start_thread is not None:
@@ -212,12 +249,10 @@ class OnlineMrCollectionService:
                     warnings.append("Traffic 启动线程仍在运行，停止阶段将继续尝试回收")
             if manage_traffic and session is not None and traffic_started.is_set():
                 emit("online_mr_stopping_traffic", "正在停止 Online MR Traffic 子任务")
-                coordinator.stop_traffic_for_session(session.meta.session_id)
-                warnings = coordinator.flush_traffic_outputs(
-                    session.meta.session_id,
-                    timeout_seconds=traffic_flush_timeout_seconds,
-                )
-                traffic_summary = coordinator.finalize_traffic_outputs(session.meta.session_id)
+                stop_and_flush_traffic()
+                # Normal run_forever() calls Collector.stop() after before_stop;
+                # finalize only after the collector connection has been closed.
+                finalize_traffic()
             if collector.status == STATE_FAILED:
                 stop_reason[0] = "collector_failed"
             elif stop_reason[0] == "collector_ended":
@@ -267,15 +302,13 @@ class OnlineMrCollectionService:
             if manage_traffic and collector.session is not None and collector.status == STATE_FAILED:
                 if traffic_start_thread is not None:
                     traffic_start_thread.join(timeout=traffic_flush_timeout_seconds)
-                if traffic_started.is_set():
-                    coordinator.stop_traffic_for_session(collector.session.meta.session_id)
-                    coordinator.flush_traffic_outputs(
-                        collector.session.meta.session_id,
-                        timeout_seconds=traffic_flush_timeout_seconds,
-                    )
-                    coordinator.finalize_traffic_outputs(collector.session.meta.session_id)
-            if collector.session is not None and collector.status not in {"STOPPED", "FORCED_STOPPED", "FAILED"}:
-                collector.stop()
+                stop_and_flush_traffic()
+                finalize_traffic()
+            if collector.session is not None and collector.status not in {"STOPPED", "FORCED_STOPPED"}:
+                if collector.status == STATE_FAILED:
+                    collector.close_resources()
+                else:
+                    collector.stop()
 
     @staticmethod
     def _enabled_collectors(config: OnlineMrConnectionConfig) -> list[str]:
