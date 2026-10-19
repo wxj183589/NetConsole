@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import datetime
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Callable
 
 from netconsole.models.online_mr_application import calculate_duration_minutes
@@ -50,9 +50,13 @@ class OnlineMrCollectionService:
         duration_deadline: list[float | None] = [None]
         traffic_started = Event()
         traffic_starting = Event()
+        traffic_start_finished = Event()
         traffic_stop_requested = Event()
+        traffic_stop_after_start = Event()
         traffic_stop_flushed = Event()
         traffic_finalized = Event()
+        traffic_stop_lock = Lock()
+        traffic_flush_lock = Lock()
         traffic_start_thread: Thread | None = None
         startup_started = self.clock()
 
@@ -100,18 +104,20 @@ class OnlineMrCollectionService:
         coordinator = self.traffic_coordinator or OnlineMrTrafficCoordinator(self.store.paths)
 
         def request_traffic_stop() -> None:
-            if (
-                not manage_traffic
-                or collector.session is None
-                or not (traffic_started.is_set() or traffic_starting.is_set())
-                or traffic_stop_requested.is_set()
+            if not manage_traffic or collector.session is None or not (
+                traffic_started.is_set() or traffic_starting.is_set()
             ):
                 return
-            traffic_stop_requested.set()
-            try:
-                coordinator.stop_traffic_for_session(collector.session.meta.session_id)
-            except Exception as exc:
-                warnings.append(f"Traffic 停止失败：{exc}")
+            with traffic_stop_lock:
+                if traffic_stop_after_start.is_set():
+                    return
+                traffic_stop_requested.set()
+                if traffic_start_finished.is_set():
+                    traffic_stop_after_start.set()
+                try:
+                    coordinator.stop_traffic_for_session(collector.session.meta.session_id)
+                except Exception as exc:
+                    warnings.append(f"Traffic 停止失败：{exc}")
 
         def stop_and_flush_traffic() -> None:
             if (
@@ -122,16 +128,22 @@ class OnlineMrCollectionService:
             ):
                 return
             request_traffic_stop()
-            traffic_stop_flushed.set()
-            try:
-                warnings.extend(
-                    coordinator.flush_traffic_outputs(
-                        collector.session.meta.session_id,
-                        timeout_seconds=traffic_flush_timeout_seconds,
+            if not traffic_start_finished.is_set():
+                return
+            with traffic_flush_lock:
+                if traffic_stop_flushed.is_set():
+                    return
+                try:
+                    warnings.extend(
+                        coordinator.flush_traffic_outputs(
+                            collector.session.meta.session_id,
+                            timeout_seconds=traffic_flush_timeout_seconds,
+                        )
                     )
-                )
-            except Exception as exc:
-                warnings.append(f"Traffic 输出收口失败：{exc}")
+                except Exception as exc:
+                    warnings.append(f"Traffic 输出收口失败：{exc}")
+                finally:
+                    traffic_stop_flushed.set()
 
         def finalize_traffic() -> None:
             nonlocal traffic_summary
@@ -139,6 +151,8 @@ class OnlineMrCollectionService:
                 not manage_traffic
                 or collector.session is None
                 or not traffic_started.is_set()
+                or not traffic_start_finished.is_set()
+                or not traffic_stop_flushed.is_set()
                 or traffic_finalized.is_set()
             ):
                 return
@@ -170,12 +184,14 @@ class OnlineMrCollectionService:
                     traffic_summary = coordinator.start_for_session(session, config)
                     traffic_started.set()
                     mark_startup("traffic_start_submitted", session=session)
-                    if traffic_stop_requested.is_set():
-                        stop_and_flush_traffic()
                 except Exception as exc:
                     warning = f"Traffic 启动失败：{exc}"
                     warnings.append(warning)
                     mark_startup("traffic_start_failed", session=session, status="failed", message=warning)
+                finally:
+                    traffic_start_finished.set()
+                    if traffic_stop_requested.is_set():
+                        stop_and_flush_traffic()
 
             traffic_start_thread = Thread(
                 target=target,
@@ -189,22 +205,25 @@ class OnlineMrCollectionService:
             if not manage_traffic or traffic_started.is_set():
                 return
             traffic_starting.set()
-            if traffic_stop_requested.is_set():
-                return
-            mark_startup("required_fping_start_begin", session=session)
-            traffic_summary = coordinator.start_for_session(session, config)
-            fping_status = str(
-                (traffic_summary.get("fping") or {}).get("status") or ""
-            ).lower()
-            if fping_status != "running":
-                raise RuntimeError(
-                    "深度采集启动失败：fping 未进入有效运行态，"
-                    "无法生成车载 MR 分析所需的 Ping 时序数据"
-                )
-            traffic_started.set()
-            mark_startup("required_fping_running", session=session)
-            if traffic_stop_requested.is_set():
-                stop_and_flush_traffic()
+            try:
+                if traffic_stop_requested.is_set():
+                    return
+                mark_startup("required_fping_start_begin", session=session)
+                traffic_summary = coordinator.start_for_session(session, config)
+                fping_status = str(
+                    (traffic_summary.get("fping") or {}).get("status") or ""
+                ).lower()
+                if fping_status != "running":
+                    raise RuntimeError(
+                        "深度采集启动失败：fping 未进入有效运行态，"
+                        "无法生成车载 MR 分析所需的 Ping 时序数据"
+                    )
+                traffic_started.set()
+                mark_startup("required_fping_running", session=session)
+            finally:
+                traffic_start_finished.set()
+                if traffic_stop_requested.is_set():
+                    stop_and_flush_traffic()
 
         def on_session_created(meta) -> None:
             payload = {
@@ -276,7 +295,9 @@ class OnlineMrCollectionService:
                 traffic_start_thread.join(timeout=traffic_flush_timeout_seconds)
                 if traffic_start_thread.is_alive():
                     warnings.append("Traffic 启动线程仍在运行，停止阶段将继续尝试回收")
-            if manage_traffic and session is not None and traffic_started.is_set():
+            if manage_traffic and session is not None and (
+                traffic_started.is_set() or traffic_starting.is_set()
+            ):
                 emit("online_mr_stopping_traffic", "正在停止 Online MR Traffic 子任务")
                 stop_and_flush_traffic()
                 # Normal run_forever() calls Collector.stop() after before_stop;

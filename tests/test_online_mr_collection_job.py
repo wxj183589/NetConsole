@@ -306,8 +306,10 @@ def test_application_collection_cancels_starting_traffic_before_ssh_returns(
     paths = PathResolver(data_root=tmp_path)
     connection_started = threading.Event()
     release_connection = threading.Event()
+    release_traffic_start = threading.Event()
     traffic_started = threading.Event()
     traffic_stopped = threading.Event()
+    traffic_stop_calls: list[str] = []
     cancel_requested = threading.Event()
     result_holder: list[dict[str, object]] = []
 
@@ -319,9 +321,11 @@ def test_application_collection_cancels_starting_traffic_before_ssh_returns(
     class TrafficCoordinator:
         def start_for_session(self, _session, _config):
             traffic_started.set()
+            assert release_traffic_start.wait(5.0)
             return {"flush_complete": False, "warnings": []}
 
         def stop_traffic_for_session(self, _session_id):
+            traffic_stop_calls.append("stop")
             traffic_stopped.set()
 
         def flush_traffic_outputs(self, _session_id, *, timeout_seconds):
@@ -353,11 +357,13 @@ def test_application_collection_cancels_starting_traffic_before_ssh_returns(
     assert traffic_started.wait(2.0)
     cancel_requested.set()
     assert traffic_stopped.wait(2.0)
+    release_traffic_start.set()
     release_connection.set()
     worker.join(5.0)
 
     assert not worker.is_alive()
     assert result_holder[0]["status"] == "STOPPED"
+    assert len(traffic_stop_calls) == 2
 
 
 def test_application_collection_failure_closes_collector_before_traffic_finalize_and_package(
