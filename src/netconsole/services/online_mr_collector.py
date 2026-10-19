@@ -585,15 +585,17 @@ class OnlineMrCollector:
             if self.session:
                 self.session.finish(STATE_FAILED, self.stats.as_dict())
         finally:
-            if self.status not in {STATE_STOPPED, STATE_FORCED_STOPPED, STATE_FAILED}:
+            if self.status not in {STATE_STOPPED, STATE_FORCED_STOPPED}:
                 try:
                     if before_stop is not None:
                         before_stop()
                 finally:
-                    self.stop()
+                    if self.status == STATE_FAILED:
+                        self.close_resources()
+                    else:
+                        self.stop()
 
     def stop(self) -> None:
-        self.request_stop()
         self.close_resources()
         if self.session:
             self.session.finish(STATE_STOPPED, self.stats.as_dict())
@@ -604,6 +606,7 @@ class OnlineMrCollector:
     def close_resources(self) -> None:
         """关闭采集线程和连接，但保留当前会话状态。"""
 
+        self.request_stop()
         self._join_stream_threads(3)
         self._stop_collector_output_writer()
         self._stop_device_terminal_writer()
@@ -632,7 +635,7 @@ class OnlineMrCollector:
     def request_stop(self) -> None:
         self.cancelled = True
         self._stream_stop.set()
-        if self.session:
+        if self.session and self.status not in {STATE_FAILED, STATE_STOPPED, STATE_FORCED_STOPPED}:
             self._set_status(STATE_STOPPING)
 
     def force_stop(self, reason: str = "force_stop") -> None:

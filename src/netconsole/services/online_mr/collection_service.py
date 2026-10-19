@@ -49,6 +49,8 @@ class OnlineMrCollectionService:
         stop_reason = ["collector_ended"]
         duration_deadline: list[float | None] = [None]
         traffic_started = Event()
+        traffic_starting = Event()
+        traffic_stop_requested = Event()
         traffic_stop_flushed = Event()
         traffic_finalized = Event()
         traffic_start_thread: Thread | None = None
@@ -68,6 +70,7 @@ class OnlineMrCollectionService:
             while not monitor_stop.wait(0.1):
                 if requested_stop():
                     collector.request_stop()
+                    stop_and_flush_traffic()
                     return
         last_progress = 0.0
 
@@ -96,23 +99,39 @@ class OnlineMrCollectionService:
 
         coordinator = self.traffic_coordinator or OnlineMrTrafficCoordinator(self.store.paths)
 
+        def request_traffic_stop() -> None:
+            if (
+                not manage_traffic
+                or collector.session is None
+                or not (traffic_started.is_set() or traffic_starting.is_set())
+                or traffic_stop_requested.is_set()
+            ):
+                return
+            traffic_stop_requested.set()
+            try:
+                coordinator.stop_traffic_for_session(collector.session.meta.session_id)
+            except Exception as exc:
+                warnings.append(f"Traffic 停止失败：{exc}")
+
         def stop_and_flush_traffic() -> None:
             if (
                 not manage_traffic
                 or collector.session is None
-                or not traffic_started.is_set()
+                or not (traffic_started.is_set() or traffic_starting.is_set())
                 or traffic_stop_flushed.is_set()
             ):
                 return
+            request_traffic_stop()
             traffic_stop_flushed.set()
-            session_id = collector.session.meta.session_id
-            coordinator.stop_traffic_for_session(session_id)
-            warnings.extend(
-                coordinator.flush_traffic_outputs(
-                    session_id,
-                    timeout_seconds=traffic_flush_timeout_seconds,
+            try:
+                warnings.extend(
+                    coordinator.flush_traffic_outputs(
+                        collector.session.meta.session_id,
+                        timeout_seconds=traffic_flush_timeout_seconds,
+                    )
                 )
-            )
+            except Exception as exc:
+                warnings.append(f"Traffic 输出收口失败：{exc}")
 
         def finalize_traffic() -> None:
             nonlocal traffic_summary
@@ -140,14 +159,19 @@ class OnlineMrCollectionService:
             nonlocal traffic_start_thread, traffic_summary
             if not manage_traffic or traffic_started.is_set() or traffic_start_thread is not None:
                 return
+            traffic_starting.set()
 
             def target() -> None:
                 nonlocal traffic_summary
                 mark_startup("traffic_start_begin", session=session)
                 try:
+                    if traffic_stop_requested.is_set():
+                        return
                     traffic_summary = coordinator.start_for_session(session, config)
                     traffic_started.set()
                     mark_startup("traffic_start_submitted", session=session)
+                    if traffic_stop_requested.is_set():
+                        stop_and_flush_traffic()
                 except Exception as exc:
                     warning = f"Traffic 启动失败：{exc}"
                     warnings.append(warning)
@@ -164,6 +188,9 @@ class OnlineMrCollectionService:
             nonlocal traffic_summary
             if not manage_traffic or traffic_started.is_set():
                 return
+            traffic_starting.set()
+            if traffic_stop_requested.is_set():
+                return
             mark_startup("required_fping_start_begin", session=session)
             traffic_summary = coordinator.start_for_session(session, config)
             fping_status = str(
@@ -176,6 +203,8 @@ class OnlineMrCollectionService:
                 )
             traffic_started.set()
             mark_startup("required_fping_running", session=session)
+            if traffic_stop_requested.is_set():
+                stop_and_flush_traffic()
 
         def on_session_created(meta) -> None:
             payload = {
