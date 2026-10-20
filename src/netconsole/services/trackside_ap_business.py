@@ -1557,12 +1557,26 @@ def merge_fit_ap_rows_by_identity(rows: list[dict[str, object | None]]) -> list[
             passthrough.append(dict(row))
             continue
         existing = merged.get(key)
-        if existing is None or _fit_ap_prefer_score(row) >= _fit_ap_prefer_score(existing):
-            merged[key] = {**existing, **row} if existing else dict(row)
+        if existing is None:
+            merged[key] = dict(row)
+            continue
+        if (
+            _fit_ap_has_explicit_state(row)
+            and _fit_ap_has_explicit_state(existing)
+            and _fit_ap_observation_key(row) > _fit_ap_observation_key(existing)
+        ) or _fit_ap_prefer_score(row) >= _fit_ap_prefer_score(existing):
+            preferred, fallback = row, existing
         else:
-            for field, value in row.items():
-                if _is_missing_display(existing.get(field)) and not _is_missing_display(value):
-                    existing[field] = value
+            preferred, fallback = existing, row
+        merged_row = dict(preferred)
+        for field, value in fallback.items():
+            if (
+                _fit_ap_can_fill_from_fallback(preferred, field)
+                and _is_missing_display(merged_row.get(field))
+                and not _is_missing_display(value)
+            ):
+                merged_row[field] = value
+        merged[key] = merged_row
     return [*merged.values(), *passthrough]
 
 
@@ -1723,6 +1737,97 @@ def _fit_ap_prefer_score(row: dict[str, object | None]) -> tuple[int, int, int, 
         1 if str(row.get("ap_ip") or "").strip() else 0,
         1 if _has_optical_module_data(row) or _has_ap_lldp_data(row) else 0,
         f"{row.get('collected_at') or ''}|{row.get('updated_at') or ''}|{_int_value(row.get('id')):020d}",
+    )
+
+
+def _fit_ap_has_explicit_state(row: dict[str, object | None]) -> bool:
+    return any(
+        str(row.get(field) or "").strip()
+        for field in ("state", "state_raw", "state_display", "ap_state", "ap_state_display")
+    )
+
+
+def _fit_ap_observation_key(row: dict[str, object | None]) -> tuple[str, str, int]:
+    return (
+        str(row.get("collected_at") or row.get("updated_at") or ""),
+        str(row.get("updated_at") or ""),
+        _int_value(row.get("id")),
+    )
+
+
+_FIT_AP_RUNTIME_FIELDS = frozenset(
+    {
+        "ap_ip",
+        "is_online",
+        "state",
+        "state_raw",
+        "state_display",
+        "ap_state",
+        "ap_state_raw",
+        "ap_state_display",
+        "rx_power",
+        "tx_power",
+        "ap_rx_power",
+        "ap_tx_power",
+        "rx_low_alarm",
+        "rx_low_warning",
+        "rx_high_alarm",
+        "rx_high_warning",
+        "tx_low_alarm",
+        "tx_low_warning",
+        "tx_high_alarm",
+        "tx_high_warning",
+        "ap_rx_low_alarm",
+        "ap_rx_low_warning",
+        "module_model",
+        "module_serial_number",
+        "module_vendor",
+        "wavelength",
+        "transmission_distance",
+        "connector_type",
+        "optical_alarm_status",
+        "raw_status",
+        "status",
+        "data_freshness",
+        "neighbor_device_name",
+        "neighbor_switch_name",
+        "neighbor_switch_sysname",
+        "neighbor_interface",
+        "neighbor_mac",
+        "lldp_neighbor",
+        "lldp_neighbor_name",
+        "lldp_neighbor_interface",
+        "lldp_neighbor_mac",
+        "lldp_neighbor_mac_normalized",
+        "lldp_local_interface",
+        "lldp_local_interface_normalized",
+        "lldp_confidence",
+        "lldp_match_status",
+        "link_match_status",
+        "optical_match_status",
+        "connection_ip",
+        "connection_state",
+        "connection_time",
+        "connection_record_raw_time",
+        "connection_record_resolved_time",
+        "connection_record_collected_at",
+        "connection_record_observed",
+        "collected_at",
+        "updated_at",
+    }
+)
+
+
+def _fit_ap_can_fill_from_fallback(
+    preferred: dict[str, object | None],
+    field: str,
+) -> bool:
+    """Do not resurrect cleared runtime facts on an explicitly offline AP."""
+
+    if _ap_state(preferred) != "offline":
+        return True
+    return field not in _FIT_AP_RUNTIME_FIELDS and not field.startswith(
+        ("rid1_", "rid2_", "rid3_", "connection_record_")
     )
 
 
@@ -3940,7 +4045,9 @@ def _explicit_no_module(row: dict[str, object | None]) -> bool:
 
 
 def _is_missing_display(value: object) -> bool:
-    return str(value or "").strip() in {"", "-"}
+    if value is None:
+        return True
+    return isinstance(value, str) and value.strip() in {"", "-"}
 
 
 def _format_export_sheet(

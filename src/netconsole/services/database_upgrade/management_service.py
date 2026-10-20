@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import hashlib
-from threading import RLock
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -19,10 +19,15 @@ from netconsole.services.database_upgrade.backup_store import (
 from netconsole.services.database_upgrade.coordinator import DatabaseUpgradeCoordinator
 from netconsole.services.database_upgrade.history import LegacyDatabaseArchiveService
 from netconsole.services.database_upgrade.journal import list_upgrade_journals
-from netconsole.services.database_upgrade.models import DatabaseDescriptor, DatabaseUpgradeStrategy
-from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup, validate_sqlite
+from netconsole.services.database_upgrade.models import (
+    DatabaseDescriptor,
+    DatabaseUpgradeStrategy,
+)
+from netconsole.services.database_upgrade.sqlite_consistency import (
+    sqlite_backup,
+    validate_sqlite,
+)
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled
-
 
 _DATABASE_BATCH_LOCK = RLock()
 
@@ -116,7 +121,9 @@ class DatabaseUpgradeManagementService:
             if isinstance(item, dict)
         }
         results: list[dict[str, Any]] = []
-        from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
+        from netconsole.services.mesh_derived_data_maintenance_service import (
+            MeshDerivedDataMaintenanceService,
+        )
 
         cancel_check = _batch_cancel_check(should_cancel)
         with _DATABASE_BATCH_LOCK:
@@ -388,7 +395,9 @@ class DatabaseUpgradeManagementService:
         return self.backups.open_directory(backup_id)
 
     def _mesh_inspection(self, site_id: str) -> dict[str, Any]:
-        from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
+        from netconsole.services.mesh_derived_data_maintenance_service import (
+            MeshDerivedDataMaintenanceService,
+        )
 
         return MeshDerivedDataMaintenanceService(self.paths).inspect(site_id)
 

@@ -331,6 +331,11 @@ class AcActionPlanDTO(ApiModel):
     status: str = "PREVIEW"
     command_summary: list[str] = Field(default_factory=list)
     task_id: str = ""
+    stored_status: str = ""
+    effective_status: str = ""
+    reconciliation_status: str = "NOT_EVALUATED"
+    reconciliation_reason: str = ""
+    evidence_level: str = "NONE"
 
 
 class AcActionConfirmRequestDTO(ApiModel):

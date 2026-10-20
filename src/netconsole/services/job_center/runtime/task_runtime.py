@@ -24,6 +24,7 @@ from netconsole.services.job_center.web_export_event_safety import (
 )
 
 WORKER_PROTOCOL_ERROR_CODE = "WORKER_PROTOCOL_CORRUPTED"
+_AC_WEB_ACTION_TASK_TYPE = "ac_command_action_execute"
 @dataclass(frozen=True)
 class TaskLaunch:
     job: BackgroundJob
@@ -230,6 +231,7 @@ class TaskRuntime:
                 terminal_state = TaskState.CANCELLED if cancelled else TaskState.FAILED
         if is_web_export_task(task.launch.job.task_type):
             payload = sanitize_web_export_event(payload)
+        self._attach_ac_web_plan_id(task, payload)
         self.events.publish(payload)
         app_logger.log_info(
             "TASK_TEXT_PERSISTED",
@@ -263,6 +265,7 @@ class TaskRuntime:
         }
         if is_web_export_task(task.launch.job.task_type):
             payload = sanitize_web_export_event(payload)
+        self._attach_ac_web_plan_id(task, payload)
         self.events.publish(payload)
         self._set_state(job_id, TaskState.CANCELLED if cancelled else TaskState.FAILED)
         self._finish(job_id)
@@ -482,14 +485,36 @@ class TaskRuntime:
         task = self._tasks.get(job_id)
         if task is not None:
             task.state = state
-        self.events.publish(
-            {
-                "type": "state",
-                "job_id": job_id,
-                "task_type": task.launch.job.task_type if task is not None else "",
-                "state": state.value,
-            }
-        )
+        event = {
+            "type": "state",
+            "job_id": job_id,
+            "task_type": task.launch.job.task_type if task is not None else "",
+            "state": state.value,
+        }
+        if task is not None and state in {
+            TaskState.COMPLETED,
+            TaskState.FAILED,
+            TaskState.CANCELLED,
+        }:
+            self._attach_ac_web_plan_id(task, event)
+        self.events.publish(event)
+
+    @staticmethod
+    def _attach_ac_web_plan_id(task: _RuntimeTask, payload: dict[str, object]) -> None:
+        """Keep a bounded correlation key for AC Web terminal recovery.
+
+        Failed/cancelled worker events do not carry the handler result, but the
+        submitted plan id is still needed by the AC-specific terminal listener
+        and cleanup-before-delete hook.  It is correlation metadata, not a
+        success assertion; the plan classifier still validates the Task
+        identity, scope, owner, source and any result plan id.
+        """
+
+        if task.launch.job.task_type != _AC_WEB_ACTION_TASK_TYPE:
+            return
+        plan_id = str(task.launch.job.params.get("plan_id") or "").strip()
+        if plan_id and not str(payload.get("plan_id") or "").strip():
+            payload["plan_id"] = plan_id
 
     @staticmethod
     def _write_cancel_file(task: _RuntimeTask) -> None:

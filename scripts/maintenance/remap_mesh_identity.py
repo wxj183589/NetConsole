@@ -11,6 +11,7 @@ from typing import Mapping
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import (
     data_root as default_data_root,
+    require_data_root_write_allowed,
 )
 from netconsole.repositories.mesh_mr_repository import PARSER_VERSION, MeshMrRepository
 from netconsole.services.ap_identity.normalizers import normalize_mac, normalize_mac_key
@@ -197,11 +198,15 @@ def apply_plan(
     allow_production_write: bool = False,
     authorization_token: str = "",
 ) -> dict[str, object]:
+    require_data_root_write_allowed(
+        paths.data_root,
+        MESH_IDENTITY_REMAP_OPERATION,
+        allow_production_write=allow_production_write,
+    )
     scope = require_mesh_write_authority(
         paths,
         site_name,
         operation=MESH_IDENTITY_REMAP_OPERATION,
-        allow_production_write=allow_production_write,
         authorization_token=authorization_token,
     )
     service = MeshSourceRebuildService(paths)
@@ -610,11 +615,15 @@ def main() -> int:
         parser.error("--source 必须与 --profile 一起使用")
     paths = PathResolver(data_root=(args.data_root or default_data_root()).resolve())
     if args.apply:
+        require_data_root_write_allowed(
+            paths.data_root,
+            MESH_IDENTITY_REMAP_OPERATION,
+            allow_production_write=args.allow_production_write,
+        )
         scope = require_mesh_write_authority(
             paths,
             args.site,
             operation=MESH_IDENTITY_REMAP_OPERATION,
-            allow_production_write=args.allow_production_write,
             authorization_token=args.authorization_token,
         )
     else:

@@ -37,13 +37,14 @@ describe('vehicle MR online view', () => {
     expect(source).not.toContain('row.tc2.')
   })
 
-  it('shows station and numeric RSSI without dBm suffix', () => {
-    expect(source).toContain('display(row.ct.station_name)')
-    expect(source).toContain('display(row.tc.station_name)')
+  it('renders CT/TC RSSI as numeric text without dBm in cells, tooltips, and detail', () => {
     expect(source).toContain('display(row.ct.rssi_dbm)')
     expect(source).toContain('display(row.tc.rssi_dbm)')
     expect(source).toContain('display(endpoint.rssi_dbm)')
+    expect(source).toContain('display(row.ct.station_name)')
+    expect(source).toContain('display(row.tc.station_name)')
     expect(source).not.toMatch(/display\((?:row\.(?:ct|tc)|endpoint)\.rssi_dbm,\s*['"] dBm['"]\)/)
+    expect(source).not.toContain(' dBm')
   })
 
   it('uses typed data tables without changing editable mapping slots', () => {

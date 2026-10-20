@@ -3,7 +3,6 @@ from __future__ import annotations
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
-from netconsole.core.runtime_environment import production_write_allowed
 from netconsole.services.mesh_parsed_rebuild_service import MeshParsedRebuildService
 from netconsole.services.mesh_derived_data_maintenance_service import (
     MeshDerivedDataMaintenanceService,
@@ -80,7 +79,6 @@ def _mesh_worker_preflight(
         context.paths,
         scope.canonical_site_id,
         operation=operation,
-        allow_production_write=production_write_allowed(),
         authorization_token=authorization_token,
     )
     if scope.is_production and delete_raw_archive:

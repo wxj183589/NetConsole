@@ -16,11 +16,7 @@ from pathlib import Path
 from typing import Iterator, Mapping
 
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import (
-    ProductionWriteBlockedError,
-    data_environment,
-    require_data_root_write_allowed,
-)
+from netconsole.core.runtime_environment import ProductionWriteBlockedError, data_environment
 from netconsole.services.production_database_maintenance import (
     ProductionMaintenanceError,
     resolve_production_site_scope,
@@ -111,30 +107,20 @@ def require_mesh_write_authority(
     site_ref: str,
     *,
     operation: str,
-    allow_production_write: bool = False,
     authorization_token: str = "",
 ) -> MeshProductionSiteScope:
     """Prove the MESH operation may write, before any MESH constructor runs.
 
-    ``allow_production_write`` is intentionally passed to the generic runtime
-    gate only.  Production additionally requires the exact operation token;
+    The generic ``--allow-production-write`` switch belongs to independent
+    maintenance CLIs and is checked at those CLI entry points.  Electron and
+    ordinary ApplicationService callers use the canonical site binding,
+    explicit confirmation, the exact operation token and the worker plan;
     one MESH operation token can never authorize another operation.
     """
 
     scope = resolve_mesh_production_scope(paths, site_ref)
     if not scope.is_production:
-        require_data_root_write_allowed(
-            paths.data_root,
-            operation,
-            allow_production_write=allow_production_write,
-        )
         return scope
-
-    require_data_root_write_allowed(
-        paths.data_root,
-        operation,
-        allow_production_write=allow_production_write,
-    )
     expected = _OPERATION_TOKENS.get(str(operation))
     if expected is None:
         raise MeshProductionAuthorizationError(

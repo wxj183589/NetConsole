@@ -8,7 +8,7 @@ import pytest
 
 import netconsole.services.mesh_production_authority as authority_module
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import write_data_environment
+from netconsole.core.runtime_environment import ProductionWriteBlockedError, write_data_environment
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
 from netconsole.services.mesh_write_authority import (
     MESH_DERIVED_REBUILD_AUTHORIZED,
@@ -63,7 +63,11 @@ def _relocated_production_fixture(tmp_path: Path) -> tuple[PathResolver, Path]:
     return PathResolver(data_root=root), site_root
 
 
-def test_relocated_production_scope_is_registry_bound_and_token_specific(tmp_path: Path) -> None:
+def test_relocated_production_scope_is_registry_bound_and_token_specific(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NETCONSOLE_ALLOW_PRODUCTION_WRITE", raising=False)
     paths, site_root = _relocated_production_fixture(tmp_path)
 
     scope = resolve_mesh_production_scope(paths, "sxl1")
@@ -76,14 +80,12 @@ def test_relocated_production_scope_is_registry_bound_and_token_specific(tmp_pat
             paths,
             "sxl1",
             operation="mesh_derived_rebuild",
-            allow_production_write=True,
         )
 
     authorized = require_mesh_write_authority(
         paths,
         "sxl1",
         operation="mesh_derived_rebuild",
-        allow_production_write=True,
         authorization_token=MESH_DERIVED_REBUILD_AUTHORIZED,
     )
     assert authorized == scope
@@ -93,7 +95,6 @@ def test_relocated_production_scope_is_registry_bound_and_token_specific(tmp_pat
             paths,
             "sxl1",
             operation="mesh_identity_remap",
-            allow_production_write=True,
             authorization_token=MESH_DERIVED_REBUILD_AUTHORIZED,
         )
     assert MESH_IDENTITY_REMAP_AUTHORIZED != MESH_DERIVED_REBUILD_AUTHORIZED
@@ -134,9 +135,19 @@ def test_rebuild_production_plan_resolves_authority_before_maintenance_construct
 
 def test_direct_production_apply_requires_operation_capability_token(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.delenv("NETCONSOLE_ALLOW_PRODUCTION_WRITE", raising=False)
     paths, _site_root = _relocated_production_fixture(tmp_path)
 
+    with pytest.raises(ProductionWriteBlockedError, match="allow-production-write"):
+        apply_rebuild_plan(
+            paths,
+            "sxl1",
+            [],
+            allow_production_write=False,
+            authorization_token=MESH_DERIVED_REBUILD_AUTHORIZED,
+        )
     with pytest.raises(MeshProductionAuthorizationError, match="MESH_DERIVED_REBUILD_AUTHORIZED"):
         apply_rebuild_plan(
             paths,

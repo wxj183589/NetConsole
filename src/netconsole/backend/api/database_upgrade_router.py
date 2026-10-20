@@ -14,9 +14,10 @@ from netconsole.models.api.database_upgrade import (
 )
 from netconsole.models.api.system_maintenance import DesktopActionDTO
 from netconsole.services.background_job import BackgroundJob
-from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
+from netconsole.services.database_upgrade.management_service import (
+    DatabaseUpgradeManagementService,
+)
 from netconsole.services.job_center.handlers.database_jobs import DATABASE_UPGRADE_OWNER
-
 
 router = APIRouter(prefix="/database-upgrades", tags=["database-upgrades"])
 

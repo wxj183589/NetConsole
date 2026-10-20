@@ -6,6 +6,7 @@ import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.task_state import TaskState
+from netconsole.models.task_snapshot import TaskSnapshot, utc_now_iso
 from netconsole.repositories.task_repository import TaskRepository, TaskRetiredError
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.job_center.job_events import finished_event, progress_event
@@ -268,6 +269,34 @@ def test_site_import_recent_task_survives_active_site_switch_and_keeps_logs(
     )] == [task_id]
 
 
+def test_rebind_site_reconciles_target_site_orphaned_tasks(tmp_path: Path) -> None:
+    service = _service(tmp_path, site_name=SITE_A)
+    now = utc_now_iso()
+    task_id = "orphaned-after-site-switch"
+    TaskRepository(service.paths.site_tasks_db_path(SITE_B)).save(
+        TaskSnapshot(
+            task_id=task_id,
+            task_type="site_switch_recovery_test",
+            task_name="切换局点恢复",
+            status=TaskState.RUNNING,
+            created_time=now,
+            updated_time=now,
+            source="local",
+            site_name=SITE_B,
+            owner_pid=999999,
+        )
+    )
+    # A cross-site read may open the repository before the runtime switch;
+    # opening it must not count as having completed recovery.
+    service.repository(SITE_B)
+
+    service.rebind_site(SITE_B)
+
+    restored = _stored(service, SITE_B, task_id)
+    assert restored is not None
+    assert restored.status is TaskState.FAILED
+
+
 def test_global_task_cleanup_reuses_operational_gc_for_indexed_sites(
     tmp_path: Path,
 ) -> None:
@@ -297,6 +326,40 @@ def test_global_task_cleanup_reuses_operational_gc_for_indexed_sites(
     assert set(result["deleted_task_ids"]) == {"cleanup-site-a", "cleanup-site-b"}
     assert _stored(service, SITE_A, "cleanup-site-a") is None
     assert _stored(service, SITE_B, "cleanup-site-b") is None
+
+
+def test_global_acknowledge_covers_indexed_sites_without_changing_single_site_scope(
+    tmp_path: Path,
+) -> None:
+    service = _service(tmp_path, site_name=SITE_A)
+    for site_name, task_id in ((SITE_A, "alert-site-a"), (SITE_B, "alert-site-b")):
+        service.create_external_task(
+            task_id=task_id,
+            task_type="multisite_alert_test",
+            task_name=task_id,
+            source="agent",
+            site_name=site_name,
+        )
+        service.record_external_event(
+            task_id,
+            "error",
+            {"error": "agent failed"},
+            source="agent",
+            site_name=site_name,
+        )
+
+    current_only = service.acknowledge_history_tasks(
+        site_name=SITE_A, all_alerts=True
+    )
+    assert current_only["task_ids"] == ["alert-site-a"]
+    assert not _stored(service, SITE_B, "alert-site-b").acknowledged_at
+
+    global_result = service.acknowledge_history_tasks(
+        site_name=SITE_A, all_alerts=True, all_sites=True
+    )
+    assert global_result["task_ids"] == ["alert-site-b"]
+    assert _stored(service, SITE_A, "alert-site-a").acknowledged_at
+    assert _stored(service, SITE_B, "alert-site-b").acknowledged_at
 
 
 def test_same_task_id_is_distinguished_by_site_scoped_repository_and_query(

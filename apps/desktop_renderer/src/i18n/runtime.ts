@@ -168,6 +168,26 @@ const en: Record<string, string> = {
   'job_center.cleanup.message_resolved_alerts': 'Remove {count} handled failed or warning tasks from Task Center.',
   'job_center.cleanup.message_all_history': 'Remove {count} historical tasks from Task Center.',
   'job_center.cleanup.retained_alerts': '{count} unhandled failed or warning tasks will remain.',
+  'job_center.cleanup.retained_references': '{count} tasks with active/business references or unverifiable metadata will remain.',
+  'job_center.cleanup.retained_reasons': 'Retention reasons: {detail}',
+  'job_center.cleanup.blocked': 'No finished tasks can be cleaned up. {detail}',
+  'job_center.cleanup.reason.active_task': 'Active task',
+  'job_center.cleanup.reason.active_resource_lock': 'Active resource lock',
+  'job_center.cleanup.reason.unacknowledged_attention': 'Unhandled alert',
+  'job_center.cleanup.reason.online_mr_mapping': 'Online MR session mapping',
+  'job_center.cleanup.reason.ground_current_mapping': 'Ground unattended mapping',
+  'job_center.cleanup.reason.durable_resource_reference': 'Durable business reference',
+  'job_center.cleanup.reason.durable_result_reference': 'Durable result reference',
+  'job_center.cleanup.reason.durable_result_summary_reference': 'Durable result summary reference',
+  'job_center.cleanup.reason.artifact_manifest_reference': 'Artifact manifest cannot be verified',
+  'job_center.cleanup.reason.result_artifact_reference': 'Result file reference cannot be verified',
+  'job_center.cleanup.reason.resource_metadata_unreadable': 'Resource metadata is unreadable',
+  'job_center.cleanup.reason.result_metadata_unreadable': 'Result metadata is unreadable',
+  'job_center.cleanup.reason.result_authority_unreadable': 'Result authority record is unreadable',
+  'job_center.cleanup.reason.resource_ownership_unknown': 'Resource ownership is unknown',
+  'job_center.cleanup.reason.task_not_found': 'Task was already cleaned up or is missing',
+  'job_center.cleanup.reason.unknown': 'Unverifiable cleanup dependency',
+  'job_center.cleanup.reason.item': '{reason}: {count}',
   'job_center.cleanup.no_files': 'This does not affect active or queued tasks, and does not delete logs, collected files, or exports.',
   'job_center.cleanup.done': 'Cleaned up {count} task records',
   'job_center.cleanup.dismiss_single': 'Remove this record from Task Center only. Logs, collected files, and exports will not be deleted.',
@@ -178,6 +198,8 @@ const en: Record<string, string> = {
   'job_center.acknowledge.all': 'Mark all as read',
   'job_center.acknowledge.one': 'Mark as handled',
   'job_center.acknowledge.done': 'Task marked as handled',
+  'job_center.acknowledge.all_done': 'Marked {count} failed or warning tasks as handled',
+  'job_center.acknowledge.none': 'There are no unread failed or warning tasks',
   'job_center.acknowledge.failed': 'Unable to mark the task',
   'job_center.action.menu': 'Task actions',
   'job_center.action.details': 'View details',
@@ -265,6 +287,44 @@ const en: Record<string, string> = {
   'mesh.rssi.zero.start': 'Start time',
   'mesh.rssi.zero.end': 'End time',
   'mesh.rssi.zero.duration': 'Duration',
+  'ac.action_plan.status.preview': 'Preview',
+  'ac.action_plan.status.confirmed': 'Confirmed',
+  'ac.action_plan.status.pending': 'Pending',
+  'ac.action_plan.status.starting': 'Starting',
+  'ac.action_plan.status.executing': 'Executing',
+  'ac.action_plan.status.running': 'Running',
+  'ac.action_plan.status.stopping': 'Stopping',
+  'ac.action_plan.status.completed': 'Completed',
+  'ac.action_plan.status.failed': 'Failed',
+  'ac.action_plan.status.cancelled': 'Cancelled',
+  'ac.action_plan.status.start_failed': 'Start failed',
+  'ac.action_plan.status.expired': 'Expired',
+  'ac.action_plan.status.unknown': 'Unknown status',
+  'ac.action_plan.reconciliation.not_evaluated': 'Not evaluated',
+  'ac.action_plan.reconciliation.plan_only': 'Plan evidence only',
+  'ac.action_plan.reconciliation.starting': 'Task starting',
+  'ac.action_plan.reconciliation.verified_active': 'Task execution verified',
+  'ac.action_plan.reconciliation.verified_terminal': 'Execution result verified from task record',
+  'ac.action_plan.reconciliation.verified_terminal_audit': 'Execution result verified from saved audit',
+  'ac.action_plan.reconciliation.unknown': 'Result cannot be verified',
+  'ac.action_plan.reconciliation.unknown_status': 'Task status cannot be identified',
+  'ac.action_plan.reason.plan_identity_invalid': 'Plan identity is invalid',
+  'ac.action_plan.reason.plan_has_no_task': 'No task has been submitted',
+  'ac.action_plan.reason.task_start_failed': 'Task start failed',
+  'ac.action_plan.reason.plan_reconciliation_audit': 'Plan reconciliation audit saved',
+  'ac.action_plan.reason.task_history_cleaned': 'Task history was cleaned up; the original result cannot be verified',
+  'ac.action_plan.reason.plan_expired': 'Plan expired',
+  'ac.action_plan.reason.task_not_found': 'Task record was not found',
+  'ac.action_plan.reason.task_id_mismatch': 'Task identity does not match',
+  'ac.action_plan.reason.task_site_mismatch': 'Task belongs to a different site; the result cannot be confirmed',
+  'ac.action_plan.reason.task_owner_mismatch': 'Task owner does not match; the result cannot be confirmed',
+  'ac.action_plan.reason.task_source_mismatch': 'Task source does not match; the result cannot be confirmed',
+  'ac.action_plan.reason.task_type_mismatch': 'Task type is not supported',
+  'ac.action_plan.reason.plan_id_mismatch': 'Task result does not match the plan',
+  'ac.action_plan.reason.task_active': 'Task is still running',
+  'ac.action_plan.reason.task_terminal': 'Task entered a terminal state',
+  'ac.action_plan.reason.task_status_unknown': 'Task status cannot be identified',
+  'ac.action_plan.reason.unknown': 'Reason cannot be verified',
 }
 export function setAppLocale(value: SystemLanguage): void { locale.value = value }
 export function currentAppLocale(): SystemLanguage { return locale.value }
@@ -285,4 +345,74 @@ export function taskTriggerSourceLabel(value: unknown): string {
   const normalized = String(value ?? '').trim().toLowerCase()
   const [key, fallback] = TASK_TRIGGER_SOURCE_LABELS[normalized] ?? TASK_TRIGGER_SOURCE_LABELS.unknown
   return t(key, fallback)
+}
+
+const AC_ACTION_PLAN_STATUS_LABELS: Record<string, readonly [string, string]> = {
+  PREVIEW: ['ac.action_plan.status.preview', '预览'],
+  CONFIRMED: ['ac.action_plan.status.confirmed', '已确认'],
+  PENDING: ['ac.action_plan.status.pending', '等待执行'],
+  STARTING: ['ac.action_plan.status.starting', '启动中'],
+  EXECUTING: ['ac.action_plan.status.executing', '执行中'],
+  RUNNING: ['ac.action_plan.status.running', '执行中'],
+  STOPPING: ['ac.action_plan.status.stopping', '停止中'],
+  COMPLETED: ['ac.action_plan.status.completed', '已完成'],
+  FAILED: ['ac.action_plan.status.failed', '执行失败'],
+  CANCELLED: ['ac.action_plan.status.cancelled', '已取消'],
+  START_FAILED: ['ac.action_plan.status.start_failed', '启动失败'],
+  EXPIRED: ['ac.action_plan.status.expired', '已过期'],
+  UNKNOWN_OR_UNVERIFIED: ['ac.action_plan.reconciliation.unknown', '结果无法核验'],
+  UNKNOWN: ['ac.action_plan.status.unknown', '未知状态'],
+}
+
+const AC_ACTION_PLAN_RECONCILIATION_LABELS: Record<string, readonly [string, string]> = {
+  NOT_EVALUATED: ['ac.action_plan.reconciliation.not_evaluated', '未评估'],
+  PLAN_ONLY: ['ac.action_plan.reconciliation.plan_only', '仅计划证据'],
+  STARTING: ['ac.action_plan.reconciliation.starting', '正在启动'],
+  VERIFIED_ACTIVE: ['ac.action_plan.reconciliation.verified_active', '已核验任务执行中'],
+  VERIFIED_TERMINAL: ['ac.action_plan.reconciliation.verified_terminal', '已根据任务记录核验执行结果'],
+  VERIFIED_TERMINAL_AUDIT: ['ac.action_plan.reconciliation.verified_terminal_audit', '已根据已保存审计核验执行结果'],
+  UNKNOWN_OR_UNVERIFIED: ['ac.action_plan.reconciliation.unknown', '结果无法核验'],
+  TASK_STATUS_UNKNOWN: ['ac.action_plan.reconciliation.unknown_status', '任务状态无法识别'],
+}
+
+const AC_ACTION_PLAN_REASON_LABELS: Record<string, readonly [string, string]> = {
+  PLAN_IDENTITY_INVALID: ['ac.action_plan.reason.plan_identity_invalid', '计划身份无效'],
+  PLAN_HAS_NO_TASK: ['ac.action_plan.reason.plan_has_no_task', '尚未提交任务'],
+  TASK_START_FAILED: ['ac.action_plan.reason.task_start_failed', '任务启动失败'],
+  PLAN_RECONCILIATION_AUDIT: ['ac.action_plan.reason.plan_reconciliation_audit', '已保存计划协调审计'],
+  TASK_HISTORY_CLEANED: ['ac.action_plan.reason.task_history_cleaned', '任务历史已清理，无法核实原执行结果'],
+  PLAN_EXPIRED: ['ac.action_plan.reason.plan_expired', '计划已过期'],
+  TASK_NOT_FOUND: ['ac.action_plan.reason.task_not_found', '未找到任务记录'],
+  TASK_ID_MISMATCH: ['ac.action_plan.reason.task_id_mismatch', '任务标识不一致'],
+  TASK_SITE_MISMATCH: ['ac.action_plan.reason.task_site_mismatch', '任务归属局点不一致，无法确认结果'],
+  TASK_OWNER_MISMATCH: ['ac.action_plan.reason.task_owner_mismatch', '任务所有者不一致，无法确认结果'],
+  TASK_SOURCE_MISMATCH: ['ac.action_plan.reason.task_source_mismatch', '任务来源不一致，无法确认结果'],
+  TASK_TYPE_MISMATCH: ['ac.action_plan.reason.task_type_mismatch', '任务类型不受支持'],
+  PLAN_ID_MISMATCH: ['ac.action_plan.reason.plan_id_mismatch', '任务结果与计划不一致'],
+  TASK_ACTIVE: ['ac.action_plan.reason.task_active', '任务仍在执行'],
+  TASK_TERMINAL: ['ac.action_plan.reason.task_terminal', '任务已进入终态'],
+  TASK_STATUS_UNKNOWN: ['ac.action_plan.reason.task_status_unknown', '任务状态无法识别'],
+  UNKNOWN: ['ac.action_plan.reason.unknown', '原因无法核验'],
+}
+
+function actionPlanLabel(
+  value: unknown,
+  labels: Record<string, readonly [string, string]>,
+  fallback: readonly [string, string],
+): string {
+  const normalized = String(value ?? '').trim().toUpperCase()
+  const [key, fallbackText] = labels[normalized] ?? fallback
+  return t(key, fallbackText)
+}
+
+export function acActionPlanStatusLabel(value: unknown): string {
+  return actionPlanLabel(value, AC_ACTION_PLAN_STATUS_LABELS, ['ac.action_plan.status.unknown', '未知状态'])
+}
+
+export function acActionPlanReconciliationLabel(value: unknown): string {
+  return actionPlanLabel(value, AC_ACTION_PLAN_RECONCILIATION_LABELS, ['ac.action_plan.reconciliation.unknown', '结果无法核验'])
+}
+
+export function acActionPlanReasonLabel(value: unknown): string {
+  return actionPlanLabel(value, AC_ACTION_PLAN_REASON_LABELS, ['ac.action_plan.reason.unknown', '原因无法核验'])
 }
