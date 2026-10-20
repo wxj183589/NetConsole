@@ -117,6 +117,7 @@ def _vehicle_mr_mesh(
     online_status: str = "online",
     data_status: str = "fresh",
     match_warning: str = "",
+    rssi: int | None = None,
 ) -> AcMeshMrStatusDTO:
     return AcMeshMrStatusDTO(
         mr_id="mr-01",
@@ -124,6 +125,7 @@ def _vehicle_mr_mesh(
         car_end="CT",
         online_status=online_status,
         peer_ap_name=ap_name,
+        rssi=rssi,
         station=station,
         match_warning=match_warning,
         data_status=data_status,
@@ -265,6 +267,19 @@ def test_vehicle_mr_station_unknown_sentinel_and_conflicting_endpoints_are_not_r
 
     assert ct.station_name is None
     assert tc.station_name == "TC站"
+
+
+def test_vehicle_mr_station_fallback_preserves_mesh_rssi(tmp_path: Path) -> None:
+    service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    persisted = VehicleMrEndState(seen=True, station="车站A", ap_name="AP-CT", rssi=40)
+    mesh = _vehicle_mr_mesh("AP-CT", rssi=24)
+
+    result = service._endpoint("CT", persisted, mesh)
+
+    assert result.station_name == "车站A"
+    assert result.rssi_dbm == 24
 
 
 @pytest.mark.parametrize(

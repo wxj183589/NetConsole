@@ -562,6 +562,7 @@ class OnlineMrCollector:
         snapshot_callback: Callable[[OnlineMrSnapshot], None] | None = None,
         stream_event_callback: Callable[[OnlineMrEvent], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        before_stop: Callable[[], None] | None = None,
     ) -> None:
         try:
             if self.session is None:
@@ -584,21 +585,33 @@ class OnlineMrCollector:
             if self.session:
                 self.session.finish(STATE_FAILED, self.stats.as_dict())
         finally:
-            if self.status not in {STATE_STOPPED, STATE_FORCED_STOPPED, STATE_FAILED}:
-                self.stop()
+            if self.status not in {STATE_STOPPED, STATE_FORCED_STOPPED}:
+                try:
+                    if before_stop is not None:
+                        before_stop()
+                finally:
+                    if self.status == STATE_FAILED:
+                        self.close_resources()
+                    else:
+                        self.stop()
 
     def stop(self) -> None:
+        self.close_resources()
+        if self.session:
+            self.session.finish(STATE_STOPPED, self.stats.as_dict())
+            if self.realtime_cache:
+                self.realtime_cache.close_session(self.session.meta.session_id)
+        self.status = STATE_STOPPED
+
+    def close_resources(self) -> None:
+        """关闭采集线程和连接，但保留当前会话状态。"""
+
         self.request_stop()
         self._join_stream_threads(3)
         self._stop_collector_output_writer()
         self._stop_device_terminal_writer()
         self._close_stream_connections()
         self._close_main_connection()
-        if self.session:
-            self.session.finish(STATE_STOPPED, self.stats.as_dict())
-            if self.realtime_cache:
-                self.realtime_cache.close_session(self.session.meta.session_id)
-        self.status = STATE_STOPPED
 
     def fail_start(self, error_message: str) -> None:
         """收口已创建会话的启动失败，不进入正常停止语义。"""
@@ -622,7 +635,7 @@ class OnlineMrCollector:
     def request_stop(self) -> None:
         self.cancelled = True
         self._stream_stop.set()
-        if self.session:
+        if self.session and self.status not in {STATE_FAILED, STATE_STOPPED, STATE_FORCED_STOPPED}:
             self._set_status(STATE_STOPPING)
 
     def force_stop(self, reason: str = "force_stop") -> None:
