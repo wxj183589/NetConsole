@@ -110,6 +110,43 @@ def test_vehicle_mr_query_maps_persisted_ct_tc_state(monkeypatch, tmp_path: Path
     assert service.list_events("demo", "train-1").items[0]["ap_name"] == "AP-CT"
 
 
+def test_vehicle_mr_station_fallback_requires_unchanged_ap(tmp_path: Path) -> None:
+    service = vehicle_mr_online_query_service.VehicleMrOnlineQueryService(
+        PathResolver(app_root=tmp_path, data_root=tmp_path)
+    )
+    persisted = VehicleMrEndState(
+        seen=True, station="车站A", ap_name="AP-CT", rssi=40
+    )
+
+    def mesh(ap_name: str, station: str = "") -> AcMeshMrStatusDTO:
+        return AcMeshMrStatusDTO(
+            mr_id="mr-01-ct",
+            train_no="01",
+            car_end="CT",
+            online_status="online",
+            peer_ap_name=ap_name,
+            rssi=24,
+            station=station,
+            data_status="fresh",
+        )
+
+    same_ap = service._endpoint("CT", persisted, mesh("AP-CT"))
+    assert same_ap.station_name == "车站A"
+    assert same_ap.rssi_dbm == 24
+
+    # A stale station must not follow a train after the current AP changes.
+    changed_ap = service._endpoint("CT", persisted, mesh("AP-OTHER"))
+    assert changed_ap.station_name is None
+
+    # Fresh AP topology takes precedence over the persisted station.
+    enriched = service._endpoint("CT", persisted, mesh("AP-CT", "车站B"))
+    assert enriched.station_name == "车站B"
+
+    # No AP identity is not sufficient evidence for a station fallback.
+    unknown_ap = service._endpoint("CT", persisted, mesh(""))
+    assert unknown_ap.station_name is None
+
+
 @pytest.mark.parametrize(
     ("ct_status", "tc_status", "expected"),
     [
