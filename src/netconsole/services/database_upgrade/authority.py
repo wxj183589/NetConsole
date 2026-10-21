@@ -54,6 +54,9 @@ _PRODUCTION_MAINTENANCE_EVIDENCE_KEYS = frozenset(
         "production_maintenance_script_sha256",
     }
 )
+_PARSED_ARTIFACT_KEYS = frozenset(
+    {"active_parsed_path", "shadow_parsed_path", "rollback_parsed_path"}
+)
 
 _OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
     "database_upgrade": ("DATABASE_UPGRADE", DATABASE_UPGRADE_AUTHORIZED),
@@ -253,6 +256,7 @@ def build_startup_recovery_authority(
     allow_legacy_mesh_adapter: bool = False,
     production_maintenance_evidence: Mapping[str, Any] | None = None,
     production_rollback_owner: Mapping[str, Any] | None = None,
+    parsed_artifacts: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist the P7.3-F-bound identity needed by startup recovery.
 
@@ -362,6 +366,28 @@ def build_startup_recovery_authority(
         artifact_paths["backup_path"] = str(
             _contained(Path(backup_path), paths.database_upgrade_backups_dir, "DATABASE_RECOVERY_BACKUP_INVALID")
         )
+    parsed_paths: dict[str, str] = {}
+    if parsed_artifacts is not None:
+        if not isinstance(parsed_artifacts, Mapping):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_RECOVERY_PARSED_ARTIFACTS_INVALID")
+        unknown = set(parsed_artifacts) - _PARSED_ARTIFACT_KEYS
+        if unknown:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_RECOVERY_PARSED_ARTIFACTS_INVALID")
+        parsed_root = (
+            site_root
+            if selected_kind == "mesh_derived" or production_evidence
+            else paths.data_root
+        )
+        for name, candidate in parsed_artifacts.items():
+            if not str(candidate or "").strip():
+                continue
+            parsed_paths[str(name)] = str(
+                _contained(
+                    Path(str(candidate)),
+                    parsed_root,
+                    "DATABASE_RECOVERY_PARSED_ARTIFACT_INVALID",
+                )
+            )
     if source:
         if str(source.get("task_type") or "") not in {
             "database_upgrade",
@@ -421,6 +447,8 @@ def build_startup_recovery_authority(
     if production_evidence:
         body["production_maintenance_evidence"] = production_evidence
         body["production_rollback_owner"] = rollback_owner
+    if parsed_paths:
+        body["parsed_artifacts"] = parsed_paths
     return {**body, "authority_digest": _digest(body)}
 
 
@@ -461,6 +489,14 @@ def validate_startup_recovery_authority(
         if production_rollback_owner_raw is not None
         else None
     )
+    parsed_artifacts_raw = authority.get("parsed_artifacts")
+    parsed_artifacts = (
+        dict(parsed_artifacts_raw)
+        if isinstance(parsed_artifacts_raw, Mapping)
+        else {}
+    )
+    if parsed_artifacts_raw is not None and not isinstance(parsed_artifacts_raw, Mapping):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_RECOVERY_PARSED_ARTIFACTS_INVALID")
     if source and production_evidence:
         raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODES_CONFLICT")
     authority_mode = str(authority.get("authority_mode") or "")
@@ -552,6 +588,23 @@ def validate_startup_recovery_authority(
                 else paths.data_root,
                 "DATABASE_RECOVERY_ARTIFACT_INVALID",
             )
+    if set(parsed_artifacts) - _PARSED_ARTIFACT_KEYS:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_RECOVERY_PARSED_ARTIFACTS_INVALID")
+    parsed_root = (
+        expected_site_root
+        if database_kind == "mesh_derived"
+        or (
+            authority_mode == STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER
+            and data_environment(paths.data_root).is_production
+        )
+        else paths.data_root
+    )
+    for raw in parsed_artifacts.values():
+        _contained(
+            Path(str(raw)),
+            parsed_root,
+            "DATABASE_RECOVERY_PARSED_ARTIFACT_INVALID",
+        )
     database_path = Path(str(authority.get("database_path") or ""))
     if not database_path.is_absolute():
         raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")

@@ -145,6 +145,40 @@ def test_journal_artifact_key_deletion_is_rejected_before_mutation(tmp_path: Pat
         assert connection.execute("SELECT value FROM marker").fetchone() == ("new",)
 
 
+def test_parsed_artifact_tampering_is_rejected_before_mutation(tmp_path: Path) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    active, shadow, rollback = _journal_paths(paths, "parsed-artifact")
+    _database(active, "new")
+    parsed_root = active.parent / "parsed"
+    parsed_root.mkdir(parents=True, exist_ok=True)
+    journal = DatabaseUpgradeJournal(paths, "parsed-artifact")
+    journal.update(
+        "switched",
+        active_path=str(active),
+        shadow_path=str(shadow),
+        rollback_path=str(rollback),
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id="demo:profile",
+        maintenance_lock="database-upgrade:site_profile:demo:profile",
+        adapter_state={
+            "active_parsed_path": str(parsed_root / "active"),
+            "shadow_parsed_path": str(parsed_root / "shadow"),
+            "rollback_parsed_path": str(parsed_root / "rollback"),
+        },
+    )
+    payload = json.loads(journal.path.read_text(encoding="utf-8"))
+    payload["adapter_state"]["active_parsed_path"] = str(parsed_root / "other")
+    journal.path.write_text(json.dumps(payload), encoding="utf-8")
+    before = active.read_bytes()
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "blocked"
+    assert result[0]["recovery_block_code"] == "DATABASE_RECOVERY_PARSED_ARTIFACT_MISMATCH"
+    assert active.read_bytes() == before
+
+
 def test_authorized_recovery_is_idempotent_and_concurrency_safe(tmp_path: Path) -> None:
     paths = PathResolver(data_root=tmp_path)
     active, shadow, rollback = _journal_paths(paths, "recoverable-operation")

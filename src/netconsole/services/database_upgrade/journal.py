@@ -137,6 +137,7 @@ def _build_journal_recovery_authority(
     database_kind = str(value.get("database_kind") or "test")
     scope_type = str(value.get("scope_type") or "test")
     scope_id = str(value.get("scope_id") or "__test__")
+    adapter_state = value.get("adapter_state")
     return build_startup_recovery_authority(
         paths,
         operation_id=str(value.get("operation_id") or ""),
@@ -155,6 +156,19 @@ def _build_journal_recovery_authority(
         ),
         production_maintenance_evidence=production_maintenance_evidence,
         production_rollback_owner=production_rollback_owner,
+        parsed_artifacts=(
+            {
+                field: adapter_state[field]
+                for field in (
+                    "active_parsed_path",
+                    "shadow_parsed_path",
+                    "rollback_parsed_path",
+                )
+                if isinstance(adapter_state, Mapping) and str(adapter_state.get(field) or "").strip()
+            }
+            if isinstance(adapter_state, Mapping)
+            else None
+        ),
     )
 
 
@@ -230,10 +244,23 @@ def _validate_recovery_payload(
             raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     adapter_state = value.get("adapter_state")
     if isinstance(adapter_state, Mapping):
+        authority_parsed = authority.get("parsed_artifacts")
+        authority_parsed = authority_parsed if isinstance(authority_parsed, Mapping) else {}
+        journal_parsed = {
+            field: adapter_state.get(field)
+            for field in ("active_parsed_path", "shadow_parsed_path", "rollback_parsed_path")
+            if str(adapter_state.get(field) or "").strip()
+        }
+        if set(journal_parsed) != set(authority_parsed):
+            raise ValueError("DATABASE_RECOVERY_PARSED_ARTIFACT_MISMATCH")
         for field in ("active_parsed_path", "shadow_parsed_path", "rollback_parsed_path"):
             raw = adapter_state.get(field)
             if str(raw or "").strip():
-                _controlled_path(paths, raw, field)
+                resolved = _controlled_path(paths, raw, field)
+                if str(resolved) != str(Path(str(authority_parsed[field])).resolve()):
+                    raise ValueError("DATABASE_RECOVERY_PARSED_ARTIFACT_MISMATCH")
+    elif authority.get("parsed_artifacts"):
+        raise ValueError("DATABASE_RECOVERY_PARSED_ARTIFACT_MISMATCH")
 
 
 def _blocked_recovery_result(
