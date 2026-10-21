@@ -34,6 +34,7 @@ import type {
 } from '../types/railTransitBaseData'
 
 const root = '/api/rail-transit/base-data'
+export const BASE_DATA_ROLLBACK_AUTHORIZATION = 'BASE_DATA_ROLLBACK_AUTHORIZED'
 
 function queryString(values: PageQuery = {}): string {
   const query = new URLSearchParams()
@@ -126,9 +127,9 @@ export async function listRailTransitImportChanges(operationId: string): Promise
   return page.items
 }
 
-export function rollbackRailTransitImport(operationId: string): Promise<{ operation_id: string; status: string; rolled_back_at: string }> {
+export function rollbackRailTransitImport(operationId: string, authorizationToken = BASE_DATA_ROLLBACK_AUTHORIZATION): Promise<{ operation_id: string; status: string; rolled_back_at: string }> {
   return apiRequest(`${root}/import-operations/${encodeURIComponent(operationId)}/rollback`, {
     method: 'POST',
-    body: JSON.stringify({ explicit_confirmation: true }),
+    body: JSON.stringify({ explicit_confirmation: true, authorization_token: authorizationToken }),
   })
 }

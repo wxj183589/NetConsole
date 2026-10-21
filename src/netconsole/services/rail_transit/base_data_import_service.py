@@ -35,6 +35,10 @@ from netconsole.services.database_upgrade.coordinator import (
     database_maintenance_lock,
     site_database_maintenance_key,
 )
+from netconsole.services.production_rollback_authority import (
+    ProductionRollbackAuthorityError,
+    require_rollback_authority,
+)
 from netconsole.services.rail_transit.base_data_preview_store import (
     BaseDataPreviewStore,
     BaseDataPreviewStoreError,
@@ -431,12 +435,28 @@ class RailTransitBaseDataImportService:
         site_id: str,
         operation_id: str,
         explicit_confirmation: bool = False,
+        authorization_token: str = "",
+        expected_operation_type: str = "BASE_DATA_IMPORT",
     ) -> dict[str, Any]:
-        with database_maintenance_lock(self.paths, site_database_maintenance_key(site_id)):
+        try:
+            scope = require_rollback_authority(
+                self.paths,
+                site_ref=site_id,
+                operation=(
+                    "AC_EXTENSION_ROLLBACK"
+                    if expected_operation_type == "AC_EXTENSION_IMPORT"
+                    else "BASE_DATA_ROLLBACK"
+                ),
+                authorization_token=authorization_token,
+            )
+        except ProductionRollbackAuthorityError as exc:
+            raise BaseDataImportError(exc.code, str(exc)) from exc
+        with database_maintenance_lock(self.paths, site_database_maintenance_key(scope.directory_name)):
             return self._rollback_import_locked(
-                site_id=site_id,
+                site_id=scope.directory_name,
                 operation_id=operation_id,
                 explicit_confirmation=explicit_confirmation,
+                expected_operation_type=expected_operation_type,
             )
 
     def _rollback_import_locked(
@@ -445,6 +465,7 @@ class RailTransitBaseDataImportService:
         site_id: str,
         operation_id: str,
         explicit_confirmation: bool,
+        expected_operation_type: str,
     ) -> dict[str, Any]:
         try:
             self.guard.authorize_rollback(site_id, explicit_confirmation=explicit_confirmation)
@@ -453,6 +474,13 @@ class RailTransitBaseDataImportService:
         operation_id = self._operation_id(operation_id)
         path = self._audit_path(site_id, operation_id)
         audit = self._read_audit(path)
+        actual_operation_type = str(audit.get("operation_type") or "")
+        if not actual_operation_type:
+            actual_operation_type = "AC_EXTENSION_IMPORT" if audit.get("owner") == "web_ac" else "BASE_DATA_IMPORT"
+        if actual_operation_type != expected_operation_type:
+            raise BaseDataImportError("BASE_DATA_OPERATION_MISMATCH", "导入审计类型与回滚入口不匹配")
+        if str(audit.get("site_id") or "") != site_id:
+            raise BaseDataImportError("BASE_DATA_ROLLBACK_CONFLICT", "导入审计不属于当前局点")
         if audit.get("status") != "APPLIED":
             raise BaseDataImportError("BASE_DATA_ROLLBACK_CONFLICT", "只有已应用且未回滚的操作可以回滚")
         if self.repository.database_hash(site_id) != audit.get("database_hash_after"):

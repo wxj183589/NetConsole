@@ -7,6 +7,7 @@ import type {
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 
 const root = '/api/ac-management'
+export const AC_EXTENSION_ROLLBACK_AUTHORIZATION = 'AC_EXTENSION_ROLLBACK_AUTHORIZED'
 
 function query(values: Record<string, string | number | undefined>): string {
   const params = new URLSearchParams()
@@ -36,10 +37,10 @@ export function applyAcExtension(preview: AcExtensionPreview, explicitConfirmati
   })
 }
 
-export function rollbackAcExtension(auditId: string): Promise<{ audit_id: string; status: string; restored_rows: number }> {
+export function rollbackAcExtension(auditId: string, authorizationToken = AC_EXTENSION_ROLLBACK_AUTHORIZATION): Promise<{ audit_id: string; status: string; restored_rows: number }> {
   return apiRequest(`${root}/extensions/audits/${encodeURIComponent(auditId)}/rollback`, {
     method: 'POST',
-    body: JSON.stringify({ explicit_confirmation: true }),
+    body: JSON.stringify({ explicit_confirmation: true, authorization_token: authorizationToken }),
   })
 }
 

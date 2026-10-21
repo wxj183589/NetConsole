@@ -25,6 +25,7 @@
     "src/netconsole/services/database_upgrade/history.py",
     "src/netconsole/services/database_upgrade/journal.py",
     "src/netconsole/services/database_upgrade/management_service.py",
+    "src/netconsole/services/database_upgrade/authority.py",
     "src/netconsole/services/database_upgrade/sqlite_consistency.py",
     "src/netconsole/services/site_lifecycle.py",
     "src/netconsole/services/site_package_staging.py",

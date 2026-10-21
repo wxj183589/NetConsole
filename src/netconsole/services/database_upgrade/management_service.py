@@ -47,6 +47,7 @@ class DatabaseUpgradeManagementService:
         task_id: str,
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        before_mutation: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Create checked backups serially and retain a result for every Profile."""
 
@@ -69,6 +70,8 @@ class DatabaseUpgradeManagementService:
                     safe_name = str(profile.get("safe_folder_name") or profile_id)
                     scope_id = f"{site_id}:{safe_name}"
                     try:
+                        if before_mutation is not None:
+                            before_mutation(profile_id)
                         backup = self.backups.create(
                             source_path=self.paths.mesh_mr_db_path(site_id, safe_name),
                             database_kind="mesh_derived",
@@ -110,6 +113,7 @@ class DatabaseUpgradeManagementService:
         task_id: str,
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        before_mutation: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Preflight then repair each incompatible Profile one at a time."""
 
@@ -146,6 +150,7 @@ class DatabaseUpgradeManagementService:
                             profile_ids=[profile_id],
                             progress=_batch_progress(progress, index, len(selected), profile_id),
                             should_cancel=cancel_check,
+                            before_mutation=before_mutation,
                         )
                         repaired = list(result.get("repaired_profiles") or [])
                         detail = dict(repaired[0]) if repaired else {}
@@ -226,9 +231,17 @@ class DatabaseUpgradeManagementService:
         self._ensure_site_scope(item, site_id)
         return item
 
-    def validate_backup(self, backup_id: str, *, site_id: str | None = None) -> dict[str, Any]:
+    def validate_backup(
+        self,
+        backup_id: str,
+        *,
+        site_id: str | None = None,
+        before_mutation: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         with self._backup_action_lock(backup_id):
             item = self.read_backup(backup_id, site_id=site_id)
+            if before_mutation is not None:
+                before_mutation()
             result = self.backups.validate(str(item["backup_id"]))
             self._audit("database_backup_validation", {
                 "backup_id": backup_id,
@@ -237,16 +250,36 @@ class DatabaseUpgradeManagementService:
             })
             return result
 
-    def organize_legacy(self, site_id: str) -> dict[str, Any]:
-        result = self.history.organize_mesh_archives(site_id)
+    def organize_legacy(
+        self,
+        site_id: str,
+        *,
+        before_mutation: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        if before_mutation is not None:
+            before_mutation()
+        if before_mutation is None:
+            result = self.history.organize_mesh_archives(site_id)
+        else:
+            result = self.history.organize_mesh_archives(
+                site_id,
+                before_mutation=before_mutation,
+            )
         self._audit("legacy_database_archive_migration", result)
         return result
 
-    def delete_backup(self, backup_id: str, *, confirmed: bool = False, site_id: str | None = None) -> dict[str, Any]:
+    def delete_backup(
+        self,
+        backup_id: str,
+        *,
+        confirmed: bool = False,
+        site_id: str | None = None,
+        before_mutation: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
         if not confirmed:
             raise ValueError("删除数据库备份前必须明确确认")
         with self.backups.lifecycle_lock():
-            _, result = self._delete_backup_item(backup_id, site_id=site_id)
+            _, result = self._delete_backup_item(backup_id, site_id=site_id, before_mutation=before_mutation)
         self._audit("database_backup_delete", {"backup_id": backup_id, **result})
         return result
 
@@ -258,6 +291,7 @@ class DatabaseUpgradeManagementService:
         site_id: str | None = None,
         task_id: str = "",
         progress: Callable[[str, int, int, str], None] | None = None,
+        before_mutation: Callable[[str], None] | None = None,
     ) -> dict[str, Any]:
         """Delete selected backups item-by-item while retaining partial results."""
 
@@ -269,7 +303,11 @@ class DatabaseUpgradeManagementService:
             with self.backups.lifecycle_lock():
                 for index, backup_id in enumerate(selected, start=1):
                     try:
-                        item, deleted = self._delete_backup_item(backup_id, site_id=site_id)
+                        item, deleted = self._delete_backup_item(
+                            backup_id,
+                            site_id=site_id,
+                            before_mutation=before_mutation,
+                        )
                         released_bytes = int(
                             deleted.get("released_bytes")
                             or item.get("database_size")
@@ -345,15 +383,20 @@ class DatabaseUpgradeManagementService:
         site_id: str | None = None,
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        before_mutation: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if not confirmed:
             raise ValueError("恢复数据库备份前必须明确确认")
         with self._backup_action_lock(backup_id):
             item = self.read_backup(backup_id, site_id=site_id)
+            if before_mutation is not None:
+                before_mutation()
             item = self.backups.validate(backup_id)
             validation = dict(item.get("validation") or {})
             if not validation.get("valid"):
                 raise ValueError("数据库备份完整性校验未通过，不能恢复")
+            if before_mutation is not None:
+                before_mutation()
             original = self._restore_target(item, site_id=site_id)
             restore_id = f"restore-{uuid4().hex}"
             source = (Path(str(item["path"])) / "database.sqlite").resolve()
@@ -466,6 +509,7 @@ class DatabaseUpgradeManagementService:
         backup_id: str,
         *,
         site_id: str | None,
+        before_mutation: Callable[[str], None] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         with self._backup_action_lock(backup_id):
             item = self.read_backup(backup_id, site_id=site_id)
@@ -478,6 +522,8 @@ class DatabaseUpgradeManagementService:
                 raise DatabaseBackupDeleteError("BACKUP_IN_USE", "数据库备份正在创建或恢复，不能删除")
             self._ensure_not_in_use(backup_id)
             active_paths = self._active_mesh_paths(str(item.get("scope_id") or ""))
+            if before_mutation is not None:
+                before_mutation(backup_id)
             return item, self.backups.delete(backup_id, active_paths=active_paths)
 
 
