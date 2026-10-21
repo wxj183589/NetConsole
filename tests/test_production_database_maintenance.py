@@ -34,6 +34,7 @@ from netconsole.services.production_database_maintenance import (
     write_exact_manifest,
 )
 from netconsole.services.database_footprint_maintenance import sqlite_quick_profile
+from netconsole.services.database_upgrade.journal import DatabaseUpgradeJournal, recover_incomplete_upgrades
 from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup
 from scripts.maintenance.production_database_maintenance import (
     _build_gate_wrapper,
@@ -1508,6 +1509,48 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
         ["source_snapshot_identity"]
         == source_identity
     )
+
+
+def test_startup_recovery_revalidates_production_owner_before_rollback(tmp_path: Path) -> None:
+    paths, site, _ = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    rollback_path = _backup(paths, "devices.db")[0]
+    expected = sqlite_quick_profile(rollback_path)
+    candidate = _candidate(paths, "op-startup-recovery", "devices.db")
+    with closing(sqlite3.connect(candidate)) as connection:
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records(value) VALUES ('unverified-switch')")
+        connection.commit()
+    capability = _capability(
+        paths,
+        operation_id="op-startup-recovery",
+        source_identity="snapshot-identity",
+    )
+    owner = capability._owner("devices.db")
+    DatabaseUpgradeJournal(paths, "op-startup-recovery").update(
+        "production_switched",
+        production_maintenance_evidence=capability.evidence_binding.startup_recovery_evidence(
+            source_snapshot_identity=owner.source_identity
+        ),
+        production_rollback_owner=owner.as_dict(),
+        active_path=str(active),
+        shadow_path=str(candidate),
+        rollback_path=str(rollback_path),
+        database_kind="devices.db",
+        scope_type="site",
+        scope_id="legacy-dfd356e96ea0",
+        maintenance_lock="site-database-maintenance:legacy-dfd356e96ea0",
+        switched=True,
+    )
+    candidate.replace(active)
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "recovered"
+    assert result[0]["stage"] == "recovered_production_rollback"
+    assert result[0]["production_recovery_status"] == "OWNER_VERIFIED_ROLLBACK"
+    assert sqlite_quick_profile(active)["sha256"] == expected["sha256"]
+    assert sqlite_quick_profile(rollback_path)["sha256"] == expected["sha256"]
 
 
 def test_post_switch_restart_failure_rolls_back_and_finalizes_journal(tmp_path: Path) -> None:

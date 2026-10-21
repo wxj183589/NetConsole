@@ -12,13 +12,13 @@ from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.interprocess_lock import interprocess_file_lock
+from netconsole.core.runtime_environment import data_environment
 from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup, validate_sqlite
 
 
 _TERMINAL_STAGES = {
     "completed",
     "production_preflight",
-    "production_switched",
     "production_rolled_back",
     "failed_before_switch",
     "failed_rolled_back",
@@ -62,6 +62,7 @@ class DatabaseUpgradeJournal:
     def update(self, stage: str, **fields: Any) -> dict[str, Any]:
         supplied_authority = fields.pop("database_authority", None)
         supplied_production_evidence = fields.pop("production_maintenance_evidence", None)
+        supplied_production_owner = fields.pop("production_rollback_owner", None)
         self._data.update(fields)
         self._data["stage"] = str(stage)
         self._data["updated_at"] = datetime.now(UTC).isoformat()
@@ -75,6 +76,9 @@ class DatabaseUpgradeJournal:
                     existing_production_evidence = existing.get("production_maintenance_evidence")
                     if supplied_production_evidence is None and isinstance(existing_production_evidence, Mapping):
                         supplied_production_evidence = existing_production_evidence
+                    existing_production_owner = existing.get("production_rollback_owner")
+                    if supplied_production_owner is None and isinstance(existing_production_owner, Mapping):
+                        supplied_production_owner = existing_production_owner
             self._data["recovery_authority"] = _build_journal_recovery_authority(
                 self.paths,
                 self._data,
@@ -82,6 +86,11 @@ class DatabaseUpgradeJournal:
                 production_maintenance_evidence=(
                     supplied_production_evidence
                     if isinstance(supplied_production_evidence, Mapping)
+                    else None
+                ),
+                production_rollback_owner=(
+                    supplied_production_owner
+                    if isinstance(supplied_production_owner, Mapping)
                     else None
                 ),
             )
@@ -121,6 +130,7 @@ def _build_journal_recovery_authority(
     *,
     source_authority: Mapping[str, Any] | None = None,
     production_maintenance_evidence: Mapping[str, Any] | None = None,
+    production_rollback_owner: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from netconsole.services.database_upgrade.authority import build_startup_recovery_authority
 
@@ -144,6 +154,7 @@ def _build_journal_recovery_authority(
             == "LEGACY_MESH_REBUILD_ADAPTER"
         ),
         production_maintenance_evidence=production_maintenance_evidence,
+        production_rollback_owner=production_rollback_owner,
     )
 
 
@@ -352,7 +363,10 @@ def recover_incomplete_upgrades(paths: PathResolver) -> list[dict[str, Any]]:
                     continue
                 authority = _validate_recovery_authority(paths, current, operation_id)
                 _validate_recovery_payload(paths, current, authority)
-                result = _recover_journal(paths, current, authority)
+                if str(authority.get("authority_mode") or "") == "PRODUCTION_MAINTENANCE_ADAPTER":
+                    result = _recover_production_journal(paths, current, authority)
+                else:
+                    result = _recover_journal(paths, current, authority)
                 value = current
                 value.update(result)
                 value["status"] = "recovered"
@@ -388,6 +402,114 @@ def recover_incomplete_upgrades(paths: PathResolver) -> list[dict[str, Any]]:
                     )
                 )
     return recovered
+
+
+def _production_rollback_binding(
+    paths: PathResolver,
+    value: Mapping[str, Any],
+    authority: Mapping[str, Any],
+) -> tuple[Path, dict[str, Any]]:
+    from netconsole.services.database_footprint_maintenance import sqlite_quick_profile
+
+    owner = authority.get("production_rollback_owner")
+    if not isinstance(owner, Mapping):
+        raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_REQUIRED")
+    database_kind = str(authority.get("database_kind") or "")
+    site_id = str(authority.get("canonical_site_id") or "")
+    binding: Mapping[str, Any] = owner
+    resources = owner.get("resources")
+    if isinstance(resources, list):
+        matches = [
+            item
+            for item in resources
+            if isinstance(item, Mapping)
+            and str(item.get("site_id") or "") == site_id
+            and str(item.get("database_role") or "") == database_kind
+        ]
+        if len(matches) != 1:
+            raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_SCOPE_MISMATCH")
+        binding = matches[0]
+    if str(binding.get("database") or binding.get("database_role") or "") != database_kind:
+        raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_SCOPE_MISMATCH")
+    rollback = _controlled_path(paths, value.get("rollback_path"), "rollback_path")
+    relative = Path(str(binding.get("backup_relative_path") or ""))
+    if not relative or relative.is_absolute() or relative.name != "database.sqlite":
+        raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_PATH_INVALID")
+    if data_environment(paths.data_root).is_production:
+        site_relative = Path(str(authority.get("site_root_relative_path") or ""))
+        expected = (paths.data_root.resolve() / site_relative / relative).resolve()
+        if rollback != expected:
+            raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_PATH_MISMATCH")
+    try:
+        expected_size = int(binding.get("backup_size") or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_INVALID") from exc
+    expected_sha256 = str(binding.get("backup_sha256") or "")
+    expected_schema = str(binding.get("schema_fingerprint") or "")
+    if expected_size <= 0 or not expected_sha256 or not expected_schema:
+        raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_INCOMPLETE")
+    wal = rollback.with_name(rollback.name + "-wal")
+    if wal.is_file() and wal.stat().st_size > 0:
+        raise ValueError("DATABASE_PRODUCTION_ROLLBACK_WAL_ACTIVE")
+    profile = sqlite_quick_profile(rollback, immutable=True)
+    if (
+        not profile["valid"]
+        or int(profile["size_bytes"]) != expected_size
+        or str(profile["sha256"]) != expected_sha256
+        or str(profile["schema_digest"]) != expected_schema
+    ):
+        raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_MISMATCH")
+    return rollback, profile
+
+
+def _recover_production_journal(
+    paths: PathResolver,
+    value: dict[str, Any],
+    authority: Mapping[str, Any],
+) -> dict[str, Any]:
+    from netconsole.services.database_footprint_maintenance import sqlite_quick_profile
+
+    stage = str(value.get("stage") or "")
+    if not bool(value.get("switched")):
+        return {
+            "stage": "recovered_no_switch",
+            "rollback_performed": False,
+            "recovered_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "production_recovery_status": "NO_SWITCH",
+        }
+    rollback, rollback_profile = _production_rollback_binding(paths, value, authority)
+    active = _controlled_path(paths, value.get("active_path"), "active_path")
+    backup_dir = _backup_directory(paths, value, str(value.get("operation_id") or "unknown"))
+    if active.exists():
+        _move_with_sidecars(
+            active,
+            _unique_target(backup_dir / "failed_recovered_production_database.sqlite"),
+        )
+    restoration = active.with_name(f".{active.name}.production-recovery-restore")
+    if restoration.exists():
+        raise RuntimeError("production recovery restoration candidate already exists")
+    sqlite_backup(rollback, restoration)
+    os.replace(restoration, active)
+    restored = sqlite_quick_profile(active, immutable=True)
+    validation = validate_sqlite(active)
+    if (
+        not restored["valid"]
+        or not validation.get("valid")
+        or int(restored["size_bytes"]) != int(rollback_profile["size_bytes"])
+        or str(restored["sha256"]) != str(rollback_profile["sha256"])
+        or str(restored["schema_digest"]) != str(rollback_profile["schema_digest"])
+    ):
+        raise RuntimeError("production recovery restoration verification failed")
+    return {
+        "stage": "recovered_production_rollback",
+        "rollback_performed": True,
+        "recovered_at": datetime.now(UTC).isoformat(),
+        "updated_at": datetime.now(UTC).isoformat(),
+        "production_recovery_status": "OWNER_VERIFIED_ROLLBACK",
+        "production_recovery_interrupted_stage": stage,
+        "production_recovery_validation": validation,
+    }
 
 
 def _recover_journal(

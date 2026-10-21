@@ -195,6 +195,48 @@ def _validate_production_maintenance_evidence(
     return result
 
 
+def _validate_production_rollback_owner(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_ROLLBACK_OWNER_INVALID")
+    result = dict(value)
+    required = {
+        "backup_set_id",
+        "site_id",
+        "operation_id",
+        "database",
+        "source_identity",
+        "schema_fingerprint",
+        "rollback_required",
+        "observation_state",
+        "retire_state",
+    }
+    missing = sorted(key for key in required if not str(result.get(key) or "").strip())
+    if missing:
+        raise DatabaseMaintenanceAuthorityError(
+            f"DATABASE_PRODUCTION_ROLLBACK_OWNER_INCOMPLETE: {','.join(missing)}"
+        )
+    if str(result.get("database") or "") not in _PRODUCTION_MAINTENANCE_DATABASES:
+        raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+    if result.get("rollback_required") is not True:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_ROLLBACK_OWNER_INVALID")
+    if str(result.get("observation_state") or "") != "VERIFIED" or str(result.get("retire_state") or "") != "PROTECT":
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_ROLLBACK_OWNER_INVALID")
+    resources = result.get("resources")
+    if resources is not None:
+        if not isinstance(resources, list) or not resources:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_ROLLBACK_OWNER_INVALID")
+        return result
+    for key in ("backup_sha256", "backup_relative_path"):
+        if not str(result.get(key) or "").strip():
+            raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_ROLLBACK_OWNER_INCOMPLETE")
+    try:
+        if int(result.get("backup_size") or 0) <= 0:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_ROLLBACK_OWNER_INVALID") from exc
+    return result
+
+
 def build_startup_recovery_authority(
     paths: PathResolver,
     *,
@@ -210,6 +252,7 @@ def build_startup_recovery_authority(
     source_authority: Mapping[str, Any] | None = None,
     allow_legacy_mesh_adapter: bool = False,
     production_maintenance_evidence: Mapping[str, Any] | None = None,
+    production_rollback_owner: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist the P7.3-F-bound identity needed by startup recovery.
 
@@ -236,6 +279,13 @@ def build_startup_recovery_authority(
         production_evidence = _validate_production_maintenance_evidence(
             production_maintenance_evidence
         )
+    rollback_owner = (
+        _validate_production_rollback_owner(production_rollback_owner)
+        if production_rollback_owner is not None
+        else None
+    )
+    if production_evidence and rollback_owner is None:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_ROLLBACK_OWNER_REQUIRED")
     if source and production_evidence:
         raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODES_CONFLICT")
     if allow_legacy_mesh_adapter and production_evidence:
@@ -370,6 +420,7 @@ def build_startup_recovery_authority(
     }
     if production_evidence:
         body["production_maintenance_evidence"] = production_evidence
+        body["production_rollback_owner"] = rollback_owner
     return {**body, "authority_digest": _digest(body)}
 
 
@@ -404,6 +455,14 @@ def validate_startup_recovery_authority(
         if production_evidence_raw is not None
         else {}
     )
+    production_rollback_owner_raw = authority.get("production_rollback_owner")
+    production_rollback_owner = (
+        _validate_production_rollback_owner(production_rollback_owner_raw)
+        if production_rollback_owner_raw is not None
+        else None
+    )
+    if source and production_evidence:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODES_CONFLICT")
     authority_mode = str(authority.get("authority_mode") or "")
     if source:
         if authority_mode != STARTUP_RECOVERY_SOURCE_AUTHORITY:
@@ -411,6 +470,8 @@ def validate_startup_recovery_authority(
     elif production_evidence:
         if authority_mode != STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER:
             raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODE_INVALID")
+        if production_rollback_owner is None:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_ROLLBACK_OWNER_REQUIRED")
     elif data_environment(paths.data_root).is_production:
         if authority_mode != STARTUP_RECOVERY_LEGACY_MESH_ADAPTER or str(authority.get("database_kind") or "") != "mesh_derived":
             raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_REQUIRED")
