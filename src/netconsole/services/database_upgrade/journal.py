@@ -61,6 +61,7 @@ class DatabaseUpgradeJournal:
 
     def update(self, stage: str, **fields: Any) -> dict[str, Any]:
         supplied_authority = fields.pop("database_authority", None)
+        supplied_production_evidence = fields.pop("production_maintenance_evidence", None)
         self._data.update(fields)
         self._data["stage"] = str(stage)
         self._data["updated_at"] = datetime.now(UTC).isoformat()
@@ -71,10 +72,18 @@ class DatabaseUpgradeJournal:
                 if isinstance(existing, Mapping):
                     existing_source = existing.get("source_authority")
                     source_authority = existing_source if existing_source else None
+                    existing_production_evidence = existing.get("production_maintenance_evidence")
+                    if supplied_production_evidence is None and isinstance(existing_production_evidence, Mapping):
+                        supplied_production_evidence = existing_production_evidence
             self._data["recovery_authority"] = _build_journal_recovery_authority(
                 self.paths,
                 self._data,
                 source_authority=source_authority if isinstance(source_authority, Mapping) else None,
+                production_maintenance_evidence=(
+                    supplied_production_evidence
+                    if isinstance(supplied_production_evidence, Mapping)
+                    else None
+                ),
             )
         self._write()
         return self.data
@@ -111,6 +120,7 @@ def _build_journal_recovery_authority(
     value: Mapping[str, Any],
     *,
     source_authority: Mapping[str, Any] | None = None,
+    production_maintenance_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from netconsole.services.database_upgrade.authority import build_startup_recovery_authority
 
@@ -133,6 +143,7 @@ def _build_journal_recovery_authority(
             str(value.get("startup_recovery_legacy_adapter") or "")
             == "LEGACY_MESH_REBUILD_ADAPTER"
         ),
+        production_maintenance_evidence=production_maintenance_evidence,
     )
 
 

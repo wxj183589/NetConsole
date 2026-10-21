@@ -1449,6 +1449,17 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
         functional_gate=lambda: True,
     )
     assert result["replaced"] is True
+    journal = json.loads(
+        (paths.database_upgrade_journal_dir / "op-replace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert journal["recovery_authority"]["authority_mode"] == (
+        "PRODUCTION_MAINTENANCE_ADAPTER"
+    )
+    assert journal["recovery_authority"]["production_maintenance_evidence"] == result[
+        "evidence_binding"
+    ]
     assert result["execution_time_recheck"] == {
         "runtime_writer_stopped": True,
         "database_owner_inactive": True,
@@ -1484,6 +1495,19 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
     assert sqlite_quick_profile(rollback_path)["sha256"] == rollback_sha
     with closing(sqlite3.connect(active)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 2
+    rollback_journal = json.loads(
+        (paths.database_upgrade_journal_dir / "op-rollback.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert rollback_journal["recovery_authority"]["authority_mode"] == (
+        "PRODUCTION_MAINTENANCE_ADAPTER"
+    )
+    assert (
+        rollback_journal["recovery_authority"]["production_maintenance_evidence"]
+        ["source_snapshot_identity"]
+        == source_identity
+    )
 
 
 def test_post_switch_restart_failure_rolls_back_and_finalizes_journal(tmp_path: Path) -> None:

@@ -41,6 +41,19 @@ STARTUP_RECOVERY_AUTHORITY = "DATABASE_STARTUP_RECOVERY_AUTHORITY"
 STARTUP_RECOVERY_SOURCE_AUTHORITY = "SOURCE_AUTHORITY"
 STARTUP_RECOVERY_LEGACY_MESH_ADAPTER = "LEGACY_MESH_REBUILD_ADAPTER"
 STARTUP_RECOVERY_TEST_ADAPTER = "TEST_SYNTHETIC_ADAPTER"
+STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER = "PRODUCTION_MAINTENANCE_ADAPTER"
+
+_PRODUCTION_MAINTENANCE_DATABASES = frozenset({"devices.db", "tasks.db"})
+_PRODUCTION_MAINTENANCE_EVIDENCE_KEYS = frozenset(
+    {
+        "current_implementation_head",
+        "rehearsal_evidence_head",
+        "source_snapshot_identity",
+        "manifest_generated_head",
+        "storage_registry_sha256",
+        "production_maintenance_script_sha256",
+    }
+)
 
 _OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
     "database_upgrade": ("DATABASE_UPGRADE", DATABASE_UPGRADE_AUTHORIZED),
@@ -162,6 +175,26 @@ def _site_binding(paths: PathResolver, site_ref: str) -> dict[str, Any]:
     }
 
 
+def _validate_production_maintenance_evidence(
+    value: Mapping[str, Any],
+) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_EVIDENCE_INVALID")
+    result = {str(key): str(raw or "") for key, raw in value.items()}
+    missing = sorted(key for key in _PRODUCTION_MAINTENANCE_EVIDENCE_KEYS if not result.get(key))
+    if missing:
+        raise DatabaseMaintenanceAuthorityError(
+            f"DATABASE_PRODUCTION_EVIDENCE_INCOMPLETE: {','.join(missing)}"
+        )
+    if result["manifest_generated_head"].casefold() != result["current_implementation_head"].casefold():
+        raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_EVIDENCE_HEAD_MISMATCH")
+    for key in ("storage_registry_sha256", "production_maintenance_script_sha256"):
+        digest = result[key].casefold()
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_PRODUCTION_EVIDENCE_DIGEST_INVALID")
+    return result
+
+
 def build_startup_recovery_authority(
     paths: PathResolver,
     *,
@@ -176,6 +209,7 @@ def build_startup_recovery_authority(
     maintenance_lock: str,
     source_authority: Mapping[str, Any] | None = None,
     allow_legacy_mesh_adapter: bool = False,
+    production_maintenance_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist the P7.3-F-bound identity needed by startup recovery.
 
@@ -197,13 +231,26 @@ def build_startup_recovery_authority(
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
         _validate_digest(source_authority)
         source = dict(source_authority)
+    production_evidence: dict[str, str] = {}
+    if production_maintenance_evidence is not None:
+        production_evidence = _validate_production_maintenance_evidence(
+            production_maintenance_evidence
+        )
+    if source and production_evidence:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODES_CONFLICT")
+    if allow_legacy_mesh_adapter and production_evidence:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODES_CONFLICT")
     is_production = data_environment(paths.data_root).is_production
-    if is_production and not source and not allow_legacy_mesh_adapter:
+    if is_production and not source and not allow_legacy_mesh_adapter and not production_evidence:
         raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_REQUIRED")
 
     site_ref = str(
         source.get("site_directory_name")
-        or (selected_scope_id.split(":", 1)[0] if ":" in selected_scope_id else "")
+        or (
+            selected_scope_id.split(":", 1)[0]
+            if ":" in selected_scope_id
+            else selected_scope_id if production_evidence else ""
+        )
     ).strip()
     if selected_kind == "mesh_derived":
         site = _site_binding(paths, site_ref)
@@ -216,12 +263,24 @@ def build_startup_recovery_authority(
         expected_active = paths.mesh_mr_db_path(str(site["site_directory_name"]), safe_profile).resolve()
         if active_path.resolve() != expected_active:
             raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")
-    else:
-        if data_environment(paths.data_root).is_production:
+    elif is_production:
+        if not production_evidence or selected_kind not in _PRODUCTION_MAINTENANCE_DATABASES:
             raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+        site = _site_binding(paths, site_ref)
+        if selected_scope_type != "site" or selected_scope_id != str(site["canonical_site_id"]):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_SCOPE_NOT_CANONICAL")
+        site_root = Path(str(site["site_root"])).resolve()
+        expected_active = site_root / "db" / selected_kind
+        if active_path.resolve() != expected_active:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")
+    else:
         if not site_ref:
             site_ref = "__test__"
-        site_root = paths.site_dir(site_ref).resolve()
+        site_root = (
+            paths.data_root.resolve()
+            if production_evidence
+            else paths.site_dir(site_ref).resolve()
+        )
         site = {
             "canonical_site_id": site_ref,
             "site_directory_name": site_ref,
@@ -241,7 +300,13 @@ def build_startup_recovery_authority(
     ):
         if candidate is None:
             continue
-        resolved = _contained(Path(candidate), site_root if selected_kind == "mesh_derived" else paths.data_root, "DATABASE_RECOVERY_ARTIFACT_INVALID")
+        resolved = _contained(
+            Path(candidate),
+            site_root
+            if selected_kind == "mesh_derived" or production_evidence
+            else paths.data_root,
+            "DATABASE_RECOVERY_ARTIFACT_INVALID",
+        )
         artifact_paths[name] = str(resolved)
     if backup_path is not None:
         artifact_paths["backup_path"] = str(
@@ -276,6 +341,8 @@ def build_startup_recovery_authority(
     authority_mode = (
         STARTUP_RECOVERY_SOURCE_AUTHORITY
         if source
+        else STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER
+        if production_evidence
         else STARTUP_RECOVERY_LEGACY_MESH_ADAPTER
         if allow_legacy_mesh_adapter
         else STARTUP_RECOVERY_TEST_ADAPTER
@@ -301,6 +368,8 @@ def build_startup_recovery_authority(
         "artifacts": artifact_paths,
         "source_authority": source,
     }
+    if production_evidence:
+        body["production_maintenance_evidence"] = production_evidence
     return {**body, "authority_digest": _digest(body)}
 
 
@@ -329,9 +398,18 @@ def validate_startup_recovery_authority(
         if not isinstance(source, Mapping):
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
         _validate_digest(source)
+    production_evidence_raw = authority.get("production_maintenance_evidence")
+    production_evidence = (
+        _validate_production_maintenance_evidence(production_evidence_raw)
+        if production_evidence_raw is not None
+        else {}
+    )
     authority_mode = str(authority.get("authority_mode") or "")
     if source:
         if authority_mode != STARTUP_RECOVERY_SOURCE_AUTHORITY:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODE_INVALID")
+    elif production_evidence:
+        if authority_mode != STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER:
             raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODE_INVALID")
     elif data_environment(paths.data_root).is_production:
         if authority_mode != STARTUP_RECOVERY_LEGACY_MESH_ADAPTER or str(authority.get("database_kind") or "") != "mesh_derived":
@@ -340,6 +418,7 @@ def validate_startup_recovery_authority(
         raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODE_INVALID")
     database_kind = str(authority.get("database_kind") or "")
     site_ref = str(authority.get("site_directory_name") or "").strip()
+    expected_site_root: Path
     if database_kind == "mesh_derived":
         site = _site_binding(paths, site_ref)
         if str(site["canonical_site_id"]) != str(authority.get("canonical_site_id") or ""):
@@ -360,13 +439,39 @@ def validate_startup_recovery_authority(
         expected_database = paths.mesh_mr_db_path(site_ref, safe_profile).resolve()
         if Path(str(authority.get("database_path") or "")).resolve() != expected_database:
             raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")
+        expected_site_root = site["site_root"]
+    elif (
+        authority_mode == STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER
+        and data_environment(paths.data_root).is_production
+    ):
+        if database_kind not in _PRODUCTION_MAINTENANCE_DATABASES:
+            raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
+        site = _site_binding(paths, site_ref)
+        if str(site["canonical_site_id"]) != str(authority.get("canonical_site_id") or ""):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_SITE_SCOPE_STALE")
+        if str(authority.get("scope_type") or "") != "site" or str(authority.get("scope_id") or "") != str(site["canonical_site_id"]):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_SCOPE_NOT_CANONICAL")
+        expected_site_root = site["site_root"]
+        expected_database = expected_site_root / "db" / database_kind
+        if Path(str(authority.get("database_path") or "")).resolve() != expected_database.resolve():
+            raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")
     elif data_environment(paths.data_root).is_production:
         raise DatabaseMaintenanceAuthorityError("UNSUPPORTED_DATABASE_KIND")
-    site_root = Path(str(authority.get("site_root_relative_path") or ""))
-    if site_root:
-        expected_site_root = paths.data_root.resolve() / site_root
     else:
-        expected_site_root = paths.data_root.resolve()
+        site_root = Path(str(authority.get("site_root_relative_path") or ""))
+        if site_root:
+            expected_site_root = paths.data_root.resolve() / site_root
+        else:
+            expected_site_root = paths.data_root.resolve()
+    if database_kind == "mesh_derived" or (
+        authority_mode == STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER
+        and data_environment(paths.data_root).is_production
+    ):
+        expected_relative_site_root = expected_site_root.relative_to(paths.data_root.resolve()).as_posix()
+        if str(authority.get("site_root_relative_path") or "") != expected_relative_site_root:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_SITE_DESCRIPTOR_MISMATCH")
+    else:
+        expected_relative_site_root = str(authority.get("site_root_relative_path") or "")
     _contained(expected_site_root, paths.data_root, "DATABASE_SITE_PATH_INVALID")
     artifacts = authority.get("artifacts")
     if not isinstance(artifacts, Mapping):
@@ -375,11 +480,31 @@ def validate_startup_recovery_authority(
         if key == "backup_path":
             _contained(Path(str(raw)), paths.database_upgrade_backups_dir, "DATABASE_RECOVERY_BACKUP_INVALID")
         else:
-            _contained(Path(str(raw)), expected_site_root if database_kind == "mesh_derived" else paths.data_root, "DATABASE_RECOVERY_ARTIFACT_INVALID")
+            _contained(
+                Path(str(raw)),
+                expected_site_root
+                if database_kind == "mesh_derived"
+                or (
+                    authority_mode == STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER
+                    and data_environment(paths.data_root).is_production
+                )
+                else paths.data_root,
+                "DATABASE_RECOVERY_ARTIFACT_INVALID",
+            )
     database_path = Path(str(authority.get("database_path") or ""))
     if not database_path.is_absolute():
         raise DatabaseMaintenanceAuthorityError("DATABASE_DESCRIPTOR_PATH_INVALID")
-    _contained(database_path, expected_site_root if database_kind == "mesh_derived" else paths.data_root, "DATABASE_DESCRIPTOR_PATH_INVALID")
+    _contained(
+        database_path,
+        expected_site_root
+        if database_kind == "mesh_derived"
+        or (
+            authority_mode == STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER
+            and data_environment(paths.data_root).is_production
+        )
+        else paths.data_root,
+        "DATABASE_DESCRIPTOR_PATH_INVALID",
+    )
     active_path = Path(str(artifacts.get("active_path") or ""))
     if active_path.resolve() != database_path.resolve():
         raise DatabaseMaintenanceAuthorityError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
@@ -911,6 +1036,7 @@ __all__ = [
     "LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED",
     "READ_ONLY_VALIDATION",
     "STARTUP_RECOVERY_AUTHORITY",
+    "STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER",
     "build_startup_recovery_authority",
     "build_database_task_authority",
     "materialize_database_task_authority",
