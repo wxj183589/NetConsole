@@ -38,6 +38,9 @@ LEGACY_DATABASE_ARCHIVE_MIGRATION_AUTHORIZED = "LEGACY_DATABASE_ARCHIVE_MIGRATIO
 READ_ONLY_VALIDATION = "READ_ONLY_VALIDATION"
 AUTHORITY_SCHEMA_VERSION = 1
 STARTUP_RECOVERY_AUTHORITY = "DATABASE_STARTUP_RECOVERY_AUTHORITY"
+STARTUP_RECOVERY_SOURCE_AUTHORITY = "SOURCE_AUTHORITY"
+STARTUP_RECOVERY_LEGACY_MESH_ADAPTER = "LEGACY_MESH_REBUILD_ADAPTER"
+STARTUP_RECOVERY_TEST_ADAPTER = "TEST_SYNTHETIC_ADAPTER"
 
 _OPERATION_BY_TASK: dict[str, tuple[str, str]] = {
     "database_upgrade": ("DATABASE_UPGRADE", DATABASE_UPGRADE_AUTHORIZED),
@@ -172,6 +175,7 @@ def build_startup_recovery_authority(
     backup_path: Path | None,
     maintenance_lock: str,
     source_authority: Mapping[str, Any] | None = None,
+    allow_legacy_mesh_adapter: bool = False,
 ) -> dict[str, Any]:
     """Persist the P7.3-F-bound identity needed by startup recovery.
 
@@ -193,7 +197,8 @@ def build_startup_recovery_authority(
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
         _validate_digest(source_authority)
         source = dict(source_authority)
-    if data_environment(paths.data_root).is_production and not source:
+    is_production = data_environment(paths.data_root).is_production
+    if is_production and not source and not allow_legacy_mesh_adapter:
         raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_REQUIRED")
 
     site_ref = str(
@@ -268,9 +273,20 @@ def build_startup_recovery_authority(
         ):
             raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_STALE")
 
+    authority_mode = (
+        STARTUP_RECOVERY_SOURCE_AUTHORITY
+        if source
+        else STARTUP_RECOVERY_LEGACY_MESH_ADAPTER
+        if allow_legacy_mesh_adapter
+        else STARTUP_RECOVERY_TEST_ADAPTER
+    )
+    if allow_legacy_mesh_adapter and selected_kind != "mesh_derived":
+        raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_LEGACY_ADAPTER_INVALID")
+
     body: dict[str, Any] = {
         "schema_version": AUTHORITY_SCHEMA_VERSION,
         "authority_type": STARTUP_RECOVERY_AUTHORITY,
+        "authority_mode": authority_mode,
         "operation_id": selected_operation,
         "database_kind": selected_kind,
         "scope_type": selected_scope_type,
@@ -313,6 +329,15 @@ def validate_startup_recovery_authority(
         if not isinstance(source, Mapping):
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_INVALID")
         _validate_digest(source)
+    authority_mode = str(authority.get("authority_mode") or "")
+    if source:
+        if authority_mode != STARTUP_RECOVERY_SOURCE_AUTHORITY:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODE_INVALID")
+    elif data_environment(paths.data_root).is_production:
+        if authority_mode != STARTUP_RECOVERY_LEGACY_MESH_ADAPTER or str(authority.get("database_kind") or "") != "mesh_derived":
+            raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_REQUIRED")
+    elif authority_mode not in {STARTUP_RECOVERY_TEST_ADAPTER, STARTUP_RECOVERY_LEGACY_MESH_ADAPTER}:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_STARTUP_AUTHORITY_MODE_INVALID")
     database_kind = str(authority.get("database_kind") or "")
     site_ref = str(authority.get("site_directory_name") or "").strip()
     if database_kind == "mesh_derived":

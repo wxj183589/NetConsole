@@ -129,6 +129,10 @@ def _build_journal_recovery_authority(
         backup_path=Path(str(value["backup_path"])) if value.get("backup_path") else None,
         maintenance_lock=str(value.get("maintenance_lock") or f"database-upgrade:{scope_type}:{scope_id}"),
         source_authority=source_authority,
+        allow_legacy_mesh_adapter=(
+            str(value.get("startup_recovery_legacy_adapter") or "")
+            == "LEGACY_MESH_REBUILD_ADAPTER"
+        ),
     )
 
 
@@ -167,15 +171,30 @@ def _validate_recovery_payload(
     authority_artifacts = authority.get("artifacts")
     if not isinstance(authority_artifacts, Mapping):
         raise ValueError("DATABASE_RECOVERY_ARTIFACTS_REQUIRED")
+    journal_fields = {
+        field
+        for field in ("active_path", "shadow_path", "rollback_path")
+        if str(value.get(field) or "").strip()
+    }
+    authority_fields = {
+        str(field)
+        for field, raw in authority_artifacts.items()
+        if str(raw or "").strip()
+    }
+    if journal_fields != authority_fields.intersection({"active_path", "shadow_path", "rollback_path"}):
+        raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     for field in ("active_path", "shadow_path", "rollback_path"):
-        raw = value.get(field)
-        if not str(raw or "").strip():
+        if field not in authority_fields:
             continue
+        raw = value.get(field)
         resolved = _controlled_path(paths, raw, field)
-        expected = str(authority_artifacts.get(field) or "")
-        if expected and str(resolved) != str(Path(expected).resolve()):
+        expected = str(authority_artifacts[field])
+        if str(resolved) != str(Path(expected).resolve()):
             raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     backup_raw = str(value.get("backup_path") or "").strip()
+    authority_has_backup = "backup_path" in authority_artifacts and str(authority_artifacts.get("backup_path") or "").strip()
+    if bool(backup_raw) != bool(authority_has_backup):
+        raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     if backup_raw:
         backup = Path(backup_raw)
         backup_root = paths.database_upgrade_backups_dir.resolve()
@@ -184,8 +203,8 @@ def _validate_recovery_payload(
         resolved_backup = backup.resolve()
         if resolved_backup != backup_root and not resolved_backup.is_relative_to(backup_root):
             raise ValueError("DATABASE_RECOVERY_BACKUP_INVALID")
-        expected_backup = str(authority_artifacts.get("backup_path") or "")
-        if expected_backup and str(resolved_backup) != str(Path(expected_backup).resolve()):
+        expected_backup = str(authority_artifacts["backup_path"])
+        if str(resolved_backup) != str(Path(expected_backup).resolve()):
             raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     adapter_state = value.get("adapter_state")
     if isinstance(adapter_state, Mapping):

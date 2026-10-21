@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from netconsole.services.job_center.handlers import legacy_tasks
 from netconsole.services.job_center.handlers.common import legacy_handler
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
@@ -177,11 +179,13 @@ def _mesh_worker_preflight(
 
 def mesh_schema_rebuild(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
+    database_authority = context.params.get("database_authority")
     result = MeshParsedRebuildService(context.paths).rebuild(
         str(context.params.get("site_name") or ""),
         str(context.params.get("mr_id") or ""),
         progress=context.progress,
         should_cancel=context.should_cancel,
+        database_authority=database_authority if isinstance(database_authority, Mapping) else None,
     )
     MeshCatalogRepository(
         context.paths.mesh_catalog_path(str(context.params.get("site_name") or ""))
@@ -432,12 +436,15 @@ def mesh_derived_data_repair(context: JobContext) -> dict[str, object]:
         context.check_cancelled()
         return False
 
+    database_authority = context.params.get("database_authority")
+
     try:
         repair_result = maintenance.repair(
             site_name,
             profile_ids=requested_profile_ids,
             progress=context.progress,
             should_cancel=should_cancel,
+            database_authority=database_authority if isinstance(database_authority, Mapping) else None,
         )
     except Exception:
         message = "MESH 分析数据库自动修复失败，原始日志和旧派生数据均已保留"

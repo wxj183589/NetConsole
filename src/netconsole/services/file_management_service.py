@@ -7,6 +7,7 @@ import json
 import os
 import re
 import threading
+from collections.abc import Mapping
 from time import monotonic, perf_counter, sleep, time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -1707,6 +1708,11 @@ class FileManagementApplicationService:
                             message,
                         ),
                         should_cancel=should_cancel,
+                        database_authority=(
+                            context.params.get("database_authority")
+                            if isinstance(context.params.get("database_authority"), Mapping)
+                            else None
+                        ),
                     )
                     result = import_downloaded_log()
                 except Exception as repair_exc:

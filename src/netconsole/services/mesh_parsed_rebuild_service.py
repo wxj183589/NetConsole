@@ -79,6 +79,15 @@ class MeshParsedRebuildService:
             profile_root=profile_root,
             source_metadata=tuple(dict(item) for item in source_metadata or ()),
         )
+        descriptor_metadata: dict[str, object] = {}
+        if database_authority:
+            descriptor_metadata["database_authority"] = dict(database_authority)
+        else:
+            # Known legacy MESH rebuild callers predate the database-task
+            # authority envelope.  Keep their recovery path explicitly
+            # scoped to this adapter; generic production callers still fail
+            # closed when no authority mode is declared.
+            descriptor_metadata["startup_recovery_legacy_adapter"] = "LEGACY_MESH_REBUILD_ADAPTER"
         descriptor = DatabaseDescriptor(
             database_kind="mesh_derived",
             scope_type="site_profile",
@@ -94,7 +103,7 @@ class MeshParsedRebuildService:
             maintenance_lock=f"database-upgrade:site_profile:{site_id}:{profile.safe_folder_name}",
             reason="MESH 派生数据库版本不兼容或需要重建",
             source_count=len(selected_raw),
-            metadata={"database_authority": dict(database_authority)} if database_authority else {},
+            metadata=descriptor_metadata,
             version_reader=self._schema_version,
             reopen_hook=lambda: None,
             smoke_test=lambda path: self._smoke_test(path),
