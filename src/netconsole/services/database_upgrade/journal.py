@@ -4,9 +4,11 @@ import json
 import hashlib
 import os
 import shutil
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.core.interprocess_lock import interprocess_file_lock
@@ -58,9 +60,22 @@ class DatabaseUpgradeJournal:
         return dict(self._data)
 
     def update(self, stage: str, **fields: Any) -> dict[str, Any]:
+        supplied_authority = fields.pop("database_authority", None)
         self._data.update(fields)
         self._data["stage"] = str(stage)
         self._data["updated_at"] = datetime.now(UTC).isoformat()
+        if self._data.get("active_path"):
+            source_authority = supplied_authority
+            if source_authority is None:
+                existing = self._data.get("recovery_authority")
+                if isinstance(existing, Mapping):
+                    existing_source = existing.get("source_authority")
+                    source_authority = existing_source if existing_source else None
+            self._data["recovery_authority"] = _build_journal_recovery_authority(
+                self.paths,
+                self._data,
+                source_authority=source_authority if isinstance(source_authority, Mapping) else None,
+            )
         self._write()
         return self.data
 
@@ -91,45 +106,271 @@ def list_upgrade_journals(paths: PathResolver) -> list[dict[str, Any]]:
     return sorted(result, key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
 
+def _build_journal_recovery_authority(
+    paths: PathResolver,
+    value: Mapping[str, Any],
+    *,
+    source_authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    from netconsole.services.database_upgrade.authority import build_startup_recovery_authority
+
+    database_kind = str(value.get("database_kind") or "test")
+    scope_type = str(value.get("scope_type") or "test")
+    scope_id = str(value.get("scope_id") or "__test__")
+    return build_startup_recovery_authority(
+        paths,
+        operation_id=str(value.get("operation_id") or ""),
+        database_kind=database_kind,
+        scope_type=scope_type,
+        scope_id=scope_id,
+        active_path=Path(str(value.get("active_path") or "")),
+        shadow_path=Path(str(value["shadow_path"])) if value.get("shadow_path") else None,
+        rollback_path=Path(str(value["rollback_path"])) if value.get("rollback_path") else None,
+        backup_path=Path(str(value["backup_path"])) if value.get("backup_path") else None,
+        maintenance_lock=str(value.get("maintenance_lock") or f"database-upgrade:{scope_type}:{scope_id}"),
+        source_authority=source_authority,
+    )
+
+
+def _validate_journal_identity(journal_path: Path, value: Mapping[str, Any]) -> str:
+    operation_id = str(value.get("operation_id") or "").strip()
+    if not operation_id or Path(operation_id).name != operation_id or operation_id != journal_path.stem:
+        raise ValueError("DATABASE_OPERATION_ID_MISMATCH")
+    return operation_id
+
+
+def _read_existing_journal(path: Path, operation_id: str) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or str(value.get("operation_id") or "") != operation_id:
+        raise ValueError("DATABASE_UPGRADE_JOURNAL_IDENTITY_MISMATCH")
+    return dict(value)
+
+
+def _validate_recovery_authority(
+    paths: PathResolver,
+    value: Mapping[str, Any],
+    operation_id: str,
+) -> dict[str, Any]:
+    from netconsole.services.database_upgrade.authority import validate_startup_recovery_authority
+
+    authority = value.get("recovery_authority")
+    if not isinstance(authority, Mapping):
+        raise ValueError("DATABASE_STARTUP_AUTHORITY_REQUIRED")
+    return validate_startup_recovery_authority(paths, authority, operation_id=operation_id)
+
+
+def _validate_recovery_payload(
+    paths: PathResolver,
+    value: Mapping[str, Any],
+    authority: Mapping[str, Any],
+) -> None:
+    authority_artifacts = authority.get("artifacts")
+    if not isinstance(authority_artifacts, Mapping):
+        raise ValueError("DATABASE_RECOVERY_ARTIFACTS_REQUIRED")
+    for field in ("active_path", "shadow_path", "rollback_path"):
+        raw = value.get(field)
+        if not str(raw or "").strip():
+            continue
+        resolved = _controlled_path(paths, raw, field)
+        expected = str(authority_artifacts.get(field) or "")
+        if expected and str(resolved) != str(Path(expected).resolve()):
+            raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
+    backup_raw = str(value.get("backup_path") or "").strip()
+    if backup_raw:
+        backup = Path(backup_raw)
+        backup_root = paths.database_upgrade_backups_dir.resolve()
+        if not backup.is_absolute() or backup.is_symlink():
+            raise ValueError("DATABASE_RECOVERY_BACKUP_INVALID")
+        resolved_backup = backup.resolve()
+        if resolved_backup != backup_root and not resolved_backup.is_relative_to(backup_root):
+            raise ValueError("DATABASE_RECOVERY_BACKUP_INVALID")
+        expected_backup = str(authority_artifacts.get("backup_path") or "")
+        if expected_backup and str(resolved_backup) != str(Path(expected_backup).resolve()):
+            raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
+    adapter_state = value.get("adapter_state")
+    if isinstance(adapter_state, Mapping):
+        for field in ("active_parsed_path", "shadow_parsed_path", "rollback_parsed_path"):
+            raw = adapter_state.get(field)
+            if str(raw or "").strip():
+                _controlled_path(paths, raw, field)
+
+
+def _blocked_recovery_result(
+    paths: PathResolver,
+    journal_path: Path,
+    code: str,
+    message: str,
+    *,
+    value: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    evidence = _record_recovery_block(paths, journal_path, str(code), str(message))
+    result = dict(value or {})
+    result.update(
+        {
+            "status": "blocked",
+            "recovery_status": "BLOCKED",
+            "recovery_block_code": str(code),
+            "recovery_error": str(message),
+            "recovery_evidence_path": str(evidence),
+        }
+    )
+    return result
+
+
+def _record_recovery_block(
+    paths: PathResolver,
+    source: Path,
+    code: str,
+    message: str,
+    *,
+    details: Mapping[str, Any] | None = None,
+) -> Path:
+    root = paths.runtime_dir / "database_upgrade_recovery_blocks"
+    root.mkdir(parents=True, exist_ok=True)
+    source_text = str(source)
+    source_digest = hashlib.sha256(source_text.encode("utf-8")).hexdigest()[:32]
+    target = root / f"{source_digest}.json"
+    if target.is_file():
+        return target
+    raw_digest = ""
+    try:
+        raw_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    except OSError:
+        pass
+    payload = {
+        "schema_version": 1,
+        "source": source_text,
+        "source_sha256": raw_digest,
+        "code": str(code),
+        "message": str(message),
+        "details": dict(details or {}),
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    temporary = target.with_name(f".{target.name}.{os.getpid()}-{uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as output:
+            json.dump(payload, output, ensure_ascii=False, indent=2)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def record_startup_recovery_block(
+    paths: PathResolver,
+    source: Path,
+    code: str,
+    message: str,
+    *,
+    details: Mapping[str, Any] | None = None,
+) -> Path:
+    """Persist a bounded startup admission failure without touching data."""
+
+    return _record_recovery_block(paths, source, code, message, details=details)
+
+
 def recover_incomplete_upgrades(paths: PathResolver) -> list[dict[str, Any]]:
-    """Recover interrupted switches without deleting any database artifact."""
+    """Recover interrupted switches only after authority revalidation.
+
+    A malformed, stale, or unauthorized journal is a startup safety failure,
+    not an ignorable background condition.  The original journal remains
+    untouched and a small durable block record preserves the evidence needed
+    for diagnosis.
+    """
 
     root = paths.database_upgrade_journal_dir.resolve()
     if not root.is_dir():
         return []
     recovered: list[dict[str, Any]] = []
     for journal_path in sorted(root.glob("*.json")):
+        if journal_path.is_symlink():
+            recovered.append(_blocked_recovery_result(paths, journal_path, "DATABASE_JOURNAL_REPARSE", "journal path is a symlink"))
+            continue
         try:
             value = json.loads(journal_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
+            recovered.append(_blocked_recovery_result(paths, journal_path, "DATABASE_UPGRADE_JOURNAL_CORRUPT", "journal JSON cannot be parsed"))
             continue
-        if not isinstance(value, dict) or str(value.get("stage") or "") in _TERMINAL_STAGES:
+        if not isinstance(value, dict):
+            recovered.append(_blocked_recovery_result(paths, journal_path, "DATABASE_UPGRADE_JOURNAL_INVALID", "journal must be a JSON object"))
+            continue
+        if str(value.get("stage") or "") in _TERMINAL_STAGES:
             continue
         if value.get("recovery_strategy") == "component_resume":
-            continue
-        try:
-            lock_key = str(
-                value.get("maintenance_lock")
-                or f"database-upgrade:{value.get('scope_type')}:{value.get('scope_id')}"
+            recovered.append(
+                {
+                    **value,
+                    "status": "skipped",
+                    "recovery_status": "COMPONENT_RESUME_DELEGATED",
+                }
             )
+            continue
+        authority_valid = False
+        try:
+            operation_id = _validate_journal_identity(journal_path, value)
+            authority = _validate_recovery_authority(paths, value, operation_id)
+            _validate_recovery_payload(paths, value, authority)
+            authority_valid = True
+            lock_key = str(authority["maintenance_lock"])
             digest = hashlib.sha256(lock_key.encode("utf-8")).hexdigest()[:32]
             with interprocess_file_lock(paths.database_upgrade_locks_dir / f"{digest}.lock", timeout_seconds=60):
-                result = _recover_journal(paths, value)
-            value.update(result)
-            _write_existing_journal(journal_path, value)
+                current = _read_existing_journal(journal_path, operation_id)
+                if str(current.get("stage") or "") in _TERMINAL_STAGES:
+                    recovered.append({**current, "status": "skipped", "recovery_status": "ALREADY_TERMINAL"})
+                    continue
+                authority = _validate_recovery_authority(paths, current, operation_id)
+                _validate_recovery_payload(paths, current, authority)
+                result = _recover_journal(paths, current, authority)
+                value = current
+                value.update(result)
+                value["status"] = "recovered"
+                _write_existing_journal(journal_path, value)
             recovered.append(dict(value))
         except Exception as exc:
-            value.update(
-                stage="recovery_failed",
-                recovery_error=str(exc),
-                updated_at=datetime.now(UTC).isoformat(),
-            )
-            _write_existing_journal(journal_path, value)
-            recovered.append(dict(value))
+            if authority_valid and isinstance(value, dict):
+                value.update(
+                    stage="recovery_failed",
+                    status="recovery_failed",
+                    recovery_error=str(exc),
+                    updated_at=datetime.now(UTC).isoformat(),
+                )
+                try:
+                    _write_existing_journal(journal_path, value)
+                except Exception as write_exc:
+                    _record_recovery_block(
+                        paths,
+                        journal_path,
+                        "DATABASE_RECOVERY_EVIDENCE_WRITE_FAILED",
+                        str(write_exc),
+                        details={"recovery_error": str(exc)},
+                    )
+                recovered.append(dict(value))
+            else:
+                recovered.append(
+                    _blocked_recovery_result(
+                        paths,
+                        journal_path,
+                        str(getattr(exc, "code", "") or str(exc) or "DATABASE_STARTUP_AUTHORITY_INVALID"),
+                        str(exc),
+                        value=value if isinstance(value, dict) else None,
+                    )
+                )
     return recovered
 
 
-def _recover_journal(paths: PathResolver, value: dict[str, Any]) -> dict[str, Any]:
+def _recover_journal(
+    paths: PathResolver,
+    value: dict[str, Any],
+    authority: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if authority is not None:
+        from netconsole.services.database_upgrade.authority import validate_startup_recovery_authority
+
+        operation_id = str(value.get("operation_id") or "unknown")
+        validate_startup_recovery_authority(paths, authority, operation_id=operation_id)
+        _validate_recovery_payload(paths, value, authority)
     operation_id = str(value.get("operation_id") or "unknown")
     if str(value.get("stage") or "") == "created" and not str(value.get("active_path") or "").strip():
         return {
@@ -234,10 +475,22 @@ def _recover_journal(paths: PathResolver, value: dict[str, Any]) -> dict[str, An
 
 
 def _controlled_path(paths: PathResolver, value: object, field: str) -> Path:
-    path = Path(str(value or "")).resolve()
+    raw = Path(str(value or ""))
+    if not str(value or "").strip() or not raw.is_absolute():
+        raise ValueError(f"数据库升级 journal 的 {field} 必须是绝对路径")
+    if raw.is_symlink():
+        raise ValueError(f"数据库升级 journal 的 {field} 不得是符号链接")
+    path = raw.resolve()
     root = paths.data_root.resolve()
-    if not str(value or "").strip() or (path != root and not path.is_relative_to(root)):
+    if path != root and not path.is_relative_to(root):
         raise ValueError(f"数据库升级 journal 的 {field} 越界")
+    current = raw
+    while current != root:
+        if current.is_symlink():
+            raise ValueError(f"数据库升级 journal 的 {field} 包含符号链接")
+        if current.parent == current:
+            raise ValueError(f"数据库升级 journal 的 {field} 越界")
+        current = current.parent
     return path
 
 
@@ -251,6 +504,8 @@ def _backup_directory(paths: PathResolver, value: dict[str, Any], operation_id: 
     path = Path(raw).resolve() if raw else root / "_recovery" / operation_id
     if path != root and not path.is_relative_to(root):
         raise ValueError("数据库升级 journal 的 backup_path 越界")
+    if path.is_symlink():
+        raise ValueError("数据库升级 journal 的 backup_path 不得是符号链接")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -293,4 +548,9 @@ def _write_existing_journal(path: Path, value: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-__all__ = ["DatabaseUpgradeJournal", "list_upgrade_journals", "recover_incomplete_upgrades"]
+__all__ = [
+    "DatabaseUpgradeJournal",
+    "list_upgrade_journals",
+    "record_startup_recovery_block",
+    "recover_incomplete_upgrades",
+]

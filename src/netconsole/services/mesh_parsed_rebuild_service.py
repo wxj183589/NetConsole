@@ -45,6 +45,7 @@ class MeshParsedRebuildService:
         allow_empty_raw: bool = False,
         raw_files: list[Path] | None = None,
         source_metadata: Iterable[Mapping[str, object]] | None = None,
+        database_authority: Mapping[str, Any] | None = None,
     ) -> dict[str, object]:
         storage = MeshStorageService(site_id, self.paths)
         profile = storage.catalog.get_profile(mr_id)
@@ -93,6 +94,7 @@ class MeshParsedRebuildService:
             maintenance_lock=f"database-upgrade:site_profile:{site_id}:{profile.safe_folder_name}",
             reason="MESH 派生数据库版本不兼容或需要重建",
             source_count=len(selected_raw),
+            metadata={"database_authority": dict(database_authority)} if database_authority else {},
             version_reader=self._schema_version,
             reopen_hook=lambda: None,
             smoke_test=lambda path: self._smoke_test(path),

@@ -118,7 +118,7 @@ def _authorize_batch_delete_item(context: JobContext, backup_id: str) -> None:
 
 def database_upgrade(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    _authorize(context)
+    authority = _authorize(context)
     database_kind = str(context.params.get("database_kind") or "")
     if database_kind != "mesh_derived":
         raise ValueError("当前阶段仅 MESH 派生数据库已接入统一升级框架")
@@ -132,12 +132,13 @@ def database_upgrade(context: JobContext) -> dict[str, object]:
         progress=context.progress,
         should_cancel=context.should_cancel,
         before_mutation=lambda selected: _authorize(context, profile_ids=[selected]),
+        database_authority=authority,
     )
 
 
 def database_batch_upgrade(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    _authorize(context, validate_profile_targets=False)
+    authority = _authorize(context, validate_profile_targets=False)
     site_id = str(context.params.get("site_id") or "")
     profile_ids = [str(value) for value in context.params.get("profile_ids") or []]
     if not site_id or not profile_ids:
@@ -153,6 +154,7 @@ def database_batch_upgrade(context: JobContext) -> dict[str, object]:
             profile_ids=[selected],
             validate_requested_profile_list=False,
         ),
+        database_authority=authority,
     )
     context.progress("database_batch_upgrade", int(result["total"]), int(result["total"]), "批量数据库升级完成")
     return result
@@ -207,7 +209,7 @@ def legacy_database_archive_migration(context: JobContext) -> dict[str, object]:
 
 def database_backup_restore(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    _authorize(context)
+    authority = _authorize(context)
     result = DatabaseUpgradeManagementService(context.paths).restore_backup(
         str(context.params.get("backup_id") or ""),
         confirmed=bool(context.params.get("confirmed")),
@@ -215,6 +217,7 @@ def database_backup_restore(context: JobContext) -> dict[str, object]:
         progress=context.progress,
         should_cancel=context.should_cancel,
         before_mutation=lambda: _authorize(context),
+        database_authority=authority,
     )
     context.progress("database_backup_restore", 1, 1, "数据库备份恢复完成")
     return result

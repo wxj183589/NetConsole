@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from netconsole.core.interprocess_lock import interprocess_file_lock
@@ -114,6 +114,7 @@ class DatabaseUpgradeManagementService:
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
         before_mutation: Callable[[str], None] | None = None,
+        database_authority: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         """Preflight then repair each incompatible Profile one at a time."""
 
@@ -151,6 +152,7 @@ class DatabaseUpgradeManagementService:
                             progress=_batch_progress(progress, index, len(selected), profile_id),
                             should_cancel=cancel_check,
                             before_mutation=before_mutation,
+                            database_authority=database_authority,
                         )
                         repaired = list(result.get("repaired_profiles") or [])
                         detail = dict(repaired[0]) if repaired else {}
@@ -384,6 +386,7 @@ class DatabaseUpgradeManagementService:
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], bool] | None = None,
         before_mutation: Callable[[], None] | None = None,
+        database_authority: Mapping[str, object] | None = None,
     ) -> dict[str, Any]:
         if not confirmed:
             raise ValueError("恢复数据库备份前必须明确确认")
@@ -401,6 +404,9 @@ class DatabaseUpgradeManagementService:
             restore_id = f"restore-{uuid4().hex}"
             source = (Path(str(item["path"])) / "database.sqlite").resolve()
             current = validate_sqlite(original)
+            descriptor_metadata: dict[str, object] = {"restored_from_backup_id": backup_id}
+            if database_authority:
+                descriptor_metadata["database_authority"] = dict(database_authority)
             descriptor = DatabaseDescriptor(
                 database_kind=str(item.get("database_kind") or "unknown"),
                 scope_type=str(item.get("scope_type") or "unknown"),
@@ -413,7 +419,9 @@ class DatabaseUpgradeManagementService:
                 task_id=restore_id,
                 maintenance_lock=f"database-upgrade:{item.get('scope_type')}:{item.get('scope_id')}",
                 reason=f"用户恢复数据库备份 {backup_id}",
-                metadata={"restored_from_backup_id": backup_id},
+                # The persisted HTTP authority is carried into the recovery
+                # journal so a restart cannot infer a new restore target.
+                metadata=descriptor_metadata,
                 smoke_test=validate_sqlite,
             )
             result = DatabaseUpgradeCoordinator(self.paths).upgrade(

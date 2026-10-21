@@ -120,6 +120,7 @@ class DatabaseUpgradeCoordinator:
             scope_type=descriptor.scope_type,
             scope_id=descriptor.scope_id,
             maintenance_lock=descriptor.maintenance_lock,
+            database_authority=descriptor.metadata.get("database_authority"),
         )
         try:
             self._check_cancel(should_cancel)
