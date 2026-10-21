@@ -469,6 +469,8 @@
         "src/netconsole/services/file_transfer_service.py",
         "src/netconsole/services/ssh_tunnel.py",
         "src/netconsole/services/host_key_trust_service.py",
+        "src/netconsole/services/host_key_manager.py",
+        "src/netconsole/repositories/host_key_repository.py",
         "src/netconsole/services/netmiko_connection.py",
         "src/netconsole/backend/api/site_storage_router.py",
         "src/netconsole/backend/api/main.py",

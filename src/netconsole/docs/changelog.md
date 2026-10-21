@@ -1,3 +1,9 @@
+### 授权设备 SSH Host Key Manager
+
+- 设备级 Host Key 使用 `host_keys.sqlite` 保存当前/历史 SHA-256 指纹、变更事件、更新策略和
+  pending/effective 状态；首次信任仅在认证连接成功后生效，失败/取消/未授权/不支持算法均不建立当前信任。
+- `AUTO_UPDATE` 不等同于独立身份验证；兼容调用方仍使用 managed `known_hosts` 缓存，现场设备轮换需单独验收。
+
 v1.5.9 - 2026-10-13
 ### SFTP 下载与 MESH 导入解耦
 

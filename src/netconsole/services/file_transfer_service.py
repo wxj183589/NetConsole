@@ -22,8 +22,10 @@ from netconsole.services.file_service import file_sha256
 from netconsole.services.host_key_trust_service import (
     HostKeyTrustService,
     HostKeyTrustError,
+    finalize_managed_host_key,
     install_managed_host_key_policy,
 )
+from netconsole.services.host_key_manager import HostKeyManager, HostKeyManagerError
 from netconsole.services.site_ssh_relay import SiteSSHRelayError, SiteSSHRelayService
 from netconsole.services.ssh_tunnel import TunnelConnectionError
 from netconsole.utils.text_encoding import clean_h3c_device_text
@@ -213,6 +215,10 @@ class FileTransferService:
                         tunnel_label=target.tunnel_label,
                     )
                 self._emit_progress(progress_callback, "file_management.status.sftp_trying")
+                # Keep the device available while an attempt is in flight so
+                # the Host Key manager can enforce the registered-device
+                # boundary before SFTP is opened.
+                self._device = device
                 client = self._connect_ssh_client(
                     prepared,
                     key_host=target.host if target.via_tunnel and not relay_enabled else "",
@@ -446,14 +452,40 @@ class FileTransferService:
         client = paramiko.SSHClient()
         checked_host = str(target.host if via_site_relay else key_host or target.host)
         checked_port = int(target.port if via_site_relay else key_port or target.port or 22)
-        install_managed_host_key_policy(
-            client,
-            self.host_key_trust,
-            checked_host,
-            checked_port,
-            role="target",
-            host_key_policy="AUTO_REPLACE",
-        )
+        device_id = str(getattr(self._device, "device_uuid", "") or "").strip()
+        host_key_manager: HostKeyManager | None = None
+        managed_target = False
+        if device_id:
+            host_key_manager = HostKeyManager(self.paths)
+            if host_key_manager.has_device_resource_authority(self.site_name):
+                managed_target = host_key_manager.is_registered_device(self.site_name, device_id)
+                if not managed_target:
+                    raise HostKeyManagerError(
+                        "未登记或未授权设备不得自动建立 SSH Host Key 信任。",
+                        {"device_id": device_id, "host": checked_host, "port": checked_port},
+                        code="HOST_KEY_TARGET_UNAUTHORIZED",
+                    )
+        if managed_target:
+            install_managed_host_key_policy(
+                client,
+                self.host_key_trust,
+                checked_host,
+                checked_port,
+                role="target",
+                host_key_policy="AUTO_UPDATE",
+                device_id=device_id,
+                authorized=True,
+                host_key_manager=host_key_manager,
+            )
+        else:
+            install_managed_host_key_policy(
+                client,
+                self.host_key_trust,
+                checked_host,
+                checked_port,
+                role="target",
+                host_key_policy="AUTO_REPLACE",
+            )
         sock = None
         try:
             hostname = target.host
@@ -483,12 +515,20 @@ class FileTransferService:
                 allow_agent=False,
                 sock=sock,
             )
+            if managed_target:
+                finalize_managed_host_key(client, success=True)
             if via_site_relay:
                 self._relay_channel = sock
                 setattr(client, "_netconsole_ssh_mode", "jump")
                 setattr(client, "_netconsole_target_host", checked_host)
                 setattr(client, "_netconsole_target_port", checked_port)
         except paramiko.BadHostKeyException as exc:
+            if managed_target:
+                finalize_managed_host_key(
+                    client,
+                    success=False,
+                    failure_reason="paramiko_bad_host_key",
+                )
             if sock is not None:
                 sock.close()
             client.close()
@@ -518,11 +558,23 @@ class FileTransferService:
                 code="DEVICE_FILE_HOST_KEY_UPDATE_FAILED",
             ) from exc
         except HostKeyTrustError:
+            if managed_target:
+                finalize_managed_host_key(
+                    client,
+                    success=False,
+                    failure_reason="host_key_policy_rejected",
+                )
             if sock is not None:
                 sock.close()
             client.close()
             raise
         except Exception:
+            if managed_target:
+                finalize_managed_host_key(
+                    client,
+                    success=False,
+                    failure_reason="ssh_connection_failed",
+                )
             if sock is not None:
                 sock.close()
             client.close()

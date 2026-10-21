@@ -49,12 +49,14 @@ class HostKeyMismatchError(HostKeyTrustError):
 class HostKeyPolicy(str, Enum):
     """统一的 managed known_hosts 处理策略。
 
-    ``STRICT`` 和 ``TOFU`` 保留为旧调用方的可解析值，但生产连接统一
-    使用 ``AUTO_REPLACE``：未知自动登记、相同继续、变化原子替换后继续。
+    ``STRICT`` 和 ``TOFU`` 保留为旧调用方的可解析值；设备级生产连接
+    由 Host Key Manager 使用 ``STRICT``/``AUTO_UPDATE``，无设备上下文的
+    兼容调用方继续使用 ``AUTO_REPLACE``。
     """
 
     STRICT = "STRICT"
     TOFU = "TOFU"
+    AUTO_UPDATE = "AUTO_UPDATE"
     AUTO_REPLACE = "AUTO_REPLACE"
 
 
@@ -105,7 +107,20 @@ class HostKeyTrustService:
     """NetConsole 自己管理的 known_hosts，避免依赖管理员修改用户 SSH 文件。"""
 
     def __init__(self, paths: PathResolver) -> None:
+        self.paths = paths
         self.path = paths.global_known_hosts_path
+
+    def manager(self):
+        """Return the device-bound SQLite Host Key manager lazily.
+
+        The import stays lazy so legacy known_hosts-only callers keep their
+        existing import boundary while new device-aware connections can opt
+        into the pending/effective Host Key authority.
+        """
+
+        from netconsole.services.host_key_manager import HostKeyManager
+
+        return HostKeyManager(self.paths)
 
     def _load(self):
         import paramiko
@@ -315,6 +330,10 @@ def install_managed_host_key_policy(
     *,
     role: str = "target",
     host_key_policy: HostKeyPolicy | str = HostKeyPolicy.AUTO_REPLACE,
+    device_id: str = "",
+    authorized: bool = False,
+    update_policy: str | None = None,
+    host_key_manager: Any | None = None,
 ) -> None:
     import paramiko
 
@@ -326,6 +345,9 @@ def install_managed_host_key_policy(
         else HostKeyPolicy(str(host_key_policy).upper())
     )
     service = trust
+    manager = host_key_manager
+    if device_id and manager is None:
+        manager = service.manager()
 
     # A few embedded/test Paramiko facades expose SSHClient but not the base
     # policy class.  The real Paramiko package always provides it; using
@@ -336,8 +358,48 @@ def install_managed_host_key_policy(
     class _ManagedHostKeyPolicy(missing_policy_base):
         def missing_host_key(self, host_client, _hostname, key):
             # Every connection uses the same persisted managed fact.
+            if device_id:
+                manager_update_policy = update_policy
+                if manager_update_policy is None and selected_policy == HostKeyPolicy.STRICT:
+                    manager_update_policy = HostKeyPolicy.STRICT.value
+                observation = manager.stage_connection(
+                    device_id,
+                    checked_host,
+                    checked_port,
+                    key,
+                    authorized=authorized,
+                    # ``None`` means the manager uses the device's persisted
+                    # policy.  This is essential for a registered STRICT
+                    # device when the compatibility adapter is installed with
+                    # its historical AUTO_REPLACE default.
+                    update_policy=manager_update_policy,
+                    reason="paramiko_host_key_callback",
+                )
+                if not observation.allowed:
+                    raise HostKeyTrustError(
+                        "SSH Host Key 不符合当前设备策略，连接已拒绝。",
+                        observation.as_dict(),
+                        key=key,
+                        code=observation.status,
+                    )
+                host_client._host_keys.add(
+                    host_key_name(checked_host, checked_port),
+                    key.get_name(),
+                    key,
+                )
+                setattr(
+                    host_client,
+                    "_netconsole_host_key_pending",
+                    {
+                        "manager": manager,
+                        "pending_token": observation.pending_token,
+                    },
+                )
+                setattr(host_client, "_netconsole_host_key_event", observation.as_dict())
+                return
             if selected_policy in {
                 HostKeyPolicy.AUTO_REPLACE,
+                HostKeyPolicy.AUTO_UPDATE,
                 HostKeyPolicy.STRICT,
                 HostKeyPolicy.TOFU,
             }:
@@ -369,6 +431,37 @@ def install_managed_host_key_policy(
             raise ValueError(f"不支持的 managed Host Key policy: {selected_policy}")
 
     client.set_missing_host_key_policy(_ManagedHostKeyPolicy())
+
+
+def finalize_managed_host_key(
+    client: Any,
+    *,
+    success: bool,
+    failure_reason: str = "",
+    host_key_manager: Any | None = None,
+) -> dict[str, object]:
+    """Promote or discard the client callback's pending Host Key observation."""
+
+    pending = getattr(client, "_netconsole_host_key_pending", None)
+    if not isinstance(pending, dict):
+        return dict(getattr(client, "_netconsole_host_key_event", {}) or {})
+    manager = host_key_manager or pending.get("manager")
+    token = str(pending.get("pending_token") or "")
+    try:
+        if success:
+            result = manager.commit_success(token)
+            event = result.as_dict()
+        else:
+            manager.reject_pending(token, reason=failure_reason or "ssh_connection_failed")
+            event = dict(getattr(client, "_netconsole_host_key_event", {}) or {})
+            event.update({"result": "FAILED", "reason": failure_reason or "ssh_connection_failed"})
+    finally:
+        try:
+            delattr(client, "_netconsole_host_key_pending")
+        except AttributeError:
+            pass
+    setattr(client, "_netconsole_host_key_event", event)
+    return event
 
 
 def _host_key_names(host: str, port: int) -> tuple[str, ...]:
@@ -439,6 +532,7 @@ __all__ = [
     "HostKeyTrustResult",
     "HostKeyTrustError",
     "HostKeyTrustService",
+    "finalize_managed_host_key",
     "host_key_mismatch_error",
     "host_key_name",
     "install_managed_host_key_policy",
