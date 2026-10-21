@@ -393,6 +393,11 @@ def install_managed_host_key_policy(
                     {
                         "manager": manager,
                         "pending_token": observation.pending_token,
+                        "compatibility_trust": service,
+                        "compatibility_host": checked_host,
+                        "compatibility_port": checked_port,
+                        "compatibility_key": key,
+                        "compatibility_role": role,
                     },
                 )
                 setattr(host_client, "_netconsole_host_key_event", observation.as_dict())
@@ -450,6 +455,24 @@ def finalize_managed_host_key(
     try:
         if success:
             result = manager.commit_success(token)
+            compatibility_trust = pending.get("compatibility_trust")
+            if compatibility_trust is not None:
+                try:
+                    compatibility_trust.trust_or_replace(
+                        str(pending.get("compatibility_host") or ""),
+                        int(pending.get("compatibility_port") or 22),
+                        pending.get("compatibility_key"),
+                        role=str(pending.get("compatibility_role") or "target"),
+                    )
+                except Exception as exc:
+                    # SQLite is the device-bound authority. known_hosts is
+                    # only a compatibility cache and must not roll back a
+                    # successful authenticated connection when its refresh
+                    # is temporarily unavailable.
+                    app_logger.log_warning(
+                        "MANAGED_KNOWN_HOSTS_CACHE_UPDATE_FAILED",
+                        f"exception={exc.__class__.__name__}",
+                    )
             event = result.as_dict()
         else:
             manager.reject_pending(token, reason=failure_reason or "ssh_connection_failed")
