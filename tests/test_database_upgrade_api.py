@@ -99,7 +99,7 @@ def test_batch_database_actions_deduplicate_selection_and_require_upgrade_confir
     assert process.jobs[-1].params["profile_ids"] == [first.mr_id, second.mr_id]
 
 
-def test_restore_and_delete_require_confirmation_and_submit_backup_id_only(tmp_path: Path) -> None:
+def test_restore_and_delete_require_confirmation_and_submit_immutable_authority(tmp_path: Path) -> None:
     client, paths, process = _client(tmp_path)
     database = tmp_path / "data" / "sites" / "demo" / "files" / "mesh.sqlite"
     database.parent.mkdir(parents=True, exist_ok=True)
@@ -121,15 +121,12 @@ def test_restore_and_delete_require_confirmation_and_submit_backup_id_only(tmp_p
     assert client.post(f"/api/database-upgrades/backups/{backup_id}/restore", json={"confirmed": False}).status_code == 422
     restored = client.post(f"/api/database-upgrades/backups/{backup_id}/restore", json={"confirmed": True})
     assert restored.status_code == 202, restored.text
-    assert process.jobs[-1].params == {
-        "backup_id": backup_id,
-        "confirmed": True,
-        "site_name": "demo",
-        "task_name": "恢复数据库备份",
-        "owner": "database-upgrade",
-        "resource_keys": [f"database-backup:{backup_id}", "mesh-import:demo"],
-        "resource_conflict_message": "当前数据库或备份已有维护任务正在执行",
-    }
+    restore_params = process.jobs[-1].params
+    assert restore_params["backup_id"] == backup_id
+    assert restore_params["confirmed"] is True
+    assert restore_params["database_kind"] == "mesh_derived"
+    assert restore_params["database_authority"]["canonical_site_id"] == "demo"
+    assert restore_params["resource_keys"] == [f"database-backup:{backup_id}", "mesh-import:demo"]
 
     assert client.post(f"/api/database-upgrades/backups/{backup_id}/delete", json={"confirmed": False}).status_code == 422
     deleted = client.post(f"/api/database-upgrades/backups/{backup_id}/delete", json={"confirmed": True})

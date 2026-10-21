@@ -525,6 +525,8 @@ def import_operation_rollback(
             site_id=_site_id(request, site_id),
             operation_id=operation_id,
             explicit_confirmation=payload.explicit_confirmation,
+            authorization_token=payload.authorization_token,
+            expected_operation_type="BASE_DATA_IMPORT",
         )
     except BaseDataImportError as exc:
         _raise_import_error(exc)

@@ -385,6 +385,35 @@ fail closed when the Production manifest or registry cannot be proven.
 No real Production, development-real, device, cloud, GUI, or installation
 acceptance was performed. Tests use isolated temporary roots only.
 
+## Branch resolution note — P7.3-F HTTP database, AC, and base-data authority
+
+The branch `codex-A/p7-3-f-authority-rollback-20261021` implements the
+minimal latest-main replacement scope for the authority gap previously
+identified in the HTTP database, AC extension rollback, and rail-transit
+base-data rollback chains. This is branch evidence only; it does not change
+the status of `main` until the replacement PR is reviewed and merged.
+
+The implementation binds the submitted operation to a canonical site scope,
+the operation-specific authorization token, the selected database/profile or
+rollback audit, and the controlled target/backup descriptor. A queued worker
+materializes and revalidates the plan, then the same authority is checked
+immediately before each mutating service/coordinator call. AC and base-data
+rollback use separate rollback operation tokens and verify the audit/operation
+type and site before entering the maintenance lock.
+
+The branch deliberately excludes automatic startup database initialization,
+startup upgrade/staging recovery, and automatic task-event retention. Those
+remain separate Production-reachable writer follow-ups and are not silently
+treated as covered by the HTTP authority implementation.
+
+- `P7_3_F_BRANCH_AUTHORITY_ROLLBACK=IMPLEMENTED_PENDING_REVIEW`
+- `P7_3_F_DB_HTTP_AUTHORITY=COVERED_PENDING_MAIN_MERGE`
+- `P7_3_F_AC_ROLLBACK_AUTHORITY=COVERED_PENDING_MAIN_MERGE`
+- `P7_3_F_BASE_DATA_ROLLBACK_AUTHORITY=COVERED_PENDING_MAIN_MERGE`
+- `P7_3_F_STARTUP_RECOVERY=OUT_OF_SCOPE_REMAINING`
+- `P7_3_F_AUTO_RETENTION=OUT_OF_SCOPE_REMAINING`
+- `P7_3_F_PR78=OPEN_UNMODIFIED`
+
 - `P7_3_E=MERGED_VALIDATED`
 - `WRITE_ENTRYPOINT_COUNT=26`
 - `SAFE_AFTER=16`

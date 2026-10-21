@@ -964,6 +964,7 @@ class ImportChangePageDTO(ApiModel):
 
 class ImportRollbackRequestDTO(ApiModel):
     explicit_confirmation: bool = False
+    authorization_token: str = Field(default="", max_length=128)
 
 
 class ImportRollbackResultDTO(ApiModel):

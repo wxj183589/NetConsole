@@ -5,6 +5,10 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from netconsole.backend.api.feature_access import require_feature
+from netconsole.services.database_upgrade.authority import (
+    DatabaseMaintenanceAuthorityError,
+    build_database_task_authority,
+)
 from netconsole.models.api.database_upgrade import (
     DatabaseBackupActionRequest,
     DatabaseBackupBatchDeleteRequest,
@@ -46,6 +50,14 @@ def start_database_upgrade(request: Request, payload: DatabaseUpgradeRequest) ->
     snapshot = _run(lambda: _service(request).list_status(site_id))
     if not any(str(item.get("mr_id") or "") == payload.profile_id for item in snapshot.get("databases", [])):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="当前局点的 MESH Profile 不存在")
+    authority = _build_authority(
+        request,
+        task_type="database_upgrade",
+        site_id=site_id,
+        profile_ids=[payload.profile_id],
+        database_kind=payload.database_kind,
+        authorization_token=payload.authorization_token,
+    )
     return _submit(
         request,
         "database_upgrade",
@@ -53,6 +65,8 @@ def start_database_upgrade(request: Request, payload: DatabaseUpgradeRequest) ->
             "database_kind": payload.database_kind,
             "profile_id": payload.profile_id,
             "site_id": site_id,
+            "authorization_token": payload.authorization_token,
+            "database_authority": authority,
         },
         resource_keys=[f"mesh-import:{site_id}", f"database-upgrade:{site_id}:{payload.profile_id}"],
     )
@@ -69,10 +83,24 @@ def start_database_batch_upgrade(request: Request, payload: DatabaseBatchRequest
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="批量升级数据库前必须明确确认")
     site_id = _site_id(request)
     selected = _validate_batch_profiles(request, site_id, payload.profile_ids)
+    authority = _build_authority(
+        request,
+        task_type="database_batch_upgrade",
+        site_id=site_id,
+        profile_ids=selected,
+        database_kind=payload.database_kind,
+        authorization_token=payload.authorization_token,
+    )
     return _submit(
         request,
         "database_batch_upgrade",
-        {"database_kind": payload.database_kind, "profile_ids": selected, "site_id": site_id},
+        {
+            "database_kind": payload.database_kind,
+            "profile_ids": selected,
+            "site_id": site_id,
+            "authorization_token": payload.authorization_token,
+            "database_authority": authority,
+        },
         resource_keys=[f"mesh-import:{site_id}", f"database-upgrade-batch:{site_id}"],
     )
 
@@ -86,11 +114,29 @@ def start_database_batch_upgrade(request: Request, payload: DatabaseBatchRequest
 def start_database_batch_backup(request: Request, payload: DatabaseBatchRequest) -> DatabaseTaskReferenceDTO:
     site_id = _site_id(request)
     selected = _validate_batch_profiles(request, site_id, payload.profile_ids)
+    authority = _build_authority(
+        request,
+        task_type="database_batch_backup",
+        site_id=site_id,
+        profile_ids=selected,
+        database_kind=payload.database_kind,
+        authorization_token=payload.authorization_token,
+    )
     return _submit(
         request,
         "database_batch_backup",
-        {"database_kind": payload.database_kind, "profile_ids": selected, "site_id": site_id},
-        resource_keys=[f"database-backup-center:{site_id}", f"database-upgrade-batch:{site_id}"],
+        {
+            "database_kind": payload.database_kind,
+            "profile_ids": selected,
+            "site_id": site_id,
+            "authorization_token": payload.authorization_token,
+            "database_authority": authority,
+        },
+        resource_keys=[
+            f"database-backup-center:{site_id}",
+            f"mesh-import:{site_id}",
+            f"database-upgrade-batch:{site_id}",
+        ],
     )
 
 
@@ -100,12 +146,26 @@ def start_database_batch_backup(request: Request, payload: DatabaseBatchRequest)
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(require_feature("capability.database_upgrade.legacy_archive_organize"))],
 )
-def organize_legacy_archives(request: Request) -> DatabaseTaskReferenceDTO:
+def organize_legacy_archives(
+    request: Request,
+    payload: DatabaseBackupActionRequest | None = None,
+) -> DatabaseTaskReferenceDTO:
     site_id = _site_id(request)
+    authorization_token = payload.authorization_token if payload is not None else ""
+    authority = _build_authority(
+        request,
+        task_type="legacy_database_archive_migration",
+        site_id=site_id,
+        authorization_token=authorization_token,
+    )
     return _submit(
         request,
         "legacy_database_archive_migration",
-        {"site_id": site_id},
+        {
+            "site_id": site_id,
+            "authorization_token": authorization_token,
+            "database_authority": authority,
+        },
         resource_keys=[f"database-backup-center:{site_id}", f"mesh-import:{site_id}"],
     )
 
@@ -117,11 +177,23 @@ def organize_legacy_archives(request: Request) -> DatabaseTaskReferenceDTO:
     dependencies=[Depends(require_feature("capability.database_upgrade.backup_validate"))],
 )
 def validate_backup(request: Request, backup_id: str) -> DatabaseTaskReferenceDTO:
-    _run(lambda: _service(request).read_backup(backup_id, site_id=_site_id(request)))
+    site_id = _site_id(request)
+    _run(lambda: _service(request).read_backup(backup_id, site_id=site_id))
+    authority = _build_authority(
+        request,
+        task_type="database_backup_validation",
+        site_id=site_id,
+        backup_ids=[backup_id],
+    )
     return _submit(
         request,
         "database_backup_validation",
-        {"backup_id": backup_id},
+        {
+            "backup_id": backup_id,
+            "site_id": site_id,
+            "database_kind": "mesh_derived",
+            "database_authority": authority,
+        },
         resource_keys=[f"database-backup:{backup_id}"],
     )
 
@@ -141,10 +213,24 @@ def restore_backup(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="恢复数据库备份前必须明确确认")
     site_id = _site_id(request)
     _run(lambda: _service(request).read_backup(backup_id, site_id=site_id))
+    authority = _build_authority(
+        request,
+        task_type="database_backup_restore",
+        site_id=site_id,
+        backup_ids=[backup_id],
+        authorization_token=payload.authorization_token,
+    )
     return _submit(
         request,
         "database_backup_restore",
-        {"backup_id": backup_id, "confirmed": True},
+        {
+            "backup_id": backup_id,
+            "confirmed": True,
+            "site_id": site_id,
+            "database_kind": "mesh_derived",
+            "authorization_token": payload.authorization_token,
+            "database_authority": authority,
+        },
         resource_keys=[f"database-backup:{backup_id}", f"mesh-import:{site_id}"],
     )
 
@@ -162,11 +248,26 @@ def delete_backup(
 ) -> DatabaseTaskReferenceDTO:
     if not payload.confirmed:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="删除数据库备份前必须明确确认")
-    _run(lambda: _service(request).read_backup(backup_id, site_id=_site_id(request)))
+    site_id = _site_id(request)
+    _run(lambda: _service(request).read_backup(backup_id, site_id=site_id))
+    authority = _build_authority(
+        request,
+        task_type="database_backup_delete",
+        site_id=site_id,
+        backup_ids=[backup_id],
+        authorization_token=payload.authorization_token,
+    )
     return _submit(
         request,
         "database_backup_delete",
-        {"backup_id": backup_id, "confirmed": True},
+        {
+            "backup_id": backup_id,
+            "confirmed": True,
+            "site_id": site_id,
+            "database_kind": "mesh_derived",
+            "authorization_token": payload.authorization_token,
+            "database_authority": authority,
+        },
         resource_keys=[f"database-backup:{backup_id}"],
     )
 
@@ -187,10 +288,24 @@ def delete_backups(
     if not selected:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="至少选择一个数据库备份")
     site_id = _site_id(request)
+    authority = _build_authority(
+        request,
+        task_type="database_backup_batch_delete",
+        site_id=site_id,
+        backup_ids=selected,
+        authorization_token=payload.authorization_token,
+    )
     return _submit(
         request,
         "database_backup_batch_delete",
-        {"backup_ids": selected, "confirmed": True, "site_id": site_id},
+        {
+            "backup_ids": selected,
+            "confirmed": True,
+            "site_id": site_id,
+            "database_kind": "mesh_derived",
+            "authorization_token": payload.authorization_token,
+            "database_authority": authority,
+        },
         resource_keys=[f"database-backup-center:{site_id}", f"database-upgrade-batch:{site_id}"],
     )
 
@@ -240,6 +355,31 @@ def _submit(
         )
     )
     return DatabaseTaskReferenceDTO(task_id=task_id, task_type=task_type)
+
+
+def _build_authority(
+    request: Request,
+    *,
+    task_type: str,
+    site_id: str,
+    profile_ids: list[str] | None = None,
+    backup_ids: list[str] | None = None,
+    database_kind: str = "mesh_derived",
+    authorization_token: str = "",
+) -> dict[str, object]:
+    try:
+        return build_database_task_authority(
+            request.app.state.paths,
+            task_type=task_type,
+            site_ref=site_id,
+            profile_ids=profile_ids or (),
+            backup_ids=backup_ids or (),
+            database_kind=database_kind,
+            authorization_token=authorization_token,
+            defer_identity=True,
+        )
+    except DatabaseMaintenanceAuthorityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
 def _run(callback):

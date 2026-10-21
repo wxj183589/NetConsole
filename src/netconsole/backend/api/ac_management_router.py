@@ -342,7 +342,12 @@ def extension_import_apply(request: Request, payload: AcExtensionApplyRequestDTO
 )
 def extension_rollback(request: Request, audit_id: str, payload: AcExtensionRollbackRequestDTO) -> AcExtensionRollbackResultDTO:
     try:
-        return _web_service(request).rollback_extension(_web_site_id(request), audit_id, payload.explicit_confirmation)
+        return _web_service(request).rollback_extension(
+            _web_site_id(request),
+            audit_id,
+            payload.explicit_confirmation,
+            payload.authorization_token,
+        )
     except AcWebActionError as exc:
         _raise_web_error(exc)
 

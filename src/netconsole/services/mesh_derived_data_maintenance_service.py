@@ -213,6 +213,7 @@ class MeshDerivedDataMaintenanceService:
         include_missing: bool = False,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        before_mutation: Callable[[str], None] | None = None,
     ) -> dict[str, object]:
         normalized_profile_ids = (
             None
@@ -258,6 +259,9 @@ class MeshDerivedDataMaintenanceService:
             ]
             if include_missing and entry.get("status") == "missing":
                 registered_raw_files = self._raw_files(profile_root)
+
+            if before_mutation is not None:
+                before_mutation(mr_id)
 
             def rebuild_progress(_stage: str, current: int, total_files: int, message: str) -> None:
                 if progress:
