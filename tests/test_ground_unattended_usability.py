@@ -202,7 +202,14 @@ def test_ping_query_unions_segments_created_before_and_after_restart(
     # The writer closes a segment with the wall-clock time at restart. Keep
     # generated samples before that close timestamp so the registered file's
     # persisted interval overlaps the query range on every clock hour.
-    now = datetime.now().astimezone() - timedelta(hours=1)
+    # Keep the synthetic interval away from the wall-clock hour boundary. The
+    # writer rotates by sample hour, so using the live minute made CI create a
+    # third segment when the test started near :59.
+    now = (datetime.now().astimezone() - timedelta(hours=1)).replace(
+        minute=10,
+        second=0,
+        microsecond=0,
+    )
     segment_ids: list[str] = []
     initial_cursor = ""
 

@@ -93,6 +93,25 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+_MANIFEST_BINDING_KEYS = (
+    "backup_id",
+    "database_kind",
+    "scope_type",
+    "scope_id",
+    "original_database_path",
+    "backup_database_path",
+    "database_size",
+    "database_sha256",
+    "migration_strategy",
+)
+
+
+def _manifest_binding(item: Mapping[str, Any]) -> str:
+    """Digest the immutable backup identity, excluding lifecycle metadata."""
+
+    return _digest({key: item.get(key) for key in _MANIFEST_BINDING_KEYS})
+
+
 def _is_reparse(path: Path) -> bool:
     if path.is_symlink():
         return True
@@ -340,6 +359,7 @@ def _backup_binding(
         ),
         "backup_database_path": str(database_path.resolve()),
         "database_observation": database_observation,
+        "manifest_binding": _manifest_binding(item),
         "declared_identity": declared_identity,
         "observed_identity": observed_identity,
         "database_sha256": str(item.get("database_sha256") or ""),
@@ -420,6 +440,8 @@ def build_database_task_authority(
         "site_root_relative_path": Path(str(site["site_root"])).relative_to(paths.data_root.resolve()).as_posix(),
         "is_production": bool(site["is_production"]),
         "scope_kind": "profile" if scopes else "backup" if backups else "site",
+        "requested_profile_ids": selected if str(task_type) in _PROFILE_TASKS else [],
+        "requested_backup_ids": selected_backups if str(task_type) in _BACKUP_TASKS else [],
         "scopes": scopes,
         "backups": backups,
         "identity_deferred": bool(defer_identity),
@@ -456,8 +478,16 @@ def materialize_database_task_authority(
     if cancel_check is not None:
         cancel_check()
     task_type = str(authority.get("task_type") or "")
-    original_profiles = [str(item.get("profile_id") or "") for item in authority.get("scopes") or ()]
-    original_backups = [str(item.get("backup_id") or "") for item in authority.get("backups") or ()]
+    original_profiles = [
+        str(value)
+        for value in authority.get("requested_profile_ids")
+        or [str(item.get("profile_id") or "") for item in authority.get("scopes") or ()]
+    ]
+    original_backups = [
+        str(value)
+        for value in authority.get("requested_backup_ids")
+        or [str(item.get("backup_id") or "") for item in authority.get("backups") or ()]
+    ]
     materialized = build_database_task_authority(
         paths,
         task_type=task_type,
@@ -480,18 +510,53 @@ def materialize_database_task_authority(
             actual_scopes[key],
             ("canonical_site_id", "site_directory_name", "profile_id", "safe_folder_name", "database_path", "database_observation"),
         )
+    if authority.get("requested_profile_ids") != materialized.get("requested_profile_ids"):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_STALE")
     expected_backups = {str(item.get("backup_id") or ""): item for item in authority.get("backups") or ()}
     actual_backups = {str(item.get("backup_id") or ""): item for item in materialized.get("backups") or ()}
-    if set(expected_backups) != set(actual_backups):
+    if task_type == "database_backup_batch_delete":
+        unauthorized = set(actual_backups) - set(expected_backups)
+        if unauthorized:
+            raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_UNAUTHORIZED")
+    elif set(expected_backups) != set(actual_backups):
         raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_STALE")
     for key, expected in expected_backups.items():
+        if task_type == "database_backup_batch_delete" and key not in actual_backups:
+            continue
         _compare(
             "DATABASE_BACKUP_STALE",
             expected,
             actual_backups[key],
-            ("backup_id", "canonical_site_id", "site_directory_name", "scope_id", "backup_relative_path", "target_database_relative_path", "database_observation"),
+            (
+                "backup_id",
+                "canonical_site_id",
+                "site_directory_name",
+                "scope_id",
+                "backup_relative_path",
+                "target_database_relative_path",
+                "backup_database_path",
+                "manifest_binding",
+                "declared_identity",
+            ),
         )
+    if authority.get("requested_backup_ids") != materialized.get("requested_backup_ids"):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_STALE")
     return materialized
+
+
+def _request_site_ref(params: Mapping[str, Any]) -> str:
+    refs = [
+        str(params.get(key) or "").strip()
+        for key in ("site_id", "site_name")
+        if str(params.get(key) or "").strip()
+    ]
+    if not refs or len(set(refs)) != 1:
+        raise DatabaseMaintenanceAuthorityError("DATABASE_SITE_SCOPE_STALE")
+    return refs[0]
+
+
+def _normalized_ids(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
 def revalidate_database_task_authority(
@@ -502,6 +567,8 @@ def revalidate_database_task_authority(
     profile_ids: Iterable[str] | None = None,
     backup_ids: Iterable[str] | None = None,
     validate_profile_targets: bool = True,
+    validate_requested_profile_list: bool = True,
+    validate_requested_backup_list: bool = True,
     allow_deferred_identity: bool = False,
     cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
@@ -515,12 +582,31 @@ def revalidate_database_task_authority(
         if not allow_deferred_identity:
             raise DatabaseMaintenanceAuthorityError("DATABASE_AUTHORITY_NOT_MATERIALIZED")
         return dict(authority)
+    actual_site_ref = _request_site_ref(params)
     selected_profiles = list(profile_ids) if profile_ids is not None else None
     selected_backups = list(backup_ids) if backup_ids is not None else None
+    expected_profiles = _normalized_ids(
+        authority.get("requested_profile_ids")
+        or [str(item.get("profile_id") or "") for item in authority.get("scopes") or ()]
+    )
+    expected_backups = _normalized_ids(
+        authority.get("requested_backup_ids")
+        or [str(item.get("backup_id") or "") for item in authority.get("backups") or ()]
+    )
+    if (
+        selected_profiles is not None
+        and str(task_type) in _PROFILE_TASKS
+        and validate_requested_profile_list
+    ):
+        if set(_normalized_ids(selected_profiles)) != set(expected_profiles):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_TARGET_STALE")
+    if selected_backups is not None and str(task_type) in _BACKUP_TASKS and validate_requested_backup_list:
+        if set(_normalized_ids(selected_backups)) != set(expected_backups):
+            raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_TARGET_STALE")
     current = build_database_task_authority(
         paths,
         task_type=task_type,
-        site_ref=str(authority.get("site_directory_name") or params.get("site_id") or params.get("site_name") or ""),
+        site_ref=actual_site_ref,
         profile_ids=selected_profiles
         if selected_profiles is not None
         else [str(item.get("profile_id") or "") for item in authority.get("scopes") or ()],
@@ -532,7 +618,16 @@ def revalidate_database_task_authority(
         defer_identity=False,
         cancel_check=cancel_check,
     )
-    for key in ("schema_version", "task_type", "operation", "database_kind", "canonical_site_id", "site_directory_name", "is_production"):
+    for key in (
+        "schema_version",
+        "task_type",
+        "operation",
+        "operation_authority",
+        "database_kind",
+        "canonical_site_id",
+        "site_directory_name",
+        "is_production",
+    ):
         if authority.get(key) != current.get(key):
             raise DatabaseMaintenanceAuthorityError("DATABASE_SITE_SCOPE_STALE")
     if validate_profile_targets:
@@ -545,12 +640,35 @@ def revalidate_database_task_authority(
     if backup_ids is not None or current.get("backups"):
         expected = {str(item.get("backup_id") or ""): item for item in authority.get("backups") or ()}
         actual = {str(item.get("backup_id") or ""): item for item in current.get("backups") or ()}
-        for key in selected_backups or expected:
+        if str(task_type) == "database_backup_batch_delete":
+            unauthorized = set(actual) - set(expected)
+            if unauthorized:
+                raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_UNAUTHORIZED")
+            keys = set(selected_backups or expected)
+        else:
+            keys = set(selected_backups or expected)
+        for key in keys:
             if str(key) not in expected or str(key) not in actual:
                 if str(task_type) == "database_backup_batch_delete":
                     continue
                 raise DatabaseMaintenanceAuthorityError("DATABASE_BACKUP_STALE")
-            _compare("DATABASE_BACKUP_STALE", expected[str(key)], actual[str(key)], ("backup_id", "scope_id", "backup_relative_path", "target_database_relative_path", "database_observation"))
+            _compare(
+                "DATABASE_BACKUP_STALE",
+                expected[str(key)],
+                actual[str(key)],
+                (
+                    "backup_id",
+                    "canonical_site_id",
+                    "site_directory_name",
+                    "scope_id",
+                    "backup_relative_path",
+                    "target_database_relative_path",
+                    "backup_database_path",
+                    "manifest_binding",
+                    "declared_identity",
+                    "database_observation",
+                ),
+            )
     return dict(current)
 
 

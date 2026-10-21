@@ -4,7 +4,7 @@ import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from netconsole.core.atomic_file import atomic_write_bytes
@@ -24,12 +24,20 @@ class LegacyDatabaseArchiveService:
         self.paths = paths
         self.backups = backup_store or DatabaseBackupStore(paths)
 
-    def organize_mesh_archives(self, site_id: str, *, profile_id: str = "") -> dict[str, Any]:
+    def organize_mesh_archives(
+        self,
+        site_id: str,
+        *,
+        profile_id: str = "",
+        before_mutation: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
         raw_root = self.paths.site_mesh_root(site_id)
         if _is_link_or_reparse_point(raw_root) or not raw_root.is_dir():
             return {"site_id": str(site_id), "found_count": 0, "moved_count": 0, "invalid_count": 0, "items": []}
         root = raw_root.resolve()
-        recovered_count = self._recover_in_progress(site_id)
+        if before_mutation is not None:
+            before_mutation()
+        recovered_count = self._recover_in_progress(site_id, before_mutation=before_mutation)
         candidates: list[Path] = []
         for pattern in self._PATTERNS:
             candidates.extend(path for path in root.rglob(pattern) if path.is_file() and not path.is_symlink())
@@ -67,6 +75,7 @@ class LegacyDatabaseArchiveService:
                     profile_id=str(profile_id or ""),
                     profile_name=profile_scope,
                     existing_by_digest=existing_by_digest,
+                    before_mutation=before_mutation,
                 )
                 items.append(item)
                 if item["result_status"] in {"VALID_BACKUP", "DUPLICATE_BACKUP"}:
@@ -87,7 +96,12 @@ class LegacyDatabaseArchiveService:
             "items": items,
         }
 
-    def _recover_in_progress(self, site_id: str) -> int:
+    def _recover_in_progress(
+        self,
+        site_id: str,
+        *,
+        before_mutation: Callable[[], None] | None = None,
+    ) -> int:
         recovered = 0
         for manifest_path in self.paths.database_upgrade_backups_dir.rglob("manifest.json"):
             try:
@@ -105,6 +119,8 @@ class LegacyDatabaseArchiveService:
             target_dir = manifest_path.parent.resolve()
             database_path = target_dir / "database.sqlite"
             if database_path.is_file():
+                if before_mutation is not None:
+                    before_mutation()
                 validation = validate_sqlite(database_path)
                 expected_size = int(manifest.get("database_size") or 0)
                 expected_sha256 = str(manifest.get("database_sha256") or "")
@@ -133,6 +149,8 @@ class LegacyDatabaseArchiveService:
                 (target_dir / "migration.log").write_text(f"历史归档整理恢复：{status}\n", encoding="utf-8")
                 recovered += 1
                 continue
+            if before_mutation is not None:
+                before_mutation()
             manifest.update(
                 result_status="UNREADABLE_DATABASE",
                 migration_state="ABANDONED",
@@ -152,6 +170,7 @@ class LegacyDatabaseArchiveService:
         profile_id: str,
         profile_name: str,
         existing_by_digest: dict[str, str],
+        before_mutation: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         size = source.stat().st_size
         digest = sha256_file(source) if size else ""
@@ -173,6 +192,8 @@ class LegacyDatabaseArchiveService:
             if not valid
             else self.backups.directory_path("site_profile", scope_id, "mesh_derived", archive_id)
         )
+        if before_mutation is not None:
+            before_mutation()
         target_dir.mkdir(parents=True, exist_ok=False)
         target = target_dir / "database.sqlite"
         created_at = datetime.now(UTC).isoformat()
@@ -202,6 +223,8 @@ class LegacyDatabaseArchiveService:
         _write_json(target_dir / "validation.json", validation)
         (target_dir / "migration.log").write_text("历史归档整理已准备\n", encoding="utf-8")
         try:
+            if before_mutation is not None:
+                before_mutation()
             shutil.move(str(source), str(target))
             retained_validation = validate_sqlite(target)
             retained_validation["size_matches"] = int(retained_validation.get("size_bytes") or 0) == size

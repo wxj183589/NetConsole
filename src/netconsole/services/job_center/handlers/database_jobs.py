@@ -37,7 +37,9 @@ def _authorize(
     profile_ids: list[str] | None = None,
     backup_ids: list[str] | None = None,
     validate_profile_targets: bool = True,
-) -> None:
+    validate_requested_profile_list: bool = True,
+    validate_requested_backup_list: bool = True,
+ ) -> Mapping[str, object] | None:
     authority = context.params.get("database_authority")
     if not isinstance(authority, Mapping):
         # Direct service-level callers historically constructed JobContext
@@ -75,22 +77,41 @@ def _authorize(
                 cancel_check=cancel_check,
             )
             context.params["database_authority"] = authority
-        revalidate_database_task_authority(
+        actual_profile_ids = profile_ids
+        if actual_profile_ids is None:
+            if "profile_ids" in context.params:
+                actual_profile_ids = [str(value) for value in context.params.get("profile_ids") or ()]
+            elif context.params.get("profile_id"):
+                actual_profile_ids = [str(context.params.get("profile_id"))]
+        actual_backup_ids = backup_ids
+        if actual_backup_ids is None:
+            if "backup_ids" in context.params:
+                actual_backup_ids = [str(value) for value in context.params.get("backup_ids") or ()]
+            elif context.params.get("backup_id"):
+                actual_backup_ids = [str(context.params.get("backup_id"))]
+        current = revalidate_database_task_authority(
             context.paths,
             context.task_type,
             context.params,
-            profile_ids=profile_ids,
-            backup_ids=backup_ids,
+            profile_ids=actual_profile_ids,
+            backup_ids=actual_backup_ids,
             validate_profile_targets=validate_profile_targets,
+            validate_requested_profile_list=validate_requested_profile_list,
+            validate_requested_backup_list=validate_requested_backup_list,
             cancel_check=cancel_check,
         )
+        return current
     except DatabaseMaintenanceAuthorityCancelled as exc:
         raise BackgroundTaskCancelled(str(exc)) from exc
 
 
 def _authorize_batch_delete_item(context: JobContext, backup_id: str) -> None:
     try:
-        _authorize(context, backup_ids=[backup_id])
+        _authorize(
+            context,
+            backup_ids=[backup_id],
+            validate_requested_backup_list=False,
+        )
     except DatabaseMaintenanceAuthorityError as exc:
         raise DatabaseBackupDeleteError(exc.code, str(exc)) from exc
 
@@ -127,7 +148,11 @@ def database_batch_upgrade(context: JobContext) -> dict[str, object]:
         task_id=context.job_id,
         progress=context.progress,
         should_cancel=context.should_cancel,
-        before_mutation=lambda selected: _authorize(context, profile_ids=[selected]),
+        before_mutation=lambda selected: _authorize(
+            context,
+            profile_ids=[selected],
+            validate_requested_profile_list=False,
+        ),
     )
     context.progress("database_batch_upgrade", int(result["total"]), int(result["total"]), "批量数据库升级完成")
     return result
@@ -146,7 +171,11 @@ def database_batch_backup(context: JobContext) -> dict[str, object]:
         task_id=context.job_id,
         progress=context.progress,
         should_cancel=context.should_cancel,
-        before_mutation=lambda selected: _authorize(context, profile_ids=[selected]),
+        before_mutation=lambda selected: _authorize(
+            context,
+            profile_ids=[selected],
+            validate_requested_profile_list=False,
+        ),
     )
     context.progress("database_batch_backup", int(result["total"]), int(result["total"]), "批量数据库备份完成")
     return result
@@ -166,8 +195,12 @@ def database_backup_validation(context: JobContext) -> dict[str, object]:
 
 def legacy_database_archive_migration(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
-    _authorize(context)
-    result = DatabaseUpgradeManagementService(context.paths).organize_legacy(str(context.params.get("site_id") or ""))
+    authority = _authorize(context)
+    site_id = str(authority.get("site_directory_name") or "")
+    result = DatabaseUpgradeManagementService(context.paths).organize_legacy(
+        site_id,
+        before_mutation=lambda: _authorize(context),
+    )
     context.progress("legacy_database_archive_migration", 1, 1, "历史数据库归档整理完成")
     return result
 

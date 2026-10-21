@@ -250,8 +250,21 @@ class DatabaseUpgradeManagementService:
             })
             return result
 
-    def organize_legacy(self, site_id: str) -> dict[str, Any]:
-        result = self.history.organize_mesh_archives(site_id)
+    def organize_legacy(
+        self,
+        site_id: str,
+        *,
+        before_mutation: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        if before_mutation is not None:
+            before_mutation()
+        if before_mutation is None:
+            result = self.history.organize_mesh_archives(site_id)
+        else:
+            result = self.history.organize_mesh_archives(
+                site_id,
+                before_mutation=before_mutation,
+            )
         self._audit("legacy_database_archive_migration", result)
         return result
 
