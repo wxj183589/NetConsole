@@ -436,6 +436,15 @@ def _production_rollback_binding(
     if not relative or relative.is_absolute() or relative.name != "database.sqlite":
         raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_PATH_INVALID")
     if data_environment(paths.data_root).is_production:
+        if (
+            len(relative.parts) != 5
+            or relative.parts[:3] != ("files", "backups", "production-maintenance")
+            or any(
+                char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+                for char in relative.parts[3]
+            )
+        ):
+            raise ValueError("DATABASE_PRODUCTION_ROLLBACK_OWNER_PATH_INVALID")
         site_relative = Path(str(authority.get("site_root_relative_path") or ""))
         expected = (paths.data_root.resolve() / site_relative / relative).resolve()
         if rollback != expected:
@@ -480,16 +489,31 @@ def _recover_production_journal(
         }
     rollback, rollback_profile = _production_rollback_binding(paths, value, authority)
     active = _controlled_path(paths, value.get("active_path"), "active_path")
+    if active == rollback:
+        raise ValueError("DATABASE_PRODUCTION_RECOVERY_ARTIFACTS_IDENTICAL")
     backup_dir = _backup_directory(paths, value, str(value.get("operation_id") or "unknown"))
-    if active.exists():
-        _move_with_sidecars(
-            active,
-            _unique_target(backup_dir / "failed_recovered_production_database.sqlite"),
-        )
     restoration = active.with_name(f".{active.name}.production-recovery-restore")
     if restoration.exists():
         raise RuntimeError("production recovery restoration candidate already exists")
     sqlite_backup(rollback, restoration)
+    restored = sqlite_quick_profile(restoration, immutable=True)
+    validation = validate_sqlite(restoration)
+    if (
+        not restored["valid"]
+        or not validation.get("valid")
+        or int(restored["size_bytes"]) != int(rollback_profile["size_bytes"])
+        or str(restored["sha256"]) != str(rollback_profile["sha256"])
+        or str(restored["schema_digest"]) != str(rollback_profile["schema_digest"])
+    ):
+        raise RuntimeError("production recovery restoration verification failed")
+    if active.exists():
+        active_wal = active.with_name(active.name + "-wal")
+        if active_wal.is_file() and active_wal.stat().st_size > 0:
+            raise ValueError("DATABASE_PRODUCTION_RECOVERY_WAL_ACTIVE")
+        sqlite_backup(
+            active,
+            _unique_target(backup_dir / "failed_recovered_production_database.sqlite"),
+        )
     os.replace(restoration, active)
     restored = sqlite_quick_profile(active, immutable=True)
     validation = validate_sqlite(active)
