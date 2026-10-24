@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import (
     ProductionWriteBlockedError,
     data_environment,
+    prepare_startup_environment,
     require_production_write_allowed,
     write_data_environment,
 )
@@ -96,3 +98,90 @@ def test_development_environment_allows_maintenance_without_production_override(
 def test_test_environment_is_process_bound_and_does_not_require_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
     assert data_environment(tmp_path).mode is DataEnvironmentMode.TEST
+
+
+def test_source_startup_recovers_missing_metadata_without_creating_a_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path))
+
+    info = prepare_startup_environment(tmp_path)
+
+    assert info.mode is DataEnvironmentMode.DEVELOPMENT
+    marker = json.loads((tmp_path / "runtime_mode.json").read_text(encoding="utf-8"))
+    assert marker["mode"] == "development"
+    assert not (tmp_path / "config" / "storage-manifest.json").exists()
+    assert not (tmp_path / "sites").exists()
+
+
+def test_source_startup_rejects_unknown_root_content_before_metadata_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path))
+    (tmp_path / "old-backup.zip").write_bytes(b"user data")
+
+    with pytest.raises(RuntimeError, match="拒绝猜测数据环境"):
+        prepare_startup_environment(tmp_path)
+    assert not (tmp_path / "runtime_mode.json").exists()
+
+
+def test_packaged_startup_still_rejects_missing_environment_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-packaged")
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="可验证的持久化存储清单"):
+        prepare_startup_environment(tmp_path)
+
+
+def test_source_startup_recovers_metadata_only_after_existing_site_integrity_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path))
+    database = tmp_path / "sites" / "line-a" / "db" / "devices.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT)")
+        connection.commit()
+
+    info = prepare_startup_environment(tmp_path)
+
+    assert info.mode is DataEnvironmentMode.DEVELOPMENT
+    assert (tmp_path / "runtime_mode.json").is_file()
+    assert not (tmp_path / "config" / "storage-manifest.json").exists()
+
+
+def test_source_startup_rejects_existing_site_without_supported_schema_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path))
+    database = tmp_path / "sites" / "line-a" / "db" / "devices.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+        connection.commit()
+
+    with pytest.raises(RuntimeError, match="schema 不兼容"):
+        prepare_startup_environment(tmp_path)
+    assert not (tmp_path / "runtime_mode.json").exists()
+
+
+def test_source_startup_rejects_invalid_existing_site_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-development")
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path))
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "site_registry.json").write_text(
+        json.dumps({"sites": [{"site_id": "line-a", "relative_path": "../outside"}]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="SiteRegistry"):
+        prepare_startup_environment(tmp_path)
+    assert not (tmp_path / "runtime_mode.json").exists()

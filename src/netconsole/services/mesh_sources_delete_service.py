@@ -8,6 +8,7 @@ from netconsole.services.mesh_source_delete_service import MeshSourceDeleteServi
 
 ProgressCallback = Callable[[str, int, int, str], None]
 CancelCallback = Callable[[], bool]
+BeforeDeleteCallback = Callable[[str], None]
 
 
 class MeshSourcesDeleteCancelled(RuntimeError):
@@ -31,6 +32,7 @@ class MeshSourcesDeleteService:
         delete_generated_reports: bool,
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
+        before_delete: BeforeDeleteCallback | None = None,
     ) -> dict[str, object]:
         selected = tuple(dict.fromkeys(str(item or "").strip() for item in session_ids))
         selected = tuple(item for item in selected if item)
@@ -52,6 +54,8 @@ class MeshSourcesDeleteService:
                     f"正在删除 MESH 来源 {index}/{total}",
                 )
             try:
+                if before_delete:
+                    before_delete(session_id)
                 result = self.single.delete_source(
                     site_id,
                     session_id,

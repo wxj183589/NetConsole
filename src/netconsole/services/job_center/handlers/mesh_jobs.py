@@ -83,10 +83,6 @@ def _mesh_worker_preflight(
         operation=operation,
         authorization_token=authorization_token,
     )
-    if scope.is_production and delete_raw_archive:
-        raise MeshProductionAuthorizationError(
-            "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED"
-        )
 
     query = MeshAnalysisQueryService(context.paths, schedule_catalog_index=False)
     current = query._context(scope.directory_name, session_id)
@@ -168,6 +164,8 @@ def _mesh_worker_preflight(
         "mesh_operation": plan["operation"],
     }
     for key, expected in aliases.items():
+        if expected_plan is not None:
+            continue
         if (
             key not in params and scope.is_production
         ) or (
@@ -351,28 +349,58 @@ def mesh_analysis_sources_delete(context: JobContext) -> dict[str, object]:
         context.paths,
         str(params.get("site_name") or ""),
     )
-    if scope.is_production:
-        raise MeshProductionAuthorizationError(
-            "MESH_PRODUCTION_BATCH_DELETE_UNSUPPORTED"
-        )
     raw_session_ids = params.get("session_ids")
     session_ids = (
         [str(item) for item in raw_session_ids]
         if isinstance(raw_session_ids, (list, tuple))
         else []
     )
-    try:
-        return MeshSourcesDeleteService(context.paths).delete_sources(
-            scope.directory_name,
-            session_ids,
+    plan_items = params.get("mesh_source_plans")
+    plans: dict[str, dict[str, object]] = {}
+    if isinstance(plan_items, (list, tuple)):
+        for item in plan_items:
+            if not isinstance(item, dict):
+                continue
+            session_id = str(item.get("session_id") or "")
+            plan = item.get("plan")
+            if session_id and isinstance(plan, dict):
+                plans[session_id] = dict(plan)
+    if scope.is_production and set(plans) != set(session_ids):
+        raise MeshProductionAuthorizationError("MESH_SOURCE_PLAN_REQUIRED")
+
+    def preflight_source(source_session_id: str) -> None:
+        if not scope.is_production:
+            return
+        _mesh_worker_preflight(
+            context,
+            operation=MESH_SOURCE_DELETE_OPERATION,
+            session_id=source_session_id,
             delete_raw_archive=bool(params.get("delete_raw_archive")),
             delete_parsed_data=bool(params.get("delete_parsed_data", True)),
             delete_generated_reports=bool(
                 params.get("delete_generated_reports", True)
             ),
-            progress=context.progress,
-            should_cancel=context.should_cancel,
+            expected_plan=plans[source_session_id],
         )
+
+    try:
+        with mesh_operation_lock(
+            context.paths,
+            scope,
+            MESH_SOURCE_DELETE_OPERATION,
+        ):
+            return MeshSourcesDeleteService(context.paths).delete_sources(
+                scope.directory_name,
+                session_ids,
+                delete_raw_archive=bool(params.get("delete_raw_archive")),
+                delete_parsed_data=bool(params.get("delete_parsed_data", True)),
+                delete_generated_reports=bool(
+                    params.get("delete_generated_reports", True)
+                ),
+                progress=context.progress,
+                should_cancel=context.should_cancel,
+                before_delete=preflight_source,
+            )
     except MeshSourcesDeleteCancelled as exc:
         raise BackgroundTaskCancelled(str(exc)) from exc
 

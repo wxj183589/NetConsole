@@ -3756,28 +3756,26 @@ class RailTransitWebApplicationService:
             )
         scope = self._mesh_scope(site_id)
         site_id = scope.directory_name
+        authorization_token = (
+            str(production_authorization or "") if scope.is_production else ""
+        )
+        plans: list[dict[str, object]] = []
         if scope.is_production:
-            try:
-                require_mesh_write_authority(
-                    self.paths,
-                    scope.canonical_site_id,
+            for selected_session_id in selected:
+                context = self._mesh_context(site_id, selected_session_id)
+                _token, plan = self._mesh_source_write_plan(
+                    scope,
+                    context,
                     operation=MESH_SOURCE_DELETE_OPERATION,
-                    authorization_token=production_authorization,
+                    explicit_confirmation=True,
+                    delete_raw_archive=bool(delete_raw_archive),
+                    delete_parsed_data=True,
+                    delete_generated_reports=bool(
+                        delete_generated_reports or delete_raw_archive
+                    ),
+                    production_authorization=authorization_token,
                 )
-            except (MeshProductionAuthorizationError, RuntimeError) as exc:
-                raise RailTransitWebError(
-                    "MESH_PRODUCTION_AUTHORITY_REQUIRED",
-                    str(exc) or "MESH Production write authority is required",
-                ) from exc
-            if delete_raw_archive:
-                raise RailTransitWebError(
-                    "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED",
-                    "Production MESH raw/archive 删除在 durable rollback owner 完成前禁止",
-                )
-            raise RailTransitWebError(
-                "MESH_PRODUCTION_BATCH_DELETE_UNSUPPORTED",
-                "Production MESH 批量来源删除在逐来源计划绑定完成前禁止",
-            )
+                plans.append({"session_id": selected_session_id, "plan": plan})
         return self._start_task(
             site_id,
             "mesh_analysis_sources_delete",
@@ -3787,6 +3785,9 @@ class RailTransitWebApplicationService:
                 "delete_parsed_data": True,
                 "delete_generated_reports": bool(delete_generated_reports),
                 "explicit_confirmation": True,
+                "mesh_source_plans": plans,
+                "mesh_canonical_site_id": str(scope.canonical_site_id),
+                "mesh_authorization_token": authorization_token,
                 "resource_keys": self._mesh_source_delete_resource_keys(
                     site_id,
                     selected,
@@ -3900,11 +3901,6 @@ class RailTransitWebApplicationService:
         delete_generated_reports: bool = True,
         production_authorization: str = "",
     ) -> tuple[str, dict[str, object]]:
-        if scope.is_production and delete_raw_archive:
-            raise RailTransitWebError(
-                "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED",
-                "Production MESH raw/archive 删除在 durable rollback owner 完成前禁止",
-            )
         authorization_token = (
             str(production_authorization or "") if scope.is_production else ""
         )
