@@ -2209,20 +2209,29 @@ def parse_ac_resource_outputs(
     for row in ap_rows:
         ap_name = str(row.get("ap_name") or "")
         connection = _connection_record_for_ap(row, connection_rows)
-        resources.append(
+        resource = {
+            "ac_device_uuid": ac_device_uuid,
+            "site_key": site_key,
+            **row,
+            **address_rows.get(ap_name, {}),
+            **radio_rows.get(ap_name, {}),
+        }
+        # ``connection-record`` identifies ordinary APs by name and therefore
+        # carries ``ap_mac=None``. Do not let that empty observation erase the
+        # explicit MAC returned by ``display wlan ap all address``.
+        if connection.get("ap_mac") or not resource.get("ap_mac"):
+            resource.update(connection)
+        else:
+            resource.update({key: value for key, value in connection.items() if key != "ap_mac"})
+        resource.update(
             {
-                "ac_device_uuid": ac_device_uuid,
-                "site_key": site_key,
-                **row,
-                **address_rows.get(ap_name, {}),
-                **radio_rows.get(ap_name, {}),
-                **connection,
                 **radio_type_rows.get(ap_name, {}),
                 **bbssid_rows.get(ap_name, {}),
                 **lldp_rows.get(ap_name, {}),
                 **metadata,
             }
         )
+        resources.append(resource)
         if connection:
             resources[-1]["connection_record_observed"] = True
     return summary, resources

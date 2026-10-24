@@ -2099,6 +2099,10 @@ AP name                  RID State Channel          BW    Usage TxPower Clients
 站厅_AP-01               1   Up    149              40    27    24      0
 站厅_AP-01               2   Up    6                20    1     17      0
 """,
+            "display wlan ap all connection-record": """
+AP name                        IP address      State     Time
+站厅_AP-01                     10.1.1.10       Run       10-25 00:10:00
+""",
         },
         "ac-1",
         "run-1",
