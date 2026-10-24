@@ -18,7 +18,6 @@ from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backu
 
 _TERMINAL_STAGES = {
     "completed",
-    "production_preflight",
     "production_rolled_back",
     "failed_before_switch",
     "failed_rolled_back",
@@ -207,17 +206,18 @@ def _validate_recovery_payload(
     authority_artifacts = authority.get("artifacts")
     if not isinstance(authority_artifacts, Mapping):
         raise ValueError("DATABASE_RECOVERY_ARTIFACTS_REQUIRED")
+    known_artifacts = {"active_path", "shadow_path", "rollback_path", "backup_path"}
+    if set(authority_artifacts) - known_artifacts:
+        raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     journal_fields = {
         field
-        for field in ("active_path", "shadow_path", "rollback_path")
+        for field in known_artifacts
         if str(value.get(field) or "").strip()
     }
-    authority_fields = {
-        str(field)
-        for field, raw in authority_artifacts.items()
-        if str(raw or "").strip()
-    }
-    if journal_fields != authority_fields.intersection({"active_path", "shadow_path", "rollback_path"}):
+    authority_fields = {str(field) for field in authority_artifacts}
+    if journal_fields != authority_fields or any(
+        not str(authority_artifacts[field] or "").strip() for field in authority_fields
+    ):
         raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     for field in ("active_path", "shadow_path", "rollback_path"):
         if field not in authority_fields:
@@ -228,9 +228,6 @@ def _validate_recovery_payload(
         if str(resolved) != str(Path(expected).resolve()):
             raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     backup_raw = str(value.get("backup_path") or "").strip()
-    authority_has_backup = "backup_path" in authority_artifacts and str(authority_artifacts.get("backup_path") or "").strip()
-    if bool(backup_raw) != bool(authority_has_backup):
-        raise ValueError("DATABASE_RECOVERY_ARTIFACT_MISMATCH")
     if backup_raw:
         backup = Path(backup_raw)
         backup_root = paths.database_upgrade_backups_dir.resolve()
@@ -367,13 +364,25 @@ def recover_incomplete_upgrades(paths: PathResolver) -> list[dict[str, Any]]:
         if str(value.get("stage") or "") in _TERMINAL_STAGES:
             continue
         if value.get("recovery_strategy") == "component_resume":
-            recovered.append(
-                {
-                    **value,
-                    "status": "skipped",
-                    "recovery_status": "COMPONENT_RESUME_DELEGATED",
-                }
-            )
+            active_artifacts = _component_resume_active_artifacts(paths, value)
+            if bool(value.get("switched")) or active_artifacts:
+                recovered.append(
+                    _blocked_recovery_result(
+                        paths,
+                        journal_path,
+                        "DATABASE_COMPONENT_RESUME_ACTIVE",
+                        "component_resume journal still has an active switch or artifact",
+                        value=value,
+                    )
+                )
+            else:
+                recovered.append(
+                    {
+                        **value,
+                        "status": "skipped",
+                        "recovery_status": "COMPONENT_RESUME_DELEGATED",
+                    }
+                )
             continue
         authority_valid = False
         try:
@@ -429,6 +438,43 @@ def recover_incomplete_upgrades(paths: PathResolver) -> list[dict[str, Any]]:
                     )
                 )
     return recovered
+
+
+def _component_resume_active_artifacts(
+    paths: PathResolver,
+    value: Mapping[str, Any],
+) -> list[str]:
+    candidates: list[tuple[str, object]] = [
+        (field, value.get(field))
+        for field in (
+            "shadow_path",
+            "rollback_path",
+            "backup_path",
+            "candidate_path",
+        )
+    ]
+    adapter_state = value.get("adapter_state")
+    if isinstance(adapter_state, Mapping):
+        candidates.extend(
+            (field, adapter_state.get(field))
+            for field in (
+                "active_parsed_path",
+                "shadow_parsed_path",
+                "rollback_parsed_path",
+            )
+        )
+    active: list[str] = []
+    for field, raw in candidates:
+        if not str(raw or "").strip():
+            continue
+        try:
+            path = _controlled_path(paths, raw, field)
+        except ValueError:
+            active.append(field)
+            continue
+        if path.exists():
+            active.append(field)
+    return active
 
 
 def _production_rollback_binding(
@@ -520,9 +566,8 @@ def _recover_production_journal(
         raise ValueError("DATABASE_PRODUCTION_RECOVERY_ARTIFACTS_IDENTICAL")
     backup_dir = _backup_directory(paths, value, str(value.get("operation_id") or "unknown"))
     restoration = active.with_name(f".{active.name}.production-recovery-restore")
-    if restoration.exists():
-        raise RuntimeError("production recovery restoration candidate already exists")
-    sqlite_backup(rollback, restoration)
+    if not restoration.exists():
+        sqlite_backup(rollback, restoration)
     restored = sqlite_quick_profile(restoration, immutable=True)
     validation = validate_sqlite(restoration)
     if (

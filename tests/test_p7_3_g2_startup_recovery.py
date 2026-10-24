@@ -145,6 +145,98 @@ def test_journal_artifact_key_deletion_is_rejected_before_mutation(tmp_path: Pat
         assert connection.execute("SELECT value FROM marker").fetchone() == ("new",)
 
 
+def test_journal_backup_artifact_key_deletion_is_rejected_before_mutation(tmp_path: Path) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    active, shadow, rollback = _journal_paths(paths, "deleted-backup-artifact")
+    backup = paths.database_upgrade_backups_dir / "deleted-backup-artifact"
+    backup.mkdir(parents=True)
+    _database(active, "new")
+    _database(rollback, "old")
+    journal = DatabaseUpgradeJournal(paths, "deleted-backup-artifact")
+    journal.update(
+        "switched",
+        active_path=str(active),
+        shadow_path=str(shadow),
+        rollback_path=str(rollback),
+        backup_path=str(backup),
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id="demo:profile",
+        maintenance_lock="database-upgrade:site_profile:demo:profile",
+    )
+    payload = json.loads(journal.path.read_text(encoding="utf-8"))
+    del payload["backup_path"]
+    journal.path.write_text(json.dumps(payload), encoding="utf-8")
+    before = active.read_bytes()
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "blocked"
+    assert result[0]["recovery_block_code"] == "DATABASE_RECOVERY_ARTIFACT_MISMATCH"
+    assert active.read_bytes() == before
+    assert rollback.is_file()
+
+
+def test_component_resume_with_switch_or_live_artifact_blocks_startup(tmp_path: Path) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    active, shadow, rollback = _journal_paths(paths, "component-resume-active")
+    _database(active, "active")
+    _database(shadow, "candidate")
+    journal_path = paths.database_upgrade_journal_dir / "component-resume-active.json"
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    journal_path.write_text(
+        json.dumps(
+            {
+                "operation_id": "component-resume-active",
+                "stage": "switched",
+                "recovery_strategy": "component_resume",
+                "active_path": str(active),
+                "shadow_path": str(shadow),
+                "rollback_path": str(rollback),
+                "switched": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    journal_before = journal_path.read_bytes()
+    active_before = active.read_bytes()
+    shadow_before = shadow.read_bytes()
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "blocked"
+    assert result[0]["recovery_block_code"] == "DATABASE_COMPONENT_RESUME_ACTIVE"
+    assert journal_path.read_bytes() == journal_before
+    assert active.read_bytes() == active_before
+    assert shadow.read_bytes() == shadow_before
+
+
+def test_component_resume_active_database_is_not_mistaken_for_artifact(tmp_path: Path) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    active, _shadow, _rollback = _journal_paths(paths, "component-resume-no-switch")
+    _database(active, "active")
+    journal_path = paths.database_upgrade_journal_dir / "component-resume-no-switch.json"
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    journal_path.write_text(
+        json.dumps(
+            {
+                "operation_id": "component-resume-no-switch",
+                "stage": "created",
+                "recovery_strategy": "component_resume",
+                "active_path": str(active),
+                "switched": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "skipped"
+    assert result[0]["recovery_status"] == "COMPONENT_RESUME_DELEGATED"
+    assert active.is_file()
+
+
 def test_parsed_artifact_tampering_is_rejected_before_mutation(tmp_path: Path) -> None:
     paths = PathResolver(data_root=tmp_path)
     active, shadow, rollback = _journal_paths(paths, "parsed-artifact")
@@ -169,6 +261,40 @@ def test_parsed_artifact_tampering_is_rejected_before_mutation(tmp_path: Path) -
     )
     payload = json.loads(journal.path.read_text(encoding="utf-8"))
     payload["adapter_state"]["active_parsed_path"] = str(parsed_root / "other")
+    journal.path.write_text(json.dumps(payload), encoding="utf-8")
+    before = active.read_bytes()
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "blocked"
+    assert result[0]["recovery_block_code"] == "DATABASE_RECOVERY_PARSED_ARTIFACT_MISMATCH"
+    assert active.read_bytes() == before
+
+
+def test_parsed_artifact_key_deletion_is_rejected_before_mutation(tmp_path: Path) -> None:
+    paths = PathResolver(data_root=tmp_path)
+    active, shadow, rollback = _journal_paths(paths, "deleted-parsed-artifact")
+    _database(active, "new")
+    parsed_root = active.parent / "parsed"
+    parsed_root.mkdir(parents=True, exist_ok=True)
+    journal = DatabaseUpgradeJournal(paths, "deleted-parsed-artifact")
+    journal.update(
+        "switched",
+        active_path=str(active),
+        shadow_path=str(shadow),
+        rollback_path=str(rollback),
+        database_kind="mesh_derived",
+        scope_type="site_profile",
+        scope_id="demo:profile",
+        maintenance_lock="database-upgrade:site_profile:demo:profile",
+        adapter_state={
+            "active_parsed_path": str(parsed_root / "active"),
+            "shadow_parsed_path": str(parsed_root / "shadow"),
+            "rollback_parsed_path": str(parsed_root / "rollback"),
+        },
+    )
+    payload = json.loads(journal.path.read_text(encoding="utf-8"))
+    del payload["adapter_state"]["rollback_parsed_path"]
     journal.path.write_text(json.dumps(payload), encoding="utf-8")
     before = active.read_bytes()
 

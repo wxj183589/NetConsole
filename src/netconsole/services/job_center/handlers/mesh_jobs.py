@@ -184,6 +184,7 @@ def mesh_schema_rebuild(context: JobContext) -> dict[str, object]:
         progress=context.progress,
         should_cancel=context.should_cancel,
         database_authority=database_authority if isinstance(database_authority, Mapping) else None,
+        allow_legacy_startup_recovery=not isinstance(database_authority, Mapping),
     )
     MeshCatalogRepository(
         context.paths.mesh_catalog_path(str(context.params.get("site_name") or ""))
@@ -473,6 +474,7 @@ def mesh_derived_data_repair(context: JobContext) -> dict[str, object]:
             progress=context.progress,
             should_cancel=should_cancel,
             database_authority=database_authority if isinstance(database_authority, Mapping) else None,
+            allow_legacy_startup_recovery=not isinstance(database_authority, Mapping),
         )
     except Exception:
         message = "MESH 分析数据库自动修复失败，原始日志和旧派生数据均已保留"

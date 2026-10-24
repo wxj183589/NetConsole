@@ -1713,6 +1713,9 @@ class FileManagementApplicationService:
                             if isinstance(context.params.get("database_authority"), Mapping)
                             else None
                         ),
+                        allow_legacy_startup_recovery=not isinstance(
+                            context.params.get("database_authority"), Mapping
+                        ),
                     )
                     result = import_downloaded_log()
                 except Exception as repair_exc:

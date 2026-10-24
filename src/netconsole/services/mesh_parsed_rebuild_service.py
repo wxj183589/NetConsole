@@ -46,6 +46,7 @@ class MeshParsedRebuildService:
         raw_files: list[Path] | None = None,
         source_metadata: Iterable[Mapping[str, object]] | None = None,
         database_authority: Mapping[str, Any] | None = None,
+        allow_legacy_startup_recovery: bool = False,
     ) -> dict[str, object]:
         storage = MeshStorageService(site_id, self.paths)
         profile = storage.catalog.get_profile(mr_id)
@@ -81,12 +82,12 @@ class MeshParsedRebuildService:
         )
         descriptor_metadata: dict[str, object] = {}
         if database_authority:
+            if allow_legacy_startup_recovery:
+                raise ValueError("database authority conflicts with the legacy MESH recovery adapter")
             descriptor_metadata["database_authority"] = dict(database_authority)
-        else:
-            # Known legacy MESH rebuild callers predate the database-task
-            # authority envelope.  Keep their recovery path explicitly
-            # scoped to this adapter; generic production callers still fail
-            # closed when no authority mode is declared.
+        elif allow_legacy_startup_recovery:
+            # Legacy MESH jobs have their own scoped write authorization and
+            # predate the database-task authority envelope.
             descriptor_metadata["startup_recovery_legacy_adapter"] = "LEGACY_MESH_REBUILD_ADAPTER"
         descriptor = DatabaseDescriptor(
             database_kind="mesh_derived",
