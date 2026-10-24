@@ -1081,6 +1081,9 @@ def build_trackside_ap_business_rows(
     fit_ap_optical_by_switch_interface: dict[
         tuple[str, str], list[dict[str, object | None]]
     ] = {}
+    fit_ap_optical_by_switch_mac_interface: dict[
+        tuple[str, str], list[dict[str, object | None]]
+    ] = {}
     fit_ap_resources_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
     fit_ap_resources_by_scoped_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
     fit_ap_resources_by_ip: dict[str, list[dict[str, object | None]]] = {}
@@ -1096,6 +1099,14 @@ def build_trackside_ap_business_rows(
         )
         if all(switch_key):
             fit_ap_optical_by_switch_interface.setdefault(switch_key, []).append(row)
+        switch_mac = normalize_mac_key(
+            row.get("neighbor_mac") or row.get("neighbor_chassis_mac")
+        )
+        if switch_mac and switch_key[1]:
+            fit_ap_optical_by_switch_mac_interface.setdefault(
+                (switch_mac, switch_key[1]),
+                [],
+            ).append(row)
         identity = ap_identity_key(row)
         if identity:
             fit_ap_optical_by_identity.setdefault(identity, []).append(row)
@@ -1260,6 +1271,50 @@ def build_trackside_ap_business_rows(
                     or _unique_candidate(fit_ap_optical_by_mac.get(neighbor_mac, []))
                     or {}
                 )
+            if lldp and not resource_from_current_lldp:
+                exact_switch_interface_candidates = (
+                    fit_ap_optical_by_switch_mac_interface.get(
+                        (
+                            normalize_mac_key(getattr(device, "mac_address", "")),
+                            normalized_interface,
+                        ),
+                        [],
+                    )
+                )
+                ac_scopes = {
+                    str(
+                        candidate.get("ac_device_uuid")
+                        or candidate.get("device_uuid")
+                        or ""
+                    ).strip().casefold()
+                    for candidate in exact_switch_interface_candidates
+                }
+                exact_switch_interface_optical = (
+                    None
+                    if len(ac_scopes) > 1
+                    else _select_interface_candidate(
+                        exact_switch_interface_candidates
+                    )
+                )
+                if exact_switch_interface_optical:
+                    exact_resource = _unique_scoped_identity_candidate(
+                        exact_switch_interface_optical,
+                        fit_ap_resources_by_scoped_identity,
+                        fit_ap_resources_by_identity,
+                    )
+                    fit_ap = (
+                        _merge_resource_with_optical(
+                            exact_resource,
+                            fit_ap_optical_by_mac,
+                            fit_ap_optical_by_identity,
+                            fit_ap_optical_by_scoped_identity,
+                        )
+                        or exact_resource
+                        or exact_switch_interface_optical
+                    )
+                    ap_match_source = "LLDP_SWITCH_INTERFACE"
+                    ap_match_confidence = 100
+                    lldp_match_status = "MATCHED"
             if not fit_ap and not lldp:
                 interface_candidates = [
                     fit_ap_optical_by_switch_interface.get(
@@ -1381,6 +1436,7 @@ def build_trackside_ap_business_rows(
                 remote_status=ap_status,
                 association_reliable=ap_match_source in {
                     "LLDP_MAC",
+                    "LLDP_SWITCH_INTERFACE",
                     "MANUAL",
                     "IMPORTED",
                 },

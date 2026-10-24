@@ -430,6 +430,123 @@ def test_trackside_business_uses_latest_current_fact_for_same_interface():
     assert rows[0]["ap_optical_status"] == "normal"
 
 
+def test_trackside_business_uses_fit_ap_optical_by_exact_switch_mac_and_port():
+    switch = Device(
+        device_uuid="sw-1",
+        name="02-黄龙体育中心",
+        mac_address="083a-389a-7200",
+        station="Station A",
+        device_type="SW",
+    )
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "description": "To AP",
+                    "port_status": "access",
+                    "collect_run_uuid": "switch-run-1",
+                    "updated_at": "2026-10-24T01:12:09",
+                }
+            ]
+        },
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "rx_power": "-7.03",
+                    "tx_power": "-5.94",
+                    "status": "normal",
+                    "collect_run_uuid": "switch-run-1",
+                    "updated_at": "2026-10-24T01:12:00",
+                }
+            ]
+        },
+        [
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_name": "AP runtime alias",
+                "ap_mac": None,
+                "rx_power": "-8.35",
+                "tx_power": "-5.98",
+                "rx_low_alarm": "-19.00",
+                "tx_low_alarm": "-11.00",
+                "model": "WA5620X",
+                "status": "success",
+                "data_freshness": "fresh",
+                "neighbor_mac": "083a-389a-7200",
+                "neighbor_interface": "GE1/0/1",
+                "neighbor_device_name": "AC learned switch name",
+                "collected_at": "2026-10-24T01:11:43",
+                "updated_at": "2026-10-24T01:11:43",
+            }
+        ],
+        {"sw-1": [{"local_interface": "GE1/0/1", "neighbor_mac": "74d6-cbff-a460"}]},
+        fit_ap_resource_rows=[
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_name": "YGL-AP1",
+                "ap_mac": None,
+                "model": "WA5620X",
+                "state": "R/M",
+                "serial_number": "SN-1",
+            }
+        ],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ap_uuid"] == "ap-1"
+    assert rows[0]["ap_mac"] == "74d6-cbff-a460"
+    assert rows[0]["ap_rx_power"] == "-8.35"
+    assert rows[0]["ap_tx_power"] == "-5.98"
+    assert rows[0]["ap_optical_status"] == "normal"
+    assert rows[0]["ap_business_optical_status"] == "normal"
+    assert rows[0]["ap_match_source"] == "LLDP_SWITCH_INTERFACE"
+    assert rows[0]["lldp_match_status"] == "MATCHED"
+
+
+def test_trackside_business_keeps_conflicting_multi_ac_switch_port_unresolved():
+    switch = Device(
+        device_uuid="sw-1",
+        name="SW1",
+        mac_address="083a-389a-7200",
+        station="Station A",
+        device_type="SW",
+    )
+    optical_rows = [
+        {
+            "ac_device_uuid": ac_uuid,
+            "ap_uuid": ap_uuid,
+            "ap_name": ap_name,
+            "rx_power": rx_power,
+            "tx_power": "-5.98",
+            "status": "success",
+            "data_freshness": "fresh",
+            "neighbor_mac": "083a-389a-7200",
+            "neighbor_interface": "GigabitEthernet1/0/1",
+        }
+        for ac_uuid, ap_uuid, ap_name, rx_power in (
+            ("ac-a", "ap-a", "AP-A", "-8.35"),
+            ("ac-b", "ap-b", "AP-B", "-10.51"),
+        )
+    ]
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "port_status": "access"}]},
+        {"sw-1": []},
+        optical_rows,
+        {"sw-1": [{"local_interface": "GigabitEthernet1/0/1", "neighbor_mac": "74d6-cbff-a460"}]},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ap_rx_power"] is None
+    assert rows[0]["ap_tx_power"] is None
+    assert rows[0]["lldp_match_status"] == "UNRESOLVED"
+
+
 def test_trackside_business_marks_combined_link_down_before_module_state():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(
