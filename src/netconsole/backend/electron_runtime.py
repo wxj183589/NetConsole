@@ -19,7 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, create_app
 from netconsole.core.backend_instance_lock import BackendInstanceLock
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import data_environment, is_packaged_runtime
+from netconsole.core.runtime_environment import (
+    is_packaged_runtime,
+    prepare_startup_environment,
+)
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.storage_manifest import prepare_storage_manifest
 from netconsole.core.runtime_profile import read_host_environment_profile
@@ -27,6 +30,17 @@ from netconsole.core.runtime_profile import read_host_environment_profile
 
 _SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 _WARM_HANDOFF_OWNER_RE = re.compile(r"^[a-f0-9]{32}$")
+
+
+def data_environment(data_root):
+    """Compatibility seam for startup tests and embedders.
+
+    The runtime preflight now performs bounded source-development recovery;
+    retaining this module-level seam keeps existing launch tests able to stub
+    the preflight without weakening the production path.
+    """
+
+    return prepare_startup_environment(data_root)
 
 
 @dataclass(frozen=True)

@@ -54,6 +54,7 @@ from netconsole.core.resources import package_resource_path
 from netconsole.core.runtime_environment import (
     data_environment,
     is_packaged_runtime,
+    prepare_startup_environment,
 )
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode, RuntimeMode
 from netconsole.core.runtime_profile import (
@@ -378,6 +379,8 @@ def create_app(
     startup_stage: Callable[[str], None] | None = None,
 ) -> FastAPI:
     paths = paths or PathResolver()
+    if runtime_mode is not RuntimeMode.TEST and hasattr(paths, "data_root"):
+        prepare_startup_environment(paths.data_root)
     if hasattr(paths, "app_log_path"):
         app_logger.configure_path_resolver(paths)
     environment = getattr(paths, "data_environment", None)

@@ -9,22 +9,53 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import quote
 
+import pytest
 from fastapi.testclient import TestClient
 
 from netconsole.backend.api.main import create_app
-from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
+from netconsole.backend.api.mesh_analysis_router import (
+    _gui_production_authorization,
+    router as mesh_analysis_router,
+)
 from netconsole.core.runtime_environment import write_data_environment
-from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode, RuntimeMode
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
 from netconsole.services.mesh_chart_payload import MeshChartSelectionLimitError
 from netconsole.services.production_database_maintenance import PRODUCTION_SITE_ALLOWLIST
+from netconsole.services.mesh_write_authority import expected_mesh_authorization_token
+from netconsole.services.online_mr.errors import OnlineMrWebControlError
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from tests.support.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
 
 
 def _fingerprint(path: Path) -> tuple[int, str]:
     return path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_gui_production_mesh_authority_is_minted_only_for_authenticated_electron_session() -> None:
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            data_environment=DataEnvironmentInfo(
+                DataEnvironmentMode.PRODUCTION,
+                readonly_warning=True,
+            ),
+            runtime_mode=RuntimeMode.DESKTOP,
+        )
+    )
+    request = SimpleNamespace(
+        app=app,
+        url=SimpleNamespace(hostname="127.0.0.1"),
+        state=SimpleNamespace(desktop_session_authenticated=True),
+    )
+
+    assert _gui_production_authorization(request, "mesh_source_delete") == expected_mesh_authorization_token(
+        "mesh_source_delete"
+    )
+
+    request.state.desktop_session_authenticated = False
+    with pytest.raises(OnlineMrWebControlError):
+        _gui_production_authorization(request, "mesh_source_delete")
 
 
 def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> None:

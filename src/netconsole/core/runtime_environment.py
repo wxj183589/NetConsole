@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import sqlite3
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -180,6 +181,170 @@ def data_environment(data_root: Path | None = None) -> DataEnvironmentInfo:
     if mode is DataEnvironmentMode.PRODUCTION and not readonly_warning:
         raise RuntimeError("production 数据根必须启用 readonly_warning")
     return DataEnvironmentInfo(mode, created_from, created_time, readonly_warning)
+
+
+def prepare_startup_environment(data_root: Path) -> DataEnvironmentInfo:
+    """Validate or recover startup metadata for an explicitly configured root.
+
+    Source Electron/PyCharm runs may point at a root created before the
+    runtime marker contract.  When the process explicitly selected
+    ``desktop-development`` and supplied ``NETCONSOLE_DATA_ROOT``, missing
+    metadata can be reconstructed after checking the root contents and every
+    existing site database.  Production and packaged roots remain fail closed;
+    this helper never selects a different root and never creates a site.
+    """
+
+    root = validate_data_root(Path(data_root), mode=runtime_mode())
+    if runtime_mode() is RuntimeMode.TEST:
+        return DataEnvironmentInfo(DataEnvironmentMode.TEST)
+    marker = root / RUNTIME_MODE_FILE_NAME
+    manifest = root / "config" / "storage-manifest.json"
+    if marker.is_file() or manifest.is_file():
+        return data_environment(root)
+    if not _source_development_root_is_explicitly_selected():
+        return data_environment(root)
+    _recover_source_development_metadata(root)
+    return data_environment(root)
+
+
+def _source_development_root_is_explicitly_selected() -> bool:
+    return (
+        str(os.environ.get("NETCONSOLE_RUNTIME_MODE") or "").strip().casefold()
+        == "desktop-development"
+        and bool(str(os.environ.get("NETCONSOLE_DATA_ROOT") or "").strip())
+    )
+
+
+def _recover_source_development_metadata(root: Path) -> None:
+    """Atomically restore only metadata for a verified source development root."""
+
+    allowed_entries = {
+        "agents",
+        "backups",
+        "config",
+        "migrations",
+        "runtime",
+        "sites",
+        "staging",
+        ".trash",
+    }
+    try:
+        entries = tuple(root.iterdir()) if root.exists() else ()
+    except OSError as exc:
+        raise RuntimeError(f"开发数据根无法读取，拒绝恢复启动元数据：{root}") from exc
+    unknown = [entry.name for entry in entries if entry.name.casefold() not in allowed_entries]
+    if unknown:
+        raise RuntimeError(
+            "开发数据根包含未识别内容，拒绝猜测数据环境：" + ", ".join(sorted(unknown))
+        )
+    _validate_existing_development_metadata(root)
+    _validate_existing_development_sites(root)
+    root.mkdir(parents=True, exist_ok=True)
+    marker = root / RUNTIME_MODE_FILE_NAME
+    temporary = root / f".{RUNTIME_MODE_FILE_NAME}.{uuid.uuid4().hex}.tmp"
+    payload = asdict(
+        DataEnvironmentInfo(
+            DataEnvironmentMode.DEVELOPMENT,
+            created_from="source-development-startup-recovery",
+            created_time="",
+            readonly_warning=False,
+        )
+    )
+    try:
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, marker)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_existing_development_sites(root: Path) -> None:
+    sites = root / "sites"
+    if not sites.exists():
+        return
+    if not sites.is_dir() or sites.is_symlink():
+        raise RuntimeError("开发数据根 sites 目录不可安全读取")
+    for site in sites.iterdir():
+        if site.is_symlink() or not site.is_dir():
+            raise RuntimeError(f"开发数据根存在不可验证的局点项：{site.name}")
+        database = site / "db" / "devices.db"
+        if not database.exists():
+            raise RuntimeError(f"既有局点缺少 devices.db，拒绝恢复元数据：{site.name}")
+        if database.is_symlink() or not database.is_file() or database.stat().st_size == 0:
+            raise RuntimeError(f"既有局点 devices.db 不可安全读取：{site.name}")
+        try:
+            with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True) as connection:
+                result = connection.execute("PRAGMA quick_check").fetchone()
+                schema = connection.execute(
+                    "SELECT 1 FROM sqlite_master "
+                    "WHERE type = 'table' AND name = 'schema_metadata'"
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"既有局点 schema/完整性无法验证：{site.name}") from exc
+        if not result or str(result[0]).casefold() != "ok":
+            raise RuntimeError(f"既有局点 schema/完整性检查失败：{site.name}")
+        if schema is None:
+            raise RuntimeError(f"既有局点 schema 不兼容，拒绝恢复元数据：{site.name}")
+
+
+def _validate_existing_development_metadata(root: Path) -> None:
+    """Check existing JSON authorities without discovering or writing sites."""
+
+    config = root / "config"
+    if config.exists() and (config.is_symlink() or not config.is_dir()):
+        raise RuntimeError("开发数据根 config 目录不可安全读取")
+    if not config.is_dir():
+        return
+
+    registry = config / "site_registry.json"
+    if registry.exists():
+        if registry.is_symlink() or not registry.is_file():
+            raise RuntimeError("既有 SiteRegistry 路径不可安全读取")
+        try:
+            value = json.loads(registry.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError("既有 SiteRegistry 无法读取或不是有效 JSON") from exc
+        if not isinstance(value, dict) or not isinstance(value.get("sites"), list):
+            raise RuntimeError("既有 SiteRegistry 结构无效，拒绝恢复元数据")
+        seen_ids: set[str] = set()
+        seen_paths: set[Path] = set()
+        sites_root = (root / "sites").resolve()
+        for item in value["sites"]:
+            if not isinstance(item, dict):
+                raise RuntimeError("既有 SiteRegistry 包含无效记录")
+            site_id = str(item.get("site_id") or "").strip()
+            relative = Path(str(item.get("relative_path") or ""))
+            if (
+                not site_id
+                or site_id.casefold() in seen_ids
+                or relative.is_absolute()
+                or len(relative.parts) != 2
+                or relative.parts[0].casefold() != "sites"
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                raise RuntimeError("既有 SiteRegistry 包含越界或重复局点记录")
+            candidate = (root / relative).resolve()
+            if candidate.parent != sites_root or candidate in seen_paths:
+                raise RuntimeError("既有 SiteRegistry 包含越界或重复局点记录")
+            if candidate.is_symlink() or not candidate.is_dir():
+                raise RuntimeError(f"既有 SiteRegistry 局点目录不可验证：{site_id}")
+            seen_ids.add(site_id.casefold())
+            seen_paths.add(candidate)
+
+    for application in (config / "application.json", config / "app.json"):
+        if not application.exists():
+            continue
+        if application.is_symlink() or not application.is_file():
+            raise RuntimeError(f"既有应用配置路径不可安全读取：{application.name}")
+        try:
+            value = json.loads(application.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError(f"既有应用配置无效：{application.name}") from exc
+        if not isinstance(value, dict):
+            raise RuntimeError(f"既有应用配置结构无效：{application.name}")
 
 
 def _has_verified_unmarked_persistent_layout(root: Path) -> bool:

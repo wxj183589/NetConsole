@@ -20,6 +20,8 @@ from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.core import app_logger
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.services.mesh_write_authority import expected_mesh_authorization_token
+from netconsole.backend.api.online_mr_control_router import require_local_desktop_session
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.mesh_analysis import (
     MeshAnalysisSessionDetailDTO,
@@ -185,8 +187,6 @@ _MESH_MUTATION_CONFLICT_CODES = frozenset(
         "MESH_SOURCE_TASK_RUNNING",
         "TASK_RESOURCE_BUSY",
         "MESH_PRODUCTION_AUTHORITY_REQUIRED",
-        "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED",
-        "MESH_PRODUCTION_BATCH_DELETE_UNSUPPORTED",
         "MESH_SOURCE_PLAN_STALE",
         "MESH_SOURCE_PLAN_DIGEST_INVALID",
     }
@@ -218,6 +218,23 @@ def _desktop(request: Request) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="该功能仅在 NetConsole Electron 桌面端可用。",
         )
+
+
+def _gui_production_authorization(request: Request, operation: str) -> str:
+    """Mint an internal MESH capability only for an authenticated Electron call."""
+
+    environment = getattr(request.app.state, "data_environment", None)
+    if not bool(getattr(environment, "is_production", False)):
+        return ""
+    _desktop(request)
+    require_local_desktop_session(request)
+    try:
+        return expected_mesh_authorization_token(operation)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="MESH GUI 操作能力未正确注册",
+        ) from exc
 
 
 def _query(callback: Callable[[], T]) -> T:
@@ -1055,6 +1072,10 @@ def delete_source(
     payload: MeshSourceDeleteRequestDTO,
 ) -> RailTransitTaskDTO:
     try:
+        authorization = _gui_production_authorization(
+            request,
+            "mesh_source_delete",
+        )
         return _rail_service(request).start_mesh_source_delete(
             _current_site_id(request),
             source_id,
@@ -1062,7 +1083,7 @@ def delete_source(
             delete_parsed_data=payload.delete_parsed_data,
             delete_generated_reports=payload.delete_generated_reports,
             explicit_confirmation=payload.explicit_confirmation,
-            production_authorization=payload.production_authorization,
+            production_authorization=authorization,
         )
     except RailTransitWebError as exc:
         raise HTTPException(
@@ -1086,6 +1107,10 @@ def delete_sources(
     payload: MeshSourcesDeleteRequestDTO,
 ) -> RailTransitTaskDTO:
     try:
+        authorization = _gui_production_authorization(
+            request,
+            "mesh_source_delete",
+        )
         return _rail_service(request).start_mesh_sources_delete(
             _current_site_id(request),
             payload.session_ids,
@@ -1093,7 +1118,7 @@ def delete_sources(
             delete_parsed_data=payload.delete_parsed_data,
             delete_generated_reports=payload.delete_generated_reports,
             explicit_confirmation=payload.explicit_confirmation,
-            production_authorization=payload.production_authorization,
+            production_authorization=authorization,
         )
     except RailTransitWebError as exc:
         raise HTTPException(
@@ -1118,12 +1143,16 @@ def maintain_session(
     payload: MeshMaintenanceRequestDTO,
 ) -> RailTransitTaskDTO:
     try:
+        authorization = _gui_production_authorization(
+            request,
+            "mesh_identity_remap" if payload.kind == "identity_projection_refresh" else "mesh_derived_rebuild",
+        )
         return _rail_service(request).start_mesh_maintenance(
             _current_site_id(request),
             session_id,
             kind=payload.kind,
             explicit_confirmation=payload.explicit_confirmation,
-            production_authorization=payload.production_authorization,
+            production_authorization=authorization,
         )
     except RailTransitWebError as exc:
         raise HTTPException(
@@ -1143,11 +1172,15 @@ def maintain_session(
 )
 def rebuild_session(request: Request, session_id: str, payload: MeshRebuildRequestDTO) -> RailTransitTaskDTO:
     try:
+        authorization = _gui_production_authorization(
+            request,
+            "mesh_derived_rebuild",
+        )
         return _rail_service(request).start_mesh_rebuild(
             _current_site_id(request),
             session_id,
             explicit_confirmation=payload.explicit_confirmation,
-            production_authorization=payload.production_authorization,
+            production_authorization=authorization,
         )
     except RailTransitWebError as exc:
         raise HTTPException(
