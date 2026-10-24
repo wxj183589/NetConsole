@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, BinaryIO, Sequence
 from netconsole.core import app_logger
 from netconsole.core.backend_instance_lock import BackendInstanceInUseError, BackendInstanceLock
 from netconsole.core.paths import PathResolver
-from netconsole.core.runtime_environment import data_environment
+from netconsole.core.runtime_environment import prepare_startup_environment
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.core.storage_manifest import prepare_storage_manifest
 
@@ -86,7 +86,7 @@ def parse_launch_options(argv: Sequence[str]) -> LaunchOptions:
 def launch(argv: Sequence[str] | None = None) -> int:
     options = parse_launch_options(sys.argv[1:] if argv is None else argv)
     paths = PathResolver()
-    data_environment(paths.data_root)
+    prepare_startup_environment(paths.data_root)
     instance = BackendInstanceLock(paths)
     try:
         instance.acquire()
