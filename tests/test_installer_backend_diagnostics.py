@@ -89,6 +89,7 @@ def test_clean_install_does_not_import_production_startup_helper_without_global_
         "dependency-import",
         "data-root-validation",
         "clean-install-business-data-check",
+        "dependency-import",
         "storage-manifest-initialization",
         "runtime-marker-initialization",
         "first-run-site-initialization",

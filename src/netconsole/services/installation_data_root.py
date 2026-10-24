@@ -107,6 +107,8 @@ def prepare_installation_data_root(
     previous_data_root = os.environ.get("NETCONSOLE_DATA_ROOT")
     os.environ["NETCONSOLE_DATA_ROOT"] = str(root)
     try:
+        if stage_callback is not None:
+            stage_callback("dependency-import")
         # SiteApplicationService imports the full application service graph,
         # including app_logger's default PathResolver.  Keep that import
         # behind the explicit candidate-root binding so clean installs never
