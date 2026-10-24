@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -60,6 +62,57 @@ def test_backend_diagnostic_records_success_and_install_mode(
     assert records[-1]["installation_mode"] == "clean-install"
     assert records[-1]["diagnostic_id"] == "test-success"
     assert records[-1]["frozen_runtime"] is False
+    log.unlink(missing_ok=True)
+
+
+def test_clean_install_does_not_import_production_startup_helper_without_global_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_isolated_install_root(monkeypatch, tmp_path)
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-packaged")
+    monkeypatch.delenv("NETCONSOLE_DATA_ROOT", raising=False)
+    monkeypatch.delitem(sys.modules, "netconsole.backend.api.main", raising=False)
+    # If clean-install regresses to importing the production API graph before
+    # binding the candidate root, this sentinel turns that into a clear test
+    # failure instead of reading the developer machine's configured root.
+    monkeypatch.setitem(sys.modules, "netconsole.backend.api.main", None)
+
+    log = _diagnostic_path(tmp_path)
+    result = entrypoint._validate_data_root_from_installer(
+        [str(tmp_path / "candidate"), "--mode", "clean-install", "--diagnostic-log-path", str(log)]
+    )
+
+    assert result == 0
+    records = _read_diagnostic(log)
+    assert [record["stage"] for record in records if record["result"] == "IN_PROGRESS"] == [
+        "argument-validation",
+        "dependency-import",
+        "data-root-validation",
+        "clean-install-business-data-check",
+        "storage-manifest-initialization",
+        "runtime-marker-initialization",
+        "first-run-site-initialization",
+    ]
+    assert os.environ.get("NETCONSOLE_DATA_ROOT") is None
+    log.unlink(missing_ok=True)
+
+
+def test_installer_dependency_import_failure_is_diagnosed_separately(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_isolated_install_root(monkeypatch, tmp_path)
+    monkeypatch.delitem(sys.modules, "netconsole.services.installation_data_root", raising=False)
+    monkeypatch.setitem(sys.modules, "netconsole.services.installation_data_root", None)
+    log = _diagnostic_path(tmp_path)
+
+    result = entrypoint._validate_data_root_from_installer(
+        [str(tmp_path / "candidate"), "--mode", "clean-install", "--diagnostic-log-path", str(log)]
+    )
+
+    assert result == 1
+    failure = _read_diagnostic(log)[-1]
+    assert failure["stage"] == "dependency-import"
+    assert failure["exception_type"]
     log.unlink(missing_ok=True)
 
 

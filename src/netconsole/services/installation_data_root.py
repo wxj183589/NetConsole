@@ -13,7 +13,6 @@ from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_environment import write_data_environment
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
 from netconsole.core.storage_manifest import prepare_storage_manifest
-from netconsole.services.site_storage import SiteApplicationService
 from netconsole.services.storage_production_authority import (
     resolve_storage_root_authority,
 )
@@ -49,7 +48,7 @@ def validate_existing_installation_data_root(
     """Validate an existing root without creating or repairing it."""
 
     if stage_callback is not None:
-        stage_callback("validate-existing-root")
+        stage_callback("data-root-validation")
     raw_candidate = Path(candidate).expanduser()
     if not raw_candidate.exists() or not raw_candidate.is_dir():
         raise DataRootConfigurationError(
@@ -90,7 +89,7 @@ def prepare_installation_data_root(
     """Validate and initialize an installer-selected root before publication."""
 
     if stage_callback is not None:
-        stage_callback("validate-installation-root")
+        stage_callback("data-root-validation")
     root = validate_installation_data_root(
         candidate, installation_root=installation_root
     )
@@ -108,12 +107,18 @@ def prepare_installation_data_root(
     previous_data_root = os.environ.get("NETCONSOLE_DATA_ROOT")
     os.environ["NETCONSOLE_DATA_ROOT"] = str(root)
     try:
+        # SiteApplicationService imports the full application service graph,
+        # including app_logger's default PathResolver.  Keep that import
+        # behind the explicit candidate-root binding so clean installs never
+        # resolve an unrelated machine data root during module import.
+        from netconsole.services.site_storage import SiteApplicationService
+
         if stage_callback is not None:
-            stage_callback("storage-manifest")
+            stage_callback("storage-manifest-initialization")
         prepare_storage_manifest(paths)
         if not paths.runtime_mode_path.exists():
             if stage_callback is not None:
-                stage_callback("runtime-mode")
+                stage_callback("runtime-marker-initialization")
             write_data_environment(
                 root,
                 DataEnvironmentInfo(
@@ -123,7 +128,7 @@ def prepare_installation_data_root(
                 ),
             )
         if stage_callback is not None:
-            stage_callback("first-run-site")
+            stage_callback("first-run-site-initialization")
         # The installer has not published HKLM yet.  Configure this candidate
         # only for the short-lived first-run validation process.
         SiteApplicationService(paths).initialize_first_run_site(

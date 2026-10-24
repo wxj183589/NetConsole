@@ -261,10 +261,14 @@ def _installer_exception_code(exc: BaseException) -> tuple[str, str]:
 def _installer_failure_function(exc: BaseException, *, stage: str) -> str:
     stage_functions = {
         "validate-installation-root": "validate_installation_data_root",
+        "data-root-validation": "validate_installation_data_root",
         "clean-install-business-data-check": "_reject_existing_netconsole_business_data",
         "storage-manifest": "prepare_storage_manifest",
+        "storage-manifest-initialization": "prepare_storage_manifest",
         "runtime-mode": "write_data_environment",
+        "runtime-marker-initialization": "write_data_environment",
         "first-run-site": "SiteApplicationService.initialize_first_run_site",
+        "first-run-site-initialization": "SiteApplicationService.initialize_first_run_site",
         "validate-existing-root": "validate_existing_installation_data_root",
         "validate-existing-site-registry": "_production_startup_site",
     }
@@ -363,17 +367,28 @@ def _validate_data_root_from_installer(arguments: list[str]) -> int:
 
     mark_stage(current_stage)
     try:
-        from netconsole.backend.api.main import _production_startup_site
+        mark_stage("dependency-import")
         from netconsole.services.installation_data_root import (
             prepare_installation_data_root,
             validate_existing_installation_data_root,
         )
 
         if values.mode == "reuse":
+            def resolve_production_startup_site(paths):
+                # Reuse must validate the selected root before importing the
+                # production API graph.  The service binds NETCONSOLE_DATA_ROOT
+                # around this callback, so app_logger cannot resolve a default
+                # machine root during dependency import.
+                mark_stage("dependency-import")
+                from netconsole.backend.api.main import _production_startup_site
+
+                mark_stage("validate-existing-site-registry")
+                return _production_startup_site(paths)
+
             validate_existing_installation_data_root(
                 values.data_root,
                 installation_root=values.installation_root,
-                startup_site_resolver=_production_startup_site,
+                startup_site_resolver=resolve_production_startup_site,
                 stage_callback=mark_stage,
             )
         else:
