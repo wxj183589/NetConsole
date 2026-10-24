@@ -28,6 +28,8 @@ Var NetConsoleDataRootPointerResult
 Var NetConsoleInstallerLogPath
 Var NetConsoleInstallerLogHandle
 Var NetConsoleInstallerDiagnosticMessage
+Var NetConsoleInstallerDiagnosticId
+Var NetConsoleBackendDiagnosticLogPath
 !endif
 
 !ifndef BUILD_UNINSTALLER
@@ -50,11 +52,14 @@ FunctionEnd
 
 Function NetConsoleInstallerInitDiagnostic
   System::Call 'kernel32::GetCurrentProcessId()i.r0'
-  StrCpy $NetConsoleInstallerLogPath "$TEMP\NetConsole-Installer-$0.log"
+  System::Call 'kernel32::GetTickCount()i.r1'
+  StrCpy $NetConsoleInstallerDiagnosticId "$0-$1"
+  StrCpy $NetConsoleInstallerLogPath "$TEMP\NetConsole-Installer-$NetConsoleInstallerDiagnosticId.log"
+  StrCpy $NetConsoleBackendDiagnosticLogPath "$TEMP\NetConsole-Backend-$NetConsoleInstallerDiagnosticId.jsonl"
   ClearErrors
   FileOpen $NetConsoleInstallerLogHandle "$NetConsoleInstallerLogPath" a
   IfErrors NetConsoleInstallerDiagnosticUnavailable
-  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=customInit registry=not-written installer_log=$NetConsoleInstallerLogPath"
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=customInit diagnostic_id=$NetConsoleInstallerDiagnosticId registry=not-written installer_log=$NetConsoleInstallerLogPath backend_diagnostic_log=$NetConsoleBackendDiagnosticLogPath"
   Call NetConsoleInstallerWriteDiagnostic
   Return
   NetConsoleInstallerDiagnosticUnavailable:
@@ -285,6 +290,8 @@ Var NetConsoleEnvironmentDataRoot
     StrCpy $NetConsoleInstallMode "FRESH_CLEAN_INSTALL"
     Call NetConsoleSelectDefaultDataRoot
   ${EndIf}
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=installer-mode-selected mode=$NetConsoleInstallMode data_root=$NetConsoleDataRoot diagnostic_id=$NetConsoleInstallerDiagnosticId registry=not-written"
+  Call NetConsoleInstallerWriteDiagnostic
   StrCpy $NetConsoleDataRootChanged "0"
   StrCpy $NetConsolePerformanceMode "standard"
 !macroend
@@ -513,16 +520,16 @@ FunctionEnd
   ; Reuse validates the existing Production authority without creating a new
   ; site. Clean install initializes only the independently selected target.
   ${If} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR"' $0
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
   ${ElseIf} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR"' $0
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
   ${Else}
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode clean-install --installation-root "$INSTDIR"' $0
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode clean-install --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
   ${EndIf}
-  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=backend-data-root-initialization exit_code=$0 registry=not-written"
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=backend-data-root-initialization mode=$NetConsoleInstallMode exit_code=$0 diagnostic_id=$NetConsoleInstallerDiagnosticId backend_diagnostic_log=$NetConsoleBackendDiagnosticLogPath registry=not-written"
   Call NetConsoleInstallerWriteDiagnostic
   ${If} $0 != 0
-    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=backend-data-root-initialization result=failed exit_code=$0 registry=not-written data-preserved=unknown"
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=backend-data-root-initialization mode=$NetConsoleInstallMode result=failed exit_code=$0 message=Backend 数据根初始化或兼容性校验失败 diagnostic_id=$NetConsoleInstallerDiagnosticId backend_diagnostic_log=$NetConsoleBackendDiagnosticLogPath registry=not-written data-preserved=see-backend-diagnostic"
     Call NetConsoleInstallerAbort
   ${EndIf}
   ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --set-runtime-performance-mode "$NetConsoleDataRoot" "$NetConsolePerformanceMode"' $0
