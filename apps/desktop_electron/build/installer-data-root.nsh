@@ -481,9 +481,10 @@ FunctionEnd
     ${EndIf}
   ${EndIf}
   ${If} $NetConsoleEnvironmentDataRoot != ""
-    StrCmp "$NetConsoleEnvironmentDataRoot" "$NetConsoleDataRoot" +2 0
+    ${If} $NetConsoleEnvironmentDataRoot != "$NetConsoleDataRoot"
       StrCpy $NetConsoleInstallerDiagnosticMessage "stage=environment-root-check result=mismatch registry=not-written"
       Call NetConsoleInstallerAbort
+    ${EndIf}
   ${EndIf}
 
   ; A relocation is never a pointer-only update.  The packaged helper stages,
@@ -491,9 +492,10 @@ FunctionEnd
   ; changes.  This branch is reachable only after the user explicitly chose
   ; MIGRATE_EXISTING_DATA; selecting a different path alone is not enough.
   ${If} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
-    IfFileExists "$NetConsoleExistingDataRoot\." +2 0
+    IfFileExists "$NetConsoleExistingDataRoot\." NetConsoleMigrationSourceAvailable
       StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-migration result=source-unavailable registry=not-written"
       Call NetConsoleInstallerAbort
+    NetConsoleMigrationSourceAvailable:
     DetailPrint "正在迁移现有 NetConsole 数据；旧数据将保留为只读备份。"
     ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --migrate-data-root --source "$NetConsoleExistingDataRoot" --target "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
     StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-migration exit_code=$0 registry=not-written"
