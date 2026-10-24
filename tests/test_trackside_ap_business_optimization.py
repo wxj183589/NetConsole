@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from netconsole.core.database import Database
+from netconsole.core.sources.ap_source import compute_ap_status, project_current_ap_optical_row
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -609,6 +610,49 @@ def test_trackside_business_keeps_ap_identity_when_ap_optical_missing():
     assert rows[0]["ap_mac"] == "083b-e9ec-da40"
     assert rows[0]["serial_number"] == "SN-MISSING-OPTICAL"
     assert rows[0]["ap_rx_power"] is None
+
+
+def test_failed_fit_ap_optical_projection_does_not_expose_retained_values():
+    row = project_current_ap_optical_row(
+        {
+            "status": "failed",
+            "rx_power": "-8.17",
+            "tx_power": "-5.69",
+            "temperature": "31",
+            "collected_at": "2026-10-24T10:00:00+08:00",
+            "error_message": "WinError 10054",
+        }
+    )
+
+    assert row is not None
+    assert row["rx_power"] is None
+    assert row["tx_power"] is None
+    assert row["temperature"] is None
+    assert row["data_freshness"] == "unknown"
+    assert compute_ap_status(row) == "unknown"
+
+
+def test_trackside_business_does_not_cross_ac_scope_for_duplicate_lldp_mac():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "port_status": "access"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "rx_power": "-8"}]},
+        [
+            {"ac_device_uuid": "ac-a", "ap_name": "AP-A", "ap_mac": "0011-2233-4455", "rx_power": "-7"},
+            {"ac_device_uuid": "ac-b", "ap_name": "AP-B", "ap_mac": "0011-2233-4455", "rx_power": "-12"},
+        ],
+        {"sw-1": [{"local_interface": "GigabitEthernet1/0/1", "neighbor_mac": "0011-2233-4455"}]},
+        fit_ap_resource_rows=[
+            {"ac_device_uuid": "ac-a", "ap_name": "AP-A", "ap_mac": "0011-2233-4455"},
+            {"ac_device_uuid": "ac-b", "ap_name": "AP-B", "ap_mac": "0011-2233-4455"},
+        ],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["lldp_match_status"] == "AMBIGUOUS"
+    assert rows[0]["ap_rx_power"] is None
+    assert rows[0]["ap_tx_power"] is None
 
 
 def test_ac_resource_collect_failure_keeps_existing_resources(monkeypatch, tmp_path):
