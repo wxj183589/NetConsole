@@ -431,6 +431,12 @@ class PathResolver:
     def global_known_hosts_path(self) -> Path:
         return self.global_security_dir / "known_hosts"
 
+    @property
+    def host_key_database_path(self) -> Path:
+        """SQLite authority for device-bound Host Key metadata and history."""
+
+        return self.global_security_dir / "host_keys.sqlite"
+
     def ensure_site_dirs(self, site_name: str = "demo") -> Path:
         site_path = self.site_dir(site_name)
         ensure_runtime_dir(site_path)

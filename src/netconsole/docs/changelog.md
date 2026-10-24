@@ -16,10 +16,16 @@ v1.6.10 - 2026-10-25
 - 保留会话鉴权、二次确认、revision/hash/plan digest 校验、路径边界、事务、审计和维护 CLI 的独立安全门禁。
 - 仅允许删除 NetConsole 管理的归档副本，不触碰用户外部原始文件；开发与正式数据根继续隔离。
 
+### 面向授权设备的 SSH Host Key Manager
+
+- 新增设备绑定的 `host_keys.sqlite` Schema、当前指纹、历史指纹、变更事件、`AUTO_UPDATE`/`STRICT` 策略和 pending/effective 生效状态；首次信任只在 SSH 连接成功后落为当前记录。
+- 现有 Paramiko/Netmiko 适配器继续复用 managed `known_hosts` 兼容缓存；已登记设备连接通过 Host Key Manager，失败、取消、不支持算法、未授权目标和并发变化均 fail-closed 并保留审计。
+- `AUTO_UPDATE` 明确不等同于独立身份验证；真实设备、Windows GUI 和现场 Host Key 轮换验收仍需单独验证。
+
 ### 验证边界
 
 - 用户已确认本轮人工完整验收通过；此前 v1.5.9 Full/Customer 候选包及其构建身份保持原状，本版本未重新打包。
-- 本版本未合并 PR #94/#95；PR #94 后续合并后仍需重新执行启动恢复与 MESH 消费者/L4 回归。
+- PR #95 已合并并纳入本版本；PR #94 尚未合并，如在本版本发布前合并，需在最终 main 重新执行启动恢复与 MESH 消费者/L4 回归。
 - 本版本的 FIT-AP、轨旁 AP 和 LLDP 修复已在杭州地铁 10 号线开发数据及 Electron 页面完成本地验证；现场实时设备采集仍需现场网络、授权和验收窗口，不能由本地验证替代。
 
 v1.5.9 - 2026-10-13
