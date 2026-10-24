@@ -273,7 +273,7 @@ def test_mesh_source_delete_binds_source_plan_and_preserves_parsed_only_scope(
     assert job.params["mesh_authorization_token"] == ""
 
 
-def test_production_raw_delete_fails_closed_before_task_creation(
+def test_production_raw_delete_uses_internal_authority_and_starts_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -288,6 +288,12 @@ def test_production_raw_delete_fails_closed_before_task_creation(
     )
     monkeypatch.setattr(web_application_module, "resolve_mesh_production_scope", lambda *_args, **_kwargs: scope)
 
+    def require_token(*_args, **kwargs):
+        if str(kwargs.get("authorization_token") or "") != "MESH_SOURCE_DELETE_AUTHORIZED":
+            raise MeshProductionAuthorizationError("MESH_SOURCE_DELETE_AUTHORIZED")
+
+    monkeypatch.setattr(web_application_module, "require_mesh_write_authority", require_token)
+
     with pytest.raises(RailTransitWebError) as error:
         service.start_mesh_source_delete(
             "sxl1",
@@ -298,8 +304,20 @@ def test_production_raw_delete_fails_closed_before_task_creation(
             explicit_confirmation=True,
         )
 
-    assert error.value.code == "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED"
+    assert error.value.code == "MESH_PRODUCTION_AUTHORITY_REQUIRED"
     assert normal.jobs == {}
+
+    started = service.start_mesh_source_delete(
+        "sxl1",
+        session_id,
+        delete_raw_archive=True,
+        delete_parsed_data=True,
+        delete_generated_reports=True,
+        explicit_confirmation=True,
+        production_authorization="MESH_SOURCE_DELETE_AUTHORIZED",
+    )
+    assert started.action == "mesh_analysis_source_delete"
+    assert normal.jobs[started.task_id].params["mesh_authorization_token"] == "MESH_SOURCE_DELETE_AUTHORIZED"
 
 
 def test_production_parsed_delete_does_not_mint_its_own_operation_token(

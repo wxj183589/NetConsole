@@ -126,7 +126,7 @@ def test_worker_validates_plan_before_running_identity_only_service(
     assert captured["expected_peer_keys"]
 
 
-def test_worker_allows_parsed_only_delete_but_blocks_production_raw_delete(
+def test_worker_allows_parsed_only_and_production_raw_delete_with_bound_plan(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -196,6 +196,7 @@ def test_worker_allows_parsed_only_delete_but_blocks_production_raw_delete(
         site_root=paths.site_dir("demo"),
         is_production=True,
     )
+    production_facts = mesh_source_plan_facts(paths, production_scope, current)
     raw_plan = build_mesh_write_plan(
         production_scope,
         profile_id=current.mr_id,
@@ -203,7 +204,10 @@ def test_worker_allows_parsed_only_delete_but_blocks_production_raw_delete(
         operation=MESH_SOURCE_DELETE_OPERATION,
         explicit_confirmation=True,
         **revisions,
-        raw_sha256=str(current.source.get("raw_sha256") or current.source.get("sha256") or ""),
+        safe_folder_name=str(production_facts["safe_folder_name"]),
+        source_index_sha256=str(production_facts["source_index_sha256"]),
+        parsed_sha256=str(production_facts["parsed_sha256"]),
+        raw_sha256=str(production_facts["raw_sha256"]),
         content_sha256=str(current.source.get("content_sha256") or ""),
         delete_raw_archive=True,
         delete_parsed_data=True,
@@ -231,6 +235,6 @@ def test_worker_allows_parsed_only_delete_but_blocks_production_raw_delete(
         "netconsole.services.job_center.handlers.mesh_jobs.require_mesh_write_authority",
         lambda *_args, **_kwargs: production_scope,
     )
-    blocked = run_job(raw_job)
-    assert blocked.ok is False
-    assert blocked.error == "MESH_PRODUCTION_RAW_DELETE_UNSUPPORTED"
+    allowed = run_job(raw_job)
+    assert allowed.ok is True
+    assert captured["delete_raw_archive"] is True
