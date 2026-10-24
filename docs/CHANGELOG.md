@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 面向授权设备的 SSH Host Key Manager
+
+- 新增设备绑定的 `host_keys.sqlite` Schema、当前指纹、历史指纹、变更事件、`AUTO_UPDATE`/
+  `STRICT` 策略和 pending/effective 生效状态；首次信任只在 SSH 连接成功后落为当前记录。
+- 现有 Paramiko/Netmiko 适配器继续复用 managed `known_hosts` 兼容缓存；已登记设备连接通过
+  Host Key Manager，失败、取消、不支持算法、未授权目标和并发变化均 fail-closed 并保留审计。
+- `AUTO_UPDATE` 明确不等同于独立身份验证；真实设备、Windows GUI 和现场 Host Key 轮换验收仍需单独验证。
+
 ## v1.5.9 - 2026-10-13
 
 ### SFTP 下载与 MESH 导入解耦

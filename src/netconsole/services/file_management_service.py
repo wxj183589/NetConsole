@@ -1025,6 +1025,7 @@ class FileManagementApplicationService:
                 SettingsStore(self.paths),
                 include_password=True,
                 paths=self.paths,
+                site_id=command.site_id,
                 **launch_options,
             )
             if not result.success:
