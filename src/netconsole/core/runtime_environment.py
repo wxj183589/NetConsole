@@ -260,6 +260,15 @@ def _recover_source_development_metadata(root: Path) -> None:
     finally:
         temporary.unlink(missing_ok=True)
 
+    # A source-development recovery must leave the same metadata contract as
+    # a normal startup.  The manifest is created only after the existing
+    # registry/sites have been validated above; it never discovers a site or
+    # copies business data.  If this fails, startup remains fail-closed.
+    from netconsole.core.paths import PathResolver
+    from netconsole.core.storage_manifest import prepare_storage_manifest
+
+    prepare_storage_manifest(PathResolver(data_root=root))
+
 
 def _validate_existing_development_sites(root: Path) -> None:
     sites = root / "sites"
@@ -276,17 +285,22 @@ def _validate_existing_development_sites(root: Path) -> None:
         if database.is_symlink() or not database.is_file() or database.stat().st_size == 0:
             raise RuntimeError(f"既有局点 devices.db 不可安全读取：{site.name}")
         try:
+            from netconsole.core.database import CURRENT_SCHEMA_VERSION
+
             with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True) as connection:
                 result = connection.execute("PRAGMA quick_check").fetchone()
                 schema = connection.execute(
                     "SELECT 1 FROM sqlite_master "
                     "WHERE type = 'table' AND name = 'schema_metadata'"
                 ).fetchone()
+                schema_version = connection.execute(
+                    "SELECT value FROM schema_metadata WHERE key = 'schema_version'"
+                ).fetchone() if schema is not None else None
         except sqlite3.Error as exc:
             raise RuntimeError(f"既有局点 schema/完整性无法验证：{site.name}") from exc
         if not result or str(result[0]).casefold() != "ok":
             raise RuntimeError(f"既有局点 schema/完整性检查失败：{site.name}")
-        if schema is None:
+        if schema is None or not schema_version or str(schema_version[0]) != CURRENT_SCHEMA_VERSION:
             raise RuntimeError(f"既有局点 schema 不兼容，拒绝恢复元数据：{site.name}")
 
 

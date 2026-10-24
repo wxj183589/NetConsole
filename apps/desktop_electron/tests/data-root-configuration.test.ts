@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DATA_ROOT_REGISTRY_KEY,
   DATA_ROOT_REGISTRY_VALUE,
+  formatDesktopDataRootConfigurationError,
   readMachineDataRoot,
   resolveDesktopDataRootConfiguration,
 } from '../src/main/data-root-configuration'
@@ -60,5 +61,14 @@ describe('desktop machine data-root configuration', () => {
       environment: {},
       queryRegistry: () => ({ status: 1 }),
     })).toThrow('尚未配置')
+  })
+
+  it('turns missing installer configuration into a user-facing recovery message', () => {
+    const message = formatDesktopDataRootConfigurationError(
+      new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置。'),
+    )
+    expect(message).toContain('尚未完成数据目录配置')
+    expect(message).toContain('重新运行安装程序')
+    expect(message).toContain('不会切换或猜测其他数据目录')
   })
 })
