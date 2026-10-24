@@ -19,6 +19,7 @@ from netconsole.services.device_command_profile_service import (
     resolve_device_capability_commands,
 )
 from netconsole.services.host_key_trust_service import HostKeyTrustService
+from netconsole.services.host_key_manager import HostKeyManager, HostKeyManagerError
 from netconsole.services.ssh_tunnel import (
     TunnelConnectionError,
     TunnelManager,
@@ -287,9 +288,56 @@ def _record_direct_host_key(
         raise RuntimeError("target remote server key unavailable")
     host = str(host_override or params.get("host") or "").strip()
     port = int(port_override or params.get("port") or 22)
+    context = _SSH_CONNECTION_CONTEXT.get()
+    manager = HostKeyManager(paths)
+    has_device_authority = manager.has_device_resource_authority(context.site_id)
+    managed_target = bool(
+        context.device_uuid
+        and has_device_authority
+        and manager.is_registered_device(context.site_id, context.device_uuid)
+    )
+    manager_result = None
+    pending_token = ""
     try:
+        if managed_target:
+            if has_device_authority and not managed_target:
+                raise HostKeyManagerError(
+                    "未登记或未授权设备不得自动建立 SSH Host Key 信任。",
+                    {"device_id": context.device_uuid, "host": host, "port": port},
+                    code="HOST_KEY_TARGET_UNAUTHORIZED",
+                )
+            # Direct Netmiko intentionally learns the server key after the
+            # authenticated session exists.  The manager therefore cannot
+            # mark a failed authentication as trusted, and STRICT can still
+            # reject the session before any command is issued.
+            staged = manager.stage_connection(
+                context.device_uuid,
+                host,
+                port,
+                key,
+                authorized=True,
+                reason="netmiko_authenticated_connection",
+            )
+            if not staged.allowed:
+                raise HostKeyManagerError(
+                    "SSH Host Key 策略拒绝当前设备连接。",
+                    staged.as_dict(),
+                    key=key,
+                    code=staged.status,
+                )
+            pending_token = staged.pending_token
+        # Keep the managed known_hosts file as the Paramiko compatibility
+        # cache.  SQLite remains the device-bound authority for policy,
+        # current state, pending state and history.
         result = HostKeyTrustService(paths).trust_or_replace(host, port, key, role="target")
-    except Exception:
+        if managed_target:
+            manager_result = manager.commit_success(pending_token)
+    except Exception as exc:
+        if managed_target and pending_token:
+            manager.reject_pending(
+                pending_token,
+                reason=str(exc) or "managed known_hosts cache update failed",
+            )
         disconnect = getattr(connection, "disconnect", None)
         if callable(disconnect):
             try:
@@ -298,12 +346,20 @@ def _record_direct_host_key(
                 pass
         raise
     event = {
-        "status": result.status,
-        "action": result.action,
+        "status": manager_result.status if manager_result is not None else result.status,
+        "action": manager_result.action if manager_result is not None else result.action,
         "host": host,
         "port": port,
-        "fingerprint_sha256": result.details.fingerprint_sha256,
-        "old_fingerprint_sha256": result.old_fingerprint_sha256,
+        "fingerprint_sha256": (
+            manager_result.details.fingerprint_sha256
+            if manager_result is not None
+            else result.details.fingerprint_sha256
+        ),
+        "old_fingerprint_sha256": (
+            manager_result.old_fingerprint_sha256
+            if manager_result is not None
+            else result.old_fingerprint_sha256
+        ),
     }
     try:
         setattr(connection, "_netconsole_host_key_event", event)

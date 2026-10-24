@@ -13,7 +13,12 @@ from urllib.parse import quote
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.core.shutdown_manager import shutdown_manager
-from netconsole.services.host_key_trust_service import HostKeyTrustService, install_managed_host_key_policy
+from netconsole.services.host_key_manager import HostKeyManager, HostKeyManagerError
+from netconsole.services.host_key_trust_service import (
+    HostKeyTrustService,
+    finalize_managed_host_key,
+    install_managed_host_key_policy,
+)
 from netconsole.services.netmiko_connection import ConnectionTarget, connection_targets, prepared_connection_target, sanitize_sensitive_text
 from netconsole.services.settings_tool_validation import SettingsToolPathError, validate_settings_tool_path
 
@@ -186,6 +191,9 @@ def _preflight_winscp_host_key(
     target: ConnectionTarget,
     prepared: ConnectionTarget,
     paths: PathResolver,
+    *,
+    device_id: str = "",
+    site_id: str = "",
 ) -> str:
     """Persist the current key before starting the separate WinSCP process."""
 
@@ -193,14 +201,40 @@ def _preflight_winscp_host_key(
 
     client = paramiko.SSHClient()
     sock: socket.socket | None = None
-    install_managed_host_key_policy(
-        client,
-        HostKeyTrustService(paths),
-        target.host,
-        target.port,
-        role="target",
-        host_key_policy="AUTO_REPLACE",
-    )
+    checked_device_id = str(device_id or "").strip()
+    host_key_manager: HostKeyManager | None = None
+    managed_target = False
+    if checked_device_id:
+        host_key_manager = HostKeyManager(paths)
+        if host_key_manager.has_device_resource_authority(site_id):
+            managed_target = host_key_manager.is_registered_device(site_id, checked_device_id)
+            if not managed_target:
+                raise HostKeyManagerError(
+                    "未登记或未授权设备不得自动建立 SSH Host Key 信任。",
+                    {"device_id": checked_device_id, "host": target.host, "port": target.port},
+                    code="HOST_KEY_TARGET_UNAUTHORIZED",
+                )
+    if managed_target:
+        install_managed_host_key_policy(
+            client,
+            HostKeyTrustService(paths),
+            target.host,
+            target.port,
+            role="target",
+            host_key_policy="AUTO_UPDATE",
+            device_id=checked_device_id,
+            authorized=True,
+            host_key_manager=host_key_manager,
+        )
+    else:
+        install_managed_host_key_policy(
+            client,
+            HostKeyTrustService(paths),
+            target.host,
+            target.port,
+            role="target",
+            host_key_policy="AUTO_REPLACE",
+        )
     try:
         if prepared.via_tunnel:
             sock = socket.create_connection((prepared.host, prepared.port), timeout=5.0)
@@ -216,11 +250,21 @@ def _preflight_winscp_host_key(
             allow_agent=False,
             sock=sock,
         )
+        if managed_target:
+            finalize_managed_host_key(client, success=True)
         event = dict(getattr(client, "_netconsole_host_key_event", {}) or {})
         fingerprint = str(event.get("fingerprint_sha256") or "").strip()
         if not fingerprint:
             raise RuntimeError("未能取得设备 SSH 主机指纹")
         return fingerprint
+    except Exception:
+        if managed_target:
+            finalize_managed_host_key(
+                client,
+                success=False,
+                failure_reason="winscp_preflight_failed",
+            )
+        raise
     finally:
         try:
             client.close()
@@ -237,6 +281,7 @@ def launch_winscp(
     include_password: bool = True,
     preferred_target: ConnectionTarget | None = None,
     paths: PathResolver | None = None,
+    site_id: str = "",
 ) -> WinScpLaunchResult:
     exe = find_winscp_exe(settings)
     if not exe:
@@ -262,7 +307,13 @@ def launch_winscp(
             if paths is not None:
                 managed_target = replace(
                     prepared,
-                    host_key_fingerprint_sha256=_preflight_winscp_host_key(target, prepared, paths),
+                    host_key_fingerprint_sha256=_preflight_winscp_host_key(
+                        target,
+                        prepared,
+                        paths,
+                        device_id=str(device.device_uuid or ""),
+                        site_id=site_id,
+                    ),
                 )
             else:
                 managed_target = prepared
@@ -282,7 +333,13 @@ def launch_winscp(
         if paths is not None:
             managed_target = replace(
                 target,
-                host_key_fingerprint_sha256=_preflight_winscp_host_key(target, target, paths),
+                host_key_fingerprint_sha256=_preflight_winscp_host_key(
+                    target,
+                    target,
+                    paths,
+                    device_id=str(device.device_uuid or ""),
+                    site_id=site_id,
+                ),
             )
         args = build_winscp_command(device, managed_target, exe, include_password=include_password)
         process = subprocess.Popen(args, shell=False)
