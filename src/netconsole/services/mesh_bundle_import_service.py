@@ -1260,6 +1260,7 @@ class MeshBundleImportService:
                     self.site_name,
                     profile.mr_id,
                     should_cancel=should_cancel,
+                    allow_legacy_startup_recovery=True,
                 )
                 self._discard_staging_schema_archives(
                     staging_paths.mesh_mr_root(self.site_name, profile.safe_folder_name)

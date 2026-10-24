@@ -45,6 +45,8 @@ class MeshParsedRebuildService:
         allow_empty_raw: bool = False,
         raw_files: list[Path] | None = None,
         source_metadata: Iterable[Mapping[str, object]] | None = None,
+        database_authority: Mapping[str, Any] | None = None,
+        allow_legacy_startup_recovery: bool = False,
     ) -> dict[str, object]:
         storage = MeshStorageService(site_id, self.paths)
         profile = storage.catalog.get_profile(mr_id)
@@ -78,6 +80,15 @@ class MeshParsedRebuildService:
             profile_root=profile_root,
             source_metadata=tuple(dict(item) for item in source_metadata or ()),
         )
+        descriptor_metadata: dict[str, object] = {}
+        if database_authority:
+            if allow_legacy_startup_recovery:
+                raise ValueError("database authority conflicts with the legacy MESH recovery adapter")
+            descriptor_metadata["database_authority"] = dict(database_authority)
+        elif allow_legacy_startup_recovery:
+            # Legacy MESH jobs have their own scoped write authorization and
+            # predate the database-task authority envelope.
+            descriptor_metadata["startup_recovery_legacy_adapter"] = "LEGACY_MESH_REBUILD_ADAPTER"
         descriptor = DatabaseDescriptor(
             database_kind="mesh_derived",
             scope_type="site_profile",
@@ -93,6 +104,7 @@ class MeshParsedRebuildService:
             maintenance_lock=f"database-upgrade:site_profile:{site_id}:{profile.safe_folder_name}",
             reason="MESH 派生数据库版本不兼容或需要重建",
             source_count=len(selected_raw),
+            metadata=descriptor_metadata,
             version_reader=self._schema_version,
             reopen_hook=lambda: None,
             smoke_test=lambda path: self._smoke_test(path),

@@ -34,6 +34,7 @@ from netconsole.services.production_database_maintenance import (
     write_exact_manifest,
 )
 from netconsole.services.database_footprint_maintenance import sqlite_quick_profile
+from netconsole.services.database_upgrade.journal import DatabaseUpgradeJournal, recover_incomplete_upgrades
 from netconsole.services.database_upgrade.sqlite_consistency import sqlite_backup
 from scripts.maintenance.production_database_maintenance import (
     _build_gate_wrapper,
@@ -1449,6 +1450,17 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
         functional_gate=lambda: True,
     )
     assert result["replaced"] is True
+    journal = json.loads(
+        (paths.database_upgrade_journal_dir / "op-replace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert journal["recovery_authority"]["authority_mode"] == (
+        "PRODUCTION_MAINTENANCE_ADAPTER"
+    )
+    assert journal["recovery_authority"]["production_maintenance_evidence"] == result[
+        "evidence_binding"
+    ]
     assert result["execution_time_recheck"] == {
         "runtime_writer_stopped": True,
         "database_owner_inactive": True,
@@ -1484,6 +1496,108 @@ def test_execute_replace_requires_explicit_authorization_and_supports_rollback(t
     assert sqlite_quick_profile(rollback_path)["sha256"] == rollback_sha
     with closing(sqlite3.connect(active)) as connection:
         assert connection.execute("SELECT COUNT(*) FROM records").fetchone()[0] == 2
+    rollback_journal = json.loads(
+        (paths.database_upgrade_journal_dir / "op-rollback.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert rollback_journal["recovery_authority"]["authority_mode"] == (
+        "PRODUCTION_MAINTENANCE_ADAPTER"
+    )
+    assert (
+        rollback_journal["recovery_authority"]["production_maintenance_evidence"]
+        ["source_snapshot_identity"]
+        == source_identity
+    )
+
+
+def test_startup_recovery_revalidates_production_owner_before_rollback(tmp_path: Path) -> None:
+    paths, site, _ = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    rollback_path = _backup(paths, "devices.db")[0]
+    expected = sqlite_quick_profile(rollback_path)
+    candidate = _candidate(paths, "op-startup-recovery", "devices.db")
+    with closing(sqlite3.connect(candidate)) as connection:
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records(value) VALUES ('unverified-switch')")
+        connection.commit()
+    capability = _capability(
+        paths,
+        operation_id="op-startup-recovery",
+        source_identity="snapshot-identity",
+    )
+    owner = capability._owner("devices.db")
+    DatabaseUpgradeJournal(paths, "op-startup-recovery").update(
+        "production_switched",
+        production_maintenance_evidence=capability.evidence_binding.startup_recovery_evidence(
+            source_snapshot_identity=owner.source_identity
+        ),
+        production_rollback_owner=owner.as_dict(),
+        active_path=str(active),
+        shadow_path=str(candidate),
+        rollback_path=str(rollback_path),
+        database_kind="devices.db",
+        scope_type="site",
+        scope_id="legacy-dfd356e96ea0",
+        maintenance_lock="site-database-maintenance:legacy-dfd356e96ea0",
+        switched=True,
+    )
+    candidate.replace(active)
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "recovered"
+    assert result[0]["stage"] == "recovered_production_rollback"
+    assert result[0]["production_recovery_status"] == "OWNER_VERIFIED_ROLLBACK"
+    assert sqlite_quick_profile(active)["sha256"] == expected["sha256"]
+    assert sqlite_quick_profile(rollback_path)["sha256"] == expected["sha256"]
+
+
+def test_startup_recovery_reuses_verified_restoration_after_interruption(
+    tmp_path: Path,
+) -> None:
+    paths, site, _ = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    rollback_path = _backup(paths, "devices.db")[0]
+    expected = sqlite_quick_profile(rollback_path)
+    candidate = _candidate(paths, "op-recovery-restoration-retry", "devices.db")
+    with closing(sqlite3.connect(candidate)) as connection:
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records(value) VALUES ('unverified-switch')")
+        connection.commit()
+    restoration = active.with_name(f".{active.name}.production-recovery-restore")
+    restoration.write_bytes(rollback_path.read_bytes())
+    capability = _capability(
+        paths,
+        operation_id="op-recovery-restoration-retry",
+        source_identity="snapshot-identity",
+    )
+    owner = capability._owner("devices.db")
+    DatabaseUpgradeJournal(paths, "op-recovery-restoration-retry").update(
+        "production_switched",
+        production_maintenance_evidence=capability.evidence_binding.startup_recovery_evidence(
+            source_snapshot_identity=owner.source_identity
+        ),
+        production_rollback_owner=owner.as_dict(),
+        active_path=str(active),
+        shadow_path=str(candidate),
+        rollback_path=str(rollback_path),
+        database_kind="devices.db",
+        scope_type="site",
+        scope_id="legacy-dfd356e96ea0",
+        maintenance_lock="site-database-maintenance:legacy-dfd356e96ea0",
+        switched=True,
+    )
+    candidate.replace(active)
+    restoration_before = restoration.read_bytes()
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "recovered"
+    assert result[0]["stage"] == "recovered_production_rollback"
+    assert sqlite_quick_profile(active)["sha256"] == expected["sha256"]
+    assert not restoration.exists()
+    assert restoration_before
 
 
 def test_post_switch_restart_failure_rolls_back_and_finalizes_journal(tmp_path: Path) -> None:

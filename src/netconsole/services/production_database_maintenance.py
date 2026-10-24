@@ -702,6 +702,18 @@ class ProductionEvidenceBinding:
             ),
         }
 
+    def startup_recovery_evidence(self, *, source_snapshot_identity: str) -> dict[str, str]:
+        """Bind rollback-only journal recovery to this verified capability."""
+
+        return {
+            "current_implementation_head": self.current_implementation_head,
+            "rehearsal_evidence_head": self.rehearsal_evidence_head,
+            "source_snapshot_identity": str(source_snapshot_identity or ""),
+            "manifest_generated_head": self.current_implementation_head,
+            "storage_registry_sha256": self.storage_registry_sha256,
+            "production_maintenance_script_sha256": self.production_maintenance_script_sha256,
+        }
+
 
 def _source_status_and_head(value: Mapping[str, Any]) -> tuple[str, str]:
     status = str(
@@ -2810,11 +2822,18 @@ class ProductionMaintenanceCapability:
                 gates=gates,
             )
             candidate_profile = self._validate_candidate(manifest, candidate_path)
+            owner = self._owner(manifest.database)
+            if owner.operation_id != operation_id:
+                raise ProductionMaintenanceError("rollback owner operation_id mismatch")
             journal = self._journal_factory(self.paths, operation_id)
             lock_key = site_database_maintenance_key(site.site_id)
             journal.update(
                 "production_preflight",
                 **preflight,
+                production_maintenance_evidence=self.evidence_binding.authorization_evidence(
+                    manifest
+                ),
+                production_rollback_owner=owner.as_dict(),
                 active_path=str(database),
                 shadow_path=str(candidate_path),
                 rollback_path=str(rollback_path),
@@ -2826,9 +2845,6 @@ class ProductionMaintenanceCapability:
             )
             switched = False
             try:
-                owner = self._owner(manifest.database)
-                if owner.operation_id != operation_id:
-                    raise ProductionMaintenanceError("rollback owner operation_id mismatch")
                 if rollback_path != self._rollback_path(site, owner, manifest.database):
                     raise ProductionMaintenanceError("rollback path does not match registered owner")
                 self._validate_rollback_owner(manifest, site, owner)
@@ -2944,6 +2960,10 @@ class ProductionMaintenanceCapability:
             journal = self._journal_factory(self.paths, operation_id)
             journal.update(
                 "created",
+                production_maintenance_evidence=self.evidence_binding.startup_recovery_evidence(
+                    source_snapshot_identity=owner.source_identity
+                ),
+                production_rollback_owner=owner.as_dict(),
                 active_path=str(active),
                 rollback_path=str(rollback_path),
                 database_kind=database,
