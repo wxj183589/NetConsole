@@ -2334,9 +2334,11 @@ class AcRepository:
 
         This is a read-time projection only.  The complete history remains
         available through ``list_fit_ap_lldp_history_by_ap`` and the history
-        page APIs.  A relation is valid for the current view only when all
-        four identity fields are present: AP MAC, local interface, neighbor
-        MAC, and neighbor interface.
+        page APIs.  The AP UUID and AC scope are the authoritative AP identity;
+        the resource MAC is used only to complete a current LLDP row whose
+        collector did not include the AP MAC.  A relation is valid for the
+        current view only when the local interface, neighbor MAC, and neighbor
+        interface are present.
         """
         bounded_rows: list[dict[str, object | None]] = []
         bounded_authority = False
@@ -2354,7 +2356,14 @@ class AcRepository:
                 bounded_rows = [
                     dict(row)
                     for row in conn.execute(
-                        "SELECT * FROM fit_ap_lldp_current "
+                        "SELECT l.*, "
+                        "COALESCE(NULLIF(l.ap_mac, ''), "
+                        "(SELECT r.ap_mac FROM ac_fit_ap_resources r "
+                        "WHERE r.ac_device_uuid = l.ac_device_uuid "
+                        "AND r.ap_uuid = l.ap_uuid "
+                        "AND trim(COALESCE(r.ap_mac, '')) <> '' "
+                        "ORDER BY r.id DESC LIMIT 1)) AS resolved_ap_mac "
+                        "FROM fit_ap_lldp_current l "
                         "WHERE ap_uuid = ?" + scope_sql,
                         params,
                     ).fetchall()
@@ -2376,7 +2385,9 @@ class AcRepository:
         latest: dict[tuple[str, str, str, str], dict[str, object | None]] = {}
         for source in rows:
             row = dict(source)
-            ap_mac = normalize_ap_mac(row.get("ap_mac")).normalized
+            ap_mac = normalize_ap_mac(
+                row.get("ap_mac") or row.get("resolved_ap_mac")
+            ).normalized
             local_interface = normalize_interface_key(
                 row.get("local_interface") or row.get("lldp_local_interface")
             )
@@ -2386,10 +2397,20 @@ class AcRepository:
             neighbor_interface = normalize_interface_key(
                 row.get("neighbor_interface") or row.get("lldp_neighbor_interface")
             )
-            if not all((ap_mac, local_interface, neighbor_mac, neighbor_interface)):
+            if not all((local_interface, neighbor_mac, neighbor_interface)):
                 continue
-            key = (ap_mac, local_interface, neighbor_mac, neighbor_interface)
-            row["ap_mac"] = row.get("ap_mac") or ap_mac
+            ap_identity = str(
+                row.get("ap_uuid") or row.get("resource_key") or ""
+            ).strip()
+            if not ap_identity:
+                continue
+            key = (
+                f"{row.get('ac_device_uuid') or ''}:{ap_identity}",
+                local_interface,
+                neighbor_mac,
+                neighbor_interface,
+            )
+            row["ap_mac"] = row.get("ap_mac") or row.get("resolved_ap_mac") or ap_mac
             row["local_interface"] = row.get("local_interface") or row.get(
                 "lldp_local_interface"
             )

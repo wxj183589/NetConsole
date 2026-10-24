@@ -5,7 +5,11 @@ from netconsole.parsers.h3c.device_parser import parse_device_model
 from netconsole.parsers.h3c.device_clock_parser import parse_h3c_device_clock
 from netconsole.parsers.h3c.interface_parser import parse_interfaces
 from netconsole.parsers.h3c.lldp_parser import parse_lldp_neighbors
-from netconsole.parsers.h3c.ac.fit_ap_optical_parser import parse_fit_ap_optical, parse_fit_ap_transceiver
+from netconsole.parsers.h3c.ac.fit_ap_optical_parser import (
+    parse_fit_ap_optical,
+    parse_fit_ap_transceiver,
+    parse_fit_ap_transceiver_diagnosis_snapshots,
+)
 from netconsole.parsers.h3c.sysname_parser import parse_sysname
 from netconsole.parsers.h3c.transceiver_parser import (
     merge_transceiver_data,
@@ -429,6 +433,41 @@ GigabitEthernet2/0/1 transceiver diagnostic information:
     assert item["rx_high_warning"] == "-5.00"
     assert item["tx_low_warning"] == "-9.00"
     assert item["tx_high_warning"] == "-3.00"
+
+
+def test_real_fit_ap_gigabit_diagnosis_fixture_preserves_rx_tx_and_thresholds():
+    output = fixture("real_fit_ap_transceiver_diagnosis_gigabit.txt")
+    snapshots = parse_fit_ap_transceiver_diagnosis_snapshots(output)
+    selected = parse_fit_ap_transceiver(output)
+
+    assert len(snapshots) == 1
+    assert snapshots[0]["interface_name"] == "GigabitEthernet1/0/2"
+    assert snapshots[0]["rx_power"] == "-8.35"
+    assert snapshots[0]["tx_power"] == "-5.98"
+    assert snapshots[0]["rx_low_alarm"] == "-19.00"
+    assert snapshots[0]["tx_low_alarm"] == "-11.00"
+    assert selected["rx_power"] == "-8.35"
+    assert selected["tx_power"] == "-5.98"
+
+
+def test_real_fit_ap_ten_gigabit_fixture_keeps_absent_port_separate():
+    output = fixture("real_fit_ap_transceiver_diagnosis_tengigabit.txt")
+    snapshots = parse_fit_ap_transceiver_diagnosis_snapshots(output)
+    selected = parse_fit_ap_transceiver(output)
+
+    assert [item["interface_name"] for item in snapshots] == [
+        "Ten-GigabitEthernet1/0/1",
+        "Ten-GigabitEthernet1/0/2",
+    ]
+    assert snapshots[0]["status"] == "no_module"
+    assert snapshots[0].get("rx_power") is None
+    assert snapshots[1]["rx_power"] == "-10.51"
+    assert snapshots[1]["tx_power"] == "-5.21"
+    assert snapshots[1]["rx_low_alarm"] == "-29.98"
+    assert snapshots[1]["tx_low_alarm"] == "-11.00"
+    assert selected["interface_name"] == "Ten-GigabitEthernet1/0/2"
+    assert selected["rx_power"] == "-10.51"
+    assert selected["tx_power"] == "-5.21"
 
 
 def test_transceiver_parsers_mark_explicitly_absent_module():
