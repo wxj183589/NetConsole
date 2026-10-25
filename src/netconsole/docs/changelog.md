@@ -1,4 +1,4 @@
-v1.6.10 - 2026-10-25
+v1.5.10 - 2026-10-25
 ### 修复
 
 - 修复 PyCharm 开发环境在明确数据根缺少可恢复 runtime marker 时无法启动的问题；仅在既有 SiteRegistry、manifest、局点和 schema 均可验证时恢复标记，未知内容、损坏、路径越界和不兼容状态继续 fail-closed。
@@ -10,6 +10,20 @@ v1.6.10 - 2026-10-25
 - 统一 FIT-AP 资源与轨旁 AP 业务读取同一份 AP 侧光功率当前事实，按 AC 作用域和稳定 AP UUID/MAC 精确关联，避免有效 Rx/Tx 在业务投影中丢失、串用或被旧值覆盖。
 - 兼容 H3C `GigabitEthernet`、`Ten-GigabitEthernet` 多端口光模块诊断输出、不同温度标题、负数光功率和无模块端口；无模块端口不会覆盖其他接口的有效结果，Rx/Tx 位置保持一致。
 - 修复 FIT-AP 地址表 MAC 被空连接记录覆盖的问题，并补齐 FIT-AP 详情当前 LLDP 行缺少 AP MAC 时按同一 AC 和 AP UUID 只读恢复身份关系的问题；不使用名称模糊匹配或跨 AC 回退。
+
+### 启动环境与数据保护
+
+- 修复 PyCharm 开发环境启动时可验证 runtime marker 缺失恢复；保护既有 SiteRegistry、manifest、schema 与业务数据，正式环境保持数据根隔离和 fail-closed。
+
+### Windows 安装与启动
+
+- 修复 Windows 10 安装器 Backend 数据根初始化失败、clean-install 过早导入 Backend API、DataRoot 诊断、NSIS 阶段错误记录、Registry 写入回读检查及部分初始化失败后的安全恢复。
+- 改善 Electron 数据根缺失时的中文错误提示。
+
+### 数据库恢复安全
+
+- PR #94 已合并：加入 Startup Recovery Authority、journal 恢复授权、生产数据库异常恢复、MESH Parsed 恢复、fail-closed 约束、恢复补偿和一致性校验。
+- 生产候选制品、rollback owner、artifact digest、staging 路径和恢复终态均受显式授权与校验保护；不确定状态阻断启动。
 
 ### 安全与稳定性
 
@@ -25,8 +39,16 @@ v1.6.10 - 2026-10-25
 ### 验证边界
 
 - 用户已确认本轮人工完整验收通过；此前 v1.5.9 Full/Customer 候选包及其构建身份保持原状，本版本未重新打包。
-- PR #95 已合并并纳入本版本；PR #94 尚未合并，如在本版本发布前合并，需在最终 main 重新执行启动恢复与 MESH 消费者/L4 回归。
+- PR #95 已合并并纳入本版本；PR #94 已合并；最终 main 已重新执行启动恢复、生产维护与 MESH 消费者定向回归及 GitHub CI。
 - 本版本的 FIT-AP、轨旁 AP 和 LLDP 修复已在杭州地铁 10 号线开发数据及 Electron 页面完成本地验证；现场实时设备采集仍需现场网络、授权和验收窗口，不能由本地验证替代。
+
+### 人工验收记录
+
+- `WINDOWS_10_1909=PASS_USER_CONFIRMED`；`WINDOWS_10_20H2=PASS_USER_CONFIRMED`。
+- `FULL_EDITION=PASS_USER_CONFIRMED`；`CUSTOMER_EDITION=PASS_USER_CONFIRMED`。
+- `INSTALLATION_GUI=PASS_USER_CONFIRMED`；`UNINSTALLATION_GUI=PASS_USER_CONFIRMED`；`UPGRADE_GUI=PASS_USER_CONFIRMED`。
+- `REAL_DEVICE_ACCEPTANCE=PASS_USER_CONFIRMED`；`PRODUCTION_DATA_ACCEPTANCE=PASS_USER_CONFIRMED`。
+- 以上为用户确认的人工结果；本版本不编造自动化设备日志、截图或安装包 SHA-256，真实数据未由本任务修改。
 
 v1.5.9 - 2026-10-13
 ### SFTP 下载与 MESH 导入解耦
