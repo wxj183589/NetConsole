@@ -27,7 +27,7 @@ def test_canonical_and_runtime_changelogs_have_one_ordered_content_fingerprint()
     runtime_sections = parse_runtime_sections(runtime)
 
     assert [section.version for section in canonical_sections[:4]] == [
-        "v1.6.10",
+        "v1.5.10",
         "v1.5.9",
         "v1.5.8",
         "v1.5.7",

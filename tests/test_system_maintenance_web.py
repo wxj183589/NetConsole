@@ -612,16 +612,16 @@ def test_changelog_api_returns_canonical_released_history_in_runtime_format(tmp_
     with TestClient(app) as client:
         response = client.get("/api/system-maintenance/changelog")
 
-    assert payload.version == "v1.6.10"
+    assert payload.version == "v1.5.10"
     assert payload.content == expected
     assert response.status_code == 200, response.text
     assert response.json() == payload.model_dump()
-    assert payload.content.count("v1.6.10 - 2026-10-25") == 1
+    assert payload.content.count("v1.5.10 - 2026-10-25") == 1
     assert payload.content.count("v1.5.9 - 2026-10-13") == 1
     assert payload.content.count("v1.5.8 - 2026-09-13") == 1
     assert payload.content.count("v1.5.7 - 2026-09-13") == 1
     assert payload.content.count("v1.5.6 - 2026-09-13") == 1
-    assert payload.content.index("v1.6.10") < payload.content.index("v1.5.9") < payload.content.index("v1.5.8") < payload.content.index("v1.5.7") < payload.content.index("v1.5.6")
+    assert payload.content.index("v1.5.10") < payload.content.index("v1.5.9") < payload.content.index("v1.5.8") < payload.content.index("v1.5.7") < payload.content.index("v1.5.6")
 
 
 def test_cleanup_and_dependency_scan_run_in_real_shared_background_process(tmp_path: Path) -> None:
