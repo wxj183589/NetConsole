@@ -56,7 +56,7 @@ D:\study\NetConsole-Workspace\worktrees\<task-id-or-branch-name>
 | 用途 | 规范路径 |
 | --- | --- |
 | 共享样本 | `test-data\fixtures\`、`test-data\mesh\`、`test-data\device\`、`test-data\integration\` |
-| 自动化测试隔离运行根 | `test-data\NetConsole\<run-id>\`；Local Gate、CI 和测试契约固定使用此路径 |
+| 自动化测试隔离运行根 | `test-data\NetConsole\<run-id>\`；主仓库及 `worktrees\<task-id>` 中的受管理 Git worktree 共用此 Workspace 容器，CI 使用检出目录旁的隔离容器 |
 | 历史测试证据 | `test-data\historical\`，保持原状 |
 | 仓库内可再生构建输出 | `NetConsole\dist\`；Renderer、Electron、PyInstaller、Agent、日志和 smoke 构建链的普通输出固定在这里 |
 | 正式发布制品 | `release\<version>\` |

@@ -176,6 +176,23 @@ def test_test_data_root_base_is_derived_from_repository_parent(tmp_path: Path) -
     ).resolve()
 
 
+def test_managed_worktree_uses_canonical_workspace_test_data_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "NetConsole-Workspace"
+    (workspace / "NetConsole" / ".git").mkdir(parents=True)
+    worktree = workspace / "worktrees" / "task"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: main-worktree-metadata", encoding="utf-8")
+
+    assert runtime_environment.test_data_root_base(worktree) == (
+        workspace / "test-data" / "NetConsole"
+    ).resolve()
+
+    (worktree / ".git").unlink()
+    assert runtime_environment.test_data_root_base(worktree) == (
+        workspace / "worktrees" / "test-data" / "NetConsole"
+    ).resolve()
+
+
 def test_test_data_root_base_uses_explicit_project_root_for_frozen_test_smoke(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -14,8 +14,8 @@ import pytest
 from netconsole.core.runtime_environment import test_data_root_base
 
 # conftest 会在测试模块收集前加载。测试根固定在仓库工作区父目录的
-# test-data/NetConsole 下，并在会话结束时清理。本机 canonical checkout
-# 仍解析为当前源码检出目录父级的 test-data/NetConsole；GitHub Actions
+# test-data/NetConsole 下，并在会话结束时清理。标准主仓库与其 managed
+# worktree 都解析到 Workspace/test-data/NetConsole；GitHub Actions checkout
 # 则解析到 runner checkout 对应的隔离工作区，不依赖固定盘符或机器路径。
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _TEST_BASE_ROOT = test_data_root_base(repository_root=_REPOSITORY_ROOT)
