@@ -1175,6 +1175,65 @@ def test_current_fit_ap_lldp_reads_bounded_current_with_ac_scope(tmp_path):
     assert current[0]["local_interface"] == "GigabitEthernet1/0/1"
 
 
+def test_current_fit_ap_lldp_fills_missing_ap_mac_from_exact_resource_identity(tmp_path):
+    repository = AcRepository(make_database(tmp_path))
+    repository.replace_fit_ap_resources(
+        "ac-a",
+        [{"ap_uuid": "ap-shared", "ap_name": "AP-A", "ap_mac": "0011-2233-4455"}],
+    )
+    repository.replace_fit_ap_resources(
+        "ac-b",
+        [{"ap_uuid": "ap-shared", "ap_name": "AP-B", "ap_mac": "0011-2233-4466"}],
+    )
+    with repository.database.connect() as conn:
+        conn.execute(
+            "UPDATE fit_ap_lldp_retention_meta SET value = 'bounded_v1' WHERE key = 'authority'"
+        )
+        conn.executemany(
+            """
+            INSERT INTO fit_ap_lldp_current (
+                resource_key, ac_device_uuid, ap_uuid, ap_name, ap_mac,
+                local_interface, lldp_neighbor, neighbor_interface, neighbor_mac,
+                collected_at
+            ) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "ap-shared",
+                    "ac-a",
+                    "ap-shared",
+                    "AP-A",
+                    "GigabitEthernet1/0/1",
+                    "SW-A",
+                    "GE1/0/1",
+                    "aa11-bbcc-ddee",
+                    "2026-08-01T00:00:00",
+                ),
+                (
+                    "ap-shared",
+                    "ac-b",
+                    "ap-shared",
+                    "AP-B",
+                    "GigabitEthernet1/0/2",
+                    "SW-B",
+                    "GE1/0/2",
+                    "ff11-2233-4455",
+                    "2026-08-01T00:01:00",
+                ),
+            ],
+        )
+        conn.commit()
+
+    current = repository.list_current_fit_ap_lldp_by_ap(
+        "ap-shared", ac_device_uuid="ac-a"
+    )
+
+    assert len(current) == 1
+    assert current[0]["ap_mac"] == "0011-2233-4455"
+    assert current[0]["lldp_neighbor"] == "SW-A"
+    assert current[0]["local_interface"] == "GigabitEthernet1/0/1"
+
+
 def test_current_fit_ap_lldp_keeps_latest_relations_after_switch_change(tmp_path):
     repository = AcRepository(make_database(tmp_path))
     rows = [
@@ -2098,6 +2157,10 @@ AP name                          IP address                       MAC address
 AP name                  RID State Channel          BW    Usage TxPower Clients
 站厅_AP-01               1   Up    149              40    27    24      0
 站厅_AP-01               2   Up    6                20    1     17      0
+""",
+            "display wlan ap all connection-record": """
+AP name                        IP address      State     Time
+站厅_AP-01                     10.1.1.10       Run       10-25 00:10:00
 """,
         },
         "ac-1",

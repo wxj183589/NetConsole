@@ -79,6 +79,32 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert _fingerprint(db_path) == before
 
 
+def test_ac_query_does_not_expose_retained_failed_fit_ap_optical_values(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute(
+            """
+            UPDATE ac_fit_ap_optical
+            SET status = 'failed', rx_power = '-8.17', tx_power = '-5.69',
+                error_message = 'WinError 10054'
+            WHERE ap_uuid = 'ap-online'
+            """
+        )
+        conn.commit()
+    sync_ac_management_optical_current(db_path)
+
+    optical = AcManagementQueryService(paths).get_ap_optical("demo", "ap-online")
+
+    assert optical is not None
+    assert optical.rx_power == ""
+    assert optical.tx_power == ""
+    assert optical.ap_rx_status == "unknown"
+    # The switch-side sample may still be current; AP-side status and values
+    # must nevertheless remain unknown/empty after the failed AP collection.
+    assert optical.data_freshness == "fresh"
+    assert optical.error_summary == "WinError 10054"
+
+
 def test_ac_query_service_never_exposes_unknown_snapshot_as_current_unauthenticated(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     repository = AcRepository(Database(paths.site_db_path("demo")))

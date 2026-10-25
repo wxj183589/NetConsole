@@ -30,7 +30,10 @@ from netconsole.core.optical_rx_threshold import (
 from netconsole.core.paths import PathResolver
 from netconsole.core.performance_profiling import ProfilingConnection, profile_repository
 from netconsole.services.site_manager import SiteManager
-from netconsole.core.sources.ap_source import compute_ap_status
+from netconsole.core.sources.ap_source import (
+    compute_ap_status,
+    project_current_ap_optical_row,
+)
 from netconsole.core.sources.switch_source import compute_switch_status
 from netconsole.models.api.ac_management import (
     AcApDTO,
@@ -1239,7 +1242,7 @@ class AcManagementQueryService:
                 anomaly_reason=OPTICAL_NOT_APPLICABLE_REASON,
                 threshold_status="不适用",
             )
-        row = self._indexed_row(resource, optical_by_ap)
+        row = project_current_ap_optical_row(self._indexed_row(resource, optical_by_ap))
         if row is None:
             return AcOpticalDTO(anomaly_reason="未采集光衰数据")
         switch_name = str(row.get("neighbor_device_name") or row.get("lldp_neighbor_name") or resource.get("lldp_neighbor_name") or "")
@@ -1253,6 +1256,7 @@ class AcManagementQueryService:
         if not has_ap_data and not has_switch_data and str(row.get("status") or "").casefold() != "success":
             return AcOpticalDTO(
                 anomaly_reason="光衰采集无有效结果",
+                data_freshness=str(row.get("data_freshness") or "unknown"),
                 source_switch=switch_name,
                 source_interface=interface,
                 error_summary=str(row.get("error_message") or ""),

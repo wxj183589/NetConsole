@@ -1258,8 +1258,8 @@ function validatePackagedChangelog(payload) {
   const content = String(payload?.content ?? '')
   const versions = [...content.matchAll(/^v(\d+\.\d+\.\d+)(?:\s+-\s+\d{4}-\d{2}-\d{2})?$/gmu)]
     .map((match) => `v${match[1]}`)
-  const expected = ['v1.5.9', 'v1.5.8', 'v1.5.7']
-  if (payload?.version !== 'v1.5.9' || JSON.stringify(versions.slice(0, 3)) !== JSON.stringify(expected)) {
+  const expected = ['v1.6.10', 'v1.5.9', 'v1.5.8']
+  if (payload?.version !== 'v1.6.10' || JSON.stringify(versions.slice(0, 3)) !== JSON.stringify(expected)) {
     throw new Error(`冻结 Backend 更新日志版本顺序错误：${changelogBodyForError(payload)}`)
   }
   for (const version of expected) {
@@ -1267,8 +1267,8 @@ function validatePackagedChangelog(payload) {
       throw new Error(`冻结 Backend 更新日志包含重复或缺失版本：${version}`)
     }
   }
-  if (!content.includes('SFTP 下载与 MESH 导入解耦') || !content.includes('H3C Comware V7/V9 Capability') || !content.includes('Task Lifecycle')) {
-    throw new Error('冻结 Backend 更新日志缺少 v1.5.9/v1.5.8/v1.5.7 内容指纹。')
+  if (!content.includes('PyCharm 开发环境') || !content.includes('SFTP 下载与 MESH 导入解耦') || !content.includes('H3C Comware V7/V9 Capability')) {
+    throw new Error('冻结 Backend 更新日志缺少 v1.6.10/v1.5.9/v1.5.8 内容指纹。')
   }
   const packagedPath = resolve(
     unpackedRoot,

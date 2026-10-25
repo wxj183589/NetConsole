@@ -1,0 +1,12 @@
+<74ad-cba8-ea00>dis tran d i
+Ten-GigabitEthernet1/0/1 transceiver diagnostic information:
+The transceiver is absent.
+
+Ten-GigabitEthernet1/0/2 transceiver diagnostic information:
+  Current diagnostic parameters:
+    Temp.(C) Voltage(V) Bias(mA) RX power(dBm) TX power(dBm)
+    34       3.25       18.69    -10.51        -5.21
+  Alarm thresholds:
+          Temp.(C) Voltage(V) Bias(mA) RX power(dBm) TX power(dBm)
+    High  80       3.60       75.00    1.00          0.00
+    Low   -10      2.80       5.00     -29.98        -11.00

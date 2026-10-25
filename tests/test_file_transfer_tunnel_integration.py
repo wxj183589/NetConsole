@@ -442,6 +442,9 @@ def test_site_relay_uses_shared_jump_channel_for_real_sftp(
         username=JUMP_USERNAME,
         password=JUMP_PASSWORD,
     )
+    device = DeviceRepository(Database(paths.site_db_path("demo"))).create(
+        _device(jump.address[1], target.address[1])
+    )
     trust = HostKeyTrustService(paths)
     service = FileTransferService(
         "demo",
@@ -455,7 +458,7 @@ def test_site_relay_uses_shared_jump_channel_for_real_sftp(
     )
 
     try:
-        root = service.connect(_device(jump.address[1], target.address[1]))
+        root = service.connect(device)
         files = service.list_directory(root)
         destination = tmp_path / "site-relay-downloaded.bin"
         service.download(files[0].remote_path, destination, chunk_size=64 * 1024)
@@ -591,10 +594,13 @@ def test_site_relay_failure_does_not_fallback_to_device_tunnel(
         username=JUMP_USERNAME,
         password=JUMP_PASSWORD,
     )
+    device = DeviceRepository(Database(paths.site_db_path("demo"))).create(
+        _device(jump.address[1], target.address[1])
+    )
     service = FileTransferService("demo", paths, host_key_trust=HostKeyTrustService(paths))
 
     with pytest.raises(FileTransferConnectionError):
-        service.connect(_device(jump.address[1], target.address[1]))
+        service.connect(device)
 
     assert service._tunnel_session is None
     assert forwards.value == 0

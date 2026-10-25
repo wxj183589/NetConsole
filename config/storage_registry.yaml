@@ -2624,7 +2624,7 @@
       "schema_version": "versioned JSON configuration",
       "allowed_data_classes": ["OPERATIONAL_CURRENT"],
       "forbidden_data_classes": ["STAGING_TEMPORARY", "DISPOSABLE_DERIVED"],
-      "source_locations": ["src/netconsole/core/paths.py", "docs/storage/DATA_ROOT.md"]
+      "source_locations": ["src/netconsole/core/paths.py", "src/netconsole/services/site_storage.py", "docs/storage/DATA_ROOT.md"]
     },
     {
       "id": "global.config.security",
@@ -2643,7 +2643,7 @@
       "schema_version": "security configuration",
       "allowed_data_classes": ["OPERATIONAL_CURRENT"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "STAGING_TEMPORARY", "DISPOSABLE_DERIVED"],
-      "source_locations": ["src/netconsole/core/paths.py", "docs/storage/DATA_ROOT.md"]
+      "source_locations": ["src/netconsole/core/paths.py", "src/netconsole/repositories/host_key_repository.py", "src/netconsole/services/host_key_manager.py", "docs/storage/DATA_ROOT.md"]
     },
     {
       "id": "global.legacy.mib_archive",
