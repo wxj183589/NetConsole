@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 
 from scripts.check_workspace_layout import (
     WORKSPACE_TOP_LEVEL,
@@ -41,6 +42,36 @@ def test_workspace_top_level_reports_duplicate_repository(tmp_path: Path) -> Non
     violations = check_workspace_root(tmp_path)
 
     assert any(item.kind == "DUPLICATE_WORKSPACE_REPOSITORY" for item in violations)
+
+
+def test_registered_independent_repository_is_accepted_only_with_expected_identity(tmp_path: Path) -> None:
+    independent = tmp_path / "NetConsole-Next"
+    independent.mkdir()
+    subprocess.run(("git", "init", "-q", str(independent)), check=True)
+    subprocess.run(
+        ("git", "-C", str(independent), "remote", "add", "origin", "https://github.com/wxj183589/NetConsole-Next.git"),
+        check=True,
+    )
+
+    assert check_workspace_root(tmp_path) == []
+
+    subprocess.run(
+        ("git", "-C", str(independent), "remote", "set-url", "origin", "https://github.com/example/other.git"),
+        check=True,
+    )
+    kinds = {item.kind for item in check_workspace_root(tmp_path)}
+    assert kinds == {"UNAPPROVED_WORKSPACE_TOP_LEVEL", "DUPLICATE_WORKSPACE_REPOSITORY"}
+
+
+def test_backup_container_is_allowed_but_unknown_repository_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "backups").mkdir()
+    assert check_workspace_root(tmp_path) == []
+
+    unknown = tmp_path / "another-project"
+    unknown.mkdir()
+    (unknown / ".git").mkdir()
+    kinds = {item.kind for item in check_workspace_root(tmp_path)}
+    assert kinds == {"UNAPPROVED_WORKSPACE_TOP_LEVEL", "DUPLICATE_WORKSPACE_REPOSITORY"}
 
 
 def test_workspace_reports_nonstandard_output_container(tmp_path: Path) -> None:

@@ -23,6 +23,7 @@ WORKSPACE_TOP_LEVEL = frozenset(
         "reports",
         "temp",
         "archives",
+        "backups",
         ".idea",
         "diagnostic",
         "field-validation-recovery-20260920-full",
@@ -52,7 +53,8 @@ REPOSITORY_TOP_LEVEL = frozenset(
         "tools",
     }
 )
-CONTAINER_LINK_CHECKS = ("worktrees", "test-data", "release", "reports", "temp", "archives")
+CONTAINER_LINK_CHECKS = ("worktrees", "test-data", "release", "reports", "temp", "archives", "backups")
+INDEPENDENT_REPOSITORIES = {"NetConsole-Next": "https://github.com/wxj183589/NetConsole-Next.git"}
 CONTAINER_CHILDREN = {
     "reports": frozenset({"build", "diagnostic", "maintenance", "tests", "workspace-cleanup"}),
     # git-pack-quarantine is a retained historical maintenance container; new
@@ -121,6 +123,32 @@ def _inside(path: Path, parent: Path) -> bool:
 
 def _direct_children(root: Path) -> tuple[Path, ...]:
     return tuple(sorted(root.iterdir(), key=lambda item: item.name.casefold()))
+
+
+def _is_registered_independent_repository(path: Path) -> bool:
+    """Recognize only the recorded independent project at its exact boundary."""
+
+    expected_remote = INDEPENDENT_REPOSITORIES.get(path.name)
+    git_marker = path / ".git"
+    if expected_remote is None or _is_reparse_point(git_marker) or not git_marker.is_dir():
+        return False
+    try:
+        remote = subprocess.run(
+            ("git", "-C", os.fspath(path), "config", "--local", "--get", "remote.origin.url"),
+            check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        top = subprocess.run(
+            ("git", "-C", os.fspath(path), "rev-parse", "--show-toplevel"),
+            check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return False
+    return (
+        remote.returncode == 0
+        and remote.stdout.strip() == expected_remote
+        and top.returncode == 0
+        and _same_path(Path(top.stdout.strip()), path)
+    )
 
 
 def _workspace_suggestion(name: str) -> str:
@@ -199,7 +227,7 @@ def check_workspace_root(workspace_root: Path, managed_worktrees: Iterable[Path]
                 )
             )
             continue
-        if not child.is_dir() or child.name in WORKSPACE_TOP_LEVEL:
+        if not child.is_dir() or child.name in WORKSPACE_TOP_LEVEL or _is_registered_independent_repository(child):
             continue
         kind = "PROHIBITED_WORKSPACE_TOP_LEVEL" if child.name.casefold() in PROHIBITED_ROOT_NAMES else "UNAPPROVED_WORKSPACE_TOP_LEVEL"
         result.append(
@@ -268,7 +296,7 @@ def check_workspace_root(workspace_root: Path, managed_worktrees: Iterable[Path]
                     )
 
     for child in children:
-        if child.name in {"NetConsole", "NetConsole-DevStatus", "worktrees"} or _is_reparse_point(child):
+        if child.name in {"NetConsole", "NetConsole-DevStatus", "worktrees"} or _is_reparse_point(child) or _is_registered_independent_repository(child):
             continue
         git_marker = child / ".git"
         if os.path.lexists(os.fspath(git_marker)):

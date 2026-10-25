@@ -84,8 +84,8 @@ def runtime_mode() -> RuntimeMode:
 def test_data_root_base(repository_root: Path | None = None) -> Path:
     """Resolve the canonical isolated test-data base for a source checkout.
 
-    Test data belongs beside the repository checkout so the same rule works on
-    a developer machine and on a portable CI runner. Packaged production
+    Test data belongs beside a standalone checkout or in the shared Workspace
+    container for a managed local worktree. Packaged production
     startup never calls this resolver because it uses a non-test runtime mode.
     Frozen test smoke may explicitly pass the source checkout through
     ``NETCONSOLE_PROJECT_ROOT``; the override is ignored outside test mode so
@@ -101,7 +101,18 @@ def test_data_root_base(repository_root: Path | None = None) -> Path:
         ).strip().casefold()
         if configured_project_root and configured_runtime_mode == RuntimeMode.TEST.value:
             repository_root = Path(configured_project_root)
-    return (repository_workspace_root(repository_root) / "test-data" / "NetConsole").resolve()
+    source_root = Path(repository_root or _source_project_root()).expanduser().resolve()
+    workspace_root = repository_workspace_root(source_root)
+    # A managed checkout lives at Workspace/worktrees/<task>. Keep its test
+    # runs in the same canonical test-data container as the main checkout.
+    if (
+        workspace_root.name.casefold() == "worktrees"
+        and workspace_root.parent.name.casefold() == "netconsole-workspace"
+        and (source_root / ".git").is_file()
+        and (workspace_root.parent / "NetConsole" / ".git").is_dir()
+    ):
+        workspace_root = workspace_root.parent
+    return (workspace_root / "test-data" / "NetConsole").resolve()
 
 
 def repository_workspace_root(repository_root: Path | None = None) -> Path:
