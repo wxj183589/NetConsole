@@ -24,8 +24,49 @@ Var NetConsoleDataRoot
 Var NetConsoleRegistryViewConflict
 !endif
 Var NetConsoleDataRootPointerResult
+!ifndef BUILD_UNINSTALLER
+Var NetConsoleInstallerLogPath
+Var NetConsoleInstallerLogHandle
+Var NetConsoleInstallerDiagnosticMessage
+Var NetConsoleInstallerDiagnosticId
+Var NetConsoleBackendDiagnosticLogPath
+!endif
 
 !ifndef BUILD_UNINSTALLER
+Function NetConsoleInstallerWriteDiagnostic
+  ${If} $NetConsoleInstallerLogHandle != ""
+    FileWrite $NetConsoleInstallerLogHandle "$NetConsoleInstallerDiagnosticMessage$\r$\n"
+  ${EndIf}
+  DetailPrint "$NetConsoleInstallerDiagnosticMessage"
+FunctionEnd
+
+Function NetConsoleInstallerAbort
+  Call NetConsoleInstallerWriteDiagnostic
+  ${If} $NetConsoleInstallerLogHandle != ""
+    FileClose $NetConsoleInstallerLogHandle
+    StrCpy $NetConsoleInstallerLogHandle ""
+  ${EndIf}
+  MessageBox MB_ICONSTOP "$NetConsoleInstallerDiagnosticMessage$\r$\n$\r$\n诊断日志：$NetConsoleInstallerLogPath"
+  Abort
+FunctionEnd
+
+Function NetConsoleInstallerInitDiagnostic
+  System::Call 'kernel32::GetCurrentProcessId()i.r0'
+  System::Call 'kernel32::GetTickCount()i.r1'
+  StrCpy $NetConsoleInstallerDiagnosticId "$0-$1"
+  StrCpy $NetConsoleInstallerLogPath "$TEMP\NetConsole-Installer-$NetConsoleInstallerDiagnosticId.log"
+  StrCpy $NetConsoleBackendDiagnosticLogPath "$TEMP\NetConsole-Backend-$NetConsoleInstallerDiagnosticId.jsonl"
+  ClearErrors
+  FileOpen $NetConsoleInstallerLogHandle "$NetConsoleInstallerLogPath" a
+  IfErrors NetConsoleInstallerDiagnosticUnavailable
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=customInit diagnostic_id=$NetConsoleInstallerDiagnosticId registry=not-written installer_log=$NetConsoleInstallerLogPath backend_diagnostic_log=$NetConsoleBackendDiagnosticLogPath"
+  Call NetConsoleInstallerWriteDiagnostic
+  Return
+  NetConsoleInstallerDiagnosticUnavailable:
+  StrCpy $NetConsoleInstallerLogHandle ""
+  DetailPrint "安装器诊断日志无法写入：$NetConsoleInstallerLogPath"
+FunctionEnd
+
 Function NetConsoleReadDataRootViews
   StrCpy $NetConsoleExistingDataRoot64 ""
   StrCpy $NetConsoleExistingDataRoot32 ""
@@ -231,13 +272,15 @@ Var NetConsoleEnvironmentDataRoot
 
 !ifndef BUILD_UNINSTALLER
 !macro customInit
+  Call NetConsoleInstallerInitDiagnostic
   DetailPrint "Installer identity: app=${NETCONSOLE_INSTALLER_APP_VERSION} commit=${NETCONSOLE_INSTALLER_GIT_COMMIT} build_time=${NETCONSOLE_INSTALLER_BUILD_TIME} build_id=${NETCONSOLE_INSTALLER_BUILD_ID} policy=${NETCONSOLE_INSTALLER_POLICY}"
   InitPluginsDir
   File /oname=$PLUGINSDIR\netconsole-installer-build.json "${NETCONSOLE_INSTALLER_MANIFEST_PATH}"
   File /oname=$PLUGINSDIR\netconsole-installer-data-root.nsh "${NETCONSOLE_INSTALLER_POLICY_SOURCE_PATH}"
   Call NetConsoleReadDataRootViews
   ${If} $NetConsoleRegistryViewConflict == "1"
-    Abort "检测到 64 位和 32 位 Registry View 中的 NetConsole DataRoot 不一致。请先核对两个指针；安装器不会猜测或覆盖任何数据。"
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=registry-read result=32-64-view-conflict registry=preserved"
+    Call NetConsoleInstallerAbort
   ${EndIf}
   ReadEnvStr $NetConsoleEnvironmentDataRoot "NETCONSOLE_DATA_ROOT"
   ${If} $NetConsoleExistingDataRoot != ""
@@ -247,6 +290,8 @@ Var NetConsoleEnvironmentDataRoot
     StrCpy $NetConsoleInstallMode "FRESH_CLEAN_INSTALL"
     Call NetConsoleSelectDefaultDataRoot
   ${EndIf}
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=installer-mode-selected mode=$NetConsoleInstallMode data_root=$NetConsoleDataRoot diagnostic_id=$NetConsoleInstallerDiagnosticId registry=not-written"
+  Call NetConsoleInstallerWriteDiagnostic
   StrCpy $NetConsoleDataRootChanged "0"
   StrCpy $NetConsolePerformanceMode "standard"
 !macroend
@@ -422,19 +467,24 @@ Function NetConsoleDataRootPathsMatch
 FunctionEnd
 
 !macro customInstall
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-location-validation path=$NetConsoleDataRoot registry=not-written"
+  Call NetConsoleInstallerWriteDiagnostic
   Call NetConsoleValidateDataRootLocation
   ${If} $NetConsoleDataRootProbeResult != "ok"
-    DetailPrint "DataRoot location validation failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
-    Abort "数据目录位置校验失败：$NetConsoleDataRootProbeResult（错误来源：$NetConsoleDataRootProbeErrorSource；错误码：$NetConsoleDataRootProbeErrorCode）。请选择非系统盘上的本地固定磁盘目录。"
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-location-validation result=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode registry=not-written"
+    Call NetConsoleInstallerAbort
   ${EndIf}
   ${If} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
     ${If} $NetConsoleDataRootExists != "1"
-      Abort "历史数据目录不可访问。请恢复原磁盘后重试；安装器不会创建空替代目录。"
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=existing-root-check result=unavailable registry=not-written"
+      Call NetConsoleInstallerAbort
     ${EndIf}
   ${EndIf}
   ${If} $NetConsoleEnvironmentDataRoot != ""
-    StrCmp "$NetConsoleEnvironmentDataRoot" "$NetConsoleDataRoot" +2 0
-      Abort "检测到 NETCONSOLE_DATA_ROOT 与安装器选择不一致：请先清除该环境变量，避免 Backend/Electron 使用旧数据根。"
+    ${If} $NetConsoleEnvironmentDataRoot != "$NetConsoleDataRoot"
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=environment-root-check result=mismatch registry=not-written"
+      Call NetConsoleInstallerAbort
+    ${EndIf}
   ${EndIf}
 
   ; A relocation is never a pointer-only update.  The packaged helper stages,
@@ -442,41 +492,54 @@ FunctionEnd
   ; changes.  This branch is reachable only after the user explicitly chose
   ; MIGRATE_EXISTING_DATA; selecting a different path alone is not enough.
   ${If} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
-    IfFileExists "$NetConsoleExistingDataRoot\." +2 0
-      Abort "历史数据目录当前不可访问。请恢复原磁盘后重试；清洁安装请返回并明确选择全新安装。"
+    IfFileExists "$NetConsoleExistingDataRoot\." NetConsoleMigrationSourceAvailable
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-migration result=source-unavailable registry=not-written"
+      Call NetConsoleInstallerAbort
+    NetConsoleMigrationSourceAvailable:
     DetailPrint "正在迁移现有 NetConsole 数据；旧数据将保留为只读备份。"
     ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --migrate-data-root --source "$NetConsoleExistingDataRoot" --target "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-migration exit_code=$0 registry=not-written"
+    Call NetConsoleInstallerWriteDiagnostic
     ${If} $0 != 0
-      Abort "NetConsole 数据迁移失败，旧数据目录未改变。安装器不会修改 DataRoot。"
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-migration result=failed exit_code=$0 registry=not-written old-data=preserved"
+      Call NetConsoleInstallerAbort
     ${EndIf}
   ${EndIf}
   Call NetConsoleRunDataRootProbe
   ${If} $NetConsoleDataRootProbeResult != "ok"
     DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
-    Abort "数据目录校验失败：$NetConsoleDataRootProbeResult（错误来源：$NetConsoleDataRootProbeErrorSource；错误码：$NetConsoleDataRootProbeErrorCode）。请关闭 NetConsole、Agent 和 Backend 后重试；不要删除已有数据。"
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-probe result=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode registry=not-written"
+    Call NetConsoleInstallerAbort
   ${EndIf}
   ${If} $NetConsoleInstallMode == "FRESH_CLEAN_INSTALL"
     Call NetConsoleDataRootCheckBusinessData
     ${If} $NetConsoleDataRootBusinessData == "1"
-      Abort "清洁安装目标包含现有或不明确的 NetConsole 数据。请选择空白新根；原数据不会被删除。"
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=clean-install-business-data-check result=conflict registry=not-written"
+      Call NetConsoleInstallerAbort
     ${EndIf}
   ${EndIf}
 
   ; Reuse validates the existing Production authority without creating a new
   ; site. Clean install initializes only the independently selected target.
   ${If} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR"' $0
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
   ${ElseIf} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR"' $0
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
   ${Else}
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode clean-install --installation-root "$INSTDIR"' $0
+    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode clean-install --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
   ${EndIf}
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=backend-data-root-initialization mode=$NetConsoleInstallMode exit_code=$0 diagnostic_id=$NetConsoleInstallerDiagnosticId backend_diagnostic_log=$NetConsoleBackendDiagnosticLogPath registry=not-written"
+  Call NetConsoleInstallerWriteDiagnostic
   ${If} $0 != 0
-    Abort "Backend 数据根初始化或兼容性校验失败（退出代码 $0）。请检查安装日志；不要删除已有数据。"
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=backend-data-root-initialization mode=$NetConsoleInstallMode result=failed exit_code=$0 message=Backend 数据根初始化或兼容性校验失败 diagnostic_id=$NetConsoleInstallerDiagnosticId backend_diagnostic_log=$NetConsoleBackendDiagnosticLogPath registry=not-written data-preserved=see-backend-diagnostic"
+    Call NetConsoleInstallerAbort
   ${EndIf}
   ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --set-runtime-performance-mode "$NetConsoleDataRoot" "$NetConsolePerformanceMode"' $0
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=runtime-performance-mode exit_code=$0 registry=not-written"
+  Call NetConsoleInstallerWriteDiagnostic
   ${If} $0 != 0
-    Abort "运行模式保存失败（退出代码 $0）。数据目录未发布到注册表。"
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=runtime-performance-mode result=failed exit_code=$0 registry=not-written"
+    Call NetConsoleInstallerAbort
   ${EndIf}
   ; Advisory only: bounded hardware collection must never make an otherwise
   ; valid install fail.  Normal startup reads this profile and never reruns WMI.
@@ -486,7 +549,14 @@ FunctionEnd
   ${EndIf}
   Call NetConsolePublishDataRootPointer
   ${If} $NetConsoleDataRootPointerResult != "ok"
-    Abort "NetConsole DataRoot 指针发布或回读失败：$NetConsoleDataRootPointerResult。旧指针已保留或恢复，安装未完成。"
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=registry-write-readback result=$NetConsoleDataRootPointerResult registry=restored-or-preserved"
+    Call NetConsoleInstallerAbort
+  ${EndIf}
+  StrCpy $NetConsoleInstallerDiagnosticMessage "stage=complete registry=written-and-readback-verified data_root=$NetConsoleDataRoot"
+  Call NetConsoleInstallerWriteDiagnostic
+  ${If} $NetConsoleInstallerLogHandle != ""
+    FileClose $NetConsoleInstallerLogHandle
+    StrCpy $NetConsoleInstallerLogHandle ""
   ${EndIf}
 !macroend
 

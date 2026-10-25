@@ -6,6 +6,8 @@ rx_power / port_status.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from netconsole.core.ap_optical_capability import (
     OPTICAL_NOT_APPLICABLE_STATUS,
     is_ap_optical_applicable,
@@ -14,9 +16,103 @@ from netconsole.core.optical_rx_threshold import (
     OPTICAL_BUSINESS_RX_MIN_DBM,
     parse_optical_rx_dbm,
 )
-from netconsole.core.optical_severity_engine import compute_optical_severity
+from netconsole.core.optical_severity_engine import (
+    classify_optical_freshness,
+    compute_optical_severity,
+)
 
 AP_BUSINESS_RX_MIN_DBM = OPTICAL_BUSINESS_RX_MIN_DBM
+
+_AP_OPTICAL_FAILURE_STATUSES = frozenset(
+    {
+        "failed",
+        "failure",
+        "error",
+        "cancelled",
+        "timeout",
+        "auth_failed",
+        "authentication_failed",
+        "tcp_failed",
+        "tcp_connection_failed",
+        "ssh_failed",
+        "connection_failed",
+        "unreachable",
+        "device_unreachable",
+        "collection_failed",
+        "parse_failed",
+    }
+)
+
+# ``replace_fit_ap_optical`` deliberately retains the previous valid payload
+# when a later collection fails.  Those fields are useful for history, but
+# must not be consumed as the current AP-side optical fact.
+_AP_OPTICAL_CURRENT_VALUE_FIELDS = (
+    "rx_power",
+    "tx_power",
+    "temperature",
+    "voltage",
+    "bias_current",
+    "rx_low_alarm",
+    "rx_low_warning",
+    "rx_high_alarm",
+    "rx_high_warning",
+    "tx_low_alarm",
+    "tx_low_warning",
+    "tx_high_alarm",
+    "tx_high_warning",
+    "module_model",
+    "module_serial_number",
+    "module_vendor",
+    "wavelength",
+    "transmission_distance",
+    "connector_type",
+    "module_present",
+    "has_module",
+    "no_module",
+    "module_status",
+    "transceiver_status",
+    "optical_alarm_status",
+)
+
+
+def project_current_ap_optical_row(
+    fit_ap_row: dict[str, object | None] | None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, object | None] | None:
+    """Project persisted FIT-AP data into a current optical fact.
+
+    The repository may retain the last valid Rx/Tx values on a failed
+    collection.  Keep that persistence behavior for history, while clearing
+    those retained values from the current projection.  Rows without an
+    explicit collection status retain legacy fixture semantics.
+    """
+
+    if fit_ap_row is None:
+        return None
+    projected = dict(fit_ap_row)
+    status = str(projected.get("status") or "").strip().casefold()
+    if status in _AP_OPTICAL_FAILURE_STATUSES:
+        for field in _AP_OPTICAL_CURRENT_VALUE_FIELDS:
+            projected[field] = None
+        projected["data_freshness"] = "unknown"
+        return projected
+    if status in {"no_module", "no module", "no-transceiver", "no transceiver"}:
+        for field in _AP_OPTICAL_CURRENT_VALUE_FIELDS:
+            projected[field] = None
+        projected["data_freshness"] = "fresh"
+        return projected
+    if status == "success":
+        freshness = str(projected.get("data_freshness") or "").strip().casefold()
+        if freshness not in {"fresh", "stale", "current"}:
+            freshness = classify_optical_freshness(
+                projected.get("updated_at"),
+                projected.get("collected_at"),
+                now=now,
+            )
+        if freshness:
+            projected["data_freshness"] = freshness
+    return projected
 
 
 def compute_ap_status(
@@ -27,6 +123,7 @@ def compute_ap_status(
     Uses ``rx_power``, ``rx_low_alarm``, ``rx_low_warning``, ``rx_high_alarm``,
     and ``ap_port_status`` from *fit_ap_row*.
     """
+    fit_ap_row = project_current_ap_optical_row(fit_ap_row)
     if fit_ap_row is None:
         return "unknown"
 

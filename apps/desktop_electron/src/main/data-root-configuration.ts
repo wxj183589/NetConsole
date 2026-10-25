@@ -11,6 +11,14 @@ export interface DesktopDataRootResolution {
   source: DesktopDataRootSource
 }
 
+export function formatDesktopDataRootConfigurationError(cause: unknown): string {
+  const detail = cause instanceof Error ? cause.message : String(cause)
+  if (/尚未配置|runtime_mode\.json|storage-manifest\.json|数据目录/.test(detail)) {
+    return `NetConsole 尚未完成数据目录配置。${detail}\n\n请重新运行安装程序，选择非系统盘上的本地固定磁盘目录；安装未完成前不会切换或猜测其他数据目录。`
+  }
+  return `NetConsole 本地运行环境配置失败。${detail}\n\n请查看安装器诊断日志，排除配置问题后重新安装。`
+}
+
 export type RegistryQuery = (command: string, args: string[]) => {
   status: number | null
   stdout?: string | Buffer

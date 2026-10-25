@@ -24,6 +24,7 @@ from netconsole.core.optical_severity_engine import (
     normalize_zte_optical_record,
     worse_optical_severity,
 )
+from netconsole.core.sources.ap_source import project_current_ap_optical_row
 from netconsole.core.sources.switch_source import build_switch_data_lookup
 from netconsole.core.sources.vlan import parse_vlan_set
 from netconsole.models.device import Device, is_device_eligible_for_automatic_collection
@@ -1067,40 +1068,54 @@ def build_trackside_ap_business_rows(
         for device_uuid, rows in (lldp_by_device or {}).items()
     }
     fit_ap_optical_rows = merge_fit_ap_rows_by_identity(fit_ap_optical_rows)
+    fit_ap_optical_rows = [
+        projected
+        for row in fit_ap_optical_rows
+        if (projected := project_current_ap_optical_row(row)) is not None
+    ]
     fit_ap_resource_rows = coalesce_fit_ap_resource_rows(fit_ap_resource_rows or [])
     fit_ap_resource_rows = merge_fit_ap_rows_by_identity(fit_ap_resource_rows)
-    fit_ap_optical_by_mac: dict[str, dict[str, object | None]] = {}
-    fit_ap_optical_by_identity: dict[tuple[str, str], dict[str, object | None]] = {}
-    fit_ap_optical_by_switch_interface: dict[tuple[str, str], dict[str, object | None]] = {}
-    fit_ap_optical_by_name_mac: dict[str, dict[str, object | None]] = {}
-    fit_ap_resource_by_mac: dict[str, dict[str, object | None]] = {}
-    fit_ap_resource_by_identity: dict[tuple[str, str], dict[str, object | None]] = {}
+    fit_ap_optical_by_mac: dict[str, list[dict[str, object | None]]] = {}
+    fit_ap_optical_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
+    fit_ap_optical_by_scoped_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
+    fit_ap_optical_by_switch_interface: dict[
+        tuple[str, str], list[dict[str, object | None]]
+    ] = {}
+    fit_ap_optical_by_switch_mac_interface: dict[
+        tuple[str, str], list[dict[str, object | None]]
+    ] = {}
     fit_ap_resources_by_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
+    fit_ap_resources_by_scoped_identity: dict[tuple[str, str], list[dict[str, object | None]]] = {}
     fit_ap_resources_by_ip: dict[str, list[dict[str, object | None]]] = {}
     fit_ap_resources_by_mac: dict[str, list[dict[str, object | None]]] = {}
     fit_ap_resources_by_name: dict[str, list[dict[str, object | None]]] = {}
     for row in fit_ap_optical_rows:
         mac = normalize_mac_key(row.get("ap_mac"))
         if mac:
-            fit_ap_optical_by_mac[mac] = row
+            fit_ap_optical_by_mac.setdefault(mac, []).append(row)
         switch_key = (
             _normalize_name(row.get("neighbor_device_name")),
             normalize_interface_name(row.get("neighbor_interface")).casefold(),
         )
         if all(switch_key):
-            fit_ap_optical_by_switch_interface[switch_key] = row
-        name_as_mac = normalize_mac_key(row.get("ap_name"))
-        if name_as_mac:
-            fit_ap_optical_by_name_mac[name_as_mac] = row
+            fit_ap_optical_by_switch_interface.setdefault(switch_key, []).append(row)
+        switch_mac = normalize_mac_key(
+            row.get("neighbor_mac") or row.get("neighbor_chassis_mac")
+        )
+        if switch_mac and switch_key[1]:
+            fit_ap_optical_by_switch_mac_interface.setdefault(
+                (switch_mac, switch_key[1]),
+                [],
+            ).append(row)
         identity = ap_identity_key(row)
         if identity:
-            fit_ap_optical_by_identity[identity] = row
+            fit_ap_optical_by_identity.setdefault(identity, []).append(row)
+        scoped_identity = _ac_scoped_fit_ap_identity_key(row)
+        if scoped_identity:
+            fit_ap_optical_by_scoped_identity.setdefault(scoped_identity, []).append(row)
     for row in fit_ap_resource_rows or []:
         mac = normalize_mac_key(row.get("ap_mac"))
         if mac:
-            current = fit_ap_resource_by_mac.get(mac)
-            if current is None or _fit_ap_prefer_score(row) >= _fit_ap_prefer_score(current):
-                fit_ap_resource_by_mac[mac] = row
             fit_ap_resources_by_mac.setdefault(mac, []).append(row)
         ap_ip = _normalize_ip(row.get("ap_ip") or row.get("management_ip"))
         if ap_ip:
@@ -1110,10 +1125,10 @@ def build_trackside_ap_business_rows(
             fit_ap_resources_by_name.setdefault(ap_name, []).append(row)
         identity = ap_identity_key(row)
         if identity:
-            current = fit_ap_resource_by_identity.get(identity)
-            if current is None or _fit_ap_prefer_score(row) >= _fit_ap_prefer_score(current):
-                fit_ap_resource_by_identity[identity] = row
             fit_ap_resources_by_identity.setdefault(identity, []).append(row)
+        scoped_identity = _ac_scoped_fit_ap_identity_key(row)
+        if scoped_identity:
+            fit_ap_resources_by_scoped_identity.setdefault(scoped_identity, []).append(row)
     historical_lldp_index = _build_historical_lldp_index(historical_lldp_rows or [])
 
     result: list[dict[str, object | None]] = []
@@ -1204,15 +1219,24 @@ def build_trackside_ap_business_rows(
             resource_from_neighbor = (
                 None
                 if lldp_match_status == "AMBIGUOUS"
-                else resource_from_current_lldp or fit_ap_resource_by_mac.get(neighbor_mac)
+                else resource_from_current_lldp
+                or _unique_candidate(fit_ap_resources_by_mac.get(neighbor_mac, []))
             )
             if not ap_match_source and resource_from_neighbor and lldp:
                 ap_match_source = "LLDP_MAC"
                 ap_match_confidence = 92
                 lldp_match_status = "MATCHED"
-            identity_from_neighbor = ap_identity_key(resource_from_neighbor or historical_lldp or {})
-            fit_ap_from_identity = fit_ap_optical_by_identity.get(identity_from_neighbor) if identity_from_neighbor else None
-            resource_from_identity = fit_ap_resource_by_identity.get(identity_from_neighbor) if identity_from_neighbor else None
+            identity_context = resource_from_neighbor or historical_lldp or {}
+            fit_ap_from_identity = _unique_scoped_identity_candidate(
+                identity_context,
+                fit_ap_optical_by_scoped_identity,
+                fit_ap_optical_by_identity,
+            )
+            resource_from_identity = _unique_scoped_identity_candidate(
+                identity_context,
+                fit_ap_resources_by_scoped_identity,
+                fit_ap_resources_by_identity,
+            )
             if lldp_match_status == "AMBIGUOUS":
                 fit_ap = {}
                 historical_lldp = {}
@@ -1222,7 +1246,12 @@ def build_trackside_ap_business_rows(
                 resource_from_identity = None
             elif resource_from_current_lldp:
                 fit_ap = (
-                    _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
+                    _merge_resource_with_optical(
+                        resource_from_neighbor,
+                        fit_ap_optical_by_mac,
+                        fit_ap_optical_by_identity,
+                        fit_ap_optical_by_scoped_identity,
+                    )
                     or resource_from_identity
                     or fit_ap_from_identity
                     or resource_from_neighbor
@@ -1230,39 +1259,81 @@ def build_trackside_ap_business_rows(
                 )
             else:
                 fit_ap = (
-                    _merge_resource_with_optical(resource_from_neighbor, fit_ap_optical_by_mac)
+                    _merge_resource_with_optical(
+                        resource_from_neighbor,
+                        fit_ap_optical_by_mac,
+                        fit_ap_optical_by_identity,
+                        fit_ap_optical_by_scoped_identity,
+                    )
                     or resource_from_identity
                     or resource_from_neighbor
                     or fit_ap_from_identity
-                    or fit_ap_optical_by_mac.get(neighbor_mac)
-                    or fit_ap_optical_by_name_mac.get(neighbor_mac)
+                    or _unique_candidate(fit_ap_optical_by_mac.get(neighbor_mac, []))
                     or {}
                 )
-                if not fit_ap and not lldp:
-                    interface_resource = next(
+            if lldp and not resource_from_current_lldp:
+                exact_switch_interface_candidates = (
+                    fit_ap_optical_by_switch_mac_interface.get(
                         (
-                            fit_ap_optical_by_switch_interface.get((name, normalized_interface))
-                            for name in device_names
-                            if fit_ap_optical_by_switch_interface.get((name, normalized_interface))
+                            normalize_mac_key(getattr(device, "mac_address", "")),
+                            normalized_interface,
                         ),
-                        None,
+                        [],
                     )
-                    if interface_resource:
-                        fit_ap = (
-                            _merge_resource_with_optical(
-                                fit_ap_resource_by_mac.get(
-                                    normalize_mac_key(interface_resource.get("ap_mac"))
-                                ),
-                                fit_ap_optical_by_mac,
-                            )
-                            or interface_resource
+                )
+                ac_scopes = {
+                    str(
+                        candidate.get("ac_device_uuid")
+                        or candidate.get("device_uuid")
+                        or ""
+                    ).strip().casefold()
+                    for candidate in exact_switch_interface_candidates
+                }
+                exact_switch_interface_optical = (
+                    None
+                    if len(ac_scopes) > 1
+                    else _select_interface_candidate(
+                        exact_switch_interface_candidates
+                    )
+                )
+                if exact_switch_interface_optical:
+                    exact_resource = _unique_scoped_identity_candidate(
+                        exact_switch_interface_optical,
+                        fit_ap_resources_by_scoped_identity,
+                        fit_ap_resources_by_identity,
+                    )
+                    fit_ap = (
+                        _merge_resource_with_optical(
+                            exact_resource,
+                            fit_ap_optical_by_mac,
+                            fit_ap_optical_by_identity,
+                            fit_ap_optical_by_scoped_identity,
                         )
-                        neighbor_mac = (
-                            normalize_mac_key(interface_resource.get("ap_mac")) or ""
-                        )
-                        ap_match_source = "FIT_AP_INTERFACE_MAC"
-                        ap_match_confidence = 80
-                        lldp_match_status = "MATCHED"
+                        or exact_resource
+                        or exact_switch_interface_optical
+                    )
+                    ap_match_source = "LLDP_SWITCH_INTERFACE"
+                    ap_match_confidence = 100
+                    lldp_match_status = "MATCHED"
+            if not fit_ap and not lldp:
+                interface_candidates = [
+                    fit_ap_optical_by_switch_interface.get(
+                        (name, normalized_interface),
+                        [],
+                    )
+                    for name in device_names
+                ]
+                interface_resource = _select_interface_candidate(
+                    [candidate for items in interface_candidates for candidate in items]
+                )
+                if interface_resource:
+                    fit_ap = interface_resource
+                    neighbor_mac = normalize_mac_key(
+                        interface_resource.get("ap_mac")
+                    )
+                    ap_match_source = "INTERFACE_UNIQUE"
+                    ap_match_confidence = 80
+                    lldp_match_status = "INFERRED_INTERFACE"
             switch_collection_status = _switch_collection_status(
                 device,
                 current_interface,
@@ -1365,6 +1436,7 @@ def build_trackside_ap_business_rows(
                 remote_status=ap_status,
                 association_reliable=ap_match_source in {
                     "LLDP_MAC",
+                    "LLDP_SWITCH_INTERFACE",
                     "MANUAL",
                     "IMPORTED",
                 },
@@ -1413,7 +1485,15 @@ def build_trackside_ap_business_rows(
                     "site": base_station_name,
                     "ac_device_uuid": fit_ap.get("ac_device_uuid"),
                     "ap_uuid": fit_ap.get("ap_uuid") or (historical_lldp or {}).get("ap_uuid"),
-                    "serial_number": fit_ap.get("serial_number") or fit_ap_resource_by_identity.get(ap_identity_key(fit_ap) or ("", ""), {}).get("serial_number"),
+                    "serial_number": fit_ap.get("serial_number")
+                    or (
+                        _unique_scoped_identity_candidate(
+                            fit_ap,
+                            fit_ap_resources_by_scoped_identity,
+                            fit_ap_resources_by_identity,
+                        )
+                        or {}
+                    ).get("serial_number"),
                     "model": ap_model,
                     "ap_optical_applicable": ap_optical_applicable,
                     "device_uuid": device_uuid,
@@ -3331,10 +3411,75 @@ def export_trackside_ap_business_xlsx(
 # Legacy aliases removed — status is now computed real-time from raw data.
 
 
-def _merge_resource_with_optical(resource: dict[str, object | None] | None, optical_by_mac: dict[str, dict[str, object | None]]) -> dict[str, object | None]:
+def _unique_candidate(
+    candidates: Sequence[dict[str, object | None]],
+) -> dict[str, object | None] | None:
+    if not candidates:
+        return None
+    unique: dict[tuple[str, str, str, str], dict[str, object | None]] = {}
+    for candidate in candidates:
+        key = (
+            str(candidate.get("ac_device_uuid") or candidate.get("device_uuid") or "").casefold(),
+            str(candidate.get("ap_uuid") or "").casefold(),
+            normalize_mac_key(candidate.get("ap_mac") or candidate.get("mac")),
+            str(candidate.get("ap_name") or "").casefold(),
+        )
+        unique[key] = candidate
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
+def _select_interface_candidate(
+    candidates: Sequence[dict[str, object | None]],
+) -> dict[str, object | None] | None:
+    """Use exact switch/interface evidence only when AP identity is stable.
+
+    Active/standby AC rows for the same physical MAC are one identity and may
+    be reduced to the preferred runtime row.  Different AP identities on the
+    same port remain unresolved instead of being guessed.
+    """
+
+    if not candidates:
+        return None
+    identities = {ap_identity_key(candidate) for candidate in candidates}
+    identities.discard(None)
+    if len(identities) > 1:
+        return None
+    if len(identities) == 1:
+        return max(candidates, key=_fit_ap_prefer_score)
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _unique_scoped_identity_candidate(
+    row: dict[str, object | None],
+    scoped_index: dict[tuple[str, str], list[dict[str, object | None]]],
+    global_index: dict[tuple[str, str], list[dict[str, object | None]]],
+) -> dict[str, object | None] | None:
+    scoped_identity = _ac_scoped_fit_ap_identity_key(row)
+    if scoped_identity:
+        scoped = _unique_candidate(scoped_index.get(scoped_identity, []))
+        return scoped
+    identity = ap_identity_key(row)
+    return _unique_candidate(global_index.get(identity, [])) if identity else None
+
+
+def _merge_resource_with_optical(
+    resource: dict[str, object | None] | None,
+    optical_by_mac: dict[str, list[dict[str, object | None]]],
+    optical_by_identity: dict[tuple[str, str], list[dict[str, object | None]]],
+    optical_by_scoped_identity: dict[tuple[str, str], list[dict[str, object | None]]],
+) -> dict[str, object | None]:
     if not resource:
         return {}
-    optical = optical_by_mac.get(normalize_mac_key(resource.get("ap_mac")), {})
+    optical = _unique_scoped_identity_candidate(
+        resource,
+        optical_by_scoped_identity,
+        optical_by_identity,
+    )
+    if optical is None and not _row_has_ac_scope(resource):
+        optical = _unique_candidate(
+            optical_by_mac.get(normalize_mac_key(resource.get("ap_mac")), [])
+        )
+    optical = optical or {}
     merged = {**resource, **optical}
     # FIT-AP runtime state is authoritative; optical payloads may carry stale
     # or unrelated status fields but must never replace state evidence.
@@ -3342,6 +3487,10 @@ def _merge_resource_with_optical(resource: dict[str, object | None] | None, opti
         if field in resource and resource.get(field) not in (None, ""):
             merged[field] = resource[field]
     return merged
+
+
+def _row_has_ac_scope(row: dict[str, object | None]) -> bool:
+    return bool(str(row.get("ac_device_uuid") or row.get("device_uuid") or "").strip())
 
 
 def _match_fit_ap_resource_from_lldp(

@@ -111,8 +111,11 @@ def test_source_startup_recovers_missing_metadata_without_creating_a_site(
     assert info.mode is DataEnvironmentMode.DEVELOPMENT
     marker = json.loads((tmp_path / "runtime_mode.json").read_text(encoding="utf-8"))
     assert marker["mode"] == "development"
-    assert not (tmp_path / "config" / "storage-manifest.json").exists()
-    assert not (tmp_path / "sites").exists()
+    manifest = json.loads(
+        (tmp_path / "config" / "storage-manifest.json").read_text(encoding="utf-8")
+    )
+    assert Path(manifest["data_root"]).resolve() == tmp_path.resolve()
+    assert list((tmp_path / "sites").iterdir()) == []
 
 
 def test_source_startup_rejects_unknown_root_content_before_metadata_recovery(
@@ -146,13 +149,19 @@ def test_source_startup_recovers_metadata_only_after_existing_site_integrity_che
     database.parent.mkdir(parents=True)
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value TEXT)")
+        from netconsole.core.database import CURRENT_SCHEMA_VERSION
+
+        connection.execute(
+            "INSERT INTO schema_metadata (key, value) VALUES (?, ?)",
+            ("schema_version", CURRENT_SCHEMA_VERSION),
+        )
         connection.commit()
 
     info = prepare_startup_environment(tmp_path)
 
     assert info.mode is DataEnvironmentMode.DEVELOPMENT
     assert (tmp_path / "runtime_mode.json").is_file()
-    assert not (tmp_path / "config" / "storage-manifest.json").exists()
+    assert (tmp_path / "config" / "storage-manifest.json").is_file()
 
 
 def test_source_startup_rejects_existing_site_without_supported_schema_metadata(
