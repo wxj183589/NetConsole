@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from netconsole.core.database import Database
+from netconsole.core.sources.ap_source import compute_ap_status, project_current_ap_optical_row
 from netconsole.models.device import Device
 from netconsole.repositories.ac_repository import AcRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
@@ -429,6 +430,123 @@ def test_trackside_business_uses_latest_current_fact_for_same_interface():
     assert rows[0]["ap_optical_status"] == "normal"
 
 
+def test_trackside_business_uses_fit_ap_optical_by_exact_switch_mac_and_port():
+    switch = Device(
+        device_uuid="sw-1",
+        name="02-黄龙体育中心",
+        mac_address="083a-389a-7200",
+        station="Station A",
+        device_type="SW",
+    )
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "description": "To AP",
+                    "port_status": "access",
+                    "collect_run_uuid": "switch-run-1",
+                    "updated_at": "2026-10-24T01:12:09",
+                }
+            ]
+        },
+        {
+            "sw-1": [
+                {
+                    "interface_name": "GigabitEthernet1/0/1",
+                    "rx_power": "-7.03",
+                    "tx_power": "-5.94",
+                    "status": "normal",
+                    "collect_run_uuid": "switch-run-1",
+                    "updated_at": "2026-10-24T01:12:00",
+                }
+            ]
+        },
+        [
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_name": "AP runtime alias",
+                "ap_mac": None,
+                "rx_power": "-8.35",
+                "tx_power": "-5.98",
+                "rx_low_alarm": "-19.00",
+                "tx_low_alarm": "-11.00",
+                "model": "WA5620X",
+                "status": "success",
+                "data_freshness": "fresh",
+                "neighbor_mac": "083a-389a-7200",
+                "neighbor_interface": "GE1/0/1",
+                "neighbor_device_name": "AC learned switch name",
+                "collected_at": "2026-10-24T01:11:43",
+                "updated_at": "2026-10-24T01:11:43",
+            }
+        ],
+        {"sw-1": [{"local_interface": "GE1/0/1", "neighbor_mac": "74d6-cbff-a460"}]},
+        fit_ap_resource_rows=[
+            {
+                "ac_device_uuid": "ac-1",
+                "ap_uuid": "ap-1",
+                "ap_name": "YGL-AP1",
+                "ap_mac": None,
+                "model": "WA5620X",
+                "state": "R/M",
+                "serial_number": "SN-1",
+            }
+        ],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ap_uuid"] == "ap-1"
+    assert rows[0]["ap_mac"] == "74d6-cbff-a460"
+    assert rows[0]["ap_rx_power"] == "-8.35"
+    assert rows[0]["ap_tx_power"] == "-5.98"
+    assert rows[0]["ap_optical_status"] == "normal"
+    assert rows[0]["ap_business_optical_status"] == "normal"
+    assert rows[0]["ap_match_source"] == "LLDP_SWITCH_INTERFACE"
+    assert rows[0]["lldp_match_status"] == "MATCHED"
+
+
+def test_trackside_business_keeps_conflicting_multi_ac_switch_port_unresolved():
+    switch = Device(
+        device_uuid="sw-1",
+        name="SW1",
+        mac_address="083a-389a-7200",
+        station="Station A",
+        device_type="SW",
+    )
+    optical_rows = [
+        {
+            "ac_device_uuid": ac_uuid,
+            "ap_uuid": ap_uuid,
+            "ap_name": ap_name,
+            "rx_power": rx_power,
+            "tx_power": "-5.98",
+            "status": "success",
+            "data_freshness": "fresh",
+            "neighbor_mac": "083a-389a-7200",
+            "neighbor_interface": "GigabitEthernet1/0/1",
+        }
+        for ac_uuid, ap_uuid, ap_name, rx_power in (
+            ("ac-a", "ap-a", "AP-A", "-8.35"),
+            ("ac-b", "ap-b", "AP-B", "-10.51"),
+        )
+    ]
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "port_status": "access"}]},
+        {"sw-1": []},
+        optical_rows,
+        {"sw-1": [{"local_interface": "GigabitEthernet1/0/1", "neighbor_mac": "74d6-cbff-a460"}]},
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["ap_rx_power"] is None
+    assert rows[0]["ap_tx_power"] is None
+    assert rows[0]["lldp_match_status"] == "UNRESOLVED"
+
+
 def test_trackside_business_marks_combined_link_down_before_module_state():
     switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
     rows = build_trackside_ap_business_rows(
@@ -609,6 +727,49 @@ def test_trackside_business_keeps_ap_identity_when_ap_optical_missing():
     assert rows[0]["ap_mac"] == "083b-e9ec-da40"
     assert rows[0]["serial_number"] == "SN-MISSING-OPTICAL"
     assert rows[0]["ap_rx_power"] is None
+
+
+def test_failed_fit_ap_optical_projection_does_not_expose_retained_values():
+    row = project_current_ap_optical_row(
+        {
+            "status": "failed",
+            "rx_power": "-8.17",
+            "tx_power": "-5.69",
+            "temperature": "31",
+            "collected_at": "2026-10-24T10:00:00+08:00",
+            "error_message": "WinError 10054",
+        }
+    )
+
+    assert row is not None
+    assert row["rx_power"] is None
+    assert row["tx_power"] is None
+    assert row["temperature"] is None
+    assert row["data_freshness"] == "unknown"
+    assert compute_ap_status(row) == "unknown"
+
+
+def test_trackside_business_does_not_cross_ac_scope_for_duplicate_lldp_mac():
+    switch = Device(device_uuid="sw-1", name="SW1", station="Station A", device_type="SW")
+    rows = build_trackside_ap_business_rows(
+        [switch],
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "description": "To AP", "port_status": "access"}]},
+        {"sw-1": [{"interface_name": "GigabitEthernet1/0/1", "rx_power": "-8"}]},
+        [
+            {"ac_device_uuid": "ac-a", "ap_name": "AP-A", "ap_mac": "0011-2233-4455", "rx_power": "-7"},
+            {"ac_device_uuid": "ac-b", "ap_name": "AP-B", "ap_mac": "0011-2233-4455", "rx_power": "-12"},
+        ],
+        {"sw-1": [{"local_interface": "GigabitEthernet1/0/1", "neighbor_mac": "0011-2233-4455"}]},
+        fit_ap_resource_rows=[
+            {"ac_device_uuid": "ac-a", "ap_name": "AP-A", "ap_mac": "0011-2233-4455"},
+            {"ac_device_uuid": "ac-b", "ap_name": "AP-B", "ap_mac": "0011-2233-4455"},
+        ],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["lldp_match_status"] == "AMBIGUOUS"
+    assert rows[0]["ap_rx_power"] is None
+    assert rows[0]["ap_tx_power"] is None
 
 
 def test_ac_resource_collect_failure_keeps_existing_resources(monkeypatch, tmp_path):

@@ -2,13 +2,36 @@
 
 ## Unreleased
 
+## v1.6.10 - 2026-10-25
+
+### 修复
+
+- 修复 PyCharm 开发环境在明确数据根缺少可恢复 runtime marker 时无法启动的问题；仅在既有 SiteRegistry、manifest、局点和 schema 均可验证时恢复标记，未知内容、损坏、路径越界和不兼容状态继续 fail-closed。
+- 修复正式 Electron GUI 中 MESH 来源单条与批量删除被 CLI production-write 门禁阻断的问题，支持仅删除解析结果，或删除 NetConsole 管理的归档副本及关联解析结果/报告。
+- 优化 MESH 批量删除任务的逐来源结果、终态汇总、互斥、失败补偿和列表统计刷新。
+
+### FIT-AP、轨旁 AP 与 LLDP
+
+- 统一 FIT-AP 资源与轨旁 AP 业务读取同一份 AP 侧光功率当前事实，按 AC 作用域和稳定 AP UUID/MAC 精确关联，避免有效 Rx/Tx 在业务投影中丢失、串用或被旧值覆盖。
+- 兼容 H3C `GigabitEthernet`、`Ten-GigabitEthernet` 多端口光模块诊断输出、不同温度标题、负数光功率和无模块端口；无模块端口不会覆盖其他接口的有效结果，Rx/Tx 位置保持一致。
+- 修复 FIT-AP 地址表 MAC 被空连接记录覆盖的问题，并补齐 FIT-AP 详情当前 LLDP 行缺少 AP MAC 时按同一 AC 和 AP UUID 只读恢复身份关系的问题；不使用名称模糊匹配或跨 AC 回退。
+
+### 安全与稳定性
+
+- 保留会话鉴权、二次确认、revision/hash/plan digest 校验、路径边界、事务、审计和维护 CLI 的独立安全门禁。
+- 仅允许删除 NetConsole 管理的归档副本，不触碰用户外部原始文件；开发与正式数据根继续隔离。
+
 ### 面向授权设备的 SSH Host Key Manager
 
-- 新增设备绑定的 `host_keys.sqlite` Schema、当前指纹、历史指纹、变更事件、`AUTO_UPDATE`/
-  `STRICT` 策略和 pending/effective 生效状态；首次信任只在 SSH 连接成功后落为当前记录。
-- 现有 Paramiko/Netmiko 适配器继续复用 managed `known_hosts` 兼容缓存；已登记设备连接通过
-  Host Key Manager，失败、取消、不支持算法、未授权目标和并发变化均 fail-closed 并保留审计。
+- 新增设备绑定的 `host_keys.sqlite` Schema、当前指纹、历史指纹、变更事件、`AUTO_UPDATE`/`STRICT` 策略和 pending/effective 生效状态；首次信任只在 SSH 连接成功后落为当前记录。
+- 现有 Paramiko/Netmiko 适配器继续复用 managed `known_hosts` 兼容缓存；已登记设备连接通过 Host Key Manager，失败、取消、不支持算法、未授权目标和并发变化均 fail-closed 并保留审计。
 - `AUTO_UPDATE` 明确不等同于独立身份验证；真实设备、Windows GUI 和现场 Host Key 轮换验收仍需单独验证。
+
+### 验证边界
+
+- 用户已确认本轮人工完整验收通过；此前 v1.5.9 Full/Customer 候选包及其构建身份保持原状，本版本未重新打包。
+- PR #95 已合并并纳入本版本；PR #94 尚未合并，如在本版本发布前合并，需在最终 main 重新执行启动恢复与 MESH 消费者/L4 回归。
+- 本版本的 FIT-AP、轨旁 AP 和 LLDP 修复已在杭州地铁 10 号线开发数据及 Electron 页面完成本地验证；现场实时设备采集仍需现场网络、授权和验收窗口，不能由本地验证替代。
 
 ## v1.5.9 - 2026-10-13
 
