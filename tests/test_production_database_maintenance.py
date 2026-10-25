@@ -11,6 +11,8 @@ from typing import Any, Callable
 import pytest
 
 import netconsole.services.production_database_maintenance as production_maintenance_module
+import netconsole.services.database_upgrade.authority as database_authority_module
+import netconsole.services.mesh_production_authority as mesh_production_authority_module
 from netconsole.core.backend_instance_lock import BackendInstanceInUseError
 from netconsole.core.build_metadata import current_build_metadata
 from netconsole.core.paths import PathResolver
@@ -1404,7 +1406,15 @@ def test_preflight_rejects_executable_manifest_from_rehearsal_head(
         )
 
 
-def test_execute_replace_requires_explicit_authorization_and_supports_rollback(tmp_path: Path) -> None:
+def test_execute_replace_requires_explicit_authorization_and_supports_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
+
+    def production_environment(_root: Path) -> DataEnvironmentInfo:
+        return DataEnvironmentInfo(DataEnvironmentMode.PRODUCTION, readonly_warning=True)
+    monkeypatch.setattr(database_authority_module, "data_environment", production_environment)
+    monkeypatch.setattr(mesh_production_authority_module, "data_environment", production_environment)
     paths, site, _ = _site(tmp_path)
     active = site / "db" / "devices.db"
     candidate = _candidate(paths, "op-replace", "devices.db")

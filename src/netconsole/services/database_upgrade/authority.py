@@ -161,6 +161,19 @@ def _contained(path: Path, root: Path, code: str) -> Path:
     return resolved
 
 
+def _production_staging_root(paths: PathResolver, operation_id: str) -> Path:
+    component = str(operation_id or "").strip()
+    if (
+        not component
+        or Path(component).name != component
+        or component in {".", ".."}
+        or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for char in component)
+    ):
+        raise DatabaseMaintenanceAuthorityError("DATABASE_OPERATION_ID_INVALID")
+    root = paths.staging_dir / "production-maintenance" / component
+    return _contained(root, paths.data_root, "DATABASE_RECOVERY_ARTIFACT_INVALID")
+
+
 def _site_binding(paths: PathResolver, site_ref: str) -> dict[str, Any]:
     try:
         scope = resolve_mesh_production_scope(paths, str(site_ref or "").strip())
@@ -346,6 +359,11 @@ def build_startup_recovery_authority(
         expected_active = active_path.resolve()
 
     site_root = _contained(Path(str(site["site_root"])), paths.data_root, "DATABASE_SITE_PATH_INVALID")
+    production_staging_root = (
+        _production_staging_root(paths, selected_operation)
+        if is_production and production_evidence
+        else None
+    )
     artifact_paths: dict[str, str] = {}
     for name, candidate in (
         ("active_path", active_path),
@@ -354,13 +372,18 @@ def build_startup_recovery_authority(
     ):
         if candidate is None:
             continue
-        resolved = _contained(
-            Path(candidate),
-            site_root
+        artifact_root = (
+            production_staging_root
+            if name == "shadow_path" and production_staging_root is not None
+            else site_root
             if selected_kind == "mesh_derived" or production_evidence
-            else paths.data_root,
-            "DATABASE_RECOVERY_ARTIFACT_INVALID",
+            else paths.data_root
         )
+        resolved = _contained(Path(candidate), artifact_root, "DATABASE_RECOVERY_ARTIFACT_INVALID")
+        if production_staging_root is not None and name == "shadow_path":
+            expected_shadow = production_staging_root / f"{selected_kind}.candidate"
+            if resolved != expected_shadow.resolve():
+                raise DatabaseMaintenanceAuthorityError("DATABASE_RECOVERY_ARTIFACT_INVALID")
         artifact_paths[name] = str(resolved)
     if backup_path is not None:
         artifact_paths["backup_path"] = str(
@@ -570,12 +593,25 @@ def validate_startup_recovery_authority(
     else:
         expected_relative_site_root = str(authority.get("site_root_relative_path") or "")
     _contained(expected_site_root, paths.data_root, "DATABASE_SITE_PATH_INVALID")
+    production_staging_root = (
+        _production_staging_root(paths, selected_operation)
+        if authority_mode == STARTUP_RECOVERY_PRODUCTION_MAINTENANCE_ADAPTER
+        and data_environment(paths.data_root).is_production
+        else None
+    )
     artifacts = authority.get("artifacts")
     if not isinstance(artifacts, Mapping):
         raise DatabaseMaintenanceAuthorityError("DATABASE_RECOVERY_ARTIFACTS_REQUIRED")
     for key, raw in artifacts.items():
         if key == "backup_path":
             _contained(Path(str(raw)), paths.database_upgrade_backups_dir, "DATABASE_RECOVERY_BACKUP_INVALID")
+        elif key == "shadow_path" and production_staging_root is not None:
+            resolved_shadow = _contained(
+                Path(str(raw)), production_staging_root, "DATABASE_RECOVERY_ARTIFACT_INVALID"
+            )
+            expected_shadow = production_staging_root / f"{database_kind}.candidate"
+            if resolved_shadow != expected_shadow.resolve():
+                raise DatabaseMaintenanceAuthorityError("DATABASE_RECOVERY_ARTIFACT_INVALID")
         else:
             _contained(
                 Path(str(raw)),
