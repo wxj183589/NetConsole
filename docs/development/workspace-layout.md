@@ -21,6 +21,7 @@ release
 reports
 temp
 archives
+backups
 ```
 
 已有历史例外允许保持原状，但不得作为新目录模板：
@@ -33,6 +34,8 @@ field-validation-recovery-20260920-full-fixed
 ```
 
 例外是保留登记，不是新建许可。其他既有目录不自动删除；必须先核验用途、依赖、Git 状态和保留批准结果，再登记为明确例外。
+
+`backups` 保存已核验的历史恢复资料，不作为临时输出目录。现有独立项目 `NetConsole-Next` 保留在 Workspace 顶层；检查器仅在其为真实 Git 仓库、仓库根恰好是该目录且本地 `origin` 为 `https://github.com/wxj183589/NetConsole-Next.git` 时识别该登记项目。此登记不允许新增同名副本或其他平级仓库。
 
 未经用户明确批准，不得新增 Workspace 顶层目录，也不得创建 `NetConsole-copy`、`NetConsole-new`、`NetConsole-test`、`NetConsole-backup`、`package-worktrees`、`devstatus-worktrees`、`new-release`、`test-data-copy` 或同类副本目录。
 
