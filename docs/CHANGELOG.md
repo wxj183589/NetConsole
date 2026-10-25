@@ -47,6 +47,11 @@
 - PR #95 已合并并纳入本版本；PR #94 已合并；最终 main 已重新执行启动恢复、生产维护与 MESH 消费者定向回归及 GitHub CI。
 - 本版本的 FIT-AP、轨旁 AP 和 LLDP 修复已在杭州地铁 10 号线开发数据及 Electron 页面完成本地验证；现场实时设备采集仍需现场网络、授权和验收窗口，不能由本地验证替代。
 
+### 历史分支归档
+
+- 本轮审计并归档 7 条 Legacy 开发分支：HTTP/DB/AC Authority、AC Web 计划调查与 Dry-Run、Production Write Authority 审计，以及 Field Diagnostic、Storage I/O、UDP Syslog Reliable Spool 历史实现。
+- 已由当前主线等价覆盖的能力继续以主线实现为准；历史分支的独立 Git Bundle 和补丁已完成恢复校验，但这些分支没有作为本轮新增代码合并到 v1.5.10，也不代表额外的已发布功能。
+
 ### 人工验收记录
 
 - `WINDOWS_10_1909=PASS_USER_CONFIRMED`；`WINDOWS_10_20H2=PASS_USER_CONFIRMED`。
