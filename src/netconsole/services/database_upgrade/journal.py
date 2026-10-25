@@ -27,6 +27,7 @@ _TERMINAL_STAGES = {
     "recovered_from_backup",
     "recovered_new_database",
     "recovered_no_existing_database",
+    "recovered_production_rollback",
 }
 
 
@@ -553,6 +554,8 @@ def _recover_production_journal(
 
     stage = str(value.get("stage") or "")
     if not bool(value.get("switched")):
+        if stage not in {"production_preflight", "backup_verified"}:
+            raise RuntimeError("DATABASE_PRODUCTION_SWITCH_STATE_UNCERTAIN")
         return {
             "stage": "recovered_no_switch",
             "rollback_performed": False,

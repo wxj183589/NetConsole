@@ -1552,6 +1552,60 @@ def test_startup_recovery_revalidates_production_owner_before_rollback(tmp_path:
     assert sqlite_quick_profile(active)["sha256"] == expected["sha256"]
     assert sqlite_quick_profile(rollback_path)["sha256"] == expected["sha256"]
 
+    with closing(sqlite3.connect(active)) as connection:
+        connection.execute("INSERT INTO records(value) VALUES ('after-recovery')")
+        connection.commit()
+    assert recover_incomplete_upgrades(paths) == []
+    with closing(sqlite3.connect(active)) as connection:
+        assert connection.execute(
+            "SELECT value FROM records WHERE value = 'after-recovery'"
+        ).fetchone() == ("after-recovery",)
+
+
+def test_startup_recovery_blocks_uncertain_switch_after_quiescence_verified(
+    tmp_path: Path,
+) -> None:
+    paths, site, _ = _site(tmp_path)
+    active = site / "db" / "devices.db"
+    rollback_path = _backup(paths, "devices.db")[0]
+    rollback_before = sqlite_quick_profile(rollback_path)
+    candidate = _candidate(paths, "op-uncertain-switch", "devices.db")
+    with closing(sqlite3.connect(candidate)) as connection:
+        connection.execute("CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO records(value) VALUES ('unverified-switch')")
+        connection.commit()
+    capability = _capability(
+        paths,
+        operation_id="op-uncertain-switch",
+        source_identity="snapshot-identity",
+    )
+    owner = capability._owner("devices.db")
+    DatabaseUpgradeJournal(paths, "op-uncertain-switch").update(
+        "execution_quiescence_verified",
+        production_maintenance_evidence=capability.evidence_binding.startup_recovery_evidence(
+            source_snapshot_identity=owner.source_identity
+        ),
+        production_rollback_owner=owner.as_dict(),
+        active_path=str(active),
+        shadow_path=str(candidate),
+        rollback_path=str(rollback_path),
+        database_kind="devices.db",
+        scope_type="site",
+        scope_id="legacy-dfd356e96ea0",
+        maintenance_lock="site-database-maintenance:legacy-dfd356e96ea0",
+        switched=False,
+    )
+    candidate.replace(active)
+    candidate_profile = sqlite_quick_profile(active)
+
+    result = recover_incomplete_upgrades(paths)
+
+    assert result[0]["status"] == "recovery_failed"
+    assert result[0]["stage"] == "recovery_failed"
+    assert "DATABASE_PRODUCTION_SWITCH_STATE_UNCERTAIN" in result[0]["recovery_error"]
+    assert sqlite_quick_profile(active)["sha256"] == candidate_profile["sha256"]
+    assert sqlite_quick_profile(rollback_path)["sha256"] == rollback_before["sha256"]
+
 
 def test_startup_recovery_reuses_verified_restoration_after_interruption(
     tmp_path: Path,
