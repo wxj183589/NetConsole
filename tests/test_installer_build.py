@@ -104,6 +104,18 @@ def test_installer_policy_has_explicit_reuse_clean_migrate_and_uninstall_modes()
     assert "DeleteRegValue HKLM \"Software\\NetConsole\" \"DataRoot\"" in source
     assert "CLEAN_UNINSTALL：仅清除 NetConsole DataRoot 指针；业务数据保留。" in source
     assert "MIGRATE_EXISTING_DATA; selecting a different path alone is not enough" in source
+    assert "Function NetConsoleInstallerInitDiagnostic" in source
+    assert "Function NetConsoleInstallerAbort" in source
+    for stage in (
+        "stage=data-root-location-validation",
+        "stage=data-root-probe",
+        "stage=backend-data-root-initialization",
+        "stage=runtime-performance-mode",
+        "stage=registry-write-readback",
+    ):
+        assert stage in source
+    assert "registry=not-written" in source
+    assert "registry=restored-or-preserved" in source
 
 
 def test_prepare_identity_uses_unique_commit_artifact_and_source_hash(

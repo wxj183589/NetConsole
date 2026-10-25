@@ -42,6 +42,14 @@ describe('Electron shell product contract', () => {
     expect(source).toContain("logger('ELECTRON_UNMANAGED_DOWNLOAD_BLOCKED')")
   })
 
+  it('handles DataRoot configuration failures after app readiness with a recovery dialog', () => {
+    expect(source).toContain('desktopStartupConfigurationError')
+    expect(source).toContain('showDesktopStartupConfigurationError')
+    expect(source).toContain('NetConsole 启动配置未完成')
+    expect(source).toContain('app.whenReady().then(async () =>')
+    expect(source).toContain('formatDesktopDataRootConfigurationError')
+  })
+
   it('starts the smoke watchdog before awaiting the renderer navigation', () => {
     expect(source.indexOf('startSmokeWatchdog()')).toBeLessThan(
       source.indexOf('void rendererWindow.loadURL(mainRendererTarget)'),
@@ -68,7 +76,7 @@ describe('Electron shell product contract', () => {
     expect(source).toContain("logger('ELECTRON_BACKEND_PROCESS_STILL_ALIVE')")
     expect(source).toContain("logger('ELECTRON_SHUTDOWN_INCOMPLETE'")
     expect(source).toContain('if (!complete) return')
-    expect(source.indexOf('allowQuit = true')).toBeGreaterThan(
+    expect(source.lastIndexOf('allowQuit = true')).toBeGreaterThan(
       source.indexOf('shutdownPromise = shutdown().then((complete)'),
     )
   })

@@ -14,7 +14,7 @@ import { createFileLogger, type DesktopLogger, type ManagedDesktopLogger } from 
 import { formatTraySyncDiagnostic } from './tray-sync-diagnostic'
 import { buildChildProcessGoneDiagnostic, logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
 import { ensureDesktopRuntimePaths, resolveDesktopStorageContext } from './development-data-root'
-import { resolveDesktopDataRootConfiguration } from './data-root-configuration'
+import { formatDesktopDataRootConfigurationError, resolveDesktopDataRootConfiguration } from './data-root-configuration'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
 import { ExternalToolStore } from './external-tool-store'
@@ -58,20 +58,30 @@ import {
   secureWebPreferences,
 } from './security'
 
-const desktopDataRootResolution = resolveDesktopDataRootConfiguration()
-const desktopStorageContext = resolveDesktopStorageContext({
-  ...process.env,
-  NETCONSOLE_DATA_ROOT: desktopDataRootResolution.dataRoot,
-})
-ensureDesktopRuntimePaths(desktopStorageContext)
-app.setPath('userData', desktopStorageContext.userDataRoot)
-app.setPath('sessionData', desktopStorageContext.sessionDataRoot)
-app.setPath('cache', desktopStorageContext.cacheRoot)
-app.setPath('logs', desktopStorageContext.logsRoot)
-app.setPath('crashDumps', desktopStorageContext.crashDumpsRoot)
-app.setPath('temp', desktopStorageContext.tempRoot)
-assertElectronStoragePaths()
-app.enableSandbox()
+let desktopDataRootResolution!: ReturnType<typeof resolveDesktopDataRootConfiguration>
+let desktopStorageContext!: ReturnType<typeof resolveDesktopStorageContext>
+let desktopStartupConfigurationError: unknown
+try {
+  desktopDataRootResolution = resolveDesktopDataRootConfiguration()
+  desktopStorageContext = resolveDesktopStorageContext({
+    ...process.env,
+    NETCONSOLE_DATA_ROOT: desktopDataRootResolution.dataRoot,
+  })
+  ensureDesktopRuntimePaths(desktopStorageContext)
+  app.setPath('userData', desktopStorageContext.userDataRoot)
+  app.setPath('sessionData', desktopStorageContext.sessionDataRoot)
+  app.setPath('cache', desktopStorageContext.cacheRoot)
+  app.setPath('logs', desktopStorageContext.logsRoot)
+  app.setPath('crashDumps', desktopStorageContext.crashDumpsRoot)
+  app.setPath('temp', desktopStorageContext.tempRoot)
+  assertElectronStoragePaths()
+  app.enableSandbox()
+} catch (cause) {
+  // DataRoot failures happen before app.whenReady(). Keep the process alive
+  // long enough to show a useful recovery dialog instead of an opaque JS
+  // exception, without selecting any fallback path.
+  desktopStartupConfigurationError = cause
+}
 
 let mainWindow: BrowserWindow | undefined
 let workspaceWindowController: WorkspaceWindowController | undefined
@@ -153,7 +163,27 @@ process.once('SIGINT', () => requestExit(0))
 process.once('SIGTERM', () => requestExit(0))
 
 if (hasSingleInstanceLock) {
-  void app.whenReady().then(startDesktop).catch((cause) => handleFatalStartup(cause))
+  void app.whenReady().then(async () => {
+    if (desktopStartupConfigurationError) {
+      await showDesktopStartupConfigurationError(desktopStartupConfigurationError)
+      return
+    }
+    await startDesktop()
+  }).catch((cause) => handleFatalStartup(cause))
+}
+
+async function showDesktopStartupConfigurationError(cause: unknown): Promise<void> {
+  const detail = formatDesktopDataRootConfigurationError(cause)
+  await dialog.showMessageBox({
+    type: 'error',
+    title: 'NetConsole 启动配置未完成',
+    message: 'NetConsole 未能安全确定业务数据目录',
+    detail,
+    buttons: ['退出'],
+    noLink: true,
+  })
+  allowQuit = true
+  app.quit()
 }
 
 async function startDesktop(): Promise<void> {
