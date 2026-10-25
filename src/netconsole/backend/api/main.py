@@ -118,7 +118,10 @@ from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestErro
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
 from netconsole.services.settings_application_service import SettingsApplicationService
 from netconsole.services.database_upgrade.management_service import DatabaseUpgradeManagementService
-from netconsole.services.database_upgrade.journal import recover_incomplete_upgrades
+from netconsole.services.database_upgrade.journal import (
+    record_startup_recovery_block,
+    recover_incomplete_upgrades,
+)
 from netconsole.services.runtime_self_check_service import RuntimeSelfCheckService
 from netconsole.services.system_network_application_service import (
     SystemNetworkApplicationService,
@@ -403,11 +406,36 @@ def create_app(
     performance_mode = read_runtime_performance_mode(paths.settings_path)
     capability_policy = RuntimeCapabilityPolicy.from_profile(host_profile, mode=performance_mode)
     _emit_startup_stage(startup_stage, "upgrade_recovery_started")
-    for recovered_upgrade in recover_incomplete_upgrades(paths):
-        app_logger.log_warning(
-            "DATABASE_UPGRADE_RECOVERED",
-            f"operation={recovered_upgrade.get('operation_id')} stage={recovered_upgrade.get('stage')}",
+    recovery_results = recover_incomplete_upgrades(paths)
+    blocked_recovery = [
+        item
+        for item in recovery_results
+        if str(item.get("status") or "") in {"blocked", "recovery_failed"}
+    ]
+    for recovery_result in recovery_results:
+        status = str(recovery_result.get("status") or "")
+        if status == "recovered":
+            app_logger.log_warning(
+                "DATABASE_UPGRADE_RECOVERED",
+                f"operation={recovery_result.get('operation_id')} stage={recovery_result.get('stage')}",
+            )
+        elif status == "skipped":
+            app_logger.log_info(
+                "DATABASE_UPGRADE_RECOVERY_DELEGATED",
+                f"operation={recovery_result.get('operation_id')} reason={recovery_result.get('recovery_status')}",
+            )
+        elif status in {"blocked", "recovery_failed"}:
+            app_logger.log_error(
+                "DATABASE_UPGRADE_RECOVERY_BLOCKED",
+                f"operation={recovery_result.get('operation_id')} code={recovery_result.get('recovery_block_code') or recovery_result.get('recovery_status')} evidence={recovery_result.get('recovery_evidence_path', '')}",
+            )
+    if blocked_recovery:
+        _emit_startup_stage(startup_stage, "upgrade_recovery_failed")
+        codes = ",".join(
+            str(item.get("recovery_block_code") or item.get("recovery_status") or "UNKNOWN")
+            for item in blocked_recovery
         )
+        raise RuntimeError(f"DATABASE_STARTUP_RECOVERY_BLOCKED: {codes}")
     _emit_startup_stage(startup_stage, "upgrade_recovery_complete")
     _emit_startup_stage(startup_stage, "active_site_resolving")
     site_name = _current_site_name(paths, startup_stage=startup_stage)
@@ -739,19 +767,34 @@ def create_app(
             )
             app.state.site_package_staging_recovery = staging_recovery.to_dict()
             if staging_recovery.failures:
-                app_logger.log_warning(
-                    "SITE_PACKAGE_STAGING_RECOVERY_PARTIAL",
-                    f"failed={len(staging_recovery.failures)}",
+                evidence = record_startup_recovery_block(
+                    paths,
+                    paths.temp_dir / "site_package_staging_recovery",
+                    "SITE_PACKAGE_STAGING_RECOVERY_FAILED",
+                    "site package staging recovery did not prove a clean state",
+                    details={"failure_count": len(staging_recovery.failures), "failures": [str(item) for item in staging_recovery.failures]},
                 )
+                app_logger.log_error(
+                    "SITE_PACKAGE_STAGING_RECOVERY_PARTIAL",
+                    f"failed={len(staging_recovery.failures)} evidence={evidence}",
+                )
+                raise RuntimeError("SITE_PACKAGE_STAGING_RECOVERY_BLOCKED")
         except Exception as exc:
             app.state.site_package_staging_recovery = {
                 "status": "FAIL",
                 "error": exc.__class__.__name__,
             }
-            app_logger.log_warning(
+            evidence = record_startup_recovery_block(
+                paths,
+                paths.temp_dir / "site_package_staging_recovery",
                 "SITE_PACKAGE_STAGING_RECOVERY_FAILED",
-                f"error={exc.__class__.__name__}",
+                str(exc),
             )
+            app_logger.log_error(
+                "SITE_PACKAGE_STAGING_RECOVERY_FAILED",
+                f"error={exc.__class__.__name__} evidence={evidence}",
+            )
+            raise RuntimeError("SITE_PACKAGE_STAGING_RECOVERY_BLOCKED") from exc
 
         auto_cleanup_task = (
             asyncio.create_task(schedule_auto_cleanup())

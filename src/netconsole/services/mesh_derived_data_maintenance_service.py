@@ -214,6 +214,8 @@ class MeshDerivedDataMaintenanceService:
         progress: ProgressCallback | None = None,
         should_cancel: CancelCallback | None = None,
         before_mutation: Callable[[str], None] | None = None,
+        database_authority: Mapping[str, object] | None = None,
+        allow_legacy_startup_recovery: bool = False,
     ) -> dict[str, object]:
         normalized_profile_ids = (
             None
@@ -283,6 +285,8 @@ class MeshDerivedDataMaintenanceService:
                 allow_empty_raw=True,
                 raw_files=registered_raw_files,
                 source_metadata=registered_sources,
+                database_authority=database_authority,
+                allow_legacy_startup_recovery=allow_legacy_startup_recovery,
             )
             missing_sources = [
                 dict(item)
