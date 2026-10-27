@@ -1187,6 +1187,48 @@ def test_site_export_job_reports_safe_stages_and_destination(
     assert destination_message["destination_path"] == str(package.resolve())
 
 
+def test_lightweight_package_round_trips_table_preferences_and_keeps_old_layout_optional(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    package = tmp_path / "source-lightweight.zip"
+    preferences = {
+        "device-detail.interfaces": {
+            "version": 1,
+            "order": ["name", "status"],
+            "columns": [
+                {"key": "name", "visible": True, "width": 180, "fixed": "left"},
+                {"key": "status", "visible": False},
+            ],
+        },
+    }
+
+    SitePackageService(source_paths, source_sites).export_site(
+        "source-site",
+        package,
+        package_type="lightweight",
+        table_preferences=preferences,
+    )
+    inspected = SitePackageService(source_paths, source_sites).inspect_package(package)
+    assert inspected["table_preferences"] == preferences
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["table_preferences_path"] == "table-column-preferences.json"
+        assert "table-column-preferences.json" in manifest["checksums"]
+        assert json.loads(archive.read("table-column-preferences.json")) == preferences
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    imported = SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="restored-site",
+    )
+    assert imported["site_switchable"] is True
+    assert imported["table_preferences"] == preferences
+
+
 def test_lightweight_package_rejects_missing_required_file_and_checksum_mismatch(
     tmp_path: Path,
 ) -> None:

@@ -40,6 +40,16 @@ watch(visible, (opened) => {
 function selectVisible(): void {
   draft.value = [...new Set([...draft.value, ...matchingOptions.value])]
 }
+function toggleDraft(option: string, checked: boolean): void {
+  const selected = new Set(draft.value)
+  if (checked) selected.add(option)
+  else selected.delete(option)
+  draft.value = [...selected]
+}
+function selectOnly(option: string): void {
+  if (!uniqueOptions.value.includes(option)) return
+  draft.value = [option]
+}
 function invertVisible(): void {
   const selected = new Set(draft.value)
   for (const option of matchingOptions.value) {
@@ -84,9 +94,21 @@ function apply(): void {
         <el-button link size="small" @click="draft = [...uniqueOptions]">恢复全部</el-button>
       </div>
       <div class="nc-multi-value-filter__list" role="group" :aria-label="placeholder">
-        <el-checkbox-group v-model="draft" class="nc-multi-value-filter__group">
-          <el-checkbox v-for="option in matchingOptions" :key="option" :value="option">{{ labels?.[option] || option }}</el-checkbox>
-        </el-checkbox-group>
+        <div class="nc-multi-value-filter__group">
+          <div v-for="option in matchingOptions" :key="option" class="nc-multi-value-filter__option">
+            <el-checkbox
+              :model-value="draft.includes(option)"
+              :value="option"
+              @change="toggleDraft(option, Boolean($event))"
+            >{{ labels?.[option] || option }}</el-checkbox>
+            <el-button
+              link
+              size="small"
+              class="nc-multi-value-filter__only"
+              @click.stop="selectOnly(option)"
+            >仅选择此项</el-button>
+          </div>
+        </div>
         <el-empty v-if="!matchingOptions.length" description="没有匹配项" :image-size="42" />
       </div>
       <div class="nc-multi-value-filter__footer">
@@ -98,13 +120,17 @@ function apply(): void {
 </template>
 
 <style scoped>
-.nc-multi-value-filter{width:100%;justify-content:space-between;min-width:140px}
+.nc-multi-value-filter{width:100%;min-width:120px;max-width:220px;box-sizing:border-box;justify-content:space-between}
 .nc-multi-value-filter__caption{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nc-multi-value-filter__count{color:var(--el-text-color-secondary);font-size:11px;margin-left:auto;padding:0 8px}
 .nc-multi-value-filter__panel{display:grid;gap:8px}
-.nc-multi-value-filter__actions{display:flex;gap:5px;border-bottom:1px solid var(--el-border-color-lighter);padding-bottom:5px}
-.nc-multi-value-filter__list{display:flex;flex-direction:column;max-height:265px;overflow-y:auto}
-.nc-multi-value-filter__group{display:flex;flex-direction:column}
-.nc-multi-value-filter__list .el-checkbox{margin:0;padding:4px 5px;min-height:28px}
+.nc-multi-value-filter__actions{display:flex;flex-wrap:wrap;gap:5px;border-bottom:1px solid var(--el-border-color-lighter);padding-bottom:5px}
+.nc-multi-value-filter__list{display:flex;flex-direction:column;min-height:0;max-height:min(52vh,320px);overflow-y:auto}
+.nc-multi-value-filter__group{display:flex;flex-direction:column;min-width:0}
+.nc-multi-value-filter__option{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:2px 0}
+.nc-multi-value-filter__list .el-checkbox{min-width:0;flex:1 1 auto;margin:0;padding:4px 5px;min-height:28px}
+.nc-multi-value-filter__list .el-checkbox :deep(.el-checkbox__label){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nc-multi-value-filter__only{flex:0 0 auto;padding:3px 4px}
 .nc-multi-value-filter__footer{display:flex;justify-content:flex-end;border-top:1px solid var(--el-border-color-lighter);padding-top:8px}
+@media(max-width:900px){.nc-multi-value-filter{max-width:none}}
 </style>

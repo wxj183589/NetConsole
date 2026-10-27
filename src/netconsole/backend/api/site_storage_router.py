@@ -613,6 +613,7 @@ def export_site(
             "site_id": site_id,
             "destination_path": payload.destination_path,
             "package_type": payload.package_type,
+            "table_preferences": payload.table_preferences,
         },
     )
 

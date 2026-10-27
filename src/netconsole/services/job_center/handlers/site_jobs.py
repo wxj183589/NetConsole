@@ -197,6 +197,11 @@ def site_export(context: JobContext) -> dict[str, object]:
             record.site_id,
             Path(destination),
             package_type=package_type,
+            table_preferences=(
+                context.params.get("table_preferences")
+                if isinstance(context.params.get("table_preferences"), dict)
+                else {}
+            ),
             check_cancel=context.check_cancelled,
             progress=context.progress,
         )

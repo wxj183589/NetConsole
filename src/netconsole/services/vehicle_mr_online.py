@@ -89,6 +89,17 @@ class TrainIdentity:
     car_end: str
     car_end_label: str
     online_policy: str = ONLINE_POLICY_AUTO
+    raw_name: str = ""
+    line_name: str = ""
+    canonical_train_key: str = ""
+    match_source: str = ""
+    confidence: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.raw_name:
+            object.__setattr__(self, "raw_name", self.peer_name)
+        if not self.canonical_train_key and self.train_no:
+            object.__setattr__(self, "canonical_train_key", f"train:{self.train_no}")
 
 
 @dataclass(frozen=True)
@@ -316,6 +327,11 @@ _MR_NAME_RE = re.compile(
     r"(?:MR|AP)-(?P<end>CT|CW)(?:[-_ ].*)?$",
     re.IGNORECASE,
 )
+_HZL10_MR_NAME_RE = re.compile(
+    r"^(?P<line>HZL10)-(?P<train_no>\d{1,3})-(?P<middle>[^-]+)-"
+    r"(?:MR|AP)-(?P<end>CT|CW)(?:[-_ ].*)?$",
+    re.IGNORECASE,
+)
 _CN_MR_NAME_RE = re.compile(
     r"^列车(?P<train_no>\d+)-(?:MR|AP)-(?P<end>CT|CW)(?:[-_ ].*)?$",
     re.IGNORECASE,
@@ -327,6 +343,11 @@ _TRAIN_NO_RE = re.compile(r"(?:LC|列车)?0*(?P<train_no>\d{1,3})车?", re.IGNOR
 VEHICLE_MR_GROUP_NAME = "车载-MR"
 EMPTY_STATION_VALUES = {"", "-", "—", "未知", "unknown", "none", "null"}
 ONLINE_LINK_STATUSES = {"forwarding", "active", "up"}
+_CONFIRMED_NUMERIC_MR_IDENTITIES = {
+    "3001": ("30", "CT"),
+    "3004": ("30", "CW"),
+    "3006": ("30", "CW"),
+}
 
 
 def canonical_peer_name(value: object) -> str:
@@ -339,6 +360,12 @@ def normalize_train_no(value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
+    confirmed = _CONFIRMED_NUMERIC_MR_IDENTITIES.get(text)
+    if confirmed:
+        return confirmed[0].zfill(2)
+    hzl10_match = re.match(r"^HZL10-0*(?P<train_no>\d{1,3})-[^-]+-(?:MR|AP)-(?:CT|CW)\b", text, re.IGNORECASE)
+    if hzl10_match:
+        return hzl10_match.group("train_no").zfill(2)
     for pattern in (r"LC0*(?P<train_no>\d{1,3})", r"列车0*(?P<train_no>\d{1,3})", r"0*(?P<train_no>\d{1,3})车"):
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
@@ -425,6 +452,33 @@ def is_vehicle_mr_device(
 
 def parse_train_identity(peer_name: str) -> TrainIdentity | None:
     text = canonical_peer_name(peer_name)
+    confirmed = _CONFIRMED_NUMERIC_MR_IDENTITIES.get(text)
+    if confirmed:
+        train_no, end = confirmed
+        return TrainIdentity(
+            peer_name=str(peer_name or "").strip(),
+            train_id=f"列车{train_no}",
+            train_no=normalize_train_no(train_no),
+            car_end=end,
+            car_end_label="TC1" if end == "CT" else "TC2",
+            line_name="HZL10",
+            match_source="confirmed-numeric",
+            confidence="high",
+        )
+    hzl10_match = _HZL10_MR_NAME_RE.match(text)
+    if hzl10_match:
+        train_no = normalize_train_no(hzl10_match.group("train_no"))
+        end = hzl10_match.group("end").upper()
+        return TrainIdentity(
+            peer_name=str(peer_name or "").strip(),
+            train_id=f"列车{train_no}",
+            train_no=train_no,
+            car_end=end,
+            car_end_label="TC1" if end == "CT" else "TC2",
+            line_name=hzl10_match.group("line").upper(),
+            match_source="hzl10-middle-segment",
+            confidence="high",
+        )
     match = _MR_NAME_RE.match(text)
     if match:
         train_no = normalize_train_no(match.group("train_no"))
@@ -432,6 +486,8 @@ def parse_train_identity(peer_name: str) -> TrainIdentity | None:
         if not match.group("prefix"):
             train_id = f"列车{train_no}"
         end = match.group("end").upper()
+        line_name = (match.group("prefix") or "").rstrip("-")
+        source = "legacy-line-lc" if line_name else "cn-compatible-lc"
     else:
         match = _CN_MR_NAME_RE.match(text)
         if not match:
@@ -439,12 +495,17 @@ def parse_train_identity(peer_name: str) -> TrainIdentity | None:
         train_no = normalize_train_no(match.group("train_no"))
         train_id = f"列车{train_no}"
         end = match.group("end").upper()
+        line_name = ""
+        source = "chinese-name"
     return TrainIdentity(
         peer_name=str(peer_name or "").strip(),
         train_id=train_id,
         train_no=train_no,
         car_end=end,
         car_end_label="TC1" if end == "CT" else "TC2",
+        line_name=line_name,
+        match_source=source,
+        confidence="high",
     )
 
 
@@ -473,6 +534,10 @@ def parse_train_identity_from_device(device: Device) -> TrainIdentity | None:
             train_no=train_no,
             car_end=end,
             car_end_label="TC1" if end == "CT" else "TC2",
+            raw_name=device.name,
+            line_name="",
+            match_source="station-format",
+            confidence="medium",
         )
     if name_identity is not None:
         return name_identity

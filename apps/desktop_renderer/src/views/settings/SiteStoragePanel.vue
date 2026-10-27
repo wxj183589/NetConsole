@@ -12,7 +12,7 @@ import { getSiteContextSnapshot, refreshSiteContext, siteContextState } from '..
 import { useWorkspaceStore } from '../../stores/workspace'
 import { coordinateSiteSwitch, LEGACY_SITE_CONTEXT_CHANGED_EVENT, notifySiteContextChanged, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 import { UI_PREFERENCE_KEYS } from '../../../../desktop_electron/src/shared/bridge'
-import { loadUiPreference } from '../../platform/uiPreferences'
+import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 
 const props = defineProps<{ focused?: boolean; switchBlocked?: boolean }>()
 
@@ -543,7 +543,8 @@ async function exportCurrent(packageType: SitePackageType): Promise<void> {
       ElMessage.warning('局点已发生变化，已取消本次导出，请重新导出当前局点')
       return
     }
-    const task = await exportSite(context.siteId, selected.path, packageType)
+    const preferences = packageType === 'lightweight' ? await collectTableColumnPreferences() : {}
+    const task = await exportSite(context.siteId, selected.path, packageType, preferences)
     await openTask(task.task_id)
     ElMessage.success(`${packageTypeLabel(packageType)}导出任务已提交`)
   } catch (cause) {
@@ -570,6 +571,52 @@ async function collectTableColumnPreferences(): Promise<Record<string, unknown>>
     }
   }
   return result
+}
+
+function isKnownUiPreferenceKey(key: string): boolean {
+  return (UI_PREFERENCE_KEYS as readonly string[]).includes(key)
+}
+
+function isValidImportedTablePreference(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as { version?: unknown; order?: unknown; columns?: unknown }
+  if (candidate.version !== 1 || !Array.isArray(candidate.order) || !Array.isArray(candidate.columns)) return false
+  if (candidate.order.length > 256 || candidate.columns.length > 256) return false
+  if (!candidate.order.every((item) => typeof item === 'string' && item.length > 0 && item.length <= 128)) return false
+  return candidate.columns.every((item) => {
+    if (!item || typeof item !== 'object') return false
+    const column = item as { key?: unknown; width?: unknown; visible?: unknown; fixed?: unknown }
+    return typeof column.key === 'string'
+      && column.key.length > 0
+      && column.key.length <= 128
+      && (column.width === undefined || (typeof column.width === 'number' && Number.isFinite(column.width) && column.width > 0 && column.width <= 10_000))
+      && (column.visible === undefined || typeof column.visible === 'boolean')
+      && (column.fixed === undefined || column.fixed === false || column.fixed === 'left' || column.fixed === 'right')
+  })
+}
+
+async function restoreImportedTablePreferences(preferences: Record<string, unknown> | undefined): Promise<void> {
+  if (!preferences) return
+  let restored = 0
+  let skipped = 0
+  for (const [key, value] of Object.entries(preferences)) {
+    try {
+      if (isKnownUiPreferenceKey(key)) {
+        if (!isValidImportedTablePreference(value)) { skipped += 1; continue }
+        await saveUiPreference(key as typeof UI_PREFERENCE_KEYS[number], value)
+        restored += 1
+        continue
+      }
+      if (key.startsWith('netconsole.table-preferences.v2:') && key.length <= 512 && isValidImportedTablePreference(value) && typeof localStorage !== 'undefined') {
+        localStorage.setItem(key, JSON.stringify(value))
+        restored += 1
+      } else skipped += 1
+    } catch {
+      skipped += 1
+    }
+  }
+  if (skipped) ElMessage.warning(`局点数据已导入，但有 ${skipped} 项列设置未恢复。`)
+  else if (restored) ElMessage.success(`已恢复 ${restored} 项表格列设置。`)
 }
 
 async function exportSelectedLightweightBundle(): Promise<void> {
@@ -659,6 +706,7 @@ async function executeImport(): Promise<void> {
     ElMessage.success('数据包导入任务已提交')
     const completed = await waitForTask(task.task_id)
     if (completed !== 'COMPLETED') throw new Error(`局点导入任务状态：${completed}`)
+    await restoreImportedTablePreferences(inspected.table_preferences)
     const importedSiteId = importMode.value === 'new'
       ? importSiteId.value.trim()
       : importMode.value === 'replace'

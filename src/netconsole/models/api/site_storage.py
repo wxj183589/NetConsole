@@ -73,6 +73,7 @@ class SiteExportRequest(ApiModel):
     package_type: Literal[
         "full_migration", "sanitized_share", "field_collection", "collection_return", "lightweight"
     ] = "full_migration"
+    table_preferences: dict[str, object] = Field(default_factory=dict)
 
 
 class SiteBatchLightweightExportRequest(ApiModel):

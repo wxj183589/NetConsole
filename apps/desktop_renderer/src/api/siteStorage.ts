@@ -182,6 +182,7 @@ export interface SitePackageInspection {
   contains_credentials: boolean
   encrypted: boolean
   credential_reentry_count: number
+  table_preferences?: Record<string, unknown>
 }
 
 export interface SiteConflictResolution {
@@ -232,7 +233,7 @@ export interface SiteActivationResult {
 
 export const activateSite = (siteId: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.activate) => apiRequest<SiteActivationResult>(`/api/v1/sites/${encodeURIComponent(siteId)}/activate`, { method: 'POST', body: JSON.stringify({ confirmed: true, authorization_token: authorizationToken }) })
 export const inspectSitePackage = (packagePath: string, targetSiteId = '') => apiRequest<SitePackageInspection>('/api/v1/sites/import/inspect', { method: 'POST', body: JSON.stringify({ package_path: packagePath, target_site_id: targetSiteId }) })
-export const exportSite = (siteId: string, destinationPath: string, packageType: SitePackageType = 'full_migration') => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/export`, { method: 'POST', body: JSON.stringify({ destination_path: destinationPath, package_type: packageType }) })
+export const exportSite = (siteId: string, destinationPath: string, packageType: SitePackageType = 'full_migration', tablePreferences: Record<string, unknown> = {}) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/export`, { method: 'POST', body: JSON.stringify({ destination_path: destinationPath, package_type: packageType, table_preferences: tablePreferences }) })
 export const exportLightweightBundle = (siteIds: string[], destinationPath: string, tablePreferences: Record<string, unknown>) => apiRequest<SiteTaskResponse>('/api/v1/sites/export-lightweight-bundle', {
   method: 'POST',
   body: JSON.stringify({ site_ids: siteIds, destination_path: destinationPath, table_preferences: tablePreferences }),

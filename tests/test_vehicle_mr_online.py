@@ -152,6 +152,33 @@ def test_parse_train_identity_merges_ct_and_cw_to_same_train() -> None:
     assert cw.car_end_label == "TC2"
 
 
+def test_parse_train_identity_uses_hzl10_middle_segment_and_confirmed_numeric_mapping() -> None:
+    ct = parse_train_identity("HZL10-25-DQ09-MR-CT")
+    cw = parse_train_identity("HZL10-25-DQ10-MR-CW")
+    nbl_ct = parse_train_identity("NBL12-LC25-MR-CT")
+    nbl_cw = parse_train_identity("NBL12-LC25-MR-CW")
+    chinese = parse_train_identity("列车25-MR-CW")
+    numeric_ct = parse_train_identity("3001")
+    numeric_cw = parse_train_identity("3004")
+    numeric_cw_2 = parse_train_identity("3006")
+
+    assert ct is not None and cw is not None
+    assert ct.train_no == cw.train_no == "25"
+    assert ct.line_name == cw.line_name == "HZL10"
+    assert ct.canonical_train_key == cw.canonical_train_key == "train:25"
+    assert ct.match_source == "hzl10-middle-segment"
+    assert ct.confidence == "high"
+    assert nbl_ct is not None and nbl_cw is not None and chinese is not None
+    assert nbl_ct.train_no == nbl_cw.train_no == chinese.train_no == "25"
+    assert nbl_ct.line_name == nbl_cw.line_name == "NBL12"
+    assert nbl_ct.match_source == "legacy-line-lc"
+    assert numeric_ct is not None and numeric_cw is not None and numeric_cw_2 is not None
+    assert (numeric_ct.train_no, numeric_ct.car_end) == ("30", "CT")
+    assert (numeric_cw.train_no, numeric_cw.car_end) == ("30", "CW")
+    assert (numeric_cw_2.train_no, numeric_cw_2.car_end) == ("30", "CW")
+    assert parse_train_identity("3002") is None
+
+
 def test_train_status_online_partial_offline_and_unregistered() -> None:
     registered = {"NBL12-LC06": VehicleMrTrainState("NBL12-LC06", "06", True)}
     ap_lookup = {"ap-a": MatchedAp("AP-A", "鼓楼站")}

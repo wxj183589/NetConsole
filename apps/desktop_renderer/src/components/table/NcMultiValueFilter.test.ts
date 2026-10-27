@@ -63,6 +63,33 @@ describe('NcMultiValueFilter', () => {
     wrapper.unmount()
   })
 
+  it('only selects one option in the draft and commits it only after confirmation', async () => {
+    const wrapper = mount(NcMultiValueFilter, {
+      attachTo: document.body,
+      props: { modelValue: ['站点A'], options: ['站点A', '站点B', '站点C'], placeholder: '全部站点' },
+      global: { plugins: [ElementPlus] },
+    })
+    wrapper.getComponent(ElPopover).vm.$emit('update:visible', true)
+    await flushPromises()
+    const only = Array.from(document.querySelectorAll('.nc-multi-value-filter__only')).find(
+      (button) => button.textContent?.includes('仅选择此项') && button.parentElement?.textContent?.includes('站点B'),
+    ) as HTMLElement
+    only.click()
+    await flushPromises()
+    expect(Array.from(document.querySelectorAll<HTMLInputElement>('.nc-multi-value-filter__list input')).map((input) => input.checked)).toEqual([false, true, false])
+    expect(wrapper.emitted('change')).toBeUndefined()
+    const cancel = Array.from(document.querySelectorAll('.nc-multi-value-filter__footer button')).find(
+      (button) => button.textContent?.includes('取消'),
+    ) as HTMLElement
+    cancel.click()
+    await flushPromises()
+    expect(wrapper.emitted('change')).toBeUndefined()
+    wrapper.getComponent(ElPopover).vm.$emit('update:visible', true)
+    await flushPromises()
+    expect(Array.from(document.querySelectorAll<HTMLInputElement>('.nc-multi-value-filter__list input')).map((input) => input.checked)).toEqual([true, false, false])
+    wrapper.unmount()
+  })
+
   it('preserves the former custom vendor filtering capability without broadening to all', async () => {
     const wrapper = mount(NcMultiValueFilter, {
       attachTo: document.body,

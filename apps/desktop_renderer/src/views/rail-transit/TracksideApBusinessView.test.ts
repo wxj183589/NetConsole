@@ -749,6 +749,39 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('saves dirty WPS edits before closing and keeps the dialog open on save failure', async () => {
+    const initialTargets = wpsTargets(false)
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      drafts: Array<{ enabled: boolean; timeout_seconds: number; document_open_url: string; webhook_url: string; token: string }>
+      saveAndClose: () => Promise<void>
+      errorMessage: string
+    }
+    vm.drafts[0].enabled = true
+    vm.drafts[0].timeout_seconds = 45
+    vm.drafts[0].token = 'test-only-token'
+    api.listTracksideWpsTargets.mockResolvedValue([{ ...wpsTargets(true)[0], timeout_seconds: 45 }])
+    await vm.saveAndClose()
+    expect(api.updateTracksideWpsTarget).toHaveBeenCalledWith('wps_standard_spreadsheet', expect.objectContaining({
+      enabled: true,
+      timeout_seconds: 45,
+      token: 'test-only-token',
+    }))
+    expect(dialog.emitted('update:modelValue')?.at(-1)?.[0]).toBe(false)
+
+    api.updateTracksideWpsTarget.mockRejectedValueOnce(new Error('测试凭据失败'))
+    vm.drafts[0].timeout_seconds = 50
+    const closeEventsBeforeFailure = dialog.emitted('update:modelValue')?.length || 0
+    await vm.saveAndClose()
+    expect(dialog.emitted('update:modelValue')?.length || 0).toBe(closeEventsBeforeFailure)
+    expect(vm.errorMessage).toBe('测试凭据失败')
+    wrapper.unmount()
+  })
+
   it('discards a slow previous-site WPS response after a site switch', async () => {
     let resolvePreviousSite: ((value: WpsTracksideTarget[]) => void) | undefined
     const previousSiteResponse = new Promise<WpsTracksideTarget[]>((resolve) => {
