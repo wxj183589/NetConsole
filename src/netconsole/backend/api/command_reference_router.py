@@ -33,21 +33,33 @@ def list_references(
     request: Request,
     query: str = Query(default="", max_length=200),
     module: str = Query(default="", max_length=100),
+    modules: list[str] = Query(default=[], max_length=20),
     device_scope: str = Query(default="", max_length=100),
+    device_scopes: list[str] = Query(default=[], max_length=20),
     vendor: str = Query(default="", max_length=100),
+    vendors: list[str] = Query(default=[], max_length=20),
     protocol: str = Query(default="", max_length=100),
+    protocols: list[str] = Query(default=[], max_length=20),
     category: str = Query(default="", max_length=100),
+    categories: list[str] = Query(default=[], max_length=20),
     risk_level: str = Query(default="", max_length=50),
+    risk_levels: list[str] = Query(default=[], max_length=20),
 ) -> CommandReferencePageDTO:
     return _call(
         lambda: _service(request).list_references(
             query=query,
             module=module,
+            modules=modules,
             device_scope=device_scope,
+            device_scopes=device_scopes,
             vendor=vendor,
+            vendors=vendors,
             protocol=protocol,
+            protocols=protocols,
             category=category,
+            categories=categories,
             risk_level=risk_level,
+            risk_levels=risk_levels,
         )
     )
 

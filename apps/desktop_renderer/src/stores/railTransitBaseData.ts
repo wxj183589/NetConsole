@@ -167,9 +167,9 @@ export const useRailTransitBaseDataStore = defineStore('rail-transit-base-data',
     if (refreshErrors.value.length) return '部分基础资料刷新失败，已保留最后成功数据。'
     return ''
   })
-  const apFilters = reactive({ query: '', station: '', section: '', line_side: '', has_issue: undefined as boolean | undefined, page: 1, page_size: 50, sort_by: 'name', sort_order: 'asc' })
-  const mrFilters = reactive({ query: '', train: '', mr_role: '', has_issue: undefined as boolean | undefined, page: 1, page_size: 50, sort_by: 'train_no', sort_order: 'asc' })
-  const issueFilters = reactive({ query: '', blocking_only: undefined as boolean | undefined, needs_confirmation_only: undefined as boolean | undefined, page: 1, page_size: 50 })
+  const apFilters = reactive({ query: '', station: '', section: '', line_side: '', has_issue_values: [] as string[], page: 1, page_size: 50, sort_by: 'name', sort_order: 'asc' })
+  const mrFilters = reactive({ query: '', train: '', mr_roles: [] as string[], has_issue: undefined as boolean | undefined, page: 1, page_size: 50, sort_by: 'train_no', sort_order: 'asc' })
+  const issueFilters = reactive({ query: '', blocking_values: [] as string[], needs_confirmation_values: [] as string[], page: 1, page_size: 50 })
   let summaryTimer: number | null = null
   let runtimeTimer: number | null = null
   let staticTimer: number | null = null

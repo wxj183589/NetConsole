@@ -11,10 +11,14 @@ import type { BackendDownloadRequest } from '../../../desktop_electron/src/share
 
 const root = '/api/config-collection'
 
-function queryString(values: Record<string, string | number | undefined>): string {
+function queryString(values: Record<string, string | number | string[] | undefined>): string {
   const query = new URLSearchParams()
   for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined && value !== '') query.set(key, String(value))
+    if (Array.isArray(value)) {
+      for (const item of value) if (item !== '') query.append(key, item)
+    } else if (value !== undefined && value !== '') {
+      query.set(key, String(value))
+    }
   }
   const text = query.toString()
   return text ? `?${text}` : ''
@@ -23,6 +27,7 @@ function queryString(values: Record<string, string | number | undefined>): strin
 export function listConfigDevices(values: {
   search?: string
   group_filter?: string
+  group_values?: string[]
   work_scope_status?: string
   page?: number
   page_size?: number

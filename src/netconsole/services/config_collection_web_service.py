@@ -138,6 +138,7 @@ class ConfigCollectionApplicationService:
         *,
         search: str = "",
         group_filter: str = "",
+        group_values: list[str] | None = None,
         work_scope_status: str = "included",
         page: int = 1,
         page_size: int = 50,
@@ -153,6 +154,7 @@ class ConfigCollectionApplicationService:
             search=str(search or "").strip() or None,
             vendor="H3C",
             group_filter=self._group_filter(group_filter),
+            group_values=group_values,
             work_scope_status="included",
         )
         current_page = max(1, int(page))

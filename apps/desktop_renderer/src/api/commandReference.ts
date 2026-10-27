@@ -7,7 +7,13 @@ export const commandReferenceArtifactName = 'NetConsole_软件使用命令清单
 
 function queryString(values: CommandReferenceQuery): string {
   const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(values)) if (value) params.set(key, value)
+  for (const [key, value] of Object.entries(values)) {
+    if (Array.isArray(value)) {
+      for (const item of value) if (item) params.append(key, item)
+    } else if (value) {
+      params.set(key, value)
+    }
+  }
   const query = params.toString()
   return query ? `?${query}` : ''
 }

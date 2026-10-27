@@ -118,6 +118,36 @@ def test_command_reference_query_matches_qt_filters_and_resource_count(tmp_path:
     assert "categories" in payload["filters"]
 
 
+def test_command_reference_multi_select_filters_use_repeated_query_params(tmp_path: Path) -> None:
+    client, _adapter, _artifacts, paths = _client(tmp_path)
+    references = load_command_references(paths)
+    anchor = next(item for item in references if item.module and item.vendor)
+    selected_modules = [anchor.module]
+    selected_modules.extend(
+        item.module
+        for item in references
+        if item.module and item.module not in selected_modules
+    )
+    selected_modules = selected_modules[:2]
+    selected_vendors = [anchor.vendor]
+    assert selected_modules
+    assert selected_vendors
+
+    params = [
+        ("modules", value) for value in selected_modules
+    ] + [
+        ("vendors", value) for value in selected_vendors
+    ]
+    with client:
+        response = client.get("/api/command-reference", params=params)
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert items
+    assert all(item["module"] in selected_modules for item in items)
+    assert all(item["vendor"] in selected_vendors for item in items)
+
+
 def test_command_reference_export_uses_public_store_and_safe_download_name(tmp_path: Path) -> None:
     client, adapter, artifacts, _paths = _client(tmp_path)
     with client:

@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { Connection, Download, Plus, UploadFilled } from '@element-plus/icons-vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useConfirm } from '../../components/feedback/useConfirm'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { downloadBackendResource } from '../../platform/runtime'
 import {
@@ -3410,7 +3411,7 @@ function sectionSourceLabel(row: Section): string {
             <el-input v-model="store.apFilters.query" clearable placeholder="AP 名称 / 点位 / MAC / IP" @keyup.enter="store.applyApFilters" />
             <el-input v-model="store.apFilters.station" clearable placeholder="归属站点" />
             <el-input v-model="store.apFilters.section" clearable placeholder="归属区间" />
-            <el-select v-model="store.apFilters.has_issue" clearable placeholder="数据质量"><el-option label="只看异常" :value="true" /><el-option label="只看正常" :value="false" /></el-select>
+            <NcMultiValueFilter v-model="store.apFilters.has_issue_values" :options="['true', 'false']" :labels="{ true: '只看异常', false: '只看正常' }" placeholder="全部数据质量" />
             <el-button type="primary" :disabled="editing" @click="store.applyApFilters">应用筛选</el-button>
             <input ref="tracksideApImportInput" type="file" accept=".xlsx,.csv,.json" hidden @change="handleTracksideApFile">
             <el-button v-if="isFeatureEnabled('capability.trackside_ap.base_io')" :icon="Download" :disabled="apBaseTaskRunning" @click="startApBaseExport(true)">下载模板</el-button>
@@ -3503,7 +3504,7 @@ function sectionSourceLabel(row: Section): string {
               <div class="filter-bar">
                 <el-input v-model="store.mrFilters.query" clearable placeholder="MR 名称 / IP / MAC / 设备 ID" @keyup.enter="store.applyMrFilters" />
                 <el-input v-model="store.mrFilters.train" clearable placeholder="列车编号" />
-                <el-select v-model="store.mrFilters.mr_role" clearable placeholder="MR 端位代码"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
+                <NcMultiValueFilter v-model="store.mrFilters.mr_roles" :options="['CT', 'CW']" placeholder="全部 MR 端位代码" />
                 <el-button type="primary" :disabled="editing" @click="store.applyMrFilters">应用筛选</el-button>
                 <el-button v-if="editing" :disabled="saving" @click="addMr">新增车载 MR</el-button>
               </div>
@@ -3525,8 +3526,8 @@ function sectionSourceLabel(row: Section): string {
         <el-tab-pane label="数据质量问题" name="quality" lazy>
           <div class="filter-bar">
             <el-input v-model="store.issueFilters.query" clearable placeholder="实体 / 错误码 / 说明" @keyup.enter="store.applyIssueFilters" />
-            <el-select v-model="store.issueFilters.blocking_only" clearable placeholder="阻断状态"><el-option label="只看阻断问题" :value="true" /><el-option label="排除阻断问题" :value="false" /></el-select>
-            <el-select v-model="store.issueFilters.needs_confirmation_only" clearable placeholder="人工确认"><el-option label="只看待人工确认" :value="true" /><el-option label="无需人工确认" :value="false" /></el-select>
+            <NcMultiValueFilter v-model="store.issueFilters.blocking_values" :options="['true', 'false']" :labels="{ true: '只看阻断问题', false: '排除阻断问题' }" placeholder="全部阻断状态" />
+            <NcMultiValueFilter v-model="store.issueFilters.needs_confirmation_values" :options="['true', 'false']" :labels="{ true: '只看待人工确认', false: '无需人工确认' }" placeholder="全部人工确认" />
             <el-button type="primary" @click="store.applyIssueFilters">应用筛选</el-button>
           </div>
           <div class="issue-stats">

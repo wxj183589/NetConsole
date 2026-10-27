@@ -299,9 +299,11 @@ class MeshAnalysisQueryService:
         train: str = "",
         mr_name: str = "",
         mr_role: str = "",
+        mr_roles: list[str] | None = None,
         source_type: str = "",
         analysis_status: str = "",
         has_warning: bool | None = None,
+        has_warning_values: list[bool] | None = None,
         time_from: str = "",
         time_to: str = "",
         query: str = "",
@@ -320,13 +322,23 @@ class MeshAnalysisQueryService:
         for field, value in (
             ("train_name", train),
             ("mr_name", mr_name),
-            ("mr_role", mr_role),
             ("source_type", source_type),
             ("analysis_status", analysis_status),
         ):
             if value:
                 where.append(f"{field} LIKE ? ESCAPE '\\' COLLATE NOCASE")
                 values.append(f"%{self._like_value(value)}%")
+        selected_roles = [str(value).strip() for value in (mr_roles or []) if str(value).strip()]
+        if selected_roles:
+            placeholders = ", ".join("?" for _ in selected_roles)
+            where.append(f"UPPER(COALESCE(mr_role, '')) IN ({placeholders})")
+            values.extend(value.upper() for value in selected_roles)
+        elif mr_role:
+            where.append("mr_role LIKE ? ESCAPE '\\' COLLATE NOCASE")
+            values.append(f"%{self._like_value(mr_role)}%")
+        selected_warning_values = {bool(value) for value in (has_warning_values or [])}
+        if selected_warning_values and selected_warning_values != {True, False}:
+            has_warning = next(iter(selected_warning_values))
         if has_warning is not None:
             where.append("actionable_warning_count > 0" if has_warning else "actionable_warning_count = 0")
         if time_from:
@@ -867,10 +879,12 @@ class MeshAnalysisQueryService:
         section: str = "",
         line_side: str = "",
         link_role: str = "",
+        link_roles: list[str] | None = None,
         event_type: str = "",
         time_from: str = "",
         time_to: str = "",
         has_warning: bool | None = None,
+        has_warning_values: list[bool] | None = None,
         query: str = "",
         page: int = 1,
         page_size: int = 100,
@@ -886,11 +900,18 @@ class MeshAnalysisQueryService:
         for column, value in (
             ("ml.peer_ap_name", peer_ap_name),
             ("ml.peer_ap_mac", self._mac_key(peer_ap_mac)),
-            ("ml.link_state", link_role.upper()),
         ):
             if value:
                 clauses.append(f"LOWER(COALESCE({column}, '')) LIKE ?")
                 values.append(f"%{str(value).casefold()}%")
+        selected_roles = [str(value).strip().upper() for value in (link_roles or []) if str(value).strip()]
+        if selected_roles:
+            placeholders = ", ".join("?" for _ in selected_roles)
+            clauses.append(f"UPPER(COALESCE(ml.link_state, '')) IN ({placeholders})")
+            values.extend(selected_roles)
+        elif link_role:
+            clauses.append("LOWER(COALESCE(ml.link_state, '')) LIKE ?")
+            values.append(f"%{link_role.casefold()}%")
         for field, value in (("station", station), ("section", section), ("line_side", line_side)):
             if not value:
                 continue
@@ -918,6 +939,9 @@ class MeshAnalysisQueryService:
         if time_to:
             clauses.append("ml.sample_time <= ?")
             values.append(time_to)
+        selected_warning_values = {bool(value) for value in (has_warning_values or [])}
+        if selected_warning_values and selected_warning_values != {True, False}:
+            has_warning = next(iter(selected_warning_values))
         if has_warning is not None:
             clauses.append("(COALESCE(ml.peer_ap_name, '') = '') = ?")
             values.append(1 if has_warning else 0)
@@ -1080,9 +1104,11 @@ class MeshAnalysisQueryService:
         session_id: str,
         *,
         radio: int | None = None,
+        radios: list[int] | None = None,
         peer: str = "",
         station: str = "",
         build_result: str = "",
+        build_results: list[str] | None = None,
         pingpong_only: bool = False,
         time_from: str = "",
         time_to: str = "",
@@ -1099,6 +1125,8 @@ class MeshAnalysisQueryService:
         peer_needle = peer.casefold().strip()
         station_needle = station.casefold().strip()
         result_needle = build_result.casefold().strip()
+        selected_radios = {int(value) for value in (radios or [])}
+        selected_results = {str(value).casefold().strip() for value in (build_results or []) if str(value).strip()}
         for row in rows:
             location = self._locate_ap(ap_map, row)
             peer_text = " ".join(
@@ -1108,13 +1136,17 @@ class MeshAnalysisQueryService:
             resolved_station = self._resolved_location_value(row, location, "station") or ""
             start_time = str(row.get("build_start_time") or "")
             end_time = str(row.get("build_end_time") or "")
-            if radio is not None and self._int(row.get("radio")) != int(radio):
+            if selected_radios and self._int(row.get("radio")) not in selected_radios:
+                continue
+            if not selected_radios and radio is not None and self._int(row.get("radio")) != int(radio):
                 continue
             if peer_needle and peer_needle not in peer_text:
                 continue
             if station_needle and station_needle not in f"{resolved_station} {location.section}".casefold():
                 continue
-            if result_needle and result_needle != str(row.get("build_result") or "").casefold():
+            if selected_results and str(row.get("build_result") or "").casefold() not in selected_results:
+                continue
+            if not selected_results and result_needle and result_needle != str(row.get("build_result") or "").casefold():
                 continue
             if pingpong_only and not bool(row.get("is_ap_return_event") or row.get("is_pingpong_abnormal")):
                 continue
@@ -1278,7 +1310,9 @@ class MeshAnalysisQueryService:
         *,
         event_type: str = "",
         radio: int | None = None,
+        radios: list[int] | None = None,
         switch_result: str = "",
+        switch_results: list[str] | None = None,
         pingpong_only: bool = False,
         time_from: str = "",
         time_to: str = "",
@@ -1320,7 +1354,12 @@ class MeshAnalysisQueryService:
         if event_type:
             clauses.append("se.event_type = ?")
             values.append(event_type)
-        if radio is not None:
+        selected_radios = {int(value) for value in (radios or [])}
+        if selected_radios:
+            placeholders = ", ".join("?" for _ in selected_radios)
+            clauses.append(f"se.radio IN ({placeholders})")
+            values.extend(sorted(selected_radios))
+        elif radio is not None:
             clauses.append("se.radio = ?")
             values.append(int(radio))
         if time_from:
@@ -1329,16 +1368,31 @@ class MeshAnalysisQueryService:
         if time_to:
             clauses.append("se.event_time <= ?")
             values.append(time_to)
-        normalized_result = switch_result.casefold().strip()
-        if normalized_result in {"normal", "short"}:
-            comparator = ">=" if normalized_result == "normal" else "<"
-            clauses.append(
-                f"{segment_duration_expr} IS NOT NULL AND ({segment_duration_expr} * 1000.0) {comparator} ?"
-            )
-            values.extend((short_threshold_ms,))
-        if normalized_result == "pingpong" or pingpong_only:
-            clauses.append(pingpong_expr)
-            values.append(pingpong_window_ms)
+        selected_results = {str(value).casefold().strip() for value in (switch_results or []) if str(value).strip()}
+        if not selected_results and switch_result:
+            selected_results = {switch_result.casefold().strip()}
+        if pingpong_only:
+            selected_results.add("pingpong")
+        invalid_results = selected_results - {"normal", "short", "pingpong"}
+        if invalid_results:
+            # Do not silently broaden a malformed multi-select into an unfiltered query.
+            clauses.append("1 = 0")
+            selected_results.clear()
+        if selected_results and selected_results != {"normal", "short", "pingpong"}:
+            result_clauses: list[str] = []
+            result_values: list[Any] = []
+            if "normal" in selected_results:
+                result_clauses.append(f"({segment_duration_expr} IS NOT NULL AND ({segment_duration_expr} * 1000.0) >= ?)")
+                result_values.append(short_threshold_ms)
+            if "short" in selected_results:
+                result_clauses.append(f"({segment_duration_expr} IS NOT NULL AND ({segment_duration_expr} * 1000.0) < ?)")
+                result_values.append(short_threshold_ms)
+            if "pingpong" in selected_results:
+                result_clauses.append(pingpong_expr)
+                result_values.append(pingpong_window_ms)
+            if result_clauses:
+                clauses.append("(" + " OR ".join(result_clauses) + ")")
+                values.extend(result_values)
         where = "WHERE " + " AND ".join(clauses)
         current, size = self._page(page, page_size)
         offset = (current - 1) * size

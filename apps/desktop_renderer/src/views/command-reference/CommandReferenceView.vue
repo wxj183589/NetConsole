@@ -14,6 +14,7 @@ import {
 import { downloadBackendResource, getPlatformAdapter, getRuntimeConfig } from '../../platform/runtime'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type { CommandReference, CommandReferenceExportTask, CommandReferencePage } from '../../types/commandReference'
 import { createCommandReferenceTranslator } from './commandReferenceI18n'
@@ -29,7 +30,7 @@ const t = createCommandReferenceTranslator()
 const route = useRoute()
 const router = useRouter()
 const userSelectedExport = useUserSelectedExport()
-const filters = reactive({ query: '', module: '', device_scope: '', vendor: '', protocol: '', category: '', risk_level: '' })
+const filters = reactive({ query: '', modules: [] as string[], device_scopes: [] as string[], vendors: [] as string[], protocols: [] as string[], categories: [] as string[], risk_levels: [] as string[] })
 const page = ref<CommandReferencePage | null>(null)
 const selected = ref<CommandReference | null>(null)
 const task = ref<CommandReferenceExportTask | null>(null)
@@ -48,12 +49,12 @@ const artifactId = computed(() => String(task.value?.result?.artifact_id || ''))
 const artifactName = computed(() => String(task.value?.result?.artifact_name || ''))
 const artifactAvailable = computed(() => task.value?.status === 'COMPLETED' && Boolean(artifactId.value) && task.value?.result?.artifact_pending !== true)
 const filterFields = computed(() => [
-  ['module', t('module'), page.value?.filters.modules],
-  ['device_scope', t('deviceScope'), page.value?.filters.device_scopes],
-  ['vendor', t('vendor'), page.value?.filters.vendors],
-  ['protocol', t('protocol'), page.value?.filters.protocols],
-  ['category', t('category'), page.value?.filters.categories],
-  ['risk_level', t('riskLevel'), page.value?.filters.risk_levels],
+  ['modules', t('module'), page.value?.filters.modules],
+  ['device_scopes', t('deviceScope'), page.value?.filters.device_scopes],
+  ['vendors', t('vendor'), page.value?.filters.vendors],
+  ['protocols', t('protocol'), page.value?.filters.protocols],
+  ['categories', t('category'), page.value?.filters.categories],
+  ['risk_levels', t('riskLevel'), page.value?.filters.risk_levels],
 ] as const)
 const commandColumns = computed<NcTableColumn<CommandReference>[]>(() => [
   { key: 'category', label: t('category'), valueType: 'text' },
@@ -312,9 +313,7 @@ onUnmounted(() => {
     <el-card shadow="never" class="filter-card">
       <div class="filters">
         <el-input v-model="filters.query" clearable :placeholder="t('searchPlaceholder')" @keyup.enter="searchNow" />
-        <el-select v-for="field in filterFields" :key="field[0]" v-model="filters[field[0]]" clearable :placeholder="field[1]" @change="loadReferences">
-          <el-option v-for="value in field[2] || []" :key="value" :label="value" :value="value" />
-        </el-select>
+        <NcMultiValueFilter v-for="field in filterFields" :key="field[0]" v-model="filters[field[0]]" :options="field[2] || []" :placeholder="field[1]" @change="loadReferences" />
         <el-button @click="searchNow">{{ t('search') }}</el-button>
       </div>
       <p v-if="page" class="summary">{{ t('archived') }} {{ page.summary.total }} {{ t('itemUnit') }}，{{ t('shown') }} {{ page.summary.shown }} {{ t('itemUnit') }}；{{ t('switch') }} {{ page.summary.switch_count }} {{ t('itemUnit') }}，{{ t('nonCli') }} {{ page.summary.non_cli_count }} {{ t('itemUnit') }}。</p>

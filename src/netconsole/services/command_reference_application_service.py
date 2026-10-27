@@ -56,14 +56,24 @@ class CommandReferenceApplicationService:
         self.export_adapter = export_adapter
         self.artifact_store = artifact_store
 
-    def list_references(self, **filters: str) -> CommandReferencePageDTO:
+    def list_references(self, **filters: object) -> CommandReferencePageDTO:
         references = load_command_references(self.paths)
         keyword = str(filters.pop("query", "") or "").strip().casefold()
+        legacy_fields = {
+            "module": "modules", "device_scope": "device_scopes", "vendor": "vendors",
+            "protocol": "protocols", "category": "categories", "risk_level": "risk_levels",
+        }
+        selected: dict[str, set[str]] = {}
+        for field, values in filters.items():
+            target = legacy_fields.get(field, field)
+            if isinstance(values, (list, tuple, set)):
+                selected[target] = {str(value) for value in values if str(value)}
+            elif values:
+                selected[target] = {str(values)}
         result = [
-            item
-            for item in references
+            item for item in references
             if (not keyword or keyword in self._search_blob(item))
-            and all(not value or str(getattr(item, field, "")) == value for field, value in filters.items())
+            and all(not values or str(getattr(item, field.removesuffix("s"), "")) in values for field, values in selected.items())
         ]
         return CommandReferencePageDTO(
             items=[self._reference_dto(item) for item in result],

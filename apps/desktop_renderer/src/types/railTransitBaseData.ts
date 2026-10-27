@@ -753,5 +753,5 @@ export interface PageQuery {
   page_size?: number
   sort_by?: string
   sort_order?: string
-  [key: string]: string | number | boolean | undefined
+  [key: string]: string | number | boolean | readonly (string | number | boolean)[] | undefined
 }

@@ -149,6 +149,22 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
                 client.get(f"/api/rail-transit/base-data/aps/{ap_id}"),
                 client.get(f"/api/rail-transit/base-data/trains/{train_id}"),
                 client.get(f"/api/rail-transit/base-data/mrs/{mr_id}"),
+                client.get(
+                    "/api/rail-transit/base-data/aps"
+                    "?has_issue_values=true&has_issue_values=false"
+                ),
+                client.get(
+                    "/api/rail-transit/base-data/mrs"
+                    "?mr_roles=CT&mr_roles=CW"
+                ),
+                client.get(
+                    "/api/rail-transit/base-data/issues/groups"
+                    "?blocking_values=true&blocking_values=false"
+                ),
+                client.get(
+                    "/api/rail-transit/base-data/issues/groups"
+                    "?needs_confirmation_values=true&needs_confirmation_values=false"
+                ),
             ]
         )
         preview = client.post(

@@ -81,6 +81,8 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/charts/peer-segment?site_id=demo&anchor_link_id=1&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/timeline?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/switch-events?site_id=demo",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/switch-events?site_id=demo&radios=1&radios=2&result_filters=normal&result_filters=short",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}?site_id=demo&mr_roles=CT&mr_roles=CW&has_warning_values=true&has_warning_values=false",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/rssi?site_id=demo&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/channel-busy?site_id=demo&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/rate-series?site_id=demo&max_points=10",

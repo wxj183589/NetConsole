@@ -41,12 +41,12 @@ export interface CommandReferencePage {
 
 export interface CommandReferenceQuery {
   query?: string
-  module?: string
-  device_scope?: string
-  vendor?: string
-  protocol?: string
-  category?: string
-  risk_level?: string
+  modules?: string[]
+  device_scopes?: string[]
+  vendors?: string[]
+  protocols?: string[]
+  categories?: string[]
+  risk_levels?: string[]
 }
 
 export interface CommandReferenceExportTask {

@@ -456,6 +456,7 @@ class RailTransitBaseDataQueryService:
         line_side: str = "",
         query: str = "",
         has_issue: bool | None = None,
+        has_issue_values: list[bool] | None = None,
         issue_severity: str = "",
         fit_ap_status: str = "",
         optical_status: str = "",
@@ -474,6 +475,7 @@ class RailTransitBaseDataQueryService:
             line_side=line_side,
             query=query,
             has_issue=has_issue,
+            has_issue_values=has_issue_values,
             issue_severity=issue_severity,
             fit_ap_status=fit_ap_status,
             optical_status=optical_status,
@@ -516,6 +518,9 @@ class RailTransitBaseDataQueryService:
                     if needle
                     in f"{item.name} {item.point_code} {item.mac} {item.management_ip}".casefold()
                 ]
+        selected_issue_values = {bool(value) for value in (has_issue_values or [])}
+        if selected_issue_values and selected_issue_values != {True, False}:
+            has_issue = next(iter(selected_issue_values))
         if has_issue is not None:
             items = [item for item in items if (item.issue_count > 0) is has_issue]
         if issue_severity:
@@ -533,6 +538,7 @@ class RailTransitBaseDataQueryService:
         line_side: str,
         query: str,
         has_issue: bool | None,
+        has_issue_values: list[bool] | None,
         issue_severity: str,
         fit_ap_status: str,
         optical_status: str,
@@ -547,10 +553,12 @@ class RailTransitBaseDataQueryService:
             return TracksideApPageDTO(items=[], total=0, page=max(1, int(page)), page_size=max(1, min(int(page_size), 200)))
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))
+        selected_issue_values = {bool(value) for value in (has_issue_values or [])}
         post_filter = bool(
             fit_ap_status
             or optical_status
             or has_issue is not None
+            or selected_issue_values
             or issue_severity
         )
         clauses = [
@@ -1060,6 +1068,7 @@ class RailTransitBaseDataQueryService:
         *,
         train: str = "",
         mr_role: str = "",
+        mr_roles: list[str] | None = None,
         query: str = "",
         has_issue: bool | None = None,
         issue_severity: str = "",
@@ -1075,7 +1084,10 @@ class RailTransitBaseDataQueryService:
         if train:
             needle = train.casefold()
             items = [item for item in items if needle in f"{item.train_id} {item.train_no}".casefold()]
-        if mr_role:
+        selected_roles = {str(value).casefold().strip() for value in (mr_roles or []) if str(value).strip()}
+        if selected_roles:
+            items = [item for item in items if item.mr_position_code.casefold() in selected_roles]
+        elif mr_role:
             items = [item for item in items if item.mr_position_code.casefold() == mr_role.casefold()]
         if query:
             needle = query.casefold()
@@ -1166,6 +1178,8 @@ class RailTransitBaseDataQueryService:
         *,
         blocking_only: bool | None = None,
         needs_confirmation_only: bool | None = None,
+        blocking_values: list[bool] | None = None,
+        needs_confirmation_values: list[bool] | None = None,
         query: str = "",
         page: int = 1,
         page_size: int = 50,
@@ -1194,6 +1208,16 @@ class RailTransitBaseDataQueryService:
                     suggested_action="；".join(actions),
                 )
             )
+        selected_blocking = {bool(value) for value in (blocking_values or [])}
+        if len(selected_blocking) == 1:
+            blocking_only = next(iter(selected_blocking))
+        elif len(selected_blocking) > 1:
+            blocking_only = None
+        selected_confirmation = {bool(value) for value in (needs_confirmation_values or [])}
+        if len(selected_confirmation) == 1:
+            needs_confirmation_only = next(iter(selected_confirmation))
+        elif len(selected_confirmation) > 1:
+            needs_confirmation_only = None
         if blocking_only is not None:
             items = [item for item in items if item.blocking is blocking_only]
         if needs_confirmation_only is not None:
