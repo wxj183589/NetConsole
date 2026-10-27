@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 
+import NcMultiValueFilter from '../table/NcMultiValueFilter.vue'
 import type { TrafficEvent } from '../../types/traffic'
 
 const props = defineProps<{ events: TrafficEvent[] }>()
-const source = ref('all')
+const sources = ref<string[]>([])
+const sourceOptions = ['stdout', 'stderr', 'system', 'error']
 const autoScroll = ref(true)
 const hiddenThrough = ref(0)
 const container = ref<HTMLDivElement | null>(null)
 
 const visibleEvents = computed(() => props.events.filter((event) => {
   if (event.sequence <= hiddenThrough.value) return false
-  if (source.value === 'all') return true
-  return event.type === source.value
+  return !sources.value.length || sources.value.includes(event.type)
 }))
 
 watch(() => props.events.length, async () => {
@@ -38,13 +39,7 @@ function clearDisplay(): void {
 <template>
   <div>
     <div class="log-toolbar">
-      <el-select v-model="source" size="small" aria-label="日志来源" style="width: 130px">
-        <el-option label="全部日志" value="all" />
-        <el-option label="stdout" value="stdout" />
-        <el-option label="stderr" value="stderr" />
-        <el-option label="system" value="system" />
-        <el-option label="error" value="error" />
-      </el-select>
+      <NcMultiValueFilter v-model="sources" :options="sourceOptions" placeholder="全部日志" style="width: 150px" />
       <el-checkbox v-model="autoScroll">自动滚动</el-checkbox>
       <el-button link @click="clearDisplay">清空显示</el-button>
     </div>

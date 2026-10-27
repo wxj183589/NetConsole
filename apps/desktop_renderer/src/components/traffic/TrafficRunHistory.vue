@@ -3,15 +3,25 @@ import { computed, ref } from 'vue'
 
 import NcStatusTag from '../NcStatusTag.vue'
 import NcDataTable from '../table/NcDataTable.vue'
+import NcMultiValueFilter from '../table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../table/NcTableColumn'
 import type { TrafficRun } from '../../types/traffic'
 
 const props = defineProps<{ runs: TrafficRun[]; loading: boolean }>()
 defineEmits<{ select: [run: TrafficRun]; cancel: [run: TrafficRun]; retry: [run: TrafficRun]; task: [run: TrafficRun] }>()
-const testType = ref('')
-const status = ref('')
+const testTypes = ref<string[]>([])
+const statuses = ref<string[]>([])
+const testTypeOptions = ['IPERF_SERVER', 'IPERF_CLIENT', 'HIGH_FREQUENCY_PING', 'TCP_PORT_TEST']
+const statusOptions = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'COMPLETED', 'FAILED', 'CANCELLED']
+const testTypeLabels: Record<string, string> = {
+  IPERF_SERVER: 'iPerf 服务端',
+  IPERF_CLIENT: 'iPerf 客户端',
+  HIGH_FREQUENCY_PING: '高频 Ping',
+  TCP_PORT_TEST: 'TCP 端口测试',
+}
 const visibleRuns = computed(() => props.runs.filter((run) => (
-  (!testType.value || run.test_type === testType.value) && (!status.value || run.status === status.value)
+  (!testTypes.value.length || testTypes.value.includes(run.test_type))
+  && (!statuses.value.length || statuses.value.includes(run.status))
 )))
 const columns: NcTableColumn<TrafficRun>[] = [
   { key: 'task', label: '任务', valueType: 'name', fixed: 'left' },
@@ -22,12 +32,7 @@ const columns: NcTableColumn<TrafficRun>[] = [
 ]
 
 function typeLabel(value: string): string {
-  return {
-    IPERF_SERVER: 'iPerf 服务端',
-    IPERF_CLIENT: 'iPerf 客户端',
-    HIGH_FREQUENCY_PING: '高频 Ping',
-    TCP_PORT_TEST: 'TCP 端口测试',
-  }[value] || value
+  return testTypeLabels[value] || value
 }
 
 function executorLabel(run: TrafficRun): string {
@@ -41,15 +46,8 @@ function formatTime(value: string): string {
 
 <template>
   <div class="history-filters">
-    <el-select v-model="testType" clearable placeholder="测试类型" style="width: 170px">
-      <el-option label="iPerf 服务端" value="IPERF_SERVER" />
-      <el-option label="iPerf 客户端" value="IPERF_CLIENT" />
-      <el-option label="高频 Ping" value="HIGH_FREQUENCY_PING" />
-      <el-option label="TCP 端口测试" value="TCP_PORT_TEST" />
-    </el-select>
-    <el-select v-model="status" clearable placeholder="任务状态" style="width: 150px">
-      <el-option v-for="value in ['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'COMPLETED', 'FAILED', 'CANCELLED']" :key="value" :label="value" :value="value" />
-    </el-select>
+    <NcMultiValueFilter v-model="testTypes" :options="testTypeOptions" :labels="testTypeLabels" placeholder="全部测试类型" style="width: 170px" />
+    <NcMultiValueFilter v-model="statuses" :options="statusOptions" placeholder="全部任务状态" style="width: 150px" />
   </div>
   <NcDataTable v-loading="loading" table-id="traffic-run-history" route-key="/network-tools/traffic" :data="visibleRuns" :columns="columns" empty-text="暂无流量测试记录">
     <template #cell-task="{ row }">

@@ -4,6 +4,7 @@ import {
   configDiffNavigationTargets,
   correctConfigDiffChangeIndex,
   exceedsMonacoDiffLimit,
+  filteredConfigDiffRows,
   MONACO_DIFF_MAX_TOTAL_CHARACTERS,
   nextConfigDiffChangeIndex,
 } from './configDiffNavigation'
@@ -26,6 +27,16 @@ describe('shared configuration diff navigation', () => {
     expect(nextConfigDiffChangeIndex(0, 3, -1)).toBe(2)
     expect(nextConfigDiffChangeIndex(2, 3, 1)).toBe(0)
     expect(correctConfigDiffChangeIndex(3, 1)).toBe(0)
+  })
+
+  it('combines multiple checked difference types without changing the all-rows default', () => {
+    expect(filteredConfigDiffRows(rows, [])).toEqual(rows)
+    expect(filteredConfigDiffRows(rows, ['added', 'removed']).map((item) => item.status)).toEqual(['added', 'removed'])
+    expect(configDiffNavigationTargets(rows, ['added', 'removed'])).toEqual([
+      { originalLine: null, modifiedLine: 3 },
+      { originalLine: 3, modifiedLine: null },
+    ])
+    expect(configDiffNavigationTargets(rows, [])).toHaveLength(3)
   })
 
   it('guards Monaco without truncating either document', () => {

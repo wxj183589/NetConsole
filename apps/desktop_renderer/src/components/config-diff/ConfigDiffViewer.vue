@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 
 import { t } from '../../i18n/runtime'
+import NcMultiValueFilter from '../table/NcMultiValueFilter.vue'
 import ConfigMonacoDiff from './ConfigMonacoDiff.vue'
 import {
   configDiffNavigationTargets,
@@ -20,7 +21,13 @@ type MonacoDiffExposed = {
 const viewMode = ref<'visual' | 'details'>('visual')
 const renderSideBySide = ref(true)
 const wordWrap = ref(false)
-const filter = ref<ConfigDiffFilter>('all')
+const filter = ref<Exclude<ConfigDiffFilter, 'all'>[]>([])
+const diffFilterOptions = ['added', 'removed', 'modified']
+const diffFilterLabels = computed(() => ({
+  added: t('config_diff.filter_added', '仅新增'),
+  removed: t('config_diff.filter_removed', '仅删除'),
+  modified: t('config_diff.filter_modified', '仅修改'),
+}))
 const currentChange = ref(0)
 const monacoError = ref('')
 const viewport = ref<HTMLElement | null>(null)
@@ -45,7 +52,7 @@ watch(
     viewMode.value = limitExceeded.value ? 'details' : 'visual'
     renderSideBySide.value = true
     wordWrap.value = false
-    filter.value = 'all'
+    filter.value = []
     currentChange.value = 0
     monacoError.value = ''
   },
@@ -70,8 +77,8 @@ function changeView(value: 'visual' | 'details'): void {
   void scrollToCurrent()
 }
 
-function changeFilter(value: ConfigDiffFilter): void {
-  filter.value = value
+function changeFilter(value: string[]): void {
+  filter.value = value as Exclude<ConfigDiffFilter, 'all'>[]
   currentChange.value = 0
   void scrollToCurrent()
 }
@@ -104,12 +111,7 @@ function handleMonacoError(message: string): void {
         <el-button :type="!renderSideBySide ? 'primary' : 'default'" @click="renderSideBySide = false">{{ t('config_diff.inline', '内联') }}</el-button>
       </el-button-group>
       <el-checkbox v-if="viewMode === 'visual'" v-model="wordWrap">{{ t('config_diff.word_wrap', '自动换行') }}</el-checkbox>
-      <el-select v-if="viewMode === 'details'" :model-value="filter" size="small" @update:model-value="changeFilter">
-        <el-option :label="t('config_diff.filter_all', '全部行')" value="all" />
-        <el-option :label="t('config_diff.filter_added', '仅新增')" value="added" />
-        <el-option :label="t('config_diff.filter_removed', '仅删除')" value="removed" />
-        <el-option :label="t('config_diff.filter_modified', '仅修改')" value="modified" />
-      </el-select>
+      <NcMultiValueFilter v-if="viewMode === 'details'" :model-value="filter" :options="diffFilterOptions" :labels="diffFilterLabels" :placeholder="t('config_diff.filter_all', '全部行')" style="width: 170px" @update:model-value="changeFilter" />
       <div class="diff-navigation">
         <el-button :disabled="!changeCount" @click="move(-1)">{{ t('config_diff.previous', '上一处差异') }}</el-button>
         <span>{{ changeCount ? currentChange + 1 : 0 }} / {{ changeCount }}</span>
