@@ -776,6 +776,7 @@ def _submit(
                 **job_params,
                 "task_name": {
                     "site_export": "导出局点",
+                    "site_batch_lightweight_export": "批量导出轻量包",
                     "site_migration": "迁移单个局点",
                     "site_import": "导入局点",
                     "site_data_root_migration": "迁移全部数据",

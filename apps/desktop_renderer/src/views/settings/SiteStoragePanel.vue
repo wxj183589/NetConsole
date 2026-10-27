@@ -596,6 +596,13 @@ async function exportSelectedLightweightBundle(): Promise<void> {
   } finally { busy.value = false }
 }
 
+function toggleBundleSite(siteId: string, checked: boolean): void {
+  const selected = new Set(selectedBundleSites.value)
+  if (checked) selected.add(siteId)
+  else selected.delete(siteId)
+  selectedBundleSites.value = [...selected]
+}
+
 async function importPackage(): Promise<void> {
   const selected = await getPlatformAdapter().selectSitePackage()
   if (selected.cancelled || !selected.path) return
@@ -850,7 +857,7 @@ function displayValue(value: unknown): string { if (value === null || value === 
     </div>
     <div class="site-list">
       <article v-for="site in sites" :key="site.site_id" class="site-item" :class="{ active: site.active }">
-        <el-checkbox v-if="root?.persistent" v-model="selectedBundleSites" :value="site.site_id" :disabled="busy" :aria-label="`选择局点 ${site.display_name}`" />
+        <el-checkbox v-if="root?.persistent" :model-value="selectedBundleSites.includes(site.site_id)" :disabled="busy" :aria-label="`选择局点 ${site.display_name}`" @change="(checked: boolean) => toggleBundleSite(site.site_id, checked)" />
         <div class="site-content">
           <div class="site-main">
             <strong>{{ site.display_name }}</strong>

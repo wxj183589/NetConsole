@@ -297,6 +297,31 @@ def test_batch_lightweight_export_requires_desktop_session_and_preserves_explici
     assert "token" not in json.dumps(submitted)
 
 
+def test_batch_lightweight_export_submits_named_task(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    captured: list[object] = []
+
+    def capture(job: object, **_kwargs: object) -> str:
+        captured.append(job)
+        return str(getattr(job, "job_id"))
+
+    client.app.state.site_process_adapter.start_job = capture
+    response = client.post(
+        "/api/v1/sites/export-lightweight-bundle",
+        json={
+            "destination_path": str(tmp_path / "exports" / "demo-bundle.zip"),
+            "site_ids": ["demo"],
+            "table_preferences": {},
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert len(captured) == 1
+    job = captured[0]
+    assert getattr(job, "task_type") == "site_batch_lightweight_export"
+    assert getattr(job, "params")["task_name"] == "批量导出轻量包"
+
+
 def test_task_result_storage_diagnostics_defaults_off_and_exposes_no_payload(
     tmp_path: Path,
 ) -> None:
