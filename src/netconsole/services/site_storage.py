@@ -1839,6 +1839,132 @@ class SitePackageService:
         finally:
             self.staging_lifecycle.finish_publish_path(staging, staging_journal)
 
+    def export_lightweight_bundle(
+        self,
+        site_ids: list[str],
+        destination: Path,
+        *,
+        table_preferences: dict[str, object] | None = None,
+        check_cancel: Callable[[], None] | None = None,
+        progress: Callable[[str, int, int, str], None] | None = None,
+    ) -> dict[str, object]:
+        """Export multiple original lightweight packages and portable WPS settings.
+
+        This is an export-only outer ZIP; each nested site ZIP remains an
+        ordinary, independently importable lightweight package. WPS tokens are
+        intentionally plain text per explicit user opt-in and never logged.
+        """
+        selected = list(dict.fromkeys(site_ids))
+        if not selected or len(selected) > 100 or len(selected) != len(site_ids):
+            raise SiteStorageError("SITE_EXPORT_SCOPE_INVALID", "请选择 1 至 100 个不重复局点")
+        selected = [validate_site_id(site_id) for site_id in selected]
+        for site_id in selected:
+            self.sites.registry.get(site_id)
+        preferences = table_preferences or {}
+        if not isinstance(preferences, dict) or len(preferences) > 64:
+            raise SiteStorageError("SITE_EXPORT_PREFERENCES_INVALID", "列设置数量超出限制")
+        encoded_preferences = json.dumps(preferences, ensure_ascii=False).encode("utf-8")
+        if len(encoded_preferences) > 256 * 1024:
+            raise SiteStorageError("SITE_EXPORT_PREFERENCES_INVALID", "列设置超过大小限制")
+
+        destination = Path(destination).expanduser().resolve()
+        if destination.suffix.casefold() != ".zip":
+            destination = destination.with_suffix(".zip")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
+        from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY
+        from netconsole.repositories.wps_sync_repository import WpsSyncRepository
+
+        staging, journal = self.staging_lifecycle.begin_publish_path(destination)
+        try:
+            with tempfile.TemporaryDirectory(prefix="netconsole-batch-lightweight-", dir=self.paths.temp_dir) as temp:
+                temporary = Path(temp)
+                checksums: dict[str, str] = {}
+                site_packages: list[dict[str, object]] = []
+                with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as bundle:
+                    for index, site_id in enumerate(selected, start=1):
+                        if check_cancel is not None:
+                            check_cancel()
+                        if progress is not None:
+                            progress("BATCH_EXPORT", index - 1, len(selected), f"正在导出第 {index} 个局点")
+                        original_package = temporary / f"{site_id}.zip"
+                        self.export_site(site_id, original_package, package_type=LIGHTWEIGHT, check_cancel=check_cancel)
+                        package_member = f"sites/{site_id}.zip"
+                        bundle.write(original_package, package_member, compress_type=zipfile.ZIP_STORED)
+                        checksums[package_member] = _sha256(original_package)
+
+                        repository = WpsSyncRepository(self.paths, site_id)
+                        targets: list[dict[str, object]] = []
+                        if repository.path.is_file():
+                            try:
+                                for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY):
+                                    targets.append({
+                                        "business_key": target.business_key,
+                                        "target_code": target.target_code,
+                                        "target_type": target.target_type.value,
+                                        "target_name": target.target_name,
+                                        "document_open_url": target.document_open_url,
+                                        "webhook_url": target.webhook_url,
+                                        "expected_document_id": target.expected_document_id,
+                                        "enabled": target.enabled,
+                                        "protocol_version": target.protocol_version,
+                                        "timeout_seconds": target.timeout_seconds,
+                                        "binding_id": target.binding_id,
+                                        "token_configured": target.token_configured,
+                                        "token": repository.resolve_token(target),
+                                    })
+                            except Exception as exc:
+                                raise SiteStorageError(
+                                    "SITE_EXPORT_WPS_CREDENTIAL_UNAVAILABLE",
+                                    "当前局点 WPS 连接或令牌无法读取，已停止批量导出",
+                                ) from exc
+                        settings_member = f"wps-connections/{site_id}.json"
+                        settings = json.dumps({"site_id": site_id, "targets": targets}, ensure_ascii=False, indent=2).encode("utf-8")
+                        bundle.writestr(settings_member, settings)
+                        checksums[settings_member] = hashlib.sha256(settings).hexdigest()
+                        site_packages.append({"site_id": site_id, "package": package_member, "wps_settings": settings_member})
+
+                    preferences_member = "table-column-preferences.json"
+                    bundle.writestr(preferences_member, encoded_preferences)
+                    checksums[preferences_member] = hashlib.sha256(encoded_preferences).hexdigest()
+                    manifest = {
+                        "format": "netconsole-lightweight-bundle",
+                        "format_version": 1,
+                        "created_at": _now(),
+                        "site_count": len(selected),
+                        "sites": site_packages,
+                        "column_preferences": preferences_member,
+                        "contains_credentials": True,
+                        "wps_tokens_plaintext": True,
+                        "encrypted": False,
+                        "checksums": checksums,
+                    }
+                    bundle.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                    bundle.writestr("README.txt", (
+                        "NetConsole 多局点轻量包汇总（仅导出）。\n"
+                        "sites/ 下每个 ZIP 可分别使用原有轻量包导入功能恢复。\n"
+                        "wps-connections/ 保存 WPS 文档连接及明文令牌；"
+                        "table-column-preferences.json 保存列布局。"
+                        "两种配置仅作为迁移备份，不会在导入轻量包时自动写入。\n"
+                        "警告：总包未经加密，含设备密码及 WPS 明文令牌，请严格限制访问。\n"
+                    ))
+            if check_cancel is not None:
+                check_cancel()
+            with zipfile.ZipFile(staging) as archive:
+                for name, expected in checksums.items():
+                    checksum = hashlib.sha256()
+                    with archive.open(name) as source:
+                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                            checksum.update(chunk)
+                    if checksum.hexdigest() != expected:
+                        raise SiteStorageError("SITE_EXPORT_CHECKSUM_FAILED", "批量导出包完整性验证失败")
+            os.replace(staging, destination)
+            if progress is not None:
+                progress("BATCH_EXPORT", len(selected), len(selected), "多局点轻量包导出完成")
+            return {"package_type": "lightweight_bundle", "site_count": len(selected), "size_bytes": destination.stat().st_size, "contains_credentials": True, "wps_tokens_plaintext": True}
+        finally:
+            self.staging_lifecycle.finish_publish_path(staging, journal)
+
     def _export_lightweight_site(
         self,
         site_id: str,

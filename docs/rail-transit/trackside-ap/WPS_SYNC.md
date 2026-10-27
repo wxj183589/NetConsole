@@ -7,6 +7,10 @@
 
 轨旁 AP 页面只提供“同步云文档”“打开云文档”和“配置云文档”。连接地址、Webhook、脚本令牌、Binding、部署身份和诊断按局点独立保存。Windows 使用 DPAPI 加密保存脚本令牌，API、任务参数、日志、错误详情和持久化请求载荷都不得包含明文令牌。
 
+轨旁 AP 页面车站筛选默认为全部，可多选并按局点保存于本地 UI 配置。选择部分车站时，本地 XLSX 导出与 WPS 手工同步均在各自 Worker 中从相同业务事实构建所选范围工作簿；历史 WPS `PREPEND_SNAPSHOT` 行保留，既有远端未确认任务仍优先恢复，避免重复提交。旧客户端不携带 `stations` 时继续导出和同步全部站点。
+
+例外：用户明确启用的“多局点轻量包汇总导出”可以把 WPS 令牌解密后写入用户选定的**未加密本地 ZIP**，用于迁移配置备份；该令牌只写包内 `wps-connections/<site_id>.json`，不经 Renderer/API/Job 参数流转，不写 manifest 或日志。普通同步和单局点导出仍遵守上述禁止明文泄露的约束。参见 [局点数据包格式](../../storage/SITE_PACKAGE_FORMAT.md)。
+
 正式 Feature ID 固定为 `capability.trackside_ap.wps_sync`。该能力随 Full 安装包交付并启用，Customer 安装包保持不交付、不可见和不可用；包内 Profile 缺失或损坏时 Customer 仍按 Full-only 保护关闭。不得恢复旧 `web.*` ID，也不得通过外部运行时覆盖改变包内交付边界。
 
 ## 已验收基线

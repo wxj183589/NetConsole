@@ -301,6 +301,7 @@ class TracksideApBusinessExportRequestDTO(ApiModel):
     suggested_name: str = Field(default="", max_length=180)
     expected_revision: str = Field(default="", max_length=64)
     station: str = Field(default="", max_length=100)
+    stations: list[str] = Field(default_factory=list, max_length=100)
     query: str = Field(default="", max_length=200)
     optical_anomaly_only: bool = Field(
         default=False,

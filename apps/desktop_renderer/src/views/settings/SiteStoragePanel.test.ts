@@ -194,6 +194,31 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.text()).toContain('项目类型未填写')
   })
 
+  it('exports selected sites together with column preferences after explicit credential warning', async () => {
+    vi.mocked(api.listSites).mockResolvedValueOnce([
+      site(), site({ site_id: 'line-12', display_name: '十二号线', active: false }),
+    ])
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    adapter.selectSiteExportDestination.mockResolvedValueOnce({ cancelled: false, path: 'C:\\exports\\bundle.zip' } as never)
+    vi.mocked(api.exportLightweightBundle).mockResolvedValueOnce({ task_id: 'bundle-task', task_type: 'site_batch_lightweight_export' })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const checkbox = wrapper.find('[aria-label="选择局点 演示局点"]')
+    expect(checkbox.exists()).toBe(true)
+    await checkbox.find('input').setValue(true)
+    await wrapper.get('[data-testid="export-sites-batch"]').trigger('click')
+    await flushPromises()
+
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('明文脚本令牌'), expect.any(String), expect.any(Object),
+    )
+    expect(api.exportLightweightBundle).toHaveBeenCalledWith(
+      ['demo'], 'C:\\exports\\bundle.zip', expect.any(Object),
+    )
+    expect(adapter.openTaskWindow).toHaveBeenCalled()
+  })
+
   it('freezes the central site context across Save As and cancels a stale export', async () => {
     setActiveSiteContext({ site_id: 'site-b', display_name: '十二号线', revision: 'rev-b' })
     let finishSaveAs: ((value: { cancelled: boolean; path?: string }) => void) | undefined

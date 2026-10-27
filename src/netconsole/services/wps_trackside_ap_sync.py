@@ -1144,6 +1144,7 @@ class TracksideApWpsSyncService:
         target_codes: Sequence[str] = (),
         expected_revision: str = "",
         initialize_binding: bool = False,
+        stations: Sequence[str] = (),
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
@@ -1255,7 +1256,7 @@ class TracksideApWpsSyncService:
                 raise WpsSyncError("TRACKSIDE_AP_SNAPSHOT_STALE", "轨旁 AP 数据已更新，请刷新后重试")
         if progress is not None:
             progress("wps_snapshot", 5, 100, "正在冻结轨旁 AP 业务快照")
-        snapshot = self._build_snapshot(site_id)
+        snapshot = self._build_snapshot(site_id, stations=stations) if stations else self._build_snapshot(site_id)
         revision = str(snapshot.get("business_revision") or "")
         business_content_sha256 = str(snapshot.get("content_sha256") or "")
         batch_id = f"wps_{uuid4().hex}"
@@ -2064,12 +2065,13 @@ class TracksideApWpsSyncService:
         self._ensure_default_targets(repository)
         return repository.recent_batches(TRACKSIDE_AP_WPS_BUSINESS_KEY, limit)
 
-    def _build_snapshot(self, site_id: str) -> dict[str, object]:
+    def _build_snapshot(self, site_id: str, *, stations: Sequence[str] = ()) -> dict[str, object]:
         scope_context = self._snapshot_scope_context(site_id)
         return build_trackside_ap_business_export_snapshot(
             DeviceRepository(Database(self.paths.site_db_path(site_id))),
             site_id,
             scope_context=scope_context,
+            stations=stations,
         )
 
     def _snapshot_scope_context(self, site_id: str) -> dict[str, object]:

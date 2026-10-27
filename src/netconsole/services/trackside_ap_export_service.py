@@ -31,6 +31,7 @@ from netconsole.services.offline_ap_ledger import (
     build_device_lookup_by_name,
     build_current_ap_history_indexes,
     build_offline_ap_ledger,
+    build_offline_ap_stats,
     offline_ap_headers,
 )
 from netconsole.services.trackside_ap_business import (
@@ -875,6 +876,7 @@ def build_trackside_ap_business_export_snapshot(
     *,
     scope_context: Mapping[str, object] | None = None,
     station: str = "",
+    stations: Sequence[str] = (),
     query: str = "",
     optical_anomaly_only: bool = False,
     selected_row_ids: Sequence[str] = (),
@@ -895,6 +897,7 @@ def build_trackside_ap_business_export_snapshot(
             context=context,
             scope_context=scope_context,
             station=station,
+            stations=stations,
             query=query,
             optical_anomaly_only=False,
             selected_row_ids=selected_row_ids,
@@ -933,6 +936,7 @@ def _build_trackside_ap_business_export_snapshot_once(
     context: TracksideApScopeContext,
     scope_context: Mapping[str, object] | None,
     station: str,
+    stations: Sequence[str],
     query: str,
     optical_anomaly_only: bool,
     selected_row_ids: Sequence[str],
@@ -996,18 +1000,47 @@ def _build_trackside_ap_business_export_snapshot_once(
         selected_row_ids=selected_row_ids,
         identity_query_entities=snapshot.identity_query_entities,
     )
+    station_set = {str(value).strip() for value in stations if str(value).strip()}
+    if station_set:
+        available_stations = {str(row.get("site") or "") for row in snapshot.rows}
+        available_stations.update(str(row.get("site") or "") for row in scope.overview_export_rows())
+        if not station_set.issubset(available_stations):
+            raise TracksideApBusinessSnapshotError(
+                "TRACKSIDE_AP_EXPORT_STATIONS_STALE",
+                "所选车站已变化，请刷新车站列表后重试",
+            )
+        business_rows = [row for row in business_rows if str(row.get("site") or "") in station_set]
     rows = [
         normalize_trackside_ap_business_row(row)
         for row in enrich_trackside_export_rows(
             business_rows,
         )
     ]
+    planned_ap_total = scope.planned_ap_total
+    if station_set:
+        planned_ap_total = sum(
+            int(row.get("total") or 0)
+            for row in scope.overview_export_rows()
+            if str(row.get("site") or "") in station_set
+        )
     statistics = build_trackside_ap_business_statistics(
         business_rows,
-        planned_ap_total=scope.planned_ap_total,
+        planned_ap_total=planned_ap_total,
     )
     optical_problem_counts = count_current_optical_abnormal_by_site(snapshot.rows)
     overview_rows = scope.overview_export_rows(optical_problem_counts)
+    if station_set:
+        overview_rows = [row for row in overview_rows if str(row.get("site") or "") in station_set]
+        planned = sum(int(row.get("total") or 0) for row in overview_rows)
+        online = sum(int(row.get("online") or 0) for row in overview_rows)
+        optical = sum(int(row.get("optical_problem_count") or 0) for row in overview_rows)
+        overview_rows.append({
+            "site": "合计", "total": planned, "online": online,
+            "offline": max(planned - online, 0),
+            "online_rate": f"{online / planned:.1%}" if planned else "—",
+            "optical_problem_count": optical,
+            "remark": f"仅统计已选择的 {len(station_set)} 个车站", "status": "normal",
+        })
     requested_ids = tuple(
         dict.fromkeys(str(value or "").strip() for value in selected_row_ids)
     )
@@ -1031,6 +1064,17 @@ def _build_trackside_ap_business_export_snapshot_once(
         current_optical_rows=ac_repository.list_optical_current(),
         persisted_summary_rows=ac_repository.list_ap_optical_treatments(),
     )
+    unmatched_online_rows = [item.to_dict() for item in scope.unmatched_online_items]
+    if station_set:
+        def in_selected_station(row: Mapping[str, object]) -> bool:
+            return str(row.get("site") or row.get("station_name") or row.get("station") or "") in station_set
+
+        new_online_ap_rows = [row for row in new_online_ap_rows if in_selected_station(row)]
+        optical_treatment_rows = [row for row in optical_treatment_rows if in_selected_station(row)]
+        offline_ledger_rows = [row for row in offline_ledger_rows if in_selected_station(row)]
+        unmatched_online_rows = [row for row in unmatched_online_rows if in_selected_station(row)]
+        scoped_resources = [row for row in resources if in_selected_station(row)]
+        offline_stats = build_offline_ap_stats(scoped_resources, offline_ledger_rows)
     return {
         "snapshot_id": snapshot.snapshot_id,
         "site_id": site_name,
@@ -1055,6 +1099,7 @@ def _build_trackside_ap_business_export_snapshot_once(
         "export_kind": "trackside_ap_business",
         "filters": {
             "station": station,
+            "stations": sorted(station_set),
             "query": query,
         },
         "selected_row_ids": list(requested_ids),
@@ -1069,9 +1114,7 @@ def _build_trackside_ap_business_export_snapshot_once(
             "optical_treatment_rows": optical_treatment_rows,
             "offline_stats": offline_stats,
             "offline_ledger_rows": offline_ledger_rows,
-            "unmatched_online_rows": [
-                item.to_dict() for item in scope.unmatched_online_items
-            ],
+            "unmatched_online_rows": unmatched_online_rows,
         },
     }
 
@@ -1424,6 +1467,7 @@ def export_trackside_ap_business_prepare_and_render(
     expected_revision: str = "",
     scope_context: Mapping[str, object] | None = None,
     station: str = "",
+    stations: Sequence[str] = (),
     query: str = "",
     optical_anomaly_only: bool = False,
     selected_row_ids: Sequence[str] = (),
@@ -1467,6 +1511,7 @@ def export_trackside_ap_business_prepare_and_render(
             site_name,
             scope_context=scope_context,
             station=station,
+            stations=stations,
             query=query,
             optical_anomaly_only=False,
             selected_row_ids=selected_row_ids,

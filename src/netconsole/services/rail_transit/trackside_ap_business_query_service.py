@@ -109,6 +109,7 @@ class TracksideApBusinessQueryService:
         site_id: str,
         *,
         station: str = "",
+        stations: Sequence[str] = (),
         query: str = "",
         optical_anomaly_only: bool = False,
         page: int = 1,
@@ -147,6 +148,16 @@ class TracksideApBusinessQueryService:
             ),
         )
         station_options = trackside_station_options(business_rows)
+        if scope is not None:
+            # Keep planned-but-empty stations selectable for Excel/WPS scope.
+            station_options = trackside_station_options([
+                *business_rows,
+                *(
+                    {"site": row.get("site")}
+                    for row in scope.overview_export_rows()
+                    if str(row.get("site") or "") != "合计"
+                ),
+            ])
         rows = select_trackside_ap_business_rows(
             business_rows,
             station=station,
@@ -154,6 +165,9 @@ class TracksideApBusinessQueryService:
             optical_anomaly_only=optical_anomaly_only,
             identity_query_entities=snapshot.identity_query_entities,
         )
+        if stations:
+            station_set = {value.strip() for value in stations if value.strip()}
+            rows = [row for row in rows if str(row.get("site") or "") in station_set]
         enriched = [(row, trackside_row_status(row)) for row in rows]
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))

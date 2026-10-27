@@ -1037,6 +1037,51 @@ def test_lightweight_package_round_trips_core_and_four_business_exports(
     assert target_sites.get_site("restored-site")["display_name"] == "恢复轻量局点"
 
 
+def test_batch_lightweight_bundle_contains_original_packages_and_explicit_wps_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    for site_id in ("site-one", "site-two"):
+        sites.create_site(site_id, site_id)
+    wps = WpsSyncRepository(paths, "site-one", protect=_test_wps_protection, unprotect=_test_wps_protection)
+    wps.initialize()
+    wps.upsert_target(
+        business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        target_code="wps_standard_spreadsheet",
+        target_type=WpsTargetType.STANDARD_SPREADSHEET,
+        target_name="WPS 云文档",
+        document_open_url="https://www.kdocs.cn/l/test",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/test/script/test/sync_task",
+        expected_document_id="test",
+        enabled=True,
+        timeout_seconds=30,
+        token="Plaintext-Token-For-Bundle-Test",
+    )
+    monkeypatch.setattr(WpsSyncRepository, "resolve_token", lambda self, target: "Plaintext-Token-For-Bundle-Test")
+    package = tmp_path / "exports" / "bundle.zip"
+    result = SitePackageService(paths, sites).export_lightweight_bundle(
+        ["site-one", "site-two"], package,
+        table_preferences={"rail.trackside-ap-business.table.main": {"version": 1, "order": ["site"]}},
+    )
+    assert result["site_count"] == 2
+    with zipfile.ZipFile(package) as bundle:
+        manifest = json.loads(bundle.read("manifest.json"))
+        assert manifest["wps_tokens_plaintext"] is True
+        assert manifest["encrypted"] is False
+        assert "Plaintext-Token-For-Bundle-Test" not in bundle.read("manifest.json").decode("utf-8")
+        config = json.loads(bundle.read("wps-connections/site-one.json"))
+        assert config["targets"][0]["token"] == "Plaintext-Token-For-Bundle-Test"
+        assert json.loads(bundle.read("wps-connections/site-two.json"))["targets"] == []
+        assert json.loads(bundle.read("table-column-preferences.json"))["rail.trackside-ap-business.table.main"]["order"] == ["site"]
+        for site_id in ("site-one", "site-two"):
+            nested = tmp_path / f"{site_id}.zip"
+            nested.write_bytes(bundle.read(f"sites/{site_id}.zip"))
+            assert SitePackageService(paths, sites).inspect_package(nested)["can_import"] is True
+        for path, expected in manifest["checksums"].items():
+            assert hashlib.sha256(bundle.read(path)).hexdigest() == expected
+
+
 def test_lightweight_export_uses_registry_id_and_legacy_directory_database(
     tmp_path: Path,
 ) -> None:

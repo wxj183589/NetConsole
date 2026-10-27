@@ -16,6 +16,7 @@ import {
   syncTracksideWpsDocument,
 } from '../../api/tracksideApBusiness'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
 import { t } from '../../i18n/runtime'
@@ -116,6 +117,7 @@ const currentTaskId = ref('')
 const opticalUpdateTaskId = ref('')
 const wpsSyncTaskId = ref('')
 const selectedRows = ref<TracksideApBusinessRow[]>([])
+const selectedStationNames = ref<string[]>([])
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 const pageActive = ref(true)
 const pageDirty = ref(false)
@@ -230,14 +232,14 @@ const unmatchedColumns: NcTableColumn<TracksideApUnmatchedOnline>[] = [
   { key: 'suggested_action', label: '建议处理', valueType: 'description', minWidth: 300, align: 'left', alignmentReason: 'long-text' },
 ]
 const onlineStatusColumns: NcTableColumn<TracksideApOnlineStatusRow>[] = [
-  { key: 'station_name', label: '站点', valueType: 'name', minWidth: 180 },
-  { key: 'planned_ap_count', label: '规划 AP', valueType: 'number', width: 110 },
-  { key: 'actual_online_count', label: '实际在线', valueType: 'number', width: 110 },
-  { key: 'offline_count', label: '离线', valueType: 'number', width: 90 },
+  { key: 'station_name', label: '归属站点', valueType: 'name', minWidth: 180 },
+  { key: 'planned_ap_count', label: '规划 AP 总数量', valueType: 'number', width: 130 },
+  { key: 'actual_online_count', label: '上线', valueType: 'number', width: 90 },
+  { key: 'offline_count', label: '未上线', valueType: 'number', width: 100 },
   { key: 'online_rate', label: '上线率', valueType: 'number', width: 100, displayValue: (row) => formatOnlineRate(row.online_rate) },
   { key: 'optical_problem_count', label: TRACKSIDE_AP_ONLINE_OPTICAL_PROBLEM_HEADER, valueType: 'number', width: 120, displayValue: (row) => String(row.optical_problem_count ?? 0) },
-  { key: 'status', label: '状态', valueType: 'status', width: 150, displayValue: (row) => onlineStatusLabel(row) },
-  { key: 'warning', label: '告警', valueType: 'description', minWidth: 280, align: 'left', alignmentReason: 'long-text', showOverflowTooltip: true },
+  { key: 'status', label: '状态', valueType: 'status', width: 140, displayValue: (row) => onlineStatusLabel(row) },
+  { key: 'warning', label: '备注', valueType: 'description', minWidth: 320, align: 'left', alignmentReason: 'long-text', showOverflowTooltip: true },
 ]
 const currentTask = computed<TaskItem | null>(() => (
   taskStore.tasks.find((item) => item.id === currentTaskId.value) || null
@@ -465,6 +467,22 @@ function businessRowKey(row: TracksideApBusinessRow): string {
 function excludedRowKey(row: TracksideApScopeExcluded): string { return cleanIdentity(row.item_id) }
 function onlineResourceRowKey(row: TracksideApUnmatchedOnline): string { return cleanIdentity(row.item_id) }
 function handleStationChange(): void { filters.page = 1; void loadRows() }
+function stationPreferenceKey(siteId: string): string {
+  return `netconsole:rail:trackside:export-stations:v1:${encodeURIComponent(siteId)}`
+}
+function readStationPreference(siteId: string): string[] {
+  if (!siteId || typeof localStorage === 'undefined') return []
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(stationPreferenceKey(siteId)) || '[]')
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string').slice(0, 100) : []
+  } catch { return [] }
+}
+function handleMultiStationChange(values: string[]): void {
+  selectedStationNames.value = values
+  selectedRows.value = []
+  try { if (wpsSiteId.value) localStorage.setItem(stationPreferenceKey(wpsSiteId.value), JSON.stringify(values)) } catch { /* Selection remains active for this session. */ }
+  handleStationChange()
+}
 function singleApUpdatePayload(row: TracksideApBusinessRow): TracksideApUpdateRequest | null {
   const apUuid = cleanIdentity(row.ap_uuid)
   if (apUuid) return { ap_uuid: apUuid }
@@ -525,6 +543,14 @@ function onlineStatusTagType(row: TracksideApOnlineStatusRow): 'success' | 'warn
   if (row.status === 'planning_missing' || row.warning || row.offline_count > 0 || row.count_anomaly || (row.optical_problem_count ?? 0) > 0) return 'warning'
   return 'success'
 }
+function onlineStatusRowClass({ row }: { row: TracksideApOnlineStatusRow }): string {
+  if (row.offline_count > 0 || row.status === 'over_planned' || row.status === 'unplanned_online') return 'online-status-row-alert'
+  if (row.warning || row.count_anomaly) return 'online-status-row-warning'
+  if ((row.optical_problem_count ?? 0) > 0) return 'online-status-row-optical'
+  return row.planned_ap_count > 0 && row.actual_online_count >= row.planned_ap_count
+    ? 'online-status-row-normal'
+    : ''
+}
 async function loadOnlineStatus(force = false): Promise<void> {
   if (onlineStatusLoading.value || (!force && onlineStatus.value)) return
   onlineStatusLoading.value = true
@@ -550,10 +576,12 @@ async function loadRows(reset = false, forceNewRevision = false): Promise<boolea
   else refreshing.value = true
   loadError.value = ''
   let succeeded = false
+  let restoredSavedStations = false
   try {
     const expectedRevision = !forceNewRevision ? cleanIdentity(page.value?.business_revision || '') : ''
     const nextPage = await listTracksideApBusiness({
       ...filters,
+      ...(selectedStationNames.value.length ? { stations: selectedStationNames.value } : {}),
       ...(expectedRevision ? { expected_revision: expectedRevision } : {}),
     })
     if (generation === loadGeneration) {
@@ -563,6 +591,8 @@ async function loadRows(reset = false, forceNewRevision = false): Promise<boolea
       page.value = nextPage
       if (wpsSiteId.value !== nextPage.site_id) {
         wpsSiteId.value = nextPage.site_id
+        selectedStationNames.value = readStationPreference(nextPage.site_id)
+        restoredSavedStations = selectedStationNames.value.length > 0
         wpsTargets.value = []
         wpsConfigVisible.value = false
         void loadWpsTargets(nextPage.site_id)
@@ -597,6 +627,12 @@ async function loadRows(reset = false, forceNewRevision = false): Promise<boolea
     filters.station = ''
     filters.page = 1
     void loadRows(true)
+  }
+  if (succeeded && restoredSavedStations) {
+    void loadRows(true)
+  }
+  if (succeeded && selectedStationNames.value.some((station) => !(page.value?.station_options || []).includes(station))) {
+    handleMultiStationChange(selectedStationNames.value.filter((station) => (page.value?.station_options || []).includes(station)))
   }
   return succeeded
 }
@@ -756,6 +792,7 @@ async function exportBusiness(): Promise<void> {
           suggested_name: proposal.suggested_name,
           expected_revision: page.value?.business_revision || '',
           station: filters.station,
+          ...(selectedStationNames.value.length ? { stations: selectedStationNames.value } : {}),
           query: filters.query,
           selected_row_ids: selectedRows.value
             .map((row) => row.row_id)
@@ -858,7 +895,7 @@ async function prepareWpsSync(): Promise<{ expectedRevision: string; initializeB
   }
   try {
     await ElMessageBox.confirm(
-      `当前局点：${page.value.site_id}\n业务：轨旁 AP 业务\nrevision：${page.value.business_revision}\n云文档：${target.target_name}\nAP 上线情况概览将新增历史批次，旧历史不会删除。`,
+      `当前局点：${page.value.site_id}\n业务：轨旁 AP 业务\n车站：${selectedStationNames.value.length ? selectedStationNames.value.join('、') : '全部车站'}\nrevision：${page.value.business_revision}\n云文档：${target.target_name}\nAP 上线情况概览将新增历史批次，旧历史不会删除。`,
       '确认同步云文档',
       { type: 'warning', confirmButtonText: '开始同步', cancelButtonText: '取消' },
     )
@@ -895,6 +932,7 @@ async function submitWpsSyncTask(prepared: { expectedRevision: string; initializ
   const task = await syncTracksideWpsDocument({
     expected_revision: prepared.expectedRevision,
     initialize_binding: prepared.initializeBinding,
+    ...(selectedStationNames.value.length ? { stations: selectedStationNames.value } : {}),
   })
   wpsSyncTaskId.value = task.task_id
   currentTaskId.value = task.task_id
@@ -1128,6 +1166,7 @@ function handleBeforeSiteSwitch(event: Event): void {
   pendingRefreshReason.value = ''
   lastLoadedAt.value = 0
   filters.station = ''
+  selectedStationNames.value = readStationPreference(targetSiteId)
   filters.page = 1
   savedTableScroll.top = 0
   savedTableScroll.left = 0
@@ -1305,23 +1344,13 @@ onBeforeUnmount(() => {
     <div class="content-card">
       <div class="toolbar">
         <el-input v-model="filters.query" clearable placeholder="交换机、接口、AP、MAC" @keyup.enter="loadRows(true)" />
-        <el-select
-          v-model="filters.station"
+        <NcMultiValueFilter
+          :model-value="selectedStationNames"
+          :options="page?.station_options || []"
           class="station-select"
-          clearable
-          filterable
           placeholder="全部站点"
-          :title="filters.station || '全部站点'"
-          @change="handleStationChange"
-        >
-          <el-option
-            v-for="station in page?.station_options || []"
-            :key="station"
-            :label="station"
-            :value="station"
-            :title="station"
-          />
-        </el-select>
+          @change="handleMultiStationChange"
+        />
         <el-checkbox v-model="filters.optical_anomaly_only">仅业务异常</el-checkbox>
         <el-button type="primary" :loading="refreshing" :disabled="initialLoading" @click="loadRows(true)">查询</el-button>
         <span v-if="refreshing" class="refresh-indicator">正在刷新，当前数据保持显示</span>
@@ -1390,6 +1419,9 @@ onBeforeUnmount(() => {
             :data="onlineStatusRows"
             :columns="onlineStatusColumns"
             :row-key="onlineStatusRowKey"
+            :row-class-name="onlineStatusRowClass"
+            :border="true"
+            :stripe="false"
             height="100%"
             :show-summary="Boolean(onlineStatus)"
             :summary-method="onlineStatusSummaryMethod"
@@ -1454,6 +1486,13 @@ onBeforeUnmount(() => {
 .kpi-strip{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.kpi-primary{display:flex;min-width:0;flex:1;align-items:center;justify-content:space-between;gap:12px;overflow:hidden}.kpi-item{display:flex;min-width:0;align-items:baseline;gap:4px;white-space:nowrap}.kpi-item small{color:var(--el-text-color-secondary);font-size:12px}.kpi-item strong{font-size:16px;line-height:1.15}.kpi-item em{color:var(--el-text-color-secondary);font-size:12px;font-style:normal}.kpi-online strong{color:var(--el-color-success)}.online-overview-optical-problem{align-items:center!important;flex-direction:column;gap:0!important;line-height:1.05}.kpi-secondary{display:flex;flex:none;align-items:center;gap:5px;white-space:nowrap}.kpi-badge{border:1px solid var(--el-border-color);border-radius:10px;color:var(--el-text-color-secondary);font-size:11px;line-height:19px;padding:0 6px}.kpi-secondary .el-button{padding:0}.online-status-error{max-width:180px;overflow:hidden;color:var(--el-color-danger);font-size:12px;text-overflow:ellipsis;white-space:nowrap}
 .online-status-optical-problem-header{display:inline-flex;align-items:center;justify-content:center;vertical-align:middle;flex-direction:column;line-height:1.15;white-space:nowrap}
 .online-status-summary-optical-problem{align-items:center;display:inline-flex;flex-direction:column;gap:0;line-height:1.15;white-space:nowrap}
+.online-status-dialog-content :deep(.el-table__header th.el-table__cell){background:#dfeafc!important;color:#21334b;font-weight:700;text-align:center}
+.online-status-dialog-content :deep(.el-table__body td.el-table__cell){border-color:var(--el-border-color-lighter);font-variant-numeric:tabular-nums}
+.online-status-dialog-content :deep(.online-status-row-normal td.el-table__cell){background:color-mix(in srgb,var(--el-color-success) 12%,var(--el-bg-color))}
+.online-status-dialog-content :deep(.online-status-row-warning td.el-table__cell),.online-status-dialog-content :deep(.online-status-row-alert td.el-table__cell){background:color-mix(in srgb,var(--el-color-warning) 16%,var(--el-bg-color))}
+.online-status-dialog-content :deep(.online-status-row-optical td.el-table__cell){background:color-mix(in srgb,var(--el-color-danger) 11%,var(--el-bg-color))}
+.online-status-dialog-content :deep(.el-table__footer-wrapper td.el-table__cell){background:color-mix(in srgb,#dfeafc 65%,var(--el-bg-color));font-weight:700}
+.online-status-dialog-content :deep(.el-table__body tr:hover > td.el-table__cell){filter:brightness(.97)}
 .diagnostic-summary{display:flex;min-width:0;flex:none;align-items:center;gap:10px;padding:6px 10px}.diagnostic-title{flex:none;font-size:13px}.diagnostic-items{display:flex;min-width:0;flex:1;align-items:center;gap:4px;overflow:hidden}.diagnostic-item{border:0;background:transparent;color:var(--el-text-color-secondary);cursor:pointer;font:inherit;font-size:12px;line-height:22px;padding:0 6px;white-space:nowrap}.diagnostic-item:not(:last-child)::after{content:'|';margin-left:10px;color:var(--el-border-color)}.diagnostic-item b{font-weight:600}.diagnostic-warning{color:var(--el-color-warning)}.diagnostic-danger{color:var(--el-color-danger)}.diagnostic-toggle{flex:none;padding:0;white-space:nowrap}
 .content-card{display:flex;min-height:0;min-width:0;flex:1;flex-direction:column;padding:8px 10px;overflow:hidden}.business-table-host{min-height:0;min-width:0;flex:1;overflow:hidden}.toolbar{position:relative;z-index:1;flex:none;margin-bottom:5px}.toolbar .el-input{width:230px}.station-select{width:260px}.refresh-indicator{color:var(--el-color-primary);font-size:13px}.work-scope-filter-hint{color:var(--el-text-color-secondary);font-size:12px}.pagination{flex-wrap:wrap;padding-top:6px}.optical-normal{color:var(--el-color-success)}.optical-notice,.optical-warning{color:var(--el-color-warning)}.optical-alarm,.optical-link-abnormal,.optical-link-down,.optical-no-light,.optical-offline{color:var(--el-color-danger);font-weight:600}.optical-no-module,.optical-missing,.optical-skipped,.optical-not-collected,.optical-unknown{color:var(--el-text-color-secondary)}
 .trackside-concurrency-select{width:112px}

@@ -17,10 +17,13 @@ const tracksideBusinessArtifactNamePattern = /^.+_轨旁AP业务_\d{8}_\d{6}\.xl
 const switchSampleArtifactNamePattern = /^[a-z0-9._-]+-adapter-sample-[a-z0-9._-]+-\d{8}_\d{6}\.zip$/i
 
 export function listTracksideApBusiness(params: {
-  station?: string; query?: string; optical_anomaly_only?: boolean; page?: number; page_size?: number; expected_revision?: string
+  station?: string; stations?: string[]; query?: string; optical_anomaly_only?: boolean; page?: number; page_size?: number; expected_revision?: string
 } = {}): Promise<TracksideApBusinessPage> {
   const query = new URLSearchParams()
-  for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') query.set(key, String(value))
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) value.forEach((entry) => query.append(key, entry))
+    else if (value !== undefined && value !== '') query.set(key, String(value))
+  }
   return apiRequest(`${root}/rows?${query}`)
 }
 
@@ -41,6 +44,7 @@ export function startTracksideApBusinessExport(
         suggested_name: request.suggested_name,
         expected_revision: request.expected_revision,
         station: request.station,
+        stations: request.stations,
         query: request.query,
         selected_row_ids: request.selected_row_ids,
       }
@@ -136,6 +140,7 @@ export function revalidateTracksideWpsDeployment(targetCode: WpsTracksideTargetC
 export function syncTracksideWpsDocument(payload: {
   expected_revision?: string
   initialize_binding?: boolean
+  stations?: string[]
 } = {}): Promise<TracksideApTask> {
   return apiRequest(`${wpsRoot}/sync`, {
     method: 'POST',

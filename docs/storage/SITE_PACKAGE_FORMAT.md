@@ -12,6 +12,17 @@ NetConsole 使用 ZIP 容器传递局点数据。`.ncsite`、`.ncresult` 与 `.z
 | `field_collection` | `.ncsite` | 主电脑下发现场采集资料 | 建立同一 `site_uuid` 的现场基准 |
 | `collection_return` | `.ncresult` | 现场采集后回传增量 | 对同一 `site_uuid` 预检后增量合并 |
 
+### 多局点轻量包汇总（仅导出）
+
+“局点与数据管理”可以勾选 1～100 个局点，合并导出为单个 ZIP（`format=netconsole-lightweight-bundle`、`format_version=1`）。汇总包不是上述单局点 Site Package，不直接接入“导入数据包”：
+
+- `sites/<site_id>.zip`：每个原始 v4 轻量包，仍可拆出并独立导入；
+- `wps-connections/<site_id>.json`：WPS 文档链接、Webhook、开关、超时和**明文脚本令牌**；
+- `table-column-preferences.json`：发起导出的桌面用户当前保存的表格列设置；
+- `manifest.json`、`README.txt`：选中的稳定站点 ID、每个成员的 SHA-256 和敏感信息标记。
+
+这是用户显式选择“包含明文令牌”的可移植备份例外；令牌不进入 manifest、日志、Job 参数或任务结果。汇总包未加密，设备密码和 WPS 令牌均可被 ZIP 持有者读取，必须保存到可信位置。单局点轻量包格式本身不变；WPS 和列设置仅作为独立配置备份，不随原单局点导入动作自动写回本机。失败或取消时不会发布半完成的总包。
+
 当前格式版本为 4。完整迁移包和轻量包均使用 `format=netconsole-site-package`、v4、同一 manifest/checksum 机制；差异由 `package_profile` 和内容清单表达。旧版 `format_version=1/2` 的 `.ncsite` 继续兼容读取，但只按无凭据旧包处理；它们不能因类型名称为 `full_migration` 而恢复已被旧流程清除的凭据。历史上生成的实验性 `format=netconsole-lightweight-package` v1 轻量包只有检查语义，因缺少可恢复核心文件仍不可直接导入。曾短暂生成的实验性 `format_version=3` 加密包不属于当前兼容输入；需要从仍持有原局点数据的来源端重新导出 v4 包。
 
 ## 通用 manifest

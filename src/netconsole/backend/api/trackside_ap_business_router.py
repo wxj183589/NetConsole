@@ -80,6 +80,7 @@ def _site_id(request: Request) -> str:
 def rows(
     request: Request,
     station: str = Query(default="", max_length=100),
+    stations: list[str] = Query(default=[], max_length=100),
     query: str = Query(default="", max_length=200),
     optical_anomaly_only: bool = False,
     page: int = Query(default=1, ge=1),
@@ -90,6 +91,7 @@ def rows(
         return _query_service(request).list_rows(
             _site_id(request),
             station=station,
+            stations=stations,
             query=query,
             optical_anomaly_only=optical_anomaly_only,
             page=page,
@@ -183,6 +185,7 @@ def export_business(
             suggested_name=payload.suggested_name if payload else "",
             expected_revision=payload.expected_revision if payload else "",
             station=payload.station if payload else "",
+            stations=payload.stations if payload else (),
             query=payload.query if payload else "",
             selected_row_ids=payload.selected_row_ids if payload else (),
         )

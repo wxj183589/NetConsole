@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TrainCommunicationRow } from '../../types/trainCommunication'
 import type { CarNetworkPointRow, RailTransitTask } from '../../types/railTransitWeb'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import CarNetworkPointTableDialog from './CarNetworkPointTableDialog.vue'
 
 const routerPush = vi.hoisted(() => vi.fn())
@@ -130,6 +131,25 @@ describe('在线列车车内通信点表 Dialog', () => {
       configurable: true,
       value: { openTaskWindow: vi.fn() },
     })
+  })
+
+  it('allows WPS-style multiple node types without changing the stored point table', async () => {
+    api.getCarNetworkPointTable.mockReset()
+    api.getCarNetworkPointTable.mockResolvedValue({ rows: nodes, global_config: {}, locked: false, revision: 'rev-1' })
+    const wrapper = mount(CarNetworkPointTableDialog, {
+      props: { modelValue: false, train },
+      global: { directives: { loading: () => undefined }, stubs },
+    })
+    await wrapper.setProps({ modelValue: true })
+    await flushPromises()
+    expect(wrapper.findAll('.nc-table > div')).toHaveLength(6)
+    const filter = wrapper.findAllComponents(NcMultiValueFilter)[1]
+    expect(filter).toBeDefined()
+    filter!.vm.$emit('update:modelValue', ['MR', 'SRV'])
+    await flushPromises()
+    expect(wrapper.findAll('.nc-table > div')).toHaveLength(4)
+    expect(api.saveCarNetworkPointTable).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('从当前列车生成六节点预览，保存后通知父页面', async () => {

@@ -75,6 +75,12 @@ class SiteExportRequest(ApiModel):
     ] = "full_migration"
 
 
+class SiteBatchLightweightExportRequest(ApiModel):
+    destination_path: str = Field(min_length=1, max_length=32_767)
+    site_ids: list[str] = Field(min_length=1, max_length=100)
+    table_preferences: dict[str, object] = Field(default_factory=dict)
+
+
 class SiteImportInspectRequest(ApiModel):
     package_path: str = Field(min_length=1, max_length=32_767)
     target_site_id: str = Field(default="", max_length=63)

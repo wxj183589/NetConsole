@@ -11,6 +11,7 @@ import {
   transformCarNetworkPointTable,
 } from '../../api/railTransitWeb'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { isFeatureEnabled } from '../../features'
@@ -87,8 +88,8 @@ const globalConfig = ref<Record<string, unknown>>({})
 const revision = ref('')
 const locked = ref(false)
 const selectedRows = ref<CarNetworkPointRow[]>([])
-const trainFilter = ref('')
-const nodeFilter = ref('')
+const trainFilters = ref<string[]>([])
+const nodeFilters = ref<string[]>([])
 const loading = ref(false)
 const dirty = ref(false)
 const error = ref('')
@@ -111,9 +112,13 @@ const trainOptions = computed(() => {
   return [...new Map(values.map((item) => [item.key, item])).values()].sort((a, b) => a.label.localeCompare(b.label, 'zh-CN'))
 })
 const nodeOptions = computed(() => [...new Set(rows.value.map((row) => row.node_type).filter(Boolean))].sort())
+const trainFilterLabels = computed(() => Object.fromEntries(trainOptions.value.map((option) => [option.key, option.label])))
 const currentTrainRows = computed(() => rows.value.filter((row) => currentTrainKey.value && rowMatchesTrain(row, currentTrainKey.value)))
 const missingNodes = computed(() => nodeOrder.filter((name) => !currentTrainRows.value.some((row) => normalizeNodeName(row.node_name) === name)))
-const filteredRows = computed(() => rows.value.filter((row) => (!trainFilter.value || rowMatchesTrain(row, trainFilter.value)) && (!nodeFilter.value || row.node_type === nodeFilter.value)))
+const filteredRows = computed(() => rows.value.filter((row) => (
+  (!trainFilters.value.length || trainFilters.value.some((key) => rowMatchesTrain(row, key)))
+  && (!nodeFilters.value.length || nodeFilters.value.includes(row.node_type))
+)))
 const showCurrentTrainEmpty = computed(() => Boolean(props.train && !currentTrainRows.value.length && !loading.value))
 const showCurrentTrainMissing = computed(() => Boolean(props.train && currentTrainRows.value.length && missingNodes.value.length && !loading.value))
 const addressMapping = computed<Record<string, Record<string, unknown>>>(() => {
@@ -209,7 +214,7 @@ async function loadPointTable(force = false): Promise<void> {
     revision.value = value.revision
     locked.value = value.locked
     ensureMapping(); dirty.value = false; selectedRows.value = []
-    if (props.train) trainFilter.value = currentTrainKey.value
+    if (props.train) trainFilters.value = [currentTrainKey.value]
   } catch (reason) { error.value = failure(reason, '车内通信点表加载失败') }
   finally { loading.value = false }
 }
@@ -255,7 +260,7 @@ async function handleTerminalTask(done: RailTransitTask): Promise<void> {
       error.value = '未生成当前列车的点表节点，请检查当前列车身份及设备映射。'
       return
     }
-    if (props.train) trainFilter.value = currentTrainKey.value
+    if (props.train) trainFilters.value = [currentTrainKey.value]
     dirty.value = true
     info.value = `已生成 ${generatedCount} 行点表预览，尚未保存`
   } else if (done.action === 'car_network_save_point_table') {
@@ -367,14 +372,14 @@ async function closeDialog(): Promise<void> {
 
 watch(() => props.modelValue, (value) => {
   if (value) {
-    trainFilter.value = props.train ? currentTrainKey.value : ''
+    trainFilters.value = props.train ? [currentTrainKey.value] : []
     void Promise.all([loadPointTable(true), recoverTasks()])
   } else {
     stopPolling()
   }
 })
 watch(() => props.train, (value) => {
-  if (props.modelValue && value && !dirty.value) trainFilter.value = currentTrainKey.value
+  if (props.modelValue && value && !dirty.value) trainFilters.value = [currentTrainKey.value]
 })
 onBeforeUnmount(stopPolling)
 </script>
@@ -396,8 +401,8 @@ onBeforeUnmount(stopPolling)
         <div class="missing-panel"><span>缺少节点：{{ missingNodes.join('、') }}</span><el-button type="primary" :disabled="locked || !canWrite || taskRunning" @click="generate">补齐六节点点表预览</el-button></div>
       </el-alert>
       <div class="filters">
-        <el-select v-model="trainFilter" clearable placeholder="全部列车" style="width:180px"><el-option v-for="value in trainOptions" :key="value.key" :label="value.label" :value="value.key" /></el-select>
-        <el-select v-model="nodeFilter" clearable placeholder="全部节点类型" style="width:160px"><el-option v-for="value in nodeOptions" :key="value" :label="value" :value="value" /></el-select>
+        <NcMultiValueFilter v-model="trainFilters" :options="trainOptions.map((option) => option.key)" :labels="trainFilterLabels" placeholder="全部列车" style="width:190px" />
+        <NcMultiValueFilter v-model="nodeFilters" :options="nodeOptions" placeholder="全部节点类型" style="width:175px" />
         <el-tag :type="locked ? 'warning' : 'success'">{{ locked ? '点表已锁定' : '点表可编辑' }}</el-tag>
         <el-tooltip :content="canWriteReason || '保存点表锁定状态'"><span><el-button :disabled="!canWrite || taskRunning" @click="toggleLock">{{ locked ? '解锁并保存' : '锁定并保存' }}</el-button></span></el-tooltip>
         <span>{{ dirty ? '有未保存修改' : `共 ${rows.length} 行` }}</span>

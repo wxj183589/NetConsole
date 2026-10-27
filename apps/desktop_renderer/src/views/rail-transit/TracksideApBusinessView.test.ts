@@ -488,6 +488,19 @@ const ElementStubs = {
   }),
 }
 
+const NcMultiValueFilterStub = defineComponent({
+  props: { modelValue: { type: Array, default: () => [] }, options: { type: Array, default: () => [] } },
+  emits: ['update:modelValue', 'change'],
+  methods: {
+    select(event: Event) {
+      const values = Array.from((event.target as HTMLSelectElement).selectedOptions).map((option) => option.value).filter(Boolean)
+      this.$emit('update:modelValue', values)
+      this.$emit('change', values)
+    },
+  },
+  template: '<select multiple :value="modelValue.length ? modelValue : [\'\']" @change="select"><option value="">全部站点</option><option v-for="option in options" :key="option" :value="option">{{ option }}</option></select>',
+})
+
 const fullPackagedFeatureSnapshot = {
   'capability.trackside_ap.update': { visible: true, enabled: true },
   'capability.trackside_ap.export': { visible: true, enabled: true },
@@ -1834,20 +1847,21 @@ describe('TracksideApBusinessView mounted behavior', () => {
     api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
     api.listTracksideApBusiness.mockClear()
     ;(wrapper.vm as unknown as { filters: { page: number } }).filters.page = 3
-    await stationSelect.setValue('02-云龙火车站')
+    await stationSelect.setValue(['02-云龙火车站'])
     await flushPromises()
 
     expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
-      station: '02-云龙火车站',
+      station: '',
+      stations: ['02-云龙火车站'],
       query: '',
       optical_anomaly_only: false,
       page: 1,
       page_size: 50,
     })
-    expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
+    expect((wrapper.find('.station-select').element as HTMLSelectElement).selectedOptions[0]?.value).toBe('02-云龙火车站')
 
     api.listTracksideApBusiness.mockClear()
-    await stationSelect.setValue('')
+    ;(wrapper.vm as unknown as { handleMultiStationChange: (values: string[]) => void }).handleMultiStationChange([])
     await flushPromises()
     expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
       station: '',
@@ -1886,7 +1900,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const stationSelect = wrapper.find('.station-select')
 
     api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
-    await stationSelect.setValue('02-云龙火车站')
+    await stationSelect.setValue(['02-云龙火车站'])
     await flushPromises()
 
     api.listTracksideApBusiness.mockClear()
@@ -1898,7 +1912,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
 
     expect(api.listTracksideApBusiness).toHaveBeenNthCalledWith(1, {
-      station: '02-云龙火车站',
+      station: '',
+      stations: ['02-云龙火车站'],
       query: '',
       optical_anomaly_only: false,
       page: 1,
@@ -1911,7 +1926,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
       page: 1,
       page_size: 50,
     })
-    expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('')
+    expect((wrapper.vm as unknown as { selectedStationNames: string[] }).selectedStationNames).toEqual([])
     wrapper.unmount()
   })
 
@@ -2172,7 +2187,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
 
     expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
-      station: '02-云龙火车站',
+      station: '',
+      stations: ['02-云龙火车站'],
       query: 'AP-A',
       optical_anomaly_only: false,
       page: 2,
@@ -2361,7 +2377,7 @@ async function mountView(): Promise<VueWrapper> {
   const wrapper = mount(TracksideApBusinessView, {
     global: {
       directives: { loading: () => undefined },
-      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub },
+      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub, NcMultiValueFilter: NcMultiValueFilterStub },
     },
   })
   await flushPromises()
@@ -2381,7 +2397,7 @@ async function mountCachedView(): Promise<VueWrapper> {
     attachTo: document.body,
     global: {
       directives: { loading: () => undefined },
-      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub },
+      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub, NcMultiValueFilter: NcMultiValueFilterStub },
     },
   })
   await flushPromises()

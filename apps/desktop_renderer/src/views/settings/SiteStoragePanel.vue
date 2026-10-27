@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, MoreFilled } from '@element-plus/icons-vue'
 
-import { activateSite, applySiteCleanup, applySiteRetention, auditSite, createSite, exportSite, getDataRoot, getLatestSiteAudit, getLatestSiteRetention, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, scanSiteRetention, trashSite, updateSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord, type SiteRetentionCandidate, type SiteRetentionReport } from '../../api/siteStorage'
+import { activateSite, applySiteCleanup, applySiteRetention, auditSite, createSite, exportSite, exportLightweightBundle, getDataRoot, getLatestSiteAudit, getLatestSiteRetention, importSite, inspectSitePackage, listSites, migrateDataRoot, migrateSite, preflightSiteActivation, prepareSiteCleanup, rebuildDemoSite, scanSiteRetention, trashSite, updateSite, validateDataRoot, type DataRootSnapshot, type SiteConflictChoice, type SiteConflictResolution, type SitePackageInspection, type SitePackageType, type SiteRecord, type SiteRetentionCandidate, type SiteRetentionReport } from '../../api/siteStorage'
 import { ApiRequestError } from '../../api/client'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { getTask } from '../../api/tasks'
@@ -11,10 +11,13 @@ import { useConfirm } from '../../components/feedback/useConfirm'
 import { getSiteContextSnapshot, refreshSiteContext, siteContextState } from '../../stores/siteContext'
 import { useWorkspaceStore } from '../../stores/workspace'
 import { coordinateSiteSwitch, LEGACY_SITE_CONTEXT_CHANGED_EVENT, notifySiteContextChanged, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
+import { UI_PREFERENCE_KEYS } from '../../../../desktop_electron/src/shared/bridge'
+import { loadUiPreference } from '../../platform/uiPreferences'
 
 const props = defineProps<{ focused?: boolean; switchBlocked?: boolean }>()
 
 const sites = ref<SiteRecord[]>([])
+const selectedBundleSites = ref<string[]>([])
 const root = ref<DataRootSnapshot | null>(null)
 const loading = ref(false)
 const busy = ref(false)
@@ -108,7 +111,11 @@ async function reload(options: { reportError?: boolean } = {}): Promise<void> {
     const [sitesResult, rootResult] = await Promise.allSettled([listSites(), getDataRoot()])
     if (!panelMounted || generation !== reloadGeneration) return
     const failures: string[] = []
-    if (sitesResult.status === 'fulfilled') sites.value = sitesResult.value
+    if (sitesResult.status === 'fulfilled') {
+      sites.value = sitesResult.value
+      const known = new Set(sitesResult.value.map((site) => site.site_id))
+      selectedBundleSites.value = selectedBundleSites.value.filter((siteId) => known.has(siteId))
+    }
     else failures.push(`局点列表（${sitesResult.reason instanceof Error ? sitesResult.reason.message : '未知错误'}）`)
     if (rootResult.status === 'fulfilled') root.value = rootResult.value
     else failures.push(`数据路径（${rootResult.reason instanceof Error ? rootResult.reason.message : '未知错误'}）`)
@@ -545,6 +552,50 @@ async function exportCurrent(packageType: SitePackageType): Promise<void> {
   } finally { busy.value = false }
 }
 
+async function collectTableColumnPreferences(): Promise<Record<string, unknown>> {
+  const result: Record<string, unknown> = {}
+  for (const key of UI_PREFERENCE_KEYS) {
+    if (!key.includes('.table.') && !key.startsWith('device-detail.') && key !== 'device-management.device-list') continue
+    const preference = await loadUiPreference(key, null)
+    if (preference !== null) result[key] = preference
+  }
+  if (typeof localStorage !== 'undefined') {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (!key?.startsWith('netconsole.table-preferences.v2:')) continue
+      const value = localStorage.getItem(key)
+      if (value && value.length <= 16_384) {
+        try { result[key] = JSON.parse(value) } catch { /* Skip invalid old preferences. */ }
+      }
+    }
+  }
+  return result
+}
+
+async function exportSelectedLightweightBundle(): Promise<void> {
+  const siteIds = [...selectedBundleSites.value]
+  if (!siteIds.length) { ElMessage.warning('请先勾选要批量导出的局点'); return }
+  if (isSiteContextSwitching()) { ElMessage.warning('请等待局点切换完成'); return }
+  busy.value = true
+  try {
+    await ElMessageBox.confirm(
+      `将 ${siteIds.length} 个局点打包为一个 ZIP，内含各局点轻量包、WPS 连接参数、明文脚本令牌及本地表格列设置。文件不加密，泄露可能导致设备和 WPS 文档被访问。请仅保存到可信位置。`,
+      '批量导出敏感信息确认',
+      { type: 'warning', confirmButtonText: '我已知晓风险，继续导出', cancelButtonText: '取消', closeOnClickModal: false },
+    )
+    const selected = await getPlatformAdapter().selectSiteExportDestination(`NetConsole_多局点轻量包_${new Date().toISOString().slice(0, 10).replaceAll('-', '')}.zip`)
+    if (selected.cancelled || !selected.path) return
+    if (isSiteContextSwitching()) { ElMessage.warning('局点已切换，请重新发起批量导出'); return }
+    const preferences = await collectTableColumnPreferences()
+    const task = await exportLightweightBundle(siteIds, selected.path, preferences)
+    await openTask(task.task_id)
+    ElMessage.success('多局点轻量包导出任务已提交')
+  } catch (cause) {
+    if (cause === 'cancel' || cause === 'close') return
+    showError(cause, '多局点轻量包导出失败')
+  } finally { busy.value = false }
+}
+
 async function importPackage(): Promise<void> {
   const selected = await getPlatformAdapter().selectSitePackage()
   if (selected.cancelled || !selected.path) return
@@ -753,6 +804,7 @@ function displayValue(value: unknown): string { if (value === null || value === 
       <div v-if="root?.persistent !== false" class="actions">
         <el-button data-testid="create-site" :loading="busy" @click="newSite">新建局点</el-button>
         <el-button data-testid="import-site" :loading="busy" @click="importPackage">导入数据包</el-button>
+        <el-button data-testid="export-sites-batch" :loading="busy" :disabled="busy || !selectedBundleSites.length" @click="exportSelectedLightweightBundle">批量导出轻量包（{{ selectedBundleSites.length }}）</el-button>
         <el-button
           v-if="desktopOnly"
           data-testid="restart-application"
@@ -792,8 +844,13 @@ function displayValue(value: unknown): string { if (value === null || value === 
       </div>
     </div>
     <div v-if="root" class="root-summary"><span>{{ root.persistent ? '全局数据根' : '临时测试数据根' }}</span><code :title="root.persistent ? root.data_root : undefined">{{ root.data_root }}</code><span>{{ root.site_count }} 个局点</span><template v-if="root.persistent"><el-button data-testid="migrate-data-root" size="small" @click="chooseRoot">选择并迁移</el-button><el-button data-testid="restore-data-root" size="small" :disabled="root.data_root === root.default_data_root" @click="restoreDefaultRoot">恢复默认路径</el-button></template></div>
+    <div v-if="root?.persistent" class="site-batch-toolbar">
+      <el-checkbox :model-value="sites.length > 0 && selectedBundleSites.length === sites.length" :indeterminate="selectedBundleSites.length > 0 && selectedBundleSites.length < sites.length" :disabled="busy" @change="(checked: boolean) => { selectedBundleSites = checked ? sites.map((site) => site.site_id) : [] }">选择全部局点</el-checkbox>
+      <span>勾选要打包的局点，再点击“批量导出轻量包”</span>
+    </div>
     <div class="site-list">
       <article v-for="site in sites" :key="site.site_id" class="site-item" :class="{ active: site.active }">
+        <el-checkbox v-if="root?.persistent" v-model="selectedBundleSites" :value="site.site_id" :disabled="busy" :aria-label="`选择局点 ${site.display_name}`" />
         <div class="site-content">
           <div class="site-main">
             <strong>{{ site.display_name }}</strong>
@@ -1011,6 +1068,9 @@ function displayValue(value: unknown): string { if (value === null || value === 
 </template>
 
 <style scoped>
+.site-batch-toolbar{display:flex;align-items:center;gap:14px;margin:10px 0;color:var(--el-text-color-secondary);font-size:12px}
+.site-batch-toolbar .el-checkbox{flex:none}
+.site-item>.el-checkbox{flex:none;align-self:flex-start;margin-top:6px}
 .el-alert{margin-top:14px}
 .storage-panel{padding:18px 20px;scroll-margin-top:16px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px;transition:outline-color .18s ease,box-shadow .18s ease}.storage-panel--focused{outline:1px solid var(--nc-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--nc-primary),transparent 82%)}.panel-heading,.actions,.root-summary,.site-item,.site-main,.site-actions,.site-info-tags,.site-facts{display:flex;align-items:center;gap:10px}.panel-heading{justify-content:space-between;gap:18px}.panel-heading h2{margin:0 0 5px;font-size:17px}.panel-heading p{margin:0;color:var(--nc-text-secondary);font-size:13px}.actions,.site-actions{flex-wrap:wrap;justify-content:flex-end}.blocking-tasks{display:grid;gap:8px;margin-top:10px}.blocking-task{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--el-color-warning-light-5);border-radius:6px;background:var(--el-color-warning-light-9)}.blocking-task>div{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}.blocking-task code{overflow-wrap:anywhere}.blocking-task p{width:100%;margin:0;color:var(--nc-text-secondary);font-size:12px}.root-summary{margin:16px 0;padding:10px 12px;background:var(--nc-surface-muted);border-radius:6px;flex-wrap:wrap}.root-summary code{flex:1;min-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.site-list{display:grid;gap:8px}.site-item{justify-content:space-between;padding:11px 12px;border:1px solid var(--el-border-color-lighter);border-radius:6px}.site-item.active{border-color:var(--el-color-success-light-5);background:var(--el-color-success-light-9)}.site-content{display:grid;min-width:0;gap:7px}.site-main,.site-info-tags,.site-facts{min-width:0;flex-wrap:wrap}.site-main strong{font-size:14px}.site-facts code{color:var(--nc-text-secondary)}.site-facts span{color:var(--nc-text-secondary);font-size:12px}.retention-content{min-height:280px;max-height:68vh;overflow:auto;padding-right:4px}.retention-heading,.retention-heading>div,.retention-actions,.retention-meta,.retention-item-title{display:flex;align-items:center;gap:10px}.retention-heading{position:sticky;top:0;z-index:2;justify-content:space-between;padding:2px 0 12px;background:var(--el-bg-color)}.retention-heading>div:first-child{min-width:0;flex-wrap:wrap}.retention-heading code{color:var(--nc-text-secondary)}.retention-actions{flex-wrap:wrap;justify-content:flex-end}.retention-summary{display:grid;grid-template-columns:repeat(4,minmax(130px,1fr));border-block:1px solid var(--el-border-color-lighter)}.retention-summary span{min-width:0;padding:12px;border-right:1px solid var(--el-border-color-lighter)}.retention-summary span:nth-child(4n){border-right:0}.retention-summary small,.retention-summary strong{display:block}.retention-summary small{margin-bottom:4px;color:var(--nc-text-secondary)}.retention-summary strong{font-size:16px}.retention-meta{padding:10px 0;color:var(--nc-text-secondary);font-size:12px;flex-wrap:wrap}.retention-group{margin-top:14px}.retention-group-heading{display:flex;align-items:center;justify-content:space-between;padding-bottom:7px;border-bottom:1px solid var(--el-border-color)}.retention-group-heading h3{margin:0;font-size:14px}.retention-group-heading span{color:var(--nc-text-secondary);font-size:12px}.retention-list{display:grid}.retention-row{display:grid;grid-template-columns:28px minmax(0,1fr) minmax(100px,auto);align-items:center;gap:10px;padding:10px 8px;border-bottom:1px solid var(--el-border-color-lighter);cursor:pointer}.retention-row.blocked{cursor:default;background:var(--nc-surface-muted)}.retention-item-main{display:grid;min-width:0;gap:4px}.retention-item-title{min-width:0;flex-wrap:wrap}.retention-item-title strong{font-size:13px}.retention-item-main code{overflow-wrap:anywhere;color:var(--nc-text-secondary);font-size:12px}.retention-item-main small{color:var(--nc-text-secondary)}.retention-item-size{display:grid;justify-items:end;gap:3px;text-align:right}.retention-item-size small{color:var(--nc-text-secondary);font-size:11px}.site-edit-dialog :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}.site-edit-dialog :deep(.el-form-item){min-width:0}.site-edit-dialog :deep(.el-form-item:first-child),.site-edit-dialog :deep(.el-form-item:nth-child(2)),.site-edit-dialog :deep(.el-form-item:nth-child(3)){grid-column:1/-1}.preflight-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;margin:14px 0}.preflight-grid span{padding:9px 10px;background:var(--nc-surface-muted);border-radius:6px;color:var(--nc-text-secondary);font-size:12px}.preflight-grid strong{display:block;margin-bottom:2px;color:var(--nc-text-primary);font-size:16px}.preflight-grid .danger strong{color:var(--el-color-danger)}.import-options{display:grid;gap:14px;margin-top:16px}.import-options :deep(.el-form){display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.import-options :deep(.el-form-item){margin-bottom:0}.full-width{width:100%}.raw-only-option{margin:14px 0}.conflict-section{margin-top:4px}.section-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}.section-heading span{color:var(--nc-text-secondary);font-size:12px}.conflict-table-wrap{width:100%;overflow-x:auto}.conflict-table-wrap :deep(.el-table){min-width:980px}.site-import-dialog code{overflow-wrap:anywhere}@media(max-width:900px){.panel-heading{align-items:flex-start;flex-direction:column}.actions{justify-content:flex-start}.blocking-task{align-items:flex-start;flex-direction:column}.site-item{align-items:flex-start;flex-direction:column}.site-actions{justify-content:flex-start}.retention-heading{align-items:flex-start;flex-direction:column}.retention-actions{justify-content:flex-start}.retention-summary{grid-template-columns:repeat(2,minmax(120px,1fr))}.retention-summary span:nth-child(2n){border-right:0}.retention-row{grid-template-columns:28px minmax(0,1fr)}.retention-item-size{grid-column:2;justify-items:start;text-align:left}.site-edit-dialog :deep(.el-form){grid-template-columns:1fr}.preflight-grid{grid-template-columns:repeat(2,minmax(110px,1fr))}.import-options :deep(.el-form){grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}}
 </style>

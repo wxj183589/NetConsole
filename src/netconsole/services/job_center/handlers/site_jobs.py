@@ -28,6 +28,7 @@ SITE_STORAGE_TASK_TYPES = frozenset(
         "site_data_root_migration",
         "site_demo_rebuild",
         "site_export",
+        "site_batch_lightweight_export",
         "site_import",
         "site_migration",
         "site_retention_apply",
@@ -227,6 +228,22 @@ def site_export(context: JobContext) -> dict[str, object]:
     return result
 
 
+def site_batch_lightweight_export(context: JobContext) -> dict[str, object]:
+    context.check_cancelled()
+    site_ids = [str(site_id) for site_id in context.params.get("site_ids") or ()]
+    destination = Path(str(context.params.get("destination_path") or ""))
+    if not destination.is_absolute():
+        raise SiteStorageError("SITE_EXPORT_DESTINATION_INVALID", "请选择有效的绝对保存路径")
+    preferences = context.params.get("table_preferences")
+    return SitePackageService(context.paths, SiteApplicationService(context.paths)).export_lightweight_bundle(
+        site_ids,
+        destination,
+        table_preferences=preferences if isinstance(preferences, dict) else {},
+        check_cancel=context.check_cancelled,
+        progress=context.progress,
+    )
+
+
 def site_migration(context: JobContext) -> dict[str, object]:
     context.check_cancelled()
     _require_operation(context, "SITE_MIGRATE")
@@ -268,6 +285,7 @@ HANDLERS = {
     "site_data_root_migration": site_data_root_migration,
     "site_demo_rebuild": site_demo_rebuild,
     "site_export": site_export,
+    "site_batch_lightweight_export": site_batch_lightweight_export,
     "site_migration": site_migration,
     "site_retention_scan": site_retention_scan,
     "site_retention_apply": site_retention_apply,
