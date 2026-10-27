@@ -1930,6 +1930,25 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('restores the selected station scope after a renderer remount', async () => {
+    api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
+    const wrapper = await mountView()
+    const stationSelect = wrapper.find('.station-select')
+
+    await stationSelect.setValue(['02-云龙火车站'])
+    await flushPromises()
+    expect(localStorage.getItem('netconsole:rail:trackside:export-stations:v1:demo')).toBe(JSON.stringify(['02-云龙火车站']))
+    wrapper.unmount()
+
+    api.listTracksideApBusiness.mockClear()
+    const restarted = await mountView()
+    await flushPromises()
+
+    expect((restarted.vm as unknown as { selectedStationNames: string[] }).selectedStationNames).toEqual(['02-云龙火车站'])
+    expect(api.listTracksideApBusiness).toHaveBeenCalledWith(expect.objectContaining({ stations: ['02-云龙火车站'] }))
+    restarted.unmount()
+  })
+
   it('submits an update task without opening or routing to the task center', async () => {
     api.startTracksideApUpdate.mockResolvedValueOnce(task('update-running', 'RUNNING', 'trackside_ap_optical_update'))
     const openTaskWindow = vi.fn()

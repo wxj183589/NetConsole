@@ -531,15 +531,15 @@ export interface DeviceDetailSectionQuery {
   page?: number
   page_size?: number
   search?: string
-  status?: string
-  interface_type?: string
-  admin_status?: string
-  physical_status?: string
-  protocol_status?: string
-  media_type?: string
-  severity?: string
+  status?: string | string[]
+  interface_type?: string | string[]
+  admin_status?: string | string[]
+  physical_status?: string | string[]
+  protocol_status?: string | string[]
+  media_type?: string | string[]
+  severity?: string | string[]
   linked_only?: boolean
-  snapshot_type?: string
+  snapshot_type?: string | string[]
   sort_by?: string
   sort_order?: 'asc' | 'desc'
 }

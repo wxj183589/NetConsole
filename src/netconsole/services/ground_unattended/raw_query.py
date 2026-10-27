@@ -5,7 +5,7 @@ import hashlib
 import heapq
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
@@ -44,6 +44,11 @@ MAX_SYSLOG_QUERY_SECONDS = 8.0
 MAX_MIXED_DEDUP_KEYS = 250_000
 MAX_INCREMENTAL_POINTS = 500
 MAX_CURSOR_FILES = 32
+
+
+def _filter_values(value: str | Iterable[str]) -> tuple[str, ...]:
+    values = (value,) if isinstance(value, str) else value
+    return tuple(dict.fromkeys(str(item).strip().casefold() for item in values if str(item).strip()))
 WMESH_COMPLETE_CLOCK_SKEW_SECONDS = 5
 
 
@@ -728,18 +733,18 @@ class GroundRawStreamQueryService:
         mr_name: str = "",
         source_ip: str = "",
         system_name: str = "",
-        mr_role: str = "",
+        mr_role: str | Iterable[str] = "",
         facility: str = "",
-        severity: str = "",
-        identity_status: str = "",
-        event_type: str = "",
-        event_family: str = "",
-        cfg_command_source: str = "",
-        physical_state: str = "",
-        correlation_status: str = "",
-        correlation_confidence: str = "",
+        severity: str | Iterable[str] = "",
+        identity_status: str | Iterable[str] = "",
+        event_type: str | Iterable[str] = "",
+        event_family: str | Iterable[str] = "",
+        cfg_command_source: str | Iterable[str] = "",
+        physical_state: str | Iterable[str] = "",
+        correlation_status: str | Iterable[str] = "",
+        correlation_confidence: str | Iterable[str] = "",
         peer_name: str = "",
-        data_source: str = "",
+        data_source: str | Iterable[str] = "",
         keyword: str = "",
         start_time: str = "",
         end_time: str = "",
@@ -768,21 +773,21 @@ class GroundRawStreamQueryService:
         matched_count = 0
         serial = 0
         filters = {
-            "train_id": canonical_train_id_for(train_id).casefold(),
-            "device_uuid": mr_id.casefold(),
-            "mr_name": mr_name.casefold(),
-            "source_ip": source_ip.casefold(),
-            "system_name": system_name.casefold(),
-            "mr_role": mr_role.casefold(),
-            "facility": facility.casefold(),
-            "severity": severity.casefold(),
-            "identity_status": identity_status.casefold(),
-            "event_type": event_type.casefold(),
-            "event_family": event_family.casefold(),
-            "cfg_command_source": cfg_command_source.casefold(),
-            "physical_state": physical_state.casefold(),
-            "peer_name": peer_name.casefold(),
-            "data_source": data_source.casefold(),
+            "train_id": _filter_values(canonical_train_id_for(train_id)),
+            "device_uuid": _filter_values(mr_id),
+            "mr_name": _filter_values(mr_name),
+            "source_ip": _filter_values(source_ip),
+            "system_name": _filter_values(system_name),
+            "mr_role": _filter_values(mr_role),
+            "facility": _filter_values(facility),
+            "severity": _filter_values(severity),
+            "identity_status": _filter_values(identity_status),
+            "event_type": _filter_values(event_type),
+            "event_family": _filter_values(event_family),
+            "cfg_command_source": _filter_values(cfg_command_source),
+            "physical_state": _filter_values(physical_state),
+            "peer_name": _filter_values(peer_name),
+            "data_source": _filter_values(data_source),
         }
         keyword_value = keyword.casefold()
         parser = WmeshRealtimeParser()
@@ -796,9 +801,7 @@ class GroundRawStreamQueryService:
                 "peer_name",
             )
         )
-        correlation_filter_active = bool(
-            correlation_status or correlation_confidence
-        )
+        correlation_filter_active = bool(correlation_status or correlation_confidence)
         correlated_positions = (
             self.repository.control_event_raw_positions(
                 correlation_status=correlation_status,
@@ -865,7 +868,7 @@ class GroundRawStreamQueryService:
                 continue
             if any(
                 expected
-                and expected not in _syslog_filter_value(item, field)
+                and not any(value in _syslog_filter_value(item, field) for value in expected)
                 for field, expected in filters.items()
             ):
                 continue

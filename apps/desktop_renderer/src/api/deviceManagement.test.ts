@@ -92,6 +92,20 @@ describe('device detail API client', () => {
     ])
   })
 
+  it('serializes repeated section filters while keeping the section route stable', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getDeviceDetailSection('device-1', 'interfaces', {
+      admin_status: ['up', 'down'], media_type: ['optical', 'copper'],
+    })
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost')
+    expect(url.pathname).toBe('/api/device-management/devices/device-1/interfaces')
+    expect(url.searchParams.getAll('admin_status')).toEqual(['up', 'down'])
+    expect(url.searchParams.getAll('media_type')).toEqual(['optical', 'copper'])
+  })
+
   it('queries a batch refresh by its opaque encoded id', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
     vi.stubGlobal('fetch', fetchMock)

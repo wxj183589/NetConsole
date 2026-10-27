@@ -14,6 +14,11 @@ from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
 
 
+def _filter_values(value: str | Iterable[str]) -> tuple[str, ...]:
+    values = (value,) if isinstance(value, str) else value
+    return tuple(dict.fromkeys(str(item).strip().casefold() for item in values if str(item).strip()))
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ground_unattended_schema (
     key TEXT PRIMARY KEY,
@@ -3263,11 +3268,26 @@ class GroundUnattendedRepository:
     def control_event_raw_positions(
         self,
         *,
-        correlation_status: str = "",
-        correlation_confidence: str = "",
+        correlation_status: str | Iterable[str] = "",
+        correlation_confidence: str | Iterable[str] = "",
     ) -> set[tuple[str, int]]:
-        status = str(correlation_status or "").strip().upper()
-        confidence = str(correlation_confidence or "").strip().upper()
+        statuses = _filter_values(correlation_status)
+        confidences = _filter_values(correlation_confidence)
+        if len(statuses) > 1 or len(confidences) > 1:
+            status_values = statuses or ("",)
+            confidence_values = confidences or ("",)
+            positions: set[tuple[str, int]] = set()
+            for selected_status in status_values:
+                for selected_confidence in confidence_values:
+                    positions.update(
+                        self.control_event_raw_positions(
+                            correlation_status=selected_status,
+                            correlation_confidence=selected_confidence,
+                        )
+                    )
+            return positions
+        status = str(next(iter(statuses), "")).strip().upper()
+        confidence = str(next(iter(confidences), "")).strip().upper()
         if status not in {"", "CORRELATED", "UNCORRELATED"}:
             return set()
         if confidence not in {"", "HIGH", "MEDIUM"}:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from uuid import uuid4
 
@@ -459,12 +460,12 @@ class DeviceFactRepository:
         device_uuid: str,
         *,
         search: str = "",
-        status: str = "",
-        interface_type: str = "",
-        admin_status: str = "",
-        physical_status: str = "",
-        protocol_status: str = "",
-        media_type: str = "",
+        status: str | Iterable[str] = "",
+        interface_type: str | Iterable[str] = "",
+        admin_status: str | Iterable[str] = "",
+        physical_status: str | Iterable[str] = "",
+        protocol_status: str | Iterable[str] = "",
+        media_type: str | Iterable[str] = "",
         sort_by: str = "interface_name",
         sort_order: str = "asc",
         limit: int = 50,
@@ -473,24 +474,15 @@ class DeviceFactRepository:
         clauses = ["device_uuid = ?"]
         params: list[object] = [device_uuid]
         _append_search_clause(clauses, params, search, _INTERFACE_SEARCH_FIELDS)
-        selected_status = str(status or "").strip().casefold()
-        if selected_status:
-            clauses.append("LOWER(TRIM(COALESCE(link_status, ''))) = ?")
-            params.append(selected_status)
-        selected_type = str(interface_type or "").strip().casefold()
-        if selected_type:
-            clauses.append("LOWER(TRIM(COALESCE(interface_type, ''))) = ?")
-            params.append(selected_type)
+        _append_value_filter(clauses, params, "link_status", status)
+        _append_value_filter(clauses, params, "interface_type", interface_type)
         for field, selected in (
             ("admin_status", admin_status),
             ("physical_status", physical_status),
             ("protocol_status", protocol_status),
             ("media_type", media_type),
         ):
-            normalized = str(selected or "").strip().casefold()
-            if normalized:
-                clauses.append(f"LOWER(TRIM(COALESCE({field}, ''))) = ?")
-                params.append(normalized)
+            _append_value_filter(clauses, params, field, selected)
         return self._current_page(
             "device_interfaces",
             "interface_name",
@@ -633,6 +625,27 @@ class DeviceFactRepository:
             sort_order=sort_order,
         )
         return _normalize_optical_rows(rows), total
+
+    def list_optical_modules_all(
+        self,
+        device_uuid: str,
+        *,
+        search: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
+    ) -> list[dict[str, object | None]]:
+        clauses = ["device_uuid = ?"]
+        params: list[object] = [device_uuid]
+        _append_search_clause(clauses, params, search, _OPTICAL_SEARCH_FIELDS)
+        where = " AND ".join(clauses)
+        with self.database.connect() as conn:
+            _register_sort_collations(conn)
+            rows = conn.execute(
+                f"SELECT * FROM device_optical_modules WHERE {where} "
+                f"ORDER BY {_page_order_clause('device_optical_modules', sort_by, sort_order)}",
+                params,
+            ).fetchall()
+        return _normalize_optical_rows([dict(row) for row in rows])
 
     def list_optical_modules_bounded(
         self,
@@ -1454,6 +1467,21 @@ def _append_search_clause(
         + ")"
     )
     params.extend([f"%{escaped}%"] * len(fields))
+
+
+def _append_value_filter(
+    clauses: list[str],
+    params: list[object],
+    field: str,
+    value: str | Iterable[str],
+) -> None:
+    values = (value,) if isinstance(value, str) else value
+    selected = tuple(dict.fromkeys(str(item).strip().casefold() for item in values if str(item).strip()))
+    if not selected:
+        return
+    placeholders = ", ".join("?" for _ in selected)
+    clauses.append(f"LOWER(TRIM(COALESCE({field}, ''))) IN ({placeholders})")
+    params.extend(selected)
 
 
 def _normalize_optical_row(

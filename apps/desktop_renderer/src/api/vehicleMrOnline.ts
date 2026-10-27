@@ -9,18 +9,26 @@ import type {
 const root = '/api/rail-transit/train-online'
 
 export function listVehicleMrOnline(params: {
-  query?: string; overall_status?: string; station?: string; section?: string; data_status?: string
+  query?: string; overall_status?: string | string[]; station?: string; section?: string; data_status?: string | string[]
   unmatched_only?: boolean; page?: number; page_size?: number
 } = {}): Promise<VehicleMrOnlinePage> {
   const query = new URLSearchParams()
-  for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== '') query.set(key, String(value))
+  for (const [key, value] of Object.entries(params)) {
+    if (Array.isArray(value)) {
+      for (const item of value) if (item) query.append(key, item)
+    } else if (value !== undefined && value !== '') query.set(key, String(value))
+  }
   return apiRequest(`${root}/trains?${query}`)
 }
 export const listVehicleMrMappings = (): Promise<VehicleMrTrainMapping[]> => apiRequest(`${root}/mappings`)
 export const listVehicleMrControllers = (): Promise<VehicleMrController[]> => apiRequest(`${root}/controllers`)
 export function listVehicleMrEvents(trainId: string, filters: VehicleMrHistoryFilters = {}): Promise<VehicleMrEventPage> {
   const query = new URLSearchParams()
-  for (const [key, value] of Object.entries(filters)) if (value !== undefined && value !== '') query.set(key, String(value))
+  for (const [key, value] of Object.entries(filters)) {
+    if (Array.isArray(value)) {
+      for (const item of value) if (item) query.append(key, item)
+    } else if (value !== undefined && value !== '') query.set(key, String(value))
+  }
   if (!query.has('limit')) query.set('limit', '200')
   return apiRequest(`${root}/trains/${encodeURIComponent(trainId)}/events?${query}`)
 }

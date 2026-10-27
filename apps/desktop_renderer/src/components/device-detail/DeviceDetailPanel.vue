@@ -16,6 +16,7 @@ import {
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import { useTaskStore } from '../../stores/tasks'
 import NcDataTable from '../table/NcDataTable.vue'
+import NcMultiValueFilter from '../table/NcMultiValueFilter.vue'
 import type { NcColumnValueType, NcTableColumn } from '../table/NcTableColumn'
 import type { TaskStatus } from '../../types/task'
 import type {
@@ -79,15 +80,15 @@ const sectionPages = ref<Partial<Record<Exclude<DeviceDetailSection, 'overview'>
 const sectionCache = new Map<string, DeviceDetailSectionPage>()
 const sectionQuery = reactive({
   search: '',
-  status: '',
-  severity: '',
-  interface_type: '',
-  admin_status: '',
-  physical_status: '',
-  protocol_status: '',
-  media_type: '',
+  status: [] as string[],
+  severity: [] as string[],
+  interface_type: [] as string[],
+  admin_status: [] as string[],
+  physical_status: [] as string[],
+  protocol_status: [] as string[],
+  media_type: [] as string[],
   linked_only: false,
-  snapshot_type: '',
+  snapshot_type: [] as string[],
   sort_by: '',
   sort_order: 'asc' as 'asc' | 'desc',
   page: 1,
@@ -360,6 +361,14 @@ function getSectionFilterOptions(section: DeviceDetailSection): Array<{ label: s
   return sectionFilterOptions[section] ?? []
 }
 
+function filterValues(options: Array<{ label: string; value: string }>): string[] {
+  return options.map((option) => option.value)
+}
+
+function filterLabels(options: Array<{ label: string; value: string }>): Record<string, string> {
+  return Object.fromEntries(options.map((option) => [option.value, option.label]))
+}
+
 const binaryInterfaceStatusOptions = [
   { label: 'Up', value: 'up' },
   { label: 'Down', value: 'down' },
@@ -449,15 +458,15 @@ async function activateSection(name: string | number): Promise<void> {
   if (section === 'overview' || !visibleSections.value.includes(section)) return
   selectedSection.value = section
   sectionQuery.search = ''
-  sectionQuery.status = ''
-  sectionQuery.severity = ''
-  sectionQuery.interface_type = ''
-  sectionQuery.admin_status = ''
-  sectionQuery.physical_status = ''
-  sectionQuery.protocol_status = ''
-  sectionQuery.media_type = ''
+  sectionQuery.status = []
+  sectionQuery.severity = []
+  sectionQuery.interface_type = []
+  sectionQuery.admin_status = []
+  sectionQuery.physical_status = []
+  sectionQuery.protocol_status = []
+  sectionQuery.media_type = []
   sectionQuery.linked_only = false
-  sectionQuery.snapshot_type = ''
+  sectionQuery.snapshot_type = []
   sectionQuery.sort_by = ''
   sectionQuery.sort_order = 'asc'
   sectionQuery.page = 1
@@ -489,15 +498,15 @@ async function loadSection(section = selectedSection.value as Exclude<DeviceDeta
     query.page,
     query.page_size,
     query.search,
-    query.status || '',
-    query.severity || '',
-    query.interface_type || '',
-    query.admin_status || '',
-    query.physical_status || '',
-    query.protocol_status || '',
-    query.media_type || '',
+    Array.isArray(query.status) ? query.status.join(',') : String(query.status || ''),
+    Array.isArray(query.severity) ? query.severity.join(',') : String(query.severity || ''),
+    Array.isArray(query.interface_type) ? query.interface_type.join(',') : String(query.interface_type || ''),
+    Array.isArray(query.admin_status) ? query.admin_status.join(',') : String(query.admin_status || ''),
+    Array.isArray(query.physical_status) ? query.physical_status.join(',') : String(query.physical_status || ''),
+    Array.isArray(query.protocol_status) ? query.protocol_status.join(',') : String(query.protocol_status || ''),
+    Array.isArray(query.media_type) ? query.media_type.join(',') : String(query.media_type || ''),
     query.linked_only ? '1' : '0',
-    query.snapshot_type || '',
+    Array.isArray(query.snapshot_type) ? query.snapshot_type.join(',') : String(query.snapshot_type || ''),
     query.sort_by || '',
     query.sort_order || '',
   ].join('|')
@@ -1300,14 +1309,14 @@ function errorMessage(cause: unknown, fallback: string): string {
               <div class="device-detail-section-pane">
                 <div class="section-toolbar">
                   <el-input v-if="['interfaces', 'optical', 'lldp'].includes(section)" v-model="sectionQuery.search" clearable placeholder="搜索当前分区" @keyup.enter="loadSection(section, true)" />
-                  <el-select v-if="section === 'optical'" v-model="sectionQuery.severity" clearable placeholder="全部严重性" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                  <el-select v-else-if="['interfaces', 'tasks'].includes(section) && getSectionFilterOptions(section).length" v-model="sectionQuery.status" clearable placeholder="全部状态" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                  <el-select v-if="section === 'interfaces'" v-model="sectionQuery.admin_status" clearable placeholder="全部管理状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                  <el-select v-if="section === 'interfaces'" v-model="sectionQuery.physical_status" clearable placeholder="全部物理状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                  <el-select v-if="section === 'interfaces'" v-model="sectionQuery.protocol_status" clearable placeholder="全部协议状态" @change="loadSection(section, true)"><el-option v-for="option in binaryInterfaceStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
-                  <el-select v-if="section === 'interfaces'" v-model="sectionQuery.media_type" clearable placeholder="全部介质类型" @change="loadSection(section, true)"><el-option v-for="option in interfaceMediaOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <NcMultiValueFilter v-if="section === 'optical'" v-model="sectionQuery.severity" :options="filterValues(getSectionFilterOptions(section))" :labels="filterLabels(getSectionFilterOptions(section))" placeholder="全部严重性" @change="loadSection(section, true)" />
+                  <NcMultiValueFilter v-else-if="['interfaces', 'tasks'].includes(section) && getSectionFilterOptions(section).length" v-model="sectionQuery.status" :options="filterValues(getSectionFilterOptions(section))" :labels="filterLabels(getSectionFilterOptions(section))" placeholder="全部状态" @change="loadSection(section, true)" />
+                  <NcMultiValueFilter v-if="section === 'interfaces'" v-model="sectionQuery.admin_status" :options="filterValues(binaryInterfaceStatusOptions)" :labels="filterLabels(binaryInterfaceStatusOptions)" placeholder="全部管理状态" @change="loadSection(section, true)" />
+                  <NcMultiValueFilter v-if="section === 'interfaces'" v-model="sectionQuery.physical_status" :options="filterValues(binaryInterfaceStatusOptions)" :labels="filterLabels(binaryInterfaceStatusOptions)" placeholder="全部物理状态" @change="loadSection(section, true)" />
+                  <NcMultiValueFilter v-if="section === 'interfaces'" v-model="sectionQuery.protocol_status" :options="filterValues(binaryInterfaceStatusOptions)" :labels="filterLabels(binaryInterfaceStatusOptions)" placeholder="全部协议状态" @change="loadSection(section, true)" />
+                  <NcMultiValueFilter v-if="section === 'interfaces'" v-model="sectionQuery.media_type" :options="filterValues(interfaceMediaOptions)" :labels="filterLabels(interfaceMediaOptions)" placeholder="全部介质类型" @change="loadSection(section, true)" />
                   <el-checkbox v-if="section === 'lldp'" v-model="sectionQuery.linked_only" @change="loadSection(section, true)">仅已关联</el-checkbox>
-                  <el-select v-if="section === 'configuration'" v-model="sectionQuery.snapshot_type" clearable placeholder="全部快照" @change="loadSection(section, true)"><el-option v-for="option in getSectionFilterOptions(section)" :key="option.value" :label="option.label" :value="option.value" /></el-select>
+                  <NcMultiValueFilter v-if="section === 'configuration'" v-model="sectionQuery.snapshot_type" :options="filterValues(getSectionFilterOptions(section))" :labels="filterLabels(getSectionFilterOptions(section))" placeholder="全部快照" @change="loadSection(section, true)" />
                   <el-button v-if="section === 'configuration'" :disabled="configurationSelection.length !== 2" @click="compareConfigurationSnapshots">比较选中</el-button>
                   <el-button v-if="section === 'configuration' && savedArtifactCapability" @click="openSavedArtifact(false)">打开 Artifact</el-button>
                   <el-button v-if="section === 'configuration' && savedArtifactCapability" @click="openSavedArtifact(true)">所在目录</el-button>

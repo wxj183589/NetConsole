@@ -103,8 +103,8 @@ class VehicleMrHistoryExportRequestDTO(ApiModel):
     train_id: str
     start_time: str = ""
     end_time: str = ""
-    car_end_label: str = ""
-    status: str = ""
+    car_end_label: str | list[str] = ""
+    status: str | list[str] = ""
     station: str = ""
     ap_name: str = ""
 

@@ -24,6 +24,11 @@ from netconsole.services.ap_identity.normalizers import normalize_mac, normalize
 from netconsole.utils.natural_sort import train_natural_sort_key
 
 
+def _filter_values(value: str | Sequence[str]) -> set[str]:
+    values = (value,) if isinstance(value, str) else value
+    return {str(item).strip() for item in values if str(item).strip()}
+
+
 VEHICLE_INIT_COMMAND = "screen-length disable"
 VEHICLE_SAMPLE_COMMANDS = ("display clock", "display wlan mesh-link ap")
 TRAIN_STATUS_ONLINE = "在线"
@@ -1263,8 +1268,8 @@ class VehicleMrOnlineStore:
         train_identifier: str,
         start_time: str,
         end_time: str,
-        car_end_label: str = "",
-        status: str = "",
+        car_end_label: str | Sequence[str] = "",
+        status: str | Sequence[str] = "",
         station: str = "",
         ap_name: str = "",
         limit: int = 5000,
@@ -1272,12 +1277,14 @@ class VehicleMrOnlineStore:
         train_no = normalize_train_no(train_identifier)
         clauses = ["(train_id = ? OR train_no = ? OR train_display_name = ?)", "event_time >= ?", "event_time <= ?"]
         params: list[object] = [train_identifier, train_no, f"{train_no}车" if train_no else train_identifier, start_time, end_time]
-        if car_end_label:
-            clauses.append("car_end_label = ?")
-            params.append(car_end_label)
-        if status:
-            clauses.append("status = ?")
-            params.append(status)
+        car_end_values = _filter_values(car_end_label)
+        if car_end_values:
+            clauses.append(f"car_end_label IN ({','.join('?' for _ in car_end_values)})")
+            params.extend(sorted(car_end_values))
+        status_values = _filter_values(status)
+        if status_values:
+            clauses.append(f"status IN ({','.join('?' for _ in status_values)})")
+            params.extend(sorted(status_values))
         if station:
             clauses.append("station LIKE ?")
             params.append(f"%{station}%")

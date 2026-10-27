@@ -103,6 +103,13 @@ describe('Ground unattended page', () => {
     expect(source).toContain('.deep-records-container{flex:1;min-height:0;overflow:hidden}')
   })
 
+  it('uses shared multi-value filters for independent Syslog dimensions', () => {
+    expect(source).toContain('NcMultiValueFilter')
+    for (const field of ['syslogFilter.mrRole', 'syslogFilter.eventType', 'syslogFilter.severity', 'syslogFilter.identityStatus', 'syslogFilter.eventFamily', 'syslogFilter.commandSource', 'syslogFilter.physicalState', 'syslogFilter.correlationStatus', 'syslogFilter.correlationConfidence', 'syslogFilter.dataSource']) {
+      expect(source).toContain(`v-model="${field}"`)
+    }
+  })
+
   it('uses the runtime decision reason contract in the train list', () => {
     expect(source).toContain("key: 'participates_in_mainline'")
     expect(source).toContain("row.ping_reason_text || '未评估'")

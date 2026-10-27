@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Protocol
 
 from netconsole.core.database import Database
@@ -32,12 +32,12 @@ class DeviceDetailDataGateway(Protocol):
         device_uuid: str,
         *,
         search: str,
-        status: str,
-        interface_type: str,
-        admin_status: str,
-        physical_status: str,
-        protocol_status: str,
-        media_type: str,
+        status: str | Iterable[str],
+        interface_type: str | Iterable[str],
+        admin_status: str | Iterable[str],
+        physical_status: str | Iterable[str],
+        protocol_status: str | Iterable[str],
+        media_type: str | Iterable[str],
         sort_by: str,
         sort_order: str,
         limit: int,
@@ -58,6 +58,15 @@ class DeviceDetailDataGateway(Protocol):
         limit: int,
         offset: int,
     ) -> tuple[list[dict[str, object | None]], int]: ...
+
+    def list_transceivers_all(
+        self,
+        device_uuid: str,
+        *,
+        search: str,
+        sort_by: str,
+        sort_order: str,
+    ) -> list[dict[str, object | None]]: ...
 
     def get_transceiver(
         self, device_uuid: str, interface_name: str
@@ -158,12 +167,12 @@ class DeviceDetailRepository:
         device_uuid: str,
         *,
         search: str = "",
-        status: str = "",
-        interface_type: str = "",
-        admin_status: str = "",
-        physical_status: str = "",
-        protocol_status: str = "",
-        media_type: str = "",
+        status: str | Iterable[str] = "",
+        interface_type: str | Iterable[str] = "",
+        admin_status: str | Iterable[str] = "",
+        physical_status: str | Iterable[str] = "",
+        protocol_status: str | Iterable[str] = "",
+        media_type: str | Iterable[str] = "",
         sort_by: str = "interface_name",
         sort_order: str = "asc",
         limit: int = 50,
@@ -207,6 +216,21 @@ class DeviceDetailRepository:
             sort_order=sort_order,
             limit=limit,
             offset=offset,
+        )
+
+    def list_transceivers_all(
+        self,
+        device_uuid: str,
+        *,
+        search: str = "",
+        sort_by: str = "interface_name",
+        sort_order: str = "asc",
+    ) -> list[dict[str, object | None]]:
+        return self._facts().list_optical_modules_all(
+            device_uuid,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
     def get_transceiver(

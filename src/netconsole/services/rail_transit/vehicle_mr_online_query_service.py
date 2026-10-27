@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import asdict, replace
 
 from netconsole.core.database import Database
@@ -52,6 +53,11 @@ _REASON_TEXT = {
 }
 
 
+def _filter_values(value: str | Iterable[str]) -> set[str]:
+    values = (value,) if isinstance(value, str) else value
+    return {str(item).strip() for item in values if str(item).strip()}
+
+
 class VehicleMrOnlineQueryService:
     """列车在线页的持久化查询边界。"""
 
@@ -70,21 +76,21 @@ class VehicleMrOnlineQueryService:
         site_id: str,
         *,
         query: str = "",
-        status: str = "",
+        status: str | Iterable[str] = "",
         station: str = "",
         section: str = "",
-        data_status: str = "",
+        data_status: str | Iterable[str] = "",
         unmatched_only: bool = False,
         page: int = 1,
         page_size: int = 50,
     ) -> VehicleMrOnlinePageDTO:
         rows = self._all_trains(site_id)
-        all_rows = list(rows)
         if query:
             needle = query.casefold()
             rows = [row for row in rows if needle in self._search_text(row).casefold()]
-        if status:
-            rows = [row for row in rows if row.overall_status == status]
+        selected_statuses = _filter_values(status)
+        if selected_statuses:
+            rows = [row for row in rows if row.overall_status in selected_statuses]
         if station:
             needle = station.casefold()
             rows = [
@@ -105,11 +111,12 @@ class VehicleMrOnlineQueryService:
                     for value in (row.ct.section_name, row.tc.section_name)
                 )
             ]
-        if data_status:
+        selected_data_statuses = _filter_values(data_status)
+        if selected_data_statuses:
             rows = [
                 row
                 for row in rows
-                if data_status in {row.ct.data_status, row.tc.data_status}
+                if {row.ct.data_status, row.tc.data_status} & selected_data_statuses
             ]
         if unmatched_only:
             rows = [
@@ -128,28 +135,28 @@ class VehicleMrOnlineQueryService:
             site_id=site_id,
             mr_total=sum(
                 bool(endpoint.mr_id)
-                for row in all_rows
+                for row in rows
                 for endpoint in (row.ct, row.tc)
             ),
             both_online_count=sum(
-                row.overall_status == "BOTH_ONLINE" for row in all_rows
+                row.overall_status == "BOTH_ONLINE" for row in rows
             ),
             one_side_online_count=sum(
-                row.overall_status == "ONE_SIDE_ONLINE" for row in all_rows
+                row.overall_status == "ONE_SIDE_ONLINE" for row in rows
             ),
             both_offline_count=sum(
-                row.overall_status == "BOTH_OFFLINE" for row in all_rows
+                row.overall_status == "BOTH_OFFLINE" for row in rows
             ),
-            stale_count=sum(row.overall_status == "STALE" for row in all_rows),
-            unknown_count=sum(row.overall_status == "UNKNOWN" for row in all_rows),
+            stale_count=sum(row.overall_status == "STALE" for row in rows),
+            unknown_count=sum(row.overall_status == "UNKNOWN" for row in rows),
             active_mesh_link_count=sum(
                 endpoint.online_status == "ONLINE" and bool(endpoint.current_ap_name)
-                for row in all_rows
+                for row in rows
                 for endpoint in (row.ct, row.tc)
             ),
             unmatched_ap_count=sum(
                 endpoint.match_status == "UNMATCHED"
-                for row in all_rows
+                for row in rows
                 for endpoint in (row.ct, row.tc)
             ),
         )
@@ -308,8 +315,8 @@ class VehicleMrOnlineQueryService:
         *,
         start_time: str = "",
         end_time: str = "",
-        car_end_label: str = "",
-        status: str = "",
+        car_end_label: str | Iterable[str] = "",
+        status: str | Iterable[str] = "",
         station: str = "",
         ap_name: str = "",
         limit: int = 200,

@@ -18,6 +18,7 @@ import { getOnlineMrSession } from '../../api/onlineMr'
 import { getOnlineMrControlPresets } from '../../api/onlineMrControl'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import NcFloatingWindow from '../../components/workspace/NcFloatingWindow.vue'
 import NcLogWorkspace from '../../components/workspace/NcLogWorkspace.vue'
 import { useAdaptiveTableHeight } from '../../composables/useAdaptiveTableHeight'
@@ -105,9 +106,9 @@ const syslogDeleteLoading = ref(false)
 const syslogDeletePreview = ref<GroundSyslogDeletePreview | null>(null)
 const syslogTimeRange = ref<[Date, Date] | null>(null)
 const syslogFilter = reactive({
-  trainId: '', mrName: '', mrRole: '', sourceIp: '', systemName: '', facility: '', severity: '',
-  identityStatus: '', eventType: '', eventFamily: '', commandSource: '', physicalState: '',
-  correlationStatus: '', correlationConfidence: '', peerName: '', dataSource: '', keyword: '',
+  trainId: '', mrName: '', mrRole: [] as string[], sourceIp: '', systemName: '', facility: '', severity: [] as string[],
+  identityStatus: [] as string[], eventType: [] as string[], eventFamily: [] as string[], commandSource: [] as string[], physicalState: [] as string[],
+  correlationStatus: [] as string[], correlationConfidence: [] as string[], peerName: '', dataSource: [] as string[], keyword: '',
   startTime: '', endTime: '', page: 1, pageSize: 100,
 })
 const localIpv4Addresses = ref<LocalIpv4Address[]>([])
@@ -493,10 +494,13 @@ async function latestRequest<T>(
   requestPromises.set(key, promise)
   return promise
 }
-const loadStatus = (silent = true) => latestRequest('status', '运行状态', (signal) => getGroundStatus({ signal }), (value) => {
+const loadStatus = (silent = true) => {
+  lastPollAt.set('status', Date.now())
+  return latestRequest('status', '运行状态', (signal) => getGroundStatus({ signal }), (value) => {
   status.value = value
   if (!selectedRunId.value) selectedRunId.value = value.active_run_id || value.latest_run_id
-}, silent)
+  }, silent)
+}
 const loadProfile = (silent = true) => latestRequest('profile', '无人值守配置', (signal) => getGroundProfile({ signal }), (value) => { profile.value = value }, silent)
 const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signal) => listGroundRuns({ signal }), (value) => {
   runs.value = value.items
@@ -2023,11 +2027,9 @@ onBeforeUnmount(() => {
             <div class="toolbar log-filter-grid syslog-common-filters">
               <el-input v-model="syslogFilter.trainId" clearable placeholder="列车 ID" />
               <el-input v-model="syslogFilter.mrName" clearable placeholder="MR 设备名称" />
-              <el-select v-model="syslogFilter.mrRole" clearable placeholder="CT/CW"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
+              <NcMultiValueFilter v-model="syslogFilter.mrRole" :options="['CT', 'CW']" placeholder="CT/CW" />
               <el-input v-model="syslogFilter.sourceIp" clearable placeholder="来源 IP" />
-              <el-select v-model="syslogFilter.eventType" clearable placeholder="原始事件">
-                <el-option v-for="value in ['MESH_LINKUP', 'MESH_LINKDOWN', 'MESH_ACTIVELINK_SWITCH', 'IFNET_PHY_UPDOWN', 'CFGMAN_CFGCHANGED']" :key="value" :label="groundEventLabel(value)" :value="value" />
-              </el-select>
+              <NcMultiValueFilter v-model="syslogFilter.eventType" :options="['MESH_LINKUP', 'MESH_LINKDOWN', 'MESH_ACTIVELINK_SWITCH', 'IFNET_PHY_UPDOWN', 'CFGMAN_CFGCHANGED']" :labels="Object.fromEntries(['MESH_LINKUP', 'MESH_LINKDOWN', 'MESH_ACTIVELINK_SWITCH', 'IFNET_PHY_UPDOWN', 'CFGMAN_CFGCHANGED'].map((value) => [value, groundEventLabel(value)]))" placeholder="原始事件" />
               <el-input v-model="syslogFilter.peerName" clearable placeholder="AP 名称或 MAC" />
               <el-date-picker v-model="syslogTimeRange" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
               <el-button @click="syslogAdvancedFiltersOpen = !syslogAdvancedFiltersOpen">
@@ -2040,30 +2042,14 @@ onBeforeUnmount(() => {
               <div v-show="syslogAdvancedFiltersOpen" class="toolbar log-filter-grid syslog-advanced-filters">
                 <el-input v-model="syslogFilter.systemName" clearable placeholder="system_name" />
                 <el-input v-model="syslogFilter.facility" clearable placeholder="Facility" />
-                <el-select v-model="syslogFilter.severity" clearable placeholder="严重级别">
-                  <el-option label="提示" value="info" /><el-option label="警告" value="warning" /><el-option label="错误" value="error" />
-                </el-select>
-                <el-select v-model="syslogFilter.identityStatus" clearable placeholder="身份状态">
-                  <el-option label="身份已确认" value="VERIFIED" /><el-option label="来源未识别" value="UNIDENTIFIED" /><el-option label="身份冲突" value="IDENTITY_CONFLICT" />
-                </el-select>
-                <el-select v-model="syslogFilter.eventFamily" clearable placeholder="事件族">
-                  <el-option label="WMESH" value="WMESH" /><el-option label="IFNET" value="IFNET" /><el-option label="CFGMAN" value="CFGMAN" />
-                </el-select>
-                <el-select v-model="syslogFilter.commandSource" clearable placeholder="控制来源">
-                  <el-option label="SNMP" value="snmp" /><el-option label="CLI" value="cli" /><el-option label="NETCONF" value="netconf" />
-                </el-select>
-                <el-select v-model="syslogFilter.physicalState" clearable placeholder="射频状态">
-                  <el-option label="开启" value="UP" /><el-option label="关闭" value="DOWN" />
-                </el-select>
-                <el-select v-model="syslogFilter.correlationStatus" clearable placeholder="关联状态">
-                  <el-option label="已关联" value="CORRELATED" /><el-option label="未关联" value="UNCORRELATED" />
-                </el-select>
-                <el-select v-model="syslogFilter.correlationConfidence" clearable placeholder="关联置信度">
-                  <el-option label="高置信度" value="HIGH" /><el-option label="中置信度" value="MEDIUM" />
-                </el-select>
-                <el-select v-model="syslogFilter.dataSource" clearable placeholder="数据来源">
-                  <el-option label="活动原始文件" value="ACTIVE" /><el-option label="READY 归档" value="ARCHIVE" />
-                </el-select>
+                <NcMultiValueFilter v-model="syslogFilter.severity" :options="['info', 'warning', 'error']" :labels="{ info: '提示', warning: '警告', error: '错误' }" placeholder="严重级别" />
+                <NcMultiValueFilter v-model="syslogFilter.identityStatus" :options="['VERIFIED', 'UNIDENTIFIED', 'IDENTITY_CONFLICT']" :labels="{ VERIFIED: '身份已确认', UNIDENTIFIED: '来源未识别', IDENTITY_CONFLICT: '身份冲突' }" placeholder="身份状态" />
+                <NcMultiValueFilter v-model="syslogFilter.eventFamily" :options="['WMESH', 'IFNET', 'CFGMAN']" placeholder="事件族" />
+                <NcMultiValueFilter v-model="syslogFilter.commandSource" :options="['snmp', 'cli', 'netconf']" :labels="{ snmp: 'SNMP', cli: 'CLI', netconf: 'NETCONF' }" placeholder="控制来源" />
+                <NcMultiValueFilter v-model="syslogFilter.physicalState" :options="['UP', 'DOWN']" :labels="{ UP: '开启', DOWN: '关闭' }" placeholder="射频状态" />
+                <NcMultiValueFilter v-model="syslogFilter.correlationStatus" :options="['CORRELATED', 'UNCORRELATED']" :labels="{ CORRELATED: '已关联', UNCORRELATED: '未关联' }" placeholder="关联状态" />
+                <NcMultiValueFilter v-model="syslogFilter.correlationConfidence" :options="['HIGH', 'MEDIUM']" :labels="{ HIGH: '高置信度', MEDIUM: '中置信度' }" placeholder="关联置信度" />
+                <NcMultiValueFilter v-model="syslogFilter.dataSource" :options="['ACTIVE', 'ARCHIVE']" :labels="{ ACTIVE: '活动原始文件', ARCHIVE: 'READY 归档' }" placeholder="数据来源" />
                 <el-input v-model="syslogFilter.keyword" clearable placeholder="原始内容关键字" />
               </div>
             </el-collapse-transition>

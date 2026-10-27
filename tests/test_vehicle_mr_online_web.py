@@ -106,6 +106,17 @@ def test_vehicle_mr_query_maps_persisted_ct_tc_state(monkeypatch, tmp_path: Path
     assert page.items[0].tc.match_status == "UNMATCHED"
     assert service.get_train("demo", "train-1") == page.items[0]
     assert service.list_trains("demo", unmatched_only=True).items == [page.items[0]]
+    filtered = service.list_trains(
+        "demo",
+        status=["BOTH_ONLINE", "BOTH_OFFLINE"],
+        data_status=["FRESH"],
+        page=2,
+        page_size=1,
+    )
+    assert filtered.total == 2
+    assert [item.train_id for item in filtered.items] == ["train-2"]
+    assert filtered.both_online_count == 1
+    assert filtered.both_offline_count == 1
     assert service.list_mappings("demo")[0].tc2_peer_name == "MR-TC"
     assert service.list_events("demo", "train-1").items[0]["ap_name"] == "AP-CT"
 

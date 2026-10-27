@@ -367,12 +367,12 @@ def device_interfaces(
     request: Request,
     device_uuid: str,
     search: str = Query(default="", max_length=200),
-    status_filter: str = Query(default="", alias="status", max_length=40),
-    interface_type: str = Query(default="", max_length=40),
-    admin_status: str = Query(default="", max_length=40),
-    physical_status: str = Query(default="", max_length=40),
-    protocol_status: str = Query(default="", max_length=40),
-    media_type: str = Query(default="", max_length=40),
+    status_filter: list[str] | None = Query(default=None, alias="status"),
+    interface_type: list[str] | None = Query(default=None),
+    admin_status: list[str] | None = Query(default=None),
+    physical_status: list[str] | None = Query(default=None),
+    protocol_status: list[str] | None = Query(default=None),
+    media_type: list[str] | None = Query(default=None),
     sort_by: str = Query(
         default="interface_name",
         pattern="^(interface_name|link_status|admin_status|physical_status|protocol_status|speed|duplex|media_type|category|port_mode|pvid|description|collected_at)$",
@@ -385,12 +385,12 @@ def device_interfaces(
         lambda: _detail_service(request).interfaces(
             device_uuid,
             search=search,
-            status=status_filter,
-            interface_type=interface_type,
-            admin_status=admin_status,
-            physical_status=physical_status,
-            protocol_status=protocol_status,
-            media_type=media_type,
+            status=status_filter or "",
+            interface_type=interface_type or "",
+            admin_status=admin_status or "",
+            physical_status=physical_status or "",
+            protocol_status=protocol_status or "",
+            media_type=media_type or "",
             sort_by=sort_by,
             sort_order=sort_order,
             page=page,
@@ -427,10 +427,7 @@ def device_transceivers(
     request: Request,
     device_uuid: str,
     search: str = Query(default="", max_length=200),
-    severity: str = Query(
-        default="",
-        pattern="^(|normal|notice|warning|alarm|link_abnormal|no_light|no_module|unknown)$",
-    ),
+    severity: list[str] | None = Query(default=None),
     sort_by: str = Query(
         default="interface_name",
         pattern="^(interface_name|rx_power|tx_power|temperature|voltage|bias_current|module_model|module_serial_number|module_vendor|wavelength|transmission_distance|connector_type|collected_at)$",
@@ -443,7 +440,7 @@ def device_transceivers(
         lambda: _detail_service(request).transceivers(
             device_uuid,
             search=search,
-            severity=severity,
+            severity=severity or "",
             sort_by=sort_by,
             sort_order=sort_order,
             page=page,
@@ -495,14 +492,14 @@ def device_lldp(
 def device_config_snapshots(
     request: Request,
     device_uuid: str,
-    snapshot_type: str = Query(default="", pattern="^(|running|saved|diff)$"),
+    snapshot_type: list[str] | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> DeviceConfigSnapshotPageDTO:
     return _not_found(
         lambda: _detail_service(request).config_snapshots(
             device_uuid,
-            snapshot_type=snapshot_type,
+            snapshot_type=snapshot_type or "",
             page=page,
             page_size=page_size,
         ),
@@ -519,18 +516,14 @@ def device_config_snapshots(
 def device_detail_tasks(
     request: Request,
     device_uuid: str,
-    task_status: str = Query(
-        default="",
-        alias="status",
-        pattern="^(|PENDING|STARTING|RUNNING|STOPPING|COMPLETED|FAILED|CANCELLED)$",
-    ),
+    task_status: list[str] | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
 ) -> DeviceDetailTaskPageDTO:
     return _not_found(
         lambda: _detail_service(request).tasks(
             device_uuid,
-            status=task_status,
+            status=task_status or "",
             page=page,
             page_size=page_size,
         ),

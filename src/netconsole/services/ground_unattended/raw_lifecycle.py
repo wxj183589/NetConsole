@@ -32,6 +32,16 @@ _ACTIVE_RUN_STATES = {
     "ARCHIVING",
     "ERROR",
 }
+
+
+def _filter_values(value: object) -> tuple[str, ...]:
+    if isinstance(value, str):
+        values = (value,)
+    elif isinstance(value, Iterable):
+        values = value
+    else:
+        values = ()
+    return tuple(dict.fromkeys(str(item).strip().casefold() for item in values if str(item).strip()))
 _REWRITABLE_FILE_STATES = {"CLOSED", "RECOVERED", "PENDING"}
 _OPERATION_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _REWRITE_JOURNAL_VERSION = 1
@@ -944,8 +954,8 @@ def _matches_delete_scope(
         "peer_name",
         "data_source",
     ):
-        expected = str(filters.get(field) or "").casefold()
-        if not expected:
+        expected_values = _filter_values(filters.get(field))
+        if not expected_values:
             continue
         if field == "train_id":
             actual = canonical_train_id_for(record.get(field)).casefold()
@@ -961,7 +971,7 @@ def _matches_delete_scope(
             actual = "active"
         else:
             actual = str(record.get(field) or "").casefold()
-        if expected not in actual:
+        if not any(expected in actual for expected in expected_values):
             return False
     mr_id = str(filters.get("mr_id") or "").casefold()
     if mr_id and mr_id not in str(

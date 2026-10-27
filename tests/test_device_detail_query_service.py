@@ -549,8 +549,12 @@ def test_optical_severity_filter_keeps_natural_order_across_pages(
     second = query.transceivers(
         str(h3c.device_uuid), severity="warning", page=2, page_size=4
     )
+    multi_value = query.transceivers(
+        str(h3c.device_uuid), severity=["warning"], page=1, page_size=20
+    )
 
     assert first.total == second.total == 7
+    assert multi_value.total == 7
     assert [item.interface_name for item in [*first.items, *second.items]] == [
         "gei-0/3/0/1",
         "gei-0/3/0/2",
@@ -965,7 +969,7 @@ def test_device_fact_platform_conflict_fails_closed_for_capability_and_start(
     assert skipped.reason_code == "UNSUPPORTED_COMMAND_PROFILE"
 
 
-def test_severity_filter_reports_bounded_transceiver_scan(
+def test_severity_filter_applies_before_pagination_without_scan_truncation(
     tmp_path: Path,
 ) -> None:
     query, _operation, _adapter, h3c, _huawei, _ac = _fixture(tmp_path)
@@ -988,9 +992,9 @@ def test_severity_filter_reports_bounded_transceiver_scan(
         str(h3c.device_uuid), severity="normal", page=1, page_size=10
     )
 
-    assert severity_page.truncated is True
-    assert severity_page.total == 1000
-    assert severity_page.source.reason is not None
+    assert severity_page.truncated is False
+    assert severity_page.total == 1001
+    assert severity_page.source.reason is None
 
 
 def test_tasks_config_and_business_dtos_redact_paths_and_secrets(tmp_path: Path) -> None:

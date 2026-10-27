@@ -31,6 +31,20 @@ vi.mock('../../api/deviceManagement', () => ({
   getDeviceInterfaceDetail: mocks.getDeviceInterfaceDetail,
   refreshDeviceDetails: mocks.refreshDeviceDetails,
 }))
+vi.mock('../table/NcMultiValueFilter.vue', () => ({
+  default: defineComponent({
+    props: {
+      modelValue: { type: Array, default: () => [] },
+      options: { type: Array, default: () => [] },
+      labels: { type: Object, default: () => ({}) },
+      placeholder: { type: String, default: '' },
+    },
+    emits: ['update:modelValue', 'change'],
+    setup(_props, { attrs }) {
+      return () => h('div', { 'data-testid': 'multi-value-filter', ...attrs })
+    },
+  }),
+}))
 vi.mock('../../stores/tasks', () => ({ useTaskStore: () => mocks.taskStore }))
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.routerPush }) }))
 vi.mock('../../platform/runtime', () => ({

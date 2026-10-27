@@ -496,6 +496,11 @@ def test_raw_query_filters_control_events_and_correlation(
         event_family="CFGMAN",
         cfg_command_source="snmp",
     )
+    multi_value = query.syslog_records(
+        **common,
+        event_family=["CFGMAN", "IFNET"],
+        cfg_command_source=["snmp", "cli"],
+    )
 
     assert correlated["total"] == high["total"] == 2
     assert {
@@ -506,6 +511,8 @@ def test_raw_query_filters_control_events_and_correlation(
     assert impossible["total"] == 0
     assert cfgman_snmp["total"] == 1
     assert cfgman_snmp["items"][0]["event_type"] == "CFGMAN_CFGCHANGED"
+    assert multi_value["total"] == 2
+    assert {item["cfg_command_source"] for item in multi_value["items"]} == {"snmp", "cli"}
 
     application = GroundUnattendedApplicationService(
         PathResolver(tmp_path / "app", tmp_path / "data"),

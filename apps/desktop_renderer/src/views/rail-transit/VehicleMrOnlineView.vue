@@ -23,6 +23,7 @@ import {
   stopVehicleMrCollection,
 } from '../../api/vehicleMrOnline'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import NcOverflowTooltip from '../../components/table/NcOverflowTooltip.vue'
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
 import { isFeatureEnabled } from '../../features'
@@ -56,13 +57,13 @@ const controllers = ref<VehicleMrController[]>([])
 const selectedControllerId = ref('')
 const collectionInterval = ref(10)
 const historyRange = ref<[string, string] | []>([])
-const historyFilters = reactive({ car_end_label: '', event_status: '', station: '', ap_name: '' })
+const historyFilters = reactive({ car_end_label: [] as string[], event_status: [] as string[], station: '', ap_name: '' })
 const mappingImportInput = ref<HTMLInputElement | null>(null)
 const mappingDuplicateStrategy = ref<'replace' | 'skip' | 'error'>('replace')
 const mappingPreview = ref<VehicleMrMappingPreview | null>(null)
 const mappingPreviewVisible = ref(false)
 const filters = reactive({
-  query: '', overall_status: '', station: '', section: '', data_status: '', unmatched_only: false,
+  query: '', overall_status: [] as string[], station: '', section: '', data_status: [] as string[], unmatched_only: false,
   page: 1, page_size: 50,
 })
 let pollTimer: number | undefined
@@ -218,7 +219,7 @@ async function openDetail(row: VehicleMrTrainState): Promise<void> {
   } catch (reason) { error.value = failure(reason, '列车通信详情加载失败') }
   finally { loading.value = false }
 }
-function resetHistory(): void { historyRange.value = []; historyFilters.car_end_label = ''; historyFilters.event_status = ''; historyFilters.station = ''; historyFilters.ap_name = ''; void loadEvents() }
+function resetHistory(): void { historyRange.value = []; historyFilters.car_end_label = []; historyFilters.event_status = []; historyFilters.station = ''; historyFilters.ap_name = ''; void loadEvents() }
 async function exportHistory(): Promise<void> {
   if (!selectedTrain.value) return
   loading.value = true
@@ -333,7 +334,7 @@ onBeforeUnmount(stopPolling)
       <article><span>有效 Mesh-Link</span><strong>{{ page.active_mesh_link_count }}</strong></article>
       <article><span>未匹配轨旁 AP</span><strong>{{ page.unmatched_ap_count }}</strong></article>
     </div>
-    <div class="content-card"><div class="toolbar"><el-input v-model="filters.query" clearable placeholder="列车 / MR / AP / 站点" @keyup.enter="loadTrains(true)" /><el-select v-model="filters.overall_status" clearable placeholder="综合状态"><el-option v-for="value in ['BOTH_ONLINE','ONE_SIDE_ONLINE','BOTH_OFFLINE','STALE','UNKNOWN']" :key="value" :label="statusText[value]" :value="value" /></el-select><el-input v-model="filters.station" clearable placeholder="站点" /><el-input v-model="filters.section" clearable placeholder="区间" /><el-select v-model="filters.data_status" clearable placeholder="数据状态"><el-option label="最新" value="FRESH" /><el-option label="过期" value="STALE" /><el-option label="无数据" value="NO_DATA" /><el-option label="错误" value="ERROR" /></el-select><el-checkbox v-model="filters.unmatched_only">只看未匹配</el-checkbox><el-button type="primary" @click="loadTrains(true)">查询</el-button></div>
+    <div class="content-card"><div class="toolbar"><el-input v-model="filters.query" clearable placeholder="列车 / MR / AP / 站点" @keyup.enter="loadTrains(true)" /><NcMultiValueFilter v-model="filters.overall_status" :options="['BOTH_ONLINE','ONE_SIDE_ONLINE','BOTH_OFFLINE','STALE','UNKNOWN']" :labels="statusText" placeholder="综合状态" /><el-input v-model="filters.station" clearable placeholder="站点" /><el-input v-model="filters.section" clearable placeholder="区间" /><NcMultiValueFilter v-model="filters.data_status" :options="['FRESH','STALE','NO_DATA','ERROR']" :labels="{ FRESH: '最新', STALE: '过期', NO_DATA: '无数据', ERROR: '错误' }" placeholder="数据状态" /><el-checkbox v-model="filters.unmatched_only">只看未匹配</el-checkbox><el-button type="primary" @click="loadTrains(true)">查询</el-button></div>
       <NcDataTable v-loading="loading" table-id="rail-vehicle-mr-online-trains" route-key="/rail-transit/train-online" :data="page?.items || []" :columns="trainColumns" height="calc(100vh - 480px)" empty-text="暂无列车在线状态" highlight-current-row @current-change="(row: VehicleMrTrainState | undefined) => selectedTrain = row || null" @row-dblclick="openDetail">
         <template #cell-overall_status="{ row }"><el-tag :type="statusType(row.overall_status)">{{ statusText[row.overall_status] }}</el-tag></template>
         <template #cell-ct_ap="{ row }"><NcOverflowTooltip :text="display(row.ct.current_ap_name)">{{ display(row.ct.current_ap_name) }}</NcOverflowTooltip></template>
@@ -371,7 +372,7 @@ onBeforeUnmount(stopPolling)
         </div>
       </div>
       <h3>最近状态变化</h3>
-      <div class="history-toolbar"><el-date-picker v-model="historyRange" type="datetimerange" value-format="YYYY-MM-DD HH:mm:ss" start-placeholder="开始时间" end-placeholder="结束时间" /><el-select v-model="historyFilters.car_end_label" clearable placeholder="全部端别"><el-option label="TC1" value="TC1" /><el-option label="TC2" value="TC2" /></el-select><el-select v-model="historyFilters.event_status" clearable placeholder="全部状态"><el-option label="在线" value="在线" /><el-option label="离线" value="离线" /></el-select><el-input v-model="historyFilters.station" clearable placeholder="车站" /><el-input v-model="historyFilters.ap_name" clearable placeholder="轨旁 AP" /><el-button type="primary" :loading="loading" @click="loadEvents">查询</el-button><el-button @click="resetHistory">重置</el-button><el-button :disabled="!isFeatureEnabled('capability.train_online.history_export') || taskRunning" @click="exportHistory">导出</el-button></div>
+      <div class="history-toolbar"><el-date-picker v-model="historyRange" type="datetimerange" value-format="YYYY-MM-DD HH:mm:ss" start-placeholder="开始时间" end-placeholder="结束时间" /><NcMultiValueFilter v-model="historyFilters.car_end_label" :options="['TC1','TC2']" placeholder="全部端别" /><NcMultiValueFilter v-model="historyFilters.event_status" :options="['在线','离线']" placeholder="全部状态" /><el-input v-model="historyFilters.station" clearable placeholder="车站" /><el-input v-model="historyFilters.ap_name" clearable placeholder="轨旁 AP" /><el-button type="primary" :loading="loading" @click="loadEvents">查询</el-button><el-button @click="resetHistory">重置</el-button><el-button :disabled="!isFeatureEnabled('capability.train_online.history_export') || taskRunning" @click="exportHistory">导出</el-button></div>
       <NcDataTable table-id="rail-vehicle-mr-online-history" route-key="/rail-transit/train-online" :data="events" :columns="eventColumns" :show-column-settings="false" :stripe="false" border height="360" empty-text="暂无经过历史" />
     </el-drawer>
     <el-dialog v-model="mappingVisible" title="列车 MR 映射表" width="min(1150px, 96vw)" destroy-on-close><div class="mapping-toolbar"><el-select v-model="mappingDuplicateStrategy" style="width:150px"><el-option label="重复时覆盖" value="replace" /><el-option label="重复时跳过" value="skip" /><el-option label="重复时报错" value="error" /></el-select><input ref="mappingImportInput" class="hidden" type="file" accept=".xlsx,.csv" @change="chooseMappingImport"><el-button :disabled="!isFeatureEnabled('capability.train_online.mapping_import')" @click="mappingImportInput?.click()">导入并预览</el-button><el-button :disabled="!isFeatureEnabled('capability.train_online.mapping_export')" @click="exportMappingTemplate">导出模板</el-button><el-button @click="loadMappings">刷新</el-button></div><NcDataTable table-id="rail-vehicle-mr-online-mappings" route-key="/rail-transit/train-online" :data="mappings" :columns="mappingColumns" :show-column-settings="false" :stripe="false" border height="520"><template #cell-enabled="{ row }"><el-checkbox v-model="row.enabled" /></template><template #cell-train_display_name="{ row }"><el-input v-model="row.train_display_name" /></template><template #cell-tc1_peer_name="{ row }"><el-input v-model="row.tc1_peer_name" /></template><template #cell-tc2_peer_name="{ row }"><el-input v-model="row.tc2_peer_name" /></template><template #cell-online_policy="{ row }"><el-select v-model="row.online_policy"><el-option label="自动/未知" value="auto" /><el-option label="单端在线-尾端在线" value="single_tail" /><el-option label="双端在线" value="dual_active" /><el-option label="TC1 固定在线" value="single_tc1" /><el-option label="TC2 固定在线" value="single_tc2" /></el-select></template><template #cell-remark="{ row }"><el-input v-model="row.remark" /></template><template #cell-actions="{ $index }"><el-button link type="danger" @click="deleteMapping($index)">删除</el-button></template></NcDataTable><template #footer><el-button @click="addMapping">新增</el-button><el-button @click="mappingVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('capability.train_online.mapping_write')" @click="saveMappings">保存映射</el-button></template></el-dialog>
