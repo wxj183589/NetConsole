@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h, KeepAlive, nextTick, ref, useAttrs, type Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -2431,7 +2431,7 @@ describe('Mesh analysis detail behavior', () => {
     })
 
     const radioFilter = switchPane.findAllComponents(NcMultiValueFilter)
-      .find((filter) => filter.props('placeholder') === '全部 Radio')!
+      .find((filter: VueWrapper<any>) => filter.props('placeholder') === '全部 Radio')!
     await radioFilter.vm.$emit('update:modelValue', ['1'])
     await radioFilter.vm.$emit('change', ['1'])
     await flushPromises()
@@ -2443,7 +2443,7 @@ describe('Mesh analysis detail behavior', () => {
     })
 
     const resultFilter = switchPane.findAllComponents(NcMultiValueFilter)
-      .find((filter) => filter.props('placeholder') === '全部切换分类')!
+      .find((filter: VueWrapper<any>) => filter.props('placeholder') === '全部切换分类')!
     await resultFilter.vm.$emit('update:modelValue', ['pingpong'])
     await resultFilter.vm.$emit('change', ['pingpong'])
     await flushPromises()
