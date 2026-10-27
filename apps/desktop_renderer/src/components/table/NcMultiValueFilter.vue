@@ -6,19 +6,25 @@ const props = withDefaults(defineProps<{
   options: readonly string[]
   placeholder?: string
   disabled?: boolean
+  allowCustom?: boolean
   labels?: Readonly<Record<string, string>>
-}>(), { placeholder: '全部', disabled: false })
+}>(), { placeholder: '全部', disabled: false, allowCustom: false })
 const emit = defineEmits<{ 'update:modelValue': [values: string[]]; change: [values: string[]] }>()
 
 const visible = ref(false)
 const search = ref('')
 const draft = ref<string[]>([])
-const uniqueOptions = computed(() => [...new Set(props.options.filter(Boolean))])
+const customOptions = ref<string[]>([])
+const uniqueOptions = computed(() => [...new Set([...props.options, ...props.modelValue, ...customOptions.value].filter(Boolean))])
 const matchingOptions = computed(() => uniqueOptions.value.filter((option) => (
   (props.labels?.[option] || option).toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())
   || option.toLocaleLowerCase().includes(search.value.trim().toLocaleLowerCase())
 )))
 const selectedCount = computed(() => props.modelValue.length || uniqueOptions.value.length)
+const customCandidate = computed(() => search.value.trim())
+const canCreate = computed(() => props.allowCustom && customCandidate.value.length <= 200
+  && Boolean(customCandidate.value) && !uniqueOptions.value.includes(customCandidate.value)
+  && uniqueOptions.value.length < 100)
 const caption = computed(() => {
   if (!props.modelValue.length) return props.placeholder
   if (props.modelValue.length === 1) return props.labels?.[props.modelValue[0]] || props.modelValue[0]
@@ -42,6 +48,14 @@ function invertVisible(): void {
   }
   draft.value = [...selected]
 }
+function addCustom(): void {
+  if (!canCreate.value) return
+  const value = customCandidate.value
+  customOptions.value = [...customOptions.value, value]
+  // When the initial state means “all”, adding a custom value selects only it.
+  draft.value = props.modelValue.length ? [...new Set([...draft.value, value])] : [value]
+  search.value = ''
+}
 function apply(): void {
   const selected = uniqueOptions.value.filter((option) => draft.value.includes(option))
   if (!selected.length) return
@@ -63,6 +77,7 @@ function apply(): void {
     </template>
     <div class="nc-multi-value-filter__panel">
       <el-input v-model="search" size="small" clearable placeholder="搜索选项" aria-label="搜索选项" />
+      <el-button v-if="canCreate" link size="small" class="nc-multi-value-filter__create" @click="addCustom">添加自定义值：{{ customCandidate }}</el-button>
       <div class="nc-multi-value-filter__actions">
         <el-button link size="small" @click="selectVisible">全选</el-button>
         <el-button link size="small" @click="invertVisible">反选</el-button>

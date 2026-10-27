@@ -510,6 +510,12 @@ class DeviceExportRequestDTO(ApiModel):
         "all", "phase_1", "phase_2", "phase_3", "other", "unspecified"
     ] = "all"
     work_scope_status: Literal["all", "included", "excluded"] = "included"
+    group_values: list[str] = Field(default_factory=list, max_length=100)
+    vendor_values: list[str] = Field(default_factory=list, max_length=100)
+    device_type_values: list[str] = Field(default_factory=list, max_length=100)
+    project_phase_values: list[str] = Field(default_factory=list, max_length=100)
+    work_scope_status_values: list[str] = Field(default_factory=list, max_length=100)
+    connection_status_values: list[str] = Field(default_factory=list, max_length=6)
     include_credentials: bool = False
 
 

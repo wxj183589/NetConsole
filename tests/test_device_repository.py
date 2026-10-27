@@ -44,6 +44,47 @@ def test_device_repository_crud_search_and_filters(tmp_path):
     assert repository.list() == []
 
 
+def test_device_repository_multiselect_filters_use_or_within_column_and_and_between_columns(tmp_path):
+    repository = make_repository(tmp_path)
+    groups = DeviceGroupRepository(repository.database, "demo")
+    first_group = groups.create("车站")
+    second_group = groups.create("控制中心")
+    records = [
+        repository.create(Device(name="H3C-Station", primary_address="192.0.2.11", group_id=first_group.id,
+                                 device_vendor="H3C", device_type="SW", project_phase="phase_1", work_scope_status="included")),
+        repository.create(Device(name="ZTE-Center", primary_address="192.0.2.12", group_id=second_group.id,
+                                 device_vendor="ZTE", device_type="AC", project_phase="phase_2", work_scope_status="excluded")),
+        repository.create(Device(name="H3C-Ungrouped", primary_address="192.0.2.13",
+                                 device_vendor="H3C", device_type="AC", project_phase="phase_2", work_scope_status="included")),
+    ]
+
+    def uuids(**filters):
+        return {device.device_uuid for device in repository.list(**filters)}
+
+    assert uuids(vendor_values=["H3C", "ZTE"], device_type_values=["AC"]) == {
+        records[1].device_uuid, records[2].device_uuid,
+    }
+    assert uuids(group_values=[str(first_group.id), "__ungrouped__"],
+                 work_scope_status_values=["included"]) == {
+        records[0].device_uuid, records[2].device_uuid,
+    }
+    assert uuids(project_phase_values=["phase_1", "phase_2"],
+                 vendor_values=["ZTE"], work_scope_status_values=["excluded"]) == {
+        records[1].device_uuid,
+    }
+    assert uuids(group_values=[str(second_group.id)], vendor_values=["H3C"]) == set()
+
+
+def test_device_repository_rejects_invalid_multiselect_filter_values(tmp_path):
+    repository = make_repository(tmp_path)
+    import pytest
+
+    with pytest.raises(ValueError, match="分组筛选值无效"):
+        repository.list(group_values=["0 OR 1=1"])
+    with pytest.raises(ValueError, match="100"):
+        repository.list(vendor_values=[str(value) for value in range(101)])
+
+
 def test_device_repository_backup_is_consistent(tmp_path):
     repository = make_repository(tmp_path)
     created = repository.create(

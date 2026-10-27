@@ -188,6 +188,12 @@ export interface AcFitApResourceExportFilters {
   section?: string
   model?: string
   switch?: string
+  statuses?: string[]
+  stations?: string[]
+  sections?: string[]
+  models?: string[]
+  switches?: string[]
+  optical_statuses?: string[]
 }
 
 export function startAcFitApResourceExport(

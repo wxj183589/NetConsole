@@ -644,8 +644,14 @@ export interface DeviceListQuery {
   vendor?: DeviceVendor | ''
   group_filter?: number | '__ungrouped__'
   connection_status?: DeviceConnectionStatus | ''
+  connection_status_values?: string[]
   project_phase?: ProjectPhase | 'all'
   work_scope_status?: WorkScopeStatus | 'all'
+  group_values?: string[]
+  vendor_values?: string[]
+  device_type_values?: string[]
+  project_phase_values?: string[]
+  work_scope_status_values?: string[]
   page?: number
   page_size?: number
   sort_by?: DeviceListSortField
@@ -658,8 +664,14 @@ export interface DeviceManagementQueryState {
   vendor: DeviceVendor | ''
   device_type: string
   connection_status: DeviceConnectionStatus | ''
+  connection_status_values: string[]
   project_phase: ProjectPhase | 'all'
   work_scope_status: WorkScopeStatus | 'all'
+  group_values: string[]
+  vendor_values: string[]
+  device_type_values: string[]
+  project_phase_values: string[]
+  work_scope_status_values: string[]
   sort_by: DeviceListSortField
   sort_order: 'asc' | 'desc'
   page: number

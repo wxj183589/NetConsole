@@ -399,8 +399,14 @@ class DeviceManagementWebService:
         device_type: str = "",
         vendor: str = "",
         connection_status: str = "",
+        connection_status_values: list[str] | None = None,
         project_phase: str = "all",
         work_scope_status: str = "included",
+        group_values: list[str] | None = None,
+        vendor_values: list[str] | None = None,
+        device_type_values: list[str] | None = None,
+        project_phase_values: list[str] | None = None,
+        work_scope_status_values: list[str] | None = None,
         page: int = 1,
         page_size: int = 10,
         sort_by: str = DEVICE_DEFAULT_SORT_FIELD,
@@ -423,12 +429,18 @@ class DeviceManagementWebService:
                 group_filter="__ungrouped__" if ungrouped else group_id,
                 project_phase=project_phase,
                 work_scope_status=work_scope_status,
+                group_values=group_values,
+                vendor_values=vendor_values,
+                device_type_values=device_type_values,
+                project_phase_values=project_phase_values,
+                work_scope_status_values=work_scope_status_values,
             )
         selected_status = connection_status.strip().upper()
+        selected_statuses = self._normalized_connection_statuses(connection_status_values)
         sort_key = SORT_FIELDS.get(sort_by)
         if sort_key is None and sort_by != DEVICE_DEFAULT_SORT_FIELD:
             raise ValueError("不支持的设备排序字段")
-        requires_full_projection = bool(selected_status) or sort_by in {
+        requires_full_projection = bool(selected_status or selected_statuses) or sort_by in {
             "last_collected_at",
             "last_collect_status",
             "status",
@@ -464,6 +476,10 @@ class DeviceManagementWebService:
             if selected_status:
                 projected = [
                     pair for pair in projected if pair[1].connection_status == selected_status
+                ]
+            if selected_statuses:
+                projected = [
+                    pair for pair in projected if pair[1].connection_status in selected_statuses
                 ]
         else:
             projected = [
@@ -2830,14 +2846,50 @@ class DeviceManagementWebService:
     def _export_filters(
         self, payload: DeviceExportRequestDTO
     ) -> dict[str, object | None]:
-        return {
+        filters: dict[str, object | None] = {
             "search": payload.search.strip() or None,
             "vendor": payload.vendor.strip() or None,
             "device_type": payload.device_type.strip() or None,
             "group_filter": payload.group_filter,
             "project_phase": payload.project_phase,
             "work_scope_status": payload.work_scope_status,
+            "group_values": payload.group_values,
+            "vendor_values": payload.vendor_values,
+            "device_type_values": payload.device_type_values,
+            "project_phase_values": payload.project_phase_values,
+            "work_scope_status_values": payload.work_scope_status_values,
         }
+        if payload.connection_status_values:
+            statuses = self._normalized_connection_statuses(payload.connection_status_values)
+            matched = self.list_devices(
+                search=payload.search,
+                vendor=payload.vendor,
+                device_type=payload.device_type,
+                group_id=payload.group_filter if isinstance(payload.group_filter, int) else None,
+                ungrouped=payload.group_filter == "__ungrouped__",
+                project_phase=payload.project_phase,
+                work_scope_status=payload.work_scope_status,
+                group_values=payload.group_values,
+                vendor_values=payload.vendor_values,
+                device_type_values=payload.device_type_values,
+                project_phase_values=payload.project_phase_values,
+                work_scope_status_values=payload.work_scope_status_values,
+                connection_status_values=sorted(statuses),
+                page_size=1_000_000,
+            )
+            # The export process runs asynchronously. Pin only UUIDs, never task details
+            # or credentials, so its rows reflect the submitted status snapshot.
+            filters["connection_match_uuids"] = [row.device_uuid for row in matched.items]
+        return filters
+
+    @staticmethod
+    def _normalized_connection_statuses(values: list[str] | None) -> set[str]:
+        if values is None:
+            return set()
+        allowed = {"UNKNOWN", "TESTING", "REACHABLE", "UNREACHABLE", "AUTH_FAILED", "ERROR"}
+        if len(values) > len(allowed) or any(value not in allowed for value in values):
+            raise ValueError("连接状态多选筛选值无效")
+        return set(values)
 
     def _require_web_task(
         self, task_id: str, allowed_types: frozenset[str] = DEVICE_TASK_TYPES
@@ -2976,7 +3028,11 @@ class DeviceManagementWebService:
             )
             task_created = True
             environment = os.environ.copy()
-            environment["PYTHONPATH"] = str(self.paths.app_root) + (
+            source_root = self.paths.app_root / "src"
+            import_roots = [str(self.paths.app_root)]
+            if source_root.is_dir():
+                import_roots.insert(0, str(source_root))
+            environment["PYTHONPATH"] = os.pathsep.join(import_roots) + (
                 os.pathsep + environment["PYTHONPATH"]
                 if environment.get("PYTHONPATH")
                 else ""

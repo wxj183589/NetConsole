@@ -15,8 +15,12 @@ const root = '/api/ac-management'
 
 function queryString(values: object): string {
   const query = new URLSearchParams()
-  for (const [key, value] of Object.entries(values as Record<string, string | number | undefined>)) {
-    if (value !== undefined && value !== '') query.set(key, String(value))
+  for (const [key, value] of Object.entries(values as Record<string, string | number | readonly string[] | undefined>)) {
+    if (Array.isArray(value)) {
+      for (const selection of value) if (selection) query.append(key, selection)
+    } else if (value !== undefined && value !== '') {
+      query.set(key, String(value))
+    }
   }
   const text = query.toString()
   return text ? `?${text}` : ''

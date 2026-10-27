@@ -47,6 +47,7 @@ import { SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type {
   NcDataTableContext,
   NcDataTableContextMenuItem,
@@ -202,8 +203,14 @@ const filters = reactive({
   vendor: '' as DeviceVendor | '',
   device_type: '',
   connection_status: '' as DeviceConnectionStatus | '',
+  connection_status_values: [] as string[],
   project_phase: 'all' as ProjectPhase | 'all',
   work_scope_status: 'included' as WorkScopeStatus | 'all',
+  group_values: [] as string[],
+  vendor_values: [] as string[],
+  device_type_values: [] as string[],
+  project_phase_values: [] as string[],
+  work_scope_status_values: ['included'] as string[],
   sort_by: 'default' as DeviceListSortField,
   sort_order: 'asc' as 'asc' | 'desc',
   page: 1,
@@ -519,16 +526,16 @@ async function loadDevices(resetPage = false, preserveSelection = false): Promis
   loading.value = true
   error.value = ''
   try {
-    const groupId = filters.group && filters.group !== 'ungrouped' ? Number(filters.group) : undefined
     pageData.value = await listDevices({
       search: filters.search,
-      group_id: groupId,
-      ungrouped: filters.group === 'ungrouped' || undefined,
-      device_type: filters.device_type,
-      vendor: filters.vendor,
-      connection_status: filters.connection_status,
-      project_phase: filters.project_phase,
-      work_scope_status: filters.work_scope_status,
+      group_values: filters.group_values,
+      device_type_values: filters.device_type_values,
+      vendor_values: filters.vendor_values,
+      connection_status_values: filters.connection_status_values,
+      project_phase_values: filters.project_phase_values,
+      work_scope_status_values: filters.work_scope_status_values,
+      project_phase: 'all',
+      work_scope_status: 'all',
       page: filters.page,
       page_size: filters.page_size,
       sort_by: filters.sort_by,
@@ -1347,7 +1354,7 @@ async function removeGroup(groupId: number, name: string): Promise<void> {
   })) return
   try {
     await deleteDeviceGroup(groupId)
-    if (filters.group === String(groupId)) filters.group = ''
+    filters.group_values = filters.group_values.filter((value) => value !== String(groupId))
     await loadDevices(true)
     ElMessage.success('分组已删除')
   } catch (cause) {
@@ -1470,11 +1477,16 @@ function currentExportFilters(
     device_uuids: scope === 'selected' ? [...selectedUuids.value] : [],
     export_scope: scope,
     search: filters.search,
-    vendor: filters.vendor,
-    device_type: filters.device_type,
-    group_filter: filters.group === 'ungrouped' ? '__ungrouped__' : filters.group ? Number(filters.group) : undefined,
-    project_phase: filters.project_phase,
-    work_scope_status: filters.work_scope_status,
+    vendor: '',
+    device_type: '',
+    group_values: [...filters.group_values],
+    vendor_values: [...filters.vendor_values],
+    device_type_values: [...filters.device_type_values],
+    project_phase_values: [...filters.project_phase_values],
+    work_scope_status_values: [...filters.work_scope_status_values],
+    connection_status_values: [...filters.connection_status_values],
+    project_phase: 'all',
+    work_scope_status: 'all',
     include_credentials: includeCredentials,
   }
 }
@@ -1917,31 +1929,12 @@ function deviceListErrorMessage(cause: unknown): string {
 
     <div class="content-card filters">
       <el-input v-model="filters.search" clearable placeholder="搜索名称、地址、站点、类型或分组" @keyup.enter="loadDevices(true)" />
-      <el-select v-model="filters.group" clearable placeholder="全部分组" @change="loadDevices(true)">
-        <el-option label="未分组" value="ungrouped" />
-        <el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="String(group.id)" />
-      </el-select>
-      <el-select v-model="filters.device_type" clearable placeholder="全部类型" @change="loadDevices(true)">
-        <el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" />
-      </el-select>
-      <el-select v-model="filters.vendor" clearable filterable allow-create default-first-option placeholder="全部厂商" @change="loadDevices(true)">
-        <el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" />
-      </el-select>
-      <el-select v-model="filters.project_phase" placeholder="建设阶段" @change="loadDevices(true)">
-        <el-option label="建设阶段：全部" value="all" /><el-option label="一期" value="phase_1" />
-        <el-option label="二期" value="phase_2" /><el-option label="三期" value="phase_3" />
-        <el-option label="其他" value="other" /><el-option label="未指定" value="unspecified" />
-      </el-select>
-      <el-select v-model="filters.work_scope_status" placeholder="当前工作状态" @change="loadDevices(true)">
-        <el-option label="参与当前调试" value="included" />
-        <el-option label="暂不参与" value="excluded" />
-        <el-option label="当前工作状态：全部" value="all" />
-      </el-select>
-      <el-select v-model="filters.connection_status" clearable placeholder="全部状态" @change="loadDevices(true)">
-        <el-option label="未测试" value="UNKNOWN" /><el-option label="测试中" value="TESTING" />
-        <el-option label="可达" value="REACHABLE" /><el-option label="不可达" value="UNREACHABLE" />
-        <el-option label="认证失败" value="AUTH_FAILED" /><el-option label="任务异常" value="ERROR" />
-      </el-select>
+      <NcMultiValueFilter v-model="filters.group_values" :options="['__ungrouped__', ...pageData.groups.map((group) => String(group.id))]" :labels="{ __ungrouped__: '未分组', ...Object.fromEntries(pageData.groups.map((group) => [String(group.id), group.name])) }" placeholder="全部分组" @change="loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.device_type_values" :options="DEVICE_TYPE_OPTIONS" placeholder="全部类型" @change="loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.vendor_values" :options="DEVICE_VENDOR_OPTIONS.map((vendor) => vendor.value)" :labels="Object.fromEntries(DEVICE_VENDOR_OPTIONS.map((vendor) => [vendor.value, vendor.label]))" allow-custom placeholder="全部厂商" @change="loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.project_phase_values" :options="['phase_1', 'phase_2', 'phase_3', 'other', 'unspecified']" :labels="{ phase_1: '一期', phase_2: '二期', phase_3: '三期', other: '其他', unspecified: '未指定' }" placeholder="全部建设阶段" @change="loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.work_scope_status_values" :options="['included', 'excluded']" :labels="{ included: '参与当前调试', excluded: '暂不参与' }" placeholder="全部工作状态" @change="loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.connection_status_values" :options="['UNKNOWN', 'TESTING', 'REACHABLE', 'UNREACHABLE', 'AUTH_FAILED', 'ERROR']" :labels="{ UNKNOWN: '未测试', TESTING: '测试中', REACHABLE: '可达', UNREACHABLE: '不可达', AUTH_FAILED: '认证失败', ERROR: '任务异常' }" placeholder="全部连接状态" @change="loadDevices(true)" />
       <el-select v-model="filters.sort_by" @change="loadDevices(true)">
         <el-option label="默认排序（分组优先 + 名称自然排序）" value="default" />
         <el-option label="按名称" value="name" /><el-option label="按地址" value="primary_address" />
@@ -1986,7 +1979,7 @@ function deviceListErrorMessage(cause: unknown): string {
       <el-button :disabled="!pageData.items.length" @click="invertSelection">反选当前页</el-button>
     </div>
     <el-alert
-      v-if="filters.work_scope_status !== 'included'"
+      v-if="!(filters.work_scope_status_values.length === 1 && filters.work_scope_status_values[0] === 'included')"
       title="当前正在查看包含暂不参与当前调试的设备。这些设备默认不参与自动任务，但仍可筛选查看并执行明确的手动操作。"
       type="info"
       :closable="false"

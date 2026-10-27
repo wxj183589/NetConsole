@@ -265,6 +265,12 @@ export interface AcApQuery {
   model?: string
   switch?: string
   optical_status?: string
+  statuses?: string[]
+  stations?: string[]
+  sections?: string[]
+  models?: string[]
+  switches?: string[]
+  optical_statuses?: string[]
   sort_by?: string
   sort_order?: 'asc' | 'desc'
 }

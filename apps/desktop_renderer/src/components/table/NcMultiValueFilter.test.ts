@@ -62,4 +62,27 @@ describe('NcMultiValueFilter', () => {
     expect(wrapper.emitted('change')?.at(-1)?.[0]).toEqual([])
     wrapper.unmount()
   })
+
+  it('preserves the former custom vendor filtering capability without broadening to all', async () => {
+    const wrapper = mount(NcMultiValueFilter, {
+      attachTo: document.body,
+      props: { modelValue: [], options: ['H3C', 'ZTE'], allowCustom: true, placeholder: '全部厂商' },
+      global: { plugins: [ElementPlus] },
+    })
+    wrapper.getComponent(ElPopover).vm.$emit('update:visible', true)
+    await flushPromises()
+    const search = document.querySelector('.nc-multi-value-filter__panel input') as HTMLInputElement
+    search.value = 'CustomVendor'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    ;(document.querySelector('.nc-multi-value-filter__create') as HTMLElement).click()
+    await flushPromises()
+    const confirm = Array.from(document.querySelectorAll('.nc-multi-value-filter__footer button')).find(
+      (button) => button.textContent?.includes('确定'),
+    )
+    ;(confirm as HTMLElement).click()
+    await flushPromises()
+    expect(wrapper.emitted('change')?.at(-1)?.[0]).toEqual(['CustomVendor'])
+    wrapper.unmount()
+  })
 })

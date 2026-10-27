@@ -38,7 +38,11 @@ import type {
 function queryString(values: DeviceListQuery): string {
   const params = new URLSearchParams()
   Object.entries(values).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+    if (Array.isArray(value)) {
+      for (const selection of value) if (selection) params.append(key, selection)
+    } else if (value !== undefined && value !== null && value !== '') {
+      params.set(key, String(value))
+    }
   })
   const query = params.toString()
   return query ? `?${query}` : ''

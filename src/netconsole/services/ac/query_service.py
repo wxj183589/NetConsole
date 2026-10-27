@@ -299,6 +299,12 @@ class AcManagementQueryService:
         model: str = "",
         switch: str = "",
         optical_status: str = "",
+        statuses: list[str] | None = None,
+        stations: list[str] | None = None,
+        sections: list[str] | None = None,
+        models: list[str] | None = None,
+        switches: list[str] | None = None,
+        optical_status_values: list[str] | None = None,
         sort_by: str = "topology",
         sort_order: str = "asc",
     ) -> AcApPageDTO:
@@ -317,6 +323,12 @@ class AcManagementQueryService:
             model=model,
             switch=switch,
             optical_statuses={optical_status} if optical_status else set(),
+            statuses=statuses,
+            stations=stations,
+            sections=sections,
+            models=models,
+            switches=switches,
+            optical_status_values=optical_status_values,
             sort_by=sort_by,
             sort_order=sort_order,
         )
@@ -646,6 +658,12 @@ class AcManagementQueryService:
             model=str(values.get("model") or ""),
             switch=str(values.get("switch") or ""),
             optical_statuses={str(values.get("optical_status") or "")} if values.get("optical_status") else set(),
+            statuses=values.get("statuses"),
+            stations=values.get("stations"),
+            sections=values.get("sections"),
+            models=values.get("models"),
+            switches=values.get("switches"),
+            optical_status_values=values.get("optical_statuses"),
             sort_by="topology",
             sort_order="asc",
         )
@@ -877,6 +895,12 @@ class AcManagementQueryService:
         model: str = "",
         switch: str = "",
         optical_statuses: set[str] | None = None,
+        statuses: list[str] | None = None,
+        stations: list[str] | None = None,
+        sections: list[str] | None = None,
+        models: list[str] | None = None,
+        switches: list[str] | None = None,
+        optical_status_values: list[str] | None = None,
         current_optical_only: bool = False,
         sort_by: str = "topology",
         sort_order: str = "asc",
@@ -887,11 +911,18 @@ class AcManagementQueryService:
             items = [item for item in items if keyword in " ".join((item.name, item.ip, item.mac)).casefold()]
         if status:
             items = [item for item in items if item.status == status]
+        selected_statuses = self._multi_filter_values(statuses)
+        if selected_statuses:
+            items = [item for item in items if str(item.status or "").strip().casefold() in selected_statuses]
         for value, field in ((station, "station"), (section, "section"), (model, "model"), (switch, "switch_name")):
             needle = str(value or "").strip().casefold()
             if needle:
                 items = [item for item in items if needle in str(getattr(item, field) or "").casefold()]
-        wanted_optical = {value for value in optical_statuses or set() if value}
+        for values, field in ((stations, "station"), (sections, "section"), (models, "model"), (switches, "switch_name")):
+            selected = self._multi_filter_values(values)
+            if selected:
+                items = [item for item in items if str(getattr(item, field) or "").strip().casefold() in selected]
+        wanted_optical = {value for value in optical_statuses or set() if value} | self._multi_filter_values(optical_status_values)
         if wanted_optical:
             canonical_optical = wanted_optical & {'normal', 'abnormal', 'no_data'}
             legacy_optical = wanted_optical - canonical_optical
@@ -909,6 +940,16 @@ class AcManagementQueryService:
         reverse = str(sort_order or "asc").casefold() == "desc"
         items.sort(key=lambda item: self._ap_sort_key(item, sort_by), reverse=reverse)
         return items
+
+    @staticmethod
+    def _multi_filter_values(values: object) -> set[str]:
+        if values is None:
+            return set()
+        if not isinstance(values, (list, tuple)) or len(values) > 100:
+            raise ValueError("多选筛选最多支持 100 个值")
+        if any(not isinstance(value, str) or len(value) > 200 for value in values):
+            raise ValueError("多选筛选值无效或过长")
+        return {value.strip().casefold() for value in values if value.strip()}
 
     @staticmethod
     def _ap_optical_filter_status(item: AcApDTO) -> str:

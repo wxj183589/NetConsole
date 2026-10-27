@@ -25,6 +25,7 @@ import { t } from '../../i18n/runtime'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import ConfigDiffViewer from '../../components/config-diff/ConfigDiffViewer.vue'
 import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTableContextMenu'
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
@@ -274,6 +275,9 @@ function clearFilters(): void {
     sort_by: 'topology',
     sort_order: 'asc',
   })
+  for (const key of Object.keys(store.multiFilters) as Array<keyof typeof store.multiFilters>) {
+    store.multiFilters[key] = []
+  }
   store.applyFilters()
 }
 
@@ -324,6 +328,7 @@ async function exportFitApResources(command: string): Promise<void> {
           section: store.filters.section,
           model: store.filters.model,
           switch: store.filters.switch,
+          ...store.multiFilters,
         }
       : {}
     const result = await userSelectedExport.submitExportAfterDestinationSelected({
@@ -841,25 +846,12 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
         <el-tab-pane label="FIT-AP 资源" name="aps">
           <div class="filter-bar">
             <el-input v-model="store.filters.query" clearable placeholder="AP 名称 / IP / MAC" @keyup.enter="store.applyFilters" />
-            <el-select v-model="store.filters.status" clearable placeholder="AP 状态">
-              <el-option label="在线" value="online" /><el-option label="离线" value="offline" /><el-option label="未认证" value="unauthenticated" />
-            </el-select>
-            <el-select v-model="store.filters.optical_status" clearable placeholder="光衰状态">
-              <el-option label="正常" value="normal" /><el-option label="光衰大" value="abnormal" />
-              <el-option label="无数据" value="no_data" />
-            </el-select>
-            <el-select v-model="store.filters.station" clearable filterable allow-create default-first-option placeholder="归属站点">
-              <el-option v-for="option in store.filterOptions.stations" :key="option" :label="option" :value="option" />
-            </el-select>
-            <el-select v-model="store.filters.section" clearable filterable allow-create default-first-option placeholder="归属区间">
-              <el-option v-for="option in store.filterOptions.sections" :key="option" :label="option" :value="option" />
-            </el-select>
-            <el-select v-model="store.filters.model" clearable filterable allow-create default-first-option placeholder="型号">
-              <el-option v-for="option in store.filterOptions.models" :key="option" :label="option" :value="option" />
-            </el-select>
-            <el-select v-model="store.filters.switch" clearable filterable allow-create default-first-option placeholder="交换机">
-              <el-option v-for="option in store.filterOptions.switches" :key="option" :label="option" :value="option" />
-            </el-select>
+            <NcMultiValueFilter v-model="store.multiFilters.statuses" :options="['online', 'offline', 'unauthenticated']" :labels="{ online: '在线', offline: '离线', unauthenticated: '未认证' }" placeholder="全部 AP 状态" />
+            <NcMultiValueFilter v-model="store.multiFilters.optical_statuses" :options="['normal', 'abnormal', 'no_data']" :labels="{ normal: '正常', abnormal: '光衰大', no_data: '无数据' }" placeholder="全部光衰状态" />
+            <NcMultiValueFilter v-model="store.multiFilters.stations" :options="store.filterOptions.stations" placeholder="全部归属站点" />
+            <NcMultiValueFilter v-model="store.multiFilters.sections" :options="store.filterOptions.sections" placeholder="全部归属区间" />
+            <NcMultiValueFilter v-model="store.multiFilters.models" :options="store.filterOptions.models" placeholder="全部型号" />
+            <NcMultiValueFilter v-model="store.multiFilters.switches" :options="store.filterOptions.switches" placeholder="全部交换机" />
             <el-button type="primary" @click="store.applyFilters">应用筛选</el-button>
             <el-button @click="clearFilters">清除</el-button>
             <el-button @click="selectCurrentPage">选择本页</el-button>

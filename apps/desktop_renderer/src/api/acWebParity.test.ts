@@ -106,4 +106,20 @@ describe('AC Web parity API client', () => {
       expectedSha256: 'a'.repeat(64),
     })
   })
+
+  it('preserves repeated FIT-AP filter selections in the filtered export request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ task_id: 'export-2' }) })
+    vi.stubGlobal('fetch', fetchMock)
+    await startAcFitApResourceExport('ac-1', 'filtered', [], {
+      statuses: ['online', 'offline'],
+      stations: ['车站A', '车站B'],
+      optical_statuses: ['normal', 'abnormal'],
+    })
+    const payload = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(payload.filters).toEqual({
+      statuses: ['online', 'offline'], stations: ['车站A', '车站B'],
+      optical_statuses: ['normal', 'abnormal'],
+    })
+    expect(payload).not.toHaveProperty('page_size')
+  })
 })

@@ -426,6 +426,12 @@ class AcFitApResourceExportFiltersDTO(ApiModel):
     section: str = Field(default="", max_length=100)
     model: str = Field(default="", max_length=100)
     switch: str = Field(default="", max_length=200)
+    statuses: list[str] = Field(default_factory=list, max_length=100)
+    stations: list[str] = Field(default_factory=list, max_length=100)
+    sections: list[str] = Field(default_factory=list, max_length=100)
+    models: list[str] = Field(default_factory=list, max_length=100)
+    switches: list[str] = Field(default_factory=list, max_length=100)
+    optical_statuses: list[str] = Field(default_factory=list, max_length=100)
 
 
 class AcFitApResourceExportRequestDTO(ApiModel):

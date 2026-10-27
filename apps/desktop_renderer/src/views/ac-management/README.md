@@ -10,6 +10,8 @@ FIT-AP OmniPeek 入口提交当前 AC、勾选 AP UUID、数据源/内容/颜色
 
 FIT-AP 资源 XLSX 与 OmniPeek 名称表是独立入口：前者面向资产核对，提交当前 AC、`filtered / selected / all` 范围、AP UUID 和页面同语义筛选，不提交分页或整行数据；后端 Export Process 从只读 SQLite 生成“AP资源清单 / Radio明细 / 导出说明”。AP 主表按规范化 MAC 去重且始终一 AP 一行，Radio 单独展开；缺失字段保留空白并写入数据完整性。FIT-AP 资源使用共享用户目标协调器，在创建任务前选择 `.xlsx` 路径，取消不提交；Artifact 就绪后按大小和 SHA-256 写入预选位置，失败时保留并允许在任务中心换位置，不重新生成。OmniPeek 保留既有专用目录/文件选择和授权绑定。Browser 仅启动后端下载，不声称已验证本地落盘。两类导出过程都不得连接 AC、AP 或交换机。
 
+FIT-AP 资源的 AP 状态、光衰状态、站点、区间、型号和交换机支持 WPS 式多选。同一字段选中值按精确匹配 OR，字段之间按 AND；后端先过滤再分页，并将同一组选值用于 `filtered` XLSX 导出与导出说明。旧版单字符串查询参数、无筛选的 `all` 和勾选 UUID 的 `selected` 导出仍兼容；批量选择不会改变 AC 范围、设备采集或刷新命令。
+
 FIT-AP 资源、配置快照、Radio、历史和 AP 扩展表格使用 `NcDataTable`。FIT-AP 页面原有私有列显隐已由公共列设置替代；排序、筛选、光衰状态、选择和详情操作继续使用原 Store/API 语义。页面不得重新直接声明 `el-table-column` 或私有列宽算法。
 
 AC running/saved 快照对比通过 `configDiffAdapter.ts` 转为共享配置 Diff 模型，并复用 `apps/desktop_renderer/src/components/config-diff/ConfigDiffViewer.vue`。Renderer 不解析 Unified Diff 还原正文；完整左右文本、标签、结构化行和摘要均由 AC 后端按快照 ID 与受控局点路径返回。

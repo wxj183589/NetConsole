@@ -63,6 +63,14 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     sort_by: 'topology',
     sort_order: 'asc' as 'asc' | 'desc',
   })
+  const multiFilters = reactive({
+    statuses: [] as string[],
+    optical_statuses: [] as string[],
+    stations: [] as string[],
+    sections: [] as string[],
+    models: [] as string[],
+    switches: [] as string[],
+  })
   const snapshotPage = ref(1)
   const snapshotPageSize = ref(30)
   const snapshotType = ref('')
@@ -113,7 +121,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
         recordSuccess('aps')
         return
       }
-      const result = await listAcAps(filters)
+      const result = await listAcAps({ ...filters, ...multiFilters })
       aps.value = result.items
       filterOptions.value = result.filter_options || emptyFilterOptions()
       total.value = result.total
@@ -497,6 +505,7 @@ export const useAcManagementStore = defineStore('ac-management', () => {
     actionTask,
     refreshStarting,
     filters,
+    multiFilters,
     snapshotPage,
     snapshotPageSize,
     snapshotType,
