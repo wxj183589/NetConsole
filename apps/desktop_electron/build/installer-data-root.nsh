@@ -34,6 +34,7 @@ Var NetConsoleProgramBackupRoot
 Var NetConsoleProgramTransactionState
 Var NetConsoleProgramMarkerPath
 Var NetConsoleProgramTransactionResult
+Var NetConsoleInstallMode
 !endif
 
 !ifndef BUILD_UNINSTALLER
@@ -365,7 +366,6 @@ Var NetConsoleDataRootPathsMatch
 Var NetConsoleDataRootExistingNormalized
 Var NetConsoleDataRootSelectedNormalized
 Var NetConsolePerformanceMode
-Var NetConsoleInstallMode
 Var NetConsoleInstallModeReuseRadio
 Var NetConsoleInstallModeFreshRadio
 Var NetConsoleInstallModeMigrateRadio
