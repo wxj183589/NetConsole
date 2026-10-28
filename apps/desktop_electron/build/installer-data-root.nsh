@@ -93,8 +93,9 @@ Function NetConsoleRollbackProgramInstallTransaction
       StrCpy $NetConsoleProgramTransactionResult "failed-new-program-marker-missing"
       Return
     NetConsoleRollbackRestoreOld:
-      System::Call 'kernel32::MoveFileExW(w "$NetConsoleProgramBackupRoot", w "$INSTDIR", i 0)i.r1'
-      StrCmp $1 0 NetConsoleRollbackFailed NetConsoleRollbackRestored
+      ClearErrors
+      Rename "$NetConsoleProgramBackupRoot" "$INSTDIR"
+      IfErrors NetConsoleRollbackFailed NetConsoleRollbackRestored
     NetConsoleRollbackRestored:
       StrCpy $NetConsoleProgramTransactionState "ROLLED_BACK"
       StrCpy $NetConsoleProgramTransactionResult "ok"
@@ -162,8 +163,9 @@ Function NetConsolePrepareProgramInstallTransaction
     Goto NetConsoleCreateNewProgram
 
   NetConsoleMoveExistingProgram:
-    System::Call 'kernel32::MoveFileExW(w "$INSTDIR", w "$NetConsoleProgramBackupRoot", i 0)i.r1'
-    StrCmp $1 0 NetConsoleProgramBackupFailed NetConsoleProgramBackedUp
+    ClearErrors
+    Rename "$INSTDIR" "$NetConsoleProgramBackupRoot"
+    IfErrors NetConsoleProgramBackupFailed NetConsoleProgramBackedUp
   NetConsoleProgramBackedUp:
     StrCpy $NetConsoleProgramTransactionState "BACKED_UP"
 
