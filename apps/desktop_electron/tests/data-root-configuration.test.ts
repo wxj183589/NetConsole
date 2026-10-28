@@ -44,6 +44,16 @@ describe('desktop machine data-root configuration', () => {
     expect(call).toEqual(['reg.exe', ['query', DATA_ROOT_REGISTRY_KEY, '/v', DATA_ROOT_REGISTRY_VALUE, '/reg:64']])
   })
 
+  it('decodes a Windows Chinese code-page registry value for packaged GUI startup', () => {
+    const output = Buffer.concat([
+      Buffer.from('    DataRoot    REG_SZ    D:\\NetConsoleData\\', 'ascii'),
+      Buffer.from('d3c3bba7cafdbedd', 'hex'),
+      Buffer.from('\r\n', 'ascii'),
+    ])
+
+    expect(readMachineDataRoot(() => ({ status: 0, stdout: output }))).toBe('D:\\NetConsoleData\\用户数据')
+  })
+
   it('never consults the registry in explicit test mode', () => {
     expect(() => resolveDesktopDataRootConfiguration({
       platform: 'win32',
