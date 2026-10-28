@@ -20,6 +20,8 @@ from openpyxl.utils import get_column_letter
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import runtime_mode
+from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.services.site_manager import SiteManager
 from netconsole.core.version import APP_VERSION
 from netconsole.models.wps_sync import (
@@ -2219,6 +2221,23 @@ class TracksideApWpsSyncService:
 
     def _repository(self, site_id: str) -> WpsSyncRepository:
         selected = SiteManager(self.paths).validate_site_name(site_id)
+        # WpsSyncRepository.initialize() creates ``sites/<site>/sync`` before
+        # it can read a target.  In a packaged/development runtime, do not let
+        # an invalid site reference turn into a new top-level site directory;
+        # production startup deliberately rejects such directories as
+        # unregistered sites.  Tests retain their explicit isolated fixture
+        # behavior under RuntimeMode.TEST.
+        if runtime_mode() is not RuntimeMode.TEST:
+            database_path = self.paths.site_db_path(selected)
+            if not database_path.is_file() or database_path.is_symlink():
+                raise WpsSyncError(
+                    "WPS_SITE_NOT_FOUND",
+                    f"当前局点未完成初始化，拒绝创建 WPS 同步存储：{selected}",
+                    details={
+                        "site_id": selected,
+                        "reason": "SITE_DATABASE_MISSING",
+                    },
+                )
         return WpsSyncRepository(self.paths, selected)
 
     def _site_display_name(self, site_id: str) -> str:
