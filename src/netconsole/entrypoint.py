@@ -270,6 +270,7 @@ def _installer_failure_function(exc: BaseException, *, stage: str) -> str:
         "first-run-site": "SiteApplicationService.initialize_first_run_site",
         "first-run-site-initialization": "SiteApplicationService.initialize_first_run_site",
         "validate-existing-root": "validate_existing_installation_data_root",
+        "validate-existing-development-root": "SiteRegistryRepository.persisted_records",
         "validate-existing-site-registry": "_production_startup_site",
     }
     if stage in stage_functions:
