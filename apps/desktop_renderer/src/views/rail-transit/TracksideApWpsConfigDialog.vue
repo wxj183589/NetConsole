@@ -19,6 +19,7 @@ import type {
   WpsTracksideDiagnostic,
   WpsTracksideTarget,
   WpsTracksideTargetCode,
+  WpsTracksideTargetUpdate,
 } from '../../types/tracksideApBusiness'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { openWpsDocumentUrl } from './wpsDocumentLink'
@@ -362,17 +363,22 @@ async function saveTargetConfiguration(
   errorMessage.value = ''
   try {
     const token = draft.token.trim()
-    const document = normalizeWpsUrlInput(draft.document_open_url, 'document')
-    const webhook = normalizeWpsUrlInput(draft.webhook_url, 'webhook')
-    draft.document_open_url = document.url
-    draft.webhook_url = webhook.url
-    await updateTracksideWpsTarget(code, {
+    const documentInput = draft.document_open_url.trim()
+    const webhookInput = draft.webhook_url.trim()
+    const payload: WpsTracksideTargetUpdate = {
       enabled: draft.enabled,
       timeout_seconds: draft.timeout_seconds,
-      document_open_url: document.url,
-      webhook_url: webhook.url,
       ...(token ? { token } : {}),
-    })
+    }
+    if (documentInput || webhookInput) {
+      const document = normalizeWpsUrlInput(documentInput, 'document')
+      const webhook = normalizeWpsUrlInput(webhookInput, 'webhook')
+      draft.document_open_url = document.url
+      draft.webhook_url = webhook.url
+      payload.document_open_url = document.url
+      payload.webhook_url = webhook.url
+    }
+    await updateTracksideWpsTarget(code, payload)
     draft.token = ''
     await reloadTargets(true)
     if (!silent) ElMessage.success('当前 WPS 云文档连接配置已保存')

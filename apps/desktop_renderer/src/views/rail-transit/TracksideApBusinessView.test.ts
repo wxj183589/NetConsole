@@ -749,6 +749,36 @@ describe('TracksideApBusinessView mounted behavior', () => {
     wrapper.unmount()
   })
 
+  it('saves an empty disabled WPS target without requiring connection URLs', async () => {
+    const initialTargets = wpsTargets(false).map((target) => ({
+      ...target,
+      document_open_url: '',
+      webhook_url: '',
+    }))
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      drafts: Array<{ enabled: boolean; timeout_seconds: number; document_open_url: string; webhook_url: string; token: string }>
+      saveTargetConfiguration: (code: 'wps_standard_spreadsheet') => Promise<boolean>
+    }
+    vm.drafts[0].enabled = false
+    vm.drafts[0].document_open_url = ''
+    vm.drafts[0].webhook_url = ''
+    vm.drafts[0].token = ''
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets.map((target) => ({ ...target, enabled: false })))
+
+    await expect(vm.saveTargetConfiguration('wps_standard_spreadsheet')).resolves.toBe(true)
+    expect(api.updateTracksideWpsTarget).toHaveBeenCalledWith('wps_standard_spreadsheet', {
+      enabled: false,
+      timeout_seconds: 30,
+    })
+    wrapper.unmount()
+  })
+
   it('saves dirty WPS edits before closing and keeps the dialog open on save failure', async () => {
     const initialTargets = wpsTargets(false)
     api.listTracksideWpsTargets.mockResolvedValue(initialTargets)

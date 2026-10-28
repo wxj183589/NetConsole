@@ -427,6 +427,21 @@ def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> N
         )
 
 
+def test_wps_can_disable_an_unconfigured_target_without_urls(tmp_path: Path) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+
+    target = service.configure_target(
+        "hangzhou10",
+        STANDARD_TARGET_CODE,
+        enabled=False,
+    )
+
+    assert target["enabled"] is False
+    assert target["document_open_url"] == ""
+    assert target["webhook_url"] == ""
+    assert target["token_configured"] is False
+
+
 def test_wps_public_targets_expose_only_cloud_document_deployment_identity(
     tmp_path: Path,
 ) -> None:
