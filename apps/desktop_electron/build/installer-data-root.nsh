@@ -150,6 +150,10 @@ Function NetConsolePrepareProgramInstallTransaction
   StrCpy $NetConsoleProgramTransactionState "NONE"
   StrCpy $NetConsoleProgramBackupRoot "$INSTDIR.netconsole-install-backup-$NetConsoleInstallerDiagnosticId"
   StrCpy $NetConsoleProgramMarkerPath "$INSTDIR\.netconsole-installer-new-$NetConsoleInstallerDiagnosticId.marker"
+  ; Never keep $INSTDIR as NSIS's current output directory while moving it.
+  ; Windows reports a directory-rename failure when the installer still has
+  ; that directory as its output target.
+  SetOutPath "$TEMP"
   IfFileExists "$NetConsoleProgramBackupRoot\." NetConsoleProgramBackupAlreadyExists
   IfFileExists "$INSTDIR\." NetConsoleCheckExistingProgram NetConsoleCreateNewProgram
 
