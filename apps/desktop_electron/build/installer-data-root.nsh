@@ -404,6 +404,28 @@ Var NetConsoleEnvironmentDataRoot
   StrCpy $NetConsolePerformanceMode "standard"
   StrCpy $NetConsoleProgramTransactionState ""
   StrCpy $NetConsoleProgramTransactionResult "not-needed"
+  IfSilent NetConsoleSilentPreflight NetConsoleInteractiveInstallerInit
+  NetConsoleSilentPreflight:
+    Call NetConsoleValidateDataRootLocation
+    ${If} $NetConsoleDataRootProbeResult != "ok"
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=silent-data-root-location-validation result=$NetConsoleDataRootProbeResult registry=not-written"
+      Call NetConsoleInstallerAbort
+    ${EndIf}
+    Call NetConsoleDataRootCheckBusinessData
+    ${If} $NetConsoleInstallMode == "FRESH_CLEAN_INSTALL"
+      ${If} $NetConsoleDataRootBusinessData == "1"
+        StrCpy $NetConsoleInstallerDiagnosticMessage "stage=silent-clean-install-business-data-check result=conflict registry=not-written"
+        Call NetConsoleInstallerAbort
+      ${EndIf}
+    ${EndIf}
+    Call NetConsoleRunDataRootProbe
+    ${If} $NetConsoleDataRootProbeResult != "ok"
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=silent-data-root-probe result=$NetConsoleDataRootProbeResult registry=not-written"
+      Call NetConsoleInstallerAbort
+    ${EndIf}
+    Call NetConsolePreflightExistingDataRoot
+    Call NetConsolePrepareProgramInstallTransaction
+  NetConsoleInteractiveInstallerInit:
 !macroend
 
 !macro customPageAfterChangeDir

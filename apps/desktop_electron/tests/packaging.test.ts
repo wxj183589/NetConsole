@@ -118,6 +118,7 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('.netconsole-installer-new-')
     expect(script).toContain('program=unchanged')
     expect(script).toContain('failed-old-program-preserved-as-backup')
+    expect(script).toContain('IfSilent NetConsoleSilentPreflight NetConsoleInteractiveInstallerInit')
     expect(script).toContain('--collect-host-profile')
     expect(script).toContain('--set-runtime-performance-mode')
     expect(script).toContain('${If} $NetConsoleEnvironmentDataRoot != "$NetConsoleDataRoot"')
