@@ -84,6 +84,7 @@ Function NetConsoleRollbackProgramInstallTransaction
     IfFileExists "$NetConsoleProgramMarkerPath" NetConsoleRollbackRemoveNewProgram NetConsoleRollbackNewProgramMissingMarker
     NetConsoleRollbackRemoveNewProgram:
       Delete "$NetConsoleProgramMarkerPath"
+      SetOutPath "$TEMP"
       RMDir /r "$INSTDIR"
       IfFileExists "$INSTDIR\." NetConsoleRollbackFailed NetConsoleRollbackRestoreOld
     NetConsoleRollbackNewProgramMissingMarker:
@@ -107,6 +108,7 @@ Function NetConsoleRollbackProgramInstallTransaction
     StrCpy $NetConsoleProgramTransactionResult "attempted"
     IfFileExists "$NetConsoleProgramMarkerPath" 0 NetConsoleRollbackNewOnlyMissingMarker
     Delete "$NetConsoleProgramMarkerPath"
+    SetOutPath "$TEMP"
     RMDir /r "$INSTDIR"
     IfFileExists "$INSTDIR\." NetConsoleRollbackNewOnlyFailed NetConsoleRollbackNewOnlyDone
     NetConsoleRollbackNewOnlyMissingMarker:
