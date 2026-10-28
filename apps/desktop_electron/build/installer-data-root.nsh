@@ -34,6 +34,7 @@ Var NetConsoleProgramBackupRoot
 Var NetConsoleProgramTransactionState
 Var NetConsoleProgramMarkerPath
 Var NetConsoleProgramTransactionResult
+Var NetConsoleProgramDirectoryHasEntries
 Var NetConsoleInstallMode
 !endif
 
@@ -120,6 +121,27 @@ Function NetConsoleRollbackProgramInstallTransaction
   ${EndIf}
 FunctionEnd
 
+Function NetConsoleCheckProgramDirectoryHasEntries
+  StrCpy $NetConsoleProgramDirectoryHasEntries "0"
+  ClearErrors
+  FindFirst $0 $1 "$INSTDIR\*"
+  IfErrors NetConsoleProgramDirectoryEntriesDone
+  NetConsoleProgramDirectoryEntriesLoop:
+    StrCmp $1 "." NetConsoleProgramDirectoryEntriesNext
+    StrCmp $1 ".." NetConsoleProgramDirectoryEntriesNext
+    StrCpy $NetConsoleProgramDirectoryHasEntries "1"
+    FindClose $0
+    Return
+  NetConsoleProgramDirectoryEntriesNext:
+    ClearErrors
+    FindNext $0 $1
+    IfErrors NetConsoleProgramDirectoryEntriesClose
+    Goto NetConsoleProgramDirectoryEntriesLoop
+  NetConsoleProgramDirectoryEntriesClose:
+    FindClose $0
+  NetConsoleProgramDirectoryEntriesDone:
+FunctionEnd
+
 Function NetConsolePrepareProgramInstallTransaction
   ${If} $NetConsoleProgramTransactionState != ""
     Return
@@ -128,7 +150,16 @@ Function NetConsolePrepareProgramInstallTransaction
   StrCpy $NetConsoleProgramBackupRoot "$INSTDIR.netconsole-install-backup-$NetConsoleInstallerDiagnosticId"
   StrCpy $NetConsoleProgramMarkerPath "$INSTDIR\.netconsole-installer-new-$NetConsoleInstallerDiagnosticId.marker"
   IfFileExists "$NetConsoleProgramBackupRoot\." NetConsoleProgramBackupAlreadyExists
-  IfFileExists "$INSTDIR\." NetConsoleMoveExistingProgram NetConsoleCreateNewProgram
+  IfFileExists "$INSTDIR\." NetConsoleCheckExistingProgram NetConsoleCreateNewProgram
+
+  NetConsoleCheckExistingProgram:
+    ; NSIS may create an empty $INSTDIR while parsing /D. Reuse that empty
+    ; directory as the new candidate; only move a non-empty old program tree.
+    Call NetConsoleCheckProgramDirectoryHasEntries
+    ${If} $NetConsoleProgramDirectoryHasEntries == "1"
+      Goto NetConsoleMoveExistingProgram
+    ${EndIf}
+    Goto NetConsoleCreateNewProgram
 
   NetConsoleMoveExistingProgram:
     StrCpy $0 "$INSTDIR"

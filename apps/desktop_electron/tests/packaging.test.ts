@@ -114,6 +114,8 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('NetConsolePreflightExistingDataRoot')
     expect(script).toContain('NetConsolePrepareProgramInstallTransaction')
     expect(script).toContain('NetConsoleRollbackProgramInstallTransaction')
+    expect(script).toContain('NetConsoleCheckProgramDirectoryHasEntries')
+    expect(script).toContain('NSIS may create an empty $INSTDIR')
     expect(script).toContain('.netconsole-install-backup-')
     expect(script).toContain('.netconsole-installer-new-')
     expect(script).toContain('program=unchanged')
