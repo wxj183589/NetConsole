@@ -91,14 +91,17 @@ Function NetConsoleRollbackProgramInstallTransaction
       StrCpy $NetConsoleProgramTransactionResult "failed-new-program-marker-missing"
       Return
     NetConsoleRollbackRestoreOld:
-      ClearErrors
-      Rename "$NetConsoleProgramBackupRoot" "$INSTDIR"
-      IfErrors NetConsoleRollbackFailed
+      StrCpy $0 "$NetConsoleProgramBackupRoot"
+      StrCpy $1 "$INSTDIR"
+      System::Call 'kernel32::MoveFileExW(w r0, w r1, i 0)i.r2'
+      IntCmp $2 0 NetConsoleRollbackFailed NetConsoleRollbackRestored NetConsoleRollbackRestored
+    NetConsoleRollbackRestored:
       StrCpy $NetConsoleProgramTransactionState "ROLLED_BACK"
       StrCpy $NetConsoleProgramTransactionResult "ok"
       Return
     NetConsoleRollbackFailed:
-      StrCpy $NetConsoleProgramTransactionResult "failed-old-program-preserved-as-backup"
+      System::Call 'kernel32::GetLastError()i.r3'
+      StrCpy $NetConsoleProgramTransactionResult "failed-old-program-preserved-as-backup-error-$3"
   ${ElseIf} $NetConsoleProgramTransactionState == "NEW_ONLY"
     StrCpy $NetConsoleProgramTransactionResult "attempted"
     IfFileExists "$NetConsoleProgramMarkerPath" 0 NetConsoleRollbackNewOnlyMissingMarker
@@ -128,9 +131,11 @@ Function NetConsolePrepareProgramInstallTransaction
   IfFileExists "$INSTDIR\." NetConsoleMoveExistingProgram NetConsoleCreateNewProgram
 
   NetConsoleMoveExistingProgram:
-    ClearErrors
-    Rename "$INSTDIR" "$NetConsoleProgramBackupRoot"
-    IfErrors NetConsoleProgramBackupFailed
+    StrCpy $0 "$INSTDIR"
+    StrCpy $1 "$NetConsoleProgramBackupRoot"
+    System::Call 'kernel32::MoveFileExW(w r0, w r1, i 0)i.r2'
+    IntCmp $2 0 NetConsoleProgramBackupFailed NetConsoleProgramBackedUp NetConsoleProgramBackedUp
+  NetConsoleProgramBackedUp:
     StrCpy $NetConsoleProgramTransactionState "BACKED_UP"
 
   NetConsoleCreateNewProgram:
@@ -152,7 +157,8 @@ Function NetConsolePrepareProgramInstallTransaction
     Call NetConsoleInstallerAbort
     Return
   NetConsoleProgramBackupFailed:
-    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=program-transaction result=backup-failed path=$INSTDIR registry=not-written"
+    System::Call 'kernel32::GetLastError()i.r3'
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=program-transaction result=backup-failed path=$INSTDIR error_code=$3 registry=not-written"
     Call NetConsoleInstallerAbort
     Return
   NetConsoleProgramCreateFailed:
