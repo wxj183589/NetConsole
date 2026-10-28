@@ -117,6 +117,8 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('NetConsoleCheckProgramDirectoryHasEntries')
     expect(script).toContain('NSIS may create an empty $INSTDIR')
     expect(script).toContain('SetOutPath "$TEMP"')
+    expect(script).toContain('MoveFileExW(w "$INSTDIR", w "$NetConsoleProgramBackupRoot"')
+    expect(script).toContain('MoveFileExW(w "$NetConsoleProgramBackupRoot", w "$INSTDIR"')
     expect(script).toContain('.netconsole-install-backup-')
     expect(script).toContain('.netconsole-installer-new-')
     expect(script).toContain('program=unchanged')
