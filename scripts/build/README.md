@@ -2,7 +2,7 @@
 
 本目录负责 PyInstaller/前端元数据、依赖与许可证检查、SBOM、运行工具校验和 Windows 发布编排。它只生成构建产物，不把产物当源码提交。
 
-主要入口为 `build_release.py`、`release.py`、`check_packaged_runtime.py` 和清单脚本。验证使用 Python 虚拟环境及 `docs/release/BUILD_AND_RELEASE.md` 规定的命令，构建临时目录完成后清理。
+主要入口为 `package_windows.ps1`、`package_local.ps1`、`build_release.py`、`check_packaged_runtime.py` 和清单脚本。验证使用 Python 虚拟环境及 `docs/release/BUILD_AND_RELEASE.md` 规定的命令，构建临时目录完成后清理。
 
 ## 用途与边界
 
@@ -10,9 +10,9 @@
 
 ## 主要入口
 
-`package_windows.ps1` 是 Windows 安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责单实例、日志，并在全部 Gate 通过后以 `D:\study\NetConsole-Workspace\release\<version>\build-<number>-<short-sha>` 保存构建制品；Customer 密码由 Core 统一解析器提供环境变量覆盖或内置默认值。它不会自动升级版本或将构建标记为正式发布。只有显式 release 命令才允许发布新版本并更新自动更新清单。
+`package_windows.ps1` 是 Windows Full/Customer 正式安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责单实例、日志，并在全部 Gate 通过后以 `D:\study\NetConsole-Workspace\release\<version>\build-<number>-<short-sha>` 保存构建制品；Customer 密码由 Core 统一解析器提供环境变量覆盖或内置默认值。构建不会自动升级版本，也不会把未经发布门禁验证的制品标记为 `published=true`。新版本通过版本 PR 更新唯一版本来源；合并 main、完成全量回归和正式 Full/Customer 构建后，才可创建指向最终 main commit 的 annotated tag 与 GitHub Release。
 
-`build_release.py`/`release.py` 编排底层发布，`check_packaged_runtime.py`、`check_runtime_deps.py`、`pyinstaller_artifact_inventory.py` 和工具校验脚本提供门禁。
+`build_release.py` 构建 Backend；`release.py` 的旧 Git 发布编排已停用，仅保留 PE 版本资源文本生成函数供构建使用，直接调用其 CLI 会失败关闭。`check_packaged_runtime.py`、`check_runtime_deps.py`、`pyinstaller_artifact_inventory.py` 和工具校验脚本提供门禁。
 
 ## 依赖关系
 

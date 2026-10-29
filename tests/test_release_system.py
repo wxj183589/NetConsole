@@ -128,6 +128,9 @@ def test_release_script_documents_the_supported_packaging_entrypoint():
     docs = (root / "docs" / "release" / "BUILD_AND_RELEASE.md").read_text(
         encoding="utf-8"
     )
+    build_readme = (root / "scripts" / "build" / "README.md").read_text(
+        encoding="utf-8"
+    )
 
     assert not (root / "release.py").exists()
     assert "scripts/build/package_windows.ps1" in text
@@ -135,6 +138,8 @@ def test_release_script_documents_the_supported_packaging_entrypoint():
     assert "Gitea" not in text
     assert "scripts/build/release.py` 的旧 Git 发布编排已停用" in docs
     assert "只有显式 `python -m scripts.build.release" not in docs
+    assert "旧 Git 发布编排已停用" in build_readme
+    assert "只有显式 release 命令才允许发布新版本" not in build_readme
 
 
 def test_legacy_release_script_has_no_git_mutation_commands():
