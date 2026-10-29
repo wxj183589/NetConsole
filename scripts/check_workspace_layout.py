@@ -442,7 +442,13 @@ def _registered_independent_worktrees(workspace_root: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
-def check_worktree_locations(repo_root: Path, workspace_root: Path | None, worktree_paths: Iterable[Path]) -> list[Violation]:
+def check_worktree_locations(
+    repo_root: Path,
+    workspace_root: Path | None,
+    worktree_paths: Iterable[Path],
+    *,
+    enforce_workspace_container: bool = True,
+) -> list[Violation]:
     if workspace_root is None:
         return []
     workspace_root = _absolute(workspace_root)
@@ -451,7 +457,20 @@ def check_worktree_locations(repo_root: Path, workspace_root: Path | None, workt
     for path in worktree_paths:
         if _same_path(path, repo_root):
             continue
-        if not _inside(path, worktree_root) or _absolute(path).parent.as_posix().casefold() != _absolute(worktree_root).as_posix().casefold():
+        if _is_protected_data_path(path):
+            result.append(
+                Violation(
+                    "WORKTREE_PROTECTED_DATA_PATH",
+                    str(path),
+                    "Git Worktree 不能位于正式数据根或其子路径",
+                    str(PROTECTED_DATA_ROOT),
+                    "停止操作并人工确认 Git 元数据，不访问或移动正式数据。",
+                )
+            )
+        elif enforce_workspace_container and (
+            not _inside(path, worktree_root)
+            or _absolute(path).parent.as_posix().casefold() != _absolute(worktree_root).as_posix().casefold()
+        ):
             result.append(
                 Violation(
                     "WORKTREE_OUTSIDE_CONTAINER",
@@ -499,9 +518,18 @@ def run_checks(repo_root: Path, workspace_root: Path | None = None) -> list[Viol
     worktree_paths, git_result = _git_worktrees(repo_root)
     result.extend(git_result)
     if workspace_root is not None:
-        managed_paths = (*worktree_paths, *_registered_independent_worktrees(workspace_root))
+        independent_worktree_paths = _registered_independent_worktrees(workspace_root)
+        managed_paths = (*worktree_paths, *independent_worktree_paths)
         result.extend(check_workspace_root(workspace_root, managed_paths))
         result.extend(check_worktree_locations(repo_root, workspace_root, worktree_paths))
+        result.extend(
+            check_worktree_locations(
+                workspace_root / "NetConsole-Next",
+                workspace_root,
+                independent_worktree_paths,
+                enforce_workspace_container=False,
+            )
+        )
         try:
             common_dir_process = subprocess.run(
                 ("git", "-C", os.fspath(repo_root), "rev-parse", "--git-common-dir"),
