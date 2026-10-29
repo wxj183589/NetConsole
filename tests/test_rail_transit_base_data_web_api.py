@@ -225,6 +225,27 @@ def test_base_data_api_defaults_to_locked_and_redacts_credentials(tmp_path: Path
     assert responses[8].json()["write_enabled"] is False
 
 
+def test_base_data_api_ap_issue_multi_value_filters_apply_before_paging(tmp_path: Path) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with TestClient(_app(paths, tmp_path)) as client:
+        abnormal = client.get(
+            "/api/rail-transit/base-data/aps?has_issue_values=true&page=1&page_size=1"
+        )
+        normal = client.get(
+            "/api/rail-transit/base-data/aps?has_issue_values=false&page=1&page_size=1"
+        )
+
+    assert abnormal.status_code == 200
+    assert normal.status_code == 200
+    abnormal_payload = abnormal.json()
+    normal_payload = normal.json()
+    assert abnormal_payload["total"] == 3
+    assert len(abnormal_payload["items"]) == 1
+    assert normal_payload["total"] == 0
+    assert normal_payload["items"] == []
+    assert all(item["issue_count"] > 0 for item in abnormal_payload["items"])
+
+
 def test_edit_snapshot_does_not_load_runtime_sources_or_rebuild_identity(
     tmp_path: Path,
     monkeypatch,

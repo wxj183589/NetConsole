@@ -554,11 +554,12 @@ class RailTransitBaseDataQueryService:
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))
         selected_issue_values = {bool(value) for value in (has_issue_values or [])}
+        if selected_issue_values and selected_issue_values != {True, False}:
+            has_issue = next(iter(selected_issue_values))
         post_filter = bool(
             fit_ap_status
             or optical_status
             or has_issue is not None
-            or selected_issue_values
             or issue_severity
         )
         clauses = [

@@ -194,6 +194,25 @@ def test_base_data_mac_mileage_filters_and_public_dto_have_no_secrets(tmp_path: 
     assert "password" not in payload
 
 
+def test_trackside_ap_sql_first_issue_multi_value_filters_apply_before_paging(
+    tmp_path: Path,
+) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = RailTransitBaseDataQueryService(paths)
+
+    abnormal = service.list_aps("demo", has_issue_values=[True], page_size=1)
+    normal = service.list_aps("demo", has_issue_values=[False], page_size=1)
+    all_items = service.list_aps("demo", page_size=200)
+
+    assert abnormal.total == 3
+    assert len(abnormal.items) == 1
+    assert normal.total == 0
+    assert normal.items == []
+    assert abnormal.total + normal.total == all_items.total
+    assert all(item.issue_count > 0 for item in service.list_aps("demo", has_issue_values=[True], page_size=200).items)
+    assert service.list_aps("demo", has_issue_values=[False], page_size=200).items == []
+
+
 def test_trackside_ap_location_read_compatibility_defaults_only_matched_records(
     tmp_path: Path,
 ) -> None:
