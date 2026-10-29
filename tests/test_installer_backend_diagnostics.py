@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -11,6 +12,8 @@ import pytest
 from netconsole import entrypoint
 from netconsole.core import data_root_configuration, paths as paths_module, runtime_environment
 from netconsole.services import site_storage
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _allow_isolated_install_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -33,6 +36,30 @@ def _read_diagnostic(path: Path) -> list[dict[str, object]]:
 
 def _diagnostic_path(tmp_path: Path) -> Path:
     return Path(tempfile.gettempdir()) / f"netconsole-installer-{tmp_path.name}.jsonl"
+
+
+def test_installation_data_root_import_does_not_load_storage_graph_before_binding_root() -> None:
+    environment = os.environ.copy()
+    environment.pop("NETCONSOLE_DATA_ROOT", None)
+    environment.pop("NETCONSOLE_RUNTIME_MODE", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import netconsole.services.installation_data_root; "
+                "print('netconsole.services.site_storage' in sys.modules)"
+            ),
+        ],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False"
 
 
 def test_backend_diagnostic_records_success_and_install_mode(

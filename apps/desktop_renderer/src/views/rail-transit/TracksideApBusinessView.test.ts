@@ -8,6 +8,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { ApiRequestError } from '../../api/client'
 import { resetRendererFeaturesForTest, setRendererFeaturesForTest } from '../../features'
+import { setAppLocale } from '../../i18n/runtime'
 import { resetUserSelectedExportForTests } from '../../composables/useUserSelectedExport'
 import { useTaskStore } from '../../stores/tasks'
 import { BEFORE_SITE_SWITCH_EVENT, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
@@ -597,6 +598,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
   afterEach(() => {
     resetRendererFeaturesForTest()
+    setAppLocale('zh_CN')
     vi.mocked(ElMessageBox.confirm).mockRestore()
     vi.useRealTimers()
   })
@@ -809,6 +811,33 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await vm.saveAndClose()
     expect(dialog.emitted('update:modelValue')?.length || 0).toBe(closeEventsBeforeFailure)
     expect(vm.errorMessage).toBe('测试凭据失败')
+    wrapper.unmount()
+  })
+
+  it('localizes the unsaved WPS close confirmation in English', async () => {
+    setAppLocale('en_US')
+    const initialTargets = wpsTargets(false)
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      drafts: Array<{ timeout_seconds: number }>
+      saveAndClose: () => Promise<void>
+    }
+    vm.drafts[0].timeout_seconds = 45
+    api.listTracksideWpsTargets.mockResolvedValue([{ ...initialTargets[0], timeout_seconds: 45 }])
+
+    expect(dialog.text()).toContain('Save and close')
+    await vm.saveAndClose()
+    expect(confirmMocks.confirm).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Unsaved WPS configuration',
+      message: 'This site has unsaved WPS configuration. It will close after successful save; cancel keeps editing.',
+      confirmText: 'Save and close',
+      cancelText: 'Keep editing',
+    }))
     wrapper.unmount()
   })
 

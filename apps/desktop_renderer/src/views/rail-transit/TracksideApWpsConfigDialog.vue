@@ -22,6 +22,7 @@ import type {
   WpsTracksideTargetUpdate,
 } from '../../types/tracksideApBusiness'
 import { getPlatformAdapter } from '../../platform/runtime'
+import { t } from '../../i18n/runtime'
 import { openWpsDocumentUrl } from './wpsDocumentLink'
 import { wpsAirScriptSource, type WpsAirScriptKind } from './wpsAirScriptSources'
 import { normalizeWpsUrlInput, tryParseWpsWebhookIdentity, type WpsUrlKind } from './wpsUrlInput'
@@ -407,10 +408,10 @@ async function beforeClose(done: () => void): Promise<void> {
   }
   const confirmed = await confirm({
     type: 'WARNING',
-    title: 'WPS 配置未保存',
-    message: '当前局点有未保存的 WPS 配置。保存成功后才会关闭弹窗；取消将继续编辑。',
-    confirmText: '保存并关闭',
-    cancelText: '继续编辑',
+    title: t('trackside.wps.unsaved_title', 'WPS 配置未保存'),
+    message: t('trackside.wps.unsaved_message', '当前局点有未保存的 WPS 配置。保存成功后才会关闭弹窗；取消将继续编辑。'),
+    confirmText: t('trackside.wps.save_and_close', '保存并关闭'),
+    cancelText: t('trackside.wps.keep_editing', '继续编辑'),
   })
   if (confirmed && await saveAllTargetConfigurations(true)) done()
 }
@@ -822,8 +823,8 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
     </div>
 
     <template #footer>
-      <el-button @click="requestClose">关闭</el-button>
-      <el-button type="primary" :loading="Boolean(savingCode)" @click="saveAndClose">保存并关闭</el-button>
+      <el-button @click="requestClose">{{ t('trackside.wps.close', '关闭') }}</el-button>
+      <el-button type="primary" :loading="Boolean(savingCode)" @click="saveAndClose">{{ t('trackside.wps.save_and_close', '保存并关闭') }}</el-button>
     </template>
   </el-dialog>
 </template>

@@ -16,7 +16,6 @@ from netconsole.core.storage_manifest import prepare_storage_manifest
 from netconsole.services.storage_production_authority import (
     resolve_storage_root_authority,
 )
-from netconsole.services.site_storage import SiteRegistryRepository
 
 
 _CLEAN_INSTALL_PROTECTED_ENTRIES = frozenset(
@@ -73,7 +72,20 @@ def validate_existing_installation_data_root(
         # never deleted or silently registered by installer validation.
         if stage_callback is not None:
             stage_callback("validate-existing-development-root")
-        SiteRegistryRepository(PathResolver(data_root=root)).persisted_records()
+        previous_data_root = os.environ.get("NETCONSOLE_DATA_ROOT")
+        os.environ["NETCONSOLE_DATA_ROOT"] = str(root)
+        try:
+            # Import the storage graph only after the candidate root is bound;
+            # app_logger's default PathResolver must not inspect HKLM during
+            # clean-install dependency loading.
+            from netconsole.services.site_storage import SiteRegistryRepository
+
+            SiteRegistryRepository(PathResolver(data_root=root)).persisted_records()
+        finally:
+            if previous_data_root is None:
+                os.environ.pop("NETCONSOLE_DATA_ROOT", None)
+            else:
+                os.environ["NETCONSOLE_DATA_ROOT"] = previous_data_root
         return root
     if startup_site_resolver is None:
         raise DataRootConfigurationError("缺少 Production 局点校验入口")

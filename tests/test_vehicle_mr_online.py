@@ -1159,14 +1159,17 @@ def test_vehicle_mr_history_export_writes_rows(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     store = VehicleMrOnlineStore(paths, "demo")
     with store.connect() as conn:
-        conn.execute(
+        conn.executemany(
             """
             INSERT INTO vehicle_mr_train_pass_events (
                 train_id, train_display_name, train_no, car_end_label, event_time,
                 status, station, ap_name, rssi, event_type, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("列车06", "06车", "06", "TC1", "2026-06-26 01:00:00", "在线", "鼓楼站", "AP-A", 46, "online", "2026-06-26 01:00:00"),
+            [
+                ("列车06", "06车", "06", "TC1", "2026-06-26 01:00:00", "在线", "鼓楼站", "AP-A", 46, "online", "2026-06-26 01:00:00"),
+                ("列车06", "06车", "06", "TC2", "2026-06-26 01:30:00", "离线", "鼓楼站", "AP-B", 0, "offline", "2026-06-26 01:30:00"),
+            ],
         )
 
     spec = vehicle_mr_history_xlsx_spec(
@@ -1175,7 +1178,7 @@ def test_vehicle_mr_history_export_writes_rows(tmp_path: Path) -> None:
         data_root=paths.data_root,
         site_name="demo",
         train_id="列车06",
-        filters={"start_time": "2026-06-26 00:00:00", "end_time": "2026-06-26 02:00:00"},
+        filters={"start_time": "2026-06-26 00:00:00", "end_time": "2026-06-26 02:00:00", "car_end_label": ["TC1"], "status": ["在线"]},
         title="导出历史记录",
     )
     job = spec.to_job("vehicle-mr-history-test")
@@ -1186,4 +1189,6 @@ def test_vehicle_mr_history_export_writes_rows(tmp_path: Path) -> None:
 
     sheet = load_workbook(path).active
     assert sheet.cell(1, 1).value == "时间"
+    assert sheet.max_row == 2
+    assert sheet.cell(2, 2).value == "TC1"
     assert sheet.cell(2, 4).value == "鼓楼站"
