@@ -8,6 +8,7 @@ import * as api from '../../api/siteStorage'
 import * as tasks from '../../api/tasks'
 import { ApiRequestError } from '../../api/client'
 import { clearSiteContext, markSiteContextSwitching, setActiveSiteContext } from '../../stores/siteContext'
+import { setAppLocale } from '../../i18n/runtime'
 import type { SiteRecord, SiteRetentionReport } from '../../api/siteStorage'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 
@@ -176,6 +177,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mountedPanels.splice(0).forEach((wrapper) => wrapper.unmount())
+  setAppLocale('zh_CN')
   vi.restoreAllMocks()
 })
 
@@ -217,6 +219,26 @@ describe('SiteStoragePanel', () => {
       ['demo'], 'C:\\exports\\bundle.zip', expect.any(Object),
     )
     expect(adapter.openTaskWindow).toHaveBeenCalled()
+  })
+
+  it('localizes the batch lightweight export risk flow in English', async () => {
+    setAppLocale('en_US')
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    adapter.selectSiteExportDestination.mockResolvedValueOnce({ cancelled: true } as never)
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const checkbox = wrapper.find('[aria-label="Select site 演示局点"]')
+    await checkbox.find('input').setValue(true)
+    expect(wrapper.get('[data-testid="export-sites-batch"]').text()).toContain('Export lightweight packages (1)')
+    await wrapper.get('[data-testid="export-sites-batch"]').trigger('click')
+    await flushPromises()
+
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('plaintext script tokens'),
+      'Confirm sensitive batch export',
+      expect.objectContaining({ confirmButtonText: 'I understand the risk and want to continue', cancelButtonText: 'Cancel' }),
+    )
   })
 
   it('freezes the central site context across Save As and cancels a stale export', async () => {

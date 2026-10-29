@@ -13,6 +13,7 @@ import { useWorkspaceStore } from '../../stores/workspace'
 import { coordinateSiteSwitch, LEGACY_SITE_CONTEXT_CHANGED_EVENT, notifySiteContextChanged, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 import { UI_PREFERENCE_KEYS } from '../../../../desktop_electron/src/shared/bridge'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
+import { t } from '../../i18n/runtime'
 
 const props = defineProps<{ focused?: boolean; switchBlocked?: boolean }>()
 
@@ -621,25 +622,25 @@ async function restoreImportedTablePreferences(preferences: Record<string, unkno
 
 async function exportSelectedLightweightBundle(): Promise<void> {
   const siteIds = [...selectedBundleSites.value]
-  if (!siteIds.length) { ElMessage.warning('请先勾选要批量导出的局点'); return }
-  if (isSiteContextSwitching()) { ElMessage.warning('请等待局点切换完成'); return }
+  if (!siteIds.length) { ElMessage.warning(siteStorageText('site_storage.batch_export.select_warning', '请先勾选要批量导出的局点')); return }
+  if (isSiteContextSwitching()) { ElMessage.warning(siteStorageText('site_storage.batch_export.wait_switch', '请等待局点切换完成')); return }
   busy.value = true
   try {
     await ElMessageBox.confirm(
-      `将 ${siteIds.length} 个局点打包为一个 ZIP，内含各局点轻量包、WPS 连接参数、明文脚本令牌及本地表格列设置。文件不加密，泄露可能导致设备和 WPS 文档被访问。请仅保存到可信位置。`,
-      '批量导出敏感信息确认',
-      { type: 'warning', confirmButtonText: '我已知晓风险，继续导出', cancelButtonText: '取消', closeOnClickModal: false },
+      siteStorageText('site_storage.batch_export.confirm_message', '将 {count} 个局点打包为一个 ZIP，内含各局点轻量包、WPS 连接参数、明文脚本令牌及本地表格列设置。文件不加密，泄露可能导致设备和 WPS 文档被访问。请仅保存到可信位置。', { count: siteIds.length }),
+      siteStorageText('site_storage.batch_export.confirm_title', '批量导出敏感信息确认'),
+      { type: 'warning', confirmButtonText: siteStorageText('site_storage.batch_export.confirm_button', '我已知晓风险，继续导出'), cancelButtonText: siteStorageText('site_storage.batch_export.cancel_button', '取消'), closeOnClickModal: false },
     )
-    const selected = await getPlatformAdapter().selectSiteExportDestination(`NetConsole_多局点轻量包_${new Date().toISOString().slice(0, 10).replaceAll('-', '')}.zip`)
+    const selected = await getPlatformAdapter().selectSiteExportDestination(siteStorageText('site_storage.batch_export.filename', 'NetConsole_多局点轻量包_{date}.zip', { date: new Date().toISOString().slice(0, 10).replaceAll('-', '') }))
     if (selected.cancelled || !selected.path) return
-    if (isSiteContextSwitching()) { ElMessage.warning('局点已切换，请重新发起批量导出'); return }
+    if (isSiteContextSwitching()) { ElMessage.warning(siteStorageText('site_storage.batch_export.context_changed', '局点已切换，请重新发起批量导出')); return }
     const preferences = await collectTableColumnPreferences()
     const task = await exportLightweightBundle(siteIds, selected.path, preferences)
     await openTask(task.task_id)
-    ElMessage.success('多局点轻量包导出任务已提交')
+    ElMessage.success(siteStorageText('site_storage.batch_export.submitted', '多局点轻量包导出任务已提交'))
   } catch (cause) {
     if (cause === 'cancel' || cause === 'close') return
-    showError(cause, '多局点轻量包导出失败')
+    showError(cause, siteStorageText('site_storage.batch_export.failed', '多局点轻量包导出失败'))
   } finally { busy.value = false }
 }
 
@@ -839,6 +840,11 @@ function deleteDisabledReason(site: SiteRecord): string {
   if (site.classification === 'empty_shell') return '空壳局点请使用“清理空壳局点”'
   return ''
 }
+function siteStorageText(key: string, fallback: string, replacements: Record<string, string | number> = {}): string {
+  let value = t(key, fallback)
+  for (const [placeholder, replacement] of Object.entries(replacements)) value = value.replace(`{${placeholder}}`, String(replacement))
+  return value
+}
 function packageTypeLabel(value: SitePackageType): string { return ({ full_migration: '完整迁移包', sanitized_share: '脱敏分享包', field_collection: '现场采集包', collection_return: '采集回传包', lightweight: '轻量包' } as const)[value] }
 function isSiteContextSwitching(): boolean { return String(siteContextState.value) === 'switching' }
 function displayValue(value: unknown): string { if (value === null || value === undefined || value === '') return '空'; if (typeof value === 'object') return JSON.stringify(value); return String(value) }
@@ -859,7 +865,7 @@ function displayValue(value: unknown): string { if (value === null || value === 
       <div v-if="root?.persistent !== false" class="actions">
         <el-button data-testid="create-site" :loading="busy" @click="newSite">新建局点</el-button>
         <el-button data-testid="import-site" :loading="busy" @click="importPackage">导入数据包</el-button>
-        <el-button data-testid="export-sites-batch" :loading="busy" :disabled="busy || !selectedBundleSites.length" @click="exportSelectedLightweightBundle">批量导出轻量包（{{ selectedBundleSites.length }}）</el-button>
+        <el-button data-testid="export-sites-batch" :loading="busy" :disabled="busy || !selectedBundleSites.length" @click="exportSelectedLightweightBundle">{{ siteStorageText('site_storage.batch_export.button', '批量导出轻量包（{count}）', { count: selectedBundleSites.length }) }}</el-button>
         <el-button
           v-if="desktopOnly"
           data-testid="restart-application"
@@ -900,12 +906,12 @@ function displayValue(value: unknown): string { if (value === null || value === 
     </div>
     <div v-if="root" class="root-summary"><span>{{ root.persistent ? '全局数据根' : '临时测试数据根' }}</span><code :title="root.persistent ? root.data_root : undefined">{{ root.data_root }}</code><span>{{ root.site_count }} 个局点</span><template v-if="root.persistent"><el-button data-testid="migrate-data-root" size="small" @click="chooseRoot">选择并迁移</el-button><el-button data-testid="restore-data-root" size="small" :disabled="root.data_root === root.default_data_root" @click="restoreDefaultRoot">恢复默认路径</el-button></template></div>
     <div v-if="root?.persistent" class="site-batch-toolbar">
-      <el-checkbox :model-value="sites.length > 0 && selectedBundleSites.length === sites.length" :indeterminate="selectedBundleSites.length > 0 && selectedBundleSites.length < sites.length" :disabled="busy" @change="(checked: boolean) => { selectedBundleSites = checked ? sites.map((site) => site.site_id) : [] }">选择全部局点</el-checkbox>
-      <span>勾选要打包的局点，再点击“批量导出轻量包”</span>
+      <el-checkbox :model-value="sites.length > 0 && selectedBundleSites.length === sites.length" :indeterminate="selectedBundleSites.length > 0 && selectedBundleSites.length < sites.length" :disabled="busy" @change="(checked: boolean) => { selectedBundleSites = checked ? sites.map((site) => site.site_id) : [] }">{{ siteStorageText('site_storage.batch_export.select_all', '选择全部局点') }}</el-checkbox>
+      <span>{{ siteStorageText('site_storage.batch_export.instructions', '勾选要打包的局点，再点击“批量导出轻量包”') }}</span>
     </div>
     <div class="site-list">
       <article v-for="site in sites" :key="site.site_id" class="site-item" :class="{ active: site.active }">
-        <el-checkbox v-if="root?.persistent" :model-value="selectedBundleSites.includes(site.site_id)" :disabled="busy" :aria-label="`选择局点 ${site.display_name}`" @change="(checked: boolean) => toggleBundleSite(site.site_id, checked)" />
+        <el-checkbox v-if="root?.persistent" :model-value="selectedBundleSites.includes(site.site_id)" :disabled="busy" :aria-label="siteStorageText('site_storage.batch_export.site_aria', '选择局点 {name}', { name: site.display_name })" @change="(checked: boolean) => toggleBundleSite(site.site_id, checked)" />
         <div class="site-content">
           <div class="site-main">
             <strong>{{ site.display_name }}</strong>
