@@ -25,6 +25,7 @@ _IMPORT_STAGING_DIR_NAME = "site-import-staging"
 _OPERATION_LOCK_NAME = "site-package-staging-operation.lock"
 _INTERNAL_STAGING_PREFIXES = (
     "netconsole-site-export-",
+    "netconsole-batch-lightweight-",
     "netconsole-field-package-",
     "netconsole-return-package-",
     "netconsole-return-inspect-",

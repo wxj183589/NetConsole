@@ -64,6 +64,9 @@ def test_site_package_staging_recovers_interrupted_internal_and_publish_work(
     internal = paths.temp_dir / "netconsole-site-export-interrupted"
     internal.mkdir(parents=True)
     (internal / "devices.db").write_bytes(b"sqlite-staging")
+    batch = paths.temp_dir / "netconsole-batch-lightweight-interrupted"
+    batch.mkdir(parents=True)
+    (batch / "site-one.zip").write_bytes(b"zip-staging")
     imported = paths.temp_dir / "site-import-staging" / "interrupted"
     imported.mkdir(parents=True)
     (imported / "tasks.sqlite").write_bytes(b"sqlite-staging")
@@ -90,7 +93,7 @@ def test_site_package_staging_recovers_interrupted_internal_and_publish_work(
 
     assert result.to_dict() == {
         "status": "PASS",
-        "removed_internal_entries": 2,
+        "removed_internal_entries": 3,
         "removed_publish_files": 1,
         "removed_journals": 1,
         "restored_site_imports": 0,
@@ -100,6 +103,7 @@ def test_site_package_staging_recovers_interrupted_internal_and_publish_work(
         "failures": [],
     }
     assert not internal.exists()
+    assert not batch.exists()
     assert not imported.exists()
     assert not publish.exists()
     assert lifecycle.recover_orphans().status == "PASS"
@@ -1126,6 +1130,61 @@ def test_lightweight_export_uses_registry_id_and_legacy_directory_database(
     assert site_metadata["display_name"] == legacy_name
     with sqlite3.connect(snapshot) as connection:
         assert connection.execute("PRAGMA schema_version").fetchone() is not None
+
+
+def test_batch_lightweight_export_reads_wps_from_legacy_directory_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    legacy_name = "宁波地铁12号线"
+    paths.ensure_site_dirs(legacy_name)
+    Database(paths.site_db_path(legacy_name)).initialize()
+    (paths.site_dir(legacy_name) / "site_meta.json").write_text(
+        json.dumps({"display_name": legacy_name}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    sites = SiteApplicationService(paths)
+    legacy = next(
+        item for item in sites.list_sites() if item["display_name"] == legacy_name
+    )
+    wps = WpsSyncRepository(
+        paths,
+        legacy_name,
+        protect=_test_wps_protection,
+        unprotect=_test_wps_protection,
+    )
+    wps.initialize()
+    wps.upsert_target(
+        business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        target_code="wps_standard_spreadsheet",
+        target_type=WpsTargetType.STANDARD_SPREADSHEET,
+        target_name="WPS 云文档",
+        document_open_url="https://www.kdocs.cn/l/legacy-test",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/legacy/sync_task",
+        expected_document_id="legacy-test",
+        enabled=True,
+        timeout_seconds=30,
+        token="Legacy-Directory-Token",
+    )
+    monkeypatch.setattr(
+        WpsSyncRepository,
+        "resolve_token",
+        lambda self, target: "Legacy-Directory-Token",
+    )
+
+    package = tmp_path / "exports" / "legacy-batch.zip"
+    result = SitePackageService(paths, sites).export_lightweight_bundle(
+        [legacy["site_id"]], package
+    )
+
+    assert result["site_count"] == 1
+    with zipfile.ZipFile(package) as bundle:
+        settings = json.loads(
+            bundle.read(f"wps-connections/{legacy['site_id']}.json")
+        )
+    assert settings["site_id"] == legacy["site_id"]
+    assert settings["targets"][0]["token"] == "Legacy-Directory-Token"
 
 
 def test_lightweight_export_missing_source_database_fails_without_autoinit(

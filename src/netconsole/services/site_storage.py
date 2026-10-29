@@ -1905,8 +1905,9 @@ class SitePackageService:
         if not selected or len(selected) > 100 or len(selected) != len(site_ids):
             raise SiteStorageError("SITE_EXPORT_SCOPE_INVALID", "请选择 1 至 100 个不重复局点")
         selected = [validate_site_id(site_id) for site_id in selected]
+        selected_records: dict[str, SiteRecord] = {}
         for site_id in selected:
-            self.sites.registry.get(site_id)
+            selected_records[site_id] = self.sites.registry.get(site_id)
         preferences = _normalize_table_preferences(table_preferences)
         encoded_preferences = json.dumps(preferences, ensure_ascii=False).encode("utf-8")
 
@@ -1942,7 +1943,12 @@ class SitePackageService:
                         bundle.write(original_package, package_member, compress_type=zipfile.ZIP_STORED)
                         checksums[package_member] = _sha256(original_package)
 
-                        repository = WpsSyncRepository(self.paths, site_id)
+                        # The stable registry ID is the package identity, while
+                        # the WPS database remains under the physical site
+                        # directory for legacy Chinese-named sites.
+                        repository = WpsSyncRepository(
+                            self.paths, selected_records[site_id].root_path.name
+                        )
                         targets: list[dict[str, object]] = []
                         if repository.path.is_file():
                             try:
