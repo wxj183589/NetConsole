@@ -80,6 +80,8 @@ const en: Record<string, string> = {
   'trackside.wps.save_and_close': 'Save and close',
   'trackside.wps.keep_editing': 'Keep editing',
   'trackside.wps.close': 'Close',
+  'trackside.wps.identity_details': 'Script and remote identity details (expand as needed)',
+  'trackside.wps.diagnostics': 'Connection, probe, and sync diagnostics (expand as needed)',
   'settings.site': 'Current site', 'settings.features': 'Feature switches', 'settings.unsaved': 'Unsaved changes',
   'settings.language_block': 'BLOCKED_ON_GLOBAL_I18N: Shell and settings consume the shared runtime; business modules are not fully connected.',
   'database_upgrade.organize_legacy': 'Organize legacy archives',

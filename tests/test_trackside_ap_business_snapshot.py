@@ -540,7 +540,7 @@ def test_export_snapshot_selected_stations_filter_every_station_sheet(
         {"business_row_id": "row-b", "site": "站点B", "device_name": "SW-B", "interface_name": "GE1/0/2"},
     ]
     overview_rows = [
-        {"site": "站点A", "total": 10, "online": 8, "optical_problem_count": 2},
+        {"site": "站点A", "total": 10, "online": 10, "optical_problem_count": 2, "status": "over_planned"},
         {"site": "站点B", "total": 15, "online": 15, "optical_problem_count": 1},
     ]
     scope = SimpleNamespace(
@@ -581,7 +581,10 @@ def test_export_snapshot_selected_stations_filter_every_station_sheet(
     assert [row["site"] for row in workbook["optical_treatment_rows"]] == ["站点A"]
     assert [row["site"] for row in workbook["overview_rows"]] == ["站点A", "合计"]
     assert workbook["overview_rows"][-1]["total"] == 10
-    assert workbook["overview_rows"][-1]["online"] == 8
+    assert workbook["overview_rows"][-1]["online"] == 10
+    assert workbook["overview_rows"][-1]["online_rate"] == "—"
+    assert workbook["overview_rows"][-1]["status"] == "anomaly"
+    assert "数量异常" in workbook["overview_rows"][-1]["remark"]
     assert workbook["overview_rows"][-1]["optical_problem_count"] == 2
     assert workbook["offline_stats"]["total_aps"] == 1
     assert workbook["offline_stats"]["online_aps"] == 1

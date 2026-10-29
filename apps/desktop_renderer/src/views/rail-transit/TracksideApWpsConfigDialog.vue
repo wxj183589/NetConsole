@@ -674,7 +674,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         </div>
 
         <el-collapse class="details-collapse">
-          <el-collapse-item title="脚本与远端身份详情（按需展开）" name="identity">
+          <el-collapse-item :title="t('trackside.wps.identity_details', '脚本与远端身份详情（按需展开）')" name="identity">
         <div class="script-identity">
           <span>本地期望脚本版本 <code>{{ row.target.expected_script_version || '未返回' }}</code></span>
           <span>本地期望部署 ID <code>{{ row.target.expected_deployment_id || '未返回' }}</code></span>
@@ -754,7 +754,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <el-tag size="small" :type="statusType(row.target.last_sync_status)">{{ statusLabel(row.target.last_sync_status) }}</el-tag>
         </div>
         <el-collapse class="details-collapse">
-          <el-collapse-item title="连接、探针与同步诊断（按需展开）" name="diagnostics">
+          <el-collapse-item :title="t('trackside.wps.diagnostics', '连接、探针与同步诊断（按需展开）')" name="diagnostics">
         <div class="operation-diagnostics">
           <div v-for="item in diagnosticItems(row.target)" :key="item.label" class="operation-diagnostic">
             <div class="diagnostic-heading">

@@ -831,6 +831,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     api.listTracksideWpsTargets.mockResolvedValue([{ ...initialTargets[0], timeout_seconds: 45 }])
 
     expect(dialog.text()).toContain('Save and close')
+    expect(dialog.text()).toContain('Script and remote identity details (expand as needed)')
+    expect(dialog.text()).toContain('Connection, probe, and sync diagnostics (expand as needed)')
     await vm.saveAndClose()
     expect(confirmMocks.confirm).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Unsaved WPS configuration',

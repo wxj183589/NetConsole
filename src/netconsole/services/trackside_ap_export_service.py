@@ -1033,12 +1033,20 @@ def _build_trackside_ap_business_export_snapshot_once(
         planned = sum(int(row.get("total") or 0) for row in overview_rows)
         online = sum(int(row.get("online") or 0) for row in overview_rows)
         optical = sum(int(row.get("optical_problem_count") or 0) for row in overview_rows)
+        selected_count_anomaly = any(
+            str(row.get("status") or "") in {"unplanned_online", "over_planned", "anomaly"}
+            for row in overview_rows
+        )
+        selected_remark = f"仅统计已选择的 {len(station_set)} 个车站"
+        if selected_count_anomaly:
+            selected_remark += "；选定范围存在数量异常，请查看分站状态。"
         overview_rows.append({
             "site": "合计", "total": planned, "online": online,
             "offline": max(planned - online, 0),
-            "online_rate": f"{online / planned:.1%}" if planned else "—",
+            "online_rate": f"{online / planned:.1%}" if planned and not selected_count_anomaly else "—",
             "optical_problem_count": optical,
-            "remark": f"仅统计已选择的 {len(station_set)} 个车站", "status": "normal",
+            "remark": selected_remark,
+            "status": "anomaly" if selected_count_anomaly else "normal",
         })
     requested_ids = tuple(
         dict.fromkeys(str(value or "").strip() for value in selected_row_ids)
