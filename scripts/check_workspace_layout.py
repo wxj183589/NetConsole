@@ -433,6 +433,8 @@ def _registered_independent_worktrees(workspace_root: Path) -> tuple[Path, ...]:
     paths: list[Path] = []
     for name in INDEPENDENT_REPOSITORIES:
         repository = workspace_root / name
+        if _is_reparse_point(repository):
+            continue
         if not _is_registered_independent_repository(repository):
             continue
         independent_paths, _ = _git_worktrees(repository)
