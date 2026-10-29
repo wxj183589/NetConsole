@@ -125,11 +125,16 @@ def test_render_version_info_contains_requested_product_version():
 def test_release_script_documents_the_supported_packaging_entrypoint():
     root = Path(__file__).resolve().parents[1]
     text = (root / "scripts" / "build" / "release.py").read_text(encoding="utf-8")
+    docs = (root / "docs" / "release" / "BUILD_AND_RELEASE.md").read_text(
+        encoding="utf-8"
+    )
 
     assert not (root / "release.py").exists()
     assert "scripts/build/package_windows.ps1" in text
     assert "ReleaseAutomationDisabled" in text
     assert "Gitea" not in text
+    assert "scripts/build/release.py` 的旧 Git 发布编排已停用" in docs
+    assert "只有显式 `python -m scripts.build.release" not in docs
 
 
 def test_legacy_release_script_has_no_git_mutation_commands():
