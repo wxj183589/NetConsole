@@ -427,6 +427,19 @@ def _git_worktrees(repo_root: Path) -> tuple[tuple[Path, ...], list[Violation]]:
     return paths, []
 
 
+def _registered_independent_worktrees(workspace_root: Path) -> tuple[Path, ...]:
+    """Return worktrees owned by independently registered repositories."""
+
+    paths: list[Path] = []
+    for name in INDEPENDENT_REPOSITORIES:
+        repository = workspace_root / name
+        if not _is_registered_independent_repository(repository):
+            continue
+        independent_paths, _ = _git_worktrees(repository)
+        paths.extend(independent_paths)
+    return tuple(paths)
+
+
 def check_worktree_locations(repo_root: Path, workspace_root: Path | None, worktree_paths: Iterable[Path]) -> list[Violation]:
     if workspace_root is None:
         return []
@@ -484,7 +497,8 @@ def run_checks(repo_root: Path, workspace_root: Path | None = None) -> list[Viol
     worktree_paths, git_result = _git_worktrees(repo_root)
     result.extend(git_result)
     if workspace_root is not None:
-        result.extend(check_workspace_root(workspace_root, worktree_paths))
+        managed_paths = (*worktree_paths, *_registered_independent_worktrees(workspace_root))
+        result.extend(check_workspace_root(workspace_root, managed_paths))
         result.extend(check_worktree_locations(repo_root, workspace_root, worktree_paths))
         try:
             common_dir_process = subprocess.run(

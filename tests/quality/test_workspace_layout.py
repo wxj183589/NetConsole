@@ -8,6 +8,7 @@ from scripts.check_workspace_layout import (
     check_repository_root,
     check_worktree_locations,
     check_workspace_root,
+    run_checks,
 )
 
 
@@ -61,6 +62,29 @@ def test_registered_independent_repository_is_accepted_only_with_expected_identi
     )
     kinds = {item.kind for item in check_workspace_root(tmp_path)}
     assert kinds == {"UNAPPROVED_WORKSPACE_TOP_LEVEL", "DUPLICATE_WORKSPACE_REPOSITORY"}
+
+
+def test_registered_independent_repository_worktrees_are_managed(tmp_path: Path) -> None:
+    main = tmp_path / "NetConsole"
+    main.mkdir()
+    subprocess.run(("git", "init", "-q", str(main)), check=True)
+    independent = tmp_path / "NetConsole-Next"
+    independent.mkdir()
+    subprocess.run(("git", "init", "-q", str(independent)), check=True)
+    subprocess.run(
+        ("git", "-C", str(independent), "remote", "add", "origin", "https://github.com/wxj183589/NetConsole-Next.git"),
+        check=True,
+    )
+    (independent / "README.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(("git", "-C", str(independent), "add", "README.md"), check=True)
+    subprocess.run(("git", "-C", str(independent), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "fixture"), check=True)
+    worktrees = tmp_path / "worktrees"
+    worktrees.mkdir()
+    subprocess.run(("git", "-C", str(independent), "worktree", "add", "--detach", "-q", str(worktrees / "next")), check=True)
+
+    violations = run_checks(main, tmp_path)
+
+    assert not any(item.kind == "UNMANAGED_WORKTREE_DIRECTORY" for item in violations)
 
 
 def test_backup_container_is_allowed_but_unknown_repository_is_rejected(tmp_path: Path) -> None:
