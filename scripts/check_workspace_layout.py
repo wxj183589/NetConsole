@@ -427,19 +427,23 @@ def _git_worktrees(repo_root: Path) -> tuple[tuple[Path, ...], list[Violation]]:
     return paths, []
 
 
-def _registered_independent_worktrees(workspace_root: Path) -> tuple[Path, ...]:
+def _registered_independent_worktrees(
+    workspace_root: Path,
+) -> tuple[tuple[Path, ...], list[Violation]]:
     """Return worktrees owned by independently registered repositories."""
 
     paths: list[Path] = []
+    violations: list[Violation] = []
     for name in INDEPENDENT_REPOSITORIES:
         repository = workspace_root / name
         if _is_reparse_point(repository):
             continue
         if not _is_registered_independent_repository(repository):
             continue
-        independent_paths, _ = _git_worktrees(repository)
+        independent_paths, independent_errors = _git_worktrees(repository)
         paths.extend(independent_paths)
-    return tuple(paths)
+        violations.extend(independent_errors)
+    return tuple(paths), violations
 
 
 def check_worktree_locations(
@@ -518,7 +522,8 @@ def run_checks(repo_root: Path, workspace_root: Path | None = None) -> list[Viol
     worktree_paths, git_result = _git_worktrees(repo_root)
     result.extend(git_result)
     if workspace_root is not None:
-        independent_worktree_paths = _registered_independent_worktrees(workspace_root)
+        independent_worktree_paths, independent_worktree_errors = _registered_independent_worktrees(workspace_root)
+        result.extend(independent_worktree_errors)
         managed_paths = (*worktree_paths, *independent_worktree_paths)
         result.extend(check_workspace_root(workspace_root, managed_paths))
         result.extend(check_worktree_locations(repo_root, workspace_root, worktree_paths))
