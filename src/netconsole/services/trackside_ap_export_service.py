@@ -31,7 +31,6 @@ from netconsole.services.offline_ap_ledger import (
     build_device_lookup_by_name,
     build_current_ap_history_indexes,
     build_offline_ap_ledger,
-    build_offline_ap_stats,
     offline_ap_headers,
 )
 from netconsole.services.trackside_ap_business import (
@@ -1071,10 +1070,21 @@ def _build_trackside_ap_business_export_snapshot_once(
 
         new_online_ap_rows = [row for row in new_online_ap_rows if in_selected_station(row)]
         optical_treatment_rows = [row for row in optical_treatment_rows if in_selected_station(row)]
-        offline_ledger_rows = [row for row in offline_ledger_rows if in_selected_station(row)]
         unmatched_online_rows = [row for row in unmatched_online_rows if in_selected_station(row)]
-        scoped_resources = [row for row in resources if in_selected_station(row)]
-        offline_stats = build_offline_ap_stats(scoped_resources, offline_ledger_rows)
+        # Use the scope-resolved resource projection here. Runtime resources
+        # may not carry a station name even when exact AP identity matching
+        # resolved their station from base data or planning evidence.
+        scoped_resources = [
+            row
+            for row in scope.resources
+            if in_selected_station(row)
+        ]
+        offline_stats, offline_ledger_rows = build_offline_ap_ledger(
+            fit_ap_resources=scoped_resources,
+            latest_lldp_by_ap=latest_lldp,
+            device_lookup_by_name=build_device_lookup_by_name(devices),
+            resource_history_rows=resource_history_rows,
+        )
     return {
         "snapshot_id": snapshot.snapshot_id,
         "site_id": site_name,

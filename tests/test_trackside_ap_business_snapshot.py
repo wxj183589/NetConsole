@@ -544,7 +544,11 @@ def test_export_snapshot_selected_stations_filter_every_station_sheet(
         {"site": "站点B", "total": 15, "online": 15, "optical_problem_count": 1},
     ]
     scope = SimpleNamespace(
-        runtime_resources=[{"site": "站点A", "ap_uuid": "a"}, {"site": "站点B", "ap_uuid": "b"}],
+        runtime_resources=[{"ap_uuid": "a"}, {"ap_uuid": "b"}],
+        resources=[
+            {"site": "站点A", "ap_uuid": "a"},
+            {"site": "站点B", "ap_uuid": "b"},
+        ],
         context=SimpleNamespace(project_phase="all"),
         planned_ap_total=25,
         overview_export_rows=lambda *_args: overview_rows,
@@ -557,7 +561,6 @@ def test_export_snapshot_selected_stations_filter_every_station_sheet(
     )
     monkeypatch.setattr(export_service, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: snapshot)
     monkeypatch.setattr(export_service, "require_complete_trackside_snapshot", lambda *_args: None)
-    monkeypatch.setattr(export_service, "build_offline_ap_ledger", lambda **_kwargs: ({}, []))
     monkeypatch.setattr(export_service, "build_new_online_ap_overview_rows", lambda *_args: [
         {"site": "站点A", "ap_name": "AP-A"}, {"site": "站点B", "ap_name": "AP-B"},
     ])
@@ -580,6 +583,8 @@ def test_export_snapshot_selected_stations_filter_every_station_sheet(
     assert workbook["overview_rows"][-1]["total"] == 10
     assert workbook["overview_rows"][-1]["online"] == 8
     assert workbook["overview_rows"][-1]["optical_problem_count"] == 2
+    assert workbook["offline_stats"]["total_aps"] == 1
+    assert workbook["offline_stats"]["online_aps"] == 1
 
 
 def test_wps_snapshot_forwards_selected_stations_to_shared_export_builder(
