@@ -11,16 +11,24 @@ import { meshSessionPathSegment } from '../validation/opaqueIdentifier'
 
 const root = '/api/rail-transit/mesh-analysis'
 
-function qs(values: Record<string, string | number | boolean | null | undefined>): string {
+type QueryValue = string | number | boolean | null | undefined | readonly (string | number)[]
+
+function qs(values: Record<string, QueryValue>): string {
   const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(values)) if (value !== '' && value !== null && value !== undefined) params.set(key, String(value))
+  for (const [key, value] of Object.entries(values)) {
+    if (Array.isArray(value)) {
+      for (const item of value) if (item !== '') params.append(key, String(item))
+    } else if (value !== '' && value !== null && value !== undefined) {
+      params.set(key, String(value))
+    }
+  }
   const text = params.toString()
   return text ? `?${text}` : ''
 }
 
 export const getMeshAnalysisSummary = (): Promise<MeshAnalysisSummary> => apiRequest(`${root}/summary`)
 export const getMeshAnalysisOverview = (
-  values: Record<string, string | number | boolean | null | undefined>,
+  values: Record<string, QueryValue>,
   signal?: AbortSignal,
 ): Promise<MeshAnalysisOverview> => apiRequest(
   `${root}/overview${qs(values)}`,
@@ -58,7 +66,7 @@ export const openMeshLocalScanCandidateDirectory = (scanId: string, candidateId:
   `${root}/local-scans/${encodeURIComponent(scanId)}/candidates/${encodeURIComponent(candidateId)}/open-directory`,
   { method: 'POST' },
 )
-export const listMeshAnalysisSessions = (values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)
+export const listMeshAnalysisSessions = (values: Record<string, QueryValue>): Promise<Page<MeshAnalysisSession>> => apiRequest(`${root}/sessions${qs(values)}`)
 export const auditMeshApCoverage = (sessionIds: string[]): Promise<MeshApCoverageAudit> => apiRequest(
   `${root}/ap-coverage/audit`, { method: 'POST', body: JSON.stringify({ session_ids: sessionIds }) },
 )
@@ -69,7 +77,7 @@ export const getMeshAnalysisSession = (id: string, signal?: AbortSignal): Promis
   `${root}/sessions/${meshSessionPathSegment(id)}`,
   signal ? { signal } : undefined,
 )
-export const listMeshParseIssues = (id: string, values: Record<string, string | number | boolean | null | undefined>, signal?: AbortSignal): Promise<MeshParseIssuePage> => apiRequest(
+export const listMeshParseIssues = (id: string, values: Record<string, QueryValue>, signal?: AbortSignal): Promise<MeshParseIssuePage> => apiRequest(
   `${root}/sessions/${meshSessionPathSegment(id)}/parse-issues${qs(values)}`,
   signal ? { signal } : undefined,
 )
@@ -86,10 +94,10 @@ export const startMeshMaintenance = (
 )
 export const exportMeshLinkDetails = (id: string, sourceFileId: number, analysisParamsOverride?: MeshAnalysisParams): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/link-details/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId, ...(analysisParamsOverride ? { analysis_params_override: analysisParamsOverride } : {}) }) })
 export const exportMeshRawLinks = (id: string, sourceFileId: number): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/raw-links/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId }) })
-export const listMeshLinks = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/links${qs(values)}`)
+export const listMeshLinks = (id: string, values: Record<string, QueryValue>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/links${qs(values)}`)
 export const listMeshActiveBuildOrder = (
   id: string,
-  values: Record<string, string | number | boolean | null | undefined>,
+  values: Record<string, QueryValue>,
   signal?: AbortSignal,
 ): Promise<Page<MeshActiveBuildOrder>> => apiRequest(
   `${root}/sessions/${meshSessionPathSegment(id)}/active-build-order${qs(values)}`,
@@ -99,7 +107,7 @@ export const MESH_ACTIVE_PATH_QUERY_TIMEOUT_MS = 30_000
 export const MESH_TRACKSIDE_SIGNAL_QUERY_TIMEOUT_MS = 60_000
 export const getMeshActivePathChart = (
   id: string,
-  values: Record<string, string | number | boolean | null | undefined> = {},
+  values: Record<string, QueryValue> = {},
   signal?: AbortSignal,
 ): Promise<MeshPathChart> => apiRequest(
   `${root}/sessions/${meshSessionPathSegment(id)}/charts/active-path${qs(values)}`,
@@ -107,15 +115,15 @@ export const getMeshActivePathChart = (
 )
 export const getMeshTracksideSignalChart = (
   id: string,
-  values: Record<string, string | number | boolean | null | undefined> = {},
+  values: Record<string, QueryValue> = {},
   signal?: AbortSignal,
 ): Promise<MeshTracksideSignalChartData> => apiRequest(
   `${root}/sessions/${meshSessionPathSegment(id)}/charts/trackside-signal${qs(values)}`,
   { queryTimeoutMs: MESH_TRACKSIDE_SIGNAL_QUERY_TIMEOUT_MS, ...(signal ? { signal } : {}) },
 )
-export const getMeshPeerSegmentChart = (id: string, values: Record<string, string | number | boolean | null | undefined>): Promise<MeshPathChart> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/charts/peer-segment${qs(values)}`)
+export const getMeshPeerSegmentChart = (id: string, values: Record<string, QueryValue>): Promise<MeshPathChart> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/charts/peer-segment${qs(values)}`)
 export const getMeshTimeline = (id: string): Promise<{ items: MeshTimelineItem[]; total: number }> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/timeline`)
-export const listMeshSwitchEvents = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<Page<MeshSwitchEvent>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/switch-events${qs(values)}`)
+export const listMeshSwitchEvents = (id: string, values: Record<string, QueryValue> = {}): Promise<Page<MeshSwitchEvent>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/switch-events${qs(values)}`)
 export const getMeshRssi = (id: string): Promise<MeshRssi> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/rssi`)
 export const getMeshChannelBusy = (id: string): Promise<{ items: MeshChannelBusy[]; total: number; downsampled: boolean }> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/channel-busy`)
 export const getMeshRateSeries = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshRatePage> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/rate-series${qs(values)}`)

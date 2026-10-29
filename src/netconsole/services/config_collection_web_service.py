@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
+from collections.abc import Iterable
 from typing import Any
 from uuid import uuid4
 
@@ -57,6 +58,13 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 
 
 CONFIG_COLLECTION_ACTIONS = {"fetch": "config_web_snapshot_fetch"}
+
+
+def _snapshot_type_filter(value: str | Iterable[str]) -> str | list[str] | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    selected = list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+    return selected or None
 CONFIG_WEB_OWNER = "web_config_collection"
 ACTIVE_TASK_STATES = {TaskState.PENDING, TaskState.STARTING, TaskState.RUNNING, TaskState.STOPPING}
 CONFIG_WEB_TASK_TYPES = frozenset(
@@ -138,6 +146,7 @@ class ConfigCollectionApplicationService:
         *,
         search: str = "",
         group_filter: str = "",
+        group_values: list[str] | None = None,
         work_scope_status: str = "included",
         page: int = 1,
         page_size: int = 50,
@@ -153,6 +162,7 @@ class ConfigCollectionApplicationService:
             search=str(search or "").strip() or None,
             vendor="H3C",
             group_filter=self._group_filter(group_filter),
+            group_values=group_values,
             work_scope_status="included",
         )
         current_page = max(1, int(page))
@@ -171,7 +181,7 @@ class ConfigCollectionApplicationService:
             groups=groups,
         )
 
-    def list_snapshots(self, site_name: str, device_id: int, snapshot_type: str = "") -> list[ConfigSnapshotDTO]:
+    def list_snapshots(self, site_name: str, device_id: int, snapshot_type: str | Iterable[str] = "") -> list[ConfigSnapshotDTO]:
         device, _repository, service = self._device_context(site_name, device_id)
         snapshots = service.list_device_snapshots(device, str(snapshot_type or "").strip() or None)
         return [
@@ -184,13 +194,13 @@ class ConfigCollectionApplicationService:
         self,
         site_name: str,
         device_id: int,
-        snapshot_type: str = "",
+        snapshot_type: str | Iterable[str] = "",
         *,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[ConfigSnapshotDTO], int]:
         device, repository, _service = self._device_context(site_name, device_id)
-        selected_type = str(snapshot_type or "").strip() or None
+        selected_type = _snapshot_type_filter(snapshot_type)
         snapshots = repository.list_for_device_page(
             str(device.device_uuid or ""),
             selected_type,
@@ -211,12 +221,12 @@ class ConfigCollectionApplicationService:
         )
 
     def count_snapshots(
-        self, site_name: str, device_id: int, snapshot_type: str = ""
+        self, site_name: str, device_id: int, snapshot_type: str | Iterable[str] = ""
     ) -> int:
         device, repository, _service = self._device_context(site_name, device_id)
         return repository.count_for_device(
             str(device.device_uuid or ""),
-            str(snapshot_type or "").strip() or None,
+            _snapshot_type_filter(snapshot_type),
         )
 
     def submit_collection(self, site_name: str, action: str, device_ids: list[int]) -> list[ConfigTaskReferenceDTO]:

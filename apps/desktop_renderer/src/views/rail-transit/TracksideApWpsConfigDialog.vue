@@ -19,8 +19,10 @@ import type {
   WpsTracksideDiagnostic,
   WpsTracksideTarget,
   WpsTracksideTargetCode,
+  WpsTracksideTargetUpdate,
 } from '../../types/tracksideApBusiness'
 import { getPlatformAdapter } from '../../platform/runtime'
+import { t } from '../../i18n/runtime'
 import { openWpsDocumentUrl } from './wpsDocumentLink'
 import { wpsAirScriptSource, type WpsAirScriptKind } from './wpsAirScriptSources'
 import { normalizeWpsUrlInput, tryParseWpsWebhookIdentity, type WpsUrlKind } from './wpsUrlInput'
@@ -90,6 +92,10 @@ const row = computed(() => {
   const draft = targetDraft(target.target_code)
   return draft ? { target, draft } : undefined
 })
+const hasUnsavedChanges = computed(() => localTargets.value.some((target) => {
+  const draft = targetDraft(target.target_code)
+  return Boolean(draft && targetDraftDirty(target, draft))
+}))
 const draftWebhookIdentity = computed(() => {
   const draft = row.value?.draft
   return draft ? tryParseWpsWebhookIdentity(draft.webhook_url) : undefined
@@ -358,17 +364,22 @@ async function saveTargetConfiguration(
   errorMessage.value = ''
   try {
     const token = draft.token.trim()
-    const document = normalizeWpsUrlInput(draft.document_open_url, 'document')
-    const webhook = normalizeWpsUrlInput(draft.webhook_url, 'webhook')
-    draft.document_open_url = document.url
-    draft.webhook_url = webhook.url
-    await updateTracksideWpsTarget(code, {
+    const documentInput = draft.document_open_url.trim()
+    const webhookInput = draft.webhook_url.trim()
+    const payload: WpsTracksideTargetUpdate = {
       enabled: draft.enabled,
       timeout_seconds: draft.timeout_seconds,
-      document_open_url: document.url,
-      webhook_url: webhook.url,
       ...(token ? { token } : {}),
-    })
+    }
+    if (documentInput || webhookInput) {
+      const document = normalizeWpsUrlInput(documentInput, 'document')
+      const webhook = normalizeWpsUrlInput(webhookInput, 'webhook')
+      draft.document_open_url = document.url
+      draft.webhook_url = webhook.url
+      payload.document_open_url = document.url
+      payload.webhook_url = webhook.url
+    }
+    await updateTracksideWpsTarget(code, payload)
     draft.token = ''
     await reloadTargets(true)
     if (!silent) ElMessage.success('当前 WPS 云文档连接配置已保存')
@@ -379,6 +390,38 @@ async function saveTargetConfiguration(
   } finally {
     savingCode.value = ''
   }
+}
+
+async function saveAllTargetConfigurations(silent = false): Promise<boolean> {
+  for (const target of [...localTargets.value]) {
+    const draft = targetDraft(target.target_code)
+    if (!draft || !targetDraftDirty(target, draft)) continue
+    if (!await saveTargetConfiguration(target.target_code, silent)) return false
+  }
+  return true
+}
+
+async function beforeClose(done: () => void): Promise<void> {
+  if (!hasUnsavedChanges.value) {
+    done()
+    return
+  }
+  const confirmed = await confirm({
+    type: 'WARNING',
+    title: t('trackside.wps.unsaved_title', 'WPS 配置未保存'),
+    message: t('trackside.wps.unsaved_message', '当前局点有未保存的 WPS 配置。保存成功后才会关闭弹窗；取消将继续编辑。'),
+    confirmText: t('trackside.wps.save_and_close', '保存并关闭'),
+    cancelText: t('trackside.wps.keep_editing', '继续编辑'),
+  })
+  if (confirmed && await saveAllTargetConfigurations(true)) done()
+}
+
+async function saveAndClose(): Promise<void> {
+  await beforeClose(() => { visible.value = false })
+}
+
+function requestClose(): void {
+  void beforeClose(() => { visible.value = false })
 }
 
 function normalizePastedWpsUrl(
@@ -569,6 +612,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
     title="配置 WPS 云文档连接"
     width="min(820px, 94vw)"
     :close-on-click-modal="false"
+    :before-close="beforeClose"
     destroy-on-close
   >
     <div class="wps-config">
@@ -629,6 +673,8 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           </div>
         </div>
 
+        <el-collapse class="details-collapse">
+          <el-collapse-item :title="t('trackside.wps.identity_details', '脚本与远端身份详情（按需展开）')" name="identity">
         <div class="script-identity">
           <span>本地期望脚本版本 <code>{{ row.target.expected_script_version || '未返回' }}</code></span>
           <span>本地期望部署 ID <code>{{ row.target.expected_deployment_id || '未返回' }}</code></span>
@@ -655,6 +701,8 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <span v-if="row.target.runtime_probe_script_version">最近探针脚本版本 <code>{{ row.target.runtime_probe_script_version }}</code></span>
           <span v-if="row.target.runtime_probe_deployment_id">最近探针部署 ID <code>{{ row.target.runtime_probe_deployment_id }}</code></span>
         </div>
+          </el-collapse-item>
+        </el-collapse>
 
         <el-form label-position="top" class="connection-fields">
           <el-form-item label="在线文档连接：">
@@ -705,6 +753,8 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           <span>最近同步</span>
           <el-tag size="small" :type="statusType(row.target.last_sync_status)">{{ statusLabel(row.target.last_sync_status) }}</el-tag>
         </div>
+        <el-collapse class="details-collapse">
+          <el-collapse-item :title="t('trackside.wps.diagnostics', '连接、探针与同步诊断（按需展开）')" name="diagnostics">
         <div class="operation-diagnostics">
           <div v-for="item in diagnosticItems(row.target)" :key="item.label" class="operation-diagnostic">
             <div class="diagnostic-heading">
@@ -738,6 +788,8 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
             </span>
           </div>
         </div>
+          </el-collapse-item>
+        </el-collapse>
 
         <div class="target-actions">
           <el-button
@@ -771,11 +823,12 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
     </div>
 
     <template #footer>
-      <el-button @click="visible = false">关闭</el-button>
+      <el-button @click="requestClose">{{ t('trackside.wps.close', '关闭') }}</el-button>
+      <el-button type="primary" :loading="Boolean(savingCode)" @click="saveAndClose">{{ t('trackside.wps.save_and_close', '保存并关闭') }}</el-button>
     </template>
   </el-dialog>
 </template>
 
 <style scoped>
-.wps-config{display:grid;gap:16px;max-height:70vh;overflow:auto;padding-right:4px}.wps-config :deep(.el-form-item){margin-bottom:14px}.wps-target{display:grid;gap:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:16px}.target-heading,.target-actions,.target-status,.deployment-actions,.diagnostic-heading{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.target-heading{justify-content:space-between}.target-heading>div{display:grid;gap:4px}.target-heading span,.target-status,.target-fields span,.script-identity{color:var(--el-text-color-secondary);font-size:12px}.target-fields{display:grid;grid-template-columns:150px 220px minmax(180px,1fr);gap:16px}.target-fields>label,.target-fields>div{display:grid;align-content:start;gap:7px}.script-identity{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px}.connection-fields{display:grid;grid-template-columns:1fr;gap:0}.deployment-actions{justify-content:flex-start}.deployment-steps{display:grid;gap:8px;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-light);font-size:13px}.deployment-steps ol{margin:0;padding-left:22px}.deployment-steps li{margin:5px 0}.deployment-steps p{margin:0;color:var(--el-text-color-secondary)}.target-status{flex-wrap:wrap}.target-status>span:nth-of-type(2){margin-left:12px}.operation-diagnostics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.operation-diagnostic{display:grid;align-content:start;gap:4px;padding:8px 10px;border:1px solid var(--el-border-color-lighter);color:var(--el-text-color-regular);font-size:12px}.diagnostic-heading>span{color:var(--el-text-color-secondary)}.runtime-capabilities{display:grid;gap:4px;margin-top:4px;padding-top:6px;border-top:1px solid var(--el-border-color-lighter)}.runtime-capabilities>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.capability-warning{color:var(--nc-warning)}.target-actions{justify-content:flex-end}code{overflow-wrap:anywhere}@media(max-width:720px){.target-fields,.script-identity,.operation-diagnostics{grid-template-columns:1fr}.target-heading{align-items:flex-start;flex-direction:column}.target-actions{justify-content:flex-start}}
+.wps-config{display:grid;gap:16px;max-height:min(70vh,660px);overflow:auto;padding-right:4px}.wps-config :deep(.el-form-item){margin-bottom:14px}.wps-target{display:grid;gap:12px;border-top:1px solid var(--el-border-color-lighter);padding-top:16px}.target-heading,.target-actions,.target-status,.deployment-actions,.diagnostic-heading{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.target-heading{justify-content:space-between}.target-heading>div{display:grid;gap:4px}.target-heading span,.target-status,.target-fields span,.script-identity{color:var(--el-text-color-secondary);font-size:12px}.target-fields{display:grid;grid-template-columns:150px 220px minmax(180px,1fr);gap:16px}.target-fields>label,.target-fields>div{display:grid;align-content:start;gap:7px}.details-collapse{border-top:1px solid var(--el-border-color-lighter);border-bottom:1px solid var(--el-border-color-lighter)}.details-collapse :deep(.el-collapse-item__header){font-size:13px;color:var(--el-text-color-regular)}.details-collapse :deep(.el-collapse-item__content){padding-bottom:10px}.script-identity{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 16px}.connection-fields{display:grid;grid-template-columns:1fr;gap:0}.deployment-actions{justify-content:flex-start}.deployment-steps{display:grid;gap:8px;padding:12px;border:1px solid var(--el-border-color-lighter);background:var(--el-fill-color-light);font-size:13px}.deployment-steps ol{margin:0;padding-left:22px}.deployment-steps li{margin:5px 0}.deployment-steps p{margin:0;color:var(--el-text-color-secondary)}.target-status{flex-wrap:wrap}.target-status>span:nth-of-type(2){margin-left:12px}.operation-diagnostics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.operation-diagnostic{display:grid;align-content:start;gap:4px;padding:8px 10px;border:1px solid var(--el-border-color-lighter);color:var(--el-text-color-regular);font-size:12px}.diagnostic-heading>span{color:var(--el-text-color-secondary)}.runtime-capabilities{display:grid;gap:4px;margin-top:4px;padding-top:6px;border-top:1px solid var(--el-border-color-lighter)}.runtime-capabilities>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.capability-warning{color:var(--nc-warning)}.target-actions{justify-content:flex-end}code{overflow-wrap:anywhere}@media(max-width:720px){.target-fields,.script-identity,.operation-diagnostics{grid-template-columns:1fr}.target-heading{align-items:flex-start;flex-direction:column}.target-actions{justify-content:flex-start}}
 </style>

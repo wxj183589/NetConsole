@@ -113,6 +113,14 @@ const dataTableStub = defineComponent({
   },
 })
 
+const multiFilterStub = defineComponent({
+  name: 'NcMultiValueFilter',
+  props: { options: { type: Array, default: () => [] } },
+  setup(props) {
+    return () => h('div', { class: 'multi-filter-options' }, (props.options as string[]).join(' '))
+  },
+})
+
 const stubs: Record<string, Component> = {
   ElAlert: alertStub,
   ElButton: buttonStub,
@@ -139,6 +147,7 @@ const stubs: Record<string, Component> = {
   ElTag: tagStub,
   ElTooltip: passthrough,
   NcDataTable: dataTableStub,
+  NcMultiValueFilter: multiFilterStub,
   AcOmniPeekExportDialog: passthrough,
 }
 
@@ -226,6 +235,9 @@ function makeStore(selectedOptical = optical()) {
       optical_status: '',
       sort_by: 'topology',
       sort_order: 'asc',
+    },
+    multiFilters: {
+      statuses: [], optical_statuses: [], stations: [], sections: [], models: [], switches: [],
     },
     filterOptions: {
       stations: ['小洋江站'],

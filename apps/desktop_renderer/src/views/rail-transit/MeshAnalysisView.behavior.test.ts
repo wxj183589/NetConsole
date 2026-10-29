@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h, KeepAlive, nextTick, ref, useAttrs, type Component } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiRequestError } from '../../api/client'
 import meshAnalysisViewSource from './MeshAnalysisView.vue?raw'
 import type { TracksideSeriesCache } from '../../components/mesh-analysis/tracksideSeriesCache'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 
 const mocks = vi.hoisted(() => ({
   listProfiles: vi.fn(),
@@ -2401,8 +2402,8 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
       page: 1,
       page_size: 100,
-      radio: null,
-      result_filter: null,
+      radios: [],
+      result_filters: [],
     })
     const switchPane = wrapper.get('#pane-switches')
     const switchTable = switchPane.getComponent(dataTableStub)
@@ -2416,8 +2417,8 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
       page: 2,
       page_size: 100,
-      radio: null,
-      result_filter: null,
+      radios: [],
+      result_filters: [],
     })
 
     await pagination.vm.$emit('size-change', 200)
@@ -2425,28 +2426,32 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
       page: 1,
       page_size: 200,
-      radio: null,
-      result_filter: null,
+      radios: [],
+      result_filters: [],
     })
 
-    const radioSelect = switchPane.get('select[data-placeholder="Radio"]')
-    await radioSelect.setValue('1')
+    const radioFilter = switchPane.findAllComponents(NcMultiValueFilter)
+      .find((filter: VueWrapper<any>) => filter.props('placeholder') === '全部 Radio')!
+    await radioFilter.vm.$emit('update:modelValue', ['1'])
+    await radioFilter.vm.$emit('change', ['1'])
     await flushPromises()
     expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
       page: 1,
       page_size: 200,
-      radio: 1,
-      result_filter: null,
+      radios: [1],
+      result_filters: [],
     })
 
-    const resultSelect = switchPane.get('select[data-placeholder="切换分类"]')
-    await resultSelect.setValue('pingpong')
+    const resultFilter = switchPane.findAllComponents(NcMultiValueFilter)
+      .find((filter: VueWrapper<any>) => filter.props('placeholder') === '全部切换分类')!
+    await resultFilter.vm.$emit('update:modelValue', ['pingpong'])
+    await resultFilter.vm.$emit('change', ['pingpong'])
     await flushPromises()
     expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
       page: 1,
       page_size: 200,
-      radio: 1,
-      result_filter: 'pingpong',
+      radios: [1],
+      result_filters: ['pingpong'],
     })
     wrapper.unmount()
   })

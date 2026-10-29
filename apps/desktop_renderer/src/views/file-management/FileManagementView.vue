@@ -22,6 +22,7 @@ import {
 import { ApiRequestError } from '../../api/client'
 import { isFeatureEnabled } from '../../features'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type {
   FileConnection,
@@ -66,7 +67,7 @@ const localPageNumber = ref(1)
 const devices = ref<FileRemoteDevice[]>([])
 const selectedDeviceId = ref('')
 const deviceSearch = ref('')
-const deviceGroup = ref('')
+const deviceGroup = ref<string[]>([])
 const sftpSetupTaskId = ref('')
 const connection = ref<FileConnection | null>(null)
 const connectionStatus = ref('未连接')
@@ -88,7 +89,7 @@ const filteredDevices = computed(() => {
   const query = deviceSearch.value.trim().toLocaleLowerCase()
   return devices.value.filter((device) => {
     const group = device.group_name || '未分组'
-    return (!deviceGroup.value || group === deviceGroup.value)
+    return (!deviceGroup.value.length || deviceGroup.value.includes(group))
       && (!query || `${device.name} ${device.address} ${device.station} ${group} ${device.device_type}`.toLocaleLowerCase().includes(query))
   })
 })
@@ -562,9 +563,7 @@ function connectionRouteText(value: FileConnection): string {
 
     <div class="device-toolbar content-card">
       <el-input v-model="deviceSearch" clearable placeholder="搜索设备 / IP / 分组 / 类型" />
-      <el-select v-model="deviceGroup" clearable placeholder="全部分组">
-        <el-option v-for="group in deviceGroups" :key="group" :label="group" :value="group" />
-      </el-select>
+      <NcMultiValueFilter v-model="deviceGroup" :options="deviceGroups" placeholder="全部分组" />
       <el-select v-model="selectedDeviceId" clearable filterable :loading="deviceLoading" placeholder="选择设备（决定默认本地目录）" @change="deviceChanged">
         <el-option v-for="device in filteredDevices" :key="device.device_id" :disabled="device.file_download_supported === false" :label="`${device.name} · ${device.address}${device.file_download_supported === false ? '（仅支持 H3C）' : ''}`" :value="device.device_id" />
       </el-select>

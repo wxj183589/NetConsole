@@ -7,6 +7,7 @@ import { Download, Refresh, Search } from '@element-plus/icons-vue'
 import { listDevices, startDeviceDiagnosticDownload } from '../../api/deviceManagement'
 import { isFeatureEnabled } from '../../features'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import type { DeviceListItem, DevicePage } from '../../types/deviceManagement'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
@@ -28,7 +29,7 @@ const pageData = ref<DevicePage>(emptyPage())
 const loading = ref(false)
 const error = ref('')
 const search = ref('')
-const groupFilter = ref('')
+const groupFilter = ref<string[]>([])
 const selectedUuids = ref<string[]>([])
 const deviceTable = ref<{ clearSelection(): void } | null>(null)
 
@@ -55,11 +56,7 @@ async function loadDevices(resetPage = false): Promise<void> {
   try {
     pageData.value = await listDevices({
       search: search.value.trim(),
-      group_filter: groupFilter.value === '__ungrouped__'
-        ? '__ungrouped__'
-        : groupFilter.value
-          ? Number(groupFilter.value)
-          : undefined,
+      group_values: groupFilter.value,
       page: pageData.value.page,
       page_size: pageData.value.page_size,
     })
@@ -162,14 +159,11 @@ function localTimestamp(now = new Date()): string {
 
     <div class="toolbar content-card">
       <el-input v-model="search" clearable :prefix-icon="Search" placeholder="搜索名称、地址、站点、类型或分组" @keyup.enter="loadDevices(true)" />
-        <el-select v-model="groupFilter" clearable placeholder="全部分组" @change="loadDevices(true)">
-          <el-option label="未分组" value="__ungrouped__" />
-        <el-option v-for="group in deviceGroups" :key="group.id" :label="group.name" :value="String(group.id)" />
-        </el-select>
+        <NcMultiValueFilter v-model="groupFilter" :options="['__ungrouped__', ...deviceGroups.map((group) => String(group.id))]" :labels="{ __ungrouped__: '未分组', ...Object.fromEntries(deviceGroups.map((group) => [String(group.id), group.name])) }" placeholder="全部分组" @change="loadDevices(true)" />
       <div class="toolbar-actions">
         <el-button type="primary" :icon="Download" :disabled="!selectedCount || !isFeatureEnabled('capability.devices.collect')" @click="downloadDiagnostics">下载诊断</el-button>
         <el-button :disabled="!selectedCount" @click="clearSelection">清空选择</el-button>
-        <el-button type="primary" plain :disabled="!search && !groupFilter" @click="loadDevices(true)">应用筛选</el-button>
+        <el-button type="primary" plain :disabled="!search && !groupFilter.length" @click="loadDevices(true)">应用筛选</el-button>
       </div>
     </div>
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from netconsole.models.api.site_storage import (
     SiteCreateRequest,
     SiteDemoRebuildRequest,
     SiteExportRequest,
+    SiteBatchLightweightExportRequest,
     SiteImportInspectRequest,
     SiteImportRequest,
     SiteRetentionExecuteRequest,
@@ -611,8 +613,32 @@ def export_site(
             "site_id": site_id,
             "destination_path": payload.destination_path,
             "package_type": payload.package_type,
+            "table_preferences": payload.table_preferences,
         },
     )
+
+
+@router.post(
+    "/sites/export-lightweight-bundle",
+    response_model=SiteTaskResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(_desktop), Depends(_persistent_storage)],
+)
+def export_lightweight_bundle(
+    request: Request, payload: SiteBatchLightweightExportRequest
+) -> SiteTaskResponse:
+    if len(set(payload.site_ids)) != len(payload.site_ids):
+        raise HTTPException(status_code=422, detail="局点不能重复选择")
+    if len(payload.table_preferences) > 64 or len(json.dumps(payload.table_preferences, ensure_ascii=False).encode("utf-8")) > 256 * 1024:
+        raise HTTPException(status_code=422, detail="表格列设置超过导出限制")
+    for site_id in payload.site_ids:
+        _call(lambda site_id=site_id: _sites(request).get_site(site_id))
+        _call(lambda site_id=site_id: _sites(request).ensure_no_active_tasks(site_id))
+    return _submit(request, "site_batch_lightweight_export", {
+        "site_ids": payload.site_ids,
+        "destination_path": payload.destination_path,
+        "table_preferences": payload.table_preferences,
+    })
 
 
 @router.post(
@@ -751,6 +777,7 @@ def _submit(
                 **job_params,
                 "task_name": {
                     "site_export": "导出局点",
+                    "site_batch_lightweight_export": "批量导出轻量包",
                     "site_migration": "迁移单个局点",
                     "site_import": "导入局点",
                     "site_data_root_migration": "迁移全部数据",

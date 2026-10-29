@@ -233,6 +233,95 @@ def test_site_export_freezes_requested_stable_context_before_worker_start(
     assert params["app_root"] == str(paths.app_root)
 
 
+def test_batch_lightweight_export_requires_desktop_session_and_preserves_explicit_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from netconsole.backend.api import site_storage_router
+    from netconsole.models.api.site_storage import SiteBatchLightweightExportRequest, SiteTaskResponse
+
+    unauthenticated = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(runtime_mode=RuntimeMode.DESKTOP)),
+        url=SimpleNamespace(hostname="127.0.0.1"),
+        state=SimpleNamespace(desktop_session_authenticated=False),
+    )
+    with pytest.raises(HTTPException) as denied:
+        site_storage_router._desktop(unauthenticated)
+    assert denied.value.status_code == 401
+
+    scoped: list[str] = []
+    submitted: list[tuple[str, dict[str, object]]] = []
+
+    class FakeSites:
+        def get_site(self, site_id: str) -> dict[str, str]:
+            assert site_id in {"demo", "site-one"}
+            scoped.append(f"get:{site_id}")
+            return {"site_id": site_id}
+
+        def ensure_no_active_tasks(self, site_id: str) -> None:
+            scoped.append(f"tasks:{site_id}")
+
+    monkeypatch.setattr(site_storage_router, "_sites", lambda *_args: FakeSites())
+
+    def submit(_request, task_type: str, params: dict[str, object]):
+        submitted.append((task_type, params))
+        return SiteTaskResponse(task_id="batch-task", task_type=task_type)
+
+    monkeypatch.setattr(site_storage_router, "_submit", submit)
+    payload = {
+        "destination_path": str(tmp_path / "exports" / "selected.zip"),
+        "site_ids": ["demo", "site-one"],
+        "table_preferences": {"rail.trackside-ap-business.table.main": {"order": ["site"]}},
+    }
+    with pytest.raises(HTTPException) as duplicate:
+        site_storage_router.export_lightweight_bundle(None, SiteBatchLightweightExportRequest(
+            **{**payload, "site_ids": ["demo", "demo"]},
+        ))
+    assert duplicate.value.status_code == 422
+    with pytest.raises(HTTPException) as excessive_preferences:
+        site_storage_router.export_lightweight_bundle(None, SiteBatchLightweightExportRequest(
+            **{**payload, "table_preferences": {"too-big": "x" * (256 * 1024 + 1)}},
+        ))
+    assert excessive_preferences.value.status_code == 422
+    accepted = site_storage_router.export_lightweight_bundle(None, SiteBatchLightweightExportRequest(**payload))
+    assert accepted.task_type == "site_batch_lightweight_export"
+    assert scoped == ["get:demo", "tasks:demo", "get:site-one", "tasks:site-one"]
+    assert submitted == [("site_batch_lightweight_export", {
+        "site_ids": ["demo", "site-one"],
+        "destination_path": payload["destination_path"],
+        "table_preferences": payload["table_preferences"],
+    })]
+    assert "token" not in json.dumps(submitted)
+
+
+def test_batch_lightweight_export_submits_named_task(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    captured: list[object] = []
+
+    def capture(job: object, **_kwargs: object) -> str:
+        captured.append(job)
+        return str(getattr(job, "job_id"))
+
+    client.app.state.site_process_adapter.start_job = capture
+    response = client.post(
+        "/api/v1/sites/export-lightweight-bundle",
+        json={
+            "destination_path": str(tmp_path / "exports" / "demo-bundle.zip"),
+            "site_ids": ["demo"],
+            "table_preferences": {},
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    assert len(captured) == 1
+    job = captured[0]
+    assert getattr(job, "task_type") == "site_batch_lightweight_export"
+    assert getattr(job, "params")["task_name"] == "批量导出轻量包"
+
+
 def test_task_result_storage_diagnostics_defaults_off_and_exposes_no_payload(
     tmp_path: Path,
 ) -> None:

@@ -6,6 +6,7 @@ import { Refresh, View } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import TaskDetailDrawer from '../../task-center/components/TaskDetailDrawer.vue'
 import { useTaskStore } from '../../stores/tasks'
@@ -15,8 +16,18 @@ import { formatTaskDateTime } from '../../utils/dateTime'
 
 const store = useTaskStore()
 const route = useRoute()
-const filter = ref('all')
-const moduleFilter = ref('all')
+const selectedStatuses = ref<string[]>([])
+const selectedModules = ref<string[]>([])
+const taskStatusOptions = ['active', 'completed', 'failed', 'stopped', 'aborted', 'warning', 'attention']
+const taskStatusLabels: Record<string, string> = {
+  active: '运行中', completed: '已完成', failed: '失败', stopped: '已停止',
+  aborted: '已中断', warning: '有告警', attention: '未处理失败/告警',
+}
+const taskModuleOptions = ['devices', 'ac', 'rail', 'config', 'files', 'network', 'command-reference', 'logs']
+const taskModuleLabels: Record<string, string> = {
+  devices: '设备管理', ac: 'AC 管理', rail: '轨道交通', config: '配置采集',
+  files: '文件管理', network: '网络工具', 'command-reference': '命令说明', logs: '日志维护',
+}
 const keyword = ref('')
 const detailVisible = ref(false)
 const detailTaskId = ref('')
@@ -28,7 +39,7 @@ const visibleTasks = computed(() => {
   const search = keyword.value.trim().toLowerCase()
   return store.tasks.filter((task) => (
     matchesFilter(task)
-    && (moduleFilter.value === 'all' || task.module === moduleFilter.value)
+    && (!selectedModules.value.length || selectedModules.value.includes(task.module || ''))
     && (!search || taskSearchText(task).includes(search))
   ))
 })
@@ -52,8 +63,11 @@ onMounted(() => {
   document.addEventListener('visibilitychange', handleVisibility)
   const status = typeof route.query.status === 'string' ? route.query.status : ''
   const module = typeof route.query.module === 'string' ? route.query.module : ''
-  if (status) filter.value = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(status) ? 'active' : status.toLowerCase()
-  if (['devices', 'ac', 'rail', 'config', 'files', 'network', 'command-reference', 'logs'].includes(module)) moduleFilter.value = module
+  if (status) {
+    const value = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING'].includes(status) ? 'active' : status.toLowerCase()
+    if (taskStatusOptions.includes(value)) selectedStatuses.value = [value]
+  }
+  if (taskModuleOptions.includes(module)) selectedModules.value = [module]
   startPolling()
   const taskId = typeof route.query.task_id === 'string'
     ? route.query.task_id
@@ -103,21 +117,21 @@ function handleDetailLoadError(taskId: string): void {
 }
 
 function matchesFilter(task: TaskItem): boolean {
-  if (filter.value === 'all') return true
-  if (filter.value === 'active') return activeTaskStatuses.includes(task.status)
-  if (filter.value === 'completed') return task.status === 'COMPLETED'
-  if (filter.value === 'failed') return task.status === 'FAILED'
-  if (filter.value === 'stopped') return ['CANCELLED', 'STOPPED'].includes(task.status)
-  if (filter.value === 'aborted') return task.status === 'ABORTED' || ['TASK_ONLY_FAILED', 'STALE'].includes(task.mapping_state)
-  if (filter.value === 'warning') return task.has_warning
-  if (filter.value === 'attention') {
-    return !task.acknowledged_at && (
+  if (!selectedStatuses.value.length) return true
+  return selectedStatuses.value.some((filter) => {
+    if (filter === 'active') return activeTaskStatuses.includes(task.status)
+    if (filter === 'completed') return task.status === 'COMPLETED'
+    if (filter === 'failed') return task.status === 'FAILED'
+    if (filter === 'stopped') return ['CANCELLED', 'STOPPED'].includes(task.status)
+    if (filter === 'aborted') return task.status === 'ABORTED' || ['TASK_ONLY_FAILED', 'STALE'].includes(task.mapping_state)
+    if (filter === 'warning') return task.has_warning
+    if (filter === 'attention') return !task.acknowledged_at && (
       task.status === 'FAILED'
       || task.status === 'ABORTED'
       || task.has_warning
     )
-  }
-  return true
+    return false
+  })
 }
 
 function taskSearchText(task: TaskItem): string {
@@ -208,17 +222,8 @@ function residentProgressLabel(task: TaskItem): string {
         </div>
         <div class="job-toolbar-actions">
           <el-input v-model="keyword" clearable placeholder="搜索任务、Session、设备或错误" style="width: 290px" />
-          <el-select v-model="filter" style="width: 145px">
-            <el-option label="全部" value="all" />
-            <el-option label="运行中" value="active" />
-            <el-option label="已完成" value="completed" />
-            <el-option label="失败" value="failed" />
-            <el-option label="已停止" value="stopped" />
-            <el-option label="已中断" value="aborted" />
-            <el-option label="有告警" value="warning" />
-            <el-option label="未处理失败/告警" value="attention" />
-          </el-select>
-          <el-select v-model="moduleFilter" style="width: 150px"><el-option label="全部模块" value="all" /><el-option label="设备管理" value="devices" /><el-option label="AC 管理" value="ac" /><el-option label="轨道交通" value="rail" /><el-option label="配置采集" value="config" /><el-option label="文件管理" value="files" /><el-option label="网络工具" value="network" /><el-option label="命令说明" value="command-reference" /><el-option label="日志维护" value="logs" /></el-select>
+          <NcMultiValueFilter v-model="selectedStatuses" :options="taskStatusOptions" :labels="taskStatusLabels" placeholder="全部状态" style="width: 155px" />
+          <NcMultiValueFilter v-model="selectedModules" :options="taskModuleOptions" :labels="taskModuleLabels" placeholder="全部模块" style="width: 150px" />
           <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新</el-button>
         </div>
       </div>

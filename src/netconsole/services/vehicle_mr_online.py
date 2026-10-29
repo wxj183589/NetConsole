@@ -24,6 +24,11 @@ from netconsole.services.ap_identity.normalizers import normalize_mac, normalize
 from netconsole.utils.natural_sort import train_natural_sort_key
 
 
+def _filter_values(value: str | Sequence[str]) -> set[str]:
+    values = (value,) if isinstance(value, str) else value
+    return {str(item).strip() for item in values if str(item).strip()}
+
+
 VEHICLE_INIT_COMMAND = "screen-length disable"
 VEHICLE_SAMPLE_COMMANDS = ("display clock", "display wlan mesh-link ap")
 TRAIN_STATUS_ONLINE = "在线"
@@ -84,6 +89,17 @@ class TrainIdentity:
     car_end: str
     car_end_label: str
     online_policy: str = ONLINE_POLICY_AUTO
+    raw_name: str = ""
+    line_name: str = ""
+    canonical_train_key: str = ""
+    match_source: str = ""
+    confidence: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.raw_name:
+            object.__setattr__(self, "raw_name", self.peer_name)
+        if not self.canonical_train_key and self.train_no:
+            object.__setattr__(self, "canonical_train_key", f"train:{self.train_no}")
 
 
 @dataclass(frozen=True)
@@ -311,6 +327,11 @@ _MR_NAME_RE = re.compile(
     r"(?:MR|AP)-(?P<end>CT|CW)(?:[-_ ].*)?$",
     re.IGNORECASE,
 )
+_HZL10_MR_NAME_RE = re.compile(
+    r"^(?P<line>HZL10)-(?P<train_no>\d{1,3})-(?P<middle>[^-]+)-"
+    r"(?:MR|AP)-(?P<end>CT|CW)(?:[-_ ].*)?$",
+    re.IGNORECASE,
+)
 _CN_MR_NAME_RE = re.compile(
     r"^列车(?P<train_no>\d+)-(?:MR|AP)-(?P<end>CT|CW)(?:[-_ ].*)?$",
     re.IGNORECASE,
@@ -322,6 +343,11 @@ _TRAIN_NO_RE = re.compile(r"(?:LC|列车)?0*(?P<train_no>\d{1,3})车?", re.IGNOR
 VEHICLE_MR_GROUP_NAME = "车载-MR"
 EMPTY_STATION_VALUES = {"", "-", "—", "未知", "unknown", "none", "null"}
 ONLINE_LINK_STATUSES = {"forwarding", "active", "up"}
+_CONFIRMED_NUMERIC_MR_IDENTITIES = {
+    "3001": ("30", "CT"),
+    "3004": ("30", "CW"),
+    "3006": ("30", "CW"),
+}
 
 
 def canonical_peer_name(value: object) -> str:
@@ -334,6 +360,12 @@ def normalize_train_no(value: object) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
+    confirmed = _CONFIRMED_NUMERIC_MR_IDENTITIES.get(text)
+    if confirmed:
+        return confirmed[0].zfill(2)
+    hzl10_match = re.match(r"^HZL10-0*(?P<train_no>\d{1,3})-[^-]+-(?:MR|AP)-(?:CT|CW)\b", text, re.IGNORECASE)
+    if hzl10_match:
+        return hzl10_match.group("train_no").zfill(2)
     for pattern in (r"LC0*(?P<train_no>\d{1,3})", r"列车0*(?P<train_no>\d{1,3})", r"0*(?P<train_no>\d{1,3})车"):
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
@@ -420,6 +452,33 @@ def is_vehicle_mr_device(
 
 def parse_train_identity(peer_name: str) -> TrainIdentity | None:
     text = canonical_peer_name(peer_name)
+    confirmed = _CONFIRMED_NUMERIC_MR_IDENTITIES.get(text)
+    if confirmed:
+        train_no, end = confirmed
+        return TrainIdentity(
+            peer_name=str(peer_name or "").strip(),
+            train_id=f"列车{train_no}",
+            train_no=normalize_train_no(train_no),
+            car_end=end,
+            car_end_label="TC1" if end == "CT" else "TC2",
+            line_name="HZL10",
+            match_source="confirmed-numeric",
+            confidence="high",
+        )
+    hzl10_match = _HZL10_MR_NAME_RE.match(text)
+    if hzl10_match:
+        train_no = normalize_train_no(hzl10_match.group("train_no"))
+        end = hzl10_match.group("end").upper()
+        return TrainIdentity(
+            peer_name=str(peer_name or "").strip(),
+            train_id=f"列车{train_no}",
+            train_no=train_no,
+            car_end=end,
+            car_end_label="TC1" if end == "CT" else "TC2",
+            line_name=hzl10_match.group("line").upper(),
+            match_source="hzl10-middle-segment",
+            confidence="high",
+        )
     match = _MR_NAME_RE.match(text)
     if match:
         train_no = normalize_train_no(match.group("train_no"))
@@ -427,6 +486,8 @@ def parse_train_identity(peer_name: str) -> TrainIdentity | None:
         if not match.group("prefix"):
             train_id = f"列车{train_no}"
         end = match.group("end").upper()
+        line_name = (match.group("prefix") or "").rstrip("-")
+        source = "legacy-line-lc" if line_name else "cn-compatible-lc"
     else:
         match = _CN_MR_NAME_RE.match(text)
         if not match:
@@ -434,12 +495,17 @@ def parse_train_identity(peer_name: str) -> TrainIdentity | None:
         train_no = normalize_train_no(match.group("train_no"))
         train_id = f"列车{train_no}"
         end = match.group("end").upper()
+        line_name = ""
+        source = "chinese-name"
     return TrainIdentity(
         peer_name=str(peer_name or "").strip(),
         train_id=train_id,
         train_no=train_no,
         car_end=end,
         car_end_label="TC1" if end == "CT" else "TC2",
+        line_name=line_name,
+        match_source=source,
+        confidence="high",
     )
 
 
@@ -468,6 +534,10 @@ def parse_train_identity_from_device(device: Device) -> TrainIdentity | None:
             train_no=train_no,
             car_end=end,
             car_end_label="TC1" if end == "CT" else "TC2",
+            raw_name=device.name,
+            line_name="",
+            match_source="station-format",
+            confidence="medium",
         )
     if name_identity is not None:
         return name_identity
@@ -1263,8 +1333,8 @@ class VehicleMrOnlineStore:
         train_identifier: str,
         start_time: str,
         end_time: str,
-        car_end_label: str = "",
-        status: str = "",
+        car_end_label: str | Sequence[str] = "",
+        status: str | Sequence[str] = "",
         station: str = "",
         ap_name: str = "",
         limit: int = 5000,
@@ -1272,12 +1342,14 @@ class VehicleMrOnlineStore:
         train_no = normalize_train_no(train_identifier)
         clauses = ["(train_id = ? OR train_no = ? OR train_display_name = ?)", "event_time >= ?", "event_time <= ?"]
         params: list[object] = [train_identifier, train_no, f"{train_no}车" if train_no else train_identifier, start_time, end_time]
-        if car_end_label:
-            clauses.append("car_end_label = ?")
-            params.append(car_end_label)
-        if status:
-            clauses.append("status = ?")
-            params.append(status)
+        car_end_values = _filter_values(car_end_label)
+        if car_end_values:
+            clauses.append(f"car_end_label IN ({','.join('?' for _ in car_end_values)})")
+            params.extend(sorted(car_end_values))
+        status_values = _filter_values(status)
+        if status_values:
+            clauses.append(f"status IN ({','.join('?' for _ in status_values)})")
+            params.extend(sorted(status_values))
         if station:
             clauses.append("station LIKE ?")
             params.append(f"%{station}%")

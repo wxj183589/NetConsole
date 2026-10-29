@@ -292,6 +292,11 @@ class DeviceRepository:
         group_filter: int | str | None = None,
         project_phase: str | None = None,
         work_scope_status: str | None = None,
+        group_values: list[str] | None = None,
+        vendor_values: list[str] | None = None,
+        device_type_values: list[str] | None = None,
+        project_phase_values: list[str] | None = None,
+        work_scope_status_values: list[str] | None = None,
     ) -> list[Device]:
         clauses: list[str] = []
         params: list[object] = []
@@ -316,6 +321,38 @@ class DeviceRepository:
         elif group_filter is not None:
             clauses.append("d.group_id = ?")
             params.append(int(group_filter))
+        for values, field in (
+            (vendor_values, "d.device_vendor"),
+            (device_type_values, "d.device_type"),
+            (project_phase_values, "d.project_phase"),
+            (work_scope_status_values, "d.work_scope_status"),
+        ):
+            selected = self._normalized_list_filter(values)
+            if not selected:
+                continue
+            if field == "d.project_phase":
+                selected = [normalize_project_phase(value) for value in selected]
+            elif field == "d.work_scope_status":
+                selected = [normalize_work_scope_status(value) for value in selected]
+            clauses.append(f"{field} IN ({','.join('?' for _ in selected)})")
+            params.extend(selected)
+        selected_groups = self._normalized_list_filter(group_values)
+        if selected_groups:
+            include_ungrouped = "__ungrouped__" in selected_groups
+            group_ids: list[int] = []
+            for value in selected_groups:
+                if value == "__ungrouped__":
+                    continue
+                if not value.isdecimal() or int(value) <= 0:
+                    raise ValueError("设备分组筛选值无效")
+                group_ids.append(int(value))
+            group_clauses: list[str] = []
+            if group_ids:
+                group_clauses.append(f"d.group_id IN ({','.join('?' for _ in group_ids)})")
+                params.extend(group_ids)
+            if include_ungrouped:
+                group_clauses.append("d.group_id IS NULL")
+            clauses.append("(" + " OR ".join(group_clauses) + ")")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self.database.connect() as conn:
             rows = conn.execute(
@@ -333,6 +370,16 @@ class DeviceRepository:
             )
         devices = [self._device_from_row(row, states) for row in rows]
         return sorted(devices, key=_device_natural_sort_key)
+
+    @staticmethod
+    def _normalized_list_filter(values: object) -> list[str]:
+        if values is None:
+            return []
+        if not isinstance(values, (list, tuple)) or len(values) > 100:
+            raise ValueError("设备多选筛选最多支持 100 个值")
+        if any(not isinstance(value, str) or len(value) > 200 for value in values):
+            raise ValueError("设备多选筛选值无效或过长")
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
 
     def update_classification_many(
         self,

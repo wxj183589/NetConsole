@@ -117,13 +117,17 @@ export function listGroundPingSamples(params: {
 }
 export function listGroundSyslogRecords(params: {
   run_id?: string; train_id?: string; mr_id?: string; mr_name?: string; source_ip?: string; system_name?: string
-  mr_role?: string; facility?: string; severity?: string; identity_status?: string; event_type?: string; peer_name?: string
-  event_family?: string; cfg_command_source?: string; physical_state?: string
-  correlation_status?: string; correlation_confidence?: string
-  data_source?: string; keyword?: string; start_time?: string; end_time?: string; page?: number; page_size?: number
+  mr_role?: string | string[]; facility?: string; severity?: string | string[]; identity_status?: string | string[]; event_type?: string | string[]; peer_name?: string
+  event_family?: string | string[]; cfg_command_source?: string | string[]; physical_state?: string | string[]
+  correlation_status?: string | string[]; correlation_confidence?: string | string[]
+  data_source?: string | string[]; keyword?: string; start_time?: string; end_time?: string; page?: number; page_size?: number
 }, options: RequestInit = {}): Promise<GroundPagedResult<GroundSyslogRecord>> {
   const query = new URLSearchParams()
-  Object.entries(params).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  Object.entries(params).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      for (const item of value) if (item) query.append(key, item)
+    } else if (value !== undefined && value !== '') query.set(key, String(value))
+  })
   return apiRequest(`${root}/syslog-records?${query}`, options)
 }
 export const previewGroundSyslogDelete = (

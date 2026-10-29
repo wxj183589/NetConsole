@@ -31,7 +31,7 @@ export interface VehicleMrController {
   controller_id: string; device_id: number; name: string; primary_address: string; protocol: string; connection_ready: boolean
 }
 export interface VehicleMrHistoryFilters {
-  start_time?: string; end_time?: string; car_end_label?: string; event_status?: string
+  start_time?: string; end_time?: string; car_end_label?: string | string[]; event_status?: string | string[]
   station?: string; ap_name?: string; limit?: number
 }
 export interface VehicleMrMappingPreviewRow {

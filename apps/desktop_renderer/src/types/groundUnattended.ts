@@ -248,11 +248,11 @@ export interface GroundSyslogRecordKey {
   raw_line_number?: number | null
 }
 export interface GroundSyslogDeleteFilters {
-  train_id?: string; mr_id?: string; mr_name?: string; mr_role?: string; source_ip?: string
-  system_name?: string; facility?: string; severity?: string; identity_status?: string
-  event_type?: string; event_family?: string; cfg_command_source?: string; physical_state?: string
-  correlation_status?: string; correlation_confidence?: string
-  peer_name?: string; data_source?: string; keyword?: string
+  train_id?: string; mr_id?: string; mr_name?: string; mr_role?: string | string[]; source_ip?: string
+  system_name?: string; facility?: string; severity?: string | string[]; identity_status?: string | string[]
+  event_type?: string | string[]; event_family?: string | string[]; cfg_command_source?: string | string[]; physical_state?: string | string[]
+  correlation_status?: string | string[]; correlation_confidence?: string | string[]
+  peer_name?: string; data_source?: string | string[]; keyword?: string
   start_time?: string; end_time?: string
 }
 export interface GroundSyslogDeletePreviewRequest {

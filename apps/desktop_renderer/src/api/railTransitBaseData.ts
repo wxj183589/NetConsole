@@ -39,7 +39,11 @@ export const BASE_DATA_ROLLBACK_AUTHORIZATION = 'BASE_DATA_ROLLBACK_AUTHORIZED'
 function queryString(values: PageQuery = {}): string {
   const query = new URLSearchParams()
   for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined && value !== '') query.set(key, String(value))
+    if (Array.isArray(value)) {
+      for (const item of value) if (item !== '') query.append(key, String(item))
+    } else if (value !== undefined && value !== '') {
+      query.set(key, String(value))
+    }
   }
   const text = query.toString()
   return text ? `?${text}` : ''

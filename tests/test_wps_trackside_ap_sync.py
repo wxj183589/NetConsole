@@ -427,6 +427,45 @@ def test_wps_target_configuration_rejects_non_kdocs_webhook(tmp_path: Path) -> N
         )
 
 
+def test_wps_can_disable_an_unconfigured_target_without_urls(tmp_path: Path) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+
+    target = service.configure_target(
+        "hangzhou10",
+        STANDARD_TARGET_CODE,
+        enabled=False,
+    )
+
+    assert target["enabled"] is False
+    assert target["document_open_url"] == ""
+    assert target["webhook_url"] == ""
+    assert target["token_configured"] is False
+
+
+def test_wps_production_rejects_uninitialized_site_without_creating_sync_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop")
+    paths = PathResolver(tmp_path)
+    service = TracksideApWpsSyncService(paths)
+
+    with pytest.raises(WpsSyncError) as failure:
+        service.list_targets("dpapi-test")
+
+    assert failure.value.code == "WPS_SITE_NOT_FOUND"
+    assert not paths.site_dir("dpapi-test").exists()
+
+
+def test_wps_production_allows_initialized_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop")
+    paths = PathResolver(tmp_path)
+    SiteManager(paths).create_site("hzl10", display_name="杭州地铁10号线")
+
+    targets = TracksideApWpsSyncService(paths).list_targets("hzl10")
+
+    assert [item["target_code"] for item in targets] == [STANDARD_TARGET_CODE]
+
+
 def test_wps_public_targets_expose_only_cloud_document_deployment_identity(
     tmp_path: Path,
 ) -> None:

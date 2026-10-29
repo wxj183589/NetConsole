@@ -116,6 +116,14 @@ vi.mock('../../components/table/NcDataTable.vue', async () => {
   return { default: defineComponent((_props, { slots }) => () => h('data-table', slots.default?.())) }
 })
 
+vi.mock('../../components/table/NcMultiValueFilter.vue', async () => {
+  const { defineComponent, h } = await import('vue')
+  return { default: defineComponent({
+    props: ['modelValue', 'options', 'placeholder'],
+    setup(props) { return () => h('multi-value-filter', { 'data-placeholder': props.placeholder }) },
+  }) }
+})
+
 vi.mock('element-plus/es', async () => {
   const { defineComponent, h } = await import('vue')
   const passthrough = (tag: string) => defineComponent({

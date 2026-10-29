@@ -246,6 +246,19 @@ def test_config_collection_reads_redacted_devices_and_controlled_snapshot_artifa
     assert invalid.status_code in {404, 405}
 
 
+def test_config_collection_device_group_multiselect_keeps_ungrouped_devices(tmp_path: Path) -> None:
+    app, _paths, device, _running, _saved, _adapter = _fixture(tmp_path)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/config-collection/devices",
+            params=[("group_values", "__ungrouped__"), ("group_values", "999")],
+        )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [device.id]
+
+
 def test_config_collection_submits_only_readonly_job_and_persists_task_reference(tmp_path: Path) -> None:
     app, _paths, device, _running, _saved, adapter = _fixture(tmp_path)
 

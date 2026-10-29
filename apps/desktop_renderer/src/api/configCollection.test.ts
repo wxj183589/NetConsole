@@ -35,6 +35,16 @@ describe('config collection api client', () => {
     expect(String(fetchMock.mock.calls[0][1]?.body)).not.toContain('save')
   })
 
+  it('serializes repeated device group filters', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ items: [], total: 0, page: 1, page_size: 50, total_pages: 1, groups: [] }), { status: 200 }),
+    )
+
+    await listConfigDevices({ group_values: ['__ungrouped__', '7'] })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/config-collection/devices?group_values=__ungrouped__&group_values=7')
+  })
+
   it('keeps task ids encoded and artifact urls opaque', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ id: 'config-web/1' }), { status: 200 }),

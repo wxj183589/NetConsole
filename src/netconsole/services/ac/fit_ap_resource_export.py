@@ -29,6 +29,12 @@ _FILTER_LABELS = {
     "section": "归属区间",
     "model": "型号",
     "switch": "交换机",
+    "statuses": "AP状态（多选）",
+    "optical_statuses": "光衰状态（多选）",
+    "stations": "归属站点（多选）",
+    "sections": "归属区间（多选）",
+    "models": "型号（多选）",
+    "switches": "交换机（多选）",
 }
 _STATUS_LABELS = {
     "online": "在线",
@@ -452,9 +458,15 @@ def _scope_text(scope: str, count: int) -> str:
 def _filter_text(filters: dict[str, object]) -> str:
     values = []
     for key, label in _FILTER_LABELS.items():
-        value = str(filters.get(key) or "").strip()
-        if value:
-            values.append(f"{label}：{_status_label(value)}")
+        raw = filters.get(key)
+        if isinstance(raw, (list, tuple)):
+            chosen = [_status_label(str(value).strip()) for value in raw if str(value).strip()]
+            if chosen:
+                values.append(f"{label}：{'、'.join(chosen)}")
+        else:
+            value = str(raw or "").strip()
+            if value:
+                values.append(f"{label}：{_status_label(value)}")
     return "\n".join(values)
 
 

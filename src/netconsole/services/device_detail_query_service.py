@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Iterable
 from typing import Protocol
 
 from netconsole.core.optical_severity_engine import (
@@ -55,14 +56,14 @@ class ConfigSnapshotReader(Protocol):
         self,
         site_name: str,
         device_id: int,
-        snapshot_type: str = "",
+        snapshot_type: str | Iterable[str] = "",
         *,
         limit: int,
         offset: int,
     ) -> tuple[list[object], int]: ...
 
     def count_snapshots(
-        self, site_name: str, device_id: int, snapshot_type: str = ""
+        self, site_name: str, device_id: int, snapshot_type: str | Iterable[str] = ""
     ) -> int: ...
 
 
@@ -268,12 +269,12 @@ class DeviceDetailQueryService:
         device_uuid: str,
         *,
         search: str = "",
-        status: str = "",
-        interface_type: str = "",
-        admin_status: str = "",
-        physical_status: str = "",
-        protocol_status: str = "",
-        media_type: str = "",
+        status: str | Iterable[str] = "",
+        interface_type: str | Iterable[str] = "",
+        admin_status: str | Iterable[str] = "",
+        physical_status: str | Iterable[str] = "",
+        protocol_status: str | Iterable[str] = "",
+        media_type: str | Iterable[str] = "",
         sort_by: str = "interface_name",
         sort_order: str = "asc",
         page: int = 1,
@@ -354,7 +355,7 @@ class DeviceDetailQueryService:
         device_uuid: str,
         *,
         search: str = "",
-        severity: str = "",
+        severity: str | Iterable[str] = "",
         sort_by: str = "interface_name",
         sort_order: str = "asc",
         page: int = 1,
@@ -362,21 +363,20 @@ class DeviceDetailQueryService:
     ) -> DeviceTransceiverPageDTO:
         device = self._device(device_uuid)
         current_page, size, offset = _pagination(page, page_size)
-        selected_severity = str(severity or "").strip().casefold()
+        selected_severities = _filter_values(severity)
         truncated = False
-        if selected_severity:
-            rows, _scanned_total, truncated = self.gateway.list_transceivers_bounded(
+        if selected_severities:
+            rows = self.gateway.list_transceivers_all(
                 device_uuid,
                 search=search,
                 sort_by=sort_by,
                 sort_order=sort_order,
-                limit=_TRANSCEIVER_SCAN_LIMIT,
             )
             mapped = [
                 self._transceiver(row, device_vendor=device.vendor_key)
                 for row in rows
             ]
-            selected = [item for item in mapped if item.severity == selected_severity]
+            selected = [item for item in mapped if item.severity in selected_severities]
             total = len(selected)
             items = selected[offset : offset + size]
         else:
@@ -446,7 +446,7 @@ class DeviceDetailQueryService:
         self,
         device_uuid: str,
         *,
-        snapshot_type: str = "",
+        snapshot_type: str | Iterable[str] = "",
         page: int = 1,
         page_size: int = 50,
     ) -> DeviceConfigSnapshotPageDTO:
@@ -493,14 +493,14 @@ class DeviceDetailQueryService:
         self,
         device_uuid: str,
         *,
-        status: str = "",
+        status: str | Iterable[str] = "",
         page: int = 1,
         page_size: int = 50,
     ) -> DeviceDetailTaskPageDTO:
         device = self._device(device_uuid)
         current_page, size, offset = _pagination(page, page_size)
-        selected_status = str(status or "").strip().upper()
-        statuses = {TaskState(selected_status)} if selected_status else None
+        selected_statuses = _filter_values(status)
+        statuses = {TaskState(selected.upper()) for selected in selected_statuses} if selected_statuses else None
         repository = self.task_service.repository(self.gateway.current_site_id())
         aliases = self._task_aliases(device)
         tasks = repository.list_filtered(
@@ -1310,6 +1310,11 @@ _ACTIVE_STATES = frozenset(
 )
 _INTERFACE_LLDP_LIMIT = 200
 _TRANSCEIVER_SCAN_LIMIT = 1000
+
+
+def _filter_values(value: str | Iterable[str]) -> set[str]:
+    values = (value,) if isinstance(value, str) else value
+    return {str(item).strip().casefold() for item in values if str(item).strip()}
 _BUSINESS_SCAN_LIMIT = 1000
 _MR_SESSION_SCAN_LIMIT = 1000
 

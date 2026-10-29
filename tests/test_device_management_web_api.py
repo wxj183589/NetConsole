@@ -371,6 +371,105 @@ def test_list_supports_filter_sort_pagination_and_never_returns_credentials(
     assert "community" not in response.text.lower()
 
 
+def test_device_multiselect_list_pagination_and_filtered_csv_export_agree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
+    groups = DeviceGroupRepository(Database(service.paths.site_db_path("demo")), "demo")
+    second_group = groups.create("控制中心")
+    third = devices.create(
+        Device(name="ZTE-AC", primary_address="192.0.2.30", group_id=second_group.id,
+               device_vendor="ZTE", device_type="AC", work_scope_status="excluded")
+    )
+    fourth = devices.create(
+        Device(name="H3C-SW", primary_address="192.0.2.31", group_id=second_group.id,
+               device_vendor="H3C", device_type="SW", work_scope_status="included")
+    )
+    selected = [str(mr.group_id), str(second_group.id)]
+    filters = [
+        ("group_values", selected[0]), ("group_values", selected[1]),
+        ("vendor_values", "H3C"), ("vendor_values", "ZTE"),
+        ("device_type_values", "AC"),
+        ("work_scope_status_values", "included"), ("work_scope_status_values", "excluded"),
+        ("work_scope_status", "all"), ("page_size", "1"),
+    ]
+    first = client.get("/api/device-management/devices", params=filters)
+    second = client.get("/api/device-management/devices", params=[*filters, ("page", "2")])
+    assert first.status_code == second.status_code == 200
+    assert first.json()["total"] == second.json()["total"] == 2
+    visible_uuids = {first.json()["items"][0]["device_uuid"], second.json()["items"][0]["device_uuid"]}
+    assert visible_uuids == {str(mr.device_uuid), str(third.device_uuid)}
+    assert str(sw.device_uuid) not in visible_uuids
+    assert str(fourth.device_uuid) not in visible_uuids
+
+    captured: list[dict[str, object]] = []
+
+    def capture_export(**values):
+        captured.append(dict(values["job_payload"]))
+        return DeviceTaskReferenceDTO(task_id="filtered-multi", task_status="PENDING", action="export_csv")
+
+    monkeypatch.setattr(service, "_start_managed_device_csv_export", capture_export)
+    request = client.post(
+        "/api/device-management/exports/csv",
+        json={
+            "export_scope": "filtered_all", "group_values": selected,
+            "vendor_values": ["H3C", "ZTE"], "device_type_values": ["AC"],
+            "work_scope_status_values": ["included", "excluded"], "work_scope_status": "all",
+        },
+    )
+    assert request.status_code == 202, request.text
+    output = tmp_path / "filtered-multi.csv"
+    assert export_device_csv(output, captured[-1]) == first.json()["total"]
+    with output.open("r", newline="", encoding="utf-8-sig") as stream:
+        names = {row[0] for row in list(csv.reader(stream))[1:]}
+    assert names == {"MR2", "ZTE-AC"}
+
+
+def test_device_connection_multiselect_export_uses_server_status_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, service, _adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
+    service.task_service.repository("demo").save(
+        _task("device-filter-connection-ok", str(mr.device_uuid), success=True)
+    )
+    response = client.get(
+        "/api/device-management/devices",
+        params=[("connection_status_values", "REACHABLE"), ("connection_status_values", "ERROR")],
+    )
+    assert response.status_code == 200
+    assert [row["device_uuid"] for row in response.json()["items"]] == [str(mr.device_uuid)]
+
+    captured: list[dict[str, object]] = []
+
+    def capture_export(**values):
+        captured.append(dict(values["job_payload"]))
+        return DeviceTaskReferenceDTO(task_id="status-snapshot", task_status="PENDING", action="export_csv")
+
+    monkeypatch.setattr(service, "_start_managed_device_csv_export", capture_export)
+    queued = client.post(
+        "/api/device-management/exports/csv",
+        json={"export_scope": "filtered_all", "connection_status_values": ["REACHABLE", "ERROR"]},
+    )
+    assert queued.status_code == 202, queued.text
+    filters = captured[-1]["filters"]
+    assert filters["connection_match_uuids"] == [str(mr.device_uuid)]
+    assert str(sw.device_uuid) not in filters["connection_match_uuids"]
+    output = tmp_path / "status-snapshot.csv"
+    assert export_device_csv(output, captured[-1]) == 1
+    with output.open("r", newline="", encoding="utf-8-sig") as stream:
+        assert [row[0] for row in list(csv.reader(stream))[1:]] == ["MR2"]
+
+    empty = client.post(
+        "/api/device-management/exports/csv",
+        json={"connection_status_values": ["ERROR"]},
+    )
+    assert empty.status_code == 202
+    assert captured[-1]["filters"]["connection_match_uuids"] == []
+    assert export_device_csv(tmp_path / "status-none.csv", captured[-1]) == 0
+
+
 def test_default_device_list_loads_facts_for_current_page_only(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1951,7 +2050,12 @@ def test_supported_device_export_formats_complete_in_real_export_process(
             ):
                 break
             sleep(0.05)
-        assert task["task_status"] == "COMPLETED", task
+        assert task["task_status"] == "COMPLETED", {
+            "status": task.get("task_status"),
+            "message": task.get("message"),
+            "error_code": task.get("error_code"),
+            "error_message": task.get("error_message"),
+        }
         assert task["available"] is True
         downloaded = client.get(
             f"/api/device-management/exports/{task_id}/download",

@@ -333,6 +333,7 @@ def aps(
     line_side: str = Query(default="", max_length=50),
     query: str = Query(default="", max_length=200),
     has_issue: bool | None = None,
+    has_issue_values: list[bool] = Query(default=[], max_length=2),
     issue_severity: str = Query(default="", pattern="^(|error|warning|info)$"),
     fit_ap_status: str = Query(default="", max_length=30),
     optical_status: str = Query(default="", max_length=30),
@@ -341,7 +342,7 @@ def aps(
     sort_by: str = Query(default="name", pattern="^(name|station|section|mileage|updated_at)$"),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> TracksideApPageDTO:
-    return _query(lambda: _service(request).list_aps(_site_id(request, site_id), station=station, section=section, line_side=line_side, query=query, has_issue=has_issue, issue_severity=issue_severity, fit_ap_status=fit_ap_status, optical_status=optical_status, page=page, page_size=page_size, sort_by=sort_by, sort_order=sort_order))
+    return _query(lambda: _service(request).list_aps(_site_id(request, site_id), station=station, section=section, line_side=line_side, query=query, has_issue=has_issue, has_issue_values=has_issue_values, issue_severity=issue_severity, fit_ap_status=fit_ap_status, optical_status=optical_status, page=page, page_size=page_size, sort_by=sort_by, sort_order=sort_order))
 
 
 @router.get("/aps/{ap_id}", response_model=TracksideApDetailDTO)
@@ -379,6 +380,7 @@ def mrs(
     site_id: str = Query(default="", max_length=100),
     train: str = Query(default="", max_length=100),
     mr_role: str = Query(default="", max_length=20),
+    mr_roles: list[str] = Query(default=[], max_length=4),
     query: str = Query(default="", max_length=200),
     has_issue: bool | None = None,
     issue_severity: str = Query(default="", pattern="^(|error|warning|info)$"),
@@ -387,7 +389,7 @@ def mrs(
     sort_by: str = Query(default="train_no", pattern="^(train_no|name|role|ip)$"),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> VehicleMrPageDTO:
-    return _query(lambda: _service(request).list_mrs(_site_id(request, site_id), train=train, mr_role=mr_role, query=query, has_issue=has_issue, issue_severity=issue_severity, page=page, page_size=page_size, sort_by=sort_by, sort_order=sort_order))
+    return _query(lambda: _service(request).list_mrs(_site_id(request, site_id), train=train, mr_role=mr_role, mr_roles=mr_roles, query=query, has_issue=has_issue, issue_severity=issue_severity, page=page, page_size=page_size, sort_by=sort_by, sort_order=sort_order))
 
 
 @router.get("/mrs/{mr_id}", response_model=VehicleMrDetailDTO)
@@ -417,6 +419,8 @@ def issue_groups(
     site_id: str = Query(default="", max_length=100),
     blocking_only: bool | None = None,
     needs_confirmation_only: bool | None = None,
+    blocking_values: list[bool] = Query(default=[], max_length=2),
+    needs_confirmation_values: list[bool] = Query(default=[], max_length=2),
     query: str = Query(default="", max_length=200),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
@@ -426,6 +430,8 @@ def issue_groups(
             _site_id(request, site_id),
             blocking_only=blocking_only,
             needs_confirmation_only=needs_confirmation_only,
+            blocking_values=blocking_values,
+            needs_confirmation_values=needs_confirmation_values,
             query=query,
             page=page,
             page_size=page_size,

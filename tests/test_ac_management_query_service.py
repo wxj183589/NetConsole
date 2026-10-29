@@ -79,6 +79,41 @@ def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_p
     assert _fingerprint(db_path) == before
 
 
+def test_ac_fit_ap_multi_filters_preserve_page_and_export_scope(tmp_path: Path) -> None:
+    paths, db_path, _files = build_ac_management_fixture(tmp_path)
+    service = AcManagementQueryService(paths)
+    before = _fingerprint(db_path)
+    online_ids = {item.id for item in service.list_aps("demo", status="online").items}
+    offline_ids = {item.id for item in service.list_aps("demo", status="offline").items}
+    combined = service.list_aps(
+        "demo", statuses=["online", "offline"], page=1, page_size=1,
+    )
+    assert combined.total == len(online_ids | offline_ids)
+    all_pages = [
+        item.id
+        for page in range(1, combined.total + 1)
+        for item in service.list_aps(
+            "demo", statuses=["online", "offline"], page=page, page_size=1,
+        ).items
+    ]
+    assert set(all_pages) == online_ids | offline_ids
+    assert len(all_pages) == len(set(all_pages))
+    assert combined.filter_options.stations == ["车站A", "车站B"]
+    exported = service.list_ap_details_for_export(
+        "demo", ac_id="ac-1", filters={"statuses": ["online", "offline"]},
+    )
+    assert {item.ap.id for item in exported} == set(all_pages)
+
+    station_exact = service.list_aps("demo", stations=["车站A"])
+    assert station_exact.total > 0
+    assert all(item.station == "车站A" for item in station_exact.items)
+    assert service.list_aps("demo", stations=["车站"]).total == 0
+    assert service.list_aps("demo", status="offline").total == len(offline_ids)
+    with pytest.raises(ValueError, match="100"):
+        service.list_aps("demo", stations=["车站A"] * 101)
+    assert _fingerprint(db_path) == before
+
+
 def test_ac_query_does_not_expose_retained_failed_fit_ap_optical_values(tmp_path: Path) -> None:
     paths, db_path, _files = build_ac_management_fixture(tmp_path)
     with Database(db_path).connect() as conn:

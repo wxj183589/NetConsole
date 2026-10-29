@@ -531,6 +531,85 @@ def test_export_snapshot_rejects_stale_selection(tmp_path: Path) -> None:
     assert error.value.code == "TRACKSIDE_AP_EXPORT_SELECTION_STALE"
 
 
+def test_export_snapshot_selected_stations_filter_every_station_sheet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = DeviceRepository(_database(tmp_path))
+    source_rows = [
+        {"business_row_id": "row-a", "site": "站点A", "device_name": "SW-A", "interface_name": "GE1/0/1"},
+        {"business_row_id": "row-b", "site": "站点B", "device_name": "SW-B", "interface_name": "GE1/0/2"},
+    ]
+    overview_rows = [
+        {"site": "站点A", "total": 10, "online": 10, "optical_problem_count": 2, "status": "over_planned"},
+        {"site": "站点B", "total": 15, "online": 15, "optical_problem_count": 1},
+    ]
+    scope = SimpleNamespace(
+        runtime_resources=[{"ap_uuid": "a"}, {"ap_uuid": "b"}],
+        resources=[
+            {"site": "站点A", "ap_uuid": "a"},
+            {"site": "站点B", "ap_uuid": "b"},
+        ],
+        context=SimpleNamespace(project_phase="all"),
+        planned_ap_total=25,
+        overview_export_rows=lambda *_args: overview_rows,
+        unmatched_online_items=[],
+    )
+    snapshot = SimpleNamespace(
+        scope=scope, all_devices=[], rows=source_rows, identity_query_entities={},
+        snapshot_id="snapshot-test", business_revision="revision-test", identity_revision=1,
+        created_at="2026-10-27T12:00:00+08:00", snapshot_retry_count=0, identity_distinct_count=0,
+    )
+    monkeypatch.setattr(export_service, "load_trackside_ap_business_snapshot", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(export_service, "require_complete_trackside_snapshot", lambda *_args: None)
+    monkeypatch.setattr(export_service, "build_new_online_ap_overview_rows", lambda *_args: [
+        {"site": "站点A", "ap_name": "AP-A"}, {"site": "站点B", "ap_name": "AP-B"},
+    ])
+    monkeypatch.setattr(export_service, "_export_persisted_optical_treatments", lambda *_args, **_kwargs: [
+        {"site": "站点A", "ap_name": "AP-A"}, {"site": "站点B", "ap_name": "AP-B"},
+    ])
+    payload = export_service._build_trackside_ap_business_export_snapshot_once(
+        repository, "demo", context=TracksideApScopeContext.from_metadata("demo", {}),
+        scope_context=None, station="", stations=["站点A"], query="",
+        optical_anomaly_only=False, selected_row_ids=(),
+    )
+    assert payload["filters"]["stations"] == ["站点A"]
+    assert payload["row_count"] == 1
+    assert payload["statistics"]["planned_ap_total"] == 10
+    workbook = payload["workbook"]
+    assert [row["site"] for row in workbook["rows"]] == ["站点A"]
+    assert [row["site"] for row in workbook["new_online_ap_rows"]] == ["站点A"]
+    assert [row["site"] for row in workbook["optical_treatment_rows"]] == ["站点A"]
+    assert [row["site"] for row in workbook["overview_rows"]] == ["站点A", "合计"]
+    assert workbook["overview_rows"][-1]["total"] == 10
+    assert workbook["overview_rows"][-1]["online"] == 10
+    assert workbook["overview_rows"][-1]["online_rate"] == "—"
+    assert workbook["overview_rows"][-1]["status"] == "anomaly"
+    assert "数量异常" in workbook["overview_rows"][-1]["remark"]
+    assert workbook["overview_rows"][-1]["optical_problem_count"] == 2
+    assert workbook["offline_stats"]["total_aps"] == 1
+    assert workbook["offline_stats"]["online_aps"] == 1
+
+
+def test_wps_snapshot_forwards_selected_stations_to_shared_export_builder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from netconsole.services import wps_trackside_ap_sync as wps_service
+
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    paths.ensure_site_dirs("demo")
+    calls: list[dict[str, object]] = []
+
+    def build_snapshot(*_args, **kwargs):
+        calls.append(kwargs)
+        return {"filters": {"stations": kwargs.get("stations")}}
+
+    monkeypatch.setattr(wps_service, "build_trackside_ap_business_export_snapshot", build_snapshot)
+    monkeypatch.setattr(wps_service.TracksideApWpsSyncService, "_snapshot_scope_context", lambda *_args: {})
+    result = wps_service.TracksideApWpsSyncService(paths)._build_snapshot("demo", stations=["站点A", "站点B"])
+    assert calls[0]["stations"] == ["站点A", "站点B"]
+    assert result["filters"]["stations"] == ["站点A", "站点B"]
+
+
 def test_export_snapshot_ignores_deprecated_optical_anomaly_filter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -654,6 +733,15 @@ def test_shared_selection_hash_matches_filtered_page_rows(
     assert page.content_sha256 == content_sha256(selected)
     assert page.abnormal_count == 0
     assert page.unresolved_count == 0
+
+    multi_station = TracksideApBusinessQueryService(paths).list_rows(
+        "demo", stations=["站点B"],
+    )
+    assert multi_station.total == 1
+    assert multi_station.row_count == 1
+    assert multi_station.content_sha256 == content_sha256(
+        select_trackside_ap_business_rows(rows, station="站点B")
+    )
 
 
 def test_worker_renders_only_from_frozen_snapshot(tmp_path: Path) -> None:

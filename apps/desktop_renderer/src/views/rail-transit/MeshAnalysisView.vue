@@ -50,6 +50,7 @@ import {
   type TracksideSeriesCache,
 } from '../../components/mesh-analysis/tracksideSeriesCache'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAvailablePanelHeight } from '../../composables/useAvailablePanelHeight'
@@ -286,7 +287,7 @@ const batchMappingLoading = ref(false)
 const batchMappingError = ref('')
 const bundlePreviewLoading = ref(false)
 const importPreviewStage = ref('')
-const filters = reactive({ query: '', mr_role: '', has_warning: '' as '' | 'true' | 'false', page: 1, page_size: 50 })
+const filters = reactive({ query: '', mr_roles: [] as string[], has_warning_values: [] as string[], page: 1, page_size: 50 })
 const warningPopoverWidth = computed(() => (
   typeof window === 'undefined'
     ? 420
@@ -302,9 +303,9 @@ const parseIssueSummary = computed<MeshParseIssueSummary>(() => selected.value?.
   message: '',
   groups: [],
 })
-const buildOrderFilters = reactive({ page: 1, page_size: 100, sort_order: 'desc', radio: '', peer: '', station: '', build_result: '', pingpong_only: false })
-const linkFilters = reactive({ query: '', link_role: '', page: 1, page_size: 100, sort_order: 'asc' })
-const switchFilters = reactive({ page: 1, page_size: 100, radio: '', result: '' })
+const buildOrderFilters = reactive({ page: 1, page_size: 100, sort_order: 'desc', radios: [] as string[], peer: '', station: '', build_results: [] as string[], pingpong_only: false })
+const linkFilters = reactive({ query: '', link_roles: [] as string[], page: 1, page_size: 100, sort_order: 'asc' })
+const switchFilters = reactive({ page: 1, page_size: 100, radios: [] as string[], result_filters: [] as string[] })
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let failureCount = 0
 let overviewGeneration = 0
@@ -1538,7 +1539,6 @@ async function refreshOverview(silent = false, force = false): Promise<void> {
   try {
     const overview = await getMeshAnalysisOverview({
       ...filters,
-      has_warning: filters.has_warning === '' ? null : filters.has_warning === 'true',
     }, controller.signal)
     if (generation !== overviewGeneration || controller.signal.aborted || !pageActive.value) return
     summary.value = overview.summary
@@ -1880,10 +1880,10 @@ async function loadBuildOrders(
   buildOrderFilters.page = page
   const result = await listMeshActiveBuildOrder(selected.value.session.session_id, {
     ...buildOrderFilters,
-    radio: buildOrderFilters.radio || null,
+    radios: buildOrderFilters.radios.map(Number),
     peer: buildOrderFilters.peer || null,
     station: buildOrderFilters.station || null,
-    build_result: buildOrderFilters.build_result || null,
+    build_results: buildOrderFilters.build_results,
     pingpong_only: buildOrderFilters.pingpong_only || null,
   }, signal)
   if (generation !== detailGeneration || signal?.aborted) return
@@ -1966,8 +1966,8 @@ async function reloadSwitches(
     const result = await listMeshSwitchEvents(selected.value.session.session_id, {
       page: switchFilters.page,
       page_size: switchFilters.page_size,
-      radio: switchFilters.radio || null,
-      result_filter: switchFilters.result || null,
+      radios: switchFilters.radios.map(Number),
+      result_filters: switchFilters.result_filters,
     })
     if (generation !== detailGeneration) return
     switches.value = result.items
@@ -4532,8 +4532,8 @@ function exportTimestamp(now = new Date()): string {
         </div>
         <div class="toolbar sessions-toolbar">
           <el-input v-model="filters.query" clearable placeholder="搜索列车、MR 或来源文件" @keyup.enter="filters.page = 1; refreshOverview()" />
-          <el-select v-model="filters.mr_role" clearable placeholder="MR 角色"><el-option label="CT" value="CT" /><el-option label="TC" value="TC" /><el-option label="CW" value="CW" /></el-select>
-          <el-select v-model="filters.has_warning" clearable placeholder="数据告警"><el-option label="有告警" value="true" /><el-option label="无告警" value="false" /></el-select>
+          <NcMultiValueFilter v-model="filters.mr_roles" :options="['CT', 'TC', 'CW']" placeholder="全部 MR 角色" />
+          <NcMultiValueFilter v-model="filters.has_warning_values" :options="['true', 'false']" :labels="{ true: '有告警', false: '无告警' }" placeholder="全部数据告警" />
           <el-button type="primary" @click="filters.page = 1; refreshOverview()">查询</el-button>
           <el-button :loading="apCoverageLoading" :disabled="selectedDeleteSessions.length !== 2 || !isFeatureEnabled('capability.mesh.coverage_audit')" @click="openApCoverageAudit">核查 AP 覆盖</el-button>
           <el-button type="danger" plain :icon="Delete" :loading="sourceDeleteSubmitting" :disabled="!selectedDeleteSessions.length" @click="prepareSourceDelete(selectedDeleteSessions)">删除选中</el-button>
@@ -4650,10 +4650,10 @@ function exportTimestamp(now = new Date()): string {
       <div class="detail-tab-content">
         <div v-show="activeTab === 'build-order'" id="pane-build-order" class="table-pane">
           <div class="toolbar">
-            <el-select v-model="buildOrderFilters.radio" clearable placeholder="Radio"><el-option label="Radio 1" value="1" /><el-option label="Radio 2" value="2" /></el-select>
+            <NcMultiValueFilter v-model="buildOrderFilters.radios" :options="['1', '2']" :labels="{ '1': 'Radio 1', '2': 'Radio 2' }" placeholder="全部 Radio" />
             <el-input v-model="buildOrderFilters.peer" clearable placeholder="Peer / AP" />
             <el-input v-model="buildOrderFilters.station" clearable placeholder="归属站点" />
-            <el-select v-model="buildOrderFilters.build_result" clearable placeholder="建链结果"><el-option label="正常" value="normal" /><el-option label="短时" value="short" /><el-option label="同 AP 双射频" value="same_ap_radio_switch" /></el-select>
+            <NcMultiValueFilter v-model="buildOrderFilters.build_results" :options="['normal', 'short', 'same_ap_radio_switch']" :labels="{ normal: '正常', short: '短时', same_ap_radio_switch: '同 AP 双射频' }" placeholder="全部建链结果" />
             <el-checkbox v-model="buildOrderFilters.pingpong_only">仅乒乓</el-checkbox>
             <el-button type="primary" @click="loadBuildOrders(detailGeneration, 1)">查询</el-button>
           </div>
@@ -4667,7 +4667,7 @@ function exportTimestamp(now = new Date()): string {
         </div>
 
         <div v-show="activeTab === 'links'" id="pane-links" class="table-pane">
-          <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="Peer AP / MAC / 站点" /><el-select v-model="linkFilters.link_role" clearable placeholder="链路角色"><el-option label="主链路" value="ACTIVE" /><el-option label="备份链路" value="STANDBY" /></el-select><el-button @click="reloadLinks(1)">筛选</el-button></div>
+          <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="Peer AP / MAC / 站点" /><NcMultiValueFilter v-model="linkFilters.link_roles" :options="['ACTIVE', 'STANDBY']" :labels="{ ACTIVE: '主链路', STANDBY: '备份链路' }" placeholder="全部链路角色" /><el-button @click="reloadLinks(1)">筛选</el-button></div>
           <div ref="linkTableHost" class="table-host" :style="{ height: `${linkPanel.height.value}px` }">
             <NcDataTable table-id="mesh-analysis-link-details:v3" route-key="/rail-transit/mesh-analysis" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border height="100%" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
           </div>
@@ -4848,15 +4848,8 @@ function exportTimestamp(now = new Date()): string {
 
         <div v-show="activeTab === 'switches'" id="pane-switches" class="table-pane" v-loading="switchLoading">
           <div class="toolbar">
-            <el-select v-model="switchFilters.radio" clearable placeholder="Radio" @change="changeSwitchFilters">
-              <el-option label="Radio 1" value="1" />
-              <el-option label="Radio 2" value="2" />
-            </el-select>
-            <el-select v-model="switchFilters.result" clearable placeholder="切换分类" @change="changeSwitchFilters">
-              <el-option label="正常切换" value="normal" />
-              <el-option label="短时建链" value="short" />
-              <el-option label="乒乓切换" value="pingpong" />
-            </el-select>
+            <NcMultiValueFilter v-model="switchFilters.radios" :options="['1', '2']" :labels="{ '1': 'Radio 1', '2': 'Radio 2' }" placeholder="全部 Radio" @change="changeSwitchFilters" />
+            <NcMultiValueFilter v-model="switchFilters.result_filters" :options="['normal', 'short', 'pingpong']" :labels="{ normal: '正常切换', short: '短时建链', pingpong: '乒乓切换' }" placeholder="全部切换分类" @change="changeSwitchFilters" />
           </div>
           <div ref="switchTableHost" class="table-host" :style="{ height: `${switchTableHeight}px` }">
             <NcDataTable table-id="mesh-analysis-switch-events:v3" route-key="/rail-transit/mesh-analysis" :data="switches" :columns="switchColumns" :stripe="false" :row-class-name="switchRowClass" border :height="switchTableHeight" />

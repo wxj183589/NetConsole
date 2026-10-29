@@ -95,6 +95,7 @@ vi.mock('element-plus', async (importOriginal) => ({
 import DeviceManagementView from './DeviceManagementView.vue'
 import { ApiRequestError } from '../../api/client'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import {
   resetUserSelectedExportForTests,
   saveReadyArtifact,
@@ -501,6 +502,37 @@ afterEach(() => {
 })
 
 describe('DeviceManagementView mounted interactions', () => {
+  it('queries and exports the same WPS multi-select group and connection-status filters', async () => {
+    const wrapper = await renderView()
+    const pick = async (placeholder: string, values: string[]) => {
+      const control = wrapper.findAllComponents(NcMultiValueFilter).find((candidate) => candidate.props('placeholder') === placeholder)
+      expect(control).toBeTruthy()
+      control!.vm.$emit('update:modelValue', values)
+      control!.vm.$emit('change', values)
+      await flushPromises()
+    }
+
+    await pick('全部分组', ['1', '__ungrouped__'])
+    await pick('全部连接状态', ['REACHABLE', 'UNREACHABLE'])
+    expect(mocks.listDevices).toHaveBeenLastCalledWith(expect.objectContaining({
+      group_values: ['1', '__ungrouped__'],
+      connection_status_values: ['REACHABLE', 'UNREACHABLE'],
+      work_scope_status_values: ['included'],
+    }))
+
+    mocks.chooseSavePath.mockResolvedValueOnce({ cancelled: false, path: 'D:\\exports\\filtered.csv' })
+    await wrapper.get('[data-testid="device-export-csv-no-credentials"]').trigger('click')
+    await wrapper.get('[data-testid="confirm-device-export-scope"]').trigger('click')
+    await flushPromises()
+    expect(mocks.startDeviceCsvExport).toHaveBeenCalledWith(expect.objectContaining({
+      group_values: ['1', '__ungrouped__'],
+      connection_status_values: ['REACHABLE', 'UNREACHABLE'],
+      work_scope_status_values: ['included'],
+      export_scope: 'filtered_all',
+    }))
+    wrapper.unmount()
+  })
+
   it('renders current work scope wording without lifecycle labels', async () => {
     const wrapper = await renderView()
     await wrapper.get('[data-testid="select-first-device"]').trigger('click')

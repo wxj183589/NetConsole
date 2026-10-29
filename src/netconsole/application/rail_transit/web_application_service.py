@@ -721,6 +721,7 @@ class RailTransitWebApplicationService:
         suggested_name: str = "",
         expected_revision: str = "",
         station: str = "",
+        stations: Sequence[str] = (),
         query: str = "",
         optical_anomaly_only: bool = False,
         selected_row_ids: Sequence[str] = (),
@@ -805,6 +806,7 @@ class RailTransitWebApplicationService:
                 "expected_revision": expected_revision,
                 "scope_context": scope_context,
                 "station": station,
+                "stations": list(stations),
                 "query": query,
                 "selected_row_ids": list(selected_row_ids),
             },
@@ -4228,6 +4230,7 @@ class RailTransitWebApplicationService:
         target_codes: Sequence[str] = (),
         expected_revision: str = "",
         initialize_binding: bool = False,
+        stations: Sequence[str] = (),
     ) -> RailTransitTaskDTO:
         """提交 WPS 同步到 Job Center，避免在 FastAPI 请求线程执行网络和工作簿 IO。"""
 
@@ -4239,6 +4242,7 @@ class RailTransitWebApplicationService:
                 "target_codes": list(selected_codes),
                 "expected_revision": str(expected_revision or ""),
                 "initialize_binding": bool(initialize_binding),
+                "stations": list(stations),
                 "resource_keys": [f"wps:{self._site(site_id)}:rail_transit.trackside_ap_business"],
                 "reuse_equivalent_task": True,
             },

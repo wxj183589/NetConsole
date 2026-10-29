@@ -115,6 +115,37 @@ def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: 
     assert after_config == before_config
 
 
+def test_ac_management_repeated_multi_filter_params_are_server_paginated(tmp_path: Path) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    app = create_app(
+        RuntimeMode.SERVER, paths=paths,
+        agent_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        traffic_service=_NoopAsyncService(),  # type: ignore[arg-type]
+        frontend_dist=tmp_path / "missing",
+    )
+    with TestClient(app) as client:
+        result = client.get("/api/ac-management/aps", params=[
+            ("statuses", "online"), ("statuses", "offline"),
+            ("page", "1"), ("page_size", "1"),
+        ])
+        next_page = client.get("/api/ac-management/aps", params=[
+            ("statuses", "online"), ("statuses", "offline"),
+            ("page", "2"), ("page_size", "1"),
+        ])
+        legacy = client.get("/api/ac-management/aps?status=offline")
+        invalid = client.get("/api/ac-management/aps", params=[
+            ("stations", "x") for _ in range(101)
+        ])
+    assert result.status_code == 200
+    assert result.json()["total"] == 2
+    assert len(result.json()["items"]) == 1
+    assert next_page.status_code == 200
+    assert next_page.json()["items"][0]["id"] != result.json()["items"][0]["id"]
+    assert legacy.status_code == 200
+    assert legacy.json()["total"] == 1
+    assert invalid.status_code == 422
+
+
 def test_ac_management_router_exposes_only_fixed_controlled_posts(tmp_path: Path) -> None:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     app = create_app(

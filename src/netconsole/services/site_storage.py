@@ -184,6 +184,26 @@ _LIGHTWEIGHT_REQUIRED_FILES = (
     "site/site_meta.json",
     "site/db/devices.db",
 )
+_LIGHTWEIGHT_TABLE_PREFERENCES = "table-column-preferences.json"
+_KNOWN_LAYOUT_PREFERENCE_KEYS = frozenset({
+    "device-management.device-list",
+    "device-detail.interfaces",
+    "device-detail.optical-modules",
+    "device-detail.lldp",
+    "device-detail.task-records",
+    "device-detail.related-businesses",
+    "mesh-analysis.table.sessions:v2",
+    "mesh-analysis.table.active-build-order:v2",
+    "mesh-analysis.table.link-details:v2",
+    "mesh-analysis.table.link-details:v3",
+    "mesh-analysis.table.switch-events:v2",
+    "mesh-analysis.table.switch-events:v3",
+    "mesh-analysis.table.artifacts:v2",
+    "mesh-analysis.table.sources:v2",
+    "rail.trackside-ap-business.table.main",
+    "rail.trackside-ap-business.table.scope-excluded",
+    "rail.trackside-ap-business.table.unmatched-online",
+})
 _LOCKS: dict[str, RLock] = {}
 _LOCKS_GUARD = RLock()
 
@@ -203,6 +223,31 @@ def _lightweight_should_cancel(
         return bool(result)
 
     return callback
+
+
+def _normalize_table_preferences(value: object) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or len(value) > 64:
+        raise SiteStorageError("SITE_EXPORT_PREFERENCES_INVALID", "列设置数量超出限制")
+    normalized: dict[str, object] = {}
+    for raw_key, preference in value.items():
+        key = str(raw_key)
+        if not (
+            key in _KNOWN_LAYOUT_PREFERENCE_KEYS
+            or key.startswith("netconsole.table-preferences.v2:")
+        ):
+            raise SiteStorageError("SITE_EXPORT_PREFERENCES_INVALID", "包含未识别的列设置键")
+        if len(key) > 512:
+            raise SiteStorageError("SITE_EXPORT_PREFERENCES_INVALID", "列设置键过长")
+        normalized[key] = preference
+    try:
+        encoded = json.dumps(normalized, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise SiteStorageError("SITE_EXPORT_PREFERENCES_INVALID", "列设置不是有效 JSON") from exc
+    if len(encoded) > 256 * 1024:
+        raise SiteStorageError("SITE_EXPORT_PREFERENCES_INVALID", "列设置超过大小限制")
+    return normalized
 
 
 def _atomic_json(path: Path, value: object) -> None:
@@ -1609,6 +1654,7 @@ class SitePackageService:
         destination: Path,
         *,
         package_type: str = FULL_MIGRATION,
+        table_preferences: dict[str, object] | None = None,
         check_cancel: Callable[[], None] | None = None,
         progress: Callable[[str, int, int, str], None] | None = None,
     ) -> dict[str, object]:
@@ -1634,6 +1680,7 @@ class SitePackageService:
             return self._export_lightweight_site(
                 site_id,
                 destination,
+                table_preferences=table_preferences,
                 check_cancel=check_cancel,
                 progress=progress,
             )
@@ -1839,11 +1886,145 @@ class SitePackageService:
         finally:
             self.staging_lifecycle.finish_publish_path(staging, staging_journal)
 
+    def export_lightweight_bundle(
+        self,
+        site_ids: list[str],
+        destination: Path,
+        *,
+        table_preferences: dict[str, object] | None = None,
+        check_cancel: Callable[[], None] | None = None,
+        progress: Callable[[str, int, int, str], None] | None = None,
+    ) -> dict[str, object]:
+        """Export multiple original lightweight packages and portable WPS settings.
+
+        This is an export-only outer ZIP; each nested site ZIP remains an
+        ordinary, independently importable lightweight package. WPS tokens are
+        intentionally plain text per explicit user opt-in and never logged.
+        """
+        selected = list(dict.fromkeys(site_ids))
+        if not selected or len(selected) > 100 or len(selected) != len(site_ids):
+            raise SiteStorageError("SITE_EXPORT_SCOPE_INVALID", "请选择 1 至 100 个不重复局点")
+        selected = [validate_site_id(site_id) for site_id in selected]
+        selected_records: dict[str, SiteRecord] = {}
+        for site_id in selected:
+            selected_records[site_id] = self.sites.registry.get(site_id)
+        preferences = _normalize_table_preferences(table_preferences)
+        encoded_preferences = json.dumps(preferences, ensure_ascii=False).encode("utf-8")
+
+        destination = Path(destination).expanduser().resolve()
+        if destination.suffix.casefold() != ".zip":
+            destination = destination.with_suffix(".zip")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.temp_dir.mkdir(parents=True, exist_ok=True)
+        from netconsole.models.wps_sync import TRACKSIDE_AP_WPS_BUSINESS_KEY
+        from netconsole.repositories.wps_sync_repository import WpsSyncRepository
+
+        staging, journal = self.staging_lifecycle.begin_publish_path(destination)
+        try:
+            with tempfile.TemporaryDirectory(prefix="netconsole-batch-lightweight-", dir=self.paths.temp_dir) as temp:
+                temporary = Path(temp)
+                checksums: dict[str, str] = {}
+                site_packages: list[dict[str, object]] = []
+                with zipfile.ZipFile(staging, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as bundle:
+                    for index, site_id in enumerate(selected, start=1):
+                        if check_cancel is not None:
+                            check_cancel()
+                        if progress is not None:
+                            progress("BATCH_EXPORT", index - 1, len(selected), f"正在导出第 {index} 个局点")
+                        original_package = temporary / f"{site_id}.zip"
+                        self.export_site(
+                            site_id,
+                            original_package,
+                            package_type=LIGHTWEIGHT,
+                            table_preferences=preferences,
+                            check_cancel=check_cancel,
+                        )
+                        package_member = f"sites/{site_id}.zip"
+                        bundle.write(original_package, package_member, compress_type=zipfile.ZIP_STORED)
+                        checksums[package_member] = _sha256(original_package)
+
+                        # The stable registry ID is the package identity, while
+                        # the WPS database remains under the physical site
+                        # directory for legacy Chinese-named sites.
+                        repository = WpsSyncRepository(
+                            self.paths, selected_records[site_id].root_path.name
+                        )
+                        targets: list[dict[str, object]] = []
+                        if repository.path.is_file():
+                            try:
+                                for target in repository.list_targets(TRACKSIDE_AP_WPS_BUSINESS_KEY):
+                                    targets.append({
+                                        "business_key": target.business_key,
+                                        "target_code": target.target_code,
+                                        "target_type": target.target_type.value,
+                                        "target_name": target.target_name,
+                                        "document_open_url": target.document_open_url,
+                                        "webhook_url": target.webhook_url,
+                                        "expected_document_id": target.expected_document_id,
+                                        "enabled": target.enabled,
+                                        "protocol_version": target.protocol_version,
+                                        "timeout_seconds": target.timeout_seconds,
+                                        "binding_id": target.binding_id,
+                                        "token_configured": target.token_configured,
+                                        "token": repository.resolve_token(target),
+                                    })
+                            except Exception as exc:
+                                raise SiteStorageError(
+                                    "SITE_EXPORT_WPS_CREDENTIAL_UNAVAILABLE",
+                                    "当前局点 WPS 连接或令牌无法读取，已停止批量导出",
+                                ) from exc
+                        settings_member = f"wps-connections/{site_id}.json"
+                        settings = json.dumps({"site_id": site_id, "targets": targets}, ensure_ascii=False, indent=2).encode("utf-8")
+                        bundle.writestr(settings_member, settings)
+                        checksums[settings_member] = hashlib.sha256(settings).hexdigest()
+                        site_packages.append({"site_id": site_id, "package": package_member, "wps_settings": settings_member})
+
+                    preferences_member = "table-column-preferences.json"
+                    bundle.writestr(preferences_member, encoded_preferences)
+                    checksums[preferences_member] = hashlib.sha256(encoded_preferences).hexdigest()
+                    manifest = {
+                        "format": "netconsole-lightweight-bundle",
+                        "format_version": 1,
+                        "created_at": _now(),
+                        "site_count": len(selected),
+                        "sites": site_packages,
+                        "column_preferences": preferences_member,
+                        "contains_credentials": True,
+                        "wps_tokens_plaintext": True,
+                        "encrypted": False,
+                        "checksums": checksums,
+                    }
+                    bundle.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                    bundle.writestr("README.txt", (
+                        "NetConsole 多局点轻量包汇总（仅导出）。\n"
+                        "sites/ 下每个 ZIP 可分别使用原有轻量包导入功能恢复。\n"
+                        "wps-connections/ 保存 WPS 文档连接及明文令牌；"
+                        "table-column-preferences.json 保存列布局；导入单个局点轻量包后会尝试恢复布局。\n"
+                        "警告：总包未经加密，含设备密码及 WPS 明文令牌，请严格限制访问。\n"
+                    ))
+            if check_cancel is not None:
+                check_cancel()
+            with zipfile.ZipFile(staging) as archive:
+                for name, expected in checksums.items():
+                    checksum = hashlib.sha256()
+                    with archive.open(name) as source:
+                        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                            checksum.update(chunk)
+                    if checksum.hexdigest() != expected:
+                        raise SiteStorageError("SITE_EXPORT_CHECKSUM_FAILED", "批量导出包完整性验证失败")
+            os.replace(staging, destination)
+            if progress is not None:
+                progress("BATCH_EXPORT", len(selected), len(selected), "多局点轻量包导出完成")
+            return {"package_type": "lightweight_bundle", "site_count": len(selected), "size_bytes": destination.stat().st_size, "contains_credentials": True, "wps_tokens_plaintext": True}
+        finally:
+            self.staging_lifecycle.finish_publish_path(staging, journal)
+
     def _export_lightweight_site(
         self,
         site_id: str,
         destination: Path,
         *,
+        table_preferences: dict[str, object] | None,
         check_cancel: Callable[[], None] | None,
         progress: Callable[[str, int, int, str], None] | None,
     ) -> dict[str, object]:
@@ -1969,6 +2150,8 @@ class SitePackageService:
                 )
                 components["rail_transit_base_data"] = "rail-transit-base-data.xlsx"
 
+                preferences = _normalize_table_preferences(table_preferences)
+                _atomic_json(root / _LIGHTWEIGHT_TABLE_PREFERENCES, preferences)
                 manifest_files = {
                     item.relative_to(root).as_posix(): _sha256(item)
                     for item in root.rglob("*")
@@ -1994,6 +2177,7 @@ class SitePackageService:
                     "required_files": list(_LIGHTWEIGHT_REQUIRED_FILES),
                     "components": components,
                     "component_paths": component_paths,
+                    "table_preferences_path": _LIGHTWEIGHT_TABLE_PREFERENCES,
                     "checksums": manifest_files,
                     "contains_credentials": True,
                     "contains_sensitive_credentials": True,
@@ -2320,6 +2504,16 @@ class SitePackageService:
                         raise SiteStorageError(
                             "SITE_IMPORT_CHECKSUM_FAILED", "局点包完整性校验失败"
                         )
+                table_preferences: dict[str, object] = {}
+                if manifest.get("table_preferences_path") == _LIGHTWEIGHT_TABLE_PREFERENCES:
+                    try:
+                        table_preferences = _normalize_table_preferences(
+                            json.loads(archive.read(_LIGHTWEIGHT_TABLE_PREFERENCES))
+                        )
+                    except (KeyError, json.JSONDecodeError) as exc:
+                        raise SiteStorageError(
+                            "SITE_IMPORT_INVALID_PACKAGE", "轻量包列设置文件无效"
+                        ) from exc
                 public = {
                     "site_id": str(manifest.get("site_id") or ""),
                     "site_uuid": str(manifest.get("site_uuid") or ""),
@@ -2352,6 +2546,7 @@ class SitePackageService:
                     "invalid_count": 0,
                     "estimated_additional_bytes": int(payload_summary["total_bytes"]),
                     "can_import": True,
+                    "table_preferences": table_preferences,
                 }
                 if package_type == COLLECTION_RETURN:
                     return {
@@ -2396,6 +2591,7 @@ class SitePackageService:
                 )
 
         structural = {"manifest.json", "checksums.json", "README.txt"}
+        optional_payload = {_LIGHTWEIGHT_TABLE_PREFERENCES}
         payload_names = names - structural
         allowed_prefixes = ("site/", *(_LIGHTWEIGHT_COMPONENT_PREFIXES.values()))
         for name in payload_names:
@@ -2406,10 +2602,21 @@ class SitePackageService:
                     "SITE_IMPORT_INVALID_PACKAGE",
                     "轻量包包含禁止的日志、历史或运行时数据",
                 )
-            if not name.startswith(allowed_prefixes):
+            if name not in optional_payload and not name.startswith(allowed_prefixes):
                 raise SiteStorageError(
                     "SITE_IMPORT_INVALID_PACKAGE", "轻量包包含未声明的文件"
                 )
+
+        table_preferences_path = manifest.get("table_preferences_path")
+        if table_preferences_path not in {None, _LIGHTWEIGHT_TABLE_PREFERENCES}:
+            raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "轻量包列设置路径无效")
+        if table_preferences_path == _LIGHTWEIGHT_TABLE_PREFERENCES and _LIGHTWEIGHT_TABLE_PREFERENCES not in payload_names:
+            raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "轻量包列设置文件缺失")
+        if _LIGHTWEIGHT_TABLE_PREFERENCES in payload_names:
+            try:
+                _normalize_table_preferences(json.loads(archive.read(_LIGHTWEIGHT_TABLE_PREFERENCES)))
+            except (KeyError, json.JSONDecodeError) as exc:
+                raise SiteStorageError("SITE_IMPORT_INVALID_PACKAGE", "轻量包列设置文件无效") from exc
 
         component_paths = manifest.get("component_paths")
         if not isinstance(component_paths, dict) or set(component_paths) != set(
@@ -2440,6 +2647,8 @@ class SitePackageService:
         expected_payload_names = set(_LIGHTWEIGHT_REQUIRED_FILES) | {
             str(path) for path in component_paths.values()
         }
+        if _LIGHTWEIGHT_TABLE_PREFERENCES in payload_names:
+            expected_payload_names.add(_LIGHTWEIGHT_TABLE_PREFERENCES)
         if payload_names != expected_payload_names:
             raise SiteStorageError(
                 "SITE_IMPORT_INVALID_PACKAGE", "轻量包包含未声明的文件"
@@ -2579,6 +2788,9 @@ class SitePackageService:
             )
         manifest = self._read_manifest(package)
         package_type = str(info.get("package_type") or FULL_MIGRATION)
+        table_preferences = info.get("table_preferences")
+        if not isinstance(table_preferences, dict):
+            table_preferences = {}
         if package_type == COLLECTION_RETURN:
             return SiteSyncService(self.paths, self.sites).import_return_package(
                 Path(package).resolve(),
@@ -2746,6 +2958,7 @@ class SitePackageService:
                     package_type,
                     backup is not None,
                     reentry_count,
+                    table_preferences=table_preferences,
                 )
             except SiteStorageError:
                 if replacement_journal is not None and replacement_journal.exists():
@@ -2762,6 +2975,7 @@ class SitePackageService:
                             package_type,
                             backup is not None,
                             reentry_count,
+                            table_preferences=table_preferences,
                         )
                 _remove_temporary_directory(staging)
                 raise
@@ -2781,6 +2995,7 @@ class SitePackageService:
                             package_type,
                             backup is not None,
                             reentry_count,
+                            table_preferences=table_preferences,
                         )
                 raise SiteStorageError(
                     "SITE_IMPORT_FAILED", "局点导入失败，已保留原数据"
@@ -2795,6 +3010,7 @@ class SitePackageService:
         package_type: str,
         backup_created: bool,
         reentry_count: int,
+        table_preferences: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """在导入任务完成前确认 Registry 已刷新且目标可切换。"""
 
@@ -2818,6 +3034,7 @@ class SitePackageService:
             "site_registry_refreshed": True,
             "site_switchable": True,
             "registry_revision": self.sites.registry.revision(),
+            "table_preferences": table_preferences or {},
         }
 
     @staticmethod

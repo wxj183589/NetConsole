@@ -30,6 +30,13 @@ Var NetConsoleInstallerLogHandle
 Var NetConsoleInstallerDiagnosticMessage
 Var NetConsoleInstallerDiagnosticId
 Var NetConsoleBackendDiagnosticLogPath
+Var NetConsoleProgramBackupRoot
+Var NetConsoleProgramTransactionState
+Var NetConsoleProgramMarkerPath
+Var NetConsoleProgramTransactionResult
+Var NetConsoleProgramDirectoryHasEntries
+Var NetConsoleProgramDirectoryIsNetConsole
+Var NetConsoleInstallMode
 !endif
 
 !ifndef BUILD_UNINSTALLER
@@ -41,6 +48,10 @@ Function NetConsoleInstallerWriteDiagnostic
 FunctionEnd
 
 Function NetConsoleInstallerAbort
+  Call NetConsoleRollbackProgramInstallTransaction
+  ${If} $NetConsoleProgramTransactionResult != "not-needed"
+    StrCpy $NetConsoleInstallerDiagnosticMessage "$NetConsoleInstallerDiagnosticMessage rollback=$NetConsoleProgramTransactionResult"
+  ${EndIf}
   Call NetConsoleInstallerWriteDiagnostic
   ${If} $NetConsoleInstallerLogHandle != ""
     FileClose $NetConsoleInstallerLogHandle
@@ -65,6 +76,164 @@ Function NetConsoleInstallerInitDiagnostic
   NetConsoleInstallerDiagnosticUnavailable:
   StrCpy $NetConsoleInstallerLogHandle ""
   DetailPrint "安装器诊断日志无法写入：$NetConsoleInstallerLogPath"
+FunctionEnd
+
+Function NetConsoleRollbackProgramInstallTransaction
+  StrCpy $NetConsoleProgramTransactionResult "not-needed"
+  ${If} $NetConsoleProgramTransactionState == "BACKED_UP"
+    StrCpy $NetConsoleProgramTransactionResult "attempted"
+    IfFileExists "$NetConsoleProgramMarkerPath" NetConsoleRollbackRemoveNewProgram NetConsoleRollbackNewProgramMissingMarker
+    NetConsoleRollbackRemoveNewProgram:
+      Delete "$NetConsoleProgramMarkerPath"
+      SetOutPath "$TEMP"
+      RMDir /r "$INSTDIR"
+      IfFileExists "$INSTDIR\." NetConsoleRollbackFailed NetConsoleRollbackRestoreOld
+    NetConsoleRollbackNewProgramMissingMarker:
+      ; Never recursively delete an unmarked directory. Keeping the failed
+      ; candidate is safer than guessing whether it contains user files.
+      StrCpy $NetConsoleProgramTransactionResult "failed-new-program-marker-missing"
+      Return
+    NetConsoleRollbackRestoreOld:
+      ClearErrors
+      Rename "$NetConsoleProgramBackupRoot" "$INSTDIR"
+      IfErrors NetConsoleRollbackFailed NetConsoleRollbackRestored
+    NetConsoleRollbackRestored:
+      StrCpy $NetConsoleProgramTransactionState "ROLLED_BACK"
+      StrCpy $NetConsoleProgramTransactionResult "ok"
+      Return
+    NetConsoleRollbackFailed:
+      System::Call 'kernel32::GetLastError()i.r3'
+      StrCpy $NetConsoleProgramTransactionResult "failed-old-program-preserved-as-backup-error-$3"
+  ${ElseIf} $NetConsoleProgramTransactionState == "NEW_ONLY"
+    StrCpy $NetConsoleProgramTransactionResult "attempted"
+    IfFileExists "$NetConsoleProgramMarkerPath" 0 NetConsoleRollbackNewOnlyMissingMarker
+    Delete "$NetConsoleProgramMarkerPath"
+    SetOutPath "$TEMP"
+    RMDir /r "$INSTDIR"
+    IfFileExists "$INSTDIR\." NetConsoleRollbackNewOnlyFailed NetConsoleRollbackNewOnlyDone
+    NetConsoleRollbackNewOnlyMissingMarker:
+      StrCpy $NetConsoleProgramTransactionResult "failed-new-program-marker-missing"
+      Return
+    NetConsoleRollbackNewOnlyFailed:
+      StrCpy $NetConsoleProgramTransactionResult "failed-new-program-preserved"
+      Return
+    NetConsoleRollbackNewOnlyDone:
+      StrCpy $NetConsoleProgramTransactionState "ROLLED_BACK"
+      StrCpy $NetConsoleProgramTransactionResult "ok"
+  ${EndIf}
+FunctionEnd
+
+Function NetConsoleCheckProgramDirectoryHasEntries
+  StrCpy $NetConsoleProgramDirectoryHasEntries "0"
+  ClearErrors
+  FindFirst $0 $1 "$INSTDIR\*"
+  IfErrors NetConsoleProgramDirectoryEntriesDone
+  NetConsoleProgramDirectoryEntriesLoop:
+    StrCmp $1 "." NetConsoleProgramDirectoryEntriesNext
+    StrCmp $1 ".." NetConsoleProgramDirectoryEntriesNext
+    StrCpy $NetConsoleProgramDirectoryHasEntries "1"
+    FindClose $0
+    Return
+  NetConsoleProgramDirectoryEntriesNext:
+    ClearErrors
+    FindNext $0 $1
+    IfErrors NetConsoleProgramDirectoryEntriesClose
+    Goto NetConsoleProgramDirectoryEntriesLoop
+  NetConsoleProgramDirectoryEntriesClose:
+    FindClose $0
+  NetConsoleProgramDirectoryEntriesDone:
+FunctionEnd
+
+Function NetConsoleCheckProgramDirectoryIdentity
+  StrCpy $NetConsoleProgramDirectoryIsNetConsole "0"
+  ; A non-empty install directory is replaceable only when it is an existing
+  ; NetConsole tree.  Never take over an arbitrary directory containing user
+  ; files or another application.
+  IfFileExists "$INSTDIR\NetConsole.exe" 0 NetConsoleProgramDirectoryIdentityDone
+  IfFileExists "$INSTDIR\resources\app.asar" 0 NetConsoleProgramDirectoryIdentityDone
+  IfFileExists "$INSTDIR\resources\backend\NetConsoleBackend.exe" 0 NetConsoleProgramDirectoryIdentityDone
+  StrCpy $NetConsoleProgramDirectoryIsNetConsole "1"
+  NetConsoleProgramDirectoryIdentityDone:
+FunctionEnd
+
+Function NetConsolePrepareProgramInstallTransaction
+  ${If} $NetConsoleProgramTransactionState != ""
+    Return
+  ${EndIf}
+  StrCpy $NetConsoleProgramTransactionState "NONE"
+  StrCpy $NetConsoleProgramBackupRoot "$INSTDIR.netconsole-install-backup-$NetConsoleInstallerDiagnosticId"
+  StrCpy $NetConsoleProgramMarkerPath "$INSTDIR\.netconsole-installer-new-$NetConsoleInstallerDiagnosticId.marker"
+  ; Never keep $INSTDIR as NSIS's current output directory while moving it.
+  ; Windows reports a directory-rename failure when the installer still has
+  ; that directory as its output target.
+  SetOutPath "$TEMP"
+  IfFileExists "$NetConsoleProgramBackupRoot\." NetConsoleProgramBackupAlreadyExists
+  IfFileExists "$INSTDIR\." NetConsoleCheckExistingProgram NetConsoleCreateNewProgram
+
+  NetConsoleCheckExistingProgram:
+    ; NSIS may create an empty $INSTDIR while parsing /D. Reuse that empty
+    ; directory as the new candidate; only move a non-empty old program tree.
+    Call NetConsoleCheckProgramDirectoryHasEntries
+    ${If} $NetConsoleProgramDirectoryHasEntries == "1"
+      Call NetConsoleCheckProgramDirectoryIdentity
+      ${If} $NetConsoleProgramDirectoryIsNetConsole != "1"
+        StrCpy $NetConsoleInstallerDiagnosticMessage "stage=program-transaction result=non-netconsole-directory path=$INSTDIR registry=not-written program=unchanged"
+        Call NetConsoleInstallerAbort
+        Return
+      ${EndIf}
+      Goto NetConsoleMoveExistingProgram
+    ${EndIf}
+    Goto NetConsoleCreateNewProgram
+
+  NetConsoleMoveExistingProgram:
+    ClearErrors
+    Rename "$INSTDIR" "$NetConsoleProgramBackupRoot"
+    IfErrors NetConsoleProgramBackupFailed NetConsoleProgramBackedUp
+  NetConsoleProgramBackedUp:
+    StrCpy $NetConsoleProgramTransactionState "BACKED_UP"
+
+  NetConsoleCreateNewProgram:
+    ClearErrors
+    CreateDirectory "$INSTDIR"
+    IfErrors NetConsoleProgramCreateFailed
+    ClearErrors
+    FileOpen $0 "$NetConsoleProgramMarkerPath" w
+    IfErrors NetConsoleProgramCreateFailed
+    FileWrite $0 "NetConsole installer transaction marker $NetConsoleInstallerDiagnosticId$\r$\n"
+    FileClose $0
+    ${If} $NetConsoleProgramTransactionState == "NONE"
+      StrCpy $NetConsoleProgramTransactionState "NEW_ONLY"
+    ${EndIf}
+    Return
+
+  NetConsoleProgramBackupAlreadyExists:
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=program-transaction result=backup-already-exists path=$NetConsoleProgramBackupRoot registry=not-written"
+    Call NetConsoleInstallerAbort
+    Return
+  NetConsoleProgramBackupFailed:
+    System::Call 'kernel32::GetLastError()i.r3'
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=program-transaction result=backup-failed path=$INSTDIR error_code=$3 registry=not-written"
+    Call NetConsoleInstallerAbort
+    Return
+  NetConsoleProgramCreateFailed:
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=program-transaction result=create-failed path=$INSTDIR registry=not-written"
+    Call NetConsoleInstallerAbort
+FunctionEnd
+
+Function NetConsolePreflightExistingDataRoot
+  ${If} $NetConsoleInstallMode != "REUSE_EXISTING_DATA"
+    Return
+  ${EndIf}
+  IfFileExists "$INSTDIR\resources\backend\NetConsoleBackend.exe" 0 NetConsolePreflightSkipped
+  DetailPrint "安装前只读验证已有程序和 DataRoot，尚未复制新程序文件。"
+  ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId-preflight"' $0
+  ${If} $0 != 0
+    StrCpy $NetConsoleInstallerDiagnosticMessage "stage=preinstall-data-root-validation result=failed exit_code=$0 registry=not-written program=unchanged action=select-fresh-or-repair"
+    Call NetConsoleInstallerAbort
+  ${EndIf}
+  Return
+  NetConsolePreflightSkipped:
+    DetailPrint "未找到旧版 Backend，跳过旧版 DataRoot 预检；安装事务仍会保护程序目录。"
 FunctionEnd
 
 Function NetConsoleReadDataRootViews
@@ -257,7 +426,6 @@ Var NetConsoleDataRootPathsMatch
 Var NetConsoleDataRootExistingNormalized
 Var NetConsoleDataRootSelectedNormalized
 Var NetConsolePerformanceMode
-Var NetConsoleInstallMode
 Var NetConsoleInstallModeReuseRadio
 Var NetConsoleInstallModeFreshRadio
 Var NetConsoleInstallModeMigrateRadio
@@ -294,6 +462,30 @@ Var NetConsoleEnvironmentDataRoot
   Call NetConsoleInstallerWriteDiagnostic
   StrCpy $NetConsoleDataRootChanged "0"
   StrCpy $NetConsolePerformanceMode "standard"
+  StrCpy $NetConsoleProgramTransactionState ""
+  StrCpy $NetConsoleProgramTransactionResult "not-needed"
+  IfSilent NetConsoleSilentPreflight NetConsoleInteractiveInstallerInit
+  NetConsoleSilentPreflight:
+    Call NetConsoleValidateDataRootLocation
+    ${If} $NetConsoleDataRootProbeResult != "ok"
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=silent-data-root-location-validation result=$NetConsoleDataRootProbeResult registry=not-written"
+      Call NetConsoleInstallerAbort
+    ${EndIf}
+    Call NetConsoleDataRootCheckBusinessData
+    ${If} $NetConsoleInstallMode == "FRESH_CLEAN_INSTALL"
+      ${If} $NetConsoleDataRootBusinessData == "1"
+        StrCpy $NetConsoleInstallerDiagnosticMessage "stage=silent-clean-install-business-data-check result=conflict registry=not-written"
+        Call NetConsoleInstallerAbort
+      ${EndIf}
+    ${EndIf}
+    Call NetConsoleRunDataRootProbe
+    ${If} $NetConsoleDataRootProbeResult != "ok"
+      StrCpy $NetConsoleInstallerDiagnosticMessage "stage=silent-data-root-probe result=$NetConsoleDataRootProbeResult registry=not-written"
+      Call NetConsoleInstallerAbort
+    ${EndIf}
+    Call NetConsolePreflightExistingDataRoot
+    Call NetConsolePrepareProgramInstallTransaction
+  NetConsoleInteractiveInstallerInit:
 !macroend
 
 !macro customPageAfterChangeDir
@@ -551,6 +743,15 @@ FunctionEnd
   ${If} $NetConsoleDataRootPointerResult != "ok"
     StrCpy $NetConsoleInstallerDiagnosticMessage "stage=registry-write-readback result=$NetConsoleDataRootPointerResult registry=restored-or-preserved"
     Call NetConsoleInstallerAbort
+  ${EndIf}
+  Delete "$NetConsoleProgramMarkerPath"
+  ${If} $NetConsoleProgramTransactionState == "BACKED_UP"
+    ; Keep the old tree as a recoverable rollback/archive.  It may contain
+    ; reports or other files that are not part of the NetConsole payload.
+    StrCpy $NetConsoleProgramTransactionState "COMMITTED_BACKUP_RETAINED"
+    DetailPrint "旧程序事务备份已保留以保护非程序文件：$NetConsoleProgramBackupRoot"
+  ${Else}
+    StrCpy $NetConsoleProgramTransactionState "COMMITTED"
   ${EndIf}
   StrCpy $NetConsoleInstallerDiagnosticMessage "stage=complete registry=written-and-readback-verified data_root=$NetConsoleDataRoot"
   Call NetConsoleInstallerWriteDiagnostic
@@ -1022,6 +1223,11 @@ Function NetConsoleDataRootPageLeave
     MessageBox MB_ICONSTOP "数据目录校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\n错误来源：$NetConsoleDataRootProbeErrorSource$\r$\n错误码：$NetConsoleDataRootProbeErrorCode$\r$\n$\r$\n请关闭 NetConsole、Agent 和 Backend 后重试，并检查目录权限或文件系统。不要删除已有数据。"
     Abort
   ${EndIf}
+  ; Validate the existing root with the old installed Backend before NSIS
+  ; copies any candidate files.  Then move the old program tree aside on the
+  ; same volume so later installer failures can restore it atomically.
+  Call NetConsolePreflightExistingDataRoot
+  Call NetConsolePrepareProgramInstallTransaction
 FunctionEnd
 
 !endif

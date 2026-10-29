@@ -14,17 +14,21 @@ export const MONACO_DIFF_MAX_TOTAL_LINES = 100_000
 
 export function filteredConfigDiffRows(
   rows: readonly SharedConfigDiffRow[],
-  filter: ConfigDiffFilter,
+  filter: ConfigDiffFilter | readonly Exclude<ConfigDiffFilter, 'all'>[],
 ): SharedConfigDiffRow[] {
-  return filter === 'all' ? [...rows] : rows.filter((row) => row.status === filter)
+  if (filter === 'all' || (Array.isArray(filter) && filter.length === 0)) return [...rows]
+  return rows.filter((row) => typeof filter === 'string' ? row.status === filter : filter.includes(row.status as Exclude<ConfigDiffFilter, 'all'>))
 }
 
 export function configDiffNavigationTargets(
   rows: readonly SharedConfigDiffRow[],
-  filter: ConfigDiffFilter = 'all',
+  filter: ConfigDiffFilter | readonly Exclude<ConfigDiffFilter, 'all'>[] = 'all',
 ): ConfigDiffNavigationTarget[] {
   return rows
-    .filter((row) => row.status !== 'equal' && (filter === 'all' || row.status === filter))
+    .filter((row) => row.status !== 'equal' && (
+      filter === 'all' || (Array.isArray(filter) && filter.length === 0)
+      || (typeof filter === 'string' ? row.status === filter : filter.includes(row.status as Exclude<ConfigDiffFilter, 'all'>))
+    ))
     .map((row) => ({
       originalLine: row.originalLine,
       modifiedLine: row.modifiedLine,

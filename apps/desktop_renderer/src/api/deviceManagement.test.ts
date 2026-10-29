@@ -1,9 +1,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getBatchRefresh, getDeviceDetailSection, getDeviceEditProfile, getDeviceInterfaceDetail, getDeviceOverview, getDeviceTerminalPreflight, previewDeviceImport } from './deviceManagement'
+import { getBatchRefresh, getDeviceDetailSection, getDeviceEditProfile, getDeviceInterfaceDetail, getDeviceOverview, getDeviceTerminalPreflight, listDevices, previewDeviceImport } from './deviceManagement'
 
 describe('device detail API client', () => {
   afterEach(() => vi.unstubAllGlobals())
+
+  it('serializes repeated values in list filters without replacing legacy single-value params', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [], total: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listDevices({
+      group_values: ['__ungrouped__', '12'], vendor_values: ['H3C', 'ZTE'],
+      project_phase_values: ['phase_1', 'phase_2'], work_scope_status_values: ['included'],
+      connection_status_values: ['REACHABLE', 'ERROR'],
+      work_scope_status: 'all', page: 2, page_size: 20,
+    })
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost')
+    expect(url.pathname).toBe('/api/device-management/devices')
+    expect(url.searchParams.getAll('group_values')).toEqual(['__ungrouped__', '12'])
+    expect(url.searchParams.getAll('vendor_values')).toEqual(['H3C', 'ZTE'])
+    expect(url.searchParams.getAll('project_phase_values')).toEqual(['phase_1', 'phase_2'])
+    expect(url.searchParams.getAll('work_scope_status_values')).toEqual(['included'])
+    expect(url.searchParams.getAll('connection_status_values')).toEqual(['REACHABLE', 'ERROR'])
+    expect(url.searchParams.get('work_scope_status')).toBe('all')
+    expect(url.searchParams.get('page')).toBe('2')
+  })
 
   it('keeps overview and paginated section requests separate', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
@@ -68,6 +90,20 @@ describe('device detail API client', () => {
       '/api/device-management/devices/device-1/transceivers?page=1&page_size=20&severity=warning',
       '/api/device-management/devices/device-1/tasks?page=1&page_size=20&status=RUNNING',
     ])
+  })
+
+  it('serializes repeated section filters while keeping the section route stable', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getDeviceDetailSection('device-1', 'interfaces', {
+      admin_status: ['up', 'down'], media_type: ['optical', 'copper'],
+    })
+
+    const url = new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost')
+    expect(url.pathname).toBe('/api/device-management/devices/device-1/interfaces')
+    expect(url.searchParams.getAll('admin_status')).toEqual(['up', 'down'])
+    expect(url.searchParams.getAll('media_type')).toEqual(['optical', 'copper'])
   })
 
   it('queries a batch refresh by its opaque encoded id', async () => {

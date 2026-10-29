@@ -1225,23 +1225,29 @@ class GroundSyslogDeleteFiltersDTO(ApiModel):
     train_id: str = Field(default="", max_length=100)
     mr_id: str = Field(default="", max_length=100)
     mr_name: str = Field(default="", max_length=200)
-    mr_role: str = Field(default="", max_length=20)
+    mr_role: str | list[str] = Field(default="", max_length=20)
     source_ip: str = Field(default="", max_length=100)
     system_name: str = Field(default="", max_length=200)
     facility: str = Field(default="", max_length=50)
-    severity: str = Field(default="", max_length=50)
-    identity_status: str = Field(default="", max_length=100)
-    event_type: str = Field(default="", max_length=100)
-    event_family: str = Field(default="", max_length=20)
-    cfg_command_source: str = Field(default="", max_length=50)
-    physical_state: str = Field(default="", max_length=20)
-    correlation_status: str = Field(default="", max_length=20)
-    correlation_confidence: str = Field(default="", max_length=20)
+    severity: str | list[str] = Field(default="", max_length=50)
+    identity_status: str | list[str] = Field(default="", max_length=100)
+    event_type: str | list[str] = Field(default="", max_length=100)
+    event_family: str | list[str] = Field(default="", max_length=20)
+    cfg_command_source: str | list[str] = Field(default="", max_length=50)
+    physical_state: str | list[str] = Field(default="", max_length=20)
+    correlation_status: str | list[str] = Field(default="", max_length=20)
+    correlation_confidence: str | list[str] = Field(default="", max_length=20)
     peer_name: str = Field(default="", max_length=200)
-    data_source: str = Field(default="", max_length=20)
+    data_source: str | list[str] = Field(default="", max_length=20)
     keyword: str = Field(default="", max_length=500)
     start_time: str = Field(default="", max_length=100)
     end_time: str = Field(default="", max_length=100)
+
+
+def _has_syslog_delete_filter_value(value: object) -> bool:
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_syslog_delete_filter_value(item) for item in value)
+    return bool(str(value or "").strip())
 
 
 class GroundSyslogDeletePreviewRequestDTO(ApiModel):
@@ -1263,7 +1269,7 @@ class GroundSyslogDeletePreviewRequestDTO(ApiModel):
         if self.mode != "SELECTED" and self.record_keys:
             raise ValueError("非选中删除模式不得携带记录身份")
         if self.mode == "FILTERED" and not any(
-            str(value or "").strip()
+            _has_syslog_delete_filter_value(value)
             for value in self.filters.model_dump().values()
         ):
             raise ValueError("筛选范围删除至少需要一个筛选条件")

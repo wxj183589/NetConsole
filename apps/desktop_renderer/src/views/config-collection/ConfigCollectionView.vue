@@ -38,6 +38,7 @@ import type {
 import { downloadBackendResource } from '../../platform/runtime'
 import { t } from '../../i18n/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import ConfigDiffViewer from '../../components/config-diff/ConfigDiffViewer.vue'
 import type { SharedConfigDiffModel } from '../../components/config-diff/configDiffTypes'
@@ -64,7 +65,7 @@ type SnapshotComparisonPair = { left: SnapshotChoice; right: SnapshotChoice; sou
 const leftSnapshotChoice = ref<SnapshotChoice | null>(null)
 const rightSnapshotChoice = ref<SnapshotChoice | null>(null)
 const search = ref('')
-const groupFilter = ref('')
+const groupFilter = ref<string[]>([])
 const snapshotType = ref('')
 const loading = ref(false)
 const snapshotLoading = ref(false)
@@ -172,7 +173,7 @@ async function loadDevices(): Promise<void> {
   loading.value = true
   error.value = ''
   try {
-    devicePage.value = await listConfigDevices({ search: search.value.trim(), group_filter: groupFilter.value, work_scope_status: 'included', page: devicePage.value.page, page_size: devicePage.value.page_size })
+    devicePage.value = await listConfigDevices({ search: search.value.trim(), group_values: groupFilter.value, work_scope_status: 'included', page: devicePage.value.page, page_size: devicePage.value.page_size })
     const currentId = selectedDevice.value?.id
     selectedDevice.value = devicePage.value.items.find((item) => item.id === currentId) || devicePage.value.items[0] || null
     selectedDevices.value = selectedDevices.value.filter((item) => devicePage.value.items.some((candidate) => candidate.id === item.id))
@@ -643,11 +644,7 @@ function formatBytes(value: number | null): string {
 
     <div class="toolbar content-card">
       <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索设备名称、系统名或站点" @keyup.enter="loadDevices" />
-      <el-select v-model="groupFilter" clearable placeholder="设备分组" @change="loadDevices">
-        <el-option label="全部分组" value="" />
-        <el-option label="未分组" value="__ungrouped__" />
-        <el-option v-for="group in devicePage.groups" :key="group.id" :label="`${group.name} (${group.device_count})`" :value="String(group.id)" />
-      </el-select>
+      <NcMultiValueFilter v-model="groupFilter" :options="['__ungrouped__', ...devicePage.groups.map((group) => String(group.id))]" :labels="{ __ungrouped__: '未分组', ...Object.fromEntries(devicePage.groups.map((group) => [String(group.id), `${group.name} (${group.device_count})`])) }" placeholder="全部分组" @change="loadDevices" />
       <div class="toolbar-actions">
         <el-button type="primary" :icon="Refresh" :loading="loading" @click="refreshAll">刷新</el-button>
         <el-button :icon="Search" :disabled="loading" @click="loadDevices">应用筛选</el-button>

@@ -8,6 +8,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { ApiRequestError } from '../../api/client'
 import { resetRendererFeaturesForTest, setRendererFeaturesForTest } from '../../features'
+import { setAppLocale } from '../../i18n/runtime'
 import { resetUserSelectedExportForTests } from '../../composables/useUserSelectedExport'
 import { useTaskStore } from '../../stores/tasks'
 import { BEFORE_SITE_SWITCH_EVENT, SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
@@ -488,6 +489,19 @@ const ElementStubs = {
   }),
 }
 
+const NcMultiValueFilterStub = defineComponent({
+  props: { modelValue: { type: Array, default: () => [] }, options: { type: Array, default: () => [] } },
+  emits: ['update:modelValue', 'change'],
+  methods: {
+    select(event: Event) {
+      const values = Array.from((event.target as HTMLSelectElement).selectedOptions).map((option) => option.value).filter(Boolean)
+      this.$emit('update:modelValue', values)
+      this.$emit('change', values)
+    },
+  },
+  template: '<select multiple :value="modelValue.length ? modelValue : [\'\']" @change="select"><option value="">全部站点</option><option v-for="option in options" :key="option" :value="option">{{ option }}</option></select>',
+})
+
 const fullPackagedFeatureSnapshot = {
   'capability.trackside_ap.update': { visible: true, enabled: true },
   'capability.trackside_ap.export': { visible: true, enabled: true },
@@ -584,6 +598,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
 
   afterEach(() => {
     resetRendererFeaturesForTest()
+    setAppLocale('zh_CN')
     vi.mocked(ElMessageBox.confirm).mockRestore()
     vi.useRealTimers()
   })
@@ -733,6 +748,98 @@ describe('TracksideApBusinessView mounted behavior', () => {
       webhook_url: 'https://www.kdocs.cn/api/v3/ide/file/standard-updated/script/test/sync_task',
     }))
     expect(vm.drafts[0].token).toBe('')
+    wrapper.unmount()
+  })
+
+  it('saves an empty disabled WPS target without requiring connection URLs', async () => {
+    const initialTargets = wpsTargets(false).map((target) => ({
+      ...target,
+      document_open_url: '',
+      webhook_url: '',
+    }))
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      drafts: Array<{ enabled: boolean; timeout_seconds: number; document_open_url: string; webhook_url: string; token: string }>
+      saveTargetConfiguration: (code: 'wps_standard_spreadsheet') => Promise<boolean>
+    }
+    vm.drafts[0].enabled = false
+    vm.drafts[0].document_open_url = ''
+    vm.drafts[0].webhook_url = ''
+    vm.drafts[0].token = ''
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets.map((target) => ({ ...target, enabled: false })))
+
+    await expect(vm.saveTargetConfiguration('wps_standard_spreadsheet')).resolves.toBe(true)
+    expect(api.updateTracksideWpsTarget).toHaveBeenCalledWith('wps_standard_spreadsheet', {
+      enabled: false,
+      timeout_seconds: 30,
+    })
+    wrapper.unmount()
+  })
+
+  it('saves dirty WPS edits before closing and keeps the dialog open on save failure', async () => {
+    const initialTargets = wpsTargets(false)
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      drafts: Array<{ enabled: boolean; timeout_seconds: number; document_open_url: string; webhook_url: string; token: string }>
+      saveAndClose: () => Promise<void>
+      errorMessage: string
+    }
+    vm.drafts[0].enabled = true
+    vm.drafts[0].timeout_seconds = 45
+    vm.drafts[0].token = 'test-only-token'
+    api.listTracksideWpsTargets.mockResolvedValue([{ ...wpsTargets(true)[0], timeout_seconds: 45 }])
+    await vm.saveAndClose()
+    expect(api.updateTracksideWpsTarget).toHaveBeenCalledWith('wps_standard_spreadsheet', expect.objectContaining({
+      enabled: true,
+      timeout_seconds: 45,
+      token: 'test-only-token',
+    }))
+    expect(dialog.emitted('update:modelValue')?.at(-1)?.[0]).toBe(false)
+
+    api.updateTracksideWpsTarget.mockRejectedValueOnce(new Error('测试凭据失败'))
+    vm.drafts[0].timeout_seconds = 50
+    const closeEventsBeforeFailure = dialog.emitted('update:modelValue')?.length || 0
+    await vm.saveAndClose()
+    expect(dialog.emitted('update:modelValue')?.length || 0).toBe(closeEventsBeforeFailure)
+    expect(vm.errorMessage).toBe('测试凭据失败')
+    wrapper.unmount()
+  })
+
+  it('localizes the unsaved WPS close confirmation in English', async () => {
+    setAppLocale('en_US')
+    const initialTargets = wpsTargets(false)
+    api.listTracksideWpsTargets.mockResolvedValue(initialTargets)
+    const wrapper = await mountView()
+    await button(wrapper, '配置云文档').trigger('click')
+    await flushPromises()
+
+    const dialog = wrapper.getComponent(TracksideApWpsConfigDialog)
+    const vm = dialog.vm as unknown as {
+      drafts: Array<{ timeout_seconds: number }>
+      saveAndClose: () => Promise<void>
+    }
+    vm.drafts[0].timeout_seconds = 45
+    api.listTracksideWpsTargets.mockResolvedValue([{ ...initialTargets[0], timeout_seconds: 45 }])
+
+    expect(dialog.text()).toContain('Save and close')
+    expect(dialog.text()).toContain('Script and remote identity details (expand as needed)')
+    expect(dialog.text()).toContain('Connection, probe, and sync diagnostics (expand as needed)')
+    await vm.saveAndClose()
+    expect(confirmMocks.confirm).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Unsaved WPS configuration',
+      message: 'This site has unsaved WPS configuration. It will close after successful save; cancel keeps editing.',
+      confirmText: 'Save and close',
+      cancelText: 'Keep editing',
+    }))
     wrapper.unmount()
   })
 
@@ -1834,20 +1941,21 @@ describe('TracksideApBusinessView mounted behavior', () => {
     api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
     api.listTracksideApBusiness.mockClear()
     ;(wrapper.vm as unknown as { filters: { page: number } }).filters.page = 3
-    await stationSelect.setValue('02-云龙火车站')
+    await stationSelect.setValue(['02-云龙火车站'])
     await flushPromises()
 
     expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
-      station: '02-云龙火车站',
+      station: '',
+      stations: ['02-云龙火车站'],
       query: '',
       optical_anomaly_only: false,
       page: 1,
       page_size: 50,
     })
-    expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('02-云龙火车站')
+    expect((wrapper.find('.station-select').element as HTMLSelectElement).selectedOptions[0]?.value).toBe('02-云龙火车站')
 
     api.listTracksideApBusiness.mockClear()
-    await stationSelect.setValue('')
+    ;(wrapper.vm as unknown as { handleMultiStationChange: (values: string[]) => void }).handleMultiStationChange([])
     await flushPromises()
     expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
       station: '',
@@ -1886,7 +1994,7 @@ describe('TracksideApBusinessView mounted behavior', () => {
     const stationSelect = wrapper.find('.station-select')
 
     api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
-    await stationSelect.setValue('02-云龙火车站')
+    await stationSelect.setValue(['02-云龙火车站'])
     await flushPromises()
 
     api.listTracksideApBusiness.mockClear()
@@ -1898,7 +2006,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
 
     expect(api.listTracksideApBusiness).toHaveBeenNthCalledWith(1, {
-      station: '02-云龙火车站',
+      station: '',
+      stations: ['02-云龙火车站'],
       query: '',
       optical_anomaly_only: false,
       page: 1,
@@ -1911,8 +2020,27 @@ describe('TracksideApBusinessView mounted behavior', () => {
       page: 1,
       page_size: 50,
     })
-    expect((wrapper.find('.station-select').element as HTMLSelectElement).value).toBe('')
+    expect((wrapper.vm as unknown as { selectedStationNames: string[] }).selectedStationNames).toEqual([])
     wrapper.unmount()
+  })
+
+  it('restores the selected station scope after a renderer remount', async () => {
+    api.listTracksideApBusiness.mockResolvedValue(page(rows, 1, ['01-小洋江站', '02-云龙火车站']))
+    const wrapper = await mountView()
+    const stationSelect = wrapper.find('.station-select')
+
+    await stationSelect.setValue(['02-云龙火车站'])
+    await flushPromises()
+    expect(localStorage.getItem('netconsole:rail:trackside:export-stations:v1:demo')).toBe(JSON.stringify(['02-云龙火车站']))
+    wrapper.unmount()
+
+    api.listTracksideApBusiness.mockClear()
+    const restarted = await mountView()
+    await flushPromises()
+
+    expect((restarted.vm as unknown as { selectedStationNames: string[] }).selectedStationNames).toEqual(['02-云龙火车站'])
+    expect(api.listTracksideApBusiness).toHaveBeenCalledWith(expect.objectContaining({ stations: ['02-云龙火车站'] }))
+    restarted.unmount()
   })
 
   it('submits an update task without opening or routing to the task center', async () => {
@@ -2172,7 +2300,8 @@ describe('TracksideApBusinessView mounted behavior', () => {
     await flushPromises()
 
     expect(api.listTracksideApBusiness).toHaveBeenLastCalledWith({
-      station: '02-云龙火车站',
+      station: '',
+      stations: ['02-云龙火车站'],
       query: 'AP-A',
       optical_anomaly_only: false,
       page: 2,
@@ -2361,7 +2490,7 @@ async function mountView(): Promise<VueWrapper> {
   const wrapper = mount(TracksideApBusinessView, {
     global: {
       directives: { loading: () => undefined },
-      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub },
+      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub, NcMultiValueFilter: NcMultiValueFilterStub },
     },
   })
   await flushPromises()
@@ -2381,7 +2510,7 @@ async function mountCachedView(): Promise<VueWrapper> {
     attachTo: document.body,
     global: {
       directives: { loading: () => undefined },
-      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub },
+      stubs: { ...ElementStubs, NcDataTable: NcDataTableStub, NcMultiValueFilter: NcMultiValueFilterStub },
     },
   })
   await flushPromises()

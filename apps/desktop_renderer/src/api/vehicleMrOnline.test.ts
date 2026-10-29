@@ -61,4 +61,19 @@ describe('vehicle MR online API', () => {
     expect(JSON.parse(fetchMock.mock.calls[5][1].body)).toEqual({ controller_id: 'ac-uuid-1', include_switch_history: false })
     expect(JSON.parse(fetchMock.mock.calls[7][1].body).explicit_confirmation).toBe(true)
   })
+
+  it('serializes multi-value status filters as repeated query keys', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listVehicleMrOnline({ overall_status: ['BOTH_ONLINE', 'BOTH_OFFLINE'], data_status: ['FRESH', 'NO_DATA'] })
+    await listVehicleMrEvents('train-1', { car_end_label: ['TC1', 'TC2'], event_status: ['在线', '离线'] })
+
+    const trainUrl = new URL(String(fetchMock.mock.calls[0][0]), 'http://localhost')
+    expect(trainUrl.searchParams.getAll('overall_status')).toEqual(['BOTH_ONLINE', 'BOTH_OFFLINE'])
+    expect(trainUrl.searchParams.getAll('data_status')).toEqual(['FRESH', 'NO_DATA'])
+    const eventUrl = new URL(String(fetchMock.mock.calls[1][0]), 'http://localhost')
+    expect(eventUrl.searchParams.getAll('car_end_label')).toEqual(['TC1', 'TC2'])
+    expect(eventUrl.searchParams.getAll('event_status')).toEqual(['在线', '离线'])
+  })
 })

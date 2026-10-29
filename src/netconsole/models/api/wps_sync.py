@@ -66,6 +66,7 @@ class WpsSyncRequestDTO(ApiModel):
     target_codes: list[str] = Field(default_factory=list, max_length=1)
     expected_revision: str = Field(default="", max_length=128)
     initialize_binding: bool = False
+    stations: list[str] = Field(default_factory=list, max_length=100)
 
 
 class WpsSyncConnectionTestDTO(ApiModel):

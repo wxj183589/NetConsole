@@ -20,6 +20,8 @@ from openpyxl.utils import get_column_letter
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
+from netconsole.core.runtime_environment import runtime_mode
+from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.services.site_manager import SiteManager
 from netconsole.core.version import APP_VERSION
 from netconsole.models.wps_sync import (
@@ -1144,6 +1146,7 @@ class TracksideApWpsSyncService:
         target_codes: Sequence[str] = (),
         expected_revision: str = "",
         initialize_binding: bool = False,
+        stations: Sequence[str] = (),
         progress: Callable[[str, int, int, str], None] | None = None,
         should_cancel: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
@@ -1255,7 +1258,7 @@ class TracksideApWpsSyncService:
                 raise WpsSyncError("TRACKSIDE_AP_SNAPSHOT_STALE", "轨旁 AP 数据已更新，请刷新后重试")
         if progress is not None:
             progress("wps_snapshot", 5, 100, "正在冻结轨旁 AP 业务快照")
-        snapshot = self._build_snapshot(site_id)
+        snapshot = self._build_snapshot(site_id, stations=stations) if stations else self._build_snapshot(site_id)
         revision = str(snapshot.get("business_revision") or "")
         business_content_sha256 = str(snapshot.get("content_sha256") or "")
         batch_id = f"wps_{uuid4().hex}"
@@ -2064,12 +2067,13 @@ class TracksideApWpsSyncService:
         self._ensure_default_targets(repository)
         return repository.recent_batches(TRACKSIDE_AP_WPS_BUSINESS_KEY, limit)
 
-    def _build_snapshot(self, site_id: str) -> dict[str, object]:
+    def _build_snapshot(self, site_id: str, *, stations: Sequence[str] = ()) -> dict[str, object]:
         scope_context = self._snapshot_scope_context(site_id)
         return build_trackside_ap_business_export_snapshot(
             DeviceRepository(Database(self.paths.site_db_path(site_id))),
             site_id,
             scope_context=scope_context,
+            stations=stations,
         )
 
     def _snapshot_scope_context(self, site_id: str) -> dict[str, object]:
@@ -2217,6 +2221,23 @@ class TracksideApWpsSyncService:
 
     def _repository(self, site_id: str) -> WpsSyncRepository:
         selected = SiteManager(self.paths).validate_site_name(site_id)
+        # WpsSyncRepository.initialize() creates ``sites/<site>/sync`` before
+        # it can read a target.  In a packaged/development runtime, do not let
+        # an invalid site reference turn into a new top-level site directory;
+        # production startup deliberately rejects such directories as
+        # unregistered sites.  Tests retain their explicit isolated fixture
+        # behavior under RuntimeMode.TEST.
+        if runtime_mode() is not RuntimeMode.TEST:
+            database_path = self.paths.site_db_path(selected)
+            if not database_path.is_file() or database_path.is_symlink():
+                raise WpsSyncError(
+                    "WPS_SITE_NOT_FOUND",
+                    f"当前局点未完成初始化，拒绝创建 WPS 同步存储：{selected}",
+                    details={
+                        "site_id": selected,
+                        "reason": "SITE_DATABASE_MISSING",
+                    },
+                )
         return WpsSyncRepository(self.paths, selected)
 
     def _site_display_name(self, site_id: str) -> str:

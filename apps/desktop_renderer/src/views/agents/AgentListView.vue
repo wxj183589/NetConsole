@@ -15,6 +15,7 @@ import {
 } from '../../api/agents'
 import NcStatusTag from '../../components/NcStatusTag.vue'
 import NcDataTable from '../../components/table/NcDataTable.vue'
+import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useAgentStore } from '../../stores/agents'
 import type {
@@ -34,8 +35,9 @@ type AgentToolRow = AgentToolStatus & { name: string }
 const store = useAgentStore()
 const { confirm } = useConfirm()
 const search = ref('')
-const statusFilter = ref<AgentStatus | ''>('')
-const enabledFilter = ref<'' | 'enabled' | 'disabled'>('')
+const statusFilters = ref<string[]>([])
+const enabledFilters = ref<string[]>([])
+const enabledLabels = { enabled: '已启用', disabled: '已禁用' }
 const dialogVisible = ref(false)
 const drawerVisible = ref(false)
 const saving = ref(false)
@@ -60,7 +62,10 @@ let remoteTimer: number | undefined
 let taskTimer: number | undefined
 const formRef = ref<FormInstance>()
 const form = reactive<AgentFormValue>(emptyForm())
-const visibleAgents = computed(() => store.filtered(search.value, statusFilter.value, enabledFilter.value))
+const visibleAgents = computed(() => store.filtered(search.value, '', '').filter((agent) => (
+  (!statusFilters.value.length || statusFilters.value.includes(agent.status))
+  && (!enabledFilters.value.length || enabledFilters.value.includes(agent.enabled ? 'enabled' : 'disabled'))
+)))
 const toolRows = computed<AgentToolRow[]>(() => remoteTools.value ? [
   { name: 'MR Collector', ...remoteTools.value.mr_collector },
   { name: 'fping', ...remoteTools.value.fping },
@@ -348,12 +353,8 @@ function capabilityText(capabilities: Record<string, unknown>): string {
         <div><h2>Agent 管理</h2><p>仅管理控制面与健康状态，本阶段不提供任务启动能力。</p></div>
         <div class="toolbar-actions">
           <el-input v-model="search" :prefix-icon="Search" placeholder="搜索名称、地址、标签" clearable style="width: 230px" />
-          <el-select v-model="statusFilter" placeholder="全部状态" clearable style="width: 138px">
-            <el-option v-for="status in statusOptions" :key="status" :label="status" :value="status" />
-          </el-select>
-          <el-select v-model="enabledFilter" placeholder="全部启用状态" clearable style="width: 150px">
-            <el-option label="已启用" value="enabled" /><el-option label="已禁用" value="disabled" />
-          </el-select>
+          <NcMultiValueFilter v-model="statusFilters" :options="statusOptions" placeholder="全部状态" style="width: 150px" />
+          <NcMultiValueFilter v-model="enabledFilters" :options="['enabled', 'disabled']" :labels="enabledLabels" placeholder="全部启用状态" style="width: 158px" />
           <el-button :icon="Refresh" :loading="store.loading" @click="store.refresh">刷新</el-button>
           <el-button type="primary" :icon="CirclePlus" @click="openCreate">新增 Agent</el-button>
         </div>

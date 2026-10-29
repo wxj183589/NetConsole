@@ -44,6 +44,26 @@ describe('ConfigDiffViewer', () => {
     expect(wrapper.get('[aria-label="配置差异双栏视图"]').text()).toContain('old')
     wrapper.unmount()
   })
+
+  it('applies multiple WPS-style checked diff types to rows and navigation together', async () => {
+    const wrapper = mountViewer(model({
+      original: 'before', modified: 'after',
+      rows: [
+        { originalLine: 1, originalText: 'same', modifiedLine: 1, modifiedText: 'same', status: 'equal' },
+        { originalLine: 2, originalText: 'old', modifiedLine: 2, modifiedText: 'new', status: 'modified' },
+        { originalLine: null, originalText: '', modifiedLine: 3, modifiedText: 'inserted', status: 'added' },
+        { originalLine: 3, originalText: 'deleted', modifiedLine: null, modifiedText: '', status: 'removed' },
+      ],
+    }))
+    await wrapper.findAll('button')[1].trigger('click')
+    expect(wrapper.findAll('.diff-row:not(.diff-header)')).toHaveLength(4)
+    wrapper.findComponent({ name: 'NcMultiValueFilter' }).vm.$emit('update:modelValue', ['added', 'removed'])
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.diff-row:not(.diff-header)')).toHaveLength(2)
+    expect(wrapper.get('.diff-navigation').text()).toContain('1 / 2')
+    expect(wrapper.text()).not.toContain('old')
+    wrapper.unmount()
+  })
 })
 
 function model(input: {
@@ -71,6 +91,7 @@ function mountViewer(value: SharedConfigDiffModel) {
         ElCheckbox: { template: '<label><slot /></label>' },
         ElSelect: { template: '<div><slot /></div>' },
         ElOption: { template: '<span />' },
+        NcMultiValueFilter: { name: 'NcMultiValueFilter', props: ['modelValue', 'options', 'labels', 'placeholder'], template: '<div data-testid="diff-multi-filter" />' },
       },
     },
   })

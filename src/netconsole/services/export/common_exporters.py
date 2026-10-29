@@ -378,8 +378,8 @@ def export_vehicle_mr_history_xlsx(
         str(payload.get("train_id") or ""),
         str(filters.get("start_time") or ""),
         str(filters.get("end_time") or ""),
-        car_end_label=str(filters.get("car_end_label") or ""),
-        status=str(filters.get("status") or ""),
+        car_end_label=filters.get("car_end_label") or "",
+        status=filters.get("status") or "",
         station=str(filters.get("station") or ""),
         ap_name=str(filters.get("ap_name") or ""),
         limit=1_000_000,
@@ -466,6 +466,11 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
             group_filter=filters.get("group_filter"),
             project_phase=filters.get("project_phase"),
             work_scope_status=filters.get("work_scope_status"),
+            group_values=filters.get("group_values"),
+            vendor_values=filters.get("vendor_values"),
+            device_type_values=filters.get("device_type_values"),
+            project_phase_values=filters.get("project_phase_values"),
+            work_scope_status_values=filters.get("work_scope_status_values"),
         )
         service = DeviceImportExportService(repository, group_repository)
     selected_uuids = {
@@ -479,6 +484,10 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
             for device in devices
             if str(device.device_uuid or "").strip() in selected_uuids
         ]
+    scoped_filters = payload.get("filters") if isinstance(payload.get("filters"), Mapping) else {}
+    if "connection_match_uuids" in scoped_filters:
+        matched_uuids = set(scoped_filters["connection_match_uuids"] or [])
+        devices = [device for device in devices if str(device.device_uuid or "") in matched_uuids]
     _emit(progress, "generate_device_csv", 55, 100, "正在生成设备 CSV")
     _check_cancel(should_cancel)
     service.export_csv(
@@ -536,9 +545,17 @@ def export_securecrt_sessions_task(path: Path, payload: Mapping[str, Any], progr
         group_filter=filters.get("group_filter"),
         project_phase=filters.get("project_phase"),
         work_scope_status=filters.get("work_scope_status"),
+        group_values=filters.get("group_values"),
+        vendor_values=filters.get("vendor_values"),
+        device_type_values=filters.get("device_type_values"),
+        project_phase_values=filters.get("project_phase_values"),
+        work_scope_status_values=filters.get("work_scope_status_values"),
     )
     if selected_uuids:
         devices = [device for device in devices if str(device.device_uuid or "").strip() in selected_uuids]
+    if "connection_match_uuids" in filters:
+        matched_uuids = set(filters["connection_match_uuids"] or [])
+        devices = [device for device in devices if str(device.device_uuid or "") in matched_uuids]
     group_names = {
         int(group.id): str(group.name)
         for group in DeviceGroupRepository(database, str(payload.get("site_name") or "")).list()

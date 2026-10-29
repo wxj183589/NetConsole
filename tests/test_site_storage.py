@@ -64,6 +64,9 @@ def test_site_package_staging_recovers_interrupted_internal_and_publish_work(
     internal = paths.temp_dir / "netconsole-site-export-interrupted"
     internal.mkdir(parents=True)
     (internal / "devices.db").write_bytes(b"sqlite-staging")
+    batch = paths.temp_dir / "netconsole-batch-lightweight-interrupted"
+    batch.mkdir(parents=True)
+    (batch / "site-one.zip").write_bytes(b"zip-staging")
     imported = paths.temp_dir / "site-import-staging" / "interrupted"
     imported.mkdir(parents=True)
     (imported / "tasks.sqlite").write_bytes(b"sqlite-staging")
@@ -90,7 +93,7 @@ def test_site_package_staging_recovers_interrupted_internal_and_publish_work(
 
     assert result.to_dict() == {
         "status": "PASS",
-        "removed_internal_entries": 2,
+        "removed_internal_entries": 3,
         "removed_publish_files": 1,
         "removed_journals": 1,
         "restored_site_imports": 0,
@@ -100,6 +103,7 @@ def test_site_package_staging_recovers_interrupted_internal_and_publish_work(
         "failures": [],
     }
     assert not internal.exists()
+    assert not batch.exists()
     assert not imported.exists()
     assert not publish.exists()
     assert lifecycle.recover_orphans().status == "PASS"
@@ -1037,6 +1041,51 @@ def test_lightweight_package_round_trips_core_and_four_business_exports(
     assert target_sites.get_site("restored-site")["display_name"] == "恢复轻量局点"
 
 
+def test_batch_lightweight_bundle_contains_original_packages_and_explicit_wps_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    for site_id in ("site-one", "site-two"):
+        sites.create_site(site_id, site_id)
+    wps = WpsSyncRepository(paths, "site-one", protect=_test_wps_protection, unprotect=_test_wps_protection)
+    wps.initialize()
+    wps.upsert_target(
+        business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        target_code="wps_standard_spreadsheet",
+        target_type=WpsTargetType.STANDARD_SPREADSHEET,
+        target_name="WPS 云文档",
+        document_open_url="https://www.kdocs.cn/l/test",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/test/script/test/sync_task",
+        expected_document_id="test",
+        enabled=True,
+        timeout_seconds=30,
+        token="Plaintext-Token-For-Bundle-Test",
+    )
+    monkeypatch.setattr(WpsSyncRepository, "resolve_token", lambda self, target: "Plaintext-Token-For-Bundle-Test")
+    package = tmp_path / "exports" / "bundle.zip"
+    result = SitePackageService(paths, sites).export_lightweight_bundle(
+        ["site-one", "site-two"], package,
+        table_preferences={"rail.trackside-ap-business.table.main": {"version": 1, "order": ["site"]}},
+    )
+    assert result["site_count"] == 2
+    with zipfile.ZipFile(package) as bundle:
+        manifest = json.loads(bundle.read("manifest.json"))
+        assert manifest["wps_tokens_plaintext"] is True
+        assert manifest["encrypted"] is False
+        assert "Plaintext-Token-For-Bundle-Test" not in bundle.read("manifest.json").decode("utf-8")
+        config = json.loads(bundle.read("wps-connections/site-one.json"))
+        assert config["targets"][0]["token"] == "Plaintext-Token-For-Bundle-Test"
+        assert json.loads(bundle.read("wps-connections/site-two.json"))["targets"] == []
+        assert json.loads(bundle.read("table-column-preferences.json"))["rail.trackside-ap-business.table.main"]["order"] == ["site"]
+        for site_id in ("site-one", "site-two"):
+            nested = tmp_path / f"{site_id}.zip"
+            nested.write_bytes(bundle.read(f"sites/{site_id}.zip"))
+            assert SitePackageService(paths, sites).inspect_package(nested)["can_import"] is True
+        for path, expected in manifest["checksums"].items():
+            assert hashlib.sha256(bundle.read(path)).hexdigest() == expected
+
+
 def test_lightweight_export_uses_registry_id_and_legacy_directory_database(
     tmp_path: Path,
 ) -> None:
@@ -1081,6 +1130,61 @@ def test_lightweight_export_uses_registry_id_and_legacy_directory_database(
     assert site_metadata["display_name"] == legacy_name
     with sqlite3.connect(snapshot) as connection:
         assert connection.execute("PRAGMA schema_version").fetchone() is not None
+
+
+def test_batch_lightweight_export_reads_wps_from_legacy_directory_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = _paths(tmp_path)
+    legacy_name = "宁波地铁12号线"
+    paths.ensure_site_dirs(legacy_name)
+    Database(paths.site_db_path(legacy_name)).initialize()
+    (paths.site_dir(legacy_name) / "site_meta.json").write_text(
+        json.dumps({"display_name": legacy_name}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    sites = SiteApplicationService(paths)
+    legacy = next(
+        item for item in sites.list_sites() if item["display_name"] == legacy_name
+    )
+    wps = WpsSyncRepository(
+        paths,
+        legacy_name,
+        protect=_test_wps_protection,
+        unprotect=_test_wps_protection,
+    )
+    wps.initialize()
+    wps.upsert_target(
+        business_key=TRACKSIDE_AP_WPS_BUSINESS_KEY,
+        target_code="wps_standard_spreadsheet",
+        target_type=WpsTargetType.STANDARD_SPREADSHEET,
+        target_name="WPS 云文档",
+        document_open_url="https://www.kdocs.cn/l/legacy-test",
+        webhook_url="https://www.kdocs.cn/api/v3/ide/file/legacy/sync_task",
+        expected_document_id="legacy-test",
+        enabled=True,
+        timeout_seconds=30,
+        token="Legacy-Directory-Token",
+    )
+    monkeypatch.setattr(
+        WpsSyncRepository,
+        "resolve_token",
+        lambda self, target: "Legacy-Directory-Token",
+    )
+
+    package = tmp_path / "exports" / "legacy-batch.zip"
+    result = SitePackageService(paths, sites).export_lightweight_bundle(
+        [legacy["site_id"]], package
+    )
+
+    assert result["site_count"] == 1
+    with zipfile.ZipFile(package) as bundle:
+        settings = json.loads(
+            bundle.read(f"wps-connections/{legacy['site_id']}.json")
+        )
+    assert settings["site_id"] == legacy["site_id"]
+    assert settings["targets"][0]["token"] == "Legacy-Directory-Token"
 
 
 def test_lightweight_export_missing_source_database_fails_without_autoinit(
@@ -1140,6 +1244,48 @@ def test_site_export_job_reports_safe_stages_and_destination(
     )
     assert isinstance(destination_message, dict)
     assert destination_message["destination_path"] == str(package.resolve())
+
+
+def test_lightweight_package_round_trips_table_preferences_and_keeps_old_layout_optional(
+    tmp_path: Path,
+) -> None:
+    source_paths = _paths(tmp_path / "source")
+    source_sites = SiteApplicationService(source_paths)
+    source_sites.create_site("source-site", "源局点")
+    package = tmp_path / "source-lightweight.zip"
+    preferences = {
+        "device-detail.interfaces": {
+            "version": 1,
+            "order": ["name", "status"],
+            "columns": [
+                {"key": "name", "visible": True, "width": 180, "fixed": "left"},
+                {"key": "status", "visible": False},
+            ],
+        },
+    }
+
+    SitePackageService(source_paths, source_sites).export_site(
+        "source-site",
+        package,
+        package_type="lightweight",
+        table_preferences=preferences,
+    )
+    inspected = SitePackageService(source_paths, source_sites).inspect_package(package)
+    assert inspected["table_preferences"] == preferences
+    with zipfile.ZipFile(package) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["table_preferences_path"] == "table-column-preferences.json"
+        assert "table-column-preferences.json" in manifest["checksums"]
+        assert json.loads(archive.read("table-column-preferences.json")) == preferences
+
+    target_paths = _paths(tmp_path / "target")
+    target_sites = SiteApplicationService(target_paths)
+    imported = SitePackageService(target_paths, target_sites).import_site(
+        package,
+        site_id="restored-site",
+    )
+    assert imported["site_switchable"] is True
+    assert imported["table_preferences"] == preferences
 
 
 def test_lightweight_package_rejects_missing_required_file_and_checksum_mismatch(

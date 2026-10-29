@@ -43,6 +43,7 @@ def list_devices(
     request: Request,
     search: str = Query(default="", max_length=200),
     group_filter: str = Query(default="", max_length=40),
+    group_values: list[str] = Query(default=[], max_length=20),
     work_scope_status: str = Query(
         default="included",
         pattern="^(all|included|excluded)$",
@@ -55,6 +56,7 @@ def list_devices(
             _site_id(request),
             search=search,
             group_filter=group_filter,
+            group_values=group_values,
             work_scope_status=work_scope_status,
             page=page,
             page_size=page_size,

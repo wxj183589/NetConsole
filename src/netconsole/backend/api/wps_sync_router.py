@@ -244,6 +244,7 @@ def sync(request: Request, payload: WpsSyncRequestDTO) -> RailTransitTaskDTO:
             target_codes=payload.target_codes,
             expected_revision=payload.expected_revision,
             initialize_binding=payload.initialize_binding,
+            stations=payload.stations,
         )
     except WpsSyncError as exc:
         _raise(exc)

@@ -81,6 +81,20 @@ describe('AC Management polling store', () => {
     expect(store.filterOptions.switches).toEqual(['01-小洋江站1'])
   })
 
+  it('submits multi selections unchanged to backend pagination and resets page on apply', async () => {
+    const store = useAcManagementStore()
+    store.filters.ac_id = 'ac-1'
+    store.filters.page = 4
+    store.multiFilters.statuses = ['online', 'offline']
+    store.multiFilters.stations = ['车站A', '车站B']
+    store.applyFilters()
+    await vi.waitFor(() => expect(listAcAps).toHaveBeenCalledOnce())
+    expect(listAcAps).toHaveBeenCalledWith(expect.objectContaining({
+      ac_id: 'ac-1', page: 1,
+      statuses: ['online', 'offline'], stations: ['车站A', '车站B'],
+    }))
+  })
+
   it('does not overlap AP requests and reports after three failures', async () => {
     let rejectRequest: ((reason?: unknown) => void) | undefined
     vi.mocked(listAcAps).mockImplementation(() => new Promise((_, reject) => { rejectRequest = reject }))

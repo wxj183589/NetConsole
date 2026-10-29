@@ -211,6 +211,7 @@ def _run_trackside_ap_business(job: ExportJob) -> None:
                 else None
             ),
             station=str(job.params.get("station") or ""),
+            stations=[str(value) for value in job.params.get("stations") or () if str(value)],
             query=str(job.params.get("query") or ""),
             selected_row_ids=[
                 str(value)

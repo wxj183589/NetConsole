@@ -177,6 +177,7 @@ def trackside_ap_wps_sync(context):
         target_codes=target_codes,
         expected_revision=str(context.params.get("expected_revision") or ""),
         initialize_binding=bool(context.params.get("initialize_binding")),
+        stations=[str(value) for value in context.params.get("stations") or () if str(value)],
         progress=context.progress,
         should_cancel=context.check_cancelled,
     )

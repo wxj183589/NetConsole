@@ -106,7 +106,7 @@ Browser 开发模式可以返回 `started`，UI 只能提示“浏览器已开�
 ## 七、已登记例外
 
 1. **OmniPeek 名称表**：保留专用目录和文件预选流程，但仍必须在创建任务前选择最终路径。
-2. **局点包**：保留 `selectSitePackage` / `selectSiteExportDestination`，以及迁移包、脱敏包、现场包和回传包的安全提示与文件契约。
+2. **局点包**：保留 `selectSitePackage` / `selectSiteExportDestination`，以及迁移包、脱敏包、现场包、回传包和多局点轻量包的安全提示与文件契约。多局点汇总 ZIP 先由 Electron Main 选择一次最终路径，取消时不提交 Job；Backend 在受控暂存区分别构建局点包、校验汇总 SHA-256，再原子发布，不绕过专用局点包任务流程。
 3. **SFTP 文件管理**：保留受管下载目录、批量队列、重试、归档和自动导入语义，不要求每个远程文件弹 Save As；从受管文件区“导出副本/另存为”时仍须弹窗。
 4. **MESH 本地日志扫描**：这是历史遗留、手工复制和失败导入的补偿机制，只允许用户点击后扫描当前局点受管 MESH raw 目录；不提供路径输入，不访问其他局点，不替代 Browser `File/FileList` 手工导入。目录遍历、哈希和批量补录进入 Job Center，页面进入不得自动全量扫描。
 5. **内部 Artifact、任务日志、缓存和临时文件**：不属于用户最终副本，不弹 Save As。

@@ -9,8 +9,14 @@ export const DEVICE_MANAGEMENT_QUERY_DEFAULTS: DeviceManagementQueryState = {
   vendor: '',
   device_type: '',
   connection_status: '',
+  connection_status_values: [],
   project_phase: 'all',
   work_scope_status: 'included',
+  group_values: [],
+  vendor_values: [],
+  device_type_values: [],
+  project_phase_values: [],
+  work_scope_status_values: ['included'],
   sort_by: 'default',
   sort_order: 'asc',
   page: 1,
@@ -18,7 +24,15 @@ export const DEVICE_MANAGEMENT_QUERY_DEFAULTS: DeviceManagementQueryState = {
 }
 
 function copyState(state: DeviceManagementQueryState): DeviceManagementQueryState {
-  return { ...state }
+  return {
+    ...state,
+    group_values: [...state.group_values],
+    connection_status_values: [...state.connection_status_values],
+    vendor_values: [...state.vendor_values],
+    device_type_values: [...state.device_type_values],
+    project_phase_values: [...state.project_phase_values],
+    work_scope_status_values: [...state.work_scope_status_values],
+  }
 }
 
 export const useDeviceManagementQueryStore = defineStore('device-management-query', () => {

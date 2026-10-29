@@ -247,4 +247,19 @@ describe('ground unattended Syslog failure classification', () => {
       '/mr-runtime-status?mr_role=CT&radio_state=DOWN&snmp_state=RADIO_DOWN',
     )
   })
+
+  it('serializes Syslog filter selections with repeated keys', async () => {
+    client.apiRequest.mockResolvedValue({})
+
+    await listGroundSyslogRecords({
+      event_type: ['MESH_LINKUP', 'MESH_LINKDOWN'],
+      severity: ['INFO', 'WARNING'],
+      correlation_status: ['CORRELATED', 'UNCORRELATED'],
+    })
+
+    const url = new URL(String(client.apiRequest.mock.calls[0][0]), 'http://localhost')
+    expect(url.searchParams.getAll('event_type')).toEqual(['MESH_LINKUP', 'MESH_LINKDOWN'])
+    expect(url.searchParams.getAll('severity')).toEqual(['INFO', 'WARNING'])
+    expect(url.searchParams.getAll('correlation_status')).toEqual(['CORRELATED', 'UNCORRELATED'])
+  })
 })

@@ -38,7 +38,11 @@ import type {
 function queryString(values: DeviceListQuery): string {
   const params = new URLSearchParams()
   Object.entries(values).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+    if (Array.isArray(value)) {
+      for (const selection of value) if (selection) params.append(key, selection)
+    } else if (value !== undefined && value !== null && value !== '') {
+      params.set(key, String(value))
+    }
   })
   const query = params.toString()
   return query ? `?${query}` : ''
@@ -97,7 +101,9 @@ export function getDeviceDetailSection(
     delete values.status
   }
   Object.entries(values).forEach(([key, value]) => {
-    if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
+    if (Array.isArray(value)) {
+      for (const item of value) if (item) params.append(key, item)
+    } else if (value !== undefined && value !== null && value !== '') params.set(key, String(value))
   })
   const suffix = params.toString() ? `?${params.toString()}` : ''
   return apiRequest<DeviceDetailSectionResponse>(

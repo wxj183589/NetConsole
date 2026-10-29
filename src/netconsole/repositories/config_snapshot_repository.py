@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Iterable
 
 from netconsole.core.database import CONFIG_SNAPSHOTS_SCHEMA, Database
 
@@ -63,13 +64,8 @@ class ConfigSnapshotRepository:
             raise KeyError(f"Config snapshot not found: {snapshot_id}")
         return self._from_row(dict(row))
 
-    def list_for_device(self, device_uuid: str, snapshot_type: str | None = None) -> list[ConfigSnapshot]:
-        clauses = ["device_uuid = ?"]
-        params: list[object] = [device_uuid]
-        if snapshot_type:
-            clauses.append("type = ?")
-            params.append(snapshot_type)
-        where = " AND ".join(clauses)
+    def list_for_device(self, device_uuid: str, snapshot_type: str | Iterable[str] | None = None) -> list[ConfigSnapshot]:
+        where, params = self._device_filter(device_uuid, snapshot_type)
         with self.database.connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM config_snapshots WHERE {where} ORDER BY timestamp DESC, id DESC",
@@ -80,7 +76,7 @@ class ConfigSnapshotRepository:
     def list_for_device_page(
         self,
         device_uuid: str,
-        snapshot_type: str | None = None,
+        snapshot_type: str | Iterable[str] | None = None,
         *,
         limit: int = 50,
         offset: int = 0,
@@ -95,7 +91,7 @@ class ConfigSnapshotRepository:
         return [self._from_row(dict(row)) for row in rows]
 
     def count_for_device(
-        self, device_uuid: str, snapshot_type: str | None = None
+        self, device_uuid: str, snapshot_type: str | Iterable[str] | None = None
     ) -> int:
         where, params = self._device_filter(device_uuid, snapshot_type)
         with self.database.connect() as conn:
@@ -107,13 +103,15 @@ class ConfigSnapshotRepository:
 
     @staticmethod
     def _device_filter(
-        device_uuid: str, snapshot_type: str | None
+        device_uuid: str, snapshot_type: str | Iterable[str] | None
     ) -> tuple[str, list[object]]:
         clauses = ["device_uuid = ?"]
         params: list[object] = [device_uuid]
-        if snapshot_type:
-            clauses.append("type = ?")
-            params.append(snapshot_type)
+        values = (snapshot_type,) if isinstance(snapshot_type, str) else tuple(snapshot_type or ())
+        selected = tuple(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+        if selected:
+            clauses.append(f"type IN ({','.join('?' for _ in selected)})")
+            params.extend(selected)
         return " AND ".join(clauses), params
 
     def delete(self, snapshot_id: int) -> ConfigSnapshot:

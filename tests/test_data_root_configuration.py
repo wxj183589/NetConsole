@@ -25,6 +25,7 @@ from netconsole.services.installation_data_root import (
     validate_existing_installation_data_root,
 )
 from netconsole.services.site_storage import SiteRegistryRepository, SiteStorageError
+from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -572,6 +573,52 @@ def test_existing_root_validation_reuses_the_persisted_production_authority(
         )
         == target.resolve()
     )
+
+
+def test_existing_development_root_retains_unregistered_fixture_site_without_production_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "development"
+    prepare_installation_data_root(target)
+    fixture_site = target / "sites" / "dpapi-test"
+    fixture_site.mkdir()
+    runtime_environment.write_data_environment(
+        target,
+        DataEnvironmentInfo(DataEnvironmentMode.DEVELOPMENT, readonly_warning=False),
+        overwrite=True,
+    )
+    resolver_calls: list[Path] = []
+
+    def production_resolver(paths):
+        resolver_calls.append(paths.data_root)
+        raise AssertionError("development root must not use Production startup resolution")
+
+    assert (
+        validate_existing_installation_data_root(
+            target, startup_site_resolver=production_resolver
+        )
+        == target.resolve()
+    )
+    assert resolver_calls == []
+    assert fixture_site.is_dir()
+
+
+def test_existing_production_root_rejects_unregistered_fixture_site(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _allow_non_production_test_root(monkeypatch, tmp_path)
+    target = tmp_path / "production"
+    prepare_installation_data_root(target)
+    fixture_site = target / "sites" / "dpapi-test"
+    fixture_site.mkdir()
+    from netconsole.backend.api.main import ActiveSiteStartupError, _production_startup_site
+
+    with pytest.raises(ActiveSiteStartupError, match="存在未登记的局点目录：dpapi-test"):
+        validate_existing_installation_data_root(
+            target, startup_site_resolver=_production_startup_site
+        )
+    assert fixture_site.is_dir()
 
 
 @pytest.mark.parametrize(

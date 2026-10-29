@@ -152,6 +152,33 @@ def test_parse_train_identity_merges_ct_and_cw_to_same_train() -> None:
     assert cw.car_end_label == "TC2"
 
 
+def test_parse_train_identity_uses_hzl10_middle_segment_and_confirmed_numeric_mapping() -> None:
+    ct = parse_train_identity("HZL10-25-DQ09-MR-CT")
+    cw = parse_train_identity("HZL10-25-DQ10-MR-CW")
+    nbl_ct = parse_train_identity("NBL12-LC25-MR-CT")
+    nbl_cw = parse_train_identity("NBL12-LC25-MR-CW")
+    chinese = parse_train_identity("列车25-MR-CW")
+    numeric_ct = parse_train_identity("3001")
+    numeric_cw = parse_train_identity("3004")
+    numeric_cw_2 = parse_train_identity("3006")
+
+    assert ct is not None and cw is not None
+    assert ct.train_no == cw.train_no == "25"
+    assert ct.line_name == cw.line_name == "HZL10"
+    assert ct.canonical_train_key == cw.canonical_train_key == "train:25"
+    assert ct.match_source == "hzl10-middle-segment"
+    assert ct.confidence == "high"
+    assert nbl_ct is not None and nbl_cw is not None and chinese is not None
+    assert nbl_ct.train_no == nbl_cw.train_no == chinese.train_no == "25"
+    assert nbl_ct.line_name == nbl_cw.line_name == "NBL12"
+    assert nbl_ct.match_source == "legacy-line-lc"
+    assert numeric_ct is not None and numeric_cw is not None and numeric_cw_2 is not None
+    assert (numeric_ct.train_no, numeric_ct.car_end) == ("30", "CT")
+    assert (numeric_cw.train_no, numeric_cw.car_end) == ("30", "CW")
+    assert (numeric_cw_2.train_no, numeric_cw_2.car_end) == ("30", "CW")
+    assert parse_train_identity("3002") is None
+
+
 def test_train_status_online_partial_offline_and_unregistered() -> None:
     registered = {"NBL12-LC06": VehicleMrTrainState("NBL12-LC06", "06", True)}
     ap_lookup = {"ap-a": MatchedAp("AP-A", "鼓楼站")}
@@ -1132,14 +1159,17 @@ def test_vehicle_mr_history_export_writes_rows(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     store = VehicleMrOnlineStore(paths, "demo")
     with store.connect() as conn:
-        conn.execute(
+        conn.executemany(
             """
             INSERT INTO vehicle_mr_train_pass_events (
                 train_id, train_display_name, train_no, car_end_label, event_time,
                 status, station, ap_name, rssi, event_type, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("列车06", "06车", "06", "TC1", "2026-06-26 01:00:00", "在线", "鼓楼站", "AP-A", 46, "online", "2026-06-26 01:00:00"),
+            [
+                ("列车06", "06车", "06", "TC1", "2026-06-26 01:00:00", "在线", "鼓楼站", "AP-A", 46, "online", "2026-06-26 01:00:00"),
+                ("列车06", "06车", "06", "TC2", "2026-06-26 01:30:00", "离线", "鼓楼站", "AP-B", 0, "offline", "2026-06-26 01:30:00"),
+            ],
         )
 
     spec = vehicle_mr_history_xlsx_spec(
@@ -1148,7 +1178,7 @@ def test_vehicle_mr_history_export_writes_rows(tmp_path: Path) -> None:
         data_root=paths.data_root,
         site_name="demo",
         train_id="列车06",
-        filters={"start_time": "2026-06-26 00:00:00", "end_time": "2026-06-26 02:00:00"},
+        filters={"start_time": "2026-06-26 00:00:00", "end_time": "2026-06-26 02:00:00", "car_end_label": ["TC1"], "status": ["在线"]},
         title="导出历史记录",
     )
     job = spec.to_job("vehicle-mr-history-test")
@@ -1159,4 +1189,6 @@ def test_vehicle_mr_history_export_writes_rows(tmp_path: Path) -> None:
 
     sheet = load_workbook(path).active
     assert sheet.cell(1, 1).value == "时间"
+    assert sheet.max_row == 2
+    assert sheet.cell(2, 2).value == "TC1"
     assert sheet.cell(2, 4).value == "鼓楼站"

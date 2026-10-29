@@ -8,6 +8,7 @@ import * as api from '../../api/siteStorage'
 import * as tasks from '../../api/tasks'
 import { ApiRequestError } from '../../api/client'
 import { clearSiteContext, markSiteContextSwitching, setActiveSiteContext } from '../../stores/siteContext'
+import { setAppLocale } from '../../i18n/runtime'
 import type { SiteRecord, SiteRetentionReport } from '../../api/siteStorage'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 
@@ -176,6 +177,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mountedPanels.splice(0).forEach((wrapper) => wrapper.unmount())
+  setAppLocale('zh_CN')
   vi.restoreAllMocks()
 })
 
@@ -192,6 +194,70 @@ describe('SiteStoragePanel', () => {
     expect(wrapper.find('[data-testid="migrate-data-root"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('线路未填写')
     expect(wrapper.text()).toContain('项目类型未填写')
+  })
+
+  it('exports selected sites together with column preferences after explicit credential warning', async () => {
+    vi.mocked(api.listSites).mockResolvedValueOnce([
+      site(), site({ site_id: 'line-12', display_name: '十二号线', active: false }),
+    ])
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    adapter.selectSiteExportDestination.mockResolvedValueOnce({ cancelled: false, path: 'C:\\exports\\bundle.zip' } as never)
+    vi.mocked(api.exportLightweightBundle).mockResolvedValueOnce({ task_id: 'bundle-task', task_type: 'site_batch_lightweight_export' })
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const checkbox = wrapper.find('[aria-label="选择局点 演示局点"]')
+    expect(checkbox.exists()).toBe(true)
+    await checkbox.find('input').setValue(true)
+    await wrapper.get('[data-testid="export-sites-batch"]').trigger('click')
+    await flushPromises()
+
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('明文脚本令牌'), expect.any(String), expect.any(Object),
+    )
+    expect(api.exportLightweightBundle).toHaveBeenCalledWith(
+      ['demo'], 'C:\\exports\\bundle.zip', expect.any(Object),
+    )
+    expect(adapter.openTaskWindow).toHaveBeenCalled()
+  })
+
+  it('localizes the batch lightweight export risk flow in English', async () => {
+    setAppLocale('en_US')
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValueOnce('confirm' as never)
+    adapter.selectSiteExportDestination.mockResolvedValueOnce({ cancelled: true } as never)
+    const wrapper = mountPanel()
+    await flushPromises()
+
+    const checkbox = wrapper.find('[aria-label="Select site 演示局点"]')
+    await checkbox.find('input').setValue(true)
+    expect(wrapper.get('[data-testid="export-sites-batch"]').text()).toContain('Export lightweight packages (1)')
+    await wrapper.get('[data-testid="export-sites-batch"]').trigger('click')
+    await flushPromises()
+
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.stringContaining('plaintext script tokens'),
+      'Confirm sensitive batch export',
+      expect.objectContaining({ confirmButtonText: 'I understand the risk and want to continue', cancelButtonText: 'Cancel' }),
+    )
+  })
+
+  it('localizes lightweight import column preference feedback in English', async () => {
+    setAppLocale('en_US')
+    const warning = vi.spyOn(ElMessage, 'warning')
+    const success = vi.spyOn(ElMessage, 'success')
+    const wrapper = mountPanel()
+    await flushPromises()
+    const restoreImportedTablePreferences = (wrapper.vm as unknown as {
+      restoreImportedTablePreferences: (preferences: Record<string, unknown>) => Promise<void>
+    }).restoreImportedTablePreferences
+
+    await restoreImportedTablePreferences({
+      'netconsole.table-preferences.v2:demo': { version: 1, order: ['site'], columns: [{ key: 'site', visible: true }] },
+    })
+    expect(success).toHaveBeenCalledWith('Restored 1 table column settings.')
+
+    await restoreImportedTablePreferences({ invalid: {} })
+    expect(warning).toHaveBeenCalledWith('The site data was imported, but 1 table settings could not be restored.')
   })
 
   it('freezes the central site context across Save As and cancels a stale export', async () => {

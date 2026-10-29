@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { isAbsolute, resolve } from 'node:path'
+import { TextDecoder } from 'node:util'
 
 export const DATA_ROOT_REGISTRY_KEY = 'HKLM\\Software\\NetConsole'
 export const DATA_ROOT_REGISTRY_VALUE = 'DataRoot'
@@ -52,7 +53,7 @@ export function resolveDesktopDataRootConfiguration(options: {
 export function readMachineDataRoot(queryRegistry: RegistryQuery = defaultRegistryQuery): string | undefined {
   const result = queryRegistry('reg.exe', ['query', DATA_ROOT_REGISTRY_KEY, '/v', DATA_ROOT_REGISTRY_VALUE, '/reg:64'])
   if (!result || result.status !== 0) return undefined
-  const output = String(result.stdout ?? '')
+  const output = decodeRegistryOutput(result.stdout ?? '')
   const line = output.split(/\r?\n/).find((candidate) => new RegExp(`^\\s*${DATA_ROOT_REGISTRY_VALUE}\\s+REG_(?:SZ|EXPAND_SZ)\\s+`, 'i').test(candidate))
   if (!line) return undefined
   const value = line.replace(new RegExp(`^\\s*${DATA_ROOT_REGISTRY_VALUE}\\s+REG_(?:SZ|EXPAND_SZ)\\s+`, 'i'), '').trim()
@@ -72,5 +73,20 @@ function requireAbsolutePath(value: string): string {
 }
 
 function defaultRegistryQuery(command: string, args: string[]) {
-  return spawnSync(command, args, { encoding: 'utf8', windowsHide: true })
+  // reg.exe uses the active Windows console code page when launched by a GUI
+  // process. Keep the bytes and decode UTF-8/GB18030 explicitly so Chinese
+  // installation and data-root paths survive a packaged Electron startup.
+  return spawnSync(command, args, { encoding: 'buffer', windowsHide: true })
+}
+
+function decodeRegistryOutput(value: string | Buffer): string {
+  if (typeof value === 'string') return value
+  if (value.length >= 2 && value[0] === 0xff && value[1] === 0xfe) {
+    return value.subarray(2).toString('utf16le')
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(value)
+  } catch {
+    return new TextDecoder('gb18030').decode(value)
+  }
 }

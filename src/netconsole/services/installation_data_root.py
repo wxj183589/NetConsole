@@ -58,11 +58,35 @@ def validate_existing_installation_data_root(
         raw_candidate, installation_root=installation_root
     )
 
-    resolve_storage_root_authority(root)
+    authority = resolve_storage_root_authority(root)
     if not (root / "config" / "site_registry.json").is_file():
         raise DataRootConfigurationError(
             "历史数据目录缺少 site_registry.json；不会自动生成新的空局点"
         )
+    if not authority.is_production:
+        # Development/test authorities may contain a locally-created fixture
+        # site which is intentionally not part of the formal SiteRegistry.
+        # Validate the persisted registry and its paths, but do not route this
+        # root through the Production active-site resolver.  The unknown
+        # directory is retained and remains outside the formal site set; it is
+        # never deleted or silently registered by installer validation.
+        if stage_callback is not None:
+            stage_callback("validate-existing-development-root")
+        previous_data_root = os.environ.get("NETCONSOLE_DATA_ROOT")
+        os.environ["NETCONSOLE_DATA_ROOT"] = str(root)
+        try:
+            # Import the storage graph only after the candidate root is bound;
+            # app_logger's default PathResolver must not inspect HKLM during
+            # clean-install dependency loading.
+            from netconsole.services.site_storage import SiteRegistryRepository
+
+            SiteRegistryRepository(PathResolver(data_root=root)).persisted_records()
+        finally:
+            if previous_data_root is None:
+                os.environ.pop("NETCONSOLE_DATA_ROOT", None)
+            else:
+                os.environ["NETCONSOLE_DATA_ROOT"] = previous_data_root
+        return root
     if startup_site_resolver is None:
         raise DataRootConfigurationError("缺少 Production 局点校验入口")
     if stage_callback is not None:

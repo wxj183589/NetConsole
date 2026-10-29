@@ -383,6 +383,22 @@ def test_switch_event_filters_are_sql_scoped_and_do_not_require_full_build_order
     assert [item.event_id for item in pingpong.items] == [1]
     assert other_radio.total == 0
 
+    combined = service.list_switch_events(
+        "demo",
+        session_id,
+        radios=[1],
+        switch_results=["short", "normal"],
+    )
+    assert [item.event_id for item in combined.items] == [1, 2]
+
+    malformed = service.list_switch_events(
+        "demo",
+        session_id,
+        radios=[1],
+        switch_results=["not-a-result"],
+    )
+    assert malformed.total == 0
+
 
 def test_chart_payload_automatically_reduces_lod_before_hard_limit(
     monkeypatch: pytest.MonkeyPatch,

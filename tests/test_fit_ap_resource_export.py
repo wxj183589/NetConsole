@@ -24,7 +24,7 @@ def _export(
     *,
     scope: str,
     selected_ap_ids: list[str] | None = None,
-    filters: dict[str, str] | None = None,
+    filters: dict[str, object] | None = None,
 ) -> tuple[Path, dict[str, int]]:
     paths, _db_path, _files = build_ac_management_fixture(tmp_path)
     output = tmp_path / f"{scope}.xlsx"
@@ -114,6 +114,18 @@ def test_fit_ap_resource_export_scopes_are_not_limited_by_page(tmp_path: Path) -
     assert filtered_book["AP资源清单"].max_row == 2
     assert selected_result["ap_count"] == 2
     assert selected_book["AP资源清单"].max_row == 3
+
+
+def test_fit_ap_resource_export_multi_selection_matches_onscreen_filter(tmp_path: Path) -> None:
+    output, result = _export(tmp_path, scope="filtered", filters={
+        "statuses": ["online", "offline"],
+    })
+    workbook = load_workbook(output, read_only=True, data_only=True)
+    assert result["ap_count"] == 2
+    assert workbook["AP资源清单"].max_row == 3
+    description = workbook["导出说明"]
+    rows = [str(description.cell(i, 2).value or "") for i in range(2, description.max_row + 1)]
+    assert any("AP状态（多选）：在线、离线" in value for value in rows)
 
 
 def test_fit_ap_resource_export_rejects_foreign_selection_and_empty_scope(tmp_path: Path) -> None:
