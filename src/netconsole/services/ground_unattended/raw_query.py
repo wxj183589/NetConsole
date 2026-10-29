@@ -1100,7 +1100,7 @@ class GroundRawStreamQueryService:
         end: datetime,
         time_key: str,
         diagnostics: dict[str, Any],
-        mr_role: str = "",
+        mr_role: str | Iterable[str] = "",
         newest_first: bool = False,
         stop_before_file: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
@@ -1288,7 +1288,7 @@ class GroundRawStreamQueryService:
         data_type: str = "",
         train_id: str = "",
         mr_id: str = "",
-        mr_role: str = "",
+        mr_role: str | Iterable[str] = "",
     ) -> tuple[datetime, datetime]:
         now = datetime.now().astimezone()
         start = _parse_time(start_time)
@@ -1301,6 +1301,7 @@ class GroundRawStreamQueryService:
             raw_files = self.repository.list_raw_files_for_run(run_id)
             if run is None and not raw_files:
                 raise GroundRawQueryError("指定的无人值守运行不存在")
+            role_values = _filter_values(mr_role)
             raw_times = [
                 row
                 for row in raw_files
@@ -1310,7 +1311,10 @@ class GroundRawStreamQueryService:
                     not mr_id
                     or str(row.get("device_uuid") or "") == mr_id
                 )
-                and (not mr_role or str(row.get("mr_role") or "") == mr_role)
+                and (
+                    not role_values
+                    or str(row.get("mr_role") or "").casefold() in role_values
+                )
             ]
             starts = [
                 parsed

@@ -177,6 +177,12 @@ const syslogDeleteBlocked = computed(() => (
   !selectedRun.value
   || ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING', 'ERROR'].includes(selectedRun.value.state)
 ))
+function hasSyslogFilterValue(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some((item) => String(item ?? '').trim().length > 0)
+  }
+  return String(value ?? '').trim().length > 0
+}
 const syslogAdvancedFilterCount = computed(() => [
   syslogFilter.systemName,
   syslogFilter.facility,
@@ -189,10 +195,10 @@ const syslogAdvancedFilterCount = computed(() => [
   syslogFilter.correlationConfidence,
   syslogFilter.dataSource,
   syslogFilter.keyword,
-].filter(Boolean).length)
+].filter(hasSyslogFilterValue).length)
 const syslogHasActiveFilters = computed(() => Object.values(
   currentSyslogDeleteFilters(),
-).some(Boolean))
+).some(hasSyslogFilterValue))
 const runScopedTab = computed(() => ['ping', 'deep', 'timeline', 'syslog'].includes(activeTab.value))
 const archiveRecordCount = computed(() => selectedArchive.value?.files.reduce((total, row) => total + row.record_count, 0) ?? 0)
 const filteredTrains = computed(() => {

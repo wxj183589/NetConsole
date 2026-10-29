@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import (
@@ -30,6 +31,22 @@ from netconsole.services.job_center.job_context import JobContext
 
 RUN_ID = "run-delete"
 RUN_DATE = "2026-07-29"
+
+
+def test_filtered_syslog_delete_rejects_empty_multi_value_filters() -> None:
+    with pytest.raises(ValidationError, match="筛选范围删除至少需要一个筛选条件"):
+        GroundSyslogDeletePreviewRequestDTO(
+            run_id=RUN_ID,
+            mode="FILTERED",
+            filters={"mr_role": [""], "severity": []},
+        )
+
+    request = GroundSyslogDeletePreviewRequestDTO(
+        run_id=RUN_ID,
+        mode="FILTERED",
+        filters={"mr_role": ["CT"]},
+    )
+    assert request.filters.mr_role == ["CT"]
 
 
 def test_selected_syslog_delete_rewrites_atomically_and_removes_provenance(

@@ -1244,6 +1244,12 @@ class GroundSyslogDeleteFiltersDTO(ApiModel):
     end_time: str = Field(default="", max_length=100)
 
 
+def _has_syslog_delete_filter_value(value: object) -> bool:
+    if isinstance(value, (list, tuple, set)):
+        return any(_has_syslog_delete_filter_value(item) for item in value)
+    return bool(str(value or "").strip())
+
+
 class GroundSyslogDeletePreviewRequestDTO(ApiModel):
     run_id: str = Field(min_length=1, max_length=100)
     mode: Literal["SELECTED", "FILTERED", "RUN_ALL"]
@@ -1263,7 +1269,7 @@ class GroundSyslogDeletePreviewRequestDTO(ApiModel):
         if self.mode != "SELECTED" and self.record_keys:
             raise ValueError("非选中删除模式不得携带记录身份")
         if self.mode == "FILTERED" and not any(
-            str(value or "").strip()
+            _has_syslog_delete_filter_value(value)
             for value in self.filters.model_dump().values()
         ):
             raise ValueError("筛选范围删除至少需要一个筛选条件")

@@ -2465,7 +2465,7 @@ class GroundUnattendedRepository:
         run_id: str = "",
         train_id: str = "",
         device_uuid: str = "",
-        mr_role: str = "",
+        mr_role: str | Iterable[str] = "",
         limit: int = 256,
         newest_first: bool = False,
     ) -> list[dict[str, Any]]:
@@ -2480,9 +2480,11 @@ class GroundUnattendedRepository:
         if device_uuid:
             where.append("device_uuid=?")
             params.append(device_uuid)
-        if mr_role:
-            where.append("mr_role=?")
-            params.append(mr_role)
+        role_values = _filter_values(mr_role)
+        if role_values:
+            placeholders = ", ".join("?" for _ in role_values)
+            where.append(f"UPPER(COALESCE(mr_role, '')) IN ({placeholders})")
+            params.extend(value.upper() for value in role_values)
         if start_time:
             where.append(
                 "(end_time='' OR julianday(end_time) IS NULL "

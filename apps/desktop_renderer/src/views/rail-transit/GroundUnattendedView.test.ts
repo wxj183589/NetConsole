@@ -110,6 +110,12 @@ describe('Ground unattended page', () => {
     }
   })
 
+  it('does not treat empty Syslog multi-value filters as active deletion filters', () => {
+    expect(source).toContain('function hasSyslogFilterValue')
+    expect(source).toContain('.filter(hasSyslogFilterValue)')
+    expect(source).toContain('.some(hasSyslogFilterValue)')
+  })
+
   it('uses the runtime decision reason contract in the train list', () => {
     expect(source).toContain("key: 'participates_in_mainline'")
     expect(source).toContain("row.ping_reason_text || '未评估'")

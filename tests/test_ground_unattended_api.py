@@ -767,6 +767,86 @@ def test_ground_unattended_empty_pages_are_stable(tmp_path) -> None:
         assert operation.json() is None
 
 
+def test_syslog_records_http_api_accepts_multi_value_mr_role_filter(
+    tmp_path: Path,
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    run_id = "run-syslog-mr-role-filter"
+    run_date = "2026-07-29"
+    start_time = f"{run_date}T09:00:00+08:00"
+    repository.create_or_get_run(
+        run_id=run_id,
+        run_date=run_date,
+        scheduled_start_at=start_time,
+        scheduled_end_at=f"{run_date}T10:00:00+08:00",
+    )
+    repository.update_run(
+        run_id,
+        state="COMPLETED",
+        actual_started_at=start_time,
+        actual_ended_at=f"{run_date}T10:00:00+08:00",
+    )
+    for role in ("CT", "CW"):
+        raw_path = (
+            paths.ground_unattended_active_dir("demo", run_date)
+            / "syslog"
+            / f"{role.lower()}.ndjson"
+        )
+        relative_path = raw_path.relative_to(repository.db_path.parent).as_posix()
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "receive_time": start_time,
+            "global_receive_sequence": 1,
+            "source_receive_sequence": 1,
+            "source_ip": f"192.0.2.{10 if role == 'CT' else 11}",
+            "train_id": "train-01",
+            "device_uuid": f"mr-{role.lower()}",
+            "mr_name": f"Train 01 MR {role}",
+            "mr_role": role,
+            "event_type": "MESH_LINKUP",
+            "raw_text": "WMESH LINKUP",
+        }
+        raw_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+        repository.upsert_raw_file(
+            {
+                "file_id": f"raw-syslog-{role.lower()}",
+                "run_id": run_id,
+                "train_id": "train-01",
+                "device_uuid": f"mr-{role.lower()}",
+                "mr_role": role,
+                "data_type": "syslog",
+                "relative_path": relative_path,
+                "start_time": start_time,
+                "end_time": start_time,
+                "record_count": 1,
+                "size_bytes": raw_path.stat().st_size,
+                "sha256": hashlib.sha256(raw_path.read_bytes()).hexdigest(),
+                "status": "CLOSED",
+                "archive_status": "PENDING",
+            }
+        )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/rail-transit/ground-unattended/syslog-records",
+            params=[
+                ("run_id", run_id),
+                ("mr_role", "CT"),
+                ("mr_role", "CW"),
+                ("page", "1"),
+                ("page_size", "1"),
+            ],
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert len(payload["items"]) == 1
+    assert payload["items"][0]["mr_role"] in {"CT", "CW"}
+
+
 def test_syslog_unexpected_failure_returns_request_id_and_keeps_backend_alive(
     tmp_path, monkeypatch
 ) -> None:

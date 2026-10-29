@@ -496,6 +496,38 @@ def test_registry_prefilters_36_mrs_across_30_days_before_limit(
     assert rows[0]["device_uuid"] == "mr-17"
 
 
+def test_registry_prefilters_syslog_for_multiple_mr_roles_before_limit(
+    tmp_path: Path,
+) -> None:
+    _paths, repository = _setup(tmp_path)
+    for role in ("CT", "CW"):
+        repository.upsert_raw_file(
+            {
+                **_raw_file_row(
+                    file_id=f"raw-syslog-{role.lower()}",
+                    relative_path=f"active/{RUN_DATE}/syslog/{role.lower()}.ndjson",
+                    data_type="syslog",
+                    record_count=1,
+                    size_bytes=100,
+                ),
+                "mr_role": role,
+                "start_time": SAMPLE_TIME,
+                "end_time": SAMPLE_TIME,
+            }
+        )
+
+    rows = repository.list_raw_files_for_query(
+        data_type="syslog",
+        start_time=f"{RUN_DATE}T00:00:00+08:00",
+        end_time=f"{RUN_DATE}T23:59:59+08:00",
+        run_id=RUN_ID,
+        mr_role=["CT", "CW"],
+        limit=10,
+    )
+
+    assert {row["mr_role"] for row in rows} == {"CT", "CW"}
+
+
 def _setup(
     tmp_path: Path,
 ) -> tuple[PathResolver, GroundUnattendedRepository]:
