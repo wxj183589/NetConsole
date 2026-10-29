@@ -148,6 +148,162 @@ def test_command_reference_multi_select_filters_use_repeated_query_params(tmp_pa
     assert all(item["vendor"] in selected_vendors for item in items)
 
 
+def test_command_reference_plural_category_filter_maps_to_model_field(tmp_path: Path) -> None:
+    client, _adapter, _artifacts, paths = _client(tmp_path)
+    references = load_command_references(paths)
+    category = next(item.category for item in references if item.category)
+    expected = [item for item in references if item.category == category]
+
+    with client:
+        response = client.get("/api/command-reference", params=[("categories", category)])
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["total"] == len(references)
+    assert payload["summary"]["shown"] == len(expected)
+    assert payload["items"]
+    assert all(item["category"] == category for item in payload["items"])
+
+
+def test_command_reference_plural_category_filter_supports_or_and_counts(tmp_path: Path) -> None:
+    client, _adapter, _artifacts, paths = _client(tmp_path)
+    references = load_command_references(paths)
+    selected_categories = list(dict.fromkeys(item.category for item in references if item.category))[:2]
+    expected = [item for item in references if item.category in selected_categories]
+    assert len(selected_categories) == 2
+
+    with client:
+        response = client.get(
+            "/api/command-reference",
+            params=[("categories", value) for value in selected_categories],
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["total"] == len(references)
+    assert payload["summary"]["shown"] == len(expected)
+    assert all(item["category"] in selected_categories for item in payload["items"])
+
+
+def test_command_reference_category_filter_handles_empty_and_unknown_values(tmp_path: Path) -> None:
+    client, _adapter, _artifacts, paths = _client(tmp_path)
+    references = load_command_references(paths)
+    with client:
+        empty_response = client.get("/api/command-reference", params={"categories": ""})
+        unknown_response = client.get(
+            "/api/command-reference",
+            params={"categories": "__missing_category__"},
+        )
+
+    assert empty_response.status_code == 200
+    assert empty_response.json()["summary"]["shown"] == len(references)
+    assert unknown_response.status_code == 200
+    assert unknown_response.json()["summary"] == {
+        "total": len(references),
+        "shown": 0,
+        "switch_count": sum(item.device_scope.startswith("交换机") for item in references),
+        "non_cli_count": sum(not item.is_cli for item in references),
+    }
+    assert unknown_response.json()["items"] == []
+
+
+def test_command_reference_multi_field_filters_use_and_semantics(tmp_path: Path) -> None:
+    client, _adapter, _artifacts, paths = _client(tmp_path)
+    references = load_command_references(paths)
+    anchor = next(item for item in references if item.module and item.vendor and item.category)
+    expected = [
+        item
+        for item in references
+        if item.module == anchor.module
+        and item.vendor == anchor.vendor
+        and item.category == anchor.category
+    ]
+    params = {
+        "modules": anchor.module,
+        "vendors": anchor.vendor,
+        "categories": anchor.category,
+    }
+    with client:
+        response = client.get("/api/command-reference", params=params)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["total"] == len(references)
+    assert payload["summary"]["shown"] == len(expected)
+    assert all(
+        item["module"] == anchor.module
+        and item["vendor"] == anchor.vendor
+        and item["category"] == anchor.category
+        for item in payload["items"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("singular", "model_field"),
+    [("module", "module"), ("vendor", "vendor"), ("category", "category")],
+)
+def test_command_reference_legacy_single_value_survives_empty_plural_default(
+    tmp_path: Path,
+    singular: str,
+    model_field: str,
+) -> None:
+    client, _adapter, _artifacts, paths = _client(tmp_path)
+    references = load_command_references(paths)
+    value = next(getattr(item, model_field) for item in references if getattr(item, model_field))
+    expected = [item for item in references if getattr(item, model_field) == value]
+
+    with client:
+        response = client.get("/api/command-reference", params={singular: value})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["shown"] == len(expected)
+    assert payload["items"]
+    assert all(item[model_field] == value for item in payload["items"])
+
+
+def test_command_reference_non_empty_plural_filter_takes_precedence_over_legacy_single_value(
+    tmp_path: Path,
+) -> None:
+    client, _adapter, _artifacts, paths = _client(tmp_path)
+    references = load_command_references(paths)
+    selected_modules = list(dict.fromkeys(item.module for item in references if item.module))[:2]
+    assert len(selected_modules) == 2
+    params = [
+        ("module", selected_modules[0]),
+        ("modules", selected_modules[1]),
+    ]
+    expected = [item for item in references if item.module == selected_modules[1]]
+
+    with client:
+        response = client.get("/api/command-reference", params=params)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["shown"] == len(expected)
+    assert payload["items"]
+    assert all(item["module"] == selected_modules[1] for item in payload["items"])
+
+
+def test_command_reference_legacy_module_survives_router_default_empty_multivalue(
+    tmp_path: Path,
+) -> None:
+    client, _adapter, _artifacts, paths = _client(tmp_path)
+    references = load_command_references(paths)
+    module = next(item.module for item in references if item.module)
+    expected = [item for item in references if item.module == module]
+
+    with client:
+        response = client.get("/api/command-reference", params={"module": module})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["total"] == len(references)
+    assert payload["summary"]["shown"] == len(expected)
+    assert payload["items"]
+    assert all(item["module"] == module for item in payload["items"])
+
+
 def test_command_reference_export_uses_public_store_and_safe_download_name(tmp_path: Path) -> None:
     client, adapter, artifacts, _paths = _client(tmp_path)
     with client:

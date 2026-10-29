@@ -37,6 +37,19 @@ class CommandReferenceApplicationError(ValueError):
 COMMAND_REFERENCE_WEB_OWNER = "web_command_reference"
 COMMAND_REFERENCE_EXPORT_TASK = "web_export_command_reference_markdown"
 
+# The API exposes both the legacy singular query parameters and the newer
+# repeated plural parameters.  Keep the mapping explicit: removing the final
+# ``s`` from a plural name is not a safe mapping (``categories`` becomes
+# ``categorie``).
+_COMMAND_REFERENCE_FILTER_FIELDS: tuple[tuple[str, str], ...] = (
+    ("module", "modules"),
+    ("device_scope", "device_scopes"),
+    ("vendor", "vendors"),
+    ("protocol", "protocols"),
+    ("category", "categories"),
+    ("risk_level", "risk_levels"),
+)
+
 
 class CommandReferenceApplicationService:
     _OWNER = COMMAND_REFERENCE_WEB_OWNER
@@ -59,21 +72,20 @@ class CommandReferenceApplicationService:
     def list_references(self, **filters: object) -> CommandReferencePageDTO:
         references = load_command_references(self.paths)
         keyword = str(filters.pop("query", "") or "").strip().casefold()
-        legacy_fields = {
-            "module": "modules", "device_scope": "device_scopes", "vendor": "vendors",
-            "protocol": "protocols", "category": "categories", "risk_level": "risk_levels",
-        }
         selected: dict[str, set[str]] = {}
-        for field, values in filters.items():
-            target = legacy_fields.get(field, field)
-            if isinstance(values, (list, tuple, set)):
-                selected[target] = {str(value) for value in values if str(value)}
-            elif values:
-                selected[target] = {str(values)}
+        for model_field, plural_field in _COMMAND_REFERENCE_FILTER_FIELDS:
+            plural_values = self._normalize_filter_values(filters.get(plural_field))
+            singular_values = self._normalize_filter_values(filters.get(model_field))
+            # A non-empty plural filter is the explicit multi-select choice.
+            # Router defaults such as modules=[] mean "not supplied" and must
+            # not erase a legacy singular value.
+            values = plural_values or singular_values
+            if values:
+                selected[model_field] = values
         result = [
             item for item in references
             if (not keyword or keyword in self._search_blob(item))
-            and all(not values or str(getattr(item, field.removesuffix("s"), "")) in values for field, values in selected.items())
+            and all(str(getattr(item, field, "")) in values for field, values in selected.items())
         ]
         return CommandReferencePageDTO(
             items=[self._reference_dto(item) for item in result],
@@ -92,6 +104,15 @@ class CommandReferenceApplicationService:
                 non_cli_count=sum(not item.is_cli for item in references),
             ),
         )
+
+    @staticmethod
+    def _normalize_filter_values(value: object) -> set[str]:
+        raw_values = value if isinstance(value, (list, tuple, set)) else (value,)
+        return {
+            str(item).strip()
+            for item in raw_values
+            if item is not None and str(item).strip()
+        }
 
     def start_export(self, selected_ids: list[str]):
         site_id = self.current_site_id()
