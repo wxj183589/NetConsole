@@ -4,9 +4,10 @@ import ElementPlus, { ElPopover } from 'element-plus'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { setAppLocale } from '../../i18n/runtime'
 import NcMultiValueFilter from './NcMultiValueFilter.vue'
 
-afterEach(() => { document.body.innerHTML = '' })
+afterEach(() => { setAppLocale('zh_CN'); document.body.innerHTML = '' })
 
 describe('NcMultiValueFilter', () => {
   it('opens a WPS-style checklist and commits only explicitly confirmed selections', async () => {
@@ -110,6 +111,31 @@ describe('NcMultiValueFilter', () => {
     ;(confirm as HTMLElement).click()
     await flushPromises()
     expect(wrapper.emitted('change')?.at(-1)?.[0]).toEqual(['CustomVendor'])
+    wrapper.unmount()
+  })
+
+  it('localizes shared filter controls in the English runtime locale', async () => {
+    setAppLocale('en_US')
+    const wrapper = mount(NcMultiValueFilter, {
+      attachTo: document.body,
+      props: { modelValue: ['A', 'B'], options: ['A', 'B'], allowCustom: true, placeholder: 'All values' },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(wrapper.get('.nc-multi-value-filter__caption').text()).toBe('2 selected')
+    wrapper.getComponent(ElPopover).vm.$emit('update:visible', true)
+    await flushPromises()
+    const search = document.querySelector('.nc-multi-value-filter__panel input') as HTMLInputElement
+    expect(search.placeholder).toBe('Search options')
+    expect(document.body.textContent).toContain('Select all')
+    expect(document.body.textContent).toContain('Invert selection')
+    expect(document.body.textContent).toContain('Restore all')
+    expect(document.body.textContent).toContain('Select only this')
+    expect(document.body.textContent).toContain('Cancel')
+    expect(document.body.textContent).toContain('Confirm')
+    search.value = 'missing'
+    search.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    expect(document.body.textContent).toContain('No matching options')
     wrapper.unmount()
   })
 })

@@ -35,6 +35,7 @@ Var NetConsoleProgramTransactionState
 Var NetConsoleProgramMarkerPath
 Var NetConsoleProgramTransactionResult
 Var NetConsoleProgramDirectoryHasEntries
+Var NetConsoleProgramDirectoryIsNetConsole
 Var NetConsoleInstallMode
 !endif
 
@@ -143,6 +144,18 @@ Function NetConsoleCheckProgramDirectoryHasEntries
   NetConsoleProgramDirectoryEntriesDone:
 FunctionEnd
 
+Function NetConsoleCheckProgramDirectoryIdentity
+  StrCpy $NetConsoleProgramDirectoryIsNetConsole "0"
+  ; A non-empty install directory is replaceable only when it is an existing
+  ; NetConsole tree.  Never take over an arbitrary directory containing user
+  ; files or another application.
+  IfFileExists "$INSTDIR\NetConsole.exe" 0 NetConsoleProgramDirectoryIdentityDone
+  IfFileExists "$INSTDIR\resources\app.asar" 0 NetConsoleProgramDirectoryIdentityDone
+  IfFileExists "$INSTDIR\resources\backend\NetConsoleBackend.exe" 0 NetConsoleProgramDirectoryIdentityDone
+  StrCpy $NetConsoleProgramDirectoryIsNetConsole "1"
+  NetConsoleProgramDirectoryIdentityDone:
+FunctionEnd
+
 Function NetConsolePrepareProgramInstallTransaction
   ${If} $NetConsoleProgramTransactionState != ""
     Return
@@ -162,6 +175,12 @@ Function NetConsolePrepareProgramInstallTransaction
     ; directory as the new candidate; only move a non-empty old program tree.
     Call NetConsoleCheckProgramDirectoryHasEntries
     ${If} $NetConsoleProgramDirectoryHasEntries == "1"
+      Call NetConsoleCheckProgramDirectoryIdentity
+      ${If} $NetConsoleProgramDirectoryIsNetConsole != "1"
+        StrCpy $NetConsoleInstallerDiagnosticMessage "stage=program-transaction result=non-netconsole-directory path=$INSTDIR registry=not-written program=unchanged"
+        Call NetConsoleInstallerAbort
+        Return
+      ${EndIf}
       Goto NetConsoleMoveExistingProgram
     ${EndIf}
     Goto NetConsoleCreateNewProgram
@@ -726,16 +745,14 @@ FunctionEnd
     Call NetConsoleInstallerAbort
   ${EndIf}
   Delete "$NetConsoleProgramMarkerPath"
-  ClearErrors
-  RMDir /r "$NetConsoleProgramBackupRoot"
-  IfErrors NetConsoleProgramCommitBackupRetained NetConsoleProgramCommitComplete
-  NetConsoleProgramCommitBackupRetained:
+  ${If} $NetConsoleProgramTransactionState == "BACKED_UP"
+    ; Keep the old tree as a recoverable rollback/archive.  It may contain
+    ; reports or other files that are not part of the NetConsole payload.
     StrCpy $NetConsoleProgramTransactionState "COMMITTED_BACKUP_RETAINED"
-    DetailPrint "旧程序事务备份未能立即清理，已保留：$NetConsoleProgramBackupRoot"
-    Goto NetConsoleProgramCommitDone
-  NetConsoleProgramCommitComplete:
+    DetailPrint "旧程序事务备份已保留以保护非程序文件：$NetConsoleProgramBackupRoot"
+  ${Else}
     StrCpy $NetConsoleProgramTransactionState "COMMITTED"
-  NetConsoleProgramCommitDone:
+  ${EndIf}
   StrCpy $NetConsoleInstallerDiagnosticMessage "stage=complete registry=written-and-readback-verified data_root=$NetConsoleDataRoot"
   Call NetConsoleInstallerWriteDiagnostic
   ${If} $NetConsoleInstallerLogHandle != ""

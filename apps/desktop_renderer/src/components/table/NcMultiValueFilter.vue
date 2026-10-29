@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 
+import { t } from '../../i18n/runtime'
+
 const props = withDefaults(defineProps<{
   modelValue: string[]
   options: readonly string[]
@@ -28,8 +30,16 @@ const canCreate = computed(() => props.allowCustom && customCandidate.value.leng
 const caption = computed(() => {
   if (!props.modelValue.length) return props.placeholder
   if (props.modelValue.length === 1) return props.labels?.[props.modelValue[0]] || props.modelValue[0]
-  return `已选 ${props.modelValue.length} 项`
+  return t('table.filter.selected_count', '已选 {count} 项').replace('{count}', String(props.modelValue.length))
 })
+
+function filterText(key: string, fallback: string): string {
+  return t(key, fallback)
+}
+
+function customValueText(value: string): string {
+  return filterText('table.filter.add_custom', '添加自定义值：{value}').replace('{value}', value)
+}
 
 watch(visible, (opened) => {
   if (!opened) return
@@ -86,12 +96,12 @@ function apply(): void {
       </el-button>
     </template>
     <div class="nc-multi-value-filter__panel">
-      <el-input v-model="search" size="small" clearable placeholder="搜索选项" aria-label="搜索选项" />
-      <el-button v-if="canCreate" link size="small" class="nc-multi-value-filter__create" @click="addCustom">添加自定义值：{{ customCandidate }}</el-button>
+      <el-input v-model="search" size="small" clearable :placeholder="filterText('table.filter.search_options', '搜索选项')" :aria-label="filterText('table.filter.search_options', '搜索选项')" />
+      <el-button v-if="canCreate" link size="small" class="nc-multi-value-filter__create" @click="addCustom">{{ customValueText(customCandidate) }}</el-button>
       <div class="nc-multi-value-filter__actions">
-        <el-button link size="small" @click="selectVisible">全选</el-button>
-        <el-button link size="small" @click="invertVisible">反选</el-button>
-        <el-button link size="small" @click="draft = [...uniqueOptions]">恢复全部</el-button>
+        <el-button link size="small" @click="selectVisible">{{ filterText('table.filter.select_all', '全选') }}</el-button>
+        <el-button link size="small" @click="invertVisible">{{ filterText('table.filter.invert', '反选') }}</el-button>
+        <el-button link size="small" @click="draft = [...uniqueOptions]">{{ filterText('table.filter.restore_all', '恢复全部') }}</el-button>
       </div>
       <div class="nc-multi-value-filter__list" role="group" :aria-label="placeholder">
         <div class="nc-multi-value-filter__group">
@@ -106,14 +116,14 @@ function apply(): void {
               size="small"
               class="nc-multi-value-filter__only"
               @click.stop="selectOnly(option)"
-            >仅选择此项</el-button>
+            >{{ filterText('table.filter.select_only', '仅选择此项') }}</el-button>
           </div>
         </div>
-        <el-empty v-if="!matchingOptions.length" description="没有匹配项" :image-size="42" />
+        <el-empty v-if="!matchingOptions.length" :description="filterText('table.filter.no_match', '没有匹配项')" :image-size="42" />
       </div>
       <div class="nc-multi-value-filter__footer">
-        <el-button size="small" @click="visible = false">取消</el-button>
-        <el-button type="primary" size="small" :disabled="!draft.length" @click="apply">确定</el-button>
+        <el-button size="small" @click="visible = false">{{ filterText('table.filter.cancel', '取消') }}</el-button>
+        <el-button type="primary" size="small" :disabled="!draft.length" @click="apply">{{ filterText('table.filter.confirm', '确定') }}</el-button>
       </div>
     </div>
   </el-popover>
