@@ -616,8 +616,8 @@ async function restoreImportedTablePreferences(preferences: Record<string, unkno
       skipped += 1
     }
   }
-  if (skipped) ElMessage.warning(`局点数据已导入，但有 ${skipped} 项列设置未恢复。`)
-  else if (restored) ElMessage.success(`已恢复 ${restored} 项表格列设置。`)
+  if (skipped) ElMessage.warning(siteStorageText('site_storage.import.table_preferences_partial', '局点数据已导入，但有 {count} 项列设置未恢复。', { count: skipped }))
+  else if (restored) ElMessage.success(siteStorageText('site_storage.import.table_preferences_restored', '已恢复 {count} 项表格列设置。', { count: restored }))
 }
 
 async function exportSelectedLightweightBundle(): Promise<void> {

@@ -75,6 +75,8 @@ const en: Record<string, string> = {
   'site_storage.batch_export.select_all': 'Select all sites',
   'site_storage.batch_export.instructions': 'Select sites to package, then click “Export lightweight packages”',
   'site_storage.batch_export.site_aria': 'Select site {name}',
+  'site_storage.import.table_preferences_partial': 'The site data was imported, but {count} table settings could not be restored.',
+  'site_storage.import.table_preferences_restored': 'Restored {count} table column settings.',
   'trackside.wps.unsaved_title': 'Unsaved WPS configuration',
   'trackside.wps.unsaved_message': 'This site has unsaved WPS configuration. It will close after successful save; cancel keeps editing.',
   'trackside.wps.save_and_close': 'Save and close',

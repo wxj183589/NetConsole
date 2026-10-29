@@ -241,6 +241,25 @@ describe('SiteStoragePanel', () => {
     )
   })
 
+  it('localizes lightweight import column preference feedback in English', async () => {
+    setAppLocale('en_US')
+    const warning = vi.spyOn(ElMessage, 'warning')
+    const success = vi.spyOn(ElMessage, 'success')
+    const wrapper = mountPanel()
+    await flushPromises()
+    const restoreImportedTablePreferences = (wrapper.vm as unknown as {
+      restoreImportedTablePreferences: (preferences: Record<string, unknown>) => Promise<void>
+    }).restoreImportedTablePreferences
+
+    await restoreImportedTablePreferences({
+      'netconsole.table-preferences.v2:demo': { version: 1, order: ['site'], columns: [{ key: 'site', visible: true }] },
+    })
+    expect(success).toHaveBeenCalledWith('Restored 1 table column settings.')
+
+    await restoreImportedTablePreferences({ invalid: {} })
+    expect(warning).toHaveBeenCalledWith('The site data was imported, but 1 table settings could not be restored.')
+  })
+
   it('freezes the central site context across Save As and cancels a stale export', async () => {
     setActiveSiteContext({ site_id: 'site-b', display_name: '十二号线', revision: 'rev-b' })
     let finishSaveAs: ((value: { cancelled: boolean; path?: string }) => void) | undefined
