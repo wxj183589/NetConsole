@@ -1258,17 +1258,29 @@ function validatePackagedChangelog(payload) {
   const content = String(payload?.content ?? '')
   const versions = [...content.matchAll(/^v(\d+\.\d+\.\d+)(?:\s+-\s+\d{4}-\d{2}-\d{2})?$/gmu)]
     .map((match) => `v${match[1]}`)
-  const expected = ['v1.5.10', 'v1.5.9', 'v1.5.8']
-  if (payload?.version !== 'v1.5.10' || JSON.stringify(versions.slice(0, 3)) !== JSON.stringify(expected)) {
+  const versionSource = readFileSync(resolve(projectRoot, 'src', 'netconsole', 'core', 'version.py'), 'utf8')
+  const appVersionMatch = versionSource.match(/(?:^|\n)\s*APP_VERSION\s*=\s*["'](v?\d+\.\d+\.\d+)["']/u)
+  const appVersion = appVersionMatch ? `v${appVersionMatch[1].replace(/^v/u, '')}` : ''
+  const sortedVersions = [...versions].sort((left, right) => {
+    const leftParts = left.slice(1).split('.').map(Number)
+    const rightParts = right.slice(1).split('.').map(Number)
+    for (let index = 0; index < leftParts.length; index += 1) {
+      if (leftParts[index] !== rightParts[index]) return rightParts[index] - leftParts[index]
+    }
+    return 0
+  })
+  if (
+    !appVersion
+    || payload?.version !== appVersion
+    || versions[0] !== appVersion
+    || versions.length < 3
+    || new Set(versions).size !== versions.length
+    || JSON.stringify(versions) !== JSON.stringify(sortedVersions)
+  ) {
     throw new Error(`冻结 Backend 更新日志版本顺序错误：${changelogBodyForError(payload)}`)
   }
-  for (const version of expected) {
-    if (versions.filter((item) => item === version).length !== 1) {
-      throw new Error(`冻结 Backend 更新日志包含重复或缺失版本：${version}`)
-    }
-  }
   if (!content.includes('PyCharm 开发环境') || !content.includes('SFTP 下载与 MESH 导入解耦') || !content.includes('H3C Comware V7/V9 Capability')) {
-    throw new Error('冻结 Backend 更新日志缺少 v1.5.10/v1.5.9/v1.5.8 内容指纹。')
+    throw new Error('冻结 Backend 更新日志缺少既有历史内容指纹。')
   }
   const packagedPath = resolve(
     unpackedRoot,
@@ -1282,7 +1294,7 @@ function validatePackagedChangelog(payload) {
   if (content !== readFileSync(packagedPath, 'utf8')) {
     throw new Error('冻结 Backend 更新日志 API 与包内资源内容不一致。')
   }
-  console.log(`PACKAGED_CHANGELOG=PASS (${expected.join(' > ')})`)
+  console.log(`PACKAGED_CHANGELOG=PASS (${versions.slice(0, 3).join(' > ')})`)
 }
 
 function changelogBodyForError(payload) {

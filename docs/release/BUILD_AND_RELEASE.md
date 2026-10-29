@@ -1,6 +1,6 @@
 # 构建与发布
 
-NetConsole v1.5.10 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
+NetConsole v1.5.11 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
 安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后，由打包 Backend 在空根或含无冲突普通文件的目录中原子初始化标准结构与 `storage-manifest.json`，或验证已有 manifest 兼容性，最后才写入 `HKLM\Software\NetConsole\DataRoot`。初始化/兼容性校验失败不得发布指针，也不得覆盖已有 manifest 或普通文件。发布 smoke 在唯一 `<repository-parent>\test-data\NetConsole\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
 
@@ -50,7 +50,7 @@ python -m pip check
 
 正式发布的身份事实来自构建开始时的 Git，而不是 `src/netconsole/core/version.py` 中的手工提交号或时间。`scripts/build/build_metadata.py` 在一次发布调用中读取 `git rev-parse HEAD` 与 `git status --porcelain`，生成并复用 `app_version / product_version / build_number / file_version / git_commit_full / git_commit_short / build_time_utc / build_dirty / build_source / frontend_commit / backend_commit / published`；时间固定为 ISO 8601 UTC。`ProductVersion` 是三段正式版本，`FileVersion` 是 `ProductVersion.BuildNumber`，Build Number 只读取显式 `NETCONSOLE_BUILD_NUMBER`，默认 `0`。Vite、PyInstaller、Backend 自检、Electron package smoke 共用这一快照，分阶段校验时还会重新确认快照对应当前 Git 来源。
 
-正式候选必须按“修改与验证完成 → 中文提交 → 确认工作区 clean → 推送最终提交 → 读取最终 HEAD → 构建 Desktop Renderer/Backend/Electron/NSIS → package smoke 比较包内元数据与实际 HEAD”的顺序执行。只有显式 `python -m scripts.build.release --version vX.Y.Z` 才允许修改正式版本、创建新版本目录并将清单标记为 `published=true`。`--release` 遇到 tracked 或 untracked 修改会直接失败；开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
+正式候选必须按“版本 PR 与完整审查 → 合并 main → main 全量回归 → 中文提交并推送最终提交 → 确认工作区 clean 且 HEAD 与 upstream 一致 → Windows Full/Customer 正式构建 → Package Smoke 与制品身份验证 → 归档制品 → 创建 annotated tag 和 GitHub Release”的顺序执行。版本号只在版本 PR 中显式更新唯一来源 `src/netconsole/core/version.py` 及所有同步引用。`scripts/build/release.py` 的旧 Git 发布编排已停用，调用时会失败关闭；该模块仅保留 PE 版本资源文本生成函数供构建使用。`scripts/build/package_windows.ps1` 才是正式安装包入口；构建不会替代 PR、全量回归或 Release Tag/上传门禁。开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
 
 先在仓库根目录执行：
 

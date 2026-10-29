@@ -20,6 +20,7 @@ from netconsole.core.changelog import render_runtime_changelog, parse_released_s
 from netconsole.core.log_policy import LOG_POLICY
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
+from netconsole.core.version import APP_VERSION
 from netconsole.infrastructure.desktop import UnavailableDesktopAdapter
 from netconsole.services.export.export_handlers import run_generic_export_handler
 from netconsole.services.export.export_job import ExportJob
@@ -612,16 +613,22 @@ def test_changelog_api_returns_canonical_released_history_in_runtime_format(tmp_
     with TestClient(app) as client:
         response = client.get("/api/system-maintenance/changelog")
 
-    assert payload.version == "v1.5.10"
+    assert payload.version == APP_VERSION
     assert payload.content == expected
     assert response.status_code == 200, response.text
     assert response.json() == payload.model_dump()
-    assert payload.content.count("v1.5.10 - 2026-10-25") == 1
+    assert payload.content.count(f"{APP_VERSION} - 2026-10-30") == 1
     assert payload.content.count("v1.5.9 - 2026-10-13") == 1
     assert payload.content.count("v1.5.8 - 2026-09-13") == 1
     assert payload.content.count("v1.5.7 - 2026-09-13") == 1
     assert payload.content.count("v1.5.6 - 2026-09-13") == 1
-    assert payload.content.index("v1.5.10") < payload.content.index("v1.5.9") < payload.content.index("v1.5.8") < payload.content.index("v1.5.7") < payload.content.index("v1.5.6")
+    assert (
+        payload.content.index(APP_VERSION)
+        < payload.content.index("v1.5.10")
+        < payload.content.index("v1.5.9")
+        < payload.content.index("v1.5.8")
+        < payload.content.index("v1.5.7")
+    )
 
 
 def test_cleanup_and_dependency_scan_run_in_real_shared_background_process(tmp_path: Path) -> None:
