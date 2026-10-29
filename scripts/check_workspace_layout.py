@@ -427,7 +427,32 @@ def _git_worktrees(repo_root: Path) -> tuple[tuple[Path, ...], list[Violation]]:
     return paths, []
 
 
-def check_worktree_locations(repo_root: Path, workspace_root: Path | None, worktree_paths: Iterable[Path]) -> list[Violation]:
+def _registered_independent_worktrees(
+    workspace_root: Path,
+) -> tuple[tuple[Path, ...], list[Violation]]:
+    """Return worktrees owned by independently registered repositories."""
+
+    paths: list[Path] = []
+    violations: list[Violation] = []
+    for name in INDEPENDENT_REPOSITORIES:
+        repository = workspace_root / name
+        if _is_reparse_point(repository):
+            continue
+        if not _is_registered_independent_repository(repository):
+            continue
+        independent_paths, independent_errors = _git_worktrees(repository)
+        paths.extend(independent_paths)
+        violations.extend(independent_errors)
+    return tuple(paths), violations
+
+
+def check_worktree_locations(
+    repo_root: Path,
+    workspace_root: Path | None,
+    worktree_paths: Iterable[Path],
+    *,
+    enforce_workspace_container: bool = True,
+) -> list[Violation]:
     if workspace_root is None:
         return []
     workspace_root = _absolute(workspace_root)
@@ -436,7 +461,20 @@ def check_worktree_locations(repo_root: Path, workspace_root: Path | None, workt
     for path in worktree_paths:
         if _same_path(path, repo_root):
             continue
-        if not _inside(path, worktree_root) or _absolute(path).parent.as_posix().casefold() != _absolute(worktree_root).as_posix().casefold():
+        if _is_protected_data_path(path):
+            result.append(
+                Violation(
+                    "WORKTREE_PROTECTED_DATA_PATH",
+                    str(path),
+                    "Git Worktree 不能位于正式数据根或其子路径",
+                    str(PROTECTED_DATA_ROOT),
+                    "停止操作并人工确认 Git 元数据，不访问或移动正式数据。",
+                )
+            )
+        elif enforce_workspace_container and (
+            not _inside(path, worktree_root)
+            or _absolute(path).parent.as_posix().casefold() != _absolute(worktree_root).as_posix().casefold()
+        ):
             result.append(
                 Violation(
                     "WORKTREE_OUTSIDE_CONTAINER",
@@ -464,6 +502,21 @@ def _default_workspace(repo_root: Path) -> Path | None:
     return candidate if candidate.name.casefold() == WORKSPACE_NAME.casefold() else None
 
 
+def _workspace_root_allows_independent_probe(workspace_root: Path) -> bool:
+    """Validate the Workspace boundary before probing another repository."""
+
+    workspace_root = _absolute(workspace_root)
+    if _is_protected_data_path(workspace_root) or _is_reparse_point(workspace_root):
+        return False
+    if not workspace_root.is_dir():
+        return False
+    try:
+        next(workspace_root.iterdir(), None)
+    except OSError:
+        return False
+    return True
+
+
 def _format_violation(violation: Violation) -> str:
     return "\n".join(
         (
@@ -484,8 +537,21 @@ def run_checks(repo_root: Path, workspace_root: Path | None = None) -> list[Viol
     worktree_paths, git_result = _git_worktrees(repo_root)
     result.extend(git_result)
     if workspace_root is not None:
-        result.extend(check_workspace_root(workspace_root, worktree_paths))
+        independent_worktree_paths: tuple[Path, ...] = ()
+        if _workspace_root_allows_independent_probe(workspace_root):
+            independent_worktree_paths, independent_worktree_errors = _registered_independent_worktrees(workspace_root)
+            result.extend(independent_worktree_errors)
+        managed_paths = (*worktree_paths, *independent_worktree_paths)
+        result.extend(check_workspace_root(workspace_root, managed_paths))
         result.extend(check_worktree_locations(repo_root, workspace_root, worktree_paths))
+        result.extend(
+            check_worktree_locations(
+                workspace_root / "NetConsole-Next",
+                workspace_root,
+                independent_worktree_paths,
+                enforce_workspace_container=False,
+            )
+        )
         try:
             common_dir_process = subprocess.run(
                 ("git", "-C", os.fspath(repo_root), "rev-parse", "--git-common-dir"),
