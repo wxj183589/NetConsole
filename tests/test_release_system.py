@@ -114,116 +114,51 @@ def test_release_version_defaults_to_app_version_without_tag_scan():
     assert not hasattr(release, "get_next_version")
 
 
-def test_render_version_py_contains_single_version_source_fields():
-    text = release.render_version_py("v1.0.7", "2026-06-17 12:00:00", "abc1234")
+def test_render_version_info_contains_requested_product_version():
+    text = release.render_version_info("v1.0.7")
 
-    assert 'APP_NAME = "NetConsole"' in text
-    assert 'APP_VERSION = "v1.0.7"' in text
-    assert "APP_VERSION_DISPLAY = APP_VERSION" in text
-    assert "BUILD_TIME" not in text
-    assert "GIT_COMMIT" not in text
-    assert 'APP_AUTHOR = "' in text
-    assert "ssh://git@nas.love-ok.com:3022/mengyou/NetConsole.git" in text
-    assert "git@github.com:wxj183589/NetConsole.git" in text
+    assert "filevers=(1, 0, 7, 0)" in text
+    assert "prodvers=(1, 0, 7, 0)" in text
+    assert "ProductVersion', '1.0.7.0'" in text
 
 
-def test_release_script_documents_gitea_https_authentication():
+def test_release_script_documents_the_supported_packaging_entrypoint():
     root = Path(__file__).resolve().parents[1]
     text = (root / "scripts" / "build" / "release.py").read_text(encoding="utf-8")
 
     assert not (root / "release.py").exists()
-    assert "self-hosted Gitea repository" in text
-    assert "SSH key" in text
-    assert "SSH key authentication is required" in text
-    assert "Release system should not block on auth failure" in text
+    assert "scripts/build/package_windows.ps1" in text
+    assert "ReleaseAutomationDisabled" in text
+    assert "Gitea" not in text
 
 
-def test_release_script_pushes_two_remotes_and_tags():
+def test_legacy_release_script_has_no_git_mutation_commands():
     root = Path(__file__).resolve().parents[1]
     text = (root / "scripts" / "build" / "release.py").read_text(encoding="utf-8")
 
-    assert "def safe_run(cmd: list[str])" in text
-    assert 'def check_git_remote(remote: str = "nas")' in text
-    assert 'git", "push", "github", "HEAD"' in text
-    assert 'git", "push", "nas", "HEAD"' in text
-    assert 'git", "push", "github", selected_version' in text
-    assert 'git", "push", "nas", selected_version' in text
-    assert 'git", "tag", "-a", selected_version' in text
+    assert "subprocess" not in text
+    assert '"git", "add"' not in text
+    assert '"git", "commit"' not in text
+    assert '"git", "tag"' not in text
+    assert '"git", "push"' not in text
 
 
-def test_release_push_failures_do_not_interrupt_release(monkeypatch):
-    commands: list[list[str]] = []
-
-    monkeypatch.setattr(release, "write_release_files", lambda *args: None)
-    monkeypatch.setattr(release, "ensure_remotes", lambda dry_run: None)
-    monkeypatch.setattr(release, "check_git_remote", lambda remote="nas": False)
-    monkeypatch.setattr(
-        release,
-        "run_git",
-        lambda args, check=True: (
-            "abc1234" if args[:2] == ["rev-parse", "--short"] else ""
-        ),
-    )
-
-    def fake_run(cmd, **kwargs):
-        commands.append(cmd)
-        if cmd[:2] == ["git", "push"]:
-            raise subprocess.CalledProcessError(128, cmd)
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(release.subprocess, "run", fake_run)
-
-    result = release.release(version="v1.0.9", dry_run=False)
-
-    assert result.build_success
-    assert result.commit_success
-    assert result.tag_success
-    assert not result.push_nas_success
-    assert not result.push_github_success
-    assert result.final_status == release.OFFLINE_RELEASE
-    assert any(
-        cmd[:4] == ["git", "tag", "-a", "v1.0.9"]
-        and cmd[4] == "-m"
-        and cmd[5].endswith("v1.0.9")
-        for cmd in commands
-    )
-    assert ["git", "push", "github", "HEAD"] in commands
-    assert ["git", "push", "nas", "HEAD"] in commands
-    assert ["git", "push", "github", "v1.0.9"] in commands
-    assert ["git", "push", "nas", "v1.0.9"] in commands
+def test_legacy_release_entrypoint_fails_closed_even_for_dry_run():
+    for dry_run in (False, True):
+        with pytest.raises(release.ReleaseAutomationDisabled, match="package_windows.ps1"):
+            release.release(version="v1.0.9", dry_run=dry_run)
 
 
-def test_release_tag_failure_does_not_interrupt_push_attempts(monkeypatch):
-    commands: list[list[str]] = []
+def test_package_smoke_reads_current_changelog_version_from_product_source():
+    root = Path(__file__).resolve().parents[1]
+    text = (
+        root / "apps" / "desktop_electron" / "scripts" / "package-smoke.mjs"
+    ).read_text(encoding="utf-8")
 
-    monkeypatch.setattr(release, "write_release_files", lambda *args: None)
-    monkeypatch.setattr(release, "ensure_remotes", lambda dry_run: None)
-    monkeypatch.setattr(release, "check_git_remote", lambda remote="nas": True)
-    monkeypatch.setattr(
-        release,
-        "run_git",
-        lambda args, check=True: (
-            "abc1234" if args[:2] == ["rev-parse", "--short"] else ""
-        ),
-    )
-
-    def fake_run(cmd, **kwargs):
-        commands.append(cmd)
-        if cmd[:3] == ["git", "tag", "-a"]:
-            raise subprocess.CalledProcessError(128, cmd)
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(release.subprocess, "run", fake_run)
-
-    result = release.release(version="v1.0.10", dry_run=False)
-
-    assert result.build_success
-    assert not result.tag_success
-    assert result.push_nas_success
-    assert result.push_github_success
-    assert result.final_status == release.LOCAL_BUILD_ONLY
-    assert ["git", "push", "github", "HEAD"] in commands
-    assert ["git", "push", "nas", "HEAD"] in commands
+    assert "src', 'netconsole', 'core', 'version.py'" in text
+    assert "payload?.version !== appVersion" in text
+    assert "versions[0] !== appVersion" in text
+    assert "const expected = ['v1.5.10'" not in text
 
 
 def test_build_release_script_uses_project_output_and_release_zip():
@@ -258,13 +193,13 @@ def test_changelog_source_is_chinese_for_zh_ui():
     assert all(fragment not in text for fragment in forbidden_fragments)
 
 
-def test_release_script_uses_chinese_auto_commit_message():
+def test_release_script_does_not_create_commits_or_tags():
     root = Path(__file__).resolve().parents[1]
     text = (root / "scripts" / "build" / "release.py").read_text(encoding="utf-8")
 
-    assert "auto release build" not in text
-    assert 'git", "commit", "--allow-empty", "-m"' in text
-    assert 'git", "tag", "-a", selected_version' in text
+    assert "git commit" not in text
+    assert "--allow-empty" not in text
+    assert "git tag" not in text
 
 
 def test_clean_build_spec_uses_strict_whitelist_and_excludes():
