@@ -10,6 +10,7 @@ from scripts.check_workspace_layout import (
     check_workspace_root,
     run_checks,
 )
+import scripts.check_workspace_layout as workspace_layout
 
 
 def _make_dirs(root: Path, names: set[str]) -> None:
@@ -85,6 +86,27 @@ def test_registered_independent_repository_worktrees_are_managed(tmp_path: Path)
     violations = run_checks(main, tmp_path)
 
     assert not any(item.kind == "UNMANAGED_WORKTREE_DIRECTORY" for item in violations)
+
+
+def test_invalid_workspace_boundary_skips_independent_repository_probe(
+    tmp_path: Path, monkeypatch
+) -> None:
+    main = tmp_path / "NetConsole"
+    main.mkdir()
+    workspace = tmp_path / "workspace-link"
+    workspace.mkdir()
+
+    monkeypatch.setattr(workspace_layout, "_git_worktrees", lambda _repo: ((), []))
+    monkeypatch.setattr(workspace_layout, "_is_reparse_point", lambda path: path == workspace)
+    monkeypatch.setattr(
+        workspace_layout,
+        "_registered_independent_worktrees",
+        lambda _root: (_ for _ in ()).throw(AssertionError("must not probe an invalid Workspace root")),
+    )
+
+    violations = run_checks(main, workspace)
+
+    assert any(item.kind == "WORKSPACE_ROOT_REPARSE" for item in violations)
 
 
 def test_backup_container_is_allowed_but_unknown_repository_is_rejected(tmp_path: Path) -> None:

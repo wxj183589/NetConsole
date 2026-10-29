@@ -502,6 +502,21 @@ def _default_workspace(repo_root: Path) -> Path | None:
     return candidate if candidate.name.casefold() == WORKSPACE_NAME.casefold() else None
 
 
+def _workspace_root_allows_independent_probe(workspace_root: Path) -> bool:
+    """Validate the Workspace boundary before probing another repository."""
+
+    workspace_root = _absolute(workspace_root)
+    if _is_protected_data_path(workspace_root) or _is_reparse_point(workspace_root):
+        return False
+    if not workspace_root.is_dir():
+        return False
+    try:
+        next(workspace_root.iterdir(), None)
+    except OSError:
+        return False
+    return True
+
+
 def _format_violation(violation: Violation) -> str:
     return "\n".join(
         (
@@ -522,8 +537,10 @@ def run_checks(repo_root: Path, workspace_root: Path | None = None) -> list[Viol
     worktree_paths, git_result = _git_worktrees(repo_root)
     result.extend(git_result)
     if workspace_root is not None:
-        independent_worktree_paths, independent_worktree_errors = _registered_independent_worktrees(workspace_root)
-        result.extend(independent_worktree_errors)
+        independent_worktree_paths: tuple[Path, ...] = ()
+        if _workspace_root_allows_independent_probe(workspace_root):
+            independent_worktree_paths, independent_worktree_errors = _registered_independent_worktrees(workspace_root)
+            result.extend(independent_worktree_errors)
         managed_paths = (*worktree_paths, *independent_worktree_paths)
         result.extend(check_workspace_root(workspace_root, managed_paths))
         result.extend(check_worktree_locations(repo_root, workspace_root, worktree_paths))
