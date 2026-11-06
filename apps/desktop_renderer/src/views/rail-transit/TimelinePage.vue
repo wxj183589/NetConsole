@@ -54,7 +54,7 @@ const eventTypes = ['mr_loss_pending', 'mr_offline', 'mr_recovered', 'train_conn
         <el-drawer v-model="detailOpen" :title="selectedEvent?.title || t('ground.details', '详情')" size="min(680px, 92vw)" append-to-body>
           <template v-if="selectedEvent"><p>{{ selectedEvent.message }}</p><el-descriptions :column="1" border><el-descriptions-item :label="t('ground.device_time', '设备时间')">{{ selectedEvent.device_time || '—' }}</el-descriptions-item><el-descriptions-item :label="t('ground.received_at', '接收时间')">{{ selectedEvent.received_at || '—' }}</el-descriptions-item></el-descriptions><pre class="event-detail">{{ JSON.stringify(selectedEvent, null, 2) }}</pre></template>
         </el-drawer>
-      
+
 </section>
 </template>
 

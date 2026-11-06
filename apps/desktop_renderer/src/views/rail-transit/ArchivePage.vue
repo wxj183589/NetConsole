@@ -125,7 +125,7 @@ onBeforeUnmount(() => { ++generation; controller?.abort() })
           <template #cell-archive_status="{ row }"><el-tag size="small" :type="statusType(row.archive_status)">{{ groundStatusLabel(row.archive_status) }}</el-tag></template>
           <template #cell-actions="{ row }"><div class="row-actions"><el-button size="small" text type="primary" @click="showArchive(row)">{{ t('common.view', '查看') }}</el-button><el-button :icon="Download" size="small" text circle :title="t('ground.history.download_zip', '下载原始 ZIP')" @click="downloadArchiveZip(row)" /><el-button size="small" text @click="downloadArchiveSummary(row)">JSON</el-button><el-button :icon="Delete" size="small" text type="danger" circle :title="t('common.delete', '删除')" @click="removeArchive(row)" /></div></template>
         </NcDataTable></div>
-      
+
 </section>
 </template>
 

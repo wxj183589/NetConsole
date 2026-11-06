@@ -130,7 +130,7 @@ function sortChanged({ order }: { order: string | null }) {
             />
           </template>
         </NcLogWorkspace>
-      
+
 </section>
 </template>
 

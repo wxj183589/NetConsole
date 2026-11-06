@@ -174,7 +174,7 @@ onBeforeUnmount(stopPolling)
             </div>
           </section>
         </section>
-      
+
 </section>
 </template>
 
