@@ -595,6 +595,8 @@ class RailTransitBaseDataRepository:
         ]
         current_metadata = load_site_metadata(self.paths, site_id)
         metadata_applied = False
+        mr_strategies = dict(current_metadata.get("mr_backup_monitoring_strategies") or {})
+        mr_strategies_changed = False
         connection = sqlite3.connect(path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         configure_sqlite_connection(connection, foreign_keys=True)
@@ -633,7 +635,13 @@ class RailTransitBaseDataRepository:
                 elif entity_type == "trackside_ap":
                     self._apply_ap_change(connection, site_id, action, change.get("entity_id"), values)
                 elif entity_type == "vehicle_mr":
-                    self._apply_mr_change(connection, action, change.get("entity_id"), values)
+                    mr_id = self._apply_mr_change(connection, action, change.get("entity_id"), values)
+                    if action == "delete":
+                        mr_strategies_changed |= mr_id in mr_strategies
+                        mr_strategies.pop(mr_id, None)
+                    elif "backup_monitoring_strategy" in values:
+                        mr_strategies[mr_id] = values["backup_monitoring_strategy"]
+                        mr_strategies_changed = True
                 elif entity_type == "trackside_ap_plan":
                     plan_result = self._replace_trackside_ap_plan(
                         connection, site_id, values
@@ -656,9 +664,12 @@ class RailTransitBaseDataRepository:
                         }
                     )
             self._assert_integrity(connection)
-            if metadata_changes:
+            if metadata_changes or mr_strategies_changed:
                 metadata = dict(current_metadata)
-                metadata.update(metadata_changes[-1])
+                if metadata_changes:
+                    metadata.update(metadata_changes[-1])
+                if mr_strategies_changed:
+                    metadata["mr_backup_monitoring_strategies"] = mr_strategies
                 metadata_applied = True
                 save_site_metadata(self.paths, site_id, metadata)
             connection.commit()
@@ -1537,7 +1548,7 @@ class RailTransitBaseDataRepository:
         action: str,
         entity_id: Any,
         values: Mapping[str, Any],
-    ) -> None:
+    ) -> str:
         if action == "delete":
             cursor = connection.execute(
                 "DELETE FROM devices WHERE device_uuid = ?",
@@ -1545,7 +1556,7 @@ class RailTransitBaseDataRepository:
             )
             if cursor.rowcount != 1:
                 raise RailTransitBaseDataConstraintError("车载 MR 不存在")
-            return
+            return str(entity_id or "")
         try:
             primary_address = normalize_ip_address(
                 values.get("primary_address"),
@@ -1566,6 +1577,8 @@ class RailTransitBaseDataRepository:
             "remark": str(values.get("remark") or "").strip(),
             "updated_at": self._now(),
         }
+        if "backup_address" in values:
+            safe["backup_address"] = normalize_ip_address(values["backup_address"], allow_empty=True) or ""
         if safe["protocol"] == "SSH":
             safe.update(ssh_enabled=1, ssh_port=safe["port"])
         else:
@@ -1595,7 +1608,7 @@ class RailTransitBaseDataRepository:
                         f"车载 MR 管理地址 {primary_address} 在当前局点内已被其他设备使用"
                     ) from exc
                 raise
-            return
+            return str(safe["device_uuid"])
         assignments = ", ".join(f'"{field}" = ?' for field in safe)
         try:
             cursor = connection.execute(
@@ -1610,6 +1623,8 @@ class RailTransitBaseDataRepository:
             raise
         if cursor.rowcount != 1:
             raise RailTransitBaseDataConstraintError("车载 MR 不存在")
+
+        return str(entity_id or "")
 
     def _replace_trackside_ap_plan(
         self,

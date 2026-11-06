@@ -650,6 +650,10 @@ class VehicleMrDTO(ApiModel):
     physical_end: MrPhysicalEnd = "unknown"
     car_number: int | None = None
     management_ip: str = ""
+    backup_management_ip: str = ""
+    management_ip_role: str = "PRIMARY"
+    backup_management_ip_role: str = "BACKUP"
+    backup_monitoring_strategy: Literal["MONITOR", "FAILOVER_ONLY", "DISABLED"] = "MONITOR"
     station: str = ""
     mac: str = ""
     protocol: str = ""

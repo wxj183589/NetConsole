@@ -863,6 +863,17 @@ def create_app(
                         "WEB_LIFESPAN_STOP_FAILED",
                         f"component=ground_unattended error={exc.__class__.__name__}: {exc}",
                     )
+            ground_application_service = getattr(
+                app.state, "ground_unattended_application_service", None
+            )
+            if ground_application_service is not None:
+                try:
+                    await asyncio.to_thread(ground_application_service.close)
+                except BaseException as exc:
+                    app_logger.log_error(
+                        "WEB_LIFESPAN_STOP_FAILED",
+                        f"component=ground_quick_ping error={exc.__class__.__name__}: {exc}",
+                    )
             try:
                 # 文件下载队列必须先退出，之后才能关闭它共用的 LocalProcessAdapter。
                 await asyncio.to_thread(file_management_service.close)
@@ -1204,6 +1215,9 @@ def create_app(
 
         target = str(target_site_name or "demo")
         old_ground_supervisor = ground_unattended_supervisor
+        old_ground_application_service = getattr(
+            app.state, "ground_unattended_application_service", None
+        )
         old_ground_started = bool(
             getattr(app.state, "unattended_ready", False)
             or (old_ground_supervisor is not None and old_ground_supervisor.running)
@@ -1248,6 +1262,8 @@ def create_app(
             try:
                 if old_ground_started:
                     target_ground_supervisor.start()
+                if old_ground_application_service is not None:
+                    old_ground_application_service.close()
                 if old_ground_supervisor is not None:
                     old_ground_supervisor.close()
             except Exception:

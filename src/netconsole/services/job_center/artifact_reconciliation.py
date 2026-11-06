@@ -53,6 +53,7 @@ def managed_artifact_source_root(
         / "command_reference",
         "device_csv_export": paths.site_files_dir(site_id) / "web_artifacts",
         "online_mr_report": paths.online_mr_root(site_id),
+        "ground_history": paths.ground_unattended_root(site_id) / "exports",
         "mesh_analysis_report": paths.site_mesh_root(site_id),
         "mesh_link_detail_export": paths.site_mesh_root(site_id),
         "mesh_raw_link_export": paths.site_mesh_root(site_id),

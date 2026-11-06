@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   deleteGroundArchive: vi.fn(),
   deleteGroundRunHistory: vi.fn(),
   getGroundArchive: vi.fn(),
+  getGroundArchiveDetail: vi.fn(),
   getGroundProfile: vi.fn(),
   getGroundStatus: vi.fn(),
   getOnlineMrControlPresets: vi.fn(),
@@ -112,6 +113,8 @@ vi.mock('../../components/workspace/NcFloatingWindow.vue', async () => {
 import GroundUnattendedView from './GroundUnattendedView.vue'
 import { ApiRequestError } from '../../api/client'
 import { SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
+import { setRendererFeaturesForTest } from '../../features'
+import { GROUND_TAB_FEATURES } from './groundFeatures'
 
 const passthrough = defineComponent({
   inheritAttrs: false,
@@ -336,6 +339,7 @@ function mountPage() {
 }
 
 beforeEach(() => {
+  setRendererFeaturesForTest(Object.fromEntries([...Object.values(GROUND_TAB_FEATURES), 'capability.ground_unattended.quick_ping', 'capability.ground_unattended.history_export'].map((id) => [id, { visible: true, enabled: true }])))
   vi.clearAllMocks()
   api.deleteGroundRunHistory.mockResolvedValue({
     accepted: true,
@@ -361,7 +365,7 @@ beforeEach(() => {
   api.listGroundDeepCollectionRecords.mockResolvedValue({ collector: {}, records: [], next_cursor: '', has_more: false })
   api.listGroundTimeline.mockResolvedValue({ items: [], total: 0 })
   api.listGroundArchives.mockResolvedValue({ items: [], total: 0 })
-  api.getGroundHealth.mockResolvedValue({ site_id: 'line-12', status: 'OK' })
+  api.getGroundHealth.mockResolvedValue({ site_id: 'line-12', status: 'HEALTHY' })
   api.getGroundSyslogTransportStatus.mockResolvedValue({
     configured_return_ip: '10.8.0.4',
     configured_return_port: 5514,
@@ -1153,6 +1157,7 @@ describe('Ground unattended page loading behavior', () => {
       3,
       50,
       'AP01',
+      { mrId: '', mrRole: '', startAt: undefined, endAt: undefined },
     )
     wrapper.unmount()
   })
@@ -1604,4 +1609,23 @@ describe('Ground unattended page loading behavior', () => {
     expect(api.listGroundSyslogRecords.mock.calls.length).toBeLessThanOrEqual(80)
     wrapper.unmount()
   })
+  it('hides unavailable pages and falls back when the selected page becomes disabled', async () => {
+    const wrapper = mountPage()
+    await flushPromises()
+    const vm = wrapper.vm as unknown as { activeTab: string }
+    vm.activeTab = 'health'
+    await flushPromises()
+    const states = Object.fromEntries(Object.values(GROUND_TAB_FEATURES).map((id) => [id, { visible: true, enabled: true }]))
+    states[GROUND_TAB_FEATURES.health!] = { visible: true, enabled: false }
+    states[GROUND_TAB_FEATURES.syslog!] = { visible: false, enabled: false }
+    setRendererFeaturesForTest(states)
+    await flushPromises()
+    expect(vm.activeTab).toBe('overview')
+    expect(wrapper.text()).not.toContain('Syslog 日志')
+    setRendererFeaturesForTest({})
+    await flushPromises()
+    expect(vm.activeTab).toBe('')
+    wrapper.unmount()
+  })
+
 })

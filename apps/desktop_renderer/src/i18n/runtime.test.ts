@@ -10,6 +10,15 @@ import {
 } from './runtime'
 
 describe('Desktop Renderer runtime i18n', () => {
+  it('localizes Ground V2 pages through the shared runtime dictionary', () => {
+    setAppLocale('en_US')
+    expect(t('ground.heartbeat', '心跳检测')).toBe('Heartbeat detection')
+    expect(t('ground.health', '系统健康')).toBe('System health')
+    expect(t('ground.v2.deep_lightweight', '轻量模式')).toContain('Lightweight')
+    setAppLocale('zh_CN')
+    expect(t('ground.heartbeat', '心跳检测')).toBe('心跳检测')
+  })
+
   afterEach(() => setAppLocale('zh_CN'))
 
   it('uses Desktop Renderer terminology in the English shell', () => {

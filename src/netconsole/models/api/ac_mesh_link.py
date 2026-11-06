@@ -34,6 +34,11 @@ class AcMeshLinkRecordDTO(ApiModel):
     match_method: str = "unmatched"
     match_warning: str = ""
     data_status: str = "no_data"
+    bssid: str = ""
+    relation_status: str = "unknown"
+    device_time: str = ""
+    received_at: str = ""
+    source_type: str = "vehicle_mr_online_snapshot"
 
 
 class AcMeshLinkPageDTO(ApiModel):
@@ -68,6 +73,14 @@ class AcMeshMrStatusDTO(ApiModel):
     match_method: str = "unmatched"
     match_warning: str = ""
     data_status: str = "no_data"
+    peer_aps: list[AcMeshLinkRecordDTO] = Field(default_factory=list)
+    management_ips: list[str] = Field(default_factory=list)
+    device_time: str = ""
+    received_at: str = ""
+    resolved_ap: str = ""
+    resolved_ap_station: str = ""
+    resolved_ap_section: str = ""
+    identity_status: str = "unresolved"
 
 
 class AcMeshMrPageDTO(ApiModel):
@@ -92,6 +105,11 @@ class AcMeshMrDetailDTO(ApiModel):
     mr: AcMeshMrStatusDTO
     current_links: list[AcMeshLinkRecordDTO] = Field(default_factory=list)
     recent_events: list[AcMeshMrEventDTO] = Field(default_factory=list)
+    history_links: list[AcMeshLinkRecordDTO] = Field(default_factory=list)
+    history_total: int = 0
+    history_page: int = 1
+    history_page_size: int = 100
+    history_note: str = "AC 快照观测不证明连续连接；未观测时间保持未知。"
 
 
 class AcMeshSnapshotDTO(ApiModel):
@@ -102,6 +120,8 @@ class AcMeshSnapshotDTO(ApiModel):
     site_id: str
     collected_at: str = ""
     ac_time: str = ""
+    device_time: str = ""
+    received_at: str = ""
     source_type: str = "vehicle_mr_online_snapshot"
     source_reference: str = ""
     data_status: str = "no_data"
@@ -142,6 +162,27 @@ class AcMeshLinkSummaryDTO(ApiModel):
     source_type: str = "vehicle_mr_online_snapshot"
     raw_available: bool = False
     message: str = ""
+    unique_peer_aps: int = 0
+    abnormal_mrs: int = 0
+    device_time: str = ""
+    received_at: str = ""
+
+
+class AcMeshApDTO(ApiModel):
+    ap_key: str
+    ap_name: str = ""
+    mac: str = ""
+    bssids: list[str] = Field(default_factory=list)
+    station: str = ""
+    section: str = ""
+    relations: list[AcMeshLinkRecordDTO] = Field(default_factory=list)
+
+
+class AcMeshApPageDTO(ApiModel):
+    items: list[AcMeshApDTO] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
 
 
 class AcMeshRawTailDTO(ApiModel):

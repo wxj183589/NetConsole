@@ -141,7 +141,7 @@ describe('Rail Transit base data maintenance view', () => {
       "window.addEventListener('beforeunload'",
       'route.query.tab',
       'name="trackside-ap-planning"',
-      "path: '/rail-transit/train-online'",
+      "path: '/rail-transit/ground-unattended'",
     ]) expect(source).toContain(contract)
 
     for (const forbidden of [

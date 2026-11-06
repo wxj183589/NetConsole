@@ -14,6 +14,8 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.ac_management import AcApDetailDTO, AcRadioDTO
 from netconsole.models.api.ac_mesh_link import (
+    AcMeshApDTO,
+    AcMeshApPageDTO,
     AcMeshLinkPageDTO,
     AcMeshLinkRecordDTO,
     AcMeshLinkSummaryDTO,
@@ -77,6 +79,7 @@ class _MrDevice:
     management_ip: str
     train_no: str
     car_end: str
+    backup_address: str = ""
 
 
 @dataclass(frozen=True)
@@ -141,6 +144,10 @@ class AcMeshLinkQueryService:
             source_type=snapshot.source_type,
             raw_available=self._raw_path(site_id, snapshot).is_file(),
             message=snapshot.error_summary,
+            unique_peer_aps=len({item.peer_ap_id or item.peer_ap_mac for item in links if item.peer_ap_id or item.peer_ap_mac}),
+            abnormal_mrs=sum(any(peer.match_warning for peer in item.peer_aps) for item in mrs),
+            device_time=snapshot.device_time,
+            received_at=snapshot.received_at,
         )
 
     def list_current_links(
@@ -312,8 +319,27 @@ class AcMeshLinkQueryService:
         page_size: int = 50,
         sort_by: str = "train_no",
         sort_order: str = "asc",
+        car_end: str = "",
+        data_status: str = "",
+        match_status: str = "",
+        multiple_peers: bool = False,
+        abnormal_only: bool = False,
     ) -> AcMeshMrPageDTO:
         items = self._mr_rows(site_id)
+        if car_end:
+            items = [item for item in items if item.car_end == car_end]
+        if data_status:
+            items = [item for item in items if item.data_status == data_status]
+        if multiple_peers:
+            items = [item for item in items if len(item.peer_aps) > 1]
+        if abnormal_only:
+            items = [item for item in items if item.match_warning or any(peer.match_warning for peer in item.peer_aps)]
+        if match_status:
+            items = [item for item in items if any(
+                (peer.match_method != "unmatched" if match_status == "matched" else
+                 "多个" in peer.match_warning if match_status == "conflict" else peer.match_method == "unmatched")
+                for peer in item.peer_aps
+            )]
         filters = {
             "online_status": online_status,
             "train_no": train_no,
@@ -326,7 +352,8 @@ class AcMeshLinkQueryService:
         for field, value in filters.items():
             if value:
                 needle = value.casefold()
-                items = [item for item in items if needle in str(getattr(item, field)).casefold()]
+                items = [item for item in items if needle in str(getattr(item, field)).casefold()
+                         or (field == "peer_ap_name" and any(needle in peer.peer_ap_name.casefold() for peer in item.peer_aps))]
         if unmatched_only:
             items = [item for item in items if item.match_method == "unmatched"]
         if query:
@@ -336,7 +363,9 @@ class AcMeshLinkQueryService:
                 for item in items
                 if needle
                 in " ".join(
-                    (item.train_display_name, item.mr_name, item.mr_mac, item.peer_ap_name, item.station, item.section)
+                    (item.train_display_name, item.mr_id, item.mr_name, item.mr_mac, *item.management_ips,
+                     item.peer_ap_name, item.station, item.section,
+                     *(f"{peer.peer_ap_name} {peer.peer_ap_mac} {peer.bssid}" for peer in item.peer_aps))
                 ).casefold()
             ]
         items.sort(key=lambda item: self._mr_sort_key(item, sort_by), reverse=sort_order == "desc")
@@ -345,12 +374,88 @@ class AcMeshLinkQueryService:
     def list_offline_mrs(self, site_id: str, **kwargs) -> AcMeshMrPageDTO:
         return self.list_mrs(site_id, online_status="offline", **kwargs)
 
-    def get_mr_link_detail(self, site_id: str, mr_id: str) -> AcMeshMrDetailDTO | None:
+    def get_mr_link_detail(
+        self, site_id: str, mr_id: str, *, start_time: str = "", end_time: str = "",
+        page: int = 1, page_size: int = 100,
+    ) -> AcMeshMrDetailDTO | None:
         mr = next((item for item in self._mr_rows(site_id) if item.mr_id == mr_id), None)
         if mr is None:
             return None
         links = [item for item in self._link_rows(site_id) if item.mr_id == mr_id]
-        return AcMeshMrDetailDTO(mr=mr, current_links=links, recent_events=self._recent_events(site_id, mr))
+        history, total = self._history_links(site_id, mr, start_time, end_time, page, page_size)
+        return AcMeshMrDetailDTO(
+            mr=mr, current_links=links, recent_events=self._recent_events(site_id, mr),
+            history_links=history, history_total=total, history_page=max(1, page),
+            history_page_size=max(1, min(page_size, 200)),
+        )
+
+    @staticmethod
+    def _ap_key(link: AcMeshLinkRecordDTO) -> str:
+        # Unresolved names never merge distinct observations or grant an AP identity.
+        return link.peer_ap_id or link.peer_ap_mac or link.bssid or f"observation:{link.id}"
+
+    def list_peer_aps(self, site_id: str, *, query: str = "", station: str = "", section: str = "",
+                      page: int = 1, page_size: int = 50) -> AcMeshApPageDTO:
+        groups: dict[str, AcMeshApDTO] = {}
+        for link in self._link_rows(site_id):
+            if query and query.casefold() not in " ".join((link.peer_ap_name, link.peer_ap_mac, link.bssid,
+                                                           link.mr_id, link.mr_name, link.train_no)).casefold():
+                continue
+            if station and station.casefold() not in link.station.casefold():
+                continue
+            if section and section.casefold() not in link.section.casefold():
+                continue
+            key = self._ap_key(link)
+            group = groups.setdefault(key, AcMeshApDTO(ap_key=key, ap_name=link.peer_ap_name,
+                mac=link.peer_ap_mac, station=link.station, section=link.section))
+            group.relations.append(link)
+            if link.bssid and link.bssid not in group.bssids:
+                group.bssids.append(link.bssid)
+        items = sorted(groups.values(), key=lambda item: (item.ap_name, item.ap_key))
+        size, current = max(1, min(page_size, 200)), max(1, page)
+        return AcMeshApPageDTO(items=items[(current-1)*size:current*size], total=len(items), page=current, page_size=size)
+
+    def _history_links(self, site_id: str, mr: AcMeshMrStatusDTO, start_time: str, end_time: str,
+                       page: int, page_size: int) -> tuple[list[AcMeshLinkRecordDTO], int]:
+        """Page existing snapshot observations; no interpolation or inferred start/end events."""
+        if start_time and end_time and datetime.fromisoformat(start_time) > datetime.fromisoformat(end_time):
+            raise ValueError("历史查询开始时间不得晚于结束时间")
+        db_path = self._snapshot_db_path(site_id)
+        if not db_path.is_file():
+            return [], 0
+        with closing(self._connect(db_path)) as conn:
+            if not self._table_exists(conn, "vehicle_mr_online_links"):
+                return [], 0
+            device = next((item for item in self._mr_devices(site_id) if item.uuid == mr.mr_id), None)
+            # Exact persisted names/MAC only; final filtering uses the same MR resolver as current rows.
+            clauses = ["(peer_name = ? OR peer_name = ? OR peer_mac = ?)"]
+            params: list[object] = [mr.mr_name, device.system_name if device else mr.mr_name,
+                                    mr.mr_mac or "__missing_mac__"]
+            if start_time:
+                datetime.fromisoformat(start_time)
+                clauses.append("COALESCE(NULLIF(ac_time, ''), created_at) >= ?")
+                params.append(start_time.replace("T", " "))
+            if end_time:
+                datetime.fromisoformat(end_time)
+                clauses.append("COALESCE(NULLIF(ac_time, ''), created_at) <= ?")
+                params.append(end_time.replace("T", " "))
+            where = " AND ".join(clauses)
+            total = int(conn.execute(f"SELECT COUNT(*) FROM vehicle_mr_online_links WHERE {where}", params).fetchone()[0])
+            size, current = max(1, min(page_size, 200)), max(1, page)
+            rows = conn.execute(f"SELECT id, snapshot_id FROM vehicle_mr_online_links WHERE {where} "
+                                "ORDER BY COALESCE(NULLIF(ac_time, ''), created_at) DESC, id DESC LIMIT ? OFFSET ?",
+                                [*params, size, (current-1)*size]).fetchall()
+        ids = {int(row["id"]) for row in rows}
+        snapshots = {int(row["snapshot_id"]) for row in rows}
+        result = []
+        for snapshot_id in snapshots:
+            snapshot = self._snapshot(site_id, snapshot_id)
+            if snapshot:
+                result.extend(item.model_copy(update={"relation_status": "historical"})
+                              for item in self._link_rows(site_id, snapshot=snapshot)
+                              if item.id in ids and item.mr_id == mr.mr_id)
+        result.sort(key=lambda item: (item.device_time, item.id), reverse=True)
+        return result, total
 
     def list_recent_snapshots(
         self,
@@ -446,27 +551,44 @@ class AcMeshLinkQueryService:
         links = self._link_rows(site_id, snapshot=snapshot)
         devices = self._mr_devices(site_id)
         states = self._current_state_rows(site_id)
-        links_by_device = {item.mr_device_id: item for item in links if item.mr_device_id}
-        links_by_identity: dict[tuple[str, str], AcMeshLinkRecordDTO] = {}
-        for item in sorted(links, key=lambda value: value.rssi or -999, reverse=True):
-            links_by_identity.setdefault((item.train_no, item.car_end), item)
+        links_by_device: dict[str, AcMeshLinkRecordDTO] = {}
+        for item in sorted(links, key=lambda value: (value.mr_online_status == "online", value.rssi or -999), reverse=True):
+            if item.mr_device_id:
+                links_by_device.setdefault(item.mr_device_id, item)
         states_by_train = {str(row.get("train_no") or "").zfill(2): row for row in states if row.get("train_no")}
         result: list[AcMeshMrStatusDTO] = []
         used_mr_ids: set[str] = set()
+        identity_query = ApIdentityQueryService(Database(self.paths.site_db_path(site_id))) if devices else None
         for device in devices:
-            link = links_by_device.get(device.uuid) or links_by_identity.get((device.train_no, device.car_end))
+            link = links_by_device.get(device.uuid)
             state = states_by_train.get(device.train_no, {})
             end_prefix = "tc1" if device.car_end == "CT" else "tc2"
             last_seen = str(state.get(f"{end_prefix}_last_seen_at") or "")
             seen = bool(state.get(f"{end_prefix}_seen"))
             status = self._mr_status(snapshot, link, bool(last_seen or seen))
             row = self._mr_from_link(device, link, status, last_seen, state, end_prefix, snapshot)
+            row.peer_aps = [item for item in links if item.mr_id == device.uuid]
+            row.management_ips = list(dict.fromkeys(ip for ip in (device.management_ip, device.backup_address) if ip))
+            row.device_time = snapshot.device_time if snapshot else ""
+            row.received_at = snapshot.received_at if snapshot else ""
+            if identity_query and device.mac_address:
+                identity = identity_query.resolve_ap_mac(device.mac_address)
+                row.identity_status = identity.status
+                if identity.matched:
+                    row.resolved_ap = identity.effective_ap_name
+                    row.resolved_ap_station = str(identity.station or "").strip()
+                    row.resolved_ap_section = str(identity.section or "").strip()
             result.append(row)
             used_mr_ids.add(row.mr_id)
         for link in links:
             if link.mr_id in used_mr_ids:
                 continue
-            result.append(self._mr_from_unregistered_link(link))
+            row = self._mr_from_unregistered_link(link)
+            row.peer_aps = [item for item in links if item.mr_id == link.mr_id]
+            row.device_time = snapshot.device_time if snapshot else ""
+            row.received_at = snapshot.received_at if snapshot else ""
+            result.append(row)
+            used_mr_ids.add(link.mr_id)
         return result
 
     def _mr_from_link(
@@ -656,6 +778,13 @@ class AcMeshLinkQueryService:
                     match_method=method,
                     match_warning=warning,
                     data_status=snapshot.data_status,
+                    bssid=format_mac(raw.get("local_mac")),
+                    relation_status=("stale" if snapshot.data_status == "stale" else "unknown"
+                                     if snapshot.data_status in {"error", "unknown", "no_data"} else
+                                     "current" if self._is_active(link_status) else "disconnected"),
+                    device_time=str(raw.get("ac_time") or snapshot.device_time),
+                    received_at=str(raw.get("created_at") or snapshot.received_at),
+                    source_type=snapshot.source_type,
                 )
             )
         return result
@@ -786,8 +915,10 @@ class AcMeshLinkQueryService:
         devices: list[dict[str, object]],
     ) -> AcMeshSnapshotDTO:
         controller = next((item for item in devices if int(item.get("id") or 0) == int(row.get("ac_device_id") or 0)), None)
-        collected_at = str(row.get("created_at") or row.get("local_time") or row.get("ac_time") or "")
-        age = self._age_seconds(collected_at)
+        collected_at = str(row.get("local_time") or row.get("created_at") or "")
+        device_time = str(row.get("ac_time") or "")
+        ages = [age for value in (collected_at, device_time) if (age := self._age_seconds(value)) is not None]
+        age = max(ages) if ages else None
         parse_status = str(row.get("parse_status") or "")
         if parse_status and parse_status.casefold() not in {"ok", "success"}:
             data_status = "error"
@@ -807,7 +938,9 @@ class AcMeshLinkQueryService:
             controller_name=str(row.get("ac_name") or (controller or {}).get("name") or ""),
             site_id=site_id,
             collected_at=collected_at,
-            ac_time=str(row.get("ac_time") or ""),
+            ac_time=device_time,
+            device_time=device_time,
+            received_at=collected_at,
             source_type="ac_live_refresh" if live_raw else "vehicle_mr_online_snapshot",
             source_reference=(
                 self._raw_reference_from_session(site_id, str(row.get("session_id") or ""))
@@ -839,6 +972,7 @@ class AcMeshLinkQueryService:
                     management_ip=str(row.get("primary_address") or ""),
                     train_no=identity.train_no,
                     car_end=identity.car_end,
+                    backup_address=str(row.get("backup_address") or ""),
                 )
             )
         return result
@@ -852,7 +986,7 @@ class AcMeshLinkQueryService:
                 return []
             rows = conn.execute(
                 """
-                SELECT id, device_uuid, name, system_name, mac_address, primary_address, device_type
+                SELECT id, device_uuid, name, system_name, mac_address, primary_address, backup_address, device_type
                 FROM devices
                 WHERE COALESCE(work_scope_status, 'included') = 'included'
                 """

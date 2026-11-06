@@ -2,7 +2,7 @@
 
 ## 用途
 
-本目录实现轨道交通地面无人值守的应用编排与后台生命周期，包括运行时间窗、列车库存、正线资格、AC/Syslog 状态、Fleet Ping、深度采集调度、时间轴和每日归档。
+本目录实现轨道交通地面无人值守的应用编排与后台生命周期，包括运行时间窗、基础资料库存、独立心跳/快速 Ping、AC/Syslog 状态、深度采集调度、时间轴和每日归档。
 
 ## 边界
 
@@ -20,7 +20,9 @@
 - `boot_config.py`、`syslog_runtime.py`：Information Center 只读核验、受控修复与 WMESH UDP 接收；
   Receiver、raw writer 和 parser 分线程运行，内存队列溢出进入当前 run 的受管 `_spool`。正常停止等待
   raw、metadata 和投影收口；异常恢复按 at-least-once 重放保留 spool，不宣称 exactly-once。
-- `fleet_ping.py`、`timeline.py`：分片 Ping 生命周期、汇总和 AC/Ping 时间关联。
+- `fleet_ping.py`、`heartbeat_state.py`：基础资料驱动的持续分片心跳、双 IP 任一成功聚合、单 MR 10 秒与双端交集 120 秒状态机、持久化及重启空窗保护。
+- `quick_ping.py`：独立 run、默认无限时长的人工诊断；有界 worker/缓存、逐 MR 分段、后台校验压缩、历史查询及终态保留策略。
+- `timeline.py`、`history_query.py`、`history_export.py`：统一事件时间轴、九类历史索引和独立 Export Process 全量筛选 CSV。
 - `identity.py`：将历史列车/MR 别名、端位和管理 IP 解析为稳定 Ping 查询身份；`run_id + target_ip`
   唯一时不再被漂移的 MR UUID 排除，冲突和参数不一致返回稳定错误。
 - `raw_query.py`：按运行/列车/MR/端位/时间预筛，流式查询 active 或 READY ZIP 中的 Ping/Syslog
@@ -29,7 +31,7 @@
   ACTIVE/ARCHIVE 不建立全局去重集合，MIXED 使用 250,000 个稳定键的上限。
 - `raw_deletion.py`、`raw_lifecycle.py`：删除预览/确认、Job Center 投递、文件生命周期锁、同目录
   `.part` 原子重写、Registry revision、派生 provenance 和删除审计；只允许已完成 run 的
-  `CLOSED/RECOVERED/PENDING` Syslog，READY ZIP 永久不可变。
+  `CLOSED/RECOVERED/PENDING` Syslog，READY ZIP 永久不可变；已登记 gzip 的文件也拒绝记录级改写，避免双副本不一致。
 - `archive_reader.py`：READY ZIP 的受管路径、大小、SHA-256、manifest、成员哈希、CRC、路径和压缩预算
   校验；普通原始列表只做路径、READY、登记大小、ZIP/manifest/成员边界检查，并在读取目标成员时校验
   CRC，完整 ZIP 与成员 SHA-256 保留给详情和显式重新校验。只读流式访问登记成员，不解压或重写归档。
@@ -58,7 +60,7 @@ Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填
 
 ## 数据安全
 
-运行数据位于 `data/sites/<site_id>/ground_unattended/`，路径由 `PathResolver` 解析。归档校验失败时保留 active 原始数据；删除归档必须经过当前局点校验、显式确认和 Repository 状态检查。运行历史删除只移除历史 run 索引及其关联查询数据，不会自动删除历史归档 ZIP；记录级 Syslog 删除只能使用 opaque file/sequence/line 身份，Vue 与 Router 不接触物理路径、文件 API 或 SQL；锁、revision、文件哈希和 SQLite 派生清理由生命周期服务与 Repository 协作完成。自动测试只能使用 `RuntimeMode.TEST` 与 `<repository-parent>\test-data\NetConsole\<run-id>`。
+运行数据位于业务根的 `sites/<site_id>/files/rail_transit/ground_unattended/`，路径由 `PathResolver` 解析。归档校验失败时保留 active 原始数据；删除归档必须经过当前局点校验、显式确认和 Repository 状态检查。运行历史删除只移除历史 run 索引及其关联查询数据，不会自动删除历史归档 ZIP；记录级 Syslog 删除只能使用 opaque file/sequence/line 身份，Vue 与 Router 不接触物理路径、文件 API 或 SQL；锁、revision、文件哈希和 SQLite 派生清理由生命周期服务与 Repository 协作完成。自动测试只能使用 `RuntimeMode.TEST` 与 `<repository-parent>\test-data\NetConsole\<run-id>`。
 
 ## 验证
 
@@ -66,8 +68,7 @@ Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填
 
 ## 相关文档
 
-- [地面无人值守](../../../../docs/rail-transit/ground-unattended/README.md)
-- [地面无人值守](../../../../docs/rail-transit/ground-unattended/README.md)
+- [地面无人值守 V2](../../../../docs/rail-transit/ground-unattended/README.md)
 - [数据布局](../../../../docs/storage/DATA_LAYOUT.md)
 - [Online MR](../../../../docs/rail-transit/online-mr/README.md)
 - [项目架构](../../../../docs/ARCHITECTURE.md)

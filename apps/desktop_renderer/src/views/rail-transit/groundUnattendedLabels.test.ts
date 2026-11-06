@@ -11,8 +11,11 @@ import {
 
 describe('ground unattended Chinese labels', () => {
   it('maps stable backend codes without leaking unknown codes into main views', () => {
+    expect(groundStatusLabel('PINGING')).toBe('心跳检测运行中')
+    expect(groundOperationStageLabel('STOPPING_PING')).toBe('正在停止心跳检测')
     expect(groundStatusLabel('MAINLINE')).toBe('正线在线')
     expect(groundStatusLabel('READY')).toBe('归档完成')
+    expect(['HEALTHY', 'DEGRADED', 'CRITICAL', 'UNKNOWN'].map(groundStatusLabel)).toEqual(['正常', '降级', '严重', '未知'])
     expect(groundEventLabel('mesh_activelink_switch')).toBe('WMESH 主链路切换')
     expect(groundSeverityLabel('critical')).toBe('严重')
     expect(groundOperationStageLabel('STOPPING_SYSLOG')).toBe('正在停止 Syslog 接收')

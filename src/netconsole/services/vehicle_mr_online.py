@@ -303,7 +303,6 @@ class H3CComwareV9VehicleMrMeshLinkParser(VehicleMrMeshLinkParser):
         except Exception as exc:
             return VehicleMrMeshParseResult(ac_time=ac_time, links=links, parse_status="FAILED", error_message=str(exc))
         if not ac_time:
-            ac_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             if not links:
                 return VehicleMrMeshParseResult(ac_time=ac_time, links=links, parse_status="FAILED", error_message="解析失败/格式未适配：未找到 AC 时间")
         return VehicleMrMeshParseResult(ac_time=ac_time, links=links, parse_status="OK")

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
 import shutil
 import sqlite3
 import threading
 import time
 import uuid
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +41,13 @@ from netconsole.services.ground_unattended.eligibility import (
 from netconsole.services.ground_unattended.fleet_ping import (
     FleetPingSupervisor,
     FleetPingTarget,
+)
+from netconsole.services.ground_unattended.heartbeat_state import (
+    HeartbeatIpObservation,
+    HeartbeatStateEngine,
+    HeartbeatTarget,
+    HeartbeatTransition,
+    TrainConnectivityAggregator,
 )
 from netconsole.services.ground_unattended.deep_scheduler import (
     DeepMrCollectionScheduler,
@@ -76,6 +85,8 @@ _DEEP_STOP_TIMEOUT_SECONDS = 120.0
 _ONLINE_MR_STOP_BUDGET_SECONDS = 65.0
 _DEEP_STOP_MARGIN_SECONDS = 30.0
 _TICK_FATAL_THRESHOLD = 3
+_HEARTBEAT_PERSIST_BATCH_SIZE = 256
+_HEARTBEAT_EVENT_CAPACITY = 4096
 
 
 @dataclass(frozen=True)
@@ -118,7 +129,30 @@ class GroundUnattendedSupervisor:
         self.ac_resident_service = ac_resident_service
         self.now_provider = now_provider or (lambda: datetime.now().astimezone())
         self.tick_seconds = max(0.05, float(tick_seconds))
-        self.fleet_ping = FleetPingSupervisor(repository=repository, site_id=site_id)
+        self._heartbeat_engine = HeartbeatStateEngine(
+            event_sink=self._on_heartbeat_transition,
+        )
+        self._train_connectivity = TrainConnectivityAggregator(
+            event_sink=self._on_heartbeat_transition,
+        )
+        self._heartbeat_run_id = ""
+        # fping callbacks run on shard threads while the Supervisor tick and
+        # stop/finalize paths run on the scheduler thread. Keep the state
+        # engine and its bounded persistence queue behind one lock.
+        self._heartbeat_lock = threading.RLock()
+        self._heartbeat_dirty_mrs: set[str] = set()
+        self._heartbeat_dirty_trains: set[str] = set()
+        self._heartbeat_target_signature: tuple[tuple[Any, ...], ...] = ()
+        self._heartbeat_force_persist = False
+        self._heartbeat_pending_events: deque[dict[str, Any]] = deque()
+        self._heartbeat_event_flush_lock = threading.Lock()
+        self._heartbeat_event_error = ""
+        self._deep_scheduler_error = ""
+        self.fleet_ping = FleetPingSupervisor(
+            repository=repository,
+            site_id=site_id,
+            sample_callback=self._on_fleet_ping_sample,
+        )
         self.deep_scheduler = (
             DeepMrCollectionScheduler(
                 paths,
@@ -220,6 +254,9 @@ class GroundUnattendedSupervisor:
                 )
         self._thread = None
         self.fleet_ping.stop()
+        self._quiesce_heartbeat()
+        with self._heartbeat_lock:
+            self._heartbeat_run_id = ""
         self.syslog_receiver.stop()
         if self.deep_scheduler is not None:
             self.deep_scheduler.close()
@@ -660,7 +697,7 @@ class GroundUnattendedSupervisor:
                 run_id=str(run["run_id"]),
                 event_type="run_recovered",
                 title="软件重启后恢复无人值守运行",
-                message="当前仍在配置运行窗口内，长 Ping 与深度调度将从持久化状态恢复。",
+                message="当前仍在配置运行窗口内，心跳检测与深度调度将从持久化状态恢复。",
                 details={
                     "recovered_from_restart": True,
                     "recovery_at": now.isoformat(timespec="milliseconds"),
@@ -995,7 +1032,7 @@ class GroundUnattendedSupervisor:
                     run_id=str(run["run_id"]),
                     event_type="scheduling_paused",
                     title="深度采集调度已暂停",
-                    message="全车长 Ping 与 AC 轮询继续运行。",
+                    message="全车心跳检测与 AC 轮询继续运行。",
                 )
             elif (
                 command.action == "resume"
@@ -1072,6 +1109,353 @@ class GroundUnattendedSupervisor:
         )
         return self.repository.get_run(str(run["run_id"])) or run
 
+    def _configure_heartbeat_targets(self, run_id: str) -> list[HeartbeatTarget]:
+        """Build heartbeat identities from the persisted rail inventory.
+
+        This path intentionally does not inspect AC rows or credentials.  The
+        inventory is the monitoring authority; AC and SSH are supplemental
+        capabilities used by the other workers.
+        """
+        grouped: dict[str, dict[str, Any]] = {}
+        for train in self.repository.list_inventory(include_removed=False):
+            train_id = str(train.get("train_id") or "").strip()
+            if not train_id:
+                continue
+            for endpoint in train.get("endpoints") or []:
+                if not isinstance(endpoint, dict):
+                    continue
+                mr_id = str(endpoint.get("device_uuid") or "").strip()
+                role = str(endpoint.get("mr_role") or "").strip().upper()
+                if not mr_id or role not in {"CT", "CW"}:
+                    continue
+                addresses: list[str] = []
+                primary = str(endpoint.get("management_ip") or "").strip()
+                if _valid_heartbeat_ip(primary):
+                    addresses.append(primary)
+                backup = str(endpoint.get("backup_management_ip") or "").strip()
+                strategy = str(
+                    endpoint.get("backup_monitoring_strategy") or "MONITOR"
+                ).strip().upper()
+                if _valid_heartbeat_ip(backup) and strategy == "MONITOR":
+                    addresses.append(backup)
+                if not addresses:
+                    continue
+                row = grouped.setdefault(
+                    mr_id,
+                    {"mr_uuid": mr_id, "train_id": train_id, "role": role, "ips": []},
+                )
+                row["ips"].extend(addresses)
+        targets = [
+            HeartbeatTarget(
+                mr_uuid=str(row["mr_uuid"]),
+                train_id=str(row["train_id"]),
+                role=str(row["role"]),
+                management_ips=tuple(dict.fromkeys(str(ip) for ip in row["ips"])),
+            )
+            for row in grouped.values()
+        ]
+        normalized_run_id = str(run_id)
+        with self._heartbeat_lock:
+            # A completed run must not leak its in-memory outage state into the
+            # next run. Backend recovery for the same run instead restores the
+            # durable counters explicitly in _start_fleet_ping.
+            if self._heartbeat_run_id and self._heartbeat_run_id != normalized_run_id:
+                self._heartbeat_engine = HeartbeatStateEngine(
+                    event_sink=self._on_heartbeat_transition,
+                )
+                self._train_connectivity = TrainConnectivityAggregator(
+                    event_sink=self._on_heartbeat_transition,
+                )
+                self._heartbeat_target_signature = ()
+                self._heartbeat_dirty_mrs.clear()
+                self._heartbeat_dirty_trains.clear()
+            self._heartbeat_run_id = normalized_run_id
+            self._heartbeat_engine.configure_targets(targets)
+            signature = tuple(
+                sorted(
+                    (
+                        target.mr_uuid,
+                        target.train_id,
+                        target.role,
+                        target.management_ips,
+                    )
+                    for target in targets
+                )
+            )
+            if signature != self._heartbeat_target_signature:
+                self._train_connectivity.reconcile_targets(targets)
+                if self._heartbeat_engine.ip_conflicts:
+                    self.repository.add_health_event(
+                        run_id=normalized_run_id, component="heartbeat",
+                        severity="error", code="HEARTBEAT_IP_IDENTITY_CONFLICT",
+                        message="管理 IP 被多个 MR 认领，冲突地址已停止监测",
+                        details={"conflicts": self._heartbeat_engine.ip_conflicts},
+                    )
+                previous = {
+                    item[0]: item for item in self._heartbeat_target_signature
+                }
+                for target in targets:
+                    current = (
+                        target.mr_uuid,
+                        target.train_id,
+                        target.role,
+                        target.management_ips,
+                    )
+                    if previous.get(target.mr_uuid) != current:
+                        self._heartbeat_dirty_mrs.add(target.mr_uuid)
+                        self._heartbeat_dirty_trains.add(target.train_id)
+                self._heartbeat_target_signature = signature
+            self._heartbeat_engine.set_engine_state("RUNNING", at=self._now())
+        return targets
+
+    def _heartbeat_fleet_targets(self) -> dict[str, FleetPingTarget]:
+        result: dict[str, FleetPingTarget] = {}
+        conflicts: set[str] = set()
+        for train in self.repository.list_inventory(include_removed=False):
+            train_id = str(train.get("train_id") or "").strip()
+            train_no = str(train.get("train_no") or train_id).strip()
+            for endpoint in train.get("endpoints") or []:
+                if not isinstance(endpoint, dict):
+                    continue
+                mr_id = str(endpoint.get("device_uuid") or "").strip()
+                role = str(endpoint.get("mr_role") or "").strip().upper()
+                if not train_id or not mr_id or role not in {"CT", "CW"}:
+                    continue
+                primary = str(endpoint.get("management_ip") or "").strip()
+                backup = str(endpoint.get("backup_management_ip") or "").strip()
+                strategy = str(endpoint.get("backup_monitoring_strategy") or "MONITOR").strip().upper()
+                addresses = [primary]
+                if _valid_heartbeat_ip(backup) and strategy == "MONITOR":
+                    addresses.append(backup)
+                for address in addresses:
+                    if not _valid_heartbeat_ip(address) or address in conflicts:
+                        continue
+                    if address in result:
+                        if result[address].mr_id != mr_id:
+                            conflicts.add(address)
+                            result.pop(address)
+                        continue
+                    result[address] = FleetPingTarget(
+                        target_ip=address,
+                        train_id=train_id,
+                        train_no=train_no,
+                        mr_id=mr_id,
+                        mr_position_code=role,
+                        mr_name=str(endpoint.get("device_name") or ""),
+                        device_id=endpoint.get("device_id"),
+                    )
+        return result
+
+    def _refresh_inventory_heartbeat(self, run: dict[str, Any], now: datetime) -> dict[str, FleetPingTarget]:
+        self._configure_heartbeat_targets(str(run["run_id"]))
+        desired = self._heartbeat_fleet_targets()
+        with self._heartbeat_lock:
+            transitions = self._heartbeat_engine.evaluate(at=now)
+            self._mark_heartbeat_transitions_dirty(transitions)
+            self._refresh_train_heartbeat_snapshots_locked(
+                self._heartbeat_engine.snapshots(), at=now
+            )
+        self._persist_heartbeat_state(at=now)
+        return desired
+
+    def _on_fleet_ping_sample(self, target: FleetPingTarget, sample) -> None:
+        with self._heartbeat_lock:
+            run_id = self._heartbeat_run_id
+        if not run_id or not target.mr_id:
+            return
+        try:
+            timestamp = datetime.fromisoformat(str(sample.ts))
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.astimezone()
+            with self._heartbeat_lock:
+                # A worker can finish a sample after stop() has been requested,
+                # or a previous run's callback can arrive after a new run has
+                # taken over.  Never let either callback mutate the new/final
+                # heartbeat state.
+                if self._heartbeat_run_id != run_id:
+                    return
+                transitions = self._heartbeat_engine.record_observation(
+                    target.mr_id,
+                    HeartbeatIpObservation(
+                        ip=target.target_ip,
+                        success=bool(sample.ok),
+                        rtt_ms=sample.rtt_ms,
+                    ),
+                    at=timestamp,
+                )
+                snapshot = self._heartbeat_engine.snapshot(str(target.mr_id))
+                if snapshot.engine_state != "RUNNING":
+                    return
+                self._heartbeat_dirty_mrs.add(str(target.mr_id))
+                self._mark_heartbeat_transitions_dirty(transitions)
+                self._refresh_train_heartbeat_snapshots_locked(
+                    (snapshot,), at=timestamp, advance_timers=False
+                )
+        except (KeyError, ValueError, TypeError) as exc:
+            self.repository.add_health_event(
+                run_id=run_id,
+                component="heartbeat",
+                severity="warning",
+                code="HEARTBEAT_SAMPLE_IGNORED",
+                message=f"{exc.__class__.__name__}: {exc}",
+                details={"target_ip": target.target_ip, "mr_id": target.mr_id},
+            )
+
+    def _persist_heartbeat_state(self, *, at: datetime) -> None:
+        # SQLite IO belongs to the scheduler, outside the probe/state lock.
+        # Failed batches remain queued with stable dedup keys for the next tick.
+        self._persist_heartbeat_events()
+        updated_at = at.isoformat(timespec="milliseconds")
+        with self._heartbeat_lock:
+            run_id = self._heartbeat_run_id
+            if not run_id:
+                return
+            force = self._heartbeat_force_persist
+            mr_ids = sorted(self._heartbeat_dirty_mrs)
+            train_ids = sorted(self._heartbeat_dirty_trains)
+            if not force and not mr_ids and not train_ids:
+                return
+            if not force:
+                mr_ids = mr_ids[:_HEARTBEAT_PERSIST_BATCH_SIZE]
+                train_ids = train_ids[:_HEARTBEAT_PERSIST_BATCH_SIZE]
+            records: list[dict[str, Any]] = []
+            for mr_id in mr_ids:
+                try:
+                    snapshot = self._heartbeat_engine.snapshot(mr_id)
+                except KeyError:
+                    continue
+                records.append(
+                    {
+                        "snapshot": snapshot.to_payload(),
+                        "entity_type": "MR",
+                        "entity_id": snapshot.mr_uuid,
+                    }
+                )
+            for train_id in train_ids:
+                train_snapshot = self._train_connectivity.snapshot(train_id)
+                if train_snapshot is None:
+                    continue
+                records.append(
+                    {
+                        "snapshot": train_snapshot.to_payload(),
+                        "entity_type": "TRAIN",
+                        "entity_id": train_snapshot.train_id,
+                    }
+                )
+            if not records:
+                self._heartbeat_dirty_mrs.difference_update(mr_ids)
+                self._heartbeat_dirty_trains.difference_update(train_ids)
+                return
+            self._heartbeat_dirty_mrs.difference_update(mr_ids)
+            self._heartbeat_dirty_trains.difference_update(train_ids)
+            self._heartbeat_force_persist = False
+        try:
+            batch = getattr(self.repository, "upsert_heartbeat_snapshots", None)
+            if callable(batch):
+                for offset in range(0, len(records), _HEARTBEAT_PERSIST_BATCH_SIZE):
+                    batch(
+                        run_id,
+                        records[offset : offset + _HEARTBEAT_PERSIST_BATCH_SIZE],
+                        updated_at=updated_at,
+                    )
+            else:
+                for record in records:
+                    self.repository.upsert_heartbeat_snapshot(
+                        run_id,
+                        record["snapshot"],
+                        entity_type=record["entity_type"],
+                        entity_id=record["entity_id"],
+                        updated_at=updated_at,
+                    )
+        except Exception:
+            with self._heartbeat_lock:
+                if self._heartbeat_run_id == run_id:
+                    self._heartbeat_dirty_mrs.update(mr_ids)
+                    self._heartbeat_dirty_trains.update(train_ids)
+            raise
+
+    def _refresh_train_heartbeat_snapshots_locked(
+        self,
+        snapshots,
+        *,
+        at: datetime,
+        advance_timers: bool = True,
+    ) -> None:
+        for snapshot in snapshots:
+            try:
+                previous = self._train_connectivity.snapshot(snapshot.train_id)
+                current, _ = self._train_connectivity.update(snapshot, at=at)
+            except ValueError:
+                continue
+            if current != previous:
+                self._heartbeat_dirty_trains.add(current.train_id)
+        if not advance_timers:
+            return
+        train_ids = {
+            snapshot.train_id
+            for snapshot in self._heartbeat_engine.snapshots()
+            if snapshot.train_id
+        }
+        previous_by_train = {
+            train_id: self._train_connectivity.snapshot(train_id)
+            for train_id in train_ids
+        }
+        for current in self._train_connectivity.evaluate(at=at):
+            if current != previous_by_train.get(current.train_id):
+                self._heartbeat_dirty_trains.add(current.train_id)
+
+    def _mark_heartbeat_transitions_dirty(
+        self, transitions: list[HeartbeatTransition] | tuple[HeartbeatTransition, ...]
+    ) -> None:
+        for transition in transitions:
+            if transition.entity_type == "MR":
+                self._heartbeat_dirty_mrs.add(transition.entity_id)
+            elif transition.entity_type == "TRAIN":
+                self._heartbeat_dirty_trains.add(transition.entity_id)
+
+    def _on_heartbeat_transition(self, transition: HeartbeatTransition) -> None:
+        with self._heartbeat_lock:
+            run_id = self._heartbeat_run_id
+            if not run_id:
+                return
+            if len(self._heartbeat_pending_events) >= _HEARTBEAT_EVENT_CAPACITY:
+                self._heartbeat_event_error = "HEARTBEAT_EVENT_BACKLOG_FULL: 心跳事件队列已满"
+                LOGGER.error(self._heartbeat_event_error)
+                raise RuntimeError(self._heartbeat_event_error)
+            self._heartbeat_pending_events.append({
+                "run_id": run_id, "event_type": transition.event_type,
+                "severity": "warning" if "offline" in transition.event_type else "info",
+                "train_id": transition.entity_id if transition.entity_type == "TRAIN" else "",
+                "mr_id": transition.entity_id if transition.entity_type == "MR" else "",
+                "title": "心跳状态变化",
+                "message": f"{transition.previous_state} -> {transition.current_state}",
+                "details": transition.to_payload(),
+                "ts": transition.occurred_at.isoformat(timespec="milliseconds"),
+                "dedup_key": "heartbeat:" + uuid.uuid4().hex,
+            })
+
+    def _persist_heartbeat_events(self) -> None:
+        with self._heartbeat_event_flush_lock:
+            with self._heartbeat_lock:
+                batch = list(self._heartbeat_pending_events)
+            if not batch:
+                return
+            for offset in range(0, len(batch), _HEARTBEAT_PERSIST_BATCH_SIZE):
+                records = batch[offset:offset + _HEARTBEAT_PERSIST_BATCH_SIZE]
+                try:
+                    self.repository.add_events_batch(records)
+                except Exception as exc:
+                    if not self._heartbeat_event_error.startswith("HEARTBEAT_EVENT_BACKLOG_FULL"):
+                        self._heartbeat_event_error = f"HEARTBEAT_EVENT_WRITE_FAILED: {exc}"
+                    raise
+                with self._heartbeat_lock:
+                    for _ in records:
+                        self._heartbeat_pending_events.popleft()
+            # A saturation incident needs an operator-visible health record even
+            # after draining. Ordinary temporary write failures recover here.
+            if not self._heartbeat_event_error.startswith("HEARTBEAT_EVENT_BACKLOG_FULL"):
+                self._heartbeat_event_error = ""
+
     @staticmethod
     def _manual_run_is_active(run, now: datetime) -> bool:
         if str(run.get("requested_action") or "") != "manual_start":
@@ -1145,7 +1529,8 @@ class GroundUnattendedSupervisor:
                 state="PAUSED" if scheduling_paused else "RUNNING",
                 ac_freshness_status="NO_DATA",
             )
-            self._expire_recovered_ping_targets(run, profile, now)
+            inventory_targets = self._refresh_inventory_heartbeat(run, now)
+            self.fleet_ping.update_targets(list(inventory_targets.values()))
             return
         new_snapshots = [
             snapshot
@@ -1176,7 +1561,8 @@ class GroundUnattendedSupervisor:
                 ac_last_updated_at=received_at,
                 ac_freshness_status="FRESH" if fresh else "STALE",
             )
-            self._expire_recovered_ping_targets(run, profile, now)
+            inventory_targets = self._refresh_inventory_heartbeat(run, now)
+            self.fleet_ping.update_targets(list(inventory_targets.values()))
             return
 
         mesh_rows = self._mesh_rows_for_snapshots(snapshots)
@@ -1355,7 +1741,7 @@ class GroundUnattendedSupervisor:
                             severity="warning",
                             train_id=train.train_id,
                             mr_id=endpoint.mr_id,
-                            title="重复长 Ping 目标已跳过",
+                            title="重复心跳检测目标已跳过",
                             details={"target_ip": target.target_ip},
                         )
                         continue
@@ -1393,7 +1779,7 @@ class GroundUnattendedSupervisor:
                         severity="warning",
                         train_id=target.train_id,
                         mr_id=target.mr_id,
-                        title="AC 异常宽限期已结束，停止对应长 Ping",
+                        title="AC 辅助定位宽限期已结束，基础资料心跳检测继续",
                         details={
                             "target_ip": address,
                             "grace_seconds": profile.ac_stale_grace_seconds,
@@ -1401,6 +1787,8 @@ class GroundUnattendedSupervisor:
                     )
             elif address not in valid_ping_targets:
                 self._last_valid_ping_targets.pop(address, None)
+        inventory_targets = self._refresh_inventory_heartbeat(run, now)
+        valid_ping_targets = _merge_heartbeat_targets(inventory_targets, valid_ping_targets)
         self.fleet_ping.update_targets(list(valid_ping_targets.values()))
         self.fleet_ping.flush_summaries()
         self.syslog_receiver.refresh_inventory()
@@ -1428,22 +1816,48 @@ class GroundUnattendedSupervisor:
             self.repository.update_run(str(run["run_id"]), summary_json=summary)
             self._last_disk_check_monotonic = time.monotonic()
         if self.deep_scheduler is not None:
-            if disk_critical:
-                self.deep_scheduler.stop_all(
+            try:
+                if disk_critical:
+                    self.deep_scheduler.stop_all(
+                        str(run["run_id"]),
+                        reason="critical_disk_space",
+                        max_finalizing_mrs=profile.max_finalizing_mrs,
+                    )
+                self.deep_scheduler.tick(
                     str(run["run_id"]),
-                    reason="critical_disk_space",
-                    max_finalizing_mrs=profile.max_finalizing_mrs,
+                    profile,
+                    current_trains,
+                    paused=(
+                        scheduling_paused
+                        or disk_warning
+                        or not profile.deep_collection_master_enabled
+                    ),
                 )
-            self.deep_scheduler.tick(
-                str(run["run_id"]),
-                profile,
-                current_trains,
-                paused=(
-                    scheduling_paused
-                    or disk_warning
-                    or not profile.deep_collection_master_enabled
-                ),
-            )
+            except Exception as exc:
+                # SSH/session failures belong to deep collection. Repeated
+                # failures must not trigger the Supervisor fatal-stop path
+                # and take independent fleet heartbeat workers down.
+                error = f"{exc.__class__.__name__}: {exc}"
+                if not self._deep_scheduler_error:
+                    self.repository.add_health_event(
+                        run_id=str(run["run_id"]), component="deep_collection",
+                        severity="error", code="DEEP_SCHEDULER_FAILED",
+                        message=error,
+                    )
+                    self.repository.add_event(
+                        run_id=str(run["run_id"]), event_type="deep_scheduler_failed",
+                        severity="error", title="深度采集异常，心跳继续运行",
+                        message=error,
+                    )
+                self._deep_scheduler_error = error
+            else:
+                if self._deep_scheduler_error:
+                    self.repository.add_health_event(
+                        run_id=str(run["run_id"]), component="deep_collection",
+                        severity="info", code="DEEP_SCHEDULER_RECOVERED",
+                        message="深度采集调度已恢复，心跳持续运行",
+                    )
+                self._deep_scheduler_error = ""
         self.repository.update_run(
             str(run["run_id"]),
             state="PAUSED" if scheduling_paused else "RUNNING",
@@ -1677,16 +2091,25 @@ class GroundUnattendedSupervisor:
                         severity="warning",
                         train_id=target.train_id,
                         mr_id=target.mr_id,
-                        title="重启恢复时跳过重复长 Ping 目标",
+                        title="重启恢复时跳过重复心跳检测目标",
                         details={"target_ip": target_ip},
                     )
                     continue
                 recovered[target_ip] = (target, last_valid_at)
-        self._last_valid_ping_targets = recovered
-        self.fleet_ping.update_targets(
-            [target for target, _last_valid_at in recovered.values()]
+        inventory_targets = self._heartbeat_fleet_targets()
+        targets = _merge_heartbeat_targets(
+            inventory_targets,
+            {address: target for address, (target, _) in recovered.items()},
         )
-        return len(recovered)
+        # Only AC enrichment has a grace period. Inventory heartbeat targets
+        # must never enter this cache or expire with an AC snapshot.
+        self._last_valid_ping_targets = {
+            address: (target, last_valid_at)
+            for address, (target, last_valid_at) in recovered.items()
+            if targets.get(address) is target
+        }
+        self.fleet_ping.update_targets(list(targets.values()))
+        return len(targets)
 
     def _expire_recovered_ping_targets(
         self,
@@ -1710,16 +2133,17 @@ class GroundUnattendedSupervisor:
                 severity="warning",
                 train_id=target.train_id,
                 mr_id=target.mr_id,
-                title="AC 异常宽限期已结束，停止重启恢复的长 Ping",
+                title="重启恢复的 AC 辅助定位已过期，基础资料心跳检测继续",
                 details={
                     "target_ip": address,
                     "grace_seconds": profile.ac_stale_grace_seconds,
                     "recovered_from_restart": True,
                 },
             )
-        self.fleet_ping.update_targets(
-            [target for target, _last_valid_at in self._last_valid_ping_targets.values()]
-        )
+        self.fleet_ping.update_targets(list(_merge_heartbeat_targets(
+            self._heartbeat_fleet_targets(),
+            {address: target for address, (target, _) in self._last_valid_ping_targets.items()},
+        ).values()))
 
     def _ensure_stop_operation(
         self,
@@ -1924,7 +2348,7 @@ class GroundUnattendedSupervisor:
                     operation_id,
                     stage="STOPPING_DEEP_COLLECTION",
                     percent=20,
-                    message="深度采集停止超时，继续收口 AC、长 Ping 与 Syslog",
+                    message="深度采集停止超时，继续收口 AC、心跳检测与 Syslog",
                     result={
                         "deep_collection_stop_state": "TIMED_OUT",
                         "active_operation_ids": active_ids,
@@ -1998,7 +2422,7 @@ class GroundUnattendedSupervisor:
                     operation_id,
                     stage="STOPPING_AC_POLLER",
                     percent=24,
-                    message="AC 常驻轮询停止超时，继续收口长 Ping 与 Syslog",
+                    message="AC 常驻轮询停止超时，继续收口心跳检测与 Syslog",
                     result={
                         "ac_resident_stop_state": "TIMED_OUT",
                         "ac_pollers": list(ac_stop.pollers),
@@ -2045,15 +2469,20 @@ class GroundUnattendedSupervisor:
             operation_id,
             stage="STOPPING_PING",
             percent=25,
-            message="正在停止长 Ping",
+            message="正在停止心跳检测",
         )
         ping_result = self.fleet_ping.stop()
+        # fping callbacks are delivered from shard threads and may race with
+        # worker shutdown.  Quiesce after stop() returns so accepted samples
+        # remain valid, then reject callbacks that arrive after the final state
+        # has been persisted.
+        self._quiesce_heartbeat()
         if not bool(ping_result.get("success")):
             component_failures.append(
                 {
                     "component": "fleet_ping",
                     "code": "FPING_STOP_TIMEOUT",
-                    "message": "长 Ping worker 未在停止预算内退出",
+                    "message": "心跳检测 worker 未在停止预算内退出",
                     "state": "TIMED_OUT",
                 }
             )
@@ -2061,7 +2490,7 @@ class GroundUnattendedSupervisor:
                 operation_id,
                 stage="STOPPING_PING",
                 percent=35,
-                message="长 Ping 停止超时，继续收口 Syslog",
+                message="心跳检测停止超时，继续收口 Syslog",
                 result={"ping_stop_state": "TIMED_OUT", "ping": ping_result},
             )
         self._operation_progress(
@@ -2198,7 +2627,7 @@ class GroundUnattendedSupervisor:
                 operation_id,
                 stage="WAITING_DEEP_COLLECTION_TERMINAL",
                 percent=90,
-                message="长 Ping、Syslog 与 AC 已收口，等待深度采集映射进入终态",
+                message="心跳检测、Syslog 与 AC 已收口，等待深度采集映射进入终态",
                 result={
                     "deep_collection_stop_state": "FORCE_STOPPING",
                     "stop_failures": component_failures,
@@ -2347,6 +2776,22 @@ class GroundUnattendedSupervisor:
         self._last_processed_snapshot_id_by_controller = {}
         self._syslog_recovery_pending = False
 
+    def _quiesce_heartbeat(self) -> None:
+        """Reject late samples and persist the terminal heartbeat state."""
+        with self._heartbeat_lock:
+            if not self._heartbeat_run_id:
+                return
+            now = self._now()
+            transitions = self._heartbeat_engine.set_engine_state("STOPPED", at=now)
+            self._mark_heartbeat_transitions_dirty(transitions)
+            snapshots = self._heartbeat_engine.snapshots()
+            self._heartbeat_dirty_mrs.update(snapshot.mr_uuid for snapshot in snapshots)
+            self._refresh_train_heartbeat_snapshots_locked(
+                snapshots, at=now, advance_timers=False
+            )
+            self._heartbeat_force_persist = True
+        self._persist_heartbeat_state(at=now)
+
     def _operation_progress(
         self,
         operation_id: str,
@@ -2425,6 +2870,12 @@ class GroundUnattendedSupervisor:
     def _start_fleet_ping(
         self, run: dict[str, Any], profile: GroundUnattendedProfileDTO
     ) -> None:
+        self._configure_heartbeat_targets(str(run["run_id"]))
+        persisted_heartbeat = self.repository.list_heartbeat_snapshots(
+            str(run["run_id"]), entity_type="MR"
+        )
+        if persisted_heartbeat:
+            self._heartbeat_engine.restore_snapshots(persisted_heartbeat)
         self.fleet_ping.start(
             run_id=str(run["run_id"]),
             run_date=str(run["run_date"]),
@@ -2710,6 +3161,35 @@ class GroundUnattendedSupervisor:
 
 def _normalize_error(value: str) -> str:
     return " ".join(value.split())[:256]
+
+
+def _merge_heartbeat_targets(
+    inventory: dict[str, FleetPingTarget], supplemental: dict[str, FleetPingTarget]
+) -> dict[str, FleetPingTarget]:
+    """Allow AC enrichment only when its complete identity matches inventory."""
+    result = {}
+    for address, target in inventory.items():
+        candidate = supplemental.get(address)
+        if candidate and (
+            candidate.mr_id, candidate.train_id, candidate.mr_position_code
+        ) == (target.mr_id, target.train_id, target.mr_position_code):
+            result[address] = candidate
+        else:
+            result[address] = target
+    return result
+
+
+def _valid_heartbeat_ip(value: object) -> bool:
+    try:
+        parsed = ipaddress.ip_address(str(value or "").strip())
+    except ValueError:
+        return False
+    return (
+        parsed.version == 4
+        and not parsed.is_unspecified
+        and not parsed.is_multicast
+        and str(parsed) != "255.255.255.255"
+    )
 
 
 __all__ = ["GroundUnattendedSupervisor"]

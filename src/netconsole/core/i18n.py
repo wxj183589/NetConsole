@@ -3721,6 +3721,11 @@ TRANSLATIONS["en_US"].update(
 )
 
 
+# Ground unattended V2 feature titles use the shared registry keys.
+TRANSLATIONS['zh_CN'].update({'ground.overview': '运行概览', 'ground.heartbeat': '心跳检测', 'ground.ac_mesh_link': 'AC-Mesh-Link', 'ground.quick_ping': '快速 Ping', 'ground.syslog': 'Syslog 日志', 'ground.deep_collection': '深度采集', 'ground.timeline': '时间轴', 'ground.health': '系统健康', 'ground.archives': '历史归档', 'ground.settings': '设置', 'ground.history_export': '历史导出'})
+TRANSLATIONS['en_US'].update({'ground.overview': 'Run overview', 'ground.heartbeat': 'Heartbeat detection', 'ground.ac_mesh_link': 'AC-Mesh-Link', 'ground.quick_ping': 'Quick Ping', 'ground.syslog': 'Syslog logs', 'ground.deep_collection': 'Deep collection', 'ground.timeline': 'Timeline', 'ground.health': 'System health', 'ground.archives': 'History archives', 'ground.settings': 'Settings', 'ground.history_export': 'Export history'})
+
+
 class I18n:
     def __init__(self, language: str = "zh_CN") -> None:
         global locale

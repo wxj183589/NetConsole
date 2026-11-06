@@ -47,6 +47,7 @@ export interface GroundRun {
   message: string; created_at: string; updated_at: string
 }
 export interface GroundEndpoint {
+  backup_management_ip: string; backup_management_ip_role: string; backup_monitoring_strategy: 'MONITOR' | 'FAILOVER_ONLY' | 'DISABLED'
   endpoint: 'CT' | 'CW'; mr_id: string; mr_name: string; device_id: number | null; management_ip: string; online_status: string
   ping_target_eligible: boolean; ping_exclusion_reason: string
   ping_active: boolean; ping_sent_count: number; ping_success_count: number; ping_loss_rate_percent: number | null
@@ -129,6 +130,7 @@ export interface GroundDeepCollection {
 }
 export type GroundDeepCollectionState = 'INELIGIBLE' | 'ELIGIBLE' | 'QUEUED' | 'STARTING' | 'RUNNING' | 'PAUSED' | 'STOPPING' | 'STOPPED' | 'FAILED'
 export interface GroundDeepCollector {
+  items?: GroundDeepCollectorItem[]; progress_kind?: 'CONTINUOUS'; source_state?: string; train_no?: string; ended_at?: string
   run_id: string; train_id: string; mr_id: string; mr_role: string; management_ip: string; operation_id: string; collector_session_id: string
   state: GroundDeepCollectionState; state_reason: string; started_at: string; last_record_at: string; record_count: number | null; bytes_written: number
   current_ap: string; station: string; section: string; last_error: string; retry_count: number
@@ -137,6 +139,13 @@ export interface GroundDeepCollector {
   fping_loss_percent: number | null; fping_avg_latency_ms: number | null; fping_latest_latency_ms: number | null
   fping_error: string; data_integrity_status: 'UNKNOWN' | 'COMPLETE' | 'INCOMPLETE'
 }
+export interface GroundDeepCollectorItem {
+  name: string; label: string; status: string; size_bytes: number; started_at: string; ended_at: string
+  updated_at: string; error: string; raw_file: string; exists: boolean
+}
+export interface GroundDeepTaskPage {
+  items: GroundDeepCollector[]; total: number; page: number; page_size: number; statistics: Record<string, number | string | null>
+}
 export interface GroundDeepCollectionRecord {
   sequence: number; timestamp: string; category: string; source: string; text: string
 }
@@ -144,6 +153,7 @@ export interface GroundDeepCollectionRecordPage {
   collector: GroundDeepCollector; records: GroundDeepCollectionRecord[]; next_cursor: string; has_more: boolean
 }
 export interface GroundTimelineEvent {
+  device_time: string; received_at: string
   event_id: number | string; ts: string; event_type: string; severity: string; train_id: string; train_no: string; train_name: string; mr_id: string
   mr_name: string; mr_position_code: string
   title: string; message: string; peer_ap_id: string; peer_ap_name: string; peer_ap_mac: string
@@ -176,6 +186,43 @@ export interface GroundArchiveDetail {
   }
 }
 export interface GroundActionResponse { accepted: boolean; state: GroundRunState; run_id: string; operation_id: string; message: string }
+export type GroundQuickPingState = 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'TIME_LIMIT' | 'INTERRUPTED'
+export interface GroundQuickPingTarget {
+  target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_role: string; address_role: 'PRIMARY' | 'BACKUP'
+}
+export interface GroundQuickPingConfig {
+  interval_ms: number; timeout_ms: number; packet_size: number; duration_seconds: number | null; max_in_flight: number
+}
+export interface GroundQuickPingStats {
+  current_rtt_ms?: number | null
+  raw_samples: number; sent: number; received: number; lost: number; loss_rate_percent: number
+  min_rtt_ms: number | null; avg_rtt_ms: number | null; max_rtt_ms: number | null; jitter_ms: number | null
+  current_consecutive_loss: number; max_consecutive_loss: number; last_sample_at: string; last_success_at: string
+}
+export interface GroundQuickPingRun {
+  target_runtime?: Record<string, { state: string; started_at: string; ended_at: string; error: string }>
+  run_id: string; site_id: string; run_date: string; targets: GroundQuickPingTarget[]; config: GroundQuickPingConfig
+  state: GroundQuickPingState; started_at: string; ended_at: string; error: string; segment_paths: string[]
+  stats: GroundQuickPingStats; target_stats: Record<string, GroundQuickPingStats>
+  recent_samples: Array<Record<string, unknown>>
+}
+export interface GroundQuickPingPage { items: GroundQuickPingRun[]; total: number; offset: number; limit: number; active_ips?: Record<string, string> }
+export interface GroundQuickPingSamplePage {
+  run_id: string; items: Array<Record<string, unknown>>; has_more: boolean; next_cursor: string
+  scanned_bytes: number; scan_budget_exhausted: boolean
+}
+export interface GroundHistoryRecord {
+  record_id: string; data_type: string; ts: string; run_id: string; train_id: string; mr_id: string
+  mr_role: string; status: string; summary: string; event_type: string; details: Record<string, unknown>
+}
+export interface GroundHistoryPage {
+  items: GroundHistoryRecord[]; total: number; page: number; page_size: number; sources: Record<string, string>
+}
+export interface GroundHistoryFilters {
+  sort_order?: 'asc' | 'desc'
+  data_type?: string; run_id?: string; train_id?: string; mr_id?: string; mr_role?: string
+  event_type?: string; start_at?: string; end_at?: string
+}
 export interface GroundOperation {
   operation_id: string; site_id: string; run_id: string; operation_type: 'STOP' | 'STOP_AND_ARCHIVE'
   operation_state: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'; operation_stage: string; progress_percent: number
@@ -216,6 +263,7 @@ export interface GroundQueryDiagnostics {
   segment_count?: number; active_segment?: string; last_persisted_sample_at?: string; last_query_sample_at?: string
 }
 export interface GroundPingSeries {
+  window_statistics?: Record<string, { sent_count: number; lost_count: number; loss_rate_percent: number | null }>
   raw_sample_count: number; effective_sample_count: number; ignored_sample_count: number
   success_count: number; loss_count: number; rtt_sample_count: number; rtt_sum_ms: number
   current_rtt_ms: number | null; average_rtt_ms: number | null; max_rtt_ms: number | null
@@ -272,25 +320,30 @@ export interface GroundSyslogDeletePreview {
 export interface GroundSyslogDeleteAccepted {
   accepted: boolean; operation_id: string; task_id: string; run_id: string; status: string; message: string
 }
-export interface GroundPagedResult<T> extends GroundPage<T> { total_exact?: boolean; page: number; page_size: number; diagnostics?: GroundQueryDiagnostics }
+export interface GroundPagedResult<T> extends GroundPage<T> { total_exact?: boolean; page: number; page_size: number; diagnostics?: GroundQueryDiagnostics; statistics?: Record<string, number | string | null> }
 export interface GroundPage<T> { items: T[]; total: number }
 export interface GroundInventorySummary {
   site_id: string; discovered_train_count: number; complete_train_count: number; ct_only_count: number; cw_only_count: number
   missing_management_ip_count: number; missing_credential_count: number; added_endpoint_count: number; updated_endpoint_count: number; removed_endpoint_count: number; removed_train_count: number; synchronized_at: string
 }
 export interface GroundTrainPolicy { enabled: boolean; priority: boolean; scheduling_priority: number; deep_collection_enabled: boolean; monitor_only: boolean; remark: string }
+export type GroundHealthStatus = 'HEALTHY' | 'DEGRADED' | 'CRITICAL' | 'UNKNOWN'
 export interface GroundAcPollerHealth {
-  controller_id: string; controller_name: string; task_id: string; run_id: string; status: string; connection_state: string
+  controller_id: string; controller_name: string; task_id: string; run_id: string; status: GroundHealthStatus; connection_state: string
   last_success_at: string; latest_snapshot_id: number | null; next_poll_at: string; poll_interval_seconds: number
   poll_count: number; success_count: number; failure_count: number; reconnect_count: number; consecutive_failures: number
-  heartbeat_at: string; heartbeat_age_seconds: number | null; last_error: string
+  heartbeat_at: string; heartbeat_age_seconds: number | null; last_success_age_seconds: number | null; last_error: string
 }
 export interface GroundHealth {
-  site_id: string; status: string; udp_running: boolean; udp_listen_address: string; udp_receive_rate_per_second: number; udp_received_count: number
+  site_id: string; status: GroundHealthStatus; udp_running: boolean; udp_listen_address: string; udp_receive_rate_per_second: number; udp_received_count: number
+  supervisor_running: boolean | null; run_state: string; run_elapsed_seconds: number | null
   udp_unidentified_count: number; udp_identity_conflict_count: number; udp_last_received_at: string
   udp_queue_length: number; udp_queue_capacity: number; udp_dropped_count: number; raw_records_written: number; raw_bytes_written: number
   raw_last_write_duration_ms: number; database_pending_count: number; database_last_batch_duration_ms: number; open_file_count: number
+  raw_write_failed_count: number; raw_write_rate_bytes_per_second: number
   ping_target_count: number; ping_process_count: number; deep_queue_length: number; archive_pending_count: number; ac_pollers: GroundAcPollerHealth[]
+  ping_sample_rate_per_second: number | null; ping_last_sample_at: string; ping_sample_write_duration_ms: number | null; ping_worker_warnings: string[]
+  archive_failed_count: number; disk_total_bytes: number; raw_file_count: number
   disk_free_bytes: number; last_error: string; updated_at: string
   receiver_alive: boolean; writer_alive: boolean; parser_alive: boolean
   received: number; written: number; parsed: number; db_saved: number; dropped: number
@@ -304,6 +357,10 @@ export interface GroundHealth {
   raw_flush_count: number; raw_batch_bytes_avg: number
   durable_sync_count: number; durable_sync_latency_ms: number
   db_batch_size: number; db_batch_interval_ms: number
+  compression_queue_size: number; compression_queue_capacity: number
+  compression_submitted_count: number; compression_completed_count: number
+  compression_failed_count: number; compression_skipped_count: number
+  compression_last_error: string; compression_worker_alive: boolean
 }
 export interface GroundRawFile { file_id: string; site_id: string; run_id: string; train_id: string; device_id: number | null; mr_role: string; data_type: string; relative_path: string; start_time: string; end_time: string; record_count: number; size_bytes: number; sha256: string; status: string; archive_status: string; parse_status: string; compressed_path: string; created_at: string; updated_at: string }
 
@@ -334,4 +391,37 @@ export interface GroundSyslogTransportStatus {
   unidentified_count: number; identity_conflict_count: number
   queue_length: number; queue_capacity: number; dropped_count: number
   recommended_local_ip: string; recommended_adapter_name: string; checked_at: string
+}
+export interface GroundHeartbeatIp {
+  ip: string; sent_count: number; received_count: number; lost_count: number
+  min_rtt_ms: number | null; avg_rtt_ms: number | null; max_rtt_ms: number | null
+  last_probe_at: string; last_success_at: string; unreachable_since: string
+}
+export interface GroundHeartbeatMr {
+  resolved_ap_name?: string; identity_status?: string; ac_data_status?: string; station?: string; section?: string; current_rtt_ms?: number | null
+  mr_uuid: string; train_id: string; train_no: string; mr_name: string; role: string
+  status: string; engine_state: string; unreachable_since: string; last_success_at: string
+  last_recovery_at: string; consecutive_recovery_successes: number; updated_at: string
+  ip_states: GroundHeartbeatIp[]
+}
+export interface GroundHeartbeatTrain {
+  train_id: string; train_no: string; status: string; both_unreachable_since: string
+  mr_states: Record<string, string>; updated_at: string
+}
+export interface GroundHeartbeatPage {
+  total?: number; total_mrs?: number; page?: number; page_size?: number; stations?: string[]
+  run_id: string; run_state: string; mrs: GroundHeartbeatMr[]; trains: GroundHeartbeatTrain[]
+  mr_counts: Record<string, number>; train_counts: Record<string, number>
+}
+export interface GroundMeshMonitorEvent {
+  id: number | string; event_time: string; device_time: string; receive_time: string; event_type: string; source: string
+  old_ap_name: string; new_ap_name: string; old_bssid: string; bssid: string; rssi: number | null; raw_text: string
+  raw_file_id: string; raw_line_number: number | null; identity_status: string; event_time_source: string; data_quality: string
+}
+export interface GroundPeerInterval {
+  start: string; end: string; peer_name: string; bssid: string; rssi: number | null; source: string; device_time: string; receive_time: string
+}
+export interface GroundMrMonitoring {
+  mr: GroundHeartbeatMr; series: GroundPingSeries; mesh_events: GroundMeshMonitorEvent[]; peer_intervals: GroundPeerInterval[]
+  run_sent_count: number; run_lost_count: number; queried_start: string; queried_end: string; events_truncated: boolean
 }

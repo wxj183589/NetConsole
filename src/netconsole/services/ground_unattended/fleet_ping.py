@@ -5,6 +5,7 @@ import json
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,7 +19,10 @@ from netconsole.repositories.ground_unattended_repository import (
 from netconsole.services.ground_unattended.timeline import (
     GroundUnattendedTimelineCorrelator,
 )
-from netconsole.services.ground_unattended.syslog_runtime import RawStreamWriter
+from netconsole.services.ground_unattended.syslog_runtime import (
+    RawCompressionWorker,
+    RawStreamWriter,
+)
 
 
 @dataclass(frozen=True)
@@ -217,10 +221,12 @@ class FleetPingSupervisor:
         repository: GroundUnattendedRepository,
         site_id: str,
         runner: Callable[..., Iterator[FpingV5Sample]] = run_fping_v5_json,
+        sample_callback: Callable[[FleetPingTarget, FpingV5Sample], None] | None = None,
     ) -> None:
         self.repository = repository
         self.site_id = site_id
         self.runner = runner
+        self.sample_callback = sample_callback
         self._lock = threading.RLock()
         self._workers: dict[str, _ShardWorker] = {}
         self._targets: dict[str, FleetPingTarget] = {}
@@ -244,6 +250,11 @@ class FleetPingSupervisor:
         self._transition_at: dict[str, str] = {}
         self._backend_warnings: list[str] = []
         self._raw_writer: RawStreamWriter | None = None
+        self._raw_compressor: RawCompressionWorker | None = None
+        self._sample_times: deque[float] = deque(maxlen=4096)
+        self._last_sample_at = ""
+        self._latest_samples: dict[str, tuple[str, float | None]] = {}
+        self._last_sample_write_duration_ms = 0.0
 
     def start(
         self,
@@ -264,8 +275,10 @@ class FleetPingSupervisor:
             stop_result = self.stop()
             if not stop_result["success"]:
                 raise RuntimeError(
-                    "previous fleet ping workers did not stop: "
+                    "previous fleet ping resources did not stop: "
                     + ", ".join(stop_result["alive_worker_ids"])
+                    + (" raw compression" if not stop_result.get("compression_stopped", True) else "")
+                    + (" raw metadata" if not stop_result.get("metadata_persisted", True) else "")
                 )
         self._recover_open_segments(run_id)
         persisted_run = self.repository.get_run(run_id) or {}
@@ -279,6 +292,10 @@ class FleetPingSupervisor:
             self._buckets = {}
             self._dirty_buckets = set()
             self._sample_count = int(persisted_run.get("ping_sample_count") or 0)
+            self._sample_times.clear()
+            self._last_sample_at = ""
+            self._latest_samples.clear()
+            self._last_sample_write_duration_ms = 0.0
             self._persisted_target_stats = {
                 str(row.get("target_ip") or ""): self._stats_from_summary(row)
                 for row in persisted_daily
@@ -292,7 +309,7 @@ class FleetPingSupervisor:
             (self._output_dir / "layout.jsonl").write_text(
                 json.dumps(
                     {
-                        "schema": "ground_unattended_ping_per_mr_v1",
+                        "schema": "ground_unattended_ping_per_mr_v2",
                         "run_id": run_id,
                         "generated_at": datetime.now()
                         .astimezone()
@@ -302,6 +319,9 @@ class FleetPingSupervisor:
                 )
                 + "\n",
                 encoding="utf-8",
+            )
+            self._raw_compressor = RawCompressionWorker(
+                repository=self.repository, run_id=run_id, data_type="ping",
             )
             self._raw_writer = RawStreamWriter(
                 root=Path(active_dir),
@@ -313,6 +333,8 @@ class FleetPingSupervisor:
                 directory_name="fleet_ping",
                 flush_records=100,
                 flush_interval_seconds=1.0,
+                max_file_size_bytes=10 * 1024 * 1024,
+                compression_worker=self._raw_compressor,
             )
             self._period_ms = int(period_ms)
             self._timeout_ms = int(timeout_ms)
@@ -391,10 +413,9 @@ class FleetPingSupervisor:
             self._flush_summaries_locked()
 
     def _flush_summaries_locked(self) -> None:
-        if not self._run_id or not self._dirty_buckets:
+        if not self._run_id:
             return
         now = datetime.now().astimezone().isoformat(timespec="milliseconds")
-        flushed = set()
         for key in tuple(self._dirty_buckets):
             kind, bucket_start, target_ip, ap_identity = key
             target = self._targets.get(target_ip)
@@ -407,8 +428,23 @@ class FleetPingSupervisor:
                     kind, bucket_start, bucket_end, target, ap_identity, stats, now
                 )
             )
-            flushed.add(key)
-        self._dirty_buckets.difference_update(flushed)
+            # A later write failure must not make already persisted buckets dirty again.
+            self._dirty_buckets.discard(key)
+        # Retain one current bucket per target/kind, rather than a day's worth of
+        # minute/AP windows. Late samples reload their persisted totals on demand.
+        latest: dict[tuple[str, str], tuple[str, str, str, str]] = {}
+        for key in self._buckets:
+            kind, start, target_ip, _ = key
+            group = (kind, target_ip)
+            previous = latest.get(group)
+            if previous is None or start >= previous[1]:
+                latest[group] = key
+        keep = set(latest.values())
+        for key in tuple(self._buckets):
+            if key not in self._dirty_buckets and (
+                key[2] not in self._targets or key not in keep
+            ):
+                del self._buckets[key]
 
     def stop(self) -> dict[str, Any]:
         with self._lock:
@@ -436,9 +472,6 @@ class FleetPingSupervisor:
             if self._correlator:
                 self._correlator.close()
             self._correlator = None
-            self._targets = {}
-            self._transition_at = {}
-            self._run_id = ""
             closed_file_count = (
                 self._raw_writer.open_file_count
                 if self._raw_writer is not None
@@ -446,7 +479,36 @@ class FleetPingSupervisor:
             )
             if self._raw_writer is not None:
                 self._raw_writer.close()
+            metadata_persisted = (
+                self._raw_writer.flush_metadata(timeout=5)
+                if self._raw_writer is not None else True
+            )
+            compression_stopped = (
+                self._raw_compressor.stop(timeout=5)
+                if self._raw_compressor is not None else True
+            )
+            compression = (
+                self._raw_compressor.snapshot()
+                if self._raw_compressor is not None else {}
+            )
+            if not metadata_persisted or not compression_stopped:
+                return {
+                    "success": False,
+                    "worker_count": len(workers),
+                    "stopped_worker_count": len(workers),
+                    "alive_worker_ids": [],
+                    "fping_processes_exited": True,
+                    "sample_count": self._sample_count,
+                    "closed_file_count": closed_file_count,
+                    "metadata_persisted": metadata_persisted,
+                    "compression_stopped": compression_stopped,
+                    **compression,
+                }
+            self._targets = {}
+            self._transition_at = {}
+            self._run_id = ""
             self._raw_writer = None
+            self._raw_compressor = None
         return {
             "success": True,
             "worker_count": len(workers),
@@ -455,7 +517,28 @@ class FleetPingSupervisor:
             "fping_processes_exited": True,
             "sample_count": self.sample_count,
             "closed_file_count": closed_file_count,
+            "metadata_persisted": metadata_persisted,
+            "compression_stopped": compression_stopped,
+            **compression,
         }
+
+    def latest_mr_rtts(self, run_id: str) -> dict[str, float | None]:
+        """Read actual latest observations, bounded to active targets and this run."""
+        with self._lock:
+            if run_id != self._run_id:
+                return {}
+            latest: dict[str, tuple[str, float | None]] = {}
+            now = datetime.now().astimezone()
+            for address, target in self._targets.items():
+                observation = self._latest_samples.get(address)
+                if observation is None:
+                    continue
+                observed = _parse_sample_ts(observation[0])
+                if (now - observed).total_seconds() > max(10.0, self._timeout_ms / 500.0):
+                    continue
+                if target.mr_id not in latest or observation[0] > latest[target.mr_id][0]:
+                    latest[target.mr_id] = observation
+            return {key: value[1] for key, value in latest.items()}
 
     def target_summaries(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -503,6 +586,27 @@ class FleetPingSupervisor:
         with self._lock:
             return len(self._workers)
 
+    @property
+    def sample_rate_per_second(self) -> float:
+        with self._lock:
+            cutoff = time.monotonic() - 1.0
+            return float(sum(value >= cutoff for value in self._sample_times))
+
+    @property
+    def last_sample_at(self) -> str:
+        with self._lock:
+            return self._last_sample_at
+
+    @property
+    def last_sample_write_duration_ms(self) -> float:
+        with self._lock:
+            return self._last_sample_write_duration_ms
+
+    @property
+    def worker_warnings(self) -> list[str]:
+        with self._lock:
+            return list(self._backend_warnings)
+
     def _reconcile_shards(self, addresses: tuple[str, ...]) -> None:
         with self._lock:
             planned = self._plan_shards(addresses)
@@ -531,7 +635,7 @@ class FleetPingSupervisor:
                 self.repository.add_event(
                     run_id=self._run_id,
                     event_type="ping_shard_restarted",
-                    title="长 Ping 分片已按目标变化重建",
+                    title="心跳检测分片已按目标变化重建",
                     details={"shard_id": shard_id, "targets": list(worker.targets)},
                 )
 
@@ -626,7 +730,6 @@ class FleetPingSupervisor:
         started_event: threading.Event,
     ) -> None:
         started_event.set()
-        parsed = 0
         try:
             for sample in self.runner(
                 target="",
@@ -637,67 +740,28 @@ class FleetPingSupervisor:
                 count_json=None,
                 stop_event=stop_event,
             ):
-                parsed += 1
                 self._record_sample(sample, shard_id)
-            if not stop_event.is_set() and parsed == 0 and len(targets) > 1:
-                self._bounded_single_target_fallback(
-                    targets, stop_event, shard_id
-                )
+            if not stop_event.is_set():
+                raise RuntimeError("fping sample stream ended unexpectedly")
         except Exception as exc:
+            if stop_event.is_set():
+                return
             self.repository.add_event(
                 run_id=self._run_id,
                 event_type="ping_shard_failed",
                 severity="error",
-                title="长 Ping 分片运行失败",
+                title="心跳检测分片运行失败",
                 message=f"{exc.__class__.__name__}: {exc}",
                 details={"shard_id": shard_id, "target_count": len(targets)},
             )
-            if not stop_event.is_set() and len(targets) > 1:
-                self._bounded_single_target_fallback(
-                    targets, stop_event, shard_id
-                )
-
-    def _bounded_single_target_fallback(
-        self, targets, stop_event, shard_id
-    ) -> None:
-        warning = f"{shard_id}: multi-target JSON unavailable; bounded round-robin fallback active"
-        with self._lock:
-            if warning not in self._backend_warnings:
-                self._backend_warnings.append(warning)
-        self.repository.add_event(
-            run_id=self._run_id,
-            event_type="ping_fallback_enabled",
-            severity="warning",
-            title="长 Ping 已进入有界兼容模式",
-            message="当前 fping 多目标 JSON 不可用；每个分片仅保留一个轮询进程，不会按 MR 无上限创建进程。",
-            details={"shard_id": shard_id, "target_count": len(targets)},
-        )
-        while not stop_event.is_set():
-            for address in targets:
-                if stop_event.is_set():
-                    return
-                try:
-                    for sample in self.runner(
-                        target=address,
-                        period_ms=self._period_ms,
-                        timeout_ms=self._timeout_ms,
-                        packet_size=self._packet_size,
-                        count_json=1,
-                        stop_event=stop_event,
-                    ):
-                        raw = dict(sample.raw)
-                        raw["fallback"] = True
-                        sample = FpingV5Sample(
-                            **{
-                                **sample.__dict__,
-                                "backend": "fping_v5_json_single_target_fallback",
-                                "raw": raw,
-                            }
-                        )
-                        self._record_sample(sample, shard_id)
-                except Exception:
-                    if stop_event.wait(min(1.0, self._period_ms / 1000)):
-                        return
+            self.repository.add_health_event(
+                run_id=self._run_id,
+                component="heartbeat",
+                severity="error",
+                code="HEARTBEAT_SHARD_FAILED",
+                message=f"{exc.__class__.__name__}: {exc}",
+                details={"shard_id": shard_id, "target_count": len(targets)},
+            )
 
     def _record_sample(
         self, sample: FpingV5Sample, shard_id: str
@@ -708,6 +772,8 @@ class FleetPingSupervisor:
                 return
             ts = _parse_sample_ts(sample.ts)
             self._sample_count += 1
+            self._sample_times.append(time.monotonic())
+            self._last_sample_at = ts.isoformat(timespec="milliseconds")
             activation_started_at = self._started_at.get(sample.target, "")
             warmup_ignored = self._is_warmup(ts, activation_started_at)
             transition_context = self._transition_context(
@@ -758,10 +824,18 @@ class FleetPingSupervisor:
                 "target_activation_started_at": activation_started_at,
             }
             if self._raw_writer is not None:
+                write_started = time.monotonic()
                 self._raw_writer.write(payload, ts)
+                self._last_sample_write_duration_ms = (
+                    time.monotonic() - write_started
+                ) * 1000.0
             self._stats.setdefault(sample.target, _Stats()).add(
                 sample, ignored=warmup_ignored
             )
+            if not warmup_ignored:
+                self._latest_samples[sample.target] = (ts.isoformat(), sample.rtt_ms if sample.ok else None)
+                for removed_address in self._latest_samples.keys() - self._targets.keys():
+                    self._latest_samples.pop(removed_address, None)
             for kind, bucket_start, ap_identity in self._bucket_keys(ts, target):
                 key = (kind, bucket_start, sample.target, ap_identity)
                 stats = self._buckets.get(key)
@@ -783,6 +857,19 @@ class FleetPingSupervisor:
                     "ap_transition_at": self._transition_at.get(sample.target, ""),
                 }
                 self._correlator.correlate(payload, context)
+            callback = self.sample_callback
+            if callback is not None:
+                try:
+                    callback(target, sample)
+                except Exception as exc:
+                    self.repository.add_event(
+                        run_id=self._run_id,
+                        event_type="heartbeat_sample_callback_failed",
+                        severity="error",
+                        title="心跳样本状态更新失败",
+                        message=f"{exc.__class__.__name__}: {exc}",
+                        details={"target_ip": sample.target, "mr_id": target.mr_id},
+                    )
 
     def _bucket_keys(self, ts: datetime, target: FleetPingTarget):
         minute = ts.replace(second=0, microsecond=0)

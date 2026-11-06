@@ -29,3 +29,17 @@ def test_feature_registry_uses_business_domain_groups(
     expected_group: str,
 ) -> None:
     assert group_id_of(feature_id) == expected_group
+
+
+def test_ground_v2_tabs_and_actions_share_authority_and_localized_titles() -> None:
+    from netconsole.core.feature_registry import FEATURE_BY_ID
+    from netconsole.core.i18n import TRANSLATIONS
+
+    children = [item for item in FEATURE_BY_ID.values() if item.parent_id == "module.ground_unattended"]
+    assert len([item for item in children if item.item_type == "tab"]) == 10
+    assert {item.feature_id for item in children if item.item_type == "action"} == {
+        "capability.ground_unattended.quick_ping", "capability.ground_unattended.history_export",
+    }
+    for item in children:
+        for language in ("zh_CN", "en_US"):
+            assert item.title_key in TRANSLATIONS[language]

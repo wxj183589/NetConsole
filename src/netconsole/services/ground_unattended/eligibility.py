@@ -181,29 +181,13 @@ class GroundUnattendedEligibilityClassifier:
                 ping_depot_trains_enabled=ping_depot_trains_enabled,
             )
             endpoints = self._endpoints(base_mrs, online_rows)
-            has_online_endpoint = any(
-                item.online_status == "ONLINE" for item in endpoints
-            )
             has_ping_target = any(
                 item.ping_target_eligible for item in endpoints
             )
-            if (
-                decision.status
-                not in {"AC_UNKNOWN", "AC_STALE", "OFFLINE"}
-                and not has_online_endpoint
-            ):
-                decision = EligibilityDecision(
-                    status="OFFLINE",
-                    reason="当前没有在线 MR",
-                    location_class=(
-                        decision.location_class
-                        if decision.location_class != "UNKNOWN"
-                        else "OFFLINE"
-                    ),
-                    ping_exclusion_reason="当前没有在线 MR",
-                    deep_exclusion_reason="当前没有在线 MR",
-                )
-            elif not has_ping_target and decision.ping_eligible:
+            # Heartbeat targets come from base-data MR addresses. AC is only a
+            # supplemental state source, so a missing/stale/offline AC row must
+            # never turn a configured MR into an ineligible heartbeat target.
+            if not has_ping_target and decision.ping_eligible:
                 address_reason = next(
                     (
                         item.ping_exclusion_reason
@@ -662,17 +646,17 @@ class GroundUnattendedEligibilityClassifier:
             if ping_depot_trains_enabled:
                 return EligibilityDecision(
                     status,
-                    f"{location_reason}；已启用车辆段长 Ping",
+                    f"{location_reason}；已启用车辆段 AC 辅助定位，基础资料心跳检测继续",
                     location_class,
                     ping_eligible=True,
-                    ping_inclusion_reason="已启用车辆段长 Ping",
+                    ping_inclusion_reason="已启用车辆段 AC 辅助定位，基础资料心跳检测继续",
                     deep_exclusion_reason="场段列车不参与深度采集",
                 )
             return EligibilityDecision(
                 status,
                 location_reason,
                 location_class,
-                ping_exclusion_reason="未启用车辆段长 Ping",
+                ping_exclusion_reason="未启用车辆段 AC 辅助定位，基础资料心跳检测继续",
                 deep_exclusion_reason="场段列车不参与深度采集",
             )
         if location_class == "UNKNOWN":
@@ -693,13 +677,13 @@ class GroundUnattendedEligibilityClassifier:
                 status,
                 location_reason,
                 location_class,
-                ping_exclusion_reason="当前位置不参与正线长 Ping",
+                ping_exclusion_reason="当前位置不参与正线 AC 辅助定位，基础资料心跳检测继续",
                 deep_exclusion_reason="当前位置不参与深度采集",
             )
         if same_ap_seconds >= stationary_seconds:
             return EligibilityDecision(
                 "MAINLINE_STATIONARY",
-                f"同一正线 AP 连续停留 {same_ap_seconds // 60} 分钟，长 Ping 继续、暂停新的深度采集",
+                f"同一正线 AP 连续停留 {same_ap_seconds // 60} 分钟，心跳检测继续、暂停新的深度采集",
                 "MAINLINE",
                 mainline_eligible=True,
                 ping_eligible=True,
@@ -835,19 +819,28 @@ class GroundUnattendedEligibilityClassifier:
                 if ac
                 else ""
             )
+            backup_management_ip = str(
+                getattr(base, "backup_management_ip", "") or ""
+            ).strip()
             online_status = (
                 str(ac.online_status or "unknown").upper()
                 if ac
                 else "UNKNOWN"
             )
             address_valid = _valid_management_ip(management_ip)
-            ping_target_eligible = (
-                online_status == "ONLINE" and address_valid
-            )
+            backup_valid = _valid_management_ip(backup_management_ip)
+            # The backup route is monitored only when base data explicitly
+            # marks it as an active monitoring address. Existing records retain
+            # the safe PRIMARY_ONLY default.
+            backup_strategy = str(
+                getattr(base, "backup_monitoring_strategy", "MONITOR")
+                or "MONITOR"
+            ).upper()
+            backup_monitoring = bool(backup_management_ip) and backup_strategy == "MONITOR"
+            ping_target_eligible = address_valid
+            backup_ping_target_eligible = backup_valid and backup_monitoring
             ping_exclusion_reason = ""
-            if online_status != "ONLINE":
-                ping_exclusion_reason = f"{endpoint} 当前不在线"
-            elif not management_ip:
+            if not management_ip:
                 ping_exclusion_reason = f"{endpoint} 未配置管理 IP"
             elif not address_valid:
                 ping_exclusion_reason = f"{endpoint} 管理 IP 无效"
@@ -864,6 +857,9 @@ class GroundUnattendedEligibilityClassifier:
                     mr_name=(base.name if base else ac.mr_name if ac else ""),
                     device_id=base.device_id if base else None,
                     management_ip=management_ip,
+                    backup_management_ip=backup_management_ip,
+                    backup_monitoring_strategy=backup_strategy,
+                    backup_ping_target_eligible=backup_ping_target_eligible,
                     online_status=online_status,
                     ping_target_eligible=ping_target_eligible,
                     ping_exclusion_reason=ping_exclusion_reason,

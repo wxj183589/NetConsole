@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.models.api.ac_mesh_link import (
+    AcMeshApPageDTO,
     AcMeshLinkPageDTO,
     AcMeshLinkSummaryDTO,
     AcMeshMrDetailDTO,
@@ -136,6 +137,11 @@ def mrs(
     page_size: int = Query(default=50, ge=1, le=200),
     sort_by: str = Query(default="train_no", max_length=30),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
+    car_end: str = Query(default="", pattern="^(|CT|CW)$"),
+    data_status: str = Query(default="", pattern="^(|fresh|recent|stale|unknown|error|no_data)$"),
+    match_status: str = Query(default="", pattern="^(|matched|unmatched|conflict)$"),
+    multiple_peers: bool = False,
+    abnormal_only: bool = False,
 ) -> AcMeshMrPageDTO:
     return _query(
         lambda: _service(request).list_mrs(
@@ -153,6 +159,11 @@ def mrs(
             page_size=page_size,
             sort_by=sort_by,
             sort_order=sort_order,
+            car_end=car_end,
+            data_status=data_status,
+            match_status=match_status,
+            multiple_peers=multiple_peers,
+            abnormal_only=abnormal_only,
         )
     )
 
@@ -180,9 +191,20 @@ def unmatched_links(
     )
 
 
+@router.get("/peer-aps", response_model=AcMeshApPageDTO, deprecated=True)
+def peer_aps(request: Request, query: str = Query(default="", max_length=200),
+             station: str = Query(default="", max_length=100), section: str = Query(default="", max_length=100),
+             page: int = Query(default=1, ge=1), page_size: int = Query(default=50, ge=1, le=200)) -> AcMeshApPageDTO:
+    return _query(lambda: _service(request).list_peer_aps(_site_id(request), query=query, station=station,
+                                                        section=section, page=page, page_size=page_size))
+
+
 @router.get("/mrs/{mr_id}", response_model=AcMeshMrDetailDTO, deprecated=True)
-def mr_detail(request: Request, mr_id: str) -> AcMeshMrDetailDTO:
-    result = _query(lambda: _service(request).get_mr_link_detail(_site_id(request), mr_id))
+def mr_detail(request: Request, mr_id: str, start_time: str = Query(default="", max_length=40),
+              end_time: str = Query(default="", max_length=40), page: int = Query(default=1, ge=1),
+              page_size: int = Query(default=100, ge=1, le=200)) -> AcMeshMrDetailDTO:
+    result = _query(lambda: _service(request).get_mr_link_detail(_site_id(request), mr_id,
+        start_time=start_time, end_time=end_time, page=page, page_size=page_size))
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="车载 MR 不存在")
     return result

@@ -4,6 +4,7 @@ import json
 import time
 import traceback
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
@@ -12,6 +13,7 @@ from netconsole.backend.api.feature_access import require_feature
 from netconsole.core import app_logger
 from netconsole.models.api.ground_unattended import (
     GroundActionResponseDTO,
+    GroundHistoryExportRequestDTO,
     GroundArchiveDTO,
     GroundArchiveDetailDTO,
     GroundArchiveDeleteRequestDTO,
@@ -20,6 +22,8 @@ from netconsole.models.api.ground_unattended import (
     GroundDeepCollectionPageDTO,
     GroundDeepCollectionRecordPageDTO,
     GroundHealthDTO,
+    GroundHeartbeatPageDTO,
+    GroundMrMonitoringDTO,
     GroundInventorySummaryDTO,
     GroundMrRuntimeStatusPageDTO,
     GroundPingSummaryPageDTO,
@@ -30,6 +34,7 @@ from netconsole.models.api.ground_unattended import (
     GroundRunPageDTO,
     GroundRunDeleteRequestDTO,
     GroundSyslogRecordPageDTO,
+    GroundDeepTaskPageDTO,
     GroundSyslogDeleteAcceptedDTO,
     GroundSyslogDeletePreviewDTO,
     GroundSyslogDeletePreviewRequestDTO,
@@ -43,12 +48,19 @@ from netconsole.models.api.ground_unattended import (
     GroundUnattendedStatusDTO,
     GroundUnattendedTrainDTO,
     GroundUnattendedTrainPageDTO,
+    GroundQuickPingPageDTO,
+    GroundQuickPingRunDTO,
+    GroundQuickPingSamplePageDTO,
+    GroundHistoryPageDTO,
+    GroundQuickPingStartRequestDTO,
 )
 from netconsole.services.ground_unattended.application_service import (
     GroundUnattendedApplicationService,
     GroundUnattendedError,
 )
 from netconsole.models.api.system_maintenance import DesktopActionDTO
+from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
+from netconsole.application.rail_transit.web_application_service import RailTransitWebError
 
 
 router = APIRouter(
@@ -87,6 +99,20 @@ def _site_id(request: Request) -> str:
     return _service(request).current_site_id()
 
 
+@router.post(
+    "/history/export", response_model=RailTransitTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("capability.ground_unattended.history_export"))],
+)
+def export_history(request: Request, payload: GroundHistoryExportRequestDTO) -> RailTransitTaskDTO:
+    try:
+        return request.app.state.rail_transit_web_application_service.start_ground_history_export(
+            _site_id(request), filters=payload.model_dump(),
+        )
+    except RailTransitWebError as exc:
+        raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
 @router.get("/status", response_model=GroundUnattendedStatusDTO)
 def get_status(request: Request) -> GroundUnattendedStatusDTO:
     return _call(lambda: _service(request).status(_site_id(request)))
@@ -95,6 +121,19 @@ def get_status(request: Request) -> GroundUnattendedStatusDTO:
 @router.get("/profile", response_model=GroundUnattendedProfileDTO)
 def get_profile(request: Request) -> GroundUnattendedProfileDTO:
     return _call(lambda: _service(request).get_profile(_site_id(request)))
+
+
+@router.get("/heartbeat", response_model=GroundHeartbeatPageDTO)
+def get_heartbeat(request: Request, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False,
+                  page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)) -> GroundHeartbeatPageDTO:
+    return _call(lambda: _service(request).heartbeat(_site_id(request), run_id=run_id, query=query, status=status,
+                                                    station=station, abnormal_only=abnormal_only, page=page, page_size=page_size))
+
+
+@router.get("/mr/{mr_uuid}/monitoring", response_model=GroundMrMonitoringDTO)
+def get_mr_monitoring(request: Request, mr_uuid: str, run_id: str = "", start_time: str = "", end_time: str = "") -> GroundMrMonitoringDTO:
+    return _call(lambda: _service(request).mr_monitoring(_site_id(request), mr_uuid=mr_uuid, run_id=run_id,
+                                                        start_time=start_time, end_time=end_time))
 
 
 @router.put("/profile", response_model=GroundUnattendedProfileDTO)
@@ -148,6 +187,96 @@ def stop(request: Request) -> GroundActionResponseDTO:
 )
 def stop_and_archive(request: Request) -> GroundActionResponseDTO:
     return _call(lambda: _service(request).stop(_site_id(request), archive=True))
+
+
+@router.post(
+    "/quick-ping",
+    response_model=GroundQuickPingRunDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("capability.ground_unattended.quick_ping"))],
+)
+def start_quick_ping(
+    request: Request,
+    payload: GroundQuickPingStartRequestDTO,
+) -> GroundQuickPingRunDTO:
+    return _call(lambda: _service(request).quick_ping_start(_site_id(request), payload))
+
+
+@router.get("/quick-ping", response_model=GroundQuickPingPageDTO)
+def list_quick_ping(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    start_time: str = Query(default="", max_length=64),
+    end_time: str = Query(default="", max_length=64),
+    query: str = Query(default="", max_length=255),
+    state: str = Query(default="", max_length=32),
+    train_id: str = Query(default="", max_length=255),
+    mr_id: str = Query(default="", max_length=255),
+    mr_role: str = Query(default="", max_length=10),
+) -> GroundQuickPingPageDTO:
+    return _call(lambda: _service(request).quick_ping_list(
+        _site_id(request), limit=limit, offset=offset, start_time=start_time,
+        end_time=end_time, query=query, state=state, train_id=train_id, mr_id=mr_id, mr_role=mr_role,
+    ))
+
+
+@router.get("/quick-ping/{run_id}/samples", response_model=GroundQuickPingSamplePageDTO)
+def quick_ping_samples(
+    request: Request, run_id: str,
+    target_ip: str = Query(default="", max_length=255),
+    start_time: str = Query(default="", max_length=64),
+    end_time: str = Query(default="", max_length=64),
+    limit: int = Query(default=1000, ge=1, le=2000),
+    cursor: str = Query(default="", max_length=512),
+) -> GroundQuickPingSamplePageDTO:
+    return _call(lambda: _service(request).quick_ping_samples(
+        _site_id(request), run_id, target_ip=target_ip, start_time=start_time,
+        end_time=end_time, limit=limit, cursor=cursor,
+    ))
+
+
+@router.get("/quick-ping/{run_id}", response_model=GroundQuickPingRunDTO)
+def get_quick_ping(request: Request, run_id: str) -> GroundQuickPingRunDTO:
+    return _call(lambda: _service(request).quick_ping_status(_site_id(request), run_id))
+
+
+@router.get("/history", response_model=GroundHistoryPageDTO)
+def history(
+    request: Request,
+    data_type: str = Query(default="", max_length=32),
+    run_id: str = Query(default="", max_length=255),
+    train_id: str = Query(default="", max_length=255),
+    mr_id: str = Query(default="", max_length=255),
+    mr_role: str = Query(default="", max_length=10),
+    event_type: str = Query(default="", max_length=100),
+    start_at: str = Query(default="", max_length=64),
+    end_at: str = Query(default="", max_length=64),
+    sort_order: Literal["asc", "desc"] = "desc",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+) -> GroundHistoryPageDTO:
+    return _call(lambda: _service(request).history(
+        _site_id(request), data_type=data_type, run_id=run_id, train_id=train_id, mr_id=mr_id,
+        mr_role=mr_role, event_type=event_type, start_at=start_at, end_at=end_at,
+        page=page, page_size=page_size, sort_order=sort_order,
+    ))
+
+
+@router.post(
+    "/quick-ping/{run_id}/stop",
+    response_model=GroundQuickPingRunDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("capability.ground_unattended.quick_ping"))],
+)
+def stop_quick_ping(request: Request, run_id: str) -> GroundQuickPingRunDTO:
+    return _call(lambda: _service(request).quick_ping_stop(_site_id(request), run_id))
+
+
+@router.post("/quick-ping/{run_id}/targets/{target_ip}/stop", response_model=GroundQuickPingRunDTO,
+             dependencies=[Depends(require_feature("capability.ground_unattended.quick_ping"))])
+def stop_quick_ping_target(request: Request, run_id: str, target_ip: str) -> GroundQuickPingRunDTO:
+    return _call(lambda: _service(request).quick_ping_stop_target(_site_id(request), run_id, target_ip))
 
 
 @router.get("/trains", response_model=GroundUnattendedTrainPageDTO)
@@ -451,6 +580,7 @@ def syslog_records(
     end_time: str = Query(default="", max_length=100),
     page: int = Query(default=1, ge=1, le=200),
     page_size: int = Query(default=100, ge=1, le=500),
+    sort_order: Literal["asc", "desc"] = "desc",
 ) -> GroundSyslogRecordPageDTO:
     request_id = uuid.uuid4().hex
     started = time.monotonic()
@@ -521,6 +651,7 @@ def syslog_records(
             end_time=end_time,
             page=page,
             page_size=page_size,
+            sort_order=sort_order,
         )
         diagnostics = result.diagnostics
         response.headers["X-Request-ID"] = request_id
@@ -674,6 +805,10 @@ def timeline(
     train_id: str = Query(default="", max_length=100),
     event_type: str = Query(default="", max_length=100),
     query: str = Query(default="", max_length=500),
+    mr_id: str = Query(default="", max_length=100),
+    mr_role: str = Query(default="", pattern="^(CT|CW)?$"),
+    start_at: str = Query(default="", max_length=64),
+    end_at: str = Query(default="", max_length=64),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
 ) -> GroundTimelinePageDTO:
@@ -684,10 +819,35 @@ def timeline(
             train_id=train_id,
             event_type=event_type,
             query=query,
+            mr_id=mr_id,
+            mr_role=mr_role,
+            start_at=start_at,
+            end_at=end_at,
             page=page,
             page_size=page_size,
         )
     )
+
+
+@router.get("/deep-collections/tasks", response_model=GroundDeepTaskPageDTO)
+def deep_tasks(
+    request: Request,
+    run_id: str = Query(default="", max_length=100),
+    train_id: str = Query(default="", max_length=100),
+    mr_role: str = Query(default="", max_length=20),
+    state: str = Query(default="", max_length=30),
+    query: str = Query(default="", max_length=200),
+    start_at: str = Query(default="", max_length=100),
+    end_at: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    ascending: bool = False,
+) -> GroundDeepTaskPageDTO:
+    return _call(lambda: _service(request).deep_tasks(
+        _site_id(request), run_id=run_id, train_id=train_id, mr_role=mr_role,
+        state=state, query=query, start_at=start_at, end_at=end_at,
+        page=page, page_size=page_size, ascending=ascending,
+    ))
 
 
 @router.get("/deep-collections", response_model=GroundDeepCollectionPageDTO)
@@ -709,6 +869,7 @@ def deep_collection_records(
     train_id: str = Query(default="", max_length=100),
     mr_id: str = Query(default="", max_length=100),
     mr_role: str = Query(default="", max_length=20),
+    operation_id: str = Query(default="", max_length=100),
     category: str = Query(default="ALL", max_length=30),
     keyword: str = Query(default="", max_length=500),
     cursor: str = Query(default="", max_length=20_000),
@@ -721,6 +882,7 @@ def deep_collection_records(
             train_id=train_id,
             mr_id=mr_id,
             mr_role=mr_role,
+            operation_id=operation_id,
             category=category,
             keyword=keyword,
             cursor=cursor,

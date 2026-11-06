@@ -555,6 +555,8 @@ export interface VehicleMr {
   physical_end: 'car_1_end' | 'car_6_end' | 'unknown'
   car_number: number | null
   management_ip: string
+  backup_management_ip?: string
+  backup_monitoring_strategy?: 'MONITOR' | 'FAILOVER_ONLY' | 'DISABLED'
   station: string
   mac: string
   protocol: string

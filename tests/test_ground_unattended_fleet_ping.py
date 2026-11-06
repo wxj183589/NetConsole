@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timedelta
+from unittest.mock import Mock
 
 import pytest
 
@@ -30,6 +32,68 @@ def test_fping_runner_keeps_single_target_and_supports_multiple_targets(
     assert single[-1:] == ["192.0.2.1"]
     assert multiple[-2:] == ["192.0.2.1", "192.0.2.2"]
     assert multiple.count("-l") == 1
+
+
+def test_fping_shard_failure_reports_health_without_serial_fallback() -> None:
+    repository = Mock()
+    runner = Mock(side_effect=RuntimeError("process exited"))
+    fleet = FleetPingSupervisor(repository=repository, site_id="site-a", runner=runner)
+    fleet._run_id = "run-1"
+
+    fleet._worker_loop(
+        "shard-1", "generation", ("192.0.2.1", "192.0.2.2"),
+        threading.Event(), threading.Event(),
+    )
+
+    assert runner.call_count == 1
+    assert repository.add_event.call_args.kwargs["event_type"] == "ping_shard_failed"
+    assert repository.add_health_event.call_args.kwargs["code"] == "HEARTBEAT_SHARD_FAILED"
+
+
+def test_400_ip_mock_fleet_has_bounded_shards_and_stops(tmp_path) -> None:
+    def runner(*, targets, stop_event, **kwargs):
+        for target in targets:
+            yield FpingV5Sample(
+                ts=datetime.now().astimezone().isoformat(), target=target, seq=1,
+                ok=True, rtt_ms=1.0, timeout_ms=kwargs["timeout_ms"],
+                size=kwargs["packet_size"], error="", backend=BACKEND,
+                raw_type="response", raw={},
+            )
+        stop_event.wait(30)
+
+    repo = GroundUnattendedRepository(tmp_path / "ground" / "index.sqlite", site_id="site-a")
+    fleet = FleetPingSupervisor(repository=repo, site_id="site-a", runner=runner)
+    fleet.start(
+        run_id="400-ip", run_date="2026-01-01", active_dir=tmp_path / "ground" / "active",
+        period_ms=1000, timeout_ms=4000, packet_size=64, shard_size=20,
+        correlation_tolerance_seconds=15, switch_before_seconds=5, switch_after_seconds=5,
+    )
+    try:
+        fleet.update_targets([
+            _target(f"192.0.{index // 254 + 2}.{index % 254 + 1}", f"train-{index}", "CT")
+            for index in range(400)
+        ])
+        _wait_until(lambda: fleet.sample_count == 400, timeout=20)
+        assert fleet.process_count == 20
+        assert len(fleet.target_summaries()) == 400
+        assert len(fleet._sample_times) <= 4096
+        assert not fleet.worker_warnings
+    finally:
+        result = fleet.stop()
+    assert result["success"] is True
+    assert fleet.process_count == 0
+    assert result["sample_count"] == 400
+
+
+def test_fping_runner_optional_global_interval_keeps_legacy_args_unchanged(tmp_path) -> None:
+    legacy = build_fping_v5_args(tmp_path / "fping.exe", "192.0.2.1", 200, 1000, 64)
+    throttled = build_fping_v5_args(
+        tmp_path / "fping.exe", "192.0.2.1", 200, 1000, 64, interval_ms=32
+    )
+
+    assert "-i" not in legacy
+    assert throttled[throttled.index("-i") + 1] == "32"
+    assert throttled[throttled.index("-p") + 1] == "200"
 
 
 def test_fleet_ping_dynamic_targets_rotation_summaries_and_stop(tmp_path) -> None:
@@ -214,6 +278,53 @@ def test_fleet_ping_only_marks_real_ap_changes_as_transition(tmp_path) -> None:
         for row in _timeline_rows(active)
         if row.get("record_type") == "correlation"
     )
+
+
+def test_fleet_hour_segments_compress_and_stop_timeout_keeps_run_for_retry(tmp_path, monkeypatch) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "ground" / "index.sqlite", site_id="site-a")
+    fleet = FleetPingSupervisor(repository=repository, site_id="site-a", runner=_idle_runner)
+    options = dict(
+        run_date="2026-07-25", active_dir=repository.db_path.parent / "active" / "2026-07-25",
+        period_ms=1000, timeout_ms=4000, packet_size=64, shard_size=12,
+        correlation_tolerance_seconds=15, switch_before_seconds=5, switch_after_seconds=5,
+    )
+    fleet.start(run_id="compression-stop", **options)
+    target = _target("192.0.2.10", "train-1", "CT")
+    compressor = fleet._raw_compressor
+    assert compressor is not None
+    real_stop = compressor.stop
+    try:
+        fleet.update_targets([target])
+        assert fleet._raw_writer.max_file_size_bytes == 10 * 1024 * 1024
+        for seq, hour in enumerate((10, 11), start=1):
+            fleet._record_sample(FpingV5Sample(
+                ts=f"2026-07-25T{hour}:00:00+08:00", target=target.target_ip,
+                seq=seq, ok=True, rtt_ms=2.0, timeout_ms=4000, size=64,
+                error="", backend=BACKEND, raw_type="response", raw={},
+            ), "mock-shard")
+        monkeypatch.setattr(compressor, "stop", lambda timeout: False)
+        incomplete = fleet.stop()
+        assert not incomplete["success"]
+        assert incomplete["fping_processes_exited"]
+        assert not incomplete["compression_stopped"]
+        assert fleet._run_id == "compression-stop"
+        assert fleet._raw_writer is not None
+        assert fleet._raw_compressor is compressor
+        with pytest.raises(RuntimeError, match="raw compression"):
+            fleet.start(run_id="another-run", **options)
+        monkeypatch.setattr(compressor, "stop", real_stop)
+        stopped = fleet.stop()
+        assert stopped["success"] and stopped["compression_stopped"]
+        assert stopped["compression_completed_count"] == 2
+        assert fleet._run_id == ""
+        assert fleet._raw_compressor is None
+        rows = repository.list_raw_files(data_type="ping")
+        assert len(rows) == 2
+        assert all(row["gzip_path"] for row in rows)
+        assert all(row["device_uuid"] == target.mr_id for row in rows)
+    finally:
+        monkeypatch.setattr(compressor, "stop", real_stop)
+        fleet.stop()
 
 
 def test_timeline_marks_loss_unknown_when_snapshot_exceeds_tolerance(tmp_path) -> None:

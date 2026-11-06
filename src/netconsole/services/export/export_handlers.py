@@ -67,6 +67,7 @@ GENERIC_EXPORT_TASK_TYPES = {
     "car_network_point_table",
     "command_reference_markdown",
     "vehicle_mr_history_xlsx",
+    "ground_history_csv",
     "trackside_ap_base_xlsx",
     "trackside_ap_rename_commands",
     "field_diagnostic_bundle",
@@ -129,6 +130,10 @@ def run_generic_export_handler(job: ExportJob, progress_callback: ProgressCallba
         row_count = export_car_network_point_table(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "command_reference_markdown":
         row_count = export_command_reference_markdown(tmp_path, payload, progress_callback, should_cancel)
+    elif job.job_type == "ground_history_csv":
+        from netconsole.services.ground_unattended.history_export import export_ground_history_csv
+
+        row_count = export_ground_history_csv(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "vehicle_mr_history_xlsx":
         row_count = export_vehicle_mr_history_xlsx(tmp_path, payload, progress_callback, should_cancel)
     elif job.job_type == "trackside_ap_base_xlsx":

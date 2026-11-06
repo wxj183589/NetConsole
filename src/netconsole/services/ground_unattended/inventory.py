@@ -66,15 +66,22 @@ class TrainInventorySyncService:
                 device = device_repository.get_by_uuid(str(mr.id))
             except (OSError, sqlite3.Error):
                 device = None
-            if device is None or not is_device_eligible_for_automatic_collection(
-                device
-            ):
-                continue
-            connectable = bool(device and connection_targets(device))
+            # Heartbeat eligibility belongs to the rail-transit inventory, not
+            # SSH credentials. Missing device connection data may block deep
+            # collection, but it must not remove an otherwise valid MR target.
+            connection_eligible = bool(
+                device and is_device_eligible_for_automatic_collection(device)
+            )
+            connectable = bool(connection_eligible and connection_targets(device))
             if not str(mr.management_ip or "").strip():
                 missing_ip += 1
-            if not connectable:
+            if not connection_eligible:
                 missing_credentials += 1
+            backup_strategy = str(
+                mr.backup_monitoring_strategy or "MONITOR"
+            ).upper()
+            if backup_strategy not in {"MONITOR", "FAILOVER_ONLY", "DISABLED"}:
+                backup_strategy = "MONITOR"
             group["endpoints"][role] = {
                 "device_uuid": str(mr.id),
                 "device_id": mr.device_id,
@@ -82,6 +89,10 @@ class TrainInventorySyncService:
                 "mr_role": role,
                 "device_name": str(mr.name or ""),
                 "management_ip": str(mr.management_ip or ""),
+                "backup_management_ip": str(device.backup_address or "") if device else "",
+                "management_ip_role": "PRIMARY",
+                "backup_management_ip_role": "BACKUP",
+                "backup_monitoring_strategy": backup_strategy,
                 "protocol": str(mr.protocol or ""),
                 "port": mr.port,
                 # Syslog hostname 以设备 sysname 为准，不能用本地化资产显示名替代。

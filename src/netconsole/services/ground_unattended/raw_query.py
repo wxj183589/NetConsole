@@ -118,6 +118,10 @@ class GroundRawStreamQueryService:
             "rtt_samples": 0,
         }
         rtt_sum_ms = 0.0
+        window_statistics = {
+            str(minutes): {"sent_count": 0, "lost_count": 0, "loss_rate_percent": None}
+            for minutes in (1, 10, 30, 60)
+        }
         max_rtt_ms: float | None = None
         current_rtt_ms: float | None = None
         current_rtt_key: tuple[str, int] = ("", -1)
@@ -161,6 +165,13 @@ class GroundRawStreamQueryService:
                 counts["ignored"] += 1
             else:
                 counts["effective"] += 1
+                probe_time = _parse_time(str(item.get("ts") or ""))
+                if probe_time is not None:
+                    age = (end - probe_time).total_seconds()
+                    for minutes, window in window_statistics.items():
+                        if 0 <= age <= int(minutes) * 60:
+                            window["sent_count"] += 1
+                            window["lost_count"] += int(not bool(item.get("ok")))
                 if bool(item.get("ok")):
                     counts["success"] += 1
                     rtt_ms = _optional_float(item.get("rtt_ms"))
@@ -301,6 +312,13 @@ class GroundRawStreamQueryService:
             ),
             "max_rtt_ms": max_rtt_ms,
             "points": points,
+            "window_statistics": {
+                minutes: {**window, "loss_rate_percent": (
+                    window["lost_count"] / window["sent_count"] * 100
+                    if window["sent_count"] else None
+                )}
+                for minutes, window in window_statistics.items()
+            },
             "loss_windows": loss_windows,
             "ap_transitions": ap_transitions[:max_points],
             "position_segments": position_segments[:max_points],
@@ -750,6 +768,7 @@ class GroundRawStreamQueryService:
         end_time: str = "",
         page: int = 1,
         page_size: int = 100,
+        sort_order: str = "desc",
     ) -> dict[str, Any]:
         registered_train_id = self._registered_train_id(
             run_id,
@@ -827,7 +846,7 @@ class GroundRawStreamQueryService:
             data_source,
             keyword,
         )
-        latest_page_fast_path = not any(record_level_filters) and not (
+        latest_page_fast_path = sort_order != "asc" and not any(record_level_filters) and not (
             train_id and not registered_train_id
         )
 
@@ -881,7 +900,7 @@ class GroundRawStreamQueryService:
             if parsed is None:
                 continue
             serial += 1
-            entry = (parsed.timestamp(), serial, item)
+            entry = (parsed.timestamp() * (-1 if sort_order == "asc" else 1), serial, item)
             if len(rows) < keep_count:
                 heapq.heappush(rows, entry)
             elif entry[:2] > rows[0][:2]:

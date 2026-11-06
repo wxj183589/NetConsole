@@ -148,7 +148,7 @@ def test_raw_writer_flush_interval_is_independent_for_each_open_file(
     )
     now = datetime.now().astimezone()
     writer.write({"train_id": "train-b", "mr_role": "CW", "sample": 1}, now)
-    b_file = writer._files[("train-b", "CW", now.strftime("%Y-%m-%d_%H"))].path
+    b_file = next(iter(writer._files.values())).path
     clock[0] = 1.1
     writer.write({"train_id": "train-a", "mr_role": "CT", "sample": 1}, now)
     assert b_file.read_text(encoding="utf-8") == ""
@@ -182,7 +182,7 @@ def test_raw_writer_explicit_storage_profile_enables_periodic_durable_sync(
     )
     now = datetime.now().astimezone()
     writer.write({"train_id": "train-b", "mr_role": "CW", "sample": 1}, now)
-    b_file = writer._files[("train-b", "CW", now.strftime("%Y-%m-%d_%H"))].path
+    b_file = next(iter(writer._files.values())).path
 
     clock[0] = 1.1
     writer.write({"train_id": "train-a", "mr_role": "CT", "sample": 1}, now)
@@ -552,10 +552,14 @@ def test_timeline_resolves_device_name_and_stop_operation_is_idempotent(
         == "groundop_previous"
     )
 
-    supervisor = object.__new__(GroundUnattendedSupervisor)
-    supervisor.repository = repository
-    supervisor.paths = paths
-    supervisor.site_id = "site-a"
+    supervisor = GroundUnattendedSupervisor(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        base_query=SimpleNamespace(),
+        mesh_query=SimpleNamespace(),
+        vehicle_query=SimpleNamespace(),
+    )
     supervisor.deep_scheduler = None
     supervisor.fleet_ping = SimpleNamespace(
         stop=lambda: {

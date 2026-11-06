@@ -1670,3 +1670,40 @@ def test_zero_count_trackside_plan_saves_null_management_vlan(
     assert validation.json()["valid"] is True
     assert saved.status_code == 200
     assert tuple(row) == (0, None, "")
+
+
+@pytest.mark.parametrize("strategy", ["MONITOR", "FAILOVER_ONLY", "DISABLED"])
+def test_saved_mr_backup_strategy_flows_to_inventory_and_heartbeat(tmp_path, monkeypatch, strategy) -> None:
+    from netconsole.core.site_identity import load_site_metadata
+    from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
+    from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
+    from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
+
+    _enable_copy_write(monkeypatch)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    app = _app(paths, tmp_path)
+    with TestClient(app) as client:
+        session = client.get("/api/rail-transit/base-data/revision").json()
+        response = client.post("/api/rail-transit/base-data/changes", json={
+            "site_id": "demo", "base_revision": session["base_revision"], "scope": "vehicles",
+            "explicit_confirmation": True, "changes": [{
+                "entity_type": "vehicle_mr", "action": "update", "entity_id": "mr-01-ct",
+                "values": {"name": "列车01-MR-CT", "management_ip": "10.10.0.1", "protocol": "SSH", "port": 22,
+                           "backup_management_ip": "192.0.2.21", "backup_monitoring_strategy": strategy},
+            }],
+        })
+        assert response.status_code == 200, response.text
+        rows = client.get("/api/rail-transit/base-data/mrs").json()["items"]
+        mr = next(row for row in rows if row["id"] == "mr-01-ct")
+        assert mr["backup_management_ip"] == "192.0.2.21"
+        assert mr["backup_monitoring_strategy"] == strategy
+    assert load_site_metadata(paths, "demo")["mr_backup_monitoring_strategies"]["mr-01-ct"] == strategy
+    repository = GroundUnattendedRepository(paths.ground_unattended_db_path("demo"), site_id="demo")
+    query = RailTransitBaseDataQueryService(paths)
+    TrainInventorySyncService(paths, site_id="demo", repository=repository, base_query=query).synchronize()
+    assert repository.get_inventory_endpoint("mr-01-ct")["backup_monitoring_strategy"] == strategy
+    supervisor = GroundUnattendedSupervisor(paths, site_id="demo", repository=repository, base_query=query, mesh_query=object(), vehicle_query=object())
+    targets = supervisor._heartbeat_fleet_targets()
+    assert "10.10.0.1" in targets
+    assert ("192.0.2.21" in targets) is (strategy == "MONITOR")

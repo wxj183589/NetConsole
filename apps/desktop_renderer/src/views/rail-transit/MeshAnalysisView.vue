@@ -4594,7 +4594,7 @@ function exportTimestamp(now = new Date()): string {
           <el-button @click="openTaskWindow()">打开任务中心</el-button>
           <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
-          <el-button @click="router.push('/rail-transit/train-online')">列车在线情况</el-button>
+          <el-button @click="router.push('/rail-transit/ground-unattended')">地面无人值守</el-button>
         </div>
       </div>
       <el-alert v-if="selectedSource && !selectedSource.exists" :title="selectedSource.missing_reason" :type="selectedSource.recoverable ? 'warning' : 'error'" :closable="false" show-icon />

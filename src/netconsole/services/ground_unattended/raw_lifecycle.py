@@ -383,6 +383,7 @@ class GroundRawDataLifecycleService:
         if any(
             str(row.get("archive_status") or "") == "ARCHIVED"
             or str(row.get("compressed_path") or "")
+            or str(row.get("gzip_path") or "")
             for row in raw_files
         ):
             blocked.append(
@@ -783,6 +784,7 @@ def _validate_planned_file(
     if (
         str(current.get("archive_status") or "") == "ARCHIVED"
         or str(current.get("compressed_path") or "")
+        or str(current.get("gzip_path") or "")
     ):
         raise GroundRawLifecycleError(
             "READY_ARCHIVE_IMMUTABLE",
