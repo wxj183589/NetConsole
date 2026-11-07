@@ -27,6 +27,9 @@ from typing import Any, Callable, Iterator
 from netconsole.core.ping.fping_v5_models import FpingV5Sample
 from netconsole.core.ping.fping_v5_runner import run_fping_v5_json
 from netconsole.services.ground_unattended.quick_ping_ownership import matching_process, orphan_fping_children, process_identity
+from netconsole.services.ground_unattended.ping_loss import (
+    PingLossTracker, acknowledge_loss_events,
+)
 
 try:
     from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
@@ -89,6 +92,9 @@ class QuickPingTarget:
     address_role: str = "PRIMARY"
     train_no: str = ""
     mr_name: str = ""
+    current_ap_name: str = ""
+    station: str = ""
+    section: str = ""
 
     def __post_init__(self) -> None:
         try:
@@ -269,6 +275,8 @@ class QuickPingRun:
     _persistence_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     _last_persist_monotonic: float = field(default=0.0, repr=False)
     _active_segment_paths: dict[str, str] = field(default_factory=dict, repr=False)
+    _loss_trackers: dict[str, PingLossTracker] = field(default_factory=dict, repr=False)
+    _pending_loss_events: list[dict[str, Any]] = field(default_factory=list, repr=False)
 
     def as_dict(self) -> dict[str, Any]:
         with self._lock:
@@ -390,6 +398,7 @@ class QuickPingService:
                 target_stats={target.target_ip: QuickPingStats() for target in normalized},
                 target_runtime={target.target_ip: {"state": "QUEUED", "started_at": "", "ended_at": "", "error": ""} for target in normalized},
                 _target_stops={target.target_ip: threading.Event() for target in normalized},
+                _loss_trackers={target.target_ip: PingLossTracker(f"quick_ping:{run_id}:{target.target_ip}") for target in normalized},
             )
             self._runs[run_id] = run
             try:
@@ -492,6 +501,7 @@ class QuickPingService:
             if value is None:
                 return None
             run = _run_from_manifest(value, self.site_id)
+            self._restore_loss_trackers(run)
         except (KeyError, TypeError, ValueError, OSError):
             return None
         with self._lock:
@@ -1017,6 +1027,32 @@ class QuickPingService:
         with run._lock:
             run.stats.add(sample)
             run.target_stats[target.target_ip].add(sample)
+            try:
+                sample_at = datetime.fromisoformat(str(sample.ts).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                # Preserve the raw sample even when a legacy/mock producer emits
+                # a non-ISO timestamp; event ordering falls back to receive time.
+                sample_at = datetime.now(timezone.utc)
+            run._loss_trackers.setdefault(
+                target.target_ip,
+                PingLossTracker(f"quick_ping:{run.run_id}:{target.target_ip}"),
+            ).enqueue_observation(
+                run._pending_loss_events,
+                success=bool(sample.ok),
+                at=sample_at,
+                metadata={
+                    "ap_name": target.current_ap_name,
+                    "station": target.station,
+                    "section": target.section,
+                },
+                fields=dict(
+                    run_id=run.run_id,
+                    target_ip=target.target_ip,
+                    train_id=target.train_id,
+                    mr_id=target.mr_id,
+                    mr_role=target.mr_role,
+                ),
+            )
             if target.target_ip in run.target_runtime:
                 run.target_runtime[target.target_ip]["current_rtt_ms"] = run.target_stats[target.target_ip].current_rtt_ms
             run.recent_samples.append(payload)
@@ -1058,6 +1094,11 @@ class QuickPingService:
                 },
             }
             run._last_persist_monotonic = now_mono
+            pending_loss_events = list(run._pending_loss_events)
+        if pending_loss_events and repository is not None:
+            repository.apply_ping_loss_events(pending_loss_events)
+            with run._lock:
+                acknowledge_loss_events(run._pending_loss_events, pending_loss_events)
         repository.save_quick_ping_state(
             payload,
             stats,
@@ -1104,6 +1145,7 @@ class QuickPingService:
             try:
                 for value in self.repository.list_quick_ping_runs(limit=MAX_RETAINED_QUICK_PING_RUNS):
                     run = _run_from_manifest(value, self.site_id)
+                    self._restore_loss_trackers(run)
                     restored.append(run)
                     restored_ids.add(run.run_id)
                     sqlite_ids.add(run.run_id)
@@ -1121,6 +1163,7 @@ class QuickPingService:
                 continue
             if run.run_date != manifest.parent.parent.name:
                 continue
+            self._restore_loss_trackers(run)
             if run.run_id in restored_ids:
                 continue
             interrupted = run.state in {"RUNNING", "STOPPING"}
@@ -1170,6 +1213,18 @@ class QuickPingService:
         )
         for run in terminal[:excess]:
             self._runs.pop(run.run_id, None)
+
+    def _restore_loss_trackers(self, run: QuickPingRun) -> None:
+        if self.repository is None:
+            return
+        for target in run.targets:
+            key = f"quick_ping:{run.run_id}:{target.target_ip}"
+            tracker = run._loss_trackers.setdefault(target.target_ip, PingLossTracker(key))
+            for row in self.repository.list_open_ping_loss_intervals(run.run_id, target_ip=target.target_ip):
+                event_key = str(row.get("event_key") or key)
+                if event_key == key or event_key.startswith(key + ":"):
+                    tracker.restore(row)
+                    break
 
     def _time_limit(self, run: QuickPingRun) -> None:
         changed = False
@@ -1274,6 +1329,9 @@ def _target_from_manifest(value: Any) -> QuickPingTarget:
         address_role=str(value.get("address_role") or "PRIMARY"),
         train_no=str(value.get("train_no") or ""),
         mr_name=str(value.get("mr_name") or ""),
+        current_ap_name=str(value.get("current_ap_name") or ""),
+        station=str(value.get("station") or ""),
+        section=str(value.get("section") or ""),
     )
 
 

@@ -154,7 +154,7 @@ export interface GroundDeepCollectionRecordPage {
 }
 export interface GroundTimelineEvent {
   device_time: string; received_at: string
-  event_id: number | string; ts: string; event_type: string; severity: string; train_id: string; train_no: string; train_name: string; mr_id: string
+  event_id: number | string; ts: string; event_at?: string; run_date?: string; source?: string; event_type: string; severity: string; train_id: string; train_no: string; train_name: string; mr_id: string
   mr_name: string; mr_position_code: string
   title: string; message: string; peer_ap_id: string; peer_ap_name: string; peer_ap_mac: string
   peer_radio_mac: string; previous_peer_ap_id: string; previous_peer_ap_name: string; previous_peer_ap_mac: string
@@ -169,7 +169,7 @@ export interface GroundTimelineEvent {
 export interface GroundArchive {
   archive_id: string; site_id: string; run_id: string; run_date: string; actual_started_at: string; actual_ended_at: string
   mainline_train_count: number; ping_target_count: number; ping_sample_count: number; covered_train_count: number
-  complete_session_count: number; partial_session_count: number; archive_size_bytes: number; sha256: string; manifest_sha256: string
+  session_count: number; complete_session_count: number; partial_session_count: number; syslog_record_count: number; archive_size_bytes: number; sha256: string; manifest_sha256: string
   archive_status: string; file_count: number; integrity_status: string
   retention_until: string; summary: Record<string, unknown>; message: string; created_at: string; updated_at: string
 }
@@ -189,6 +189,7 @@ export interface GroundActionResponse { accepted: boolean; state: GroundRunState
 export type GroundQuickPingState = 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'TIME_LIMIT' | 'INTERRUPTED'
 export interface GroundQuickPingTarget {
   target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_role: string; address_role: 'PRIMARY' | 'BACKUP'
+  current_ap_name?: string; station?: string; section?: string
 }
 export interface GroundQuickPingConfig {
   interval_ms: number; timeout_ms: number; packet_size: number; duration_seconds: number | null; max_in_flight: number
@@ -205,6 +206,7 @@ export interface GroundQuickPingRun {
   state: GroundQuickPingState; started_at: string; ended_at: string; error: string; segment_paths: string[]
   stats: GroundQuickPingStats; target_stats: Record<string, GroundQuickPingStats>
   recent_samples: Array<Record<string, unknown>>
+  loss_events?: Array<Record<string, unknown>>
 }
 export interface GroundQuickPingPage { items: GroundQuickPingRun[]; total: number; offset: number; limit: number; active_ips?: Record<string, string> }
 export interface GroundQuickPingSamplePage {
@@ -397,18 +399,23 @@ export interface GroundHeartbeatIp {
   min_rtt_ms: number | null; avg_rtt_ms: number | null; max_rtt_ms: number | null
   last_probe_at: string; last_success_at: string; unreachable_since: string
 }
+export interface GroundHeartbeatAp {
+  name: string; bssid: string; mac: string; rssi: number | null
+  connection_status: string; last_seen_at: string; station: string; section: string
+}
 export interface GroundHeartbeatMr {
   resolved_ap_name?: string; identity_status?: string; ac_data_status?: string; station?: string; section?: string; current_rtt_ms?: number | null
   mr_uuid: string; train_id: string; train_no: string; mr_name: string; role: string
   status: string; engine_state: string; unreachable_since: string; last_success_at: string
   last_recovery_at: string; consecutive_recovery_successes: number; updated_at: string
-  ip_states: GroundHeartbeatIp[]
+  ip_states: GroundHeartbeatIp[]; associated_aps?: GroundHeartbeatAp[]; associated_stations?: string[]
+  loss_events?: Array<Record<string, unknown>>
 }
 export interface GroundHeartbeatTrain {
   train_id: string; train_no: string; status: string; both_unreachable_since: string
   mr_states: Record<string, string>; updated_at: string
 }
-export type GroundHeartbeatDataState = 'NO_INVENTORY' | 'NOT_STARTED' | 'INITIALIZING' | 'RUNNING' | 'PAUSED' | 'STALE' | 'WAITING_FOR_SAMPLES' | 'ERROR' | 'DISABLED'
+export type GroundHeartbeatDataState = 'NO_INVENTORY' | 'NOT_STARTED' | 'INITIALIZING' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'STALE' | 'WAITING_FOR_SAMPLES' | 'ERROR' | 'DISABLED'
 export interface GroundHeartbeatStatistics {
   sent_count: number; success_count: number; lost_count: number
   average_rtt_ms: number | null; loss_rate_percent: number | null; latest_sample_at: string
@@ -438,5 +445,5 @@ export interface GroundPeerInterval {
 }
 export interface GroundMrMonitoring {
   mr: GroundHeartbeatMr; series: GroundPingSeries; mesh_events: GroundMeshMonitorEvent[]; peer_intervals: GroundPeerInterval[]
-  run_sent_count: number; run_lost_count: number; queried_start: string; queried_end: string; events_truncated: boolean
+  run_sent_count: number; run_lost_count: number; queried_start: string; queried_end: string; events_truncated: boolean; loss_events?: Array<Record<string, unknown>>
 }

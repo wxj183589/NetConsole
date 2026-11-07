@@ -2,6 +2,7 @@
   {"path":"src/netconsole/services/ground_unattended/monitoring.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"ground","reason":"MR 综合监测以 mode=ro、query_only 和单一只读事务有界读取当前局点、运行和 MR 的既有事件与 AC 证据，不创建或修改数据库。"},
   {"path":"tests/test_ground_unattended_monitoring.py","classification":"TEST_ONLY","owner":"ground","reason":"仅在 RuntimeMode.TEST 隔离测试根验证 MR 综合监测与只读证据边界。"},
   {"path":"scripts/dev/ground_v2_soak.py","classification":"TEST_ONLY","owner":"ground","reason":"Synthetic component soak creates an exclusive canonical test root and checks only its own generated SQLite integrity; no real business data or runtime connection path."},
+  {"path":"scripts/dev/ground_r3_short_stress.py","classification":"TEST_ONLY","owner":"ground","reason":"Synthetic bounded pressure harness creates only its own storage.sqlite under a unique canonical test root to exercise competing writers and integrity; it does not read business data or configured runtime roots."},
   {"path":"src/netconsole/services/ground_unattended/history_query.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"ground","reason":"地面历史工作台与Export Process共享的只读查询网关，以mode=ro/query_only和单个read transaction读取既有Ground索引；不建库、不建表、不迁移或更新数据。"},
   {"path":"tests/test_ground_unattended_history_query.py","classification":"TEST_ONLY","owner":"ground","reason":"仅在pytest隔离测试根使用真实Ground schema构造历史查询fixture，并发写入验证导出快照一致性及只读连接契约；不访问真实业务数据。"},
   {"path":"src/netconsole/core/sqlite_utils.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"统一 SQLite 连接工厂。"},

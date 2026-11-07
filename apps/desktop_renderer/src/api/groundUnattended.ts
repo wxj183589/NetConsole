@@ -237,6 +237,7 @@ export const getGroundArchive = (archiveId: string): Promise<GroundArchive> => a
 export const getGroundArchiveDetail = (archiveId: string, options: RequestInit = {}): Promise<GroundArchiveDetail> => apiRequest(`${root}/archives/${encodeURIComponent(archiveId)}/detail`, options)
 export const verifyGroundArchive = (archiveId: string): Promise<GroundArchiveDetail> => apiRequest(`${root}/archives/${encodeURIComponent(archiveId)}/verify`, { method: 'POST' })
 export const deleteGroundArchive = (archiveId: string): Promise<GroundActionResponse> => apiRequest(`${root}/archives/${encodeURIComponent(archiveId)}`, { method: 'DELETE', body: JSON.stringify({ explicit_confirmation: true }) })
+export const deleteGroundArchives = (archiveIds: string[]): Promise<{ accepted_count: number; failed_count: number; results: Array<{ archive_id: string; accepted: boolean; state: string; run_id: string; operation_id: string; message: string }> }> => apiRequest(`${root}/archives/batch-delete`, { method: 'POST', body: JSON.stringify({ archive_ids: archiveIds, explicit_confirmation: true }) })
 export const openGroundArchiveDirectory = (): Promise<{ success: boolean; code: string; message: string }> => apiRequest(`${root}/archives/open-directory`, { method: 'POST' })
 export const groundArchiveSummaryDownloadRequest = (row: GroundArchive): BackendDownloadRequest => ({
   apiPath: `${root}/artifacts/${encodeURIComponent(row.archive_id)}/summary-download`,

@@ -82,6 +82,7 @@ GroundHeartbeatDataState = Literal[
     "INITIALIZING",
     "RUNNING",
     "PAUSED",
+    "STOPPED",
     "STALE",
     "WAITING_FOR_SAMPLES",
     "ERROR",
@@ -695,6 +696,15 @@ class GroundHealthDTO(ApiModel):
     compression_skipped_count: int = 0
     compression_last_error: str = ""
     compression_worker_alive: bool = False
+    task_queue_lengths: dict[str, int] = Field(default_factory=dict)
+    active_task_count: int = 0
+    completed_task_count: int = 0
+    failed_task_count: int = 0
+    cancelled_task_count: int = 0
+    scheduler_worker_count: int = 0
+    heartbeat_schedule_delay_ms: float = 0.0
+    resource_cpu_percent: float | None = None
+    resource_memory_bytes: int = 0
 
 
 class GroundSyslogTransportStatusDTO(ApiModel):
@@ -911,6 +921,9 @@ class GroundDeepCollectionPageDTO(ApiModel):
 class GroundTimelineEventDTO(ApiModel):
     event_id: int | str
     ts: str
+    event_at: str = ""
+    run_date: str = ""
+    source: str = ""
     device_time: str = ""
     received_at: str = ""
     event_type: str
@@ -979,8 +992,10 @@ class GroundArchiveDTO(ApiModel):
     ping_target_count: int = 0
     ping_sample_count: int = 0
     covered_train_count: int = 0
+    session_count: int = 0
     complete_session_count: int = 0
     partial_session_count: int = 0
+    syslog_record_count: int = 0
     archive_size_bytes: int = 0
     sha256: str = ""
     manifest_sha256: str = ""
@@ -1048,6 +1063,9 @@ class GroundQuickPingTargetDTO(ApiModel):
     mr_name: str = ""
     mr_role: str = ""
     address_role: Literal["PRIMARY", "BACKUP"] = "PRIMARY"
+    current_ap_name: str = ""
+    station: str = ""
+    section: str = ""
 
 
 class GroundQuickPingStartRequestDTO(ApiModel):
@@ -1089,6 +1107,7 @@ class GroundQuickPingTargetRuntimeDTO(ApiModel):
     started_at: str = ""
     ended_at: str = ""
     error: str = ""
+    current_rtt_ms: float | None = None
 
 
 class GroundQuickPingRunDTO(ApiModel):
@@ -1108,6 +1127,7 @@ class GroundQuickPingRunDTO(ApiModel):
     target_stats: dict[str, GroundQuickPingStatsDTO] = Field(default_factory=dict)
     target_runtime: dict[str, GroundQuickPingTargetRuntimeDTO] = Field(default_factory=dict)
     recent_samples: list[dict[str, Any]] = Field(default_factory=list, max_length=256)
+    loss_events: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GroundQuickPingPageDTO(ApiModel):
@@ -1532,6 +1552,19 @@ class GroundHeartbeatIpDTO(ApiModel):
     unreachable_since: str = ""
 
 
+class GroundHeartbeatApDTO(ApiModel):
+    """真实 AC Mesh 关联的区间 AP 摘要。"""
+
+    name: str = ""
+    bssid: str = ""
+    mac: str = ""
+    rssi: int | None = None
+    connection_status: str = "UNKNOWN"
+    last_seen_at: str = ""
+    station: str = ""
+    section: str = ""
+
+
 class GroundHeartbeatMrDTO(ApiModel):
     resolved_ap_name: str = ""
     identity_status: str = "unresolved"
@@ -1552,6 +1585,9 @@ class GroundHeartbeatMrDTO(ApiModel):
     consecutive_recovery_successes: int = 0
     updated_at: str = ""
     ip_states: list[GroundHeartbeatIpDTO] = Field(default_factory=list)
+    associated_aps: list[GroundHeartbeatApDTO] = Field(default_factory=list)
+    associated_stations: list[str] = Field(default_factory=list)
+    loss_events: list[dict[str, object]] = Field(default_factory=list)
 
 
 class GroundHeartbeatTrainDTO(ApiModel):
@@ -1604,10 +1640,31 @@ class GroundMrMonitoringDTO(ApiModel):
     queried_start: str = ""
     queried_end: str = ""
     events_truncated: bool = False
+    loss_events: list[dict[str, object]] = Field(default_factory=list)
 
 
 class GroundArchiveDeleteRequestDTO(ApiModel):
     explicit_confirmation: bool = False
+
+
+class GroundArchiveBatchDeleteRequestDTO(ApiModel):
+    archive_ids: list[str] = Field(min_length=1, max_length=100)
+    explicit_confirmation: bool = False
+
+
+class GroundArchiveBatchDeleteItemDTO(ApiModel):
+    archive_id: str
+    accepted: bool = False
+    state: str = ""
+    run_id: str = ""
+    operation_id: str = ""
+    message: str = ""
+
+
+class GroundArchiveBatchDeleteResponseDTO(ApiModel):
+    accepted_count: int = 0
+    failed_count: int = 0
+    results: list[GroundArchiveBatchDeleteItemDTO] = Field(default_factory=list)
 
 
 __all__ = [name for name in globals() if name.startswith("Ground")]

@@ -26,7 +26,7 @@ const global = {
   renderStubDefaultSlot: true,
   stubs: {
     NcDataTable: { props: ['data'], template: '<div><slot v-if="data.length" name="cell-actions" :row="data[0]" /></div>' },
-    ElButton: { template: '<button @click="$emit(\'click\')"><slot /></button>' },
+    ElButton: { emits: ['click'], template: '<button @click="$emit(\'click\')"><slot /></button>' },
     ElDrawer: { props: ['modelValue'], template: '<div v-if="modelValue"><slot /></div>' },
     ElDescriptionsItem: { template: '<div><slot /></div>' },
     ElTableColumn: { template: '<div />' },
@@ -47,6 +47,53 @@ beforeEach(() => {
 afterEach(() => { vi.clearAllMocks(); vi.useRealTimers() })
 
 describe('persisted heartbeat UI', () => {
+  it('shows loading without an empty total and offers refresh after the first request fails', async () => {
+    let reject!: (reason: Error) => void
+    api.heartbeat.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+    await flushPromises()
+    expect(wrapper.text()).toContain('加载中')
+    expect(wrapper.findComponent({ name: 'ElPagination' }).exists()).toBe(false)
+    reject(new Error('inventory unavailable'))
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'ElAlert' }).attributes('title')).toBe('inventory unavailable')
+    expect(wrapper.text()).not.toContain('暂无数据')
+    await wrapper.findAll('button').find((button) => button.text() === '刷新')!.trigger('click')
+    await flushPromises()
+    expect(api.heartbeat).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('.mr-card')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('keeps the inventory while hidden and refreshes stopped status once without polling', async () => {
+    vi.useFakeTimers()
+    const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+    await flushPromises()
+    ;(injected.current.pageVisible as { value: boolean }).value = false
+    await flushPromises()
+    expect(wrapper.findAll('.mr-card')).toHaveLength(2)
+    ;(injected.current.pageVisible as { value: boolean }).value = true
+    await flushPromises()
+    api.heartbeat.mockResolvedValue({ ...snapshot, data_state: 'STOPPED', run_state: 'COMPLETED' })
+    ;(injected.current.status as { value: unknown }).value = { state: 'COMPLETED' }
+    await flushPromises()
+    expect(wrapper.text()).toContain('已停止')
+    const calls = api.heartbeat.mock.calls.length
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(api.heartbeat).toHaveBeenCalledTimes(calls)
+    expect(wrapper.findAll('.mr-card')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('keeps inventory totals and leaves reachability counts unknown before the first sample', async () => {
+    api.heartbeat.mockResolvedValue({ ...snapshot, data_state: 'NOT_STARTED', total_mrs: 42, train_counts: { UNKNOWN: 21 }, mr_counts: { UNKNOWN: 42 }, heartbeat_statistics: { sent_count: 0 }, mrs: snapshot.mrs.map((mr) => ({ ...mr, status: 'UNKNOWN', ip_states: [] })) })
+    const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+    await flushPromises()
+    const metrics = wrapper.findAll('.metrics > div').map((row) => row.find('b').text())
+    expect(metrics).toEqual(['21', '—', '—', '—', '42', '—', '42'])
+    wrapper.unmount()
+  })
+
   it('loads the initial snapshot once but does not poll while monitoring is stopped', async () => {
     vi.useFakeTimers()
     ;(injected.current.status as { value: unknown }).value = { state: 'STOPPED' }
@@ -75,7 +122,7 @@ describe('persisted heartbeat UI', () => {
     ;(injected.current.status as { value: unknown }).value = { state: 'PAUSED' }
     await flushPromises()
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(api.heartbeat).toHaveBeenCalledTimes(2)
+    expect(api.heartbeat).toHaveBeenCalledTimes(3)
     wrapper.unmount()
   })
 
@@ -105,10 +152,15 @@ describe('persisted heartbeat UI', () => {
     await flushPromises()
     expect(wrapper.findAll('.train-row')).toHaveLength(1)
     expect(wrapper.findAll('.mr-card')).toHaveLength(2)
-    expect(wrapper.text()).toContain('192.0.2.1')
-    expect(wrapper.text()).toContain('192.0.2.2')
+    expect(wrapper.text()).not.toContain('192.0.2.1')
+    expect(wrapper.text()).not.toContain('192.0.2.2')
+    expect(wrapper.text()).toContain('Mock CT')
+    expect(wrapper.text()).toContain('暂无关联 AP')
+    expect(wrapper.text()).toContain('未关联站点')
     expect(wrapper.text()).toContain('仅 CT 可达')
     expect(wrapper.text()).not.toContain('RTT 2 ms')
+    expect(wrapper.find('.train-summary').text()).toContain('整车详情')
+    expect(wrapper.find('.train-summary').text()).not.toContain('2026-01-01')
     expect(wrapper.find('[table-id="ground-heartbeat-mrs"]').exists()).toBe(false)
     await wrapper.find('.mr-card[role="button"]').trigger('click')
     const vm = wrapper.vm as unknown as { selectedMr: typeof snapshot.mrs[0] }
@@ -118,6 +170,30 @@ describe('persisted heartbeat UI', () => {
     drawer.vm.$emit('quick-ping')
     expect(wrapper.emitted('quick-ping')?.[0]).toEqual(['mr-1'])
     wrapper.unmount()
+  })
+
+  it.each([
+    ['BOTH_ONLINE', '双端在线'],
+    ['CT_ONLY', '仅 CT 可达'],
+    ['CW_ONLY', '仅 CW 可达'],
+    ['TRAIN_OFFLINE', '整车离线'],
+    ['UNKNOWN', '待检测'],
+  ])('uses the backend aggregate status %s without collapsing CT/CW state', async (status, label) => {
+    api.heartbeat.mockResolvedValueOnce({ ...snapshot, data_state: status === 'UNKNOWN' ? 'NOT_STARTED' : 'RUNNING', trains: [{ ...snapshot.trains[0], status }], mrs: [{ ...snapshot.mrs[0], status: status === 'BOTH_ONLINE' ? 'ONLINE' : 'UNKNOWN' }] })
+    const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+    await flushPromises()
+    expect(wrapper.find('.train-summary').text()).toContain(label)
+    wrapper.unmount()
+  })
+
+  it('shows paused, stopped and stale as monitoring states in the vehicle column', async () => {
+    for (const [dataState, label] of [['PAUSED', '已暂停'], ['STOPPED', '已停止'], ['STALE', '数据过期']] as const) {
+      api.heartbeat.mockResolvedValueOnce({ ...snapshot, data_state: dataState, trains: [{ ...snapshot.trains[0], status: 'BOTH_ONLINE' }] })
+      const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+      await flushPromises()
+      expect(wrapper.find('.train-summary').text()).toContain(label)
+      wrapper.unmount()
+    }
   })
 
   it('sends IP and AP search to the backend before pagination', async () => {

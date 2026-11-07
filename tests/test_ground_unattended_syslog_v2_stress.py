@@ -43,6 +43,41 @@ def _receiver(tmp_path: Path) -> SyslogUdpReceiver:
     return receiver
 
 
+def test_existing_projection_history_gains_indexed_raw_replay_lookup(tmp_path: Path) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    # Simulate an existing database, including duplicate legacy raw identities:
+    # the performance repair must preserve those records instead of imposing a
+    # new uniqueness constraint or rewriting history.
+    with repository._transaction() as conn:
+        conn.execute("DROP INDEX idx_ground_wmesh_raw_line")
+        conn.executemany(
+            "INSERT INTO ground_unattended_wmesh_events "
+            "(site_id, run_id, event_type, receive_time, raw_file_id, raw_line_number, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            [("site-a", "old", "test", "2026-11-08T00:00:00+00:00", "raw-old", 1,
+              "2026-11-08T00:00:00+00:00")] * 2,
+        )
+    repository.initialize()
+    repository.initialize()
+    with repository._connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM ground_unattended_wmesh_events"
+        ).fetchone()[0] == 2
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM ground_unattended_wmesh_events "
+            "WHERE site_id=? AND raw_file_id=? AND raw_line_number=? LIMIT 1",
+            ("site-a", "raw-old", 1),
+        ).fetchall()
+        assert any(
+            "idx_ground_wmesh_raw_line" in row[3]
+            and "raw_file_id=? AND raw_line_number=?" in row[3]
+            for row in plan
+        ), plan
+    assert repository.insert_wmesh_events([
+        {"run_id": "old", "raw_file_id": "raw-old", "raw_line_number": 1}
+    ]) == 0
+
+
 def test_20000_mock_ingress_burst_keeps_raw_and_bounded_queues(tmp_path: Path, monkeypatch) -> None:
     receiver = _receiver(tmp_path)
     barrier = threading.Event()

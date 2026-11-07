@@ -397,7 +397,7 @@ def test_stopped_fleet_ping_callback_does_not_mutate_heartbeat_state() -> None:
             mr_id="mr-1",
             mr_position_code="CT",
         ),
-        SimpleNamespace(ts=_at(1).isoformat(), ok=True, rtt_ms=1.0),
+        SimpleNamespace(ts=_at(1).isoformat(), ok=False, rtt_ms=None),
     )
 
     snapshot = engine.snapshot("mr-1")
@@ -419,6 +419,8 @@ def test_stopped_fleet_ping_callback_does_not_mutate_heartbeat_state() -> None:
     assert persisted_train["status"] == "UNKNOWN"
     assert not supervisor._heartbeat_dirty_mrs
     assert not supervisor._heartbeat_dirty_trains
+    assert not getattr(supervisor, "_heartbeat_pending_loss_events", ())
+    assert not getattr(supervisor, "_heartbeat_loss_trackers", {})
     repository.add_health_event.assert_not_called()
 
 

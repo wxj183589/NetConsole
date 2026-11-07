@@ -36,6 +36,8 @@ const heartbeat = {
     mr_uuid: endpoint.mr_id, train_id: train.train_id, train_no: train.train_no, mr_name: endpoint.mr_name,
     role: endpoint.endpoint, status: 'ONLINE', engine_state: 'RUNNING', last_success_at: now,
     unreachable_since: '', last_recovery_at: '', consecutive_recovery_successes: 0, updated_at: now,
+    associated_aps: Array.from({ length: endpoint.endpoint === 'CT' ? 4 : 1 }, (_, apIndex) => ({ name: `区间 AP ${endpoint.endpoint}-${String(apIndex + 1).padStart(2, '0')}`, bssid: `00:11:22:33:44:${endpoint.endpoint === 'CT' ? String(apIndex + 1).padStart(2, '0') : '02'}`, mac: `aa-bb-cc-dd-ee-${endpoint.endpoint === 'CT' ? String(apIndex + 1).padStart(2, '0') : '02'}`, rssi: -52 - apIndex, connection_status: 'ONLINE', last_seen_at: now, station: apIndex % 2 ? '杭州东站' : '杭州南站', section: `南站-区间${apIndex + 1}` })),
+    associated_stations: ['杭州南站'],
     ip_states: [endpoint.management_ip, endpoint.backup_management_ip].filter(Boolean).map(ip => ({
       ip, sent_count: 60, received_count: 59, lost_count: 1, min_rtt_ms: 1, avg_rtt_ms: 2, max_rtt_ms: 3,
     })),
@@ -56,11 +58,11 @@ const diagnostics = { source_kind: 'ACTIVE', data_availability: 'ACTIVE_RAW', fi
 
 const rootMrs = heartbeat.mrs.map((mr, index) => ({ ...mr, resolved_ap_name: `车载 AP ${index ? 'CW' : 'CT'}`, station: '', section: '车辆段', identity_status: 'matched', ac_data_status: 'fresh', current_rtt_ms: index ? null : 2.8, status: index ? 'OFFLINE' : 'ONLINE' }))
 const currentHeartbeat = {
-  ...heartbeat, total: 10, total_mrs: 20, page: 1, page_size: 50, stations: [], train_counts: { CT_ONLY: 10 },
+  ...heartbeat, total: 10, total_mrs: 20, page: 1, page_size: 50, stations: ['杭州东站', '杭州南站'], data_state: 'RUNNING', data_state_message: '正在接收实时心跳采样', train_counts: { CT_ONLY: 10 },
   trains: Array.from({ length: 10 }, (_, index) => ({ train_id: `train-${index}`, train_no: String(index + 1).padStart(3, '0'), status: 'CT_ONLY' })),
   mrs: Array.from({ length: 10 }, (_, index) => rootMrs.map(mr => ({ ...mr, mr_uuid: `${mr.mr_uuid}-${index}`, train_id: `train-${index}`, train_no: String(index + 1).padStart(3, '0') }))).flat(),
 }
-async function mockHeartbeat(page: Page) {
+async function mockHeartbeat(page: Page, response = currentHeartbeat) {
   const unexpected: string[] = []
   const applied: unknown[] = []
   await page.route(url => url.pathname.startsWith('/api/'), async route => {
@@ -76,7 +78,7 @@ async function mockHeartbeat(page: Page) {
     else if (path === `${root}/runs`) body = paged([run])
     else if (path === `${root}/trains`) body = paged([train])
     else if (path === `${root}/health`) body = health
-    else if (path === `${root}/heartbeat`) body = currentHeartbeat
+    else if (path === `${root}/heartbeat`) body = response
     else if (path.includes('/operations/')) body = null
     else if (path.endsWith('/monitoring')) {
       const end = Date.parse(url.searchParams.get('end_time')!), start = Date.parse(url.searchParams.get('start_time')!), time = new Date(end - 30000).toISOString()
@@ -108,17 +110,13 @@ test('Heartbeat compact rows and unified MR evidence drawer', async ({ page }, t
   await expect(page.locator('.heartbeat-page .train-row')).toHaveCount(10)
   await expect(page.locator('.heartbeat-page')).toContainText('仅 CT 可达')
   await expect(page.locator('.heartbeat-page .mr-card').first()).toContainText('合成 MR CT')
-  await expect(page.locator('.heartbeat-page .mr-card').first().locator('.el-tag')).toBeVisible()
+  await expect(page.locator('.heartbeat-page .mr-card').first()).toContainText('+1')
+  await expect(page.locator('.heartbeat-page .mr-card').first().locator('.el-tag').first()).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('heartbeat-01-compact-trains.png'), fullPage: true, animations: 'disabled' })
-  await page.getByRole('button', { name: '同步监测设备' }).click()
+  await page.getByRole('button', { name: '重新同步设备' }).click()
   let management = page.getByRole('dialog', { name: '同步设备预览' })
   await expect(management).toContainText('1 / 2 / 0 / 0')
   await page.screenshot({ path: testInfo.outputPath('heartbeat-05-sync-preview.png'), fullPage: true, animations: 'disabled' })
-  await management.getByRole('button', { name: '取消' }).click()
-  await page.getByRole('button', { name: '清空监测设备', exact: true }).click()
-  management = page.getByRole('dialog', { name: '清空监测设备' })
-  await expect(management).toContainText('不删除设备管理资产')
-  await page.screenshot({ path: testInfo.outputPath('heartbeat-06-clear-confirmation.png'), fullPage: true, animations: 'disabled' })
   await management.getByRole('button', { name: '取消' }).click()
   expect(applied).toEqual([])
   await page.locator('.heartbeat-page .mr-card').first().click({ button: 'right' })
@@ -126,10 +124,12 @@ test('Heartbeat compact rows and unified MR evidence drawer', async ({ page }, t
   await page.screenshot({ path: testInfo.outputPath('heartbeat-02-context-menu.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('menuitem', { name: '综合监测', exact: true }).click()
   const drawer = page.locator('.mr-monitor-drawer')
-  await expect(drawer).toContainText('AP 综合动态监测')
+  await expect(drawer).toContainText('MR 综合动态监测')
+  await expect(drawer).toContainText('接入区间 AP')
+  await expect(drawer).toContainText('接入站点')
   await expect(drawer.locator('canvas')).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('heartbeat-03-monitoring-drawer.png'), fullPage: true, animations: 'disabled' })
-  await drawer.getByRole('button', { name: 'Mesh', exact: true }).click()
+  await drawer.getByRole('button', { name: /Mesh/ }).click()
   await drawer.locator('.mesh-event').click()
   await expect(drawer.locator('.raw-detail')).toContainText('Synthetic WMESH')
   await page.screenshot({ path: testInfo.outputPath('heartbeat-04-mesh-provenance.png'), fullPage: true, animations: 'disabled' })
@@ -137,4 +137,41 @@ test('Heartbeat compact rows and unified MR evidence drawer', async ({ page }, t
   await expect(drawer).toHaveCount(0)
   expect(errors).toEqual([])
   expect(unexpected).toEqual([])
+})
+
+test('Heartbeat keeps inventory visible before monitoring starts', async ({ page }, testInfo) => {
+  const notStarted = {
+    ...currentHeartbeat,
+    run_id: '', run_state: '', data_state: 'NOT_STARTED', data_state_message: '监测任务尚未启动，设备状态待检测',
+    mr_counts: { UNKNOWN: 20, ONLINE: 0, OFFLINE: 0 }, train_counts: { UNKNOWN: 10 },
+    mrs: currentHeartbeat.mrs.map(mr => ({ ...mr, status: 'UNKNOWN', engine_state: 'STOPPED', current_rtt_ms: null, last_success_at: '', ip_states: mr.ip_states.map(ip => ({ ...ip, sent_count: 0, received_count: 0, lost_count: 0 })) })),
+    trains: currentHeartbeat.trains.map(train => ({ ...train, status: 'UNKNOWN' })),
+    heartbeat_statistics: { sent_count: 0, success_count: 0, lost_count: 0, average_rtt_ms: null, loss_rate_percent: null, latest_sample_at: '' },
+  }
+  await mockHeartbeat(page, notStarted)
+  await page.goto('/tests/visual/ground.html?netconsole_host=electron')
+  await page.getByRole('tab', { name: '心跳检测', exact: true }).click()
+  await expect(page.locator('.heartbeat-page')).toContainText('监测任务尚未启动')
+  await expect(page.locator('.heartbeat-page')).toContainText('待检测 MR')
+  await expect(page.locator('.heartbeat-page .train-row')).toHaveCount(10)
+  await expect(page.locator('.heartbeat-page .mr-card').first()).toContainText('待检测')
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-06-not-started.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('Heartbeat 2048x1091 running viewport evidence', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 2048, height: 1091 })
+  await mockHeartbeat(page)
+  await page.goto('/tests/visual/ground.html?netconsole_host=electron')
+  await page.getByRole('tab', { name: '心跳检测', exact: true }).click()
+  await expect(page.locator('.heartbeat-page .train-row')).toHaveCount(10)
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-08-2048x1091.png'), fullPage: true, animations: 'disabled' })
+})
+
+test('Heartbeat 1672x941 running viewport evidence', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1672, height: 941 })
+  await mockHeartbeat(page)
+  await page.goto('/tests/visual/ground.html?netconsole_host=electron')
+  await page.getByRole('tab', { name: '心跳检测', exact: true }).click()
+  await expect(page.locator('.heartbeat-page .train-row')).toHaveCount(10)
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-09-1672x941.png'), fullPage: true, animations: 'disabled' })
 })

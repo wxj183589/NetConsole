@@ -307,8 +307,13 @@ class Harness:
         self.summary["final_heartbeat"] = self.api("/heartbeat?page_size=200")
         self.summary["quick_ping_stop"] = self.api(f"/quick-ping/{quick['run_id']}/stop", "POST")
         self.summary["stop"] = self.api("/stop", "POST")
-        self.wait(lambda: self.api("/status").get("state") not in {"RUNNING", "PAUSED", "STOPPING"}, 90)
+        # FINALIZING is still active: accepting it previously hid blocked
+        # writers and allowed shutdown to race the resource drain.
+        self.wait(lambda: not self.api("/status").get("active_run_id"), 90)
         self.summary["final_health_after_stop"] = self.api("/health")
+        final_health = self.summary["final_health_after_stop"]
+        if final_health.get("ping_target_count") or final_health.get("udp_running"):
+            raise RuntimeError("Ground stop left Ping or UDP resources active")
         self.summary["status"] = "COMPLETED"
         self.summary["db_path"] = str(db_path)
 
@@ -325,6 +330,7 @@ class Harness:
                 self.summary["electron_graceful_exit_code"] = self.electron.returncode
             except subprocess.TimeoutExpired:
                 self.summary["electron_graceful_exit_timeout"] = True
+                self.summary["status"] = "FAILED"
         owned = process_tree([child.pid for child in self.children])
         self.summary["owned_before_cleanup"] = owned
         # Each PID is a verified descendant of a process launched by this run.

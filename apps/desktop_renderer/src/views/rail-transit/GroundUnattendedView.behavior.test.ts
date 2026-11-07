@@ -425,6 +425,35 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
+  it('keeps initial run history when switching to heartbeat before it resolves', async () => {
+    let resolveRuns!: (value: { items: Array<{ run_id: string; run_date: string }>; total: number }) => void
+    let historySignal: AbortSignal | undefined
+    api.listGroundRuns.mockImplementationOnce((options: { signal: AbortSignal }) => {
+      historySignal = options.signal
+      return new Promise((resolve) => { resolveRuns = resolve })
+    })
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      expect(historySignal).toBeDefined()
+      const view = wrapper.vm as unknown as {
+        activeTab: string
+        runs: Array<{ run_id: string }>
+        selectedRunId: string
+      }
+      view.activeTab = 'heartbeat'
+      await flushPromises()
+      expect(historySignal?.aborted).toBe(false)
+      resolveRuns({ items: [{ run_id: 'run-history', run_date: '2026-11-06' }], total: 1 })
+      await flushPromises()
+      expect(view.runs.map((run) => run.run_id)).toEqual(['run-history'])
+      expect(view.selectedRunId).toBe('run-history')
+      expect(api.listGroundRuns).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('loads vehicle inventory on the heartbeat tab while stopped without starting Ping polling', async () => {
     vi.useFakeTimers()
     api.listGroundTrains.mockResolvedValue({

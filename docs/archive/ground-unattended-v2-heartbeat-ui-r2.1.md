@@ -1,9 +1,9 @@
 # NetConsole 原版｜地面无人值守 V2 心跳检测 R2.1
 
-日期：2026-11-07  
-分支：`codex-A/ground-unattended-v2-20261107`  
-基线：`b3c2fd51`  
-项目：`Ground-Unattended-Heartbeat-Initial-Load-And-Polling-Fix`  
+日期：2026-11-07
+分支：`codex-A/ground-unattended-v2-20261107`
+基线：`b3c2fd51`
+项目：`Ground-Unattended-Heartbeat-Initial-Load-And-Polling-Fix`
 PR：#105（本轮未合并）
 
 ## 根因
@@ -44,7 +44,7 @@ R2 已补齐无快照时的后端库存投影，但前端仍有两个调度边�
 
 ## Change Impact
 
-Risk：L2，Ground 领域页面与组合式函数调度。  
-Contracts：真实运行状态门禁、库存与心跳快照分离、单调度器和旧请求代际校验。  
-Consumers：`HeartbeatPage.vue`、`useGroundUnattended.ts`、Ground 页面行为测试及 Renderer 定向套件。  
+Risk：L2，Ground 领域页面与组合式函数调度。
+Contracts：真实运行状态门禁、库存与心跳快照分离、单调度器和旧请求代际校验。
+Consumers：`HeartbeatPage.vue`、`useGroundUnattended.ts`、Ground 页面行为测试及 Renderer 定向套件。
 剩余：真实 Electron 截图、Windows DPI、真实设备、安装包和长时稳定性仍为 `REAL_DEVICE_PENDING`；PR #105 保持开放。

@@ -908,6 +908,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "capability.ground_unattended.heartbeat_inventory_manage": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "capability.ground_unattended.history_export": {
       "visible": true,
       "enabled": true,

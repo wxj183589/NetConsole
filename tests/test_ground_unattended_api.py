@@ -430,6 +430,16 @@ def test_ground_quick_ping_start_only_accepts_current_mr_addresses(tmp_path) -> 
     assert started.json()["targets"][0]["mr_role"] == "CT"
 
 
+def test_quick_ping_runtime_contract_accepts_sampled_rtt() -> None:
+    from netconsole.models.api.ground_unattended import GroundQuickPingTargetRuntimeDTO
+
+    row = GroundQuickPingTargetRuntimeDTO.model_validate({
+        "state": "STOPPED", "current_rtt_ms": 0.303,
+    })
+    assert row.current_rtt_ms == 0.303
+    assert GroundQuickPingTargetRuntimeDTO().current_rtt_ms is None
+
+
 def test_ground_unattended_rejects_invalid_profile_and_archive_delete_without_confirmation(
     tmp_path,
 ) -> None:

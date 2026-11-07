@@ -38,7 +38,9 @@ def test_ground_v2_tabs_and_actions_share_authority_and_localized_titles() -> No
     children = [item for item in FEATURE_BY_ID.values() if item.parent_id == "module.ground_unattended"]
     assert len([item for item in children if item.item_type == "tab"]) == 10
     assert {item.feature_id for item in children if item.item_type == "action"} == {
-        "capability.ground_unattended.quick_ping", "capability.ground_unattended.history_export",
+        "capability.ground_unattended.quick_ping",
+        "capability.ground_unattended.history_export",
+        "capability.ground_unattended.heartbeat_inventory_manage",
     }
     for item in children:
         for language in ("zh_CN", "en_US"):

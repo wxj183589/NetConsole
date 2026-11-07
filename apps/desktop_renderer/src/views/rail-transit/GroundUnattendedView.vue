@@ -384,11 +384,21 @@ function openQuickPing(mrId: string) {
             <el-descriptions-item :label="t('ground.ping_samples', 'Ping 样本')">{{ selectedArchive.archive.ping_sample_count }}</el-descriptions-item>
             <el-descriptions-item label="Syslog 记录">{{ selectedArchive.archive.summary.syslog_record_count || 0 }}</el-descriptions-item>
             <el-descriptions-item :label="t('ground.covered_trains', '覆盖列车')">{{ selectedArchive.archive.covered_train_count }}</el-descriptions-item>
+            <el-descriptions-item :label="t('ground.run_sessions', '运行会话')">{{ selectedArchive.archive.session_count || selectedArchive.archive.summary.session_count || 0 }}</el-descriptions-item>
             <el-descriptions-item :label="t('ground.complete_sessions', '完整会话')">{{ selectedArchive.archive.complete_session_count }}</el-descriptions-item>
             <el-descriptions-item :label="t('ground.partial_sessions', '部分会话')">{{ selectedArchive.archive.partial_session_count }}</el-descriptions-item>
             <el-descriptions-item :label="t('ground.archive_size', '归档大小')">{{ bytes(selectedArchive.archive.archive_size_bytes) }}</el-descriptions-item>
             <el-descriptions-item label="归档 SHA-256" :span="2"><code>{{ selectedArchive.archive.sha256 }}</code></el-descriptions-item>
           </el-descriptions>
+        </el-tab-pane>
+        <el-tab-pane label="运行会话" name="sessions">
+          <el-table :data="selectedArchive.archive.summary.sessions || []" size="small" empty-text="当天没有独立会话记录">
+            <el-table-column prop="session_id" label="会话 ID" min-width="220" />
+            <el-table-column prop="started_at" label="启动时间" min-width="190" />
+            <el-table-column prop="ended_at" label="停止时间" min-width="190" />
+            <el-table-column prop="state" label="状态" width="120" />
+            <el-table-column prop="stop_reason" label="停止原因" min-width="220" />
+          </el-table>
         </el-tab-pane>
         <el-tab-pane label="文件清单" name="files">
           <el-table :data="selectedArchive.files" size="small" max-height="480" empty-text="归档没有可展示的文件成员">

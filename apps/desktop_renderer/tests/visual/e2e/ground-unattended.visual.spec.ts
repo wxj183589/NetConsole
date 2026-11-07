@@ -38,7 +38,7 @@ const heartbeat = {
     unreachable_since: '', last_recovery_at: '', consecutive_recovery_successes: 0, updated_at: now,
     ip_states: [endpoint.management_ip, endpoint.backup_management_ip].filter(Boolean).map(ip => ({
       ip, sent_count: 60, received_count: 59, lost_count: 1, min_rtt_ms: 1, avg_rtt_ms: 2, max_rtt_ms: 3,
-    })),
+    })), associated_aps: [{ name: `区间 AP ${endpoint.endpoint}-01`, bssid: `00:11:22:33:44:${endpoint.endpoint === 'CT' ? '01' : '02'}`, mac: `aa-bb-cc-dd-ee-${endpoint.endpoint === 'CT' ? '01' : '02'}`, rssi: -52, connection_status: 'ONLINE', last_seen_at: now, station: '杭州南站', section: '南站-区间1' }], associated_stations: ['杭州南站'],
   })), trains: [{ train_id: train.train_id, train_no: train.train_no, status: 'BOTH_ONLINE' }],
 }
 const health = {
@@ -176,11 +176,14 @@ test('Ground V2 真实页面十页导航、MR抽屉和Quick启停', async ({ pag
   }
   await openTab(page, '心跳检测')
   const mrTable = page.locator('.heartbeat-page')
-  await expect(mrTable).toContainText('192.0.2.10')
+  await expect(mrTable).toContainText('区间 AP CT-01')
+  await expect(mrTable).toContainText('杭州南站')
+  await expect(mrTable).not.toContainText('192.0.2.10')
   await mrTable.locator('.mr-card').first().click()
   const drawer = page.locator('.mr-monitor-drawer')
-  await expect(drawer).toContainText('192.0.2.10')
-  await expect(drawer).toContainText('192.0.2.20')
+  await expect(drawer).toContainText('区间 AP CT-01')
+  await expect(drawer).toContainText('杭州南站')
+  await expect(drawer).not.toContainText('192.0.2.10')
   await drawer.getByRole('button', { name: '快速 Ping', exact: true }).click()
   await expect(page.getByRole('tab', { name: '快速 Ping', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(drawer).toBeHidden()

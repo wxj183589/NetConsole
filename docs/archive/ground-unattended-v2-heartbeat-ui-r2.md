@@ -1,8 +1,8 @@
 # NetConsole 原版｜地面无人值守 V2 心跳检测深度优化 R2
 
-日期：2026-11-07  
-分支：`codex-A/ground-unattended-v2-20261107`  
-基线：`35e99811`  
+日期：2026-11-07
+分支：`codex-A/ground-unattended-v2-20261107`
+基线：`35e99811`
 PR：#105（本轮未合并）
 
 ## 数据差异根因
@@ -69,12 +69,12 @@ PR #105 保持开放；本轮分支未合并。产品提交 `865edd6c` 已推送
 
 ## Change Impact
 
-Risk：L2（Ground 领域 DTO、Application Service、Renderer 页面和动态图；未改共享 API client、数据库 schema、Feature Registry、Electron 生命周期）。  
-Contracts：Ground heartbeat page DTO、run-scoped snapshot semantics、MR monitoring chart metric/time contract。  
-Consumers：Ground heartbeat page、MR monitoring drawer、Ground monitoring API tests、动态图表单测。  
-Regression：Ground 与定向 Renderer PASS；Renderer 全量有一个既有 locale 超时。  
-Parallel modifications：当前 worktree 仅本分支，本轮文件没有其他并行修改。  
-Post-merge verification：合并 main 后重跑 Ground consumer suite、Renderer 全量/typecheck/build、Change Impact Guard；补真实 Electron 截图和外部设备验收。  
+Risk：L2（Ground 领域 DTO、Application Service、Renderer 页面和动态图；未改共享 API client、数据库 schema、Feature Registry、Electron 生命周期）。
+Contracts：Ground heartbeat page DTO、run-scoped snapshot semantics、MR monitoring chart metric/time contract。
+Consumers：Ground heartbeat page、MR monitoring drawer、Ground monitoring API tests、动态图表单测。
+Regression：Ground 与定向 Renderer PASS；Renderer 全量有一个既有 locale 超时。
+Parallel modifications：当前 worktree 仅本分支，本轮文件没有其他并行修改。
+Post-merge verification：合并 main 后重跑 Ground consumer suite、Renderer 全量/typecheck/build、Change Impact Guard；补真实 Electron 截图和外部设备验收。
 Manual gaps：GUI、设备、安装包、长时运行均未宣称通过。
 
 ## R2.1 后续整改

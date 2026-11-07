@@ -326,7 +326,7 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
     supervisor.close()
 
 
-def test_supervisor_does_not_reopen_ready_archived_run_date(tmp_path) -> None:
+def test_supervisor_allows_explicit_same_day_restart_after_ready_archive(tmp_path) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     paths.site_dir("site-a").mkdir(parents=True)
     repo = GroundUnattendedRepository(
@@ -391,8 +391,9 @@ def test_supervisor_does_not_reopen_ready_archived_run_date(tmp_path) -> None:
 
     supervisor.request("start")
     supervisor._tick()
-    assert repo.get_active_run() is None
-    assert repo.count_events(run["run_id"], event_type="start_rejected") == 1
+    assert repo.get_active_run() is not None
+    supervisor.close()
+    assert len(repo.list_run_sessions(run["run_id"])) == 1
 
 
 def test_supervisor_reconciles_incomplete_operations_without_active_run(

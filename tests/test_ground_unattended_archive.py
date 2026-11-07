@@ -186,6 +186,40 @@ def test_archive_excludes_pending_spool_and_preserves_active_data(tmp_path) -> N
         assert not any("_spool" in name for name in zipped.namelist())
 
 
+def test_same_day_sessions_update_one_daily_archive_and_keep_boundaries(tmp_path) -> None:
+    paths, repo, service, run_id = _setup(tmp_path)
+    first = paths.ground_unattended_active_dir("site-a", "2026-07-25") / "fleet_ping" / "first.jsonl"
+    first.parent.mkdir(parents=True)
+    first.write_text('{"session":1}\n', encoding="utf-8")
+    repo.create_run_session(
+        session_id="session-1", run_id=run_id, run_date="2026-07-25",
+        started_at="2026-07-25T08:00:00+08:00",
+    )
+    repo.close_run_session("session-1", ended_at="2026-07-25T12:00:00+08:00", stop_reason="stop-1")
+    first_result = service.archive_run(run_id, repo.get_profile())
+    assert first_result.success
+
+    repo.create_run_session(
+        session_id="session-2", run_id=run_id, run_date="2026-07-25",
+        started_at="2026-07-25T13:00:00+08:00",
+    )
+    repo.close_run_session("session-2", ended_at="2026-07-25T18:00:00+08:00", stop_reason="stop-2")
+    repo.add_event(run_id=run_id, event_type="run_started", title="再次启动", ts="2026-07-25T13:00:00+08:00")
+    assert service.restore_daily_archive(run_id, "2026-07-25")
+    second = paths.ground_unattended_active_dir("site-a", "2026-07-25") / "fleet_ping" / "second.jsonl"
+    second.write_text('{"session":2}\n', encoding="utf-8")
+    second_result = service.archive_run(run_id, repo.get_profile())
+
+    assert second_result.success
+    assert second_result.archive_id == first_result.archive_id
+    summary = repo.get_archive(second_result.archive_id)["summary"]
+    assert summary["session_count"] == 2
+    assert [(row["started_at"], row["ended_at"]) for row in summary["sessions"]] == [
+        ("2026-07-25T08:00:00+08:00", "2026-07-25T12:00:00+08:00"),
+        ("2026-07-25T13:00:00+08:00", "2026-07-25T18:00:00+08:00"),
+    ]
+
+
 def _setup(tmp_path):
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     repo = GroundUnattendedRepository(

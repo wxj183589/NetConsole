@@ -3,7 +3,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Box, CopyDocument, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import {
-  deleteGroundArchive, deleteGroundRunHistory, getGroundArchiveDetail, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, groundArchiveZipDownloadRequest, listGroundArchives,
+  deleteGroundArchive, deleteGroundArchives, deleteGroundRunHistory, getGroundArchiveDetail, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, groundArchiveZipDownloadRequest, listGroundArchives,
   getGroundHealth, listGroundDeepCollectionRecords, listGroundDeepCollections, listGroundPingTargets, listGroundTimeline, listGroundTrains, requestGroundConfigCheck,
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
@@ -106,6 +106,7 @@ const deepAutoRefresh = ref(true)
 const timeline = ref<GroundTimelineEvent[]>([])
 
 const archives = ref<GroundArchive[]>([])
+const selectedArchives = ref<GroundArchive[]>([])
 
 const health = ref<GroundHealth | null>(null)
 
@@ -267,6 +268,12 @@ const timelinePageSize = ref(100)
 const timelineTotal = ref(0)
 
 let pollTimer: number | undefined
+
+// Keep the page's background refreshes on one lane. Ground status and
+// heartbeat queries are synchronous backend work, so a burst of independent
+// polls can otherwise queue behind the backend thread pool.
+let pollInFlight = false
+let loadAllInFlight = false
 
 let disposed = false
 
@@ -540,7 +547,7 @@ const deepColumns: NcTableColumn<GroundDeepCollection>[] = [
 const timelineColumns: NcTableColumn<GroundTimelineEvent>[] = [
   { key: 'device_time', label: t('ground.device_time', '设备时间'), valueType: 'datetime', width: 180 },
   { key: 'received_at', label: t('ground.received_at', '接收时间'), valueType: 'datetime', width: 180 },
-  { key: 'ts', label: t('ground.time', '时间'), valueType: 'datetime', fixed: 'left' },
+  { key: 'event_at', label: t('ground.event_time', '事件时间'), valueType: 'datetime', fixed: 'left', displayValue: (row) => row.event_at || row.ts },
   { key: 'event_type', label: t('ground.event_type', '事件类型'), valueType: 'status', displayValue: (row) => groundEventLabel(row.event_type) },
   { key: 'train_no', label: t('ground.train', '列车'), valueType: 'name', displayValue: (row) => row.train_no ? `列车 ${row.train_no}` : row.train_name || '未知列车' },
   { key: 'mr_name', label: t('ground.mr', 'MR 设备'), valueType: 'text' },
@@ -552,6 +559,7 @@ const timelineColumns: NcTableColumn<GroundTimelineEvent>[] = [
 ]
 
 const archiveColumns: NcTableColumn<GroundArchive>[] = [
+  { key: 'selection', label: '', type: 'selection', valueType: 'selection', width: 48, fixed: 'left', hideable: false },
   { key: 'run_date', label: t('ground.run_date', '运行日期'), valueType: 'datetime', fixed: 'left' },
   { key: 'actual_started_at', label: t('ground.actual_start', '实际开始'), valueType: 'datetime' },
   { key: 'actual_ended_at', label: t('ground.actual_end', '实际结束'), valueType: 'datetime' },
@@ -559,9 +567,12 @@ const archiveColumns: NcTableColumn<GroundArchive>[] = [
   { key: 'ping_target_count', label: t('ground.ping_targets', 'Ping 目标'), valueType: 'number' },
   { key: 'ping_sample_count', label: t('ground.ping_samples', 'Ping 样本'), valueType: 'number' },
   { key: 'covered_train_count', label: t('ground.covered_trains', '深度覆盖'), valueType: 'number' },
+  { key: 'session_count', label: t('ground.run_sessions', '运行会话'), valueType: 'number' },
+  { key: 'syslog_record_count', label: t('ground.syslog_records', 'Syslog'), valueType: 'number' },
   { key: 'complete_session_count', label: t('ground.complete_sessions', '完整会话'), valueType: 'number' },
   { key: 'partial_session_count', label: t('ground.partial_sessions', '部分会话'), valueType: 'number' },
   { key: 'archive_size_bytes', label: t('ground.archive_size', '归档大小'), valueType: 'number', displayValue: (row) => bytes(row.archive_size_bytes) },
+  { key: 'integrity_status', label: t('ground.integrity', '完整性'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.integrity_status) },
   { key: 'archive_status', label: t('ground.archive_status', '归档状态'), valueType: 'status', displayValue: (row) => groundStatusLabel(row.archive_status) },
   { key: 'retention_until', label: t('ground.retention_until', '保留截止'), valueType: 'datetime' },
   { key: 'actions', label: t('ground.actions', '操作'), valueType: 'actions', fixed: 'right', width: 230, hideable: false },
@@ -849,9 +860,11 @@ function dismissOperation(): void {
 
 async function loadActiveTab(silent = true): Promise<void> {
   if (activeTab.value === 'overview') await Promise.all([loadHealth(silent), loadSyslogTransport(silent)])
+  // HeartbeatPage owns the durable heartbeat projection and its refresh
+  // cadence. Keep the stopped-state inventory read for the shared context,
+  // but avoid duplicate train/Ping reads while active sampling is displayed.
   else if (activeTab.value === 'heartbeat') {
-    await loadTrains(silent)
-    if (monitoringRunning.value) await loadPingTargets(silent)
+    if (!monitoringRunning.value) await loadTrains(silent)
   }
   else if (activeTab.value === 'quick-ping') await loadTrains(silent)
   else if (activeTab.value === 'deep') await loadDeep(silent)
@@ -865,27 +878,34 @@ async function loadActiveTab(silent = true): Promise<void> {
 
 async function loadAll(silent = false): Promise<void> {
   if (!silent) loading.value = true
+  loadAllInFlight = true
   try {
-    const staticRequests = [loadStatus(silent), loadRuns(silent)]
-    if (!profile.value || activeTab.value === 'settings') staticRequests.push(loadProfile(silent))
-    await Promise.allSettled(staticRequests)
+    // Status drives the run selection and is relatively expensive. Complete
+    // it before loading dependent data so first entry does not create a burst
+    // of synchronous backend queries.
+    await loadStatus(silent)
+    await loadRuns(silent)
+    if (!profile.value || activeTab.value === 'settings') await loadProfile(silent)
     if (!selectedRunId.value) {
       selectedRunId.value = status.value?.active_run_id || status.value?.latest_run_id || runs.value[0]?.run_id || ''
     }
-    await Promise.allSettled([loadOperation(silent), loadActiveTab(silent)])
+    await loadOperation(silent)
+    await loadActiveTab(silent)
   } finally {
+    loadAllInFlight = false
     if (!silent) loading.value = false
   }
 }
 
 function pollDue(key: string, intervalMs: number, callback: () => Promise<unknown>): void {
-  if (requestControllers.has(key)) return
+  if (loadAllInFlight || pollInFlight || requestControllers.size > 0 || requestControllers.has(key)) return
   const now = Date.now()
   const failures = Math.min(requestFailureCounts.get(key) ?? 0, 5)
   const effectiveInterval = Math.min(intervalMs * (2 ** failures), 120_000)
   if (now - (lastPollAt.get(key) ?? 0) < effectiveInterval) return
   lastPollAt.set(key, now)
-  void callback()
+  pollInFlight = true
+  void callback().finally(() => { pollInFlight = false })
 }
 
 function schedulePoll(): void {
@@ -1598,6 +1618,18 @@ async function removeArchive(row: GroundArchive): Promise<void> {
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_delete_failed', '归档删除失败'))) }
 }
 
+async function removeSelectedArchives(rows: GroundArchive[] = selectedArchives.value): Promise<void> {
+  const ids = [...new Set(rows.map((row) => row.archive_id).filter(Boolean))]
+  if (!ids.length) { ElMessage.warning('请先选择需要删除的历史归档'); return }
+  await ElMessageBox.confirm(`确认批量删除 ${ids.length} 个历史归档？正在使用的当日数据会逐条拒绝。`, '批量删除历史归档', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+  try {
+    const result = await deleteGroundArchives(ids)
+    selectedArchives.value = []
+    ElMessage[result.failed_count ? 'warning' : 'success'](`已提交 ${result.accepted_count} 个，失败 ${result.failed_count} 个`)
+    await loadAll(true)
+  } catch (reason) { ElMessage.error(errorText(reason, '批量归档删除失败')) }
+}
+
 async function deleteSelectedRunHistory(): Promise<void> {
   const row = selectedRun.value
   if (!row) {
@@ -1745,6 +1777,7 @@ function abortRequests(): void {
   requestSequences.forEach((sequence, key) => requestSequences.set(key, sequence + 1))
   requestFailureCounts.clear()
   requestNotifySequences.clear()
+  pollInFlight = false
 }
 
 function handleVisibilityChange(): void {
@@ -2040,7 +2073,9 @@ onActivated(() => {
 watch(activeTab, () => {
   requestControllers.forEach((controller, key) => {
     if (
-      !['status', 'operation'].includes(key)
+      // These reads populate the shared run context, not an individual tab.
+      // Cancelling first-entry history here leaves the date selector empty.
+      !['status', 'operation', 'runs', 'profile'].includes(key)
       && !(pingWindowOpen.value && ['ping-series', 'ping-series-incremental'].includes(key))
     ) controller.abort()
   })
@@ -2193,6 +2228,7 @@ deepPaused,
 deepAutoRefresh,
 timeline,
 archives,
+selectedArchives,
 health,
 acMeshSummary,
 acMeshLinks,
@@ -2336,6 +2372,7 @@ timelineColumns,
 archiveColumns,
 syslogColumns,
 latestRequest,
+removeSelectedArchives,
 loadStatus,
 loadProfile,
 loadRuns,

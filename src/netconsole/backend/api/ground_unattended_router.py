@@ -17,6 +17,8 @@ from netconsole.models.api.ground_unattended import (
     GroundArchiveDTO,
     GroundArchiveDetailDTO,
     GroundArchiveDeleteRequestDTO,
+    GroundArchiveBatchDeleteRequestDTO,
+    GroundArchiveBatchDeleteResponseDTO,
     GroundArchivePageDTO,
     GroundConfigCheckRequestDTO,
     GroundDeepCollectionPageDTO,
@@ -442,6 +444,21 @@ def delete_run_history(
             _site_id(request),
             run_id,
             payload,
+        )
+    )
+
+
+@router.post(
+    "/archives/batch-delete",
+    response_model=GroundArchiveBatchDeleteResponseDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def batch_delete_archives(
+    request: Request, payload: GroundArchiveBatchDeleteRequestDTO
+) -> GroundArchiveBatchDeleteResponseDTO:
+    return _call(
+        lambda: _service(request).request_delete_archives(
+            _site_id(request), payload
         )
     )
 

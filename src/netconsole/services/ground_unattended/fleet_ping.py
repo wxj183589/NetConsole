@@ -367,6 +367,8 @@ class FleetPingSupervisor:
                     self._started_at.pop(address, None)
             if self._run_id:
                 for address in desired:
+                    if address in self._started_at:
+                        continue
                     self._started_at[address] = (
                         self.repository.ensure_ping_target_activation(
                             self._run_id, address, now
@@ -416,6 +418,8 @@ class FleetPingSupervisor:
         if not self._run_id:
             return
         now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        pending = []
+        persisted_keys = []
         for key in tuple(self._dirty_buckets):
             kind, bucket_start, target_ip, ap_identity = key
             target = self._targets.get(target_ip)
@@ -423,13 +427,16 @@ class FleetPingSupervisor:
             if target is None or stats is None:
                 continue
             bucket_end = self._bucket_end(kind, bucket_start)
-            self.repository.upsert_ping_summary(
+            pending.append(
                 self._summary_payload(
                     kind, bucket_start, bucket_end, target, ap_identity, stats, now
                 )
             )
-            # A later write failure must not make already persisted buckets dirty again.
-            self._dirty_buckets.discard(key)
+            persisted_keys.append(key)
+        # One transaction replaces hundreds of per-bucket connections while the
+        # sampler lock is held. Keep every dirty bucket if the batch rolls back.
+        self.repository.upsert_ping_summaries(pending)
+        self._dirty_buckets.difference_update(persisted_keys)
         # Retain one current bucket per target/kind, rather than a day's worth of
         # minute/AP windows. Late samples reload their persisted totals on demand.
         latest: dict[tuple[str, str], tuple[str, str, str, str]] = {}

@@ -24,6 +24,9 @@ from netconsole.models.api.ground_unattended import (
     GroundArchiveFileDTO,
     GroundArchivePageDTO,
     GroundArchiveValidationDTO,
+    GroundArchiveBatchDeleteRequestDTO,
+    GroundArchiveBatchDeleteResponseDTO,
+    GroundArchiveBatchDeleteItemDTO,
     GroundDeepCollectionDTO,
     GroundDeepCollectorDTO,
     GroundDeepTaskPageDTO,
@@ -47,6 +50,7 @@ from netconsole.models.api.ground_unattended import (
     GroundHealthDTO,
     GroundHeartbeatMrDTO,
     GroundHeartbeatIpDTO,
+    GroundHeartbeatApDTO,
     GroundHeartbeatInventoryApplyDTO,
     GroundHeartbeatInventoryPreviewDTO,
     GroundHeartbeatPageDTO,
@@ -271,6 +275,9 @@ class GroundUnattendedApplicationService:
                     mr_name=str(mr.name or ""),
                     mr_role=str(mr.mr_position_code or ""),
                     address_role=item.address_role,
+                    current_ap_name=str(getattr(mr, "current_ap_name", "") or ""),
+                    station=str(getattr(mr, "station", "") or ""),
+                    section=str(getattr(mr, "section", "") or ""),
                 )
             )
         try:
@@ -306,7 +313,7 @@ class GroundUnattendedApplicationService:
         except QuickPingError as exc:
             raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
         return GroundQuickPingPageDTO(
-            items=[self._quick_ping_run_dto(value) for value in values],
+            items=[self._quick_ping_run_dto_with_events(value) for value in values],
             active_ips=self.quick_ping.active_ips(),
             total=total, offset=offset, limit=limit,
         )
@@ -327,18 +334,18 @@ class GroundUnattendedApplicationService:
     def quick_ping_stop(self, site_id: str, run_id: str) -> GroundQuickPingRunDTO:
         self._require_site(site_id)
         try:
-            run = self.quick_ping.stop(run_id)
+            self.quick_ping.stop(run_id)
         except QuickPingError as exc:
             raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
-        return self._quick_ping_run_dto(run.as_dict())
+        return self._quick_ping_dto(run_id)
 
     def quick_ping_stop_target(self, site_id: str, run_id: str, target_ip: str) -> GroundQuickPingRunDTO:
         self._require_site(site_id)
         try:
-            run = self.quick_ping.stop_target(run_id, target_ip)
+            self.quick_ping.stop_target(run_id, target_ip)
         except QuickPingError as exc:
             raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
-        return self._quick_ping_run_dto(run.as_dict())
+        return self._quick_ping_dto(run_id)
 
     def history(
         self, site_id: str, *, data_type: str = "", run_id: str = "", train_id: str = "",
@@ -360,11 +367,47 @@ class GroundUnattendedApplicationService:
         """Stop site-scoped diagnostic workers owned by this application service."""
         self.quick_ping.close()
 
+    @staticmethod
+    def _heartbeat_ap_projection(identity: Any) -> tuple[list[GroundHeartbeatApDTO], list[str]]:
+        """Project only explicit AC Mesh MR->peer AP observations for heartbeat UI."""
+        if identity is None:
+            return [], []
+        projected: list[GroundHeartbeatApDTO] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for peer in getattr(identity, "peer_aps", ()) or ():
+            name = str(getattr(peer, "peer_ap_name", "") or "").strip()
+            bssid = str(getattr(peer, "bssid", "") or "").strip()
+            mac = str(getattr(peer, "peer_ap_mac", "") or "").strip()
+            station = str(getattr(peer, "station", "") or "").strip()
+            section = str(getattr(peer, "section", "") or "").strip()
+            key = (name, bssid, mac, station)
+            if not any(key) or key in seen:
+                continue
+            seen.add(key)
+            projected.append(GroundHeartbeatApDTO(
+                name=name,
+                bssid=bssid,
+                mac=mac,
+                rssi=getattr(peer, "rssi", None),
+                connection_status=("ONLINE" if str(getattr(peer, "mr_online_status", "")).lower() == "online"
+                                   else str(getattr(peer, "data_status", "") or "UNKNOWN").upper()),
+                last_seen_at=str(getattr(peer, "last_seen_at", "") or ""),
+                station=station,
+                section=section,
+            ))
+        stations = sorted({ap.station for ap in projected if ap.station})
+        return projected, stations
+
     def _quick_ping_dto(self, run_id: str) -> GroundQuickPingRunDTO:
         run = self.quick_ping.status(run_id)
         if run is None:
             raise GroundUnattendedError("QUICK_PING_NOT_FOUND", "快速 Ping 任务不存在", status_code=404)
-        return self._quick_ping_run_dto(run.as_dict())
+        return self._quick_ping_run_dto_with_events(run.as_dict())
+
+    def _quick_ping_run_dto_with_events(self, value: dict[str, Any]) -> GroundQuickPingRunDTO:
+        dto = self._quick_ping_run_dto(value)
+        dto.loss_events = self.repository.list_ping_loss_intervals(dto.run_id, limit=500)
+        return dto
 
     @staticmethod
     def _quick_ping_run_dto(value: dict[str, Any]) -> GroundQuickPingRunDTO:
@@ -437,24 +480,32 @@ class GroundUnattendedApplicationService:
         self._require_site(site_id)
         state = self.repository.heartbeat_inventory_state()
         source_conflicts: list[str] = []
+        active_run = self.repository.get_active_run()
         # A page refresh reconciles the device projection once per source change;
         # it never starts probes. Explicit clearing suppresses regeneration.
-        if not run_id and state["enabled"] and self.inventory_sync is not None:
+        # During an active run the supervisor has already synchronized the
+        # inventory, and re-running the full source preview for every heartbeat
+        # read can occupy the backend thread pool. Explicit inventory sync
+        # remains available for changes while monitoring is active.
+        supervisor_running = bool(getattr(self.supervisor, "running", False))
+        if (
+            not run_id
+            and (not active_run or not supervisor_running)
+            and state["enabled"]
+            and self.inventory_sync is not None
+        ):
             preview = self.inventory_sync.preview()
             source_conflicts = preview["conflicts"]
             if not source_conflicts and any(preview[key] for key in (
                 "added_count", "updated_count", "disabled_count",
             )):
                 self.sync_inventory(site_id)
-        run = self._resolve_run(run_id) if run_id else self.repository.get_active_run()
+        run = self._resolve_run(run_id)
         resolved_id = str(run["run_id"]) if run else ""
-        active_run = self.repository.get_active_run()
         is_current = not run_id or bool(
             active_run and str(active_run["run_id"]) == resolved_id
         )
         inventory = self.repository.list_inventory(include_removed=not is_current)
-        if is_current and not state["enabled"]:
-            inventory = []
         snapshot_rows = (
             self.repository.list_heartbeat_snapshots(resolved_id)
             if resolved_id
@@ -520,9 +571,12 @@ class GroundUnattendedApplicationService:
                 payload["mr_name"] = str(endpoint.get("device_name") or "")
                 identity = identity_rows.get(str(payload.get("mr_uuid") or ""))
                 if identity is not None:
+                    associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
                     payload.update(resolved_ap_name=identity.resolved_ap, identity_status=identity.identity_status,
                                    ac_data_status=identity.data_status, station=identity.resolved_ap_station,
-                                   section=identity.resolved_ap_section)
+                                   section=identity.resolved_ap_section,
+                                   associated_aps=associated_aps,
+                                   associated_stations=associated_stations)
                 payload["current_rtt_ms"] = recent_rtts.get(str(payload.get("mr_uuid") or ""))
                 mrs.append(GroundHeartbeatMrDTO.model_validate(
                     project_row_for_model(payload, GroundHeartbeatMrDTO)
@@ -538,6 +592,7 @@ class GroundUnattendedApplicationService:
                     continue
                 train = trains_by_id.get(str(endpoint.get("train_id") or ""), {})
                 identity = identity_rows.get(mr_id)
+                associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
                 ips = [str(endpoint.get("management_ip") or "")]
                 if endpoint.get("backup_monitoring_strategy") == "MONITOR":
                     ips.append(str(endpoint.get("backup_management_ip") or ""))
@@ -548,6 +603,9 @@ class GroundUnattendedApplicationService:
                     role=str(endpoint.get("mr_role") or ""),
                     resolved_ap_name=identity.resolved_ap if identity else "",
                     station=identity.resolved_ap_station if identity else "",
+                    section=identity.resolved_ap_section if identity else "",
+                    associated_aps=associated_aps,
+                    associated_stations=associated_stations,
                     ip_states=[GroundHeartbeatIpDTO(ip=ip) for ip in dict.fromkeys(ips) if ip],
                 ))
         if is_current or inventory_projection:
@@ -581,7 +639,17 @@ class GroundUnattendedApplicationService:
         sent_count = success_count = lost_count = 0
         weighted_rtt = 0.0
         latest_sample_at = ""
+        loss_events_by_mr = (
+            self.repository.list_ping_loss_intervals_by_mr(
+                resolved_id, (mr.mr_uuid for mr in mrs), limit_per_mr=200,
+                started_after=str(state["data_cleared_at"]),
+            )
+            if resolved_id
+            else {}
+        )
         for mr in mrs:
+            if resolved_id:
+                mr.loss_events = loss_events_by_mr.get(mr.mr_uuid, [])
             for ip in mr.ip_states:
                 sent_count += int(ip.sent_count or 0)
                 success_count += int(ip.received_count or 0)
@@ -597,6 +665,10 @@ class GroundUnattendedApplicationService:
         if not inventory:
             data_state = "DISABLED" if not state["enabled"] else "NO_INVENTORY"
             data_state_message = "已停用心跳监测对象" if not state["enabled"] else "当前局点没有已登记的心跳监测对象"
+        elif not state["enabled"]:
+            data_state, data_state_message = "DISABLED", "心跳监测已停止，设备清单保留"
+        elif run_state in {"COMPLETED", "FINALIZING", "ARCHIVING"}:
+            data_state, data_state_message = "STOPPED", "心跳监测已停止，保留设备清单和最近有效采样"
         elif not has_samples:
             data_state = (
                 "INITIALIZING" if run_state == "STARTING"
@@ -625,12 +697,20 @@ class GroundUnattendedApplicationService:
         else:
             data_state, data_state_message = "RUNNING", "正在接收实时心跳采样"
         total_mrs = len(mrs)
-        stations = sorted({mr.station for mr in mrs if mr.station})
+        stations = sorted({station_name for mr in mrs for station_name in (
+            list(mr.associated_stations) + ([mr.station] if mr.station else [])
+        ) if station_name})
         needle = query.strip().casefold()
         selected_ids = {
             mr.train_id for mr in mrs
-            if (not needle or needle in " ".join((mr.train_no, mr.mr_name, mr.mr_uuid, mr.resolved_ap_name, *(ip.ip for ip in mr.ip_states))).casefold())
-            and (not station or mr.station == station)
+            if (not needle or needle in " ".join((
+                mr.train_no, mr.mr_name, mr.mr_uuid, mr.resolved_ap_name,
+                *(ap.name for ap in mr.associated_aps),
+                *(ap.bssid for ap in mr.associated_aps),
+                *(ap.mac for ap in mr.associated_aps),
+                *(ip.ip for ip in mr.ip_states),
+            )).casefold())
+            and (not station or station in set(mr.associated_stations) | ({mr.station} if mr.station else set()))
             and (not mr_uuid or mr.mr_uuid == mr_uuid)
             and (not role or mr.role == role.upper())
         }
@@ -690,6 +770,10 @@ class GroundUnattendedApplicationService:
         return GroundMrMonitoringDTO(mr=mr, series=series, mesh_events=events, peer_intervals=intervals,
                                      run_sent_count=sum(ip.sent_count for ip in mr.ip_states),
                                      run_lost_count=sum(ip.lost_count for ip in mr.ip_states),
+                                     loss_events=self.repository.list_ping_loss_intervals(
+                                         heartbeat.run_id, mr_id=mr_uuid, limit=500,
+                                         started_after=str(cleared_at),
+                                     ),
                                      queried_start=start.isoformat(), queried_end=end.isoformat(), events_truncated=truncated)
 
     def status(self, site_id: str) -> GroundUnattendedStatusDTO:
@@ -721,16 +805,22 @@ class GroundUnattendedApplicationService:
         )
         config_abnormal = 0
         syslog_active = 0
+        endpoint_ids = [
+            str(endpoint.get("device_uuid") or "")
+            for train in inventory
+            for endpoint in train.get("endpoints", [])
+            if str(endpoint.get("device_uuid") or "")
+        ]
+        endpoint_runtime = self.repository.train_endpoint_snapshot(endpoint_ids)
+        boot_by_device = endpoint_runtime["boot_by_device"]
+        audit_by_device = endpoint_runtime["audit_by_device"]
         for train in inventory:
             for endpoint in train.get("endpoints", []):
-                boot = self.repository.latest_boot_session(
-                    str(endpoint.get("device_uuid") or "")
-                )
+                device_uuid = str(endpoint.get("device_uuid") or "")
+                boot = boot_by_device.get(device_uuid)
                 if boot and boot.get("last_syslog_received_at"):
                     syslog_active += 1
-                audit = self.repository.latest_syslog_config_audit(
-                    str(endpoint.get("device_uuid") or "")
-                )
+                audit = audit_by_device.get(device_uuid)
                 if audit and audit.get("status") in {
                     "CONFIG_FAILED",
                     "CONFIG_VERIFY_FAILED",
@@ -1341,6 +1431,8 @@ class GroundUnattendedApplicationService:
         target_count = int(getattr(fleet, "target_count", 0))
         process_count = int(getattr(fleet, "process_count", 0))
         worker_warnings = list(getattr(fleet, "worker_warnings", []))
+        scheduler = getattr(self.supervisor, "task_scheduler", None)
+        scheduler_values = scheduler.snapshot() if scheduler is not None else {}
         archive_failed = sum(row.get("archive_status") == "FAILED" for row in archives)
         startup_grace = max(
             10.0, self.repository.get_profile().fleet_ping_timeout_ms / 1000.0 * 2.0
@@ -1415,6 +1507,12 @@ class GroundUnattendedApplicationService:
             raw_file_count=self.repository.count_raw_files(),
             last_error=last_error,
             updated_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            task_queue_lengths=dict(scheduler_values.get("queue_lengths") or {}),
+            active_task_count=int(scheduler_values.get("active_tasks") or 0),
+            completed_task_count=int(scheduler_values.get("completed_tasks") or 0),
+            failed_task_count=int(scheduler_values.get("failed_tasks") or 0),
+            cancelled_task_count=int(scheduler_values.get("cancelled_tasks") or 0),
+            scheduler_worker_count=int(scheduler_values.get("worker_count") or 0),
         )
 
     def syslog_transport_status(
@@ -3045,6 +3143,9 @@ class GroundUnattendedApplicationService:
                 GroundTimelineEventDTO(
                     event_id=row["id"],
                     ts=row["ts"],
+                    event_at=row["ts"],
+                    run_date=str(run.get("run_date") or ""),
+                    source=str(details.get("source") or details.get("event_source") or ""),
                     device_time=str(details.get("device_time") or ""),
                     received_at=str(details.get("received_at") or details.get("receive_time") or ""),
                     event_type=row["event_type"],
@@ -3328,6 +3429,35 @@ class GroundUnattendedApplicationService:
             state="WAITING_WINDOW",
             run_id=str(row["run_id"]),
             message="归档删除请求已提交",
+        )
+
+    def request_delete_archives(
+        self, site_id: str, payload: GroundArchiveBatchDeleteRequestDTO
+    ) -> GroundArchiveBatchDeleteResponseDTO:
+        self._require_site(site_id)
+        if not payload.explicit_confirmation:
+            raise GroundUnattendedError(
+                "CONFIRMATION_REQUIRED", "批量删除归档需要明确确认", status_code=409
+            )
+        results: list[GroundArchiveBatchDeleteItemDTO] = []
+        for archive_id in dict.fromkeys(str(value).strip() for value in payload.archive_ids if str(value).strip()):
+            try:
+                result = self.request_delete_archive(site_id, archive_id, confirmed=True)
+                results.append(GroundArchiveBatchDeleteItemDTO(
+                    archive_id=archive_id, accepted=result.accepted,
+                    state=result.state, run_id=result.run_id,
+                    operation_id=result.operation_id, message=result.message,
+                ))
+            except GroundUnattendedError as exc:
+                results.append(GroundArchiveBatchDeleteItemDTO(
+                    archive_id=archive_id, accepted=False,
+                    state="FAILED", message=exc.message,
+                ))
+        accepted = sum(1 for item in results if item.accepted)
+        return GroundArchiveBatchDeleteResponseDTO(
+            accepted_count=accepted,
+            failed_count=len(results) - accepted,
+            results=results,
         )
 
     def _train_dto(self, row: dict[str, Any]) -> GroundUnattendedTrainDTO:
@@ -3936,8 +4066,10 @@ class GroundUnattendedApplicationService:
             ping_target_count=_integer(summary.get("ping_target_count")),
             ping_sample_count=_integer(summary.get("ping_sample_count")),
             covered_train_count=_integer(summary.get("covered_train_count")),
+            session_count=_integer(summary.get("session_count")),
             complete_session_count=_integer(summary.get("complete_session_count")),
             partial_session_count=_integer(summary.get("partial_session_count")),
+            syslog_record_count=_integer(summary.get("syslog_record_count")),
             archive_size_bytes=_integer(row.get("archive_size_bytes")),
             sha256=_text("sha256"),
             manifest_sha256=_text("manifest_sha256"),

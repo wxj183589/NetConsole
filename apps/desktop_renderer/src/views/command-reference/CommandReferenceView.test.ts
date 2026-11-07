@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
-import { defineComponent, h, useAttrs, type Component } from 'vue'
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { defineComponent, h, nextTick, useAttrs, type Component } from 'vue'
+import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiRequestError } from '../../api/client'
@@ -47,6 +47,8 @@ vi.mock('element-plus', async (importOriginal) => ({
 
 import CommandReferenceView from './CommandReferenceView.vue'
 import source from './CommandReferenceView.vue?raw'
+
+enableAutoUnmount(afterEach)
 
 const page: CommandReferencePage = {
   items: [{
@@ -414,7 +416,7 @@ describe('Command Reference mounted behavior', () => {
   it('consumes the shared dynamic application locale', async () => {
     const wrapper = await renderView()
     setAppLocale('en_US')
-    await flushPromises()
+    await nextTick()
 
     expect(wrapper.text()).toContain('Command Reference')
     expect(wrapper.text()).toContain('Prerequisites')

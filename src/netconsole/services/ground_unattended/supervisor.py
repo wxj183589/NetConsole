@@ -8,6 +8,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import zipfile
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -49,6 +50,10 @@ from netconsole.services.ground_unattended.heartbeat_state import (
     HeartbeatTransition,
     TrainConnectivityAggregator,
 )
+from netconsole.services.ground_unattended.ping_loss import (
+    PingLossTracker, acknowledge_loss_events,
+)
+from netconsole.services.ground_unattended.task_scheduler import GroundTaskScheduler
 from netconsole.services.ground_unattended.deep_scheduler import (
     DeepMrCollectionScheduler,
 )
@@ -136,6 +141,7 @@ class GroundUnattendedSupervisor:
             event_sink=self._on_heartbeat_transition,
         )
         self._heartbeat_run_id = ""
+        self._run_session_id = ""
         # fping callbacks run on shard threads while the Supervisor tick and
         # stop/finalize paths run on the scheduler thread. Keep the state
         # engine and its bounded persistence queue behind one lock.
@@ -145,6 +151,8 @@ class GroundUnattendedSupervisor:
         self._heartbeat_target_signature: tuple[tuple[Any, ...], ...] = ()
         self._heartbeat_force_persist = False
         self._heartbeat_pending_events: deque[dict[str, Any]] = deque()
+        self._heartbeat_pending_loss_events: deque[dict[str, Any]] = deque()
+        self._heartbeat_loss_trackers: dict[str, PingLossTracker] = {}
         self._heartbeat_event_flush_lock = threading.Lock()
         self._heartbeat_event_error = ""
         self._deep_scheduler_error = ""
@@ -153,6 +161,7 @@ class GroundUnattendedSupervisor:
             site_id=site_id,
             sample_callback=self._on_fleet_ping_sample,
         )
+        self.task_scheduler = GroundTaskScheduler()
         self.deep_scheduler = (
             DeepMrCollectionScheduler(
                 paths,
@@ -925,7 +934,7 @@ class GroundUnattendedSupervisor:
             latest = self.repository.latest_run()
             if latest and str(latest.get("run_date") or "") == window.run_date:
                 archive = self.repository.get_archive_by_run(str(latest["run_id"]))
-                if archive and archive.get("archive_status") == "READY":
+                if archive and archive.get("archive_status") == "READY" and not self._manual_start:
                     manual_start = self._manual_start
                     self._manual_start = False
                     if manual_start:
@@ -1078,6 +1087,12 @@ class GroundUnattendedSupervisor:
             scheduled_start_at=scheduled_start.isoformat(timespec="seconds"),
             scheduled_end_at=scheduled_end.isoformat(timespec="seconds"),
         )
+        # A run is the daily aggregation identity. Each actual start gets its
+        # own persisted session so same-day stop/start cycles remain distinct.
+        if str(run.get("actual_started_at") or ""):
+            first_started_at = min(str(run["actual_started_at"]), now.isoformat(timespec="milliseconds"))
+        else:
+            first_started_at = now.isoformat(timespec="milliseconds")
         self.repository.update_run(
             str(run["run_id"]),
             state="STARTING",
@@ -1085,12 +1100,31 @@ class GroundUnattendedSupervisor:
             requested_action="manual_start" if manual_start else "",
             scheduled_start_at=scheduled_start.isoformat(timespec="seconds"),
             scheduled_end_at=scheduled_end.isoformat(timespec="seconds"),
-            actual_started_at=now.isoformat(timespec="milliseconds"),
+            actual_started_at=first_started_at,
             actual_ended_at="",
             error_code="",
             error_message="",
         )
         run = self.repository.get_run(str(run["run_id"])) or run
+        self._run_session_id = f"session_{uuid.uuid4().hex}"
+        self.repository.create_run_session(
+            session_id=self._run_session_id,
+            run_id=str(run["run_id"]),
+            run_date=str(run["run_date"]),
+            started_at=now.isoformat(timespec="milliseconds"),
+        )
+        try:
+            self.archive_service.restore_daily_archive(
+                str(run["run_id"]), str(run["run_date"])
+            )
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            self.repository.add_event(
+                run_id=str(run["run_id"]),
+                event_type="archive_restore_failed",
+                severity="error",
+                title="同日历史归档恢复失败",
+                message=f"{exc.__class__.__name__}: {exc}",
+            )
         self._manual_start = False
         self._active_profile = profile
         self._last_processed_snapshot_id_by_controller = {}
@@ -1105,7 +1139,8 @@ class GroundUnattendedSupervisor:
             event_type="run_started",
             title="地面无人值守运行已开始",
             message=f"运行窗口 {profile.schedule_start_time} - {profile.schedule_end_time}",
-            details=inventory_summary.model_dump(mode="json"),
+            details={**inventory_summary.model_dump(mode="json"), "session_id": self._run_session_id, "event_source": "ground_supervisor"},
+            ts=now.isoformat(timespec="milliseconds"),
         )
         return self.repository.get_run(str(run["run_id"])) or run
 
@@ -1117,8 +1152,9 @@ class GroundUnattendedSupervisor:
         capabilities used by the other workers.
         """
         grouped: dict[str, dict[str, Any]] = {}
+        inventory_state = self.repository.heartbeat_inventory_state()
         inventory = (self.repository.list_inventory(include_removed=False)
-                     if self.repository.heartbeat_inventory_state()["enabled"] else [])
+                     if inventory_state["enabled"] else [])
         for train in inventory:
             train_id = str(train.get("train_id") or "").strip()
             if not train_id:
@@ -1158,10 +1194,14 @@ class GroundUnattendedSupervisor:
         ]
         normalized_run_id = str(run_id)
         with self._heartbeat_lock:
-            # A completed run must not leak its in-memory outage state into the
-            # next run. Backend recovery for the same run instead restores the
-            # durable counters explicitly in _start_fleet_ping.
-            if self._heartbeat_run_id and self._heartbeat_run_id != normalized_run_id:
+            # A new run or explicit data clear must not reuse old in-memory
+            # counters, including when the daily run ID is reused. Backend
+            # recovery restores durable counters in _start_fleet_ping.
+            cleared_at = str(inventory_state.get("data_cleared_at") or "")
+            if self._heartbeat_run_id and (
+                self._heartbeat_run_id != normalized_run_id
+                or getattr(self, "_heartbeat_cleared_at", "") != cleared_at
+            ):
                 self._heartbeat_engine = HeartbeatStateEngine(
                     event_sink=self._on_heartbeat_transition,
                 )
@@ -1171,8 +1211,12 @@ class GroundUnattendedSupervisor:
                 self._heartbeat_target_signature = ()
                 self._heartbeat_dirty_mrs.clear()
                 self._heartbeat_dirty_trains.clear()
+                self._heartbeat_pending_loss_events.clear()
+                self._heartbeat_loss_trackers.clear()
+            self._heartbeat_cleared_at = cleared_at
             self._heartbeat_run_id = normalized_run_id
             self._heartbeat_engine.configure_targets(targets)
+            self._restore_heartbeat_loss_trackers(normalized_run_id, targets)
             signature = tuple(
                 sorted(
                     (
@@ -1209,6 +1253,68 @@ class GroundUnattendedSupervisor:
                 self._heartbeat_target_signature = signature
             self._heartbeat_engine.set_engine_state("RUNNING", at=self._now())
         return targets
+
+    def _restore_heartbeat_loss_trackers(
+        self, run_id: str, targets: list[HeartbeatTarget]
+    ) -> None:
+        by_mr = {target.mr_uuid: target for target in targets}
+        valid_keys = {
+            f"heartbeat:{target.mr_uuid}:{address}"
+            for target in targets for address in target.management_ips
+        }
+        restored = {
+            key: tracker for key, tracker in self._heartbeat_loss_trackers.items()
+            if key in valid_keys
+        }
+        missing = valid_keys - restored.keys()
+        if not missing:
+            self._heartbeat_loss_trackers = restored
+            return
+        for row in self.repository.list_open_ping_loss_intervals(
+            run_id, started_after=getattr(self, "_heartbeat_cleared_at", "")
+        ):
+            mr_id = str(row.get("mr_id") or "")
+            target_ip = str(row.get("target_ip") or "")
+            target = by_mr.get(mr_id)
+            if not target_ip or target is None or target_ip not in target.management_ips:
+                continue
+            key = f"heartbeat:{mr_id}:{target_ip}"
+            if key not in missing:
+                continue
+            tracker = PingLossTracker(key)
+            tracker.restore(row)
+            restored[key] = tracker
+        for key in missing - restored.keys():
+            restored[key] = PingLossTracker(key)
+        self._heartbeat_loss_trackers = restored
+
+    def _queue_heartbeat_loss_sample(
+        self, target: FleetPingTarget, sample: Any, timestamp: datetime
+    ) -> None:
+        key = f"heartbeat:{target.mr_id}:{target.target_ip}"
+        trackers = getattr(self, "_heartbeat_loss_trackers", None)
+        if trackers is None:
+            trackers = self._heartbeat_loss_trackers = {}
+        tracker = trackers.setdefault(key, PingLossTracker(key))
+        pending = getattr(self, "_heartbeat_pending_loss_events", None)
+        if pending is None:
+            pending = self._heartbeat_pending_loss_events = deque()
+        try:
+            tracker.enqueue_observation(
+                pending,
+                success=bool(sample.ok),
+                at=timestamp,
+                metadata={
+                    "ap_name": target.current_ap_name,
+                    "station": target.station,
+                    "section": target.section,
+                },
+                fields=dict(run_id=self._heartbeat_run_id, target_ip=target.target_ip,
+                            train_id=target.train_id, mr_id=target.mr_id, mr_role=target.mr_position_code),
+            )
+        except RuntimeError as exc:
+            self._heartbeat_event_error = f"HEARTBEAT_EVENT_BACKLOG_FULL: {exc}"
+            raise
 
     def _heartbeat_fleet_targets(self) -> dict[str, FleetPingTarget]:
         result: dict[str, FleetPingTarget] = {}
@@ -1290,6 +1396,7 @@ class GroundUnattendedSupervisor:
                 snapshot = self._heartbeat_engine.snapshot(str(target.mr_id))
                 if snapshot.engine_state != "RUNNING":
                     return
+                self._queue_heartbeat_loss_sample(target, sample, timestamp)
                 self._heartbeat_dirty_mrs.add(str(target.mr_id))
                 self._mark_heartbeat_transitions_dirty(transitions)
                 self._refresh_train_heartbeat_snapshots_locked(
@@ -1442,6 +1549,14 @@ class GroundUnattendedSupervisor:
         with self._heartbeat_event_flush_lock:
             with self._heartbeat_lock:
                 batch = list(self._heartbeat_pending_events)
+                loss_batch = list(getattr(self, "_heartbeat_pending_loss_events", ()))
+            if loss_batch:
+                try:
+                    self.repository.apply_ping_loss_events(loss_batch)
+                except Exception:
+                    raise
+                with self._heartbeat_lock:
+                    acknowledge_loss_events(self._heartbeat_pending_loss_events, loss_batch)
             if not batch:
                 return
             for offset in range(0, len(batch), _HEARTBEAT_PERSIST_BATCH_SIZE):
@@ -2573,6 +2688,18 @@ class GroundUnattendedSupervisor:
                 }
             )
         ended_at = self._now().isoformat(timespec="milliseconds")
+        session = (
+            self.repository.latest_open_run_session(run_id)
+            if not self._run_session_id
+            else None
+        )
+        session_id = self._run_session_id or str((session or {}).get("session_id") or "")
+        if session_id:
+            self.repository.close_run_session(
+                session_id,
+                ended_at=ended_at,
+                stop_reason=str(operation.get("stop_reason") or ""),
+            )
         result_summary: dict[str, Any] = dict(
             (self.repository.get_operation(operation_id) or {}).get(
                 "result_summary"
@@ -2770,12 +2897,16 @@ class GroundUnattendedSupervisor:
             ),
             details={
                 "operation_id": operation_id,
+                "session_id": session_id,
+                "event_source": "ground_supervisor",
                 "stop_trigger": str(operation.get("stop_trigger") or "UNKNOWN"),
                 "stop_failures": component_failures,
             },
+            ts=ended_at,
         )
         self._active_profile = None
         self._manual_start = False
+        self._run_session_id = ""
         self._last_valid_ping_targets = {}
         self._last_processed_snapshot_id_by_controller = {}
         self._syslog_recovery_pending = False

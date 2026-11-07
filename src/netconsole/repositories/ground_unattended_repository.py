@@ -112,6 +112,23 @@ CREATE TABLE IF NOT EXISTS ground_unattended_runs (
 CREATE INDEX IF NOT EXISTS idx_ground_runs_site_state
 ON ground_unattended_runs(site_id, state, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS ground_unattended_run_sessions (
+    session_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'RUNNING',
+    stop_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ground_run_sessions_day
+ON ground_unattended_run_sessions(site_id, run_date, started_at);
+CREATE INDEX IF NOT EXISTS idx_ground_run_sessions_run
+ON ground_unattended_run_sessions(site_id, run_id, started_at);
+
 CREATE TABLE IF NOT EXISTS ground_unattended_train_runs (
     site_id TEXT NOT NULL,
     run_id TEXT NOT NULL,
@@ -602,12 +619,28 @@ CREATE TABLE IF NOT EXISTS ground_unattended_ping_loss_intervals (
     target_ip TEXT NOT NULL,
     train_id TEXT NOT NULL DEFAULT '',
     mr_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    event_key TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'OPEN',
+    observed_at TEXT NOT NULL DEFAULT '',
+    recovered_at TEXT NOT NULL DEFAULT '',
+    ap_name TEXT NOT NULL DEFAULT '',
+    station TEXT NOT NULL DEFAULT '',
+    section TEXT NOT NULL DEFAULT '',
+    last_success_ap_name TEXT NOT NULL DEFAULT '',
+    last_success_station TEXT NOT NULL DEFAULT '',
+    last_success_section TEXT NOT NULL DEFAULT '',
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
     started_at TEXT NOT NULL,
     ended_at TEXT NOT NULL DEFAULT '',
     loss_count INTEGER NOT NULL DEFAULT 0,
     duration_seconds REAL NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS idx_ground_ping_loss_intervals_query
+ON ground_unattended_ping_loss_intervals(site_id, run_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS ground_unattended_raw_files (
     file_id TEXT PRIMARY KEY,
@@ -801,6 +834,23 @@ _PROFILE_MIGRATION_COLUMNS = {
     "storage_io_profile": "TEXT NOT NULL DEFAULT 'AUTO'",
 }
 
+_PING_LOSS_MIGRATION_COLUMNS = {
+    "mr_role": "TEXT NOT NULL DEFAULT ''",
+    "event_key": "TEXT NOT NULL DEFAULT ''",
+    "state": "TEXT NOT NULL DEFAULT 'OPEN'",
+    "observed_at": "TEXT NOT NULL DEFAULT ''",
+    "recovered_at": "TEXT NOT NULL DEFAULT ''",
+    "ap_name": "TEXT NOT NULL DEFAULT ''",
+    "station": "TEXT NOT NULL DEFAULT ''",
+    "section": "TEXT NOT NULL DEFAULT ''",
+    "last_success_ap_name": "TEXT NOT NULL DEFAULT ''",
+    "last_success_station": "TEXT NOT NULL DEFAULT ''",
+    "last_success_section": "TEXT NOT NULL DEFAULT ''",
+    "sent_count": "INTEGER NOT NULL DEFAULT 0",
+    "success_count": "INTEGER NOT NULL DEFAULT 0",
+    "updated_at": "TEXT NOT NULL DEFAULT ''",
+}
+
 _PING_SUMMARY_MIGRATION_COLUMNS = {
     "raw_sample_count": "INTEGER NOT NULL DEFAULT 0",
     "warmup_ignored_count": "INTEGER NOT NULL DEFAULT 0",
@@ -971,12 +1021,20 @@ class GroundUnattendedRepository:
             self._ensure_columns(conn, "ground_unattended_train_endpoints", _ENDPOINT_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_boot_sessions", _BOOT_SESSION_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_wmesh_events", _WMESH_EVENT_MIGRATION_COLUMNS)
+            # Raw replay checks every incoming line inside the projection write
+            # transaction. A site-only scan grows with the day's full history
+            # and can starve Ping/stop writers under sustained Syslog ingress.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ground_wmesh_raw_line "
+                "ON ground_unattended_wmesh_events(site_id, raw_file_id, raw_line_number)"
+            )
             self._ensure_columns(
                 conn,
                 "ground_unattended_raw_files",
                 _RAW_FILE_MIGRATION_COLUMNS,
             )
             self._ensure_columns(conn, "ground_unattended_events", _EVENT_MIGRATION_COLUMNS)
+            self._ensure_columns(conn, "ground_unattended_ping_loss_intervals", _PING_LOSS_MIGRATION_COLUMNS)
             self._ensure_columns(
                 conn,
                 "ground_unattended_operations",
@@ -1011,8 +1069,23 @@ class GroundUnattendedRepository:
             )
             conn.execute(
                 """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ground_ping_loss_event_key
+                ON ground_unattended_ping_loss_intervals(site_id, run_id, event_key)
+                WHERE event_key <> ''
+                """
+            )
+            conn.execute(
+                """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
                 VALUES('schema_version', '13', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (_now(),),
+            )
+            conn.execute(
+                """
+                INSERT INTO ground_unattended_schema(key, value, updated_at)
+                VALUES('ping_loss_intervals_version', '1', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -1658,6 +1731,79 @@ class GroundUnattendedRepository:
             ).fetchone()
         return _decode_row(row) if row else None
 
+    def create_run_session(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        run_date: str,
+        started_at: str,
+    ) -> dict[str, Any]:
+        now = _now()
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO ground_unattended_run_sessions(
+                    session_id, site_id, run_id, run_date, started_at,
+                    state, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, 'RUNNING', ?, ?)
+                """,
+                (session_id, self.site_id, run_id, run_date, started_at, now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_run_sessions "
+                "WHERE site_id=? AND session_id=?",
+                (self.site_id, session_id),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("ground unattended run session was not created")
+        return _decode_row(row)
+
+    def latest_open_run_session(self, run_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_run_sessions "
+                "WHERE site_id=? AND run_id=? AND ended_at='' "
+                "ORDER BY started_at DESC LIMIT 1",
+                (self.site_id, run_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def list_run_sessions(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_run_sessions "
+                "WHERE site_id=? AND run_id=? ORDER BY started_at, session_id",
+                (self.site_id, run_id),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def close_run_session(
+        self,
+        session_id: str,
+        *,
+        ended_at: str,
+        state: str = "COMPLETED",
+        stop_reason: str = "",
+    ) -> None:
+        with self._transaction() as conn:
+            conn.execute(
+                "UPDATE ground_unattended_run_sessions SET ended_at=?, state=?, "
+                "stop_reason=?, updated_at=? WHERE site_id=? AND session_id=?",
+                (ended_at, state, stop_reason, _now(), self.site_id, session_id),
+            )
+
+    def latest_event_timestamp(self, run_id: str) -> str:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT ts FROM ground_unattended_events WHERE site_id=? AND run_id=? "
+                "AND event_type NOT IN ('run_completed', 'archive_delete_requested', "
+                "'archive_deleted', 'archive_delete_failed') "
+                "ORDER BY ts DESC, id DESC LIMIT 1",
+                (self.site_id, run_id),
+            ).fetchone()
+        return str(row[0] or "") if row else ""
+
     def latest_run(self) -> dict[str, Any] | None:
         with self._connection() as conn:
             row = conn.execute(
@@ -2058,6 +2204,21 @@ class GroundUnattendedRepository:
         return int(cursor.rowcount)
 
     def upsert_ping_summary(self, values: dict[str, Any]) -> None:
+        self.upsert_ping_summaries([values])
+
+    def upsert_ping_summaries(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        """Persist one sampler flush atomically, without a connection per bucket."""
+        values = [dict(row) for row in rows]
+        if not values:
+            return
+        with self._transaction() as conn:
+            for row in values:
+                self._upsert_ping_summary(conn, row)
+
+    @staticmethod
+    def _upsert_ping_summary(
+        conn: sqlite3.Connection, values: dict[str, Any]
+    ) -> None:
         fields = tuple(values)
         updates = ", ".join(
             f"{field}=excluded.{field}"
@@ -2073,14 +2234,13 @@ class GroundUnattendedRepository:
                 "ap_identity",
             }
         )
-        with self._transaction() as conn:
-            conn.execute(
-                f"INSERT INTO ground_unattended_ping_summaries ({', '.join(fields)}) "
-                f"VALUES ({', '.join('?' for _ in fields)}) "
-                "ON CONFLICT(site_id, run_id, bucket_kind, bucket_start, target_ip, ap_identity) "
-                f"DO UPDATE SET {updates}",
-                tuple(values.values()),
-            )
+        conn.execute(
+            f"INSERT INTO ground_unattended_ping_summaries ({', '.join(fields)}) "
+            f"VALUES ({', '.join('?' for _ in fields)}) "
+            "ON CONFLICT(site_id, run_id, bucket_kind, bucket_start, target_ip, ap_identity) "
+            f"DO UPDATE SET {updates}",
+            tuple(values.values()),
+        )
 
     def list_ping_summaries(
         self, run_id: str, *, bucket_kind: str | None = "daily"
@@ -2360,6 +2520,176 @@ class GroundUnattendedRepository:
             item["snapshot"] = payload if isinstance(payload, dict) else {}
             result.append(item)
         return result
+
+    def apply_ping_loss_events(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+    ) -> int:
+        """Apply loss episode commands in one transaction.
+
+        The table is the shared event authority for Fleet Ping and Quick Ping;
+        callers may safely retry a batch after a database busy/error.
+        """
+        values = [dict(row) for row in rows if str(row.get("event_key") or "").strip()]
+        if not values:
+            return 0
+        with self._transaction() as conn:
+            for row in values:
+                key = str(row["event_key"])
+                action = str(row.get("action") or "UPDATE").upper()
+                run_id = str(row.get("run_id") or "")
+                if action == "RECOVER":
+                    conn.execute(
+                        """
+                        UPDATE ground_unattended_ping_loss_intervals
+                        SET state='RECOVERED', ended_at=?, recovered_at=?,
+                            observed_at=?, duration_seconds=?, loss_count=?,
+                            sent_count=?, success_count=?, last_success_ap_name=?,
+                            last_success_station=?, last_success_section=?,
+                            updated_at=?
+                        WHERE site_id=? AND run_id=? AND event_key=?
+                        """,
+                        (
+                            str(row.get("ended_at") or row.get("observed_at") or _now()),
+                            str(row.get("recovered_at") or row.get("ended_at") or _now()),
+                            str(row.get("observed_at") or row.get("ended_at") or _now()),
+                            float(row.get("duration_seconds") or 0),
+                            int(row.get("loss_count") or 0),
+                            int(row.get("sent_count") or 0),
+                            int(row.get("success_count") or 0),
+                            str(row.get("last_success_ap_name") or ""),
+                            str(row.get("last_success_station") or ""),
+                            str(row.get("last_success_section") or ""),
+                            _now(), self.site_id, run_id, key,
+                        ),
+                    )
+                    continue
+                now = _now()
+                conn.execute(
+                    """
+                    INSERT INTO ground_unattended_ping_loss_intervals(
+                        site_id, run_id, target_ip, train_id, mr_id, mr_role,
+                        event_key, state, observed_at, recovered_at, ap_name,
+                        station, section, last_success_ap_name,
+                        last_success_station, last_success_section, sent_count,
+                        success_count, started_at, ended_at, loss_count,
+                        duration_seconds, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, '', ?, ?, ?, ?, ?, ?,
+                              ?, ?, ?, '', ?, ?, ?, ?)
+                    ON CONFLICT DO UPDATE SET
+                        observed_at=excluded.observed_at,
+                        ap_name=excluded.ap_name,
+                        station=excluded.station,
+                        section=excluded.section,
+                        last_success_ap_name=excluded.last_success_ap_name,
+                        last_success_station=excluded.last_success_station,
+                        last_success_section=excluded.last_success_section,
+                        sent_count=excluded.sent_count,
+                        success_count=excluded.success_count,
+                        loss_count=excluded.loss_count,
+                        duration_seconds=excluded.duration_seconds,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        self.site_id, run_id, str(row.get("target_ip") or ""),
+                        str(row.get("train_id") or ""), str(row.get("mr_id") or ""),
+                        str(row.get("mr_role") or ""), key,
+                        str(row.get("observed_at") or now), str(row.get("ap_name") or ""),
+                        str(row.get("station") or ""), str(row.get("section") or ""),
+                        str(row.get("last_success_ap_name") or ""),
+                        str(row.get("last_success_station") or ""),
+                        str(row.get("last_success_section") or ""),
+                        int(row.get("sent_count") or 0), int(row.get("success_count") or 0),
+                        str(row.get("started_at") or row.get("observed_at") or now),
+                        int(row.get("loss_count") or 0), float(row.get("duration_seconds") or 0),
+                        now, now,
+                    ),
+                )
+        return len(values)
+
+    def list_ping_loss_intervals(
+        self,
+        run_id: str,
+        *,
+        target_ip: str = "",
+        mr_id: str = "",
+        state: str = "",
+        limit: int = 500,
+        started_after: str = "",
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?", "run_id=?"]
+        params: list[Any] = [self.site_id, str(run_id)]
+        if target_ip:
+            where.append("target_ip=?")
+            params.append(str(target_ip))
+        if mr_id:
+            where.append("mr_id=?")
+            params.append(str(mr_id))
+        if state:
+            where.append("state=?")
+            params.append(str(state).upper())
+        if started_after:
+            where.append("julianday(started_at) > julianday(?)")
+            params.append(started_after)
+        params.append(max(1, min(int(limit), 5000)))
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_ping_loss_intervals WHERE "
+                + " AND ".join(where)
+                + " ORDER BY started_at DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def list_ping_loss_intervals_by_mr(
+        self,
+        run_id: str,
+        mr_ids: Iterable[str],
+        *,
+        limit_per_mr: int = 200,
+        started_after: str = "",
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Read bounded loss-event history for all visible MRs in one query."""
+        ids = tuple(dict.fromkeys(str(value) for value in mr_ids if str(value)))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        bounded = max(1, min(int(limit_per_mr), 5000))
+        boundary = " AND julianday(started_at) > julianday(?)" if started_after else ""
+        params = (self.site_id, str(run_id), *ids, *([started_after] if started_after else []), bounded)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT interval_rows.*, ROW_NUMBER() OVER (
+                        PARTITION BY mr_id ORDER BY started_at DESC, id DESC
+                    ) AS row_number
+                    FROM ground_unattended_ping_loss_intervals AS interval_rows
+                    WHERE site_id=? AND run_id=? AND mr_id IN ({placeholders}){boundary}
+                )
+                WHERE row_number <= ?
+                ORDER BY started_at DESC, id DESC
+                """,
+                params,
+            ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            decoded = _decode_row(row)
+            decoded.pop("row_number", None)
+            grouped.setdefault(str(decoded.get("mr_id") or ""), []).append(decoded)
+        return grouped
+
+    def list_open_ping_loss_intervals(
+        self, run_id: str, *, target_ip: str = "", mr_id: str = "", started_after: str = ""
+    ) -> list[dict[str, Any]]:
+        return self.list_ping_loss_intervals(
+            run_id,
+            target_ip=target_ip,
+            mr_id=mr_id,
+            state="OPEN",
+            limit=5000,
+            started_after=started_after,
+        )
 
     def radio_runtime_statistics(
         self, *, run_id: str = "", day_start: str = ""
