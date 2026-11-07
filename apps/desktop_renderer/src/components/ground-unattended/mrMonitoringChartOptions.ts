@@ -11,6 +11,7 @@ export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string,
   const ips = [...new Set(points.map((point) => point.target_ip))]
   const intervals = data.peer_intervals.filter((row) => Date.parse(row.end) >= begin && Date.parse(row.start) <= finish)
   const peers = [...new Set(intervals.map((row) => row.peer_name || row.bssid || 'UNKNOWN'))]
+  const meshEvents = (data.mesh_events || []).filter((row) => Date.parse(row.event_time || row.receive_time) >= begin && Date.parse(row.event_time || row.receive_time) <= finish)
   const series: Array<Record<string, unknown>> = []
   for (const ip of ips) {
     const rows = points.filter((point) => point.target_ip === ip).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
@@ -36,15 +37,27 @@ export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string,
       const height = Math.min(24, api.size([0, 1])[1]! * 0.7)
       return { type: 'rect', shape: { x: a[0], y: a[1]! - height / 2, width: Math.max(0, b[0]! - a[0]!), height }, style: api.style() }
     }, tooltip: { show: false } })
+  series.push({ id: 'mesh-events', name: 'Mesh / Syslog', type: 'custom', xAxisIndex: 2, yAxisIndex: 3,
+    data: meshEvents.map((row) => [Date.parse(row.event_time || row.receive_time), 0, row.event_type]),
+    encode: { x: 0, y: 1 },
+    renderItem: (_params: unknown, api: { value: (index: number) => number; coord: (values: number[]) => number[]; style: () => object }) => {
+      const point = api.coord([api.value(0), api.value(1)])
+      return { type: 'circle', shape: { cx: point[0], cy: point[1], r: 5 }, style: api.style() }
+    },
+    tooltip: { formatter: (params: { data?: [number, number, string] }) => {
+      const event = meshEvents.find((row) => Date.parse(row.event_time || row.receive_time) === params.data?.[0])
+      return event ? `${escape(event.event_time || event.receive_time)}<br>${escape(event.event_type)}<br>${escape(event.new_ap_name || event.bssid || 'UNKNOWN')}` : 'Mesh / Syslog'
+    } },
+  })
   return {
     ...createMultiSeriesTimeChartBaseOption(theme, { unit: 'ms', pointCount: points.length, showLegend: true }),
     toolbox: { show: false },
     legend: { top: 4, type: 'scroll' },
-    grid: [{ left: 65, right: 50, top: 48, height: '46%', outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' }, { left: 95, right: 50, top: '66%', bottom: 72, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' }],
+    grid: [{ left: 65, right: 50, top: 48, height: '38%', outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' }, { left: 95, right: 50, top: '56%', height: '18%', outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' }, { left: 95, right: 50, top: '79%', bottom: 72, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' }],
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
-    xAxis: [0, 1].map((gridIndex) => ({ type: 'time', gridIndex, min: begin, max: finish, axisPointer: { show: true, snap: false } })),
-    yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }, { type: 'category', gridIndex: 1, data: peers.length ? peers : ['UNKNOWN'], axisLabel: { width: 85, overflow: 'truncate' } }],
-    dataZoom: [{ type: 'inside', xAxisIndex: [0, 1], filterMode: 'weakFilter' }, { type: 'slider', xAxisIndex: [0, 1], bottom: 8, filterMode: 'weakFilter' }],
+    xAxis: [0, 1, 2].map((gridIndex) => ({ type: 'time', gridIndex, min: begin, max: finish, axisPointer: { show: true, snap: false } })),
+    yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }, { type: 'category', gridIndex: 1, data: peers.length ? peers : ['UNKNOWN'], axisLabel: { width: 85, overflow: 'truncate' } }, { type: 'category', gridIndex: 2, data: ['Mesh / Syslog'], axisLabel: { width: 85, overflow: 'truncate' } }],
+    dataZoom: [{ type: 'inside', xAxisIndex: [0, 1, 2], filterMode: 'weakFilter' }, { type: 'slider', xAxisIndex: [0, 1, 2], bottom: 8, filterMode: 'weakFilter' }],
     tooltip: { trigger: 'axis', confine: true, appendToBody: false, extraCssText: 'max-width:420px;max-height:260px;overflow:hidden',
       formatter: (params: Array<{ axisValue?: number; data?: [number, number | null]; seriesName: string; seriesIndex: number }>) => {
         const time = Number(params[0]?.axisValue)

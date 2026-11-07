@@ -76,6 +76,17 @@ GroundDataAvailability = Literal[
     "MISSING",
     "CORRUPT",
 ]
+GroundHeartbeatDataState = Literal[
+    "NO_INVENTORY",
+    "NOT_STARTED",
+    "INITIALIZING",
+    "RUNNING",
+    "PAUSED",
+    "STALE",
+    "WAITING_FOR_SAMPLES",
+    "ERROR",
+    "DISABLED",
+]
 GroundSyslogReturnAddressStatus = Literal[
     "LOCAL_ADDRESS",
     "EXTERNAL_CONFIRMED",
@@ -1552,6 +1563,15 @@ class GroundHeartbeatTrainDTO(ApiModel):
     updated_at: str = ""
 
 
+class GroundHeartbeatStatisticsDTO(ApiModel):
+    sent_count: int = 0
+    success_count: int = 0
+    lost_count: int = 0
+    average_rtt_ms: float | None = None
+    loss_rate_percent: float | None = None
+    latest_sample_at: str = ""
+
+
 class GroundHeartbeatPageDTO(ApiModel):
     monitoring_enabled: bool = True
     source_conflicts: list[str] = Field(default_factory=list)
@@ -1567,6 +1587,11 @@ class GroundHeartbeatPageDTO(ApiModel):
     trains: list[GroundHeartbeatTrainDTO] = Field(default_factory=list)
     mr_counts: dict[str, int] = Field(default_factory=dict)
     train_counts: dict[str, int] = Field(default_factory=dict)
+    data_state: GroundHeartbeatDataState = "NO_INVENTORY"
+    data_state_message: str = ""
+    inventory_train_count: int = 0
+    inventory_mr_count: int = 0
+    heartbeat_statistics: GroundHeartbeatStatisticsDTO = Field(default_factory=GroundHeartbeatStatisticsDTO)
 
 
 class GroundMrMonitoringDTO(ApiModel):

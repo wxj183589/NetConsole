@@ -408,10 +408,18 @@ export interface GroundHeartbeatTrain {
   train_id: string; train_no: string; status: string; both_unreachable_since: string
   mr_states: Record<string, string>; updated_at: string
 }
+export type GroundHeartbeatDataState = 'NO_INVENTORY' | 'NOT_STARTED' | 'INITIALIZING' | 'RUNNING' | 'PAUSED' | 'STALE' | 'WAITING_FOR_SAMPLES' | 'ERROR' | 'DISABLED'
+export interface GroundHeartbeatStatistics {
+  sent_count: number; success_count: number; lost_count: number
+  average_rtt_ms: number | null; loss_rate_percent: number | null; latest_sample_at: string
+}
 export interface GroundHeartbeatPage {
   total?: number; total_mrs?: number; page?: number; page_size?: number; stations?: string[]
   run_id: string; run_state: string; mrs: GroundHeartbeatMr[]; trains: GroundHeartbeatTrain[]
   mr_counts: Record<string, number>; train_counts: Record<string, number>
+  monitoring_enabled?: boolean; source_conflicts?: string[]; data_cleared_at?: string
+  data_state?: GroundHeartbeatDataState; data_state_message?: string
+  inventory_train_count?: number; inventory_mr_count?: number; heartbeat_statistics?: GroundHeartbeatStatistics
 }
 export type GroundHeartbeatInventoryAction = 'SYNC' | 'CLEAR_DEVICES' | 'CLEAR_DATA'
 export interface GroundHeartbeatInventoryPreview {

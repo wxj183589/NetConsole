@@ -50,6 +50,7 @@ from netconsole.models.api.ground_unattended import (
     GroundHeartbeatInventoryApplyDTO,
     GroundHeartbeatInventoryPreviewDTO,
     GroundHeartbeatPageDTO,
+    GroundHeartbeatStatisticsDTO,
     GroundMrMonitoringDTO,
     GroundHeartbeatTrainDTO,
     GroundInventorySummaryDTO,
@@ -454,6 +455,20 @@ class GroundUnattendedApplicationService:
         inventory = self.repository.list_inventory(include_removed=not is_current)
         if is_current and not state["enabled"]:
             inventory = []
+        snapshot_rows = (
+            self.repository.list_heartbeat_snapshots(resolved_id)
+            if resolved_id
+            else []
+        )
+        # A selected historical run can legitimately have no heartbeat facts
+        # (for example, a run created before the first probe). Keep that run
+        # context in the response, but project the current active inventory so
+        # the page does not turn a known 21/42 inventory into an unsupported 0.
+        inventory_projection = bool(
+            state["enabled"] and resolved_id and not snapshot_rows
+        )
+        if inventory_projection:
+            inventory = self.repository.list_inventory(include_removed=False)
         trains_by_id = {str(row["train_id"]): row for row in inventory}
         endpoints = {
             str(endpoint.get("device_uuid") or ""): endpoint
@@ -475,12 +490,12 @@ class GroundUnattendedApplicationService:
         recent_rtts = self.supervisor.fleet_ping.latest_mr_rtts(resolved_id) if is_current else {}
         mrs: list[GroundHeartbeatMrDTO] = []
         trains: list[GroundHeartbeatTrainDTO] = []
-        for row in self.repository.list_heartbeat_snapshots(resolved_id) if resolved_id else []:
+        for row in snapshot_rows:
             if state["data_cleared_at"] and str(row.get("updated_at") or "") <= state["data_cleared_at"]:
                 continue
             payload = dict(row["snapshot"])
             train_id = str(payload.get("train_id") or "")
-            if is_current and train_id not in trains_by_id:
+            if (is_current or inventory_projection) and train_id not in trains_by_id:
                 continue
             train = trains_by_id.get(train_id, {})
             payload.update(
@@ -489,13 +504,13 @@ class GroundUnattendedApplicationService:
             )
             if row["entity_type"] == "MR":
                 endpoint = endpoints.get(str(payload.get("mr_uuid") or ""), {})
-                if is_current and (
+                if (is_current or inventory_projection) and (
                     not endpoint
                     or str(endpoint.get("train_id") or "") != train_id
                     or str(endpoint.get("mr_role") or "").upper() != str(payload.get("role") or "").upper()
                 ):
                     continue
-                if is_current:
+                if is_current or inventory_projection:
                     expected_ips = {str(endpoint.get("management_ip") or "")}
                     if endpoint.get("backup_monitoring_strategy") == "MONITOR":
                         expected_ips.add(str(endpoint.get("backup_management_ip") or ""))
@@ -516,7 +531,7 @@ class GroundUnattendedApplicationService:
                 trains.append(GroundHeartbeatTrainDTO.model_validate(payload))
         # Inventory objects exist before the first run/sample. Unknown means
         # no evidence, never "offline" or an AC-derived reachability result.
-        if is_current:
+        if is_current or inventory_projection:
             present = {mr.mr_uuid for mr in mrs}
             for mr_id, endpoint in endpoints.items():
                 if mr_id in present:
@@ -535,7 +550,7 @@ class GroundUnattendedApplicationService:
                     station=identity.resolved_ap_station if identity else "",
                     ip_states=[GroundHeartbeatIpDTO(ip=ip) for ip in dict.fromkeys(ips) if ip],
                 ))
-        if is_current:
+        if is_current or inventory_projection:
             # An IP/group/role edit invalidates an MR snapshot above. A train
             # aggregate from before that edit must not continue to advertise
             # BOTH_ONLINE alongside a newly UNKNOWN endpoint.
@@ -563,6 +578,52 @@ class GroundUnattendedApplicationService:
             mr_counts[mr.status] = mr_counts.get(mr.status, 0) + 1
         for train in trains:
             train_counts[train.status] = train_counts.get(train.status, 0) + 1
+        sent_count = success_count = lost_count = 0
+        weighted_rtt = 0.0
+        latest_sample_at = ""
+        for mr in mrs:
+            for ip in mr.ip_states:
+                sent_count += int(ip.sent_count or 0)
+                success_count += int(ip.received_count or 0)
+                lost_count += int(ip.lost_count or 0)
+                if ip.avg_rtt_ms is not None:
+                    weighted_rtt += float(ip.avg_rtt_ms) * int(ip.received_count or 0)
+                if ip.sent_count or ip.received_count or ip.lost_count:
+                    candidate = ip.last_probe_at or ip.last_success_at
+                    if candidate > latest_sample_at:
+                        latest_sample_at = candidate
+        has_samples = sent_count > 0 or success_count > 0 or lost_count > 0
+        run_state = str((run or {}).get("state") or "").upper()
+        if not inventory:
+            data_state = "DISABLED" if not state["enabled"] else "NO_INVENTORY"
+            data_state_message = "已停用心跳监测对象" if not state["enabled"] else "当前局点没有已登记的心跳监测对象"
+        elif not has_samples:
+            data_state = (
+                "INITIALIZING" if run_state == "STARTING"
+                else "PAUSED" if run_state == "PAUSED"
+                else "ERROR" if run_state == "ERROR"
+                else "WAITING_FOR_SAMPLES" if resolved_id else "NOT_STARTED"
+            )
+            data_state_message = (
+                "心跳任务报告错误，尚未产生有效采样" if data_state == "ERROR"
+                else "已生成监测对象，等待首个 Ping 采样" if resolved_id
+                else "监测任务尚未启动，设备状态待检测"
+            )
+        elif run_state == "ERROR":
+            data_state, data_state_message = "ERROR", "心跳任务报告错误，保留最近有效采样"
+        elif run_state == "PAUSED":
+            data_state, data_state_message = "PAUSED", "心跳任务已暂停，状态保留在最近有效采样"
+        elif latest_sample_at:
+            try:
+                age = (datetime.now().astimezone() - datetime.fromisoformat(latest_sample_at.replace("Z", "+00:00"))).total_seconds()
+            except ValueError:
+                age = 0
+            if age > max(30, self.repository.get_profile().fleet_ping_timeout_ms / 1000 * 5):
+                data_state, data_state_message = "STALE", "最近心跳采样已超过刷新阈值"
+            else:
+                data_state, data_state_message = "RUNNING", "正在接收实时心跳采样"
+        else:
+            data_state, data_state_message = "RUNNING", "正在接收实时心跳采样"
         total_mrs = len(mrs)
         stations = sorted({mr.station for mr in mrs if mr.station})
         needle = query.strip().casefold()
@@ -585,9 +646,20 @@ class GroundUnattendedApplicationService:
         return GroundHeartbeatPageDTO(
             monitoring_enabled=bool(state["enabled"]), source_conflicts=source_conflicts,
             data_cleared_at=str(state["data_cleared_at"]),
-            run_id=resolved_id, run_state=str((run or {}).get("state") or ""),
+            run_id=resolved_id, run_state=run_state,
             mrs=mrs, trains=trains, mr_counts=mr_counts, train_counts=train_counts,
             total=total, total_mrs=total_mrs, page=page, page_size=page_size, stations=stations,
+            data_state=data_state, data_state_message=data_state_message,
+            inventory_train_count=len(inventory),
+            inventory_mr_count=sum(len(row.get("endpoints", [])) for row in inventory),
+            heartbeat_statistics=GroundHeartbeatStatisticsDTO(
+                sent_count=sent_count,
+                success_count=success_count,
+                lost_count=lost_count,
+                average_rtt_ms=(weighted_rtt / success_count) if success_count else None,
+                loss_rate_percent=(lost_count / sent_count * 100) if sent_count else None,
+                latest_sample_at=latest_sample_at,
+            ),
         )
 
     def mr_monitoring(self, site_id: str, *, mr_uuid: str, run_id: str = "", start_time: str = "", end_time: str = "") -> GroundMrMonitoringDTO:

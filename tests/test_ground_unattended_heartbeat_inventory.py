@@ -73,6 +73,48 @@ def test_refresh_projects_unknown_without_run_and_is_idempotent(inventory_app):
     f.start.assert_not_called()
 
 
+def test_selected_run_without_heartbeat_samples_keeps_inventory_visible(inventory_app):
+    f = inventory_app
+    site = f.service.site_id
+    f.service.heartbeat(site)
+    _run(f.repository, run_id="empty-run", state="COMPLETED")
+
+    page = f.service.heartbeat(site, run_id="empty-run")
+
+    assert page.run_id == "empty-run"
+    assert page.data_state == "WAITING_FOR_SAMPLES"
+    assert page.inventory_train_count == 1
+    assert page.inventory_mr_count == 2
+    assert page.total == 1 and page.total_mrs == 2
+    assert {mr.status for mr in page.mrs} == {"UNKNOWN"}
+    assert page.heartbeat_statistics.sent_count == 0
+
+
+def test_heartbeat_page_aggregates_real_ping_statistics(inventory_app):
+    f = inventory_app
+    site = f.service.site_id
+    f.service.heartbeat(site)
+    _run(f.repository, run_id="stats-run", state="RUNNING")
+    f.repository.upsert_heartbeat_snapshot("stats-run", {
+        "mr_uuid": str(f.devices[0].device_uuid), "train_id": "train-01", "role": "CT", "status": "ONLINE",
+        "ip_states": [{"ip": "192.0.2.1", "sent_count": 4, "received_count": 3, "lost_count": 1, "avg_rtt_ms": 4.0, "last_probe_at": "2026-11-07T10:00:02+00:00"}],
+    }, entity_type="MR", entity_id=str(f.devices[0].device_uuid))
+    f.repository.upsert_heartbeat_snapshot("stats-run", {
+        "mr_uuid": str(f.devices[1].device_uuid), "train_id": "train-01", "role": "CW", "status": "ONLINE",
+        "ip_states": [{"ip": "192.0.2.2", "sent_count": 2, "received_count": 2, "lost_count": 0, "avg_rtt_ms": 2.0, "last_probe_at": "2026-11-07T10:00:03+00:00"}],
+    }, entity_type="MR", entity_id=str(f.devices[1].device_uuid))
+
+    page = f.service.heartbeat(site, run_id="stats-run")
+
+    assert page.data_state == "RUNNING"
+    assert page.heartbeat_statistics.sent_count == 6
+    assert page.heartbeat_statistics.success_count == 5
+    assert page.heartbeat_statistics.lost_count == 1
+    assert page.heartbeat_statistics.average_rtt_ms == pytest.approx(3.2)
+    assert page.heartbeat_statistics.loss_rate_percent == pytest.approx(100 / 6)
+    assert page.heartbeat_statistics.latest_sample_at.endswith("03+00:00")
+
+
 def test_changed_ip_invalidates_mr_and_old_train_online_aggregate(inventory_app):
     f = inventory_app
     site = f.service.site_id
