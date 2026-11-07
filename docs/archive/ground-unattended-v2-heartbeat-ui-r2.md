@@ -76,3 +76,7 @@ Regression：Ground 与定向 Renderer PASS；Renderer 全量有一个既有 loc
 Parallel modifications：当前 worktree 仅本分支，本轮文件没有其他并行修改。  
 Post-merge verification：合并 main 后重跑 Ground consumer suite、Renderer 全量/typecheck/build、Change Impact Guard；补真实 Electron 截图和外部设备验收。  
 Manual gaps：GUI、设备、安装包、长时运行均未宣称通过。
+
+## R2.1 后续整改
+
+R2.1 针对首次进入心跳页和运行状态轮询边界继续收口。设备库存、运行状态和心跳快照保持独立；停止、暂停、停止中等非 `RUNNING` 状态不再触发运行期车辆/Ping 调度。详细变更、Fake Timer 证据和剩余 GUI 缺口见 [`ground-unattended-v2-heartbeat-ui-r2.1.md`](./ground-unattended-v2-heartbeat-ui-r2.1.md)。

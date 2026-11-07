@@ -425,6 +425,30 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
+  it('loads vehicle inventory on the heartbeat tab while stopped without starting Ping polling', async () => {
+    vi.useFakeTimers()
+    api.listGroundTrains.mockResolvedValue({
+      items: [{ train_id: 'train-inventory', train_no: '001', status: 'UNKNOWN', endpoints: [] }],
+      total: 1,
+    })
+    const wrapper = mountPage()
+    await flushPromises()
+    const view = wrapper.vm as unknown as {
+      activeTab: string
+      loadActiveTab: (silent?: boolean) => Promise<void>
+      trains: Array<{ train_id: string }>
+    }
+    view.activeTab = 'heartbeat'
+    await view.loadActiveTab(false)
+    await flushPromises()
+
+    expect(view.trains).toEqual([{ train_id: 'train-inventory', train_no: '001', status: 'UNKNOWN', endpoints: [] }])
+    expect(api.listGroundPingTargets).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(api.listGroundPingTargets).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('clears cached site data and reloads after the current site changes', async () => {
     api.getGroundStatus
       .mockResolvedValueOnce({ ...status(), site_id: 'line-10' })

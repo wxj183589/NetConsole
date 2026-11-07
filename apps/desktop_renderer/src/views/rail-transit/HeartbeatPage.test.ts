@@ -47,6 +47,59 @@ beforeEach(() => {
 afterEach(() => { vi.clearAllMocks(); vi.useRealTimers() })
 
 describe('persisted heartbeat UI', () => {
+  it('loads the initial snapshot once but does not poll while monitoring is stopped', async () => {
+    vi.useFakeTimers()
+    ;(injected.current.status as { value: unknown }).value = { state: 'STOPPED' }
+    const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+    await flushPromises()
+
+    expect(api.heartbeat).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(api.heartbeat).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('uses one completion chained timer while running and clears it on pause', async () => {
+    vi.useFakeTimers()
+    ;(injected.current.status as { value: unknown }).value = { state: 'RUNNING' }
+    const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+    await flushPromises()
+
+    expect(api.heartbeat).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(api.heartbeat).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(api.heartbeat).toHaveBeenCalledTimes(2)
+
+    ;(injected.current.status as { value: unknown }).value = { state: 'PAUSED' }
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(api.heartbeat).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('backs off failed polls and keeps the last successful snapshot', async () => {
+    vi.useFakeTimers()
+    ;(injected.current.status as { value: unknown }).value = { state: 'RUNNING' }
+    api.heartbeat.mockResolvedValueOnce(snapshot).mockRejectedValueOnce(new Error('temporary failure')).mockResolvedValue({ ...snapshot, run_id: 'run-after-retry' })
+    const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+    await flushPromises()
+
+    await vi.advanceTimersByTimeAsync(3_000)
+    await flushPromises()
+    expect(api.heartbeat).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('001')
+
+    await vi.advanceTimersByTimeAsync(5_999)
+    expect(api.heartbeat).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(api.heartbeat).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).toContain('run-after-retry')
+    wrapper.unmount()
+  })
+
   it('renders one train with independent CT/CW cards and opens the unified monitor', async () => {
     const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
     await flushPromises()

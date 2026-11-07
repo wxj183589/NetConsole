@@ -305,6 +305,9 @@ const loadIssueDescription = computed(() => generalLoadIssues.value.map((item) =
 const profileLoadError = computed(() => loadIssues.value.find((item) => item.key === 'profile')?.message || '')
 
 const running = computed(() => Boolean(status.value && ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(status.value.state)))
+// Device inventory is useful in every state, but run-scoped heartbeat data is
+// live only after the backend has confirmed RUNNING.
+const monitoringRunning = computed(() => status.value?.state === 'RUNNING')
 
 const operationActive = computed(() => Boolean(activeOperation.value && ['PENDING', 'RUNNING'].includes(activeOperation.value.operation_state)))
 
@@ -846,7 +849,10 @@ function dismissOperation(): void {
 
 async function loadActiveTab(silent = true): Promise<void> {
   if (activeTab.value === 'overview') await Promise.all([loadHealth(silent), loadSyslogTransport(silent)])
-  else if (activeTab.value === 'heartbeat') await Promise.all([loadTrains(silent), loadPingTargets(silent)])
+  else if (activeTab.value === 'heartbeat') {
+    await loadTrains(silent)
+    if (monitoringRunning.value) await loadPingTargets(silent)
+  }
   else if (activeTab.value === 'quick-ping') await loadTrains(silent)
   else if (activeTab.value === 'deep') await loadDeep(silent)
   else if (activeTab.value === 'timeline') await loadTimelineData(silent)
@@ -886,7 +892,7 @@ function schedulePoll(): void {
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
   pollTimer = window.setTimeout(() => {
     if (!document.hidden) {
-      pollDue('status', running.value ? 5_000 : 20_000, () => loadStatus())
+      pollDue('status', monitoringRunning.value ? 5_000 : 20_000, () => loadStatus())
       if (operationActive.value || status.value?.active_operation_id) {
         pollDue('operation', 2_000, () => loadOperation())
       } else if (
@@ -896,7 +902,7 @@ function schedulePoll(): void {
       ) {
         pollDue('operation', 2_000, () => loadOperation())
       }
-      if (running.value) {
+      if (monitoringRunning.value) {
         if (activeTab.value === 'overview') {
           pollDue('health', 5_000, () => loadHealth())
           pollDue('syslog-transport', 5_000, () => loadSyslogTransport())
@@ -2285,6 +2291,7 @@ pingIssue,
 loadIssueDescription,
 profileLoadError,
 running,
+monitoringRunning,
 operationActive,
 visibleOperation,
 selectedRun,
