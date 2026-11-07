@@ -123,6 +123,14 @@ async function mockGround(page: Page) {
       items: Array.from({ length: 20 }, (_, i) => ({ received_at: new Date(Date.parse(now) + i * 200).toISOString(), target_ip: '192.0.2.10', sample: { ok: i % 10 !== 0, rtt_ms: i % 10 !== 0 ? 2 + i / 10 : null } })), next_cursor: '', scan_budget_exhausted: false,
     }
     else if (path.endsWith('/quick-ping/mock-quick-1')) body = quick
+    else if (path === `${root}/deep-collections/tasks`) body = { ...paged([]), statistics: { task_count: 0, running: 0, completed: 0, failed: 0, partial: 0 } }
+    else if (path.endsWith('/monitoring')) body = {
+      mr: heartbeat.mrs.find(mr => path.includes(mr.mr_uuid)) || heartbeat.mrs[0],
+      queried_start: url.searchParams.get('start_time'), queried_end: url.searchParams.get('end_time'),
+      events_truncated: false, run_sent_count: 0, run_lost_count: 0,
+      series: { run_id: run.run_id, statistics: stats, diagnostics, window_statistics: {}, points: [] },
+      mesh_events: [], peer_intervals: [],
+    }
     else if (path === `${root}/deep-collections` || path === `${root}/archives`) body = paged([])
     else if (path === `${root}/history`) body = { ...paged([]), sources: {} }
     else if (path.endsWith('/ipv4-addresses')) body = paged([])
@@ -167,10 +175,10 @@ test('Ground V2 真实页面十页导航、MR抽屉和Quick启停', async ({ pag
     await expectNoOuterOverflow(page)
   }
   await openTab(page, '心跳检测')
-  const mrTable = page.locator('.heartbeat-section').first()
-  await expect(mrTable).toContainText('合成 MR CT')
-  await mrTable.getByRole('button', { name: '详情', exact: true }).first().click()
-  const drawer = page.getByRole('dialog', { name: 'MR 心跳详情' })
+  const mrTable = page.locator('.heartbeat-page')
+  await expect(mrTable).toContainText('192.0.2.10')
+  await mrTable.locator('.mr-card').first().click()
+  const drawer = page.locator('.mr-monitor-drawer')
   await expect(drawer).toContainText('192.0.2.10')
   await expect(drawer).toContainText('192.0.2.20')
   await drawer.getByRole('button', { name: '快速 Ping', exact: true }).click()
@@ -184,11 +192,11 @@ test('Ground V2 真实页面十页导航、MR抽屉和Quick启停', async ({ pag
   expect(api.starts[0]).toMatchObject({ interval_ms: 200, timeout_ms: 1000, packet_size: 64, duration_seconds: null })
   expect((api.starts[0]!.targets as unknown[]).length).toBe(2)
   await quick.getByRole('button', { name: '停止当前任务', exact: true }).click()
-  await expect(quick.locator('.detail .el-tag')).toContainText('COMPLETED')
+  await expect(quick.locator('.detail .el-tag').filter({ hasText: 'COMPLETED' }).first()).toBeVisible()
   await expect(quick.getByRole('button', { name: '停止当前任务', exact: true })).toBeDisabled()
   await expect(quick.getByRole('img', { name: '快速 Ping RTT 毫秒与单包丢包百分比时间曲线' }).locator('canvas')).toBeVisible()
   await expectNoOuterOverflow(page)
-  await page.screenshot({ path: testInfo.outputPath('ground-quick-stopped.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('ground-quick-stopped.png'), fullPage: true, animations: 'disabled' })
   expect(errors).toEqual([])
   expect(api.unexpected).toEqual([])
 })
@@ -221,7 +229,7 @@ test('Ground 日志/时间轴服务端筛选分页和剩余高度', async ({ pag
     await workspace.locator('.el-pagination').getByRole('button', { name: 'Go to next page' }).click()
     await second
     await expect(workspace.locator('.el-pagination .is-active')).toHaveText('2')
-    await page.screenshot({ path: testInfo.outputPath(name === 'Syslog 日志' ? 'ground-syslog.png' : 'ground-timeline.png'), fullPage: true })
+    await page.screenshot({ path: testInfo.outputPath(name === 'Syslog 日志' ? 'ground-syslog.png' : 'ground-timeline.png'), fullPage: true, animations: 'disabled' })
   }
   expect(api.unexpected).toEqual([])
 })

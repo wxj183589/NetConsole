@@ -23,6 +23,9 @@ from netconsole.models.api.ground_unattended import (
     GroundDeepCollectionRecordPageDTO,
     GroundHealthDTO,
     GroundHeartbeatPageDTO,
+    GroundHeartbeatInventoryRequestDTO,
+    GroundHeartbeatInventoryApplyDTO,
+    GroundHeartbeatInventoryPreviewDTO,
     GroundMrMonitoringDTO,
     GroundInventorySummaryDTO,
     GroundMrRuntimeStatusPageDTO,
@@ -124,10 +127,26 @@ def get_profile(request: Request) -> GroundUnattendedProfileDTO:
 
 
 @router.get("/heartbeat", response_model=GroundHeartbeatPageDTO)
-def get_heartbeat(request: Request, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False,
+def get_heartbeat(request: Request, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, role: str = "",
                   page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)) -> GroundHeartbeatPageDTO:
     return _call(lambda: _service(request).heartbeat(_site_id(request), run_id=run_id, query=query, status=status,
-                                                    station=station, abnormal_only=abnormal_only, page=page, page_size=page_size))
+                                                    station=station, abnormal_only=abnormal_only, page=page, page_size=page_size, role=role))
+
+
+@router.post(
+    "/heartbeat/inventory/preview", response_model=GroundHeartbeatInventoryPreviewDTO,
+    dependencies=[Depends(require_feature("capability.ground_unattended.heartbeat_inventory_manage"))],
+)
+def heartbeat_inventory_preview(request: Request, payload: GroundHeartbeatInventoryRequestDTO) -> GroundHeartbeatInventoryPreviewDTO:
+    return _call(lambda: _service(request).heartbeat_inventory_preview(_site_id(request), action=payload.action))
+
+
+@router.post(
+    "/heartbeat/inventory/apply", response_model=GroundHeartbeatInventoryPreviewDTO,
+    dependencies=[Depends(require_feature("capability.ground_unattended.heartbeat_inventory_manage"))],
+)
+def heartbeat_inventory_apply(request: Request, payload: GroundHeartbeatInventoryApplyDTO) -> GroundHeartbeatInventoryPreviewDTO:
+    return _call(lambda: _service(request).heartbeat_inventory_apply(_site_id(request), payload))
 
 
 @router.get("/mr/{mr_uuid}/monitoring", response_model=GroundMrMonitoringDTO)
@@ -306,6 +325,7 @@ def mr_runtime_status(
 @router.post(
     "/inventory/sync",
     response_model=GroundInventorySummaryDTO,
+    dependencies=[Depends(require_feature("capability.ground_unattended.heartbeat_inventory_manage"))],
 )
 def sync_inventory(request: Request) -> GroundInventorySummaryDTO:
     return _call(lambda: _service(request).sync_inventory(_site_id(request)))

@@ -10,17 +10,21 @@ import type {
   GroundMrRuntimeStatus,
   GroundSyslogTransportStatus, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
   GroundQuickPingPage, GroundQuickPingRun, GroundQuickPingTarget, GroundQuickPingSamplePage,
-  GroundHeartbeatPage, GroundMrMonitoring,
+  GroundHeartbeatPage, GroundMrMonitoring, GroundHeartbeatInventoryAction, GroundHeartbeatInventoryPreview,
   GroundHistoryFilters, GroundHistoryPage,
 } from '../types/groundUnattended'
 
 const root = '/api/rail-transit/ground-unattended'
 
-export const getGroundHeartbeat = (runId = '', options: RequestInit = {}, filters: { query?: string; status?: string; station?: string; abnormal_only?: boolean; page?: number; page_size?: number } = {}): Promise<GroundHeartbeatPage> => {
+export const getGroundHeartbeat = (runId = '', options: RequestInit = {}, filters: { query?: string; status?: string; station?: string; role?: string; abnormal_only?: boolean; page?: number; page_size?: number } = {}): Promise<GroundHeartbeatPage> => {
   const query = new URLSearchParams({ run_id: runId })
   Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
   return apiRequest(`${root}/heartbeat?${query}`, options)
 }
+export const previewGroundHeartbeatInventory = (action: GroundHeartbeatInventoryAction): Promise<GroundHeartbeatInventoryPreview> =>
+  apiRequest(`${root}/heartbeat/inventory/preview`, { method: 'POST', body: JSON.stringify({ action }) })
+export const applyGroundHeartbeatInventory = (action: GroundHeartbeatInventoryAction, revision: string): Promise<GroundHeartbeatInventoryPreview> =>
+  apiRequest(`${root}/heartbeat/inventory/apply`, { method: 'POST', body: JSON.stringify({ action, revision, confirm: true }) })
 export const getGroundMrMonitoring = (mrUuid: string, params: { run_id?: string; start_time?: string; end_time?: string } = {}, options: RequestInit = {}): Promise<GroundMrMonitoring> =>
   apiRequest(`${root}/mr/${encodeURIComponent(mrUuid)}/monitoring?${new URLSearchParams(params)}`, options)
 

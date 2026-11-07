@@ -299,6 +299,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("ground_unattended.archives", "ground.archives", "module.ground_unattended", "tab"),
     FeatureItem("ground_unattended.settings", "ground.settings", "module.ground_unattended", "tab"),
     FeatureItem("capability.ground_unattended.quick_ping", "ground.quick_ping", "module.ground_unattended", "action"),
+    FeatureItem("capability.ground_unattended.heartbeat_inventory_manage", "ground.monitor.manage_inventory", "module.ground_unattended", "action"),
     FeatureItem("capability.ground_unattended.history_export", "ground.history_export", "module.ground_unattended", "action"),
     FeatureItem("capability.train_online.refresh", "列车在线状态与 AP 映射刷新", "module.train_online", "action"),
     FeatureItem("capability.train_online.collect", "列车在线连续采集", "module.train_online", "action"),

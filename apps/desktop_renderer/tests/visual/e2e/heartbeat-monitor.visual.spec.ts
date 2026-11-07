@@ -62,11 +62,14 @@ const currentHeartbeat = {
 }
 async function mockHeartbeat(page: Page) {
   const unexpected: string[] = []
+  const applied: unknown[] = []
   await page.route(url => url.pathname.startsWith('/api/'), async route => {
     const url = new URL(route.request().url()), path = url.pathname
     const paged = (items: unknown[]) => ({ items, total: items.length, page: 1, page_size: 100, total_exact: true })
     let body: unknown
-    if (path === '/api/features') body = { items: [...['overview', 'heartbeat', 'ac_mesh_link', 'quick_ping', 'syslog', 'deep', 'timeline', 'health', 'archives', 'settings'].map(key => `ground_unattended.${key}`), 'capability.ground_unattended.quick_ping'].map(feature_id => ({ feature_id, enabled: true, visible: true })) }
+    if (path === '/api/features') body = { items: [...['overview', 'heartbeat', 'ac_mesh_link', 'quick_ping', 'syslog', 'deep', 'timeline', 'health', 'archives', 'settings'].map(key => `ground_unattended.${key}`), 'capability.ground_unattended.quick_ping', 'capability.ground_unattended.heartbeat_inventory_manage'].map(feature_id => ({ feature_id, enabled: true, visible: true })) }
+    else if (path === `${root}/heartbeat/inventory/preview`) body = { site_id: 'mock-ground', action: route.request().postDataJSON().action, revision: 'mock-revision', added_count: 1, updated_count: 2, disabled_count: 0, conflict_count: 0, retained_history_count: 9, train_count: 10, device_count: 20, affected_history_count: 9, conflicts: [] }
+    else if (path === `${root}/heartbeat/inventory/apply`) { applied.push(route.request().postDataJSON()); body = {} }
     else if (path === `${root}/status`) body = { ...run, site_id: profile.site_id, enabled: true, service_state: 'RUNNING', active_run_id: run.run_id, active_run_state: 'RUNNING', active_run_date: run.run_date, latest_run_id: run.run_id, latest_run_date: run.run_date, latest_run_state: 'RUNNING', schedule_start_time: '07:00', schedule_end_time: '23:00', timezone: profile.timezone, ping_target_count: 3, mainline_train_count: 1, active_deep_train_count: 0 }
     else if (path === `${root}/profile`) body = profile
     else if (path === `${root}/syslog-transport-status`) body = { state: 'RUNNING', message: '' }
@@ -94,30 +97,42 @@ async function mockHeartbeat(page: Page) {
     else { unexpected.push(path); await route.fulfill({ status: 404, json: { detail: 'Unmocked API' } }); return }
     await route.fulfill({ json: body })
   })
-  return unexpected
+  return { unexpected, applied }
 }
 
 test('Heartbeat compact rows and unified MR evidence drawer', async ({ page }, testInfo) => {
-  const unexpected = await mockHeartbeat(page), errors: string[] = []
+  const { unexpected, applied } = await mockHeartbeat(page), errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   await page.goto('/tests/visual/ground.html?netconsole_host=electron')
   await page.getByRole('tab', { name: '心跳检测', exact: true }).click()
   await expect(page.locator('.heartbeat-page .train-row')).toHaveCount(10)
   await expect(page.locator('.heartbeat-page')).toContainText('仅 CT 可达')
-  await expect(page.locator('.heartbeat-page .mr-card').first()).toContainText('车载 AP CT')
-  await page.screenshot({ path: testInfo.outputPath('heartbeat-01-compact-trains.png'), fullPage: true })
+  await expect(page.locator('.heartbeat-page .mr-card').first()).toContainText('合成 MR CT')
+  await expect(page.locator('.heartbeat-page .mr-card').first().locator('.el-tag')).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-01-compact-trains.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: '同步监测设备' }).click()
+  let management = page.getByRole('dialog', { name: '同步设备预览' })
+  await expect(management).toContainText('1 / 2 / 0 / 0')
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-05-sync-preview.png'), fullPage: true, animations: 'disabled' })
+  await management.getByRole('button', { name: '取消' }).click()
+  await page.getByRole('button', { name: '清空监测设备', exact: true }).click()
+  management = page.getByRole('dialog', { name: '清空监测设备' })
+  await expect(management).toContainText('不删除设备管理资产')
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-06-clear-confirmation.png'), fullPage: true, animations: 'disabled' })
+  await management.getByRole('button', { name: '取消' }).click()
+  expect(applied).toEqual([])
   await page.locator('.heartbeat-page .mr-card').first().click({ button: 'right' })
   await expect(page.getByRole('menuitem', { name: '综合监测', exact: true })).toBeVisible()
-  await page.screenshot({ path: testInfo.outputPath('heartbeat-02-context-menu.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-02-context-menu.png'), fullPage: true, animations: 'disabled' })
   await page.getByRole('menuitem', { name: '综合监测', exact: true }).click()
   const drawer = page.locator('.mr-monitor-drawer')
   await expect(drawer).toContainText('AP 综合动态监测')
   await expect(drawer.locator('canvas')).toBeVisible()
-  await page.screenshot({ path: testInfo.outputPath('heartbeat-03-monitoring-drawer.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-03-monitoring-drawer.png'), fullPage: true, animations: 'disabled' })
   await drawer.getByRole('button', { name: 'Mesh', exact: true }).click()
   await drawer.locator('.mesh-event').click()
   await expect(drawer.locator('.raw-detail')).toContainText('Synthetic WMESH')
-  await page.screenshot({ path: testInfo.outputPath('heartbeat-04-mesh-provenance.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('heartbeat-04-mesh-provenance.png'), fullPage: true, animations: 'disabled' })
   await drawer.getByRole('button', { name: '关闭', exact: true }).click()
   await expect(drawer).toHaveCount(0)
   expect(errors).toEqual([])

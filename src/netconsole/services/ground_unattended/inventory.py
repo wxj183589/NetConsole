@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
+import json
 import sqlite3
 from typing import Any
 
@@ -35,8 +37,11 @@ class TrainInventorySyncService:
         self.repository = repository
         self.base_query = base_query
 
-    def synchronize(self) -> GroundInventorySummaryDTO:
+    def collect(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]], GroundInventorySummaryDTO, list[str]]:
+        """Read the Site device projection without persisting or probing."""
         mrs = self._all_mrs()
+        conflicts: list[str] = []
+        seen_uuids: set[str] = set()
         device_repository = DeviceRepository(Database(self.paths.site_db_path(self.site_id)))
         grouped: dict[str, dict[str, Any]] = {}
         missing_ip = 0
@@ -58,10 +63,14 @@ class TrainInventorySyncService:
                     "endpoints": {},
                 },
             )
+            mr_uuid = str(mr.id or "")
+            if not mr_uuid or mr_uuid in seen_uuids:
+                conflicts.append(f"MR_UUID_DUPLICATE: {mr_uuid}")
+                continue
+            seen_uuids.add(mr_uuid)
             if role in group["endpoints"]:
-                # 设备管理存在重复端位时保留管理 IP 更完整的一条，避免错误覆盖。
-                if group["endpoints"][role].get("management_ip"):
-                    continue
+                conflicts.append(f"MR_POSITION_DUPLICATE: {train_id}/{role}")
+                continue
             try:
                 device = device_repository.get_by_uuid(str(mr.id))
             except (OSError, sqlite3.Error):
@@ -113,11 +122,10 @@ class TrainInventorySyncService:
             for row in grouped.values()
             for endpoint in row["endpoints"].values()
         ]
-        changes = self.repository.sync_inventory(trains=trains, endpoints=endpoints)
         complete = sum(set(row["endpoints"]) == {"CT", "CW"} for row in grouped.values())
         ct_only = sum(set(row["endpoints"]) == {"CT"} for row in grouped.values())
         cw_only = sum(set(row["endpoints"]) == {"CW"} for row in grouped.values())
-        return GroundInventorySummaryDTO(
+        summary = GroundInventorySummaryDTO(
             site_id=self.site_id,
             discovered_train_count=len(grouped),
             complete_train_count=complete,
@@ -126,10 +134,76 @@ class TrainInventorySyncService:
             missing_management_ip_count=missing_ip,
             missing_credential_count=missing_credentials,
             synchronized_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
-            **changes,
         )
 
+        return trains, endpoints, summary, sorted(set(conflicts))
+
+    def synchronize(self, *, heartbeat_revision: int | None = None,
+                    preview_revision: str = "") -> GroundInventorySummaryDTO:
+        trains, endpoints, summary, conflicts = self.collect()
+        if conflicts:
+            raise ValueError("HEARTBEAT_INVENTORY_CONFLICT: " + "; ".join(conflicts))
+        if preview_revision:
+            actual = self._preview(trains, endpoints, conflicts)
+            revision = hashlib.sha256(f"SYNC:{actual['revision']}".encode("utf-8")).hexdigest()
+            if revision != preview_revision:
+                raise ValueError("HEARTBEAT_PREVIEW_STALE")
+        changes = self.repository.sync_inventory(
+            trains=trains, endpoints=endpoints, heartbeat_revision=heartbeat_revision,
+        )
+        return summary.model_copy(update=changes)
+
+    def preview(self) -> dict[str, Any]:
+        trains, endpoints, _, conflicts = self.collect()
+        return self._preview(trains, endpoints, conflicts)
+
+    def _preview(self, trains: list[dict[str, Any]], endpoints: list[dict[str, Any]],
+                 conflicts: list[str]) -> dict[str, Any]:
+        previous_trains = self.repository.list_inventory(include_removed=False)
+        previous = {
+            str(endpoint["device_uuid"]): endpoint
+            for train in previous_trains
+            for endpoint in train.get("endpoints", [])
+        }
+        current = {str(endpoint["device_uuid"]): endpoint for endpoint in endpoints}
+        previous_train_names = {
+            str(train["train_id"]): (train.get("train_no"), train.get("train_name"))
+            for train in previous_trains
+        }
+        changed_trains = {
+            str(train["train_id"]) for train in trains
+            if previous_train_names.get(str(train["train_id"])) != (train.get("train_no"), train.get("train_name"))
+        }
+        fields = ("train_id", "mr_role", "management_ip", "backup_management_ip",
+                  "backup_monitoring_strategy", "device_name", "protocol", "port", "source_hostname")
+        state = self.repository.heartbeat_inventory_state()
+        signature = {
+            "site_id": self.site_id, "trains": sorted(trains, key=lambda row: row["train_id"]),
+            "endpoints": sorted(endpoints, key=lambda row: row["device_uuid"]),
+            "previous": [{field: row.get(field) for field in ("device_uuid", *fields)}
+                         for row in sorted(previous.values(), key=lambda row: row["device_uuid"])],
+            "previous_trains": previous_train_names,
+            "state": state, "conflicts": conflicts,
+        }
+        return {
+            "revision": hashlib.sha256(json.dumps(signature, sort_keys=True, ensure_ascii=False,
+                                                   default=str).encode("utf-8")).hexdigest(),
+            "added_count": len(current.keys() - previous.keys()) if state["enabled"] else len(current),
+            "updated_count": sum(row["train_id"] in changed_trains or any(
+                str(row.get(field) or "") != str(previous[key].get(field) or "")
+                for field in fields) for key, row in current.items() if key in previous),
+            "disabled_count": len(previous.keys() - current.keys()),
+            "device_count": len(current), "train_count": len(trains),
+            "conflicts": conflicts, "conflict_count": len(conflicts),
+        }
+
     def _all_mrs(self):
+        # Reuse the existing identity-only device projection. The general MR
+        # page also enriches runtime/quality data and repeats that work for
+        # every page; none of it belongs to inventory reconciliation.
+        identity_reader = getattr(self.base_query, "list_mesh_import_context_mrs", None)
+        if callable(identity_reader):
+            return identity_reader(self.site_id)
         first = self.base_query.list_mrs(self.site_id, page=1, page_size=200)
         result = list(first.items)
         page = 2

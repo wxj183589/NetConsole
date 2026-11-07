@@ -52,6 +52,14 @@ const filteredTargets = computed(() => targets.value.filter((target) =>
   && (!roleFilter.value || target.mr_role === roleFilter.value)
   && (!addressFilter.value || target.address_role === addressFilter.value)
   && (!targetQuery.value.trim() || `${target.mr_name} ${target.mr_id} ${target.target_ip}`.toLowerCase().includes(targetQuery.value.trim().toLowerCase()))))
+const targetGroups = computed(() => {
+  const groups = new Map<string, GroundQuickPingTarget[]>()
+  for (const target of filteredTargets.value) {
+    const label = `${target.train_no || target.train_id} / ${target.mr_role}`
+    groups.set(label, [...(groups.get(label) || []), target])
+  }
+  return [...groups].map(([label, rows]) => ({ label, rows }))
+})
 const selectedTargets = computed(() => [...new Map(targets.value
   .filter((target) => selectedKeys.value.includes(targetKey(target)))
   .map((target) => [target.target_ip.trim(), target])).values()])
@@ -63,6 +71,12 @@ function removeTarget(target: GroundQuickPingTarget): void {
 const targetState = (ip: string) => selected.value?.target_runtime?.[ip]?.state || selected.value?.state || ''
 const targetActive = (ip: string) => ['QUEUED', 'STARTING', 'RUNNING', 'STOPPING'].includes(targetState(ip))
 const rtt = (value?: number | null) => value == null ? '—' : `${value.toFixed(2)} ms`
+const runDuration = (run: GroundQuickPingRun) => {
+  const start = Date.parse(run.started_at), end = Date.parse(run.ended_at || new Date().toISOString())
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return '—'
+  const seconds = Math.floor((end - start) / 1000)
+  return `${String(Math.floor(seconds / 3600)).padStart(2, '0')}:${String(Math.floor(seconds / 60) % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
+}
 const sampleValue = (row: Record<string, unknown>, key: string): unknown => {
   const sample = row.sample
   return sample && typeof sample === 'object' ? (sample as Record<string, unknown>)[key] : undefined
@@ -221,12 +235,14 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++pollGeneration; ++sampl
 
 <template>
   <section class="quick-ping-page">
+    <header class="quick-heading"><div><h2>{{ t('ground.quick.title', '快速 Ping') }}</h2><p>{{ t('ground.quick.subtitle', '车载 MR 管理地址批量检测') }}</p></div><span>{{ selectedTargets.length }} {{ t('ground.quick.selected_ips', '已选 IP') }}</span></header>
+    <div class="quick-setup">
     <div class="toolbar">
       <el-select v-model="trainFilter" clearable filterable :placeholder="t('ground.quick.all_trains', '全部列车')"><el-option v-for="train in trains" :key="train.train_id" :label="train.train_no || train.train_id" :value="train.train_id" /></el-select>
       <el-select v-model="roleFilter" clearable placeholder="CT / CW"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select>
       <el-select v-model="addressFilter" clearable :placeholder="t('ground.quick.address_roles', '主用 / 备用')"><el-option :label="t('ground.quick.primary', '主用')" value="PRIMARY" /><el-option :label="t('ground.quick.backup', '备用')" value="BACKUP" /></el-select>
       <el-input v-model="targetQuery" clearable class="target-search" :placeholder="t('ground.quick.search_mr_ip', '搜索 MR 名称、UUID 或 IP')" />
-      <el-select v-model="selectedKeys" multiple collapse-tags collapse-tags-tooltip filterable class="target-select" :placeholder="t('ground.quick.select_addresses', '选择 MR 管理地址')"><el-option v-for="target in filteredTargets" :key="targetKey(target)" :label="`${target.train_no || target.train_id} / ${target.mr_role} / ${target.mr_name || target.mr_id} / ${target.target_ip} (${target.address_role})`" :value="targetKey(target)" :disabled="targetDisabled(target)"><span>{{ target.train_no || target.train_id }} / {{ target.mr_role }} / {{ target.mr_name || target.mr_id }} / {{ target.target_ip }} ({{ target.address_role }})</span><small v-if="occupiedBy(target)" class="occupied">{{ t('ground.quick.occupied', '占用任务') }}: {{ occupiedBy(target) }}</small></el-option></el-select>
+      <el-select v-model="selectedKeys" multiple collapse-tags collapse-tags-tooltip filterable class="target-select" :placeholder="t('ground.quick.select_addresses', '选择 MR 管理地址')"><el-option-group v-for="group in targetGroups" :key="group.label" :label="group.label"><el-option v-for="target in group.rows" :key="targetKey(target)" :label="`${target.train_no || target.train_id} / ${target.mr_role} / ${target.mr_name || target.mr_id} / ${target.target_ip} (${target.address_role})`" :value="targetKey(target)" :disabled="targetDisabled(target)"><span>{{ target.mr_name || target.mr_id }} / {{ target.target_ip }} ({{ target.address_role }})</span><small v-if="occupiedBy(target)" class="occupied">{{ t('ground.quick.occupied', '占用任务') }}: {{ occupiedBy(target) }}</small></el-option></el-option-group></el-select>
     </div>
     <div class="selected-targets">
       <span>{{ t('ground.quick.selected_ips', '已选 IP') }}: {{ selectedTargets.length }}</span>
@@ -244,6 +260,7 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++pollGeneration; ++sampl
       <el-button :icon="Refresh" :title="t('ground.quick.refresh', '刷新')" @click="refresh(true)" />
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
+    </div>
     <div v-if="selected" class="detail">
       <div class="status-line"><b>{{ selected.run_id }}</b><el-tag>{{ selected.state }}</el-tag><span>{{ selected.started_at }} - {{ selected.ended_at || t('ground.quick.running', '运行中') }}</span></div>
       <el-alert v-if="selected.error" :title="selected.error" type="error" :closable="false" />
@@ -262,18 +279,19 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++pollGeneration; ++sampl
       <el-table :data="selected.targets" size="small" stripe><el-table-column prop="train_no" :label="t('ground.quick.train', '列车')" /><el-table-column prop="mr_role" label="CT / CW" /><el-table-column prop="mr_name" label="MR" /><el-table-column prop="target_ip" :label="t('ground.quick.management_ip', '管理 IP')" /><el-table-column prop="address_role" :label="t('ground.quick.address_role', '地址角色')" /><el-table-column :label="t('ground.quick.state', '状态')" min-width="110"><template #default="scope"><el-tag>{{ targetState(scope.row.target_ip) }}</el-tag></template></el-table-column><el-table-column :label="t('ground.quick.started', '开始时间')" min-width="190"><template #default="scope">{{ selected.target_runtime?.[scope.row.target_ip]?.started_at || '—' }}</template></el-table-column><el-table-column :label="t('ground.quick.counts', '发送 / 接收 / 丢包')"><template #default="scope">{{ selected.target_stats[scope.row.target_ip]?.sent ?? 0 }} / {{ selected.target_stats[scope.row.target_ip]?.received ?? 0 }} / {{ selected.target_stats[scope.row.target_ip]?.lost ?? 0 }}</template></el-table-column><el-table-column :label="t('ground.quick.loss', '丢包率')"><template #default="scope">{{ selected.target_stats[scope.row.target_ip]?.loss_rate_percent?.toFixed(2) ?? '—' }}%</template></el-table-column><el-table-column :label="t('ground.quick.current_rtt', '当前 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.current_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.average_rtt', '平均 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.avg_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.maximum_rtt', '最大 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.max_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.actions', '操作')"><template #default="scope"><el-button text type="danger" :disabled="!targetActive(scope.row.target_ip) || loading" @click="stopTarget(scope.row.target_ip)">{{ t('ground.quick.stop_ip', '停止此 IP') }}</el-button></template></el-table-column></el-table>
       <el-table :data="sampleRows" size="small" max-height="240" stripe><el-table-column prop="received_at" :label="t('ground.quick.time', '时间')" /><el-table-column prop="target_ip" :label="t('ground.quick.target_ip', '目标 IP')" /><el-table-column :label="t('ground.quick.result', '结果')"><template #default="scope">{{ sampleValue(scope.row, 'ok') ? t('ground.quick.success', '成功') : t('ground.quick.lost', '丢包') }}</template></el-table-column><el-table-column label="RTT"><template #default="scope">{{ sampleValue(scope.row, 'rtt_ms') ?? '—' }} ms</template></el-table-column></el-table>
     </div>
-    <h3>{{ t('ground.quick.history', '任务历史') }}</h3>
+    <section class="history-panel"><h3>{{ t('ground.quick.history', '任务历史') }}</h3>
     <div class="toolbar">
       <el-input v-model="historyQuery" clearable :placeholder="t('ground.quick.history_query', '任务、日期、列车、MR 或 IP')" @keyup.enter="searchHistory" />
       <el-select v-model="historyState" clearable :placeholder="t('ground.quick.all_states', '全部状态')"><el-option v-for="state in ['RUNNING', 'STOPPING', 'COMPLETED', 'FAILED', 'CANCELLED', 'TIME_LIMIT', 'INTERRUPTED']" :key="state" :label="state" :value="state" /></el-select>
       <el-date-picker v-model="historyRange" type="datetimerange" :start-placeholder="t('ground.quick.history_start', '任务开始时间下限')" :end-placeholder="t('ground.quick.history_end', '任务开始时间上限')" />
       <el-button @click="searchHistory">{{ t('ground.quick.query_history', '查询历史') }}</el-button>
     </div>
-    <el-table :data="runs" size="small" stripe max-height="300"><el-table-column prop="run_id" :label="t('ground.quick.task', '任务')" min-width="210" /><el-table-column prop="state" :label="t('ground.quick.state', '状态')" width="110" /><el-table-column prop="started_at" :label="t('ground.quick.started', '开始时间')" min-width="190" /><el-table-column :label="t('ground.quick.targets', '目标')" width="80"><template #default="scope">{{ scope.row.targets.length }}</template></el-table-column><el-table-column :label="t('ground.quick.actions', '操作')" width="100"><template #default="scope"><el-button text type="primary" @click="selectRun(scope.row)">{{ t('ground.quick.view', '查看') }}</el-button></template></el-table-column></el-table>
+    <el-table :data="runs" size="small" stripe max-height="300"><el-table-column prop="run_id" :label="t('ground.quick.task', '任务')" min-width="210" /><el-table-column prop="state" :label="t('ground.quick.state', '状态')" width="110" /><el-table-column :label="t('ground.quick.targets', '目标')" width="80"><template #default="scope">{{ scope.row.targets.length }}</template></el-table-column><el-table-column prop="started_at" :label="t('ground.quick.started', '开始时间')" min-width="180" /><el-table-column :label="t('ground.quick.duration', '持续时间')" width="105"><template #default="scope">{{ runDuration(scope.row) }}</template></el-table-column><el-table-column :label="t('ground.quick.average_rtt', '平均 RTT')" width="105"><template #default="scope">{{ rtt(scope.row.stats.avg_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.loss', '丢包率')" width="90"><template #default="scope">{{ scope.row.stats.loss_rate_percent.toFixed(2) }}%</template></el-table-column><el-table-column :label="t('ground.quick.actions', '操作')" width="80"><template #default="scope"><el-button text type="primary" @click="selectRun(scope.row)">{{ t('ground.quick.view', '查看') }}</el-button></template></el-table-column></el-table>
     <el-pagination v-model:current-page="historyPage" :page-size="historyPageSize" :total="historyTotal" layout="total, prev, pager, next" @current-change="refresh(true)" />
+    </section>
   </section>
 </template>
 
 <style scoped>
-.quick-ping-page{display:flex;flex-direction:column;gap:12px}.toolbar,.status-line{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.toolbar .el-select{width:145px}.toolbar .target-select{width:min(520px,100%)}.toolbar .duration-select{width:130px}.parameters label{display:flex;gap:5px;align-items:center}.parameters .el-input-number{width:90px}.detail{display:flex;flex-direction:column;gap:10px}.metrics{display:flex;flex-wrap:wrap;gap:16px}.metrics span{display:flex;flex-direction:column;gap:4px;color:var(--el-text-color-secondary)}.metrics b{color:var(--el-text-color-primary)}.chart svg{display:block;width:100%;height:140px;background:var(--el-fill-color-light)}.selected-targets{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.occupied{display:block;color:var(--el-color-warning);line-height:18px}.target-search{width:230px}.quick-ping-page h3{margin:4px 0}
+.quick-ping-page{display:flex;flex-direction:column;gap:12px;min-width:0}.quick-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.quick-heading h2{margin:0;font-size:20px}.quick-heading p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px}.quick-heading>span{color:var(--el-color-primary);font-size:13px}.quick-setup,.history-panel{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--el-border-color-light);border-radius:6px;background:var(--el-bg-color)}.quick-setup{order:1}.history-panel{order:2}.quick-ping-page>.detail{order:3;padding:16px;border-top:1px solid var(--el-border-color)}.toolbar,.status-line{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.toolbar .el-select{width:145px}.toolbar .target-select{width:min(520px,100%)}.toolbar .duration-select{width:130px}.parameters label{display:flex;gap:5px;align-items:center}.parameters .el-input-number{width:90px}.detail{display:flex;flex-direction:column;gap:10px}.metrics{display:flex;flex-wrap:wrap;gap:16px}.metrics span{display:flex;flex-direction:column;gap:4px;color:var(--el-text-color-secondary)}.metrics b{color:var(--el-text-color-primary)}.chart svg{display:block;width:100%;height:140px;background:var(--el-fill-color-light)}.selected-targets{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.occupied{display:block;color:var(--el-color-warning);line-height:18px}.target-search{width:230px}.quick-ping-page h3{margin:4px 0}.history-panel>.toolbar>.el-input{flex:1 1 220px;max-width:380px}.history-panel>.toolbar>.el-select{width:180px}@media(max-width:800px){.quick-setup,.history-panel{padding:12px}.target-search,.toolbar .target-select{width:100%}.quick-heading{align-items:flex-start}}
 </style>

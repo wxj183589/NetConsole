@@ -547,6 +547,35 @@ class GroundInventorySummaryDTO(ApiModel):
     synchronized_at: str = ""
 
 
+GroundHeartbeatInventoryAction = Literal["SYNC", "CLEAR_DEVICES", "CLEAR_DATA"]
+
+
+class GroundHeartbeatInventoryRequestDTO(ApiModel):
+    action: GroundHeartbeatInventoryAction = "SYNC"
+
+
+class GroundHeartbeatInventoryApplyDTO(GroundHeartbeatInventoryRequestDTO):
+    revision: str = Field(min_length=64, max_length=64)
+    confirm: bool = False
+
+
+class GroundHeartbeatInventoryPreviewDTO(ApiModel):
+    site_id: str
+    action: GroundHeartbeatInventoryAction
+    revision: str = ""
+    added_count: int = 0
+    updated_count: int = 0
+    disabled_count: int = 0
+    conflict_count: int = 0
+    conflicts: list[str] = Field(default_factory=list)
+    retained_history_count: int = 0
+    affected_history_count: int = 0
+    device_count: int = 0
+    train_count: int = 0
+    monitoring_enabled: bool = True
+    applied: bool = False
+
+
 GroundHealthStatus = Literal["HEALTHY", "DEGRADED", "CRITICAL", "UNKNOWN"]
 
 
@@ -1524,6 +1553,9 @@ class GroundHeartbeatTrainDTO(ApiModel):
 
 
 class GroundHeartbeatPageDTO(ApiModel):
+    monitoring_enabled: bool = True
+    source_conflicts: list[str] = Field(default_factory=list)
+    data_cleared_at: str = ""
     total: int = 0
     total_mrs: int = 0
     page: int = 1

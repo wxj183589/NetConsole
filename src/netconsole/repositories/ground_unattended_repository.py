@@ -680,6 +680,14 @@ CREATE TABLE IF NOT EXISTS ground_unattended_health_events (
 CREATE INDEX IF NOT EXISTS idx_ground_health_events
 ON ground_unattended_health_events(site_id, ts DESC, severity);
 
+CREATE TABLE IF NOT EXISTS ground_unattended_heartbeat_inventory_state (
+    site_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    revision INTEGER NOT NULL DEFAULT 0,
+    data_cleared_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ground_unattended_heartbeat_states (
     site_id TEXT NOT NULL,
     run_id TEXT NOT NULL,
@@ -1235,6 +1243,7 @@ class GroundUnattendedRepository:
         *,
         trains: list[dict[str, Any]],
         endpoints: list[dict[str, Any]],
+        heartbeat_revision: int | None = None,
     ) -> dict[str, int]:
         """增量保存设备绑定快照；设备凭据和设备主体始终不进入本库。"""
 
@@ -1242,6 +1251,13 @@ class GroundUnattendedRepository:
         active_train_ids = {str(row["train_id"]) for row in trains}
         active_device_ids = {str(row["device_uuid"]) for row in endpoints}
         with self._transaction() as conn:
+            if heartbeat_revision is not None:
+                state = conn.execute(
+                    "SELECT revision FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
+                    (self.site_id,),
+                ).fetchone()
+                if (int(state["revision"]) if state else 0) != heartbeat_revision:
+                    raise ValueError("HEARTBEAT_PREVIEW_STALE")
             previous_endpoints = {
                 str(row["device_uuid"]): dict(row)
                 for row in conn.execute(
@@ -1383,6 +1399,16 @@ class GroundUnattendedRepository:
                 key not in active_train_ids and row.get("inventory_status") == "ACTIVE"
                 for key, row in previous_trains.items()
             )
+            if heartbeat_revision is not None:
+                # Enable the heartbeat selection only when its exact inventory
+                # reconciliation commits successfully in this transaction.
+                conn.execute(
+                    "INSERT INTO ground_unattended_heartbeat_inventory_state "
+                    "(site_id, enabled, revision, updated_at) VALUES(?, 1, ?, ?) "
+                    "ON CONFLICT(site_id) DO UPDATE SET enabled=1, "
+                    "revision=excluded.revision, updated_at=excluded.updated_at",
+                    (self.site_id, heartbeat_revision + 1, now),
+                )
         return {
             "added_endpoint_count": added,
             "updated_endpoint_count": updated,
@@ -1409,6 +1435,8 @@ class GroundUnattendedRepository:
             ).fetchall()
             endpoints = conn.execute(
                 "SELECT * FROM ground_unattended_train_endpoints WHERE site_id=? "
+                + ("AND binding_status='ACTIVE' " if not include_removed else "")
+                +
                 "ORDER BY train_id, mr_role",
                 (self.site_id,),
             ).fetchall()
@@ -1421,6 +1449,88 @@ class GroundUnattendedRepository:
             item["endpoints"] = by_train.get(str(item["train_id"]), [])
             result.append(item)
         return result
+
+    def heartbeat_inventory_state(self) -> dict[str, Any]:
+        """Heartbeat selection is independent from the shared asset inventory."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
+                (self.site_id,),
+            ).fetchone()
+        return dict(row) if row else {
+            "site_id": self.site_id, "enabled": True, "revision": 0,
+            "data_cleared_at": "", "updated_at": "",
+        }
+
+    def heartbeat_history_counts(self) -> dict[str, int]:
+        # These are Fleet heartbeat indexes only. Quick Ping, syslog, deep
+        # collection, archives and raw/segment files are separate authorities.
+        with self._connection() as conn:
+            counts = {
+                table: int(conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE site_id=?", (self.site_id,),
+                ).fetchone()[0])
+                for table in (
+                    "ground_unattended_heartbeat_states",
+                    "ground_unattended_ping_summaries",
+                    "ground_unattended_ping_loss_intervals",
+                )
+            }
+            counts["heartbeat_events"] = int(conn.execute(
+                "SELECT COUNT(*) FROM ground_unattended_events WHERE site_id=? "
+                "AND dedup_key LIKE 'heartbeat:%'", (self.site_id,),
+            ).fetchone()[0])
+        return counts
+
+    def apply_heartbeat_inventory_action(self, action: str, *, expected_revision: int) -> None:
+        """Apply the Site selection/clear atomically, preserving shared assets/raw.
+
+        The nonterminal-run check is repeated inside the write transaction so
+        a concurrent run start cannot race a destructive operation.
+        """
+        with self._transaction() as conn:
+            state = conn.execute(
+                "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
+                (self.site_id,),
+            ).fetchone()
+            revision = int(state["revision"]) if state else 0
+            if revision != expected_revision:
+                raise ValueError("HEARTBEAT_PREVIEW_STALE")
+            if action not in {"SYNC", "CLEAR_DEVICES", "CLEAR_DATA"}:
+                raise ValueError("HEARTBEAT_ACTION_INVALID")
+            if action != "SYNC" and conn.execute(
+                "SELECT 1 FROM ground_unattended_runs WHERE site_id=? "
+                "AND state NOT IN ('COMPLETED', 'ERROR') LIMIT 1", (self.site_id,),
+            ).fetchone():
+                raise ValueError("HEARTBEAT_RUN_ACTIVE")
+            enabled = bool(state["enabled"]) if state else True
+            cleared_at = str(state["data_cleared_at"]) if state else ""
+            if action == "CLEAR_DATA":
+                conn.execute(
+                    "DELETE FROM ground_unattended_heartbeat_states WHERE site_id=?",
+                    (self.site_id,),
+                )
+                conn.execute(
+                    "DELETE FROM ground_unattended_events WHERE site_id=? "
+                    "AND dedup_key LIKE 'heartbeat:%'", (self.site_id,),
+                )
+                # Fleet summaries/loss indexes, raw NDJSON and segments also
+                # serve deep-collection eligibility, history and archives.
+                # Preserve these shared facts; heartbeat reads enforce the
+                # logical sample boundary without altering other consumers.
+                cleared_at = _now()
+            elif action == "CLEAR_DEVICES":
+                enabled = False
+            else:
+                enabled = True
+            conn.execute(
+                "INSERT INTO ground_unattended_heartbeat_inventory_state "
+                "(site_id, enabled, revision, data_cleared_at, updated_at) VALUES(?, ?, ?, ?, ?) "
+                "ON CONFLICT(site_id) DO UPDATE SET enabled=excluded.enabled, "
+                "revision=excluded.revision, data_cleared_at=excluded.data_cleared_at, "
+                "updated_at=excluded.updated_at",
+                (self.site_id, int(enabled), revision + 1, cleared_at, _now()),
+            )
 
     def get_inventory_endpoint(self, device_uuid: str) -> dict[str, Any] | None:
         with self._connection() as conn:

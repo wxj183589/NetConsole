@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import json
 import re
@@ -45,6 +46,9 @@ from netconsole.models.api.ground_unattended import (
     GroundAcPollerHealthDTO,
     GroundHealthDTO,
     GroundHeartbeatMrDTO,
+    GroundHeartbeatIpDTO,
+    GroundHeartbeatInventoryApplyDTO,
+    GroundHeartbeatInventoryPreviewDTO,
     GroundHeartbeatPageDTO,
     GroundMrMonitoringDTO,
     GroundHeartbeatTrainDTO,
@@ -427,16 +431,29 @@ class GroundUnattendedApplicationService:
             )
         return saved
 
-    def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "") -> GroundHeartbeatPageDTO:
+    def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "") -> GroundHeartbeatPageDTO:
         """Read durable heartbeat facts without deriving reachability from AC data."""
         self._require_site(site_id)
-        run = self._resolve_run(run_id)
-        if run is None:
-            return GroundHeartbeatPageDTO()
-        resolved_id = str(run["run_id"])
+        state = self.repository.heartbeat_inventory_state()
+        source_conflicts: list[str] = []
+        # A page refresh reconciles the device projection once per source change;
+        # it never starts probes. Explicit clearing suppresses regeneration.
+        if not run_id and state["enabled"] and self.inventory_sync is not None:
+            preview = self.inventory_sync.preview()
+            source_conflicts = preview["conflicts"]
+            if not source_conflicts and any(preview[key] for key in (
+                "added_count", "updated_count", "disabled_count",
+            )):
+                self.sync_inventory(site_id)
+        run = self._resolve_run(run_id) if run_id else self.repository.get_active_run()
+        resolved_id = str(run["run_id"]) if run else ""
         active_run = self.repository.get_active_run()
-        is_current = active_run is not None and str(active_run["run_id"]) == resolved_id
+        is_current = not run_id or bool(
+            active_run and str(active_run["run_id"]) == resolved_id
+        )
         inventory = self.repository.list_inventory(include_removed=not is_current)
+        if is_current and not state["enabled"]:
+            inventory = []
         trains_by_id = {str(row["train_id"]): row for row in inventory}
         endpoints = {
             str(endpoint.get("device_uuid") or ""): endpoint
@@ -458,7 +475,9 @@ class GroundUnattendedApplicationService:
         recent_rtts = self.supervisor.fleet_ping.latest_mr_rtts(resolved_id) if is_current else {}
         mrs: list[GroundHeartbeatMrDTO] = []
         trains: list[GroundHeartbeatTrainDTO] = []
-        for row in self.repository.list_heartbeat_snapshots(resolved_id):
+        for row in self.repository.list_heartbeat_snapshots(resolved_id) if resolved_id else []:
+            if state["data_cleared_at"] and str(row.get("updated_at") or "") <= state["data_cleared_at"]:
+                continue
             payload = dict(row["snapshot"])
             train_id = str(payload.get("train_id") or "")
             if is_current and train_id not in trains_by_id:
@@ -476,6 +495,13 @@ class GroundUnattendedApplicationService:
                     or str(endpoint.get("mr_role") or "").upper() != str(payload.get("role") or "").upper()
                 ):
                     continue
+                if is_current:
+                    expected_ips = {str(endpoint.get("management_ip") or "")}
+                    if endpoint.get("backup_monitoring_strategy") == "MONITOR":
+                        expected_ips.add(str(endpoint.get("backup_management_ip") or ""))
+                    expected_ips.discard("")
+                    if {str(ip.get("ip") or "") for ip in payload.get("ip_states", [])} != expected_ips:
+                        continue
                 payload["mr_name"] = str(endpoint.get("device_name") or "")
                 identity = identity_rows.get(str(payload.get("mr_uuid") or ""))
                 if identity is not None:
@@ -488,12 +514,46 @@ class GroundUnattendedApplicationService:
                 ))
             elif row["entity_type"] == "TRAIN":
                 trains.append(GroundHeartbeatTrainDTO.model_validate(payload))
+        # Inventory objects exist before the first run/sample. Unknown means
+        # no evidence, never "offline" or an AC-derived reachability result.
+        if is_current:
+            present = {mr.mr_uuid for mr in mrs}
+            for mr_id, endpoint in endpoints.items():
+                if mr_id in present:
+                    continue
+                train = trains_by_id.get(str(endpoint.get("train_id") or ""), {})
+                identity = identity_rows.get(mr_id)
+                ips = [str(endpoint.get("management_ip") or "")]
+                if endpoint.get("backup_monitoring_strategy") == "MONITOR":
+                    ips.append(str(endpoint.get("backup_management_ip") or ""))
+                mrs.append(GroundHeartbeatMrDTO(
+                    mr_uuid=mr_id, train_id=str(endpoint.get("train_id") or ""),
+                    train_no=str(train.get("train_no") or ""),
+                    mr_name=str(endpoint.get("device_name") or ""),
+                    role=str(endpoint.get("mr_role") or ""),
+                    resolved_ap_name=identity.resolved_ap if identity else "",
+                    station=identity.resolved_ap_station if identity else "",
+                    ip_states=[GroundHeartbeatIpDTO(ip=ip) for ip in dict.fromkeys(ips) if ip],
+                ))
+        if is_current:
+            # An IP/group/role edit invalidates an MR snapshot above. A train
+            # aggregate from before that edit must not continue to advertise
+            # BOTH_ONLINE alongside a newly UNKNOWN endpoint.
+            current_members: dict[str, dict[str, str]] = {}
+            for mr in mrs:
+                current_members.setdefault(mr.train_id, {})[mr.role] = mr.status
+            trains = [
+                train for train in trains
+                if train.mr_states == current_members.get(train.train_id, {})
+            ]
         # Older runs can contain durable MR facts without a train aggregate.
         # Retain those facts in an explicitly UNKNOWN row, never infer online.
         snapshotted_train_ids = {row.train_id for row in trains}
         for mr in mrs:
             if mr.train_id not in snapshotted_train_ids:
-                trains.append(GroundHeartbeatTrainDTO(train_id=mr.train_id, train_no=mr.train_no, status="UNKNOWN"))
+                members = {row.role: row.status for row in mrs if row.train_id == mr.train_id}
+                trains.append(GroundHeartbeatTrainDTO(train_id=mr.train_id, train_no=mr.train_no,
+                                                       status="UNKNOWN", mr_states=members))
                 snapshotted_train_ids.add(mr.train_id)
         mr_counts: dict[str, int] = dict.fromkeys(
             ("ONLINE", "OFFLINE", "OFFLINE_PENDING", "RECOVERING", "UNKNOWN"), 0
@@ -511,6 +571,7 @@ class GroundUnattendedApplicationService:
             if (not needle or needle in " ".join((mr.train_no, mr.mr_name, mr.mr_uuid, mr.resolved_ap_name, *(ip.ip for ip in mr.ip_states))).casefold())
             and (not station or mr.station == station)
             and (not mr_uuid or mr.mr_uuid == mr_uuid)
+            and (not role or mr.role == role.upper())
         }
         trains = [row for row in trains if row.train_id in selected_ids
                   and (not status or row.status == status)
@@ -522,7 +583,9 @@ class GroundUnattendedApplicationService:
         selected_ids = {row.train_id for row in trains}
         mrs = [row for row in mrs if row.train_id in selected_ids]
         return GroundHeartbeatPageDTO(
-            run_id=resolved_id, run_state=str(run.get("state") or ""),
+            monitoring_enabled=bool(state["enabled"]), source_conflicts=source_conflicts,
+            data_cleared_at=str(state["data_cleared_at"]),
+            run_id=resolved_id, run_state=str((run or {}).get("state") or ""),
             mrs=mrs, trains=trains, mr_counts=mr_counts, train_counts=train_counts,
             total=total, total_mrs=total_mrs, page=page, page_size=page_size, stations=stations,
         )
@@ -537,6 +600,12 @@ class GroundUnattendedApplicationService:
         mr = next((row for row in heartbeat.mrs if row.mr_uuid == mr_uuid), None)
         if mr is None:
             raise GroundUnattendedError("GROUND_MR_NOT_FOUND", "当前运行中没有该 MR 的心跳快照")
+        cleared_at = self.repository.heartbeat_inventory_state()["data_cleared_at"]
+        if cleared_at:
+            start = max(start, datetime.fromisoformat(cleared_at))
+        if not heartbeat.run_id or start >= end:
+            return GroundMrMonitoringDTO(mr=mr, series=GroundPingSeriesDTO(),
+                                         queried_start=start.isoformat(), queried_end=end.isoformat())
         series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
                                   start_time=start.isoformat(), end_time=end.isoformat(), max_points=2400)
         rows, ac_rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id, run_id=heartbeat.run_id,
@@ -983,13 +1052,82 @@ class GroundUnattendedApplicationService:
             )
         return GroundMrRuntimeStatusPageDTO(items=items, total=len(items))
 
-    def sync_inventory(self, site_id: str) -> GroundInventorySummaryDTO:
+    def heartbeat_inventory_preview(self, site_id: str, *, action: str = "SYNC") -> GroundHeartbeatInventoryPreviewDTO:
+        self._require_site(site_id)
+        if action not in {"SYNC", "CLEAR_DEVICES", "CLEAR_DATA"}:
+            raise GroundUnattendedError("HEARTBEAT_ACTION_INVALID", "无效的心跳管理操作")
+        state = self.repository.heartbeat_inventory_state()
+        history_counts = self.repository.heartbeat_history_counts()
+        history_count = sum(history_counts.values())
+        affected_history_count = (history_counts["ground_unattended_heartbeat_states"]
+                                  + history_counts["heartbeat_events"]) if action == "CLEAR_DATA" else 0
+        if action == "SYNC":
+            if self.inventory_sync is None:
+                raise GroundUnattendedError("INVENTORY_SYNC_UNAVAILABLE", "设备清单同步服务不可用", status_code=503)
+            preview = self.inventory_sync.preview()
+        else:
+            inventory = self.repository.list_inventory(include_removed=False) if state["enabled"] else []
+            device_count = sum(len(train.get("endpoints", [])) for train in inventory)
+            preview = {
+                "revision": hashlib.sha256(json.dumps(
+                    {"state": state, "inventory": inventory, "history": history_counts},
+                    sort_keys=True, ensure_ascii=False, default=str,
+                ).encode("utf-8")).hexdigest(),
+                "added_count": 0, "updated_count": 0,
+                "disabled_count": device_count if action == "CLEAR_DEVICES" else 0,
+                "device_count": device_count, "train_count": len(inventory),
+                "conflict_count": 0, "conflicts": [],
+            }
+        # Bind confirmation to its exact operation, not merely the source
+        # snapshot, so a SYNC preview cannot authorize a destructive action.
+        preview["revision"] = hashlib.sha256(
+            f"{action}:{preview['revision']}".encode("utf-8")
+        ).hexdigest()
+        return GroundHeartbeatInventoryPreviewDTO(
+            site_id=site_id, action=action, **preview,
+            monitoring_enabled=bool(state["enabled"]),
+            retained_history_count=history_count - affected_history_count,
+            affected_history_count=affected_history_count,
+        )
+
+    def heartbeat_inventory_apply(self, site_id: str, payload: GroundHeartbeatInventoryApplyDTO) -> GroundHeartbeatInventoryPreviewDTO:
+        self._require_site(site_id)
+        if not payload.confirm:
+            raise GroundUnattendedError("HEARTBEAT_CONFIRM_REQUIRED", "请明确确认操作范围", status_code=409)
+        state = self.repository.heartbeat_inventory_state()
+        preview = self.heartbeat_inventory_preview(site_id, action=payload.action)
+        if preview.revision != payload.revision:
+            raise GroundUnattendedError("HEARTBEAT_PREVIEW_STALE", "设备或监测数据已变化，请重新预览", status_code=409)
+        if payload.action == "SYNC" and preview.conflict_count:
+            raise GroundUnattendedError("HEARTBEAT_INVENTORY_CONFLICT", "设备身份或端别存在冲突，请先修复设备资料", status_code=409)
+        try:
+            if payload.action == "SYNC":
+                self.sync_inventory(site_id, heartbeat_revision=int(state["revision"]),
+                                    heartbeat_preview_revision=payload.revision)
+            else:
+                self.repository.apply_heartbeat_inventory_action(payload.action, expected_revision=int(state["revision"]))
+        except ValueError as exc:
+            raise GroundUnattendedError(str(exc).split(":")[0], "监测运行中或预览已过期，请停止监测后重新预览", status_code=409) from exc
+        self.repository.add_event(
+            event_type="heartbeat_inventory_managed", title="心跳监测管理操作",
+            message=payload.action, details=preview.model_dump(mode="json"),
+        )
+        return preview.model_copy(update={"applied": True, "monitoring_enabled": bool(self.repository.heartbeat_inventory_state()["enabled"])})
+
+    def sync_inventory(self, site_id: str, *, heartbeat_revision: int | None = None,
+                       heartbeat_preview_revision: str = "") -> GroundInventorySummaryDTO:
         self._require_site(site_id)
         if self.inventory_sync is None:
             raise GroundUnattendedError(
                 "INVENTORY_SYNC_UNAVAILABLE", "设备清单同步服务不可用", status_code=503
             )
-        result = self.inventory_sync.synchronize()
+        try:
+            result = (self.inventory_sync.synchronize(heartbeat_revision=heartbeat_revision,
+                                                      preview_revision=heartbeat_preview_revision)
+                      if heartbeat_revision is not None else self.inventory_sync.synchronize())
+        except ValueError as exc:
+            code = str(exc).split(":")[0]
+            raise GroundUnattendedError(code, str(exc), status_code=409) from exc
         receiver = getattr(self.supervisor, "syslog_receiver", None)
         if receiver is not None:
             receiver.refresh_inventory()

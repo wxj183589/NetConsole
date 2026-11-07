@@ -147,6 +147,16 @@ describe('QuickPingPage', () => {
 
 
 describe('Quick Ping IP selection and individual control', () => {
+  it('groups both address roles under one MR and formats history metrics from run data', () => {
+    const wrapper = shallowMount(QuickPingPage, { props: { trains: trains as never, active: false } })
+    const vm = wrapper.vm as unknown as { targetGroups: Array<{ label: string; rows: Array<{ address_role: string }> }>; runDuration: (value: typeof run) => string }
+    expect(vm.targetGroups).toHaveLength(1)
+    expect(vm.targetGroups[0]?.label).toBe('001 / CT')
+    expect(vm.targetGroups[0]?.rows.map(row => row.address_role)).toEqual(['PRIMARY', 'BACKUP'])
+    expect(vm.runDuration({ ...run, started_at: '2026-01-01T00:00:00Z', ended_at: '2026-01-01T01:02:03Z' })).toBe('01:02:03')
+    wrapper.unmount()
+  })
+
   it('deduplicates MR aliases by IP while preserving primary and backup addresses', async () => {
     const inventory = [...trains, { train_id: 't2', endpoints: [{ endpoint: 'CW', mr_id: 'alias', mr_name: 'Alias', management_ip: '192.0.2.1' }] }]
     const wrapper = shallowMount(QuickPingPage, { props: { trains: inventory as never, active: false } })

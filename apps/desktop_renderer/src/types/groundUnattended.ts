@@ -413,6 +413,13 @@ export interface GroundHeartbeatPage {
   run_id: string; run_state: string; mrs: GroundHeartbeatMr[]; trains: GroundHeartbeatTrain[]
   mr_counts: Record<string, number>; train_counts: Record<string, number>
 }
+export type GroundHeartbeatInventoryAction = 'SYNC' | 'CLEAR_DEVICES' | 'CLEAR_DATA'
+export interface GroundHeartbeatInventoryPreview {
+  site_id: string; action: GroundHeartbeatInventoryAction; revision: string
+  added_count: number; updated_count: number; disabled_count: number; conflict_count: number; conflicts: string[]
+  retained_history_count: number; affected_history_count: number; device_count: number; train_count: number
+  monitoring_enabled: boolean; applied: boolean
+}
 export interface GroundMeshMonitorEvent {
   id: number | string; event_time: string; device_time: string; receive_time: string; event_type: string; source: string
   old_ap_name: string; new_ap_name: string; old_bssid: string; bssid: string; rssi: number | null; raw_text: string

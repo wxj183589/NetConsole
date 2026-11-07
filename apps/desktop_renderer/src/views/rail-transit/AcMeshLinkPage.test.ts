@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { flushPromises, shallowMount } from '@vue/test-utils'
-import { reactive } from 'vue'
+import { nextTick, reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AcMeshLinkPage from './AcMeshLinkPage.vue'
 
@@ -60,6 +60,48 @@ describe('AC Mesh-Link MR page', () => {
     expect(signal.aborted).toBe(true)
     expect(vm.selectedAp).toEqual(ap)
     expect(vm.detail).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('zooms continuously around the pointer and pans without changing node layout', async () => {
+    const wrapper = shallowMount(AcMeshLinkPage, { props: props as never, global })
+    const vm = wrapper.vm as unknown as { view: string; fitGraph: () => void; graphViewport: { x: number; y: number; width: number; height: number } }
+    vm.view = 'graph'
+    await nextTick()
+    const svg = wrapper.find('.relation-graph')
+    vi.spyOn(svg.element, 'getBoundingClientRect').mockReturnValue({ left: 100, top: 50, width: 1000, height: 500 } as DOMRect)
+    vm.fitGraph()
+    const before = { ...vm.graphViewport }
+    await svg.trigger('wheel', { deltaY: -100, deltaMode: 0, clientX: 350, clientY: 175 })
+    const zoomed = { ...vm.graphViewport }
+    expect(zoomed.width).toBeLessThan(before.width)
+    expect(zoomed.x + zoomed.width * 0.25).toBeCloseTo(before.x + before.width * 0.25)
+    expect(zoomed.y + zoomed.height * 0.25).toBeCloseTo(before.y + before.height * 0.25)
+    await svg.trigger('pointerdown', { button: 0, pointerId: 1, clientX: 350, clientY: 175 })
+    await svg.trigger('pointermove', { pointerId: 1, clientX: 450, clientY: 225 })
+    await svg.trigger('pointerup', { pointerId: 1, clientX: 450, clientY: 225 })
+    expect(vm.graphViewport.x).toBeCloseTo(zoomed.x - zoomed.width * 0.1)
+    expect(vm.graphViewport.y).toBeCloseTo(zoomed.y - zoomed.height * 0.1)
+    wrapper.unmount()
+  })
+
+  it('keeps the graph view after data refresh and opens the clicked AP relation', async () => {
+    const wrapper = shallowMount(AcMeshLinkPage, { props: props as never, global })
+    const vm = wrapper.vm as unknown as { view: string; fitGraph: () => void; graphViewport: { x: number; y: number; width: number; height: number }; selectedAp: { ap_name: string; relations: unknown[] } | null }
+    vm.view = 'graph'
+    await nextTick()
+    const svg = wrapper.find('.relation-graph')
+    vi.spyOn(svg.element, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 1000, height: 500 } as DOMRect)
+    vm.fitGraph()
+    await svg.trigger('wheel', { deltaY: -100, clientX: 500, clientY: 250 })
+    const viewport = { ...vm.graphViewport }
+    await wrapper.setProps({ mrs: [{ ...mr, peer_aps: [...peers] }] } as never)
+    expect(vm.graphViewport).toEqual(viewport)
+    await wrapper.find('.graph-ap-node').trigger('click')
+    expect(wrapper.find('.graph-ap-node').classes()).toContain('graph-selected')
+    expect(vm.selectedAp?.ap_name).toBe('AP-1')
+    expect(vm.selectedAp?.relations).toHaveLength(1)
+    expect(wrapper.find('.drawer-content').text()).toContain('AP-1')
     wrapper.unmount()
   })
 })

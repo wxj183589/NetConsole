@@ -1117,7 +1117,9 @@ class GroundUnattendedSupervisor:
         capabilities used by the other workers.
         """
         grouped: dict[str, dict[str, Any]] = {}
-        for train in self.repository.list_inventory(include_removed=False):
+        inventory = (self.repository.list_inventory(include_removed=False)
+                     if self.repository.heartbeat_inventory_state()["enabled"] else [])
+        for train in inventory:
             train_id = str(train.get("train_id") or "").strip()
             if not train_id:
                 continue
@@ -1211,6 +1213,8 @@ class GroundUnattendedSupervisor:
     def _heartbeat_fleet_targets(self) -> dict[str, FleetPingTarget]:
         result: dict[str, FleetPingTarget] = {}
         conflicts: set[str] = set()
+        if not self.repository.heartbeat_inventory_state()["enabled"]:
+            return result
         for train in self.repository.list_inventory(include_removed=False):
             train_id = str(train.get("train_id") or "").strip()
             train_no = str(train.get("train_no") or train_id).strip()

@@ -136,11 +136,13 @@ function sortChanged({ order }: { order: string | null }) {
 
 <style scoped src="./groundUnattended.css"></style>
 <style scoped>
-.syslog-statistics { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 12px; }
-.syslog-statistics article { padding: 14px 16px; background: var(--el-bg-color); border: 1px solid var(--el-border-color-light); border-radius: 8px; display: grid; gap: 10px; }
+.syslog-statistics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.syslog-statistics article { min-width:0; padding: 12px 14px; background: var(--el-bg-color); border: 1px solid var(--el-border-color-light); border-radius: 6px; display: grid; gap: 5px; }
 .syslog-statistics span, .statistics-note { color: var(--el-text-color-secondary); font-size: 12px; }
-.syslog-statistics strong { font-size: 22px; color: var(--el-color-primary); }
+.syslog-statistics strong { font-size: 21px; color: var(--el-text-color-primary); overflow-wrap:anywhere; }
 .syslog-statistics .abnormal strong { color: var(--el-color-danger); }
-.statistics-note { margin: 0; }
-@media (max-width: 1100px) { .syslog-statistics { grid-template-columns: repeat(3, 1fr); } }
+.statistics-note { margin: 2px 0 8px; }
+.syslog-common-filters{grid-template-columns:repeat(6,minmax(0,1fr));align-items:center;gap:8px;padding:8px 0}.syslog-common-filters :deep(.el-date-editor){grid-column:span 2}.syslog-common-filters :deep(.el-button){min-width:0}.syslog-advanced-filters{padding:8px 0;border-top:1px solid var(--el-border-color-lighter)}.syslog-bulk-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px}.syslog-bulk-actions :deep(.el-button+.el-button){margin-left:0}
+@media (max-width: 1350px) { .syslog-statistics { grid-template-columns: repeat(3, minmax(0,1fr)); } .syslog-common-filters{grid-template-columns:repeat(4,minmax(0,1fr))} }
+@media (max-width: 800px) { .syslog-statistics { grid-template-columns: repeat(2, minmax(0,1fr)); } .syslog-common-filters{grid-template-columns:repeat(2,minmax(0,1fr))} }
 </style>

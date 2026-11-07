@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { Refresh } from '@element-plus/icons-vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { FullScreen, Refresh, RefreshRight, ZoomIn, ZoomOut } from '@element-plus/icons-vue'
 import { useGroundContext } from './useGroundUnattended'
 import { t } from '../../i18n/runtime'
 import NcDataTable from '../../components/table/NcDataTable.vue'
@@ -14,8 +14,15 @@ const emit = defineEmits<{ (event: 'refresh'): void; (event: 'update:selectedCon
 const view = ref('mr'), collapsed = ref<string[]>([]), detail = ref<AcMeshMrDetail | null>(null), drawer = ref(false), loadingDetail = ref(false), error = ref('')
 const aps = ref<AcMeshAp[]>([]), apTotal = ref(0), apPage = ref(1), selectedAp = ref<AcMeshAp | null>(null)
 const selectedSnapshot = ref<AcMeshSnapshotDetail | null>(null), snapshotRaw = ref<AcMeshRawTail | null>(null)
+const selectedGraphNode = ref('')
 const minutes = ref(60), customRange = ref<[string, string] | null>(null), historyPage = ref(1), relationPage = ref(1), peerPage = ref(1)
 let request: AbortController | undefined, generation = 0, apRequest: AbortController | undefined
+const graphSurface = ref<HTMLElement | null>(null), graphSvg = ref<SVGSVGElement | null>(null)
+const graphViewport = ref({ x: 0, y: 0, width: 1000, height: 600 })
+const graphFullscreen = ref(false)
+let graphInitialWidth = 1000, graphInitialized = false, graphResizeObserver: ResizeObserver | undefined
+let graphDrag: { pointerId: number; x: number; y: number; moved: boolean } | undefined
+let suppressGraphClick = false, graphClickTimer: ReturnType<typeof setTimeout> | undefined
 const groups = computed(() => {
   const values = new Map<string, AcMeshMrStatus[]>()
   for (const mr of props.mrs) { const key = mr.train_no || '—'; values.set(key, [...(values.get(key) || []), mr]) }
@@ -37,6 +44,94 @@ const graph = computed(() => {
       to: apNodes.get(peer.peer_ap_id || peer.peer_ap_mac || peer.bssid || `observation:${peer.id}`)! })),
     height: Math.max(mrNodes.size, apNodes.size) * 68 + 30 }
 })
+const graphViewBox = computed(() => {
+  const { x, y, width, height } = graphViewport.value
+  return `${x} ${y} ${width} ${height}`
+})
+function graphSize() {
+  const rect = graphSvg.value?.getBoundingClientRect()
+  return { width: Math.max(rect?.width || 0, 1), height: Math.max(rect?.height || 0, 1) }
+}
+function fitGraph() {
+  if (!graphPage.value.length || !graphSvg.value) return
+  const { width, height } = graphSize()
+  const viewportWidth = Math.max(1060, (graph.value.height + 60) * width / height)
+  const viewportHeight = viewportWidth * height / width
+  graphInitialWidth = viewportWidth
+  graphViewport.value = { x: 500 - viewportWidth / 2, y: graph.value.height / 2 - viewportHeight / 2,
+    width: viewportWidth, height: viewportHeight }
+  graphInitialized = true
+}
+function zoomGraph(factor: number, clientX?: number, clientY?: number) {
+  const svg = graphSvg.value
+  if (!svg || !graphInitialized) return
+  const rect = svg.getBoundingClientRect(), current = graphViewport.value
+  const width = Math.min(graphInitialWidth * 6, Math.max(graphInitialWidth / 8, current.width * factor))
+  const height = current.height * width / current.width
+  const px = clientX === undefined || !rect.width ? 0.5 : Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
+  const py = clientY === undefined || !rect.height ? 0.5 : Math.min(1, Math.max(0, (clientY - rect.top) / rect.height))
+  graphViewport.value = { x: current.x + (current.width - width) * px, y: current.y + (current.height - height) * py, width, height }
+}
+function wheelGraph(event: WheelEvent) {
+  event.preventDefault()
+  const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? graphSize().height : 1)
+  zoomGraph(Math.exp(Math.max(-800, Math.min(800, pixels)) * 0.0015), event.clientX, event.clientY)
+}
+function startGraphDrag(event: PointerEvent) {
+  if (event.button !== 0) return
+  if (graphClickTimer) clearTimeout(graphClickTimer)
+  suppressGraphClick = false
+  graphDrag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false }
+  graphSvg.value?.setPointerCapture?.(event.pointerId)
+}
+function moveGraphDrag(event: PointerEvent) {
+  if (!graphDrag || event.pointerId !== graphDrag.pointerId) return
+  const dx = event.clientX - graphDrag.x, dy = event.clientY - graphDrag.y
+  if (!dx && !dy) return
+  const { width, height } = graphSize(), current = graphViewport.value
+  graphViewport.value = { ...current, x: current.x - dx * current.width / width, y: current.y - dy * current.height / height }
+  graphDrag.x = event.clientX; graphDrag.y = event.clientY; graphDrag.moved = true
+}
+function endGraphDrag(event: PointerEvent) {
+  if (!graphDrag || event.pointerId !== graphDrag.pointerId) return
+  suppressGraphClick = graphDrag.moved
+  if (suppressGraphClick) graphClickTimer = setTimeout(() => { suppressGraphClick = false }, 0)
+  graphDrag = undefined
+  if (graphSvg.value?.hasPointerCapture?.(event.pointerId)) graphSvg.value.releasePointerCapture(event.pointerId)
+}
+function graphNodeClick(event: MouseEvent, id: string, open: () => void) {
+  if (suppressGraphClick) { suppressGraphClick = false; event.stopPropagation(); return }
+  selectedGraphNode.value = id
+  open()
+}
+function openGraphAp(peer: AcMeshLinkRecord) {
+  const key = peer.peer_ap_id || peer.peer_ap_mac || peer.bssid || `observation:${peer.id}`
+  openAp({ ap_key: key, ap_name: peer.peer_ap_name || peer.bssid || '—', mac: peer.peer_ap_mac || peer.bssid || '',
+    bssids: peer.bssid ? [peer.bssid] : [], station: peer.station, section: peer.section,
+    relations: graphPage.value.filter(({ peer: item }) =>
+      (item.peer_ap_id || item.peer_ap_mac || item.bssid || `observation:${item.id}`) === key).map(({ peer: item }) => item) })
+}
+function resetGraph() { fitGraph() }
+async function toggleGraphFullscreen() {
+  if (!graphSurface.value) return
+  if (document.fullscreenElement === graphSurface.value) await document.exitFullscreen()
+  else await graphSurface.value.requestFullscreen()
+}
+function syncGraphFullscreen() { graphFullscreen.value = document.fullscreenElement === graphSurface.value }
+watch(graphSurface, (surface, previous) => {
+  if (previous && graphResizeObserver) graphResizeObserver.unobserve(previous)
+  if (!surface) return
+  if (typeof ResizeObserver === 'undefined') { void nextTick(() => { if (!graphInitialized) fitGraph() }); return }
+  graphResizeObserver ??= new ResizeObserver(() => {
+    if (!graphInitialized) { fitGraph(); return }
+    const { width, height } = graphSize(), current = graphViewport.value
+    const nextHeight = current.width * height / width
+    graphViewport.value = { ...current, y: current.y + (current.height - nextHeight) / 2, height: nextHeight }
+  })
+  graphResizeObserver.observe(surface)
+  void nextTick(() => { if (!graphInitialized) fitGraph() })
+})
+watch(graphPage, () => { if (view.value === 'graph' && !graphInitialized) void nextTick(fitGraph) })
 const columns = computed(() => [
   { key: 'peer_ap_name', label: t('ground.acv.peer', '区间 AP'), minWidth: 160 },
   { key: 'bssid', label: 'BSSID', minWidth: 150 }, { key: 'peer_ap_mac', label: 'AP MAC', minWidth: 150 },
@@ -76,15 +171,11 @@ function openAp(ap: AcMeshAp) {
   selectedAp.value = ap; detail.value = null; selectedSnapshot.value = null; snapshotRaw.value = null
   peerPage.value = 1; loadingDetail.value = false; error.value = ''; drawer.value = true
 }
-function showGraphAp(peer: AcMeshLinkRecord) {
-  acMeshQuery.query = peer.peer_ap_mac || peer.bssid || peer.peer_ap_name
-  view.value = 'ap'
-  void loadAps()
-}
 function closeDrawer() { drawer.value = false; generation++; request?.abort(); detail.value = null; selectedAp.value = null; selectedSnapshot.value = null; loadingDetail.value = false }
 watch(view, value => { if (value === 'ap') void loadAps() })
 watch(() => props.mrs, () => { if (view.value === 'ap') void loadAps() })
-onBeforeUnmount(() => { generation++; request?.abort(); apRequest?.abort() })
+onBeforeUnmount(() => { generation++; request?.abort(); apRequest?.abort(); graphResizeObserver?.disconnect(); if (graphClickTimer) clearTimeout(graphClickTimer); document.removeEventListener('fullscreenchange', syncGraphFullscreen) })
+document.addEventListener('fullscreenchange', syncGraphFullscreen)
 </script>
 
 <template>
@@ -112,12 +203,53 @@ onBeforeUnmount(() => { generation++; request?.abort(); apRequest?.abort() })
     <el-pagination v-model:current-page="acMeshQuery.mrPage" :page-size="acMeshQuery.pageSize" :total="acMeshTotals.mrs" layout="total, prev, pager, next" @current-change="loadAcMesh(false)" />
   </template>
   <template v-else-if="view === 'ap'"><el-empty v-if="!aps.length" :description="t('ground.acv.no_peers', '暂无关联数据')" /><article v-for="ap in aps" :key="ap.ap_key" class="ap-card" @click="openAp(ap)"><div><strong>{{ ap.ap_name || ap.mac || ap.ap_key }}</strong><small>{{ ap.mac }} · {{ ap.station || ap.section }}</small></div><el-tag>{{ new Set(ap.relations.map(link => link.mr_id)).size }} MR</el-tag><div class="peer-list"><el-tag v-for="relation in ap.relations.slice(0, 3)" :key="relation.id" :type="stateType(relation.relation_status)">{{ relation.mr_name }} · {{ relation.rssi ?? '—' }}</el-tag><span v-if="ap.relations.length > 3">+{{ ap.relations.length - 3 }}</span></div></article><el-pagination v-model:current-page="apPage" :page-size="acMeshQuery.pageSize" :total="apTotal" layout="total, prev, pager, next" @current-change="loadAps" /></template>
-  <template v-else-if="view === 'graph'"><p class="muted">{{ t('ground.acv.graph_note', '显示当前筛选页的全部关联；虚线表示过期、断开或未知。点击 MR、AP 或连线查看详情。') }}</p><el-empty v-if="!graphPage.length" :description="t('ground.acv.no_peers', '暂无关联数据')" /><div v-else class="graph-scroll"><svg class="relation-graph" role="img" :aria-label="t('ground.acv.graph_view', '连接关系图')" :viewBox="`0 0 1000 ${graph.height}`"><g v-for="edge in graph.edges" :key="edge.peer.id"><path :d="`M 270 ${edge.from.y} C 430 ${edge.from.y}, 570 ${edge.to.y}, 730 ${edge.to.y}`" :class="['relation-edge', { uncertain: edge.peer.relation_status !== 'current' }]" @click="openMr(edge.mr)" /></g><g v-for="node in graph.mrs" :key="node.id"><rect x="10" :y="node.y-21" width="260" height="42" rx="5" @click="openMr(node.mr)" /><text x="22" :y="node.y+5" @click="openMr(node.mr)">{{ node.label }}</text></g><g v-for="node in graph.aps" :key="node.id"><rect x="730" :y="node.y-21" width="260" height="42" rx="5" @click="showGraphAp(node.peer)" /><text x="744" :y="node.y+5" @click="showGraphAp(node.peer)">{{ node.label }}</text></g></svg><div class="graph-observations"><button v-for="edge in graph.edges" :key="edge.peer.id" @click="openMr(edge.mr)">{{ edge.mr.mr_name }} → {{ edge.peer.peer_ap_name || edge.peer.bssid }} · RSSI {{ edge.peer.rssi ?? '—' }} · {{ edge.peer.device_time }}</button></div></div><el-pagination v-model:current-page="relationPage" :page-size="40" :total="graphRows.length" layout="total, prev, pager, next" /><el-pagination v-model:current-page="acMeshQuery.mrPage" :page-size="acMeshQuery.pageSize" :total="acMeshTotals.mrs" layout="total, prev, pager, next" @current-change="loadAcMesh(false)" /></template>
+  <template v-else-if="view === 'graph'">
+    <p class="muted">{{ t('ground.acv.graph_note', '显示当前筛选页的全部关联；虚线表示过期、断开或未知。点击 MR、AP 或连线查看详情。') }}</p>
+    <el-empty v-if="!graphPage.length" :description="t('ground.acv.no_peers', '暂无关联数据')" />
+    <div v-else ref="graphSurface" class="graph-surface">
+      <div class="graph-toolbar">
+        <span>{{ t('ground.acv.graph_view', '连接关系图') }} · {{ graph.mrs.length }} MR / {{ graph.aps.length }} AP</span>
+        <div class="graph-tools">
+          <el-button :icon="ZoomOut" title="缩小" aria-label="缩小" @click="zoomGraph(1.2)" />
+          <el-button :icon="ZoomIn" title="放大" aria-label="放大" @click="zoomGraph(1 / 1.2)" />
+          <el-button title="适应画布" @click="fitGraph">适应画布</el-button>
+          <el-button :icon="RefreshRight" title="重置视图" aria-label="重置视图" @click="resetGraph" />
+          <el-button :icon="FullScreen" :title="graphFullscreen ? '退出全屏' : '全屏'" :aria-label="graphFullscreen ? '退出全屏' : '全屏'" @click="toggleGraphFullscreen" />
+        </div>
+      </div>
+      <svg ref="graphSvg" class="relation-graph" role="img" :aria-label="t('ground.acv.graph_view', '连接关系图')"
+        :viewBox="graphViewBox" preserveAspectRatio="none" @wheel="wheelGraph"
+        @pointerdown="startGraphDrag" @pointermove="moveGraphDrag" @pointerup="endGraphDrag" @pointercancel="endGraphDrag">
+        <g v-for="edge in graph.edges" :key="edge.peer.id">
+          <path :d="`M 270 ${edge.from.y} C 430 ${edge.from.y}, 570 ${edge.to.y}, 730 ${edge.to.y}`"
+            :class="['relation-edge', { uncertain: edge.peer.relation_status !== 'current' }]"
+            @click="graphNodeClick($event, `edge:${edge.peer.id}`, () => openMr(edge.mr))" />
+        </g>
+        <g v-for="node in graph.mrs" :key="node.id" :class="['graph-mr-node', { 'graph-selected': selectedGraphNode === `mr:${node.id}` }]"
+          @click="graphNodeClick($event, `mr:${node.id}`, () => openMr(node.mr))">
+          <title>{{ node.label }} · {{ node.mr.management_ip || node.id }}</title>
+          <rect x="10" :y="node.y-25" width="260" height="50" rx="5" />
+          <text x="22" :y="node.y-3">{{ node.label }}</text>
+          <text class="graph-node-secondary" x="22" :y="node.y+15">{{ node.mr.management_ip || node.id }}</text>
+        </g>
+        <g v-for="node in graph.aps" :key="node.id" :class="['graph-ap-node', { 'graph-selected': selectedGraphNode === `ap:${node.id}` }]"
+          @click="graphNodeClick($event, `ap:${node.id}`, () => openGraphAp(node.peer))">
+          <title>{{ node.label }} · {{ node.peer.peer_ap_mac || node.peer.bssid || node.id }}</title>
+          <rect x="730" :y="node.y-25" width="260" height="50" rx="5" />
+          <text x="744" :y="node.y-3">{{ node.label }}</text>
+          <text class="graph-node-secondary" x="744" :y="node.y+15">{{ node.peer.peer_ap_mac || node.peer.bssid || node.id }}</text>
+        </g>
+      </svg>
+    </div>
+    <div class="graph-observations"><button v-for="edge in graph.edges" :key="edge.peer.id" @click="openMr(edge.mr)">{{ edge.mr.mr_name }} → {{ edge.peer.peer_ap_name || edge.peer.bssid }} · RSSI {{ edge.peer.rssi ?? '—' }} · {{ edge.peer.device_time }}</button></div>
+    <el-pagination v-model:current-page="relationPage" :page-size="40" :total="graphRows.length" layout="total, prev, pager, next" />
+    <el-pagination v-model:current-page="acMeshQuery.mrPage" :page-size="acMeshQuery.pageSize" :total="acMeshTotals.mrs" layout="total, prev, pager, next" @current-change="loadAcMesh(false)" />
+  </template>
   <template v-else><NcDataTable table-id="ground-ac-snapshots" route-key="ground-ac" :data="snapshots" :columns="snapshotColumns" row-key="id" compact @row-click="openSnapshot" /><el-pagination v-model:current-page="acMeshQuery.snapshotPage" :page-size="acMeshQuery.pageSize" :total="acMeshTotals.snapshots" layout="total, prev, pager, next" @current-change="loadAcMesh(false)" /><pre v-if="rawTail?.available" class="raw-tail">{{ rawTail.lines.join('\n') }}</pre></template>
   <el-drawer :model-value="drawer" :title="detail?.mr.mr_name || selectedAp?.ap_name || t('ground.acv.details', 'MR / AP 关联详情')" size="min(900px, 100vw)" destroy-on-close @close="closeDrawer"><div v-loading="loadingDetail" class="drawer-content"><template v-if="detail"><div class="detail-identity"><el-tag>{{ detail.mr.car_end || 'MR' }}</el-tag><strong>{{ detail.mr.mr_name }}</strong><code>{{ detail.mr.mr_id }}</code><p>{{ (detail.mr.management_ips || [detail.mr.management_ip]).join(' / ') }}</p><p>{{ t('ground.acv.resolved_ap', '解析后 AP') }}：{{ detail.mr.resolved_ap || '—' }} · {{ detail.mr.identity_status }}</p><p>{{ detail.mr.resolved_ap_station || detail.mr.resolved_ap_section || '' }}</p><el-tag :type="stateType(detail.mr.data_status)">{{ detail.mr.data_status }}</el-tag></div><h3>{{ t('ground.acv.current_peers', '当前快照关联') }} ({{ detail.current_links.length }})</h3><NcDataTable table-id="ground-ac-current-peers" route-key="ground-ac" :data="detail.current_links.slice((peerPage-1)*20, peerPage*20)" :columns="columns" row-key="id" compact /><el-pagination v-model:current-page="peerPage" :page-size="20" :total="detail.current_links.length" layout="total, prev, pager, next" /><h3>{{ t('ground.acv.rssi', 'RSSI 观测趋势') }}</h3><div class="mesh-filters"><el-select v-model="minutes" @change="customRange = null; historyPage = 1; openMr(detail.mr, false)"><el-option v-for="count in [10, 30, 60]" :key="count" :value="count" :label="`${count} min`" /></el-select><el-date-picker v-model="customRange" type="datetimerange" value-format="YYYY-MM-DD HH:mm:ss" @change="historyPage = 1; openMr(detail.mr, false)" /></div><AcMeshRssiChart v-if="detail.history_links.length" :rows="detail.history_links" :active="drawer" /><el-empty v-else :description="t('ground.acv.no_history', '所选时间内没有历史观测')" /><p class="muted">{{ detail.history_note }} {{ t('ground.acv.paged_history', '图表仅展示当前历史页的实际观测，切页查看其余记录。') }}</p><h3>{{ t('ground.acv.history', '历史关联观测') }}</h3><NcDataTable table-id="ground-ac-history-peers" route-key="ground-ac" :data="detail.history_links" :columns="columns" row-key="id" compact /><el-pagination v-model:current-page="historyPage" :page-size="100" :total="detail.history_total" layout="total, prev, pager, next" @current-change="openMr(detail.mr, false)" /><h3>{{ t('ground.acv.events', '已有事件记录') }}</h3><pre class="raw-tail">{{ JSON.stringify(detail.recent_events, null, 2) }}</pre><h3>{{ t('ground.acv.raw', '快照与解析结果') }}</h3><el-button v-for="id in [...new Set(detail.current_links.map(link => link.snapshot_id))]" :key="id" @click="openSnapshot({ id } as AcMeshSnapshot)">{{ t('ground.acv.snapshots', '数据快照') }} #{{ id }}</el-button></template><template v-if="selectedAp"><h3>{{ selectedAp.ap_name }}</h3><p>{{ selectedAp.mac }} · {{ selectedAp.station || selectedAp.section }}</p><NcDataTable table-id="ground-ac-reverse-peers" route-key="ground-ac" :data="selectedAp.relations.slice((peerPage-1)*20, peerPage*20)" :columns="[{ key: 'mr_name', label: 'MR', minWidth: 160 }, ...columns]" row-key="id" compact /><el-pagination v-model:current-page="peerPage" :page-size="20" :total="selectedAp.relations.length" layout="total, prev, pager, next" /></template><template v-if="selectedSnapshot"><h3>{{ t('ground.acv.snapshots', '数据快照') }} #{{ selectedSnapshot.snapshot.id }}</h3><pre class="raw-tail">{{ JSON.stringify(selectedSnapshot.snapshot, null, 2) }}</pre><NcDataTable table-id="ground-ac-snapshot-peers" route-key="ground-ac" :data="selectedSnapshot.links" :columns="[{ key: 'mr_name', label: 'MR', minWidth: 160 }, ...columns]" row-key="id" compact /><pre v-if="snapshotRaw?.available" class="raw-tail">{{ snapshotRaw.lines.join('\n') }}</pre><el-empty v-else :description="snapshotRaw?.message || t('ground.v2.ac_no_raw_tail', '暂无原始尾部')" /></template></div></el-drawer>
 </section>
 </template>
 <style scoped>
 .mesh-page{display:flex;flex-direction:column;gap:14px;min-width:0}.page-heading,.controller-actions,.data-bar,.mesh-filters{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.page-heading{justify-content:space-between}.page-heading h2{margin:3px 0}.eyebrow{margin:0;color:var(--el-color-primary);font-size:12px;font-weight:700}.controller-actions .el-select{width:270px}.metric-grid{display:grid;grid-template-columns:repeat(6,minmax(110px,1fr));gap:12px}.metric-grid article{border:1px solid var(--el-border-color-lighter);border-radius:8px;padding:14px;background:var(--el-bg-color)}.metric-grid strong{display:block;font-size:25px;margin-top:8px}.metric-grid span,.muted,.data-bar{font-size:12px;color:var(--el-text-color-secondary)}.good{color:var(--el-color-success)}.data-bar{padding:10px;background:var(--el-fill-color-light);border-radius:6px}.mesh-filters .el-input{width:180px}.mesh-filters .el-input:first-child{width:300px}.mesh-filters .el-select{width:130px}.train-group{border:1px solid var(--el-border-color-lighter);border-radius:8px;overflow:hidden}.train-heading{width:100%;border:0;padding:10px 14px;text-align:left;background:var(--el-fill-color-light);color:var(--el-text-color-primary);font-weight:600;cursor:pointer}.train-heading span{margin-left:12px;color:var(--el-text-color-secondary)}.mr-row{display:grid;grid-template-columns:minmax(165px,1.1fr) 95px 150px minmax(230px,2fr) minmax(130px,1fr) 45px;gap:14px;align-items:center;padding:14px;cursor:pointer;background:var(--el-bg-color)}.mr-row+.mr-row{border-top:1px solid var(--el-border-color-lighter)}.mr-row:hover{background:var(--el-fill-color-light)}.mr-identity{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.mr-identity small{flex-basis:100%;padding-left:44px}.mr-row small,.ap-card small{display:block;font-size:12px;color:var(--el-text-color-secondary);margin-top:5px;overflow-wrap:anywhere}.peer-list{display:flex;gap:6px;align-items:center;flex-wrap:wrap;min-width:0}.peer-list .el-tag{max-width:100%;height:auto;white-space:normal}.peer-count{font-size:12px;flex-basis:100%;color:var(--el-text-color-secondary)}.management{font-size:13px}.ap-card{display:flex;gap:20px;align-items:center;padding:16px;border:1px solid var(--el-border-color-lighter);border-radius:8px;cursor:pointer}.relation-graph{width:100%;max-height:650px;overflow:auto;font-size:12px}.relation-graph rect{fill:var(--el-fill-color-light);stroke:var(--el-border-color);cursor:pointer}.relation-graph text{fill:var(--el-text-color-primary);cursor:pointer}.relation-edge{fill:none;stroke:var(--el-color-primary);stroke-width:3;cursor:pointer}.relation-edge.uncertain{stroke:var(--el-text-color-placeholder);stroke-dasharray:7 5}.drawer-content{min-height:180px}.detail-identity{padding:14px;border-radius:8px;background:var(--el-fill-color-light)}.detail-identity strong{margin:0 10px}.detail-identity code{display:block;margin-top:10px;overflow-wrap:anywhere}.raw-tail{max-height:300px;overflow:auto;background:var(--el-fill-color-light);padding:12px;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}:deep(.el-drawer__body){overflow:auto}:deep(.el-pagination){flex-wrap:wrap;margin-top:6px}@media(max-width:1200px){.metric-grid{grid-template-columns:repeat(3,1fr)}.mr-row{grid-template-columns:170px 90px 140px 1fr}.mr-row>div:nth-last-child(2){grid-column:1/4}.mr-row>.el-button{justify-self:end}}@media(max-width:650px){.metric-grid{grid-template-columns:repeat(2,1fr)}.mr-row{grid-template-columns:1fr 1fr}.mr-row>div:nth-last-child(2){grid-column:auto}.controller-actions .el-select,.mesh-filters .el-input:first-child{width:100%}.ap-card{flex-wrap:wrap}}
-.graph-scroll{max-height:650px;overflow:auto}.relation-graph{min-width:700px}.graph-observations{display:flex;gap:6px;flex-wrap:wrap;padding:8px 0}.graph-observations button{border:1px solid var(--el-border-color);border-radius:4px;background:var(--el-bg-color);color:var(--el-text-color-regular);padding:5px 8px;cursor:pointer;font-size:12px}.graph-observations button:hover{color:var(--el-color-primary)}
+.graph-surface{display:flex;flex-direction:column;width:100%;height:65vh;min-height:460px;max-height:850px;min-width:0;overflow:hidden;border:1px solid var(--el-border-color);border-radius:6px;background:var(--el-bg-color)}.graph-surface:fullscreen{height:100vh;border:0;border-radius:0}.graph-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:50px;padding:6px 12px;border-bottom:1px solid var(--el-border-color);font-size:12px;color:var(--el-text-color-secondary)}.graph-tools{display:flex;align-items:center;flex-wrap:wrap;gap:4px}.graph-tools :deep(.el-button+.el-button){margin-left:0}.relation-graph{width:100%;height:100%;min-height:0;max-height:none;overflow:hidden;cursor:grab;touch-action:none;user-select:none}.relation-graph:active{cursor:grabbing}.relation-graph .graph-selected rect{fill:var(--el-color-primary-light-9);stroke:var(--el-color-primary);stroke-width:2}.relation-graph .graph-node-secondary{font-size:10px;fill:var(--el-text-color-secondary)}.graph-observations{display:flex;gap:6px;flex-wrap:wrap;padding:8px 0}.graph-observations button{border:1px solid var(--el-border-color);border-radius:4px;background:var(--el-bg-color);color:var(--el-text-color-regular);padding:5px 8px;cursor:pointer;font-size:12px}.graph-observations button:hover{color:var(--el-color-primary)}@media(max-width:650px){.graph-toolbar{align-items:flex-start;flex-direction:column}.graph-surface{height:65vh;min-height:420px;max-height:700px}}
 </style>
