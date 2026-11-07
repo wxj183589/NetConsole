@@ -20,10 +20,7 @@ Branch：`codex-A/ground-unattended-v2-20261107`
 隔离 Electron 运行目录：`D:\study\NetConsole-Workspace\test-data\NetConsole\ground-r311-20261108`
 截图目录：`D:\study\NetConsole-Workspace\reports\tests\ground-r311-20261108`
 
-- [1920×1080 修改后截图](../../../reports/tests/ground-r311-20261108/after-1920.png)
-- [2048×1091 修改后截图](../../../reports/tests/ground-r311-20261108/after-2048.png)
-- [1672×941 修改后截图](../../../reports/tests/ground-r311-20261108/after-1672.png)
-- [Electron DOM/布局核验](../../../reports/tests/ground-r311-20261108/after-layout.json)
+本轮截图和 Electron DOM/布局 JSON 保存在上述 Workspace 临时目录，未纳入 Git 归档；下方保留其核验结论。
 
 实际 Electron DOM 结果：
 
@@ -52,6 +49,4 @@ Branch：`codex-A/ground-unattended-v2-20261107`
 
 修改前对照截图：
 
-- [1920×1080 修改前截图](../../../reports/tests/ground-r311-20261108/before-1920.png)
-- [2048×1091 修改前截图](../../../reports/tests/ground-r311-20261108/before-2048.png)
-- [1672×941 修改前截图](../../../reports/tests/ground-r311-20261108/before-1672.png)
+修改前截图同样保存在上述 Workspace 临时目录，未纳入 Git 归档。
