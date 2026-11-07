@@ -65,7 +65,7 @@ PR：#105（本轮未合并）
 
 ## PR 最新状态
 
-PR #105 保持开放；本轮分支未合并。产品提交和 DevStatus 提交待完成后再推送，禁止 force push。整体状态保持 `PASS_WITH_LIMITATIONS / REAL_DEVICE_PENDING`。
+PR #105 保持开放；本轮分支未合并。产品提交 `865edd6c` 已推送到 `github/codex-A/ground-unattended-v2-20261107`，DevStatus 提交 `aad8235` 已推送到 DevStatus `main`；未使用 force push。整体状态保持 `PASS_WITH_LIMITATIONS / REAL_DEVICE_PENDING`。
 
 ## Change Impact
 
