@@ -165,12 +165,14 @@ ACTIVE_BUILD_ORDER_COLUMNS: tuple[tuple[str, str], ...] = (
 )
 
 # 独立“导出链路明细”契约。综合分析报告仍使用上面的扩展字段集合。
+# 原始指标直接对应 Parser/SQLite 字段；派生 dBm 信号单独列出，避免把
+# 原始 L_Rssi/L_Noise 等数值误当成二次计算结果。
 LINK_DETAIL_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("序号", "record_seq"),
     ("采样时间", "sample_time"),
     ("采样标识", "timestamp_tag"),
-    ("Radio", "radio"),
-    ("状态", "link_state"),
+    ("本端 Radio", "radio"),
+    ("链路状态", "link_state"),
     ("原始 Peer MAC", "peer_mac_raw"),
     ("解析 AP 名称", "peer_ap_name"),
     ("物理 AP MAC", "peer_ap_mac"),
@@ -183,35 +185,47 @@ LINK_DETAIL_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("匹配规则", "peer_match_rule"),
     ("身份来源", "peer_identity_source"),
     ("建链时间", "establish_time"),
-    ("链路时长", "duration_text"),
-    ("LinkCnt", "link_count"),
-    ("MR 侧 RSSI 差值", "local_rssi_db"),
-    ("Peer 侧 RSSI 差值", "peer_rssi_db"),
-    ("MR 侧底噪", "local_noise_dbm"),
-    ("Peer 侧底噪", "peer_noise_dbm"),
-    ("MR 接收信号", "local_signal_dbm"),
-    ("Peer 接收信号", "peer_signal_dbm"),
-    ("MR 侧协商速率原始值", "local_rate_raw"),
-    ("Peer 侧协商速率原始值", "peer_rate_raw"),
-    ("L_TxBusy", "local_tx_busy"),
-    ("P_TxBusy", "peer_tx_busy"),
-    ("L_RxBusy", "local_rx_busy"),
-    ("P_RxBusy", "peer_rx_busy"),
-    ("MR CPU", "local_cpu_percent"),
-    ("Peer CPU", "peer_cpu_percent"),
-    ("MR 内存", "local_mem_percent"),
-    ("Peer 内存", "peer_mem_percent"),
-    ("LocalTx", "local_tx"),
-    ("PeerTx", "peer_tx"),
-    ("LocalRx", "local_rx"),
-    ("PeerRx", "peer_rx"),
-    ("LocalRetry", "local_retry"),
-    ("PeerRetry", "peer_retry"),
-    ("LocalErr", "local_err"),
-    ("PeerErr", "peer_err"),
+    ("链路持续时间", "duration_text"),
+    ("链路数量", "link_count"),
+    ("本端 RSSI", "local_rssi_db"),
+    ("对端 RSSI", "peer_rssi_db"),
+    ("本端底噪", "local_noise_raw"),
+    ("对端底噪", "peer_noise_raw"),
+    ("本端协商速率", "local_rate_raw"),
+    ("对端协商速率", "peer_rate_raw"),
+    ("本端 CPU 利用率", "local_cpu_percent"),
+    ("对端 CPU 利用率", "peer_cpu_percent"),
+    ("本端内存利用率", "local_mem_percent"),
+    ("对端内存利用率", "peer_mem_percent"),
+    ("本端发送忙时占比", "local_tx_busy"),
+    ("对端发送忙时占比", "peer_tx_busy"),
+    ("本端接收忙时占比", "local_rx_busy"),
+    ("对端接收忙时占比", "peer_rx_busy"),
+    ("本端发送描述符空闲数", "local_tx_des_free_cnt"),
+    ("对端发送描述符空闲数", "peer_tx_des_free_cnt"),
+    ("本端发送计数", "local_tx"),
+    ("对端发送计数", "peer_tx"),
+    ("本端接收计数", "local_rx"),
+    ("对端接收计数", "peer_rx"),
+    ("本端重传计数", "local_retry"),
+    ("对端重传计数", "peer_retry"),
+    ("本端错误计数", "local_err"),
+    ("对端错误计数", "peer_err"),
+    ("本端发送 GARP 计数", "local_tx_garp"),
+    ("对端接收 GARP 计数", "peer_rx_garp"),
+    ("本端发送组播加入计数", "local_tx_mul_join"),
+    ("对端接收组播加入计数", "peer_rx_mul_join"),
+    ("本端信号强度(dBm)", "local_signal_dbm"),
+    ("对端信号强度(dBm)", "peer_signal_dbm"),
     ("来源文件", "archived_filename"),
     ("行号", "source_line_number"),
+    ("原始行起点", "raw_line_start"),
+    ("原始行终点", "raw_line_end"),
+    ("备注", "remark"),
 )
+
+# Keep the legacy public name aligned with the complete diagnostic contract.
+LINK_DETAIL_COLUMNS = LINK_DETAIL_EXPORT_COLUMNS
 
 ACTIVE_BUILD_ORDER_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("序号", "sequence"),
@@ -221,7 +235,7 @@ ACTIVE_BUILD_ORDER_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("物理 AP MAC", "peer_ap_mac"),
     ("归属站点", "peer_site"),
     ("归属区间", "belong_section"),
-    ("Peer Radio", "peer_radio"),
+    ("PEER Radio", "peer_radio"),
     ("Peer Radio MAC", "peer_radio_mac"),
     ("匹配规则", "identity_rule"),
     ("身份来源", "identity_source"),
@@ -244,23 +258,10 @@ ACTIVE_BUILD_ORDER_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("来源文件", "source_file"),
 )
 
-BUSINESS_LINK_COLUMNS = (
-    ("序号", "record_seq"),
-    ("采样时间", "sample_time"),
-    ("Radio", "radio"),
-    ("链路状态", "link_state"),
-    ("AP 名称", "peer_ap_name"),
-    ("AP MAC", "peer_ap_mac"),
-    ("归属站点", "peer_site"),
-    ("归属区间", "belong_section"),
-    ("Peer Radio", "peer_radio"),
-    ("RSSI", "local_rssi_db"),
-    ("TxBusy", "local_tx_busy"),
-    ("RxBusy", "local_rx_busy"),
-    ("LinkCnt", "link_count"),
-    ("建链时间", "establish_time"),
-    ("持续时长", "duration_text"),
-    ("未识别 Peer 证据", "peer_mac_raw"),
+BUSINESS_LINK_COLUMNS = tuple(
+    (header, field)
+    for header, field in LINK_DETAIL_EXPORT_COLUMNS
+    if field not in {"peer_radio_mac", "peer_match_rule", "peer_identity_source"}
 )
 BUSINESS_BUILD_COLUMNS = tuple(
     (label, field)
@@ -269,10 +270,14 @@ BUSINESS_BUILD_COLUMNS = tuple(
     in {
         "sequence",
         "radio",
+        "peer_mac_raw",
         "peer_ap_name",
         "peer_ap_mac",
         "peer_site",
         "belong_section",
+        "peer_radio",
+        "mileage",
+        "line_side",
         "build_start_time",
         "build_end_time",
         "main_link_duration_seconds",
@@ -283,7 +288,7 @@ BUSINESS_BUILD_COLUMNS = tuple(
         "avg_tx_busy",
         "avg_rx_busy",
     }
-) + (("未识别 Peer 证据", "peer_mac_raw"),)
+)
 AP_SIGNAL_COLUMNS = (
     ("AP 名称", "peer_ap_name"),
     ("AP MAC", "peer_ap_mac"),
@@ -345,74 +350,11 @@ def business_values(columns, row):
 
 def projected_export_values(columns, original_columns, factory, row):
     values = dict(zip((field for _label, field in original_columns), factory(row)))
-    if columns in (BUSINESS_LINK_COLUMNS, BUSINESS_BUILD_COLUMNS) and row.get(
-        "peer_ap_mac"
-    ):
-        values["peer_mac_raw"] = ""
     return [values.get(field) for _label, field in columns]
 
 
 def link_detail_row_values(row: dict[str, object]) -> list[object]:
-    metrics = _json_dict(row.get("metrics_json"))
-    peer = format_mac_h3c(row.get("peer_mac_normalized")) if row.get("peer_mac_normalized") else row.get("peer_mac_raw")
-    local_tx_busy = metrics.get("local_tx_busy")
-    peer_tx_busy = metrics.get("peer_tx_busy")
-    local_rx_busy = metrics.get("local_rx_busy")
-    peer_rx_busy = metrics.get("peer_rx_busy")
-    return [
-        row.get("record_seq") or row.get("source_line_number"),
-        _excel_time_text(row.get("sample_time")),
-        row.get("timestamp_tag") or "",
-        row.get("radio"),
-        format_link_state(row.get("link_state")),
-        row.get("peer_mac_raw") or peer,
-        row.get("peer_ap_name") or "-",
-        format_mac_h3c(row.get("peer_ap_mac")) if row.get("peer_ap_mac") else "-",
-        row.get("peer_site") or "-",
-        row.get("belong_section") or row.get("peer_section") or "-",
-        row.get("peer_location") or row.get("mileage") or "-",
-        row.get("peer_direction") or row.get("direction") or "-",
-        format_mac_h3c(row.get("peer_radio_mac")) if row.get("peer_radio_mac") else "-",
-        row.get("peer_radio") or row.get("peer_radio_label") or "-",
-        _excel_time_text(row.get("establish_time")),
-        row.get("duration_text"),
-        row.get("link_count"),
-        _dash(_metric(row, metrics, "local_rssi_db")),
-        _dash(_metric(row, metrics, "peer_rssi_db")),
-        _dash(_metric(row, metrics, "local_noise_dbm", "local_noise_raw")),
-        _dash(_metric(row, metrics, "peer_noise_dbm", "peer_noise_raw")),
-        _dash(_metric(row, metrics, "local_signal_dbm")),
-        _dash(_metric(row, metrics, "peer_signal_dbm")),
-        _dash(_metric(row, metrics, "local_rate_raw")),
-        _dash(_metric(row, metrics, "peer_rate_raw")),
-        _dash(local_tx_busy),
-        _dash(peer_tx_busy),
-        _dash(local_rx_busy),
-        _dash(peer_rx_busy),
-        row.get("archived_filename") or row.get("source_file") or "-",
-        _dash(row.get("source_line_number")),
-        _dash(_metric(row, metrics, "local_cpu_percent")),
-        _dash(_metric(row, metrics, "peer_cpu_percent")),
-        _dash(_metric(row, metrics, "local_mem_percent")),
-        _dash(_metric(row, metrics, "peer_mem_percent")),
-        _dash(_metric(row, metrics, "local_tx_des_free_cnt")),
-        _dash(_metric(row, metrics, "peer_tx_des_free_cnt")),
-        _dash(_metric(row, metrics, "local_tx")),
-        _dash(_metric(row, metrics, "peer_tx")),
-        _dash(_metric(row, metrics, "local_rx")),
-        _dash(_metric(row, metrics, "peer_rx")),
-        _dash(_metric(row, metrics, "local_retry")),
-        _dash(_metric(row, metrics, "peer_retry")),
-        _dash(_metric(row, metrics, "local_err")),
-        _dash(_metric(row, metrics, "peer_err")),
-        _dash(_metric(row, metrics, "local_tx_garp")),
-        _dash(_metric(row, metrics, "local_tx_mul_join")),
-        row.get("peer_match_rule") or "-",
-        row.get("peer_identity_source") or row.get("identity_source") or row.get("peer_resolve_source") or "-",
-        _dash(row.get("raw_line_start")),
-        _dash(row.get("raw_line_end")),
-        _link_detail_remark(row, metrics),
-    ]
+    return link_detail_export_row_values(row)
 
 
 def active_build_order_row_values(row: dict[str, object]) -> list[object]:
@@ -492,34 +434,25 @@ def link_detail_export_row_values(row: dict[str, object]) -> list[object]:
         row.get("peer_match_rule") or row.get("identity_rule") or "-",
         row.get("peer_identity_source") or row.get("identity_source") or row.get("peer_resolve_source") or "-",
         _excel_time_text(row.get("establish_time")),
-        row.get("duration_text") or "-",
-        _dash(row.get("link_count")),
-        _dash(_metric(row, metrics, "local_rssi_db")),
-        _dash(_metric(row, metrics, "peer_rssi_db")),
-        _dash(_metric(row, metrics, "local_noise_dbm", "local_noise_raw")),
-        _dash(_metric(row, metrics, "peer_noise_dbm", "peer_noise_raw")),
-        _dash(_metric(row, metrics, "local_signal_dbm")),
-        _dash(_metric(row, metrics, "peer_signal_dbm")),
-        _dash(_metric(row, metrics, "local_rate_raw")),
-        _dash(_metric(row, metrics, "peer_rate_raw")),
-        _dash(_metric(row, metrics, "local_tx_busy")),
-        _dash(_metric(row, metrics, "peer_tx_busy")),
-        _dash(_metric(row, metrics, "local_rx_busy")),
-        _dash(_metric(row, metrics, "peer_rx_busy")),
-        _dash(_metric(row, metrics, "local_cpu_percent")),
-        _dash(_metric(row, metrics, "peer_cpu_percent")),
-        _dash(_metric(row, metrics, "local_mem_percent")),
-        _dash(_metric(row, metrics, "peer_mem_percent")),
-        _dash(_metric(row, metrics, "local_tx")),
-        _dash(_metric(row, metrics, "peer_tx")),
-        _dash(_metric(row, metrics, "local_rx")),
-        _dash(_metric(row, metrics, "peer_rx")),
-        _dash(_metric(row, metrics, "local_retry")),
-        _dash(_metric(row, metrics, "peer_retry")),
-        _dash(_metric(row, metrics, "local_err")),
-        _dash(_metric(row, metrics, "peer_err")),
-        row.get("archived_filename") or row.get("source_file") or "-",
-        _dash(row.get("source_line_number")),
+        _raw_value(row, metrics, "duration_text"),
+        _raw_value(row, metrics, "link_count"),
+        *[
+            _raw_metric(row, metrics, field)
+            for field in (
+                "local_rssi_db", "peer_rssi_db", "local_noise_raw", "peer_noise_raw",
+                "local_rate_raw", "peer_rate_raw", "local_cpu_percent", "peer_cpu_percent",
+                "local_mem_percent", "peer_mem_percent", "local_tx_busy", "peer_tx_busy",
+                "local_rx_busy", "peer_rx_busy", "local_tx_des_free_cnt", "peer_tx_des_free_cnt",
+                "local_tx", "peer_tx", "local_rx", "peer_rx", "local_retry", "peer_retry",
+                "local_err", "peer_err", "local_tx_garp", "peer_rx_garp",
+                "local_tx_mul_join", "peer_rx_mul_join", "local_signal_dbm", "peer_signal_dbm",
+            )
+        ],
+        row.get("archived_filename") or row.get("source_file"),
+        row.get("source_line_number"),
+        row.get("raw_line_start"),
+        row.get("raw_line_end"),
+        _link_detail_remark(row, metrics),
     ]
 
 
@@ -981,11 +914,23 @@ def _write_params_sheet_xlsx(worksheet, analysis_params: dict[str, object], cont
         ("grade_metric", "AP 质量指标"),
         ("rule_version", "统计规则版本"),
         ("export_mode", "导出模式"),
+        ("exclude_depot", "排除车辆段"),
+        ("exclude_parking", "排除停车场"),
+        ("scope_label", "统计范围"),
     ):
         rows.append(
             {
                 "key": label,
-                "value": analysis_params.get(key, ""),
+                "value": (
+                    _yes_no(analysis_params.get(key, True))
+                    if key in {"exclude_depot", "exclude_parking"}
+                    else {
+                        "CURRENT_FILTERED_SCOPE": "当前筛选范围",
+                        "FULL_SCOPE": "完整范围",
+                    }.get(str(analysis_params.get(key) or ""), "")
+                    if key == "scope_label"
+                    else analysis_params.get(key, "")
+                ),
                 "remark": "完整唯一 ACTIVE MR RSSI；P10 分级；弱信号 < 良好阈值；区段以最后采样减首次采样计时",
             }
         )
@@ -1149,7 +1094,15 @@ def _write_xlsx_data_row(
                 break
     if extra_formats:
         column_formats.update(extra_formats)
-    write_row(worksheet, row_index, [_cell_value(value) for value in values], default_format=default_format, column_formats=column_formats,
+    write_row(
+        worksheet,
+        row_index,
+        [
+            _cell_value(value, preserve_blank=column.field in RAW_MESH_EXPORT_FIELDS)
+            for value, column in zip(values, specs)
+        ],
+        default_format=default_format,
+        column_formats=column_formats,
     )
 
 
@@ -1482,6 +1435,16 @@ def _metric(row: dict[str, object], metrics: dict[str, object], key: str, fallba
     return metrics.get(fallback_key) if fallback_key else None
 
 
+def _raw_metric(row: dict[str, object], metrics: dict[str, object], key: str) -> object:
+    """Return a parser value without display formatting or unit conversion."""
+
+    return _metric(row, metrics, key)
+
+
+def _raw_value(row: dict[str, object], metrics: dict[str, object], key: str) -> object:
+    return row.get(key) if row.get(key) is not None else metrics.get(key)
+
+
 def _dash(value: object) -> object:
     if value is None:
         return "-"
@@ -1493,7 +1456,20 @@ def _dash(value: object) -> object:
     return value
 
 
-def _cell_value(value: object) -> object:
+RAW_MESH_EXPORT_FIELDS = frozenset({
+    "local_rssi_db", "peer_rssi_db", "local_noise_raw", "peer_noise_raw",
+    "local_rate_raw", "peer_rate_raw", "local_cpu_percent", "peer_cpu_percent",
+    "local_mem_percent", "peer_mem_percent", "local_tx_busy", "peer_tx_busy",
+    "local_rx_busy", "peer_rx_busy", "local_tx_des_free_cnt", "peer_tx_des_free_cnt",
+    "local_tx", "peer_tx", "local_rx", "peer_rx", "local_retry", "peer_retry",
+    "local_err", "peer_err", "local_tx_garp", "peer_rx_garp", "local_tx_mul_join",
+    "peer_rx_mul_join",
+})
+
+
+def _cell_value(value: object, *, preserve_blank: bool = False) -> object:
+    if preserve_blank and value is None:
+        return ""
     value = _dash(value)
     return "-" if value == "" else value
 

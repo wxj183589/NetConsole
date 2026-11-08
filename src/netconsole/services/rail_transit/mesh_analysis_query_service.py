@@ -2480,7 +2480,14 @@ class MeshAnalysisQueryService:
         start = (current - 1) * size
         return MeshApStatisticsPageDTO(items=items[start : start + size], total=len(items), page=current, page_size=size)
 
-    def business_statistics(self, site_id: str, session_id: str) -> dict[str, Any]:
+    def business_statistics(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        exclude_depot: bool = True,
+        exclude_parking: bool = True,
+    ) -> dict[str, Any]:
         from netconsole.services.mesh_business_statistics import (
             build_mesh_business_statistics,
             effective_business_rules,
@@ -2494,7 +2501,12 @@ class MeshAnalysisQueryService:
         snapshot = self._ap_map(site_id)
         if context.detail_db is None:
             return build_mesh_business_statistics(
-                [], rules, snapshot, minimum_samples=params.ap_minimum_samples
+                [],
+                rules,
+                snapshot,
+                minimum_samples=params.ap_minimum_samples,
+                exclude_depot=exclude_depot,
+                exclude_parking=exclude_parking,
             )
         path = context.detail_db
         wal = path.with_name(path.name + "-wal")
@@ -2507,6 +2519,8 @@ class MeshAnalysisQueryService:
             repr(rules),
             repr(params),
             json.dumps(snapshot.to_serializable(), sort_keys=True),
+            exclude_depot,
+            exclude_parking,
         )
         cached = getattr(self, "_business_statistics_cache", None)
         if cached and cached[0] == signature:
@@ -2517,6 +2531,8 @@ class MeshAnalysisQueryService:
                 rules,
                 snapshot,
                 minimum_samples=params.ap_minimum_samples,
+                exclude_depot=exclude_depot,
+                exclude_parking=exclude_parking,
             )
         # One session only; large interval collections are not retained by the cache.
         self._business_statistics_cache = (
@@ -2536,10 +2552,17 @@ class MeshAnalysisQueryService:
         descending: bool = False,
         page: int = 1,
         page_size: int = 100,
+        exclude_depot: bool = True,
+        exclude_parking: bool = True,
     ) -> MeshApStatisticsPageDTO:
         from netconsole.services.mesh_business_statistics import statistics_page
 
-        result = self.business_statistics(site_id, session_id)
+        result = self.business_statistics(
+            site_id,
+            session_id,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+        )
         current, size = self._page(page, page_size)
         rows, total = statistics_page(
             result["aps"],
@@ -2560,14 +2583,30 @@ class MeshAnalysisQueryService:
         )
 
     def list_single_links(
-        self, site_id: str, session_id: str, *, page: int = 1, page_size: int = 100
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        exclude_depot: bool = True,
+        exclude_parking: bool = True,
     ) -> dict:
         from netconsole.services.mesh_business_statistics import statistics_page
 
-        result = self.business_statistics(site_id, session_id)
+        result = self.business_statistics(
+            site_id,
+            session_id,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+        )
         current, size = self._page(page, page_size)
         rows, total = statistics_page(
-            result["single_links"], page=current, page_size=size, sort_by="start_time"
+            result["single_links"],
+            page=current,
+            page_size=size,
+            sort_by="duration_seconds",
+            descending=True,
         )
         return {
             "items": rows,

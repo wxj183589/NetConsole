@@ -13,15 +13,9 @@ function metric(value: number | null | undefined, unit = ''): string {
   return value == null || !Number.isFinite(value) ? '—' : escapeMeshTooltipHtml(`${value}${unit}`)
 }
 
-function formatMeshMac(value: string | null | undefined): string {
-  const source = String(value || '').trim()
-  const compact = source.toLowerCase().replace(/[^0-9a-f]/g, '')
-  if (compact.length !== 12) return source
-  return `${compact.slice(0, 4)}-${compact.slice(4, 8)}-${compact.slice(8)}`
-}
-
-function radioLabel(value: number | null | undefined): string {
-  return value == null ? '—' : `Radio ${value}`
+export function peerRadioPort(value: string | null | undefined): string {
+  const match = String(value || '').match(/(?:radio|wlan|mesh)?\s*([12])\s*$/i)
+  return match?.[1] || '—'
 }
 
 function divider(): string {
@@ -37,11 +31,10 @@ export function buildBackupSection(backups: readonly MeshChartBackupLink[], know
   if (!known) return `${divider()}<strong>备份链路：当前点未返回</strong>`
   if (!backups.length) return `${divider()}<strong>备份链路：无</strong>`
   const rows = backups.map((item, index) => [
-    `${index + 1}. ${escapeMeshTooltipHtml(item.peer_ap_name || item.peer_mac)}`,
-    `AP MAC：${escapeMeshTooltipHtml(formatMeshMac(item.peer_ap_mac))}`,
+    `${index + 1}. ${escapeMeshTooltipHtml(item.peer_ap_name || '轨旁 AP 未知')}`,
+    `对端射频口：${escapeMeshTooltipHtml(peerRadioPort(item.peer_radio))}`,
     `MR / 轨旁 AP 接收信号：${metric(item.local_rssi)} / ${metric(item.peer_rssi)}`,
     linkCount(item.link_count),
-    `Radio：${escapeMeshTooltipHtml(radioLabel(item.local_radio))}`,
     `归属站点 / 区间：${escapeMeshTooltipHtml(item.station)} / ${escapeMeshTooltipHtml(item.section)}`,
   ].join('<br>'))
   return `${divider()}<strong>备份链路</strong><br>${rows.join('<br>')}`
@@ -53,8 +46,8 @@ export function buildSwitchSection(event?: MeshChartEvent): string {
     divider(),
     '<strong>切换事件</strong>',
     `切换事件时间：${escapeMeshTooltipHtml(event.timestamp)}`,
-    `切出：${escapeMeshTooltipHtml(event.from_ap_name)} / ${escapeMeshTooltipHtml(event.from_peer_mac)}`,
-    `切入：${escapeMeshTooltipHtml(event.to_ap_name)} / ${escapeMeshTooltipHtml(event.to_peer_mac)}`,
+    `切出：${escapeMeshTooltipHtml(event.from_ap_name)}`,
+    `切入：${escapeMeshTooltipHtml(event.to_ap_name)}`,
   ]
   if (event.before_rssi != null || event.after_rssi != null) {
     rows.push(`切出 / 切入 RSSI：${metric(event.before_rssi)} / ${metric(event.after_rssi)}`)
@@ -88,10 +81,7 @@ export function buildMeshRssiTooltip(
     '<strong>主链路</strong>',
     `状态：${escapeMeshTooltipHtml(point.link_state)}`,
     `当前轨旁 AP：${escapeMeshTooltipHtml(point.peer_ap_name)}`,
-    `Radio：${escapeMeshTooltipHtml(radioLabel(point.local_radio))}`,
-    `Peer MAC：${escapeMeshTooltipHtml(formatMeshMac(point.peer_mac))}`,
-    `当前轨旁 AP MAC：${escapeMeshTooltipHtml(formatMeshMac(point.peer_ap_mac))}`,
-    `Peer Radio MAC：${escapeMeshTooltipHtml(formatMeshMac(point.peer_radio_mac))}`,
+    `对端射频口：${escapeMeshTooltipHtml(peerRadioPort(point.peer_radio))}`,
     `MR / 轨旁 AP 接收信号：${metric(point.local_rssi)} / ${metric(point.peer_rssi)}`,
     linkCount(point.link_count),
     '<strong>空口负载</strong>',
@@ -124,7 +114,7 @@ export function buildMeshRssiQuickTooltip(point?: MeshChartPoint, event?: MeshCh
     rows.push(`AP ${escapeMeshTooltipHtml(point.peer_ap_name || point.peer_mac)}`)
     rows.push(linkCount(point.link_count))
   } else if (event) {
-    rows.push(escapeMeshTooltipHtml(event.to_ap_name || event.to_peer_mac || '切换事件'))
+    rows.push(escapeMeshTooltipHtml(event.to_ap_name || '切换事件'))
   } else {
     rows.push('当前时刻无有效采样')
   }
@@ -150,8 +140,7 @@ export function buildMeshRssiZeroRunTooltip(
     `${t('mesh.rssi.zero.duration', '持续时间')}：${(zeroRun.duration_ms / 1_000).toFixed(3)} s`,
     `链路角色：${escapeMeshTooltipHtml(point.link_state)}`,
     `当前轨旁 AP：${escapeMeshTooltipHtml(point.peer_ap_name)}`,
-    `当前轨旁 AP MAC：${escapeMeshTooltipHtml(point.peer_ap_mac)}`,
-    `Radio：${point.local_radio == null ? '—' : escapeMeshTooltipHtml(point.local_radio)}`,
+    `对端射频口：${escapeMeshTooltipHtml(peerRadioPort(point.peer_radio))}`,
     linkCount(point.link_count),
     `归属站点 / 区间：${escapeMeshTooltipHtml(point.station)} / ${escapeMeshTooltipHtml(point.section)}`,
     '</div>',
@@ -168,8 +157,8 @@ export function buildMeshSwitchPointTooltip(
     `<div class="mesh-switch-tooltip" style="${TOOLTIP_STYLE}">`,
     `时间：${escapeMeshTooltipHtml(event?.timestamp)}`,
     `${escapeMeshTooltipHtml(seriesName || '切换 RSSI')}：${metric(value)}`,
-    `原 AP → 目标 AP：${escapeMeshTooltipHtml(event?.from_ap_name || event?.from_peer_mac)} → ${escapeMeshTooltipHtml(event?.to_ap_name || event?.to_peer_mac)}`,
-    `Radio：${event?.local_radio == null ? '—' : escapeMeshTooltipHtml(event.local_radio)}`,
+    `切出：${escapeMeshTooltipHtml(event?.from_ap_name)}`,
+    `切入：${escapeMeshTooltipHtml(event?.to_ap_name)}`,
     linkCount(linkCountValue),
     '</div>',
   ].join('<br>')

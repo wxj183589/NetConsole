@@ -483,6 +483,7 @@ vi.mock('echarts/components', () => ({
   LegendComponent: {},
   MarkAreaComponent: {},
   MarkLineComponent: {},
+  TitleComponent: {},
   ToolboxComponent: {},
   TooltipComponent: {},
 }))

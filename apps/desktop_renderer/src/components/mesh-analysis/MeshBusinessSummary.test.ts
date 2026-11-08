@@ -70,7 +70,7 @@ describe('Mesh business summary', () => {
     await flushPromises()
     await wrapper.find('.risk-card').trigger('click')
     await flushPromises()
-    expect(api.risks).toHaveBeenCalledWith('two', { page: 1, page_size: 50 }, expect.any(AbortSignal))
+    expect(api.risks).toHaveBeenCalledWith('two', { page: 1, page_size: 50, exclude_depot: true, exclude_parking: true }, expect.any(AbortSignal))
     expect(wrapper.text()).not.toContain('stale')
     wrapper.unmount()
   })

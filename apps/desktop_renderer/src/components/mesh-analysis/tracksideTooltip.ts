@@ -5,6 +5,7 @@ export interface TracksideTooltipEntry {
   metaId: number
   apName: string | null
   radio: number | null
+  peerRadio?: string | null
   role: 'ACTIVE' | 'STANDBY'
   linkCount?: number | null
   tracksideRssi: number | null
@@ -32,6 +33,11 @@ export function displayTracksideZeroDuration(durationMs: number): string {
 
 export function tracksideTooltipApLabel(entry: TracksideTooltipEntry): string {
   return entry.apName || '轨旁 AP 未知'
+}
+
+export function tracksideTooltipPeerRadioPort(value: string | null | undefined): string {
+  const match = String(value || '').match(/(?:radio|wlan|mesh)?\s*([12])\s*$/i)
+  return match?.[1] || '—'
 }
 
 export function sortTracksideTooltipEntries(

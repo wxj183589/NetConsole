@@ -7,6 +7,7 @@ import {
   displayTracksideZeroDuration,
   sortTracksideTooltipEntries,
   tracksideTooltipApLabel,
+  tracksideTooltipPeerRadioPort,
   type TracksideTooltipEntry,
 } from './tracksideTooltip'
 
@@ -17,6 +18,7 @@ const props = withDefaults(defineProps<{
   side?: 'left' | 'right'
   availableHeight?: number
   compact?: boolean
+  pinned?: boolean
 }>(), {
   visible: false,
   timestamp: null,
@@ -24,6 +26,7 @@ const props = withDefaults(defineProps<{
   side: 'right',
   availableHeight: 640,
   compact: false,
+  pinned: false,
 })
 
 const emit = defineEmits<{
@@ -70,18 +73,19 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
     @pointerenter="emit('pointerenter')"
     @pointerleave="emit('pointerleave')"
     @pointerdown.stop
+    @dblclick.stop="emit('pin')"
     @click.stop
     @wheel.stop
   >
     <div class="trackside-external-tooltip__header">
-      <span>{{ compact ? (timestamp || '—') : `采样时间：${timestamp || '—'}` }}</span>
+      <span>{{ pinned ? '已固定 · ' : '' }}{{ compact ? (timestamp || '—') : `采样时间：${timestamp || '—'}` }}</span>
       <button
         v-if="!compact"
         type="button"
         class="trackside-external-tooltip__pin"
         @click="emit('pin')"
       >
-        固定查看
+        {{ pinned ? '解除固定' : '固定查看' }}
       </button>
     </div>
     <div ref="body" class="trackside-external-tooltip__body">
@@ -102,7 +106,7 @@ function hasActiveDuration(entry: TracksideTooltipEntry): boolean {
           {{ entry.role }}
         </div>
         <div class="trackside-tooltip-entry__ap">
-          AP：{{ tracksideTooltipApLabel(entry) }} · Radio {{ displayTracksideTooltipMetric(entry.radio) }}
+          AP：{{ tracksideTooltipApLabel(entry) }} · 对端射频口 {{ tracksideTooltipPeerRadioPort(entry.peerRadio) }}
         </div>
         <div v-if="!compact">LinkCnt：{{ entry.linkCount ?? '—' }}<span v-if="entry.linkCount === 2">（△ 三角链路）</span></div>
         <div v-if="!compact && entry.rssiZeroRun?.state === 'sustained'" class="trackside-tooltip-entry__zero-run">

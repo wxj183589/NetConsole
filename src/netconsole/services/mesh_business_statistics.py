@@ -14,6 +14,7 @@ from dataclasses import replace
 from collections import Counter
 from datetime import datetime
 from itertools import groupby
+import unicodedata
 from typing import Callable, Iterable
 
 from netconsole.models.mesh_log_models import normalize_link_state
@@ -176,6 +177,30 @@ def business_sort_key(row: dict) -> tuple[str, ...]:
     return tuple(str(value) for value in business_sample_key(row))
 
 
+def classify_station_type(value: object) -> str:
+    """Classify a formal node/location type first; only then use station names."""
+    text = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    normalized = "".join(character for character in text if character.isalnum() or "\u4e00" <= character <= "\u9fff")
+    if normalized in {"depot", "车辆段", "车辆基地", "段场"} or normalized.endswith(
+        ("车辆段", "车辆基地", "段场")
+    ):
+        return "DEPOT"
+    if normalized in {"parkinglot", "parkingyard", "停车场", "停车库", "停车基地"} or normalized.endswith(
+        ("停车场", "停车库", "停车基地")
+    ):
+        return "PARKING"
+    if normalized in {"station", "mainline", "mainline_ap", "正线", "车站"}:
+        return "STATION"
+    return "UNKNOWN"
+
+
+def _location_scope(location: dict) -> str:
+    formal_type = classify_station_type(location.get("station_type"))
+    if formal_type != "UNKNOWN":
+        return formal_type
+    return classify_station_type(location.get("station"))
+
+
 def _seconds(start: object, end: object) -> float:
     try:
         return max(
@@ -212,6 +237,8 @@ def build_mesh_business_statistics(
     snapshot: MeshApLocationSnapshot,
     *,
     minimum_samples: int = 10,
+    exclude_depot: bool = True,
+    exclude_parking: bool = True,
     should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, object]:
     """Rows must be ordered by source, sample_time, Radio, sample identity.
@@ -289,12 +316,23 @@ def build_mesh_business_statistics(
                 "identity_source": projected.get("peer_identity_source"),
                 "identity_rule": projected.get("peer_match_rule"),
                 "identity_reason": projected.get("peer_identity_reason"),
+                "station_type": location.station_type,
+                "station_scope": _location_scope(
+                    {
+                        "station_type": location.station_type,
+                        "station": projected.get("station")
+                        or projected.get("peer_site")
+                        or "",
+                    }
+                ),
             }
         return identity_cache[key]
 
     def finish(scope: tuple[object, object]) -> None:
         block = current.pop(scope, None)
         if block is not None:
+            block.pop("station_type", None)
+            block.pop("station_scope", None)
             block["duration_seconds"] = _seconds(block["start_time"], block["end_time"])
             block["qualifies_no_backup_event"] = (
                 block["duration_seconds"] >= rules.no_backup_min_seconds
@@ -315,6 +353,7 @@ def build_mesh_business_statistics(
 
             raise MeshLinkDetailExportCancelled("导出已取消")
         sample_rows = []
+        excluded_active = False
         for raw in group:
             row = dict(raw)
             row["link_state"] = normalize_link_state(
@@ -331,7 +370,23 @@ def build_mesh_business_statistics(
             row["peer_rssi"] = _finite_number(
                 row.get("peer_rssi_db", row.get("peer_rssi"))
             )
+            info = identity(row)
+            row["station_scope"] = info["station_scope"]
+            excluded = (
+                exclude_depot and info["station_scope"] == "DEPOT"
+            ) or (
+                exclude_parking and info["station_scope"] == "PARKING"
+            )
+            if excluded:
+                excluded_active = excluded_active or row["link_state"] == "ACTIVE"
+                continue
             sample_rows.append(row)
+        scope = (_key[0], _key[2])
+        if excluded_active:
+            finish(scope)
+        if not sample_rows:
+            finish(scope)
+            continue
         # Reuse the actual backup predicate/RSSI fallback, never LinkCnt.
         sample = build_sample_quality(sample_rows, rules)[0]
         scope = (sample["source_file_id"], sample["radio"])
@@ -453,8 +508,18 @@ def build_mesh_business_statistics(
             )
         )
         ap["signal_grade"] = grade
+        ap.pop("station_type", None)
+        ap.pop("station_scope", None)
         counts[grade] += 1
-    risks.sort(key=lambda row: (str(row["start_time"]), str(row["radio"])))
+    risk_order = {"NO_STANDBY": 0, "WEAK_STANDBY": 1, "MISSING_STANDBY_RSSI": 2}
+    risks.sort(
+        key=lambda row: (
+            -float(row["duration_seconds"]),
+            risk_order.get(str(row["risk_type"]), 3),
+            str(row["start_time"]),
+            str(row["radio"]),
+        )
+    )
     return {
         "aps": list(aps.values()),
         "single_links": risks,
@@ -474,5 +539,10 @@ def build_mesh_business_statistics(
             "minimum_samples": minimum_samples,
             "grade_metric": "ACTIVE_MR_RSSI_P10",
             "rule_version": "mesh_business_v1",
+            "exclude_depot": exclude_depot,
+            "exclude_parking": exclude_parking,
+            "scope_label": "CURRENT_FILTERED_SCOPE"
+            if exclude_depot or exclude_parking
+            else "FULL_SCOPE",
         },
     }

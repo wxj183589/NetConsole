@@ -7,6 +7,7 @@ import type { NcTableColumn } from '../table/NcTableColumn'
 import { meshBusinessText as mt } from '../../i18n/meshBusiness'
 
 const props = defineProps<{ sessionId: string; revision?: string }>()
+const emit = defineEmits<{ scopeChange: [scope: { exclude_depot: boolean; exclude_parking: boolean }] }>()
 const summary = ref<MeshBusinessSummary | null>(null)
 const error = ref('')
 const detailError = ref('')
@@ -19,6 +20,8 @@ const station = ref('')
 const query = ref('')
 const sort = ref('avg_rssi')
 const descending = ref(false)
+const excludeDepot = ref(true)
+const excludeParking = ref(true)
 const page = ref(1)
 const total = ref(0)
 const aps = ref<MeshApSignal[]>([])
@@ -66,13 +69,20 @@ async function loadSummary() {
   summaryLoading.value = true
   error.value = ''
   try {
-    const result = await getMeshBusinessSummary(props.sessionId, controller.signal)
+    const result = await getMeshBusinessSummary(props.sessionId, scope.value, controller.signal)
     if (current === generation && !controller.signal.aborted) summary.value = result
   } catch (reason) {
     if (!controller.signal.aborted && current === generation) error.value = reason instanceof Error ? reason.message : mt('failed')
   } finally {
     if (current === generation) summaryLoading.value = false
   }
+}
+const scope = computed(() => ({ exclude_depot: excludeDepot.value, exclude_parking: excludeParking.value }))
+function changeScope() {
+  emit('scopeChange', scope.value)
+  detailController?.abort()
+  void loadSummary()
+  if (visible.value) void loadDetails(true)
 }
 async function loadDetails(reset = false) {
   if (reset) page.value = 1
@@ -83,13 +93,14 @@ async function loadDetails(reset = false) {
   detailError.value = ''
   try {
     if (risk.value) {
-      const result = await listMeshSingleLinks(props.sessionId, { page: page.value, page_size: 50 }, controller.signal)
+      const result = await listMeshSingleLinks(props.sessionId, { page: page.value, page_size: 50, ...scope.value }, controller.signal)
       if (controller !== detailController || controller.signal.aborted) return
       risks.value = result.items; total.value = result.total
     } else {
       const result = await listMeshApSignalStatistics(props.sessionId, {
         page: page.value, page_size: 50, query: query.value, station: station.value,
         signal_grade: grade.value, sort_by: sort.value, descending: descending.value,
+        ...scope.value,
       }, controller.signal)
       if (controller !== detailController || controller.signal.aborted) return
       aps.value = result.items; total.value = result.total
@@ -118,6 +129,10 @@ onBeforeUnmount(() => { generation++; summaryController?.abort(); detailControll
     <p v-if="summaryLoading" class="hint">{{ mt('loading') }}</p>
     <el-alert v-if="error" :title="error" type="warning" :closable="false"><el-button link @click="loadSummary">{{ mt('retry') }}</el-button></el-alert>
     <template v-if="summary">
+      <div class="business-scope">
+        <el-checkbox v-model="excludeDepot" @change="changeScope">排除车辆段 <span>{{ excludeDepot ? '已排除' : '已纳入' }}</span></el-checkbox>
+        <el-checkbox v-model="excludeParking" @change="changeScope">排除停车场 <span>{{ excludeParking ? '已排除' : '已纳入' }}</span></el-checkbox>
+      </div>
       <div class="business-cards">
         <button class="business-card" @click="open('RECOGNIZED')"><span>{{ mt('ap_total') }}</span><strong>{{ summary.ap_total }}</strong></button>
         <button v-for="key in gradeKeys" :key="key" class="business-card" @click="open(key)"><span>{{ gradeText(key) }}</span><strong>{{ summary.grades[key] || 0 }}</strong></button>
@@ -143,12 +158,14 @@ onBeforeUnmount(() => { generation++; summaryController?.abort(); detailControll
 </template>
 
 <style scoped>
-.business-cards { display: grid; grid-template-columns: repeat(6, minmax(90px, 1fr)) minmax(190px, 1.8fr); gap: 8px; }
-.business-card { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 10px 14px; color: var(--el-text-color-primary); background: var(--el-fill-color-light); border: 1px solid var(--el-border-color); border-radius: 6px; cursor: pointer; }
+.business-cards { display: grid; grid-template-columns: repeat(6, minmax(90px, 1fr)) minmax(190px, 1.8fr); gap: 6px; }
+.business-scope { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 6px; padding: 4px 8px; background: var(--el-fill-color-lighter); border: 1px solid var(--el-border-color-lighter); border-radius: 4px; }
+.business-card { display: flex; min-height: 58px; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; padding: 6px 10px; color: var(--el-text-color-primary); background: var(--el-fill-color-light); border: 1px solid var(--el-border-color); border-radius: 4px; cursor: pointer; }
 .business-card:hover { border-color: var(--el-color-primary); }
 .business-card span, .business-card small, .hint { color: var(--el-text-color-secondary); font-size: 12px; }
-.business-card strong { font-size: 22px; }
+.business-card strong { font-size: 20px; line-height: 1.05; }
 .business-filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .business-filters .el-input, .business-filters .el-select { width: 180px; }
 @media (max-width: 1300px) { .business-cards { grid-template-columns: repeat(4, minmax(100px, 1fr)); } .risk-card { grid-column: span 2; } }
+@media (max-width: 900px) { .business-cards { grid-template-columns: repeat(2, minmax(120px, 1fr)); } .risk-card { grid-column: span 2; } }
 </style>

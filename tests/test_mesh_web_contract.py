@@ -527,6 +527,7 @@ def test_mesh_report_uses_existing_context_and_artifact_manifest(
             "identity_status": "unresolved",
             "identity_source": "",
             "identity_reason": "",
+            "station_type": "UNKNOWN",
         }
     ]
 

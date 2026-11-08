@@ -36,7 +36,7 @@ const echartsMock = vi.hoisted(() => {
 
 vi.mock('echarts/core', () => ({ init: echartsMock.init, use: echartsMock.use }))
 vi.mock('echarts/charts', () => ({ LineChart: {}, ScatterChart: {} }))
-vi.mock('echarts/components', () => ({ DataZoomComponent: {}, GridComponent: {}, LegendComponent: {}, MarkAreaComponent: {}, MarkLineComponent: {}, ToolboxComponent: {}, TooltipComponent: {} }))
+vi.mock('echarts/components', () => ({ DataZoomComponent: {}, GridComponent: {}, LegendComponent: {}, MarkAreaComponent: {}, MarkLineComponent: {}, TitleComponent: {}, ToolboxComponent: {}, TooltipComponent: {} }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
 
 const chartPoint: MeshChartPoint = {
@@ -194,7 +194,7 @@ describe('MESH charts mount and render', () => {
 
     wrappers.forEach((wrapper) => wrapper.unmount())
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(3)
-    expect(echartsMock.chart.off).toHaveBeenCalledTimes(6)
+    expect(echartsMock.chart.off).toHaveBeenCalledTimes(7)
   })
 
   it('renders LinkCnt=2 as a non-fault triangle overlay without adding an RSSI curve', async () => {
@@ -263,8 +263,8 @@ describe('MESH charts mount and render', () => {
     expect(tooltipHtml).toContain('采样时间：2026-07-20T10:00:01.123Z')
     expect(tooltipHtml).toContain('状态：ACTIVE')
     expect(tooltipHtml).toContain('当前轨旁 AP：AP0128')
-    expect(tooltipHtml).toContain('Radio：Radio 1')
-    expect(tooltipHtml).toContain('当前轨旁 AP MAC：0000-0000-1128')
+    expect(tooltipHtml).toContain('对端射频口：1')
+    expect(tooltipHtml).not.toContain('当前轨旁 AP MAC：')
     expect(tooltipHtml).toContain('MR / 轨旁 AP 接收信号：41 / 44')
     expect(tooltipHtml).toContain('MR TX/RX Busy：31 % / 22 %')
     expect(tooltipHtml).toContain('轨旁 AP TX/RX Busy：45 % / 27 %')
@@ -1043,10 +1043,10 @@ describe('MESH charts mount and render', () => {
     const markers = tooltip.findAll('.trackside-tooltip-entry__marker')
     expect(roleRows.map((item) => item.text())).toEqual(['● ACTIVE', '○ STANDBY', '○ STANDBY', '○ STANDBY'])
     expect(apRows.map((item) => item.text())).toEqual([
-      'AP：AP-A · Radio 1',
-      'AP：AP-B · Radio 1',
-      'AP：AP-C · Radio 1',
-      'AP：AP-D · Radio 1',
+      'AP：AP-A · 对端射频口 1',
+      'AP：AP-B · 对端射频口 1',
+      'AP：AP-C · 对端射频口 1',
+      'AP：AP-D · 对端射频口 1',
     ])
     expect(tooltip.text().match(/采样时间：/g)).toHaveLength(1)
     expect(tooltip.text()).toContain('采样时间：2026-07-20 10:05:00.852')
@@ -1068,7 +1068,8 @@ describe('MESH charts mount and render', () => {
     expect(detailPanel.findAll('.trackside-frame-detail-entry')).toHaveLength(4)
     expect(detailPanel.text()).toContain('ACTIVE 1 条 · STANDBY 3 条 · 共 4 条')
     expect(detailPanel.text()).toContain('采样时间：2026-07-20 10:05:00.852')
-    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
+    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(true)
+    expect(wrapper.find('[data-trackside-external-tooltip]').text()).toContain('已固定')
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
     expect(echartsMock.chart.clear).toHaveBeenCalledTimes(initialClearCount)
     expect(echartsMock.chart.resize).toHaveBeenCalledTimes(initialResizeCount)
@@ -1168,6 +1169,18 @@ describe('MESH charts mount and render', () => {
     expect(wrapper.get('[data-trackside-frame-detail-panel]').text()).toContain(
       '采样时间：2024-10-22 14:39:23.000',
     )
+    expect(wrapper.get('[data-trackside-external-tooltip]').text()).toContain(
+      '采样时间：2024-10-22 14:39:23.000',
+    )
+    await wrapper.get('.trackside-external-tooltip__pin').trigger('click')
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(false)
+    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
+    wrapper.get('.chart').element.dispatchEvent(new MouseEvent('pointermove', {
+      bubbles: true,
+      clientX: 100,
+    }))
+    updateAxisPointer({ axesInfo: [{ value: firstTime }] })
+    await nextTick()
     expect(wrapper.get('[data-trackside-external-tooltip]').text()).toContain(
       '采样时间：2024-10-22 14:39:13.000',
     )

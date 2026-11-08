@@ -1360,7 +1360,7 @@ describe('Mesh analysis detail behavior', () => {
     expect(wrapper.text()).toContain('业务叠加点 4,000 / 51,324')
     expect(wrapper.text()).toContain('业务叠加精度')
     expect(wrapper.text()).not.toContain('绘图点 4,000 / 51,324')
-    const summaries = wrapper.findAll('.rssi-pane-summary')
+    const summaries = wrapper.findAll('.chart-fact-groups')
     expect(summaries).toHaveLength(2)
     expect(summaries[0].text()).not.toContain('当前 PeerMac')
     expect(summaries[0].text()).not.toContain('当前 AP')
@@ -2356,7 +2356,7 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '开始导出')!.trigger('click')
     await flushPromises()
 
-    expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1, expect.objectContaining({ link_time_window: 4000, link_hold_rssi: 22, link_establish_threshold: 4 }), 'business')
+    expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1, expect.objectContaining({ link_time_window: 4000, link_hold_rssi: 22, link_establish_threshold: 4 }), 'business', { exclude_depot: true, exclude_parking: true })
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-export-1' } })
     wrapper.unmount()
   })

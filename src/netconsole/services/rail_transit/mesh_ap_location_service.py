@@ -26,6 +26,7 @@ class MeshApLocation:
     identity_source: str = ""
     identity_reason: str = ""
     alias_mac: str = ""
+    station_type: str = "UNKNOWN"
 
     def to_serializable(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -42,6 +43,7 @@ class MeshApLocation:
             "identity_status": self.identity_status,
             "identity_source": self.identity_source,
             "identity_reason": self.identity_reason,
+            "station_type": self.station_type,
         }
         if self.alias_mac:
             result["alias_mac"] = self.alias_mac
@@ -68,7 +70,11 @@ class MeshApLocationSnapshot:
                     self._by_alias[alias] = location
 
     @classmethod
-    def from_base_data_items(cls, items: Iterable[object]) -> MeshApLocationSnapshot:
+    def from_base_data_items(
+        cls,
+        items: Iterable[object],
+        station_types: Mapping[str, str] | None = None,
+    ) -> MeshApLocationSnapshot:
         locations: list[MeshApLocation] = []
         for item in items:
             mileage = getattr(getattr(item, "mileage", None), "raw", "")
@@ -96,6 +102,11 @@ class MeshApLocationSnapshot:
                     direction=direction,
                     identity_status="matched" if mac else "unresolved",
                     identity_source="BASE_DATA_AP_MAC" if mac else "",
+                    station_type=str(
+                        (station_types or {}).get(str(getattr(item, "station_id", "") or ""))
+                        or getattr(item, "location_class", "")
+                        or "UNKNOWN"
+                    ),
                 )
             )
         return cls(locations)
@@ -139,6 +150,7 @@ class MeshApLocationSnapshot:
                 identity_source=str(row.get("identity_source") or ""),
                 identity_reason=str(row.get("identity_reason") or ""),
                 alias_mac=str(row.get("alias_mac") or ""),
+                station_type=str(row.get("station_type") or "UNKNOWN"),
             )
             for row in rows
         )
@@ -330,8 +342,23 @@ class MeshApLocationService:
     def snapshot(self, site_id: str) -> MeshApLocationSnapshot:
         list_location_items = getattr(self.base_query, "list_ap_location_items", None)
         if callable(list_location_items):
+            station_types: dict[str, str] = {}
+            list_stations = getattr(self.base_query, "list_stations", None)
+            if callable(list_stations):
+                station_page = list_stations(site_id, page=1, page_size=500)
+                stations = list(station_page.items)
+                page = 2
+                while len(stations) < station_page.total:
+                    result = list_stations(site_id, page=page, page_size=500)
+                    if not result.items:
+                        break
+                    stations.extend(result.items)
+                    page += 1
+                station_types = {
+                    str(item.id): str(item.node_type or "unknown") for item in stations
+                }
             snapshot = MeshApLocationSnapshot.from_base_data_items(
-                list_location_items(site_id)
+                list_location_items(site_id), station_types
             )
         else:
             first = self.base_query.list_aps(site_id, page=1, page_size=500)

@@ -87,6 +87,7 @@ let viewportReady = false
 let viewportFrame: number | null = null
 let pendingViewport: MeshChartViewport | null = null
 let pointerGlobalOut: (() => void) | null = null
+const pinnedTooltip = ref<{ html: string; timestamp: string } | null>(null)
 
 function invalidateAppliedViewport(): void {
   chartRenderEpoch += 1
@@ -157,6 +158,7 @@ async function ensureChart(): Promise<boolean> {
       components.DataZoomComponent,
       components.MarkLineComponent,
       components.MarkAreaComponent,
+      components.TitleComponent,
       components.ToolboxComponent,
       renderers.CanvasRenderer,
     ])
@@ -167,6 +169,7 @@ async function ensureChart(): Promise<boolean> {
     }))
     invalidateAppliedViewport()
     chart.on('click', handleChartClick)
+    chart.on('dblclick', handleChartDoubleClick)
     chart.on('datazoom', handleDataZoom)
     chart.on('restore', handleRestore)
     chart.on('updateAxisPointer', handleAxisPointer)
@@ -209,11 +212,13 @@ onMounted(() => {
   resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleChartUpdate())
   if (container.value) resizeObserver?.observe(container.value)
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('keydown', handlePinnedTooltipKeydown, true)
   scheduleChartUpdate('data')
 })
 onBeforeUnmount(() => {
   disposed = true
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('keydown', handlePinnedTooltipKeydown, true)
   resizeObserver?.disconnect()
   resizeObserver = null
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
@@ -225,6 +230,7 @@ onBeforeUnmount(() => {
   unsubscribeTheme?.()
   unsubscribeTheme = null
   chart?.off('click', handleChartClick)
+  chart?.off('dblclick', handleChartDoubleClick)
   chart?.off('datazoom', handleDataZoom)
   chart?.off('restore', handleRestore)
   chart?.off('updateAxisPointer', handleAxisPointer)
@@ -239,6 +245,7 @@ onBeforeUnmount(() => {
 })
 
 watch(() => [props.points, props.rssiLine] as const, () => {
+  pinnedTooltip.value = null
   meshRssiContextIndex = createMeshRssiContextIndex(props.points)
   scheduleChartUpdate('data')
 })
@@ -251,6 +258,7 @@ watch(() => props.active, (active) => {
     void nextTick(() => scheduleChartUpdate(pendingRenderReason || 'resize'))
     return
   }
+  pinnedTooltip.value = null
   chart?.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' }, { silent: true })
   chart?.dispatchAction({ type: 'hideTip' }, { silent: true })
 })
@@ -279,6 +287,31 @@ function handleChartClick(raw: unknown): void {
   if (event) emit('selectSwitch', event)
   const timestamp = data?.meta?.timestamp || data?.value?.[0]
   if (timestamp) emit('select-time', timestamp)
+}
+
+function handleChartDoubleClick(raw: unknown): void {
+  if (!props.active) return
+  if (pinnedTooltip.value) {
+    pinnedTooltip.value = null
+    return
+  }
+  const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint; value?: [string, number | null] } }).data
+  const event = data?.meshEvent
+  const timestamp = data?.meta?.timestamp || data?.value?.[0] || event?.render_point_timestamp || event?.timestamp
+  if (!timestamp) return
+  const point = data?.meta || (event ? findRenderedSwitchPoint(event) : props.points.find(item => item.timestamp === timestamp))
+  pinnedTooltip.value = {
+    timestamp,
+    html: buildMeshRssiTooltip(point, event, timestamp),
+  }
+  chart?.dispatchAction({ type: 'hideTip' }, { silent: true })
+}
+
+function handlePinnedTooltipKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && pinnedTooltip.value) {
+    event.preventDefault()
+    pinnedTooltip.value = null
+  }
 }
 
 function focusCurrentPoint(): void {
@@ -581,6 +614,16 @@ defineExpose({
       @touchend.passive="endViewportInteraction"
       @touchcancel.passive="endViewportInteraction"
     ></div>
+    <div
+      v-if="pinnedTooltip"
+      class="mesh-rssi-pinned-tooltip"
+      data-mesh-rssi-pinned-tooltip
+      title="双击或按 Esc 解除固定"
+      @dblclick.stop="pinnedTooltip = null"
+    >
+      <div class="mesh-rssi-pinned-tooltip__status">已固定 · 双击或按 Esc 解除固定</div>
+      <div v-html="pinnedTooltip.html"></div>
+    </div>
     <el-empty v-if="!points.length" class="empty" description="暂无 RSSI 数据" :image-size="60" />
   </div>
 </template>
@@ -588,5 +631,7 @@ defineExpose({
 <style scoped>
 .chart-shell { position: relative; height: 100%; min-height: 0; width: 100%; }
 .chart { height: 100%; min-height: 0; width: 100%; min-width: 0; }
+.mesh-rssi-pinned-tooltip { position: absolute; top: 12px; right: 12px; z-index: 20; width: min(420px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto; border: 1px solid var(--nc-border); border-radius: 6px; background: var(--nc-bg-elevated); box-shadow: var(--nc-shadow-floating); color: var(--nc-text-primary); cursor: pointer; }
+.mesh-rssi-pinned-tooltip__status { padding: 6px 10px; border-bottom: 1px solid var(--nc-border-light); color: var(--nc-primary); font-size: 12px; }
 .empty { position: absolute; inset: 0; pointer-events: none; }
 </style>

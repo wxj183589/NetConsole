@@ -327,6 +327,8 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
             effective_business_rules(effective_params, load_default_rules()),
             location_snapshot,
             minimum_samples=effective_params.ap_minimum_samples,
+            exclude_depot=bool(params.get("exclude_depot", True)),
+            exclude_parking=bool(params.get("exclude_parking", True)),
             should_cancel=lambda: _should_cancel(job),
         )
     export_context = {
