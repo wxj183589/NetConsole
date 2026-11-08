@@ -1171,6 +1171,7 @@ class MeshAnalysisQueryService:
                     section=self._resolved_location_value(row, location, "section"),
                     mileage=self._resolved_location_value(row, location, "mileage"),
                     line_side=self._resolved_location_value(row, location, "line_side"),
+                    first_sample_time=str(row.get("first_sample_time") or start_time) or None,
                     build_start_time=start_time,
                     build_end_time=end_time,
                     main_link_duration_seconds=self._number(row.get("main_link_duration_seconds")),
@@ -2154,6 +2155,14 @@ class MeshAnalysisQueryService:
         with closing(self._connect_readonly(context.detail_db)) as conn:
             link_columns = self._table_columns(conn, "mesh_links")
         timestamp_expr = "timestamp_tag" if "timestamp_tag" in link_columns else "''"
+        counter_fields = (
+            "local_tx", "peer_tx", "local_rx", "peer_rx",
+            "local_retry", "peer_retry", "local_err", "peer_err",
+            "local_tx_garp", "peer_rx_garp", "local_tx_mul_join", "peer_rx_mul_join",
+        )
+        counter_output_names = {"local_err": "local_error", "peer_err": "peer_error"}
+        def column_or_null(column: str) -> str:
+            return column if column in link_columns else f"NULL AS {column}"
         identity_select = ", ".join(
             (
                 column
@@ -2169,41 +2178,59 @@ class MeshAnalysisQueryService:
                 "peer_identity_reason",
             )
         )
+        counter_select = ", ".join(column_or_null(column) for column in counter_fields)
+        identity_key_select = ", ".join(
+            column_or_null(column)
+            for column in ("source_file_id", "radio", "peer_ap_mac", "peer_mac_normalized", "peer_mac_raw", "establish_time", "session_id")
+        )
+        session_key = "NULLIF(session_id, '')" if "session_id" in link_columns else "NULL"
+        ap_key = "NULLIF(peer_ap_mac, '')" if "peer_ap_mac" in link_columns else "NULL"
+        normalized_peer_key = "NULLIF(peer_mac_normalized, '')" if "peer_mac_normalized" in link_columns else "NULL"
+        raw_peer_key = "NULLIF(peer_mac_raw, '')" if "peer_mac_raw" in link_columns else "NULL"
+        establish_key = "establish_time" if "establish_time" in link_columns else "NULL"
+        partition_key = (
+            f"source_file_id, radio, COALESCE({session_key}, ''), COALESCE({ap_key}, ''), "
+            f"COALESCE({normalized_peer_key}, {raw_peer_key}, ''), COALESCE({establish_key}, '')"
+        )
+        lag_select = ", ".join(
+            f"LAG({field}) OVER sample_partition AS previous_{field}"
+            for field in counter_fields
+        )
+        delta_select = ",\n                       ".join(
+            f"CASE WHEN {field} IS NULL OR previous_{field} IS NULL OR {field} < previous_{field} THEN NULL ELSE {field} - previous_{field} END AS {field}_delta"
+            for field in counter_fields
+        )
+        rate_select = ",\n                       ".join(
+            f"CASE WHEN {field}_delta IS NULL OR sample_interval_seconds IS NULL OR sample_interval_seconds <= 0 THEN NULL ELSE CAST({field}_delta AS REAL) / sample_interval_seconds END AS {field}_per_second"
+            for field in counter_fields
+        )
+        delta_filter = " OR ".join(f"{field}_delta IS NOT NULL" for field in counter_fields)
         counter_cte = f"""
             WITH ordered AS (
-                SELECT id, source_file_id, sample_time, {timestamp_expr} AS timestamp_tag, radio, peer_ap_name,
-                       peer_ap_mac, peer_mac_normalized, peer_radio_mac, {identity_select},
-                       local_retry, peer_retry, local_err, peer_err,
-                       LAG(local_retry) OVER sample_partition AS previous_local_retry,
-                       LAG(peer_retry) OVER sample_partition AS previous_peer_retry,
-                       LAG(local_err) OVER sample_partition AS previous_local_err,
-                       LAG(peer_err) OVER sample_partition AS previous_peer_err
+                SELECT id, sample_time, {timestamp_expr} AS timestamp_tag, peer_ap_name,
+                       peer_radio_mac, {identity_select}, {identity_key_select}, {counter_select},
+                       LAG(sample_time) OVER sample_partition AS previous_sample_time,
+                       {lag_select}
                 FROM mesh_links
                 WINDOW sample_partition AS (
-                    PARTITION BY source_file_id, radio,
-                        COALESCE(NULLIF(session_id, ''), NULLIF(peer_mac_normalized, ''), peer_mac_raw, '')
+                    PARTITION BY {partition_key}
                     ORDER BY sample_time, {timestamp_expr}, id
                 )
             ), deltas AS (
                 SELECT *,
-                       CASE WHEN local_retry IS NULL OR previous_local_retry IS NULL
-                                      OR local_retry < previous_local_retry
-                            THEN NULL ELSE local_retry - previous_local_retry END AS local_retry_delta,
-                       CASE WHEN peer_retry IS NULL OR previous_peer_retry IS NULL
-                                      OR peer_retry < previous_peer_retry
-                            THEN NULL ELSE peer_retry - previous_peer_retry END AS peer_retry_delta,
-                       CASE WHEN local_err IS NULL OR previous_local_err IS NULL
-                                      OR local_err < previous_local_err
-                            THEN NULL ELSE local_err - previous_local_err END AS local_error_delta,
-                       CASE WHEN peer_err IS NULL OR previous_peer_err IS NULL
-                                      OR peer_err < previous_peer_err
-                            THEN NULL ELSE peer_err - previous_peer_err END AS peer_error_delta
+                       CASE WHEN previous_sample_time IS NULL OR sample_time IS NULL
+                                  THEN NULL
+                            ELSE ROUND((julianday(sample_time) - julianday(previous_sample_time)) * 86400.0, 6)
+                       END AS sample_interval_seconds,
+                       {delta_select}
                 FROM ordered
+            ), rates AS (
+                SELECT *, {rate_select}
+                FROM deltas
             ), filtered AS (
-                SELECT * FROM deltas
+                SELECT * FROM rates
                 WHERE {time_where}
-                  AND (local_retry_delta IS NOT NULL OR peer_retry_delta IS NOT NULL
-                       OR local_error_delta IS NOT NULL OR peer_error_delta IS NOT NULL)
+                  AND ({delta_filter})
             )
         """
         with closing(self._connect_readonly(context.detail_db)) as conn:
@@ -2234,10 +2261,15 @@ class MeshAnalysisQueryService:
                     peer_ap_name=self._resolved_ap_name(data, location),
                     peer_ap_mac=self._resolved_ap_mac(data, location),
                     **self._identity_payload(data, location),
-                    local_retry_delta=int(data["local_retry_delta"]) if data["local_retry_delta"] is not None else None,
-                    peer_retry_delta=int(data["peer_retry_delta"]) if data["peer_retry_delta"] is not None else None,
-                    local_error_delta=int(data["local_error_delta"]) if data["local_error_delta"] is not None else None,
-                    peer_error_delta=int(data["peer_error_delta"]) if data["peer_error_delta"] is not None else None,
+                    sample_interval_seconds=self._number(data.get("sample_interval_seconds")),
+                    **{
+                        f"{counter_output_names.get(field, field)}_delta": self._int(data.get(f"{field}_delta"))
+                        for field in counter_fields
+                    },
+                    **{
+                        f"{counter_output_names.get(field, field)}_per_second": self._number(data.get(f"{field}_per_second"))
+                        for field in counter_fields
+                    },
                 )
             )
         return MeshCounterDeltaPageDTO(items=items, total=total, downsampled=step > 1)

@@ -39,6 +39,7 @@ const emit = defineEmits<{
   'viewport-ready': [viewport: MeshChartViewport]
 }>()
 const container = ref<HTMLDivElement | null>(null)
+const pinnedTooltip = ref<{ html: string } | null>(null)
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubscribeTheme: (() => void) | null = null
@@ -67,8 +68,8 @@ function switchSection(event: MeshChartEvent | undefined): string {
     '<hr>',
     '<strong>切换事件</strong>',
     `切换时间：${escapeHtml(event.timestamp)}`,
-    `切出：${escapeHtml(event.from_ap_name || event.from_peer_mac)}`,
-    `切入：${escapeHtml(event.to_ap_name || event.to_peer_mac)}`,
+    `切出：${escapeHtml(event.from_ap_name || '—')}`,
+    `切入：${escapeHtml(event.to_ap_name || '—')}`,
     event.render_busy_aligned && event.render_busy_point_timestamp
       ? `对齐空口采样时间：${escapeHtml(event.render_busy_point_timestamp)}`
       : '该切换事件无可对齐空口负载采样点，未作为折线节点显示。',
@@ -83,7 +84,7 @@ function tooltip(point: MeshChartPoint | undefined, event?: MeshChartEvent): str
   return [
     `采样时间：${escapeHtml(point.timestamp)}`,
     `当前 ACTIVE AP：${escapeHtml(point.peer_ap_name)}`,
-    `Peer MAC / Radio：${escapeHtml(point.peer_mac)} / ${escapeHtml(point.local_radio)}`,
+    `对端射频口：${escapeHtml(point.peer_radio ? point.peer_radio.match(/(?:radio|wlan|mesh)?\s*([12])\s*$/i)?.[1] || '—' : '—')}`,
     `MR TxBusy / RxBusy：${metric(point.local_tx_busy)} / ${metric(point.local_rx_busy)}`,
     `Peer TxBusy / RxBusy：${metric(point.peer_tx_busy)} / ${metric(point.peer_rx_busy)}`,
     `MR / Peer RSSI：${metric(point.local_rssi, '')} / ${metric(point.peer_rssi, '')}`,
@@ -137,6 +138,7 @@ async function ensureChart(): Promise<boolean> {
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false
     chart = core.init(container.value)
     chart.on('click', handleChartClick)
+    chart.on('dblclick', handleChartDoubleClick)
     chart.on('datazoom', handleDataZoom)
     unsubscribeTheme = subscribeNetConsoleChartTheme(() => scheduleChartUpdate('theme'))
     return true
@@ -168,12 +170,14 @@ onMounted(() => {
   resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => scheduleChartUpdate())
   if (container.value) resizeObserver?.observe(container.value)
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('keydown', handlePinnedTooltipKeydown)
   scheduleChartUpdate('data')
 })
 
 onBeforeUnmount(() => {
   disposed = true
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('keydown', handlePinnedTooltipKeydown)
   resizeObserver?.disconnect()
   resizeObserver = null
   if (resizeFrame !== null) cancelAnimationFrame(resizeFrame)
@@ -184,12 +188,13 @@ onBeforeUnmount(() => {
   unsubscribeTheme?.()
   unsubscribeTheme = null
   chart?.off('click', handleChartClick)
+  chart?.off('dblclick', handleChartDoubleClick)
   chart?.off('datazoom', handleDataZoom)
   chart?.dispose()
   chart = null
 })
 
-watch(() => props.points, () => scheduleChartUpdate('data'), { deep: true })
+watch(() => props.points, () => { pinnedTooltip.value = null; scheduleChartUpdate('data') }, { deep: true })
 watch(() => [props.events, props.locationSegments] as const, () => scheduleChartUpdate('data'), { deep: true })
 watch(() => [props.showPeer, props.showSwitchLines, props.showSwitchPoints, props.showLocationBand] as const, () => scheduleChartUpdate('display'))
 watch(() => props.scope, () => { currentViewport = null; viewportReady = false; scheduleChartUpdate('reset') })
@@ -207,6 +212,28 @@ function handleChartClick(raw: unknown): void {
     || item.timestamp === data?.meta?.timestamp
   ))
   if (event) emit('selectSwitch', event)
+}
+
+function handleChartDoubleClick(raw: unknown): void {
+  if (!props.active) return
+  if (pinnedTooltip.value) {
+    pinnedTooltip.value = null
+    return
+  }
+  const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint; value?: [string, number | null] } }).data
+  const event = data?.meshEvent
+  const point = data?.meta || (event ? findRenderedBusySwitchPoint(event) : undefined)
+  const timestamp = point?.timestamp || data?.value?.[0] || event?.render_busy_point_timestamp || event?.timestamp
+  if (!timestamp) return
+  pinnedTooltip.value = { html: tooltip(point, event) }
+  chart?.dispatchAction({ type: 'hideTip' }, { silent: true })
+}
+
+function handlePinnedTooltipKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && pinnedTooltip.value) {
+    event.preventDefault()
+    pinnedTooltip.value = null
+  }
 }
 
 function handleDataZoom(raw: unknown): void {
@@ -338,6 +365,16 @@ defineExpose({
 <template>
   <div class="chart-shell">
     <div ref="container" class="chart"></div>
+    <div
+      v-if="pinnedTooltip"
+      class="mesh-busy-pinned-tooltip"
+      data-mesh-busy-pinned-tooltip
+      title="双击或按 Esc 解除固定"
+      @dblclick.stop="pinnedTooltip = null"
+    >
+      <div class="mesh-busy-pinned-tooltip__status">已固定 · 双击或按 Esc 解除固定</div>
+      <div v-html="pinnedTooltip.html"></div>
+    </div>
     <el-empty v-if="!hasBusySamples" class="empty" description="暂无 TxBusy / RxBusy 数据" :image-size="60" />
   </div>
 </template>
@@ -345,5 +382,7 @@ defineExpose({
 <style scoped>
 .chart-shell { position: relative; height: 100%; min-height: 360px; width: 100%; }
 .chart { height: 100%; min-height: 360px; width: 100%; min-width: 0; }
+.mesh-busy-pinned-tooltip { position: absolute; top: 12px; right: 12px; z-index: 20; width: min(420px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto; border: 1px solid var(--nc-border); border-radius: 6px; background: var(--nc-bg-elevated); box-shadow: var(--nc-shadow-floating); color: var(--nc-text-primary); cursor: pointer; padding: 8px 10px; font-size: 12px; line-height: 1.5; }
+.mesh-busy-pinned-tooltip__status { margin: -8px -10px 8px; padding: 6px 10px; border-bottom: 1px solid var(--nc-border-light); color: var(--nc-primary); }
 .empty { position: absolute; inset: 0; pointer-events: none; }
 </style>

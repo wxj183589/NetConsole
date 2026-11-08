@@ -4657,6 +4657,7 @@ def _active_build_order_row(sequence: int, rows: list[dict[str, object]], sample
         "identity_confidence": first.get("peer_match_confidence") or first.get("identity_confidence") or 0,
         "identity_reason": first.get("peer_identity_reason") or first.get("identity_reason") or "",
         "anchor_link_id": first.get("link_id") or first.get("id"),
+        "first_sample_time": first.get("sample_time") or "",
         "build_start_time": first.get("sample_time") or "",
         "build_end_time": last.get("sample_time") or "",
         "main_link_duration_seconds": round(duration, 3),
