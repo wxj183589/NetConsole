@@ -281,7 +281,9 @@ process.once('SIGTERM', requestGracefulSignalShutdown)
 try {
   if (isolated) isolatedRuntime = createIsolatedRuntime(undefined, explicitIsolatedDataRoot)
   process.stdout.write(isolated
-    ? 'Isolated temporary test runtime - all data will be deleted\n'
+    ? explicitIsolatedDataRoot
+      ? 'Isolated test runtime - explicit data root will be preserved\n'
+      : 'Isolated temporary test runtime - all data will be deleted\n'
     : 'Persistent development runtime\n')
   vite = spawnNode([
     viteCli,
@@ -357,7 +359,7 @@ try {
   process.exitCode = exitCode
 } finally {
   await stopChildren()
-  if (isolatedRuntime) {
+  if (isolatedRuntime && !explicitIsolatedDataRoot) {
     try {
       cleanupIsolatedRuntime(isolatedRuntime.root)
     } catch {

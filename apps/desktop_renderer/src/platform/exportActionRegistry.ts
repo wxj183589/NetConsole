@@ -28,6 +28,7 @@ export const userSelectedExportDefinitions = {
   'rail.trackside_base_import_issues': xlsxDefinition('rail', '轨旁 AP 导入问题明细'),
   'rail.trackside_rename_commands': textDefinition('rail', '轨旁 AP 重命名命令', 'txt'),
   'rail.online_mr_report': xlsxDefinition('rail', 'Online MR 分析报告'),
+  'rail.ground_history': csvDefinition('rail', '地面无人值守历史'),
   'rail.vehicle_history': xlsxDefinition('rail', '列车经过历史'),
   'rail.vehicle_mapping_template': xlsxDefinition('rail', '列车 MR 映射模板'),
   'rail.car_network_points_csv': csvDefinition('rail', '车内通信点表'),

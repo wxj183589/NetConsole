@@ -6,3 +6,5 @@
 
 - [基础资料编辑生命周期](./BASE_DATA_EDITING.md)
 - [轨旁 AP 主数据与关联模型](./TRACKSIDE_AP_DOMAIN_MODEL.md)
+
+- [地面无人值守 V2](./ground-unattended/README.md)

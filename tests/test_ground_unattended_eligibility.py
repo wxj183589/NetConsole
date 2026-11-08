@@ -404,7 +404,7 @@ def test_depot_ping_switch_only_enables_ping_for_supported_special_locations(
     assert enabled.train.eligibility_status == expected_status
     assert not enabled.train.mainline_eligible
     assert enabled.train.ping_eligible
-    assert enabled.train.ping_inclusion_reason == "已启用车辆段长 Ping"
+    assert enabled.train.ping_inclusion_reason == "已启用车辆段 AC 辅助定位，基础资料心跳检测继续"
     assert not enabled.train.deep_collection_eligible
 
 

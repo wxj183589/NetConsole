@@ -1,3 +1,5 @@
+import { t } from '../../i18n/runtime'
+
 const statusLabels: Record<string, string> = {
   DISABLED: '未启用',
   WAITING_WINDOW: '等待运行时段',
@@ -31,7 +33,7 @@ const statusLabels: Record<string, string> = {
   STATION_EXACT: '站点精确匹配',
   STATION_ALIAS: '站点别名匹配',
   UNMATCHED: '未匹配',
-  PINGING: '长 Ping 运行中',
+  PINGING: '心跳检测运行中',
   INELIGIBLE: '不具备资格',
   ELIGIBLE: '符合资格',
   QUEUED: '等待调度',
@@ -53,6 +55,10 @@ const statusLabels: Record<string, string> = {
   STALE: '数据过期',
   NO_DATA: '暂无数据',
   OK: '正常',
+  HEALTHY: '正常',
+  NORMAL: '正常',
+  EMERGENCY: '紧急',
+  DEGRADED: '降级',
   WARNING: '警告',
   CRITICAL: '严重',
   ENABLED: '已启用',
@@ -155,6 +161,19 @@ const statusLabels: Record<string, string> = {
 }
 
 const eventLabels: Record<string, string> = {
+  mr_offline: 'MR 心跳离线',
+  mr_recovered: 'MR 心跳恢复',
+  mr_loss_pending: 'MR 心跳丢包',
+  train_connectivity_changed: '车辆连通状态变化',
+  train_offline: '整车离线',
+  train_recovered: '整车恢复',
+  heartbeat_sampling_interrupted: '心跳采样中断',
+  heartbeat_sampling_resumed: '心跳采样恢复',
+  heartbeat_engine_recovered: '心跳引擎恢复',
+  rssi_changed: 'RSSI 变化',
+  deep_collection_started: '深度采集开始',
+  deep_collection_completed: '深度采集完成',
+  deep_collection_failed: '深度采集失败',
   ap_transition: '当前 AP 变化',
   mesh_linkup: 'WMESH 链路建立',
   mesh_linkdown: 'WMESH 链路断开',
@@ -204,7 +223,7 @@ const operationStageLabels: Record<string, string> = {
     FORCE_STOPPING_DEEP_COLLECTION: '正在强制停止深度采集',
     WAITING_DEEP_COLLECTION_TERMINAL: '等待深度采集进入终态',
   STOPPING_AC_POLLER: '正在停止 AC 常驻轮询',
-  STOPPING_PING: '正在停止长 Ping',
+  STOPPING_PING: '正在停止心跳检测',
   STOPPING_SYSLOG: '正在停止 Syslog 接收',
   FLUSHING_QUEUE: '正在清空接收队列',
   CLOSING_FILES: '正在关闭原始文件',
@@ -222,6 +241,7 @@ const operationStageLabels: Record<string, string> = {
 
 export function groundStatusLabel(value: unknown): string {
   const key = String(value || '').trim()
+  if (key === 'PINGING') return t('ground.v2.heartbeat_running', statusLabels[key])
   return key ? statusLabels[key] || '未知状态' : '暂无状态'
 }
 
@@ -237,6 +257,7 @@ export function groundSeverityLabel(value: unknown): string {
 
 export function groundOperationStageLabel(value: unknown): string {
   const key = String(value || '').trim()
+  if (key === 'STOPPING_PING') return t('ground.v2.stopping_heartbeat', operationStageLabels[key])
   return key ? operationStageLabels[key] || '正在处理' : '等待处理'
 }
 

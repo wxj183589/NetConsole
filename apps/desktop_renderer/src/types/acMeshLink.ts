@@ -20,6 +20,10 @@ export interface AcMeshLinkSummary {
   source_type: string
   raw_available: boolean
   message: string
+  unique_peer_aps?: number
+  abnormal_mrs?: number
+  device_time?: string
+  received_at?: string
 }
 
 export interface AcMeshLinkRefreshResponse {
@@ -61,6 +65,11 @@ export interface AcMeshLinkRecord {
   match_method: string
   match_warning: string
   data_status: MeshDataStatus
+  bssid?: string
+  relation_status?: string
+  device_time?: string
+  received_at?: string
+  source_type?: string
 }
 
 export interface AcMeshLinkPage {
@@ -95,6 +104,14 @@ export interface AcMeshMrStatus {
   match_method: string
   match_warning: string
   data_status: MeshDataStatus
+  peer_aps?: AcMeshLinkRecord[]
+  management_ips?: string[]
+  device_time?: string
+  received_at?: string
+  resolved_ap?: string
+  resolved_ap_station?: string
+  resolved_ap_section?: string
+  identity_status?: string
 }
 
 export interface AcMeshMrPage {
@@ -119,6 +136,11 @@ export interface AcMeshMrDetail {
   mr: AcMeshMrStatus
   current_links: AcMeshLinkRecord[]
   recent_events: AcMeshMrEvent[]
+  history_links: AcMeshLinkRecord[]
+  history_total: number
+  history_page: number
+  history_page_size: number
+  history_note: string
 }
 
 export interface AcMeshSnapshot {
@@ -129,6 +151,8 @@ export interface AcMeshSnapshot {
   site_id: string
   collected_at: string
   ac_time: string
+  device_time: string
+  received_at: string
   source_type: string
   source_reference: string
   data_status: MeshDataStatus
@@ -156,6 +180,11 @@ export interface AcMeshRawTail {
 }
 
 export interface AcMeshMrQuery {
+  car_end?: string
+  data_status?: string
+  match_status?: string
+  multiple_peers?: boolean
+  abnormal_only?: boolean
   online_status?: string
   train_no?: string
   mr_name?: string
@@ -170,6 +199,18 @@ export interface AcMeshMrQuery {
   sort_by?: string
   sort_order?: 'asc' | 'desc'
 }
+
+export interface AcMeshAp {
+  ap_key: string
+  ap_name: string
+  mac: string
+  bssids: string[]
+  station: string
+  section: string
+  relations: AcMeshLinkRecord[]
+}
+export interface AcMeshApPage { items: AcMeshAp[]; total: number; page: number; page_size: number }
+export interface AcMeshSnapshotDetail { snapshot: AcMeshSnapshot; links: AcMeshLinkRecord[] }
 
 export interface AcMeshLinkQuery {
   controller_id?: string

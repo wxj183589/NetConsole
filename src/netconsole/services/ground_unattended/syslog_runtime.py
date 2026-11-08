@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import json
 import os
@@ -125,8 +126,201 @@ class _OpenRawFile:
     handle: Any
     start_time: str
     record_count: int = 0
+    size_bytes: int = 0
     flushed_record_count: int = 0
     last_flush_at: float = field(default_factory=time.monotonic)
+
+
+class RawCompressionWorker:
+    """后台压缩已关闭的 raw 文件，不占用 UDP 接收线程。"""
+
+    def __init__(
+        self,
+        *,
+        repository: GroundUnattendedRepository,
+        queue_capacity: int = 64,
+        run_id: str = "",
+        data_type: str = "syslog",
+    ) -> None:
+        self.repository = repository
+        self.run_id = str(run_id)
+        self.data_type = str(data_type)
+        self._label = "Heartbeat" if self.data_type == "ping" else "Syslog"
+        self._queue: queue.Queue[tuple[dict[str, Any], Path]] = queue.Queue(
+            maxsize=max(1, int(queue_capacity))
+        )
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"ground-{self.data_type}-compressor",
+            daemon=True,
+        )
+        self._lock = threading.Lock()
+        self._pending_files: set[str] = set()
+        self._submitted_count = 0
+        self._completed_count = 0
+        self._failed_count = 0
+        self._skipped_count = 0
+        self._last_error = ""
+        self._thread.start()
+
+    @property
+    def alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def submit(self, values: dict[str, Any], path: Path) -> bool:
+        file_id = str(values.get("file_id") or "")
+        with self._lock:
+            if file_id in self._pending_files:
+                return True
+            self._pending_files.add(file_id)
+        try:
+            self._queue.put_nowait((dict(values), Path(path)))
+        except queue.Full:
+            with self._lock:
+                self._pending_files.discard(file_id)
+                self._skipped_count += 1
+                self._last_error = "compression queue is full"
+            self._record_health(
+                severity="warning",
+                code=f"{self.data_type.upper()}_COMPRESSION_QUEUE_FULL",
+                message=f"{self._label} raw 压缩队列已满，保留未压缩原始文件",
+                details={"queue_capacity": self._queue.maxsize},
+            )
+            return False
+        with self._lock:
+            self._submitted_count += 1
+        return True
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "compression_queue_size": self._queue.qsize(),
+                "compression_queue_capacity": self._queue.maxsize,
+                "compression_submitted_count": self._submitted_count,
+                "compression_completed_count": self._completed_count,
+                "compression_failed_count": self._failed_count,
+                "compression_skipped_count": self._skipped_count,
+                "compression_last_error": self._last_error,
+                "compression_worker_alive": self.alive,
+            }
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        self._stop.set()
+        self._thread.join(timeout=max(0.0, float(timeout)))
+        return not self._thread.is_alive()
+
+    def _run(self) -> None:
+        while not self._stop.is_set() or not self._queue.empty():
+            try:
+                values, path = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                for attempt in range(3):
+                    try:
+                        self._compress(values, path)
+                        break
+                    except Exception:
+                        if attempt == 2:
+                            raise
+                        self._stop.wait(0.05 * (attempt + 1))
+            except Exception as exc:  # pragma: no cover - defensive worker boundary
+                error = f"{exc.__class__.__name__}: {exc}"
+                with self._lock:
+                    self._failed_count += 1
+                    self._last_error = error
+                self._record_health(
+                    severity="error",
+                    code=f"{self.data_type.upper()}_COMPRESSION_FAILED",
+                    message=f"{self._label} raw 文件压缩失败，保留原始文件",
+                    details={"file_id": str(values.get("file_id") or ""), "error": error},
+                )
+            finally:
+                with self._lock:
+                    self._pending_files.discard(str(values.get("file_id") or ""))
+                self._queue.task_done()
+
+    def _compress(self, values: dict[str, Any], path: Path) -> None:
+        existing = self.repository.get_raw_file(str(values["file_id"]))
+        if existing and existing.get("gzip_path"):
+            registered_path = self.repository.db_path.parent / str(existing["gzip_path"])
+            if registered_path.is_file():
+                return
+        if not path.is_file():
+            raise FileNotFoundError(str(path))
+        target = path.with_name(path.name + ".gz")
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        published = False
+        registered = False
+        try:
+            source_hash = hashlib.sha256()
+            source_size = 0
+            with temporary.open("wb") as raw_output:
+                with gzip.GzipFile(
+                    filename=target.name,
+                    mode="wb",
+                    fileobj=raw_output,
+                    mtime=0,
+                ) as compressed:
+                    with path.open("rb") as raw_input:
+                        for chunk in iter(lambda: raw_input.read(1024 * 1024), b""):
+                            source_hash.update(chunk)
+                            source_size += len(chunk)
+                            compressed.write(chunk)
+                raw_output.flush()
+                os.fsync(raw_output.fileno())
+            _verify_compressed_raw(temporary, source_size, source_hash.hexdigest())
+            os.replace(temporary, target)
+            published = True
+            relative = target.relative_to(self.repository.db_path.parent).as_posix()
+            registered = self.repository.register_raw_gzip(str(values["file_id"]), relative)
+            if not registered:
+                raise RuntimeError("raw file is no longer eligible for gzip registration")
+            with self._lock:
+                self._completed_count += 1
+        finally:
+            try:
+                if temporary.exists():
+                    temporary.unlink()
+            except OSError:
+                pass
+            if published and not registered:
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _record_health(
+        self,
+        *,
+        severity: str,
+        code: str,
+        message: str,
+        details: dict[str, Any],
+    ) -> None:
+        try:
+            self.repository.add_health_event(
+                run_id=self.run_id,
+                component=f"{self.data_type}_compression",
+                severity=severity,
+                code=code,
+                message=message,
+                details=details,
+            )
+        except Exception:
+            pass
+
+
+def _verify_compressed_raw(path: Path, expected_size: int, expected_sha256: str) -> None:
+    digest = hashlib.sha256()
+    size = 0
+    with gzip.open(path, "rb") as compressed:
+        for chunk in iter(lambda: compressed.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    if size != expected_size or digest.hexdigest() != expected_sha256:
+        raise ValueError("compressed content does not match raw file")
 
 
 class RawStreamWriter:
@@ -146,6 +340,8 @@ class RawStreamWriter:
         flush_interval_seconds: float = 1.0,
         storage_profile: StorageIOProfile | None = None,
         defer_registry: bool = False,
+        max_file_size_bytes: int | None = None,
+        compression_worker: RawCompressionWorker | None = None,
     ) -> None:
         self.root = Path(root)
         self.repository = repository
@@ -167,11 +363,19 @@ class RawStreamWriter:
             0.1, self.storage_profile.durable_sync_interval_ms / 1000
         )
         self.defer_registry = bool(defer_registry)
-        self._metadata_threads: list[threading.Thread] = []
+        self.max_file_size_bytes = (
+            max(1, int(max_file_size_bytes))
+            if max_file_size_bytes is not None and int(max_file_size_bytes) > 0
+            else None
+        )
+        self.compression_worker = compression_worker
+        self._metadata_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
+        self._metadata_thread: threading.Thread | None = None
         self._metadata_errors: dict[str, str] = {}
         self._metadata_lock = threading.Lock()
         self._generation = uuid.uuid4().hex[:8]
-        self._files: dict[tuple[str, str, str], _OpenRawFile] = {}
+        self._file_sequence = 0
+        self._files: dict[tuple[str, str, str, str], _OpenRawFile] = {}
         self.records_written = 0
         self.bytes_written = 0
         self.last_write_duration_ms = 0.0
@@ -201,19 +405,30 @@ class RawStreamWriter:
         started = time.perf_counter()
         train_id = _safe_component(str(record.get("train_id") or "_unidentified"))
         role = _safe_component(str(record.get("mr_role") or record.get("source_ip") or "unknown"))
+        identity = _raw_source_component(record)
         hour = received_at.strftime("%Y-%m-%d_%H")
-        key = (train_id, role, hour)
+        key = (train_id, role, identity, hour)
         for current_key in tuple(self._files):
-            if current_key[:2] == key[:2] and current_key[2] != hour:
+            # Retired/replaced MRs may never write again. Close their older
+            # hour too, while late spool records cannot close a newer hour.
+            if current_key[3] < hour:
                 self._close_one(current_key, received_at.isoformat(timespec="milliseconds"))
         current = self._files.get(key)
         if current is None:
             current = self._open(key, received_at, record)
         encoded = (json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+        if (
+            self.max_file_size_bytes is not None
+            and current.size_bytes > 0
+            and current.size_bytes + len(encoded) > self.max_file_size_bytes
+        ):
+            self._close_one(key, received_at.isoformat(timespec="milliseconds"))
+            current = self._open(key, received_at, record)
         current.handle.write(encoded.decode("utf-8"))
         current.record_count += 1
         self.records_written += 1
         self.bytes_written += len(encoded)
+        current.size_bytes += len(encoded)
         self._pending_bytes[current.file_id] = self._pending_bytes.get(current.file_id, 0) + len(encoded)
         if (
             current.record_count % self.flush_records == 0
@@ -229,6 +444,11 @@ class RawStreamWriter:
             current.last_flush_at = time.monotonic()
         if self._storage_profile_managed:
             self.durable_sync()
+        if (
+            self.max_file_size_bytes is not None
+            and current.size_bytes >= self.max_file_size_bytes
+        ):
+            self._close_one(key, received_at.isoformat(timespec="milliseconds"))
         self.last_write_duration_ms = (time.perf_counter() - started) * 1000
         return current.file_id, current.record_count
 
@@ -284,13 +504,19 @@ class RawStreamWriter:
 
     def _open(
         self,
-        key: tuple[str, str, str],
+        key: tuple[str, str, str, str],
         received_at: datetime,
         record: dict[str, Any],
     ) -> _OpenRawFile:
-        train_id, role, hour = key
+        train_id, role, identity, hour = key
         date_text, hour_text = hour.rsplit("_", 1)
-        path = self.root / self.directory_name / train_id / role / date_text / f"{hour_text}_{self._generation}.ndjson"
+        self._file_sequence += 1
+        suffix = (
+            self._generation
+            if self._file_sequence == 1
+            else f"{self._generation}_{self._file_sequence:06d}"
+        )
+        path = self.root / self.directory_name / train_id / role / identity / date_text / f"{hour_text}_{suffix}.ndjson"
         path.parent.mkdir(parents=True, exist_ok=True)
         relative = path.relative_to(self.repository.db_path.parent).as_posix()
         file_id = f"raw_{hashlib.sha256(relative.encode('utf-8')).hexdigest()[:32]}"
@@ -301,6 +527,7 @@ class RawStreamWriter:
             relative_path=relative,
             handle=path.open("a", encoding="utf-8", newline="\n"),
             start_time=started_at,
+            size_bytes=path.stat().st_size if path.exists() else 0,
             last_flush_at=time.monotonic(),
         )
         self._files[key] = current
@@ -323,18 +550,16 @@ class RawStreamWriter:
         self._submit_registry(values)
         return current
 
-    def _close_one(self, key: tuple[str, str, str], ended_at: str) -> None:
-        current = self._files.pop(key, None)
+    def _close_one(self, key: tuple[str, str, str, str], ended_at: str) -> None:
+        current = self._files.get(key)
         if current is None:
             return
         self._flush_one(current)
-        try:
-            os.fsync(current.handle.fileno())
-            self.durable_sync_count += 1
-        except (OSError, ValueError):
-            pass
-        current.handle.close()
+        os.fsync(current.handle.fileno())
+        self.durable_sync_count += 1
         size = current.path.stat().st_size
+        current.handle.close()
+        self._files.pop(key, None)
         values = {
                 "file_id": current.file_id,
                 "run_id": self.run_id,
@@ -360,38 +585,70 @@ class RawStreamWriter:
     def _submit_registry(self, values: dict[str, Any]) -> None:
         if not self.defer_registry:
             self.repository.upsert_raw_file(values)
+            self._notify_file_closed(values)
             return
-        self._metadata_threads = [
-            thread for thread in self._metadata_threads if thread.is_alive()
-        ]
-        thread = threading.Thread(
-            target=self._upsert_registry_safely,
-            args=(values,),
-            name="ground-metadata-registry",
-            daemon=True,
-        )
-        self._metadata_threads.append(thread)
-        thread.start()
+        # Backpressure stays on the raw writer; the UDP receiver has its own
+        # bounded queue and durable spool. One ordered worker preserves OPEN/CLOSED.
+        self._metadata_queue.put(dict(values))
+        with self._metadata_lock:
+            if self._metadata_thread is None:
+                self._metadata_thread = threading.Thread(
+                    target=self._metadata_loop, name="ground-metadata-registry", daemon=True,
+                )
+                self._metadata_thread.start()
 
-    def _upsert_registry_safely(self, values: dict[str, Any]) -> None:
+    def _metadata_loop(self) -> None:
+        while True:
+            with self._metadata_lock:
+                try:
+                    values = self._metadata_queue.get_nowait()
+                except queue.Empty:
+                    self._metadata_thread = None
+                    return
+            try:
+                self._upsert_registry_safely(values)
+            finally:
+                self._metadata_queue.task_done()
+
+    def _upsert_registry_safely(
+        self, values: dict[str, Any],
+    ) -> None:
         file_id = str(values.get("file_id") or "")
         try:
-            self.repository.upsert_raw_file(values)
+            for attempt in range(3):
+                try:
+                    self.repository.upsert_raw_file(values)
+                    break
+                except Exception as exc:
+                    if attempt == 2 or not any(word in str(exc).lower() for word in ("locked", "busy")):
+                        raise
+                    time.sleep(0.05 * (attempt + 1))
         except Exception as exc:
             with self._metadata_lock:
+                if len(self._metadata_errors) >= 256:
+                    self._metadata_errors.pop(next(iter(self._metadata_errors)))
                 self._metadata_errors[file_id] = f"{exc.__class__.__name__}: {exc}"
         else:
             with self._metadata_lock:
                 self._metadata_errors.pop(file_id, None)
+            self._notify_file_closed(values)
+
+    def _notify_file_closed(self, values: dict[str, Any]) -> None:
+        if str(values.get("status") or "") != "CLOSED":
+            return
+        path = self.repository.db_path.parent / str(values.get("relative_path") or "")
+        if self.compression_worker is not None:
+            self.compression_worker.submit(values, path)
 
     def flush_metadata(self, timeout: float = 1.0) -> bool:
         deadline = time.monotonic() + max(0.0, float(timeout))
-        for thread in tuple(self._metadata_threads):
+        with self._metadata_lock:
+            thread = self._metadata_thread
+        if thread is not None:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
-        self._metadata_threads = [thread for thread in self._metadata_threads if thread.is_alive()]
         with self._metadata_lock:
             has_errors = bool(self._metadata_errors)
-        return not self._metadata_threads and not has_errors
+        return (thread is None or not thread.is_alive()) and not self._metadata_queue.unfinished_tasks and not has_errors
 
     @property
     def metadata_error(self) -> str:
@@ -580,6 +837,7 @@ class SyslogUdpReceiver:
         self._writer_thread: threading.Thread | None = None
         self._process_thread: threading.Thread | None = None
         self._writer: RawStreamWriter | None = None
+        self._compression_worker: RawCompressionWorker | None = None
         self._run_id = ""
         self._listen_address = ""
         self._listen_host = ""
@@ -590,10 +848,14 @@ class SyslogUdpReceiver:
         self._unidentified_count = 0
         self._identity_conflict_count = 0
         self._dropped_count = 0
+        self._raw_write_failed_count = 0
+        self._reported_raw_write_failed_count = 0
+        self._raw_write_error = ""
         self._last_received_at = ""
         self._started_monotonic = 0.0
         self._last_error = ""
         self._event_batch: list[dict[str, Any]] = []
+        self._projection_error = ""
         self._timeline_batch: list[dict[str, Any]] = []
         self._raw_checkpoints: dict[str, int] = {}
         self._event_batch_size = 100
@@ -662,8 +924,11 @@ class SyslogUdpReceiver:
         self._queue = queue.Queue(maxsize=max(100, int(queue_capacity)))
         self._parser_queue = queue.Queue(maxsize=max(100, int(queue_capacity)))
         self._run_id = run_id
+        self._compression_worker = None
         self._stop.clear()
         self._received_count = self._unidentified_count = self._dropped_count = 0
+        self._raw_write_failed_count = self._reported_raw_write_failed_count = 0
+        self._raw_write_error = ""
         self._identity_conflict_count = 0
         self._last_received_at = ""
         self._global_receive_sequence = 0
@@ -672,6 +937,7 @@ class SyslogUdpReceiver:
         self._last_line_hash = {}
         self._last_error = ""
         self._reported_dropped_count = 0
+        self._projection_error = ""
         self._reported_pressure = False
         self._disk_queue_count = 0
         self._written_count = 0
@@ -703,6 +969,10 @@ class SyslogUdpReceiver:
         if storage_profile is not None:
             self._event_batch_size = max(1, int(storage_profile.db_batch_size))
             self._event_batch_interval = max(0.1, storage_profile.db_batch_interval_ms / 1000)
+        self._compression_worker = RawCompressionWorker(
+            repository=self.repository,
+            run_id=run_id,
+        )
         self._writer = RawStreamWriter(
             root=Path(active_dir) / "realtime",
             repository=self.repository,
@@ -714,6 +984,8 @@ class SyslogUdpReceiver:
             flush_interval_seconds=flush_interval_seconds,
             storage_profile=storage_profile,
             defer_registry=True,
+            max_file_size_bytes=10 * 1024 * 1024,
+            compression_worker=self._compression_worker,
         )
         spool_dir = Path(active_dir) / "realtime" / "syslog" / "_spool"
         sock: socket.socket | None = None
@@ -742,6 +1014,9 @@ class SyslogUdpReceiver:
         except Exception:
             if sock is not None:
                 sock.close()
+            if self._compression_worker is not None:
+                self._compression_worker.stop(timeout=1.0)
+                self._compression_worker = None
             self._close_spool_handles()
             self._writer = None
             self._disk_spool_path = None
@@ -800,10 +1075,19 @@ class SyslogUdpReceiver:
             metadata_flushed = self._writer.flush_metadata(
                 timeout=max(0.0, deadline - time.monotonic())
             )
-            if not metadata_flushed and self._writer.metadata_error:
-                self._last_error = self._writer.metadata_error
+            if not metadata_flushed:
+                self._last_error = self._writer.metadata_error or "syslog raw metadata did not flush"
         else:
             metadata_flushed = writer_finished
+        compression_worker = self._compression_worker
+        if compression_worker is not None and writer_finished and metadata_flushed:
+            compression_flushed = compression_worker.stop(
+                timeout=max(0.0, deadline - time.monotonic())
+            )
+            if not compression_flushed:
+                self._last_error = "syslog compression worker did not stop"
+        else:
+            compression_flushed = compression_worker is None
         parser_thread = self._process_thread
         if parser_thread is not None:
             parser_thread.join(timeout=max(0.0, deadline - time.monotonic()))
@@ -816,7 +1100,7 @@ class SyslogUdpReceiver:
             if thread is not None
         ]
         alive = [thread.name for thread in threads if thread.is_alive()]
-        if alive or not writer_finished:
+        if alive or not writer_finished or not metadata_flushed or not compression_flushed:
             return {
                 "success": False,
                 "udp_port_released": udp_port_released,
@@ -826,6 +1110,8 @@ class SyslogUdpReceiver:
                 "closed_file_count": closed_file_count,
                 "received_count": self._received_count,
                 "dropped_count": self._dropped_count,
+                "metadata_flushed": metadata_flushed,
+                "compression_flushed": compression_flushed,
             }
         self._recv_thread = self._writer_thread = self._process_thread = None
         self._drain_remaining()
@@ -843,6 +1129,7 @@ class SyslogUdpReceiver:
         self._disk_queue_count = 0
         self._parser_spool_count = 0
         self._writer = None
+        self._compression_worker = None
         self._disk_spool_path = None
         self._parser_spool_path = None
         self._spool_dir = None
@@ -856,6 +1143,7 @@ class SyslogUdpReceiver:
                 and udp_port_released
                 and projection_flushed
                 and metadata_flushed
+                and compression_flushed
             ),
             "udp_port_released": udp_port_released,
             "alive_thread_names": [],
@@ -864,8 +1152,11 @@ class SyslogUdpReceiver:
             "closed_file_count": closed_file_count,
             "projection_flushed": projection_flushed,
             "metadata_flushed": metadata_flushed,
+            "compression_flushed": compression_flushed,
             "received_count": self._received_count,
             "dropped_count": self._dropped_count,
+            "raw_write_failed_count": self._raw_write_failed_count,
+            "data_complete": self._dropped_count == 0 and self._written_count == self._received_count,
         }
 
     def _close_spool_handles(self) -> None:
@@ -922,6 +1213,7 @@ class SyslogUdpReceiver:
     def health_snapshot(self) -> dict[str, Any]:
         elapsed = max(0.001, time.monotonic() - self._started_monotonic) if self._started_monotonic else 1.0
         writer = self._writer
+        compression_worker = self._compression_worker
         self._refresh_spool_guard()
         spool_metrics = self._spool_metrics()
         return {
@@ -938,17 +1230,19 @@ class SyslogUdpReceiver:
             "udp_dropped_count": self._dropped_count,
             "raw_records_written": writer.records_written if writer else 0,
             "raw_bytes_written": writer.bytes_written if writer else 0,
+            "raw_write_rate_bytes_per_second": round(writer.bytes_written / elapsed, 3) if writer else 0.0,
             "raw_last_write_duration_ms": writer.last_write_duration_ms if writer else 0.0,
             "database_pending_count": len(self._event_batch),
             "database_last_batch_duration_ms": self._batch_duration_ms,
             "open_file_count": writer.open_file_count if writer else 0,
-            "last_error": self._last_error,
+            "last_error": self._projection_error or self._last_error,
             "raw_file": writer.current_file if writer else "",
             "received": self._received_count,
             "written": self._written_count,
             "parsed": self._parsed_count,
             "db_saved": self._db_saved_count,
             "dropped": self._dropped_count,
+            "raw_write_failed_count": self._raw_write_failed_count,
             "disk_queue_count": self._disk_queue_count,
             "parser_queue_size": self._parser_queue.qsize(),
             "parser_queue_capacity": self._parser_queue.maxsize,
@@ -975,6 +1269,20 @@ class SyslogUdpReceiver:
             "durable_sync_latency_ms": writer.durable_sync_latency_ms if writer else 0.0,
             "db_batch_size": self._event_batch_size,
             "db_batch_interval_ms": round(self._event_batch_interval * 1000),
+            **(
+                compression_worker.snapshot()
+                if compression_worker is not None
+                else {
+                    "compression_queue_size": 0,
+                    "compression_queue_capacity": 0,
+                    "compression_submitted_count": 0,
+                    "compression_completed_count": 0,
+                    "compression_failed_count": 0,
+                    "compression_skipped_count": 0,
+                    "compression_last_error": "",
+                    "compression_worker_alive": False,
+                }
+            ),
         }
 
     def _spool_metrics(self) -> dict[str, int | float]:
@@ -1167,7 +1475,14 @@ class SyslogUdpReceiver:
                 record, receive_time = self._build_raw_record(envelope)
                 if self._writer is None:
                     continue
-                file_id, line_number = self._writer.write(record, receive_time)
+                try:
+                    file_id, line_number = self._writer.write(record, receive_time)
+                except Exception as exc:
+                    self._raw_write_error = f"{exc.__class__.__name__}: {exc}"
+                    self._last_error = self._raw_write_error
+                    self._raw_write_failed_count += 1
+                    self._dropped_count += 1
+                    continue
                 self._written_count += 1
                 self._last_write_time = envelope.receive_time
                 self._raw_file_size = self._raw_file_size_for(file_id)
@@ -1562,7 +1877,7 @@ class SyslogUdpReceiver:
             self._timeline_batch.append(
                 {
                     "run_id": self._run_id,
-                    "ts": envelope.receive_time,
+                    "ts": event["event_time"],
                     "event_type": str(parsed["event_type"]).casefold(),
                     "severity": "warning" if quality != "COMPLETE" else "info",
                     "train_id": record["train_id"],
@@ -1581,6 +1896,9 @@ class SyslogUdpReceiver:
                         "source_receive_sequence": envelope.source_receive_sequence,
                         "clock_offset_ms": clock_offset_ms,
                         **dict(parsed.get("details") or {}),
+                        "device_time": str(parsed.get("device_time") or ""),
+                        "received_at": envelope.receive_time,
+                        "event_time_source": event["event_time_source"],
                     },
                 }
             )
@@ -1643,6 +1961,19 @@ class SyslogUdpReceiver:
 
     def _flush_if_due(self) -> None:
         self._refresh_spool_guard()
+        if self._raw_write_failed_count > self._reported_raw_write_failed_count:
+            self.repository.add_health_event(
+                run_id=self._run_id,
+                component="syslog_raw_writer",
+                severity="error",
+                code="SYSLOG_RAW_WRITE_FAILED",
+                message="Syslog 原始日志写入失败，接收数据不完整",
+                details={
+                    "failed_total": self._raw_write_failed_count,
+                    "error": self._raw_write_error,
+                },
+            )
+            self._reported_raw_write_failed_count = self._raw_write_failed_count
         queue_length = self._queue.qsize()
         queue_capacity = self._queue.maxsize
         pressure = queue_length / queue_capacity if queue_capacity else 0.0
@@ -1722,8 +2053,9 @@ class SyslogUdpReceiver:
                 complete_closed_files=True,
             )
         except Exception as exc:
-            self._last_error = f"{exc.__class__.__name__}: {exc}"
+            self._projection_error = f"{exc.__class__.__name__}: {exc}"
             return False
+        self._projection_error = ""
         del self._event_batch[: len(events)]
         del self._timeline_batch[: len(timeline)]
         for file_id, line_number in checkpoints.items():
@@ -1919,7 +2251,7 @@ class SyslogUdpReceiver:
         }
         timeline = {
             "run_id": self._run_id,
-            "ts": receive_time.isoformat(timespec="milliseconds"),
+            "ts": event_time,
             "event_type": str(parsed["event_type"]).casefold(),
             "severity": "warning" if quality != "COMPLETE" else "info",
             "train_id": str(record.get("train_id") or ""),
@@ -1937,6 +2269,9 @@ class SyslogUdpReceiver:
                 "raw_line_number": raw_line_number,
                 "recovered_from_raw": True,
                 **details,
+                "device_time": str(parsed.get("device_time") or ""),
+                "received_at": receive_time.isoformat(timespec="milliseconds"),
+                "event_time_source": event["event_time_source"],
             },
         }
         return event, timeline
@@ -2071,6 +2406,19 @@ def _safe_component(value: str) -> str:
     return result[:100] or "unknown"
 
 
+def _raw_source_component(record: Mapping[str, Any]) -> str:
+    """Keep replacement MRs and unresolved sources in separate raw streams."""
+    device_uuid = str(record.get("device_uuid") or record.get("mr_id") or "")
+    if device_uuid:
+        namespace, identity = "mr", device_uuid
+    else:
+        namespace = "unidentified"
+        identity = str(record.get("source_ip") or record.get("target_ip") or "unknown")
+    # The hash prevents sanitization, truncation and Windows case-fold collisions.
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return f"{namespace}_{_safe_component(identity)[:36]}_{digest}"
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -2192,7 +2540,8 @@ def recover_raw_files(
         if relative in known:
             continue
         first = _first_json_line(path)
-        data_type = "ping" if "fleet_ping" in path.parts else "syslog"
+        active_relative = path.relative_to(active)
+        data_type = "ping" if active_relative.parts[0] == "fleet_ping" else "syslog"
         repository.upsert_raw_file(
             {
                 "file_id": f"raw_{hashlib.sha256(relative.encode('utf-8')).hexdigest()[:32]}",
@@ -2310,6 +2659,7 @@ def _is_junction(path: Path) -> bool:
 
 
 __all__ = [
+    "RawCompressionWorker",
     "RawStreamWriter",
     "SyslogUdpReceiver",
     "UdpEnvelope",

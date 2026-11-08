@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -149,7 +150,10 @@ def test_valid_empty_response_creates_zero_link_snapshot(tmp_path: Path) -> None
     result = service.execute(_context(paths))
 
     assert result["records_count"] == 0
-    assert AcMeshLinkQueryService(paths).get_summary("site-a").offline_mrs == 1
+    query = AcMeshLinkQueryService(
+        paths, now_provider=lambda: datetime(2026, 7, 14, 12, 0, 1)
+    )
+    assert query.get_summary("site-a").offline_mrs == 1
 
 
 @pytest.mark.parametrize(

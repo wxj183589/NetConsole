@@ -6,7 +6,7 @@ import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from netconsole.core.shutdown_manager import shutdown_manager
 from netconsole.core.ping.fping_v5_models import FpingV5CheckResult, FpingV5Paths, FpingV5Sample
@@ -62,6 +62,7 @@ def build_fping_v5_args(
     packet_size: int = 64,
     *,
     targets: list[str] | tuple[str, ...] | None = None,
+    interval_ms: int | None = None,
 ) -> list[str]:
     normalized_targets = list(
         dict.fromkeys(
@@ -72,18 +73,23 @@ def build_fping_v5_args(
     )
     if not normalized_targets:
         raise ValueError("fping target list cannot be empty")
-    return [
+    args = [
         str(fping_path),
         "-J",
         "-b",
         str(max(1, min(65_507, int(packet_size)))),
+    ]
+    if interval_ms is not None:
+        args.extend(["-i", str(max(1, int(interval_ms)))])
+    args.extend([
         "-l",
         "-p",
         str(max(1, int(period_ms))),
         "-t",
         str(max(1, int(timeout_ms))),
         *normalized_targets,
-    ]
+    ])
+    return args
 
 
 def run_fping_v5_json(
@@ -99,6 +105,8 @@ def run_fping_v5_json(
     fping_path: Path | None = None,
     targets: list[str] | tuple[str, ...] | None = None,
     process_started_event: threading.Event | None = None,
+    interval_ms: int | None = None,
+    process_observer: Callable[[subprocess.Popen[str]], None] | None = None,
 ) -> Iterator[FpingV5Sample]:
     if stop_event is not None and stop_event.is_set():
         return
@@ -110,6 +118,7 @@ def run_fping_v5_json(
         timeout_ms,
         packet_size,
         targets=targets,
+        interval_ms=interval_ms,
     )
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     raw_file = _open_text(output_raw_log_path)
@@ -135,6 +144,8 @@ def run_fping_v5_json(
         if process_started_event is not None:
             process_started_event.set()
         shutdown_manager.register_process(process, "fping", kind="internal_tool", shutdown_policy="terminate")
+        if process_observer is not None:
+            process_observer(process)
         stop_watcher = threading.Thread(
             target=_watch_stop_event,
             args=(process, stop_event, process_done),

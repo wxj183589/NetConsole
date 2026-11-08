@@ -112,6 +112,23 @@ CREATE TABLE IF NOT EXISTS ground_unattended_runs (
 CREATE INDEX IF NOT EXISTS idx_ground_runs_site_state
 ON ground_unattended_runs(site_id, state, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS ground_unattended_run_sessions (
+    session_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'RUNNING',
+    stop_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ground_run_sessions_day
+ON ground_unattended_run_sessions(site_id, run_date, started_at);
+CREATE INDEX IF NOT EXISTS idx_ground_run_sessions_run
+ON ground_unattended_run_sessions(site_id, run_id, started_at);
+
 CREATE TABLE IF NOT EXISTS ground_unattended_train_runs (
     site_id TEXT NOT NULL,
     run_id TEXT NOT NULL,
@@ -382,6 +399,10 @@ CREATE TABLE IF NOT EXISTS ground_unattended_train_endpoints (
     mr_role TEXT NOT NULL,
     device_name TEXT NOT NULL DEFAULT '',
     management_ip TEXT NOT NULL DEFAULT '',
+    backup_management_ip TEXT NOT NULL DEFAULT '',
+    management_ip_role TEXT NOT NULL DEFAULT 'PRIMARY',
+    backup_management_ip_role TEXT NOT NULL DEFAULT 'BACKUP',
+    backup_monitoring_strategy TEXT NOT NULL DEFAULT 'MONITOR',
     protocol TEXT NOT NULL DEFAULT '',
     port INTEGER,
     source_hostname TEXT NOT NULL DEFAULT '',
@@ -598,12 +619,28 @@ CREATE TABLE IF NOT EXISTS ground_unattended_ping_loss_intervals (
     target_ip TEXT NOT NULL,
     train_id TEXT NOT NULL DEFAULT '',
     mr_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    event_key TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'OPEN',
+    observed_at TEXT NOT NULL DEFAULT '',
+    recovered_at TEXT NOT NULL DEFAULT '',
+    ap_name TEXT NOT NULL DEFAULT '',
+    station TEXT NOT NULL DEFAULT '',
+    section TEXT NOT NULL DEFAULT '',
+    last_success_ap_name TEXT NOT NULL DEFAULT '',
+    last_success_station TEXT NOT NULL DEFAULT '',
+    last_success_section TEXT NOT NULL DEFAULT '',
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
     started_at TEXT NOT NULL,
     ended_at TEXT NOT NULL DEFAULT '',
     loss_count INTEGER NOT NULL DEFAULT 0,
     duration_seconds REAL NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT ''
 );
+CREATE INDEX IF NOT EXISTS idx_ground_ping_loss_intervals_query
+ON ground_unattended_ping_loss_intervals(site_id, run_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS ground_unattended_raw_files (
     file_id TEXT PRIMARY KEY,
@@ -624,6 +661,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_raw_files (
     archive_status TEXT NOT NULL DEFAULT 'PENDING',
     parse_status TEXT NOT NULL DEFAULT 'PENDING',
     compressed_path TEXT NOT NULL DEFAULT '',
+    gzip_path TEXT NOT NULL DEFAULT '',
     revision INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -674,6 +712,101 @@ CREATE TABLE IF NOT EXISTS ground_unattended_health_events (
 );
 CREATE INDEX IF NOT EXISTS idx_ground_health_events
 ON ground_unattended_health_events(site_id, ts DESC, severity);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_heartbeat_inventory_state (
+    site_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    revision INTEGER NOT NULL DEFAULT 0,
+    data_cleared_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_heartbeat_states (
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'UNKNOWN',
+    engine_state TEXT NOT NULL DEFAULT 'STOPPED',
+    snapshot_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, run_id, entity_type, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_heartbeat_states_query
+ON ground_unattended_heartbeat_states(site_id, run_id, entity_type, updated_at DESC);
+
+-- Quick Ping keeps run indexes and bounded aggregates in SQLite. Individual
+-- probe samples remain in the run-owned NDJSON segments.
+CREATE TABLE IF NOT EXISTS ground_unattended_quick_ping_ip_reservations (
+    lock_key TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    target_ip TEXT NOT NULL,
+    owner_pid INTEGER NOT NULL,
+    owner_identity TEXT NOT NULL,
+    child_pid INTEGER NOT NULL DEFAULT 0,
+    child_identity TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'QUEUED'
+);
+CREATE TABLE IF NOT EXISTS ground_unattended_quick_ping_target_runtime (
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    target_ip TEXT NOT NULL,
+    runtime_json TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (site_id, run_id, target_ip)
+);
+CREATE TABLE IF NOT EXISTS ground_unattended_quick_ping_runs (
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    state TEXT NOT NULL,
+    targets_json TEXT NOT NULL DEFAULT '[]',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    segment_paths_json TEXT NOT NULL DEFAULT '[]',
+    started_at TEXT NOT NULL DEFAULT '',
+    ended_at TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, run_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_quick_ping_runs_list
+ON ground_unattended_quick_ping_runs(site_id, started_at DESC, run_id DESC);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_quick_ping_stats (
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    target_ip TEXT NOT NULL DEFAULT '',
+    raw_samples INTEGER NOT NULL DEFAULT 0,
+    sent INTEGER NOT NULL DEFAULT 0,
+    received INTEGER NOT NULL DEFAULT 0,
+    lost INTEGER NOT NULL DEFAULT 0,
+    rtt_sum_ms REAL NOT NULL DEFAULT 0,
+    min_rtt_ms REAL,
+    max_rtt_ms REAL,
+    jitter_sum_ms REAL NOT NULL DEFAULT 0,
+    jitter_count INTEGER NOT NULL DEFAULT 0,
+    previous_success_rtt REAL,
+    current_consecutive_loss INTEGER NOT NULL DEFAULT 0,
+    max_consecutive_loss INTEGER NOT NULL DEFAULT 0,
+    last_sample_at TEXT NOT NULL DEFAULT '',
+    last_success_at TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, run_id, target_ip)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_quick_ping_stats_run
+ON ground_unattended_quick_ping_stats(site_id, run_id, target_ip);
+
+CREATE TABLE IF NOT EXISTS ground_unattended_quick_ping_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    site_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT '',
+    ts TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_ground_quick_ping_events_run
+ON ground_unattended_quick_ping_events(site_id, run_id, ts DESC, id DESC);
 """
 
 
@@ -699,6 +832,23 @@ _PROFILE_MIGRATION_COLUMNS = {
     "ping_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
     "syslog_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
     "storage_io_profile": "TEXT NOT NULL DEFAULT 'AUTO'",
+}
+
+_PING_LOSS_MIGRATION_COLUMNS = {
+    "mr_role": "TEXT NOT NULL DEFAULT ''",
+    "event_key": "TEXT NOT NULL DEFAULT ''",
+    "state": "TEXT NOT NULL DEFAULT 'OPEN'",
+    "observed_at": "TEXT NOT NULL DEFAULT ''",
+    "recovered_at": "TEXT NOT NULL DEFAULT ''",
+    "ap_name": "TEXT NOT NULL DEFAULT ''",
+    "station": "TEXT NOT NULL DEFAULT ''",
+    "section": "TEXT NOT NULL DEFAULT ''",
+    "last_success_ap_name": "TEXT NOT NULL DEFAULT ''",
+    "last_success_station": "TEXT NOT NULL DEFAULT ''",
+    "last_success_section": "TEXT NOT NULL DEFAULT ''",
+    "sent_count": "INTEGER NOT NULL DEFAULT 0",
+    "success_count": "INTEGER NOT NULL DEFAULT 0",
+    "updated_at": "TEXT NOT NULL DEFAULT ''",
 }
 
 _PING_SUMMARY_MIGRATION_COLUMNS = {
@@ -733,6 +883,10 @@ _TRAIN_RUN_MIGRATION_COLUMNS = {
 }
 
 _ENDPOINT_MIGRATION_COLUMNS = {
+    "backup_management_ip": "TEXT NOT NULL DEFAULT ''",
+    "management_ip_role": "TEXT NOT NULL DEFAULT 'PRIMARY'",
+    "backup_management_ip_role": "TEXT NOT NULL DEFAULT 'BACKUP'",
+    "backup_monitoring_strategy": "TEXT NOT NULL DEFAULT 'MONITOR'",
     "last_syslog_source_ip": "TEXT NOT NULL DEFAULT ''",
     "syslog_hostname": "TEXT NOT NULL DEFAULT ''",
     "last_syslog_identity_verified_at": "TEXT NOT NULL DEFAULT ''",
@@ -780,6 +934,7 @@ _CONFIG_AUDIT_MIGRATION_COLUMNS = {
 
 _RAW_FILE_MIGRATION_COLUMNS = {
     "revision": "INTEGER NOT NULL DEFAULT 0",
+    "gzip_path": "TEXT NOT NULL DEFAULT ''",
 }
 
 _OPERATION_MIGRATION_COLUMNS = {
@@ -866,12 +1021,20 @@ class GroundUnattendedRepository:
             self._ensure_columns(conn, "ground_unattended_train_endpoints", _ENDPOINT_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_boot_sessions", _BOOT_SESSION_MIGRATION_COLUMNS)
             self._ensure_columns(conn, "ground_unattended_wmesh_events", _WMESH_EVENT_MIGRATION_COLUMNS)
+            # Raw replay checks every incoming line inside the projection write
+            # transaction. A site-only scan grows with the day's full history
+            # and can starve Ping/stop writers under sustained Syslog ingress.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ground_wmesh_raw_line "
+                "ON ground_unattended_wmesh_events(site_id, raw_file_id, raw_line_number)"
+            )
             self._ensure_columns(
                 conn,
                 "ground_unattended_raw_files",
                 _RAW_FILE_MIGRATION_COLUMNS,
             )
             self._ensure_columns(conn, "ground_unattended_events", _EVENT_MIGRATION_COLUMNS)
+            self._ensure_columns(conn, "ground_unattended_ping_loss_intervals", _PING_LOSS_MIGRATION_COLUMNS)
             self._ensure_columns(
                 conn,
                 "ground_unattended_operations",
@@ -906,8 +1069,23 @@ class GroundUnattendedRepository:
             )
             conn.execute(
                 """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_ground_ping_loss_event_key
+                ON ground_unattended_ping_loss_intervals(site_id, run_id, event_key)
+                WHERE event_key <> ''
+                """
+            )
+            conn.execute(
+                """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '11', ?)
+                VALUES('schema_version', '13', ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (_now(),),
+            )
+            conn.execute(
+                """
+                INSERT INTO ground_unattended_schema(key, value, updated_at)
+                VALUES('ping_loss_intervals_version', '1', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -1138,6 +1316,7 @@ class GroundUnattendedRepository:
         *,
         trains: list[dict[str, Any]],
         endpoints: list[dict[str, Any]],
+        heartbeat_revision: int | None = None,
     ) -> dict[str, int]:
         """增量保存设备绑定快照；设备凭据和设备主体始终不进入本库。"""
 
@@ -1145,6 +1324,13 @@ class GroundUnattendedRepository:
         active_train_ids = {str(row["train_id"]) for row in trains}
         active_device_ids = {str(row["device_uuid"]) for row in endpoints}
         with self._transaction() as conn:
+            if heartbeat_revision is not None:
+                state = conn.execute(
+                    "SELECT revision FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
+                    (self.site_id,),
+                ).fetchone()
+                if (int(state["revision"]) if state else 0) != heartbeat_revision:
+                    raise ValueError("HEARTBEAT_PREVIEW_STALE")
             previous_endpoints = {
                 str(row["device_uuid"]): dict(row)
                 for row in conn.execute(
@@ -1204,15 +1390,21 @@ class GroundUnattendedRepository:
                     """
                     INSERT INTO ground_unattended_train_endpoints(
                         site_id, device_uuid, device_id, train_id, mr_role,
-                        device_name, management_ip, protocol, port, source_hostname,
+                        device_name, management_ip, backup_management_ip,
+                        management_ip_role, backup_management_ip_role,
+                        backup_monitoring_strategy, protocol, port, source_hostname,
                         binding_status, first_seen_at, last_seen_at, removed_at, updated_at
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, '', ?)
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, '', ?)
                     ON CONFLICT(site_id, device_uuid) DO UPDATE SET
                         device_id=excluded.device_id,
                         train_id=excluded.train_id,
                         mr_role=excluded.mr_role,
                         device_name=excluded.device_name,
                         management_ip=excluded.management_ip,
+                        backup_management_ip=excluded.backup_management_ip,
+                        management_ip_role=excluded.management_ip_role,
+                        backup_management_ip_role=excluded.backup_management_ip_role,
+                        backup_monitoring_strategy=excluded.backup_monitoring_strategy,
                         protocol=excluded.protocol,
                         port=excluded.port,
                         source_hostname=excluded.source_hostname,
@@ -1229,6 +1421,10 @@ class GroundUnattendedRepository:
                         str(endpoint["mr_role"]),
                         str(endpoint.get("device_name") or ""),
                         str(endpoint.get("management_ip") or ""),
+                        str(endpoint.get("backup_management_ip") or ""),
+                        str(endpoint.get("management_ip_role") or "PRIMARY"),
+                        str(endpoint.get("backup_management_ip_role") or "BACKUP"),
+                        str(endpoint.get("backup_monitoring_strategy") or "MONITOR"),
                         str(endpoint.get("protocol") or ""),
                         endpoint.get("port"),
                         str(endpoint.get("source_hostname") or ""),
@@ -1257,7 +1453,14 @@ class GroundUnattendedRepository:
                 and any(
                     str(previous_endpoints[key].get(field) or "")
                     != str(next(row for row in endpoints if str(row["device_uuid"]) == key).get(field) or "")
-                    for field in ("train_id", "mr_role", "management_ip", "device_name")
+                    for field in (
+                        "train_id",
+                        "mr_role",
+                        "management_ip",
+                        "backup_management_ip",
+                        "backup_monitoring_strategy",
+                        "device_name",
+                    )
                 )
                 for key in active_device_ids
             )
@@ -1269,6 +1472,16 @@ class GroundUnattendedRepository:
                 key not in active_train_ids and row.get("inventory_status") == "ACTIVE"
                 for key, row in previous_trains.items()
             )
+            if heartbeat_revision is not None:
+                # Enable the heartbeat selection only when its exact inventory
+                # reconciliation commits successfully in this transaction.
+                conn.execute(
+                    "INSERT INTO ground_unattended_heartbeat_inventory_state "
+                    "(site_id, enabled, revision, updated_at) VALUES(?, 1, ?, ?) "
+                    "ON CONFLICT(site_id) DO UPDATE SET enabled=1, "
+                    "revision=excluded.revision, updated_at=excluded.updated_at",
+                    (self.site_id, heartbeat_revision + 1, now),
+                )
         return {
             "added_endpoint_count": added,
             "updated_endpoint_count": updated,
@@ -1295,6 +1508,8 @@ class GroundUnattendedRepository:
             ).fetchall()
             endpoints = conn.execute(
                 "SELECT * FROM ground_unattended_train_endpoints WHERE site_id=? "
+                + ("AND binding_status='ACTIVE' " if not include_removed else "")
+                +
                 "ORDER BY train_id, mr_role",
                 (self.site_id,),
             ).fetchall()
@@ -1307,6 +1522,88 @@ class GroundUnattendedRepository:
             item["endpoints"] = by_train.get(str(item["train_id"]), [])
             result.append(item)
         return result
+
+    def heartbeat_inventory_state(self) -> dict[str, Any]:
+        """Heartbeat selection is independent from the shared asset inventory."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
+                (self.site_id,),
+            ).fetchone()
+        return dict(row) if row else {
+            "site_id": self.site_id, "enabled": True, "revision": 0,
+            "data_cleared_at": "", "updated_at": "",
+        }
+
+    def heartbeat_history_counts(self) -> dict[str, int]:
+        # These are Fleet heartbeat indexes only. Quick Ping, syslog, deep
+        # collection, archives and raw/segment files are separate authorities.
+        with self._connection() as conn:
+            counts = {
+                table: int(conn.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE site_id=?", (self.site_id,),
+                ).fetchone()[0])
+                for table in (
+                    "ground_unattended_heartbeat_states",
+                    "ground_unattended_ping_summaries",
+                    "ground_unattended_ping_loss_intervals",
+                )
+            }
+            counts["heartbeat_events"] = int(conn.execute(
+                "SELECT COUNT(*) FROM ground_unattended_events WHERE site_id=? "
+                "AND dedup_key LIKE 'heartbeat:%'", (self.site_id,),
+            ).fetchone()[0])
+        return counts
+
+    def apply_heartbeat_inventory_action(self, action: str, *, expected_revision: int) -> None:
+        """Apply the Site selection/clear atomically, preserving shared assets/raw.
+
+        The nonterminal-run check is repeated inside the write transaction so
+        a concurrent run start cannot race a destructive operation.
+        """
+        with self._transaction() as conn:
+            state = conn.execute(
+                "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
+                (self.site_id,),
+            ).fetchone()
+            revision = int(state["revision"]) if state else 0
+            if revision != expected_revision:
+                raise ValueError("HEARTBEAT_PREVIEW_STALE")
+            if action not in {"SYNC", "CLEAR_DEVICES", "CLEAR_DATA"}:
+                raise ValueError("HEARTBEAT_ACTION_INVALID")
+            if action != "SYNC" and conn.execute(
+                "SELECT 1 FROM ground_unattended_runs WHERE site_id=? "
+                "AND state NOT IN ('COMPLETED', 'ERROR') LIMIT 1", (self.site_id,),
+            ).fetchone():
+                raise ValueError("HEARTBEAT_RUN_ACTIVE")
+            enabled = bool(state["enabled"]) if state else True
+            cleared_at = str(state["data_cleared_at"]) if state else ""
+            if action == "CLEAR_DATA":
+                conn.execute(
+                    "DELETE FROM ground_unattended_heartbeat_states WHERE site_id=?",
+                    (self.site_id,),
+                )
+                conn.execute(
+                    "DELETE FROM ground_unattended_events WHERE site_id=? "
+                    "AND dedup_key LIKE 'heartbeat:%'", (self.site_id,),
+                )
+                # Fleet summaries/loss indexes, raw NDJSON and segments also
+                # serve deep-collection eligibility, history and archives.
+                # Preserve these shared facts; heartbeat reads enforce the
+                # logical sample boundary without altering other consumers.
+                cleared_at = _now()
+            elif action == "CLEAR_DEVICES":
+                enabled = False
+            else:
+                enabled = True
+            conn.execute(
+                "INSERT INTO ground_unattended_heartbeat_inventory_state "
+                "(site_id, enabled, revision, data_cleared_at, updated_at) VALUES(?, ?, ?, ?, ?) "
+                "ON CONFLICT(site_id) DO UPDATE SET enabled=excluded.enabled, "
+                "revision=excluded.revision, data_cleared_at=excluded.data_cleared_at, "
+                "updated_at=excluded.updated_at",
+                (self.site_id, int(enabled), revision + 1, cleared_at, _now()),
+            )
 
     def get_inventory_endpoint(self, device_uuid: str) -> dict[str, Any] | None:
         with self._connection() as conn:
@@ -1433,6 +1730,79 @@ class GroundUnattendedRepository:
                 (self.site_id, *sorted(_RUN_STATES_ACTIVE)),
             ).fetchone()
         return _decode_row(row) if row else None
+
+    def create_run_session(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        run_date: str,
+        started_at: str,
+    ) -> dict[str, Any]:
+        now = _now()
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO ground_unattended_run_sessions(
+                    session_id, site_id, run_id, run_date, started_at,
+                    state, created_at, updated_at
+                ) VALUES(?, ?, ?, ?, ?, 'RUNNING', ?, ?)
+                """,
+                (session_id, self.site_id, run_id, run_date, started_at, now, now),
+            )
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_run_sessions "
+                "WHERE site_id=? AND session_id=?",
+                (self.site_id, session_id),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("ground unattended run session was not created")
+        return _decode_row(row)
+
+    def latest_open_run_session(self, run_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_run_sessions "
+                "WHERE site_id=? AND run_id=? AND ended_at='' "
+                "ORDER BY started_at DESC LIMIT 1",
+                (self.site_id, run_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def list_run_sessions(self, run_id: str) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_run_sessions "
+                "WHERE site_id=? AND run_id=? ORDER BY started_at, session_id",
+                (self.site_id, run_id),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def close_run_session(
+        self,
+        session_id: str,
+        *,
+        ended_at: str,
+        state: str = "COMPLETED",
+        stop_reason: str = "",
+    ) -> None:
+        with self._transaction() as conn:
+            conn.execute(
+                "UPDATE ground_unattended_run_sessions SET ended_at=?, state=?, "
+                "stop_reason=?, updated_at=? WHERE site_id=? AND session_id=?",
+                (ended_at, state, stop_reason, _now(), self.site_id, session_id),
+            )
+
+    def latest_event_timestamp(self, run_id: str) -> str:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT ts FROM ground_unattended_events WHERE site_id=? AND run_id=? "
+                "AND event_type NOT IN ('run_completed', 'archive_delete_requested', "
+                "'archive_deleted', 'archive_delete_failed') "
+                "ORDER BY ts DESC, id DESC LIMIT 1",
+                (self.site_id, run_id),
+            ).fetchone()
+        return str(row[0] or "") if row else ""
 
     def latest_run(self) -> dict[str, Any] | None:
         with self._connection() as conn:
@@ -1834,6 +2204,21 @@ class GroundUnattendedRepository:
         return int(cursor.rowcount)
 
     def upsert_ping_summary(self, values: dict[str, Any]) -> None:
+        self.upsert_ping_summaries([values])
+
+    def upsert_ping_summaries(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        """Persist one sampler flush atomically, without a connection per bucket."""
+        values = [dict(row) for row in rows]
+        if not values:
+            return
+        with self._transaction() as conn:
+            for row in values:
+                self._upsert_ping_summary(conn, row)
+
+    @staticmethod
+    def _upsert_ping_summary(
+        conn: sqlite3.Connection, values: dict[str, Any]
+    ) -> None:
         fields = tuple(values)
         updates = ", ".join(
             f"{field}=excluded.{field}"
@@ -1849,14 +2234,13 @@ class GroundUnattendedRepository:
                 "ap_identity",
             }
         )
-        with self._transaction() as conn:
-            conn.execute(
-                f"INSERT INTO ground_unattended_ping_summaries ({', '.join(fields)}) "
-                f"VALUES ({', '.join('?' for _ in fields)}) "
-                "ON CONFLICT(site_id, run_id, bucket_kind, bucket_start, target_ip, ap_identity) "
-                f"DO UPDATE SET {updates}",
-                tuple(values.values()),
-            )
+        conn.execute(
+            f"INSERT INTO ground_unattended_ping_summaries ({', '.join(fields)}) "
+            f"VALUES ({', '.join('?' for _ in fields)}) "
+            "ON CONFLICT(site_id, run_id, bucket_kind, bucket_start, target_ip, ap_identity) "
+            f"DO UPDATE SET {updates}",
+            tuple(values.values()),
+        )
 
     def list_ping_summaries(
         self, run_id: str, *, bucket_kind: str | None = "daily"
@@ -1903,6 +2287,62 @@ class GroundUnattendedRepository:
                 (self.site_id, run_id),
             ).fetchall()
         return [_decode_row(row) for row in rows]
+
+    def get_deep_operation(self, operation_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_deep_operations WHERE site_id=? AND operation_id=?",
+                (self.site_id, operation_id),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def deep_task_page(
+        self, *, run_id: str, train_id: str = "", mr_role: str = "",
+        state: str = "", query: str = "", start_at: str = "", end_at: str = "",
+        page: int = 1, page_size: int = 50, ascending: bool = False,
+    ) -> dict[str, Any]:
+        where = ["site_id=?", "run_id=?"]
+        params: list[Any] = [self.site_id, run_id]
+        for column, value in (("train_id", train_id), ("mr_position_code", mr_role), ("state", state)):
+            if value:
+                where.append(f"{column}=?")
+                params.append(value)
+        if query:
+            where.append("""(instr(lower(train_id),lower(?))
+                OR instr(lower(mr_id),lower(?)) OR instr(lower(operation_id),lower(?))
+                OR EXISTS (SELECT 1 FROM ground_unattended_train_runs t
+                    WHERE t.site_id=ground_unattended_deep_operations.site_id
+                    AND t.run_id=ground_unattended_deep_operations.run_id
+                    AND t.train_id=ground_unattended_deep_operations.train_id
+                    AND (instr(lower(t.train_no),lower(?)) OR EXISTS (
+                        SELECT 1 FROM json_each(t.endpoints_json) e
+                        WHERE json_extract(e.value,'$.mr_id')=ground_unattended_deep_operations.mr_id
+                        AND (instr(lower(COALESCE(json_extract(e.value,'$.management_ip'),'')),lower(?))
+                            OR instr(lower(COALESCE(json_extract(e.value,'$.name'),'')),lower(?))))))
+            )""")
+            params.extend([query] * 6)
+        for op, value in ((">=", start_at), ("<=", end_at)):
+            if value:
+                where.append(f"julianday(started_at){op}julianday(?)")
+                params.append(value)
+        clause = " AND ".join(where)
+        with self._connection() as conn:
+            total = conn.execute(f"SELECT COUNT(*) FROM ground_unattended_deep_operations WHERE {clause}", params).fetchone()[0]
+            rows = conn.execute(
+                f"SELECT * FROM ground_unattended_deep_operations WHERE {clause} "
+                f"ORDER BY started_at {'ASC' if ascending else 'DESC'}, operation_id LIMIT ? OFFSET ?",
+                (*params, max(1, min(page_size, 200)), (max(1, page) - 1) * max(1, min(page_size, 200))),
+            ).fetchall()
+            statistics = dict(conn.execute(
+                "SELECT COUNT(*) AS task_count, "
+                "COALESCE(SUM(state IN ('STARTING','RUNNING','FINALIZING')),0) AS running, "
+                "COALESCE(SUM(state='COMPLETED' AND finalization_complete=1),0) AS completed, "
+                "COALESCE(SUM(state='FAILED'),0) AS failed, "
+                "COALESCE(SUM(state='PARTIAL'),0) AS partial "
+                "FROM ground_unattended_deep_operations WHERE site_id=? AND run_id=?",
+                (self.site_id, run_id),
+            ).fetchone())
+        return {"items": [_decode_row(row) for row in rows], "total": total, "statistics": statistics}
 
     def add_event(
         self,
@@ -1990,6 +2430,266 @@ class GroundUnattendedRepository:
         if row is None:
             raise RuntimeError("timeline projection was not saved")
         return int(row["id"]), bool(cursor.rowcount)
+
+    def upsert_heartbeat_snapshot(
+        self,
+        run_id: str,
+        snapshot: Mapping[str, Any],
+        *,
+        entity_type: str,
+        entity_id: str,
+        updated_at: str | None = None,
+    ) -> None:
+        """保存心跳 MR/整车的最新状态快照，不保存逐秒采样。"""
+        self.upsert_heartbeat_snapshots(
+            run_id,
+            [{"snapshot": snapshot, "entity_type": entity_type, "entity_id": entity_id}],
+            updated_at=updated_at,
+        )
+
+    def upsert_heartbeat_snapshots(
+        self,
+        run_id: str,
+        snapshots: Iterable[Mapping[str, Any]],
+        *,
+        updated_at: str | None = None,
+    ) -> None:
+        """Save a bounded batch of dirty heartbeat snapshots in one transaction."""
+        rows: list[tuple[Any, ...]] = []
+        for item in snapshots:
+            snapshot = item.get("snapshot")
+            if not isinstance(snapshot, Mapping):
+                raise ValueError("heartbeat snapshot payload is invalid")
+            normalized_type = str(item.get("entity_type") or "MR").strip().upper()
+            normalized_id = str(item.get("entity_id") or "").strip()
+            if normalized_type not in {"MR", "TRAIN"} or not normalized_id:
+                raise ValueError("heartbeat snapshot entity is invalid")
+            payload = dict(snapshot)
+            rows.append(
+                (
+                    self.site_id,
+                    str(run_id),
+                    normalized_type,
+                    normalized_id,
+                    str(payload.get("status") or "UNKNOWN"),
+                    str(payload.get("engine_state") or "STOPPED"),
+                    json.dumps(payload, ensure_ascii=False),
+                    updated_at or _now(),
+                )
+            )
+        if not rows:
+            return
+        with self._transaction() as conn:
+            conn.executemany(
+                """
+                INSERT INTO ground_unattended_heartbeat_states(
+                    site_id, run_id, entity_type, entity_id, status,
+                    engine_state, snapshot_json, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(site_id, run_id, entity_type, entity_id) DO UPDATE SET
+                    status=excluded.status,
+                    engine_state=excluded.engine_state,
+                    snapshot_json=excluded.snapshot_json,
+                    updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+
+    def list_heartbeat_snapshots(
+        self,
+        run_id: str,
+        *,
+        entity_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?", "run_id=?"]
+        params: list[Any] = [self.site_id, str(run_id)]
+        if entity_type:
+            where.append("entity_type=?")
+            params.append(str(entity_type).strip().upper())
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_heartbeat_states WHERE "
+                + " AND ".join(where)
+                + " ORDER BY entity_type, entity_id",
+                params,
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = _decode_row(row)
+            payload = item.get("snapshot")
+            item["snapshot"] = payload if isinstance(payload, dict) else {}
+            result.append(item)
+        return result
+
+    def apply_ping_loss_events(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+    ) -> int:
+        """Apply loss episode commands in one transaction.
+
+        The table is the shared event authority for Fleet Ping and Quick Ping;
+        callers may safely retry a batch after a database busy/error.
+        """
+        values = [dict(row) for row in rows if str(row.get("event_key") or "").strip()]
+        if not values:
+            return 0
+        with self._transaction() as conn:
+            for row in values:
+                key = str(row["event_key"])
+                action = str(row.get("action") or "UPDATE").upper()
+                run_id = str(row.get("run_id") or "")
+                if action == "RECOVER":
+                    conn.execute(
+                        """
+                        UPDATE ground_unattended_ping_loss_intervals
+                        SET state='RECOVERED', ended_at=?, recovered_at=?,
+                            observed_at=?, duration_seconds=?, loss_count=?,
+                            sent_count=?, success_count=?, last_success_ap_name=?,
+                            last_success_station=?, last_success_section=?,
+                            updated_at=?
+                        WHERE site_id=? AND run_id=? AND event_key=?
+                        """,
+                        (
+                            str(row.get("ended_at") or row.get("observed_at") or _now()),
+                            str(row.get("recovered_at") or row.get("ended_at") or _now()),
+                            str(row.get("observed_at") or row.get("ended_at") or _now()),
+                            float(row.get("duration_seconds") or 0),
+                            int(row.get("loss_count") or 0),
+                            int(row.get("sent_count") or 0),
+                            int(row.get("success_count") or 0),
+                            str(row.get("last_success_ap_name") or ""),
+                            str(row.get("last_success_station") or ""),
+                            str(row.get("last_success_section") or ""),
+                            _now(), self.site_id, run_id, key,
+                        ),
+                    )
+                    continue
+                now = _now()
+                conn.execute(
+                    """
+                    INSERT INTO ground_unattended_ping_loss_intervals(
+                        site_id, run_id, target_ip, train_id, mr_id, mr_role,
+                        event_key, state, observed_at, recovered_at, ap_name,
+                        station, section, last_success_ap_name,
+                        last_success_station, last_success_section, sent_count,
+                        success_count, started_at, ended_at, loss_count,
+                        duration_seconds, created_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, '', ?, ?, ?, ?, ?, ?,
+                              ?, ?, ?, '', ?, ?, ?, ?)
+                    ON CONFLICT DO UPDATE SET
+                        observed_at=excluded.observed_at,
+                        ap_name=excluded.ap_name,
+                        station=excluded.station,
+                        section=excluded.section,
+                        last_success_ap_name=excluded.last_success_ap_name,
+                        last_success_station=excluded.last_success_station,
+                        last_success_section=excluded.last_success_section,
+                        sent_count=excluded.sent_count,
+                        success_count=excluded.success_count,
+                        loss_count=excluded.loss_count,
+                        duration_seconds=excluded.duration_seconds,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        self.site_id, run_id, str(row.get("target_ip") or ""),
+                        str(row.get("train_id") or ""), str(row.get("mr_id") or ""),
+                        str(row.get("mr_role") or ""), key,
+                        str(row.get("observed_at") or now), str(row.get("ap_name") or ""),
+                        str(row.get("station") or ""), str(row.get("section") or ""),
+                        str(row.get("last_success_ap_name") or ""),
+                        str(row.get("last_success_station") or ""),
+                        str(row.get("last_success_section") or ""),
+                        int(row.get("sent_count") or 0), int(row.get("success_count") or 0),
+                        str(row.get("started_at") or row.get("observed_at") or now),
+                        int(row.get("loss_count") or 0), float(row.get("duration_seconds") or 0),
+                        now, now,
+                    ),
+                )
+        return len(values)
+
+    def list_ping_loss_intervals(
+        self,
+        run_id: str,
+        *,
+        target_ip: str = "",
+        mr_id: str = "",
+        state: str = "",
+        limit: int = 500,
+        started_after: str = "",
+    ) -> list[dict[str, Any]]:
+        where = ["site_id=?", "run_id=?"]
+        params: list[Any] = [self.site_id, str(run_id)]
+        if target_ip:
+            where.append("target_ip=?")
+            params.append(str(target_ip))
+        if mr_id:
+            where.append("mr_id=?")
+            params.append(str(mr_id))
+        if state:
+            where.append("state=?")
+            params.append(str(state).upper())
+        if started_after:
+            where.append("julianday(started_at) > julianday(?)")
+            params.append(started_after)
+        params.append(max(1, min(int(limit), 5000)))
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_ping_loss_intervals WHERE "
+                + " AND ".join(where)
+                + " ORDER BY started_at DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def list_ping_loss_intervals_by_mr(
+        self,
+        run_id: str,
+        mr_ids: Iterable[str],
+        *,
+        limit_per_mr: int = 200,
+        started_after: str = "",
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Read bounded loss-event history for all visible MRs in one query."""
+        ids = tuple(dict.fromkeys(str(value) for value in mr_ids if str(value)))
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        bounded = max(1, min(int(limit_per_mr), 5000))
+        boundary = " AND julianday(started_at) > julianday(?)" if started_after else ""
+        params = (self.site_id, str(run_id), *ids, *([started_after] if started_after else []), bounded)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT interval_rows.*, ROW_NUMBER() OVER (
+                        PARTITION BY mr_id ORDER BY started_at DESC, id DESC
+                    ) AS row_number
+                    FROM ground_unattended_ping_loss_intervals AS interval_rows
+                    WHERE site_id=? AND run_id=? AND mr_id IN ({placeholders}){boundary}
+                )
+                WHERE row_number <= ?
+                ORDER BY started_at DESC, id DESC
+                """,
+                params,
+            ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            decoded = _decode_row(row)
+            decoded.pop("row_number", None)
+            grouped.setdefault(str(decoded.get("mr_id") or ""), []).append(decoded)
+        return grouped
+
+    def list_open_ping_loss_intervals(
+        self, run_id: str, *, target_ip: str = "", mr_id: str = "", started_after: str = ""
+    ) -> list[dict[str, Any]]:
+        return self.list_ping_loss_intervals(
+            run_id,
+            target_ip=target_ip,
+            mr_id=mr_id,
+            state="OPEN",
+            limit=5000,
+            started_after=started_after,
+        )
 
     def radio_runtime_statistics(
         self, *, run_id: str = "", day_start: str = ""
@@ -2092,6 +2792,10 @@ class GroundUnattendedRepository:
         train_id: str = "",
         event_type: str = "",
         query: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+        start_at: str = "",
+        end_at: str = "",
         limit: int = 500,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
@@ -2103,6 +2807,24 @@ class GroundUnattendedRepository:
         if event_type:
             where.append("event_type=?")
             params.append(event_type)
+        if mr_id:
+            where.append("mr_id=?")
+            params.append(mr_id)
+        if mr_role:
+            where.append(
+                "COALESCE(NULLIF(json_extract(details_json, '$.mr_role'), ''), "
+                "NULLIF(json_extract(details_json, '$.mr_position_code'), ''), "
+                "(SELECT mr_role FROM ground_unattended_train_endpoints e "
+                "WHERE e.site_id=ground_unattended_events.site_id "
+                "AND e.device_uuid=ground_unattended_events.mr_id))=?"
+            )
+            params.append(mr_role.upper())
+        if start_at:
+            where.append("julianday(ts)>=julianday(?)")
+            params.append(start_at)
+        if end_at:
+            where.append("julianday(ts)<=julianday(?)")
+            params.append(end_at)
         if query:
             where.append(
                 "LOWER(train_id || ' ' || mr_id || ' ' || title || ' ' || "
@@ -2115,7 +2837,7 @@ class GroundUnattendedRepository:
         with self._connection() as conn:
             rows = conn.execute(
                 f"SELECT * FROM ground_unattended_events WHERE {' AND '.join(where)} "
-                "ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
+                "ORDER BY julianday(ts) DESC, id DESC LIMIT ? OFFSET ?",
                 params,
             ).fetchall()
         return [_decode_row(row) for row in rows]
@@ -2127,6 +2849,10 @@ class GroundUnattendedRepository:
         train_id: str = "",
         event_type: str = "",
         query: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+        start_at: str = "",
+        end_at: str = "",
     ) -> int:
         where = ["site_id=?", "run_id=?"]
         params: list[Any] = [self.site_id, run_id]
@@ -2136,6 +2862,24 @@ class GroundUnattendedRepository:
         if event_type:
             where.append("event_type=?")
             params.append(event_type)
+        if mr_id:
+            where.append("mr_id=?")
+            params.append(mr_id)
+        if mr_role:
+            where.append(
+                "COALESCE(NULLIF(json_extract(details_json, '$.mr_role'), ''), "
+                "NULLIF(json_extract(details_json, '$.mr_position_code'), ''), "
+                "(SELECT mr_role FROM ground_unattended_train_endpoints e "
+                "WHERE e.site_id=ground_unattended_events.site_id "
+                "AND e.device_uuid=ground_unattended_events.mr_id))=?"
+            )
+            params.append(mr_role.upper())
+        if start_at:
+            where.append("julianday(ts)>=julianday(?)")
+            params.append(start_at)
+        if end_at:
+            where.append("julianday(ts)<=julianday(?)")
+            params.append(end_at)
         if query:
             where.append(
                 "LOWER(train_id || ' ' || mr_id || ' ' || title || ' ' || "
@@ -2410,6 +3154,7 @@ class GroundUnattendedRepository:
             "archive_status",
             "parse_status",
             "compressed_path",
+            "gzip_path",
             "created_at",
             "updated_at",
         }
@@ -2431,6 +3176,60 @@ class GroundUnattendedRepository:
                 f"ON CONFLICT(file_id) DO UPDATE SET {updates}",
                 tuple(row[field] for field in fields),
             )
+
+    def syslog_ui_statistics(self, *, run_id: str = "", day_start: str, day_end: str) -> dict[str, Any]:
+        """Aggregate the registration index only; never read raw logs for cards.
+
+        A segment crossing midnight cannot supply an exact per-day count. Keep
+        that value unknown instead of treating its whole count as today's logs.
+        Missing files here are registered failures, not a filesystem audit.
+        """
+        where = "site_id=? AND data_type='syslog'"
+        params: list[Any] = [day_start, day_end, day_start, day_start, self.site_id]
+        if run_id:
+            where += " AND run_id=?"
+            params.append(run_id)
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(CASE WHEN julianday(start_time)>=julianday(?) "
+                "AND julianday(start_time)<julianday(?) THEN record_count ELSE 0 END),0) AS today_count, "
+                "COALESCE(SUM(CASE WHEN julianday(start_time)<julianday(?) "
+                "AND (end_time='' OR julianday(end_time)>=julianday(?)) THEN 1 ELSE 0 END),0) AS crossing, "
+                "COALESCE(SUM(status='OPEN'),0) AS active_files, "
+                "COALESCE(SUM(UPPER(parse_status) IN ('FAILED','ERROR')),0) AS parse_failed_files, "
+                "COALESCE(SUM(UPPER(status) IN ('MISSING','RAW_DATA_MISSING')),0) AS raw_missing_files, "
+                "COALESCE(SUM(UPPER(parse_status) NOT IN ('PARSED','IGNORED','COMPLETE','COMPLETED','READY')),0) AS pending_files "
+                f"FROM ground_unattended_raw_files WHERE {where}", params,
+            ).fetchone()
+            event_where = "site_id=?"
+            event_params: list[Any] = [self.site_id]
+            if run_id:
+                event_where += " AND run_id=?"
+                event_params.append(run_id)
+            event_count = conn.execute(
+                f"SELECT COUNT(*) FROM ground_unattended_wmesh_events WHERE {event_where} "
+                "AND event_type LIKE 'MESH_%'", event_params,
+            ).fetchone()[0]
+        result = dict(row)
+        result["today_received"] = None if result.pop("crossing") else result.pop("today_count")
+        result.pop("today_count", None)
+        result["wmesh_events"] = event_count
+        result["scope"] = "RUN_REGISTERED_INDEX" if run_id else "SITE_REGISTERED_INDEX"
+        result["data_status"] = (
+            "INCOMPLETE" if result["parse_failed_files"] or result["raw_missing_files"]
+            else "PENDING" if result["pending_files"] else "REGISTERED"
+        )
+        return result
+
+    def register_raw_gzip(self, file_id: str, relative_path: str) -> bool:
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE ground_unattended_raw_files SET gzip_path=?, updated_at=? "
+                "WHERE site_id=? AND file_id=? AND status='CLOSED' "
+                "AND archive_status!='ARCHIVED'",
+                (relative_path, _now(), self.site_id, file_id),
+            )
+            return cursor.rowcount == 1
 
     def list_raw_files(
         self,
@@ -2607,7 +3406,7 @@ class GroundUnattendedRepository:
         with self._transaction() as conn:
             cursor = conn.execute(
                 "UPDATE ground_unattended_raw_files SET archive_status='ARCHIVED', "
-                "compressed_path=?, updated_at=? WHERE site_id=? AND run_id=? "
+                "compressed_path=?, gzip_path='', updated_at=? WHERE site_id=? AND run_id=? "
                 "AND status IN ('CLOSED','RECOVERED')",
                 (compressed_path, _now(), self.site_id, run_id),
             )
@@ -4057,6 +4856,334 @@ class GroundUnattendedRepository:
                 )
             return int(cursor.rowcount)
 
+    def delete_terminal_quick_ping_summary(self, run_id: str, *, ended_at: str, cutoff: str) -> bool:
+        """Expire one exact terminal summary; retain its problem/lifecycle events."""
+        with self._transaction() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM ground_unattended_quick_ping_runs WHERE site_id=? AND run_id=? "
+                "AND ended_at=? AND state IN ('COMPLETED','FAILED','CANCELLED','TIME_LIMIT','INTERRUPTED') "
+                "AND julianday(ended_at)<julianday(?)",
+                (self.site_id, run_id, ended_at, cutoff),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute("DELETE FROM ground_unattended_quick_ping_target_runtime WHERE site_id=? AND run_id=?", (self.site_id, run_id))
+            conn.execute("DELETE FROM ground_unattended_quick_ping_stats WHERE site_id=? AND run_id=?", (self.site_id, run_id))
+            conn.execute("DELETE FROM ground_unattended_quick_ping_runs WHERE site_id=? AND run_id=?", (self.site_id, run_id))
+            return True
+
+    def quick_ping_reservations(self) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            return [dict(row) for row in conn.execute("SELECT * FROM ground_unattended_quick_ping_ip_reservations").fetchall()]
+
+    def reserve_quick_ping_ips(self, run_id: str, target_ips: list[str], *, owner_pid: int, owner_identity: str, max_active_runs: int) -> dict[str, Any] | None:
+        """All-or-nothing IP reservation, serialized across connections/processes."""
+        with self._transaction() as conn:
+            for ip in target_ips:
+                row = conn.execute("SELECT * FROM ground_unattended_quick_ping_ip_reservations WHERE lock_key=?", (f"quick_ping:ip:{ip}",)).fetchone()
+                if row is not None:
+                    return dict(row)
+            count = conn.execute("SELECT COUNT(DISTINCT run_id) FROM ground_unattended_quick_ping_ip_reservations").fetchone()[0]
+            if count >= max_active_runs:
+                return {"limit": True}
+            conn.executemany("INSERT INTO ground_unattended_quick_ping_ip_reservations(lock_key, site_id, run_id, target_ip, owner_pid, owner_identity) VALUES(?, ?, ?, ?, ?, ?)",
+                             [(f"quick_ping:ip:{ip}", self.site_id, run_id, ip, owner_pid, owner_identity) for ip in target_ips])
+        return None
+
+    def claim_quick_ping_ip(self, run_id: str, target_ip: str) -> bool:
+        with self._transaction() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM ground_unattended_quick_ping_ip_reservations WHERE state='RUNNING'").fetchone()[0]
+            if count >= 4:
+                return False
+            return bool(conn.execute("UPDATE ground_unattended_quick_ping_ip_reservations SET state='RUNNING' WHERE site_id=? AND run_id=? AND target_ip=? AND state='QUEUED'", (self.site_id, run_id, target_ip)).rowcount)
+
+    def record_quick_ping_child(self, run_id: str, target_ip: str, pid: int, identity: str) -> None:
+        with self._transaction() as conn:
+            conn.execute("UPDATE ground_unattended_quick_ping_ip_reservations SET child_pid=?, child_identity=? WHERE site_id=? AND run_id=? AND target_ip=?", (pid, identity, self.site_id, run_id, target_ip))
+
+    def release_quick_ping_ip(self, run_id: str, target_ip: str) -> None:
+        with self._transaction() as conn:
+            conn.execute("DELETE FROM ground_unattended_quick_ping_ip_reservations WHERE site_id=? AND run_id=? AND target_ip=?", (self.site_id, run_id, target_ip))
+
+    def save_quick_ping_state(
+        self,
+        run: Mapping[str, Any],
+        stats: Mapping[str, Mapping[str, Any]],
+        accumulators: Mapping[str, Mapping[str, Any]],
+        *,
+        event: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Persist Quick Ping run metadata and bounded aggregates, never samples."""
+
+        run_id = str(run.get("run_id") or "").strip()
+        if not run_id:
+            raise ValueError("Quick Ping run id is required")
+        run_site_id = str(run.get("site_id") or self.site_id)
+        if run_site_id != self.site_id:
+            raise ValueError("Quick Ping run belongs to another site")
+        now = _now()
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO ground_unattended_quick_ping_runs(
+                    site_id, run_id, run_date, state, targets_json, config_json,
+                    segment_paths_json, started_at, ended_at, error, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(site_id, run_id) DO UPDATE SET
+                    run_date=excluded.run_date,
+                    state=excluded.state,
+                    targets_json=excluded.targets_json,
+                    config_json=excluded.config_json,
+                    segment_paths_json=excluded.segment_paths_json,
+                    started_at=excluded.started_at,
+                    ended_at=excluded.ended_at,
+                    error=excluded.error,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    self.site_id,
+                    run_id,
+                    str(run.get("run_date") or ""),
+                    str(run.get("state") or "UNKNOWN"),
+                    json.dumps(run.get("targets") or [], ensure_ascii=False),
+                    json.dumps(run.get("config") or {}, ensure_ascii=False),
+                    json.dumps(run.get("segment_paths") or [], ensure_ascii=False),
+                    str(run.get("started_at") or ""),
+                    str(run.get("ended_at") or ""),
+                    str(run.get("error") or ""),
+                    now,
+                ),
+            )
+            for target_ip, runtime in (run.get("target_runtime") or {}).items():
+                conn.execute("INSERT INTO ground_unattended_quick_ping_target_runtime(site_id, run_id, target_ip, runtime_json) VALUES(?, ?, ?, ?) ON CONFLICT(site_id, run_id, target_ip) DO UPDATE SET runtime_json=excluded.runtime_json", (self.site_id, run_id, target_ip, json.dumps(runtime, ensure_ascii=False)))
+            for target_ip, summary in stats.items():
+                aggregate = accumulators.get(target_ip, {})
+                received = int(summary.get("received") or 0)
+                avg_rtt = summary.get("avg_rtt_ms")
+                jitter = summary.get("jitter_ms")
+                conn.execute(
+                    """
+                    INSERT INTO ground_unattended_quick_ping_stats(
+                        site_id, run_id, target_ip, raw_samples, sent, received, lost,
+                        rtt_sum_ms, min_rtt_ms, max_rtt_ms, jitter_sum_ms, jitter_count,
+                        previous_success_rtt, current_consecutive_loss,
+                        max_consecutive_loss, last_sample_at, last_success_at, updated_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(site_id, run_id, target_ip) DO UPDATE SET
+                        raw_samples=excluded.raw_samples,
+                        sent=excluded.sent,
+                        received=excluded.received,
+                        lost=excluded.lost,
+                        rtt_sum_ms=excluded.rtt_sum_ms,
+                        min_rtt_ms=excluded.min_rtt_ms,
+                        max_rtt_ms=excluded.max_rtt_ms,
+                        jitter_sum_ms=excluded.jitter_sum_ms,
+                        jitter_count=excluded.jitter_count,
+                        previous_success_rtt=excluded.previous_success_rtt,
+                        current_consecutive_loss=excluded.current_consecutive_loss,
+                        max_consecutive_loss=excluded.max_consecutive_loss,
+                        last_sample_at=excluded.last_sample_at,
+                        last_success_at=excluded.last_success_at,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        self.site_id,
+                        run_id,
+                        str(target_ip),
+                        int(summary.get("raw_samples") or 0),
+                        int(summary.get("sent") or 0),
+                        received,
+                        int(summary.get("lost") or 0),
+                        float(aggregate.get("rtt_sum_ms") or (float(avg_rtt) * received if avg_rtt is not None else 0.0)),
+                        summary.get("min_rtt_ms"),
+                        summary.get("max_rtt_ms"),
+                        float(aggregate.get("jitter_sum_ms") or (float(jitter) if jitter is not None else 0.0)),
+                        int(aggregate.get("jitter_count") or (1 if jitter is not None else 0)),
+                        aggregate.get("previous_success_rtt"),
+                        int(summary.get("current_consecutive_loss") or 0),
+                        int(summary.get("max_consecutive_loss") or 0),
+                        str(summary.get("last_sample_at") or ""),
+                        str(summary.get("last_success_at") or ""),
+                        now,
+                    ),
+                )
+            if event is not None:
+                conn.execute(
+                    """
+                    INSERT INTO ground_unattended_quick_ping_events(
+                        site_id, run_id, event_type, state, ts, details_json
+                    ) VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self.site_id,
+                        run_id,
+                        str(event.get("event_type") or "STATE_CHANGED"),
+                        str(event.get("state") or run.get("state") or ""),
+                        str(event.get("ts") or now),
+                        json.dumps(event.get("details") or {}, ensure_ascii=False),
+                    ),
+                )
+
+    def get_quick_ping_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_quick_ping_runs WHERE site_id=? AND run_id=?",
+                (self.site_id, run_id),
+            ).fetchone()
+            return self._quick_ping_payload(conn, row) if row is not None else None
+
+    def list_quick_ping_runs(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(int(limit), 500))
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ground_unattended_quick_ping_runs
+                WHERE site_id=?
+                ORDER BY started_at DESC, run_id DESC
+                LIMIT ?
+                """,
+                (self.site_id, safe_limit),
+            ).fetchall()
+            return [self._quick_ping_payload(conn, row) for row in rows]
+
+    def query_quick_ping_runs(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        start_time: str = "",
+        end_time: str = "",
+        query: str = "",
+        state: str = "",
+        train_id: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Query the durable run index, including runs evicted from runtime memory."""
+        clauses = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if start_time:
+            clauses.append("julianday(started_at)>=julianday(?)")
+            params.append(start_time)
+        if end_time:
+            clauses.append("julianday(started_at)<=julianday(?)")
+            params.append(end_time)
+        if state:
+            clauses.append("state=?")
+            params.append(state)
+        if query:
+            clauses.append("instr(lower(run_id || ' ' || started_at || ' ' || targets_json), lower(?))>0")
+            params.append(query)
+        target_clauses: list[str] = []
+        for key, value in (("train_id", train_id), ("mr_id", mr_id), ("mr_role", mr_role)):
+            if value:
+                target_clauses.append(f"json_extract(target.value, '$.{key}')=?")
+                params.append(value)
+        if target_clauses:
+            clauses.append("EXISTS (SELECT 1 FROM json_each(targets_json) AS target WHERE " + " AND ".join(target_clauses) + ")")
+        where = " AND ".join(clauses)
+        with self._connection() as conn:
+            total = int(conn.execute(
+                f"SELECT COUNT(*) FROM ground_unattended_quick_ping_runs WHERE {where}", params,
+            ).fetchone()[0])
+            rows = conn.execute(
+                f"SELECT * FROM ground_unattended_quick_ping_runs WHERE {where} "
+                "ORDER BY julianday(started_at) DESC, run_id DESC LIMIT ? OFFSET ?",
+                (*params, max(1, min(int(limit), 500)), max(0, int(offset))),
+            ).fetchall()
+            return [self._quick_ping_payload(conn, row) for row in rows], total
+
+    def list_quick_ping_events(self, run_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM ground_unattended_quick_ping_events
+                WHERE site_id=? AND run_id=?
+                ORDER BY ts, id
+                LIMIT ?
+                """,
+                (self.site_id, run_id, max(1, min(int(limit), 5000))),
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "site_id": str(row["site_id"]),
+                "run_id": str(row["run_id"]),
+                "event_type": str(row["event_type"]),
+                "state": str(row["state"]),
+                "ts": str(row["ts"]),
+                "details": _json_object(row["details_json"]),
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _quick_ping_payload(
+        conn: sqlite3.Connection, row: sqlite3.Row
+    ) -> dict[str, Any]:
+        payload = {
+            "run_id": str(row["run_id"]),
+            "site_id": str(row["site_id"]),
+            "run_date": str(row["run_date"]),
+            "state": str(row["state"]),
+            "targets": _json_array(row["targets_json"]),
+            "config": _json_object(row["config_json"]),
+            "segment_paths": _json_array(row["segment_paths_json"]),
+            "started_at": str(row["started_at"]),
+            "ended_at": str(row["ended_at"]),
+            "error": str(row["error"]),
+            "recent_samples": [],
+        }
+        stat_rows = conn.execute(
+            """
+            SELECT * FROM ground_unattended_quick_ping_stats
+            WHERE site_id=? AND run_id=?
+            """,
+            (payload["site_id"], payload["run_id"]),
+        ).fetchall()
+        payload["target_runtime"] = {str(item["target_ip"]): _json_object(item["runtime_json"]) for item in conn.execute("SELECT target_ip, runtime_json FROM ground_unattended_quick_ping_target_runtime WHERE site_id=? AND run_id=?", (payload["site_id"], payload["run_id"])).fetchall()}
+        accumulators: dict[str, dict[str, Any]] = {}
+        decoded: dict[str, dict[str, Any]] = {}
+        for stat in stat_rows:
+            target_ip = str(stat["target_ip"])
+            received = int(stat["received"])
+            sent = int(stat["sent"])
+            lost = int(stat["lost"])
+            jitter_count = int(stat["jitter_count"])
+            rtt_sum = float(stat["rtt_sum_ms"])
+            jitter_sum = float(stat["jitter_sum_ms"])
+            decoded[target_ip] = {
+                "raw_samples": int(stat["raw_samples"]),
+                "sent": sent,
+                "received": received,
+                "lost": lost,
+                "loss_rate_percent": (lost * 100.0 / sent) if sent else 0.0,
+                "min_rtt_ms": stat["min_rtt_ms"],
+                "avg_rtt_ms": (rtt_sum / received) if received else None,
+                "max_rtt_ms": stat["max_rtt_ms"],
+                "jitter_ms": (jitter_sum / jitter_count) if jitter_count else None,
+                "current_consecutive_loss": int(stat["current_consecutive_loss"]),
+                "max_consecutive_loss": int(stat["max_consecutive_loss"]),
+                "last_sample_at": str(stat["last_sample_at"]),
+                "last_success_at": str(stat["last_success_at"]),
+                "current_rtt_ms": payload["target_runtime"].get(target_ip, {}).get("current_rtt_ms"),
+            }
+            accumulators[target_ip] = {
+                "rtt_sum_ms": rtt_sum,
+                "jitter_sum_ms": jitter_sum,
+                "jitter_count": jitter_count,
+                "previous_success_rtt": stat["previous_success_rtt"],
+            }
+        overall = decoded.pop("", _empty_quick_ping_stats())
+        overall_accumulator = accumulators.pop("", _empty_quick_ping_accumulator())
+        payload["stats"] = overall
+        payload["target_stats"] = decoded
+        payload["_stats_accumulators"] = {
+            "overall": overall_accumulator,
+            "targets": accumulators,
+        }
+        return payload
+
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = Database(self.db_path).connect()
@@ -4298,6 +5425,49 @@ def _decode_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         if key in result:
             result[key] = bool(result[key])
     return result
+
+
+def _json_object(value: object) -> dict[str, Any]:
+    try:
+        decoded = json.loads(str(value or "{}"))
+    except (TypeError, ValueError):
+        decoded = {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _json_array(value: object) -> list[Any]:
+    try:
+        decoded = json.loads(str(value or "[]"))
+    except (TypeError, ValueError):
+        decoded = []
+    return decoded if isinstance(decoded, list) else []
+
+
+def _empty_quick_ping_stats() -> dict[str, Any]:
+    return {
+        "raw_samples": 0,
+        "sent": 0,
+        "received": 0,
+        "lost": 0,
+        "loss_rate_percent": 0.0,
+        "min_rtt_ms": None,
+        "avg_rtt_ms": None,
+        "max_rtt_ms": None,
+        "jitter_ms": None,
+        "current_consecutive_loss": 0,
+        "max_consecutive_loss": 0,
+        "last_sample_at": "",
+        "last_success_at": "",
+    }
+
+
+def _empty_quick_ping_accumulator() -> dict[str, Any]:
+    return {
+        "rtt_sum_ms": 0.0,
+        "jitter_sum_ms": 0.0,
+        "jitter_count": 0,
+        "previous_success_rtt": None,
+    }
 
 
 __all__ = ["GroundUnattendedRepository"]

@@ -101,6 +101,7 @@ AP name: AP-TCC-15
 
     assert result.parse_status == "OK"
     assert [link.peer_name for link in result.links] == ["Nbl06-LC12-AP- CT", "Nbl06-LC20-AP- CT", "Nbl06-LC14-AP-CW"]
+    assert result.ac_time == ""
     assert result.links[0].peer_name_canonical == "Nbl06-LC12-AP-CT"
     assert identities["Nbl06-LC12-AP- CT"].train_no == "12"
     assert identities["Nbl06-LC12-AP- CT"].car_end_label == "TC1"

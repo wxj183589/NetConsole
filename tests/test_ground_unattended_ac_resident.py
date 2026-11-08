@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+import threading
+import time
+import sqlite3
 
 import pytest
+
+from netconsole.core.ping.fping_v5_models import BACKEND, FpingV5Sample
+from netconsole.services.ground_unattended.fleet_ping import FleetPingSupervisor
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.rail_transit_base_data import RailTransitSummaryDTO
@@ -94,7 +101,7 @@ def _supervisor(
     tmp_path: Path,
 ) -> tuple[GroundUnattendedSupervisor, GroundUnattendedRepository, _MeshQuery]:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
-    paths.site_dir("site-a").mkdir(parents=True)
+    paths.site_dir("site-a").mkdir(parents=True, exist_ok=True)
     repository = GroundUnattendedRepository(
         paths.ground_unattended_db_path("site-a"),
         site_id="site-a",
@@ -116,6 +123,466 @@ def _supervisor(
         vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
     )
     return supervisor, repository, mesh
+
+
+def _heartbeat_fixture(tmp_path: Path):
+    supervisor, repository, mesh = _supervisor(tmp_path)
+    repository.sync_inventory(
+        trains=[{"train_id": "heartbeat-train", "train_no": "001"}],
+        endpoints=[{
+            "device_uuid": "heartbeat-mr", "train_id": "heartbeat-train",
+            "mr_role": "CT", "device_name": "Mock CT",
+            "management_ip": "192.0.2.10", "backup_management_ip": "192.0.2.11",
+        }],
+    )
+
+    def runner(*, targets, stop_event, **kwargs):
+        sequence = 0
+        while not stop_event.wait(0.01):
+            sequence += 1
+            for target in targets:
+                yield FpingV5Sample(
+                    ts=datetime.now().astimezone().isoformat(), target=target,
+                    seq=sequence, ok=True, rtt_ms=2.0,
+                    timeout_ms=kwargs["timeout_ms"], size=kwargs["packet_size"],
+                    error="", backend=BACKEND, raw_type="response", raw={},
+                )
+
+    supervisor.fleet_ping = FleetPingSupervisor(
+        repository=repository, site_id="site-a", runner=runner,
+        sample_callback=supervisor._on_fleet_ping_sample,
+    )
+    supervisor._start_fleet_ping(repository.get_run("run-1"), repository.get_profile())
+    supervisor.fleet_ping.update_targets(list(supervisor._heartbeat_fleet_targets().values()))
+    return supervisor, repository, mesh
+
+
+def test_busy_heartbeat_population_persists_every_mr_and_train(tmp_path, monkeypatch):
+    supervisor, repository, _ = _supervisor(tmp_path)
+    ids = [f"mr-{index:03d}" for index in range(300)]
+    repository.sync_inventory(
+        trains=[{"train_id": item, "train_no": item} for item in ids],
+        endpoints=[{"device_uuid": item, "train_id": item, "mr_role": "CT",
+                    "management_ip": f"192.0.{index // 250 + 2}.{index % 250 + 1}"}
+                   for index, item in enumerate(ids)],
+    )
+    supervisor._configure_heartbeat_targets("run-1")
+    stored = {"MR": set(), "TRAIN": set()}
+
+    def persist(_run_id, records, **_kwargs):
+        for record in records:
+            stored[record["entity_type"]].add(record["entity_id"])
+
+    monkeypatch.setattr(repository, "upsert_heartbeat_snapshots", persist)
+    now = datetime.now().astimezone()
+    supervisor._refresh_train_heartbeat_snapshots_locked(
+        [supervisor._heartbeat_engine.snapshot(item) for item in ids], at=now,
+    )
+    for _ in range(10):
+        # Every probe can dirty the early IDs again before the next scheduler tick.
+        supervisor._heartbeat_dirty_mrs.update(ids)
+        supervisor._heartbeat_dirty_trains.update(ids)
+        supervisor._persist_heartbeat_state(at=now)
+    assert stored == {"MR": set(ids), "TRAIN": set(ids)}
+
+
+@pytest.mark.parametrize("snapshot_available", [True, False])
+def test_poll_between_ac_snapshots_preserves_fresh_matching_enrichment(tmp_path, snapshot_available, monkeypatch):
+    supervisor, repository, mesh = _supervisor(tmp_path)
+    # This regression exercises target enrichment only; never launch network workers.
+    monkeypatch.setattr(supervisor.fleet_ping, "_reconcile_shards", lambda _addresses: None)
+    repository.sync_inventory(
+        trains=[{"train_id": "train-1", "train_no": "001"}],
+        endpoints=[{"device_uuid": "mr-1", "train_id": "train-1", "mr_role": "CT",
+                    "management_ip": "192.0.2.10"}],
+    )
+    now = datetime.now().astimezone()
+    inventory = supervisor._refresh_inventory_heartbeat(repository.get_run("run-1"), now)
+    address = "192.0.2.10"
+    enriched = replace(inventory[address], current_ap_identity="ap-a", current_ap_name="AP A",
+                       ac_snapshot_id="snapshot-a", rssi=-51)
+    supervisor._last_valid_ping_targets[address] = (enriched, now)
+    supervisor._last_processed_snapshot_id_by_controller = {"ac-1": 11, "ac-2": 21}
+    if not snapshot_available:
+        mesh.snapshots = []
+    supervisor._poll_ac_and_classify(repository.get_run("run-1"), repository.get_profile(),
+                                     now + timedelta(seconds=1), scheduling_paused=False)
+    assert supervisor.fleet_ping._targets[address] == enriched
+    supervisor._poll_ac_and_classify(repository.get_run("run-1"), repository.get_profile(),
+                                     now + timedelta(seconds=repository.get_profile().ac_stale_grace_seconds + 1),
+                                     scheduling_paused=False)
+    assert not supervisor.fleet_ping._targets[address].current_ap_identity
+    assert supervisor.fleet_ping._targets[address].mr_id == "mr-1"
+
+
+def _wait_samples(supervisor, minimum: int) -> None:
+    deadline = time.monotonic() + 5
+    while supervisor.fleet_ping.sample_count < minimum and time.monotonic() < deadline:
+        threading.Event().wait(0.01)
+    assert supervisor.fleet_ping.sample_count >= minimum
+
+
+def test_heartbeat_events_defer_database_io_and_retry_without_losing_transition(tmp_path, monkeypatch):
+    from netconsole.services.ground_unattended.heartbeat_state import HeartbeatIpObservation
+
+    supervisor, repository, _ = _supervisor(tmp_path)
+    repository.sync_inventory(
+        trains=[{"train_id": "train-1", "train_no": "001"}],
+        endpoints=[{"device_uuid": "mr-1", "train_id": "train-1", "mr_role": "CT",
+                    "management_ip": "192.0.2.10"}],
+    )
+    supervisor._configure_heartbeat_targets("run-1")
+    original_single = repository.add_event
+    original_batch = repository.add_events_batch
+    writes = []
+
+    def locked(*args, **kwargs):
+        writes.append(1)
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(repository, "add_event", locked)
+    monkeypatch.setattr(repository, "add_events_batch", locked)
+    at = datetime.now().astimezone()
+    # Probe callback must finish state/aggregate updates without any SQLite IO.
+    with supervisor._heartbeat_lock:
+        for second in range(11):
+            moment = at + timedelta(seconds=second)
+            transitions = supervisor._heartbeat_engine.record_observation(
+                "mr-1", HeartbeatIpObservation("192.0.2.10", False), at=moment,
+            )
+            supervisor._heartbeat_dirty_mrs.add("mr-1")
+            supervisor._mark_heartbeat_transitions_dirty(transitions)
+            supervisor._refresh_train_heartbeat_snapshots_locked(
+                (supervisor._heartbeat_engine.snapshot("mr-1"),), at=moment,
+            )
+    assert not writes
+    assert supervisor._heartbeat_engine.snapshot("mr-1").status == "OFFLINE"
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        supervisor._persist_heartbeat_state(at=moment)
+    monkeypatch.setattr(repository, "add_event", original_single)
+    monkeypatch.setattr(repository, "add_events_batch", original_batch)
+    supervisor._persist_heartbeat_state(at=moment)
+    supervisor._persist_heartbeat_state(at=moment)
+    events = repository.list_events("run-1", event_type="mr_offline")
+    assert len(events) == 1
+    assert datetime.fromisoformat(events[0]["ts"]) == moment.replace(microsecond=moment.microsecond // 1000 * 1000)
+    assert not supervisor._heartbeat_pending_events
+
+
+def test_slow_heartbeat_event_store_keeps_sampling_lock_free_and_run_ownership(tmp_path, monkeypatch):
+    from netconsole.services.ground_unattended.heartbeat_state import HeartbeatTransition
+
+    supervisor, repository, _ = _supervisor(tmp_path)
+    supervisor._heartbeat_run_id = "run-1"
+    at = datetime.now().astimezone()
+    supervisor._on_heartbeat_transition(HeartbeatTransition(
+        "MR", "mr-1", "ONLINE", "OFFLINE", "mr_offline", at,
+    ))
+    entered, release = threading.Event(), threading.Event()
+    original = repository.add_events_batch
+    failures = []
+
+    def slow_store(records):
+        entered.set()
+        assert release.wait(5)
+        return original(records)
+
+    def flush():
+        try:
+            supervisor._persist_heartbeat_events()
+        except Exception as exc:
+            failures.append(exc)
+
+    monkeypatch.setattr(repository, "add_events_batch", slow_store)
+    worker = threading.Thread(target=flush)
+    worker.start()
+    try:
+        assert entered.wait(3)
+        acquired = supervisor._heartbeat_lock.acquire(timeout=1)
+        assert acquired, "slow SQLite must not own the sampling lock"
+        try:
+            supervisor._heartbeat_run_id = "run-2"
+            supervisor._on_heartbeat_transition(HeartbeatTransition(
+                "MR", "mr-2", "ONLINE", "OFFLINE", "mr_offline", at,
+            ))
+        finally:
+            supervisor._heartbeat_lock.release()
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert not failures
+    monkeypatch.setattr(repository, "add_events_batch", original)
+    supervisor._persist_heartbeat_events()
+    assert [item["mr_id"] for item in repository.list_events("run-1", event_type="mr_offline")] == ["mr-1"]
+    assert [item["mr_id"] for item in repository.list_events("run-2", event_type="mr_offline")] == ["mr-2"]
+    assert not supervisor._heartbeat_pending_events
+
+
+def test_heartbeat_without_ac_or_credentials_persists_both_ip_stats(tmp_path: Path) -> None:
+    supervisor, repository, mesh = _heartbeat_fixture(tmp_path)
+    mesh.snapshots = []
+    try:
+        _wait_samples(supervisor, 8)
+        supervisor._poll_ac_and_classify(
+            repository.get_run("run-1"), repository.get_profile(),
+            datetime.now().astimezone(), scheduling_paused=True,
+        )
+        service = GroundUnattendedApplicationService(
+            supervisor.paths, site_id="site-a", repository=repository, supervisor=supervisor,
+        )
+        page = service.heartbeat("site-a", run_id="run-1")
+        assert page.mr_counts["ONLINE"] == 1
+        assert page.train_counts["SINGLE_ONLINE"] == 1
+        assert page.mrs[0].mr_name == "Mock CT"
+        assert {row.ip for row in page.mrs[0].ip_states} == {"192.0.2.10", "192.0.2.11"}
+        assert all(row.received_count > 0 for row in page.mrs[0].ip_states)
+        assert not repository.list_events("run-1", event_type="mr_offline")
+    finally:
+        supervisor.fleet_ping.stop()
+
+
+def test_slow_ac_query_does_not_block_fleet_heartbeat(tmp_path: Path) -> None:
+    supervisor, repository, mesh = _heartbeat_fixture(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def delayed_query(_site_id):
+        entered.set()
+        assert release.wait(40)
+        return []
+
+    mesh.list_latest_snapshots_by_controller = delayed_query
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(
+                supervisor._poll_ac_and_classify, repository.get_run("run-1"),
+                repository.get_profile(), datetime.now().astimezone(), scheduling_paused=False,
+            )
+            try:
+                assert entered.wait(2)
+                initial = supervisor.fleet_ping.sample_count
+                time.sleep(30.0)
+                _wait_samples(supervisor, initial + 20)
+                assert not pending.done()
+                assert supervisor._heartbeat_engine.snapshot("heartbeat-mr").status == "ONLINE"
+            finally:
+                release.set()
+            pending.result(timeout=5)
+        assert not repository.list_events("run-1", event_type="mr_offline")
+    finally:
+        release.set()
+        supervisor.fleet_ping.stop()
+
+
+def test_repeated_deep_scheduler_failure_keeps_heartbeat_running_and_recovers(tmp_path: Path) -> None:
+    supervisor, repository, mesh = _heartbeat_fixture(tmp_path)
+    failing = [True]
+
+    def deep_tick(*_args, **_kwargs):
+        if failing[0]:
+            raise RuntimeError("mock SSH deep collection failure")
+
+    supervisor.deep_scheduler = SimpleNamespace(tick=deep_tick, stop_all=lambda *_args, **_kwargs: None)
+    try:
+        _wait_samples(supervisor, 4)
+        for iteration in range(4):
+            mesh.snapshots = [mesh._snapshot(30 + iteration, "ac-1")]
+            supervisor._poll_ac_and_classify(
+                repository.get_run("run-1"), repository.get_profile(),
+                datetime.now().astimezone(), scheduling_paused=False,
+            )
+        initial = supervisor.fleet_ping.sample_count
+        _wait_samples(supervisor, initial + 12)
+        assert repository.get_run("run-1")["state"] == "RUNNING"
+        assert supervisor._heartbeat_engine.snapshot("heartbeat-mr").status == "ONLINE"
+        assert len(repository.list_events("run-1", event_type="deep_scheduler_failed")) == 1
+        assert not repository.list_events("run-1", event_type="mr_offline")
+        failing[0] = False
+        mesh.snapshots = [mesh._snapshot(40, "ac-1")]
+        supervisor._poll_ac_and_classify(
+            repository.get_run("run-1"), repository.get_profile(),
+            datetime.now().astimezone(), scheduling_paused=False,
+        )
+        assert supervisor._deep_scheduler_error == ""
+        with repository._connection() as connection:
+            codes = {row["code"] for row in connection.execute(
+                "SELECT code FROM ground_unattended_health_events WHERE run_id=?", ("run-1",)
+            )}
+        assert {"DEEP_SCHEDULER_FAILED", "DEEP_SCHEDULER_RECOVERED"} <= codes
+    finally:
+        supervisor.fleet_ping.stop()
+
+
+def test_critical_disk_space_pauses_deep_collection_but_keeps_heartbeat_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor, repository, mesh = _heartbeat_fixture(tmp_path)
+    profile = repository.get_profile().model_copy(update={
+        "deep_collection_master_enabled": True,
+        "storage_warning_free_gb": 4,
+        "storage_critical_free_gb": 2,
+    })
+    free_bytes = [1024**3]
+    stop_calls: list[tuple[str, dict]] = []
+    paused_ticks: list[bool] = []
+
+    def stop_deep(run_id, **kwargs):
+        stop_calls.append((run_id, kwargs))
+
+    def tick_deep(_run_id, _profile, _trains, *, paused):
+        paused_ticks.append(paused)
+
+    supervisor.deep_scheduler = SimpleNamespace(tick=tick_deep, stop_all=stop_deep)
+    monkeypatch.setattr(
+        "netconsole.services.ground_unattended.supervisor.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=free_bytes[0]),
+    )
+    try:
+        _wait_samples(supervisor, 4)
+        supervisor._poll_ac_and_classify(
+            repository.get_run("run-1"), profile,
+            datetime.now().astimezone(), scheduling_paused=False,
+        )
+        assert stop_calls == [("run-1", {
+            "reason": "critical_disk_space",
+            "max_finalizing_mrs": profile.max_finalizing_mrs,
+        })]
+        # Paused ticks allow finalization while preventing new deep collectors.
+        assert paused_ticks == [True]
+        initial = supervisor.fleet_ping.sample_count
+        _wait_samples(supervisor, initial + 12)
+        assert supervisor._heartbeat_engine.snapshot("heartbeat-mr").status == "ONLINE"
+        assert repository.get_run("run-1")["state"] == "RUNNING"
+        assert not repository.list_events("run-1", event_type="mr_offline")
+
+        free_bytes[0] = 8 * 1024**3
+        mesh.snapshots = [mesh._snapshot(40, "ac-1")]
+        supervisor._poll_ac_and_classify(
+            repository.get_run("run-1"), profile,
+            datetime.now().astimezone(), scheduling_paused=False,
+        )
+        assert paused_ticks == [True, False]
+        assert len(stop_calls) == 1
+        initial = supervisor.fleet_ping.sample_count
+        _wait_samples(supervisor, initial + 4)
+        assert supervisor._heartbeat_engine.snapshot("heartbeat-mr").status == "ONLINE"
+    finally:
+        supervisor.fleet_ping.stop()
+
+
+@pytest.mark.parametrize("expiry_path", ["poll", "recovered_expiry"])
+def test_inventory_heartbeat_never_expires_with_ac_recovery_grace(
+    tmp_path: Path, expiry_path: str,
+) -> None:
+    supervisor, repository, _mesh = _heartbeat_fixture(tmp_path)
+    profile = repository.get_profile()
+    now = datetime.now().astimezone()
+    try:
+        restored = supervisor._restore_fleet_ping_targets(
+            repository.get_run("run-1"), profile,
+            now - timedelta(seconds=profile.ac_stale_grace_seconds + 1),
+        )
+        assert restored == 2
+        assert supervisor._last_valid_ping_targets == {}
+        if expiry_path == "poll":
+            supervisor._poll_ac_and_classify(
+                repository.get_run("run-1"), profile, now, scheduling_paused=False,
+            )
+        else:
+            supervisor._expire_recovered_ping_targets(
+                repository.get_run("run-1"), profile, now,
+            )
+        assert supervisor.fleet_ping.target_count == 2
+        assert not repository.list_events("run-1", event_type="ping_target_grace_expired")
+        initial = supervisor.fleet_ping.sample_count
+        _wait_samples(supervisor, initial + 12)
+        snapshot = supervisor._heartbeat_engine.snapshot("heartbeat-mr")
+        assert snapshot.status == "ONLINE"
+        assert {item.ip for item in snapshot.ip_states} == {"192.0.2.10", "192.0.2.11"}
+        assert all(item.received_count > 0 for item in snapshot.ip_states)
+        assert not repository.list_events("run-1", event_type="mr_offline")
+    finally:
+        supervisor.fleet_ping.stop()
+
+
+@pytest.mark.parametrize("expiry_path", ["poll", "recovered_expiry"])
+def test_expired_ac_enrichment_keeps_inventory_heartbeat_targets(
+    tmp_path: Path, expiry_path: str,
+) -> None:
+    supervisor, repository, _mesh = _heartbeat_fixture(tmp_path)
+    profile = repository.get_profile()
+    now = datetime.now().astimezone()
+    address = "192.0.2.10"
+    target = replace(
+        supervisor._heartbeat_fleet_targets()[address], current_ap_name="Mock AP",
+    )
+    supervisor._last_valid_ping_targets = {
+        address: (target, now - timedelta(seconds=profile.ac_stale_grace_seconds + 1)),
+    }
+    try:
+        if expiry_path == "poll":
+            supervisor._poll_ac_and_classify(
+                repository.get_run("run-1"), profile, now, scheduling_paused=False,
+            )
+        else:
+            supervisor._expire_recovered_ping_targets(
+                repository.get_run("run-1"), profile, now,
+            )
+        assert supervisor._last_valid_ping_targets == {}
+        assert supervisor.fleet_ping.target_count == 2
+        expired = repository.list_events("run-1", event_type="ping_target_grace_expired")
+        assert len(expired) == 1
+        assert "AC 辅助定位" in expired[0]["title"]
+        assert "心跳检测继续" in expired[0]["title"]
+        initial = supervisor.fleet_ping.sample_count
+        _wait_samples(supervisor, initial + 12)
+        assert supervisor._heartbeat_engine.snapshot("heartbeat-mr").status == "ONLINE"
+        assert not repository.list_events("run-1", event_type="mr_offline")
+    finally:
+        supervisor.fleet_ping.stop()
+
+
+def test_backend_restart_restores_counters_but_requires_live_recovery_evidence(tmp_path: Path) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.sync_inventory(
+        trains=[{"train_id": "restart-train", "train_no": "002"}],
+        endpoints=[{
+            "device_uuid": "restart-mr", "train_id": "restart-train",
+            "mr_role": "CW", "management_ip": "192.0.2.20",
+        }],
+    )
+    started = datetime.fromisoformat("2026-07-29T08:00:00+08:00")
+    supervisor.now_provider = lambda: started
+    target = supervisor._refresh_inventory_heartbeat(repository.get_run("run-1"), started)["192.0.2.20"]
+    for second in range(11):
+        supervisor._on_fleet_ping_sample(target, SimpleNamespace(
+            ts=(started + timedelta(seconds=second)).isoformat(), ok=False, rtt_ms=None,
+        ))
+    supervisor._persist_heartbeat_state(at=started + timedelta(seconds=10))
+    assert supervisor._heartbeat_engine.snapshot("restart-mr").status == "OFFLINE"
+    assert repository.list_heartbeat_snapshots("run-1", entity_type="MR")[0]["snapshot"]["ip_states"][0]["sent_count"] == 11
+
+    resumed, resumed_repository, _mesh = _supervisor(tmp_path)
+    resumed.now_provider = lambda: started + timedelta(hours=1)
+    resumed.fleet_ping = _FleetPingRecorder()
+    resumed._start_fleet_ping(resumed_repository.get_run("run-1"), resumed_repository.get_profile())
+    restored = resumed._heartbeat_engine.snapshot("restart-mr")
+    assert restored.status == "UNKNOWN"
+    assert restored.unreachable_since is None
+    assert restored.ip_states[0].sent_count == 11
+    assert restored.ip_states[0].last_probe_at is None
+    resumed._refresh_inventory_heartbeat(resumed_repository.get_run("run-1"), resumed.now_provider())
+    for second in range(2):
+        resumed._on_fleet_ping_sample(target, SimpleNamespace(
+            ts=(started + timedelta(hours=1, seconds=second)).isoformat(), ok=True, rtt_ms=1.0,
+        ))
+        assert resumed._heartbeat_engine.snapshot("restart-mr").status == ("RECOVERING" if second == 0 else "ONLINE")
+    resumed._persist_heartbeat_state(at=started + timedelta(hours=1, seconds=1))
+    stored = resumed_repository.list_heartbeat_snapshots("run-1", entity_type="MR")[0]["snapshot"]
+    assert stored["ip_states"][0]["sent_count"] == 13
+    assert len(resumed_repository.list_events("run-1", event_type="mr_offline")) == 1
+    assert len(resumed_repository.list_events("run-1", event_type="mr_recovered")) == 1
 
 
 def test_supervisor_processes_each_controller_snapshot_only_once(
@@ -530,10 +997,18 @@ def test_restart_backfills_missing_frozen_window_before_next_tick(
     assert repository.latest_operation(run_id="run-1") is None
 
 
+@pytest.mark.parametrize("expiry_path", ["poll", "recovered_expiry"])
 def test_restart_restores_persisted_ping_targets_without_new_ac_snapshot(
-    tmp_path: Path,
+    tmp_path: Path, expiry_path: str,
 ) -> None:
     supervisor, repository, _mesh = _supervisor(tmp_path)
+    repository.sync_inventory(
+        trains=[{"train_id": "train-02", "train_no": "02"}],
+        endpoints=[{
+            "device_uuid": "mr-cw-02", "train_id": "train-02", "mr_role": "CW",
+            "management_ip": "192.168.100.232",
+        }],
+    )
     repository.save_profile(
         repository.get_profile().model_copy(
             update={"enabled": True, "ac_stale_grace_seconds": 180}
@@ -616,14 +1091,24 @@ def test_restart_restores_persisted_ping_targets_without_new_ac_snapshot(
     assert run["summary"]["ap_identity_revision"] == 8743
 
     clock[0] = datetime.fromisoformat("2026-07-29T11:49:01+08:00")
-    supervisor._poll_ac_and_classify(
-        repository.get_run("run-1"),
-        repository.get_profile(),
-        clock[0],
-        scheduling_paused=False,
-    )
+    if expiry_path == "poll":
+        supervisor._poll_ac_and_classify(
+            repository.get_run("run-1"),
+            repository.get_profile(),
+            clock[0],
+            scheduling_paused=False,
+        )
+    else:
+        supervisor._expire_recovered_ping_targets(
+            repository.get_run("run-1"), repository.get_profile(), clock[0],
+        )
 
-    assert ping.target_updates[-1] == []
+    assert [target.target_ip for target in ping.target_updates[-1]] == ["192.168.100.232"]
+    assert ping.target_updates[-1][0].current_ap_name == ""
+    expired = repository.list_events("run-1", event_type="ping_target_grace_expired")
+    assert len(expired) == 1
+    assert "AC 辅助定位" in expired[0]["title"]
+    assert "心跳检测继续" in expired[0]["title"]
 
 
 def test_restart_marks_persisted_main_link_stale_after_existing_grace(
@@ -985,7 +1470,9 @@ def test_ac_health_marks_backoff_degraded_and_keeps_failed_poller(
 
     assert [(item.controller_id, item.status) for item in health.ac_pollers] == [
         ("ac-1", "DEGRADED"),
-        ("ac-2", "FAILED"),
+        ("ac-2", "CRITICAL"),
     ]
-    assert health.status == "ERROR"
+    # This fixture does not start the supervisor thread; the auxiliary poller
+    # health itself remains independent of the overall runtime lifecycle.
+    assert health.status == "CRITICAL"
     assert health.ac_pollers[1].last_error == "凭据不可用"

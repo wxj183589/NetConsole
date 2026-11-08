@@ -248,6 +248,7 @@ class RailTransitWebApplicationService:
         "web_export_multi_sheet_xlsx",
         "web_export_table_xlsx",
         "web_export_vehicle_mr_history_xlsx",
+        "web_export_ground_history_csv",
     }
     _OWNER = "web_rail_transit"
     _ARTIFACT_TASK_TYPES = {
@@ -262,6 +263,7 @@ class RailTransitWebApplicationService:
         "trackside_ap_rename_commands": "web_export_trackside_ap_rename_commands",
         "trackside_ap_plan": "web_export_multi_sheet_xlsx",
         "vehicle_mr_history": "web_export_vehicle_mr_history_xlsx",
+        "ground_history": "web_export_ground_history_csv",
         "vehicle_mr_mapping_template": "web_export_table_xlsx",
         "switch_vendor_sample": "switch_vendor_sample_collect",
     }
@@ -278,6 +280,7 @@ class RailTransitWebApplicationService:
         "web_export_multi_sheet_xlsx": "trackside_ap_plan_export",
         "web_export_table_xlsx": "trackside_ap_plan_export",
         "web_export_vehicle_mr_history_xlsx": "vehicle_mr_history_export",
+        "web_export_ground_history_csv": "ground_history_export",
         "switch_vendor_sample_collect": "switch_vendor_sample_collect",
     }
     _ARTIFACT_ACTIONS = {
@@ -292,6 +295,7 @@ class RailTransitWebApplicationService:
         "trackside_ap_rename_commands": "trackside_ap_rename_command_export",
         "trackside_ap_plan": "trackside_ap_plan_export",
         "vehicle_mr_history": "vehicle_mr_history_export",
+        "ground_history": "ground_history_export",
         "vehicle_mr_mapping_template": "vehicle_mr_mapping_template_export",
         "switch_vendor_sample": "switch_vendor_sample_collect",
     }
@@ -2894,6 +2898,33 @@ class RailTransitWebApplicationService:
 
     def open_vehicle_mr_mapping_template(self, site_id: str, artifact_id: str) -> tuple[Path, str]:
         return self._open_artifact(site_id, artifact_id, "vehicle_mr_mapping_template")
+
+    def start_ground_history_export(
+        self, site_id: str, *, filters: dict[str, object],
+    ) -> RailTransitTaskDTO:
+        from netconsole.services.ground_unattended.history_query import GroundHistoryQueryService
+
+        site_id = self._site(site_id)
+        db_path = self.paths.ground_unattended_db_path(site_id)
+        # Validate the filter contract before reserving an Artifact or launching a process.
+        try:
+            GroundHistoryQueryService.validate_filters(**filters)
+        except ValueError as exc:
+            raise RailTransitWebError("INVALID_HISTORY_FILTER", str(exc)) from exc
+        task_id = f"rail-export-{uuid4().hex}"
+        reservation = self.artifact_store.reserve(
+            site_id=site_id, owner=self._OWNER, source="ground_history",
+            artifact_type="csv", task_id=task_id,
+            task_type=self._ARTIFACT_TASK_TYPES["ground_history"],
+            output_root=self.paths.ground_unattended_root(site_id) / "exports",
+            preferred_name="地面无人值守历史.csv",
+        )
+        job = ExportTaskSpec(
+            task_type="ground_history_csv", output_path=str(reservation.output_path),
+            site_name=site_id, title="导出地面无人值守历史",
+            payload={"db_path": str(db_path), "site_id": site_id, "filters": filters},
+        ).to_job(task_id)
+        return self._start_export(site_id, job, "ground_history_export", reservation)
 
     def start_vehicle_mr_history_export(
         self,

@@ -1563,6 +1563,7 @@ class RailTransitBaseDataQueryService:
                     session_by_name.setdefault(item.mr_name.casefold(), item)
             except (OSError, ValueError, sqlite3.Error):
                 pass
+        strategies = self._site_meta(site_id).get("mr_backup_monitoring_strategies") or {}
         result: list[VehicleMrDTO] = []
         for relation in reconciliation.relations:
             device = relation.device
@@ -1589,6 +1590,8 @@ class RailTransitBaseDataQueryService:
                     physical_end=relation.physical_end,
                     car_number=relation.car_number,
                     management_ip=device.primary_address,
+                    backup_management_ip=str(device.backup_address or ""),
+                    backup_monitoring_strategy=strategies.get(item_id, "MONITOR"),
                     station=str(device.station or ""),
                     mac=self._display_mac(device.mac_address),
                     protocol=str(device.protocol or ""),

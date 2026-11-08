@@ -57,7 +57,14 @@ class GroundUnattendedArchiveService:
         final_path = archive_dir / f"{run_date}_ground_unattended.zip"
         temp_path = final_path.with_name(f".{final_path.name}.{archive_id}.tmp")
         existing = self.repository.get_archive_by_run(run_id)
-        if existing and existing.get("archive_status") == "READY":
+        # A daily archive may be updated after a later session on the same
+        # run date.  Keep the fast idempotent path when no new activity/raw
+        # files appeared, and rebuild the same ZIP when the day gained data.
+        if (
+            existing
+            and existing.get("archive_status") == "READY"
+            and not self._has_new_daily_activity(existing, run_id, active_dir)
+        ):
             _progress(
                 progress_callback,
                 "ARCHIVE_VERIFYING",
@@ -372,6 +379,39 @@ class GroundUnattendedArchiveService:
         self.repository.purge_run_details(str(row["run_id"]))
         self.repository.delete_archive_record(archive_id)
 
+    def restore_daily_archive(self, run_id: str, run_date: str) -> bool:
+        """Restore a prior same-day ZIP into the managed active directory.
+
+        A later start on the same run date reuses the daily run identity.  The
+        restore lets the next archive rebuild include both sessions after the
+        previous stop has already cleaned its active directory.
+        """
+        row = self.repository.get_archive_by_run(run_id)
+        if not row or str(row.get("archive_status") or "") != "READY":
+            return False
+        archive_path = self._archive_path(row)
+        self._validate_archive_path(archive_path)
+        if not archive_path.is_file() or archive_path.is_symlink():
+            raise OSError("ready archive is not a regular file")
+        self._verify_zip(archive_path)
+        active_dir = self.paths.ground_unattended_active_dir(self.site_id, run_date)
+        active_dir.mkdir(parents=True, exist_ok=True)
+        has_files = any(path.is_file() for path in active_dir.rglob("*"))
+        if has_files:
+            return False
+        root = active_dir.resolve()
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            for member in archive.infolist():
+                name = member.filename.replace("\\", "/").lstrip("/")
+                if not name or name.endswith("/"):
+                    continue
+                target = (root / name).resolve()
+                target.relative_to(root)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member, "r") as source, target.open("wb") as sink:
+                    sink.write(source.read())
+        return True
+
     def apply_retention(
         self,
         profile: GroundUnattendedProfileDTO,
@@ -405,12 +445,26 @@ class GroundUnattendedArchiveService:
         trains = self.repository.list_train_runs(run_id)
         deep = self.repository.list_deep_operations(run_id)
         ping = self.repository.list_ping_summaries(run_id)
+        sessions = self.repository.list_run_sessions(run_id)
+        raw_files = self.repository.list_raw_files_for_run(run_id)
+        session_views = [
+            {
+                "session_id": str(row.get("session_id") or ""),
+                "started_at": str(row.get("started_at") or ""),
+                "ended_at": str(row.get("ended_at") or ""),
+                "state": str(row.get("state") or ""),
+                "stop_reason": str(row.get("stop_reason") or ""),
+            }
+            for row in sessions
+        ]
         return {
             "site_id": self.site_id,
             "run_id": run_id,
             "run_date": run.get("run_date", ""),
             "actual_started_at": run.get("actual_started_at", ""),
             "actual_ended_at": run.get("actual_ended_at", ""),
+            "session_count": len(session_views),
+            "sessions": session_views,
             "mainline_train_count": sum(
                 bool(row.get("mainline_eligible"))
                 for row in trains
@@ -419,6 +473,12 @@ class GroundUnattendedArchiveService:
                 {row.get("target_ip") for row in ping if row.get("target_ip")}
             ),
             "ping_sample_count": int(run.get("ping_sample_count") or 0),
+            "syslog_record_count": sum(
+                int(row.get("record_count") or 0)
+                for row in raw_files
+                if str(row.get("data_type") or "").casefold() in {"syslog", "syslog_raw"}
+            ),
+            "raw_file_count": len(raw_files),
             "covered_train_count": sum(
                 row.get("coverage_status") == "COVERED" for row in trains
             ),
@@ -655,6 +715,25 @@ class GroundUnattendedArchiveService:
             self.paths.ground_unattended_root(self.site_id)
             / str(row.get("relative_path") or "")
         ).resolve()
+
+    def _has_new_daily_activity(
+        self, existing: dict[str, Any], run_id: str, active_dir: Path
+    ) -> bool:
+        if not active_dir.is_dir():
+            return False
+        if self.repository.count_unarchived_raw_files(run_id) > 0:
+            return True
+        sessions = self.repository.list_run_sessions(run_id)
+        latest = self.repository.latest_event_timestamp(run_id)
+        updated = str(existing.get("updated_at") or "")
+        latest_session_update = max(
+            (str(row.get("updated_at") or "") for row in sessions),
+            default="",
+        )
+        return bool(
+            (latest and (not updated or latest > updated))
+            or (latest_session_update and (not updated or latest_session_update > updated))
+        )
 
     def _validate_archive_path(self, path: Path) -> None:
         root = self.paths.ground_unattended_archives_dir(self.site_id).resolve()

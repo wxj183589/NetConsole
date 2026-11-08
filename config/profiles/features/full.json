@@ -841,6 +841,84 @@
       "enabled": true,
       "client_package": true,
       "internal_only": false
+    },
+    "ground_unattended.overview": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.heartbeat": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.ac_mesh_link": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.quick_ping": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.syslog": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.deep": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.timeline": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.health": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.archives": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "ground_unattended.settings": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "capability.ground_unattended.quick_ping": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "capability.ground_unattended.heartbeat_inventory_manage": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "capability.ground_unattended.history_export": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
     }
   }
 }

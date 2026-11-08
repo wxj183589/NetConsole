@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from tests.support.ac_mesh_link_web_fixture import build_ac_mesh_link_fixture
 from netconsole.core.database import Database
@@ -150,6 +152,20 @@ def test_mesh_link_query_marks_old_snapshot_and_mr_state_as_stale(tmp_path: Path
     assert {item.online_status for item in mrs.items} == {"stale"}
 
 
+def test_snapshot_freshness_accounts_for_delayed_device_data(tmp_path: Path) -> None:
+    paths, _, _ = build_ac_mesh_link_fixture(tmp_path)
+    service = AcMeshLinkQueryService(paths, now_provider=lambda: datetime(2026, 7, 14, 12, 10))
+    snapshot = service._snapshot_dto("demo", {
+        "id": 1, "session_id": "s1", "local_time": "2026-07-14 12:10:00",
+        "ac_time": "2026-07-14 12:00:00", "parse_status": "OK",
+    }, [])
+
+    assert snapshot.device_time == "2026-07-14 12:00:00"
+    assert snapshot.received_at == "2026-07-14 12:10:00"
+    assert snapshot.age_seconds == 600
+    assert snapshot.data_status == "stale"
+
+
 def test_mesh_link_query_returns_empty_read_only_result_without_snapshot(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path)
     paths.ensure_site_dirs("demo")
@@ -160,3 +176,18 @@ def test_mesh_link_query_returns_empty_read_only_result_without_snapshot(tmp_pat
     assert summary.link_total == 0
     assert summary.unknown_mrs == 0
     assert "暂无 AC Mesh-Link 快照" in summary.message
+
+
+@pytest.mark.parametrize("delay,status", [(30, "fresh"), (120, "recent"), (301, "stale")])
+def test_device_delay_preserves_existing_freshness_boundaries(tmp_path: Path, delay: int, status: str) -> None:
+    now = datetime(2026, 7, 14, 12, 10)
+    service = AcMeshLinkQueryService(PathResolver(tmp_path), now_provider=lambda: now)
+    device_time = (now - timedelta(seconds=delay)).isoformat(sep=" ")
+    snapshot = service._snapshot_dto("demo", {
+        "id": 1, "session_id": "missing-controller", "local_time": now.isoformat(sep=" "),
+        "ac_time": device_time, "parse_status": "OK",
+    }, [])
+    assert snapshot.device_time == device_time
+    assert snapshot.received_at == now.isoformat(sep=" ")
+    assert snapshot.age_seconds == delay
+    assert snapshot.data_status == status

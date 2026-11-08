@@ -585,6 +585,8 @@ const mrColumns: NcTableColumn<VehicleMr>[] = [
   { key: 'physical_end', label: '物理安装位置', minWidth: 130, displayValue: (row) => physicalEndLabel(row.physical_end) },
   { key: 'car_number', label: '车厢号', valueType: 'number', width: 90, displayValue: (row) => row.car_number ?? '--' },
   { key: 'management_ip', label: '管理 IP', valueType: 'ip', minWidth: 125 },
+  { key: 'backup_management_ip', label: '备用 IP', minWidth: 130 },
+  { key: 'backup_monitoring_strategy', label: '备用监测策略', minWidth: 170 },
   { key: 'mac', label: 'MAC', valueType: 'mac', minWidth: 150, displayValue: (row) => display(row.mac) },
   { key: 'connection', label: '协议 / 端口', minWidth: 120, displayValue: (row) => `${display(row.protocol)} / ${display(row.port)}` },
   { key: 'mesh_status', label: 'Mesh-Link', valueType: 'status', width: 120 },
@@ -1908,7 +1910,7 @@ function apValues(row: TracksideAp): Record<string, unknown> {
     ),
   }
 }
-function mrValues(row: VehicleMr): Record<string, unknown> { return { name: row.name, station: row.station, management_ip: row.management_ip, mac: row.mac, protocol: row.protocol, port: row.port, remark: row.remark } }
+function mrValues(row: VehicleMr): Record<string, unknown> { return { name: row.name, station: row.station, management_ip: row.management_ip, backup_management_ip: row.backup_management_ip || '', backup_monitoring_strategy: row.backup_monitoring_strategy || 'MONITOR', mac: row.mac, protocol: row.protocol, port: row.port, remark: row.remark } }
 function metadataValues(metadata: BaseDataDraft['metadata']): Record<string, unknown> {
   return {
     line_name: metadata.line_name,
@@ -2826,7 +2828,7 @@ function openApAc(ap: TracksideAp): void {
   router.push({ path: '/ac-management', query: { ac_id: ap.runtime.fit_ap_ac_id || undefined, ap: ap.runtime.fit_ap_id } })
 }
 function openMrMesh(mr: VehicleMr): void {
-  router.push({ path: '/rail-transit/train-online', query: { query: mr.name } })
+  router.push({ path: '/rail-transit/ground-unattended', query: { query: mr.name } })
 }
 function openMrSession(mr: VehicleMr): void {
   router.push({ path: '/rail-transit/online-mr', query: { session_id: mr.runtime.latest_session_id || undefined, device_id: mr.id } })
@@ -3511,6 +3513,8 @@ function sectionSourceLabel(row: Section): string {
               <NcDataTable table-id="rail-base-vehicle-mrs" route-key="/rail-transit/base-data" :data="mrRows" :columns="mrEditColumns" height="calc(100vh - 430px)" empty-text="暂无车载 MR 资料">
                 <template #cell-name="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('vehicle_mr', row.id, 'name') }" @input="markMr(row)" /><span v-else>{{ display(row.name) }}</span></template>
                 <template #cell-management_ip="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.management_ip" :class="{ 'field-error': fieldError('vehicle_mr', row.id, 'management_ip') }" @input="markMr(row)" /><span v-else>{{ display(row.management_ip) }}</span></template>
+                <template #cell-backup_management_ip="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.backup_management_ip" @input="markMr(row)" /><span v-else>{{ display(row.backup_management_ip) }}</span></template>
+                <template #cell-backup_monitoring_strategy="{ row }"><el-select v-if="canEditRow('vehicle_mr', row.id)" v-model="row.backup_monitoring_strategy" @change="markMr(row)"><el-option label="持续监测" value="MONITOR" /><el-option label="仅故障切换（不参与心跳）" value="FAILOVER_ONLY" /><el-option label="停用（不参与心跳）" value="DISABLED" /></el-select><span v-else>{{ row.backup_monitoring_strategy === 'FAILOVER_ONLY' ? '仅故障切换' : row.backup_monitoring_strategy === 'DISABLED' ? '停用' : '持续监测' }}</span></template>
                 <template #cell-mac="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.mac" @input="markMr(row)" /><span v-else>{{ display(row.mac) }}</span></template>
                 <template #cell-connection="{ row }"><div v-if="canEditRow('vehicle_mr', row.id)" class="connection-editor"><el-select v-model="row.protocol" @change="markMr(row)"><el-option label="SSH" value="SSH" /><el-option label="Telnet" value="TELNET" /></el-select><el-input-number v-model="row.port" :min="1" :max="65535" controls-position="right" @change="markMr(row)" /></div><span v-else>{{ display(row.protocol) }} / {{ display(row.port) }}</span></template>
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.remark" @input="markMr(row)" /><span v-else>{{ display(row.remark) }}</span></template>

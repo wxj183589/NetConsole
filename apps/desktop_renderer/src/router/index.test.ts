@@ -24,15 +24,18 @@ describe('Web route ownership', () => {
     expect(leaves.every((item) => routeNames.has(String(item.route_name)))).toBe(true)
   })
 
-  it('keeps legacy AC and toolbox redirects', () => {
+  it('keeps legacy AC, train-online, and toolbox redirects', () => {
     expect(routes.find((route) => route.path === 'ac-management')?.redirect).toEqual({ name: 'ac-fit-aps' })
     expect(routes.find((route) => route.path === 'ac-management/optical')?.redirect).toEqual({ name: 'ac-fit-aps' })
     const meshRedirect = routes.find((route) => route.path === 'ac-management/mesh-links')?.redirect
     const monitorRedirect = routes.find((route) => route.path === 'ac/mesh-link-monitor')?.redirect
     expect(typeof meshRedirect).toBe('function')
     expect(typeof monitorRedirect).toBe('function')
-    expect((meshRedirect as (to: { query: Record<string, string> }) => object)({ query: { query: '01' } })).toEqual({ name: 'rail-train-online', query: { query: '01' } })
-    expect((monitorRedirect as (to: { query: Record<string, string> }) => object)({ query: {} })).toEqual({ name: 'rail-train-online', query: {} })
+    expect((meshRedirect as (to: { query: Record<string, string> }) => object)({ query: { query: '01' } })).toEqual({ name: 'ground-unattended', query: { query: '01' } })
+    expect((monitorRedirect as (to: { query: Record<string, string> }) => object)({ query: {} })).toEqual({ name: 'ground-unattended', query: {} })
+    const trainOnlineRedirect = routes.find((route) => route.path === 'rail-transit/train-online')?.redirect
+    expect(typeof trainOnlineRedirect).toBe('function')
+    expect((trainOnlineRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: { query: '01' }, hash: '#details' })).toEqual({ name: 'ground-unattended', query: { query: '01' }, hash: '#details' })
     expect(routes.find((route) => route.path === 'rail-transit/car-network-diagnostic')?.redirect).toEqual({ name: 'train-communication' })
     expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.title).toBe('轨道交通 / 车内通信检测')
     expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'tools-connectivity' })

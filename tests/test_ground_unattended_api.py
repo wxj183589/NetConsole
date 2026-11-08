@@ -17,7 +17,15 @@ from netconsole.backend.api import ground_unattended_router
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
-from netconsole.models.api.rail_transit_base_data import VehicleMrDTO
+from netconsole.models.api.ground_unattended import (
+    GroundQuickPingConfigDTO,
+    GroundQuickPingPageDTO,
+    GroundQuickPingRunDTO,
+    GroundQuickPingStatsDTO,
+    GroundQuickPingTargetDTO,
+)
+from netconsole.models.api.rail_transit_base_data import VehicleMrDTO, VehicleMrPageDTO
+from netconsole.core.ping.fping_v5_models import FpingV5Sample
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
@@ -162,6 +170,88 @@ def test_ground_unattended_profile_status_and_actions_are_site_scoped(tmp_path) 
         assert status.json()["site_id"] == "demo"
 
 
+def test_heartbeat_route_reads_durable_run_scoped_facts(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    repository.create_or_get_run(
+        run_id="heartbeat-history", run_date="2026-07-29",
+        scheduled_start_at="2026-07-29T07:00:00+08:00",
+        scheduled_end_at="2026-07-29T23:00:00+08:00",
+    )
+    repository.update_run("heartbeat-history", state="COMPLETED")
+    repository.upsert_heartbeat_snapshot(
+        "heartbeat-history", {
+            "mr_uuid": "mock-mr", "train_id": "mock-train", "role": "CT",
+            "status": "UNKNOWN", "engine_state": "STOPPED", "ip_states": [{
+                "ip": "192.0.2.10", "sent_count": 12, "received_count": 10, "lost_count": 2,
+            }], "offline_event_open": False,
+        }, entity_type="MR", entity_id="mock-mr",
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/rail-transit/ground-unattended/heartbeat?run_id=heartbeat-history")
+        missing = client.get("/api/rail-transit/ground-unattended/heartbeat?run_id=missing")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["run_id"] == "heartbeat-history"
+    assert payload["mr_counts"]["UNKNOWN"] == 1
+    assert payload["mr_counts"]["OFFLINE"] == 0
+    assert payload["mrs"][0]["ip_states"][0]["sent_count"] == 12
+    assert payload["mrs"][0]["engine_state"] == "STOPPED"
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "RUN_NOT_FOUND"
+
+
+def test_current_heartbeat_hides_departed_mr_but_keeps_historical_facts(tmp_path, monkeypatch) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repo = app.state.ground_unattended_repository
+    repo.create_or_get_run(
+        run_id="changed-inventory", run_date="2026-07-29",
+        scheduled_start_at="2026-07-29T07:00:00+08:00",
+        scheduled_end_at="2026-07-29T23:00:00+08:00",
+    )
+    repo.update_run("changed-inventory", state="RUNNING")
+    repo.sync_inventory(
+        trains=[{"train_id": "old-train", "train_no": "001"}],
+        endpoints=[{"device_uuid": "old-mr", "train_id": "old-train", "mr_role": "CT",
+                    "management_ip": "192.0.2.10"}],
+    )
+    repo.upsert_heartbeat_snapshot("changed-inventory", {
+        "mr_uuid": "old-mr", "train_id": "old-train", "role": "CT",
+        "status": "ONLINE", "engine_state": "RUNNING", "ip_states": [],
+    }, entity_type="MR", entity_id="old-mr")
+    repo.upsert_heartbeat_snapshot("changed-inventory", {
+        "train_id": "old-train", "status": "ONLINE", "mr_states": {"CT": "ONLINE"},
+    }, entity_type="TRAIN", entity_id="old-train")
+    repo.sync_inventory(trains=[], endpoints=[])
+    # This read contract deliberately controls RUNNING -> COMPLETED itself.
+    # A real recovery worker would concurrently finalize the old disabled run.
+    monkeypatch.setattr(app.state.ground_unattended_supervisor, "start", lambda: None)
+    with TestClient(app) as client:
+        current = client.get("/api/rail-transit/ground-unattended/heartbeat?run_id=changed-inventory")
+        assert current.status_code == 200
+        assert current.json()["mrs"] == []
+        assert current.json()["trains"] == []
+        repo.update_run("changed-inventory", state="COMPLETED")
+        historical = client.get("/api/rail-transit/ground-unattended/heartbeat?run_id=changed-inventory")
+        assert len(historical.json()["mrs"]) == 1
+        assert len(historical.json()["trains"]) == 1
+
+
+def test_ground_quick_ping_workers_stop_with_backend_lifespan(tmp_path, monkeypatch) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    service = app.state.ground_unattended_application_service
+    stopped: list[bool] = []
+    monkeypatch.setattr(service.quick_ping, "close", lambda: stopped.append(True))
+
+    with TestClient(app):
+        pass
+
+    assert stopped == [True]
+
+
 def test_ground_unattended_rejects_invalid_bound_site(tmp_path) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     app = create_app(paths=paths)
@@ -172,6 +262,182 @@ def test_ground_unattended_rejects_invalid_bound_site(tmp_path) -> None:
 
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "SITE_INVALID"
+
+
+def test_ground_quick_ping_routes_are_site_scoped_and_return_contract(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    service = app.state.ground_unattended_application_service
+    run = GroundQuickPingRunDTO(
+        run_id="quick-ping-test",
+        site_id="demo",
+        run_date="2026-11-06",
+        targets=[
+            GroundQuickPingTargetDTO(
+                target_ip="192.0.2.10", mr_id="mr-1", mr_role="CT"
+            )
+        ],
+        config=GroundQuickPingConfigDTO(),
+        state="COMPLETED",
+        stats=GroundQuickPingStatsDTO(sent=1, received=1),
+        recent_samples=[{"target_ip": "192.0.2.10"}],
+    )
+    service.quick_ping_list = lambda site_id, limit=100, **filters: GroundQuickPingPageDTO(
+        items=[run], total=1, active_ips={"192.0.2.10": "quick-ping-test"}
+    )
+    service.quick_ping_status = lambda site_id, run_id: run
+    stopped_targets = []
+    service.quick_ping_stop_target = lambda site_id, run_id, ip: stopped_targets.append((site_id, run_id, ip)) or run
+
+    with TestClient(app) as client:
+        stopped = client.post("/api/rail-transit/ground-unattended/quick-ping/quick-ping-test/targets/192.0.2.10/stop")
+        page = client.get("/api/rail-transit/ground-unattended/quick-ping?limit=10")
+        detail = client.get(
+            "/api/rail-transit/ground-unattended/quick-ping/quick-ping-test"
+        )
+
+    assert stopped.status_code == 200
+    assert stopped_targets == [("demo", "quick-ping-test", "192.0.2.10")]
+    assert page.status_code == 200
+    assert page.json()["active_ips"] == {"192.0.2.10": "quick-ping-test"}
+    assert page.json()["total"] == 1
+    assert page.json()["items"][0]["recent_samples"] == [{"target_ip": "192.0.2.10"}]
+    assert detail.status_code == 200
+    assert detail.json()["run_id"] == "quick-ping-test"
+
+
+def test_ground_quick_ping_history_and_sample_query_parameters(tmp_path) -> None:
+    from netconsole.models.api.ground_unattended import GroundQuickPingSamplePageDTO
+
+    app = create_app(paths=PathResolver(tmp_path / "app", tmp_path / "data"))
+    service = app.state.ground_unattended_application_service
+    seen = {}
+    def list_runs(site_id, **filters):
+        seen["history"] = (site_id, filters)
+        return GroundQuickPingPageDTO(items=[], total=601, offset=filters["offset"], limit=filters["limit"])
+    def samples(site_id, run_id, **filters):
+        seen["samples"] = (site_id, run_id, filters)
+        return GroundQuickPingSamplePageDTO(run_id=run_id, items=[], has_more=True, next_cursor="next", scanned_bytes=100, scan_budget_exhausted=True)
+    service.quick_ping_list = list_runs
+    service.quick_ping_samples = samples
+    with TestClient(app) as client:
+        history = client.get("/api/rail-transit/ground-unattended/quick-ping", params={
+            "offset": 550, "limit": 50, "start_time": "2026-11-01T00:00:00+08:00",
+            "end_time": "2026-11-07T00:00:00+08:00", "mr_id": "mr-a", "state": "FAILED", "query": "001",
+        })
+        raw = client.get("/api/rail-transit/ground-unattended/quick-ping/run-old/samples", params={
+            "target_ip": "192.0.2.10", "limit": 20, "cursor": "old-cursor", "start_time": "2026-11-01T00:00:00Z",
+        })
+        invalid = client.get("/api/rail-transit/ground-unattended/quick-ping?offset=-1")
+    assert history.status_code == 200 and history.json()["total"] == 601
+    assert seen["history"][1]["offset"] == 550
+    assert seen["history"][1]["mr_id"] == "mr-a"
+    assert seen["history"][1]["start_time"] == "2026-11-01T00:00:00+08:00"
+    assert raw.status_code == 200 and raw.json()["next_cursor"] == "next"
+    assert seen["samples"][1] == "run-old"
+    assert seen["samples"][2]["cursor"] == "old-cursor"
+    assert seen["history"][0] == seen["samples"][0]
+    assert invalid.status_code == 422
+
+
+def test_ground_history_forwards_filters_and_enforces_page_bounds(tmp_path) -> None:
+    from netconsole.models.api.ground_unattended import GroundHistoryPageDTO
+
+    app = create_app(paths=PathResolver(tmp_path / "app", tmp_path / "data"))
+    seen = {}
+
+    def history(site_id, **filters):
+        seen.update(site_id=site_id, **filters)
+        return GroundHistoryPageDTO(items=[], total=621, page=filters["page"], page_size=filters["page_size"], sources={"timeline": "AVAILABLE"})
+
+    app.state.ground_unattended_application_service.history = history
+    query = {
+        "data_type": "timeline", "run_id": "run-1", "train_id": "train-1", "mr_id": "mr-1", "mr_role": "CT",
+        "event_type": "AP_OFFLINE", "start_at": "2026-11-01T00:00:00+08:00", "end_at": "2026-11-07T00:00:00Z",
+        "page": 6, "page_size": 100,
+    }
+    with TestClient(app) as client:
+        response = client.get("/api/rail-transit/ground-unattended/history", params=query)
+        invalid = client.get("/api/rail-transit/ground-unattended/history?page_size=501")
+    assert response.status_code == 200
+    assert response.json()["total"] == 621
+    assert response.json()["page"] == 6
+    assert all(seen[key] == value for key, value in query.items())
+    assert seen["site_id"]
+    assert invalid.status_code == 422
+
+
+def test_ground_quick_ping_start_only_accepts_current_mr_addresses(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    service = app.state.ground_unattended_application_service
+    mr = VehicleMrDTO(
+        id="mr-1",
+        name="MR CT",
+        train_id="train-1",
+        train_no="001",
+        mr_position_code="CT",
+        management_ip="192.0.2.10",
+        backup_management_ip="192.0.2.11",
+    )
+    service.base_query = SimpleNamespace(
+        list_mrs=lambda site_id, *, page, page_size: VehicleMrPageDTO(
+            items=[mr] if page == 1 else [], total=1
+        )
+    )
+
+    def fake_runner(**kwargs):
+        target = kwargs["targets"][0]
+        yield FpingV5Sample(
+            ts="2026-11-06T10:00:00+08:00",
+            target=target,
+            seq=1,
+            ok=True,
+            rtt_ms=1.25,
+            timeout_ms=1000,
+            size=64,
+            error="",
+            backend="test",
+            raw_type="response",
+            raw={},
+        )
+
+    service.quick_ping.runner = fake_runner
+    base = "/api/rail-transit/ground-unattended/quick-ping"
+    payload = {
+        "targets": [
+            {
+                "target_ip": "192.0.2.10",
+                "train_id": "forged-train",
+                "train_no": "forged-number",
+                "mr_id": "mr-1",
+                "mr_name": "forged-name",
+                "mr_role": "CW",
+                "address_role": "PRIMARY",
+            }
+        ]
+    }
+
+    with TestClient(app) as client:
+        rejected = client.post(base, json={**payload, "targets": [{**payload["targets"][0], "target_ip": "192.0.2.99"}]})
+        started = client.post(base, json=payload)
+
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "QUICK_PING_ADDRESS_NOT_IN_INVENTORY"
+    assert started.status_code == 202
+    assert started.json()["targets"][0]["train_id"] == "train-1"
+    assert started.json()["targets"][0]["train_no"] == "001"
+    assert started.json()["targets"][0]["mr_role"] == "CT"
+
+
+def test_quick_ping_runtime_contract_accepts_sampled_rtt() -> None:
+    from netconsole.models.api.ground_unattended import GroundQuickPingTargetRuntimeDTO
+
+    row = GroundQuickPingTargetRuntimeDTO.model_validate({
+        "state": "STOPPED", "current_rtt_ms": 0.303,
+    })
+    assert row.current_rtt_ms == 0.303
+    assert GroundQuickPingTargetRuntimeDTO().current_rtt_ms is None
 
 
 def test_ground_unattended_rejects_invalid_profile_and_archive_delete_without_confirmation(
@@ -1859,3 +2125,15 @@ class _BaseQuery:
             ),
         ]
         return SimpleNamespace(items=rows if page == 1 else [], total=len(rows))
+
+
+def test_disabled_ground_quick_ping_capability_rejects_start_and_stop(tmp_path, monkeypatch) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    gate = app.state.feature_gate
+    original = gate.is_enabled
+    monkeypatch.setattr(gate, "is_enabled", lambda feature_id: False if feature_id == "capability.ground_unattended.quick_ping" else original(feature_id))
+    with TestClient(app) as client:
+        for path in ("/quick-ping", "/quick-ping/mock-run/stop"):
+            response = client.post("/api/rail-transit/ground-unattended" + path, json={})
+            assert response.status_code == 404

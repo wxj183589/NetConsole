@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import json
 import re
 import shutil
 import uuid
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,8 +24,12 @@ from netconsole.models.api.ground_unattended import (
     GroundArchiveFileDTO,
     GroundArchivePageDTO,
     GroundArchiveValidationDTO,
+    GroundArchiveBatchDeleteRequestDTO,
+    GroundArchiveBatchDeleteResponseDTO,
+    GroundArchiveBatchDeleteItemDTO,
     GroundDeepCollectionDTO,
     GroundDeepCollectorDTO,
+    GroundDeepTaskPageDTO,
     GroundDeepCollectionRecordDTO,
     GroundDeepCollectionRecordPageDTO,
     GroundDeepCollectionPageDTO,
@@ -33,11 +38,25 @@ from netconsole.models.api.ground_unattended import (
     GroundPingSamplePageDTO,
     GroundPingSeriesDTO,
     GroundPingTargetDTO,
+    GroundQuickPingPageDTO,
+    GroundQuickPingRunDTO,
+    GroundQuickPingSamplePageDTO,
+    GroundHistoryPageDTO,
+    GroundQuickPingStartRequestDTO,
     GroundRunDTO,
     GroundRunPageDTO,
     GroundRunDeleteRequestDTO,
     GroundAcPollerHealthDTO,
     GroundHealthDTO,
+    GroundHeartbeatMrDTO,
+    GroundHeartbeatIpDTO,
+    GroundHeartbeatApDTO,
+    GroundHeartbeatInventoryApplyDTO,
+    GroundHeartbeatInventoryPreviewDTO,
+    GroundHeartbeatPageDTO,
+    GroundHeartbeatStatisticsDTO,
+    GroundMrMonitoringDTO,
+    GroundHeartbeatTrainDTO,
     GroundInventorySummaryDTO,
     GroundMrRuntimeStatusDTO,
     GroundMrRuntimeStatusPageDTO,
@@ -89,6 +108,13 @@ from netconsole.services.ground_unattended.raw_lifecycle import (
 )
 from netconsole.services.ground_unattended.schedule import schedule_window
 from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
+from netconsole.services.ground_unattended.quick_ping import (
+    QuickPingConfig,
+    QuickPingError,
+    QuickPingService,
+    QuickPingTarget,
+)
+from netconsole.services.ground_unattended.history_query import GroundHistoryQueryError, GroundHistoryQueryService
 from netconsole.services.ground_unattended.syslog_runtime import (
     WmeshRealtimeParser,
 )
@@ -142,11 +168,17 @@ class GroundUnattendedApplicationService:
         network_service: SystemNetworkApplicationService | None = None,
         process_adapter: GroundDeletionProcessPort | None = None,
         ap_identity_query_service: ApIdentityQueryService | None = None,
+        quick_ping_service: QuickPingService | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
         self.repository = repository
         self.supervisor = supervisor
+        self.quick_ping = quick_ping_service or QuickPingService(
+            site_id=site_id,
+            output_root=paths.ground_unattended_root(site_id),
+            repository=repository,
+        )
         self.base_query = base_query
         self.desktop_action_service = desktop_action_service
         self.network_service = network_service or SystemNetworkApplicationService()
@@ -180,6 +212,206 @@ class GroundUnattendedApplicationService:
             if base_query is not None
             else None
         )
+
+    def quick_ping_start(
+        self,
+        site_id: str,
+        payload: GroundQuickPingStartRequestDTO,
+    ) -> GroundQuickPingRunDTO:
+        self._require_site(site_id)
+        if self.base_query is None:
+            raise GroundUnattendedError(
+                "QUICK_PING_INVENTORY_UNAVAILABLE",
+                "当前局点的 MR 基础资料查询服务不可用",
+                status_code=503,
+            )
+        base_mrs: dict[str, Any] = {}
+        page = self.base_query.list_mrs(site_id, page=1, page_size=200)
+        base_mrs.update((str(item.id), item) for item in page.items)
+        current_page = 2
+        while len(base_mrs) < page.total:
+            batch = self.base_query.list_mrs(
+                site_id, page=current_page, page_size=200
+            )
+            if not batch.items:
+                break
+            base_mrs.update((str(item.id), item) for item in batch.items)
+            current_page += 1
+        validated_targets: list[QuickPingTarget] = []
+        for item in payload.targets:
+            mr = base_mrs.get(item.mr_id)
+            if mr is None:
+                raise GroundUnattendedError(
+                    "QUICK_PING_MR_NOT_FOUND",
+                    f"MR {item.mr_id} 不存在于当前局点基础资料",
+                    status_code=409,
+                )
+            expected_ip = (
+                str(mr.management_ip or "").strip()
+                if item.address_role == "PRIMARY"
+                else str(mr.backup_management_ip or "").strip()
+            )
+            try:
+                expected_ip = str(ipaddress.ip_address(expected_ip))
+                requested_ip = str(ipaddress.ip_address(item.target_ip.strip()))
+            except ValueError as exc:
+                raise GroundUnattendedError(
+                    "QUICK_PING_ADDRESS_NOT_IN_INVENTORY",
+                    f"MR {item.mr_id} 的所选管理地址无效或未配置",
+                    status_code=409,
+                ) from exc
+            if expected_ip != requested_ip:
+                raise GroundUnattendedError(
+                    "QUICK_PING_ADDRESS_NOT_IN_INVENTORY",
+                    f"目标地址与 MR {item.mr_id} 的基础资料不匹配",
+                    status_code=409,
+                )
+            validated_targets.append(
+                QuickPingTarget(
+                    target_ip=expected_ip,
+                    train_id=str(mr.train_id or ""),
+                    train_no=str(mr.train_no or ""),
+                    mr_id=str(mr.id),
+                    mr_name=str(mr.name or ""),
+                    mr_role=str(mr.mr_position_code or ""),
+                    address_role=item.address_role,
+                    current_ap_name=str(getattr(mr, "current_ap_name", "") or ""),
+                    station=str(getattr(mr, "station", "") or ""),
+                    section=str(getattr(mr, "section", "") or ""),
+                )
+            )
+        try:
+            run_id = self.quick_ping.start(
+                targets=validated_targets,
+                config=QuickPingConfig(
+                    interval_ms=payload.interval_ms,
+                    timeout_ms=payload.timeout_ms,
+                    packet_size=payload.packet_size,
+                    duration_seconds=payload.duration_seconds,
+                    max_in_flight=payload.max_in_flight,
+                ),
+            )
+        except QuickPingError as exc:
+            raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
+        return self._quick_ping_dto(run_id)
+
+    def quick_ping_status(self, site_id: str, run_id: str) -> GroundQuickPingRunDTO:
+        self._require_site(site_id)
+        return self._quick_ping_dto(run_id)
+
+    def quick_ping_list(
+        self, site_id: str, *, limit: int = 100, offset: int = 0,
+        start_time: str = "", end_time: str = "", query: str = "", state: str = "",
+        train_id: str = "", mr_id: str = "", mr_role: str = "",
+    ) -> GroundQuickPingPageDTO:
+        self._require_site(site_id)
+        try:
+            values, total = self.quick_ping.query_runs(
+                limit=limit, offset=offset, start_time=start_time, end_time=end_time,
+                query=query, state=state, train_id=train_id, mr_id=mr_id, mr_role=mr_role,
+            )
+        except QuickPingError as exc:
+            raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
+        return GroundQuickPingPageDTO(
+            items=[self._quick_ping_run_dto_with_events(value) for value in values],
+            active_ips=self.quick_ping.active_ips(),
+            total=total, offset=offset, limit=limit,
+        )
+
+    def quick_ping_samples(
+        self, site_id: str, run_id: str, *, target_ip: str = "", start_time: str = "",
+        end_time: str = "", limit: int = 1000, cursor: str = "",
+    ) -> GroundQuickPingSamplePageDTO:
+        self._require_site(site_id)
+        try:
+            return GroundQuickPingSamplePageDTO.model_validate(self.quick_ping.query_samples(
+                run_id, target_ip=target_ip, start_time=start_time, end_time=end_time,
+                limit=limit, cursor=cursor,
+            ))
+        except QuickPingError as exc:
+            raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
+
+    def quick_ping_stop(self, site_id: str, run_id: str) -> GroundQuickPingRunDTO:
+        self._require_site(site_id)
+        try:
+            self.quick_ping.stop(run_id)
+        except QuickPingError as exc:
+            raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
+        return self._quick_ping_dto(run_id)
+
+    def quick_ping_stop_target(self, site_id: str, run_id: str, target_ip: str) -> GroundQuickPingRunDTO:
+        self._require_site(site_id)
+        try:
+            self.quick_ping.stop_target(run_id, target_ip)
+        except QuickPingError as exc:
+            raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
+        return self._quick_ping_dto(run_id)
+
+    def history(
+        self, site_id: str, *, data_type: str = "", run_id: str = "", train_id: str = "",
+        mr_id: str = "", mr_role: str = "", event_type: str = "", start_at: str = "", end_at: str = "",
+        page: int = 1, page_size: int = 100, sort_order: str = "desc",
+    ) -> GroundHistoryPageDTO:
+        self._require_site(site_id)
+        try:
+            result = GroundHistoryQueryService(self.repository.db_path, site_id=site_id).query(
+                data_type=data_type, run_id=run_id, train_id=train_id, mr_id=mr_id,
+                mr_role=mr_role, event_type=event_type, start_at=start_at, end_at=end_at,
+                page=page, page_size=page_size, sort_order=sort_order,
+            )
+        except GroundHistoryQueryError as exc:
+            raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
+        return GroundHistoryPageDTO.model_validate(result)
+
+    def close(self) -> None:
+        """Stop site-scoped diagnostic workers owned by this application service."""
+        self.quick_ping.close()
+
+    @staticmethod
+    def _heartbeat_ap_projection(identity: Any) -> tuple[list[GroundHeartbeatApDTO], list[str]]:
+        """Project only explicit AC Mesh MR->peer AP observations for heartbeat UI."""
+        if identity is None:
+            return [], []
+        projected: list[GroundHeartbeatApDTO] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for peer in getattr(identity, "peer_aps", ()) or ():
+            name = str(getattr(peer, "peer_ap_name", "") or "").strip()
+            bssid = str(getattr(peer, "bssid", "") or "").strip()
+            mac = str(getattr(peer, "peer_ap_mac", "") or "").strip()
+            station = str(getattr(peer, "station", "") or "").strip()
+            section = str(getattr(peer, "section", "") or "").strip()
+            key = (name, bssid, mac, station)
+            if not any(key) or key in seen:
+                continue
+            seen.add(key)
+            projected.append(GroundHeartbeatApDTO(
+                name=name,
+                bssid=bssid,
+                mac=mac,
+                rssi=getattr(peer, "rssi", None),
+                connection_status=("ONLINE" if str(getattr(peer, "mr_online_status", "")).lower() == "online"
+                                   else str(getattr(peer, "data_status", "") or "UNKNOWN").upper()),
+                last_seen_at=str(getattr(peer, "last_seen_at", "") or ""),
+                station=station,
+                section=section,
+            ))
+        stations = sorted({ap.station for ap in projected if ap.station})
+        return projected, stations
+
+    def _quick_ping_dto(self, run_id: str) -> GroundQuickPingRunDTO:
+        run = self.quick_ping.status(run_id)
+        if run is None:
+            raise GroundUnattendedError("QUICK_PING_NOT_FOUND", "快速 Ping 任务不存在", status_code=404)
+        return self._quick_ping_run_dto_with_events(run.as_dict())
+
+    def _quick_ping_run_dto_with_events(self, value: dict[str, Any]) -> GroundQuickPingRunDTO:
+        dto = self._quick_ping_run_dto(value)
+        dto.loss_events = self.repository.list_ping_loss_intervals(dto.run_id, limit=500)
+        return dto
+
+    @staticmethod
+    def _quick_ping_run_dto(value: dict[str, Any]) -> GroundQuickPingRunDTO:
+        return GroundQuickPingRunDTO.model_validate(value)
 
     def current_site_id(self) -> str:
         """返回组合根创建本服务时绑定且已校验的局点。"""
@@ -243,6 +475,307 @@ class GroundUnattendedApplicationService:
             )
         return saved
 
+    def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "") -> GroundHeartbeatPageDTO:
+        """Read durable heartbeat facts without deriving reachability from AC data."""
+        self._require_site(site_id)
+        state = self.repository.heartbeat_inventory_state()
+        source_conflicts: list[str] = []
+        active_run = self.repository.get_active_run()
+        # A page refresh reconciles the device projection once per source change;
+        # it never starts probes. Explicit clearing suppresses regeneration.
+        # During an active run the supervisor has already synchronized the
+        # inventory, and re-running the full source preview for every heartbeat
+        # read can occupy the backend thread pool. Explicit inventory sync
+        # remains available for changes while monitoring is active.
+        supervisor_running = bool(getattr(self.supervisor, "running", False))
+        if (
+            not run_id
+            and (not active_run or not supervisor_running)
+            and state["enabled"]
+            and self.inventory_sync is not None
+        ):
+            preview = self.inventory_sync.preview()
+            source_conflicts = preview["conflicts"]
+            if not source_conflicts and any(preview[key] for key in (
+                "added_count", "updated_count", "disabled_count",
+            )):
+                self.sync_inventory(site_id)
+        run = self._resolve_run(run_id)
+        resolved_id = str(run["run_id"]) if run else ""
+        is_current = not run_id or bool(
+            active_run and str(active_run["run_id"]) == resolved_id
+        )
+        inventory = self.repository.list_inventory(include_removed=not is_current)
+        snapshot_rows = (
+            self.repository.list_heartbeat_snapshots(resolved_id)
+            if resolved_id
+            else []
+        )
+        # A selected historical run can legitimately have no heartbeat facts
+        # (for example, a run created before the first probe). Keep that run
+        # context in the response, but project the current active inventory so
+        # the page does not turn a known 21/42 inventory into an unsupported 0.
+        inventory_projection = bool(
+            state["enabled"] and resolved_id and not snapshot_rows
+        )
+        if inventory_projection:
+            inventory = self.repository.list_inventory(include_removed=False)
+        trains_by_id = {str(row["train_id"]): row for row in inventory}
+        endpoints = {
+            str(endpoint.get("device_uuid") or ""): endpoint
+            for row in inventory for endpoint in row.get("endpoints", [])
+        }
+        # Reuse the AC view's exact physical MR identity contract; its peer AP is
+        # deliberately not the MR body identity or location.
+        from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
+        ac_query = AcMeshLinkQueryService(self.paths)
+        identity_rows: dict[str, Any] = {}
+        ac_page = 1
+        while True:
+            result = ac_query.list_mrs(site_id, page=ac_page, page_size=200)
+            for item in result.items:
+                identity_rows[str(item.mr_device_id)] = item
+            if ac_page * 200 >= result.total:
+                break
+            ac_page += 1
+        recent_rtts = self.supervisor.fleet_ping.latest_mr_rtts(resolved_id) if is_current else {}
+        mrs: list[GroundHeartbeatMrDTO] = []
+        trains: list[GroundHeartbeatTrainDTO] = []
+        for row in snapshot_rows:
+            if state["data_cleared_at"] and str(row.get("updated_at") or "") <= state["data_cleared_at"]:
+                continue
+            payload = dict(row["snapshot"])
+            train_id = str(payload.get("train_id") or "")
+            if (is_current or inventory_projection) and train_id not in trains_by_id:
+                continue
+            train = trains_by_id.get(train_id, {})
+            payload.update(
+                train_no=str(train.get("train_no") or ""),
+                updated_at=str(row.get("updated_at") or ""),
+            )
+            if row["entity_type"] == "MR":
+                endpoint = endpoints.get(str(payload.get("mr_uuid") or ""), {})
+                if (is_current or inventory_projection) and (
+                    not endpoint
+                    or str(endpoint.get("train_id") or "") != train_id
+                    or str(endpoint.get("mr_role") or "").upper() != str(payload.get("role") or "").upper()
+                ):
+                    continue
+                if is_current or inventory_projection:
+                    expected_ips = {str(endpoint.get("management_ip") or "")}
+                    if endpoint.get("backup_monitoring_strategy") == "MONITOR":
+                        expected_ips.add(str(endpoint.get("backup_management_ip") or ""))
+                    expected_ips.discard("")
+                    if {str(ip.get("ip") or "") for ip in payload.get("ip_states", [])} != expected_ips:
+                        continue
+                payload["mr_name"] = str(endpoint.get("device_name") or "")
+                identity = identity_rows.get(str(payload.get("mr_uuid") or ""))
+                if identity is not None:
+                    associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
+                    payload.update(resolved_ap_name=identity.resolved_ap, identity_status=identity.identity_status,
+                                   ac_data_status=identity.data_status, station=identity.resolved_ap_station,
+                                   section=identity.resolved_ap_section,
+                                   associated_aps=associated_aps,
+                                   associated_stations=associated_stations)
+                payload["current_rtt_ms"] = recent_rtts.get(str(payload.get("mr_uuid") or ""))
+                mrs.append(GroundHeartbeatMrDTO.model_validate(
+                    project_row_for_model(payload, GroundHeartbeatMrDTO)
+                ))
+            elif row["entity_type"] == "TRAIN":
+                trains.append(GroundHeartbeatTrainDTO.model_validate(payload))
+        # Inventory objects exist before the first run/sample. Unknown means
+        # no evidence, never "offline" or an AC-derived reachability result.
+        if is_current or inventory_projection:
+            present = {mr.mr_uuid for mr in mrs}
+            for mr_id, endpoint in endpoints.items():
+                if mr_id in present:
+                    continue
+                train = trains_by_id.get(str(endpoint.get("train_id") or ""), {})
+                identity = identity_rows.get(mr_id)
+                associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
+                ips = [str(endpoint.get("management_ip") or "")]
+                if endpoint.get("backup_monitoring_strategy") == "MONITOR":
+                    ips.append(str(endpoint.get("backup_management_ip") or ""))
+                mrs.append(GroundHeartbeatMrDTO(
+                    mr_uuid=mr_id, train_id=str(endpoint.get("train_id") or ""),
+                    train_no=str(train.get("train_no") or ""),
+                    mr_name=str(endpoint.get("device_name") or ""),
+                    role=str(endpoint.get("mr_role") or ""),
+                    resolved_ap_name=identity.resolved_ap if identity else "",
+                    station=identity.resolved_ap_station if identity else "",
+                    section=identity.resolved_ap_section if identity else "",
+                    associated_aps=associated_aps,
+                    associated_stations=associated_stations,
+                    ip_states=[GroundHeartbeatIpDTO(ip=ip) for ip in dict.fromkeys(ips) if ip],
+                ))
+        if is_current or inventory_projection:
+            # An IP/group/role edit invalidates an MR snapshot above. A train
+            # aggregate from before that edit must not continue to advertise
+            # BOTH_ONLINE alongside a newly UNKNOWN endpoint.
+            current_members: dict[str, dict[str, str]] = {}
+            for mr in mrs:
+                current_members.setdefault(mr.train_id, {})[mr.role] = mr.status
+            trains = [
+                train for train in trains
+                if train.mr_states == current_members.get(train.train_id, {})
+            ]
+        # Older runs can contain durable MR facts without a train aggregate.
+        # Retain those facts in an explicitly UNKNOWN row, never infer online.
+        snapshotted_train_ids = {row.train_id for row in trains}
+        for mr in mrs:
+            if mr.train_id not in snapshotted_train_ids:
+                members = {row.role: row.status for row in mrs if row.train_id == mr.train_id}
+                trains.append(GroundHeartbeatTrainDTO(train_id=mr.train_id, train_no=mr.train_no,
+                                                       status="UNKNOWN", mr_states=members))
+                snapshotted_train_ids.add(mr.train_id)
+        mr_counts: dict[str, int] = dict.fromkeys(
+            ("ONLINE", "OFFLINE", "OFFLINE_PENDING", "RECOVERING", "UNKNOWN"), 0
+        )
+        train_counts: dict[str, int] = {}
+        for mr in mrs:
+            mr_counts[mr.status] = mr_counts.get(mr.status, 0) + 1
+        for train in trains:
+            train_counts[train.status] = train_counts.get(train.status, 0) + 1
+        sent_count = success_count = lost_count = 0
+        weighted_rtt = 0.0
+        latest_sample_at = ""
+        loss_events_by_mr = (
+            self.repository.list_ping_loss_intervals_by_mr(
+                resolved_id, (mr.mr_uuid for mr in mrs), limit_per_mr=200,
+                started_after=str(state["data_cleared_at"]),
+            )
+            if resolved_id
+            else {}
+        )
+        for mr in mrs:
+            if resolved_id:
+                mr.loss_events = loss_events_by_mr.get(mr.mr_uuid, [])
+            for ip in mr.ip_states:
+                sent_count += int(ip.sent_count or 0)
+                success_count += int(ip.received_count or 0)
+                lost_count += int(ip.lost_count or 0)
+                if ip.avg_rtt_ms is not None:
+                    weighted_rtt += float(ip.avg_rtt_ms) * int(ip.received_count or 0)
+                if ip.sent_count or ip.received_count or ip.lost_count:
+                    candidate = ip.last_probe_at or ip.last_success_at
+                    if candidate > latest_sample_at:
+                        latest_sample_at = candidate
+        has_samples = sent_count > 0 or success_count > 0 or lost_count > 0
+        run_state = str((run or {}).get("state") or "").upper()
+        if not inventory:
+            data_state = "DISABLED" if not state["enabled"] else "NO_INVENTORY"
+            data_state_message = "已停用心跳监测对象" if not state["enabled"] else "当前局点没有已登记的心跳监测对象"
+        elif not state["enabled"]:
+            data_state, data_state_message = "DISABLED", "心跳监测已停止，设备清单保留"
+        elif run_state in {"COMPLETED", "FINALIZING", "ARCHIVING"}:
+            data_state, data_state_message = "STOPPED", "心跳监测已停止，保留设备清单和最近有效采样"
+        elif not has_samples:
+            data_state = (
+                "INITIALIZING" if run_state == "STARTING"
+                else "PAUSED" if run_state == "PAUSED"
+                else "ERROR" if run_state == "ERROR"
+                else "WAITING_FOR_SAMPLES" if resolved_id else "NOT_STARTED"
+            )
+            data_state_message = (
+                "心跳任务报告错误，尚未产生有效采样" if data_state == "ERROR"
+                else "已生成监测对象，等待首个 Ping 采样" if resolved_id
+                else "监测任务尚未启动，设备状态待检测"
+            )
+        elif run_state == "ERROR":
+            data_state, data_state_message = "ERROR", "心跳任务报告错误，保留最近有效采样"
+        elif run_state == "PAUSED":
+            data_state, data_state_message = "PAUSED", "心跳任务已暂停，状态保留在最近有效采样"
+        elif latest_sample_at:
+            try:
+                age = (datetime.now().astimezone() - datetime.fromisoformat(latest_sample_at.replace("Z", "+00:00"))).total_seconds()
+            except ValueError:
+                age = 0
+            if age > max(30, self.repository.get_profile().fleet_ping_timeout_ms / 1000 * 5):
+                data_state, data_state_message = "STALE", "最近心跳采样已超过刷新阈值"
+            else:
+                data_state, data_state_message = "RUNNING", "正在接收实时心跳采样"
+        else:
+            data_state, data_state_message = "RUNNING", "正在接收实时心跳采样"
+        total_mrs = len(mrs)
+        stations = sorted({station_name for mr in mrs for station_name in (
+            list(mr.associated_stations) + ([mr.station] if mr.station else [])
+        ) if station_name})
+        needle = query.strip().casefold()
+        selected_ids = {
+            mr.train_id for mr in mrs
+            if (not needle or needle in " ".join((
+                mr.train_no, mr.mr_name, mr.mr_uuid, mr.resolved_ap_name,
+                *(ap.name for ap in mr.associated_aps),
+                *(ap.bssid for ap in mr.associated_aps),
+                *(ap.mac for ap in mr.associated_aps),
+                *(ip.ip for ip in mr.ip_states),
+            )).casefold())
+            and (not station or station in set(mr.associated_stations) | ({mr.station} if mr.station else set()))
+            and (not mr_uuid or mr.mr_uuid == mr_uuid)
+            and (not role or mr.role == role.upper())
+        }
+        trains = [row for row in trains if row.train_id in selected_ids
+                  and (not status or row.status == status)
+                  and (not abnormal_only or row.status not in {"BOTH_ONLINE", "SINGLE_ONLINE"})]
+        trains.sort(key=lambda row: [int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", row.train_no or row.train_id)])
+        total = len(trains)
+        page, page_size = max(1, page), max(1, min(200, page_size))
+        trains = trains[(page - 1) * page_size:page * page_size]
+        selected_ids = {row.train_id for row in trains}
+        mrs = [row for row in mrs if row.train_id in selected_ids]
+        return GroundHeartbeatPageDTO(
+            monitoring_enabled=bool(state["enabled"]), source_conflicts=source_conflicts,
+            data_cleared_at=str(state["data_cleared_at"]),
+            run_id=resolved_id, run_state=run_state,
+            mrs=mrs, trains=trains, mr_counts=mr_counts, train_counts=train_counts,
+            total=total, total_mrs=total_mrs, page=page, page_size=page_size, stations=stations,
+            data_state=data_state, data_state_message=data_state_message,
+            inventory_train_count=len(inventory),
+            inventory_mr_count=sum(len(row.get("endpoints", [])) for row in inventory),
+            heartbeat_statistics=GroundHeartbeatStatisticsDTO(
+                sent_count=sent_count,
+                success_count=success_count,
+                lost_count=lost_count,
+                average_rtt_ms=(weighted_rtt / success_count) if success_count else None,
+                loss_rate_percent=(lost_count / sent_count * 100) if sent_count else None,
+                latest_sample_at=latest_sample_at,
+            ),
+        )
+
+    def mr_monitoring(self, site_id: str, *, mr_uuid: str, run_id: str = "", start_time: str = "", end_time: str = "") -> GroundMrMonitoringDTO:
+        from netconsole.services.ground_unattended.monitoring import monitoring_range, mesh_evidence, indexed_evidence, ac_peer_intervals
+        try:
+            start, end = monitoring_range(start_time, end_time)
+        except ValueError as exc:
+            raise GroundUnattendedError("GROUND_MONITOR_RANGE_INVALID", str(exc)) from exc
+        heartbeat = self.heartbeat(site_id, run_id=run_id, mr_uuid=mr_uuid)
+        mr = next((row for row in heartbeat.mrs if row.mr_uuid == mr_uuid), None)
+        if mr is None:
+            raise GroundUnattendedError("GROUND_MR_NOT_FOUND", "当前运行中没有该 MR 的心跳快照")
+        cleared_at = self.repository.heartbeat_inventory_state()["data_cleared_at"]
+        if cleared_at:
+            start = max(start, datetime.fromisoformat(cleared_at))
+        if not heartbeat.run_id or start >= end:
+            return GroundMrMonitoringDTO(mr=mr, series=GroundPingSeriesDTO(),
+                                         queried_start=start.isoformat(), queried_end=end.isoformat())
+        series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
+                                  start_time=start.isoformat(), end_time=end.isoformat(), max_points=2400)
+        rows, ac_rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id, run_id=heartbeat.run_id,
+                                                   mr_uuid=mr_uuid, start=start, end=end)
+        resolver = self._ap_display_resolver()
+        resolver.preload_parsed(rows)
+        events, intervals = mesh_evidence([resolver.enrich_parsed(row) for row in rows], start, end)
+        intervals.extend(ac_peer_intervals(ac_rows, intervals))
+        intervals.sort(key=lambda row: row["start"])
+        return GroundMrMonitoringDTO(mr=mr, series=series, mesh_events=events, peer_intervals=intervals,
+                                     run_sent_count=sum(ip.sent_count for ip in mr.ip_states),
+                                     run_lost_count=sum(ip.lost_count for ip in mr.ip_states),
+                                     loss_events=self.repository.list_ping_loss_intervals(
+                                         heartbeat.run_id, mr_id=mr_uuid, limit=500,
+                                         started_after=str(cleared_at),
+                                     ),
+                                     queried_start=start.isoformat(), queried_end=end.isoformat(), events_truncated=truncated)
+
     def status(self, site_id: str) -> GroundUnattendedStatusDTO:
         self._require_site(site_id)
         profile = self.repository.get_profile()
@@ -272,16 +805,22 @@ class GroundUnattendedApplicationService:
         )
         config_abnormal = 0
         syslog_active = 0
+        endpoint_ids = [
+            str(endpoint.get("device_uuid") or "")
+            for train in inventory
+            for endpoint in train.get("endpoints", [])
+            if str(endpoint.get("device_uuid") or "")
+        ]
+        endpoint_runtime = self.repository.train_endpoint_snapshot(endpoint_ids)
+        boot_by_device = endpoint_runtime["boot_by_device"]
+        audit_by_device = endpoint_runtime["audit_by_device"]
         for train in inventory:
             for endpoint in train.get("endpoints", []):
-                boot = self.repository.latest_boot_session(
-                    str(endpoint.get("device_uuid") or "")
-                )
+                device_uuid = str(endpoint.get("device_uuid") or "")
+                boot = boot_by_device.get(device_uuid)
                 if boot and boot.get("last_syslog_received_at"):
                     syslog_active += 1
-                audit = self.repository.latest_syslog_config_audit(
-                    str(endpoint.get("device_uuid") or "")
-                )
+                audit = audit_by_device.get(device_uuid)
                 if audit and audit.get("status") in {
                     "CONFIG_FAILED",
                     "CONFIG_VERIFY_FAILED",
@@ -505,7 +1044,7 @@ class GroundUnattendedApplicationService:
         return GroundActionResponseDTO(
             state="PAUSED",
             run_id=str(run["run_id"]),
-            message="深度采集调度将暂停，长 Ping 继续",
+            message="深度采集调度将暂停，心跳检测继续",
         )
 
     def resume(self, site_id: str) -> GroundActionResponseDTO:
@@ -675,13 +1214,82 @@ class GroundUnattendedApplicationService:
             )
         return GroundMrRuntimeStatusPageDTO(items=items, total=len(items))
 
-    def sync_inventory(self, site_id: str) -> GroundInventorySummaryDTO:
+    def heartbeat_inventory_preview(self, site_id: str, *, action: str = "SYNC") -> GroundHeartbeatInventoryPreviewDTO:
+        self._require_site(site_id)
+        if action not in {"SYNC", "CLEAR_DEVICES", "CLEAR_DATA"}:
+            raise GroundUnattendedError("HEARTBEAT_ACTION_INVALID", "无效的心跳管理操作")
+        state = self.repository.heartbeat_inventory_state()
+        history_counts = self.repository.heartbeat_history_counts()
+        history_count = sum(history_counts.values())
+        affected_history_count = (history_counts["ground_unattended_heartbeat_states"]
+                                  + history_counts["heartbeat_events"]) if action == "CLEAR_DATA" else 0
+        if action == "SYNC":
+            if self.inventory_sync is None:
+                raise GroundUnattendedError("INVENTORY_SYNC_UNAVAILABLE", "设备清单同步服务不可用", status_code=503)
+            preview = self.inventory_sync.preview()
+        else:
+            inventory = self.repository.list_inventory(include_removed=False) if state["enabled"] else []
+            device_count = sum(len(train.get("endpoints", [])) for train in inventory)
+            preview = {
+                "revision": hashlib.sha256(json.dumps(
+                    {"state": state, "inventory": inventory, "history": history_counts},
+                    sort_keys=True, ensure_ascii=False, default=str,
+                ).encode("utf-8")).hexdigest(),
+                "added_count": 0, "updated_count": 0,
+                "disabled_count": device_count if action == "CLEAR_DEVICES" else 0,
+                "device_count": device_count, "train_count": len(inventory),
+                "conflict_count": 0, "conflicts": [],
+            }
+        # Bind confirmation to its exact operation, not merely the source
+        # snapshot, so a SYNC preview cannot authorize a destructive action.
+        preview["revision"] = hashlib.sha256(
+            f"{action}:{preview['revision']}".encode("utf-8")
+        ).hexdigest()
+        return GroundHeartbeatInventoryPreviewDTO(
+            site_id=site_id, action=action, **preview,
+            monitoring_enabled=bool(state["enabled"]),
+            retained_history_count=history_count - affected_history_count,
+            affected_history_count=affected_history_count,
+        )
+
+    def heartbeat_inventory_apply(self, site_id: str, payload: GroundHeartbeatInventoryApplyDTO) -> GroundHeartbeatInventoryPreviewDTO:
+        self._require_site(site_id)
+        if not payload.confirm:
+            raise GroundUnattendedError("HEARTBEAT_CONFIRM_REQUIRED", "请明确确认操作范围", status_code=409)
+        state = self.repository.heartbeat_inventory_state()
+        preview = self.heartbeat_inventory_preview(site_id, action=payload.action)
+        if preview.revision != payload.revision:
+            raise GroundUnattendedError("HEARTBEAT_PREVIEW_STALE", "设备或监测数据已变化，请重新预览", status_code=409)
+        if payload.action == "SYNC" and preview.conflict_count:
+            raise GroundUnattendedError("HEARTBEAT_INVENTORY_CONFLICT", "设备身份或端别存在冲突，请先修复设备资料", status_code=409)
+        try:
+            if payload.action == "SYNC":
+                self.sync_inventory(site_id, heartbeat_revision=int(state["revision"]),
+                                    heartbeat_preview_revision=payload.revision)
+            else:
+                self.repository.apply_heartbeat_inventory_action(payload.action, expected_revision=int(state["revision"]))
+        except ValueError as exc:
+            raise GroundUnattendedError(str(exc).split(":")[0], "监测运行中或预览已过期，请停止监测后重新预览", status_code=409) from exc
+        self.repository.add_event(
+            event_type="heartbeat_inventory_managed", title="心跳监测管理操作",
+            message=payload.action, details=preview.model_dump(mode="json"),
+        )
+        return preview.model_copy(update={"applied": True, "monitoring_enabled": bool(self.repository.heartbeat_inventory_state()["enabled"])})
+
+    def sync_inventory(self, site_id: str, *, heartbeat_revision: int | None = None,
+                       heartbeat_preview_revision: str = "") -> GroundInventorySummaryDTO:
         self._require_site(site_id)
         if self.inventory_sync is None:
             raise GroundUnattendedError(
                 "INVENTORY_SYNC_UNAVAILABLE", "设备清单同步服务不可用", status_code=503
             )
-        result = self.inventory_sync.synchronize()
+        try:
+            result = (self.inventory_sync.synchronize(heartbeat_revision=heartbeat_revision,
+                                                      preview_revision=heartbeat_preview_revision)
+                      if heartbeat_revision is not None else self.inventory_sync.synchronize())
+        except ValueError as exc:
+            code = str(exc).split(":")[0]
+            raise GroundUnattendedError(code, str(exc), status_code=409) from exc
         receiver = getattr(self.supervisor, "syslog_receiver", None)
         if receiver is not None:
             receiver.refresh_inventory()
@@ -802,42 +1410,109 @@ class GroundUnattendedApplicationService:
             for item in self.deep_collections(site_id).items
         )
         archives = self.repository.list_archives()
-        last_error = str(values.pop("last_error", "") or latest.get("message") or "")
-        spool_disk_free = values.pop("disk_free_bytes", None)
+        current_error = str(values.pop("last_error", "") or "") or str(
+            getattr(self.supervisor, "_heartbeat_event_error", "") or ""
+        )
+        last_error = current_error or (
+            str(latest.get("message") or "")
+            if str(latest.get("severity") or "").lower() in {"error", "critical"}
+            else ""
+        )
+        values.pop("disk_free_bytes", None)
         run = self.repository.get_active_run()
         ac_pollers = self._ac_poller_health(
             site_id, str((run or {}).get("run_id") or "")
         )
-        ac_unhealthy = any(
-            item.status in {"DEGRADED", "STALE", "FAILED"}
-            for item in ac_pollers
+        now = datetime.now().astimezone()
+        fleet = self.supervisor.fleet_ping
+        supervisor_running = getattr(self.supervisor, "running", None)
+        run_state = str((run or {}).get("state") or "")
+        run_age = self._age_seconds((run or {}).get("actual_started_at"), now)
+        target_count = int(getattr(fleet, "target_count", 0))
+        process_count = int(getattr(fleet, "process_count", 0))
+        worker_warnings = list(getattr(fleet, "worker_warnings", []))
+        scheduler = getattr(self.supervisor, "task_scheduler", None)
+        scheduler_values = scheduler.snapshot() if scheduler is not None else {}
+        archive_failed = sum(row.get("archive_status") == "FAILED" for row in archives)
+        startup_grace = max(
+            10.0, self.repository.get_profile().fleet_ping_timeout_ms / 1000.0 * 2.0
+        )
+        core_stopped = run_state == "RUNNING" and (
+            supervisor_running is False
+            or (
+                run_age is not None
+                and run_age > startup_grace
+                and (
+                    (target_count > 0 and process_count == 0)
+                    or not values.get("udp_running")
+                )
+            )
+        )
+        pipeline_stopped = values.get("udp_running") and any(
+            values.get(name) is False
+            for name in ("receiver_alive", "writer_alive", "parser_alive")
+        )
+        critical = (
+            core_stopped
+            or pipeline_stopped
+            or run_state == "ERROR"
+            or values.get("raw_write_failed_count")
+            or values.get("udp_dropped_count")
+            or values.get("dropped")
+            or values.get("spool_guard_state") in {"CRITICAL", "EMERGENCY"}
+        )
+        degraded = (
+            current_error
+            or worker_warnings
+            or archive_failed
+            or values.get("compression_failed_count")
+            or values.get("compression_skipped_count")
+            or values.get("spool_guard_state") == "WARNING"
+            or float(values.get("udp_queue_pressure") or 0) >= 0.8
+            or any(item.status in {"DEGRADED", "CRITICAL"} for item in ac_pollers)
+            or getattr(self.supervisor, "_tick_consecutive_failure_count", 0)
+        )
+        observed = (
+            supervisor_running is True
+            or values.get("udp_running")
+            or process_count > 0
+            or any(item.status == "HEALTHY" for item in ac_pollers)
         )
         status = (
-            "ERROR"
-            if last_error or any(item.status == "FAILED" for item in ac_pollers)
-            else "WARNING"
-            if values.get("udp_dropped_count") or ac_unhealthy
-            else "OK"
+            "CRITICAL" if critical else "DEGRADED" if degraded
+            else "HEALTHY" if observed else "UNKNOWN"
         )
         return GroundHealthDTO(
             site_id=site_id,
             status=status,
             **values,
-            ping_target_count=int(getattr(self.supervisor.fleet_ping, "target_count", 0)),
-            ping_process_count=int(getattr(self.supervisor.fleet_ping, "process_count", 0)),
+            supervisor_running=supervisor_running,
+            run_state=run_state,
+            run_elapsed_seconds=run_age,
+            ping_target_count=target_count,
+            ping_process_count=process_count,
+            ping_sample_rate_per_second=getattr(fleet, "sample_rate_per_second", None),
+            ping_last_sample_at=str(getattr(fleet, "last_sample_at", "")),
+            ping_sample_write_duration_ms=getattr(fleet, "last_sample_write_duration_ms", None),
+            ping_worker_warnings=worker_warnings,
             deep_queue_length=deep_queue,
             archive_pending_count=sum(
-                row.get("archive_status") in {"PENDING", "BUILDING", "FAILED"}
+                row.get("archive_status") in {"PENDING", "BUILDING"}
                 for row in archives
             ),
             ac_pollers=ac_pollers,
-            disk_free_bytes=(
-                int(spool_disk_free)
-                if spool_disk_free is not None and int(spool_disk_free) > 0
-                else int(disk.free)
-            ),
+            archive_failed_count=archive_failed,
+            disk_free_bytes=int(disk.free),
+            disk_total_bytes=int(disk.total),
+            raw_file_count=self.repository.count_raw_files(),
             last_error=last_error,
             updated_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            task_queue_lengths=dict(scheduler_values.get("queue_lengths") or {}),
+            active_task_count=int(scheduler_values.get("active_tasks") or 0),
+            completed_task_count=int(scheduler_values.get("completed_tasks") or 0),
+            failed_task_count=int(scheduler_values.get("failed_tasks") or 0),
+            cancelled_task_count=int(scheduler_values.get("cancelled_tasks") or 0),
+            scheduler_worker_count=int(scheduler_values.get("worker_count") or 0),
         )
 
     def syslog_transport_status(
@@ -1024,23 +1699,23 @@ class GroundUnattendedApplicationService:
                 row.get("connection_state") or "UNKNOWN"
             ).upper()
             if connection_state == "FAILED":
-                status = "FAILED"
+                status = "CRITICAL"
             elif (
                 success_age is not None
                 and success_age > profile.ac_stale_grace_seconds
             ):
-                status = "STALE"
+                status = "DEGRADED"
             elif connection_state in {"RECONNECTING", "BACKOFF", "CONNECTING"}:
                 status = "DEGRADED"
             elif heartbeat_age is None or heartbeat_age > max(
                 5.0,
                 float(row.get("poll_interval_seconds") or 0) + 2.0,
             ):
-                status = "STALE"
+                status = "DEGRADED"
             elif connection_state in {"CONNECTED", "POLLING", "WAITING"}:
                 status = "HEALTHY"
             else:
-                status = "DEGRADED"
+                status = "UNKNOWN"
             result.append(
                 GroundAcPollerHealthDTO(
                     controller_id=str(row.get("controller_id") or ""),
@@ -1066,6 +1741,7 @@ class GroundUnattendedApplicationService:
                     ),
                     heartbeat_at=str(row.get("heartbeat_at") or ""),
                     heartbeat_age_seconds=heartbeat_age,
+                    last_success_age_seconds=success_age,
                     last_error=str(row.get("last_error_message") or ""),
                 )
             )
@@ -1721,6 +2397,12 @@ class GroundUnattendedApplicationService:
                 )
                 for item in result.get("items", [])
             ]
+            day_start = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+            result["statistics"] = self.repository.syslog_ui_statistics(
+                run_id=str(filters.get("run_id") or ""),
+                day_start=day_start.isoformat(),
+                day_end=(day_start + timedelta(days=1)).isoformat(),
+            )
             return GroundSyslogRecordPageDTO.model_validate(result)
         except GroundRawQueryError as exc:
             raise GroundUnattendedError(
@@ -1762,6 +2444,35 @@ class GroundUnattendedApplicationService:
                     else 409
                 ),
             ) from exc
+
+    def deep_tasks(self, site_id: str, *, run_id: str = "", **filters: Any) -> GroundDeepTaskPageDTO:
+        self._require_site(site_id)
+        for field in ("start_at", "end_at"):
+            value = str(filters.get(field) or "")
+            if value:
+                parsed = self._parse_datetime(value)
+                if parsed is None:
+                    raise GroundUnattendedError("INVALID_TIME_RANGE", "时间范围必须为有效 ISO 时间")
+                filters[field] = parsed.isoformat()
+        if filters.get("start_at") and filters.get("end_at") and datetime.fromisoformat(filters["start_at"]).timestamp() > datetime.fromisoformat(filters["end_at"]).timestamp():
+            raise GroundUnattendedError("INVALID_TIME_RANGE", "开始时间不能晚于结束时间")
+        run = self._resolve_run(run_id)
+        if not run:
+            return GroundDeepTaskPageDTO()
+        resolved_run_id = str(run["run_id"])
+        result = self.repository.deep_task_page(run_id=resolved_run_id, **filters)
+        trains = {str(row["train_id"]): row for row in self.repository.list_train_runs(resolved_run_id)}
+        query = self._deep_query_service()
+        cache: dict[str, tuple[object | None, list[object], dict[str, Any], str]] = {}
+        items = []
+        for operation in result["items"]:
+            train = trains.get(str(operation["train_id"]), {"train_id": operation["train_id"]})
+            endpoint = next((item for item in train.get("endpoints", []) if str(item.get("mr_id") or "") == str(operation["mr_id"])), None)
+            if endpoint is None:
+                endpoint = next((item for item in train.get("endpoints", []) if item.get("endpoint") == operation["mr_position_code"]), {})
+            items.append(self._project_deep_collector(run_id=resolved_run_id, train=train, operation=operation, endpoint=endpoint, query=query, session_cache=cache))
+        result["statistics"]["scope"] = "SELECTED_RUN_ALL_TASKS"
+        return GroundDeepTaskPageDTO(items=items, total=result["total"], page=filters.get("page", 1), page_size=filters.get("page_size", 50), statistics=result["statistics"])
 
     def deep_collections(
         self, site_id: str, *, run_id: str = ""
@@ -1892,6 +2603,7 @@ class GroundUnattendedApplicationService:
         train_id: str = "",
         mr_id: str = "",
         mr_role: str = "",
+        operation_id: str = "",
         category: str = "ALL",
         keyword: str = "",
         cursor: str = "",
@@ -1900,7 +2612,7 @@ class GroundUnattendedApplicationService:
         """Read a bounded increment of the existing Online MR raw logs."""
 
         self._require_site(site_id)
-        collections = self.deep_collections(site_id, run_id=run_id).items
+        collections = self.deep_collections(site_id, run_id=run_id).items if not operation_id else []
         selected = next(
             (
                 collector
@@ -1912,6 +2624,13 @@ class GroundUnattendedApplicationService:
             ),
             None,
         )
+        if operation_id:
+            operation = self.repository.get_deep_operation(operation_id)
+            run = self._resolve_run(run_id)
+            if operation and run and str(operation["run_id"]) == str(run["run_id"]) and (not train_id or operation["train_id"] == train_id) and (not mr_id or operation["mr_id"] == mr_id) and (not mr_role or operation["mr_position_code"].upper() == mr_role.upper()):
+                train = next((row for row in self.repository.list_train_runs(str(run["run_id"])) if row["train_id"] == operation["train_id"]), {"train_id": operation["train_id"]})
+                endpoint = next((row for row in train.get("endpoints", []) if row.get("endpoint") == operation["mr_position_code"]), {})
+                selected = self._project_deep_collector(run_id=str(run["run_id"]), train=train, operation=operation, endpoint=endpoint, query=self._deep_query_service(), session_cache={})
         if selected is None:
             raise GroundUnattendedError(
                 "DEEP_COLLECTOR_NOT_FOUND", "未找到匹配的深度采集 MR", status_code=404
@@ -2093,6 +2812,8 @@ class GroundUnattendedApplicationService:
         session_error = ""
         fping_view: dict[str, Any] = {}
         fping_row = None
+        collector_items: list[dict[str, Any]] = []
+        session_host = ""
         if session_id and query is not None:
             cached = session_cache.get(session_id)
             if cached is None:
@@ -2118,7 +2839,21 @@ class GroundUnattendedApplicationService:
                     cached = (None, [], {}, str(exc))
                 session_cache[session_id] = cached
             detail, status_rows, fping_view, session_error = cached
+            session_host = str((getattr(detail, "connection_summary", {}) or {}).get("host") or "")
             for status in status_rows:
+                if getattr(status, "enabled", False):
+                    collector_items.append({
+                        "name": str(getattr(status, "name", "") or ""),
+                        "label": str(getattr(status, "label", "") or ""),
+                        "status": str(getattr(status, "status", "") or "unknown"),
+                        "size_bytes": int(getattr(status, "size_bytes", 0) or 0),
+                        "started_at": str(getattr(status, "started_at", "") or ""),
+                        "ended_at": str(getattr(status, "ended_at", "") or ""),
+                        "updated_at": str(getattr(status, "updated_at", "") or ""),
+                        "error": str(getattr(status, "last_error", "") or getattr(status, "error", "") or ""),
+                        "raw_file": str(getattr(status, "raw_file", "") or ""),
+                        "exists": bool(getattr(status, "exists", False)),
+                    })
                 bytes_written += int(getattr(status, "size_bytes", 0) or 0)
                 updated_at = str(getattr(status, "updated_at", "") or "")
                 if updated_at > last_record_at:
@@ -2134,7 +2869,7 @@ class GroundUnattendedApplicationService:
                 state, reason = "RUNNING", "Collector 已写入原始数据"
             elif session_error and state in {"STARTING", "RUNNING"}:
                 reason = f"{reason}；会话状态暂不可读"
-            elif detail is not None:
+            if detail is not None:
                 session_status = str(getattr(detail, "status", "") or "").upper()
                 if session_status in {"FAILED", "ERROR"}:
                     state, reason = "FAILED", str(
@@ -2168,7 +2903,7 @@ class GroundUnattendedApplicationService:
             train_id=str(train.get("train_id") or ""),
             mr_id=str(operation.get("mr_id") or endpoint.get("mr_id") or ""),
             mr_role=str(operation.get("mr_position_code") or endpoint.get("endpoint") or ""),
-            management_ip=str(endpoint.get("management_ip") or ""),
+            management_ip=session_host or str(endpoint.get("management_ip") or ""),
             operation_id=str(operation.get("operation_id") or ""),
             collector_session_id=session_id,
             state=state,
@@ -2209,6 +2944,10 @@ class GroundUnattendedApplicationService:
             fping_latest_latency_ms=fping_latest.get("rtt_ms"),
             fping_error=fping_error,
             data_integrity_status=integrity_status,
+            items=collector_items,
+            source_state=str(operation.get("state") or ""),
+            train_no=str(train.get("train_no") or ""),
+            ended_at=str(operation.get("ended_at") or ""),
         )
 
     @staticmethod
@@ -2246,10 +2985,24 @@ class GroundUnattendedApplicationService:
         train_id: str = "",
         event_type: str = "",
         query: str = "",
+        mr_id: str = "",
+        mr_role: str = "",
+        start_at: str = "",
+        end_at: str = "",
         run_id: str = "",
         page: int = 1,
         page_size: int = 100,
     ) -> GroundTimelinePageDTO:
+        self._require_site(site_id)
+        filter_mr_id = mr_id
+        parsed_start = self._parse_datetime(start_at) if start_at else None
+        parsed_end = self._parse_datetime(end_at) if end_at else None
+        if (start_at and parsed_start is None) or (end_at and parsed_end is None):
+            raise GroundUnattendedError("INVALID_TIME_RANGE", "时间范围必须为有效 ISO 时间")
+        if parsed_start and parsed_end and parsed_start.timestamp() > parsed_end.timestamp():
+            raise GroundUnattendedError("INVALID_TIME_RANGE", "开始时间不能晚于结束时间")
+        start_at = parsed_start.isoformat() if parsed_start else ""
+        end_at = parsed_end.isoformat() if parsed_end else ""
         page = max(1, int(page))
         page_size = max(1, min(int(page_size), 500))
         offset = (page - 1) * page_size
@@ -2260,6 +3013,10 @@ class GroundUnattendedApplicationService:
                 train_id=train_id,
                 event_type=event_type,
                 query=query,
+                mr_id=filter_mr_id,
+                mr_role=mr_role,
+                start_at=start_at,
+                end_at=end_at,
                 limit=page_size,
                 offset=offset,
             )
@@ -2386,6 +3143,11 @@ class GroundUnattendedApplicationService:
                 GroundTimelineEventDTO(
                     event_id=row["id"],
                     ts=row["ts"],
+                    event_at=row["ts"],
+                    run_date=str(run.get("run_date") or ""),
+                    source=str(details.get("source") or details.get("event_source") or ""),
+                    device_time=str(details.get("device_time") or ""),
+                    received_at=str(details.get("received_at") or details.get("receive_time") or ""),
                     event_type=row["event_type"],
                     severity=row["severity"],
                     train_id=train_id_value,
@@ -2401,6 +3163,7 @@ class GroundUnattendedApplicationService:
                     ),
                     mr_position_code=str(
                         details.get("mr_position_code")
+                        or details.get("mr_role")
                         or endpoint.get("mr_role")
                         or ""
                     ),
@@ -2499,6 +3262,10 @@ class GroundUnattendedApplicationService:
                 train_id=train_id,
                 event_type=event_type,
                 query=query,
+                mr_id=filter_mr_id,
+                mr_role=mr_role,
+                start_at=start_at,
+                end_at=end_at,
             )
             if run
             else 0,
@@ -2662,6 +3429,35 @@ class GroundUnattendedApplicationService:
             state="WAITING_WINDOW",
             run_id=str(row["run_id"]),
             message="归档删除请求已提交",
+        )
+
+    def request_delete_archives(
+        self, site_id: str, payload: GroundArchiveBatchDeleteRequestDTO
+    ) -> GroundArchiveBatchDeleteResponseDTO:
+        self._require_site(site_id)
+        if not payload.explicit_confirmation:
+            raise GroundUnattendedError(
+                "CONFIRMATION_REQUIRED", "批量删除归档需要明确确认", status_code=409
+            )
+        results: list[GroundArchiveBatchDeleteItemDTO] = []
+        for archive_id in dict.fromkeys(str(value).strip() for value in payload.archive_ids if str(value).strip()):
+            try:
+                result = self.request_delete_archive(site_id, archive_id, confirmed=True)
+                results.append(GroundArchiveBatchDeleteItemDTO(
+                    archive_id=archive_id, accepted=result.accepted,
+                    state=result.state, run_id=result.run_id,
+                    operation_id=result.operation_id, message=result.message,
+                ))
+            except GroundUnattendedError as exc:
+                results.append(GroundArchiveBatchDeleteItemDTO(
+                    archive_id=archive_id, accepted=False,
+                    state="FAILED", message=exc.message,
+                ))
+        accepted = sum(1 for item in results if item.accepted)
+        return GroundArchiveBatchDeleteResponseDTO(
+            accepted_count=accepted,
+            failed_count=len(results) - accepted,
+            results=results,
         )
 
     def _train_dto(self, row: dict[str, Any]) -> GroundUnattendedTrainDTO:
@@ -3270,8 +4066,10 @@ class GroundUnattendedApplicationService:
             ping_target_count=_integer(summary.get("ping_target_count")),
             ping_sample_count=_integer(summary.get("ping_sample_count")),
             covered_train_count=_integer(summary.get("covered_train_count")),
+            session_count=_integer(summary.get("session_count")),
             complete_session_count=_integer(summary.get("complete_session_count")),
             partial_session_count=_integer(summary.get("partial_session_count")),
+            syslog_record_count=_integer(summary.get("syslog_record_count")),
             archive_size_bytes=_integer(row.get("archive_size_bytes")),
             sha256=_text("sha256"),
             manifest_sha256=_text("manifest_sha256"),

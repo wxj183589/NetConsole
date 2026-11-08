@@ -1192,7 +1192,16 @@ class RailTransitBaseDataApplicationService:
         mac = normalize_ap_mac(raw.get("mac") or raw.get("mac_address"))
         if (raw.get("mac") or raw.get("mac_address")) and not mac.normalized:
             raise ValueError("车载 MR MAC 格式无效")
+        extra = {}
+        if "backup_management_ip" in raw:
+            extra["backup_address"] = normalize_ip_address(raw.get("backup_management_ip"), allow_empty=True) or ""
+        if "backup_monitoring_strategy" in raw:
+            strategy = str(raw["backup_monitoring_strategy"]).upper()
+            if strategy not in {"MONITOR", "FAILOVER_ONLY", "DISABLED"}:
+                raise ValueError("备用地址监测策略无效")
+            extra["backup_monitoring_strategy"] = strategy
         return {
+            **extra,
             "name": name,
             "station": station,
             "primary_address": address,

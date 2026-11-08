@@ -1,11 +1,34 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 
-import source from './GroundUnattendedView.vue?raw'
+import viewSource from './GroundUnattendedView.vue?raw'
+import runtimeSource from './useGroundUnattended.ts?raw'
 import apiSource from '../../api/groundUnattended.ts?raw'
+import meshPageSource from './AcMeshLinkPage.vue?raw'
+const pageSources = import.meta.glob('./*Page.vue', { query: '?raw', import: 'default', eager: true })
+const styleSource = readFileSync(new URL('./groundUnattended.css', import.meta.url), 'utf8')
+const source = [viewSource, runtimeSource, styleSource, ...Object.values(pageSources)].join('\n')
 
 describe('Ground unattended page', () => {
+  it('uses heartbeat terminology and inventory targets in the fixed ten-page order', () => {
+    expect(source).not.toMatch(/长\s*Ping/i)
+    expect(source).toContain('不受 AC 位置、正线或车辆段分类影响')
+    expect(source).not.toContain('v-model="profile.ping_depot_trains_enabled"')
+    const tabs = [...viewSource.matchAll(/<el-tab-pane v-if="tabVisible\('([^']+)'\)"/g)].map((match) => match[1])
+    expect(tabs).toEqual(['overview', 'heartbeat', 'ac-mesh-link', 'quick-ping', 'syslog', 'deep', 'timeline', 'health', 'archives', 'settings'])
+  })
+
+  it('requires a configured AC for Mesh-Link refresh', () => {
+    expect(source).toContain('listVehicleMrControllers()')
+    expect(source).toContain("controllers.length === 1 ? controllers[0].controller_id : ''")
+    expect(source).toContain('if (!acRefreshReady.value)')
+    expect(source).toContain('refreshAcMeshLinks({ controller_id: selectedAcControllerId.value })')
+    expect(meshPageSource).toContain('未配置无线控制器 AC，无法刷新 Mesh-Link')
+    expect(meshPageSource).toContain('请选择要刷新的无线控制器 AC')
+    expect(meshPageSource).toContain(':disabled="!item.connection_ready"')
+  })
   it('is an independent unattended rail transit workflow', () => {
-    for (const label of ['运行概览', '正线车辆', '长 Ping', '深度采集', '时间轴', 'Syslog 日志', '历史归档', '设置']) {
+    for (const label of ['运行概览', '心跳检测', 'AC-Mesh-Link', '快速 Ping', 'Syslog 日志', '深度采集', '时间轴', '系统健康', '历史归档', '设置']) {
       expect(source).toContain(label)
     }
     expect(source).toContain('地面无人值守')
@@ -35,7 +58,7 @@ describe('Ground unattended page', () => {
     expect(source).toContain('onBeforeUnmount')
     expect(source).toContain('window.clearTimeout(pollTimer)')
     expect(source).not.toMatch(/onBeforeUnmount\([^)]*stopGroundRun/)
-    expect(source).toContain('暂停调度时 AC 轮询与长 Ping 继续')
+    expect(source).toContain('暂停调度时 AC 轮询与心跳检测继续')
   })
 
   it('shows per-controller resident AC polling health', () => {
@@ -43,7 +66,7 @@ describe('Ground unattended page', () => {
     expect(source).toContain('health.ac_pollers')
     expect(source).toContain('poller.connection_state')
     expect(source).toContain('poller.reconnect_count')
-    expect(source).toContain('每台控制器一个常驻 Task 和一个活动 SSH 会话')
+    expect(source).toContain('辅助数据源异常使系统降级；心跳检测独立运行。')
   })
 
   it('uses the dedicated API including stop-and-archive and confirmed deletion', () => {
@@ -63,7 +86,7 @@ describe('Ground unattended page', () => {
 
   it('links train details to ping, timeline and existing session analysis', () => {
     expect(source).toContain('getGroundTrain')
-    expect(source).toContain('查看长 Ping')
+    expect(source).toContain('查看心跳检测')
     expect(source).toContain('查看事件时间轴')
     expect(source).toContain('getOnlineMrSession')
     expect(source).toContain('workspace.openOrActivateRoute')
@@ -73,7 +96,6 @@ describe('Ground unattended page', () => {
   it('keeps the Syslog AP fields together before radio correlation fields', () => {
     const orderedKeys = [
       "key: 'peer_name'",
-      "key: 'peer_mac'",
       "key: 'previous_peer_name'",
       "key: 'rssi'",
       "key: 'reason_text'",
@@ -88,6 +110,9 @@ describe('Ground unattended page', () => {
     const positions = orderedKeys.map((key) => source.indexOf(key, source.indexOf('const syslogColumns')))
     expect(positions.every((position) => position >= 0)).toBe(true)
     expect(positions).toEqual([...positions].sort((left, right) => left - right))
+    const syslogColumns = source.slice(source.indexOf('const syslogColumns'), source.indexOf('async function latestRequest'))
+    expect(syslogColumns).not.toContain("key: 'peer_mac'")
+    expect(syslogColumns).not.toContain("key: 'mr_role'")
     expect(source).toContain('table-id="ground-syslog:v2"')
   })
 
@@ -145,7 +170,7 @@ describe('Ground unattended page', () => {
     expect(source).toContain('.log-console-pane){display:flex;overflow:hidden}')
     expect(source).toContain('.ground-tabs :deep(.el-tabs__content){flex:1;height:100%;overflow:hidden}')
     expect(source).toContain('.ground-tabs :deep(.el-tab-pane){height:100%;overflow:auto;overscroll-behavior:contain}')
-    expect(source).toContain('高级筛选（{{ syslogAdvancedFilterCount }} 个条件）')
+    expect(source).toContain('ground.v2.syslog_advanced_count')
     expect(source).toContain('v-model:current-page="timelinePage"')
     expect(source).toContain('v-model:current-page="syslogFilter.page"')
   })
@@ -177,7 +202,7 @@ describe('Ground unattended page', () => {
     expect(source).toContain('getGroundPingSeriesIncremental')
     expect(source).toContain('onDeactivated')
     expect(source).toContain("pollDue('ping-series-incremental', 1_800")
-    expect(source).toContain("activeTab.value === 'ping'")
+    expect(source).toContain("activeTab.value === 'heartbeat'")
     expect(source).toContain("activeTab.value === 'syslog'")
     expect(source).toContain("pollDue('deep', 4_000")
     expect(source).not.toMatch(/pollDue\('(?:timeline|archives)'/)

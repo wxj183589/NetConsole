@@ -115,7 +115,7 @@ describe('Mesh analysis view', () => {
     expect(source).toContain("{ key: 'switch_result'")
     expect(source).toContain('exportMeshLinkDetails')
     expect(source).toContain('exportMeshRawLinks')
-    expect(source).toContain("router.push('/rail-transit/train-online')")
+    expect(source).toContain("router.push('/rail-transit/ground-unattended')")
     expect(source).not.toContain("router.push('/ac-management/mesh-links')")
     expect(source).not.toMatch(/READ ONLY|只读|迁移/)
     expect(source).toContain('删除分析报告')

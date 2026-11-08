@@ -905,10 +905,50 @@
           "data_class": "HISTORICAL_RAW_FACT",
           "authority": "timestamped unattended MR/Ping/Syslog/AC/state-change operational fact authority; raw bytes remain in registered raw files",
           "producer": ["Ground collectors", "Syslog receiver", "fleet ping", "AC polling", "GroundUnattendedRepository"],
-          "consumers": ["Ground timeline", "historical session query", "incident analysis", "archive service", "Site Package"],
+          "consumers": ["Ground timeline", "historical session query", "incident analysis", "archive service", "Site Package", "MR monitoring read-only bounded evidence snapshot"],
           "lifecycle_owner": "Ground archive service; move or retire only after query parity",
           "rebuildable": false,
-          "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/supervisor.py", "src/netconsole/services/ground_unattended/archive_service.py"]
+          "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/supervisor.py", "src/netconsole/services/ground_unattended/archive_service.py", "src/netconsole/services/ground_unattended/monitoring.py"]
+        },
+        {
+          "tables": ["ground_unattended_heartbeat_states"],
+          "data_class": "OPERATIONAL_CURRENT",
+          "authority": "persisted MR/train heartbeat state, last-success counters and restart sampling-gap authority; not per-sample history",
+          "producer": ["HeartbeatStateEngine", "HeartbeatEventService"],
+          "consumers": ["Ground restart", "heartbeat UI", "train connectivity aggregation"],
+          "lifecycle_owner": "GroundUnattendedRepository; preserve current state across sampling interruptions",
+          "rebuildable": false,
+          "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/heartbeat_state.py"]
+        },
+        {
+          "tables": ["ground_unattended_quick_ping_runs", "ground_unattended_quick_ping_stats", "ground_unattended_quick_ping_target_runtime"],
+          "data_class": "HISTORICAL_TREND",
+          "authority": "independent Quick Ping run, registered segment paths and accumulated statistics authority",
+          "producer": ["QuickPingService", "GroundUnattendedRepository"],
+          "consumers": ["Quick Ping UI", "historical query", "Quick Ping recovery and retention"],
+          "lifecycle_owner": "QuickPingService; exact terminal run summary_retention_days, protect active runs",
+          "rebuildable": false,
+          "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/quick_ping.py"]
+        },
+        {
+          "tables": ["ground_unattended_quick_ping_ip_reservations"],
+          "data_class": "OPERATIONAL_CURRENT",
+          "authority": "atomic normalized-IP ownership; owner and actual child creation identities protect live Quick Ping processes",
+          "producer": ["QuickPingService", "GroundUnattendedRepository"],
+          "consumers": ["Quick Ping admission", "per-IP worker dispatch", "Quick Ping occupied IP UI", "Quick Ping crash recovery"],
+          "lifecycle_owner": "QuickPingService; release only after child exit and result persistence, never expire by elapsed time alone",
+          "rebuildable": false,
+          "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/quick_ping.py", "src/netconsole/services/ground_unattended/quick_ping_ownership.py"]
+        },
+        {
+          "tables": ["ground_unattended_quick_ping_events"],
+          "data_class": "HISTORICAL_RAW_FACT",
+          "authority": "Quick Ping lifecycle and problem events retained independently of ordinary samples and summaries",
+          "producer": ["QuickPingService", "GroundUnattendedRepository"],
+          "consumers": ["Quick Ping history", "incident analysis"],
+          "lifecycle_owner": "GroundUnattendedRepository; ordinary Quick Ping retention does not delete events",
+          "rebuildable": false,
+          "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/quick_ping.py"]
         },
         {
           "tables": ["ground_unattended_ping_segments", "ground_unattended_ping_target_activations"],
@@ -971,7 +1011,7 @@
           "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/supervisor.py", "src/netconsole/services/ground_unattended/application_service.py", "scripts/maintenance/tasks_db_compaction.py"]
+      "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/supervisor.py", "src/netconsole/services/ground_unattended/application_service.py", "src/netconsole/services/ground_unattended/history_query.py", "src/netconsole/services/ground_unattended/monitoring.py", "scripts/maintenance/tasks_db_compaction.py"]
     },
     {
       "id": "site.ground.active_raw",
@@ -991,6 +1031,25 @@
       "allowed_data_classes": ["ARTIFACT_OR_RAW_FILE"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "BACKUP_ROLLBACK"],
       "source_locations": ["src/netconsole/services/ground_unattended/archive_service.py", "src/netconsole/services/ground_unattended/raw_lifecycle.py"]
+    },
+    {
+      "id": "site.ground.quick_ping_raw",
+      "relative_path": "sites/{site_id}/files/rail_transit/ground_unattended/quick_ping/**",
+      "owner": "QuickPingService",
+      "code_owners": ["ground"],
+      "data_type": "ARTIFACT_OR_RAW_FILE",
+      "authority": "registered per-run per-MR NDJSON segments, verified gzip with integrity sidecars and recovery manifests",
+      "producer": ["QuickPingService"],
+      "consumers": ["Quick Ping sample query", "Quick Ping restart", "historical query"],
+      "retention_owner": "QuickPingService; live profile ping_raw_retention_days for exact registered terminal runs, preserve active and unknown files",
+      "rebuildable": false,
+      "site_package_policy": "include according to Ground recovery/export contract",
+      "backup_policy": "raw authority is not duplicated as database payload",
+      "migration_policy": "no legacy migration; verified gzip publication precedes raw segment removal",
+      "schema_version": "Quick Ping NDJSON and manifest contracts",
+      "allowed_data_classes": ["ARTIFACT_OR_RAW_FILE"],
+      "forbidden_data_classes": ["CACHE_REBUILDABLE", "BACKUP_ROLLBACK"],
+      "source_locations": ["src/netconsole/services/ground_unattended/quick_ping.py"]
     },
     {
       "id": "site.ground.archive",

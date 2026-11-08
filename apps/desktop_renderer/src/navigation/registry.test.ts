@@ -52,8 +52,9 @@ describe('Web navigation registry', () => {
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.mesh-links')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.optical')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'rail')?.children.map((item) => item.title)).toEqual([
-      '轨道交通无线看板', '基础资料', '列车在线情况', '地面无人值守', '车内通信检测', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
+      '轨道交通无线看板', '基础资料', '地面无人值守', '车内通信检测', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
     ])
+    expect(flattenNavigation().some((item) => item.navigation_id === 'rail.train-online')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'files')?.children.map((item) => item.title)).toEqual([
       '设备文件下载', '配置采集中心', '设备诊断下载',
     ])

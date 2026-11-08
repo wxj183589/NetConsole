@@ -1,15 +1,32 @@
+import type { RailTransitTask } from '../types/railTransitWeb'
 import { ApiRequestError, apiRequest, getHealth } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
+  GroundDeepTaskPage,
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundDeepCollectionRecordPage, GroundPage, GroundPingTarget,
   GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain, GroundHealth, GroundInventorySummary, GroundRawFile, GroundTrainPolicy,
   GroundOperation, GroundPingSeries, GroundPingSample, GroundRun, GroundSyslogRecord, GroundPagedResult,
   GroundSyslogDeleteAccepted, GroundSyslogDeletePreview, GroundSyslogDeletePreviewRequest,
   GroundMrRuntimeStatus,
   GroundSyslogTransportStatus, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
+  GroundQuickPingPage, GroundQuickPingRun, GroundQuickPingTarget, GroundQuickPingSamplePage,
+  GroundHeartbeatPage, GroundMrMonitoring, GroundHeartbeatInventoryAction, GroundHeartbeatInventoryPreview,
+  GroundHistoryFilters, GroundHistoryPage,
 } from '../types/groundUnattended'
 
 const root = '/api/rail-transit/ground-unattended'
+
+export const getGroundHeartbeat = (runId = '', options: RequestInit = {}, filters: { query?: string; status?: string; station?: string; role?: string; abnormal_only?: boolean; page?: number; page_size?: number } = {}): Promise<GroundHeartbeatPage> => {
+  const query = new URLSearchParams({ run_id: runId })
+  Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/heartbeat?${query}`, options)
+}
+export const previewGroundHeartbeatInventory = (action: GroundHeartbeatInventoryAction): Promise<GroundHeartbeatInventoryPreview> =>
+  apiRequest(`${root}/heartbeat/inventory/preview`, { method: 'POST', body: JSON.stringify({ action }) })
+export const applyGroundHeartbeatInventory = (action: GroundHeartbeatInventoryAction, revision: string): Promise<GroundHeartbeatInventoryPreview> =>
+  apiRequest(`${root}/heartbeat/inventory/apply`, { method: 'POST', body: JSON.stringify({ action, revision, confirm: true }) })
+export const getGroundMrMonitoring = (mrUuid: string, params: { run_id?: string; start_time?: string; end_time?: string } = {}, options: RequestInit = {}): Promise<GroundMrMonitoring> =>
+  apiRequest(`${root}/mr/${encodeURIComponent(mrUuid)}/monitoring?${new URLSearchParams(params)}`, options)
 
 export interface GroundRawQueryTransportState {
   code: string
@@ -55,6 +72,35 @@ export const pauseGroundRun = (): Promise<GroundActionResponse> => apiRequest(`$
 export const resumeGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/resume`, { method: 'POST' })
 export const stopGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/stop`, { method: 'POST' })
 export const stopAndArchiveGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/stop-and-archive`, { method: 'POST' })
+export function startGroundQuickPing(payload: {
+  targets: GroundQuickPingTarget[]; interval_ms?: number; timeout_ms?: number; packet_size?: number
+  duration_seconds?: number | null; max_in_flight?: number
+}): Promise<GroundQuickPingRun> {
+  return apiRequest(`${root}/quick-ping`, { method: 'POST', body: JSON.stringify(payload) })
+}
+export function listGroundQuickPing(limit = 100, options: RequestInit = {}, filters: {
+  offset?: number; start_time?: string; end_time?: string; query?: string; state?: string
+  train_id?: string; mr_id?: string; mr_role?: string
+} = {}): Promise<GroundQuickPingPage> {
+  const query = new URLSearchParams({ limit: String(limit) })
+  Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/quick-ping?${query}`, options)
+}
+export function getGroundQuickPingSamples(runId: string, filters: {
+  target_ip?: string; start_time?: string; end_time?: string; limit?: number; cursor?: string
+} = {}, options: RequestInit = {}): Promise<GroundQuickPingSamplePage> {
+  const query = new URLSearchParams()
+  Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/quick-ping/${encodeURIComponent(runId)}/samples?${query}`, options)
+}
+export const getGroundQuickPing = (runId: string, options: RequestInit = {}): Promise<GroundQuickPingRun> => apiRequest(`${root}/quick-ping/${encodeURIComponent(runId)}`, options)
+export function listGroundHistory(filters: GroundHistoryFilters & { page?: number; page_size?: number } = {}, options: RequestInit = {}): Promise<GroundHistoryPage> {
+  const query = new URLSearchParams()
+  Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+  return apiRequest(`${root}/history?${query}`, options)
+}
+export const stopGroundQuickPing = (runId: string): Promise<GroundQuickPingRun> => apiRequest(`${root}/quick-ping/${encodeURIComponent(runId)}/stop`, { method: 'POST' })
+export const stopGroundQuickPingTarget = (runId: string, targetIp: string): Promise<GroundQuickPingRun> => apiRequest(`${root}/quick-ping/${encodeURIComponent(runId)}/targets/${encodeURIComponent(targetIp)}/stop`, { method: 'POST' })
 export const listGroundTrains = (options: RequestInit = {}): Promise<GroundPage<GroundTrain>> => apiRequest(`${root}/trains`, options)
 export function listGroundMrRuntimeStatus(params: {
   mr_role?: string; radio_state?: string; snmp_state?: string
@@ -85,6 +131,7 @@ export const listGroundPingTargets = (runId = '', options: RequestInit = {}): Pr
   return apiRequest(`${root}/ping-targets${query}`, options)
 }
 export const listGroundDeepCollectionRecords = (params: {
+  operation_id?: string
   run_id?: string; train_id?: string; mr_id?: string; mr_role?: string; category?: string; keyword?: string; cursor?: string; limit?: number
 }, options: RequestInit = {}): Promise<GroundDeepCollectionRecordPage> => {
   const query = new URLSearchParams()
@@ -116,6 +163,7 @@ export function listGroundPingSamples(params: {
   return apiRequest(`${root}/ping-samples?${query}`, options)
 }
 export function listGroundSyslogRecords(params: {
+  sort_order?: 'asc' | 'desc'
   run_id?: string; train_id?: string; mr_id?: string; mr_name?: string; source_ip?: string; system_name?: string
   mr_role?: string | string[]; facility?: string; severity?: string | string[]; identity_status?: string | string[]; event_type?: string | string[]; peer_name?: string
   event_family?: string | string[]; cfg_command_source?: string | string[]; physical_state?: string | string[]
@@ -152,6 +200,11 @@ export const submitGroundSyslogDelete = (request: {
 export const getLatestGroundOperation = (options: RequestInit = {}): Promise<GroundOperation | null> => apiRequest(`${root}/operations/latest`, options)
 export const getActiveGroundOperation = (options: RequestInit = {}): Promise<GroundOperation | null> => apiRequest(`${root}/operations/active`, options)
 export const getGroundOperation = (operationId: string, options: RequestInit = {}): Promise<GroundOperation> => apiRequest(`${root}/operations/${encodeURIComponent(operationId)}`, options)
+export function listGroundDeepTasks(params: Record<string, string | number | boolean>, options: RequestInit = {}): Promise<GroundDeepTaskPage> {
+  const query = new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))
+  return apiRequest(`${root}/deep-collections/tasks?${query}`, options)
+}
+
 export const listGroundDeepCollections = (runId = '', options: RequestInit = {}): Promise<GroundPage<GroundDeepCollection>> => {
   const query = runId ? `?run_id=${encodeURIComponent(runId)}` : ''
   return apiRequest(`${root}/deep-collections${query}`, options)
@@ -164,12 +217,17 @@ export function listGroundTimeline(
   page = 1,
   pageSize = 100,
   query = '',
+  filters: { mrId?: string; mrRole?: string; startAt?: string; endAt?: string } = {},
 ): Promise<GroundPagedResult<GroundTimelineEvent>> {
   const params = new URLSearchParams()
   if (trainId) params.set('train_id', trainId)
   if (eventType) params.set('event_type', eventType)
   if (runId) params.set('run_id', runId)
   if (query) params.set('query', query)
+  if (filters.mrId) params.set('mr_id', filters.mrId)
+  if (filters.mrRole) params.set('mr_role', filters.mrRole)
+  if (filters.startAt) params.set('start_at', filters.startAt)
+  if (filters.endAt) params.set('end_at', filters.endAt)
   params.set('page', String(page))
   params.set('page_size', String(pageSize))
   return apiRequest(`${root}/timeline?${params}`, options)
@@ -179,6 +237,7 @@ export const getGroundArchive = (archiveId: string): Promise<GroundArchive> => a
 export const getGroundArchiveDetail = (archiveId: string, options: RequestInit = {}): Promise<GroundArchiveDetail> => apiRequest(`${root}/archives/${encodeURIComponent(archiveId)}/detail`, options)
 export const verifyGroundArchive = (archiveId: string): Promise<GroundArchiveDetail> => apiRequest(`${root}/archives/${encodeURIComponent(archiveId)}/verify`, { method: 'POST' })
 export const deleteGroundArchive = (archiveId: string): Promise<GroundActionResponse> => apiRequest(`${root}/archives/${encodeURIComponent(archiveId)}`, { method: 'DELETE', body: JSON.stringify({ explicit_confirmation: true }) })
+export const deleteGroundArchives = (archiveIds: string[]): Promise<{ accepted_count: number; failed_count: number; results: Array<{ archive_id: string; accepted: boolean; state: string; run_id: string; operation_id: string; message: string }> }> => apiRequest(`${root}/archives/batch-delete`, { method: 'POST', body: JSON.stringify({ archive_ids: archiveIds, explicit_confirmation: true }) })
 export const openGroundArchiveDirectory = (): Promise<{ success: boolean; code: string; message: string }> => apiRequest(`${root}/archives/open-directory`, { method: 'POST' })
 export const groundArchiveSummaryDownloadRequest = (row: GroundArchive): BackendDownloadRequest => ({
   apiPath: `${root}/artifacts/${encodeURIComponent(row.archive_id)}/summary-download`,
@@ -203,3 +262,7 @@ export const checkGroundUdpPort = (listenHost: string, listenPort: number): Prom
   method: 'POST',
   body: JSON.stringify({ listen_host: listenHost, listen_port: listenPort }),
 })
+
+export function startGroundHistoryExport(filters: Record<string, string>): Promise<RailTransitTask> {
+  return apiRequest(`${root}/history/export`, { method: 'POST', body: JSON.stringify(filters) })
+}
