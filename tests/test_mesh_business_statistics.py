@@ -109,6 +109,57 @@ def test_physical_identity_merges_radios_and_names_but_never_same_name_devices()
     assert result["summary"]["grades"]["INSUFFICIENT"] == 1
 
 
+def test_station_type_scope_excludes_depot_parking_and_their_backup_candidates():
+    depot_peer = "001122336601"
+    parking_peer = "001122337701"
+    excluded_active_peer = "001122338801"
+    locations = MeshApLocationSnapshot(
+        [
+            MeshApLocation(mac=AP, alias_mac=PEER, name="Line", station="Central", station_type="station"),
+            MeshApLocation(mac="0011-2233-6600", alias_mac=depot_peer, name="Depot", station="云龙车辆段", station_type="depot"),
+            MeshApLocation(mac="0011-2233-7700", alias_mac=parking_peer, name="Parking", station="停车库", station_type="parking_lot"),
+            MeshApLocation(mac="0011-2233-8800", alias_mac=excluded_active_peer, name="Yard", station="普通站名", station_type="DEPOT"),
+        ]
+    )
+    rows = [
+        row(0, source=1, peer=PEER, state="ACTIVE"),
+        row(0, source=1, peer=depot_peer, state="STANDBY", rssi=45),
+        row(1, source=1, peer=PEER, state="ACTIVE"),
+        row(1, source=1, peer=depot_peer, state="STANDBY", rssi=45),
+        row(0, source=2, peer=PEER, state="ACTIVE"),
+        row(1, source=2, peer=excluded_active_peer, state="ACTIVE"),
+        row(2, source=2, peer=PEER, state="ACTIVE"),
+        row(0, source=3, peer=parking_peer, state="ACTIVE"),
+    ]
+
+    filtered = stats(rows, locations=locations, exclude_depot=True, exclude_parking=True)
+    complete = stats(rows, locations=locations, exclude_depot=False, exclude_parking=False)
+
+    assert filtered["summary"]["ap_total"] == 1
+    assert filtered["summary"]["single_link_count"] == 3
+    assert [(item["source_file_id"], item["start_time"], item["end_time"]) for item in filtered["single_links"]] == [
+        (1, row(0, source=1)["sample_time"], row(1, source=1)["sample_time"]),
+        (2, row(0, source=2)["sample_time"], row(0, source=2)["sample_time"]),
+        (2, row(2, source=2)["sample_time"], row(2, source=2)["sample_time"]),
+    ]
+    assert all(item["peer_ap_name"] == "Line" for item in filtered["single_links"])
+    assert all("station_type" not in item and "station_scope" not in item for item in filtered["single_links"])
+    assert complete["summary"]["ap_total"] == 3
+    assert complete["summary"]["single_link_count"] == 4
+    assert filtered["summary"]["exclude_depot"] is True
+    assert filtered["summary"]["exclude_parking"] is True
+
+
+def test_official_station_type_wins_over_name_and_station_name_fallback_is_scoped():
+    from netconsole.services.mesh_business_statistics import classify_station_type
+
+    assert classify_station_type("station") == "STATION"
+    assert classify_station_type("云龙车辆段") == "DEPOT"
+    assert classify_station_type("停车基地") == "PARKING"
+    assert classify_station_type("普通车站") == "UNKNOWN"
+    assert classify_station_type("普通站名") == "UNKNOWN"
+
+
 @pytest.mark.parametrize("value", [None, "", "bad", 0, -1, float("nan"), float("inf")])
 def test_invalid_active_rssi_is_not_a_sample_and_peer_rssi_cannot_replace_it(value):
     ap = stats([row(rssi=value, peer_rssi_db=60)])["aps"][0]
@@ -373,6 +424,12 @@ def test_detail_xlsx_modes_counts_styles_and_statistics(tmp_path, mode, empty):
         BUSINESS_LINK_COLUMNS if mode == "business" else LINK_DETAIL_EXPORT_COLUMNS
     )
     assert [cell.value for cell in detail[1]] == [label for label, _ in columns]
+    headers = [cell.value for cell in detail[1]]
+    if mode == "business":
+        assert {"原始 Peer MAC", "PEER Radio"} <= set(headers)
+        assert not {"Peer Radio MAC", "匹配规则", "身份来源"}.intersection(headers)
+    else:
+        assert {"原始 Peer MAC", "PEER Radio", "Peer Radio MAC", "匹配规则", "身份来源"} <= set(headers)
     assert detail.freeze_panes == "A2"
     assert detail.auto_filter.ref
     quality = book["AP 信号质量"]
@@ -386,6 +443,14 @@ def test_detail_xlsx_modes_counts_styles_and_statistics(tmp_path, mode, empty):
         )
         assert quality[2][weak].number_format == "0.00%"
         assert quality["B2"].value == AP
+    params = book["分析参数"]
+    params_by_key = {
+        params.cell(row, 1).value: params.cell(row, 2).value
+        for row in range(1, params.max_row + 1)
+    }
+    assert params_by_key["排除车辆段"] == "是"
+    assert params_by_key["排除停车场"] == "是"
+    assert params_by_key["统计范围"] == "当前筛选范围"
     book.close()
 
 
@@ -404,7 +469,7 @@ def test_report_business_default_and_percent_format_without_mutating_intervals(
     book = load_workbook(
         MeshAnalysisExcelReportExporter().export(model, tmp_path / "report.xlsx")
     )
-    assert book["主链路建链顺序"].max_column == 16
+    assert book["主链路建链顺序"].max_column == 17
     field = next(
         i for i, (_, key) in enumerate(AP_SIGNAL_COLUMNS) if key == "weak_ratio"
     )

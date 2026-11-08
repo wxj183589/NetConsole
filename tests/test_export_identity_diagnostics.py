@@ -120,8 +120,8 @@ def test_mesh_export_keeps_workbook_contract_and_returns_diagnostics(tmp_path: P
         "序号",
         "采样时间",
         "采样标识",
-        "Radio",
-        "状态",
+        "本端 Radio",
+        "链路状态",
         "原始 Peer MAC",
         "解析 AP 名称",
         "物理 AP MAC",
@@ -131,9 +131,81 @@ def test_mesh_export_keeps_workbook_contract_and_returns_diagnostics(tmp_path: P
     assert "Peer Radio MAC" in headers
     assert "匹配规则" in headers
     assert "身份来源" in headers
-    assert {"MR 侧 RSSI 差值", "Peer 侧 RSSI 差值", "L_TxBusy", "P_RxBusy", "行号"} <= set(headers)
+    assert {
+        "本端 RSSI", "对端 RSSI", "本端底噪", "对端底噪", "本端发送忙时占比",
+        "对端接收忙时占比", "本端发送描述符空闲数", "对端发送描述符空闲数",
+        "本端发送 GARP 计数", "对端接收 GARP 计数", "本端发送组播加入计数",
+        "对端接收组播加入计数", "行号",
+    } <= set(headers)
     assert sheet.freeze_panes == "A2"
     assert sheet.auto_filter.ref
+
+
+def test_mesh_export_preserves_all_raw_metrics_in_both_modes(tmp_path: Path) -> None:
+    source = _mesh_row() | {
+        "record_seq": 7,
+        "local_rssi_db": 31,
+        "peer_rssi_db": 29,
+        "local_noise_raw": 80,
+        "peer_noise_raw": 81,
+        "local_rate_raw": 1200,
+        "peer_rate_raw": 1100,
+        "local_cpu_percent": 0,
+        "peer_cpu_percent": -1,
+        "local_mem_percent": 42,
+        "peer_mem_percent": 43,
+        "local_tx_busy": 6,
+        "peer_tx_busy": 9,
+        "local_rx_busy": 7,
+        "peer_rx_busy": 10,
+        "local_tx_des_free_cnt": 0,
+        "peer_tx_des_free_cnt": 12,
+        "local_tx": 100,
+        "peer_tx": 101,
+        "local_rx": 200,
+        "peer_rx": 201,
+        "local_retry": 3,
+        "peer_retry": 4,
+        "local_err": 0,
+        "peer_err": -2,
+        "local_tx_garp": 5,
+        "peer_rx_garp": 6,
+        "local_tx_mul_join": 7,
+        "peer_rx_mul_join": 8,
+    }
+    required = {
+        "本端 RSSI": 31,
+        "对端 RSSI": 29,
+        "本端底噪": 80,
+        "对端底噪": 81,
+        "本端协商速率": 1200,
+        "对端协商速率": 1100,
+        "本端 CPU 利用率": 0,
+        "对端 CPU 利用率": -1,
+        "本端发送描述符空闲数": 0,
+        "对端发送描述符空闲数": 12,
+        "本端发送 GARP 计数": 5,
+        "对端接收 GARP 计数": 6,
+        "本端发送组播加入计数": 7,
+        "对端接收组播加入计数": 8,
+    }
+    for mode in ("business", "diagnostic"):
+        path = tmp_path / f"raw-{mode}.xlsx"
+        export_mesh_link_details_xlsx(path, [source], total_rows=1, export_mode=mode)
+        sheet = load_workbook(path, data_only=True)["链路明细"]
+        headers = [cell.value for cell in sheet[1]]
+        values = [cell.value for cell in sheet[2]]
+        row_by_header = dict(zip(headers, values))
+        for header, value in required.items():
+            assert row_by_header[header] == value
+        assert row_by_header["本端 CPU 利用率"] == 0
+        assert row_by_header["对端 CPU 利用率"] == -1
+        if mode == "business":
+            assert "Peer Radio MAC" not in headers
+            assert "匹配规则" not in headers
+            assert "身份来源" not in headers
+        else:
+            assert {"Peer Radio MAC", "匹配规则", "身份来源"} <= set(headers)
 
 
 def test_mesh_link_detail_export_includes_analysis_parameters_sheet(tmp_path: Path) -> None:

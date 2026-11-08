@@ -3432,6 +3432,8 @@ class RailTransitWebApplicationService:
         source_file_id: int,
         analysis_params_override: dict[str, object] | None = None,
         export_mode: str = "business",
+        exclude_depot: bool = True,
+        exclude_parking: bool = True,
     ) -> RailTransitTaskDTO:
         if export_mode not in {"business", "diagnostic"}:
             raise RailTransitWebError("MESH_EXPORT_MODE_INVALID", "不支持的导出模式")
@@ -3482,6 +3484,8 @@ class RailTransitWebApplicationService:
             params={
                 "analysis_params": task_analysis_params,
                 "export_mode": export_mode,
+                "exclude_depot": exclude_depot,
+                "exclude_parking": exclude_parking,
                 "fallback_analysis_params": site_analysis_params,
                 "ap_location_snapshot": ap_location_snapshot,
             },

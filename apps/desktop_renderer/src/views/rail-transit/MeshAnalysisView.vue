@@ -31,6 +31,7 @@ import {
 } from '../../components/mesh-analysis/meshRssiLayout'
 import {
   acceptMeshSharedViewport,
+  createEffectiveMeshViewportFromSamples,
   createFullMeshViewportFromDomain,
   isFullRssiViewport,
   meshTimestampMillis,
@@ -123,6 +124,7 @@ const summary = ref<MeshAnalysisSummary | null>(null)
 const sessions = ref<MeshAnalysisSession[]>([])
 const total = ref(0)
 const selected = ref<MeshSessionDetail | null>(null)
+const meshBusinessScope = ref({ exclude_depot: true, exclude_parking: true })
 const selectedDeleteSessions = ref<MeshAnalysisSession[]>([])
 const apCoverageVisible = ref(false)
 const apCoverageLoading = ref(false)
@@ -2524,8 +2526,12 @@ function ensureSharedRssiViewport(): void {
   const domain = sharedRssiTimeDomain.value
   if (!domain) return
   if (!rssiViewport.value) {
-    rssiViewport.value = createFullMeshViewportFromDomain(
+    const samples = (chartData.value?.rssi_line?.points || [])
+      .map((point) => String(point[0] ?? ''))
+      .filter(Boolean)
+    rssiViewport.value = createEffectiveMeshViewportFromSamples(
       domain,
+      samples,
       'initial',
       'programmatic',
       ++rssiViewportRevision,
@@ -2684,6 +2690,29 @@ function resetCurrentChartViewport(): void {
     rssiChartRef.value?.applyViewport(viewport)
     tracksideChartRef.value?.applyViewport(viewport)
   }
+}
+
+function resetRssiViewportToEffectiveSamples(): void {
+  const domain = sharedRssiTimeDomain.value
+  if (!domain) return
+  const samples = (chartData.value?.rssi_line?.points || [])
+    .map((point) => String(point[0] ?? ''))
+    .filter(Boolean)
+  const viewport = createEffectiveMeshViewportFromSamples(
+    domain,
+    samples,
+    'programmatic',
+    'programmatic',
+    ++rssiViewportRevision,
+  )
+  if (!viewport) return
+  pendingRssiQueryViewport.value = viewport
+  rssiViewport.value = viewport
+  committedRssiViewport.value = { ...viewport }
+  invalidateRssiWindowBatch()
+  scheduleRssiWindowReload(viewport, 0)
+  rssiChartRef.value?.applyViewport(viewport)
+  tracksideChartRef.value?.applyViewport(viewport)
 }
 
 function clearTimeLock(): void {
@@ -4097,7 +4126,7 @@ async function exportLinkDetails(): Promise<void> {
       action: 'rail.mesh_link_details',
       suggestedName,
       context: { sessionId, sourceFileId },
-      submit: () => exportMeshLinkDetails(sessionId, sourceFileId, { ...linkExportParams }, exportMode.value),
+      submit: () => exportMeshLinkDetails(sessionId, sourceFileId, { ...linkExportParams }, exportMode.value, meshBusinessScope.value),
     })
     if (result.status === 'cancelled') return
     linkExportVisible.value = false
@@ -4652,7 +4681,7 @@ function exportTimestamp(now = new Date()): string {
       </el-alert>
       <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
-      <MeshBusinessSummary v-if="selected.session.parsed_status === 'ready' && isFeatureEnabled('capability.mesh.business_statistics')" :session-id="selected.session.session_id" :revision="JSON.stringify([selected.analysis_params, selected.maintenance_state, selected.session.analysis_time])" />
+      <MeshBusinessSummary v-if="selected.session.parsed_status === 'ready' && isFeatureEnabled('capability.mesh.business_statistics')" :session-id="selected.session.session_id" :revision="JSON.stringify([selected.analysis_params, selected.maintenance_state, selected.session.analysis_time])" @scope-change="meshBusinessScope = $event" />
       <el-tabs v-model="activeTab" class="detail-tabs">
         <el-tab-pane label="主链路建链顺序" name="build-order" />
         <el-tab-pane label="链路明细" name="links" />
@@ -4728,7 +4757,8 @@ function exportTimestamp(now = new Date()): string {
               <el-button :icon="showSwitchLines ? View : Hide" @click="showSwitchLines = !showSwitchLines">显示切换时刻线</el-button>
               <el-button :icon="showSwitchPoints ? View : Hide" @click="showSwitchPoints = !showSwitchPoints">显示切换节点</el-button>
               <el-button :icon="showLocationBand ? View : Hide" @click="showLocationBand = !showLocationBand">显示站点/区间</el-button>
-              <el-button @click="resetCurrentChartViewport">重置视图</el-button>
+              <el-button @click="resetRssiViewportToEffectiveSamples">有效数据</el-button>
+              <el-button @click="resetCurrentChartViewport">全时段</el-button>
               <el-button v-if="!lockedAnalysisRange" :icon="Lock" type="primary" plain @click="lockCurrentRssiRange">锁定当前时间范围</el-button>
               <template v-else>
                 <el-button :icon="Refresh" @click="lockCurrentRssiRange">更新锁定范围</el-button>
@@ -4776,7 +4806,12 @@ function exportTimestamp(now = new Date()): string {
                     <span v-else>主链 RSSI 数据尚未加载</span>
                     <el-button v-if="rssiActiveError" link type="warning" :loading="rssiActiveLoading" @click="retryRssiActivePath">重试主链 RSSI</el-button>
                   </div>
-                  <div v-else-if="chartData" class="mini-summary rssi-pane-summary"><span>估算采样间隔 <strong>{{ display(chartData.summary.estimated_interval_seconds, ' s') }}</strong></span><span>采样点 <strong>{{ chartData.summary.sample_count }}</strong></span><span>ACTIVE <strong>{{ chartData.summary.active_count }}</strong></span><span>STANDBY 上下文 <strong>{{ chartData.summary.standby_context_count }}</strong></span><span>△ 三角链路 <strong>{{ chartData.summary.triangle_link_point_count ?? 0 }}</strong></span><span><strong>{{ chartData.rssi_line?.resolution_mode === 'full' ? '主链 RSSI 全量' : '主链 RSSI' }} {{ formatChartCount(chartData.rssi_line?.returned_points ?? chartData.returned_points) }} / {{ formatChartCount(chartData.rssi_line?.total_points ?? chartData.total_points) }}</strong></span><span>业务叠加点 <strong>{{ formatChartCount(chartData.response_budget?.returned_points) }} / {{ formatChartCount(chartData.response_budget?.total_points) }}</strong></span><span>切换事件 Overlay <strong>{{ formatChartCount(chartData.response_budget?.returned_events) }} / {{ formatChartCount(chartData.response_budget?.total_events) }}</strong></span><span>Payload <strong>{{ formatPayloadBytes(chartData.payload_bytes) }}</strong></span><span>当前窗口 <strong>{{ chartWindowLabel(activeChartWindow.start, activeChartWindow.end) }}</strong></span><span>最早 <strong>{{ chartData.summary.first_sample_time || '—' }}</strong></span><span>最新 <strong>{{ chartData.summary.last_sample_time || '—' }}</strong></span></div>
+                  <div v-else-if="chartData" class="chart-fact-groups">
+                    <section><strong>链路概况</strong><span>采样点 {{ formatChartCount(chartData.summary.sample_count) }}</span><span>ACTIVE {{ formatChartCount(chartData.summary.active_count) }}</span><span>STANDBY {{ formatChartCount(chartData.summary.standby_context_count) }}</span><span>三角链路 {{ formatChartCount(chartData.summary.triangle_link_point_count ?? 0) }}</span></section>
+                    <section><strong>信号质量</strong><span>{{ chartData.rssi_line?.resolution_mode === 'full' ? '主链 RSSI 全量' : '主链 RSSI' }} {{ formatChartCount(chartData.rssi_line?.returned_points ?? chartData.returned_points) }} / {{ formatChartCount(chartData.rssi_line?.total_points ?? chartData.total_points) }}</span></section>
+                    <section><strong>事件与窗口</strong><span>切换事件 {{ formatChartCount(chartData.events.length) }}</span><span>{{ chartWindowLabel(activeChartWindow.start, activeChartWindow.end) }}</span></section>
+                    <details><summary>技术诊断</summary><div><span>业务叠加点 {{ formatChartCount(chartData.response_budget?.returned_points) }} / {{ formatChartCount(chartData.response_budget?.total_points) }}</span><span>事件 Overlay {{ formatChartCount(chartData.response_budget?.returned_events) }} / {{ formatChartCount(chartData.response_budget?.total_events) }}</span><span>估算采样间隔 {{ display(chartData.summary.estimated_interval_seconds, ' s') }}</span><span>Payload {{ formatPayloadBytes(chartData.payload_bytes) }}</span><span>最早 {{ chartData.summary.first_sample_time || '—' }}</span><span>最新 {{ chartData.summary.last_sample_time || '—' }}</span></div></details>
+                  </div>
                   <div class="rssi-pane-chart-host">
                     <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :rssi-line="chartData.rssi_line" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" />
                     <el-empty v-else-if="rssiActiveLoaded && !rssiActiveLoading" description="当前范围没有 RSSI 数据" :image-size="60" />
@@ -4807,20 +4842,10 @@ function exportTimestamp(now = new Date()): string {
                       </div>
                     </el-popover>
                   </div>
-                  <div v-if="tracksideSignal && tracksideLoaded" class="mini-summary rssi-pane-summary">
-                    <span>采样时刻 <strong>{{ tracksideSignal.returned_frames }} / {{ tracksideSignal.total_frames }}</strong></span>
-                    <span>ACTIVE 链路点 <strong>{{ tracksideSignal.returned_active_link_points }} / {{ tracksideSignal.active_link_points }}</strong></span>
-                    <span>STANDBY 链路点 <strong>{{ tracksideSignal.returned_standby_link_points }} / {{ tracksideSignal.standby_link_points }}</strong></span>
-                    <span>△ 三角链路 <strong>{{ tracksideSignal.returned_triangle_link_points ?? 0 }} / {{ tracksideSignal.triangle_link_points ?? 0 }}</strong></span>
-                    <span>总链路点 <strong>{{ tracksideSignal.returned_link_points }} / {{ tracksideSignal.total_link_points }}</strong></span>
-                    <span>AP/Radio 序列 <strong>{{ tracksideSignal.returned_series }} / {{ tracksideSignal.total_series }}</strong></span>
-                    <span>链路存在区段 <strong>{{ tracksideSignal.total_link_runs }}</strong></span>
-                    <span>角色切换 <strong>{{ tracksideSignal.role_switch_count }}</strong></span>
-                    <span>缺失轨旁信号跳过 <strong>{{ tracksideSignal.skipped_missing_signal_points }}</strong></span>
-                    <span>查询行 <strong>{{ formatChartCount(tracksideSignal.response_budget?.selected_rows) }} / {{ formatChartCount(tracksideSignal.response_budget?.source_rows) }}</strong></span>
-                    <span>事件 <strong>{{ formatChartCount(tracksideSignal.response_budget?.returned_events) }} / {{ formatChartCount(tracksideSignal.response_budget?.total_events) }}</strong></span>
-                    <span>Payload <strong>{{ formatPayloadBytes(tracksideSignal.payload_bytes) }}</strong></span>
-                    <span>当前窗口 <strong>{{ chartWindowLabel(tracksideChartWindow.start, tracksideChartWindow.end) }}</strong></span>
+                  <div v-if="tracksideSignal && tracksideLoaded" class="chart-fact-groups">
+                    <section><strong>链路概况</strong><span>采样时刻 {{ formatChartCount(tracksideSignal.returned_frames) }} / {{ formatChartCount(tracksideSignal.total_frames) }}</span><span>ACTIVE {{ formatChartCount(tracksideSignal.returned_active_link_points) }} / {{ formatChartCount(tracksideSignal.active_link_points) }}</span><span>STANDBY {{ formatChartCount(tracksideSignal.returned_standby_link_points) }} / {{ formatChartCount(tracksideSignal.standby_link_points) }}</span><span>AP/Radio 序列 {{ formatChartCount(tracksideSignal.returned_series) }} / {{ formatChartCount(tracksideSignal.total_series) }}</span></section>
+                    <section><strong>信号与窗口</strong><span>总链路点 {{ formatChartCount(tracksideSignal.returned_link_points) }} / {{ formatChartCount(tracksideSignal.total_link_points) }}</span><span>三角链路 {{ formatChartCount(tracksideSignal.returned_triangle_link_points ?? 0) }} / {{ formatChartCount(tracksideSignal.triangle_link_points ?? 0) }}</span><span>{{ chartWindowLabel(tracksideChartWindow.start, tracksideChartWindow.end) }}</span></section>
+                    <details><summary>技术诊断</summary><div><span>链路存在区段 {{ formatChartCount(tracksideSignal.total_link_runs) }}</span><span>角色切换 {{ formatChartCount(tracksideSignal.role_switch_count) }}</span><span>缺失轨旁信号跳过 {{ formatChartCount(tracksideSignal.skipped_missing_signal_points) }}</span><span>查询行 {{ formatChartCount(tracksideSignal.response_budget?.selected_rows) }} / {{ formatChartCount(tracksideSignal.response_budget?.source_rows) }}</span><span>事件 {{ formatChartCount(tracksideSignal.response_budget?.returned_events) }} / {{ formatChartCount(tracksideSignal.response_budget?.total_events) }}</span><span>Payload {{ formatPayloadBytes(tracksideSignal.payload_bytes) }}</span></div></details>
                   </div>
                   <div ref="tracksideChartHost" class="rssi-pane-chart-host">
                     <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" />
@@ -4899,6 +4924,7 @@ function exportTimestamp(now = new Date()): string {
 .selected-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;padding:8px 12px;border:1px solid var(--nc-border-light);border-radius:6px;background:var(--nc-bg-page)}
 .rssi-layout-switch{display:inline-flex;align-items:center}.rssi-layout-switch .el-button{margin-left:0;border-radius:0}.rssi-layout-switch .el-button:first-child{border-radius:6px 0 0 6px}.rssi-layout-switch .el-button:last-child{border-radius:0 6px 6px 0}.rssi-layout-switch .el-button+.el-button{margin-left:-1px}.rssi-layout-switch .el-button.is-current{position:relative;z-index:1;color:var(--nc-primary);border-color:var(--nc-primary);background:color-mix(in srgb,var(--nc-primary) 12%,var(--nc-bg-card))}
 .rssi-load-stage{display:flex;min-height:28px;align-items:center;gap:10px;padding:4px 8px;color:var(--nc-text-secondary);background:var(--nc-bg-page);border-left:3px solid var(--nc-primary);font-size:12px}.rssi-load-stage strong{color:var(--nc-primary);white-space:nowrap}.rssi-workspace-host{width:100%;min-width:0;min-height:240px;overflow:hidden}.rssi-pane-content{display:flex;width:100%;height:100%;min-width:0;min-height:0;flex-direction:column;overflow-y:auto}.rssi-pane-heading{display:flex;min-height:36px;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:2px 4px}.rssi-pane-heading h3{margin:0}.rssi-pane-alerts{max-height:104px;flex:none;overflow-y:auto}.rssi-pane-alerts:empty{display:none}.rssi-pane-summary{flex:none;flex-wrap:nowrap!important;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}.rssi-pane-summary span{flex:none;white-space:nowrap}.rssi-pane-chart-host{width:100%;min-width:0;min-height:240px;flex:1 0 240px}
+.chart-fact-groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));align-items:start;gap:6px;padding:5px 0;color:var(--nc-text-secondary);font-size:12px}.chart-fact-groups section,.chart-fact-groups details{display:flex;min-width:0;flex-wrap:wrap;align-content:flex-start;gap:4px 10px}.chart-fact-groups section>strong{width:100%;color:var(--nc-text-primary);font-weight:600}.chart-fact-groups section>span,.chart-fact-groups details>div>span{min-width:0;overflow-wrap:anywhere}.chart-fact-groups details summary{color:var(--nc-primary);cursor:pointer;white-space:nowrap}.chart-fact-groups details>div{display:flex;flex-wrap:wrap;gap:4px 10px;padding-top:4px}.chart-fact-groups details[open]{grid-column:1/-1}
 .mesh-page{display:flex;min-height:0;min-width:0;flex-direction:column;gap:16px}.page-heading,.detail-heading,.jump-actions,.toolbar,.pagination,.mini-summary,.chart-toolbar,.task-line{display:flex;align-items:center;gap:12px}.page-heading,.detail-heading,.pagination{justify-content:space-between}.page-heading h1,.detail-heading h2{margin:2px 0 6px}.page-heading p,.detail-heading p,.hint{margin:0;color:var(--nc-text-secondary)}.eyebrow{color:var(--nc-primary)!important;font-size:12px;font-weight:700;letter-spacing:.08em}.summary-grid{display:grid;grid-template-columns:repeat(8,minmax(105px,1fr));gap:10px}.metric-card,.content-card{background:var(--nc-bg-card);border:1px solid var(--nc-border-light);border-radius:12px}.metric-card{padding:13px}.metric-card span{color:var(--nc-text-secondary);font-size:12px}.metric-card strong{display:block;margin-top:6px;font-size:22px}.content-card{padding:14px 16px;overflow:hidden}.sessions-panel{padding-top:10px}.sessions-toggle{display:flex;width:100%;min-height:42px;align-items:center;gap:10px;padding:6px 4px;color:var(--nc-text-primary);background:transparent;border:0;cursor:pointer;text-align:left}.sessions-toggle>span:not(.el-tag){min-width:0;overflow:hidden;color:var(--nc-text-secondary);text-overflow:ellipsis;white-space:nowrap}.sessions-toggle .el-tag{margin-left:auto}.sessions-toolbar{margin-top:14px}.task-card{max-height:140px;margin:8px 0 14px;padding:10px 12px;overflow:hidden;background:var(--nc-bg-page);border:1px solid var(--nc-border-light);border-radius:8px}.task-line{min-width:0}.task-copy{display:flex;min-width:0;flex:1;flex-direction:column}.task-copy span,.task-summary{overflow:hidden;color:var(--nc-text-secondary);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.task-line>.el-button{margin-left:auto}.task-card :deep(.el-progress){margin-top:8px}.task-summary{margin:7px 0 0}.toolbar,.jump-actions,.mini-summary,.chart-toolbar{flex-wrap:wrap}.toolbar{margin-bottom:12px}.toolbar .el-input{width:240px}.toolbar .el-select{width:145px}.chart-toolbar{padding:10px 0 4px}.chart-toolbar .el-select:first-child{width:min(620px,100%)}.pagination{flex:none;padding-top:12px;color:var(--nc-text-secondary)}.detail-card{display:flex;min-height:0;flex-direction:column}.detail-tabs{min-height:0;flex:none;scroll-margin-top:12px}.detail-card :deep(.detail-tabs>.el-tabs__content){display:none}.detail-tab-content{min-height:0;flex:1}.analysis-subtabs :deep(.el-tabs__content){display:none}.table-pane,.chart-pane{min-height:0}.table-pane{display:flex;flex-direction:column}.table-host,.chart-host{min-height:0;min-width:0;flex:none}.chart-host{width:100%;min-height:360px}.detail-card .el-alert,.task-card .el-alert{margin:10px 0}.warning-summary .el-alert{margin:10px 0}.warning-list{display:flex;flex-direction:column;gap:8px}.mini-summary{padding:10px 0}.mini-summary span{padding:9px 12px;border-radius:8px;background:var(--nc-bg-page)}.hint{font-size:12px}.hidden-input{display:none}.profile-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.bundle-table-wrap{overflow-x:auto;margin-top:12px}.bundle-table{width:100%;border-collapse:collapse;min-width:900px}.bundle-table th,.bundle-table td{padding:9px;border-bottom:1px solid var(--nc-border-light);text-align:left;vertical-align:middle}.bundle-table th{color:var(--nc-text-secondary);font-size:12px}.bundle-table td small{display:block;color:var(--nc-text-secondary);margin-top:4px}.mesh-role-active{color:var(--nc-success);font-weight:600}.mesh-role-standby{color:var(--nc-text-secondary)}.nc-data-table :deep(.mesh-time-group-0 > td.el-table__cell){background:var(--nc-bg-card)}.nc-data-table :deep(.mesh-time-group-1 > td.el-table__cell){background:var(--nc-bg-page)}.nc-data-table :deep(.mesh-row-active > td.el-table__cell){color:var(--nc-success)}.nc-data-table :deep(.mesh-build-selected > td.el-table__cell){background:color-mix(in srgb,var(--nc-primary) 14%,var(--nc-bg-card))}.nc-data-table :deep(.mesh-time-group-0:hover > td.el-table__cell),.nc-data-table :deep(.mesh-time-group-1:hover > td.el-table__cell),.nc-data-table :deep(.mesh-build-selected:hover > td.el-table__cell){background:var(--nc-table-hover-bg)}h3{margin:16px 0 8px}pre{max-height:360px;overflow:auto;padding:12px;background:var(--nc-bg-code);color:var(--nc-text-code);border-radius:8px;font:12px/1.6 Consolas,monospace}@media(max-width:1450px){.summary-grid{grid-template-columns:repeat(4,minmax(120px,1fr))}}@media(max-width:900px){.summary-grid{grid-template-columns:repeat(2,minmax(120px,1fr))}.page-heading,.detail-heading{align-items:flex-start;flex-direction:column}.profile-grid{grid-template-columns:1fr}.sessions-toggle>span:not(.el-tag){display:none}}
 .mesh-page.is-rssi-workspace{gap:8px}
 .is-rssi-workspace .page-heading{min-height:36px;gap:12px}
@@ -4933,9 +4959,7 @@ function exportTimestamp(now = new Date()): string {
 .rssi-pane-alert__text{min-width:0;overflow:hidden;flex:1;text-overflow:ellipsis;white-space:nowrap}
 .rssi-pane-alert__details p{margin:0 0 8px;line-height:1.5}
 .rssi-pane-alert__details p:last-child{margin-bottom:0}
-.mesh-page .rssi-pane-summary{min-height:26px;max-height:26px;padding:0;gap:6px;scrollbar-width:none}
-.mesh-page .rssi-pane-summary::-webkit-scrollbar{display:none}
-.mesh-page .rssi-pane-summary span{height:24px;padding:2px 8px;line-height:20px}
+.mesh-page .chart-fact-groups{flex:none;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));overflow:visible}
 .rssi-pane-chart-host{min-height:240px;flex:1 0 240px}
 .rssi-pane-state{display:flex;min-height:36px;align-items:center;gap:8px;padding:6px 8px;color:var(--nc-text-secondary);font-size:12px}
 .is-rssi-workspace #pane-rssi>.hint{display:none}

@@ -304,6 +304,8 @@ class MeshLinkDetailExportRequestDTO(ApiModel):
     export_mode: Literal["business", "diagnostic"] = "business"
     source_file_id: int = Field(gt=0)
     analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
+    exclude_depot: bool = True
+    exclude_parking: bool = True
 
 
 class MeshRawLinkExportRequestDTO(ApiModel):

@@ -192,6 +192,7 @@ export interface MeshBusinessSummary {
   ap_total: number; grades: Record<string, number>; single_link_count: number; single_link_seconds: number
   single_link_ap_count: number; single_link_radios: number[]
   good_threshold: number; warning_threshold: number; backup_available_threshold: number; minimum_samples: number
+    exclude_depot: boolean; exclude_parking: boolean; scope_label: string
 }
 export interface MeshMaintenanceState {
   schema_current: string; schema_latest: string; schema_status: 'current' | 'outdated' | 'missing' | 'unreadable'

@@ -1025,6 +1025,8 @@ def ap_signal_statistics(
     descending: bool = False,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
+    exclude_depot: bool = True,
+    exclude_parking: bool = True,
 ) -> MeshApStatisticsPageDTO:
     return _query(
         lambda: _service(request).list_ap_signal_statistics(
@@ -1037,6 +1039,8 @@ def ap_signal_statistics(
             descending=descending,
             page=page,
             page_size=page_size,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
         )
     )
 
@@ -1046,11 +1050,18 @@ def ap_signal_statistics(
     dependencies=[Depends(require_feature("capability.mesh.business_statistics"))],
 )
 def business_summary(
-    request: Request, session_id: str, site_id: str = Query(default="", max_length=100)
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    exclude_depot: bool = True,
+    exclude_parking: bool = True,
 ) -> dict:
     return _query(
         lambda: _service(request).business_statistics(
-            _site_id(request, site_id), session_id
+            _site_id(request, site_id),
+            session_id,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
         )["summary"]
     )
 
@@ -1065,10 +1076,18 @@ def single_links(
     site_id: str = Query(default="", max_length=100),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
+    exclude_depot: bool = True,
+    exclude_parking: bool = True,
 ) -> dict:
     return _query(
         lambda: _service(request).list_single_links(
-            _site_id(request, site_id), session_id, page=page, page_size=page_size))
+            _site_id(request, site_id),
+            session_id,
+            page=page,
+            page_size=page_size,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+        ))
 
 
 @router.get("/sessions/{session_id}/artifacts", response_model=list[MeshReportArtifactDTO])
@@ -1336,6 +1355,8 @@ def start_link_detail_export(
                 exclude_none=True, exclude_unset=True
             ) if payload.analysis_params_override else None,
             export_mode=payload.export_mode,
+            exclude_depot=payload.exclude_depot,
+            exclude_parking=payload.exclude_parking,
         )
     except RailTransitWebError as exc:
         raise HTTPException(

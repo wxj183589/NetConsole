@@ -131,7 +131,7 @@ async function ensureChart(): Promise<boolean> {
     ])
     core.use([
       charts.LineChart, charts.ScatterChart, components.GridComponent, components.LegendComponent, components.TooltipComponent,
-      components.DataZoomComponent, components.MarkLineComponent, components.MarkAreaComponent, components.ToolboxComponent, renderers.CanvasRenderer,
+      components.DataZoomComponent, components.MarkLineComponent, components.MarkAreaComponent, components.TitleComponent, components.ToolboxComponent, renderers.CanvasRenderer,
     ])
     await nextTick()
     if (!props.active || !hasRenderableSize() || disposed || !container.value) return false

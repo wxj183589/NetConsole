@@ -519,6 +519,7 @@ function tooltipEntry(point: ResolvedTracksidePoint): TracksideTooltipEntry {
     metaId: meta.metaId,
     apName: pointLabel(meta),
     radio: meta.localRadio ?? series.radio,
+    peerRadio: meta.peerRadio,
     role: meta.role,
     linkCount: meta.linkCount,
     tracksideRssi: meta.rssi,
@@ -537,6 +538,7 @@ function cancelTooltipHide(): void {
 }
 
 function hideTracksideTooltip(hideEchartsTip = true): void {
+  if (pinnedTracksideFrame.value) return
   cancelTooltipHide()
   const side = tracksideTooltip.value.side
   tracksideTooltip.value = {
@@ -561,6 +563,7 @@ function scheduleTooltipHide(): void {
 }
 
 function showTracksideTooltip(timestampMillis: number): void {
+  if (pinnedTracksideFrame.value) return
   const matchedTimestamp = tooltipFrameTimestamp(timestampMillis)
   if (matchedTimestamp === null) {
     hideTracksideTooltip(false)
@@ -584,6 +587,10 @@ function showTracksideTooltip(timestampMillis: number): void {
 }
 
 function pinCurrentTracksideFrame(): void {
+  if (pinnedTracksideFrame.value) {
+    closePinnedTracksideFrame()
+    return
+  }
   const current = tracksideTooltip.value
   if (
     !current.visible
@@ -596,13 +603,14 @@ function pinCurrentTracksideFrame(): void {
     timestampMillis: current.timestampMillis,
     entries: current.entries.map((entry) => ({ ...entry })),
   }
+  tracksideTooltip.value = { ...current, source: 'local' }
   updateSelectedRangeStatus()
-  hideTracksideTooltip(false)
 }
 
 function closePinnedTracksideFrame(): void {
   pinnedTracksideFrame.value = null
   pinnedOutsideRange.value = false
+  hideTracksideTooltip()
 }
 
 function selectPinnedTracksideEntry(entry: TracksideTooltipEntry): void {
@@ -646,6 +654,7 @@ async function ensureChart(): Promise<boolean> {
       components.DataZoomComponent,
       components.MarkLineComponent,
       components.MarkAreaComponent,
+      components.TitleComponent,
       components.ToolboxComponent,
       renderers.CanvasRenderer,
     ])
@@ -658,6 +667,7 @@ async function ensureChart(): Promise<boolean> {
     }))
     invalidateAppliedViewport()
     chart.on('click', handleChartClick)
+    chart.on('dblclick', handleChartDoubleClick)
     chart.on('datazoom', handleDataZoom)
     chart.on('restore', handleRestore)
     chart.on('updateAxisPointer', handleAxisPointer)
@@ -754,6 +764,7 @@ onBeforeUnmount(() => {
   unsubscribeTheme?.()
   unsubscribeTheme = null
   chart?.off('click', handleChartClick)
+  chart?.off('dblclick', handleChartDoubleClick)
   chart?.off('datazoom', handleDataZoom)
   chart?.off('restore', handleRestore)
   chart?.off('updateAxisPointer', handleAxisPointer)
@@ -844,6 +855,21 @@ function handleChartClick(raw: unknown): void {
   if (pointMeta && pointSeries) selectTracksidePoint(pointMeta, pointSeries)
   if (event) emit('selectSwitch', event)
   if (pointMeta) emit('select-time', formatMeshViewportTimestamp(pointMeta.timestampMillis))
+}
+
+function handleChartDoubleClick(raw: unknown): void {
+  if (!props.active) return
+  if (pinnedTracksideFrame.value) {
+    closePinnedTracksideFrame()
+    hideTracksideTooltip()
+    return
+  }
+  const candidate = raw as { data?: CompactTracksideChartPoint }
+  if (!Array.isArray(candidate.data)) return
+  const point = tracksidePointMeta(seriesCache, candidate.data[2])
+  if (!point) return
+  showTracksideTooltip(point.timestampMillis)
+  pinCurrentTracksideFrame()
 }
 
 function handleDataZoom(raw: unknown): void {
@@ -1208,6 +1234,7 @@ defineExpose({
       :side="tracksideTooltip.side"
       :available-height="tooltipAvailableHeight"
       :compact="quickTooltip"
+      :pinned="Boolean(pinnedTracksideFrame)"
       @pin="pinCurrentTracksideFrame"
       @pointerenter="handleTooltipPointerEnter"
       @pointerleave="handleTooltipPointerLeave"
