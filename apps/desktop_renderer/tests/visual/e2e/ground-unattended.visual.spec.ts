@@ -188,12 +188,13 @@ test('Ground V2 真实页面十页导航、MR抽屉和Quick启停', async ({ pag
   await expect(page.getByRole('tab', { name: '快速 Ping', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(drawer).toBeHidden()
   const quick = page.locator('.quick-ping-page')
-  await expect(quick.locator('.target-select')).toContainText('192.0.2.10')
+  await expect(quick.locator('.target-select')).toContainText('合成 MR CT')
   await quick.getByRole('button', { name: '开始', exact: true }).click()
   await expect(quick).toContainText('mock-quick-1')
   expect(api.starts).toHaveLength(1)
   expect(api.starts[0]).toMatchObject({ interval_ms: 200, timeout_ms: 1000, packet_size: 64, duration_seconds: null })
   expect((api.starts[0]!.targets as unknown[]).length).toBe(2)
+  expect(JSON.stringify(api.starts[0]!.targets)).toContain('192.0.2.10')
   await quick.getByRole('button', { name: '停止当前任务', exact: true }).click()
   await expect(quick.locator('.detail .el-tag').filter({ hasText: 'COMPLETED' }).first()).toBeVisible()
   await expect(quick.getByRole('button', { name: '停止当前任务', exact: true })).toBeDisabled()
@@ -234,5 +235,82 @@ test('Ground 日志/时间轴服务端筛选分页和剩余高度', async ({ pag
     await expect(workspace.locator('.el-pagination .is-active')).toHaveText('2')
     await page.screenshot({ path: testInfo.outputPath(name === 'Syslog 日志' ? 'ground-syslog.png' : 'ground-timeline.png'), fullPage: true, animations: 'disabled' })
   }
+  expect(api.unexpected).toEqual([])
+})
+
+test('Ground 每日归档选择、确认删除与时间轴独立时间', async ({ page }, testInfo) => {
+  const api = await mockGround(page)
+  let archives = ['2026-11-05', '2026-11-06', '2026-11-04'].map(run_date => ({
+    archive_id: `daily-${run_date}`, site_id: profile.site_id, run_id: `run-${run_date}`, run_date,
+    actual_started_at: `${run_date}T08:00:00+08:00`, actual_ended_at: `${run_date}T18:00:00+08:00`,
+    mainline_train_count: 1, ping_target_count: 2, ping_sample_count: 20, covered_train_count: 1,
+    session_count: 2, complete_session_count: 2, partial_session_count: 0, syslog_record_count: 3,
+    archive_size_bytes: 100, sha256: '', manifest_sha256: '', archive_status: 'READY', file_count: 1,
+    integrity_status: 'READY', retention_until: '', summary: {}, message: '', created_at: '', updated_at: '',
+  }))
+  const deleted: string[][] = []
+  await page.route(url => url.pathname.startsWith(`${root}/archives`), async route => {
+    const path = new URL(route.request().url()).pathname
+    if (route.request().method() === 'GET' && path === `${root}/archives`) {
+      await route.fulfill({ json: { items: archives, total: archives.length, page: 1, page_size: 100 } })
+    } else if (path === `${root}/archives/batch-delete`) {
+      const payload = route.request().postDataJSON()
+      expect(payload.explicit_confirmation).toBe(true)
+      deleted.push(payload.archive_ids)
+      archives = archives.filter(row => !payload.archive_ids.includes(row.archive_id))
+      await route.fulfill({ json: { accepted_count: payload.archive_ids.length, failed_count: 0, results: [] } })
+    } else if (route.request().method() === 'DELETE') {
+      const id = path.split('/').at(-1)!
+      expect(route.request().postDataJSON().explicit_confirmation).toBe(true)
+      deleted.push([id])
+      archives = archives.filter(row => row.archive_id !== id)
+      await route.fulfill({ json: { accepted: true, state: 'QUEUED', operation_id: 'synthetic-delete' } })
+    } else await route.fallback()
+  })
+  await page.route(url => url.pathname === `${root}/timeline`, route => route.fulfill({ json: {
+    items: ['run_started', 'run_stopped'].map((event_type, index) => ({
+      event_id: index + 1, run_id: run.run_id, run_date: run.run_date, event_type, source: 'SUPERVISOR',
+      title: index ? '独立停止事件' : '独立启动事件', message: '合成时间轴事件', severity: 'info', details: {},
+      ts: now, event_at: '2026-11-07T09:00:01+08:00', device_time: '2026-11-07T08:59:58+08:00', received_at: '2026-11-07T09:00:02+08:00',
+    })), total: 2, page: 1, page_size: 100, total_exact: true,
+  } }))
+  await page.goto('/tests/visual/ground.html?netconsole_host=electron')
+  await expect(page.getByTestId('v2-heartbeat-metrics')).toContainText('2 / 0')
+  await openTab(page, '历史归档')
+  const panel = page.locator('.archive-page')
+  const rows = panel.locator('.el-table__body-wrapper tbody tr')
+  await expect(rows).toHaveCount(3)
+  await expect(panel.getByRole('button', { name: '批量删除（0）' })).toBeDisabled()
+  await rows.first().locator('.el-checkbox').click()
+  await expect(panel.locator('.selection-count')).toContainText('1')
+  await panel.getByRole('button', { name: '批量删除（1）' }).click()
+  await page.getByRole('dialog', { name: '批量删除历史归档' }).getByRole('button', { name: '取消', exact: true }).click()
+  expect(deleted).toEqual([])
+  await expect(rows).toHaveCount(3)
+  await panel.locator('.el-table__header-wrapper .el-checkbox').click()
+  await expect(panel.getByRole('button', { name: '批量删除（3）' })).toBeEnabled()
+  await panel.locator('.el-table__header-wrapper .el-checkbox').click()
+  await rows.nth(0).locator('.el-checkbox').click()
+  await rows.nth(1).locator('.el-checkbox').click()
+  await panel.getByRole('button', { name: '批量删除（2）' }).click()
+  await page.getByRole('dialog', { name: '批量删除历史归档' }).getByRole('button', { name: '删除', exact: true }).click()
+  await expect(rows).toHaveCount(1)
+  expect(deleted).toEqual([['daily-2026-11-05', 'daily-2026-11-06']])
+  await expect(panel.getByRole('button', { name: '批量删除（0）' })).toBeDisabled()
+  await rows.first().getByTitle('删除', { exact: true }).click()
+  await page.getByRole('dialog', { name: '删除历史归档' }).getByRole('button', { name: '删除', exact: true }).click()
+  await expect(rows).toHaveCount(0)
+  expect(deleted).toHaveLength(2)
+  await openTab(page, '心跳检测')
+  await expect(page.locator('.heartbeat-page .mr-card')).toHaveCount(2)
+  await expect(page.locator('.heartbeat-page')).toContainText('区间 AP CT-01')
+  await openTab(page, '时间轴')
+  const timeline = page.getByRole('tabpanel').filter({ visible: true })
+  await expect(timeline).toContainText('独立启动事件')
+  await expect(timeline).toContainText('独立停止事件')
+  await timeline.getByRole('button', { name: '详情', exact: true }).first().click()
+  const detail = page.locator('.el-drawer').filter({ hasText: '独立启动事件' })
+  for (const timestamp of ['09:00:01', '08:59:58', '09:00:02']) await expect(detail.locator('.el-descriptions')).toContainText(timestamp)
+  await page.screenshot({ path: testInfo.outputPath('ground-r321-timeline-detail.png'), fullPage: true, animations: 'disabled' })
   expect(api.unexpected).toEqual([])
 })

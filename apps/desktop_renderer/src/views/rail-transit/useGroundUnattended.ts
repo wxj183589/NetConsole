@@ -1613,7 +1613,8 @@ async function showArchive(row: GroundArchive): Promise<void> {
 }
 
 async function removeArchive(row: GroundArchive): Promise<void> {
-  await ElMessageBox.confirm(t('ground.archive_delete_confirm', `确认删除 ${row.run_date} 的无人值守归档？该操作不会作用于正在使用的当日数据。`), t('ground.archive_delete_title', '删除历史归档'), { type: 'warning', confirmButtonText: t('common.delete', '删除'), cancelButtonText: t('common.cancel', '取消') })
+  const confirmed = await ElMessageBox.confirm(t('ground.archive_delete_confirm', `确认删除 ${row.run_date} 的无人值守归档？该操作不会作用于正在使用的当日数据。`), t('ground.archive_delete_title', '删除历史归档'), { type: 'warning', confirmButtonText: t('common.delete', '删除'), cancelButtonText: t('common.cancel', '取消') }).then(() => true, () => false)
+  if (!confirmed) return
   try { await deleteGroundArchive(row.archive_id); ElMessage.success(t('ground.archive_delete_queued', '归档删除请求已提交')); await loadAll(true) }
   catch (reason) { ElMessage.error(errorText(reason, t('ground.archive_delete_failed', '归档删除失败'))) }
 }
@@ -1621,7 +1622,8 @@ async function removeArchive(row: GroundArchive): Promise<void> {
 async function removeSelectedArchives(rows: GroundArchive[] = selectedArchives.value): Promise<void> {
   const ids = [...new Set(rows.map((row) => row.archive_id).filter(Boolean))]
   if (!ids.length) { ElMessage.warning('请先选择需要删除的历史归档'); return }
-  await ElMessageBox.confirm(`确认批量删除 ${ids.length} 个历史归档？正在使用的当日数据会逐条拒绝。`, '批量删除历史归档', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+  const confirmed = await ElMessageBox.confirm(`确认批量删除 ${ids.length} 个历史归档？正在使用的当日数据会逐条拒绝。`, '批量删除历史归档', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }).then(() => true, () => false)
+  if (!confirmed) return
   try {
     const result = await deleteGroundArchives(ids)
     selectedArchives.value = []

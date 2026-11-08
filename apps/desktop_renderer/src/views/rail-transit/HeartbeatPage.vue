@@ -91,7 +91,10 @@ function scheduleNextPoll(): void {
 }
 function stopPolling(): void { generation++; controller?.abort(); controller = null; if (timer) clearTimeout(timer); timer = undefined; if (debounce) clearTimeout(debounce); loading.value = false }
 function restart(clear = false): void { stopPolling(); if (clear) { heartbeat.value = null; heartbeatError.value = ''; selectedMr.value = null; menu.value = null }; if (active.value) void loadHeartbeat() }
-watch(active, () => restart())
+watch(active, (visible) => {
+  if (!visible) { selectedMr.value = null; closeMenu() }
+  restart()
+})
 watch([selectedRunId, quickContextRevision], () => restart(true))
 watch(() => monitorStatus?.value?.state, (next, previous) => {
   if (next === previous) return
