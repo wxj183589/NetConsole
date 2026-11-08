@@ -98,7 +98,7 @@ export const getMeshBusinessSummary = (id: string, scope: Record<string, boolean
 export const listMeshApSignalStatistics = (id: string, values: Record<string, QueryValue>, signal?: AbortSignal): Promise<Page<MeshApSignal>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/ap-signal-statistics${qs(values)}`, { signal })
 export const listMeshSingleLinks = (id: string, values: Record<string, QueryValue>, signal?: AbortSignal): Promise<Page<MeshSingleLink>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/single-links${qs(values)}`, { signal })
 export const exportMeshRawLinks = (id: string, sourceFileId: number): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/raw-links/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId }) })
-export const listMeshLinks = (id: string, values: Record<string, QueryValue>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/links${qs(values)}`)
+export const listMeshLinks = (id: string, values: Record<string, QueryValue>, signal?: AbortSignal): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/links${qs(values)}`, signal ? { signal } : undefined)
 export const listMeshActiveBuildOrder = (
   id: string,
   values: Record<string, QueryValue>,
@@ -131,7 +131,7 @@ export const listMeshSwitchEvents = (id: string, values: Record<string, QueryVal
 export const getMeshRssi = (id: string): Promise<MeshRssi> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/rssi`)
 export const getMeshChannelBusy = (id: string): Promise<{ items: MeshChannelBusy[]; total: number; downsampled: boolean }> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/channel-busy`)
 export const getMeshRateSeries = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshRatePage> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/rate-series${qs(values)}`)
-export const getMeshCounterDeltas = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}): Promise<MeshCounterDeltaPage> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/counter-deltas${qs(values)}`)
+export const getMeshCounterDeltas = (id: string, values: Record<string, string | number | boolean | null | undefined> = {}, signal?: AbortSignal): Promise<MeshCounterDeltaPage> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/counter-deltas${qs(values)}`, signal ? { signal } : undefined)
 export const listMeshAnomalies = (id: string): Promise<Page<MeshAnomaly>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/anomalies`)
 export const listMeshArtifacts = (id: string): Promise<MeshArtifact[]> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/artifacts`)
 export const deleteMeshArtifact = (id: string, artifactId: string): Promise<{ artifact_id: string; name: string; deleted_files: number }> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/artifacts/${encodeURIComponent(artifactId)}`, { method: 'DELETE', body: JSON.stringify({ explicit_confirmation: true }) })

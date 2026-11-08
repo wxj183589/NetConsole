@@ -66,8 +66,8 @@ import {
 } from '../../api/meshAnalysis'
 import { exportMeshAnalysisReport, getRailTransitTask, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import type { MeshAnalysisParamsOverride } from '../../api/railTransitWeb'
-import MeshBusinessSummary from '../../components/mesh-analysis/MeshBusinessSummary.vue'
 import MeshBusinessParams from '../../components/mesh-analysis/MeshBusinessParams.vue'
+import MeshPhase11Workbench from '../../components/mesh-analysis/MeshPhase11Workbench.vue'
 import { initialMeshResolution, meshWindowResolution } from '../../components/mesh-analysis/meshLoadingPolicy'
 import {
   isMeshLoadingActivePhase,
@@ -4964,7 +4964,12 @@ function exportTimestamp(now = new Date()): string {
       </el-alert>
       <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
-      <MeshBusinessSummary v-if="selected.session.parsed_status === 'ready' && isFeatureEnabled('capability.mesh.business_statistics')" :session-id="selected.session.session_id" :revision="JSON.stringify([selected.analysis_params, selected.maintenance_state, selected.session.analysis_time])" @scope-change="meshBusinessScope = $event" />
+      <MeshPhase11Workbench
+        v-if="selected.session.parsed_status === 'ready' && isFeatureEnabled('capability.mesh.business_statistics')"
+        :session-id="selected.session.session_id"
+        :session="selected.session"
+        @scope-change="meshBusinessScope = $event"
+      />
       <el-tabs v-model="activeTab" class="detail-tabs">
         <el-tab-pane label="主链路建链顺序" name="build-order" />
         <el-tab-pane label="链路明细" name="links" />
