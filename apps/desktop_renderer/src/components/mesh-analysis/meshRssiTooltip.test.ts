@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { MeshChartEvent, MeshChartPoint } from '../../types/meshAnalysis'
-import { buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip, buildMeshSwitchPointTooltip, peerRadioPort } from './meshRssiTooltip'
+import { buildMeshRssiQuickTooltip, buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip, buildMeshSwitchPointTooltip, peerRadioPort } from './meshRssiTooltip'
 
 const point: MeshChartPoint = {
   link_id: 1,
@@ -200,6 +200,12 @@ describe('MESH RSSI tooltip', () => {
     expect(html).toContain('切入：—')
     expect(html).not.toContain('from-mac')
     expect(html).not.toContain('to-mac')
+  })
+
+  it('keeps the quick tooltip free of peer MAC fallbacks', () => {
+    const html = buildMeshRssiQuickTooltip({ ...point, peer_ap_name: null, peer_mac: 'hidden-peer-mac' })
+    expect(html).toContain('AP 轨旁 AP 未知')
+    expect(html).not.toContain('hidden-peer-mac')
   })
 
   it('renders radio, peer radio, state, and sample-level busy values without null artifacts', () => {
