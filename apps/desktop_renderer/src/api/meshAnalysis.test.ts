@@ -134,7 +134,7 @@ describe('Mesh profile API', () => {
     await exportMeshLinkDetails('mr-id:1', 7, params)
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/rail-transit/mesh-analysis/sessions/mr-id%3A1/link-details/export')
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ source_file_id: 7, analysis_params_override: params })
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ source_file_id: 7, analysis_params_override: params, export_mode: 'business' })
   })
 
   it('starts the raw link export for the selected source', async () => {

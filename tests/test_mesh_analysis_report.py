@@ -39,6 +39,7 @@ from netconsole.services.mesh_quality_analysis import (
     build_active_segments as build_quality_active_segments,
     build_busy_analysis,
     build_overview,
+    build_peer_quality,
     build_sample_quality,
     get_threshold_template,
     load_threshold_templates,
@@ -290,18 +291,20 @@ def test_rssi_and_channel_busy_statistics_keep_raw_positive_values():
     assert busy["local_tx_busy_avg"] == 12
 
 
-def test_excel_report_contains_required_sheets_headers_and_empty_parse_issue_text(tmp_path):
+def test_excel_report_contains_required_sheets_headers_and_empty_parse_issue_text(tmp_path,
+):
     model = MeshAnalysisReportModel(
         mr_name="14CW-01",
         report_name="14CW-01",
         generated_at=datetime.now(),
-        options=MeshReportOptions(),
+        options=MeshReportOptions(export_mode="diagnostic"),
         overview={"mr_name": "14CW-01"},
         active_segments=build_active_segments([_row("2025-12-03 10:00:00.000", PEER_A)]),
     )
     path = MeshAnalysisExcelReportExporter().export(model, tmp_path / "report.xlsx")
     workbook = load_workbook(path)
-    assert workbook.sheetnames == [definition[0] for definition in SHEET_DEFINITIONS]
+    assert workbook.sheetnames == [definition[0] for definition in SHEET_DEFINITIONS
+    ] + ["AP 信号质量", "单链路风险"]
     assert [cell.value for cell in workbook["主链路切换分析"][1]][:4] == [
         REPORT_FIELD_LABELS["sequence"],
         REPORT_FIELD_LABELS["radio"],
@@ -311,7 +314,8 @@ def test_excel_report_contains_required_sheets_headers_and_empty_parse_issue_tex
     assert workbook["解析问题"]["F2"].value == EMPTY_PARSE_ISSUES_TEXT
 
 
-def test_formal_report_reuses_repository_results_and_exports_fixed_active_series(tmp_path: Path):
+def test_formal_report_reuses_repository_results_and_exports_fixed_active_series(tmp_path: Path,
+):
     paths = PathResolver(tmp_path)
     profile = MeshStorageService("demo", paths).create_mr_profile("14CW-01")
     source = tmp_path / "meshlog.log"
@@ -340,7 +344,7 @@ def test_formal_report_reuses_repository_results_and_exports_fixed_active_series
     expected_order = index_repository.query_active_link_build_order(source_file_id)
 
     model = MeshAnalysisReportService(index_path, profile.display_name).build_report(
-        MeshReportOptions(source_file_id=source_file_id)
+        MeshReportOptions(source_file_id=source_file_id, export_mode="diagnostic")
     )
 
     assert [row["active_peer_mac"] for row in model.active_build_order] == [
@@ -357,7 +361,9 @@ def test_formal_report_reuses_repository_results_and_exports_fixed_active_series
     expected_business_sheets = [definition[0] for definition in SHEET_DEFINITIONS]
     assert workbook.sheetnames[: len(expected_business_sheets)] == expected_business_sheets
     assert {"链路明细", "全量链路明细", "Peer质量排名", "AP统计"}.isdisjoint(workbook.sheetnames)
-    assert all(workbook[name].sheet_state == "hidden" for name in workbook.sheetnames[len(expected_business_sheets) :])
+    assert all(workbook[name].sheet_state == "hidden" for name in workbook.sheetnames[len(expected_business_sheets) :]
+        if name not in {"AP 信号质量", "单链路风险"}
+    )
     build_sheet = workbook["主链路建链顺序"]
     assert [cell.value for cell in build_sheet[2]] == [
         None if value == "" else value for value in active_build_order_row_values(model.active_build_order[0])
@@ -843,3 +849,59 @@ def test_quality_rebuild_busy_and_percentiles():
     assert {event["rebuild_type"] for event in rebuilds} >= {"LINKCNT_INCREASE", "DURATION_RESET"}
     busy = build_busy_analysis(rows, MeshQualityRules(busy_warning_threshold=60, busy_bad_threshold=75))[0]
     assert busy["busy_level"] == "BAD"
+
+
+def test_peer_quality_uses_radio_scoped_segments_and_switch_counts():
+    rows = normalize_samples(
+        [
+            _row("2025-12-03 10:00:00", PEER_A, "ACTIVE", radio=1, mr_rssi=28),
+            _row("2025-12-03 10:00:01", PEER_B, "STANDBY", radio=1, mr_rssi=42),
+            _row("2025-12-03 10:00:02", PEER_A, "ACTIVE", radio=2, mr_rssi=34),
+        ]
+    )
+    segments = [
+        {
+            "radio": 1,
+            "active_peer_key": PEER_A,
+            "duration_seconds": 4,
+            "weak_rssi_seconds": 2,
+            "no_backup_seconds": 3,
+        },
+        {
+            "radio": 2,
+            "active_peer_key": PEER_A,
+            "duration_seconds": 6,
+            "weak_rssi_seconds": 0,
+            "no_backup_seconds": 0,
+        },
+    ]
+    switches = [
+        {
+            "radio": 1,
+            "from_peer": PEER_B,
+            "to_peer": PEER_A,
+            "is_pingpong_abnormal": True,
+        },
+        {
+            "radio": 2,
+            "from_peer": PEER_A,
+            "to_peer": PEER_B,
+            "switch_type": "NORMAL",
+            "is_pingpong_abnormal": False,
+        },
+    ]
+
+    result = build_peer_quality(rows, segments, switches, MeshQualityRules())
+    by_radio = {
+        row["radio"]: row for row in result if row["peer_mac"] == "30f5-277a-5a2f"
+    }
+
+    assert by_radio[1]["active_segment_count"] == 1
+    assert by_radio[1]["switch_in_count"] == 1
+    assert by_radio[1]["switch_out_count"] == 0
+    assert by_radio[1]["flap_related_count"] == 1
+    assert by_radio[1]["no_backup_when_active_seconds"] == 3
+    assert by_radio[2]["active_segment_count"] == 1
+    assert by_radio[2]["switch_in_count"] == 0
+    assert by_radio[2]["switch_out_count"] == 1
+    assert by_radio[2]["flap_related_count"] == 1

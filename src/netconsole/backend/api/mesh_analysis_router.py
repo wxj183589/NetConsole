@@ -238,10 +238,12 @@ def _gui_production_authorization(request: Request, operation: str) -> str:
 
 
 def _query(callback: Callable[[], T]) -> T:
+    from netconsole.services.mesh_business_statistics import MeshBusinessParamsError
+
     with map_api_errors("Mesh 分析结果暂时不可读取"):
         try:
             return callback()
-        except MeshAnalysisTimeRangeError as exc:
+        except (MeshAnalysisTimeRangeError, MeshBusinessParamsError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except (MeshAnalysisPayloadLimitError, MeshChartSelectionLimitError) as exc:
             raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
@@ -1007,6 +1009,68 @@ def ap_statistics(
     return _query(lambda: _service(request).list_ap_statistics(_site_id(request, site_id), session_id, query=query, page=page, page_size=page_size))
 
 
+@router.get(
+    "/sessions/{session_id}/ap-signal-statistics",
+    response_model=MeshApStatisticsPageDTO,
+    dependencies=[Depends(require_feature("capability.mesh.business_statistics"))],
+)
+def ap_signal_statistics(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    query: str = Query(default="", max_length=200),
+    station: str = Query(default="", max_length=200),
+    signal_grade: str = Query(default="", max_length=30),
+    sort_by: str = Query(default="peer_ap_name", max_length=30),
+    descending: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+) -> MeshApStatisticsPageDTO:
+    return _query(
+        lambda: _service(request).list_ap_signal_statistics(
+            _site_id(request, site_id),
+            session_id,
+            query=query,
+            station=station,
+            signal_grade=signal_grade,
+            sort_by=sort_by,
+            descending=descending,
+            page=page,
+            page_size=page_size,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/business-summary",
+    dependencies=[Depends(require_feature("capability.mesh.business_statistics"))],
+)
+def business_summary(
+    request: Request, session_id: str, site_id: str = Query(default="", max_length=100)
+) -> dict:
+    return _query(
+        lambda: _service(request).business_statistics(
+            _site_id(request, site_id), session_id
+        )["summary"]
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/single-links",
+    dependencies=[Depends(require_feature("capability.mesh.business_statistics"))],
+)
+def single_links(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+) -> dict:
+    return _query(
+        lambda: _service(request).list_single_links(
+            _site_id(request, site_id), session_id, page=page, page_size=page_size))
+
+
 @router.get("/sessions/{session_id}/artifacts", response_model=list[MeshReportArtifactDTO])
 def artifacts(request: Request, session_id: str, site_id: str = Query(default="", max_length=100)) -> list[MeshReportArtifactDTO]:
     return _query(lambda: _service(request).list_report_artifacts(_site_id(request, site_id), session_id))
@@ -1225,7 +1289,9 @@ def start_report(
 ) -> RailTransitTaskDTO:
     try:
         override = (
-            payload.analysis_params_override.model_dump(exclude_none=True)
+            payload.analysis_params_override.model_dump(
+                exclude_none=True, exclude_unset=True
+            )
             if payload and payload.analysis_params_override
             else None
         )
@@ -1233,6 +1299,7 @@ def start_report(
             _current_site_id(request),
             session_id,
             analysis_params_override=override,
+            export_mode=payload.export_mode if payload else "business",
         )
     except RailTransitWebError as exc:
         raise HTTPException(
@@ -1265,7 +1332,10 @@ def start_link_detail_export(
             _current_site_id(request),
             session_id,
             source_file_id=payload.source_file_id,
-            analysis_params_override=payload.analysis_params_override.model_dump(exclude_none=True) if payload.analysis_params_override else None,
+            analysis_params_override=payload.analysis_params_override.model_dump(
+                exclude_none=True, exclude_unset=True
+            ) if payload.analysis_params_override else None,
+            export_mode=payload.export_mode,
         )
     except RailTransitWebError as exc:
         raise HTTPException(

@@ -122,10 +122,10 @@ export function ensureOnlineMrParsedDatabaseCurrent(sessionId: string): Promise<
   )
 }
 
-export function exportMeshAnalysisReport(sessionId: string, override?: MeshAnalysisParamsOverride): Promise<RailTransitTask> {
+export function exportMeshAnalysisReport(sessionId: string, override?: MeshAnalysisParamsOverride, exportMode: 'business' | 'diagnostic' = 'business'): Promise<RailTransitTask> {
   return apiRequest<RailTransitTask>(`/api/rail-transit/mesh-analysis/sessions/${encodeURIComponent(sessionId)}/report`, {
     method: 'POST',
-    ...(override ? { body: JSON.stringify({ analysis_params_override: override }) } : {}),
+    body: JSON.stringify({ export_mode: exportMode, ...(override ? { analysis_params_override: override } : {}) }),
   })
 }
 

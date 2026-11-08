@@ -166,10 +166,32 @@ export interface MeshRawSource {
   identity_index_revision: number; identity_current_revision: number; identity_mapped_at: string; identity_mapping_status: string
 }
 export interface MeshAnalysisParams {
+  rssi_good_threshold?: number | null; rssi_warning_threshold?: number | null; backup_available_threshold?: number | null
+  ap_minimum_samples?: number
   link_time_window: number; link_switch_threshold: number; link_hold_rssi: number; link_establish_threshold: number
   main_link_switch_time_ms: number; short_link_tolerance_ms: number; pingpong_tolerance_ms: number; pingpong_return_window_ms: number | null
   merge_same_physical_ap_dual_radio: boolean; include_log_boundary_segments: boolean; sample_interval_ms: number | null
   service_type: 'PIS' | 'CBTC' | '信号' | '其他'; wifi_type: 'WiFi5' | 'WiFi6' | '其他'
+}
+
+export interface MeshApSignal {
+  peer_ap_name: string | null; peer_ap_mac: string | null; peer_mac_raw: string | null
+  station: string; section: string; match_status: string
+  avg_rssi: number | null; min_rssi: number | null; max_rssi: number | null; p10_rssi: number | null
+  valid_sample_count: number; weak_sample_count: number; weak_ratio: number | null
+  first_seen: string; last_seen: string; signal_grade: string
+}
+export interface MeshSingleLink {
+  radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; station: string; section: string
+  start_time: string; end_time: string; duration_seconds: number; sample_count: number
+  standby_peer_count: number; available_backup_count: number; best_backup_rssi: number | null
+  risk_type: string; diagnosis: string; source_file_id: number
+  source_line_number_start: number | null; source_line_number_end: number | null; active_peer_mac: string | null
+}
+export interface MeshBusinessSummary {
+  ap_total: number; grades: Record<string, number>; single_link_count: number; single_link_seconds: number
+  single_link_ap_count: number; single_link_radios: number[]
+  good_threshold: number; warning_threshold: number; backup_available_threshold: number; minimum_samples: number
 }
 export interface MeshMaintenanceState {
   schema_current: string; schema_latest: string; schema_status: 'current' | 'outdated' | 'missing' | 'unreadable'

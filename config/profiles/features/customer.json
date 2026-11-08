@@ -515,6 +515,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "capability.mesh.business_statistics": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "capability.mesh.source_open_location": {
       "visible": true,
       "enabled": true,

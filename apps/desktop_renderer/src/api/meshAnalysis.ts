@@ -4,6 +4,7 @@ import type {
   MeshActiveBuildOrder, MeshChannelBusy, MeshCounterDeltaPage, MeshLinkDetail, MeshPathChart, MeshRawSource, MeshRawTail, MeshRatePage, MeshRssi, MeshSessionDetail, MeshSwitchEvent,
   MeshTimelineItem, MeshProfile, MeshImportContext, MeshImportContextPrepare, MeshBundleImportRequest, MeshBundlePreview, MeshAnalysisParams, MeshTracksideSignalChartData, MeshAnalysisOverview, Page,
   MeshLocalScanResult, MeshLocalScanStart, MeshApCoverageAudit, MeshParseIssuePage,
+  MeshBusinessSummary, MeshApSignal, MeshSingleLink,
 } from '../types/meshAnalysis'
 import type { RailTransitTask } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
@@ -92,7 +93,10 @@ export const startMeshMaintenance = (
     body: JSON.stringify({ ...payload, explicit_confirmation: true }),
   },
 )
-export const exportMeshLinkDetails = (id: string, sourceFileId: number, analysisParamsOverride?: MeshAnalysisParams): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/link-details/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId, ...(analysisParamsOverride ? { analysis_params_override: analysisParamsOverride } : {}) }) })
+export const exportMeshLinkDetails = (id: string, sourceFileId: number, analysisParamsOverride?: MeshAnalysisParams, exportMode: 'business' | 'diagnostic' = 'business'): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/link-details/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId, export_mode: exportMode, ...(analysisParamsOverride ? { analysis_params_override: analysisParamsOverride } : {}) }) })
+export const getMeshBusinessSummary = (id: string, signal?: AbortSignal): Promise<MeshBusinessSummary> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/business-summary`, { signal })
+export const listMeshApSignalStatistics = (id: string, values: Record<string, QueryValue>, signal?: AbortSignal): Promise<Page<MeshApSignal>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/ap-signal-statistics${qs(values)}`, { signal })
+export const listMeshSingleLinks = (id: string, values: Record<string, QueryValue>, signal?: AbortSignal): Promise<Page<MeshSingleLink>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/single-links${qs(values)}`, { signal })
 export const exportMeshRawLinks = (id: string, sourceFileId: number): Promise<RailTransitTask> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/raw-links/export`, { method: 'POST', body: JSON.stringify({ source_file_id: sourceFileId }) })
 export const listMeshLinks = (id: string, values: Record<string, QueryValue>): Promise<Page<MeshLinkDetail>> => apiRequest(`${root}/sessions/${meshSessionPathSegment(id)}/links${qs(values)}`)
 export const listMeshActiveBuildOrder = (

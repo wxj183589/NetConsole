@@ -2480,6 +2480,103 @@ class MeshAnalysisQueryService:
         start = (current - 1) * size
         return MeshApStatisticsPageDTO(items=items[start : start + size], total=len(items), page=current, page_size=size)
 
+    def business_statistics(self, site_id: str, session_id: str) -> dict[str, Any]:
+        from netconsole.services.mesh_business_statistics import (
+            build_mesh_business_statistics,
+            effective_business_rules,
+            iter_business_links,
+        )
+        from netconsole.services.mesh_quality_analysis import load_default_rules
+
+        context = self._context(site_id, session_id)
+        params = load_site_mesh_analysis_params(self.paths, site_id)
+        rules = effective_business_rules(params, load_default_rules())
+        snapshot = self._ap_map(site_id)
+        if context.detail_db is None:
+            return build_mesh_business_statistics(
+                [], rules, snapshot, minimum_samples=params.ap_minimum_samples
+            )
+        path = context.detail_db
+        wal = path.with_name(path.name + "-wal")
+        signature = (
+            str(path),
+            context.detail_source_id,
+            path.stat().st_mtime_ns,
+            path.stat().st_size,
+            (wal.stat().st_mtime_ns, wal.stat().st_size) if wal.exists() else None,
+            repr(rules),
+            repr(params),
+            json.dumps(snapshot.to_serializable(), sort_keys=True),
+        )
+        cached = getattr(self, "_business_statistics_cache", None)
+        if cached and cached[0] == signature:
+            return cached[1]
+        with closing(self._connect_readonly(path)) as conn:
+            result = build_mesh_business_statistics(
+                iter_business_links(conn, context.detail_source_id),
+                rules,
+                snapshot,
+                minimum_samples=params.ap_minimum_samples,
+            )
+        # One session only; large interval collections are not retained by the cache.
+        self._business_statistics_cache = (
+            (signature, result) if len(result["single_links"]) < 10000 else None
+        )
+        return result
+
+    def list_ap_signal_statistics(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        query: str = "",
+        station: str = "",
+        signal_grade: str = "",
+        sort_by: str = "peer_ap_name",
+        descending: bool = False,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> MeshApStatisticsPageDTO:
+        from netconsole.services.mesh_business_statistics import statistics_page
+
+        result = self.business_statistics(site_id, session_id)
+        current, size = self._page(page, page_size)
+        rows, total = statistics_page(
+            result["aps"],
+            page=current,
+            page_size=size,
+            query=query,
+            station=station,
+            grade=signal_grade,
+            sort_by=sort_by,
+            descending=descending,
+        )
+        return MeshApStatisticsPageDTO(
+            items=[MeshApStatisticsDTO(**row) for row in rows],
+            total=total,
+            page=current,
+            page_size=size,
+            summary=result["summary"],
+        )
+
+    def list_single_links(
+        self, site_id: str, session_id: str, *, page: int = 1, page_size: int = 100
+    ) -> dict:
+        from netconsole.services.mesh_business_statistics import statistics_page
+
+        result = self.business_statistics(site_id, session_id)
+        current, size = self._page(page, page_size)
+        rows, total = statistics_page(
+            result["single_links"], page=current, page_size=size, sort_by="start_time"
+        )
+        return {
+            "items": rows,
+            "total": total,
+            "page": current,
+            "page_size": size,
+            "summary": result["summary"],
+        }
+
     def list_report_artifacts(self, site_id: str, session_id: str) -> list[MeshReportArtifactDTO]:
         return [item.dto for item in self._artifact_candidates(self._context(site_id, session_id))]
 

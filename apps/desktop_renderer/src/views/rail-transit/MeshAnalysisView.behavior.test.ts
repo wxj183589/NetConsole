@@ -81,6 +81,9 @@ vi.mock('../../api/meshAnalysis', () => ({
   getMeshAnalysisSession: mocks.getSession,
   getMeshAnalysisOverview: mocks.getOverview,
   getMeshAnalysisSummary: vi.fn().mockResolvedValue({ session_count: 0, train_count: 0, mr_count: 0 }),
+  getMeshBusinessSummary: vi.fn().mockResolvedValue(null),
+  listMeshApSignalStatistics: vi.fn(),
+  listMeshSingleLinks: vi.fn(),
   getMeshImportContext: mocks.getImportContext,
   getMeshPeerSegmentChart: mocks.getPeerPath,
   getMeshTracksideSignalChart: mocks.getTracksideSignal,
@@ -491,6 +494,7 @@ function refreshTestSession(sessionId: string, mrName = '列车24-MR-CT') {
     parsed_status: 'ready',
     warning_count: 0,
     report_count: 0,
+    link_record_count: 100,
   }
 }
 
@@ -669,8 +673,10 @@ async function mountHotfixRssiSession(
   sessionId: string,
   resolutionMode: 'full' | 'overview' = 'full',
   activePayload: Record<string, unknown> = hotfixActivePayload(sessionId, 30),
+  recordCount: number | null = 100,
 ) {
   const session = {
+    link_record_count: recordCount,
     session_id: sessionId,
     mr_name: '列车35-MR-CT',
     original_filename: '2026_07_24_1meshlog.log',
@@ -1409,6 +1415,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('opens a backend compound session id with one click', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'c4682b2a-ba83-44f2-8bc9-3d2b37c37237:1',
       mr_name: '列车06-MR-CT',
       original_filename: '6CTmeshlog.log',
@@ -1499,6 +1506,7 @@ describe('Mesh analysis detail behavior', () => {
     vi.stubGlobal('IntersectionObserver', undefined)
 
     const session = {
+      link_record_count: 100,
       session_id: 'session-keep-alive',
       mr_name: '列车06-MR-CT',
       original_filename: '6CTmeshlog.log',
@@ -1620,6 +1628,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('restarts an aborted active RSSI request after KeepAlive resumes the page', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-resume-active-request',
       mr_name: '列车07-MR-CT',
       original_filename: '7CTmeshlog.log',
@@ -1727,6 +1736,7 @@ describe('Mesh analysis detail behavior', () => {
     vi.stubGlobal('cancelAnimationFrame', () => undefined)
     vi.stubGlobal('IntersectionObserver', undefined)
     const session = {
+      link_record_count: 100,
       session_id: 'session-background-update',
       mr_name: '列车06-MR-CW',
       original_filename: '6CWmeshlog.log',
@@ -2199,6 +2209,7 @@ describe('Mesh analysis detail behavior', () => {
   it('refreshes imported sources after the catalog index catches up', async () => {
     vi.useFakeTimers()
     const session = {
+      link_record_count: 100,
       session_id: 'profile-1:7',
       mr_name: '列车34-MR-CT',
       train_name: '列车34',
@@ -2294,6 +2305,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('places RSSI deltas before AP MAC and shows the unified switch classification', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-1', mr_name: '列车06-MR-CT', original_filename: '6CTmeshlog.log', first_sample_time: '', last_sample_time: '',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
@@ -2328,6 +2340,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('starts the independent link detail export for the selected source', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
@@ -2343,13 +2356,14 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '开始导出')!.trigger('click')
     await flushPromises()
 
-    expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1, expect.objectContaining({ link_time_window: 4000, link_hold_rssi: 22, link_establish_threshold: 4 }))
+    expect(mocks.exportDetails).toHaveBeenCalledWith('session-1', 1, expect.objectContaining({ link_time_window: 4000, link_hold_rssi: 22, link_establish_threshold: 4 }), 'business')
     expect(mocks.routerPush).toHaveBeenCalledWith({ name: 'tasks', query: { module: 'rail', task_id: 'mesh-export-1' } })
     wrapper.unmount()
   })
 
   it('starts the raw link export for the selected source through the task center', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
@@ -2372,6 +2386,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('pages switch events through the backend and uses the available table height', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-switch-page', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
@@ -2609,6 +2624,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('waits for an explicit identity projection refresh when a healthy source revision is stale', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-identity-stale',
       mr_name: '列车07-MR-CT',
       train_name: '列车07',
@@ -2771,6 +2787,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('keeps the last successful overview and distinguishes an HTTP failure from a backend outage', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-existing', mr_name: '列车35-MR-CT', train_name: '列车35',
       original_filename: '2026_07_24_1meshlog.log', first_sample_time: '', last_sample_time: '',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
@@ -2832,6 +2849,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('locks the real RSSI viewport and requeries Busy with the same peer context', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-locked', mr_name: '列车06-MR-CT', original_filename: '6CTmeshlog.log', first_sample_time: '', last_sample_time: '',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
@@ -2925,6 +2943,7 @@ describe('Mesh analysis detail behavior', () => {
     vi.stubGlobal('IntersectionObserver', undefined)
 
     const session = {
+      link_record_count: 100,
       session_id: 'session-staged-rssi',
       mr_name: '列车07-MR-CT',
       original_filename: '7CTmeshlog.log',
@@ -3040,6 +3059,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('does not automatically request trackside data when the active RSSI request fails', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-active-failed',
       mr_name: '列车07-MR-CW',
       original_filename: '7CWmeshlog.log',
@@ -3063,6 +3083,13 @@ describe('Mesh analysis detail behavior', () => {
     expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('主链 RSSI 数据加载失败：主链查询失败')
     expect(wrapper.text()).toContain('等待主链 RSSI 图加载完成')
+    wrapper.unmount()
+  })
+
+  it.each([200_000, null])('requests overview on first open for large or unknown sessions (%s)', async (count) => {
+    const { wrapper, session } = await mountHotfixRssiSession('session-auto-resolution', 'overview', undefined, count)
+    expect(mocks.getActivePath).toHaveBeenCalledWith(session.session_id,
+      expect.objectContaining({ resolution_mode: 'overview', view_mode: 'overview' }), expect.any(AbortSignal))
     wrapper.unmount()
   })
 
@@ -3123,7 +3150,7 @@ describe('Mesh analysis detail behavior', () => {
         time_from: viewport.start_time,
         time_to: viewport.end_time,
         view_mode: 'window',
-        resolution_mode: 'overview',
+        resolution_mode: 'high',
         include_peer: false,
         include_standby_context: true,
         include_events: true,
@@ -3415,6 +3442,7 @@ describe('Mesh analysis detail behavior', () => {
     const fullMiddle = '2026-07-20 10:30:00.000'
     const fullEnd = '2026-07-20 11:00:00.000'
     const session = {
+      link_record_count: 100,
       session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: fullStart, last_sample_time: fullEnd,
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
@@ -3688,6 +3716,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('does not open RSSI for build-order row click or double click', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-row-click',
       mr_name: '列车07-MR-CT',
       original_filename: '7CTmeshlog.log',
@@ -3764,6 +3793,7 @@ describe('Mesh analysis detail behavior', () => {
     }
     vi.stubGlobal('IntersectionObserver', IdleIntersectionObserver)
     const session = {
+      link_record_count: 100,
       session_id: 'session-trackside-unloaded',
       mr_name: '列车07-MR-CT',
       original_filename: '7CTmeshlog.log',
@@ -3833,6 +3863,7 @@ describe('Mesh analysis detail behavior', () => {
   it('keeps the active RSSI chart when trackside loading fails and retries only trackside', async () => {
     vi.stubGlobal('IntersectionObserver', undefined)
     const session = {
+      link_record_count: 100,
       session_id: 'session-rssi-isolated',
       mr_name: '列车07-MR-CT',
       original_filename: '7CTmeshlog.log',
@@ -3926,6 +3957,7 @@ describe('Mesh analysis detail behavior', () => {
   it('shows an active RSSI timeout as an error instead of a zero-point success summary', async () => {
     vi.stubGlobal('IntersectionObserver', undefined)
     const session = {
+      link_record_count: 100,
       session_id: 'session-rssi-timeout',
       mr_name: '列车07-MR-CT',
       original_filename: '7CTmeshlog.log',
@@ -3967,6 +3999,7 @@ describe('Mesh analysis detail behavior', () => {
   it('aborts the previous active RSSI request when the Radio changes', async () => {
     vi.stubGlobal('IntersectionObserver', undefined)
     const session = {
+      link_record_count: 100,
       session_id: 'session-rssi-radio-abort',
       mr_name: '列车07-MR-CT',
       original_filename: '7CTmeshlog.log',
@@ -4023,6 +4056,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('opens link detail RSSI view with full-log API requests and only applies the row window to charts', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-link', mr_name: '列车07-MR-CT', original_filename: '7CTmeshlog.log', first_sample_time: '2026-07-20 09:00:00.000', last_sample_time: '2026-07-20 12:00:00.000',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
@@ -4099,6 +4133,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('falls back to the main task route when the Electron task window reports failure', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-1', mr_name: '列车34-MR-CW', original_filename: '34-CW.log', first_sample_time: '', last_sample_time: '',
       parsed_status: 'ready', warning_count: 0, report_count: 0,
     }
@@ -4122,6 +4157,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('restores the crashed session safely and waits for an explicit trackside reload', async () => {
     const session = {
+      link_record_count: 100,
       session_id: 'session-safe',
       mr_name: '列车06-MR-CW',
       original_filename: '6CWmeshlog.log',
@@ -4205,6 +4241,7 @@ describe('Mesh analysis detail behavior', () => {
 
   it('shows the source directory action only in Electron and passes no path to it', async () => {
     const session = {
+      link_record_count: 100,
       session_id: '12345678-1234-1234-1234-123456789abc:1',
       mr_name: '列车08-MR-CT',
       original_filename: '8CTmeshlog.log',

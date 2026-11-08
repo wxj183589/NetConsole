@@ -65,6 +65,10 @@ import {
 } from '../../api/meshAnalysis'
 import { exportMeshAnalysisReport, getRailTransitTask, recoverRailTransitTasks } from '../../api/railTransitWeb'
 import type { MeshAnalysisParamsOverride } from '../../api/railTransitWeb'
+import MeshBusinessSummary from '../../components/mesh-analysis/MeshBusinessSummary.vue'
+import MeshBusinessParams from '../../components/mesh-analysis/MeshBusinessParams.vue'
+import { initialMeshResolution, meshWindowResolution } from '../../components/mesh-analysis/meshLoadingPolicy'
+import { meshBusinessText as mt } from '../../i18n/meshBusiness'
 import { isFeatureEnabled } from '../../features'
 import type {
   MeshActiveBuildOrder, MeshAnalysisParams, MeshAnalysisSession, MeshAnalysisSummary, MeshArtifact, MeshBundleImportRequest, MeshBundleMapping, MeshBundlePreview, MeshLocalScanCandidate, MeshLocalScanResult,
@@ -162,6 +166,7 @@ const rawTail = ref<MeshRawTail | null>(null)
 const profiles = ref<MeshProfile[]>([])
 const baseMrs = ref<VehicleMr[]>([])
 const importVisible = ref(false)
+const exportMode = ref<'business' | 'diagnostic'>('business')
 const reportVisible = ref(false)
 const linkExportVisible = ref(false)
 const useTemporaryReportParams = ref(false)
@@ -179,6 +184,7 @@ const reportParams = reactive<MeshAnalysisParamsOverride>({
   sample_interval_ms: null,
   service_type: 'PIS',
   wifi_type: 'WiFi6',
+  rssi_good_threshold: null, rssi_warning_threshold: null, backup_available_threshold: null, ap_minimum_samples: 10,
 })
 const linkExportParams = reactive<MeshAnalysisParams>({ ...reportParams })
 const importContextLoading = ref(false)
@@ -1812,6 +1818,7 @@ async function openSessionById(
     if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
   }
   selected.value = detail
+  if (!preservedView) rssiResolutionMode.value = initialMeshResolution(detail.session.link_record_count)
   requestWorkspaceTabTitle(`MESH：${detail.session.mr_name || detail.session.train_name}`)
   reportRendererWorkload('session-selected')
   ensureSharedRssiViewport()
@@ -2218,7 +2225,7 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
   }
   const activeValues = {
     ...values,
-    resolution_mode: rssiResolutionMode.value,
+    resolution_mode: meshWindowResolution(rssiResolutionMode.value, isFullRssiViewport(viewport)),
     include_peer: showRssiPeer.value,
     include_standby_context: true,
     include_events: true,
@@ -2344,7 +2351,7 @@ async function loadActivePath(
   }
   if (metric === 'rssi') {
     values.view_mode = rssiViewModeForRange(effectiveRange)
-    values.resolution_mode = rssiResolutionMode.value
+    values.resolution_mode = meshWindowResolution(rssiResolutionMode.value, !effectiveRange?.start_time || !effectiveRange?.end_time)
   }
   if (metric === 'busy') {
     values.time_from = effectiveRange?.start_time
@@ -2412,8 +2419,10 @@ async function loadActivePath(
         || !isLatestChartRequest(metric, requestGeneration)
       ) return
       rssiActiveError.value = reason instanceof Error ? reason.message : '主链 RSSI 数据加载失败，请重试'
-      rssiActiveLoaded.value = false
-      rssiActivePaintReady.value = false
+      if (!rssiActivePath.value) {
+        rssiActiveLoaded.value = false
+        rssiActivePaintReady.value = false
+      }
       cancelTracksideIdleSchedule?.()
       cancelTracksideIdleSchedule = null
     } finally {
@@ -4048,7 +4057,7 @@ async function generateReport(): Promise<void> {
       action: 'rail.mesh_report',
       suggestedName,
       context: { sessionId },
-      submit: () => exportMeshAnalysisReport(sessionId, override),
+      submit: () => exportMeshAnalysisReport(sessionId, override, exportMode.value),
     })
     if (result.status === 'cancelled') return
     reportVisible.value = false
@@ -4088,7 +4097,7 @@ async function exportLinkDetails(): Promise<void> {
       action: 'rail.mesh_link_details',
       suggestedName,
       context: { sessionId, sourceFileId },
-      submit: () => exportMeshLinkDetails(sessionId, sourceFileId, { ...linkExportParams }),
+      submit: () => exportMeshLinkDetails(sessionId, sourceFileId, { ...linkExportParams }, exportMode.value),
     })
     if (result.status === 'cancelled') return
     linkExportVisible.value = false
@@ -4411,6 +4420,7 @@ function exportTimestamp(now = new Date()): string {
 
     <el-dialog v-model="reportVisible" title="生成 MESH 分析报告" width="min(720px, 94vw)">
       <el-form label-position="top">
+        <el-form-item :label="mt('export_mode')"><el-select v-model="exportMode"><el-option :label="mt('business')" value="business" /><el-option :label="mt('diagnostic')" value="diagnostic" /></el-select></el-form-item>
         <el-form-item><el-checkbox v-model="useTemporaryReportParams">本次报告使用临时分析参数</el-checkbox></el-form-item>
         <template v-if="useTemporaryReportParams">
           <div class="report-params-grid">
@@ -4423,6 +4433,7 @@ function exportTimestamp(now = new Date()): string {
             <el-form-item label="乒乓返回窗口 (ms)"><el-input-number v-model="reportParams.pingpong_return_window_ms" :min="1" :max="3600000" clearable /></el-form-item>
             <el-form-item label="无线类型"><el-select v-model="reportParams.wifi_type"><el-option label="WiFi 5" value="WiFi5" /><el-option label="WiFi 6" value="WiFi6" /><el-option label="其他" value="其他" /></el-select></el-form-item>
           </div>
+          <MeshBusinessParams :params="reportParams" />
           <el-checkbox v-model="reportParams.merge_same_physical_ap_dual_radio">合并同一物理 AP 双射频</el-checkbox>
           <el-checkbox v-model="reportParams.include_log_boundary_segments">包含日志边界区段</el-checkbox>
         </template>
@@ -4433,6 +4444,8 @@ function exportTimestamp(now = new Date()): string {
     <el-dialog v-model="linkExportVisible" title="导出链路明细：分析参数" width="min(720px, 94vw)">
       <div v-if="linkExportVisible">
       <el-form label-position="top">
+        <el-form-item :label="mt('export_mode')"><el-select v-model="exportMode"><el-option :label="mt('business')" value="business" /><el-option :label="mt('diagnostic')" value="diagnostic" /></el-select></el-form-item>
+        <MeshBusinessParams :params="linkExportParams" />
         <el-alert title="链路明细与综合报告使用同一局点默认；本次导出会冻结当前参数快照。" type="info" :closable="false" show-icon />
         <div class="report-params-grid">
           <el-form-item label="业务模板"><el-select :model-value="linkExportParams.service_type" @change="(value: string) => applyAnalysisTemplate(linkExportParams, value)"><el-option label="PIS" value="PIS" /><el-option label="CBTC（待现场标定）" value="CBTC" /></el-select></el-form-item>
@@ -4639,6 +4652,7 @@ function exportTimestamp(now = new Date()): string {
       </el-alert>
       <el-alert v-if="detailSectionError" :title="detailSectionError" type="warning" :closable="false" show-icon />
 
+      <MeshBusinessSummary v-if="selected.session.parsed_status === 'ready' && isFeatureEnabled('capability.mesh.business_statistics')" :session-id="selected.session.session_id" :revision="JSON.stringify([selected.analysis_params, selected.maintenance_state, selected.session.analysis_time])" />
       <el-tabs v-model="activeTab" class="detail-tabs">
         <el-tab-pane label="主链路建链顺序" name="build-order" />
         <el-tab-pane label="链路明细" name="links" />
@@ -4705,7 +4719,7 @@ function exportTimestamp(now = new Date()): string {
               </el-button>
               <el-select v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
               <span class="toolbar-label">主链 RSSI 精度</span>
-              <el-select v-model="rssiResolutionMode" @change="changeRssiResolutionMode"><el-option label="全量（默认）" value="full" /><el-option label="高精度" value="high" /><el-option label="概览" value="overview" /></el-select>
+              <el-select :title="mt('auto_note')" v-model="rssiResolutionMode" @change="changeRssiResolutionMode"><el-option :label="mt('full')" value="full" /><el-option label="高精度" value="high" /><el-option label="概览" value="overview" /></el-select>
               <span class="toolbar-label">业务叠加精度</span>
               <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="600 点" :value="600" /><el-option label="1200 点" :value="1200" /><el-option label="2000 点" :value="2000" /><el-option label="4000 点（高精度）" :value="4000" /></el-select>
             </div>
