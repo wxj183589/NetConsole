@@ -194,7 +194,7 @@ describe('MESH charts mount and render', () => {
 
     wrappers.forEach((wrapper) => wrapper.unmount())
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(3)
-    expect(echartsMock.chart.off).toHaveBeenCalledTimes(7)
+    expect(echartsMock.chart.off).toHaveBeenCalledTimes(8)
   })
 
   it('renders LinkCnt=2 as a non-fault triangle overlay without adding an RSSI curve', async () => {
@@ -1736,8 +1736,19 @@ describe('MESH charts mount and render', () => {
     const tooltip = option.tooltip.formatter([{ data: nodes.data?.[0] }])
     expect(tooltip).toContain('<strong>切换事件</strong>')
     expect(tooltip).toContain('对齐空口采样时间')
+    const pointTooltip = option.tooltip.formatter([{ data: { meta: chartPoint } }])
+    expect(pointTooltip).toContain('对端射频口：1')
+    expect(pointTooltip).not.toContain('Peer MAC')
+    expect(pointTooltip).not.toContain('Radio：1')
     expect(tooltip).not.toContain('切换耗时')
     expect(tooltip).not.toContain('切换类型')
+    const doubleClick = echartsMock.chart.on.mock.calls.find(([event]) => event === 'dblclick')?.[1] as ((payload: unknown) => void) | undefined
+    doubleClick?.({ data: { meta: chartPoint } })
+    await nextTick()
+    expect(wrapper.find('[data-mesh-busy-pinned-tooltip]').exists()).toBe(true)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(wrapper.find('[data-mesh-busy-pinned-tooltip]').exists()).toBe(false)
     wrapper.unmount()
   })
 

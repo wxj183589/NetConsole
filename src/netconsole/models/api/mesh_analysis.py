@@ -643,6 +643,7 @@ class MeshActiveBuildOrderDTO(ApiModel):
     section: str | None = None
     mileage: str | None = None
     line_side: str | None = None
+    first_sample_time: str | None = None
     build_start_time: str
     build_end_time: str
     main_link_duration_seconds: float | None = None
@@ -1188,6 +1189,27 @@ class MeshCounterDeltaPointDTO(ApiModel):
     peer_retry_delta: int | None = None
     local_error_delta: int | None = None
     peer_error_delta: int | None = None
+    sample_interval_seconds: float | None = None
+    local_tx_delta: int | None = None
+    peer_tx_delta: int | None = None
+    local_rx_delta: int | None = None
+    peer_rx_delta: int | None = None
+    local_retry_per_second: float | None = None
+    peer_retry_per_second: float | None = None
+    local_error_per_second: float | None = None
+    peer_error_per_second: float | None = None
+    local_tx_per_second: float | None = None
+    peer_tx_per_second: float | None = None
+    local_rx_per_second: float | None = None
+    peer_rx_per_second: float | None = None
+    local_tx_garp_delta: int | None = None
+    peer_rx_garp_delta: int | None = None
+    local_tx_mul_join_delta: int | None = None
+    peer_rx_mul_join_delta: int | None = None
+    local_tx_garp_per_second: float | None = None
+    peer_rx_garp_per_second: float | None = None
+    local_tx_mul_join_per_second: float | None = None
+    peer_rx_mul_join_per_second: float | None = None
 
 
 class MeshCounterDeltaPageDTO(ApiModel):

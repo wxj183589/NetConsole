@@ -21,16 +21,16 @@
 | ACTIVE_ONLY_STATUS | PASS（主链路路径按 ACTIVE 事实返回；STANDBY 仅作为上下文） |
 | SINGLE_AP_HISTORY_STATUS | PASS_WITH_LIMITATIONS（现有 Peer 连续访问/轨旁序列支持历史主备角色；未做真实样本验收） |
 | AP_ROLE_TRANSITION_STATUS | PASS（按每条采样 LinkState 建序列并保留切换事件） |
-| COUNTER_BASELINE_STATUS | PARTIAL（原始累计计数保留；本轮未新增跨角色增量算法） |
+| COUNTER_BASELINE_STATUS | PASS_WITH_LIMITATIONS（已补齐 Tx/Rx、Retry/Err、GARP/MulJoin 增量与每秒速率，并按完整链路身份分区；完整多指标趋势 UI 尚未接入） |
 | ACTIVE_SWITCH_STATUS | PASS（合成切换事件和图表节点定向回归） |
 | COMPACT_KPI_STATUS | PASS（统计区改为紧凑栏，点击行为保留） |
 | UI_RESPONSIVE_STATUS | PASS_WITH_LIMITATIONS（Renderer/typecheck；真实 Windows 125% 与 GUI 仍待） |
-| TOOLTIP_PIN_STATUS | PASS（主链路与轨旁 Tooltip 双击固定/解锁、Esc 清理） |
+| TOOLTIP_PIN_STATUS | PASS（主链路、轨旁和空口忙时 Tooltip 双击固定/解锁、Esc 清理） |
 | TOOLTIP_FIELD_SIMPLIFICATION_STATUS | PASS（主链路/备链去除重复 MAC/本端 Radio，切换事件仅保留 AP 名称与 RSSI） |
 | PEER_RADIO_PORT_STATUS | PASS（radio1/radio2 显示 1/2，无法解析显示 —） |
 | TOOLTIP_LAYOUT_STATUS | PASS_WITH_LIMITATIONS（容器边界/内部滚动已实现，未做真实窗口截图验收） |
-| TOOLTIP_REGRESSION_STATUS | PASS（本轮定向 Tooltip/挂载/trackside 回归 3 files / 49 tests passed；`vue-tsc -b` passed） |
+| TOOLTIP_REGRESSION_STATUS | PASS（本轮定向 Tooltip/挂载/trackside 回归 4 files / 54 tests passed；`vue-tsc -b` passed） |
 
 产品分支：`codex-A/mesh-analysis-scope-ui-optimization`；实现提交：`225e05d2`，Tooltip 回退修订：`2a6ea78e`。DevStatus 单独提交，两个仓库均不推送。
 
-限制：用户要求的原始 Excel ZIP 在本轮附件目录不可见，不能声称真实样本字段或三视口人工截图已独立复核；Windows 原生 DPI、Excel/WPS GUI、真实局点与设备仍待外部验收。累计计数器跨主备角色的增量基线算法仍沿用既有实现，本轮只确认原始累计字段不丢失。`FULL_GATE_STATUS=PASS` 仅引用 2026-11-08 的既有本地 Gate 证据，本轮按要求未重复全量 Gate。
+限制：用户要求的原始 Excel ZIP 在本轮附件目录不可见，不能声称真实样本字段或三视口人工截图已独立复核；Windows 原生 DPI、Excel/WPS GUI、真实局点与设备仍待外部验收。Noise/CPU/内存/Rate/TxDesFree、完整 Tx/Rx/Retry/Err/GARP/MulJoin 趋势分组及单 AP 历史选择器仍未接入主页面；当前计数器后端已完成合成数据回归，但不把未接入的图表与真实样本验收写成 PASS。`FULL_GATE_STATUS=PASS` 仅引用 2026-11-08 的既有本地 Gate 证据，本轮按要求未重复全量 Gate。

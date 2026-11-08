@@ -171,6 +171,11 @@ const importVisible = ref(false)
 const exportMode = ref<'business' | 'diagnostic'>('business')
 const reportVisible = ref(false)
 const linkExportVisible = ref(false)
+const buildOrderModalVisible = ref(false)
+const buildOrderModalLoading = ref(false)
+const buildOrderModalError = ref('')
+const buildOrderModalRow = shallowRef<MeshActiveBuildOrder | null>(null)
+let buildOrderModalGeneration = 0
 const useTemporaryReportParams = ref(false)
 const reportParams = reactive<MeshAnalysisParamsOverride>({
   link_time_window: 4000,
@@ -333,6 +338,7 @@ let rssiViewportRevision = 0
 let tracksideObserver: IntersectionObserver | null = null
 let tracksideAbortController: AbortController | null = null
 let rssiActiveAbortController: AbortController | null = null
+let busyActiveAbortController: AbortController | null = null
 let rssiActiveRequestKey = ''
 let rssiActiveLoadedKey = ''
 let rssiActiveRequestPromise: Promise<void> | null = null
@@ -641,6 +647,7 @@ const coverageColumns: NcTableColumn<NonNullable<MeshApCoverageAudit['connected'
 const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
   { key: 'sequence', label: '序号', valueType: 'number', width: 75, fixed: 'left', hideable: false },
   { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, fixed: 'left', hideable: false },
+  { key: 'first_sample_time', label: '首个采样时间', valueType: 'datetime', minWidth: 215, hideable: false },
   { key: 'peer_mac_raw', label: '原始 Peer MAC', valueType: 'mac', minWidth: 150, fixed: 'left', hideable: false, displayValue: (row) => row.peer_mac_raw || row.active_peer_mac },
   { key: 'active_peer_mac', label: '规范 Peer MAC', valueType: 'mac', minWidth: 150, visible: false },
   { key: 'peer_ap_name', label: '解析 AP 名称', valueType: 'name', minWidth: 175, hideable: false, displayValue: (row) => row.peer_ap_name || '未关联' },
@@ -977,6 +984,8 @@ function cancelInFlightRssiChartRequests(): void {
   rssiActiveRequestPromise = null
   rssiActiveRequestKey = ''
   rssiActiveLoading.value = false
+  busyActiveAbortController?.abort()
+  busyActiveAbortController = null
   tracksideAbortController?.abort()
   tracksideAbortController = null
   tracksideRequestPromise = null
@@ -1415,6 +1424,7 @@ async function resumeMeshAnalysisPage(): Promise<void> {
 
 function disposeMeshAnalysisPage(): void {
   pageActive.value = false
+  closeBuildOrderModal()
   rssiViewportInteracting.value = false
   pendingRssiQueryViewport.value = null
   overviewAbortController?.abort()
@@ -1761,6 +1771,7 @@ function resetSessionDetailState(
   chartRadioValue: number | null,
   preserveRecovery: boolean,
 ): void {
+  closeBuildOrderModal()
   cancelDeferredRssiChartWork()
   rssiActiveAbortController?.abort()
   rssiActiveAbortController = null
@@ -2365,9 +2376,20 @@ async function loadActivePath(
   }
   if (metric === 'busy') {
     const requestGeneration = nextChartGeneration(metric)
-    const result = await getMeshActivePathChart(selected.value.session.session_id, values)
-    if (generation === detailGeneration && isLatestChartRequest(metric, requestGeneration)) {
-      busyActivePath.value = result
+    busyActiveAbortController?.abort()
+    const controller = new AbortController()
+    busyActiveAbortController = controller
+    try {
+      const result = await getMeshActivePathChart(selected.value.session.session_id, values, controller.signal)
+      if (generation === detailGeneration && isLatestChartRequest(metric, requestGeneration) && !controller.signal.aborted) {
+        busyActivePath.value = result
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted && generation === detailGeneration && isLatestChartRequest(metric, requestGeneration)) {
+        throw reason
+      }
+    } finally {
+      if (busyActiveAbortController === controller) busyActiveAbortController = null
     }
     return
   }
@@ -2965,16 +2987,38 @@ function selectBuildOrderRow(row: MeshActiveBuildOrder): void {
 
 async function openBuildOrderRssi(row: MeshActiveBuildOrder): Promise<void> {
   selectBuildOrderRow(row)
-  activeTab.value = 'rssi'
   const range = buildRssiWindowRange(row.build_start_time, row.build_end_time || null, row.local_radio)
   if (!range) {
     ElMessage.warning('当前建链时间无效，无法打开动态图')
     return
   }
-  updateRssiViewport(range)
-  rssiFocusLabel.value = `已定位：主链路建链顺序 #${row.sequence} · ${row.build_start_time} — ${row.build_end_time}`
-  await nextTick()
-  document.querySelector('.detail-tabs')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const generation = ++buildOrderModalGeneration
+  buildOrderModalRow.value = row
+  buildOrderModalError.value = ''
+  buildOrderModalLoading.value = true
+  buildOrderModalVisible.value = true
+  try {
+    await Promise.all([
+      loadActivePath('rssi', range, detailGeneration, true),
+      loadActivePath('busy', range, detailGeneration),
+    ])
+    if (generation !== buildOrderModalGeneration || !buildOrderModalVisible.value) return
+  } catch (reason) {
+    if (generation === buildOrderModalGeneration) {
+      buildOrderModalError.value = reason instanceof Error ? reason.message : '动态图加载失败'
+    }
+  } finally {
+    if (generation === buildOrderModalGeneration) buildOrderModalLoading.value = false
+  }
+}
+
+function closeBuildOrderModal(): void {
+  buildOrderModalGeneration += 1
+  buildOrderModalVisible.value = false
+  buildOrderModalLoading.value = false
+  buildOrderModalError.value = ''
+  buildOrderModalRow.value = null
+  cancelInFlightRssiChartRequests()
 }
 
 async function showLinkChart(row: MeshLinkDetail): Promise<void> {
@@ -3974,6 +4018,7 @@ async function confirmSourceDelete(): Promise<void> {
 }
 
 async function closeSelectedMeshSession(): Promise<void> {
+  closeBuildOrderModal()
   cancelDeferredRssiChartWork()
   cancelInFlightRssiChartRequests()
   activeSessionOpenController?.abort()
@@ -4470,6 +4515,70 @@ function exportTimestamp(now = new Date()): string {
       <template #footer><el-button @click="reportVisible = false">取消</el-button><el-button @click="saveSiteAnalysisParams(reportParams)">保存为局点默认</el-button><el-button type="primary" :loading="taskLoading" @click="generateReport">开始生成</el-button></template>
     </el-dialog>
 
+    <el-dialog
+      v-model="buildOrderModalVisible"
+      title="主链路动态图"
+      width="min(1280px, 96vw)"
+      top="4vh"
+      destroy-on-close
+      :close-on-click-modal="false"
+      @close="closeBuildOrderModal"
+    >
+      <template v-if="buildOrderModalRow">
+        <div class="build-order-modal-meta">
+          <span><strong>AP：</strong>{{ buildOrderModalRow.peer_ap_name || '—' }}</span>
+          <span><strong>物理 AP MAC：</strong>{{ buildOrderModalRow.peer_ap_mac || '—' }}</span>
+          <span><strong>对端射频口：</strong>{{ buildOrderModalRow.peer_radio || '—' }}</span>
+          <span><strong>站点 / 区间：</strong>{{ buildOrderModalRow.station || '—' }} / {{ buildOrderModalRow.section || '—' }}</span>
+          <span><strong>首个采样：</strong>{{ buildOrderModalRow.first_sample_time || '—' }}</span>
+          <span><strong>建链：</strong>{{ buildOrderModalRow.build_start_time || '—' }} — {{ buildOrderModalRow.build_end_time || '—' }}</span>
+          <span><strong>持续：</strong>{{ display(buildOrderModalRow.main_link_duration_seconds, ' s') }}</span>
+        </div>
+        <el-alert v-if="buildOrderModalLoading" title="正在加载当前建链区段的动态图…" type="info" :closable="false" show-icon />
+        <el-alert v-else-if="buildOrderModalError" :title="buildOrderModalError" type="error" :closable="false" show-icon />
+        <template v-else>
+          <section class="build-order-modal-chart">
+            <h3>RSSI</h3>
+            <MeshRssiChart
+              v-if="rssiActivePath"
+              :points="rssiActivePath.points"
+              :rssi-line="rssiActivePath.rssi_line"
+              :events="rssiActivePath.events"
+              :location-segments="rssiActivePath.location_segments"
+              :show-peer="true"
+              :show-switch-lines="true"
+              :show-switch-points="true"
+              :show-location-band="true"
+              scope="active"
+              :active="buildOrderModalVisible"
+              :initial-viewport="buildRssiWindowRange(buildOrderModalRow.build_start_time, buildOrderModalRow.build_end_time || null, buildOrderModalRow.local_radio)"
+              :shared-time-domain="sharedRssiTimeDomain"
+            />
+            <el-empty v-else description="当前区段没有 RSSI 数据" :image-size="48" />
+          </section>
+          <section class="build-order-modal-chart">
+            <h3>空口负载</h3>
+            <MeshChannelBusyChart
+              v-if="busyActivePath"
+              :points="busyActivePath.points"
+              :events="busyActivePath.events"
+              :location-segments="busyActivePath.location_segments"
+              :show-peer="true"
+              :show-switch-lines="true"
+              :show-switch-points="true"
+              :show-location-band="true"
+              scope="active"
+              :active="buildOrderModalVisible"
+              :initial-viewport="buildRssiWindowRange(buildOrderModalRow.build_start_time, buildOrderModalRow.build_end_time || null, buildOrderModalRow.local_radio)"
+            />
+            <el-empty v-else description="当前区段没有空口负载数据" :image-size="48" />
+          </section>
+        </template>
+      </template>
+      <el-empty v-else description="未选择建链区段" :image-size="48" />
+      <template #footer><el-button @click="closeBuildOrderModal">关闭</el-button></template>
+    </el-dialog>
+
     <el-dialog v-model="linkExportVisible" title="导出链路明细：分析参数" width="min(720px, 94vw)">
       <div v-if="linkExportVisible">
       <el-form label-position="top">
@@ -4920,6 +5029,7 @@ function exportTimestamp(now = new Date()): string {
 <style scoped>
 .report-params-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 14px}
 .source-delete-list{display:flex;max-height:260px;flex-direction:column;gap:8px;overflow:auto}.source-delete-item{display:grid;grid-template-columns:minmax(180px,1.5fr) minmax(130px,1fr) minmax(260px,1.5fr);gap:12px;padding:9px 0;border-bottom:1px solid var(--nc-border-light)}.source-delete-item span{color:var(--nc-text-secondary)}.source-delete-options{display:flex;margin:16px 0;flex-direction:column;align-items:stretch;gap:10px}.source-delete-options :deep(.el-radio){height:auto;margin-right:0;padding:10px;border:1px solid var(--nc-border-light);border-radius:6px;white-space:normal}.source-delete-options :deep(.el-radio__label span){display:flex;flex-direction:column;gap:4px}.source-delete-options small{color:var(--nc-text-secondary);line-height:1.5}
+.build-order-modal-meta{display:flex;flex-wrap:wrap;gap:6px 16px;margin-bottom:12px;padding:8px 10px;border:1px solid var(--nc-border-light);background:var(--nc-bg-page);color:var(--nc-text-secondary);font-size:12px;line-height:1.5}.build-order-modal-meta strong{color:var(--nc-text-primary)}.build-order-modal-chart{min-height:220px;margin-top:12px}.build-order-modal-chart h3{margin:0 0 6px;font-size:14px}.build-order-modal-chart :deep(.chart-shell),.build-order-modal-chart :deep(.chart){height:260px;min-height:220px}
 @media(max-width:700px){.report-params-grid,.source-delete-item{grid-template-columns:1fr}}
 .selected-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0;padding:8px 12px;border:1px solid var(--nc-border-light);border-radius:6px;background:var(--nc-bg-page)}
 .rssi-layout-switch{display:inline-flex;align-items:center}.rssi-layout-switch .el-button{margin-left:0;border-radius:0}.rssi-layout-switch .el-button:first-child{border-radius:6px 0 0 6px}.rssi-layout-switch .el-button:last-child{border-radius:0 6px 6px 0}.rssi-layout-switch .el-button+.el-button{margin-left:-1px}.rssi-layout-switch .el-button.is-current{position:relative;z-index:1;color:var(--nc-primary);border-color:var(--nc-primary);background:color-mix(in srgb,var(--nc-primary) 12%,var(--nc-bg-card))}

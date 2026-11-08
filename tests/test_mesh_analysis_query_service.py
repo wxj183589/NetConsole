@@ -176,18 +176,67 @@ def test_reads_persisted_mesh_results_without_modifying_sources(tmp_path: Path) 
     assert rates.total == 4
     assert rates.items[1].local_rate_raw == 110
     assert rates.items[1].peer_rate_raw == 95
-    assert counters.total == 2
-    assert counters.items[0].local_retry_delta == 3
-    assert counters.items[0].peer_retry_delta == 0
+    assert counters.total == 1
+    assert counters.items[0].local_retry_delta is None
+    assert counters.items[0].peer_retry_delta == 5
     assert counters.items[0].local_error_delta == 1
-    assert counters.items[0].peer_error_delta == 2
-    assert counters.items[1].local_retry_delta is None
-    assert counters.items[1].peer_retry_delta == 5
-    assert counters.items[1].local_error_delta == 0
-    assert counters.items[1].peer_error_delta is None
+    assert counters.items[0].peer_error_delta is None
     assert anomalies.total >= 4
     assert location_snapshot.to_serializable() == []
     assert before == [_fingerprint(path) for path in protected]
+
+
+def test_counter_deltas_include_all_traffic_garp_and_multicast_counters(tmp_path: Path) -> None:
+    paths, session_id, detail, *_ = create_mesh_analysis_fixture(tmp_path)
+    counter_columns = (
+        "local_tx", "peer_tx", "local_rx", "peer_rx", "local_tx_garp", "peer_rx_garp",
+        "local_tx_mul_join", "peer_rx_mul_join",
+    )
+    with sqlite3.connect(detail) as conn:
+        existing_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(mesh_links)")}
+        for column in counter_columns:
+            if column not in existing_columns:
+                conn.execute(f"ALTER TABLE mesh_links ADD COLUMN {column} INTEGER")
+        conn.execute(
+            """
+            UPDATE mesh_links SET
+                local_tx = 100, peer_tx = 200, local_rx = 300, peer_rx = 400,
+                local_retry = 10, peer_retry = 20, local_err = 1, peer_err = 2,
+                local_tx_garp = 5, peer_rx_garp = 6,
+                local_tx_mul_join = 7, peer_rx_mul_join = 8
+            WHERE id = 1
+            """
+        )
+        conn.execute(
+            """
+            UPDATE mesh_links SET
+                local_tx = 817, peer_tx = 542, local_rx = 642, peer_rx = 1116,
+                local_retry = 35, peer_retry = 97, local_err = 1, peer_err = 5,
+                local_tx_garp = 5, peer_rx_garp = 6,
+                local_tx_mul_join = 9, peer_rx_mul_join = 10
+            WHERE id = 3
+            """
+        )
+    result = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery()).get_counter_deltas(  # type: ignore[arg-type]
+        "demo", session_id, max_points=10
+    )
+    assert result.total == 1
+    point = result.items[0]
+    assert point.sample_interval_seconds == pytest.approx(2.0, abs=0.001)
+    assert point.local_tx_delta == 717
+    assert point.peer_tx_delta == 342
+    assert point.local_rx_delta == 342
+    assert point.peer_rx_delta == 716
+    assert point.local_retry_delta == 25
+    assert point.peer_retry_delta == 77
+    assert point.local_error_delta == 0
+    assert point.peer_error_delta == 3
+    assert point.local_tx_garp_delta == 0
+    assert point.peer_rx_garp_delta == 0
+    assert point.local_tx_mul_join_delta == 2
+    assert point.peer_rx_mul_join_delta == 2
+    assert point.local_tx_per_second == pytest.approx(358.5, abs=0.01)
+    assert point.peer_rx_per_second == pytest.approx(358.0, abs=0.01)
 
 
 def test_full_rssi_line_bypasses_render_point_budget(tmp_path: Path) -> None:
@@ -961,7 +1010,6 @@ def test_mesh_analysis_consumers_reuse_base_radio_alias_snapshot(tmp_path: Path,
     rssi = service.get_rssi_statistics("demo", session_id, max_points=10).points[0]
     busy = service.get_channel_busy("demo", session_id, max_points=10).items[0]
     rate = service.get_rate_series("demo", session_id, max_points=10).items[0]
-    counter = service.get_counter_deltas("demo", session_id, max_points=10).items[0]
     event = service.list_switch_events("demo", session_id).items[0]
     stats = service.list_ap_statistics("demo", session_id).items[0]
 
@@ -969,7 +1017,6 @@ def test_mesh_analysis_consumers_reuse_base_radio_alias_snapshot(tmp_path: Path,
         assert item.identity_status == "matched"
         assert item.peer_ap_name == "AP-BASE"
         assert item.peer_ap_mac.replace("-", "") == "000000000010"
-    assert counter.identity_status == "matched"
     assert busy.station == "杞︾珯A"
     assert event.from_identity_status == "matched"
     assert event.from_ap_name

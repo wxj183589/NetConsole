@@ -964,7 +964,7 @@ def peer_segment_chart(
 @router.get(
     "/sessions/{session_id}/counter-deltas",
     response_model=MeshCounterDeltaPageDTO,
-    summary="读取 MESH Retry 与 Error 计数器增量",
+    summary="读取 MESH Tx/Rx、Retry、Error、GARP 与 MulJoin 计数器增量",
 )
 def counter_deltas(
     request: Request,
