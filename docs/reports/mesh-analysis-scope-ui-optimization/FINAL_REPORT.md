@@ -1,5 +1,25 @@
 # Phase 9 最终报告
 
+## 2026-11-09 加载状态与业务界面精简补充
+
+本补充覆盖 MR 原始 MESH 分析页的分阶段加载反馈和普通业务字段审查。页面统一使用 `IDLE/PREPARING/QUERYING/PROCESSING/RENDERING/COMPLETED/ERROR/CANCELLED`，首次加载以短延迟骨架屏预留统计卡、图表和表格高度；主链 RSSI、轨旁 AP 信号、空口负载保持独立状态，并在 ECharts 实际完成绘制后才进入 `COMPLETED`。请求取消时清理 AbortController、generation 和图表状态，旧结果不能覆盖当前选择；缓存和无有效数据沿用明确文案。
+
+普通业务表格移除来源文件/类型、身份来源、匹配规则、原始/规范 Peer MAC、Peer Radio MAC、行号、内部记录 ID、技术诊断预算等字段，统一使用 AP 名称、AP MAC、对端射频口和运维指标。底层接口、解析追溯信息、诊断导出和删除/导入内部操作仍保留。
+
+| 状态项 | 结果 |
+|---|---|
+| LOADING_STATE_STATUS | PASS |
+| DATABASE_QUERY_FEEDBACK_STATUS | PASS_WITH_LIMITATIONS |
+| DATA_PROCESSING_FEEDBACK_STATUS | PASS |
+| CHART_RENDER_FEEDBACK_STATUS | PASS |
+| PER_CHART_LOADING_STATUS | PASS |
+| CANCELLATION_STATUS | PASS |
+| CACHE_LOADING_STATUS | PASS |
+| ERROR_STATE_STATUS | PASS_WITH_LIMITATIONS |
+| BUSINESS_UI_FIELD_AUDIT_STATUS | PASS |
+
+验证：Renderer 加载与图表挂载 `2 files / 34 passed`，页面契约 `5 passed`，业务列行为 `1 passed`，`vue-tsc -b` 和 `pnpm run build` 通过，`git diff --check` 通过。完整行为套件仍有既有 RSSI/KeepAlive 异步时序失败，未将其升级为本补充的成功证据；真实数据库慢查询、故障注入、Electron/Windows DPI 和真实数据仍待人工验收。
+
 本阶段完成 Mesh 业务范围治理、完整原始链路字段导出、单链路排除和页面信息层次/初始视口优化。业务 Excel 删除重复的 `Peer Radio MAC`、匹配规则、身份来源；保留原始 Peer MAC、`PEER Radio`、来源文件和行号，并在业务/诊断两种模式保留全部 L/P RSSI、Noise、Rate、CPU、Memory、Busy、TxDesFreeCnt、Tx/Rx、Retry/Err、GARP、MulJoin 原始数值。诊断模式保留完整身份字段。
 
 车辆段和停车场默认排除，正式站点类型优先，未知归属保持 UNKNOWN。过滤在备链判定和风险分段前执行，统一影响 AP/风险统计和派生工作表，原始日志与解析数据完整保留。主链路图以 ACTIVE 数据为主，轨旁图保留逐采样 ACTIVE/STANDBY 角色；Tooltip 支持双击固定、再次双击或 Esc 解锁，固定后不随指针、缩放或时间轴拖动改写；普通和备链浮窗去除重复 MAC/本端 Radio，切换事件只显示 AP 名称与 RSSI，并显示可确认的对端射频口。图表首次打开定位有效样本范围，同时保留完整 Navigator、缩放、锁定和全时段恢复。
