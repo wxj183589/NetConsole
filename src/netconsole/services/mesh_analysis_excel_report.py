@@ -14,6 +14,10 @@ from netconsole.services.mesh_analysis_report import MeshAnalysisReportModel
 from netconsole.services.mesh_chart_payload import preserve_extrema_indices, render_indices
 from netconsole.services.mesh_link_detail_export import (
     ACTIVE_BUILD_ORDER_COLUMNS,
+    AP_SIGNAL_COLUMNS,
+    SINGLE_LINK_COLUMNS,
+    BUSINESS_BUILD_COLUMNS,
+    BUSINESS_VALUE_LABELS,
     active_build_order_row_values,
 )
 
@@ -740,6 +744,23 @@ class MeshAnalysisExcelReportExporter:
         written = 0
         pending_charts: list[tuple[object, list[dict[str, object]] | list[tuple[object, ...]], str]] = []
         for sheet_name, fields, attr_name in SHEET_DEFINITIONS:
+            if model.options.export_mode == "business":
+                if attr_name == "active_build_order":
+                    fields = tuple(field for _label, field in BUSINESS_BUILD_COLUMNS)
+                elif attr_name == "switch_events":
+                    fields = (
+                        "switch_time",
+                        "radio",
+                        "from_peer_ap_name",
+                        "to_peer_ap_name",
+                        "from_last_rssi",
+                        "to_first_rssi",
+                        "switch_type",
+                        "severity",
+                        "is_pingpong_abnormal",
+                        "from_peer",
+                        "to_peer",
+                    )
             _raise_if_cancelled(should_cancel)
             progress(90 + int(written / max(total_sheets, 1) * 8), STAGE_BY_ATTR.get(attr_name, f"excel_{attr_name}"))
             rows = self._rows_for(model, attr_name)
@@ -749,6 +770,20 @@ class MeshAnalysisExcelReportExporter:
             written += 1
         for sheet, rows, attr_name in pending_charts:
             _add_active_path_chart(workbook, sheet, rows, attr_name)
+        for name, columns, attr in (
+            ("AP 信号质量", AP_SIGNAL_COLUMNS, "ap_signal_quality"),
+            ("单链路风险", SINGLE_LINK_COLUMNS, "single_link_intervals"),
+        ):
+            rows = getattr(model, attr)
+            self._write_sheet(
+                workbook,
+                name,
+                tuple(field for _label, field in columns),
+                rows,
+                attr,
+                should_cancel,
+                progress,
+            )
         progress(99, "excel_save")
         workbook.save(path)
         return path
@@ -790,16 +825,44 @@ class MeshAnalysisExcelReportExporter:
                 _raise_if_cancelled(should_cancel)
                 progress(95, f"excel_sheet_rows:{sheet_name}:{index}:{total_rows}")
             values = self._row_values(field_list, row, attr_name, index)
+            if "weak_ratio" in field_list:
+                position = field_list.index("weak_ratio")
+                cell = WriteOnlyCell(sheet, value=values[position])
+                cell.number_format = "0.00%"
+                values[position] = cell
             sheet.append(_parameter_row_cells(sheet, field_list, values) if is_parameter_sheet else values)
         return sheet
 
-    def _row_values(self, fields: list[str], row: dict[str, object] | tuple[object, ...], attr_name: str, index: int) -> list[object]:
+    def _row_values(self, fields: list[str], row: dict[str, object] | tuple[object, ...], attr_name: str, index: int,
+    ) -> list[object]:
         if isinstance(row, tuple):
             return [translate_report_value(field, value) for field, value in zip(fields, row)]
-        materialized = dict(row)
+        materialized = row
         if attr_name == "active_build_order":
-            return active_build_order_row_values(materialized)
+            values = dict(
+                zip(
+                    ACTIVE_BUILD_ORDER_FIELDS,
+                    active_build_order_row_values(materialized),
+                )
+            )
+            if len(fields) == len(BUSINESS_BUILD_COLUMNS) and materialized.get(
+                "peer_ap_mac"
+            ):
+                values["peer_mac_raw"] = ""
+            return [values.get(field) for field in fields]
+        if attr_name in {"ap_signal_quality", "single_link_intervals"}:
+            return [
+                BUSINESS_VALUE_LABELS.get(
+                    str(materialized.get(field)), materialized.get(field)
+                )
+                if field in {"signal_grade", "risk_type"}
+                else index
+                if field == "sequence"
+                else materialized.get(field)
+                for field in fields
+            ]
         if attr_name == "parse_issues":
+            materialized = dict(row)
             materialized.setdefault("issue_sequence", index)
             if "source_line_number" not in materialized and "line_number" in materialized:
                 materialized["source_line_number"] = materialized.get("line_number")
@@ -810,7 +873,7 @@ class MeshAnalysisExcelReportExporter:
     def _rows_for(self, model: MeshAnalysisReportModel, attr_name: str) -> list[dict[str, object]] | list[tuple[object, ...]]:
         if attr_name == "overview":
             return [{"key": REPORT_FIELD_LABELS.get(str(key), str(key)), "value": translate_report_value(str(key), value)} for key, value in model.overview.items()]
-        return list(getattr(model, attr_name, []))
+        return getattr(model, attr_name, [])
 
 
 def translate_report_value(field_name: str, value: object) -> object:
@@ -830,6 +893,19 @@ def translate_report_value(field_name: str, value: object) -> object:
 
 
 def _field_label(field: str, attr_name: str) -> str:
+    if attr_name in {"ap_signal_quality", "single_link_intervals"}:
+        return next(
+            (
+                label
+                for label, key in (
+                    AP_SIGNAL_COLUMNS
+                    if attr_name == "ap_signal_quality"
+                    else SINGLE_LINK_COLUMNS
+                )
+                if key == field
+            ),
+            field,
+        )
     if attr_name == "active_build_order":
         return ACTIVE_BUILD_ORDER_LABELS.get(field, REPORT_FIELD_LABELS.get(field, field))
     return REPORT_FIELD_LABELS.get(field, field)
@@ -861,7 +937,7 @@ def _add_active_path_chart(
         data_sheet_name = "_ACTIVE_BUSY图表数据"
     else:
         return
-    materialized = [dict(row) for row in rows if isinstance(row, dict)]
+    materialized = rows
     if not materialized or not any(_chart_number(row.get(field)) is not None for row in materialized for field in value_fields):
         return
     chart_rows = _downsample_chart_rows(materialized, value_fields)

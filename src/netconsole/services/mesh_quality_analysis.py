@@ -687,12 +687,35 @@ def analyze_anomaly_events(samples: list[dict[str, object]], rows: list[dict[str
     return sorted(events, key=lambda row: (str(row.get("event_time_start") or ""), str(row.get("event_type") or "")))
 
 
-def build_peer_quality(rows: list[dict[str, object]], segments: list[dict[str, object]], switches: list[dict[str, object]], rules: MeshQualityRules) -> list[dict[str, object]]:
+def build_peer_quality(rows: list[dict[str, object]], segments: list[dict[str, object]], switches: list[dict[str, object]], rules: MeshQualityRules,
+) -> list[dict[str, object]]:
+    segments_by_peer: dict[tuple[object, object], list[dict[str, object]]] = {}
+    for segment in segments:
+        key = (segment.get("radio"), segment.get("active_peer_key"))
+        segments_by_peer.setdefault(key, []).append(segment)
+
+    switch_in_by_peer: dict[tuple[object, str], int] = {}
+    switch_out_by_peer: dict[tuple[object, str], int] = {}
+    flap_events_by_peer: dict[object, int] = {}
+    for event in switches:
+        radio = event.get("radio")
+        target = _canonical(event.get("to_peer"))
+        source = _canonical(event.get("from_peer"))
+        if target:
+            key = (radio, target)
+            switch_in_by_peer[key] = switch_in_by_peer.get(key, 0) + 1
+        if source:
+            key = (radio, source)
+            switch_out_by_peer[key] = switch_out_by_peer.get(key, 0) + 1
+        if _is_pingpong_abnormal_event(event):
+            for peer in {source, target}:
+                flap_events_by_peer[peer] = flap_events_by_peer.get(peer, 0) + 1
+
     result = []
     for (radio, peer), peer_rows in _group_by_peer(rows).items():
         active_rows = [row for row in peer_rows if _state(row) == LINK_STATE_ACTIVE]
         standby_rows = [row for row in peer_rows if _state(row) == LINK_STATE_STANDBY]
-        peer_segments = [row for row in segments if row.get("radio") == radio and row.get("active_peer_key") == peer]
+        peer_segments = segments_by_peer.get((radio, peer), [])
         values = [_num(row.get("mr_rssi")) for row in active_rows]
         weak_seconds = sum(float(segment.get("weak_rssi_seconds") or 0) for segment in peer_segments)
         no_backup_seconds = sum(float(segment.get("no_backup_seconds") or 0) for segment in peer_segments)
@@ -716,8 +739,8 @@ def build_peer_quality(rows: list[dict[str, object]], segments: list[dict[str, o
             "active_sample_count": len(active_rows),
             "standby_sample_count": len(standby_rows),
             "active_segment_count": len(peer_segments),
-            "switch_in_count": len([event for event in switches if event.get("radio") == radio and _canonical(event.get("to_peer")) == peer]),
-            "switch_out_count": len([event for event in switches if event.get("radio") == radio and _canonical(event.get("from_peer")) == peer]),
+            "switch_in_count": switch_in_by_peer.get((radio, peer), 0),
+            "switch_out_count": switch_out_by_peer.get((radio, peer), 0),
             "active_total_seconds": sum(float(segment.get("duration_seconds") or 0) for segment in peer_segments),
             "active_total_ratio": round(len(active_rows) / max(len(peer_rows), 1), 4),
             "avg_active_rssi": _avg(values),
@@ -733,7 +756,7 @@ def build_peer_quality(rows: list[dict[str, object]], segments: list[dict[str, o
             "max_rx_busy": _max([_num(row.get("rx_busy")) for row in active_rows]),
             "link_rebuild_count": sum(int(segment.get("link_count_delta_count") or 0) + int(segment.get("duration_reset_count") or 0) + int(segment.get("establish_reset_count") or 0) for segment in peer_segments),
             "short_segment_count": len([segment for segment in peer_segments if float(segment.get("duration_seconds") or 0) < rules.short_active_segment_seconds]),
-            "flap_related_count": len([event for event in switches if _is_pingpong_abnormal_event(event) and (_canonical(event.get("to_peer")) == peer or _canonical(event.get("from_peer")) == peer)]),
+            "flap_related_count": flap_events_by_peer.get(peer, 0),
             "peer_quality_score": max(0, 100 - len(tags) * 15),
             "problem_tags": "; ".join(tags),
             "suggestion": _peer_suggestion(tags),

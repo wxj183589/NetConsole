@@ -269,6 +269,10 @@ class MeshRebuildRequestDTO(ApiModel):
 
 
 class MeshAnalysisParamsDTO(ApiModel):
+    rssi_good_threshold: int | None = Field(default=None, gt=0, le=200)
+    rssi_warning_threshold: int | None = Field(default=None, gt=0, le=200)
+    backup_available_threshold: int | None = Field(default=None, gt=0, le=200)
+    ap_minimum_samples: int = Field(default=10, ge=2, le=10000)
     link_time_window: int = Field(default=4000, gt=0, le=600_000)
     link_switch_threshold: int = Field(default=10, ge=0, le=200)
     link_hold_rssi: int = Field(default=22, ge=0, le=200)
@@ -285,14 +289,19 @@ class MeshAnalysisParamsDTO(ApiModel):
 
 
 class MeshAnalysisParamsOverrideDTO(MeshAnalysisParamsDTO):
-    pass
+    # Routers forward exclude_unset=True so partial task overrides retain Site values.
+    main_link_switch_time_ms: int = Field(default=4000, gt=0, le=600_000)
+    short_link_tolerance_ms: int = Field(default=500, ge=0, le=600_000)
+    pingpong_tolerance_ms: int = Field(default=500, ge=0, le=600_000)
 
 
 class MeshReportRequestDTO(ApiModel):
+    export_mode: Literal["business", "diagnostic"] = "business"
     analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
 
 
 class MeshLinkDetailExportRequestDTO(ApiModel):
+    export_mode: Literal["business", "diagnostic"] = "business"
     source_file_id: int = Field(gt=0)
     analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
 
@@ -1210,6 +1219,15 @@ class MeshAnomalyPageDTO(ApiModel):
 
 
 class MeshApStatisticsDTO(ApiModel):
+    peer_mac_raw: str | None = None
+    max_rssi: float | None = None
+    p10_rssi: float | None = None
+    valid_sample_count: int = 0
+    weak_sample_count: int = 0
+    weak_ratio: float | None = None
+    first_seen: str | None = None
+    last_seen: str | None = None
+    signal_grade: str = "INSUFFICIENT"
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
     station: str | None = None
@@ -1232,6 +1250,7 @@ class MeshApStatisticsDTO(ApiModel):
 
 
 class MeshApStatisticsPageDTO(ApiModel):
+    summary: dict[str, object] = Field(default_factory=dict)
     items: list[MeshApStatisticsDTO] = Field(default_factory=list)
     total: int = 0
     page: int = 1

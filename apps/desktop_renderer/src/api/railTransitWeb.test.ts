@@ -101,7 +101,9 @@ describe('rail transit Web parity API client', () => {
 
     await exportMeshAnalysisReport('mr-id:1', override)
 
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ analysis_params_override: override })
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({ export_mode: 'business', analysis_params_override: override })
+    await exportMeshAnalysisReport('mr-id:1', undefined, 'diagnostic')
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1].body))).toEqual({ export_mode: 'diagnostic' })
   })
 
   it('keeps the legacy Online MR metric consumer on the list contract', async () => {

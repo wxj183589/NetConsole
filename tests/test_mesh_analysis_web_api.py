@@ -89,6 +89,9 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/counter-deltas?site_id=demo&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/anomalies?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/ap-statistics?site_id=demo",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/ap-signal-statistics?site_id=demo",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/business-summary?site_id=demo",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/single-links?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/artifacts?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/raw-sources?site_id=demo",
         ]

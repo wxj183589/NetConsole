@@ -106,7 +106,7 @@ def test_mesh_export_keeps_workbook_contract_and_returns_diagnostics(tmp_path: P
     target = tmp_path / "mesh.xlsx"
     row = _mesh_row()
 
-    result = export_mesh_link_details_xlsx(target, [row], total_rows=1)
+    result = export_mesh_link_details_xlsx(target, [row], total_rows=1, export_mode="diagnostic")
 
     diagnostics = result["export_identity_diagnostics"]
     assert diagnostics["available"] is True
@@ -167,10 +167,10 @@ def test_mesh_link_detail_export_includes_analysis_parameters_sheet(tmp_path: Pa
         "source_file": "mesh.log",
     }
 
-    export_mesh_link_details_xlsx(target, [_mesh_row()], [active_row], total_rows=1)
+    export_mesh_link_details_xlsx(target, [_mesh_row()], [active_row], total_rows=1, export_mode="diagnostic")
 
     workbook = load_workbook(target)
-    assert workbook.sheetnames == ["链路明细", "主链路明细", "分析参数"]
+    assert workbook.sheetnames == ["链路明细", "主链路明细", "分析参数", "AP 信号质量", "单链路风险"]
     assert [cell.value for cell in workbook["链路明细"][1]] == [header for header, _field in LINK_DETAIL_EXPORT_COLUMNS]
     assert [cell.value for cell in workbook["主链路明细"][1]] == [header for header, _field in ACTIVE_BUILD_ORDER_EXPORT_COLUMNS]
     assert workbook["链路明细"].max_row == 2
@@ -194,7 +194,7 @@ def test_mesh_export_diagnostics_failure_does_not_fail_export(tmp_path: Path, mo
 
     monkeypatch.setattr(ExportIdentityDiagnostics, "inspect_mesh_link_detail_row", fail_diagnostics)
 
-    result = export_mesh_link_details_xlsx(target, [_mesh_row()], total_rows=1)
+    result = export_mesh_link_details_xlsx(target, [_mesh_row()], total_rows=1, export_mode="diagnostic")
 
     assert target.exists()
     assert result["export_identity_diagnostics"]["available"] is False
@@ -241,6 +241,11 @@ def test_mesh_export_worker_finished_result_contains_diagnostics(tmp_path: Path,
         filters={"source_file_id": 7},
         context={"source_file_id": 7},
     )
+
+    # The worker now streams full-resolution business facts through a separate
+    # read-only cursor; retain a minimal real schema alongside the repository fake.
+    with sqlite3.connect(job.db_path) as conn:
+        conn.execute("CREATE TABLE mesh_links (id INTEGER, source_file_id INTEGER)")
 
     export_worker._run_mesh_link_detail(job)
 
@@ -355,9 +360,20 @@ def test_mesh_export_worker_applies_ap_location_snapshot_to_both_sheets(tmp_path
         output_path=str(output_path),
         tmp_path=str(tmp_output),
         filters={"source_file_id": 7},
-        params={"ap_location_snapshot": location_snapshot},
+        params={"ap_location_snapshot": location_snapshot, "export_mode": "diagnostic"},
         context={"source_file_id": 7},
     )
+
+    with sqlite3.connect(job.db_path) as conn:
+        conn.execute(
+            "CREATE TABLE mesh_links (id INTEGER, source_file_id INTEGER, "
+            "sample_time TEXT, radio INTEGER, link_state TEXT, peer_ap_mac TEXT, "
+            "peer_mac_raw TEXT, local_rssi_db REAL)"
+        )
+        conn.execute(
+            "INSERT INTO mesh_links VALUES (1, 7, '2026-07-11 10:00:00', 1, "
+            "'ACTIVE', '30f5-277a-5a2f', '30f5-277a-5a2f', 40)"
+        )
 
     export_worker._run_mesh_link_detail(job)
 
@@ -372,6 +388,11 @@ def test_mesh_export_worker_applies_ap_location_snapshot_to_both_sheets(tmp_path
     active_headers = [cell.value for cell in active_sheet[1]]
     active_values = [cell.value for cell in active_sheet[2]]
     assert active_values[active_headers.index("归属区间")] == "快照区间"
+    ap_sheet = workbook["AP 信号质量"]
+    ap_headers = [cell.value for cell in ap_sheet[1]]
+    ap_values = [cell.value for cell in ap_sheet[2]]
+    assert ap_values[ap_headers.index("站点")] == "快照站点"
+    assert ap_values[ap_headers.index("有效采样数")] == 1
     workbook.close()
 
 

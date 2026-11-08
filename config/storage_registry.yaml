@@ -1116,7 +1116,7 @@
       "data_type": "DISPOSABLE_DERIVED",
       "authority": "current parsed aggregate selected by catalog; raw log remains evidence authority",
       "producer": ["MeshLogAnalysisService", "MeshParsedRebuildService"],
-      "consumers": ["MESH query", "charts", "reports", "coverage audit"],
+      "consumers": ["MESH query", "charts", "reports", "coverage audit", "Mesh business statistics and Export Process (read-only; pagination uses disposable :memory: connection)"],
       "retention_owner": "MeshDerivedDataMaintenanceService",
       "rebuildable": true,
       "site_package_policy": "include or declare rebuildable from included raw+catalog",
@@ -1147,7 +1147,7 @@
           "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_peer_mapping_service.py"]
         }
       ],
-      "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_analysis_report.py", "src/netconsole/services/mesh_derived_data_maintenance_service.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_report_process.py", "src/netconsole/services/mesh_source_rebuild_service.py", "src/netconsole/services/mesh_bundle_import_service.py", "src/netconsole/services/rail_transit/mesh_analysis_query_service.py", "scripts/maintenance/remap_mesh_identity.py", "scripts/maintenance/analyze_task_payloads_dev.py"]
+      "source_locations": ["src/netconsole/repositories/mesh_mr_repository.py", "src/netconsole/services/mesh_analysis_report.py", "src/netconsole/services/mesh_derived_data_maintenance_service.py", "src/netconsole/services/mesh_parsed_rebuild_service.py", "src/netconsole/services/mesh_report_process.py", "src/netconsole/services/mesh_source_rebuild_service.py", "src/netconsole/services/mesh_bundle_import_service.py", "src/netconsole/services/rail_transit/mesh_analysis_query_service.py", "src/netconsole/services/mesh_business_statistics.py", "src/netconsole/export_worker.py", "scripts/maintenance/remap_mesh_identity.py", "scripts/maintenance/analyze_task_payloads_dev.py"]
     },
     {
       "id": "site.mesh.legacy_analysis",

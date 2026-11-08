@@ -5,6 +5,8 @@ import io
 from itertools import chain
 import json
 import os
+import sqlite3
+from contextlib import closing
 import sys
 import traceback
 from contextlib import redirect_stdout
@@ -306,6 +308,27 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
         **(fallback_analysis_params or {}),
         **(analysis_params or {}),
     }
+    from netconsole.models.mesh_analysis_params import normalize_mesh_analysis_params
+    from netconsole.services.mesh_business_statistics import (
+        build_mesh_business_statistics,
+        effective_business_rules,
+        iter_business_links,
+    )
+    from netconsole.services.mesh_quality_analysis import load_default_rules
+
+    effective_params = normalize_mesh_analysis_params(merged_params)
+    with closing(
+        sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+    ) as conn:
+        business_statistics = build_mesh_business_statistics(
+            iter_business_links(
+                conn, int(source_file_id) if source_file_id is not None else None
+            ),
+            effective_business_rules(effective_params, load_default_rules()),
+            location_snapshot,
+            minimum_samples=effective_params.ap_minimum_samples,
+            should_cancel=lambda: _should_cancel(job),
+        )
     export_context = {
         "site_name": context.get("site_name") or "",
         "mr_name": context.get("mr_name") or "",
@@ -319,6 +342,8 @@ def _run_mesh_link_detail_export(job: ExportJob) -> None:
         total_rows=total,
         analysis_params=merged_params,
         export_context=export_context,
+        export_mode=str(params.get("export_mode") or "business"),
+        business_statistics=business_statistics,
         progress_callback=lambda done, row_total, key: _emit_progress(job, done, row_total, key, f"正在导出链路明细：{done} / {row_total}"),
         should_cancel=lambda: _should_cancel(job),
     )

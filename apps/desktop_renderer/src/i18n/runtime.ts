@@ -1,10 +1,12 @@
 import { ref } from 'vue'
+import { meshBusinessEn } from './meshBusinessLabels'
 import { groundUnattendedEn } from './groundUnattended'
 import type { SystemLanguage } from '../types/systemSettings'
 
 const locale = ref<SystemLanguage>('zh_CN')
 const en: Record<string, string> = {
   ...groundUnattendedEn,
+  ...meshBusinessEn,
   'ground.quick.all_trains': 'All trains',
   'ground.quick.address_roles': 'Primary / Backup',
   'ground.quick.primary': 'Primary',
