@@ -69,6 +69,27 @@ def test_indexed_evidence_is_site_run_mr_scoped_and_read_only(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM ground_unattended_wmesh_events").fetchone()[0] == 2
 
 
+def test_evidence_filters_offsets_and_time_window_before_limiting(tmp_path):
+    path = tmp_path / "ground.sqlite"
+    GroundUnattendedRepository(path, site_id="demo")
+    with closing(sqlite3.connect(path)) as conn:
+        stamps = ["2026-11-07T19:10:00+08:00"] + ["2026-11-07T13:00:00Z"] * 501
+        for index, stamp in enumerate(stamps):
+            conn.execute("INSERT INTO ground_unattended_wmesh_events(site_id,run_id,device_uuid,event_type,event_family,receive_time,created_at) VALUES(?,?,?,?,?,?,?)",
+                         ("demo", "run-1", "mr-1", "MESH_ACTIVELINK_SWITCH", "WMESH", stamp, stamp))
+            conn.execute("INSERT INTO ground_unattended_ac_snapshots(snapshot_id,site_id,run_id,mr_id,received_at,peer_ap_mac,freshness_status) VALUES(?,?,?,?,?,?,?)",
+                         (f"ac-{index}", "demo", "run-1", "mr-1", stamp, "00:11:22:33:44:55", "fresh"))
+        conn.commit()
+    start, end = monitoring_range("2026-11-07T11:00:00Z", "2026-11-07T12:00:00Z")
+    mesh, ac, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
+    assert len(mesh) == len(ac) == 1
+    assert ac[0]["snapshot_id"] == "ac-0"
+    assert not truncated
+    start, end = monitoring_range("2026-11-07T12:00:00Z", "2026-11-07T14:00:00Z")
+    mesh, ac, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
+    assert len(mesh) == len(ac) == 500 and truncated
+
+
 def test_latest_rtt_is_fresh_and_current_run_only():
     fleet = FleetPingSupervisor(repository=object(), site_id="demo")
     fleet._run_id = "current"

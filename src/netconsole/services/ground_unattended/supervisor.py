@@ -94,6 +94,21 @@ _HEARTBEAT_PERSIST_BATCH_SIZE = 256
 _HEARTBEAT_EVENT_CAPACITY = 4096
 
 
+def _fair_persist_batch(items: list[str], *, after: str, limit: int) -> list[str]:
+    """Select a bounded rotating slice so a busy prefix cannot starve later IDs."""
+    if len(items) <= limit:
+        return items
+    start = 0
+    if after:
+        for index, item in enumerate(items):
+            if item > after:
+                start = index
+                break
+        else:
+            start = 0
+    return items[start : start + limit]
+
+
 @dataclass(frozen=True)
 class SupervisorCommand:
     action: str
@@ -148,6 +163,8 @@ class GroundUnattendedSupervisor:
         self._heartbeat_lock = threading.RLock()
         self._heartbeat_dirty_mrs: set[str] = set()
         self._heartbeat_dirty_trains: set[str] = set()
+        self._heartbeat_persist_after_mr = ""
+        self._heartbeat_persist_after_train = ""
         self._heartbeat_target_signature: tuple[tuple[Any, ...], ...] = ()
         self._heartbeat_force_persist = False
         self._heartbeat_pending_events: deque[dict[str, Any]] = deque()
@@ -1211,6 +1228,8 @@ class GroundUnattendedSupervisor:
                 self._heartbeat_target_signature = ()
                 self._heartbeat_dirty_mrs.clear()
                 self._heartbeat_dirty_trains.clear()
+                self._heartbeat_persist_after_mr = ""
+                self._heartbeat_persist_after_train = ""
                 self._heartbeat_pending_loss_events.clear()
                 self._heartbeat_loss_trackers.clear()
             self._heartbeat_cleared_at = cleared_at
@@ -1427,8 +1446,20 @@ class GroundUnattendedSupervisor:
             if not force and not mr_ids and not train_ids:
                 return
             if not force:
-                mr_ids = mr_ids[:_HEARTBEAT_PERSIST_BATCH_SIZE]
-                train_ids = train_ids[:_HEARTBEAT_PERSIST_BATCH_SIZE]
+                mr_ids = _fair_persist_batch(
+                    mr_ids,
+                    after=self._heartbeat_persist_after_mr,
+                    limit=_HEARTBEAT_PERSIST_BATCH_SIZE,
+                )
+                train_ids = _fair_persist_batch(
+                    train_ids,
+                    after=self._heartbeat_persist_after_train,
+                    limit=_HEARTBEAT_PERSIST_BATCH_SIZE,
+                )
+                if mr_ids:
+                    self._heartbeat_persist_after_mr = mr_ids[-1]
+                if train_ids:
+                    self._heartbeat_persist_after_train = train_ids[-1]
             records: list[dict[str, Any]] = []
             for mr_id in mr_ids:
                 try:
@@ -1648,8 +1679,8 @@ class GroundUnattendedSupervisor:
                 state="PAUSED" if scheduling_paused else "RUNNING",
                 ac_freshness_status="NO_DATA",
             )
-            inventory_targets = self._refresh_inventory_heartbeat(run, now)
-            self.fleet_ping.update_targets(list(inventory_targets.values()))
+            self._refresh_inventory_heartbeat(run, now)
+            self._expire_recovered_ping_targets(run, profile, now)
             return
         new_snapshots = [
             snapshot
@@ -1680,8 +1711,8 @@ class GroundUnattendedSupervisor:
                 ac_last_updated_at=received_at,
                 ac_freshness_status="FRESH" if fresh else "STALE",
             )
-            inventory_targets = self._refresh_inventory_heartbeat(run, now)
-            self.fleet_ping.update_targets(list(inventory_targets.values()))
+            self._refresh_inventory_heartbeat(run, now)
+            self._expire_recovered_ping_targets(run, profile, now)
             return
 
         mesh_rows = self._mesh_rows_for_snapshots(snapshots)

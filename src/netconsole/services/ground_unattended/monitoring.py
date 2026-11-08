@@ -70,13 +70,15 @@ def indexed_evidence(db_path: Path, *, site_id: str, run_id: str, mr_uuid: str, 
         mesh_rows = connection.execute(
             "SELECT * FROM ground_unattended_wmesh_events WHERE site_id=? AND run_id=? AND device_uuid=? "
             "AND (event_family='WMESH' OR (event_family='' AND event_type LIKE 'MESH_%')) "
-            "AND receive_time>=? AND receive_time<=? ORDER BY receive_time DESC,id DESC LIMIT 501",
-            (site_id, run_id, mr_uuid, (start - timedelta(hours=14)).isoformat()[:19], (end + timedelta(hours=14)).isoformat()[:19] + "~"),
+            "AND julianday(receive_time)>=julianday(?) AND julianday(receive_time)<=julianday(?) "
+            "ORDER BY julianday(receive_time) DESC,id DESC LIMIT 501",
+            (site_id, run_id, mr_uuid, start.isoformat(), end.isoformat()),
         ).fetchall()
         ac_rows = connection.execute(
             "SELECT * FROM ground_unattended_ac_snapshots WHERE site_id=? AND run_id=? AND mr_id=? "
-            "AND received_at>=? AND received_at<=? ORDER BY received_at DESC,id DESC LIMIT 501",
-            (site_id, run_id, mr_uuid, (start - timedelta(hours=14)).isoformat()[:19], (end + timedelta(hours=14)).isoformat()[:19] + "~"),
+            "AND julianday(received_at)>=julianday(?) AND julianday(received_at)<=julianday(?) "
+            "ORDER BY julianday(received_at) DESC,id DESC LIMIT 501",
+            (site_id, run_id, mr_uuid, start.isoformat(), end.isoformat()),
         ).fetchall()
     def within(row: sqlite3.Row, key: str) -> bool:
         try:

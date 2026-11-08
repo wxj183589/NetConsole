@@ -123,7 +123,9 @@ def test_fleet_ping_dynamic_targets_rotation_summaries_and_stop(tmp_path) -> Non
     fleet.update_targets(
         [_target("192.0.2.2", "train-1", "CW"), _target("192.0.2.3", "train-2", "CT")]
     )
-    _wait_until(lambda: fleet.sample_count > before)
+    _wait_until(lambda: fleet.sample_count > before and all(
+        row["sent_count"] > 0 for row in fleet.target_summaries()
+    ))
     fleet.flush_summaries()
     live = fleet.target_summaries()
     assert {row["target_ip"] for row in live} == {"192.0.2.2", "192.0.2.3"}

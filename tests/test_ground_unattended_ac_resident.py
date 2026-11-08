@@ -157,6 +157,62 @@ def _heartbeat_fixture(tmp_path: Path):
     return supervisor, repository, mesh
 
 
+def test_busy_heartbeat_population_persists_every_mr_and_train(tmp_path, monkeypatch):
+    supervisor, repository, _ = _supervisor(tmp_path)
+    ids = [f"mr-{index:03d}" for index in range(300)]
+    repository.sync_inventory(
+        trains=[{"train_id": item, "train_no": item} for item in ids],
+        endpoints=[{"device_uuid": item, "train_id": item, "mr_role": "CT",
+                    "management_ip": f"192.0.{index // 250 + 2}.{index % 250 + 1}"}
+                   for index, item in enumerate(ids)],
+    )
+    supervisor._configure_heartbeat_targets("run-1")
+    stored = {"MR": set(), "TRAIN": set()}
+
+    def persist(_run_id, records, **_kwargs):
+        for record in records:
+            stored[record["entity_type"]].add(record["entity_id"])
+
+    monkeypatch.setattr(repository, "upsert_heartbeat_snapshots", persist)
+    now = datetime.now().astimezone()
+    supervisor._refresh_train_heartbeat_snapshots_locked(
+        [supervisor._heartbeat_engine.snapshot(item) for item in ids], at=now,
+    )
+    for _ in range(10):
+        # Every probe can dirty the early IDs again before the next scheduler tick.
+        supervisor._heartbeat_dirty_mrs.update(ids)
+        supervisor._heartbeat_dirty_trains.update(ids)
+        supervisor._persist_heartbeat_state(at=now)
+    assert stored == {"MR": set(ids), "TRAIN": set(ids)}
+
+
+@pytest.mark.parametrize("snapshot_available", [True, False])
+def test_poll_between_ac_snapshots_preserves_fresh_matching_enrichment(tmp_path, snapshot_available):
+    supervisor, repository, mesh = _supervisor(tmp_path)
+    repository.sync_inventory(
+        trains=[{"train_id": "train-1", "train_no": "001"}],
+        endpoints=[{"device_uuid": "mr-1", "train_id": "train-1", "mr_role": "CT",
+                    "management_ip": "192.0.2.10"}],
+    )
+    now = datetime.now().astimezone()
+    inventory = supervisor._refresh_inventory_heartbeat(repository.get_run("run-1"), now)
+    address = "192.0.2.10"
+    enriched = replace(inventory[address], current_ap_identity="ap-a", current_ap_name="AP A",
+                       ac_snapshot_id="snapshot-a", rssi=-51)
+    supervisor._last_valid_ping_targets[address] = (enriched, now)
+    supervisor._last_processed_snapshot_id_by_controller = {"ac-1": 11, "ac-2": 21}
+    if not snapshot_available:
+        mesh.snapshots = []
+    supervisor._poll_ac_and_classify(repository.get_run("run-1"), repository.get_profile(),
+                                     now + timedelta(seconds=1), scheduling_paused=False)
+    assert supervisor.fleet_ping._targets[address] == enriched
+    supervisor._poll_ac_and_classify(repository.get_run("run-1"), repository.get_profile(),
+                                     now + timedelta(seconds=repository.get_profile().ac_stale_grace_seconds + 1),
+                                     scheduling_paused=False)
+    assert not supervisor.fleet_ping._targets[address].current_ap_identity
+    assert supervisor.fleet_ping._targets[address].mr_id == "mr-1"
+
+
 def _wait_samples(supervisor, minimum: int) -> None:
     deadline = time.monotonic() + 5
     while supervisor.fleet_ping.sample_count < minimum and time.monotonic() < deadline:
@@ -1048,12 +1104,9 @@ def test_restart_restores_persisted_ping_targets_without_new_ac_snapshot(
     assert [target.target_ip for target in ping.target_updates[-1]] == ["192.168.100.232"]
     assert ping.target_updates[-1][0].current_ap_name == ""
     expired = repository.list_events("run-1", event_type="ping_target_grace_expired")
-    if expiry_path == "recovered_expiry":
-        assert len(expired) == 1
-        assert "AC 辅助定位" in expired[0]["title"]
-        assert "心跳检测继续" in expired[0]["title"]
-    else:
-        assert not expired
+    assert len(expired) == 1
+    assert "AC 辅助定位" in expired[0]["title"]
+    assert "心跳检测继续" in expired[0]["title"]
 
 
 def test_restart_marks_persisted_main_link_stale_after_existing_grace(
