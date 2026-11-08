@@ -29,8 +29,8 @@
 | TOOLTIP_FIELD_SIMPLIFICATION_STATUS | PASS（主链路/备链去除重复 MAC/本端 Radio，切换事件仅保留 AP 名称与 RSSI） |
 | PEER_RADIO_PORT_STATUS | PASS（radio1/radio2 显示 1/2，无法解析显示 —） |
 | TOOLTIP_LAYOUT_STATUS | PASS_WITH_LIMITATIONS（容器边界/内部滚动已实现，未做真实窗口截图验收） |
-| TOOLTIP_REGRESSION_STATUS | PASS（本轮定向 Tooltip/挂载/trackside 回归 3 files / 48 tests passed；`vue-tsc -b` passed） |
+| TOOLTIP_REGRESSION_STATUS | PASS（本轮定向 Tooltip/挂载/trackside 回归 3 files / 49 tests passed；`vue-tsc -b` passed） |
 
-产品分支：`codex-A/mesh-analysis-scope-ui-optimization`；实现提交：`225e05d2`。DevStatus 单独提交，两个仓库均不推送。
+产品分支：`codex-A/mesh-analysis-scope-ui-optimization`；实现提交：`225e05d2`，Tooltip 回退修订：`2a6ea78e`。DevStatus 单独提交，两个仓库均不推送。
 
 限制：用户要求的原始 Excel ZIP 在本轮附件目录不可见，不能声称真实样本字段或三视口人工截图已独立复核；Windows 原生 DPI、Excel/WPS GUI、真实局点与设备仍待外部验收。累计计数器跨主备角色的增量基线算法仍沿用既有实现，本轮只确认原始累计字段不丢失。`FULL_GATE_STATUS=PASS` 仅引用 2026-11-08 的既有本地 Gate 证据，本轮按要求未重复全量 Gate。
