@@ -63,4 +63,4 @@ ArchivePage 已删除历史索引/时间轴工作台，仅保留每日归档列�
 
 ## Git、数据与剩余问题
 
-本报告编写时功能分支仍有本轮及此前 R3 有效修改，尚未形成最终发布提交。数据影响仅限隔离测试 fixture 和 Workspace 测试证据；没有删除原始历史数据。正式发布前还需完成 main 合并后的回归、Full/Customer Windows 安装包构建、制品 SHA256/Manifest、安装验证报告和 GitHub Release 记录。
+功能、版本和评审修复已提交到发布 PR #105。后续完整门禁发现新增 AC 目标富化测试意外启动 fping 工作线程，已将该测试的网络线程启动隔离，保留原业务断言和全局停止检查；原失败日志与按顺序复验证据保存在 Workspace reports。数据影响限于隔离 fixture 和 Workspace 测试证据，测试目标为文档地址 192.0.2.10；没有删除原始历史数据。最终 main 回归、Full/Customer 制品身份与 SHA256、安装验证和分支回收的当前事实以 [v1.5.12 发布报告](NETCONSOLE_V1.5.12_RELEASE_REPORT.md) 为准。本轮不创建 GitHub Release 或上传制品。

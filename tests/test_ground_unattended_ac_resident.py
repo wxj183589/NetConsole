@@ -187,8 +187,10 @@ def test_busy_heartbeat_population_persists_every_mr_and_train(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("snapshot_available", [True, False])
-def test_poll_between_ac_snapshots_preserves_fresh_matching_enrichment(tmp_path, snapshot_available):
+def test_poll_between_ac_snapshots_preserves_fresh_matching_enrichment(tmp_path, snapshot_available, monkeypatch):
     supervisor, repository, mesh = _supervisor(tmp_path)
+    # This regression exercises target enrichment only; never launch network workers.
+    monkeypatch.setattr(supervisor.fleet_ping, "_reconcile_shards", lambda _addresses: None)
     repository.sync_inventory(
         trains=[{"train_id": "train-1", "train_no": "001"}],
         endpoints=[{"device_uuid": "mr-1", "train_id": "train-1", "mr_role": "CT",
