@@ -111,7 +111,7 @@ export function buildMeshRssiQuickTooltip(point?: MeshChartPoint, event?: MeshCh
   ]
   if (point) {
     rows.push(`RSSI ${metric(point.local_rssi, ' dBm')}`)
-    rows.push(`AP ${escapeMeshTooltipHtml(point.peer_ap_name || point.peer_mac)}`)
+    rows.push(`AP ${escapeMeshTooltipHtml(point.peer_ap_name || '轨旁 AP 未知')}`)
     rows.push(linkCount(point.link_count))
   } else if (event) {
     rows.push(escapeMeshTooltipHtml(event.to_ap_name || '切换事件'))
