@@ -76,6 +76,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'header-dragend': [newWidth: number, oldWidth: number, column: unknown, event: MouseEvent]
   'row-contextmenu': [row: Row, column: { property?: string; columnKey?: string; label?: string }, event: MouseEvent]
+  'row-click': [row: Row, column: unknown, event: MouseEvent]
   'selection-change': [rows: Row[]]
 }>()
 
@@ -461,6 +462,10 @@ function handleSelectionChange(rows: Row[]): void {
   emit('selection-change', rows)
 }
 
+function handleRowClick(row: Row, column: unknown, event: MouseEvent): void {
+  emit('row-click', row, column, event)
+}
+
 function refreshFonts(): void {
   const element = containerRef.value
   if (!element || typeof getComputedStyle === 'undefined') return
@@ -564,6 +569,7 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
         scrollbar-always-on
         @header-dragend="handleHeaderDragEnd"
         @row-contextmenu="handleRowContextMenu"
+        @row-click="handleRowClick"
         @selection-change="handleSelectionChange"
       >
         <template
