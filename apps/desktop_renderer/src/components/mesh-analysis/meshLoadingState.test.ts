@@ -7,6 +7,7 @@ import {
   meshLoadingPhaseLabel,
   meshLoadingStateFromRenderComplete,
   meshLoadingStateFromRenderError,
+  isMeshLoadingActivePhase,
   toMeshChartError,
 } from './meshLoadingState'
 
@@ -32,5 +33,8 @@ describe('Mesh loading state helpers', () => {
     expect(error).toMatchObject({ phase: 'ERROR', message: 'timeout', error: 'timeout' })
     expect(toMeshChartError(new Error('boom'))).toBe('boom')
     expect(toMeshChartError(null, 'fallback')).toBe('fallback')
+    expect(isMeshLoadingActivePhase('QUERYING')).toBe(true)
+    expect(isMeshLoadingActivePhase('COMPLETED')).toBe(false)
+    expect(isMeshLoadingActivePhase('CANCELLED')).toBe(false)
   })
 })

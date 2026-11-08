@@ -55,6 +55,13 @@ export function meshLoadingPhaseLabel(phase: MeshLoadingPhase): string {
   return MESH_LOADING_PHASE_LABELS[phase]
 }
 
+export function isMeshLoadingActivePhase(phase: MeshLoadingPhase): boolean {
+  return phase === 'PREPARING'
+    || phase === 'QUERYING'
+    || phase === 'PROCESSING'
+    || phase === 'RENDERING'
+}
+
 export const meshLoadingPhaseText = meshLoadingPhaseLabel
 export const meshLoadingPhaseMessage = meshLoadingPhaseLabel
 

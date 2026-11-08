@@ -2321,11 +2321,15 @@ describe('Mesh analysis detail behavior', () => {
     const resolvedLinkColumns = linkTable.props('columns') as Array<{ key: string; fixed?: string; width?: number }>
     const linkKeys = resolvedLinkColumns.map((column) => column.key)
     expect(linkKeys.slice(0, 10)).toEqual([
-      'record_id', 'timestamp', 'timestamp_tag', 'local_radio', 'link_role', 'peer_mac_raw', 'peer_mac',
-      'peer_ap_name', 'local_rssi_db', 'peer_rssi_db',
+      'timestamp', 'local_radio', 'link_role', 'peer_ap_name', 'local_rssi_db', 'peer_rssi_db',
+      'peer_ap_mac', 'station', 'section', 'peer_radio',
     ])
     expect(linkKeys).toContain('peer_ap_mac')
-    expect(resolvedLinkColumns.filter((column) => column.fixed === 'left').map((column) => column.key)).toEqual(['record_id'])
+    expect(resolvedLinkColumns.filter((column) => column.fixed === 'left').map((column) => column.key)).toEqual([])
+    for (const key of [
+      'record_id', 'timestamp_tag', 'peer_mac_raw', 'peer_mac', 'peer_radio_mac',
+      'identity_source', 'identity_rule', 'identity_reason', 'source_file', 'source_line_number',
+    ]) expect(linkKeys).not.toContain(key)
     expect(resolvedLinkColumns.find((column) => column.key === 'section')?.width).toBe(190)
     const switchTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-switch-events:v3')!
     const switchKeys = (switchTable.props('columns') as Array<{ key: string }>).map((column) => column.key)

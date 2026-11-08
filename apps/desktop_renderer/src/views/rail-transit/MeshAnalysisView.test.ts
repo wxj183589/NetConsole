@@ -28,7 +28,7 @@ describe('Mesh analysis view', () => {
     expect(source).not.toContain('getMeshAlignment')
     expect(source).toContain('报告与来源')
     expect(source).toContain('<el-pagination')
-    expect(source).toContain('peer_radio_mac')
+    expect(source).not.toContain("label: 'Peer Radio MAC'")
     expect(source).not.toContain('归属来源')
     expect(source).toContain('previewMeshImport')
     expect(source).toContain('applyMeshBundleImport')
@@ -144,6 +144,11 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('缓存命中')
     expect(source).toContain('无有效数据')
     expect(source).toContain('已取消加载')
+    expect(source).toContain('mesh-chart-status-row--global')
+    expect(source).toContain('initialSkeletonVisible')
+    expect(source).toContain('mesh-initial-skeleton__metrics')
+    expect(source).toContain('startInitialSkeletonDelay')
+    expect(source).toContain('clearInitialSkeletonDelay')
   })
 
   it('uses the unified platform download instead of navigating the renderer', () => {
@@ -174,6 +179,11 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('打开任务中心')
     expect(source).toContain("alignmentReason: 'long-text'")
     expect(source).toContain("alignmentReason: 'path'")
+
+    for (const columnName of ['sessionColumns', 'coverageColumns', 'buildOrderColumns', 'linkColumns', 'parseIssueColumns']) {
+      const block = source.match(new RegExp(`const ${columnName}:[\\s\\S]*?\\n\\]`))?.[0] || ''
+      expect(block).not.toMatch(/label: '(?:来源文件|来源类型|身份来源|匹配规则|Peer Radio MAC|原始 Peer MAC|规范 Peer MAC|行号)'/)
+    }
 
     const tableIds = [...source.matchAll(/table-id="([^"]+)"/g)].map((match) => match[1])
     expect(tableIds.length).toBeGreaterThanOrEqual(6)
