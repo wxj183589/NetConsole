@@ -39,6 +39,6 @@
 | CACHE_LOADING_STATUS | PASS（窗口缓存恢复显示缓存命中并仍等待实际图表渲染完成） |
 | ERROR_STATE_STATUS | PASS_WITH_LIMITATIONS（加载、无有效数据、查询/绘图错误、取消文案已区分；真实后端故障注入未执行） |
 
-产品分支：`codex-A/mesh-analysis-scope-ui-optimization`；既有实现提交：`225e05d2`、`2a6ea78e`；本轮补充提交：`43eef05d`。DevStatus 单独提交，两个仓库均不推送。
+产品分支：`codex-A/mesh-analysis-scope-ui-optimization`；既有实现提交：`225e05d2`、`2a6ea78e`、`43eef05d`；本轮加载状态提交：`57ee2eaf`。DevStatus 单独提交：`6f2679e`，两个仓库均不推送。
 
 限制：用户要求的原始 Excel ZIP 在本轮附件目录不可见，不能声称真实样本字段或三视口人工截图已独立复核；Windows 原生 DPI、Excel/WPS GUI、真实局点与设备仍待外部验收。Noise/CPU/内存/Rate/TxDesFree、完整 Tx/Rx/Retry/Err/GARP/MulJoin 趋势分组及单 AP 历史选择器仍未接入主页面；当前计数器后端已完成合成数据回归，但不把未接入的图表与真实样本验收写成 PASS。加载状态本轮完成 Renderer 定向验证，未执行真实数据库慢查询、故障注入或 Electron 三尺寸截图。`FULL_GATE_STATUS=PASS` 仅引用 2026-11-08 的既有本地 Gate 证据，本轮按要求未重复全量 Gate。
