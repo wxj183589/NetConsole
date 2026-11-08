@@ -31,6 +31,6 @@
 | TOOLTIP_LAYOUT_STATUS | PASS_WITH_LIMITATIONS（容器边界/内部滚动已实现，未做真实窗口截图验收） |
 | TOOLTIP_REGRESSION_STATUS | PASS（本轮定向 Tooltip/挂载/trackside 回归 4 files / 54 tests passed；`vue-tsc -b` passed） |
 
-产品分支：`codex-A/mesh-analysis-scope-ui-optimization`；实现提交：`225e05d2`，Tooltip 回退修订：`2a6ea78e`。DevStatus 单独提交，两个仓库均不推送。
+产品分支：`codex-A/mesh-analysis-scope-ui-optimization`；既有实现提交：`225e05d2`、`2a6ea78e`；本轮补充提交：`43eef05d`。DevStatus 单独提交，两个仓库均不推送。
 
 限制：用户要求的原始 Excel ZIP 在本轮附件目录不可见，不能声称真实样本字段或三视口人工截图已独立复核；Windows 原生 DPI、Excel/WPS GUI、真实局点与设备仍待外部验收。Noise/CPU/内存/Rate/TxDesFree、完整 Tx/Rx/Retry/Err/GARP/MulJoin 趋势分组及单 AP 历史选择器仍未接入主页面；当前计数器后端已完成合成数据回归，但不把未接入的图表与真实样本验收写成 PASS。`FULL_GATE_STATUS=PASS` 仅引用 2026-11-08 的既有本地 Gate 证据，本轮按要求未重复全量 Gate。
