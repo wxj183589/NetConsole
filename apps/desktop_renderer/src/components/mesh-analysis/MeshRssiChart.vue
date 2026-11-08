@@ -35,6 +35,7 @@ import {
   resolveMeshRssiPoint,
   type MeshRssiContextIndex,
 } from './meshRssiContext'
+import { toMeshChartError, type MeshChartRenderCompletePayload, type MeshChartRenderErrorPayload } from './meshLoadingState'
 
 const props = withDefaults(defineProps<{
   points: MeshChartPoint[]
@@ -67,6 +68,8 @@ const emit = defineEmits<{
   'viewport-interaction-start': []
   'viewport-interaction-end': []
   'select-time': [time: string]
+  'render-complete': [payload: MeshChartRenderCompletePayload]
+  'render-error': [payload: MeshChartRenderErrorPayload]
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -198,9 +201,24 @@ function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'r
       if (!ready || !props.active || disposed) return
       const renderReason = pendingRenderReason
       pendingRenderReason = null
-      if (renderReason || !chartExisted) render(renderReason || 'data')
+      const rendered = Boolean(renderReason || !chartExisted)
+      if (rendered) render(renderReason || 'data')
       chart?.resize({ silent: true, animation: { duration: 0 } })
       focusCurrentPoint()
+      if (rendered) emit('render-complete', {
+        chart: 'rssi',
+        phase: 'COMPLETED',
+        point_count: pointCount(),
+        rendered_at: new Date().toISOString(),
+      })
+    }).catch((reason: unknown) => {
+      if (disposed) return
+      emit('render-error', {
+        chart: 'rssi',
+        phase: 'ERROR',
+        error: toMeshChartError(reason, '主链 RSSI 图加载失败'),
+        failed_at: new Date().toISOString(),
+      })
     })
   })
 }

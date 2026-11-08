@@ -58,6 +58,7 @@ import {
   type PinnedTracksideFrame,
   type TracksideTooltipEntry,
 } from './tracksideTooltip'
+import { toMeshChartError, type MeshChartRenderCompletePayload, type MeshChartRenderErrorPayload } from './meshLoadingState'
 
 const props = withDefaults(defineProps<{
   series?: MeshTracksideSignalSeriesData[]
@@ -112,6 +113,8 @@ const emit = defineEmits<{
   'select-time': [time: string]
   'workload-phase': [phase: 'echarts-init' | 'echarts-set-option' | 'echarts-interactive' | 'chart-disposed']
   'workload-profile': [profile: { conflictEdgeCount: number }]
+  'render-complete': [payload: MeshChartRenderCompletePayload]
+  'render-error': [payload: MeshChartRenderErrorPayload]
 }>()
 
 const container = ref<HTMLDivElement | null>(null)
@@ -723,8 +726,23 @@ function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'r
       if (!ready || !props.active || disposed) return
       const renderReason = pendingRenderReason
       pendingRenderReason = null
-      if (renderReason || !chartExisted) render(renderReason || 'data')
+      const rendered = Boolean(renderReason || !chartExisted)
+      if (rendered) render(renderReason || 'data')
       chart?.resize({ silent: true, animation: { duration: 0 } })
+      if (rendered) emit('render-complete', {
+        chart: 'trackside',
+        phase: 'COMPLETED',
+        point_count: seriesCache.totalRenderedPoints,
+        rendered_at: new Date().toISOString(),
+      })
+    }).catch((reason: unknown) => {
+      if (disposed) return
+      emit('render-error', {
+        chart: 'trackside',
+        phase: 'ERROR',
+        error: toMeshChartError(reason, '轨旁 AP 信号图加载失败'),
+        failed_at: new Date().toISOString(),
+      })
     })
   })
 }

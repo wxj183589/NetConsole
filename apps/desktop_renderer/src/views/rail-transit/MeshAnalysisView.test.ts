@@ -132,6 +132,20 @@ describe('Mesh analysis view', () => {
     expect(source).not.toContain('absolute_path')
   })
 
+  it('exposes real staged loading state and per-chart render completion', () => {
+    for (const phase of ['IDLE', 'PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING', 'COMPLETED', 'ERROR', 'CANCELLED']) {
+      expect(source).toContain(`'${phase}'`)
+    }
+    expect(source).toContain('正在查询数据库')
+    expect(source).toContain('正在整理链路数据')
+    expect(source).toContain('正在绘制主链 RSSI 图')
+    expect(source).toContain('@render-complete="handleMeshChartRenderComplete"')
+    expect(source).toContain('@render-error="handleMeshChartRenderError"')
+    expect(source).toContain('缓存命中')
+    expect(source).toContain('无有效数据')
+    expect(source).toContain('已取消加载')
+  })
+
   it('uses the unified platform download instead of navigating the renderer', () => {
     expect(source).toContain('meshArtifactDownloadRequest')
     expect(source).toContain('downloadBackendResource')

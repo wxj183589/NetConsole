@@ -159,6 +159,14 @@ describe('MESH charts mount and render', () => {
       useDirtyRect: false,
     })
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(3)
+    expect(wrappers[1].emitted('render-complete')).toHaveLength(1)
+    expect(wrappers[1].emitted('render-complete')?.[0]?.[0]).toMatchObject({
+      chart: 'rssi', phase: 'COMPLETED', point_count: 2,
+    })
+    expect(wrappers[2].emitted('render-complete')).toHaveLength(1)
+    expect(wrappers[2].emitted('render-complete')?.[0]?.[0]).toMatchObject({
+      chart: 'busy', phase: 'COMPLETED', point_count: 1,
+    })
     const options = echartsMock.chart.setOption.mock.calls.map(([option]) => option as { series: Array<{ name: string; type: string }> })
     expect(options[0].series.every((item) => item.type === 'scatter')).toBe(true)
     expect(options[1].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 RSSI', '切换节点'])
@@ -195,6 +203,17 @@ describe('MESH charts mount and render', () => {
     wrappers.forEach((wrapper) => wrapper.unmount())
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(3)
     expect(echartsMock.chart.off).toHaveBeenCalledTimes(8)
+  })
+
+  it('reports a render-complete event for the trackside chart', async () => {
+    const wrapper = mount(MeshTracksideSignalChart, { props: { series: tracksideSeries } })
+    await flushPromises()
+
+    expect(wrapper.emitted('render-complete')).toHaveLength(1)
+    expect(wrapper.emitted('render-complete')?.[0]?.[0]).toMatchObject({
+      chart: 'trackside', phase: 'COMPLETED', point_count: 2,
+    })
+    wrapper.unmount()
   })
 
   it('renders LinkCnt=2 as a non-fault triangle overlay without adding an RSSI curve', async () => {
