@@ -18,6 +18,7 @@ import {
   viewportFromDataZoom,
   type MeshChartViewport,
 } from './meshChartViewport'
+import { toMeshChartError, type MeshChartRenderCompletePayload, type MeshChartRenderErrorPayload } from './meshLoadingState'
 
 const props = withDefaults(defineProps<{
   points: MeshChartPoint[]
@@ -37,6 +38,8 @@ const emit = defineEmits<{
   selectSwitch: [event: MeshChartEvent]
   'viewport-change': [viewport: MeshChartViewport]
   'viewport-ready': [viewport: MeshChartViewport]
+  'render-complete': [payload: MeshChartRenderCompletePayload]
+  'render-error': [payload: MeshChartRenderErrorPayload]
 }>()
 const container = ref<HTMLDivElement | null>(null)
 const pinnedTooltip = ref<{ html: string } | null>(null)
@@ -157,8 +160,23 @@ function scheduleChartUpdate(reason: 'data' | 'display' | 'theme' | 'reset' | 'r
       if (!ready || !props.active || disposed) return
       const renderReason = pendingRenderReason
       pendingRenderReason = null
-      if (renderReason || !chartExisted) render(renderReason || 'data')
+      const rendered = Boolean(renderReason || !chartExisted)
+      if (rendered) render(renderReason || 'data')
       chart?.resize({ silent: true, animation: { duration: 0 } })
+      if (rendered) emit('render-complete', {
+        chart: 'busy',
+        phase: 'COMPLETED',
+        point_count: props.points.length,
+        rendered_at: new Date().toISOString(),
+      })
+    }).catch((reason: unknown) => {
+      if (disposed) return
+      emit('render-error', {
+        chart: 'busy',
+        phase: 'ERROR',
+        error: toMeshChartError(reason, '空口负载图加载失败'),
+        failed_at: new Date().toISOString(),
+      })
     })
   })
 }

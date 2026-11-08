@@ -30,7 +30,15 @@
 | PEER_RADIO_PORT_STATUS | PASS（radio1/radio2 显示 1/2，无法解析显示 —） |
 | TOOLTIP_LAYOUT_STATUS | PASS_WITH_LIMITATIONS（容器边界/内部滚动已实现，未做真实窗口截图验收） |
 | TOOLTIP_REGRESSION_STATUS | PASS（本轮定向 Tooltip/挂载/trackside 回归 4 files / 54 tests passed；`vue-tsc -b` passed） |
+| LOADING_STATE_STATUS | PASS（统一 IDLE/PREPARING/QUERYING/PROCESSING/RENDERING/COMPLETED/ERROR/CANCELLED 状态与阶段文案） |
+| DATABASE_QUERY_FEEDBACK_STATUS | PASS_WITH_LIMITATIONS（页面、会话、主链、轨旁、单 AP 空口查询接入真实请求边界；无伪造数据库百分比） |
+| DATA_PROCESSING_FEEDBACK_STATUS | PASS（响应后按实际缓存构建、整理、降采样和角色识别阶段更新） |
+| CHART_RENDER_FEEDBACK_STATUS | PASS（ECharts setOption/resize 完成后由 render-complete 事件标记完成，异常发 render-error） |
+| PER_CHART_LOADING_STATUS | PASS（主链 RSSI、轨旁 AP、空口负载独立状态，单图错误不阻塞其他图） |
+| CANCELLATION_STATUS | PASS_WITH_LIMITATIONS（已有 AbortController/generation 与状态清理接入；页面关闭和真实慢查询 GUI 尚未人工验收） |
+| CACHE_LOADING_STATUS | PASS（窗口缓存恢复显示缓存命中并仍等待实际图表渲染完成） |
+| ERROR_STATE_STATUS | PASS_WITH_LIMITATIONS（加载、无有效数据、查询/绘图错误、取消文案已区分；真实后端故障注入未执行） |
 
 产品分支：`codex-A/mesh-analysis-scope-ui-optimization`；既有实现提交：`225e05d2`、`2a6ea78e`；本轮补充提交：`43eef05d`。DevStatus 单独提交，两个仓库均不推送。
 
-限制：用户要求的原始 Excel ZIP 在本轮附件目录不可见，不能声称真实样本字段或三视口人工截图已独立复核；Windows 原生 DPI、Excel/WPS GUI、真实局点与设备仍待外部验收。Noise/CPU/内存/Rate/TxDesFree、完整 Tx/Rx/Retry/Err/GARP/MulJoin 趋势分组及单 AP 历史选择器仍未接入主页面；当前计数器后端已完成合成数据回归，但不把未接入的图表与真实样本验收写成 PASS。`FULL_GATE_STATUS=PASS` 仅引用 2026-11-08 的既有本地 Gate 证据，本轮按要求未重复全量 Gate。
+限制：用户要求的原始 Excel ZIP 在本轮附件目录不可见，不能声称真实样本字段或三视口人工截图已独立复核；Windows 原生 DPI、Excel/WPS GUI、真实局点与设备仍待外部验收。Noise/CPU/内存/Rate/TxDesFree、完整 Tx/Rx/Retry/Err/GARP/MulJoin 趋势分组及单 AP 历史选择器仍未接入主页面；当前计数器后端已完成合成数据回归，但不把未接入的图表与真实样本验收写成 PASS。加载状态本轮完成 Renderer 定向验证，未执行真实数据库慢查询、故障注入或 Electron 三尺寸截图。`FULL_GATE_STATUS=PASS` 仅引用 2026-11-08 的既有本地 Gate 证据，本轮按要求未重复全量 Gate。

@@ -69,6 +69,12 @@ import type { MeshAnalysisParamsOverride } from '../../api/railTransitWeb'
 import MeshBusinessSummary from '../../components/mesh-analysis/MeshBusinessSummary.vue'
 import MeshBusinessParams from '../../components/mesh-analysis/MeshBusinessParams.vue'
 import { initialMeshResolution, meshWindowResolution } from '../../components/mesh-analysis/meshLoadingPolicy'
+import {
+  meshLoadingPhaseLabel,
+  type MeshChartRenderCompletePayload,
+  type MeshChartRenderErrorPayload,
+  type MeshLoadingPhase,
+} from '../../components/mesh-analysis/meshLoadingState'
 import { meshBusinessText as mt } from '../../i18n/meshBusiness'
 import { isFeatureEnabled } from '../../features'
 import type {
@@ -115,6 +121,60 @@ const pageActivatedOnce = ref(false)
 const analysisResultUpdatePending = ref(false)
 const analysisResultRefreshError = ref('')
 const loading = ref(false)
+type MeshLoadingTarget = 'page' | 'rssi' | 'trackside' | 'busy'
+interface MeshLoadingStatus {
+  phase: MeshLoadingPhase
+  message: string
+  startedAt: number | null
+  elapsedMs: number | null
+  error: string
+  cached: boolean
+  generation: number
+}
+function initialMeshLoadingStatus(): MeshLoadingStatus {
+  return { phase: 'IDLE', message: meshLoadingPhaseLabel('IDLE'), startedAt: null, elapsedMs: null, error: '', cached: false, generation: 0 }
+}
+const meshLoadingStatus = reactive<Record<MeshLoadingTarget, MeshLoadingStatus>>({
+  page: initialMeshLoadingStatus(),
+  rssi: initialMeshLoadingStatus(),
+  trackside: initialMeshLoadingStatus(),
+  busy: initialMeshLoadingStatus(),
+})
+function setMeshLoadingStatus(target: MeshLoadingTarget, phase: MeshLoadingPhase, options: Partial<Pick<MeshLoadingStatus, 'message' | 'error' | 'cached' | 'generation'>> = {}): void {
+  const status = meshLoadingStatus[target]
+  if (phase === 'PREPARING' || phase === 'QUERYING') {
+    status.startedAt = status.startedAt ?? Date.now()
+  }
+  status.phase = phase
+  status.message = options.message || meshLoadingPhaseLabel(phase)
+  status.error = options.error || (phase === 'ERROR' ? status.error : '')
+  status.cached = options.cached ?? status.cached
+  if (options.generation !== undefined) status.generation = options.generation
+  if (phase === 'COMPLETED' || phase === 'ERROR' || phase === 'CANCELLED' || phase === 'IDLE') {
+    status.elapsedMs = status.startedAt === null ? null : Math.max(0, Date.now() - status.startedAt)
+  }
+  if (phase === 'IDLE') {
+    status.startedAt = null
+    status.elapsedMs = null
+    status.error = ''
+    status.cached = false
+  }
+}
+function loadingStatusText(target: MeshLoadingTarget): string {
+  const status = meshLoadingStatus[target]
+  if (status.error) return `${status.message}：${status.error}`
+  if (status.elapsedMs !== null && (status.phase === 'COMPLETED' || status.phase === 'ERROR' || status.phase === 'CANCELLED')) {
+    return `${status.message}（${(status.elapsedMs / 1000).toFixed(1)} s${status.cached ? ' · 缓存命中' : ''}）`
+  }
+  return status.cached ? `${status.message} · 缓存命中` : status.message
+}
+const pageLoadingPhase = computed(() => meshLoadingStatus.page.phase)
+const pageLoadingText = computed(() => loadingStatusText('page'))
+const chartLoadingStatuses = computed(() => [
+  { key: 'rssi' as const, label: '主链路 RSSI' },
+  { key: 'trackside' as const, label: '轨旁 AP 信号' },
+  { key: 'busy' as const, label: '空口负载' },
+])
 const detailLoading = ref(false)
 const openingSessionId = ref<string | null>(null)
 const pendingRequestedSessionId = ref<string | null>(null)
@@ -573,6 +633,20 @@ const rssiLoadStage = computed<{ step: string; label: string } | null>(() => {
   }
   return null
 })
+function handleMeshChartRenderComplete(payload: MeshChartRenderCompletePayload): void {
+  const target = payload.chart as MeshLoadingTarget
+  if (!(target in meshLoadingStatus) || target === 'page') return
+  setMeshLoadingStatus(target, 'COMPLETED', { message: payload.point_count === 0 ? '无有效数据' : meshLoadingPhaseLabel('COMPLETED') })
+  if (target === 'rssi') rssiActivePaintReady.value = true
+  if (target === 'trackside') tracksideChartRendered.value = true
+}
+function handleMeshChartRenderError(payload: MeshChartRenderErrorPayload): void {
+  const target = payload.chart as MeshLoadingTarget
+  if (!(target in meshLoadingStatus) || target === 'page') return
+  setMeshLoadingStatus(target, 'ERROR', { message: meshLoadingPhaseLabel('ERROR'), error: payload.error })
+  if (target === 'rssi') rssiActiveError.value = payload.error
+  if (target === 'trackside') tracksideError.value = payload.error
+}
 const busyChartData = computed(() => busyMode.value === 'peer' ? busyPeerPath.value : busyActivePath.value)
 const busyValidSampleCount = computed(() => (busyChartData.value?.points || []).filter((point) => (
   point.local_tx_busy != null || point.local_rx_busy != null || point.peer_tx_busy != null || point.peer_rx_busy != null
@@ -1176,6 +1250,9 @@ function reportRendererWorkload(phase: RendererWorkloadPhase): void {
 }
 
 function releaseTracksideResources(reportDisposed = true): void {
+  if (meshLoadingStatus.trackside.phase === 'QUERYING' || meshLoadingStatus.trackside.phase === 'PROCESSING' || meshLoadingStatus.trackside.phase === 'RENDERING') {
+    setMeshLoadingStatus('trackside', 'CANCELLED', { message: '已取消加载' })
+  }
   invalidateRssiWindowBatch()
   cancelTracksideIdleSchedule?.()
   cancelTracksideIdleSchedule = null
@@ -1467,6 +1544,7 @@ function disposeMeshAnalysisPage(): void {
 }
 
 onMounted(async () => {
+  setMeshLoadingStatus('page', 'PREPARING', { message: '正在准备分析数据' })
   window.addEventListener('keydown', handleRssiLayoutKeydown)
   window.addEventListener('pointerup', endRssiViewportInteraction, true)
   window.addEventListener('pointercancel', endRssiViewportInteraction, true)
@@ -1554,6 +1632,7 @@ async function refreshOverview(silent = false, force = false): Promise<void> {
   const controller = new AbortController()
   overviewAbortController = controller
   loading.value = !silent
+  if (!silent) setMeshLoadingStatus('page', 'QUERYING', { message: '正在查询数据库', generation })
   try {
     const overview = await getMeshAnalysisOverview({
       ...filters,
@@ -1564,9 +1643,14 @@ async function refreshOverview(silent = false, force = false): Promise<void> {
     total.value = overview.sessions.total
     error.value = ''
     failureCount = 0
+    if (!selected.value) setMeshLoadingStatus('page', 'COMPLETED', { message: '加载完成' })
   } catch (reason) {
-    if (isAbortError(reason) || controller.signal.aborted || generation !== overviewGeneration) return
+    if (isAbortError(reason) || controller.signal.aborted || generation !== overviewGeneration) {
+      if (generation === overviewGeneration) setMeshLoadingStatus('page', 'CANCELLED', { message: '已取消加载' })
+      return
+    }
     error.value = meshOverviewErrorMessage(reason)
+    setMeshLoadingStatus('page', 'ERROR', { message: '数据加载失败', error: error.value })
     failureCount += 1
   } finally {
     if (overviewAbortController === controller) overviewAbortController = null
@@ -1744,6 +1828,8 @@ async function restoreRssiWindowFromCache(
   key: string,
   entry: RssiWindowCacheEntry,
 ): Promise<void> {
+  setMeshLoadingStatus('rssi', 'PROCESSING', { message: '正在恢复缓存的主链 RSSI 数据', cached: true })
+  setMeshLoadingStatus('trackside', 'PROCESSING', { message: '正在恢复缓存的轨旁 AP 数据', cached: true })
   rssiWindowCache.delete(key)
   rememberPublishedRssiWindow()
   rssiActivePath.value = entry.active
@@ -1758,6 +1844,8 @@ async function restoreRssiWindowFromCache(
   tracksideChartRendered.value = false
   rssiActiveError.value = ''
   tracksideError.value = ''
+  setMeshLoadingStatus('rssi', 'RENDERING', { message: '正在绘制缓存的主链 RSSI 图', cached: true })
+  setMeshLoadingStatus('trackside', 'RENDERING', { message: '正在绘制缓存的轨旁 AP 图', cached: true })
   publishedRssiWindowKey = key
   reportRendererWorkload('trackside-cache-ready')
   await nextTick()
@@ -1771,6 +1859,11 @@ function resetSessionDetailState(
   chartRadioValue: number | null,
   preserveRecovery: boolean,
 ): void {
+  for (const target of ['rssi', 'trackside', 'busy'] as const) {
+    if (meshLoadingStatus[target].phase !== 'IDLE' && meshLoadingStatus[target].phase !== 'COMPLETED') {
+      setMeshLoadingStatus(target, 'CANCELLED', { message: '已取消加载' })
+    }
+  }
   closeBuildOrderModal()
   cancelDeferredRssiChartWork()
   rssiActiveAbortController?.abort()
@@ -1812,6 +1905,7 @@ async function openSessionById(
     switchPage: switchFilters.page,
   } : null
   detailLoading.value = true
+  setMeshLoadingStatus('page', 'PREPARING', { message: '正在准备分析数据', generation })
   if (!preservedView) {
     analysisResultUpdatePending.value = false
     analysisResultRefreshError.value = ''
@@ -1819,8 +1913,13 @@ async function openSessionById(
     resetSessionDetailState('build-order', null, preserveRecovery)
     await nextTick()
   }
+  setMeshLoadingStatus('page', 'QUERYING', { message: '正在查询数据库', generation })
   const detail = await getMeshAnalysisSession(id, signal)
-  if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
+  if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) {
+    if (generation === detailGeneration) setMeshLoadingStatus('page', 'CANCELLED', { message: '已取消加载', generation })
+    return
+  }
+  setMeshLoadingStatus('page', 'PROCESSING', { message: '正在整理链路数据', generation })
   if (preservedView) {
     const preservedRadio = preservedView.chartRadio !== null
       && (detail.available_radios || []).includes(preservedView.chartRadio)
@@ -1850,6 +1949,7 @@ async function openSessionById(
   }
   refreshDetailPanels()
   error.value = ''
+  setMeshLoadingStatus('page', 'COMPLETED', { message: '加载完成', generation })
 }
 
 async function refreshIdentityProjection(): Promise<void> {
@@ -2063,6 +2163,8 @@ function loadTracksideSignal(
   tracksideRequestKey = requestKey
   tracksideWorkloadCycle += 1
   tracksideLoading.value = true
+  setMeshLoadingStatus('trackside', 'PREPARING', { message: '正在准备轨旁 AP 历史数据', generation: requestGeneration })
+  setMeshLoadingStatus('trackside', 'QUERYING', { message: '正在查询轨旁 AP 历史数据', generation: requestGeneration })
   reportRendererWorkload('trackside-request-started')
   let requestPromise!: Promise<void>
   requestPromise = (async () => {
@@ -2078,6 +2180,7 @@ function loadTracksideSignal(
         || requestGeneration !== tracksideRequestGeneration
         || controller.signal.aborted
       ) return
+      setMeshLoadingStatus('trackside', 'PROCESSING', { message: '正在整理轨旁 AP 链路数据', generation: requestGeneration })
       tracksideSignal.value = result
       reportRendererWorkload('trackside-response-received')
       reportRendererWorkload('trackside-cache-building')
@@ -2096,12 +2199,17 @@ function loadTracksideSignal(
       tracksideChartRendered.value = false
       tracksideLoadedKey = requestKey
       tracksideError.value = ''
+      setMeshLoadingStatus('trackside', 'RENDERING', { message: '正在绘制轨旁 AP 信号图', generation: requestGeneration })
       setTracksideCacheActive(meshRuntimeToken, true)
       reportRendererWorkload('trackside-cache-ready')
       await nextTick()
       observeTracksideChart()
     } catch (reason) {
-      if (isAbortError(reason) || controller.signal.aborted || generation !== detailGeneration) return
+      if (isAbortError(reason) || controller.signal.aborted) {
+        if (generation === detailGeneration && requestGeneration === tracksideRequestGeneration) setMeshLoadingStatus('trackside', 'CANCELLED', { message: '已取消加载', generation: requestGeneration })
+        return
+      }
+      if (generation !== detailGeneration) return
       if (
         reason instanceof DOMException
         && reason.name === 'AbortError'
@@ -2113,6 +2221,7 @@ function loadTracksideSignal(
       ) return
       tracksideLoaded.value = false
       tracksideError.value = reason instanceof Error ? reason.message : '轨旁AP信号图加载失败，请重试'
+      setMeshLoadingStatus('trackside', 'ERROR', { message: '数据加载失败', error: tracksideError.value, generation: requestGeneration })
     } finally {
       if (!tracksideSeriesCache.value) releaseTracksideReservation(meshRuntimeToken)
       if (tracksideRequestPromise === requestPromise) {
@@ -2146,7 +2255,6 @@ async function loadTracksideForCurrentWindow(): Promise<void> {
 
 function handleTracksideWorkloadPhase(phase: RendererWorkloadPhase): void {
   if (phase === 'echarts-init') setTracksideChartActive(meshRuntimeToken, true)
-  if (phase === 'echarts-set-option') tracksideChartRendered.value = true
   if (phase === 'chart-disposed') setTracksideChartActive(meshRuntimeToken, false)
   reportRendererWorkload(phase)
 }
@@ -2215,6 +2323,10 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
   tracksideLoading.value = true
   rssiActiveError.value = ''
   tracksideError.value = ''
+  setMeshLoadingStatus('rssi', 'PREPARING', { message: '正在准备当前时间窗口', generation: request.generation })
+  setMeshLoadingStatus('trackside', 'PREPARING', { message: '正在准备当前时间窗口', generation: request.generation })
+  setMeshLoadingStatus('rssi', 'QUERYING', { message: '正在查询 ACTIVE 主链路数据', generation: request.generation })
+  setMeshLoadingStatus('trackside', 'QUERYING', { message: '正在查询轨旁 AP 历史数据', generation: request.generation })
   tracksideWorkloadCycle += 1
   reportRendererWorkload('trackside-request-started')
 
@@ -2270,6 +2382,8 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
 
       reportRendererWorkload('trackside-response-received')
       reportRendererWorkload('trackside-cache-building')
+      setMeshLoadingStatus('rssi', 'PROCESSING', { message: '正在整理主链路数据并执行降采样', generation: request.generation })
+      setMeshLoadingStatus('trackside', 'PROCESSING', { message: '正在整理轨旁 AP 序列', generation: request.generation })
       const cache = markRaw(buildTracksideSeriesCache(tracksideResult.series))
       if (
         request.generation !== rssiWindowBatchGeneration
@@ -2300,6 +2414,8 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
       publishedRssiWindowKey = request.key
       rssiActiveError.value = ''
       tracksideError.value = ''
+      setMeshLoadingStatus('rssi', 'RENDERING', { message: '正在绘制主链 RSSI 图', generation: request.generation })
+      setMeshLoadingStatus('trackside', 'RENDERING', { message: '正在绘制轨旁 AP 信号图', generation: request.generation })
       setTracksideCacheActive(meshRuntimeToken, true)
       reportRendererWorkload('trackside-cache-ready')
 
@@ -2316,10 +2432,17 @@ function loadRssiWindowBatch(viewport: MeshChartViewport): Promise<void> {
         || activeController.signal.aborted
         || tracksideController.signal.aborted
         || isAbortError(reason)
-      ) return
+      ) {
+        if (isAbortError(reason) || activeController.signal.aborted || tracksideController.signal.aborted) {
+          setMeshLoadingStatus('rssi', 'CANCELLED', { message: '已取消加载', generation: request.generation })
+          setMeshLoadingStatus('trackside', 'CANCELLED', { message: '已取消加载', generation: request.generation })
+        }
+        return
+      }
       const message = reason instanceof Error ? reason.message : '当前时间窗口加载失败，请重试'
       if (item.source === 'trackside') tracksideError.value = message
       else rssiActiveError.value = message
+      setMeshLoadingStatus(item.source === 'trackside' ? 'trackside' : 'rssi', 'ERROR', { message: '数据加载失败', error: message, generation: request.generation })
       activeController.abort()
       tracksideController.abort()
     } finally {
@@ -2353,6 +2476,7 @@ async function loadActivePath(
   preserveTrackside = false,
 ): Promise<void> {
   if (!selected.value) return
+  const loadingTarget: MeshLoadingTarget = metric === 'busy' ? 'busy' : 'rssi'
   const effectiveRange = range ?? (metric === 'busy' ? defaultChartWindowRange(metric) : null)
   const values: Record<string, string | number | boolean | null | undefined> = {
     max_points: visiblePoints.value,
@@ -2376,16 +2500,23 @@ async function loadActivePath(
   }
   if (metric === 'busy') {
     const requestGeneration = nextChartGeneration(metric)
+    setMeshLoadingStatus('busy', 'PREPARING', { message: '正在准备空口负载数据', generation: requestGeneration })
+    setMeshLoadingStatus('busy', 'QUERYING', { message: '正在查询 Tx/Rx 空口负载', generation: requestGeneration })
     busyActiveAbortController?.abort()
     const controller = new AbortController()
     busyActiveAbortController = controller
     try {
       const result = await getMeshActivePathChart(selected.value.session.session_id, values, controller.signal)
       if (generation === detailGeneration && isLatestChartRequest(metric, requestGeneration) && !controller.signal.aborted) {
+        setMeshLoadingStatus('busy', 'PROCESSING', { message: '正在整理空口负载数据', generation: requestGeneration })
         busyActivePath.value = result
+        setMeshLoadingStatus('busy', 'RENDERING', { message: '正在绘制空口负载图', generation: requestGeneration })
       }
     } catch (reason) {
-      if (!controller.signal.aborted && generation === detailGeneration && isLatestChartRequest(metric, requestGeneration)) {
+      if (controller.signal.aborted || isAbortError(reason)) {
+        if (generation === detailGeneration && isLatestChartRequest(metric, requestGeneration)) setMeshLoadingStatus('busy', 'CANCELLED', { message: '已取消加载', generation: requestGeneration })
+      } else if (generation === detailGeneration && isLatestChartRequest(metric, requestGeneration)) {
+        setMeshLoadingStatus('busy', 'ERROR', { message: '数据加载失败', error: reason instanceof Error ? reason.message : '空口负载数据加载失败', generation: requestGeneration })
         throw reason
       }
     } finally {
@@ -2416,6 +2547,8 @@ async function loadActivePath(
   }
   rssiActiveAbortController?.abort()
   const requestGeneration = nextChartGeneration(metric)
+  setMeshLoadingStatus(loadingTarget, 'PREPARING', { message: '正在准备主链 RSSI 数据', generation: requestGeneration })
+  setMeshLoadingStatus(loadingTarget, 'QUERYING', { message: '正在查询 ACTIVE 主链路数据', generation: requestGeneration })
   const controller = new AbortController()
   rssiActiveAbortController = controller
   rssiActiveRequestKey = requestKey
@@ -2431,18 +2564,22 @@ async function loadActivePath(
         || controller.signal.aborted
       ) return
       rssiActivePath.value = markRaw(result)
+      setMeshLoadingStatus('rssi', 'PROCESSING', { message: '正在识别 ACTIVE / STANDBY 并整理链路数据', generation: requestGeneration })
       rssiActiveLoaded.value = true
       rssiActivePeerLoaded.value = Boolean(values.include_peer)
       rssiActiveLoadedKey = requestKey
       rssiActiveError.value = ''
+      setMeshLoadingStatus('rssi', 'RENDERING', { message: '正在绘制主链 RSSI 图', generation: requestGeneration })
     } catch (reason) {
-      if (
-        controller.signal.aborted
-        || isAbortError(reason)
-        || generation !== detailGeneration
-        || !isLatestChartRequest(metric, requestGeneration)
-      ) return
+      if (controller.signal.aborted || isAbortError(reason)) {
+        if (generation === detailGeneration && isLatestChartRequest(metric, requestGeneration)) {
+          setMeshLoadingStatus('rssi', 'CANCELLED', { message: '已取消加载', generation: requestGeneration })
+        }
+        return
+      }
+      if (generation !== detailGeneration || !isLatestChartRequest(metric, requestGeneration)) return
       rssiActiveError.value = reason instanceof Error ? reason.message : '主链 RSSI 数据加载失败，请重试'
+      setMeshLoadingStatus('rssi', 'ERROR', { message: '数据加载失败', error: rssiActiveError.value, generation: requestGeneration })
       if (!rssiActivePath.value) {
         rssiActiveLoaded.value = false
         rssiActivePaintReady.value = false
@@ -2580,17 +2717,29 @@ async function loadPeerPath(
 ): Promise<void> {
   if (!selected.value || !anchorLinkId) return
   const requestGeneration = nextChartGeneration(metric)
+  setMeshLoadingStatus('busy', 'PREPARING', { message: '正在准备单 AP 空口负载数据', generation: requestGeneration })
+  setMeshLoadingStatus('busy', 'QUERYING', { message: '正在查询单 AP 历史记录', generation: requestGeneration })
   const segment = selectedSegment.value?.anchor_link_id === anchorLinkId ? selectedSegment.value : null
   const allVisits = range?.all_visits ?? allPeerVisits.value
-  const result = await getMeshPeerSegmentChart(selected.value.session.session_id, {
-    anchor_link_id: anchorLinkId,
-    max_points: visiblePoints.value,
-    all_visits: allVisits || null,
-    time_from: range?.start_time ?? (allVisits ? null : segment?.build_start_time),
-    time_to: range?.end_time ?? (allVisits ? null : segment?.build_end_time),
-  })
+  let result: MeshPathChart
+  try {
+    result = await getMeshPeerSegmentChart(selected.value.session.session_id, {
+      anchor_link_id: anchorLinkId,
+      max_points: visiblePoints.value,
+      all_visits: allVisits || null,
+      time_from: range?.start_time ?? (allVisits ? null : segment?.build_start_time),
+      time_to: range?.end_time ?? (allVisits ? null : segment?.build_end_time),
+    })
+  } catch (reason) {
+    if (generation === detailGeneration && isLatestChartRequest(metric, requestGeneration)) {
+      setMeshLoadingStatus('busy', 'ERROR', { message: '数据加载失败', error: reason instanceof Error ? reason.message : '单 AP 历史记录加载失败', generation: requestGeneration })
+    }
+    throw reason
+  }
   if (generation !== detailGeneration || !isLatestChartRequest(metric, requestGeneration)) return
+  setMeshLoadingStatus('busy', 'PROCESSING', { message: '正在整理单 AP 历史记录', generation: requestGeneration })
   busyPeerPath.value = result
+  setMeshLoadingStatus('busy', 'RENDERING', { message: '正在绘制单 AP 空口负载图', generation: requestGeneration })
 }
 
 async function loadCurrentMetricChart(
@@ -4385,6 +4534,11 @@ function exportTimestamp(now = new Date()): string {
       <div class="jump-actions"><el-button :loading="importContextLoading" :disabled="!isFeatureEnabled('capability.mesh.import')" @click="openImportDialog">导入原始 MESH 日志</el-button><el-button :loading="localScanLoading" :disabled="!isFeatureEnabled('capability.mesh.import')" @click="scanLocalLogs">扫描本地日志</el-button><el-button v-if="localScanResult" @click="localScanVisible = true">查看扫描结果</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('capability.mesh.report_export')" @click="openLinkExportDialog">导出链路明细</el-button><el-button :icon="Download" :loading="taskLoading" :disabled="!selected || !selectedSource || selected.session.parsed_status !== 'ready' || !isFeatureEnabled('capability.mesh.report_export')" @click="exportRawLinks">导出原始链路</el-button><el-button :icon="Document" type="primary" :loading="taskLoading" :disabled="!selected || ['missing','unreadable'].includes(selected.session.parsed_status) || !isFeatureEnabled('capability.mesh.report_export')" @click="openReportDialog">生成分析报告</el-button><el-button :loading="loading || detailLoading" @click="refreshAnalysisResults()">刷新结果</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+    <div v-if="pageLoadingPhase !== 'IDLE'" class="mesh-loading-status" role="status" aria-live="polite">
+      <span class="mesh-loading-status__indicator" :class="{ 'is-active': ['PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING'].includes(pageLoadingPhase) }" aria-hidden="true"></span>
+      <strong>{{ pageLoadingPhase }}</strong>
+      <span>{{ pageLoadingText }}</span>
+    </div>
 
     <el-dialog v-model="parseIssuesVisible" title="解析异常明细" width="min(1100px, 94vw)" :close-on-click-modal="false">
       <NcDataTable v-loading="parseIssuesLoading" table-id="mesh-analysis-parse-issues:v1" route-key="/rail-transit/mesh-analysis" :data="parseIssues" :columns="parseIssueColumns" border height="520" empty-text="暂无解析异常" />
@@ -4553,6 +4707,8 @@ function exportTimestamp(now = new Date()): string {
               :active="buildOrderModalVisible"
               :initial-viewport="buildRssiWindowRange(buildOrderModalRow.build_start_time, buildOrderModalRow.build_end_time || null, buildOrderModalRow.local_radio)"
               :shared-time-domain="sharedRssiTimeDomain"
+              @render-complete="handleMeshChartRenderComplete"
+              @render-error="handleMeshChartRenderError"
             />
             <el-empty v-else description="当前区段没有 RSSI 数据" :image-size="48" />
           </section>
@@ -4570,6 +4726,8 @@ function exportTimestamp(now = new Date()): string {
               scope="active"
               :active="buildOrderModalVisible"
               :initial-viewport="buildRssiWindowRange(buildOrderModalRow.build_start_time, buildOrderModalRow.build_end_time || null, buildOrderModalRow.local_radio)"
+              @render-complete="handleMeshChartRenderComplete"
+              @render-error="handleMeshChartRenderError"
             />
             <el-empty v-else description="当前区段没有空口负载数据" :image-size="48" />
           </section>
@@ -4653,6 +4811,10 @@ function exportTimestamp(now = new Date()): string {
       </template>
     </el-dialog>
 
+    <div v-if="loading && !summary" class="mesh-initial-skeleton" aria-label="正在准备分析数据">
+      <el-skeleton animated :rows="2" />
+      <div class="mesh-initial-skeleton__charts"><el-skeleton-item variant="rect" /><el-skeleton-item variant="rect" /><el-skeleton-item variant="rect" /></div>
+    </div>
     <section class="content-card sessions-panel">
       <button class="sessions-toggle" type="button" :aria-expanded="sessionDetailsExpanded" @click="toggleSessionDetails">
         <el-icon><ArrowDown v-if="sessionDetailsExpanded" /><ArrowRight v-else /></el-icon>
@@ -4880,6 +5042,11 @@ function exportTimestamp(now = new Date()): string {
             <strong>步骤 {{ rssiLoadStage.step }}</strong>
             <span>{{ rssiLoadStage.label }}</span>
           </div>
+          <div class="mesh-chart-status-row" aria-label="图表加载状态">
+            <span v-for="chart in chartLoadingStatuses" :key="chart.key" class="mesh-chart-status" :class="`is-${meshLoadingStatus[chart.key].phase.toLowerCase()}`">
+              <span class="mesh-chart-status__dot" aria-hidden="true"></span>{{ chart.label }}：{{ meshLoadingStatus[chart.key].message }}
+            </span>
+          </div>
           <div
             ref="rssiWorkspaceHost"
             class="rssi-workspace-host"
@@ -4922,7 +5089,7 @@ function exportTimestamp(now = new Date()): string {
                     <details><summary>技术诊断</summary><div><span>业务叠加点 {{ formatChartCount(chartData.response_budget?.returned_points) }} / {{ formatChartCount(chartData.response_budget?.total_points) }}</span><span>事件 Overlay {{ formatChartCount(chartData.response_budget?.returned_events) }} / {{ formatChartCount(chartData.response_budget?.total_events) }}</span><span>估算采样间隔 {{ display(chartData.summary.estimated_interval_seconds, ' s') }}</span><span>Payload {{ formatPayloadBytes(chartData.payload_bytes) }}</span><span>最早 {{ chartData.summary.first_sample_time || '—' }}</span><span>最新 {{ chartData.summary.last_sample_time || '—' }}</span></div></details>
                   </div>
                   <div class="rssi-pane-chart-host">
-                    <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :rssi-line="chartData.rssi_line" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" />
+                    <MeshRssiChart v-if="rssiActiveLoaded && chartData" ref="rssiChartRef" :points="chartData.points" :rssi-line="chartData.rssi_line" :events="chartData?.events || []" :location-segments="chartData.location_segments" :show-peer="showRssiPeer" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" scope="active" :active="pageActive && activeTab === 'rssi' && rssiLayoutMode !== 'trackside-focus'" :focus-timestamp="focusTimestamp" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" @render-complete="handleMeshChartRenderComplete" @render-error="handleMeshChartRenderError" />
                     <el-empty v-else-if="rssiActiveLoaded && !rssiActiveLoading" description="当前范围没有 RSSI 数据" :image-size="60" />
                   </div>
                 </div>
@@ -4957,7 +5124,7 @@ function exportTimestamp(now = new Date()): string {
                     <details><summary>技术诊断</summary><div><span>链路存在区段 {{ formatChartCount(tracksideSignal.total_link_runs) }}</span><span>角色切换 {{ formatChartCount(tracksideSignal.role_switch_count) }}</span><span>缺失轨旁信号跳过 {{ formatChartCount(tracksideSignal.skipped_missing_signal_points) }}</span><span>查询行 {{ formatChartCount(tracksideSignal.response_budget?.selected_rows) }} / {{ formatChartCount(tracksideSignal.response_budget?.source_rows) }}</span><span>事件 {{ formatChartCount(tracksideSignal.response_budget?.returned_events) }} / {{ formatChartCount(tracksideSignal.response_budget?.total_events) }}</span><span>Payload {{ formatPayloadBytes(tracksideSignal.payload_bytes) }}</span></div></details>
                   </div>
                   <div ref="tracksideChartHost" class="rssi-pane-chart-host">
-                    <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" />
+                    <MeshTracksideSignalChart v-if="tracksideSeriesCache" ref="tracksideChartRef" :series-cache="tracksideSeriesCache" :events="chartData?.events || []" :location-segments="chartData?.location_segments || []" :continuity-gap-seconds="tracksideSignal?.continuity_gap_seconds" :show-switch-lines="showSwitchLines" :show-switch-points="showSwitchPoints" :show-location-band="showLocationBand" :active="pageActive && activeTab === 'rssi' && tracksideChartVisible && rssiLayoutMode !== 'active-focus'" :workspace-visible="activeTab === 'rssi'" :initial-viewport="rssiViewport" :sync-viewport="rssiViewport" :shared-time-domain="sharedRssiTimeDomain" :sync-pointer-time="sharedPointerTime || selectedAnalysisTime" :sync-pointer-source="sharedPointerTime ? sharedPointerSource : 'programmatic'" :selected-time="selectedAnalysisTime" @viewport-change="updateRssiViewport" @viewport-interaction-start="beginRssiViewportInteraction" @viewport-interaction-end="endRssiViewportInteraction" @pointer-change="updateSharedPointer" @select-time="selectAnalysisTime" @select-switch="selectChartSwitch" @workload-phase="handleTracksideWorkloadPhase" @workload-profile="handleTracksideWorkloadProfile" @render-complete="handleMeshChartRenderComplete" @render-error="handleMeshChartRenderError" />
                     <el-empty v-else-if="tracksideLoaded && !tracksideLoading" description="当前范围没有轨旁AP信号数据" :image-size="60" />
                     <el-empty v-else-if="!tracksideRecoveryBlocked && !tracksideLoading" :description="rssiActivePaintReady ? '轨旁AP信号图尚未加载' : '等待主链 RSSI 图加载完成'" :image-size="60" />
                   </div>
@@ -4989,7 +5156,7 @@ function exportTimestamp(now = new Date()): string {
           <el-alert v-if="lockedAnalysisRange" :title="`已使用 RSSI 锁定时间 ${lockedRangeLabel} · RSSI 可见采样 ${lockedAnalysisRange.sample_count} 点 · 空口有效采样 ${busyValidSampleCount} 点`" type="info" :closable="false" show-icon />
           <el-alert v-if="lockedAnalysisRange && busyChartData && busyValidSampleCount === 0" title="当前 RSSI 锁定时间范围内没有有效 TxBusy/RxBusy 样本。" type="warning" :closable="false" show-icon />
           <div ref="busyChartHost" class="chart-host" :style="{ height: `${busyPanel.height.value}px` }">
-            <MeshChannelBusyChart ref="busyChartRef" :points="busyChartData?.points || []" :events="busyChartData?.events || []" :location-segments="busyChartData?.location_segments || []" :show-peer="showBusyPeer" :show-switch-lines="showBusySwitchLines" :show-switch-points="showBusySwitchPoints" :show-location-band="showLocationBand" :scope="busyMode" :active="pageActive && activeTab === 'busy'" :initial-viewport="busyViewport" :locked-viewport="lockedAnalysisRange" @viewport-change="updateBusyViewport" @viewport-ready="updateBusyViewport" @select-switch="selectChartSwitch" />
+            <MeshChannelBusyChart ref="busyChartRef" :points="busyChartData?.points || []" :events="busyChartData?.events || []" :location-segments="busyChartData?.location_segments || []" :show-peer="showBusyPeer" :show-switch-lines="showBusySwitchLines" :show-switch-points="showBusySwitchPoints" :show-location-band="showLocationBand" :scope="busyMode" :active="pageActive && activeTab === 'busy'" :initial-viewport="busyViewport" :locked-viewport="lockedAnalysisRange" @viewport-change="updateBusyViewport" @viewport-ready="updateBusyViewport" @select-switch="selectChartSwitch" @render-complete="handleMeshChartRenderComplete" @render-error="handleMeshChartRenderError" />
           </div>
           <p class="hint">默认仅显示 MR 侧 TxBusy / RxBusy 两条真实曲线；启用 Peer 后最多四条，不伪造 CtlBusy。</p>
         </div>
@@ -5101,4 +5268,5 @@ function exportTimestamp(now = new Date()): string {
 .local-scan-toolbar { justify-content: flex-start; margin-top: 12px; }
 .local-scan-table-wrap { max-height: min(58vh, 680px); overflow: auto; }
 .local-scan-table-wrap .el-select { min-width: 180px; }
+.mesh-loading-status{display:flex;min-height:30px;align-items:center;gap:8px;padding:5px 10px;border-left:3px solid var(--nc-primary);background:var(--nc-bg-page);color:var(--nc-text-secondary);font-size:12px}.mesh-loading-status strong{color:var(--nc-primary);font-size:11px;letter-spacing:.04em}.mesh-loading-status__indicator,.mesh-chart-status__dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--nc-text-secondary)}.mesh-loading-status__indicator.is-active,.mesh-chart-status.is-querying .mesh-chart-status__dot,.mesh-chart-status.is-processing .mesh-chart-status__dot,.mesh-chart-status.is-rendering .mesh-chart-status__dot{background:var(--nc-primary);animation:mesh-loading-pulse 1.2s ease-in-out infinite}.mesh-chart-status-row{display:flex;flex-wrap:wrap;gap:6px 12px;min-height:24px;padding:3px 4px;color:var(--nc-text-secondary);font-size:11px}.mesh-chart-status{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.mesh-chart-status.is-completed{color:var(--nc-success)}.mesh-chart-status.is-error{color:var(--nc-danger)}.mesh-chart-status.is-cancelled{color:var(--nc-warning)}.mesh-initial-skeleton{min-height:210px;padding:14px 16px;background:var(--nc-bg-card);border:1px solid var(--nc-border-light);border-radius:12px}.mesh-initial-skeleton__charts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}.mesh-initial-skeleton__charts :deep(.el-skeleton__item){height:120px}@keyframes mesh-loading-pulse{0%,100%{opacity:.45}50%{opacity:1}}@media(prefers-reduced-motion:reduce){.mesh-loading-status__indicator.is-active,.mesh-chart-status.is-querying .mesh-chart-status__dot,.mesh-chart-status.is-processing .mesh-chart-status__dot,.mesh-chart-status.is-rendering .mesh-chart-status__dot{animation:none}}@media(max-width:900px){.mesh-initial-skeleton__charts{grid-template-columns:1fr}.mesh-chart-status-row{overflow-x:auto;flex-wrap:nowrap}}
 </style>
