@@ -170,6 +170,17 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     expect(charts(wrapper).every(chart => JSON.stringify(chart.props('window')) === JSON.stringify(final))).toBe(true)
   })
 
+  it('reuses complete metric responses within their original window', async () => {
+    api.links.mockImplementation(async (_id, query) => ({ items: [sample], total: 1, downsampled: query.metric_group ? false : undefined }))
+    const wrapper = mounted(); await nav(wrapper, 4); vi.useFakeTimers()
+    const initialMetrics = metrics().length
+    charts(wrapper)[0]!.vm.$emit('viewport-change', { start: '2026-11-09 10:26:00.000', end: '2026-11-09 10:28:00.000' })
+    await vi.advanceTimersByTimeAsync(180); await flushPromises()
+    expect(metrics()).toHaveLength(initialMetrics)
+    expect(api.builds).toHaveBeenCalledTimes(2)
+    expect(api.links.mock.calls.filter(([, query]) => !query.metric_group && !query.nearest_time)).toHaveLength(2)
+  })
+
   it('shares pointer movement without querying and selects chart samples into right detail', async () => {
     const wrapper = mounted(); await nav(wrapper, 4)
     charts(wrapper)[2]!.vm.$emit('pointer-change', standby.timestamp); await flushPromises()
@@ -342,7 +353,7 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     const earlier = { ...sample, timestamp: '2026-11-09 10:27:00.100', peer_ap_name: 'AP-EARLY' }
     const later = { ...sample, timestamp: '2026-11-09 10:27:00.900', peer_ap_name: 'AP-LATE' }
     api.links.mockImplementation(async (_id, query) => query.metric_group === 'counters'
-      ? { items: [later, { ...standby, timestamp: '2026-11-09 10:27:00.790' }, { ...zero, timestamp: '2026-11-09 10:27:00.800' }, earlier], total: 4 }
+      ? { items: [later, { ...standby, timestamp: '2026-11-09 10:27:00.790' }, { ...zero, timestamp: '2026-11-09 10:27:00.800' }, earlier], total: 4, downsampled: false }
       : { items: [{ ...sample, timestamp: '2026-11-09 10:27:00.800', peer_ap_name: 'AP-GAUGE' }], total: 1 })
     const wrapper = mounted(); await nav(wrapper, 4); vi.useFakeTimers()
     charts(wrapper)[0]!.vm.$emit('time-select', '2026-11-09 10:27:00.800')
@@ -356,7 +367,7 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     const fields = ['local_tx', 'peer_tx', 'local_rx', 'peer_rx', 'local_retry', 'peer_retry', 'local_err', 'peer_err', 'local_tx_garp', 'peer_rx_garp', 'local_tx_mul_join', 'peer_rx_mul_join']
     const counter_samples = Object.fromEntries(fields.map((field, index) => [field, { current: 9000 + index, previous: 8000 + index, delta: 1000, interval_seconds: 0.5, per_second: 2000, status: 'valid' }]))
     const selected = { ...sample, timestamp: '2026-11-09 10:27:00.987', peer_ap_name: 'AP-COUNTER-RAW', ...Object.fromEntries(fields.map(field => [field, counter_samples[field]!.current])), counter_samples }
-    api.links.mockImplementation(async (_id, query) => ({ items: [query.metric_group === 'counters' ? selected : { ...sample, peer_ap_name: 'AP-GAUGE-OLD' }], total: 1 }))
+    api.links.mockImplementation(async (_id, query) => ({ items: [query.metric_group === 'counters' ? selected : { ...sample, peer_ap_name: 'AP-GAUGE-OLD' }], total: 1, downsampled: false }))
     const wrapper = mounted(); await nav(wrapper, 4); vi.useFakeTimers()
     charts(wrapper)[0]!.vm.$emit('time-select', selected.timestamp)
     await vi.advanceTimersByTimeAsync(80); await flushPromises()
