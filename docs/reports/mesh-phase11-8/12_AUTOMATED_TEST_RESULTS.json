@@ -1,0 +1,26 @@
+{
+  "status": "IMPLEMENTED_NOT_RUNTIME_VERIFIED",
+  "scope": "partial real Electron acceptance",
+  "branch": "codex-A/global-dataroot-disk-policy",
+  "initial_head": "f9b2fb43",
+  "head_during_restart": "b3ccb1bd",
+  "session": "80716c07-6bd9-47d8-b76d-ace1e55624d1:1",
+  "window_pixels": [1920, 1080],
+  "screenshot_pixels": [1904, 1041],
+  "device_pixel_ratio": 1,
+  "checks": {
+    "wheel_in": {"result": "partial_pass", "window_seconds_before": 300, "window_seconds_after": 240, "screenshot": "screenshots/02-wheel-zoom-in.png"},
+    "wheel_out": {"result": "partial_pass", "window_seconds_before": 32.212, "window_seconds_after": 40.265, "screenshot": "screenshots/03-wheel-zoom-out.png"},
+    "loaded_charts_sync": {"result": "partial_pass", "charts": ["RSSI", "CPU", "Memory"], "instance_ids_unchanged": true},
+    "query_performance": {"result": "fail", "requests": 6, "responses_200": 6, "request_groups": ["RSSI", "CPU", "Memory", "build order", "history", "nearest sample"]},
+    "all_charts_slider_detail": {"result": "not_completed"},
+    "page_scroll_and_boundaries": {"result": "not_completed"},
+    "tooltip_and_keyboard": {"result": "not_completed"},
+    "ap_radio_reentry": {"result": "not_completed"},
+    "screenshots": {"result": "fail", "reason": "Content area is 1904x1041; screenshots 05-10 not captured", "available": ["screenshots/01-initial-main-monitor.png", "screenshots/02-wheel-zoom-in.png", "screenshots/03-wheel-zoom-out.png", "screenshots/04-wheel-anchor-position.png"]},
+    "renderer_tests": {"result": "pass", "files": 24, "tests": 229},
+    "renderer_build_and_types": {"result": "pass"},
+    "electron_main_build": {"result": "pass"},
+    "git_diff_check": {"result": "pass"}
+  }
+}

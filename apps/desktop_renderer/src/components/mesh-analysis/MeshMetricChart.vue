@@ -132,7 +132,7 @@ async function render(): Promise<void> {
 function resize(): void { chart?.resize() }
 onMounted(async () => {
   await nextTick(); if (disposed || !host.value) return
-  host.value.addEventListener('wheel', onWheel, { passive: false })
+  host.value.addEventListener('wheel', onWheel, { passive: false, capture: true })
   host.value.addEventListener('click', selectTime)
   host.value.addEventListener('mousemove', moveTime)
   host.value.addEventListener('keydown', onKey)
@@ -149,7 +149,7 @@ watch(() => props.pointer, syncPointer)
 watch(() => [props.selectedSample, props.selectionActive], syncPointer)
 onBeforeUnmount(() => {
   disposed = true; epoch++; unsubscribeTheme?.(); resizeObserver?.disconnect(); intersectionObserver?.disconnect()
-  host.value?.removeEventListener('wheel', onWheel); host.value?.removeEventListener('click', selectTime); host.value?.removeEventListener('mousemove', moveTime); host.value?.removeEventListener('keydown', onKey)
+  host.value?.removeEventListener('wheel', onWheel, true); host.value?.removeEventListener('click', selectTime); host.value?.removeEventListener('mousemove', moveTime); host.value?.removeEventListener('keydown', onKey)
   if (chart) { chart.off('datazoom', onZoom); chart.off('updateAxisPointer', onPointer); chart.off('click', onClick); chart.off('dblclick', onDoubleClick); if (finished) chart.off('finished', finished); chart.getZr().off('globalout', onLeave); chart.dispose(); chart = null }
 })
 </script>

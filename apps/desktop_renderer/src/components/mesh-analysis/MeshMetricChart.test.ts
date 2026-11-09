@@ -196,6 +196,17 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
     })
   })
 
+  it('handles wheel before the chart canvas stops propagation', async () => {
+    const wrapper = mounted({ window: domain }); await visible(wrapper)
+    const canvas = document.createElement('canvas')
+    wrapper.get('.mesh-metric-chart').element.appendChild(canvas)
+    canvas.addEventListener('wheel', event => event.stopPropagation())
+    const event = wheel({ deltaY: -100, bubbles: true, cancelable: true })
+    canvas.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(wrapper.emitted('viewport-change')).toHaveLength(1)
+  })
+
   it('zooms the shared time window around the actual Shift-wheel pixel time', async () => {
     const wrapper = mounted({ window: domain }); const chart = await visible(wrapper)
     const event = wheel({ deltaY: -100, shiftKey: true, clientX: 240, clientY: 80, bubbles: true, cancelable: true })
