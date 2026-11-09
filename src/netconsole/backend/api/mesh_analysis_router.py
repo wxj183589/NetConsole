@@ -695,6 +695,8 @@ def links(
     raw_max_rows: int = Query(default=50_000, ge=100, le=100_000),
     exclude_depot: bool = False,
     exclude_parking: bool = False,
+    mesh_trace: bool = False,
+    mesh_operation_id: str = Query(default="", max_length=100),
 ) -> MeshLinkPageDTO:
     return _query(
         lambda: _service(request).list_link_details(
@@ -728,6 +730,8 @@ def links(
             raw_max_rows=raw_max_rows,
             exclude_depot=exclude_depot,
             exclude_parking=exclude_parking,
+            trace=mesh_trace,
+            operation_id=mesh_operation_id,
         )
     )
 
@@ -853,6 +857,8 @@ def active_build_order(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1_000),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    mesh_trace: bool = False,
+    mesh_operation_id: str = Query(default="", max_length=100),
 ) -> MeshActiveBuildOrderPageDTO:
     return _query(
         lambda: _service(request).list_active_build_order(
@@ -874,6 +880,8 @@ def active_build_order(
             page=page,
             page_size=page_size,
             sort_order=sort_order,
+            trace=mesh_trace,
+            operation_id=mesh_operation_id,
         )
     )
 
@@ -1060,6 +1068,8 @@ def ap_signal_statistics(
     weak_signal_threshold: int | None = Query(default=None, ge=1, le=200),
     link_role: str = Query(default="ACTIVE", pattern="^(ACTIVE|STANDBY|ALL)$"),
     radio: int | None = Query(default=None, ge=1, le=2),
+    mesh_trace: bool = False,
+    mesh_operation_id: str = Query(default="", max_length=100),
 ) -> MeshApStatisticsPageDTO:
     return _query(
         lambda: _service(request).list_ap_signal_statistics(
@@ -1077,6 +1087,8 @@ def ap_signal_statistics(
             weak_signal_threshold=weak_signal_threshold,
             link_role=link_role,
             radio=radio,
+            trace=mesh_trace,
+            operation_id=mesh_operation_id,
         )
     )
 
@@ -1091,15 +1103,23 @@ def business_summary(
     site_id: str = Query(default="", max_length=100),
     exclude_depot: bool = True,
     exclude_parking: bool = True,
+    mesh_trace: bool = False,
+    mesh_operation_id: str = Query(default="", max_length=100),
 ) -> dict:
-    return _query(
-        lambda: _service(request).business_statistics(
+    def execute() -> dict:
+        result = _service(request).business_statistics(
             _site_id(request, site_id),
             session_id,
             exclude_depot=exclude_depot,
             exclude_parking=exclude_parking,
-        )["summary"]
-    )
+            trace=mesh_trace,
+            operation_id=mesh_operation_id,
+        )
+        summary = dict(result["summary"])
+        summary.update({key: result.get("_query_trace", {}).get(key) for key in ("query_duration_ms", "sql_query_count", "query_kind", "query_id", "operation_id") if key in result.get("_query_trace", {})})
+        return summary
+
+    return _query(execute)
 
 
 @router.get(

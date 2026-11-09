@@ -146,6 +146,7 @@ export interface Page<T> {
   query_kind?: string; sql_query_count?: number; raw_sample_complete?: boolean
   raw_sample_version?: string | null; raw_context_count?: number
   coverage_time_from?: string | null; coverage_time_to?: string | null
+  query_id?: string | null; operation_id?: string | null
   items: T[]; total: number; page: number; page_size: number
   index_status?: string; indexed_session_count?: number; pending_session_count?: number
 }
@@ -199,6 +200,8 @@ export interface MeshBusinessSummary {
   single_link_ap_count: number; single_link_radios: number[]
   good_threshold: number; warning_threshold: number; backup_available_threshold: number; minimum_samples: number
     exclude_depot: boolean; exclude_parking: boolean; scope_label: string
+  query_duration_ms?: number; sql_query_count?: number; query_kind?: string
+  query_id?: string | null; operation_id?: string | null
 }
 export interface MeshMaintenanceState {
   schema_current: string; schema_latest: string; schema_status: 'current' | 'outdated' | 'missing' | 'unreadable'

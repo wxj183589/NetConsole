@@ -3,6 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, h } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MeshPhase11Workbench from './MeshPhase11Workbench.vue'
+import { meshQueryTrace } from './meshQueryTrace'
 
 const api = vi.hoisted(() => ({ summary: vi.fn(), aps: vi.fn(), links: vi.fn(), issues: vi.fn(), builds: vi.fn() }))
 vi.mock('../../api/meshAnalysis', () => ({ getMeshBusinessSummary: api.summary, listMeshApSignalStatistics: api.aps, listMeshLinks: api.links, listMeshParseIssues: api.issues, listMeshActiveBuildOrder: api.builds }))
@@ -210,6 +211,53 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     expect(api.links.mock.calls.filter(([, query]) => !query.metric_group && !query.nearest_time)).toHaveLength(1)
     expect(api.builds).toHaveBeenCalledOnce()
     expect(wrapper.text()).toContain('AP 历史采样 · 1 条')
+  })
+
+  it('keeps one fully cached range at zero HTTP and SQL for 100 workbench interactions', async () => {
+    const rawPage = { items: [sample], total: 1, page: 1, page_size: 1000, downsampled: false, raw_sample_complete: true, raw_sample_version: 'mesh-raw-v1', raw_context_count: 0, sql_query_count: 3, query_kind: 'raw_samples' }
+    api.links.mockImplementation(async (_id, query) => query.raw_samples ? rawPage : { items: [sample], total: 1 })
+    api.builds.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 100 })
+    const wrapper = mounted()
+    await context(wrapper, range('20'))
+    const warmLinks = api.links.mock.calls.length
+    const warmBuilds = api.builds.mock.calls.length
+    meshQueryTrace.clear()
+    for (let index = 0; index < 100; index += 1) await context(wrapper, range('20'))
+    await flushPromises()
+    const events = meshQueryTrace.snapshot()
+    expect(api.links.mock.calls.length).toBe(warmLinks)
+    expect(api.builds.mock.calls.length).toBe(warmBuilds)
+    expect(events.filter(event => event.stage === 'http')).toHaveLength(0)
+    expect(events.filter(event => event.stage === 'sql').reduce((total, event) => total + (event.sql_queries || 0), 0)).toBe(0)
+    expect(events.filter(event => event.stage === 'cache' && event.cache_status === 'hit').length).toBeGreaterThanOrEqual(100)
+  })
+
+  it('uses the shared raw contract for LinkCnt=0 metrics and history', async () => {
+    const rawZero = { ...zero, raw_sample_version: 'mesh-raw-v1', is_boundary_context: false }
+    api.links.mockImplementation(async (_id, query) => query.raw_samples
+      ? { items: [rawZero], total: 1, page: 1, page_size: 1000, zero_link_count: 1, downsampled: false, raw_sample_complete: true, raw_sample_version: 'mesh-raw-v1', raw_context_count: 0, sql_query_count: 3, query_kind: 'raw_samples' }
+      : { items: [rawZero], total: 1 })
+    const wrapper = mounted(); await nav(wrapper, 4)
+    await control(wrapper, 'ElCheckbox', 2, true)
+    const includeZeroCalls = api.links.mock.calls.filter(([, query]) => query.include_zero)
+    expect(includeZeroCalls.length).toBeGreaterThan(0)
+    expect(includeZeroCalls.every(([, query]) => query.raw_samples === true)).toBe(true)
+    expect(includeZeroCalls.some(([, query]) => query.metric_group)).toBe(false)
+  })
+
+  it('caches AP statistics pages without mixing role or radio scopes', async () => {
+    const wrapper = mounted(); await nav(wrapper, 3)
+    expect(api.aps).toHaveBeenCalledOnce()
+    await nav(wrapper, 3)
+    expect(api.aps).toHaveBeenCalledTimes(2)
+    await nav(wrapper, 3)
+    expect(api.aps).toHaveBeenCalledTimes(2)
+    await control(wrapper, 'ElSelect', 0, 'STANDBY')
+    expect(api.aps).toHaveBeenCalledTimes(3)
+    await control(wrapper, 'ElSelect', 1, 2)
+    expect(api.aps).toHaveBeenCalledTimes(4)
+    await control(wrapper, 'ElSelect', 0, 'ACTIVE')
+    expect(api.aps).toHaveBeenCalledTimes(5)
   })
 
   it('shares pointer movement without querying and selects chart samples into right detail', async () => {

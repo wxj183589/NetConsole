@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api.main import create_app
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from tests.support.mesh_analysis_test_support import EmptyBaseQuery, create_mesh_analysis_fixture
+from tests.test_mesh_monitor_zero_query import ZERO
 
 
 def _rows(tmp_path, values):
@@ -121,6 +122,71 @@ def test_raw_query_context_ignores_visible_role_filter(tmp_path):
     assert result.items[0].is_boundary_context is True
     assert result.items[0].link_role == "STANDBY"
     assert result.items[1].link_role == "ACTIVE"
+
+
+def test_raw_query_can_complete_with_linkcnt_zero_observations(tmp_path):
+    paths, session_id, service, raw = _rows(
+        tmp_path,
+        [
+            {"peer_mac_normalized": "peer-a", "peer_ap_mac": "ap-a"},
+            {"peer_mac_normalized": "peer-a", "peer_ap_mac": "ap-a"},
+        ],
+    )
+    raw.write_text(
+        "[1] 2026/07/14 10:00:00.500\n"
+        + ZERO
+        + "\n"
+        "[2] 2026/07/14 10:00:01.500\n"
+        + ZERO.replace("[1]", "[2]"),
+        encoding="utf-8",
+    )
+
+    result = service.list_link_details(
+        "demo",
+        session_id,
+        radio=1,
+        time_from="2026-07-14 10:00:00.000",
+        time_to="2026-07-14 10:00:01.999",
+        raw_samples=True,
+        include_zero=True,
+        raw_max_rows=100,
+    )
+
+    assert result.raw_sample_complete is True
+    assert result.total == 3
+    assert result.zero_link_count == 1
+    assert sum(item.link_count == 0 for item in result.items) == 1
+    assert all(item.raw_sample_version == "mesh-raw-v1" for item in result.items)
+
+
+def test_raw_sample_group_index_is_stable_between_full_and_segmented_queries(tmp_path):
+    _paths, session_id, service, _raw = _rows(
+        tmp_path,
+        [
+            {"peer_mac_normalized": "peer-a", "peer_ap_mac": "ap-a"},
+            {"peer_mac_normalized": "peer-a", "peer_ap_mac": "ap-a"},
+            {"peer_mac_normalized": "peer-a", "peer_ap_mac": "ap-a"},
+        ],
+    )
+
+    def read(start: str, end: str):
+        return service.list_link_details(
+            "demo",
+            session_id,
+            radio=1,
+            time_from=start,
+            time_to=end,
+            raw_samples=True,
+            raw_max_rows=100,
+        ).items
+
+    full = {item.record_id: item.sample_group_index for item in read("2026-07-14 10:00:00.000", "2026-07-14 10:00:02.000")}
+    segmented = {
+        item.record_id: item.sample_group_index
+        for item in read("2026-07-14 10:00:00.000", "2026-07-14 10:00:01.000")
+        + read("2026-07-14 10:00:02.000", "2026-07-14 10:00:02.000")
+    }
+    assert segmented == full
 
 
 def test_raw_query_http_exposes_version_completeness_and_sql_trace(tmp_path):
