@@ -24,6 +24,7 @@ from netconsole.core.storage_io import (
     detect_storage_profile,
 )
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
+from netconsole.models.task_state import TaskState
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
@@ -248,6 +249,9 @@ class GroundUnattendedSupervisor:
         self._manual_config_task_ids: dict[str, str] = {}
         self._manual_syslog_exits: set[str] = set()
         self._manual_syslog_exit_task_ids: dict[str, str] = {}
+        # Manual Syslog operations are retained per submission.  The legacy
+        # maps above remain as a compatibility bridge for older callers/tests.
+        self._manual_syslog_queue: list[dict[str, Any]] = []
         self._syslog_task_progress: dict[str, dict[str, Any]] = {}
         self._syslog_task_devices: dict[str, set[str]] = {}
         self._cancelled_syslog_tasks: set[str] = set()
@@ -344,12 +348,20 @@ class GroundUnattendedSupervisor:
     ) -> None:
         with self._lock:
             key = str(device_uuid or "*")
-            self._manual_config_checks[key] = (
+            options = (
                 bool(allow_target_port_change),
                 bool(repair_enabled),
             )
+            self._manual_config_checks[key] = options
             if task_id:
                 self._manual_config_task_ids[key] = str(task_id)
+            self._manual_syslog_queue.append({
+                "op": "JOIN",
+                "device_uuid": key,
+                "task_id": str(task_id or ""),
+                "allow_target_port_change": options[0],
+                "repair_enabled": options[1],
+            })
         self._wake_event.set()
 
     def request_syslog_exit(self, device_uuid: str = "", *, task_id: str = "") -> None:
@@ -360,6 +372,11 @@ class GroundUnattendedSupervisor:
                 self._manual_syslog_exits.add("*")
             if task_id:
                 self._manual_syslog_exit_task_ids[str(device_uuid or "*")] = str(task_id)
+            self._manual_syslog_queue.append({
+                "op": "EXIT",
+                "device_uuid": str(device_uuid or "*"),
+                "task_id": str(task_id or ""),
+            })
         self._wake_event.set()
 
     def cancel_syslog_task(self, task_id: str) -> bool:
@@ -370,6 +387,14 @@ class GroundUnattendedSupervisor:
             if progress is None:
                 return False
             self._cancelled_syslog_tasks.add(task_id)
+            removed = [
+                item for item in getattr(self, "_manual_syslog_queue", [])
+                if str(item.get("task_id") or "") == task_id
+            ]
+            self._manual_syslog_queue = [
+                item for item in getattr(self, "_manual_syslog_queue", [])
+                if str(item.get("task_id") or "") != task_id
+            ]
             for key, queued_task_id in tuple(self._manual_config_task_ids.items()):
                 if queued_task_id == task_id:
                     self._manual_config_task_ids.pop(key, None)
@@ -389,14 +414,14 @@ class GroundUnattendedSupervisor:
                 if future is not None:
                     in_flight += 1
                     future.cancel()
-            progress["total"] = progress["current"] + in_flight
-            finish_now = in_flight == 0
+            progress["total"] = progress["current"] + in_flight + len(removed)
+            for item in removed:
+                self._append_syslog_task_result(
+                    task_id, progress, str(item.get("device_uuid") or ""), "CANCELLED", ""
+                )
+            finish_now = progress["current"] >= progress["total"]
         if finish_now:
-            self._record_syslog_task_event(task_id, "finished", {
-                "terminal_state": "CANCELLED",
-                "message": "Syslog 批次任务已取消",
-                "result": {"success_count": 0, "failed_count": 0, "business_status": "CANCELLED"},
-            })
+            self._finish_syslog_task(task_id, cancelled=True)
             with self._lock:
                 self._syslog_task_progress.pop(task_id, None)
                 getattr(self, "_syslog_task_devices", {}).pop(task_id, None)
@@ -421,6 +446,44 @@ class GroundUnattendedSupervisor:
             self._syslog_task_devices[str(task_id)] = {
                 str(value) for value in device_uuids if str(value).strip()
             }
+
+    def _append_syslog_task_result(
+        self,
+        task_id: str,
+        progress: dict[str, Any],
+        device_uuid: str,
+        status: str,
+        audit_id: str,
+    ) -> None:
+        progress["current"] += 1
+        if status in {"CONFIGURED", "ALREADY_CONFIGURED"}:
+            progress["success"] += 1
+        elif status not in {"CANCELLED"}:
+            progress["failed"] += 1
+        progress["results"].append({
+            "device_uuid": device_uuid,
+            "status": status,
+            "audit_id": audit_id,
+        })
+
+    def _finish_syslog_task(self, task_id: str, *, cancelled: bool = False) -> None:
+        progress = self._syslog_task_progress.get(task_id)
+        if progress is None:
+            return
+        result_payload: dict[str, Any] = {
+            "success_count": progress["success"],
+            "failed_count": progress["failed"],
+            "business_status": "CANCELLED" if cancelled else (
+                "PARTIAL_SUCCESS" if progress["failed"] else "SUCCESS"
+            ),
+        }
+        if progress["results"]:
+            result_payload["devices"] = list(progress["results"])
+        self._record_syslog_task_event(task_id, "finished", {
+            "terminal_state": "CANCELLED" if cancelled else "COMPLETED",
+            "message": "Syslog 批次任务已取消" if cancelled else "Syslog 批次任务完成",
+            "result": result_payload,
+        })
 
     def busy_syslog_devices(self, device_uuids: list[str] | tuple[str, ...]) -> set[str]:
         requested = {str(value) for value in device_uuids if str(value).strip()}
@@ -548,6 +611,7 @@ class GroundUnattendedSupervisor:
         self._tick_consecutive_failure_count = 0
 
     def _recover_on_start(self) -> None:
+        self._recover_syslog_batch_tasks()
         run = self.repository.get_active_run()
         if run is None:
             for archive in self.repository.list_archives():
@@ -705,6 +769,7 @@ class GroundUnattendedSupervisor:
                     },
                 )
             return
+
         window = schedule_window(
             now,
             profile.schedule_start_time,
@@ -878,6 +943,83 @@ class GroundUnattendedSupervisor:
                 state="FINALIZING",
                 requested_action="restart_after_window",
             )
+
+    def _recover_syslog_batch_tasks(self) -> None:
+        if self.task_service is None:
+            return
+        try:
+            tasks = self.task_service.list_tasks(
+                statuses={TaskState.RUNNING}, limit=1000, site_name=self.site_id
+            )
+        except (AttributeError, TypeError, RuntimeError):
+            LOGGER.warning("无法读取 Syslog 批次任务以恢复待处理设备", exc_info=True)
+            return
+        for task in sorted(tasks, key=lambda item: str(getattr(item, "created_time", ""))):
+            if str(getattr(task, "task_type", "")) != "ground_unattended_syslog_control":
+                continue
+            task_id = str(getattr(task, "task_id", "") or "")
+            if not task_id:
+                continue
+            try:
+                events = self.task_service.list_events(
+                    task_id, limit=2000, site_name=self.site_id
+                )
+            except (AttributeError, TypeError, RuntimeError, KeyError):
+                LOGGER.warning("无法读取 Syslog 批次事件 task_id=%s", task_id, exc_info=True)
+                continue
+            queued: dict[str, dict[str, str]] = {}
+            completed: dict[str, dict[str, str]] = {}
+            for event in events:
+                payload = event.get("payload") or {}
+                if str(payload.get("event") or "") == "BATCH_DEVICES":
+                    operation = str(payload.get("operation") or "JOIN")
+                    for raw_device_uuid in payload.get("device_uuids") or []:
+                        device_uuid = str(raw_device_uuid or "")
+                        if device_uuid:
+                            queued[device_uuid] = {
+                                "op": operation,
+                                "device_uuid": device_uuid,
+                                "task_id": task_id,
+                            }
+                if str(payload.get("event") or "") == "DEVICE_QUEUED":
+                    device_uuid = str(payload.get("device_uuid") or "")
+                    if device_uuid:
+                        queued[device_uuid] = {
+                            "op": str(payload.get("operation") or "JOIN"),
+                            "device_uuid": device_uuid,
+                            "task_id": task_id,
+                        }
+                result = payload.get("device_result") or {}
+                device_uuid = str(result.get("device_uuid") or "")
+                if device_uuid:
+                    completed[device_uuid] = {
+                        "device_uuid": device_uuid,
+                        "status": str(result.get("status") or "FAILED"),
+                        "audit_id": str(result.get("audit_id") or ""),
+                    }
+            pending = [value for key, value in queued.items() if key not in completed]
+            if not queued:
+                continue
+            self._syslog_task_progress[task_id] = {
+                "current": len(completed),
+                "total": max(int(getattr(task, "total", 0) or 0), len(queued)),
+                "success": sum(
+                    item["status"] in {"CONFIGURED", "ALREADY_CONFIGURED"}
+                    for item in completed.values()
+                ),
+                "failed": sum(
+                    item["status"] not in {"CONFIGURED", "ALREADY_CONFIGURED", "CANCELLED"}
+                    for item in completed.values()
+                ),
+                "results": list(completed.values()),
+                "in_flight": 0,
+            }
+            self._syslog_task_devices[task_id] = set(queued)
+            self._manual_syslog_queue.extend(pending)
+            if not pending:
+                self._finish_syslog_task(task_id)
+                self._syslog_task_progress.pop(task_id, None)
+                self._syslog_task_devices.pop(task_id, None)
 
     @staticmethod
     def _main_link_recovery_state(event: dict[str, Any]) -> str:
@@ -3331,6 +3473,19 @@ class GroundUnattendedSupervisor:
             self._manual_config_checks.clear()
             manual_task_ids = dict(getattr(self, "_manual_config_task_ids", {}))
             getattr(self, "_manual_config_task_ids", {}).clear()
+            queued = list(getattr(self, "_manual_syslog_queue", []))
+            queued_keys = {
+                (str(item.get("op") or ""), str(item.get("device_uuid") or "*"))
+                for item in queued
+            }
+            for key, task_id in manual_task_ids.items():
+                if ("JOIN", key) in queued_keys:
+                    manual.pop(key, None)
+            for item in queued:
+                key = str(item.get("device_uuid") or "*")
+                if str(item.get("op") or "") == "EXIT":
+                    getattr(self, "_manual_syslog_exits", set()).discard(key)
+                    getattr(self, "_manual_syslog_exit_task_ids", {}).pop(key, None)
         policies = {
             str(row["train_id"]): row
             for row in self.repository.list_inventory(include_removed=False)
@@ -3352,6 +3507,59 @@ class GroundUnattendedSupervisor:
             if "*" in manual:
                 for target in inventory_targets.values():
                     endpoints.setdefault(target.mr_id, target)
+        # Expand wildcard manual operations against the same persisted device
+        # inventory, preserving submission order across JOIN and EXIT requests.
+        for item in queued:
+            if str(item.get("device_uuid") or "") == "*":
+                item["expanded_devices"] = sorted(endpoints)
+        with getattr(self, "_lock", threading.RLock()):
+            queue = getattr(self, "_manual_syslog_queue", [])
+            blocked_devices: set[str] = set()
+            for item in tuple(queue):
+                op = str(item.get("op") or "JOIN")
+                devices = item.get("expanded_devices") or [str(item.get("device_uuid") or "")]
+                remaining: list[str] = []
+                for device_uuid in devices:
+                    if device_uuid in blocked_devices or device_uuid in self._config_futures:
+                        remaining.append(device_uuid)
+                        continue
+                    if device_uuid not in endpoints:
+                        remaining.append(device_uuid)
+                        continue
+                    target = endpoints[device_uuid]
+                    common = {
+                        "run_id": str(run["run_id"]),
+                        "run_date": str(run["run_date"]),
+                        "device_uuid": device_uuid,
+                        "target_ip": target_ip,
+                        "target_port": profile.syslog_server_port,
+                    }
+                    if op == "EXIT":
+                        function = self.config_service.exit
+                        kwargs = common
+                    else:
+                        function = self.config_service.check
+                        kwargs = {
+                            **common,
+                            "boot_tolerance_seconds": profile.boot_time_tolerance_seconds,
+                            "repair_enabled": bool(item.get("repair_enabled", True)),
+                            "allow_target_port_change": bool(item.get("allow_target_port_change", False)),
+                        }
+                    self._config_futures[device_uuid] = self._config_executor.submit(function, **kwargs)
+                    self._config_future_meta[device_uuid] = {
+                        "task_id": str(item.get("task_id") or ""),
+                        "operation": op,
+                    }
+                    progress = self._syslog_task_progress.get(str(item.get("task_id") or ""))
+                    if progress is not None:
+                        progress.setdefault("in_flight", 0)
+                        progress["in_flight"] += 1
+                    blocked_devices.add(device_uuid)
+                if remaining:
+                    item["expanded_devices"] = remaining
+                else:
+                    queue.remove(item)
+                blocked_devices.update(devices)
         now = self._now()
         ordered = sorted(
             endpoints.items(),
@@ -3449,40 +3657,53 @@ class GroundUnattendedSupervisor:
             self._config_futures.pop(device_uuid, None)
             meta = self._config_future_meta.pop(device_uuid, {})
             try:
-                future.result()
+                result = future.result()
                 succeeded = True
-            except Exception:
+            except Exception as exc:
                 # Service 已持久化结构化失败审计，Supervisor 继续调度其他 MR。
+                result = {}
                 succeeded = False
+                error_message = str(exc)
+            else:
+                error_message = ""
             task_id = str(meta.get("task_id") or "")
             progress = self._syslog_task_progress.get(task_id)
             if not task_id or progress is None:
                 continue
-            progress["current"] += 1
-            if not future.cancelled():
-                progress["success" if succeeded else "failed"] += 1
-                progress["results"].append({
-                    "device_uuid": device_uuid,
-                    "status": "SUCCEEDED" if succeeded else "FAILED",
-                })
+            progress["in_flight"] = max(0, int(progress.get("in_flight", 1)) - 1)
+            raw_status = str(
+                getattr(result, "config_status", "")
+                or (result.get("status", "") if isinstance(result, dict) else "")
+            ).upper()
+            status = "CANCELLED" if future.cancelled() else {
+                "CONFIG_SENT": "CONFIGURED",
+                "CONFIG_REPAIRED": "CONFIGURED",
+                "CONFIG_PRESENT": "ALREADY_CONFIGURED",
+                "TARGET_PORT_CONFLICT": "CONFIG_CONFLICT",
+                "CONFIG_VERIFY_FAILED": "FAILED",
+                "CONFIG_FAILED": "FAILED",
+                "EXITED": "CONFIGURED",
+                "EXIT_VERIFY_FAILED": "FAILED",
+                "EXIT_FAILED": "FAILED",
+                }.get(raw_status, "FAILED" if not succeeded else "CONFIGURED")
+            audit_id = str(getattr(result, "audit_id", "") or (result.get("audit_id", "") if isinstance(result, dict) else ""))
+            self._append_syslog_task_result(task_id, progress, device_uuid, status, audit_id)
             self._record_syslog_task_event(task_id, "progress", {
                 "current": progress["current"],
                 "total": progress["total"],
                 "stage": "SYSLOG_CONTROL",
-                "message": "已完成一台 MR" if succeeded else "一台 MR 执行失败",
+                "message": status,
+                "device_result": {
+                    "device_uuid": device_uuid,
+                    "operation": str(meta.get("operation") or "JOIN"),
+                    "status": status,
+                    "audit_id": audit_id,
+                    "error": error_message if not future.cancelled() else "",
+                },
             })
-            if progress["current"] >= progress["total"]:
+            if progress["current"] + int(progress.get("in_flight", 0)) >= progress["total"]:
                 cancelled = task_id in self._cancelled_syslog_tasks
-                self._record_syslog_task_event(task_id, "finished", {
-                    "terminal_state": "CANCELLED" if cancelled else "COMPLETED",
-                    "message": "Syslog 批次任务已取消" if cancelled else "Syslog 批次任务完成",
-                    "result": {
-                        "success_count": progress["success"],
-                        "failed_count": progress["failed"],
-                        "devices": list(progress["results"]),
-                        "business_status": "PARTIAL_SUCCESS" if progress["failed"] else "SUCCESS",
-                    },
-                })
+                self._finish_syslog_task(task_id, cancelled=cancelled)
                 self._syslog_task_progress.pop(task_id, None)
                 getattr(self, "_syslog_task_devices", {}).pop(task_id, None)
                 self._cancelled_syslog_tasks.discard(task_id)

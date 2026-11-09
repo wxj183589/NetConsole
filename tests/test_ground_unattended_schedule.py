@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import socket
 import threading
+from concurrent.futures import Future
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -328,6 +329,189 @@ def test_syslog_task_cancel_discards_queued_devices_and_finishes_task() -> None:
                 },
             },
         )
+    ]
+
+
+def test_repeated_syslog_requests_keep_independent_fifo_entries() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._wake_event = threading.Event()
+    supervisor._manual_syslog_queue = []
+    supervisor._manual_config_checks = {}
+    supervisor._manual_config_task_ids = {}
+    supervisor._manual_syslog_exits = set()
+    supervisor._manual_syslog_exit_task_ids = {}
+
+    supervisor.request_config_check("mr-1", task_id="task-1")
+    supervisor.request_config_check("mr-1", task_id="task-2")
+    supervisor.request_syslog_exit("mr-1", task_id="task-3")
+
+    assert [
+        (item["task_id"], item["device_uuid"], item["op"])
+        for item in supervisor._manual_syslog_queue
+    ] == [
+        ("task-1", "mr-1", "JOIN"),
+        ("task-2", "mr-1", "JOIN"),
+        ("task-3", "mr-1", "EXIT"),
+    ]
+
+
+def test_syslog_cancel_only_removes_its_batch_and_records_device_result() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._wake_event = threading.Event()
+    supervisor._manual_syslog_queue = [
+        {"task_id": "task-1", "device_uuid": "mr-1", "op": "JOIN"},
+        {"task_id": "task-2", "device_uuid": "mr-1", "op": "JOIN"},
+    ]
+    supervisor._manual_config_checks = {"mr-1": (False, True)}
+    supervisor._manual_config_task_ids = {"mr-1": "task-1"}
+    supervisor._manual_syslog_exits = set()
+    supervisor._manual_syslog_exit_task_ids = {}
+    supervisor._config_future_meta = {}
+    supervisor._config_futures = {}
+    supervisor._syslog_task_progress = {
+        task_id: {"current": 0, "total": 1, "success": 0, "failed": 0, "results": []}
+        for task_id in ("task-1", "task-2")
+    }
+    supervisor._syslog_task_devices = {"task-1": {"mr-1"}, "task-2": {"mr-1"}}
+    supervisor._cancelled_syslog_tasks = set()
+    events: list[tuple[str, str, dict[str, object]]] = []
+    supervisor._record_syslog_task_event = (
+        lambda task_id, event_type, payload: events.append((task_id, event_type, payload))
+    )
+
+    assert supervisor.cancel_syslog_task("task-1") is True
+
+    assert [item["task_id"] for item in supervisor._manual_syslog_queue] == ["task-2"]
+    assert supervisor._syslog_task_progress["task-2"]["current"] == 0
+    finished = [payload for task_id, kind, payload in events if task_id == "task-1" and kind == "finished"]
+    assert finished[0]["result"]["devices"] == [
+        {"device_uuid": "mr-1", "status": "CANCELLED", "audit_id": ""}
+    ]
+
+
+def test_syslog_batch_results_map_service_status_per_task() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    first = Future()
+    first.set_result(SimpleNamespace(config_status="CONFIG_SENT", audit_id="audit-1"))
+    second = Future()
+    second.set_result(SimpleNamespace(config_status="CONFIG_PRESENT", audit_id="audit-2"))
+    supervisor._config_futures = {"mr-1": first, "mr-2": second}
+    supervisor._config_future_meta = {
+        "mr-1": {"task_id": "task-1", "operation": "JOIN"},
+        "mr-2": {"task_id": "task-2", "operation": "JOIN"},
+    }
+    supervisor._syslog_task_progress = {
+        task_id: {"current": 0, "total": 1, "success": 0, "failed": 0, "results": [], "in_flight": 1}
+        for task_id in ("task-1", "task-2")
+    }
+    supervisor._cancelled_syslog_tasks = set()
+    events: list[tuple[str, str, dict[str, object]]] = []
+    supervisor._record_syslog_task_event = (
+        lambda task_id, event_type, payload: events.append((task_id, event_type, payload))
+    )
+
+    supervisor._collect_config_checks()
+
+    results = {
+        task_id: payload["device_result"]
+        for task_id, kind, payload in events
+        if kind == "progress"
+    }
+    assert results == {
+        "task-1": {
+            "device_uuid": "mr-1", "operation": "JOIN", "status": "CONFIGURED",
+            "audit_id": "audit-1", "error": "",
+        },
+        "task-2": {
+            "device_uuid": "mr-2", "operation": "JOIN", "status": "ALREADY_CONFIGURED",
+            "audit_id": "audit-2", "error": "",
+        },
+    }
+
+
+def test_running_syslog_batches_recover_independently_after_restart() -> None:
+    class _TaskService:
+        def list_tasks(self, *, statuses, limit, site_name):
+            assert site_name == "site-a"
+            return [
+                SimpleNamespace(
+                    task_id="task-1",
+                    task_type="ground_unattended_syslog_control",
+                    created_time="2026-07-26T01:00:00Z",
+                    total=1,
+                ),
+                SimpleNamespace(
+                    task_id="task-2",
+                    task_type="ground_unattended_syslog_control",
+                    created_time="2026-07-26T01:01:00Z",
+                    total=1,
+                ),
+            ]
+
+        def list_events(self, task_id, *, limit, site_name):
+            assert site_name == "site-a"
+            assert limit == 2000
+            if task_id == "task-1":
+                return [
+                    {
+                        "payload": {
+                            "event": "BATCH_DEVICES",
+                            "device_uuids": ["mr-1", "mr-2"],
+                            "operation": "JOIN",
+                        }
+                    },
+                    {
+                        "payload": {
+                            "event": "DEVICE_QUEUED",
+                            "device_uuid": "mr-1",
+                            "operation": "JOIN",
+                        }
+                    }
+                ]
+            return [
+                {
+                    "payload": {
+                        "event": "DEVICE_QUEUED",
+                        "device_uuid": "mr-1",
+                        "operation": "JOIN",
+                    }
+                },
+                {
+                    "payload": {
+                        "device_result": {
+                            "device_uuid": "mr-1",
+                            "status": "ALREADY_CONFIGURED",
+                            "audit_id": "audit-2",
+                        }
+                    }
+                },
+            ]
+
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor.site_id = "site-a"
+    supervisor.task_service = _TaskService()
+    supervisor._manual_syslog_queue = []
+    supervisor._syslog_task_progress = {}
+    supervisor._syslog_task_devices = {}
+    finished: dict[str, dict[str, object]] = {}
+
+    def _finish(task_id: str, **kwargs: object) -> None:
+        finished[task_id] = dict(supervisor._syslog_task_progress[task_id])
+
+    supervisor._finish_syslog_task = _finish
+
+    supervisor._recover_syslog_batch_tasks()
+
+    assert supervisor._manual_syslog_queue == [
+        {"op": "JOIN", "device_uuid": "mr-1", "task_id": "task-1"},
+        {"op": "JOIN", "device_uuid": "mr-2", "task_id": "task-1"},
+    ]
+    assert supervisor._syslog_task_devices == {"task-1": {"mr-1", "mr-2"}}
+    assert supervisor._syslog_task_progress["task-1"]["current"] == 0
+    assert finished["task-2"]["results"] == [
+        {"device_uuid": "mr-1", "status": "ALREADY_CONFIGURED", "audit_id": "audit-2"}
     ]
 
 

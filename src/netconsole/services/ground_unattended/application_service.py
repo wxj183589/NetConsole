@@ -1482,15 +1482,6 @@ class GroundUnattendedApplicationService:
                     if address_owners.get(normalized_ip) == "<conflict>":
                         raise GroundUnattendedError("MR_MANAGEMENT_IP_CONFLICT", f"MR 主备地址与其他 MR 冲突: {device_uuid}", status_code=409)
             selected.append(device_uuid)
-        busy_devices = getattr(self.supervisor, "busy_syslog_devices", None)
-        if callable(busy_devices):
-            conflict = sorted(busy_devices(selected))
-            if conflict:
-                raise GroundUnattendedError(
-                    "SYSLOG_DEVICE_BUSY",
-                    f"MR 已在其他 Syslog 批次中执行: {', '.join(conflict)}",
-                    status_code=409,
-                )
         task_id = f"ground-syslog-{uuid.uuid4().hex}"
         if self.task_service is not None:
             self.task_service.create_external_task(
@@ -1515,6 +1506,17 @@ class GroundUnattendedApplicationService:
                 site_name=site_id,
                 source="ground_unattended",
             )
+            self.task_service.record_external_event(
+                task_id,
+                "progress",
+                {
+                    "event": "BATCH_DEVICES",
+                    "operation": payload.mode,
+                    "device_uuids": list(selected),
+                },
+                site_name=site_id,
+                source="ground_unattended",
+            )
         register_task = getattr(self.supervisor, "register_syslog_task", None)
         if callable(register_task):
             register_for_devices = getattr(
@@ -1526,6 +1528,19 @@ class GroundUnattendedApplicationService:
                 register_task(task_id, len(selected))
         if payload.mode == "JOIN":
             for device_uuid in selected:
+                if self.task_service is not None:
+                    self.task_service.record_external_event(
+                        task_id,
+                        "progress",
+                        {
+                            "event": "DEVICE_QUEUED",
+                            "device_uuid": device_uuid,
+                            "operation": "JOIN",
+                            "status": "QUEUED",
+                        },
+                        site_name=site_id,
+                        source="ground_unattended",
+                    )
                 try:
                     self.supervisor.request_config_check(
                         device_uuid, repair_enabled=True, task_id=task_id
@@ -1537,6 +1552,19 @@ class GroundUnattendedApplicationService:
             message = f"已提交 {len(selected)} 台 MR 加入 Syslog 上报"
         else:
             for device_uuid in selected:
+                if self.task_service is not None:
+                    self.task_service.record_external_event(
+                        task_id,
+                        "progress",
+                        {
+                            "event": "DEVICE_QUEUED",
+                            "device_uuid": device_uuid,
+                            "operation": "EXIT",
+                            "status": "QUEUED",
+                        },
+                        site_name=site_id,
+                        source="ground_unattended",
+                    )
                 try:
                     self.supervisor.request_syslog_exit(device_uuid, task_id=task_id)
                 except TypeError as exc:
