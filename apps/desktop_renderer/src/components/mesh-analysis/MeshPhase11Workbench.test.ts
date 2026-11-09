@@ -181,6 +181,20 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     expect(api.links.mock.calls.filter(([, query]) => !query.metric_group && !query.nearest_time)).toHaveLength(2)
   })
 
+  it('reuses complete history and build pages when the window narrows', async () => {
+    api.links.mockImplementation(async (_id, query) => ({ items: [sample], total: 1, page: query.page ?? 1, page_size: query.page_size, downsampled: false, zero_link_count: 0 }))
+    api.builds.mockImplementation(async (_id, query) => ({ items: [], total: 0, page: query.page, page_size: query.page_size }))
+    const wrapper = mounted(); await nav(wrapper, 4); vi.useFakeTimers()
+    const initialLinks = api.links.mock.calls.length
+    charts(wrapper)[0]!.vm.$emit('viewport-change', { start: '2026-11-09 10:26:00.000', end: '2026-11-09 10:28:00.000' })
+    await vi.advanceTimersByTimeAsync(180); await flushPromises()
+    expect(api.links).toHaveBeenCalledTimes(initialLinks + 1)
+    expect(timeQueries()).toHaveLength(1)
+    expect(api.links.mock.calls.filter(([, query]) => !query.metric_group && !query.nearest_time)).toHaveLength(1)
+    expect(api.builds).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('AP 历史采样 · 1 条')
+  })
+
   it('shares pointer movement without querying and selects chart samples into right detail', async () => {
     const wrapper = mounted(); await nav(wrapper, 4)
     charts(wrapper)[2]!.vm.$emit('pointer-change', standby.timestamp); await flushPromises()
