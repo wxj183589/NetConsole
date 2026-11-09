@@ -1482,6 +1482,15 @@ class GroundUnattendedApplicationService:
                     if address_owners.get(normalized_ip) == "<conflict>":
                         raise GroundUnattendedError("MR_MANAGEMENT_IP_CONFLICT", f"MR 主备地址与其他 MR 冲突: {device_uuid}", status_code=409)
             selected.append(device_uuid)
+        busy_devices = getattr(self.supervisor, "busy_syslog_devices", None)
+        if callable(busy_devices):
+            conflict = sorted(busy_devices(selected))
+            if conflict:
+                raise GroundUnattendedError(
+                    "SYSLOG_DEVICE_BUSY",
+                    f"MR 已在其他 Syslog 批次中执行: {', '.join(conflict)}",
+                    status_code=409,
+                )
         task_id = f"ground-syslog-{uuid.uuid4().hex}"
         if self.task_service is not None:
             self.task_service.create_external_task(
@@ -1508,7 +1517,13 @@ class GroundUnattendedApplicationService:
             )
         register_task = getattr(self.supervisor, "register_syslog_task", None)
         if callable(register_task):
-            register_task(task_id, len(selected))
+            register_for_devices = getattr(
+                self.supervisor, "register_syslog_task_for_devices", None
+            )
+            if callable(register_for_devices):
+                register_for_devices(task_id, len(selected), selected)
+            else:
+                register_task(task_id, len(selected))
         if payload.mode == "JOIN":
             for device_uuid in selected:
                 try:
