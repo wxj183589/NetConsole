@@ -3950,6 +3950,9 @@ class GroundUnattendedApplicationService:
         boot_by_device = dict(endpoint_snapshot["boot_by_device"])
         wmesh_by_device = dict(endpoint_snapshot["wmesh_by_device"])
         position_by_device = dict(endpoint_snapshot.get("position_by_device") or {})
+        reconciliation_by_device = dict(
+            endpoint_snapshot.get("reconciliation_by_device") or {}
+        )
         runtime_by_device = dict(endpoint_snapshot["runtime_by_device"])
         radio_by_device = dict(endpoint_snapshot["radio_by_device"])
         audit_by_device = dict(endpoint_snapshot["audit_by_device"])
@@ -3965,6 +3968,7 @@ class GroundUnattendedApplicationService:
                 boot = boot_by_device.get(endpoint.mr_id)
                 wmesh = wmesh_by_device.get(endpoint.mr_id)
                 position = position_by_device.get(endpoint.mr_id) or {}
+                reconciliation = reconciliation_by_device.get(endpoint.mr_id) or {}
                 radio_runtime = runtime_by_device.get(endpoint.mr_id)
                 radio_interfaces = (
                     [
@@ -4129,6 +4133,17 @@ class GroundUnattendedApplicationService:
                             "position_commit_time": str(position.get("last_position_commit_time") or ""),
                             "position_latency_ms": position.get("last_position_latency_ms"),
                             "position_ui_available_time": now.isoformat(timespec="milliseconds"),
+                            "position_reconciliation_status": str(
+                                reconciliation.get("state") or "UNKNOWN"
+                            ),
+                            "position_reconciliation_reason": str(
+                                reconciliation.get("reason") or ""
+                            ),
+                            "position_reconciliation_ac_time": str(
+                                reconciliation.get("ac_event_time")
+                                or reconciliation.get("ac_received_at")
+                                or ""
+                            ),
                             "boot_session_id": str(
                                 (boot or {}).get("boot_session_id") or ""
                             ),
@@ -4265,6 +4280,27 @@ class GroundUnattendedApplicationService:
                         "position_commit_time": str(latest_position.get("last_position_commit_time") or ""),
                         "position_latency_ms": latest_position.get("last_position_latency_ms"),
                         "position_ui_available_time": now.isoformat(timespec="milliseconds"),
+                        "position_reconciliation_status": str(
+                            reconciliation_by_device.get(
+                                str(latest_position.get("device_uuid") or ""), {}
+                            ).get("state")
+                            or "UNKNOWN"
+                        ),
+                        "position_reconciliation_reason": str(
+                            reconciliation_by_device.get(
+                                str(latest_position.get("device_uuid") or ""), {}
+                            ).get("reason")
+                            or ""
+                        ),
+                        "position_reconciliation_ac_time": str(
+                            reconciliation_by_device.get(
+                                str(latest_position.get("device_uuid") or ""), {}
+                            ).get("ac_event_time")
+                            or reconciliation_by_device.get(
+                                str(latest_position.get("device_uuid") or ""), {}
+                            ).get("ac_received_at")
+                            or ""
+                        ),
                     }
                 )
             result.append(train.model_copy(update=train_update))

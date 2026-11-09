@@ -51,6 +51,11 @@ from netconsole.services.ground_unattended.deep_scheduler import (
 from netconsole.services.ground_unattended.archive_service import (
     GroundUnattendedArchiveService,
 )
+from netconsole.services.ground_unattended.ac_reconciliation import (
+    AcSnapshotEnvelope,
+    diff_full_snapshot,
+    reconcile_syslog_ac,
+)
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.ground_unattended.schedule import (
@@ -1588,6 +1593,12 @@ class GroundUnattendedSupervisor:
             )
             in new_snapshot_keys
         ]
+        self._record_ac_deltas_and_reconciliation(
+            run=run,
+            snapshots=new_snapshots,
+            profile=profile,
+            now=now,
+        )
         ac_ids = (
             self.repository.insert_ac_rows(new_persisted_rows)
             if new_persisted_rows
@@ -1979,6 +1990,7 @@ class GroundUnattendedSupervisor:
     ) -> list[tuple[object, object]]:
         provider = getattr(self.mesh_query, "list_mrs_for_snapshot", None)
         selected: dict[str, tuple[object, object]] = {}
+        self._last_mesh_rows_by_snapshot = {}
         for index, snapshot in enumerate(snapshots):
             rows = (
                 list(provider(self.site_id, int(snapshot.id)))
@@ -1987,6 +1999,7 @@ class GroundUnattendedSupervisor:
                 if index == 0
                 else []
             )
+            self._last_mesh_rows_by_snapshot[int(snapshot.id)] = list(rows)
             for item in rows:
                 key = (
                     str(item.mr_device_id or item.mr_id or "")
@@ -1999,6 +2012,144 @@ class GroundUnattendedSupervisor:
                 ):
                     selected[key] = (item, snapshot)
         return list(selected.values())
+
+    def _mesh_rows_for_snapshot(self, snapshot: object) -> list[object]:
+        cached = getattr(self, "_last_mesh_rows_by_snapshot", {}).get(
+            int(getattr(snapshot, "id", 0) or 0)
+        )
+        if cached is not None:
+            return list(cached)
+        provider = getattr(self.mesh_query, "list_mrs_for_snapshot", None)
+        if not callable(provider):
+            return []
+        return list(provider(self.site_id, int(snapshot.id)))
+
+    @staticmethod
+    def _mesh_row_payload(item: object) -> dict[str, Any]:
+        dumper = getattr(item, "model_dump", None)
+        if callable(dumper):
+            value = dumper(mode="json")
+            return dict(value) if isinstance(value, dict) else {}
+        if isinstance(item, dict):
+            return dict(item)
+        return {
+            key: getattr(item, key)
+            for key in (
+                "mr_id", "mr_device_id", "train_no", "car_end", "peer_ap_id",
+                "peer_ap_name", "peer_ap_mac", "station", "section", "mileage",
+                "rssi", "mr_online_status", "device_time", "received_at",
+            )
+            if hasattr(item, key)
+        }
+
+    def _record_ac_deltas_and_reconciliation(
+        self,
+        *,
+        run: dict[str, Any],
+        snapshots: list[object],
+        profile: GroundUnattendedProfileDTO,
+        now: datetime,
+    ) -> None:
+        """Persist AC diff/reconciliation evidence without touching Syslog state."""
+
+        delta_rows: list[dict[str, Any]] = []
+        reconciliation_rows: list[dict[str, Any]] = []
+        run_id = str(run["run_id"])
+        observed_at = now.isoformat(timespec="milliseconds")
+        for snapshot in snapshots:
+            controller_id = str(getattr(snapshot, "controller_id", "") or "")
+            if not controller_id:
+                continue
+            current_rows = tuple(
+                self._mesh_row_payload(item)
+                for item in self._mesh_rows_for_snapshot(snapshot)
+            )
+            previous_row = self.repository.latest_ac_snapshot_for_controller(
+                run_id, controller_id
+            )
+            previous_rows = (
+                tuple(
+                    self.repository.list_ac_snapshot_rows(
+                        str(previous_row.get("snapshot_id") or ""),
+                        run_id=run_id,
+                    )
+                )
+                if previous_row
+                else ()
+            )
+            current = AcSnapshotEnvelope(
+                controller_id=controller_id,
+                snapshot_id=f"{controller_id}:{getattr(snapshot, 'id', '')}",
+                rows=current_rows,
+                device_time=str(
+                    getattr(snapshot, "device_time", "")
+                    or getattr(snapshot, "ac_time", "")
+                    or ""
+                ),
+                received_at=str(getattr(snapshot, "received_at", "") or ""),
+                data_status=str(getattr(snapshot, "data_status", "unknown") or "unknown"),
+                complete=str(getattr(snapshot, "data_status", "") or "").casefold()
+                in {"fresh", "success", "complete"},
+            )
+            previous = (
+                AcSnapshotEnvelope(
+                    controller_id=controller_id,
+                    snapshot_id=str(previous_row.get("snapshot_id") or ""),
+                    rows=previous_rows,
+                    device_time=str(previous_row.get("device_time") or ""),
+                    received_at=str(previous_row.get("received_at") or ""),
+                    data_status=str(
+                        previous_row.get("freshness_status") or "unknown"
+                    ),
+                    complete=str(
+                        previous_row.get("freshness_status") or ""
+                    ).casefold()
+                    in {"fresh", "success", "complete"},
+                )
+                if previous_row
+                else None
+            )
+            result = diff_full_snapshot(previous, current)
+            delta_rows.extend(
+                item.to_record(
+                    site_id=self.site_id,
+                    run_id=run_id,
+                    created_at=observed_at,
+                )
+                for item in result.records
+            )
+            for row in current_rows:
+                mr_id = str(
+                    row.get("mr_id")
+                    or row.get("mr_device_id")
+                    or row.get("device_uuid")
+                    or ""
+                )
+                if not mr_id:
+                    continue
+                reconciliation = reconcile_syslog_ac(
+                    self.repository.get_syslog_position_state(mr_id),
+                    {
+                        **row,
+                        "received_at": current.received_at,
+                        "device_time": current.device_time,
+                    },
+                    now=observed_at,
+                    stale_after_seconds=max(
+                        60.0, float(profile.ac_stale_grace_seconds)
+                    ),
+                )
+                reconciliation_rows.append(
+                    reconciliation.to_record(
+                        site_id=self.site_id,
+                        run_id=run_id,
+                        observed_at=observed_at,
+                    )
+                )
+        if delta_rows:
+            self.repository.insert_ac_delta_rows(delta_rows)
+        if reconciliation_rows:
+            self.repository.upsert_position_reconciliations(reconciliation_rows)
 
     def _restore_processed_snapshot_ids(self, run) -> None:
         values = dict(run.get("summary") or {}).get(

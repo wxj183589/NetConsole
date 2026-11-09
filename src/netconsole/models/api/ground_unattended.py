@@ -381,6 +381,9 @@ class GroundUnattendedEndpointDTO(ApiModel):
     position_commit_time: str = ""
     position_latency_ms: float | None = None
     position_ui_available_time: str = ""
+    position_reconciliation_status: str = "UNKNOWN"
+    position_reconciliation_reason: str = ""
+    position_reconciliation_ac_time: str = ""
     boot_session_id: str = ""
     estimated_boot_time: str = ""
     uptime_seconds: int | None = None
@@ -497,6 +500,9 @@ class GroundUnattendedTrainDTO(ApiModel):
     position_commit_time: str = ""
     position_latency_ms: float | None = None
     position_ui_available_time: str = ""
+    position_reconciliation_status: str = "UNKNOWN"
+    position_reconciliation_reason: str = ""
+    position_reconciliation_ac_time: str = ""
     station: str = ""
     section: str = ""
     mileage: str = ""

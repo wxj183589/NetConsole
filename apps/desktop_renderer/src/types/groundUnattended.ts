@@ -62,6 +62,7 @@ export interface GroundEndpoint {
   position_last_event_time_source: string; position_last_event_time_precision: string
   position_last_receive_time: string; position_raw_persist_time: string; position_parse_complete_time: string
   position_commit_time: string; position_latency_ms: number | null; position_ui_available_time: string
+  position_reconciliation_status: string; position_reconciliation_reason: string; position_reconciliation_ac_time: string
   boot_session_id: string; estimated_boot_time: string; uptime_seconds: number | null; boot_time_uncertainty_seconds: number
   reboot_reason: string; timezone_name: string; utc_offset_seconds: number | null; device_time_quality: string
   config_status: string; config_checked_at: string; managed_target_ip: string; managed_target_port: number | null
@@ -113,6 +114,7 @@ export interface GroundTrain {
   position_previous_ap_name: string; position_previous_ap_mac: string; position_source: string; position_freshness: string
   position_status: string; position_quality: string; position_last_event_time: string; position_last_receive_time: string
   position_commit_time: string; position_latency_ms: number | null; position_ui_available_time: string
+  position_reconciliation_status: string; position_reconciliation_reason: string; position_reconciliation_ac_time: string
   location_match_level: 'AP_EXACT' | 'AP_REGISTRY' | 'AP_ALIAS' | 'STATION_EXACT' | 'STATION_ALIAS' | 'UNMATCHED'
   location_match_reason: string; resolved_ap_id: string; resolved_ap_name: string; raw_peer_ap_name: string; raw_peer_ap_mac: string; canonical_station_name: string
   station: string; section: string; mileage: string; rssi: number | null; same_ap_duration_seconds: number

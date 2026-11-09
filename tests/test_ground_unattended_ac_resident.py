@@ -623,6 +623,11 @@ def test_supervisor_processes_each_controller_snapshot_only_once(
         "run-1", "mesh:train:21", "mr-21"
     )
     assert first_ac_2_row is not None
+    delta_rows = repository.list_ac_deltas("run-1")
+    assert any(row["change_type"] == "ADDED" for row in delta_rows)
+    reconciliation_rows = repository.list_position_reconciliations("run-1")
+    assert reconciliation_rows
+    assert all(row["state"] == "UNKNOWN" for row in reconciliation_rows)
 
     mesh.snapshots[0] = mesh._snapshot(12, "ac-1")
     supervisor._poll_ac_and_classify(
