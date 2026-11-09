@@ -9,6 +9,12 @@ export type MeshBusinessMetricKey =
   | 'counters'
 
 export interface MeshBusinessMetricSample {
+  local_radio?: number | null
+  peer_mac?: string | null
+  link_role?: string
+  establish_time?: string | null
+  monitor_gap_before?: boolean
+  link_count?: number | null
   timestamp: string
   local_rssi?: number | null
   peer_rssi?: number | null
@@ -85,14 +91,19 @@ function makeLine(samples: MeshBusinessMetricSample[], definition: MetricLine, s
   const field = side === 'local' ? definition.local : definition.peer
   return {
     key: `${definition.key}_${side}`,
-    label: `${side === 'local' ? 'MR' : 'Peer'} ${definition.label}`,
+    label: `${side === 'local' ? 'L' : 'P'} ${definition.label}`,
     side,
-    data: samples.map((sample) => ({ value: [sample.timestamp, sample[field] == null ? null : Number(sample[field])] as [string, number | null], sample })),
+    data: samples.flatMap((sample, index) => {
+      const previous = samples[index - 1]
+      const boundary = previous && (sample.monitor_gap_before || ['local_radio', 'peer_mac', 'link_role', 'establish_time'].some(key => previous[key as keyof MeshBusinessMetricSample] !== sample[key as keyof MeshBusinessMetricSample]))
+      const point = { value: [sample.timestamp, sample.link_count === 0 || sample[field] == null ? null : Number(sample[field])] as [string, number | null], sample }
+      return boundary ? [{ value: [sample.timestamp, null] as [string, number | null], sample }, point] : [point]
+    }),
   }
 }
 
-export function buildMeshBusinessMetricGroups(samples: MeshBusinessMetricSample[]): MeshBusinessMetricGroup[] {
-  return GROUPS.map((group) => ({
+export function buildMeshBusinessMetricGroups(samples: MeshBusinessMetricSample[], key?: MeshBusinessMetricKey): MeshBusinessMetricGroup[] {
+  return GROUPS.filter(group => !key || group.key === key).map((group) => ({
     key: group.key,
     label: group.label,
     lines: group.lines.flatMap((line) => [makeLine(samples, line, 'local'), makeLine(samples, line, 'peer')]),

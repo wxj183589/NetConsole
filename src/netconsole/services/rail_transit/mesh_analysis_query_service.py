@@ -7,6 +7,8 @@ import logging
 import math
 import re
 import sqlite3
+import heapq
+from itertools import islice
 from time import perf_counter
 from bisect import bisect_right
 from collections import defaultdict
@@ -14,6 +16,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from threading import RLock
 from pathlib import Path
 from typing import Any, Callable
 from uuid import UUID
@@ -96,6 +99,8 @@ from netconsole.services.rail_transit.mesh_ap_location_service import (
     MeshApLocationSnapshot,
 )
 from netconsole.services.mesh_source_locator import MeshSourceLocator
+from netconsole.services.mesh_monitor_sampling import METRIC_FIELDS, select_monitor_rows
+from netconsole.parsers.mesh_log_parser import MeshLogParser
 
 
 _SESSION_ID_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9][0-9]*)$")
@@ -111,6 +116,21 @@ _MAX_TRACKSIDE_SERIES = 512
 _TARGET_CHART_PAYLOAD_BYTES = 4 * 1024 * 1024
 _MAX_CHART_PAYLOAD_BYTES = 16 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
+_ZERO_READ_LOCK = RLock()
+
+
+@lru_cache(maxsize=4)
+def _zero_window(path: str, modified: int, size: int, start: str, end: str, radio: int | None):
+    # The file identity invalidates cached observations without touching archived logs.
+    rows = []
+    for record in MeshLogParser().iter_zero_observations(Path(path)):
+        stamp = record.sample_time.isoformat(sep=" ", timespec="milliseconds")
+        if (start and stamp < start) or (end and stamp > end) or (radio is not None and record.radio != radio):
+            continue
+        rows.append(record)
+        if len(rows) > 20000:
+            raise MeshAnalysisQueryError("零链路观测过多，请缩小时间范围")
+    return tuple(rows)
 _DETAIL_CAPABILITY_TABLES = {
     "links": frozenset({"mesh_links"}),
     "timeline": frozenset({"active_segments"}),
@@ -890,18 +910,54 @@ class MeshAnalysisQueryService:
         page_size: int = 100,
         sort_by: str = "timestamp",
         sort_order: str = "asc",
+        radio: int | None = None,
+        exact_ap: bool = False,
+        metric_group: str = "",
+        max_points: int = 1000,
+        include_zero: bool = False,
+        exclude_depot: bool = False,
+        exclude_parking: bool = False,
     ) -> MeshLinkPageDTO:
+        started = perf_counter()
         context = self._context(site_id, session_id)
         if context.detail_db is None:
             return MeshLinkPageDTO(page=page, page_size=page_size)
+        if metric_group or include_zero or exact_ap:
+            try:
+                time_from = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
+                time_to = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
+                if time_from and time_to and time_from > time_to:
+                    raise ValueError("reversed")
+            except ValueError as exc:
+                raise MeshAnalysisQueryError("监控时间范围无效") from exc
         clauses: list[str] = []
         values: list[Any] = []
         ap_map = self._ap_map(site_id)
+        if metric_group and metric_group not in METRIC_FIELDS:
+            raise MeshAnalysisQueryError("未知的监控指标")
+        if metric_group and (not time_from or not time_to):
+            raise MeshAnalysisQueryError("监控查询需要明确的起止时间")
+        if metric_group or include_zero or radio is not None or exact_ap:
+            clauses.append("ml.source_file_id = ?")
+            values.append(context.detail_source_id)
+        if radio is not None:
+            clauses.append("ml.radio = ?")
+            values.append(radio)
+        if exact_ap and peer_ap_mac:
+            clauses.append("LOWER(REPLACE(REPLACE(COALESCE(ml.peer_ap_mac, ''), ':', ''), '-', '')) = ?")
+            values.append(self._mac_key(peer_ap_mac))
+        clauses.append("COALESCE(ml.link_count, 1) <> 0")
+        excluded_macs = sorted({self._mac_key(location.mac) for location in ap_map.values()
+                                if (exclude_depot and location.station_type == "DEPOT")
+                                or (exclude_parking and location.station_type == "PARKING")})
+        if excluded_macs:
+            clauses.append("LOWER(REPLACE(REPLACE(COALESCE(ml.peer_ap_mac, ''), ':', ''), '-', '')) NOT IN (" + ",".join("?" for _ in excluded_macs) + ")")
+            values.extend(excluded_macs)
         for column, value in (
             ("ml.peer_ap_name", peer_ap_name),
             ("ml.peer_ap_mac", self._mac_key(peer_ap_mac)),
         ):
-            if value:
+            if value and not (exact_ap and column == "ml.peer_ap_mac"):
                 clauses.append(f"LOWER(COALESCE({column}, '')) LIKE ?")
                 values.append(f"%{str(value).casefold()}%")
         selected_roles = [str(value).strip().upper() for value in (link_roles or []) if str(value).strip()]
@@ -977,7 +1033,7 @@ class MeshAnalysisQueryService:
                 for column in ("peer_section", "peer_location", "peer_direction")
             )
             total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
-            rows = conn.execute(
+            cursor = conn.execute(
                 f"""
                 SELECT ml.id, ml.sample_id, ml.source_file_id, ml.sample_time, s.timestamp_tag,
                        DENSE_RANK() OVER (
@@ -1010,10 +1066,63 @@ class MeshAnalysisQueryService:
                 LEFT JOIN source_files sf ON sf.id = ml.source_file_id
                 {where}
                 ORDER BY {sort_column} {direction}, s.timestamp_tag {direction}, ml.record_seq {direction}, ml.id {direction}
-                LIMIT ? OFFSET ?
+                {'' if metric_group or include_zero else 'LIMIT ? OFFSET ?'}
                 """,
-                (*values, size, offset),
-            ).fetchall()
+                tuple(values) if metric_group or include_zero else (*values, size, offset),
+            )
+            zero_rows = []
+            if include_zero:
+                if context.raw_path is None or not context.raw_path.is_file():
+                    raise MeshAnalysisQueryError("原始日志不可用，无法查询 LinkCnt=0")
+                stat = context.raw_path.stat()
+                with _ZERO_READ_LOCK:
+                    observations = _zero_window(str(context.raw_path), stat.st_mtime_ns, stat.st_size, time_from, time_to, radio)
+                for record in observations:
+                    stamp = record.sample_time.isoformat(sep=" ", timespec="milliseconds")
+                    data = {**record.metrics, "id": -record.source_line_number,
+                            "sample_time": stamp, "radio": record.radio, "link_count": 0,
+                            "link_state": "UNCONNECTED", "source_file_id": context.detail_source_id,
+                            "peer_mac_raw": record.peer_mac_raw, "peer_mac_normalized": record.peer_mac_normalized,
+                            "establish_time": record.establish_time.isoformat(sep=" ") if record.establish_time else None,
+                            "duration_seconds": record.duration_seconds, "duration_text": record.duration_text,
+                            "source_line_number": record.source_line_number, "source_file": context.raw_path.name,
+                            "local_noise_dbm": record.local_noise_dbm, "peer_noise_dbm": record.peer_noise_dbm}
+                    location = self._locate_ap(ap_map, data)
+                    ap_mac = self._resolved_ap_mac(data, location)
+                    if radio is not None and record.radio != radio:
+                        continue
+                    if (time_from and stamp < time_from) or (time_to and stamp > time_to):
+                        continue
+                    if peer_ap_mac and self._mac_key(peer_ap_mac) != self._mac_key(ap_mac or record.peer_mac_normalized or ""):
+                        continue
+                    if peer_ap_name and peer_ap_name.casefold() not in str(location.name).casefold():
+                        continue
+                    if self._mac_key(ap_mac or "") in excluded_macs:
+                        continue
+                    if any(value and value.casefold() not in str(getattr(location, field)).casefold() for field, value in (("station", station), ("section", section), ("line_side", line_side))):
+                        continue
+                    if query and query.casefold() not in (str(location.name) + " " + str(ap_mac) + " " + record.peer_mac_raw).casefold():
+                        continue
+                    zero_rows.append(data)
+                    if len(zero_rows) > 20000:
+                        raise MeshAnalysisQueryError("零链路观测过多，请缩小时间范围或选择单 AP")
+            zero_count = len(zero_rows)
+            combined = heapq.merge((dict(row) for row in cursor), sorted(zero_rows, key=lambda row: (row["sample_time"], row["id"])), key=lambda row: (row["sample_time"], row["id"])) if metric_group or include_zero else cursor
+            if metric_group:
+                try:
+                    rows, total, zero_count = select_monitor_rows(
+                        combined, metric_group, time_from, time_to,
+                        min(2000, max(100, max_points)),
+                    )
+                except ValueError as exc:
+                    raise MeshAnalysisQueryError(str(exc)) from exc
+            elif include_zero:
+                if sort_by != "timestamp" or sort_order != "asc":
+                    raise MeshAnalysisQueryError("零链路历史按采样时间正序查询")
+                total += zero_count
+                rows = list(islice(combined, offset, offset + size))
+            else:
+                rows = cursor.fetchall()
         train_name, role = self._mr_identity(context.mr_name)
         items: list[MeshLinkDetailDTO] = []
         for row in rows:
@@ -1022,6 +1131,7 @@ class MeshAnalysisQueryService:
             peer_name = self._resolved_ap_name(data, location)
             items.append(
                 MeshLinkDetailDTO(
+                    monitor_gap_before=bool(data.get("monitor_gap_before")),
                     record_id=int(data["id"]),
                     timestamp=str(data["sample_time"]),
                     train_name=train_name,
@@ -1094,9 +1204,14 @@ class MeshAnalysisQueryService:
                     match_method=str(data.get("peer_match_rule") or data.get("peer_resolve_source") or "") or None,
                     **self._identity_payload(data, location),
                     warning=None if peer_name else "Peer AP 未匹配",
+                    **{field + "_delta": data.get(field + "_delta") for field in METRIC_FIELDS["counters"]},
                 )
             )
-        return MeshLinkPageDTO(items=items, total=total, page=current, page_size=size)
+        return MeshLinkPageDTO(
+            items=items, total=total, page=current, page_size=size, zero_link_count=zero_count,
+            downsampled=bool(metric_group and total > len(items)),
+            query_duration_ms=round((perf_counter() - started) * 1000, 2),
+        )
 
     def list_active_build_order(
         self,
@@ -1115,20 +1230,40 @@ class MeshAnalysisQueryService:
         page: int = 1,
         page_size: int = 100,
         sort_order: str = "desc",
+        include_zero: bool = False,
+        exclude_depot: bool = False,
+        exclude_parking: bool = False,
+        link_role: str = "",
     ) -> MeshActiveBuildOrderPageDTO:
         context = self._context(site_id, session_id)
         if context.detail_db is None:
             return MeshActiveBuildOrderPageDTO(page=page, page_size=page_size)
+        try:
+            time_from = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
+            time_to = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
+            if time_from and time_to and time_from > time_to:
+                raise ValueError("reversed")
+        except ValueError as exc:
+            raise MeshAnalysisQueryError("监控时间范围无效") from exc
         rows = self._build_rows(context)
         ap_map = self._ap_map(site_id)
         items: list[MeshActiveBuildOrderDTO] = []
         peer_needle = peer.casefold().strip()
+        peer_mac_key = self._mac_key(peer)
+        peer_is_mac = len(peer_mac_key) == 12 and all(character in "0123456789abcdefABCDEF:-. " for character in peer)
         station_needle = station.casefold().strip()
         result_needle = build_result.casefold().strip()
         selected_radios = {int(value) for value in (radios or [])}
         selected_results = {str(value).casefold().strip() for value in (build_results or []) if str(value).strip()}
+        excluded_macs = {self._mac_key(location.mac) for location in ap_map.values()
+                         if (exclude_depot and location.station_type == "DEPOT")
+                         or (exclude_parking and location.station_type == "PARKING")}
         for row in rows:
+            if link_role and link_role.upper() != "ACTIVE":
+                continue
             location = self._locate_ap(ap_map, row)
+            if self._mac_key(self._resolved_ap_mac(row, location) or "") in excluded_macs:
+                continue
             peer_text = " ".join(
                 str(row.get(key) or "")
                 for key in ("active_peer_mac", "peer_ap_name", "peer_ap_mac", "peer_radio", "peer_radio_mac")
@@ -1140,7 +1275,7 @@ class MeshAnalysisQueryService:
                 continue
             if not selected_radios and radio is not None and self._int(row.get("radio")) != int(radio):
                 continue
-            if peer_needle and peer_needle not in peer_text:
+            if peer_needle and (peer_mac_key not in {self._mac_key(row.get(key)) for key in ("active_peer_mac", "peer_ap_mac", "peer_radio_mac")} if peer_is_mac else peer_needle not in peer_text):
                 continue
             if station_needle and station_needle not in f"{resolved_station} {location.section}".casefold():
                 continue
@@ -1216,8 +1351,45 @@ class MeshAnalysisQueryService:
                     source_file=str(row.get("source_file") or context.source.get("archived_filename") or ""),
                 )
             )
+        if include_zero and not pingpong_only and (not selected_results or "unconnected" in selected_results) and (not result_needle or result_needle == "unconnected"):
+            if context.raw_path is None or not context.raw_path.is_file():
+                raise MeshAnalysisQueryError("原始日志不可用，无法查询 LinkCnt=0")
+            try:
+                zero_start = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
+                zero_end = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
+                if zero_start and zero_end and zero_start > zero_end:
+                    raise ValueError("reversed")
+            except ValueError as exc:
+                raise MeshAnalysisQueryError("监控时间范围无效") from exc
+            stat = context.raw_path.stat()
+            with _ZERO_READ_LOCK:
+                observations = _zero_window(str(context.raw_path), stat.st_mtime_ns, stat.st_size, zero_start, zero_end, radio if not selected_radios else None)
+            for record in observations:
+                if selected_radios and record.radio not in selected_radios:
+                    continue
+                data = {"peer_mac_raw": record.peer_mac_raw, "peer_mac_normalized": record.peer_mac_normalized}
+                location = self._locate_ap(ap_map, data)
+                ap_mac = self._resolved_ap_mac(data, location)
+                name = self._resolved_ap_name(data, location)
+                resolved_station = self._resolved_location_value(data, location, "station") or ""
+                if self._mac_key(ap_mac or "") in excluded_macs:
+                    continue
+                if peer_needle and (peer_mac_key not in {self._mac_key(value) for value in (record.peer_mac_raw, record.peer_mac_normalized, ap_mac)} if peer_is_mac else peer_needle not in f"{record.peer_mac_raw} {record.peer_mac_normalized} {ap_mac or ''} {name or ''}".casefold()):
+                    continue
+                if station_needle and station_needle not in f"{resolved_station} {location.section}".casefold():
+                    continue
+                stamp = record.sample_time.isoformat(sep=" ", timespec="milliseconds")
+                items.append(MeshActiveBuildOrderDTO(
+                    sequence=-record.source_line_number, source_file_id=context.source_id,
+                    link_count=0, observation_time=stamp, local_radio=record.radio,
+                    peer_mac_raw=record.peer_mac_raw, active_peer_mac=record.peer_mac_normalized or "",
+                    peer_ap_name=name, peer_ap_mac=ap_mac, station=resolved_station or None,
+                    section=self._resolved_location_value(data, location, "section"),
+                    build_start_time="", build_end_time="", first_sample_time=stamp,
+                    sample_count=1, build_result="UNCONNECTED", judge_reason="采样时 LinkCnt=0，未形成有效链路",
+                ))
         items.sort(
-            key=lambda item: (item.build_start_time, item.sequence),
+            key=lambda item: (item.observation_time or item.build_start_time, item.sequence),
             reverse=sort_order.lower() != "asc",
         )
         current, size = self._page(page, page_size)

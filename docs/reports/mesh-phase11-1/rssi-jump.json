@@ -1,0 +1,125 @@
+{
+  "point": {
+    "x": 1089.537109375,
+    "y": 622.4285714285714,
+    "ap": "bc5a-3457-8b20",
+    "time": "2026-10-20 14:07:16.605"
+  },
+  "context": {
+    "locked": {
+      "start_time": "2026-10-20 14:07:01.605",
+      "end_time": "2026-10-20 14:07:31.605",
+      "start_percent": 49.05889939062444,
+      "end_percent": 49.15149277197546,
+      "full_start_time": "2026-10-20 09:42:06.657",
+      "full_end_time": "2026-10-20 18:42:06.381",
+      "source": "programmatic",
+      "source_chart": "programmatic",
+      "revision": 48,
+      "session_id": "80716c07-6bd9-47d8-b76d-ace1e55624d1:1",
+      "source_file_id": 1,
+      "radio": 1,
+      "mode": "active",
+      "anchor_link_id": null,
+      "all_visits": false,
+      "first_sample_time": "2026-10-20 14:07:02.556",
+      "last_sample_time": "2026-10-20 14:07:31.556",
+      "sample_count": 49,
+      "created_at": "2026-11-09T06:35:00.375Z"
+    },
+    "selected": "2026-10-20 14:07:16.605"
+  },
+  "result": {
+    "window": {
+      "start": "2026-10-20 14:07:01.605",
+      "end": "2026-10-20 14:07:31.605"
+    },
+    "filters": {
+      "ap": "bc5a-3457-8b20",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": "2026-10-20 14:07:16.605",
+    "selected": {
+      "time": "2026-10-20 14:07:16.605",
+      "ap": "bc:5a:34:57:8b:20",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "COMPLETED",
+      "rate": "COMPLETED",
+      "noise": "COMPLETED",
+      "tx_des_free_cnt": "COMPLETED",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "rssi": 7,
+      "memory": 7,
+      "cpu": 7,
+      "rate": 7,
+      "busy": 5,
+      "noise": 7,
+      "tx_des_free_cnt": 8,
+      "counters": 8
+    },
+    "historyTotal": 8,
+    "zeroTotal": 0,
+    "recordTotal": 2,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 14:07:01.605",
+        "end": "2026-10-20 14:07:31.605",
+        "pointer": "2026-10-20 14:07:16.605",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 14:07:01.605",
+        "end": "2026-10-20 14:07:31.605",
+        "pointer": "2026-10-20 14:07:16.605",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 14:07:01.605",
+        "end": "2026-10-20 14:07:31.605",
+        "pointer": "2026-10-20 14:07:16.605",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 14:07:01.605",
+        "end": "2026-10-20 14:07:31.605",
+        "pointer": "2026-10-20 14:07:16.605",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 14:07:01.605",
+        "end": "2026-10-20 14:07:31.605",
+        "pointer": "2026-10-20 14:07:16.605",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 14:07:01.605",
+        "end": "2026-10-20 14:07:31.605",
+        "pointer": "2026-10-20 14:07:16.605",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 14:07:01.605",
+        "end": "2026-10-20 14:07:31.605",
+        "pointer": "2026-10-20 14:07:16.605",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 14:07:01.605",
+        "end": "2026-10-20 14:07:31.605",
+        "pointer": "2026-10-20 14:07:16.605",
+        "canvases": 1
+      }
+    ]
+  }
+}

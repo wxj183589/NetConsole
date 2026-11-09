@@ -1,0 +1,77 @@
+{
+  "python": {
+    "passed": 233,
+    "warnings": 3,
+    "seconds": 62.93,
+    "files": [
+      "test_mesh_monitor_sampling.py",
+      "test_mesh_monitor_zero_query.py",
+      "test_mesh_analysis_query_service.py",
+      "test_mesh_analysis_web_api.py",
+      "test_mesh_business_statistics.py",
+      "test_mesh_log_analysis.py"
+    ]
+  },
+  "renderer": {
+    "passed": 154,
+    "skipped": 0,
+    "success": true,
+    "files": [
+      {
+        "file": "meshBusinessMetrics.test.ts",
+        "passed": 2,
+        "status": "passed"
+      },
+      {
+        "file": "meshCharts.mount.test.ts",
+        "passed": 33,
+        "status": "passed"
+      },
+      {
+        "file": "meshChartViewport.test.ts",
+        "passed": 11,
+        "status": "passed"
+      },
+      {
+        "file": "meshLoadingPolicy.test.ts",
+        "passed": 7,
+        "status": "passed"
+      },
+      {
+        "file": "meshLoadingState.test.ts",
+        "passed": 2,
+        "status": "passed"
+      },
+      {
+        "file": "MeshMetricChart.test.ts",
+        "passed": 12,
+        "status": "passed"
+      },
+      {
+        "file": "MeshPhase11Workbench.test.ts",
+        "passed": 15,
+        "status": "passed"
+      },
+      {
+        "file": "meshRssiContext.test.ts",
+        "passed": 3,
+        "status": "passed"
+      },
+      {
+        "file": "MeshAnalysisView.behavior.test.ts",
+        "passed": 64,
+        "status": "passed"
+      },
+      {
+        "file": "MeshAnalysisView.test.ts",
+        "passed": 5,
+        "status": "passed"
+      }
+    ]
+  },
+  "renderer_build": "PASS (vue-tsc -b included); existing chunk size warning",
+  "ruff_changed_python": "PASS",
+  "architecture": "11/12 PASS; device-command-hardcoding FAIL on unchanged mesh_link_detail_export.py:1439 docstring",
+  "full_suite": "NOT_RUN",
+  "post_merge": "NOT_APPLICABLE: merge prohibited"
+}

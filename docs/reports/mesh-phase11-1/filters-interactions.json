@@ -1,0 +1,451 @@
+{
+  "off": {
+    "window": {
+      "start": "2026-10-20 18:38:41.726",
+      "end": "2026-10-20 18:40:08.625"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": null,
+    "selected": {
+      "time": "2026-10-20 18:38:42.656",
+      "ap": "bc:5a:34:57:62:c0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "RENDERING",
+      "rate": "RENDERING",
+      "noise": "RENDERING",
+      "tx_des_free_cnt": "RENDERING",
+      "counters": "RENDERING"
+    },
+    "counts": {
+      "rssi": 102,
+      "cpu": 93,
+      "memory": 91,
+      "busy": 84,
+      "rate": 111,
+      "noise": 97,
+      "tx_des_free_cnt": 111,
+      "counters": 99
+    },
+    "historyTotal": 135,
+    "zeroTotal": 0,
+    "recordTotal": 28,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 1
+      }
+    ]
+  },
+  "on": {
+    "window": {
+      "start": "2026-10-20 18:38:41.726",
+      "end": "2026-10-20 18:40:08.625"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": true
+    },
+    "pointer": "2026-10-20 18:38:42.656",
+    "selected": {
+      "time": "2026-10-20 18:38:42.656",
+      "ap": "bc:5a:34:57:62:c0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "RENDERING",
+      "rate": "RENDERING",
+      "noise": "RENDERING",
+      "tx_des_free_cnt": "RENDERING",
+      "counters": "RENDERING"
+    },
+    "counts": {
+      "rate": 118,
+      "noise": 104,
+      "memory": 98,
+      "cpu": 100,
+      "rssi": 109,
+      "busy": 91,
+      "counters": 107,
+      "tx_des_free_cnt": 118
+    },
+    "historyTotal": 142,
+    "zeroTotal": 7,
+    "recordTotal": 35,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      }
+    ]
+  },
+  "zero": {
+    "window": {
+      "start": "2026-10-20 18:38:41.726",
+      "end": "2026-10-20 18:40:08.625"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": true
+    },
+    "pointer": "2026-10-20 18:38:59.468",
+    "selected": {
+      "time": "2026-10-20 18:38:59.468",
+      "ap": "bc5a-3457-af80",
+      "role": "UNCONNECTED",
+      "zero": 0
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "RENDERING",
+      "rate": "RENDERING",
+      "noise": "RENDERING",
+      "tx_des_free_cnt": "RENDERING",
+      "counters": "RENDERING"
+    },
+    "counts": {
+      "rate": 118,
+      "noise": 104,
+      "memory": 98,
+      "cpu": 100,
+      "rssi": 109,
+      "busy": 91,
+      "counters": 107,
+      "tx_des_free_cnt": 118
+    },
+    "historyTotal": 142,
+    "zeroTotal": 7,
+    "recordTotal": 35,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:59.468",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:59.468",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:59.468",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:59.468",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:59.468",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:59.468",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:59.468",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:59.468",
+        "canvases": 0
+      }
+    ]
+  },
+  "restored": {
+    "window": {
+      "start": "2026-10-20 18:38:41.726",
+      "end": "2026-10-20 18:40:08.625"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": "2026-10-20 18:38:42.656",
+    "selected": {
+      "time": "2026-10-20 18:38:42.656",
+      "ap": "bc:5a:34:57:62:c0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "RENDERING",
+      "rate": "RENDERING",
+      "noise": "RENDERING",
+      "tx_des_free_cnt": "RENDERING",
+      "counters": "RENDERING"
+    },
+    "counts": {
+      "cpu": 93,
+      "memory": 91,
+      "rssi": 102,
+      "rate": 111,
+      "busy": 84,
+      "noise": 97,
+      "tx_des_free_cnt": 111,
+      "counters": 99
+    },
+    "historyTotal": 135,
+    "zeroTotal": 0,
+    "recordTotal": 28,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "pointer": "2026-10-20 18:38:42.656",
+        "canvases": 0
+      }
+    ]
+  },
+  "record": {
+    "window": {
+      "start": "2026-10-20 18:38:41.726",
+      "end": "2026-10-20 18:40:08.625"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": null,
+    "selected": {
+      "time": "2026-10-20 18:38:42.656",
+      "ap": "bc:5a:34:57:62:c0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "RENDERING",
+      "rate": "RENDERING",
+      "noise": "RENDERING",
+      "tx_des_free_cnt": "RENDERING",
+      "counters": "RENDERING"
+    },
+    "counts": {
+      "cpu": 93,
+      "memory": 91,
+      "rssi": 102,
+      "rate": 111,
+      "busy": 84,
+      "noise": 97,
+      "tx_des_free_cnt": 111,
+      "counters": 99
+    },
+    "historyTotal": 135,
+    "zeroTotal": 0,
+    "recordTotal": 28,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:38:41.726",
+        "end": "2026-10-20 18:40:08.625",
+        "canvases": 0
+      }
+    ]
+  }
+}

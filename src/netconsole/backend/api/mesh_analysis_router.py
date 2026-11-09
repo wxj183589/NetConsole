@@ -684,6 +684,13 @@ def links(
     page_size: int = Query(default=100, ge=1, le=1_000),
     sort_by: str = Query(default="timestamp", pattern="^(timestamp|rssi|peer_ap_name)$"),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
+    radio: int | None = Query(default=None, ge=1, le=64),
+    exact_ap: bool = False,
+    metric_group: str = Query(default="", pattern="^(|rssi|cpu|memory|busy|rate|noise|tx_des_free_cnt|counters)$"),
+    max_points: int = Query(default=1000, ge=100, le=2000),
+    include_zero: bool = False,
+    exclude_depot: bool = False,
+    exclude_parking: bool = False,
 ) -> MeshLinkPageDTO:
     return _query(
         lambda: _service(request).list_link_details(
@@ -706,6 +713,13 @@ def links(
             page_size=page_size,
             sort_by=sort_by,
             sort_order=sort_order,
+            radio=radio,
+            exact_ap=exact_ap,
+            metric_group=metric_group,
+            max_points=max_points,
+            include_zero=include_zero,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
         )
     )
 
@@ -822,6 +836,10 @@ def active_build_order(
     build_result: str = Query(default="", max_length=50),
     build_results: list[str] = Query(default=[], max_length=10),
     pingpong_only: bool = False,
+    include_zero: bool = False,
+    exclude_depot: bool = False,
+    exclude_parking: bool = False,
+    link_role: str = Query(default="", pattern="^(|ACTIVE|STANDBY)$"),
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
     page: int = Query(default=1, ge=1),
@@ -839,6 +857,10 @@ def active_build_order(
             build_result=build_result,
             build_results=build_results,
             pingpong_only=pingpong_only,
+            include_zero=include_zero,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+            link_role=link_role,
             time_from=time_from,
             time_to=time_to,
             page=page,

@@ -1,0 +1,742 @@
+{
+  "before": {
+    "window": {
+      "start": "2026-10-20 18:37:06.381",
+      "end": "2026-10-20 18:42:06.381"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": null,
+    "selected": {
+      "time": "2026-10-20 18:37:06.656",
+      "ap": "bc:5a:34:57:96:a0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "COMPLETED",
+      "rate": "COMPLETED",
+      "noise": "COMPLETED",
+      "tx_des_free_cnt": "COMPLETED",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "rssi": 253,
+      "cpu": 250,
+      "memory": 227,
+      "busy": 231,
+      "rate": 260,
+      "noise": 235,
+      "tx_des_free_cnt": 247,
+      "counters": 237
+    },
+    "historyTotal": 465,
+    "zeroTotal": 0,
+    "recordTotal": 91,
+    "cache": 8,
+    "charts": [
+      {
+        "start": "2026-10-20 18:37:06.381",
+        "end": "2026-10-20 18:42:06.381",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:06.381",
+        "end": "2026-10-20 18:42:06.381",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:06.381",
+        "end": "2026-10-20 18:42:06.381",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:06.381",
+        "end": "2026-10-20 18:42:06.381",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:06.381",
+        "end": "2026-10-20 18:42:06.381",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:06.381",
+        "end": "2026-10-20 18:42:06.381",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:06.381",
+        "end": "2026-10-20 18:42:06.381",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:06.381",
+        "end": "2026-10-20 18:42:06.381",
+        "canvases": 1
+      }
+    ]
+  },
+  "zoom": {
+    "window": {
+      "start": "2026-10-20 18:37:20.982",
+      "end": "2026-10-20 18:41:53.709"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": "2026-10-20 18:39:46.992",
+    "selected": null,
+    "phases": {
+      "rssi": "QUERYING",
+      "cpu": "QUERYING",
+      "memory": "QUERYING",
+      "busy": "QUERYING",
+      "rate": "QUERYING",
+      "noise": "QUERYING",
+      "tx_des_free_cnt": "QUERYING",
+      "counters": "QUERYING"
+    },
+    "counts": {},
+    "historyTotal": 465,
+    "zeroTotal": 0,
+    "recordTotal": 91,
+    "cache": 8,
+    "charts": []
+  },
+  "pan": {
+    "window": {
+      "start": "2026-10-20 18:37:20.982",
+      "end": "2026-10-20 18:41:53.709"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": "2026-10-20 18:37:21.656",
+    "selected": {
+      "time": "2026-10-20 18:37:21.656",
+      "ap": "30:f5:27:7a:3f:80",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "RENDERING",
+      "rate": "RENDERING",
+      "noise": "RENDERING",
+      "tx_des_free_cnt": "RENDERING",
+      "counters": "RENDERING"
+    },
+    "counts": {
+      "rate": 242,
+      "memory": 212,
+      "cpu": 237,
+      "rssi": 234,
+      "busy": 218,
+      "tx_des_free_cnt": 231,
+      "counters": 218,
+      "noise": 222
+    },
+    "historyTotal": 424,
+    "zeroTotal": 0,
+    "recordTotal": 85,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:37:21.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:37:21.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:37:21.656",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:37:21.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:37:21.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:37:21.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:37:21.656",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:37:21.656",
+        "canvases": 0
+      }
+    ]
+  },
+  "hover": {
+    "window": {
+      "start": "2026-10-20 18:37:20.982",
+      "end": "2026-10-20 18:41:53.709"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": "2026-10-20 18:40:15.934",
+    "selected": {
+      "time": "2026-10-20 18:37:21.656",
+      "ap": "30:f5:27:7a:3f:80",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "COMPLETED",
+      "rate": "COMPLETED",
+      "noise": "COMPLETED",
+      "tx_des_free_cnt": "COMPLETED",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "rate": 242,
+      "memory": 212,
+      "cpu": 237,
+      "rssi": 234,
+      "busy": 218,
+      "tx_des_free_cnt": 231,
+      "counters": 218,
+      "noise": 222
+    },
+    "historyTotal": 424,
+    "zeroTotal": 0,
+    "recordTotal": 85,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:40:15.934",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:40:15.934",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:40:15.934",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:40:15.934",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:40:15.934",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:40:15.934",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:40:15.934",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:40:15.934",
+        "canvases": 1
+      }
+    ]
+  },
+  "point": {
+    "x": 1031.3836693836693,
+    "y": 564.8,
+    "time": "2026-10-20 18:39:45.789"
+  },
+  "selected": {
+    "window": {
+      "start": "2026-10-20 18:37:20.982",
+      "end": "2026-10-20 18:41:53.709"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": "2026-10-20 18:39:45.789",
+    "selected": {
+      "time": "2026-10-20 18:39:45.789",
+      "ap": "bc:5a:34:57:d1:c0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "COMPLETED",
+      "rate": "COMPLETED",
+      "noise": "COMPLETED",
+      "tx_des_free_cnt": "COMPLETED",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "rate": 242,
+      "memory": 212,
+      "cpu": 237,
+      "rssi": 234,
+      "busy": 218,
+      "tx_des_free_cnt": 231,
+      "counters": 218,
+      "noise": 222
+    },
+    "historyTotal": 424,
+    "zeroTotal": 0,
+    "recordTotal": 85,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:39:45.789",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:39:45.789",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:39:45.789",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:39:45.789",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:39:45.789",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:39:45.789",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:39:45.789",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:37:20.982",
+        "end": "2026-10-20 18:41:53.709",
+        "pointer": "2026-10-20 18:39:45.789",
+        "canvases": 1
+      }
+    ]
+  },
+  "navigator": {
+    "window": {
+      "start": "2026-10-20 18:36:19.032",
+      "end": "2026-10-20 18:41:53.709"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": null,
+    "selected": {
+      "time": "2026-10-20 18:39:45.789",
+      "ap": "bc:5a:34:57:d1:c0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "RENDERING",
+      "cpu": "RENDERING",
+      "memory": "RENDERING",
+      "busy": "RENDERING",
+      "rate": "RENDERING",
+      "noise": "RENDERING",
+      "tx_des_free_cnt": "RENDERING",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "rate": 269,
+      "busy": 251,
+      "rssi": 270,
+      "tx_des_free_cnt": 259,
+      "cpu": 266,
+      "memory": 237,
+      "noise": 247,
+      "counters": 245
+    },
+    "historyTotal": 515,
+    "zeroTotal": 0,
+    "recordTotal": 97,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 0
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      }
+    ]
+  },
+  "options": [
+    {
+      "zoom": [
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        }
+      ],
+      "axisType": "time",
+      "canvases": 1
+    },
+    {
+      "zoom": [
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        }
+      ],
+      "axisType": "time",
+      "canvases": 1
+    },
+    {
+      "zoom": [
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        }
+      ],
+      "axisType": "time",
+      "canvases": 1
+    },
+    {
+      "zoom": [
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        }
+      ],
+      "axisType": "time",
+      "canvases": 1
+    },
+    {
+      "zoom": [
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        }
+      ],
+      "axisType": "time",
+      "canvases": 1
+    },
+    {
+      "zoom": [
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        }
+      ],
+      "axisType": "time",
+      "canvases": 1
+    },
+    {
+      "zoom": [
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        }
+      ],
+      "axisType": "time",
+      "canvases": 1
+    },
+    {
+      "zoom": [
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        },
+        {
+          "startValue": 1792492579032,
+          "endValue": 1792492913709
+        }
+      ],
+      "axisType": "time",
+      "canvases": 1
+    }
+  ],
+  "actualPanBefore": {
+    "window": {
+      "start": "2026-10-20 18:36:19.032",
+      "end": "2026-10-20 18:41:53.709"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": null,
+    "selected": {
+      "time": "2026-10-20 18:39:45.789",
+      "ap": "bc:5a:34:57:d1:c0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "COMPLETED",
+      "rate": "COMPLETED",
+      "noise": "COMPLETED",
+      "tx_des_free_cnt": "COMPLETED",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "rate": 269,
+      "busy": 251,
+      "rssi": 270,
+      "tx_des_free_cnt": 259,
+      "cpu": 266,
+      "memory": 237,
+      "noise": 247,
+      "counters": 245
+    },
+    "historyTotal": 515,
+    "zeroTotal": 0,
+    "recordTotal": 97,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:19.032",
+        "end": "2026-10-20 18:41:53.709",
+        "canvases": 1
+      }
+    ]
+  },
+  "actualPanAfter": {
+    "window": {
+      "start": "2026-10-20 18:36:15.832",
+      "end": "2026-10-20 18:41:50.509"
+    },
+    "filters": {
+      "ap": "",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": null,
+    "selected": {
+      "time": "2026-10-20 18:39:45.789",
+      "ap": "bc:5a:34:57:d1:c0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "COMPLETED",
+      "rate": "COMPLETED",
+      "noise": "COMPLETED",
+      "tx_des_free_cnt": "COMPLETED",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "cpu": 264,
+      "busy": 252,
+      "memory": 239,
+      "rssi": 264,
+      "noise": 249,
+      "rate": 274,
+      "tx_des_free_cnt": 261,
+      "counters": 250
+    },
+    "historyTotal": 511,
+    "zeroTotal": 0,
+    "recordTotal": 96,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:36:15.832",
+        "end": "2026-10-20 18:41:50.509",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:15.832",
+        "end": "2026-10-20 18:41:50.509",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:15.832",
+        "end": "2026-10-20 18:41:50.509",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:15.832",
+        "end": "2026-10-20 18:41:50.509",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:15.832",
+        "end": "2026-10-20 18:41:50.509",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:15.832",
+        "end": "2026-10-20 18:41:50.509",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:15.832",
+        "end": "2026-10-20 18:41:50.509",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:36:15.832",
+        "end": "2026-10-20 18:41:50.509",
+        "canvases": 1
+      }
+    ]
+  }
+}

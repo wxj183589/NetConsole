@@ -1,0 +1,14 @@
+[PASS] architecture-boundaries: 0 finding(s), 0 waived
+[PASS] forbidden-imports: 0 finding(s), 0 waived
+[PASS] direct-sql-access: 0 finding(s), 0 waived
+[PASS] dynamic-chart-stability: 0 finding(s), 0 waived
+[FAIL] device-command-hardcoding: 1 finding(s), 0 waived
+DEVICE_COMMAND_AUDIT scripts/maintenance/audit_commands.py {   "reference_count": 86,   "profile_command_count": 24,   "candidate_count": 868,   "missing_candidate_count": 1,   "deferred_profile_migration_count": 0,   "duplicate_ids": [],   "duplicate_templates": [],   "missing_candidates": [     {       "command": "display formatting or unit conversion",       "path": "src\\netconsole\\services\\mesh_link_detail_export.py",       "line": 1439     }   ],   "deferred_profile_migration_candidates": [] }
+[PASS] ui-business-logic: 0 finding(s), 0 waived
+[PASS] removed-features: 0 finding(s), 0 waived
+[PASS] runtime-paths: 0 finding(s), 0 waived
+[PASS] orphan-modules: 0 finding(s), 0 waived
+[PASS] product-architecture: 0 finding(s), 0 waived
+[PASS] storage-registry: 0 finding(s), 0 waived
+[PASS] production-database-boundary: 0 finding(s), 0 waived
+[FAIL] architecture guard summary: 1/12 failed: device-command-hardcoding

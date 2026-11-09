@@ -303,7 +303,9 @@ function handleChartClick(raw: unknown): void {
     || item.timestamp === data?.meta?.timestamp
   ))
   if (event) emit('selectSwitch', event)
-  const timestamp = data?.meta?.timestamp || data?.value?.[0]
+  // ECharts markLine carries a scalar value; indexing it yields the first
+  // character instead of the selected historical timestamp.
+  const timestamp = data?.meta?.timestamp || (Array.isArray(data?.value) ? data.value[0] : undefined) || event?.render_point_timestamp || event?.timestamp
   if (timestamp) emit('select-time', timestamp)
 }
 
@@ -315,7 +317,7 @@ function handleChartDoubleClick(raw: unknown): void {
   }
   const data = (raw as { data?: { meshEvent?: MeshChartEvent; meta?: MeshChartPoint; value?: [string, number | null] } }).data
   const event = data?.meshEvent
-  const timestamp = data?.meta?.timestamp || data?.value?.[0] || event?.render_point_timestamp || event?.timestamp
+  const timestamp = data?.meta?.timestamp || (Array.isArray(data?.value) ? data.value[0] : undefined) || event?.render_point_timestamp || event?.timestamp
   if (!timestamp) return
   const point = data?.meta || (event ? findRenderedSwitchPoint(event) : props.points.find(item => item.timestamp === timestamp))
   pinnedTooltip.value = {
