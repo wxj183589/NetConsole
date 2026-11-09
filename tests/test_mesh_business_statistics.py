@@ -17,6 +17,7 @@ from netconsole.services.mesh_analysis_report import (
     MeshReportOptions,
 )
 from netconsole.services.mesh_business_statistics import (
+    MeshBusinessParamsError,
     build_mesh_business_statistics,
     business_sort_key,
     effective_business_rules,
@@ -106,10 +107,13 @@ def stats(rows, *, rules=None, locations=None, minimum=2, **kwargs):
 def test_physical_identity_merges_radios_and_names_but_never_same_name_devices():
     result = stats([row(), row(1, radio=2, peer="001122334402"), row(2, peer=OTHER)])
     assert result["summary"]["ap_total"] == 2
-    first = next(ap for ap in result["aps"] if ap["peer_ap_mac"] == AP)
-    assert first["valid_sample_count"] == 2
-    assert first["signal_grade"] == "GOOD"
-    assert result["summary"]["grades"]["INSUFFICIENT"] == 1
+    first = [ap for ap in result["aps"] if ap["peer_ap_mac"] == AP]
+    assert {(ap["radio"], ap["peer_ap_name"], ap["valid_sample_count"]) for ap in first} == {
+        (1, "同名AP", 1),
+        (2, "不同名字", 1),
+    }
+    assert all(ap["signal_grade"] == "INSUFFICIENT" for ap in first)
+    assert result["summary"]["grades"]["INSUFFICIENT"] == 3
 
 
 def test_station_type_scope_excludes_depot_parking_and_their_backup_candidates():
@@ -183,10 +187,12 @@ def test_exact_p10_full_samples_standby_excluded_and_threshold_changes():
     )
     assert (ap["valid_sample_count"], ap["weak_sample_count"], ap["weak_ratio"]) == (
         10,
-        10,
-        1,
+        5,
+        0.5,
     )
     assert ap["signal_grade"] == "BAD"
+    explicit_weak_threshold = stats(rows, weak_signal_threshold=30)["aps"][0]
+    assert (explicit_weak_threshold["weak_sample_count"], explicit_weak_threshold["weak_ratio"]) == (10, 1)
     rules = effective_business_rules(
         normalize_mesh_analysis_params(
             {"rssi_good_threshold": 20, "rssi_warning_threshold": 15}
@@ -195,6 +201,20 @@ def test_exact_p10_full_samples_standby_excluded_and_threshold_changes():
     )
     assert stats(rows, rules=rules)["aps"][0]["signal_grade"] == "GOOD"
     assert MeshQualityRules().rssi_good_threshold == 30
+
+
+def test_signal_statistics_reject_threshold_above_good_and_unknown_role():
+    with pytest.raises(MeshBusinessParamsError, match="弱信号阈值"):
+        stats([row()], weak_signal_threshold=31)
+    with pytest.raises(MeshBusinessParamsError, match="链路角色"):
+        stats([row()], link_role="INVALID")
+
+
+def test_signal_statistics_keeps_latest_valid_rssi_when_newest_sample_is_missing():
+    rows = [row(0, rssi=35), row(1, rssi=None)]
+    ap = stats(rows)["aps"][0]
+    assert ap["last_seen"] == row(1)["sample_time"]
+    assert ap["last_rssi"] == 35
 
 
 def test_unresolved_and_ambiguous_identity_stay_out_of_physical_total():

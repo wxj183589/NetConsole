@@ -16,10 +16,10 @@ const samples: MeshBusinessMetricSample[] = [
 ]
 
 describe('mesh business metric groups', () => {
-  it('returns twelve business charts in stable display order', () => {
+  it('returns thirteen business charts in stable display order', () => {
     const groups = buildMeshBusinessMetricGroups(samples)
     expect(groups.map((group) => group.key)).toEqual([
-      'rssi', 'cpu', 'memory', 'rate', 'noise', 'tx_des_free_cnt', 'tx_busy', 'rx_busy', 'tx_rx', 'retry', 'error', 'control',
+      'rssi', 'cpu', 'memory', 'rate', 'noise', 'tx_des_free_cnt', 'tx_busy', 'rx_busy', 'tx_rx', 'retry', 'error', 'garp', 'mul_join',
     ])
     expect(groups.find((group) => group.key === 'tx_busy')?.lines.map((line) => line.key)).toEqual([
       'tx_busy_local', 'tx_busy_peer',

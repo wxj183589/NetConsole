@@ -71,12 +71,12 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     expect(charts(wrapper)).toHaveLength(1)
     expect(wrapper.find('#monitor-cpu .skeleton').exists()).toBe(true)
     intersect(['rssi'], false)
-    intersect(['tx_rx', 'retry', 'error', 'control']); await flushPromises()
+    intersect(['tx_rx', 'retry', 'error', 'garp', 'mul_join']); await flushPromises()
     expect(metrics().map(([, query]) => query.metric_group)).toEqual(['rssi', 'counters'])
-    intersect(['tx_rx', 'retry', 'error', 'control']); await flushPromises()
+    intersect(['tx_rx', 'retry', 'error', 'garp', 'mul_join']); await flushPromises()
     expect(metrics()).toHaveLength(2)
     counter.resolve({ items: [sample], total: 1 }); await flushPromises()
-    expect(charts(wrapper)).toHaveLength(5)
+    expect(charts(wrapper)).toHaveLength(6)
     expect(metrics().some(([, query]) => query.metric_group === 'cpu')).toBe(false)
     wrapper.unmount(); expect(observers.at(-1)!.disconnect).toHaveBeenCalledOnce()
   })
@@ -84,13 +84,13 @@ describe('Mesh Phase 11 workbench business behavior', () => {
   it('reuses completed counter source data when counter panels enter sequentially', async () => {
     autoVisible = false
     const wrapper = mounted(); await nav(wrapper, 4)
-    for (const key of ['tx_rx', 'retry', 'error', 'control']) {
+    for (const key of ['tx_rx', 'retry', 'error', 'garp', 'mul_join']) {
       intersect([key]); await flushPromises()
       expect(metrics().map(([, query]) => query.metric_group)).toEqual(['counters'])
       expect(wrapper.find(`#monitor-${key} .metric-chart`).exists()).toBe(true)
       intersect([key], false)
     }
-    expect(charts(wrapper)).toHaveLength(4)
+    expect(charts(wrapper)).toHaveLength(5)
     expect(api.links).toHaveBeenCalledTimes(2)
   })
 
@@ -144,16 +144,16 @@ describe('Mesh Phase 11 workbench business behavior', () => {
 
   it('uses the latest five minutes and binds twelve charts from eight queries to one domain and window', async () => {
     const wrapper = mounted(); await nav(wrapper, 4)
-    expect(charts(wrapper)).toHaveLength(12)
+    expect(charts(wrapper)).toHaveLength(13)
     charts(wrapper).forEach((chart, index) => {
       expect(chart.props('domain')).toEqual({ start: session.first_sample_time, end: session.last_sample_time })
       expect(chart.props('window')).toEqual({ start: '2026-11-09 10:25:00.000', end: session.last_sample_time })
-      expect(chart.props('lines')).toHaveLength([8, 11].includes(index) ? 4 : 2)
+      expect(chart.props('lines')).toHaveLength(index === 8 ? 4 : 2)
     })
-    expect(charts(wrapper).map(chart => chart.props('navigator'))).toEqual([...Array(11).fill(false), true])
+    expect(charts(wrapper).map(chart => chart.props('navigator'))).toEqual([...Array(12).fill(false), true])
     for (const [, query] of metrics()) expect(query).toMatchObject({ time_from: '2026-11-09 10:25:00.000', time_to: session.last_sample_time, radio: 1, link_role: 'ACTIVE', exact_ap: true, max_points: 1000, page_size: 1000 })
-    expect(wrapper.text()).toContain('0/12 图表完成')
-    charts(wrapper)[0]!.vm.$emit('render-complete'); await flushPromises(); expect(wrapper.text()).toContain('1/12 图表完成')
+    expect(wrapper.text()).toContain('0/13 图表完成')
+    charts(wrapper)[0]!.vm.$emit('render-complete'); await flushPromises(); expect(wrapper.text()).toContain('1/13 图表完成')
   })
 
   it('throttles repeated zoom to 180ms and queries every section for the final window', async () => {
@@ -204,7 +204,7 @@ describe('Mesh Phase 11 workbench business behavior', () => {
 
   it('opens an AP using its exact physical MAC and all historical roles', async () => {
     const wrapper = mounted(); await nav(wrapper, 3)
-    await wrapper.find('[data-table-id="mesh-phase11-aps:v2"] button').trigger('click'); await flushPromises()
+    await wrapper.find('[data-table-id="mesh-phase11-aps:v3"] button').trigger('click'); await flushPromises()
     expect(wrapper.find('.phase11-monitor').exists()).toBe(true)
     for (const [, query] of api.links.mock.calls) expect(query).toMatchObject({ peer_ap_mac: sample.peer_ap_mac, exact_ap: true, link_role: '' })
   })
@@ -218,7 +218,7 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     expect(oldSignals.every(signal => signal.aborted)).toBe(true)
     old.resolve({ items: [{ ...sample, peer_ap_name: 'AP-STALE' }], total: 1 }); await flushPromises()
     expect(wrapper.find('.phase11-detail').text()).toContain('AP-NEW'); expect(wrapper.text()).not.toContain('AP-STALE')
-    expect(charts(wrapper)).toHaveLength(12)
+    expect(charts(wrapper)).toHaveLength(13)
   })
 
   it('aborts requests and pending zoom when the page closes', async () => {
@@ -232,21 +232,31 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     await vi.advanceTimersByTimeAsync(200); expect(api.links).toHaveBeenCalledTimes(calls)
   })
 
+  it('cancels an AP statistics request when leaving the AP workspace', async () => {
+    const pending = deferred<any>(); api.aps.mockReturnValue(pending.promise)
+    const wrapper = mounted(); await nav(wrapper, 3)
+    const signal = api.aps.mock.calls[0]![2] as AbortSignal
+    expect(signal.aborted).toBe(false)
+    await nav(wrapper, 0)
+    expect(signal.aborted).toBe(true)
+    wrapper.unmount()
+  })
+
   it('isolates a failed metric query and retries only that metric', async () => {
     api.links.mockImplementation(async (_id, query) => { if (query.metric_group === 'cpu') throw new Error('CPU 查询失败'); return { items: [sample], total: 1 } })
     const wrapper = mounted(); await nav(wrapper, 4)
-    expect(charts(wrapper)).toHaveLength(11); expect(wrapper.find('#monitor-cpu .phase-error').text()).toContain('CPU 查询失败')
+    expect(charts(wrapper)).toHaveLength(12); expect(wrapper.find('#monitor-cpu .phase-error').text()).toContain('CPU 查询失败')
     charts(wrapper)[0]!.vm.$emit('render-complete'); await flushPromises(); expect(wrapper.find('#monitor-rssi .phase-completed').exists()).toBe(true)
     api.links.mockResolvedValue({ items: [sample], total: 1 })
     await wrapper.find('#monitor-cpu button').trigger('click'); await flushPromises()
-    expect(api.links).toHaveBeenCalledTimes(10); expect(api.links.mock.calls.at(-1)?.[1].metric_group).toBe('cpu'); expect(charts(wrapper)).toHaveLength(12)
+    expect(api.links).toHaveBeenCalledTimes(10); expect(api.links.mock.calls.at(-1)?.[1].metric_group).toBe('cpu'); expect(charts(wrapper)).toHaveLength(13)
     expect(wrapper.find('#monitor-cpu .phase-rendering').exists()).toBe(true)
   })
 
   it('isolates rendering errors and completes empty results without infinite loading', async () => {
     api.links.mockResolvedValue({ items: [], total: 0 })
     const wrapper = mounted(); await nav(wrapper, 4)
-    expect(charts(wrapper)).toHaveLength(12); expect(wrapper.find('#monitor-rssi .phase-rendering').text()).toContain('空数据')
+    expect(charts(wrapper)).toHaveLength(13); expect(wrapper.find('#monitor-rssi .phase-rendering').text()).toContain('空数据')
     charts(wrapper)[0]!.vm.$emit('render-error', 'RSSI 绘图失败'); charts(wrapper)[1]!.vm.$emit('render-complete'); await flushPromises()
     expect(wrapper.find('#monitor-rssi .phase-error').text()).toContain('RSSI 绘图失败'); expect(wrapper.find('#monitor-cpu .phase-completed').exists()).toBe(true)
     expect(wrapper.find('.phase11-detail').text()).toContain('当前窗口暂无选中样本')
@@ -256,13 +266,13 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     const wrapper = mounted(); await nav(wrapper, 4); await nav(wrapper, 0)
     const pending = deferred<any>(); api.links.mockImplementation(() => pending.promise)
     await nav(wrapper, 4)
-    expect(charts(wrapper)).toHaveLength(12); expect(wrapper.find('#monitor-rssi .phase-rendering').text()).toContain('缓存命中')
+    expect(charts(wrapper)).toHaveLength(13); expect(wrapper.find('#monitor-rssi .phase-rendering').text()).toContain('缓存命中')
     expect(metrics()).toHaveLength(8)
     ;(wrapper.vm as any).refreshData(); await flushPromises()
-    expect(charts(wrapper)).toHaveLength(12); expect(wrapper.find('#monitor-rssi .phase-querying').exists()).toBe(true)
+    expect(charts(wrapper)).toHaveLength(13); expect(wrapper.find('#monitor-rssi .phase-querying').exists()).toBe(true)
     expect(metrics()).toHaveLength(16)
     charts(wrapper).forEach(chart => chart.vm.$emit('render-complete')); await flushPromises()
-    expect(wrapper.find('#monitor-rssi .phase-querying').exists()).toBe(true); expect(wrapper.text()).toContain('0/12 图表完成')
+    expect(wrapper.find('#monitor-rssi .phase-querying').exists()).toBe(true); expect(wrapper.text()).toContain('0/13 图表完成')
     pending.resolve({ items: [{ ...sample, local_rssi_db: -65 }], total: 1 }); await flushPromises()
     expect(wrapper.find('#monitor-rssi .phase-rendering').exists()).toBe(true)
     expect(charts(wrapper)[0]!.props('lines')[0].data[0].value[1]).toBe(-65)
@@ -303,7 +313,7 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     await context(wrapper, range('20')); await context(wrapper, range('22')); await context(wrapper, range('24'))
     const pending = deferred<any>(); api.links.mockImplementation(() => pending.promise)
     await context(wrapper, range('22'))
-    expect(charts(wrapper)).toHaveLength(12); expect(wrapper.find('#monitor-control [role="status"]').text()).toContain('缓存命中')
+    expect(charts(wrapper)).toHaveLength(13); expect(wrapper.find('#monitor-garp [role="status"]').text()).toContain('缓存命中')
     expect(wrapper.find('#monitor-rssi [role="status"]').text()).not.toContain('缓存命中')
     expect(metrics()).toHaveLength(24)
     await context(wrapper, range('20'))

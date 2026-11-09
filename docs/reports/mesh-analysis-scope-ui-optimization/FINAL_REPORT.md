@@ -1,3 +1,24 @@
+# Phase 11.5 业务计算与图表交互交付（2026-11-09）
+
+本轮在 `codex-A/mesh-analysis-scope-ui-optimization`、基线 `dec6b1c344ca433cbbd8007ea52ed92314bdff4a` 上完成 Mesh 业务统计与主链路监控收敛：GARP/MulJoin 拆为独立图表并继续共享一次 counters 查询；本端/对端颜色统一为绿色/橙色；AP 统计按物理 AP、ACTIVE/STANDBY、Radio 分组，提供最近有效 RSSI、低信号数量/比例、阈值持久化和筛选；INFO 级 LinkCnt=0 占位从普通解析异常中排除，底层记录仍保留。AP 请求在离页、切换 Session 和组件销毁时主动取消，旧 generation 结果不会覆盖当前页面。
+
+普通滚轮保持页面自然滚动，Shift+滚轮才以指针时间为锚点缩放，所有主链图表共享时间窗；ECharts `finished` 事件作为绘制完成边界。轨旁 AP 彩虹/冲突感知稳定颜色分配已在现有 `tracksideSeriesColors.ts` 中核验，本轮未重复实现或改写该独立规则。
+
+| 状态项 | 结果 |
+|---|---|
+| CODE_STATUS | PASS |
+| UNIT_TEST_STATUS | PASS（Renderer 核心 4 文件 85/85；全 Renderer 206 文件、1508/1508） |
+| PYTHON_TEST_STATUS | PASS（Mesh 回归 197 passed；统计定向 36 passed） |
+| RENDERER_STATUS | PASS（`vue-tsc -b`、`pnpm run build`） |
+| ELECTRON_UI_STATUS | BLOCKED（启动仍受自动审批策略阻止，未伪造截图） |
+| REAL_DATA_STATUS | PASS_WITH_LIMITATIONS（`docs/reports/mesh-phase11-2/real-service-query-validation.json` 只读证据；未启动 runtime） |
+| PERFORMANCE_STATUS | PARTIAL（真实窄查询已测；未完成 Electron 端 108700 条长稳/内存对照） |
+| MEMORY_STATUS | NOT_TESTED（本轮未做长时间 Electron 内存曲线） |
+| ARCHITECTURE_STATUS | PASS（复用既有 Service/Router/DTO/缓存，无 schema 迁移） |
+| GIT_STATUS | LOCAL_ONLY（产品与 DevStatus 本地提交，不 Push/Merge/Release） |
+
+数据边界：未修改 `D:\NetConsoleData`、`D:\NetConsoleData-dev` 中的业务数据、数据库 Schema 或设备状态；真实服务证据使用只读 SQLite 连接。构建仅产生可重建的 Renderer `dist/` 输出。剩余人工验收为 Electron 1920×1080 交互、真实大数据长稳、内存曲线和截图。
+
 # Phase 9 最终报告
 
 ## 2026-11-09 加载状态与业务界面精简补充

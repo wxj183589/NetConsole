@@ -1,4 +1,5 @@
 import type { MeshBusinessMetricLine } from './meshBusinessMetrics'
+import { meshSideColor } from './meshMetricColors'
 
 const escape = (value: unknown): string => String(value ?? '暂无数据').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]!))
 export const counterStatus: Record<string, string> = { valid: '有效增量', first: '首个采样，无上次数据', missing: '采样缺失', reset: '计数器重置或回绕', invalid_interval: '采样时间重复或倒序', gap: '采样间隔过长', link_changed: '链路已切换' }
@@ -33,7 +34,7 @@ export function meshMonitorTooltip(lines: MeshBusinessMetricLine[], params: any,
       row('每秒速率（次/s）', group.local?.per_second, group.peer?.per_second),
       row('状态', counterStatus[group.local?.status || 'missing'], counterStatus[group.peer?.status || 'missing']),
     ].join('') : row('当前值', group.local == null ? null : `${group.local}${unit}`, group.peer == null ? null : `${group.peer}${unit}`)
-    return `<div><strong>${escape(group.label)}</strong><table style="width:100%;border-spacing:7px 2px;text-align:left;line-height:19px"><thead><tr><th>项目</th><th>本端</th><th>对端</th></tr></thead><tbody>${rows}</tbody></table></div>`
+    return `<div><strong>${escape(group.label)}</strong><table style="width:100%;border-spacing:7px 2px;text-align:left;line-height:19px"><thead><tr><th>项目</th><th style="color:${meshSideColor('local')}">本端</th><th style="color:${meshSideColor('peer')}">对端</th></tr></thead><tbody>${rows}</tbody></table></div>`
   })
   return `${header}<div style="display:flex;gap:14px;margin-top:5px">${blocks.join('')}</div>`
 }

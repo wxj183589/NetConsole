@@ -4,8 +4,9 @@ import type { EChartsType } from 'echarts/core'
 import { readNetConsoleChartTokens, createNetConsoleDataZoomStyle, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { createTimeChartInitOptions } from '../charts/multiSeriesTimeChart'
 import { meshTimestampMillis as millis, formatMeshViewportTimestamp as stamp } from './meshChartViewport'
-import type { MeshBusinessMetricLine } from './meshBusinessMetrics'
+import type { MeshBusinessMetricLine, MeshBusinessMetricSample } from './meshBusinessMetrics'
 import { meshMonitorTooltip } from './meshMonitorTooltip'
+import { meshSideColor } from './meshMetricColors'
 import type { MeshLinkDetail } from '../../types/meshAnalysis'
 export interface MeshMetricPoint { timestamp: string; value: number | null }
 export interface MeshMonitorWindow { start: string; end: string }
@@ -88,7 +89,7 @@ async function render(): Promise<void> {
     const [core, charts, components, renderers] = await Promise.all([import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers')])
     if (disposed || !host.value || local !== epoch) return
     core.use([charts.LineChart, components.GridComponent, components.TooltipComponent, components.DataZoomComponent, components.LegendComponent, components.AxisPointerComponent, components.MarkLineComponent, renderers.CanvasRenderer])
-    const lines = props.lines.length ? props.lines : [{ key: 'metric', label: '', side: 'local', data: props.points.map(point => ({ value: [point.timestamp, point.value], sample: point })) }]
+    const lines: MeshBusinessMetricLine[] = props.lines.length ? props.lines : [{ key: 'metric', label: '', side: 'local', data: props.points.map(point => ({ value: [point.timestamp, point.value], sample: point as unknown as MeshBusinessMetricSample })) }]
     if (!chart) {
       chart = core.init(host.value, undefined, createTimeChartInitOptions(lines.reduce((sum, line) => sum + line.data.length, 0), { useDirtyRect: false }))
       chart.on('datazoom', onZoom); chart.on('updateAxisPointer', onPointer); chart.on('click', onClick); chart.getZr().on('globalout', onLeave)
@@ -97,7 +98,7 @@ async function render(): Promise<void> {
     finished = () => { if (!disposed && local === epoch) { if (finished) chart?.off('finished', finished); finished = null; emit('render-complete') } }
     chart.on('finished', finished)
     const theme = readNetConsoleChartTokens()
-    const palette = theme.series
+    const palette = props.lines.map(line => meshSideColor(line.side))
     chart.setOption({
       animation: false, color: palette,
       grid: { left: 54, right: 16, top: 35, bottom: props.navigator ? 55 : 27 },
@@ -106,7 +107,7 @@ async function render(): Promise<void> {
       xAxis: { type: 'time', min: millis(props.domain?.start), max: millis(props.domain?.end), axisLabel: { color: theme.textSecondary, fontSize: 11 }, axisPointer: { show: true, snap: true, triggerTooltip: true, label: { show: true } } },
       yAxis: { type: 'value', scale: true, name: props.unit, nameTextStyle: { color: theme.textSecondary }, axisLabel: { color: theme.textSecondary, fontSize: 10 }, splitLine: { lineStyle: { color: theme.splitLine } } },
       dataZoom: [{ type: 'inside', filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseWheel: false, preventDefaultMouseMove: false, throttle: 100, startValue: millis(props.window?.start), endValue: millis(props.window?.end) }, ...(props.navigator ? [{ ...createNetConsoleDataZoomStyle(theme), type: 'slider', filterMode: 'none', height: 18, bottom: 5, showDataShadow: false, startValue: millis(props.window?.start), endValue: millis(props.window?.end) }] : [])],
-      series: lines.map(line => ({ id: line.key, name: line.label, type: 'line', showSymbol: true, symbolSize: 4, connectNulls: false, lineStyle: { width: 1.3, type: line.side === 'peer' ? 'dashed' : 'solid' }, data: line.data, markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: theme.warning }, data: props.selectedTime ? [{ xAxis: millis(props.selectedTime) }] : [] }, itemStyle: { color: palette[line.side === 'peer' ? 1 : 0] } })),
+      series: lines.map(line => ({ id: line.key, name: line.label, type: 'line', showSymbol: true, symbolSize: 4, connectNulls: false, lineStyle: { color: meshSideColor(line.side), width: 1.3, type: line.side === 'peer' ? 'dashed' : 'solid' }, data: line.data, markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: theme.warning }, data: props.selectedTime ? [{ xAxis: millis(props.selectedTime) }] : [] }, itemStyle: { color: meshSideColor(line.side) } })),
     }, { replaceMerge: ['series', 'dataZoom'], lazyUpdate: false })
     syncPointer()
   } catch (error) {

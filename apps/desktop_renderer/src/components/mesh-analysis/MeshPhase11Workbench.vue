@@ -10,6 +10,7 @@ import { buildMeshBusinessMetricGroups, meshMetricLabels, type MeshBusinessMetri
 import { meshLoadingPhaseLabel, type MeshLoadingPhase } from './meshLoadingState'
 import { counterStatus } from './meshMonitorTooltip'
 import { meshTimestampMillis as millis, formatMeshViewportTimestamp as stamp } from './meshChartViewport'
+import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 type Workspace = 'overview' | 'links' | 'rssi' | 'aps' | 'main' | 'switches' | 'artifacts'
 type Status = { phase: MeshLoadingPhase; message: string; cached: boolean }
 const props = defineProps<{ sessionId: string; session: MeshAnalysisSession }>()
@@ -21,6 +22,9 @@ const apLoading = ref(false), parseLoading = ref(false), summaryError = ref('')
 let parseLoaded = false, parseGeneration = 0
 let parseController = new AbortController()
 const apTotal = ref(0), apPage = ref(1)
+const apRole = ref<'ACTIVE' | 'STANDBY' | 'ALL'>('ACTIVE'), apRadio = ref<number | undefined>()
+const weakSignalThreshold = ref<number | null>(null), apGoodThreshold = ref(30)
+let apPreferenceLoaded = false, apController = new AbortController()
 const filters = ref({ ap: '', radio: 1 as number | undefined, role: 'ACTIVE', include_zero: false })
 const domain = ref<MeshMonitorWindow>({ start: '', end: '' }), windowRange = ref<MeshMonitorWindow>({ start: '', end: '' })
 const pointer = ref<string | null>(null), selectedLink = shallowRef<MeshLinkDetail | null>(null)
@@ -41,7 +45,7 @@ function nearest(rows: MeshLinkDetail[], time: string): MeshLinkDetail | null {
 }
 const definitions: Array<{ key: MeshBusinessMetricKey; label: string; unit: string }> = [
   ...(['rssi', 'cpu', 'memory', 'tx_busy', 'rx_busy', 'rate', 'noise', 'tx_des_free_cnt'] as MeshBusinessMetricKey[]).map(key => ({ key, label: meshMetricLabels[key]!, unit: ['cpu', 'memory', 'tx_busy', 'rx_busy'].includes(key) ? '%' : ['rssi', 'noise'].includes(key) ? 'dBm' : '' })),
-  { key: 'tx_rx', label: '发送/接收报文（Tx / Rx）', unit: '次/s' }, { key: 'retry', label: '重传次数（Retry）', unit: '次/s' }, { key: 'error', label: '错误报文数（Err）', unit: '次/s' }, { key: 'control', label: 'GARP 报文 / 组播加入报文（MulJoin）', unit: '次/s' },
+  { key: 'tx_rx', label: '发送/接收报文（Tx / Rx）', unit: '次/s' }, { key: 'retry', label: '重传次数（Retry）', unit: '次/s' }, { key: 'error', label: '错误报文数（Err）', unit: '次/s' }, { key: 'garp', label: 'GARP 报文（GARP）', unit: '次/s' }, { key: 'mul_join', label: '组播加入报文（MulJoin）', unit: '次/s' },
 ]
 const groups = shallowRef<Partial<Record<MeshBusinessMetricKey, MeshBusinessMetricGroup>>>({})
 const samples = shallowRef<Partial<Record<MeshBusinessMetricKey, MeshLinkDetail[]>>>({})
@@ -71,7 +75,7 @@ function observePanel(element: unknown, key: MeshBusinessMetricKey): void {
   }, { rootMargin: '240px' })
   element.dataset.metric = key; panelElements.set(key, element); panelObserver.observe(element)
 }
-function metricSource(key: MeshBusinessMetricKey): string { return ['tx_rx', 'retry', 'error', 'control'].includes(key) ? 'counters' : ['tx_busy', 'rx_busy'].includes(key) ? 'busy' : key }
+function metricSource(key: MeshBusinessMetricKey): string { return ['tx_rx', 'retry', 'error', 'garp', 'mul_join'].includes(key) ? 'counters' : ['tx_busy', 'rx_busy'].includes(key) ? 'busy' : key }
 function metricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false) {
   const source = metricSource(key), id = `${props.sessionId}|${source}|${JSON.stringify(values)}`
   if (refresh) sourceQueryCache.delete(id)
@@ -90,6 +94,7 @@ function metricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query
 function phase(key: MeshBusinessMetricKey, value: MeshLoadingPhase, message = '', cached = false): void { statuses.value[key] = { phase: value, message: message || meshLoadingPhaseLabel(value), cached } }
 function query() { return { time_from: windowRange.value.start, time_to: windowRange.value.end, radio: filters.value.radio, peer_ap_mac: filters.value.ap, exact_ap: true, link_role: filters.value.role, include_zero: filters.value.include_zero, ...scope.value } }
 function cancel(): void { generation++; selectionGeneration++; selectionController.abort(); selectionController = new AbortController(); clearTimeout(selectionTimer); selectionTimer = undefined; mainController.abort(); mainController = new AbortController(); pending.clear(); queryPending.clear(); clearTimeout(zoomTimer); definitions.forEach(d => { if (['PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING'].includes(statuses.value[d.key].phase)) phase(d.key, 'CANCELLED') }) }
+function cancelApRequest(): void { apController.abort(); apController = new AbortController(); apLoading.value = false }
 function resetMain(): void { cancel(); completeIndex = []; autoSelect = true; fixedSelection.value = false; selectionMessage.value = ''; selectionCache.clear(); groups.value = {}; samples.value = {}; selectedLink.value = null; pointer.value = null; records.value = []; history.value = []; zeroTotal.value = 0; historyTotal.value = 0; recordTotal.value = 0; historyPage.value = 1; recordPage.value = 1 }
 function accept(key: MeshBusinessMetricKey, rows: MeshLinkDetail[], group: MeshBusinessMetricGroup): void { loadedScopes.set(key, JSON.stringify(query())); samples.value = { ...samples.value, [key]: rows }; groups.value = { ...groups.value, [key]: group }; if (autoSelect && !selectedLink.value && rows.length) selectLink(rows[0]!) }
 function finishChart(key: MeshBusinessMetricKey): void { if (statuses.value[key].phase === 'RENDERING') phase(key, 'COMPLETED', '', statuses.value[key].cached) }
@@ -123,8 +128,36 @@ async function loadOverview(): Promise<void> {
   try { const value = await getMeshBusinessSummary(props.sessionId, scope.value, signal); if (local === auxGeneration && !signal.aborted) business.value = value } catch (error) { if (!signal.aborted) summaryError.value = error instanceof Error ? error.message : '摘要查询失败' }
 }
 async function loadAps(): Promise<void> {
-  const request = ++apRequest, local = auxGeneration, signal = auxController.signal; apLoading.value = true
-  try { const result = await listMeshApSignalStatistics(props.sessionId, { page: apPage.value, page_size: 100, ...scope.value }, signal); if (request === apRequest && local === auxGeneration && !signal.aborted) { aps.value = result.items; apTotal.value = result.total } } catch (error) { if (!signal.aborted) ElMessage.warning(String(error)) } finally { if (request === apRequest && local === auxGeneration) apLoading.value = false }
+  const request = ++apRequest, local = auxGeneration
+  apController.abort(); apController = new AbortController()
+  const signal = apController.signal
+  apLoading.value = true
+  try {
+    if (!apPreferenceLoaded) {
+      const saved = await loadUiPreference<unknown>('mesh-analysis-ap.weak-signal-threshold', null)
+      if (request !== apRequest || local !== auxGeneration || signal.aborted) return
+      weakSignalThreshold.value = typeof saved === 'number' && Number.isInteger(saved) && saved > 0 && saved <= apGoodThreshold.value ? saved : null
+      apPreferenceLoaded = true
+    }
+    const result = await listMeshApSignalStatistics(props.sessionId, {
+      page: apPage.value, page_size: 100, ...scope.value,
+      link_role: apRole.value, radio: apRadio.value,
+      ...(weakSignalThreshold.value == null ? {} : { weak_signal_threshold: weakSignalThreshold.value }),
+    }, signal)
+    if (request === apRequest && local === auxGeneration && !signal.aborted) {
+      aps.value = result.items; apTotal.value = result.total
+      apGoodThreshold.value = Number(result.summary?.good_threshold) || 30
+      if (weakSignalThreshold.value == null) weakSignalThreshold.value = Number(result.summary?.warning_threshold) || 25
+    }
+  } catch (error) { if (!signal.aborted) ElMessage.warning(String(error)) } finally { if (request === apRequest && local === auxGeneration) apLoading.value = false }
+}
+async function changeWeakSignalThreshold(value: number | null): Promise<void> {
+  if (value == null || !Number.isInteger(value) || value < 1 || value > apGoodThreshold.value) {
+    ElMessage.warning(`请输入 1 至 ${apGoodThreshold.value} 之间的 RSSI 日志值`); return
+  }
+  weakSignalThreshold.value = value; apPage.value = 1
+  await saveUiPreference('mesh-analysis-ap.weak-signal-threshold', value)
+  await loadAps()
 }
 async function loadIssues(): Promise<void> {
   if (parseLoaded || parseLoading.value) return
@@ -185,7 +218,7 @@ async function selectBuild(row: MeshActiveBuildOrder): Promise<void> {
   if (selection === selectionGeneration && result?.items[0] && local === generation && !signal.aborted) selectLink(result.items[0])
 }
 function switchWorkspace(value: Workspace): void {
-  if (workspace.value !== value) { cancel(); auxGeneration++; auxController.abort(); auxController = new AbortController(); groups.value = {}; samples.value = {} }
+  if (workspace.value !== value) { cancel(); auxGeneration++; auxController.abort(); auxController = new AbortController(); if (workspace.value === 'aps') cancelApRequest(); groups.value = {}; samples.value = {} }
   workspace.value = value; emit('workspaceChange', value)
   if (value === 'main') loadMain(); if (value === 'aps') void loadAps(); if (value === 'overview') { if (!business.value) void loadOverview(); if (!parseIssues.value.length) void loadIssues() }
 }
@@ -206,14 +239,14 @@ function refreshData(): void {
 defineExpose({ openContext, switchWorkspace, refreshData })
 watch(() => props.sessionId, () => {
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
-  resetMain(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); sourceQueryCache.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; workspace.value = 'overview'; emit('workspaceChange', 'overview');
+  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); sourceQueryCache.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; workspace.value = 'overview'; emit('workspaceChange', 'overview');
   domain.value = { start: props.session.first_sample_time || '', end: props.session.last_sample_time || '' }; windowRange.value = { start: stamp(Math.max(millis(domain.value.start) || 0, (millis(domain.value.end) || 0) - 300_000)), end: domain.value.end }; void loadOverview()
 }, { immediate: true })
-onDeactivated(() => { pageActive = false; panelObserver?.disconnect(); cancel(); auxGeneration++; auxController.abort(); auxController = new AbortController(); parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoading.value = false; groups.value = {}; samples.value = {} })
+onDeactivated(() => { pageActive = false; panelObserver?.disconnect(); cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoading.value = false; groups.value = {}; samples.value = {} })
 onActivated(() => { pageActive = true; panelElements.forEach(element => panelObserver?.observe(element)); if (workspace.value === 'main' && !Object.keys(groups.value).length) loadMain() })
-onBeforeUnmount(() => { pageActive = false; cancel(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); sourceQueryCache.clear() })
+onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); sourceQueryCache.clear() })
 function roleLabel(row: MeshLinkDetail): string { return row.link_count === 0 ? '未连接（LinkCnt=0）' : row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : row.link_role === 'STANDBY' ? '备用（STANDBY）' : '未知' }
-const apColumns: NcTableColumn<MeshApSignal>[] = [{ key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'station', label: '归属站点' }, { key: 'section', label: '归属区间' }, { key: 'avg_rssi', label: '平均 RSSI' }, { key: 'min_rssi', label: '最低 RSSI' }, { key: 'signal_grade', label: '信号质量' }, { key: 'valid_sample_count', label: '有效采样' }, { key: 'last_seen', label: '最近采样时间' }]
+const apColumns: NcTableColumn<MeshApSignal>[] = [{ key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'station', label: '归属站点' }, { key: 'section', label: '归属区间' }, { key: 'link_role', label: '链路角色', displayValue: row => row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : '备用（STANDBY）' }, { key: 'radio', label: '射频口' }, { key: 'avg_rssi', label: '平均 RSSI' }, { key: 'min_rssi', label: '最低 RSSI' }, { key: 'last_rssi', label: '最近 RSSI' }, { key: 'signal_grade', label: '信号质量' }, { key: 'valid_sample_count', label: '有效采样' }, { key: 'weak_sample_count', label: '低于阈值' }, { key: 'weak_ratio', label: '低信号比例', displayValue: row => row.weak_ratio == null ? '暂无数据' : `${(row.weak_ratio * 100).toFixed(1)}%` }, { key: 'last_seen', label: '最近采样时间' }]
 const parseColumns: NcTableColumn<MeshParseIssue>[] = [{ key: 'severity', label: '级别' }, { key: 'code', label: '异常类型' }, { key: 'message', label: '简要原因' }]
 const recordColumns: NcTableColumn<MeshActiveBuildOrder>[] = [{ key: 'sequence', label: '序号' }, { key: 'local_radio', label: '射频口' }, { key: 'first_sample_time', label: '首次采样时间' }, { key: 'build_start_time', label: '建链开始时间', displayValue: row => row.link_count === 0 ? '—' : row.build_start_time }, { key: 'build_end_time', label: '建链结束时间', displayValue: row => row.link_count === 0 ? '—' : row.build_end_time }, { key: 'main_link_duration_seconds', label: '持续时长 (s)' }, { key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'peer_radio', label: '对端射频口' }, { key: 'build_result', label: '链路状态', displayValue: row => ({ normal: '正常', short: '短时建链', pingpong: '乒乓切换', UNCONNECTED: '未连接' }[row.build_result] || row.build_result) }, { key: 'avg_mr_rssi', label: '平均 RSSI' }, { key: 'min_mr_rssi', label: '最低 RSSI' }, { key: 'p10_mr_rssi', label: 'P10 RSSI' }]
 const historyColumns: NcTableColumn<MeshLinkDetail>[] = [{ key: 'timestamp', label: '采样时间' }, { key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'local_radio', label: '射频口' }, { key: 'peer_radio', label: '对端射频口' }, { key: 'link_role', label: '历史角色', displayValue: roleLabel }, { key: 'link_count', label: '链路数量' }, { key: 'local_rssi_db', label: '本端 RSSI' }, { key: 'peer_rssi_db', label: '对端 RSSI' }]
@@ -233,7 +266,12 @@ function latest(key: MeshBusinessMetricKey): string { const lines = groups.value
   <div class="phase11-top"><nav class="phase11-nav" aria-label="分析工作区"><button v-for="item in [{ key: 'overview', label: '分析概览' }, { key: 'links', label: '链路明细' }, { key: 'rssi', label: 'RSSI 分析' }, { key: 'aps', label: 'AP 情况' }, { key: 'main', label: '主链路监控' }, { key: 'switches', label: '切换事件' }, { key: 'artifacts', label: '报告与来源' }]" :key="item.key" :class="{ active: workspace === item.key }" @click="switchWorkspace(item.key as Workspace)">{{ item.label }}</button></nav><div class="phase11-scope"><el-checkbox v-model="scope.exclude_depot" @change="changeScope">排除车辆段</el-checkbox><el-checkbox v-model="scope.exclude_parking" @change="changeScope">排除停车场</el-checkbox></div></div>
   <div v-if="workspace === 'overview'"><el-alert v-if="summaryError" :title="summaryError" type="error" :closable="false" /><el-skeleton v-if="!business && !summaryError" :rows="2" animated /><template v-if="business"><div class="phase11-cards"><button @click="switchWorkspace('aps')"><span>物理 AP</span><strong>{{ business.ap_total }}</strong></button><button v-for="(label, key) in { GOOD: '信号良好', WARNING: '信号关注', BAD: '信号较差', INSUFFICIENT: '数据不足' }" :key="key" @click="switchWorkspace('aps')"><span>{{ label }}</span><strong>{{ business.grades[key] || 0 }}</strong></button><button @click="switchWorkspace('main')"><span>单链路风险</span><strong>{{ business.single_link_count }}</strong></button></div><p class="phase11-secondary">有效记录 {{ session.link_record_count }} · 主用（ACTIVE）{{ session.active_link_count }} · 备用（STANDBY）{{ session.standby_link_count }} · 解析异常 {{ session.error_count + session.warning_count }}</p></template><slot name="overview" /><details class="phase11-parse" @toggle="($event.target as HTMLDetailsElement).open && loadIssues()"><summary>日志解析状态与异常</summary><p class="phase11-secondary">解析状态 {{ session.parsed_status === 'ready' ? '已完成' : session.parsed_status }} · 成功解析 {{ session.link_record_count }} · 异常 {{ session.error_count + session.warning_count }} · 数据完整性 {{ session.data_integrity === 'complete' ? '完整' : '存在缺失' }}</p><NcDataTable table-id="mesh-phase11-parse:v2" route-key="/rail-transit/mesh-analysis" :data="parseIssues" :columns="parseColumns" :loading="parseLoading" empty-text="暂无解析异常" /></details></div>
   <div v-else-if="['links', 'rssi', 'switches', 'artifacts'].includes(workspace)"><slot name="external" /></div>
-  <div v-else-if="workspace === 'aps'"><p class="phase11-secondary">{{ apTotal }} 个 AP · 点击 AP 查看历史链路与同期指标</p><NcDataTable table-id="mesh-phase11-aps:v2" route-key="/rail-transit/mesh-analysis" :data="aps" :columns="apColumns" :loading="apLoading" @row-click="openAp" empty-text="暂无 AP 数据" /><el-pagination v-model:current-page="apPage" :page-size="100" :total="apTotal" layout="prev,pager,next" @current-change="loadAps" /></div>
+  <div v-else-if="workspace === 'aps'">
+    <div class="phase11-ap-filters"><span>弱信号阈值（RSSI 日志值）</span><el-input v-model.number="weakSignalThreshold" type="number" :min="1" :max="apGoodThreshold" :disabled="apLoading" @change="changeWeakSignalThreshold(Number($event))" /><span>低于阈值判为信号较差；良好阈值 {{ apGoodThreshold }}</span><el-select v-model="apRole" aria-label="AP 链路角色" @change="apPage = 1; loadAps()"><el-option value="ACTIVE" label="主用（ACTIVE）" /><el-option value="STANDBY" label="备用（STANDBY）" /><el-option value="ALL" label="全部角色" /></el-select><el-select v-model="apRadio" clearable aria-label="AP 射频口" placeholder="全部射频口" @change="apPage = 1; loadAps()"><el-option :value="1" label="射频口 1" /><el-option :value="2" label="射频口 2" /></el-select></div>
+    <p class="phase11-secondary">{{ apTotal }} 条 AP / 射频口 / 链路角色统计 · 点击查看历史链路与同期指标</p>
+    <NcDataTable table-id="mesh-phase11-aps:v3" route-key="/rail-transit/mesh-analysis" :data="aps" :columns="apColumns" :loading="apLoading" @row-click="openAp" empty-text="当前角色、射频口和范围内暂无有效 RSSI 数据" />
+    <el-pagination v-model:current-page="apPage" :page-size="100" :total="apTotal" layout="prev,pager,next" @current-change="loadAps" />
+  </div>
   <div v-else class="phase11-monitor">
     <div class="phase11-filters"><el-input v-model="filters.ap" clearable placeholder="AP MAC（留空为全部）" @change="changeFilters" /><el-select v-model="filters.radio" clearable placeholder="全部射频口" @change="changeFilters"><el-option :value="1" label="射频口 1（Radio 1）" /><el-option :value="2" label="射频口 2（Radio 2）" /></el-select><el-select v-model="filters.role" @change="changeFilters"><el-option value="" label="全部角色" /><el-option value="ACTIVE" label="主用（ACTIVE）" /><el-option value="STANDBY" label="备用（STANDBY）" /></el-select><el-checkbox v-model="filters.include_zero" @change="changeFilters">包含 LinkCnt=0</el-checkbox><el-button size="small" @click="loadMain(true)">刷新</el-button><span>{{ completed }}/{{ definitions.length }} 图表完成</span></div>
     <div class="phase11-range"><el-input :model-value="windowRange.start" aria-label="监控开始时间" @change="(value: string) => setWindow({ ...windowRange, start: value })" /><span>至</span><el-input :model-value="windowRange.end" aria-label="监控结束时间" @change="(value: string) => setWindow({ ...windowRange, end: value })" /><el-button size="small" @click="setWindow({ ...domain })">完整范围</el-button><span class="phase11-selection" role="status">{{ selectionMessage }}{{ fixedSelection ? ' · Esc 退出固定' : '' }}</span></div>

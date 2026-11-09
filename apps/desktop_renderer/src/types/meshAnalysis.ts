@@ -176,12 +176,14 @@ export interface MeshAnalysisParams {
 }
 
 export interface MeshApSignal {
+    link_role: 'ACTIVE' | 'STANDBY'; radio: number | null
   peer_ap_name: string | null; peer_ap_mac: string | null; peer_mac_raw: string | null
   station: string; section: string; match_status: string
-  avg_rssi: number | null; min_rssi: number | null; max_rssi: number | null; p10_rssi: number | null
+    avg_rssi: number | null; min_rssi: number | null; max_rssi: number | null; last_rssi: number | null; p10_rssi: number | null
   valid_sample_count: number; weak_sample_count: number; weak_ratio: number | null
   first_seen: string; last_seen: string; signal_grade: string
 }
+export interface MeshApSignalPage extends Page<MeshApSignal> { summary?: MeshBusinessSummary }
 export interface MeshSingleLink {
   radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; station: string; section: string
   start_time: string; end_time: string; duration_seconds: number; sample_count: number

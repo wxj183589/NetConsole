@@ -45,7 +45,7 @@ describe('mesh monitor business tooltip', () => {
     expect(text).not.toMatch(/身份来源|解析规则|匹配规则|来源行号|record_id|source_file/)
   })
 
-  it.each(['tx_rx', 'retry', 'error', 'control'] as const)('shows %s both-end counter values, deltas, actual intervals and rates', key => {
+  it.each(['tx_rx', 'retry', 'error', 'garp', 'mul_join'] as const)('shows %s both-end counter values, deltas, actual intervals and rates', key => {
     const { element, lines } = tooltip(key)
     const text = element.textContent!
     for (const label of ['当前累计值', '上次累计值', '区间增量', '实际间隔', '每秒速率', '状态', '本端', '对端']) expect(text).toContain(label)
@@ -56,7 +56,7 @@ describe('mesh monitor business tooltip', () => {
     expect(text).toContain('有效增量')
   })
 
-  it.each(['tx_rx', 'retry', 'error', 'control'] as const)('lays out %s as six rows with parallel local and peer columns', key => {
+  it.each(['tx_rx', 'retry', 'error', 'garp', 'mul_join'] as const)('lays out %s as six rows with parallel local and peer columns', key => {
     const { element, lines } = tooltip(key)
     const tables = [...element.querySelectorAll('table')]
     expect(tables).toHaveLength(lines.length / 2)
