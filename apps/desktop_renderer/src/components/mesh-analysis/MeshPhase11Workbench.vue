@@ -11,6 +11,7 @@ import { meshLoadingPhaseLabel, type MeshLoadingPhase } from './meshLoadingState
 import { counterStatus } from './meshMonitorTooltip'
 import { meshTimestampMillis as millis, formatMeshViewportTimestamp as stamp } from './meshChartViewport'
 import { MeshCompleteMetricCache } from './meshCompleteMetricCache'
+import { MeshWindowPageCache } from './meshWindowPageCache'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 type Workspace = 'overview' | 'links' | 'rssi' | 'aps' | 'main' | 'switches' | 'artifacts'
 type Status = { phase: MeshLoadingPhase; message: string; cached: boolean }
@@ -59,6 +60,12 @@ const pending = new Map<string, Promise<void>>()
 const queryPending = new Map<string, ReturnType<typeof listMeshLinks>>()
 const sourceQueryCache = new Map<string, Awaited<ReturnType<typeof listMeshLinks>>>()
 const completeMetricCache = new MeshCompleteMetricCache<ReturnType<typeof query>, Awaited<ReturnType<typeof listMeshLinks>>>()
+type PageQuery = ReturnType<typeof query> & { page: number; page_size: number }
+const historyCache = new MeshWindowPageCache<PageQuery, MeshLinkDetail>((row, start, end) => { const time = millis(row.timestamp); return time !== null && time >= start && time <= end }, row => row.link_count === 0)
+const recordsCache = new MeshWindowPageCache<PageQuery & { peer: string }, MeshActiveBuildOrder>((row, start, end) => {
+  const first = millis(row.observation_time || row.build_start_time), last = millis(row.observation_time || row.build_end_time)
+  return first !== null && last !== null && first <= end && last >= start
+})
 const visibleMetrics = new Set<MeshBusinessMetricKey>()
 const panelElements = new Map<MeshBusinessMetricKey, HTMLElement>()
 let pageActive = true
@@ -172,11 +179,13 @@ async function loadIssues(): Promise<void> {
 }
 async function loadRecords(): Promise<void> {
   const request = ++recordRequest, local = generation, signal = mainController.signal; recordLoading.value = true
-  try { const result = await listMeshActiveBuildOrder(props.sessionId, { ...query(), peer: filters.value.ap, page: recordPage.value, page_size: 100 }, signal); if (request === recordRequest && local === generation && !signal.aborted) { records.value = result.items; recordTotal.value = result.total } } catch (error) { if (!signal.aborted) ElMessage.warning(String(error)) } finally { if (request === recordRequest && local === generation) recordLoading.value = false }
+  const values = { ...query(), peer: filters.value.ap, page: recordPage.value, page_size: 100 }
+  try { const result = recordsCache.get(props.sessionId, values) || await listMeshActiveBuildOrder(props.sessionId, values, signal); if (request === recordRequest && local === generation && !signal.aborted) { recordsCache.put(props.sessionId, values, result); records.value = result.items; recordTotal.value = result.total } } catch (error) { if (!signal.aborted) ElMessage.warning(String(error)) } finally { if (request === recordRequest && local === generation) recordLoading.value = false }
 }
 async function loadHistory(): Promise<void> {
   const request = ++historyRequest, local = generation, signal = mainController.signal; historyLoading.value = true
-    try { const result = await listMeshLinks(props.sessionId, { ...query(), page: historyPage.value, page_size: 100 }, signal); if (request === historyRequest && local === generation && !signal.aborted) { history.value = result.items; historyTotal.value = result.total; zeroTotal.value = result.zero_link_count || 0 } } catch (error) { if (!signal.aborted) ElMessage.warning(String(error)) } finally { if (request === historyRequest && local === generation) historyLoading.value = false }
+  const values = { ...query(), page: historyPage.value, page_size: 100 }
+  try { const result = historyCache.get(props.sessionId, values) || await listMeshLinks(props.sessionId, values, signal); if (request === historyRequest && local === generation && !signal.aborted) { historyCache.put(props.sessionId, values, result); history.value = result.items; historyTotal.value = result.total; zeroTotal.value = result.zero_link_count || 0 } } catch (error) { if (!signal.aborted) ElMessage.warning(String(error)) } finally { if (request === historyRequest && local === generation) historyLoading.value = false }
 }
 function loadMain(refresh = false): void { definitions.filter(d => typeof IntersectionObserver === 'undefined' || visibleMetrics.has(d.key)).forEach(d => { void loadMetric(d.key, refresh) }); void loadRecords(); void loadHistory() }
 function changeFilters(): void { resetMain(); loadMain() }
@@ -235,7 +244,7 @@ async function openContext(context: { ap?: string; radio?: number | null; start:
   if (context.focus) { const local = generation, signal = mainController.signal; const result = await listMeshLinks(props.sessionId, { ...query(), time_from: context.focus, time_to: context.focus, page_size: 1 }, signal).catch(() => null); if (local === generation && result?.items[0]?.link_role === 'ACTIVE' && result.items[0].link_count !== 0) selectLink(result.items[0]) }
 }
 function refreshData(): void {
-  cancel(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); loadedScopes.clear(); completeIndex = []; selectionCache.clear()
+  cancel(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); historyCache.clear(); recordsCache.clear(); loadedScopes.clear(); completeIndex = []; selectionCache.clear()
   auxGeneration++; auxController.abort(); auxController = new AbortController(); business.value = null
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
   if (workspace.value === 'main') loadMain(true)
@@ -245,12 +254,12 @@ function refreshData(): void {
 defineExpose({ openContext, switchWorkspace, refreshData })
 watch(() => props.sessionId, () => {
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
-  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; workspace.value = 'overview'; emit('workspaceChange', 'overview');
+  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); historyCache.clear(); recordsCache.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; workspace.value = 'overview'; emit('workspaceChange', 'overview');
   domain.value = { start: props.session.first_sample_time || '', end: props.session.last_sample_time || '' }; windowRange.value = { start: stamp(Math.max(millis(domain.value.start) || 0, (millis(domain.value.end) || 0) - 300_000)), end: domain.value.end }; void loadOverview()
 }, { immediate: true })
 onDeactivated(() => { pageActive = false; panelObserver?.disconnect(); cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoading.value = false; groups.value = {}; samples.value = {} })
 onActivated(() => { pageActive = true; panelElements.forEach(element => panelObserver?.observe(element)); if (workspace.value === 'main' && !Object.keys(groups.value).length) loadMain() })
-onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear() })
+onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); historyCache.clear(); recordsCache.clear() })
 function roleLabel(row: MeshLinkDetail): string { return row.link_count === 0 ? '未连接（LinkCnt=0）' : row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : row.link_role === 'STANDBY' ? '备用（STANDBY）' : '未知' }
 const apColumns: NcTableColumn<MeshApSignal>[] = [{ key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'station', label: '归属站点' }, { key: 'section', label: '归属区间' }, { key: 'link_role', label: '链路角色', displayValue: row => row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : '备用（STANDBY）' }, { key: 'radio', label: '射频口' }, { key: 'avg_rssi', label: '平均 RSSI' }, { key: 'min_rssi', label: '最低 RSSI' }, { key: 'last_rssi', label: '最近 RSSI' }, { key: 'signal_grade', label: '信号质量' }, { key: 'valid_sample_count', label: '有效采样' }, { key: 'weak_sample_count', label: '低于阈值' }, { key: 'weak_ratio', label: '低信号比例', displayValue: row => row.weak_ratio == null ? '暂无数据' : `${(row.weak_ratio * 100).toFixed(1)}%` }, { key: 'last_seen', label: '最近采样时间' }]
 const parseColumns: NcTableColumn<MeshParseIssue>[] = [{ key: 'severity', label: '级别' }, { key: 'code', label: '异常类型' }, { key: 'message', label: '简要原因' }]
