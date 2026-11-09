@@ -140,6 +140,19 @@ describe('MESH charts mount and render', () => {
     Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 430 })
   })
 
+  it('selects the historical timestamp from RSSI switch lines with scalar ECharts values', async () => {
+    const wrapper = mount(MeshRssiChart, { props: { points: [chartPoint], events: [chartEvent], showSwitchLines: true } })
+    await flushPromises()
+    const click = echartsMock.chart.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
+    click({ data: { value: chartEvent.timestamp, meshEvent: chartEvent } })
+    expect(wrapper.emitted('select-time')?.[0]).toEqual([chartEvent.timestamp])
+    const doubleClick = echartsMock.chart.on.mock.calls.find(([event]) => event === 'dblclick')?.[1] as (payload: unknown) => void
+    doubleClick({ data: { value: chartEvent.timestamp, meshEvent: chartEvent } })
+    await nextTick()
+    expect(wrapper.find('[data-mesh-rssi-pinned-tooltip]').text()).toContain(chartEvent.timestamp)
+    wrapper.unmount()
+  })
+
   it('mounts active charts, renders real series and disposes ECharts', async () => {
     const wrappers = [
       mount(MeshSwitchRssiChart, { props: { events: [{ event_id: 1, timestamp: '2026-07-20T10:00:00.123Z', event_type: 'switch', mr_name: 'MR-1', local_radio: 1, from_peer_mac: null, to_peer_mac: null, from_ap_name: 'AP-1', to_ap_name: 'AP-2', before_rssi: -40, after_rssi: -45, duration_ms: null, is_short_link: false, is_pingpong: false, station: null, section: null, warning: null }] } }),

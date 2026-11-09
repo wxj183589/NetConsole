@@ -93,6 +93,7 @@
   {"path":"tests/test_job_center_cleanup.py","classification":"TEST_ONLY","owner":"test","reason":"Job Center 清理测试读取临时 tasks.db 断言到期与隐藏字段。"},
   {"path":"tests/test_legacy_runtime_data_tools.py","classification":"TEST_ONLY","owner":"test","reason":"历史数据迁移测试 fixture。"},
   {"path":"tests/test_mesh_log_analysis.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 分析测试 fixture。"},
+  {"path":"tests/test_mesh_monitor_zero_query.py","classification":"TEST_ONLY","owner":"test","reason":"仅修改 tmp_path 隔离 fixture 的 MAC 格式，验证精确 AP 查询兼容性。"},
   {"path":"tests/test_mesh_analysis_query_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 旧 schema、损坏库和迁移路径只读隔离测试 fixture。"},
   {"path":"tests/test_mesh_bundle_import_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH ZIP 隔离导入、staging 路径改写与 manifest 提交测试 fixture。"},
   {"path":"tests/test_mesh_source_rebuild_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 单一来源恢复、重建隔离和 bundle SHA 校验测试 fixture。"},

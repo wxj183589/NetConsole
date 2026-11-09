@@ -1,0 +1,1058 @@
+[
+  {
+    "stage": "initial-overview",
+    "at": "2026-11-09 13:16:39",
+    "heap": {
+      "usedSize": 225925200,
+      "totalSize": 314925056,
+      "embedderHeapUsedSize": 32599824,
+      "backingStorageSize": 70681797
+    },
+    "processes": [
+      {
+        "pid": 56064,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 125548,
+          "peakWorkingSetSize": 126744,
+          "privateBytes": 88612
+        }
+      },
+      {
+        "pid": 43824,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 163724,
+          "peakWorkingSetSize": 189484,
+          "privateBytes": 249352
+        }
+      },
+      {
+        "pid": 56664,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 95656,
+          "peakWorkingSetSize": 104216,
+          "privateBytes": 63712
+        }
+      },
+      {
+        "pid": 33972,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 784896,
+          "peakWorkingSetSize": 1018704,
+          "privateBytes": 706668
+        }
+      }
+    ]
+  },
+  {
+    "stage": "eight-charts",
+    "at": "2026-11-09 13:17:05",
+    "heap": {
+      "usedSize": 341679800,
+      "totalSize": 406937600,
+      "embedderHeapUsedSize": 88133360,
+      "backingStorageSize": 71542102
+    },
+    "processes": [
+      {
+        "pid": 56064,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 126880,
+          "peakWorkingSetSize": 138436,
+          "privateBytes": 89780
+        }
+      },
+      {
+        "pid": 43824,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 193304,
+          "peakWorkingSetSize": 209724,
+          "privateBytes": 231776
+        }
+      },
+      {
+        "pid": 56664,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 101140,
+          "peakWorkingSetSize": 104216,
+          "privateBytes": 69648
+        }
+      },
+      {
+        "pid": 33972,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 888748,
+          "peakWorkingSetSize": 1018704,
+          "privateBytes": 811224
+        }
+      }
+    ]
+  },
+  {
+    "stage": "initial-overview",
+    "at": "2026-11-09 13:26:06",
+    "heap": {
+      "usedSize": 31460728,
+      "totalSize": 54292480,
+      "embedderHeapUsedSize": 13448016,
+      "backingStorageSize": 17176741
+    },
+    "processes": [
+      {
+        "pid": 38972,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 126164,
+          "peakWorkingSetSize": 126164,
+          "privateBytes": 84204
+        }
+      },
+      {
+        "pid": 43860,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 138068,
+          "peakWorkingSetSize": 139984,
+          "privateBytes": 186044
+        }
+      },
+      {
+        "pid": 52712,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 58776,
+          "peakWorkingSetSize": 61588,
+          "privateBytes": 25812
+        }
+      },
+      {
+        "pid": 17960,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 240764,
+          "peakWorkingSetSize": 240840,
+          "privateBytes": 168236
+        }
+      }
+    ]
+  },
+  {
+    "stage": "initial-overview-final",
+    "at": "2026-11-09 13:27:11",
+    "heap": {
+      "usedSize": 26710588,
+      "totalSize": 28737536,
+      "embedderHeapUsedSize": 4132536,
+      "backingStorageSize": 16743609
+    },
+    "processes": [
+      {
+        "pid": 38972,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 122956,
+          "peakWorkingSetSize": 136400,
+          "privateBytes": 79188
+        }
+      },
+      {
+        "pid": 43860,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 133688,
+          "peakWorkingSetSize": 162488,
+          "privateBytes": 159240
+        }
+      },
+      {
+        "pid": 52712,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 57308,
+          "peakWorkingSetSize": 61588,
+          "privateBytes": 24120
+        }
+      },
+      {
+        "pid": 17960,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 202460,
+          "peakWorkingSetSize": 255060,
+          "privateBytes": 128100
+        }
+      }
+    ]
+  },
+  {
+    "stage": "eight-charts-final",
+    "at": "2026-11-09 13:28:29",
+    "heap": {
+      "usedSize": 295146412,
+      "totalSize": 297381888,
+      "embedderHeapUsedSize": 30327448,
+      "backingStorageSize": 27915904
+    },
+    "processes": [
+      {
+        "pid": 38972,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 124616,
+          "peakWorkingSetSize": 136400,
+          "privateBytes": 81004
+        }
+      },
+      {
+        "pid": 43860,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 162844,
+          "peakWorkingSetSize": 172840,
+          "privateBytes": 232196
+        }
+      },
+      {
+        "pid": 52712,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 73376,
+          "peakWorkingSetSize": 75340,
+          "privateBytes": 40676
+        }
+      },
+      {
+        "pid": 17960,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 539124,
+          "peakWorkingSetSize": 611000,
+          "privateBytes": 469748
+        }
+      }
+    ]
+  },
+  {
+    "stage": "timeline-zoom",
+    "at": "2026-11-09 13:29:03",
+    "heap": {
+      "usedSize": 472713704,
+      "totalSize": 519942144,
+      "embedderHeapUsedSize": 68507200,
+      "backingStorageSize": 29694194
+    },
+    "processes": [
+      {
+        "pid": 38972,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 124848,
+          "peakWorkingSetSize": 136400,
+          "privateBytes": 80524
+        }
+      },
+      {
+        "pid": 43860,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 170504,
+          "peakWorkingSetSize": 186708,
+          "privateBytes": 254612
+        }
+      },
+      {
+        "pid": 52712,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 74692,
+          "peakWorkingSetSize": 75768,
+          "privateBytes": 42032
+        }
+      },
+      {
+        "pid": 17960,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 935940,
+          "peakWorkingSetSize": 939640,
+          "privateBytes": 869416
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-page-initial",
+    "at": "2026-11-09 13:40:21",
+    "heap": {
+      "usedSize": 151026728,
+      "totalSize": 196587520,
+      "embedderHeapUsedSize": 13478736,
+      "backingStorageSize": 28087154
+    },
+    "processes": [
+      {
+        "pid": 38972,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 133196,
+          "peakWorkingSetSize": 145896,
+          "privateBytes": 87184
+        }
+      },
+      {
+        "pid": 43860,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 182352,
+          "peakWorkingSetSize": 195892,
+          "privateBytes": 229416
+        }
+      },
+      {
+        "pid": 52712,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 95420,
+          "peakWorkingSetSize": 104292,
+          "privateBytes": 64892
+        }
+      },
+      {
+        "pid": 17960,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 565216,
+          "peakWorkingSetSize": 970400,
+          "privateBytes": 487296
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-eight-charts",
+    "at": "2026-11-09 13:40:47",
+    "heap": {
+      "usedSize": 442402600,
+      "totalSize": 507752448,
+      "embedderHeapUsedSize": 39388312,
+      "backingStorageSize": 29918049
+    },
+    "processes": [
+      {
+        "pid": 38972,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 134084,
+          "peakWorkingSetSize": 145896,
+          "privateBytes": 88692
+        }
+      },
+      {
+        "pid": 43860,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 187640,
+          "peakWorkingSetSize": 195892,
+          "privateBytes": 257800
+        }
+      },
+      {
+        "pid": 52712,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 96220,
+          "peakWorkingSetSize": 104292,
+          "privateBytes": 65628
+        }
+      },
+      {
+        "pid": 17960,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 860712,
+          "peakWorkingSetSize": 970400,
+          "privateBytes": 784160
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-timeline-drag",
+    "at": "2026-11-09 13:40:59",
+    "heap": {
+      "usedSize": 366723740,
+      "totalSize": 543928320,
+      "embedderHeapUsedSize": 34101200,
+      "backingStorageSize": 28064459
+    },
+    "processes": [
+      {
+        "pid": 38972,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 134056,
+          "peakWorkingSetSize": 145896,
+          "privateBytes": 88696
+        }
+      },
+      {
+        "pid": 43860,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 197732,
+          "peakWorkingSetSize": 205832,
+          "privateBytes": 277388
+        }
+      },
+      {
+        "pid": 52712,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 101372,
+          "peakWorkingSetSize": 104292,
+          "privateBytes": 71196
+        }
+      },
+      {
+        "pid": 17960,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 1066732,
+          "peakWorkingSetSize": 1092644,
+          "privateBytes": 990660
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-page-initial",
+    "at": "2026-11-09 13:48:00",
+    "heap": {
+      "usedSize": 72201828,
+      "totalSize": 102608896,
+      "embedderHeapUsedSize": 6809176,
+      "backingStorageSize": 27985745
+    },
+    "processes": [
+      {
+        "pid": 21900,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 122740,
+          "peakWorkingSetSize": 132460,
+          "privateBytes": 84268
+        }
+      },
+      {
+        "pid": 54196,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 185764,
+          "peakWorkingSetSize": 234680,
+          "privateBytes": 314928
+        }
+      },
+      {
+        "pid": 55048,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 95056,
+          "peakWorkingSetSize": 104720,
+          "privateBytes": 61448
+        }
+      },
+      {
+        "pid": 43436,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 364380,
+          "peakWorkingSetSize": 662924,
+          "privateBytes": 291948
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-eight-charts",
+    "at": "2026-11-09 13:48:22",
+    "heap": {
+      "usedSize": 344654560,
+      "totalSize": 408268800,
+      "embedderHeapUsedSize": 37656432,
+      "backingStorageSize": 31442942
+    },
+    "processes": [
+      {
+        "pid": 21900,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 122940,
+          "peakWorkingSetSize": 132636,
+          "privateBytes": 84392
+        }
+      },
+      {
+        "pid": 54196,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 174772,
+          "peakWorkingSetSize": 234680,
+          "privateBytes": 234712
+        }
+      },
+      {
+        "pid": 55048,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 99692,
+          "peakWorkingSetSize": 104720,
+          "privateBytes": 66484
+        }
+      },
+      {
+        "pid": 43436,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 704860,
+          "peakWorkingSetSize": 717236,
+          "privateBytes": 637276
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-timeline-drag",
+    "at": "2026-11-09 13:48:33",
+    "heap": {
+      "usedSize": 328165524,
+      "totalSize": 397258752,
+      "embedderHeapUsedSize": 43100784,
+      "backingStorageSize": 29207939
+    },
+    "processes": [
+      {
+        "pid": 21900,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 123500,
+          "peakWorkingSetSize": 133536,
+          "privateBytes": 84996
+        }
+      },
+      {
+        "pid": 54196,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 179932,
+          "peakWorkingSetSize": 234680,
+          "privateBytes": 258732
+        }
+      },
+      {
+        "pid": 55048,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 98404,
+          "peakWorkingSetSize": 104720,
+          "privateBytes": 65032
+        }
+      },
+      {
+        "pid": 43436,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 833684,
+          "peakWorkingSetSize": 846932,
+          "privateBytes": 764252
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-page-initial",
+    "at": "2026-11-09 14:17:46",
+    "heap": {
+      "usedSize": 239375400,
+      "totalSize": 246259712,
+      "embedderHeapUsedSize": 36990200,
+      "backingStorageSize": 27136857
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 114972,
+          "peakWorkingSetSize": 124220,
+          "privateBytes": 79332
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 158744,
+          "peakWorkingSetSize": 166844,
+          "privateBytes": 197436
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 80428,
+          "peakWorkingSetSize": 81904,
+          "privateBytes": 47596
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 512340,
+          "peakWorkingSetSize": 606288,
+          "privateBytes": 440092
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-eight-charts",
+    "at": "2026-11-09 14:18:11",
+    "heap": {
+      "usedSize": 337709500,
+      "totalSize": 414539776,
+      "embedderHeapUsedSize": 38239912,
+      "backingStorageSize": 29889395
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 114960,
+          "peakWorkingSetSize": 125700,
+          "privateBytes": 79616
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 169008,
+          "peakWorkingSetSize": 177108,
+          "privateBytes": 230976
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 80384,
+          "peakWorkingSetSize": 82040,
+          "privateBytes": 47596
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 709560,
+          "peakWorkingSetSize": 728764,
+          "privateBytes": 642684
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-timeline-drag",
+    "at": "2026-11-09 14:18:27",
+    "heap": {
+      "usedSize": 325237272,
+      "totalSize": 405102592,
+      "embedderHeapUsedSize": 44734824,
+      "backingStorageSize": 28633041
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 116028,
+          "peakWorkingSetSize": 126692,
+          "privateBytes": 80740
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 167680,
+          "peakWorkingSetSize": 180968,
+          "privateBytes": 246320
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 84636,
+          "peakWorkingSetSize": 85708,
+          "privateBytes": 52096
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 823004,
+          "peakWorkingSetSize": 834924,
+          "privateBytes": 754844
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-repeated-ap-12",
+    "at": "2026-11-09 14:41:25",
+    "heap": {
+      "usedSize": 93244308,
+      "totalSize": 154791936,
+      "embedderHeapUsedSize": 12384712,
+      "backingStorageSize": 28097833
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 117856,
+          "peakWorkingSetSize": 127900,
+          "privateBytes": 81828
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 158580,
+          "peakWorkingSetSize": 188684,
+          "privateBytes": 204576
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 95804,
+          "peakWorkingSetSize": 102444,
+          "privateBytes": 64504
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 478624,
+          "peakWorkingSetSize": 834924,
+          "privateBytes": 400184
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-charts-disposed",
+    "at": "2026-11-09 14:41:33",
+    "heap": {
+      "usedSize": 104786372,
+      "totalSize": 154791936,
+      "embedderHeapUsedSize": 23870728,
+      "backingStorageSize": 28265981
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 118036,
+          "peakWorkingSetSize": 128624,
+          "privateBytes": 82140
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 167076,
+          "peakWorkingSetSize": 188684,
+          "privateBytes": 236604
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 95972,
+          "peakWorkingSetSize": 102444,
+          "privateBytes": 64704
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 472388,
+          "peakWorkingSetSize": 834924,
+          "privateBytes": 393584
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-leave-reenter",
+    "at": "2026-11-09 14:41:41",
+    "heap": {
+      "usedSize": 74336120,
+      "totalSize": 153219072,
+      "embedderHeapUsedSize": 11662000,
+      "backingStorageSize": 28140218
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 118252,
+          "peakWorkingSetSize": 128624,
+          "privateBytes": 82156
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 167740,
+          "peakWorkingSetSize": 188684,
+          "privateBytes": 224088
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 95944,
+          "peakWorkingSetSize": 102444,
+          "privateBytes": 64668
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 469524,
+          "peakWorkingSetSize": 834924,
+          "privateBytes": 390316
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-route-left",
+    "at": "2026-11-09 14:47:25",
+    "heap": {
+      "usedSize": 67752888,
+      "totalSize": 75886592,
+      "embedderHeapUsedSize": 14816168,
+      "backingStorageSize": 28229233
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 122008,
+          "peakWorkingSetSize": 128624,
+          "privateBytes": 84864
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 158512,
+          "peakWorkingSetSize": 188684,
+          "privateBytes": 241956
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 96300,
+          "peakWorkingSetSize": 102444,
+          "privateBytes": 65260
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 378388,
+          "peakWorkingSetSize": 834924,
+          "privateBytes": 299464
+        }
+      }
+    ]
+  },
+  {
+    "stage": "final-route-reentered",
+    "at": "2026-11-09 14:47:35",
+    "heap": {
+      "usedSize": 69040608,
+      "totalSize": 82964480,
+      "embedderHeapUsedSize": 9982176,
+      "backingStorageSize": 29069894
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 122104,
+          "peakWorkingSetSize": 128624,
+          "privateBytes": 84868
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 158812,
+          "peakWorkingSetSize": 188684,
+          "privateBytes": 244364
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 97296,
+          "peakWorkingSetSize": 102444,
+          "privateBytes": 66256
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 388488,
+          "peakWorkingSetSize": 834924,
+          "privateBytes": 309288
+        }
+      }
+    ]
+  },
+  {
+    "stage": "actual-navigation-left",
+    "at": "2026-11-09 15:03:46",
+    "heap": {
+      "usedSize": 68923916,
+      "totalSize": 92401664,
+      "embedderHeapUsedSize": 9793312,
+      "backingStorageSize": 29139510
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 110076,
+          "peakWorkingSetSize": 128624,
+          "privateBytes": 85448
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 135668,
+          "peakWorkingSetSize": 188684,
+          "privateBytes": 206572
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 81504,
+          "peakWorkingSetSize": 102444,
+          "privateBytes": 66120
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 340604,
+          "peakWorkingSetSize": 834924,
+          "privateBytes": 318228
+        }
+      }
+    ]
+  },
+  {
+    "stage": "actual-navigation-reentered",
+    "at": "2026-11-09 15:03:52",
+    "heap": {
+      "usedSize": 69059620,
+      "totalSize": 87945216,
+      "embedderHeapUsedSize": 11731984,
+      "backingStorageSize": 29141018
+    },
+    "processes": [
+      {
+        "pid": 56400,
+        "type": "Browser",
+        "memory": {
+          "workingSetSize": 110632,
+          "peakWorkingSetSize": 128624,
+          "privateBytes": 86324
+        }
+      },
+      {
+        "pid": 1664,
+        "type": "GPU",
+        "memory": {
+          "workingSetSize": 139184,
+          "peakWorkingSetSize": 188684,
+          "privateBytes": 230460
+        }
+      },
+      {
+        "pid": 4284,
+        "type": "Utility",
+        "memory": {
+          "workingSetSize": 81776,
+          "peakWorkingSetSize": 102444,
+          "privateBytes": 66392
+        }
+      },
+      {
+        "pid": 44004,
+        "type": "Tab",
+        "memory": {
+          "workingSetSize": 338204,
+          "peakWorkingSetSize": 834924,
+          "privateBytes": 315956
+        }
+      }
+    ]
+  }
+]

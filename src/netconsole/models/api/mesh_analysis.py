@@ -536,6 +536,19 @@ class MeshAnalysisSessionDetailDTO(ApiModel):
 
 
 class MeshLinkDetailDTO(ApiModel):
+    monitor_gap_before: bool = False
+    local_tx_delta: int | None = None
+    peer_tx_delta: int | None = None
+    local_rx_delta: int | None = None
+    peer_rx_delta: int | None = None
+    local_retry_delta: int | None = None
+    peer_retry_delta: int | None = None
+    local_err_delta: int | None = None
+    peer_err_delta: int | None = None
+    local_tx_garp_delta: int | None = None
+    peer_rx_garp_delta: int | None = None
+    local_tx_mul_join_delta: int | None = None
+    peer_rx_mul_join_delta: int | None = None
     record_id: int
     timestamp: str
     timestamp_tag: str = ""
@@ -621,10 +634,15 @@ class MeshLinkPageDTO(ApiModel):
     total: int = 0
     page: int = 1
     page_size: int = 100
+    zero_link_count: int = 0
+    downsampled: bool = False
+    query_duration_ms: float = 0
 
 
 class MeshActiveBuildOrderDTO(ApiModel):
     sequence: int
+    link_count: int | None = None
+    observation_time: str | None = None
     source_file_id: int | None = None
     anchor_link_id: int | None = None
     local_radio: int | None = None

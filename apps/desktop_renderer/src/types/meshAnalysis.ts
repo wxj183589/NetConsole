@@ -142,6 +142,7 @@ export interface MeshApCoverageAudit {
 }
 
 export interface Page<T> {
+  zero_link_count?: number; downsampled?: boolean; query_duration_ms?: number
   items: T[]; total: number; page: number; page_size: number
   index_status?: string; indexed_session_count?: number; pending_session_count?: number
 }
@@ -212,6 +213,10 @@ export interface MeshIdentityMetadata {
 }
 
 export interface MeshLinkDetail extends MeshIdentityMetadata {
+  monitor_gap_before?: boolean
+  local_tx_delta?: number | null; peer_tx_delta?: number | null; local_rx_delta?: number | null; peer_rx_delta?: number | null
+  local_retry_delta?: number | null; peer_retry_delta?: number | null; local_err_delta?: number | null; peer_err_delta?: number | null
+  local_tx_garp_delta?: number | null; peer_rx_garp_delta?: number | null; local_tx_mul_join_delta?: number | null; peer_rx_mul_join_delta?: number | null
   record_id: number; timestamp: string; timestamp_tag: string | null; sample_group_index: number | null; train_name: string; mr_name: string; mr_role: string
   local_radio: number | null; peer_mac_raw?: string | null; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null; peer_radio: string | null; peer_radio_mac: string | null
   link_role: string; link_status: string; establish_time: string | null; duration_text: string | null; duration_seconds: number | null; link_count: number | null
@@ -230,6 +235,7 @@ export interface MeshLinkDetail extends MeshIdentityMetadata {
 }
 
 export interface MeshActiveBuildOrder extends MeshIdentityMetadata {
+  link_count?: number | null; observation_time?: string | null
   sequence: number; source_file_id: number | null; local_radio: number | null; peer_mac_raw?: string; active_peer_mac: string
   peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null
   peer_radio: string | null; peer_radio_mac?: string | null; anchor_link_id: number | null

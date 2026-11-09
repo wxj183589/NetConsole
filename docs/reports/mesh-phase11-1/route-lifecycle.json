@@ -1,0 +1,235 @@
+{
+  "before": {
+    "window": {
+      "start": "2026-10-20 18:39:36.302",
+      "end": "2026-10-20 18:39:46.978"
+    },
+    "filters": {
+      "ap": "bc:5a:34:57:87:e0",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": "2026-10-20 18:39:37.639",
+    "selected": {
+      "time": "2026-10-20 18:39:42.656",
+      "ap": "bc:5a:34:57:87:e0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "COMPLETED",
+      "rate": "COMPLETED",
+      "noise": "COMPLETED",
+      "tx_des_free_cnt": "COMPLETED",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "memory": 4,
+      "rssi": 4,
+      "noise": 4,
+      "rate": 4,
+      "busy": 4,
+      "cpu": 4,
+      "tx_des_free_cnt": 4,
+      "counters": 4
+    },
+    "historyTotal": 4,
+    "zeroTotal": 0,
+    "recordTotal": 1,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      }
+    ]
+  },
+  "left": {
+    "route": "/",
+    "visibleCharts": 8,
+    "pending": 0,
+    "phases": {
+      "rssi": {
+        "phase": "COMPLETED",
+        "message": "加载完成",
+        "cached": false
+      },
+      "cpu": {
+        "phase": "COMPLETED",
+        "message": "加载完成",
+        "cached": false
+      },
+      "memory": {
+        "phase": "COMPLETED",
+        "message": "加载完成",
+        "cached": false
+      },
+      "busy": {
+        "phase": "COMPLETED",
+        "message": "加载完成",
+        "cached": false
+      },
+      "rate": {
+        "phase": "COMPLETED",
+        "message": "加载完成",
+        "cached": false
+      },
+      "noise": {
+        "phase": "COMPLETED",
+        "message": "加载完成",
+        "cached": false
+      },
+      "tx_des_free_cnt": {
+        "phase": "COMPLETED",
+        "message": "加载完成",
+        "cached": false
+      },
+      "counters": {
+        "phase": "COMPLETED",
+        "message": "加载完成",
+        "cached": false
+      }
+    }
+  },
+  "restored": {
+    "window": {
+      "start": "2026-10-20 18:39:36.302",
+      "end": "2026-10-20 18:39:46.978"
+    },
+    "filters": {
+      "ap": "bc:5a:34:57:87:e0",
+      "radio": 1,
+      "role": "ACTIVE",
+      "include_zero": false
+    },
+    "pointer": "2026-10-20 18:39:37.639",
+    "selected": {
+      "time": "2026-10-20 18:39:42.656",
+      "ap": "bc:5a:34:57:87:e0",
+      "role": "ACTIVE",
+      "zero": 1
+    },
+    "phases": {
+      "rssi": "COMPLETED",
+      "cpu": "COMPLETED",
+      "memory": "COMPLETED",
+      "busy": "COMPLETED",
+      "rate": "COMPLETED",
+      "noise": "COMPLETED",
+      "tx_des_free_cnt": "COMPLETED",
+      "counters": "COMPLETED"
+    },
+    "counts": {
+      "memory": 4,
+      "rssi": 4,
+      "noise": 4,
+      "rate": 4,
+      "busy": 4,
+      "cpu": 4,
+      "tx_des_free_cnt": 4,
+      "counters": 4
+    },
+    "historyTotal": 4,
+    "zeroTotal": 0,
+    "recordTotal": 1,
+    "cache": 16,
+    "charts": [
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      },
+      {
+        "start": "2026-10-20 18:39:36.302",
+        "end": "2026-10-20 18:39:46.978",
+        "pointer": "2026-10-20 18:39:37.639",
+        "canvases": 1
+      }
+    ]
+  }
+}
