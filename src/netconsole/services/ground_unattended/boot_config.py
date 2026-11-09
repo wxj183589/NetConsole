@@ -565,6 +565,20 @@ class MrSyslogConfigService:
                 previous=previous_metrics,
                 current=metrics,
             )
+            prior_ownership = self.repository.active_syslog_config_ownership(
+                device_uuid, target_ip, target_port
+            )
+            loghost_command = f"info-center loghost {target_ip} port {target_port}"
+            newly_owned = bool(verified and loghost_command in applied)
+            ownership = {
+                "managed_by_netconsole": int(newly_owned or prior_ownership is not None),
+                "created_by_netconsole": int(newly_owned or prior_ownership is not None),
+                "managed_target_ip": target_ip if newly_owned or prior_ownership else "",
+                "managed_target_port": target_port if newly_owned or prior_ownership else None,
+                "ownership_audit_id": audit_id if newly_owned else str((prior_ownership or {}).get("ownership_audit_id") or ""),
+                "ownership_status": "ACTIVE" if newly_owned or prior_ownership else "NOT_OWNED",
+                "revoked_at": "",
+            }
             self.repository.save_syslog_config_audit(
                 {
                     "audit_id": audit_id,
@@ -581,6 +595,7 @@ class MrSyslogConfigService:
                     "evidence_path": evidence_path,
                     "evidence_sha256": _sha256(self.repository.db_path.parent / evidence_path),
                     "managed_profile_version": MANAGED_PROFILE_VERSION,
+                    **ownership,
                 }
             )
             if status == "CONFIG_VERIFY_FAILED":
@@ -724,15 +739,12 @@ class MrSyslogConfigService:
             raise ValueError("设备管理中已找不到 MR")
         if str(device.device_vendor or "H3C").casefold() != "h3c":
             raise ValueError("当前 Syslog Profile 仅适配 H3C MR")
-        previous = self.repository.latest_syslog_config_audit(device_uuid) or {}
-        if (
-            str(previous.get("target_ip") or "") != target_ip
-            or int(previous.get("target_port") or 0) != target_port
-            or str(previous.get("status") or "") not in {
-                "CONFIG_SENT", "CONFIG_REPAIRED", "CONFIG_PRESENT", "EXIT_FAILED"
-            }
-        ):
-            raise ValueError("没有匹配当前目标的 NetConsole Syslog 配置审计，拒绝撤销")
+        ownership = self.repository.active_syslog_config_ownership(
+            device_uuid, target_ip, target_port
+        )
+        if ownership is None:
+            raise ValueError("没有匹配当前目标的 ACTIVE NetConsole 所有权记录，拒绝撤销")
+        previous = ownership
 
         config = _connection_config(self.site_id, device, paths=self.paths)
         validate_command_list(READ_COMMANDS, "ground_unattended_syslog_read")
@@ -816,6 +828,8 @@ class MrSyslogConfigService:
                     "version_evidence_path": evidence_path,
                 })
                 self.repository.upsert_boot_session(boot)
+            if status != "EXITED":
+                raise RuntimeError("退出命令已执行，但重新读取配置未确认目标撤销")
             self.repository.save_syslog_config_audit({
                 "audit_id": audit_id,
                 "boot_session_id": str(boot.get("boot_session_id") or previous.get("boot_session_id") or ""),
@@ -830,6 +844,13 @@ class MrSyslogConfigService:
                 "evidence_path": evidence_path,
                 "evidence_sha256": _sha256(self.repository.db_path.parent / evidence_path),
                 "managed_profile_version": MANAGED_PROFILE_VERSION,
+                "managed_by_netconsole": int(status != "EXITED"),
+                "created_by_netconsole": 1,
+                "managed_target_ip": target_ip,
+                "managed_target_port": target_port,
+                "ownership_audit_id": str(ownership.get("ownership_audit_id") or ownership.get("audit_id") or ""),
+                "ownership_status": "REVOKED" if status == "EXITED" else "ACTIVE",
+                "revoked_at": checked_at.isoformat(timespec="milliseconds") if status == "EXITED" else "",
             })
             self.repository.add_event(
                 run_id=run_id, event_type="mr_syslog_exit", severity="info" if status == "EXITED" else "warning",
@@ -837,8 +858,6 @@ class MrSyslogConfigService:
                 title="MR Syslog 上报已退出" if status == "EXITED" else "MR Syslog 退出验证失败",
                 message=status, details={"audit_id": audit_id, "target_ip": target_ip, "target_port": target_port},
             )
-            if status != "EXITED":
-                raise RuntimeError("退出命令已执行，但重新读取配置未确认目标撤销")
             return {"device_uuid": device_uuid, "status": status, "audit_id": audit_id}
         except Exception as exc:
             evidence["error_code"] = exc.__class__.__name__
@@ -857,6 +876,10 @@ class MrSyslogConfigService:
                 "checked_at": checked_at.isoformat(timespec="milliseconds"), "target_ip": target_ip, "target_port": target_port,
                 "status": "EXIT_FAILED", "applied_commands": list(applied), "evidence_path": evidence_path,
                 "error_code": exc.__class__.__name__, "error_message": str(exc), "managed_profile_version": MANAGED_PROFILE_VERSION,
+                "managed_by_netconsole": 1, "created_by_netconsole": 1,
+                "managed_target_ip": target_ip, "managed_target_port": target_port,
+                "ownership_audit_id": str(ownership.get("ownership_audit_id") or ownership.get("audit_id") or ""),
+                "ownership_status": "ACTIVE", "revoked_at": "",
             })
             self.repository.add_event(run_id=run_id, event_type="mr_syslog_exit_failed", severity="error",
                                       train_id=str(endpoint.get("train_id") or ""), mr_id=device_uuid,

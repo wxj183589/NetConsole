@@ -495,6 +495,13 @@ CREATE TABLE IF NOT EXISTS ground_unattended_syslog_config_audits (
     error_code TEXT NOT NULL DEFAULT '',
     error_message TEXT NOT NULL DEFAULT '',
     managed_profile_version INTEGER NOT NULL DEFAULT 2,
+    managed_by_netconsole INTEGER NOT NULL DEFAULT 0,
+    created_by_netconsole INTEGER NOT NULL DEFAULT 0,
+    managed_target_ip TEXT NOT NULL DEFAULT '',
+    managed_target_port INTEGER,
+    ownership_audit_id TEXT NOT NULL DEFAULT '',
+    ownership_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+    revoked_at TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ground_config_audit_device
@@ -939,6 +946,13 @@ _EVENT_MIGRATION_COLUMNS = {
 
 _CONFIG_AUDIT_MIGRATION_COLUMNS = {
     "managed_profile_version": "INTEGER NOT NULL DEFAULT 2",
+    "managed_by_netconsole": "INTEGER NOT NULL DEFAULT 0",
+    "created_by_netconsole": "INTEGER NOT NULL DEFAULT 0",
+    "managed_target_ip": "TEXT NOT NULL DEFAULT ''",
+    "managed_target_port": "INTEGER",
+    "ownership_audit_id": "TEXT NOT NULL DEFAULT ''",
+    "ownership_status": "TEXT NOT NULL DEFAULT 'UNKNOWN'",
+    "revoked_at": "TEXT NOT NULL DEFAULT ''",
 }
 
 _RAW_FILE_MIGRATION_COLUMNS = {
@@ -4560,6 +4574,13 @@ class GroundUnattendedRepository:
             "error_code",
             "error_message",
             "managed_profile_version",
+            "managed_by_netconsole",
+            "created_by_netconsole",
+            "managed_target_ip",
+            "managed_target_port",
+            "ownership_audit_id",
+            "ownership_status",
+            "revoked_at",
             "created_at",
         )
         row = dict(values)
@@ -4585,6 +4606,20 @@ class GroundUnattendedRepository:
                 "SELECT * FROM ground_unattended_syslog_config_audits "
                 "WHERE site_id=? AND device_uuid=? ORDER BY checked_at DESC LIMIT 1",
                 (self.site_id, device_uuid),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def active_syslog_config_ownership(
+        self, device_uuid: str, target_ip: str, target_port: int
+    ) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_syslog_config_audits "
+                "WHERE site_id=? AND device_uuid=? AND ownership_status='ACTIVE' "
+                "AND managed_by_netconsole=1 AND managed_target_ip=? "
+                "AND managed_target_port=? AND created_by_netconsole=1 "
+                "ORDER BY checked_at DESC, audit_id DESC LIMIT 1",
+                (self.site_id, device_uuid, target_ip, int(target_port)),
             ).fetchone()
         return _decode_row(row) if row else None
 

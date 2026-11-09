@@ -249,6 +249,7 @@ class GroundUnattendedSupervisor:
         self._manual_syslog_exits: set[str] = set()
         self._manual_syslog_exit_task_ids: dict[str, str] = {}
         self._syslog_task_progress: dict[str, dict[str, Any]] = {}
+        self._syslog_task_devices: dict[str, set[str]] = {}
         self._cancelled_syslog_tasks: set[str] = set()
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
@@ -398,11 +399,17 @@ class GroundUnattendedSupervisor:
             })
             with self._lock:
                 self._syslog_task_progress.pop(task_id, None)
+                getattr(self, "_syslog_task_devices", {}).pop(task_id, None)
                 self._cancelled_syslog_tasks.discard(task_id)
         self._wake_event.set()
         return True
 
     def register_syslog_task(self, task_id: str, total: int) -> None:
+        self.register_syslog_task_for_devices(task_id, total, ())
+
+    def register_syslog_task_for_devices(
+        self, task_id: str, total: int, device_uuids: tuple[str, ...] | list[str]
+    ) -> None:
         with self._lock:
             self._syslog_task_progress[str(task_id)] = {
                 "current": 0,
@@ -411,6 +418,19 @@ class GroundUnattendedSupervisor:
                 "failed": 0,
                 "results": [],
             }
+            self._syslog_task_devices[str(task_id)] = {
+                str(value) for value in device_uuids if str(value).strip()
+            }
+
+    def busy_syslog_devices(self, device_uuids: list[str] | tuple[str, ...]) -> set[str]:
+        requested = {str(value) for value in device_uuids if str(value).strip()}
+        with self._lock:
+            busy = (
+                set().union(*self._syslog_task_devices.values())
+                if self._syslog_task_devices
+                else set()
+            )
+        return requested & busy
 
     @property
     def running(self) -> bool:
@@ -3464,6 +3484,7 @@ class GroundUnattendedSupervisor:
                     },
                 })
                 self._syslog_task_progress.pop(task_id, None)
+                getattr(self, "_syslog_task_devices", {}).pop(task_id, None)
                 self._cancelled_syslog_tasks.discard(task_id)
 
     def _record_syslog_task_event(
