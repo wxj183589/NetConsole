@@ -68,6 +68,10 @@ from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDe
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.repositories.device_detail_repository import DeviceDetailRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ac.ac_resource_service import AcResourceService
+from netconsole.services.ac.ac_service import AcService
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
 from netconsole.services.ac.mesh_link_resident_polling_service import (
@@ -609,6 +613,14 @@ def create_app(
         )
         supervisor: GroundUnattendedSupervisor | None = None
         try:
+            site_database = Database(paths.site_db_path(target_site_name))
+            ac_basic_service = AcService(
+                AcResourceService(
+                    DeviceRepository(site_database),
+                    AcRepository(site_database),
+                    paths,
+                )
+            )
             supervisor = GroundUnattendedSupervisor(
                 paths,
                 site_id=target_site_name,
@@ -618,10 +630,12 @@ def create_app(
                 vehicle_query=app.state.vehicle_mr_online_query_service,
                 ac_refresh_service=ac_mesh_link_refresh_service,
                 ac_resident_service=ac_mesh_link_resident_service,
+                ac_basic_service=ac_basic_service,
                 online_mr_application_service=online_mr_application_service,
                 online_mr_query_service=online_mr_query_service,
                 network_service=app.state.system_network_application_service,
                 ap_identity_query_service=ap_identity_query,
+                task_service=task_service,
             )
             application_service = GroundUnattendedApplicationService(
                 paths,
@@ -633,6 +647,7 @@ def create_app(
                 network_service=app.state.system_network_application_service,
                 process_adapter=web_process_adapter,
                 ap_identity_query_service=ap_identity_query,
+                task_service=task_service,
             )
             return repository, supervisor, application_service
         except Exception:

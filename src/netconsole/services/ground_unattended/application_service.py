@@ -49,6 +49,7 @@ from netconsole.models.api.ground_unattended import (
     GroundAcPollerHealthDTO,
     GroundHealthDTO,
     GroundHeartbeatMrDTO,
+    GroundSyslogControlRequestDTO,
     GroundHeartbeatIpDTO,
     GroundHeartbeatApDTO,
     GroundHeartbeatInventoryApplyDTO,
@@ -130,6 +131,7 @@ from netconsole.services.system_network_application_service import (
 )
 from netconsole.services.online_mr.errors import OnlineMrQueryError
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
 class DesktopActionResultPort(Protocol):
@@ -169,11 +171,13 @@ class GroundUnattendedApplicationService:
         process_adapter: GroundDeletionProcessPort | None = None,
         ap_identity_query_service: ApIdentityQueryService | None = None,
         quick_ping_service: QuickPingService | None = None,
+        task_service: TaskApplicationService | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
         self.repository = repository
         self.supervisor = supervisor
+        self.task_service = task_service
         self.quick_ping = quick_ping_service or QuickPingService(
             site_id=site_id,
             output_root=paths.ground_unattended_root(site_id),
@@ -525,6 +529,29 @@ class GroundUnattendedApplicationService:
             str(endpoint.get("device_uuid") or ""): endpoint
             for row in inventory for endpoint in row.get("endpoints", [])
         }
+        syslog_audits = self.repository.latest_syslog_config_audits(endpoints)
+
+        def apply_syslog_projection(payload: dict[str, Any], endpoint: dict[str, Any]) -> dict[str, Any]:
+            audit = syslog_audits.get(str(payload.get("mr_uuid") or ""), {})
+            audit_status = str(audit.get("status") or "").upper()
+            payload["management_ip"] = str(endpoint.get("management_ip") or "")
+            payload["backup_management_ip"] = str(endpoint.get("backup_management_ip") or "")
+            payload["syslog_status"] = {
+                "CONFIGURING": "CONFIGURING",
+                "VERIFYING": "VERIFYING",
+                "EXITING": "EXITING",
+                "EXITED": "EXITED",
+                "CONFIG_SENT": "CONFIGURED",
+                "CONFIG_REPAIRED": "CONFIGURED",
+                "CONFIG_PRESENT": "CONFIGURED",
+                "CONFIG_VERIFY_FAILED": "FAILED",
+                "EXIT_VERIFY_FAILED": "FAILED",
+                "CONFIG_FAILED": "FAILED",
+                "EXIT_FAILED": "FAILED",
+                "TARGET_PORT_CONFLICT": "FAILED",
+            }.get(audit_status, "NOT_CONFIGURED" if audit_status in {"", "AUTO_REPAIR_DISABLED"} else "UNKNOWN")
+            payload["syslog_last_error"] = str(audit.get("error_message") or "")
+            return payload
         # Reuse the AC view's exact physical MR identity contract; its peer AP is
         # deliberately not the MR body identity or location.
         from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
@@ -569,6 +596,7 @@ class GroundUnattendedApplicationService:
                     if {str(ip.get("ip") or "") for ip in payload.get("ip_states", [])} != expected_ips:
                         continue
                 payload["mr_name"] = str(endpoint.get("device_name") or "")
+                apply_syslog_projection(payload, endpoint)
                 identity = identity_rows.get(str(payload.get("mr_uuid") or ""))
                 if identity is not None:
                     associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
@@ -596,11 +624,16 @@ class GroundUnattendedApplicationService:
                 ips = [str(endpoint.get("management_ip") or "")]
                 if endpoint.get("backup_monitoring_strategy") == "MONITOR":
                     ips.append(str(endpoint.get("backup_management_ip") or ""))
+                projected = apply_syslog_projection({"mr_uuid": mr_id}, endpoint)
                 mrs.append(GroundHeartbeatMrDTO(
                     mr_uuid=mr_id, train_id=str(endpoint.get("train_id") or ""),
                     train_no=str(train.get("train_no") or ""),
                     mr_name=str(endpoint.get("device_name") or ""),
                     role=str(endpoint.get("mr_role") or ""),
+                    management_ip=str(endpoint.get("management_ip") or ""),
+                    backup_management_ip=str(endpoint.get("backup_management_ip") or ""),
+                    syslog_status=str(projected.get("syslog_status") or "NOT_CONFIGURED"),  # type: ignore[arg-type]
+                    syslog_last_error=str(projected.get("syslog_last_error") or ""),
                     resolved_ap_name=identity.resolved_ap if identity else "",
                     station=identity.resolved_ap_station if identity else "",
                     section=identity.resolved_ap_section if identity else "",
@@ -1389,15 +1422,116 @@ class GroundUnattendedApplicationService:
             )
         self.supervisor.request_config_check(
             device_uuid,
-            repair_enabled=(
-                mode == "AUTO_REPAIR" and profile.syslog_auto_repair_enabled
-            ),
+            # This endpoint is an explicit operator action.  The profile flag
+            # gates only unattended boot checks; a manual repair request keeps
+            # its existing meaning and is still recorded by the audit service.
+            repair_enabled=mode == "AUTO_REPAIR",
             allow_target_port_change=allow_target_port_change,
         )
         return GroundActionResponseDTO(
             state=str(run["state"]),
             run_id=str(run["run_id"]),
             message="MR 配置检查请求已提交",
+        )
+
+    def request_syslog_control(
+        self,
+        site_id: str,
+        payload: GroundSyslogControlRequestDTO,
+    ) -> GroundActionResponseDTO:
+        run = self._active(site_id)
+        profile = self.repository.get_profile()
+        self._validate_network_profile(profile, require_syslog=True)
+        requested = list(dict.fromkeys(str(item).strip() for item in payload.device_uuids if str(item).strip()))
+        if not requested:
+            raise GroundUnattendedError("MR_REQUIRED", "至少选择一台 MR", status_code=422)
+        inventory = {str(row.get("device_uuid") or ""): row for row in self.repository.list_inventory() for row in row.get("endpoints", [])}
+        selected: list[str] = []
+        address_owners: dict[str, str] = {}
+        for endpoint in inventory.values():
+            owner = str(endpoint.get("device_uuid") or "")
+            for field in ("management_ip", "backup_management_ip"):
+                raw_ip = str(endpoint.get(field) or "").strip()
+                if not raw_ip:
+                    continue
+                try:
+                    normalized_ip = str(ipaddress.ip_address(raw_ip))
+                except ValueError:
+                    continue
+                previous_owner = address_owners.setdefault(normalized_ip, owner)
+                if previous_owner != owner:
+                    address_owners[normalized_ip] = "<conflict>"
+        for device_uuid in requested:
+            endpoint = inventory.get(device_uuid)
+            if endpoint is None:
+                raise GroundUnattendedError("MR_NOT_FOUND", f"MR 不在当前无人值守清单中: {device_uuid}", status_code=404)
+            if payload.mode == "JOIN":
+                live = next((row for row in self.supervisor.fleet_ping.target_summaries() if str(row.get("mr_id") or "") == device_uuid), None)
+                if not live or str(live.get("status") or "").upper() != "ONLINE":
+                    raise GroundUnattendedError("MR_NOT_ONLINE", f"MR 当前不在线，不能加入 Syslog: {device_uuid}", status_code=409)
+                if not str(endpoint.get("management_ip") or "").strip():
+                    raise GroundUnattendedError("MR_MANAGEMENT_IP_MISSING", f"MR 没有有效管理地址: {device_uuid}", status_code=409)
+                for field in ("management_ip", "backup_management_ip"):
+                    raw_ip = str(endpoint.get(field) or "").strip()
+                    if not raw_ip:
+                        continue
+                    try:
+                        normalized_ip = str(ipaddress.ip_address(raw_ip))
+                    except ValueError as exc:
+                        raise GroundUnattendedError("MR_MANAGEMENT_IP_INVALID", f"MR 管理地址无效: {device_uuid}", status_code=409) from exc
+                    if address_owners.get(normalized_ip) == "<conflict>":
+                        raise GroundUnattendedError("MR_MANAGEMENT_IP_CONFLICT", f"MR 主备地址与其他 MR 冲突: {device_uuid}", status_code=409)
+            selected.append(device_uuid)
+        task_id = f"ground-syslog-{uuid.uuid4().hex}"
+        if self.task_service is not None:
+            self.task_service.create_external_task(
+                task_id=task_id,
+                task_type="ground_unattended_syslog_control",
+                task_name=f"MR Syslog {'加入' if payload.mode == 'JOIN' else '退出'}",
+                source="local",
+                site_name=site_id,
+                owner="ground_unattended",
+                device=str(len(selected)),
+            )
+            self.task_service.record_external_event(
+                task_id,
+                "state",
+                {
+                    "state": "RUNNING",
+                    "current": 0,
+                    "total": len(selected),
+                    "stage": f"SYSLOG_{payload.mode}",
+                    "message": "Syslog 批次任务已开始",
+                },
+                site_name=site_id,
+                source="ground_unattended",
+            )
+        register_task = getattr(self.supervisor, "register_syslog_task", None)
+        if callable(register_task):
+            register_task(task_id, len(selected))
+        if payload.mode == "JOIN":
+            for device_uuid in selected:
+                try:
+                    self.supervisor.request_config_check(
+                        device_uuid, repair_enabled=True, task_id=task_id
+                    )
+                except TypeError as exc:
+                    if "task_id" not in str(exc):
+                        raise
+                    self.supervisor.request_config_check(device_uuid, repair_enabled=True)
+            message = f"已提交 {len(selected)} 台 MR 加入 Syslog 上报"
+        else:
+            for device_uuid in selected:
+                try:
+                    self.supervisor.request_syslog_exit(device_uuid, task_id=task_id)
+                except TypeError as exc:
+                    if "task_id" not in str(exc):
+                        raise
+                    self.supervisor.request_syslog_exit(device_uuid)
+            message = f"已提交 {len(selected)} 台 MR 退出 Syslog 上报"
+        return GroundActionResponseDTO(
+            state=str(run["state"]), run_id=str(run["run_id"]), task_id=task_id,
+            message=message,
         )
 
     def health(self, site_id: str) -> GroundHealthDTO:

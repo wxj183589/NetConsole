@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { t } from '../../i18n/runtime'
 import { isFeatureEnabled, isFeatureVisible } from '../../features'
-import { applyGroundHeartbeatInventory, getGroundHeartbeat, previewGroundHeartbeatInventory } from '../../api/groundUnattended'
+import { applyGroundHeartbeatInventory, getGroundHeartbeat, previewGroundHeartbeatInventory, requestGroundSyslogControl } from '../../api/groundUnattended'
 import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import type { NcTableColumn } from '../../components/table'
 import type { GroundEndpoint, GroundPingTarget, GroundTrain, GroundHeartbeatPage, GroundHeartbeatMr, GroundHeartbeatTrain, GroundHeartbeatInventoryAction, GroundHeartbeatInventoryPreview } from '../../types/groundUnattended'
@@ -26,6 +26,7 @@ const emit = defineEmits<{
 const { activeTab, pageVisible, pageActivated, selectedRunId, quickContextRevision, status: monitorStatus } = useGroundContext()
 const heartbeat = ref<GroundHeartbeatPage | null>(null), heartbeatError = ref(''), loading = ref(false)
 const search = ref(props.trainFilter), statusFilter = ref(''), station = ref(''), role = ref(''), abnormalOnly = ref(false), page = ref(1), pageSize = ref(50)
+const onlineOnly = ref(true), selectedSyslogMrs = ref<string[]>([]), syslogBusy = ref(false)
 const paused = ref(false), managementBusy = ref(false), managementPreview = ref<GroundHeartbeatInventoryPreview | null>(null), managementError = ref('')
 const managementEnabled = computed(() => isFeatureEnabled('capability.ground_unattended.heartbeat_inventory_manage'))
 const selectedMr = ref<GroundHeartbeatMr | null>(null), selectedSection = ref('all')
@@ -61,6 +62,10 @@ function hiddenApCount(mr: GroundHeartbeatMr) { return Math.max(0, associatedAps
 function stationNames(mr: GroundHeartbeatMr): string[] { return Array.from(new Set([...(mr.associated_stations || []), ...(mr.station ? [mr.station] : [])])) }
 function apSummary(mr: GroundHeartbeatMr): string { return associatedAps(mr).map((ap) => ap.name || ap.bssid || ap.mac).filter(Boolean).join('、') }
 const apRows = computed(() => heartbeatMrs.value.slice().sort((a, b) => `${a.train_no}-${a.role}`.localeCompare(`${b.train_no}-${b.role}`, undefined, { numeric: true })))
+const syslogRows = computed(() => apRows.value.filter((mr) => (!onlineOnly.value || mr.status === 'ONLINE') && (!role.value || mr.role === role.value)))
+const selectableSyslogRows = computed(() => syslogRows.value.filter((mr) => !!mr.management_ip?.trim()))
+const joinAllowed = computed(() => selectedSyslogMrs.value.some((id) => selectableSyslogRows.value.some((mr) => mr.mr_uuid === id && mr.status === 'ONLINE')))
+const exitAllowed = computed(() => selectedSyslogMrs.value.some((id) => selectableSyslogRows.value.some((mr) => mr.mr_uuid === id && ['CONFIGURED', 'FAILED', 'UNKNOWN'].includes(mr.syslog_status || ''))))
 const dataState = computed(() => heartbeat.value?.data_state || '')
 const dataStateMessage = computed(() => heartbeat.value?.data_state_message || '')
 const heartbeatStats = computed(() => heartbeat.value?.heartbeat_statistics)
@@ -145,6 +150,30 @@ async function openTerminal(mr: GroundHeartbeatMr): Promise<void> {
     if (preflight.launchableDevices.length) { const result = await terminal.launchDeviceTerminalTargets(preflight.launchableDevices, preflight.terminalType); if (result) terminal.showLaunchResult(result) }
   } catch (error) { ElMessage.error(error instanceof Error ? error.message : String(error)) }
 }
+function toggleSyslogMr(id: string, checked: boolean): void {
+  selectedSyslogMrs.value = checked ? Array.from(new Set([...selectedSyslogMrs.value, id])) : selectedSyslogMrs.value.filter((item) => item !== id)
+}
+function toggleFilteredSyslogMrs(checked: boolean): void {
+  const visible = selectableSyslogRows.value.map((mr) => mr.mr_uuid)
+  selectedSyslogMrs.value = checked
+    ? Array.from(new Set([...selectedSyslogMrs.value, ...visible]))
+    : selectedSyslogMrs.value.filter((id) => !visible.includes(id))
+}
+async function controlSyslog(mode: 'JOIN' | 'EXIT'): Promise<void> {
+  const eligible = selectableSyslogRows.value.filter((mr) => selectedSyslogMrs.value.includes(mr.mr_uuid) && (mode === 'JOIN' ? mr.status === 'ONLINE' : true))
+  if (!eligible.length) return
+  syslogBusy.value = true
+  try {
+    const result = await requestGroundSyslogControl(eligible.map((mr) => mr.mr_uuid), mode)
+    ElMessage.success(result.message || (mode === 'JOIN' ? '已提交加入请求' : '已提交退出请求'))
+    selectedSyslogMrs.value = []
+    restart()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    syslogBusy.value = false
+  }
+}
 const metrics = computed(() => {
   const counts = heartbeat.value?.train_counts || {}
   const hasSamples = (heartbeatStats.value?.sent_count || 0) > 0 || heartbeatMrs.value.some((mr) => mr.ip_states.some((ip) => ip.sent_count > 0))
@@ -170,6 +199,10 @@ const metrics = computed(() => {
       <div class="heartbeat-stats"><span>{{ t('ground.monitor.ping_total', '累计 Ping') }} <b>{{ heartbeatStats?.sent_count ?? '—' }}</b></span><span>{{ t('ground.monitor.ping_success', '成功次数') }} <b>{{ heartbeatStats?.success_count ?? '—' }}</b></span><span>{{ t('ground.monitor.ping_lost', '丢包次数') }} <b>{{ heartbeatStats?.lost_count ?? '—' }}</b></span><span>{{ t('ground.monitor.average_rtt', '平均 RTT') }} <b>{{ formatRtt(heartbeatStats?.average_rtt_ms) }}</b></span><span>{{ t('ground.monitor.current_loss', '当前丢包率') }} <b>{{ heartbeatStats?.loss_rate_percent == null ? '—' : `${heartbeatStats.loss_rate_percent.toFixed(2)}%` }}</b></span><span>{{ t('ground.monitor.updated_at', '最近更新时间') }} <b>{{ heartbeatStats?.latest_sample_at || '—' }}</b></span></div>
       <div class="view-tabs"><el-button :type="viewMode === 'vehicles' ? 'primary' : 'default'" @click="viewMode = 'vehicles'">{{ t('ground.monitor.vehicle_view', '车辆视图') }}</el-button><el-button :type="viewMode === 'aps' ? 'primary' : 'default'" @click="viewMode = 'aps'">{{ t('ground.monitor.ap_view', 'AP 列表') }}</el-button></div>
       <div class="filters"><el-input v-model="search" clearable :placeholder="t('ground.monitor.search', '搜索列车 / 接入区间 AP / UUID')" /><el-select v-model="role" clearable :placeholder="t('ground.monitor.role', '端别')"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select><el-select v-model="statusFilter" clearable :placeholder="t('ground.monitor.train_state', '全部状态')"><el-option v-for="value in ['BOTH_ONLINE','CT_ONLY','CW_ONLY','TRAIN_OFFLINE','BOTH_UNREACHABLE_PENDING','SINGLE_ONLINE','SINGLE_OFFLINE','UNKNOWN']" :key="value" :value="value" :label="stateLabel(value)" /></el-select><el-select v-model="station" clearable :placeholder="t('ground.station', '全部站点')"><el-option v-for="item in heartbeat.stations || []" :key="item" :value="item" :label="item" /></el-select><el-checkbox v-model="abnormalOnly">{{ t('ground.monitor.abnormal', '仅异常') }}</el-checkbox></div>
+      <section class="syslog-control" aria-label="Syslog 人工控制">
+        <div class="syslog-toolbar"><strong>MR Syslog 控制</strong><el-checkbox v-model="onlineOnly">仅显示在线 MR</el-checkbox><el-checkbox :model-value="selectableSyslogRows.length > 0 && selectableSyslogRows.every((mr) => selectedSyslogMrs.includes(mr.mr_uuid))" @change="toggleFilteredSyslogMrs(Boolean($event))">选择当前筛选 {{ selectableSyslogRows.length }} 台</el-checkbox><span class="muted">已选 {{ selectedSyslogMrs.length }} 台</span><el-button :loading="syslogBusy" :disabled="!joinAllowed || syslogBusy" type="primary" @click="controlSyslog('JOIN')">加入 Syslog 上报</el-button><el-button :loading="syslogBusy" :disabled="!exitAllowed || syslogBusy" @click="controlSyslog('EXIT')">退出 Syslog 上报</el-button></div>
+        <div class="syslog-table"><div v-for="mr in syslogRows" :key="mr.mr_uuid" class="syslog-row"><el-checkbox :model-value="selectedSyslogMrs.includes(mr.mr_uuid)" :disabled="!mr.management_ip" :aria-label="`选择 ${endpointName(mr)}`" @change="toggleSyslogMr(mr.mr_uuid, Boolean($event))" /><strong>{{ endpointName(mr) }}</strong><span>{{ mr.train_no || mr.train_id }} · {{ mr.role }}</span><span>管理 {{ mr.management_ip || '无有效地址' }}</span><span>备用 {{ mr.backup_management_ip || '—' }}</span><el-tag size="small" :type="stateType(mr.status)">{{ stateLabel(mr.status) }}</el-tag><el-tag size="small" effect="plain">Syslog {{ mr.syslog_status || 'UNKNOWN' }}</el-tag></div><div v-if="!syslogRows.length" class="syslog-empty">当前筛选没有 MR</div></div>
+      </section>
     </template>
     <div v-if="!heartbeat" class="empty" role="status"><span v-if="!heartbeatError">{{ t('common.loading', '加载中') }}</span></div>
     <div v-else-if="!heartbeat.trains.length" class="empty">{{ dataState === 'NO_INVENTORY' ? t('ground.monitor.sync_hint', '当前没有监测设备，请先同步设备') : t('ground.monitor.no_match', '当前筛选条件没有匹配结果') }}</div>

@@ -34,6 +34,8 @@ from netconsole.services.ac.mesh_link_refresh_service import (
 from netconsole.services.ac.mesh_link_resident_polling_service import (
     AcMeshLinkResidentPollingApplicationService,
 )
+from netconsole.services.ac.ac_models import AcResourceRefreshRequest
+from netconsole.services.ac.ac_service import AcService
 from netconsole.services.ap_identity import ApIdentityQueryService
 from netconsole.services.ground_unattended.eligibility import (
     GroundUnattendedEligibilityClassifier,
@@ -131,12 +133,14 @@ class GroundUnattendedSupervisor:
         ac_refresh_service: AcMeshLinkRefreshApplicationService | None = None,
         ac_resident_service: AcMeshLinkResidentPollingApplicationService
         | None = None,
+        ac_basic_service: AcService | None = None,
         online_mr_application_service: OnlineMrApplicationService | None = None,
         online_mr_query_service: OnlineMrQueryService | None = None,
         network_service: SystemNetworkApplicationService | None = None,
         now_provider: Callable[[], datetime] | None = None,
         tick_seconds: float = 1.0,
         ap_identity_query_service: ApIdentityQueryService | None = None,
+        task_service: Any | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
@@ -147,8 +151,10 @@ class GroundUnattendedSupervisor:
         self.network_service = network_service or SystemNetworkApplicationService()
         self.ac_refresh_service = ac_refresh_service
         self.ac_resident_service = ac_resident_service
+        self.ac_basic_service = ac_basic_service
         self.now_provider = now_provider or (lambda: datetime.now().astimezone())
         self.tick_seconds = max(0.05, float(tick_seconds))
+        self.task_service = task_service
         self._heartbeat_engine = HeartbeatStateEngine(
             event_sink=self._on_heartbeat_transition,
         )
@@ -230,7 +236,20 @@ class GroundUnattendedSupervisor:
             thread_name_prefix="ground-syslog-config",
         )
         self._config_futures: dict[str, Future] = {}
+        self._config_future_meta: dict[str, dict[str, str]] = {}
+        self._ac_basic_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="ground-ac-basic",
+        )
+        self._ac_basic_future: Future | None = None
+        self._ac_basic_next_poll_monotonic = 0.0
+        self._ac_basic_failure_count = 0
         self._manual_config_checks: dict[str, tuple[bool, bool]] = {}
+        self._manual_config_task_ids: dict[str, str] = {}
+        self._manual_syslog_exits: set[str] = set()
+        self._manual_syslog_exit_task_ids: dict[str, str] = {}
+        self._syslog_task_progress: dict[str, dict[str, Any]] = {}
+        self._cancelled_syslog_tasks: set[str] = set()
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -251,6 +270,8 @@ class GroundUnattendedSupervisor:
         self._tick_error_count = 0
         self._tick_consecutive_failure_count = 0
         self._syslog_recovery_pending = False
+        self._syslog_auto_start_state: bool | None = None
+        self._mesh_link_auto_collection_state: bool | None = None
         self._storage_detection = StorageDetection(
             data_root=str(self.paths.data_root), volume=""
         )
@@ -287,6 +308,7 @@ class GroundUnattendedSupervisor:
         if self.deep_scheduler is not None:
             self.deep_scheduler.close()
         self._config_executor.shutdown(wait=True, cancel_futures=True)
+        self._ac_basic_executor.shutdown(wait=True, cancel_futures=True)
 
     def request(
         self,
@@ -317,6 +339,7 @@ class GroundUnattendedSupervisor:
         *,
         repair_enabled: bool = True,
         allow_target_port_change: bool = False,
+        task_id: str = "",
     ) -> None:
         with self._lock:
             key = str(device_uuid or "*")
@@ -324,7 +347,70 @@ class GroundUnattendedSupervisor:
                 bool(allow_target_port_change),
                 bool(repair_enabled),
             )
+            if task_id:
+                self._manual_config_task_ids[key] = str(task_id)
         self._wake_event.set()
+
+    def request_syslog_exit(self, device_uuid: str = "", *, task_id: str = "") -> None:
+        with self._lock:
+            if device_uuid:
+                self._manual_syslog_exits.add(str(device_uuid))
+            else:
+                self._manual_syslog_exits.add("*")
+            if task_id:
+                self._manual_syslog_exit_task_ids[str(device_uuid or "*")] = str(task_id)
+        self._wake_event.set()
+
+    def cancel_syslog_task(self, task_id: str) -> bool:
+        task_id = str(task_id or "").strip()
+        finish_now = False
+        with self._lock:
+            progress = self._syslog_task_progress.get(task_id)
+            if progress is None:
+                return False
+            self._cancelled_syslog_tasks.add(task_id)
+            for key, queued_task_id in tuple(self._manual_config_task_ids.items()):
+                if queued_task_id == task_id:
+                    self._manual_config_task_ids.pop(key, None)
+                    self._manual_config_checks.pop(key, None)
+            for key, queued_task_id in tuple(self._manual_syslog_exit_task_ids.items()):
+                if queued_task_id == task_id:
+                    self._manual_syslog_exit_task_ids.pop(key, None)
+                    if key == "*":
+                        self._manual_syslog_exits.discard("*")
+                    else:
+                        self._manual_syslog_exits.discard(key)
+            in_flight = 0
+            for device_uuid, meta in tuple(self._config_future_meta.items()):
+                if meta.get("task_id") != task_id:
+                    continue
+                future = self._config_futures.get(device_uuid)
+                if future is not None:
+                    in_flight += 1
+                    future.cancel()
+            progress["total"] = progress["current"] + in_flight
+            finish_now = in_flight == 0
+        if finish_now:
+            self._record_syslog_task_event(task_id, "finished", {
+                "terminal_state": "CANCELLED",
+                "message": "Syslog 批次任务已取消",
+                "result": {"success_count": 0, "failed_count": 0, "business_status": "CANCELLED"},
+            })
+            with self._lock:
+                self._syslog_task_progress.pop(task_id, None)
+                self._cancelled_syslog_tasks.discard(task_id)
+        self._wake_event.set()
+        return True
+
+    def register_syslog_task(self, task_id: str, total: int) -> None:
+        with self._lock:
+            self._syslog_task_progress[str(task_id)] = {
+                "current": 0,
+                "total": max(0, int(total)),
+                "success": 0,
+                "failed": 0,
+                "results": [],
+            }
 
     @property
     def running(self) -> bool:
@@ -1003,18 +1089,23 @@ class GroundUnattendedSupervisor:
         self, latest: GroundUnattendedProfileDTO
     ) -> GroundUnattendedProfileDTO:
         active = self._active_profile or latest
-        if (
-            active.ping_depot_trains_enabled
-            == latest.ping_depot_trains_enabled
-        ):
-            return active
-        return active.model_copy(
-            update={
-                "ping_depot_trains_enabled": (
-                    latest.ping_depot_trains_enabled
-                )
-            }
+        hot_fields = (
+            "ping_depot_trains_enabled",
+            "ac_poll_interval_seconds",
+            "ac_mesh_link_poll_interval_seconds",
+            "syslog_receiver_auto_start_enabled",
+            "boot_check_auto_start_enabled",
+            "syslog_auto_repair_enabled",
+            "ac_mesh_link_auto_collection_enabled",
         )
+        updates = {
+            field: getattr(latest, field)
+            for field in hot_fields
+            if getattr(active, field) != getattr(latest, field)
+        }
+        if not updates:
+            return active
+        return active.model_copy(update=updates)
 
     def _network_profile_error(
         self, profile: GroundUnattendedProfileDTO
@@ -1639,6 +1730,9 @@ class GroundUnattendedSupervisor:
     def _poll_if_due(self, run, profile, now, *, scheduling_paused: bool) -> None:
         import time
 
+        receiver_enabled = bool(profile.syslog_receiver_auto_start_enabled)
+        if receiver_enabled != self._syslog_auto_start_state:
+            self._start_syslog(run, profile)
         if self._syslog_recovery_pending:
             replay = getattr(self.syslog_receiver, "replay_pending_events", None)
             if callable(replay):
@@ -1659,6 +1753,9 @@ class GroundUnattendedSupervisor:
                         int(replay_result.get("files_pending") or 0)
                     )
         self._ensure_ac_resident_pollers(run, profile)
+        self._schedule_ac_basic_poll(profile)
+        # Operator requested Syslog actions must not wait for a new AC snapshot.
+        self._schedule_config_checks(run, profile, {})
         current = time.monotonic()
         if current - self._last_ac_poll_monotonic < min(
             1.0, max(0.1, self.tick_seconds)
@@ -1668,6 +1765,57 @@ class GroundUnattendedSupervisor:
         self._poll_ac_and_classify(
             run, profile, now, scheduling_paused=scheduling_paused
         )
+
+    def _schedule_ac_basic_poll(self, profile: GroundUnattendedProfileDTO) -> None:
+        if self.ac_basic_service is None:
+            return
+        current = time.monotonic()
+        future = self._ac_basic_future
+        if future is not None:
+            if not future.done():
+                return
+            self._ac_basic_future = None
+            try:
+                future.result()
+            except Exception as exc:
+                self._ac_basic_failure_count = min(self._ac_basic_failure_count + 1, 6)
+                backoff = min(
+                    max(60.0, float(profile.ac_poll_interval_seconds))
+                    * (2 ** (self._ac_basic_failure_count - 1)),
+                    1800.0,
+                )
+                self._ac_basic_next_poll_monotonic = current + backoff
+                LOGGER.warning("Ground AC 基础轮询失败，将在 %.0f 秒后重试: %s", backoff, exc)
+        if current < self._ac_basic_next_poll_monotonic:
+            return
+        interval = max(3, int(profile.ac_poll_interval_seconds))
+        self._ac_basic_next_poll_monotonic = current + interval
+        self._ac_basic_future = self._ac_basic_executor.submit(
+            self._refresh_ac_basic_information
+        )
+
+    def _refresh_ac_basic_information(self) -> None:
+        from netconsole.core.database import Database
+        from netconsole.repositories.device_repository import DeviceRepository
+
+        database = Database(self.paths.site_db_path(self.site_id))
+        devices = DeviceRepository(database).list(device_type="AC")
+        failures: list[str] = []
+        for device in devices:
+            if self._stop_event.is_set():
+                return
+            result = self.ac_basic_service.refresh_ac_info(
+                AcResourceRefreshRequest(
+                    device_uuid=str(device.device_uuid or ""),
+                    site_name=self.site_id,
+                    source="auto",
+                )
+            )
+            if not result.success or result.error_message:
+                failures.append(str(device.device_uuid or device.name or "AC"))
+        if failures:
+            raise RuntimeError("AC 基础信息采集失败: " + ", ".join(failures))
+        self._ac_basic_failure_count = 0
 
     def _poll_ac_and_classify(
         self, run, profile, now, *, scheduling_paused: bool
@@ -2081,6 +2229,26 @@ class GroundUnattendedSupervisor:
     def _ensure_ac_resident_pollers(self, run, profile) -> None:
         if self.ac_resident_service is None:
             return
+        enabled = bool(profile.ac_mesh_link_auto_collection_enabled)
+        if not enabled:
+            if self._mesh_link_auto_collection_state is not False:
+                try:
+                    self.ac_resident_service.request_stop_run(
+                        site_name=self.site_id,
+                        run_id=str(run["run_id"]),
+                        timeout_seconds=0,
+                    )
+                except Exception as exc:
+                    self.repository.add_event(
+                        run_id=str(run["run_id"]),
+                        event_type="ac_poller_stop_failed",
+                        severity="warning",
+                        title="AC Mesh-Link 常驻轮询停止请求失败",
+                        message=f"{exc.__class__.__name__}: {exc}",
+                    )
+            self._mesh_link_auto_collection_state = False
+            return
+        self._mesh_link_auto_collection_state = True
         for controller in self.vehicle_query.list_controllers(self.site_id):
             if not controller.connection_ready:
                 continue
@@ -2090,7 +2258,7 @@ class GroundUnattendedSupervisor:
                     run_id=str(run["run_id"]),
                     controller_id=controller.controller_id,
                     controller_name=controller.name,
-                    poll_interval_seconds=profile.ac_poll_interval_seconds,
+                    poll_interval_seconds=profile.ac_mesh_link_poll_interval_seconds,
                     include_switch_history=False,
                 )
                 if result.already_running:
@@ -3061,6 +3229,11 @@ class GroundUnattendedSupervisor:
     def _start_syslog(
         self, run: dict[str, Any], profile: GroundUnattendedProfileDTO
     ) -> None:
+        if not profile.syslog_receiver_auto_start_enabled:
+            if self.syslog_receiver.running:
+                self.syslog_receiver.stop()
+            self._syslog_auto_start_state = False
+            return
         try:
             self._storage_detection, self._storage_io_profile = detect_storage_profile(
                 self.paths.data_root,
@@ -3081,6 +3254,7 @@ class GroundUnattendedSupervisor:
                 event_batch_interval_seconds=profile.event_batch_interval_seconds,
                 storage_profile=self._storage_io_profile,
             )
+            self._syslog_auto_start_state = True
             self.syslog_receiver.refresh_ap_identity()
             replay = getattr(self.syslog_receiver, "replay_pending_events", None)
             if callable(replay):
@@ -3132,9 +3306,11 @@ class GroundUnattendedSupervisor:
             str(row.get("mr_id") or ""): row
             for row in self.fleet_ping.target_summaries()
         }
-        with self._lock:
+        with getattr(self, "_lock", threading.RLock()):
             manual = dict(self._manual_config_checks)
             self._manual_config_checks.clear()
+            manual_task_ids = dict(getattr(self, "_manual_config_task_ids", {}))
+            getattr(self, "_manual_config_task_ids", {}).clear()
         policies = {
             str(row["train_id"]): row
             for row in self.repository.list_inventory(include_removed=False)
@@ -3145,6 +3321,17 @@ class GroundUnattendedSupervisor:
         if "*" in manual:
             for device_uuid in endpoints:
                 manual.setdefault(device_uuid, manual["*"])
+        if manual:
+            # Explicit operator checks may run before an AC snapshot exists.
+            # Use the persisted heartbeat inventory as the identity source while
+            # keeping automatic checks bounded by AC eligibility below.
+            inventory_targets = self._heartbeat_fleet_targets()
+            for target in inventory_targets.values():
+                if target.mr_id in manual:
+                    endpoints.setdefault(target.mr_id, target)
+            if "*" in manual:
+                for target in inventory_targets.values():
+                    endpoints.setdefault(target.mr_id, target)
         now = self._now()
         ordered = sorted(
             endpoints.items(),
@@ -3160,6 +3347,8 @@ class GroundUnattendedSupervisor:
         )
         for device_uuid, target in ordered:
             if device_uuid in self._config_futures:
+                continue
+            if device_uuid not in manual and not profile.boot_check_auto_start_enabled:
                 continue
             if (
                 device_uuid not in manual
@@ -3186,7 +3375,10 @@ class GroundUnattendedSupervisor:
                 repair_enabled=(
                     bool(manual[device_uuid][1])
                     if device_uuid in manual
-                    else bool(profile.syslog_auto_repair_enabled)
+                    else bool(
+                        profile.boot_check_auto_start_enabled
+                        and profile.syslog_auto_repair_enabled
+                    )
                 ),
                 allow_target_port_change=(
                     bool(manual[device_uuid][0])
@@ -3194,17 +3386,98 @@ class GroundUnattendedSupervisor:
                     else False
                 ),
             )
+            task_id = manual_task_ids.get(device_uuid) or manual_task_ids.get("*")
+            if task_id:
+                self._config_future_meta[device_uuid] = {"task_id": task_id}
+
+        with getattr(self, "_lock", threading.RLock()):
+            exits = set(getattr(self, "_manual_syslog_exits", set()))
+            exit_task_ids = dict(getattr(self, "_manual_syslog_exit_task_ids", {}))
+            getattr(self, "_manual_syslog_exit_task_ids", {}).clear()
+        if exits:
+            inventory_targets = self._heartbeat_fleet_targets()
+            for target in inventory_targets.values():
+                if target.mr_id in exits or "*" in exits:
+                    endpoints.setdefault(target.mr_id, target)
+        if exits:
+            if "*" in exits:
+                exits.update(endpoints)
+                with getattr(self, "_lock", threading.RLock()):
+                    getattr(self, "_manual_syslog_exits", set()).discard("*")
+            for device_uuid in sorted(exits):
+                if device_uuid in self._config_futures or device_uuid not in endpoints:
+                    continue
+                target = endpoints[device_uuid]
+                self._config_futures[device_uuid] = self._config_executor.submit(
+                    self.config_service.exit,
+                    run_id=str(run["run_id"]),
+                    run_date=str(run["run_date"]),
+                    device_uuid=device_uuid,
+                    target_ip=target_ip,
+                    target_port=profile.syslog_server_port,
+                )
+                task_id = exit_task_ids.get(device_uuid) or exit_task_ids.get("*")
+                if task_id:
+                    self._config_future_meta[device_uuid] = {"task_id": task_id}
+                with getattr(self, "_lock", threading.RLock()):
+                    getattr(self, "_manual_syslog_exits", set()).discard(device_uuid)
 
     def _collect_config_checks(self) -> None:
         for device_uuid, future in tuple(self._config_futures.items()):
             if not future.done():
                 continue
             self._config_futures.pop(device_uuid, None)
+            meta = self._config_future_meta.pop(device_uuid, {})
             try:
                 future.result()
+                succeeded = True
             except Exception:
                 # Service 已持久化结构化失败审计，Supervisor 继续调度其他 MR。
-                pass
+                succeeded = False
+            task_id = str(meta.get("task_id") or "")
+            progress = self._syslog_task_progress.get(task_id)
+            if not task_id or progress is None:
+                continue
+            progress["current"] += 1
+            if not future.cancelled():
+                progress["success" if succeeded else "failed"] += 1
+                progress["results"].append({
+                    "device_uuid": device_uuid,
+                    "status": "SUCCEEDED" if succeeded else "FAILED",
+                })
+            self._record_syslog_task_event(task_id, "progress", {
+                "current": progress["current"],
+                "total": progress["total"],
+                "stage": "SYSLOG_CONTROL",
+                "message": "已完成一台 MR" if succeeded else "一台 MR 执行失败",
+            })
+            if progress["current"] >= progress["total"]:
+                cancelled = task_id in self._cancelled_syslog_tasks
+                self._record_syslog_task_event(task_id, "finished", {
+                    "terminal_state": "CANCELLED" if cancelled else "COMPLETED",
+                    "message": "Syslog 批次任务已取消" if cancelled else "Syslog 批次任务完成",
+                    "result": {
+                        "success_count": progress["success"],
+                        "failed_count": progress["failed"],
+                        "devices": list(progress["results"]),
+                        "business_status": "PARTIAL_SUCCESS" if progress["failed"] else "SUCCESS",
+                    },
+                })
+                self._syslog_task_progress.pop(task_id, None)
+                self._cancelled_syslog_tasks.discard(task_id)
+
+    def _record_syslog_task_event(
+        self, task_id: str, event_type: str, payload: dict[str, Any]
+    ) -> None:
+        if self.task_service is None:
+            return
+        try:
+            self.task_service.record_external_event(
+                task_id, event_type, payload, site_name=self.site_id,
+                source="ground_unattended",
+            )
+        except (KeyError, RuntimeError, ValueError):
+            LOGGER.warning("无法写入 Syslog 任务事件 task_id=%s", task_id, exc_info=True)
 
     @staticmethod
     def _parse_datetime(value: str) -> datetime | None:

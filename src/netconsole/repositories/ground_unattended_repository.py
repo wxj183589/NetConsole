@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     schedule_start_time TEXT NOT NULL DEFAULT '07:00',
     schedule_end_time TEXT NOT NULL DEFAULT '23:00',
     timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
-    ac_poll_interval_seconds INTEGER NOT NULL DEFAULT 10,
+    ac_poll_interval_seconds INTEGER NOT NULL DEFAULT 60,
+    ac_mesh_link_poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
     stationary_exclusion_minutes INTEGER NOT NULL DEFAULT 10,
     ac_stale_grace_seconds INTEGER NOT NULL DEFAULT 120,
     ac_ping_correlation_tolerance_seconds INTEGER NOT NULL DEFAULT 15,
@@ -62,7 +63,10 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     config_check_cooldown_seconds INTEGER NOT NULL DEFAULT 1800,
     syslog_server_ip TEXT NOT NULL DEFAULT '',
     syslog_server_port INTEGER NOT NULL DEFAULT 514,
-    syslog_auto_repair_enabled INTEGER NOT NULL DEFAULT 1,
+    syslog_receiver_auto_start_enabled INTEGER NOT NULL DEFAULT 0,
+    boot_check_auto_start_enabled INTEGER NOT NULL DEFAULT 0,
+    syslog_auto_repair_enabled INTEGER NOT NULL DEFAULT 0,
+    ac_mesh_link_auto_collection_enabled INTEGER NOT NULL DEFAULT 0,
     allow_external_syslog_address INTEGER NOT NULL DEFAULT 0,
     ping_raw_retention_days INTEGER NOT NULL DEFAULT 30,
     syslog_raw_retention_days INTEGER NOT NULL DEFAULT 30,
@@ -811,6 +815,8 @@ ON ground_unattended_quick_ping_events(site_id, run_id, ts DESC, id DESC);
 
 
 _PROFILE_MIGRATION_COLUMNS = {
+    "ac_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 60",
+    "ac_mesh_link_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 300",
     "deep_collection_master_enabled": "INTEGER NOT NULL DEFAULT 1",
     "deep_fping_required": "INTEGER NOT NULL DEFAULT 1",
     "deep_fping": "TEXT NOT NULL DEFAULT '{}'",
@@ -827,7 +833,10 @@ _PROFILE_MIGRATION_COLUMNS = {
     "config_check_cooldown_seconds": "INTEGER NOT NULL DEFAULT 1800",
     "syslog_server_ip": "TEXT NOT NULL DEFAULT ''",
     "syslog_server_port": "INTEGER NOT NULL DEFAULT 514",
-    "syslog_auto_repair_enabled": "INTEGER NOT NULL DEFAULT 1",
+    "syslog_receiver_auto_start_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "boot_check_auto_start_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "syslog_auto_repair_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "ac_mesh_link_auto_collection_enabled": "INTEGER NOT NULL DEFAULT 0",
     "allow_external_syslog_address": "INTEGER NOT NULL DEFAULT 0",
     "ping_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
     "syslog_raw_retention_days": "INTEGER NOT NULL DEFAULT 30",
@@ -4579,6 +4588,29 @@ class GroundUnattendedRepository:
             ).fetchone()
         return _decode_row(row) if row else None
 
+    def latest_syslog_config_audits(self, device_uuids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        targets = sorted({str(value).strip() for value in device_uuids if str(value).strip()})
+        if not targets:
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        with self._connection() as conn:
+            for offset in range(0, len(targets), 500):
+                batch = targets[offset : offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    "SELECT a.* FROM ground_unattended_syslog_config_audits a "
+                    "JOIN (SELECT device_uuid, MAX(checked_at) AS checked_at "
+                    "FROM ground_unattended_syslog_config_audits WHERE site_id=? "
+                    f"AND device_uuid IN ({placeholders}) GROUP BY device_uuid) latest "
+                    "ON latest.device_uuid=a.device_uuid AND latest.checked_at=a.checked_at "
+                    "WHERE a.site_id=?",
+                    (self.site_id, *batch, self.site_id),
+                ).fetchall()
+                for row in rows:
+                    decoded = _decode_row(row)
+                    result[str(decoded.get("device_uuid") or "")] = decoded
+        return result
+
     def train_endpoint_snapshot(
         self, device_uuids: Iterable[str], *, run_id: str = ""
     ) -> dict[str, Any]:
@@ -5419,7 +5451,10 @@ def _decode_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "deep_collection_master_enabled",
         "ping_depot_trains_enabled",
         "monitor_only",
+        "syslog_receiver_auto_start_enabled",
+        "boot_check_auto_start_enabled",
         "syslog_auto_repair_enabled",
+        "ac_mesh_link_auto_collection_enabled",
         "expected_internal_change",
     ):
         if key in result:
