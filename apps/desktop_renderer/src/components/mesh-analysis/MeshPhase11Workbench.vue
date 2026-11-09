@@ -10,6 +10,7 @@ import { buildMeshBusinessMetricGroups, meshMetricLabels, type MeshBusinessMetri
 import { meshLoadingPhaseLabel, type MeshLoadingPhase } from './meshLoadingState'
 import { counterStatus } from './meshMonitorTooltip'
 import { meshTimestampMillis as millis, formatMeshViewportTimestamp as stamp } from './meshChartViewport'
+import { MeshCompleteMetricCache } from './meshCompleteMetricCache'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 type Workspace = 'overview' | 'links' | 'rssi' | 'aps' | 'main' | 'switches' | 'artifacts'
 type Status = { phase: MeshLoadingPhase; message: string; cached: boolean }
@@ -57,6 +58,7 @@ const cache = new Map<string, { rows: MeshLinkDetail[]; group: MeshBusinessMetri
 const pending = new Map<string, Promise<void>>()
 const queryPending = new Map<string, ReturnType<typeof listMeshLinks>>()
 const sourceQueryCache = new Map<string, Awaited<ReturnType<typeof listMeshLinks>>>()
+const completeMetricCache = new MeshCompleteMetricCache<ReturnType<typeof query>, Awaited<ReturnType<typeof listMeshLinks>>>()
 const visibleMetrics = new Set<MeshBusinessMetricKey>()
 const panelElements = new Map<MeshBusinessMetricKey, HTMLElement>()
 let pageActive = true
@@ -79,12 +81,16 @@ function metricSource(key: MeshBusinessMetricKey): string { return ['tx_rx', 're
 function metricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false) {
   const source = metricSource(key), id = `${props.sessionId}|${source}|${JSON.stringify(values)}`
   if (refresh) sourceQueryCache.delete(id)
+  if (!refresh) {
+    const complete = completeMetricCache.get(`${props.sessionId}|${source}`, values)
+    if (complete) return Promise.resolve(complete)
+  }
   let task = queryPending.get(id)
   if (!task) {
     const cached = sourceQueryCache.get(id)
     if (cached) return Promise.resolve(cached)
     task = listMeshLinks(props.sessionId, { ...values, metric_group: source, max_points: 1000, page_size: 1000 }, signal).then(result => {
-      if (!signal.aborted) { sourceQueryCache.set(id, result); while (sourceQueryCache.size > 16) sourceQueryCache.delete(sourceQueryCache.keys().next().value!) }
+      if (!signal.aborted) { sourceQueryCache.set(id, result); completeMetricCache.put(`${props.sessionId}|${source}`, values, result); while (sourceQueryCache.size > 16) sourceQueryCache.delete(sourceQueryCache.keys().next().value!) }
       return result
     })
     queryPending.set(id, task); void task.finally(() => { if (queryPending.get(id) === task) queryPending.delete(id) }).catch(() => undefined)
@@ -108,7 +114,7 @@ async function loadMetric(key: MeshBusinessMetricKey, refresh = false): Promise<
     try {
       const result = await metricQuery(key, values, signal, refresh)
       if (local !== generation || signal.aborted) return
-      if (key === 'tx_rx' && !result.downsampled && result.total <= result.items.length) completeIndex = result.items.filter(row => row.link_role === 'ACTIVE' && row.link_count !== 0).sort((a, b) => (millis(a.timestamp) ?? 0) - (millis(b.timestamp) ?? 0))
+      if (key === 'tx_rx' && result.downsampled === false && result.total === result.items.length) completeIndex = result.items.filter(row => row.link_role === 'ACTIVE' && row.link_count !== 0 && (millis(row.timestamp) ?? -Infinity) >= millis(values.time_from)! && (millis(row.timestamp) ?? Infinity) <= millis(values.time_to)!).sort((a, b) => (millis(a.timestamp) ?? 0) - (millis(b.timestamp) ?? 0))
       phase(key, 'PROCESSING', metricSource(key) === 'counters' ? '正在整理计数器每秒速率' : '正在整理链路数据')
       await nextTick()
       if (local !== generation || signal.aborted) return
@@ -229,7 +235,7 @@ async function openContext(context: { ap?: string; radio?: number | null; start:
   if (context.focus) { const local = generation, signal = mainController.signal; const result = await listMeshLinks(props.sessionId, { ...query(), time_from: context.focus, time_to: context.focus, page_size: 1 }, signal).catch(() => null); if (local === generation && result?.items[0]?.link_role === 'ACTIVE' && result.items[0].link_count !== 0) selectLink(result.items[0]) }
 }
 function refreshData(): void {
-  cancel(); cache.clear(); sourceQueryCache.clear(); loadedScopes.clear(); completeIndex = []; selectionCache.clear()
+  cancel(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); loadedScopes.clear(); completeIndex = []; selectionCache.clear()
   auxGeneration++; auxController.abort(); auxController = new AbortController(); business.value = null
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
   if (workspace.value === 'main') loadMain(true)
@@ -239,12 +245,12 @@ function refreshData(): void {
 defineExpose({ openContext, switchWorkspace, refreshData })
 watch(() => props.sessionId, () => {
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
-  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); sourceQueryCache.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; workspace.value = 'overview'; emit('workspaceChange', 'overview');
+  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; workspace.value = 'overview'; emit('workspaceChange', 'overview');
   domain.value = { start: props.session.first_sample_time || '', end: props.session.last_sample_time || '' }; windowRange.value = { start: stamp(Math.max(millis(domain.value.start) || 0, (millis(domain.value.end) || 0) - 300_000)), end: domain.value.end }; void loadOverview()
 }, { immediate: true })
 onDeactivated(() => { pageActive = false; panelObserver?.disconnect(); cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoading.value = false; groups.value = {}; samples.value = {} })
 onActivated(() => { pageActive = true; panelElements.forEach(element => panelObserver?.observe(element)); if (workspace.value === 'main' && !Object.keys(groups.value).length) loadMain() })
-onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); sourceQueryCache.clear() })
+onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear() })
 function roleLabel(row: MeshLinkDetail): string { return row.link_count === 0 ? '未连接（LinkCnt=0）' : row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : row.link_role === 'STANDBY' ? '备用（STANDBY）' : '未知' }
 const apColumns: NcTableColumn<MeshApSignal>[] = [{ key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'station', label: '归属站点' }, { key: 'section', label: '归属区间' }, { key: 'link_role', label: '链路角色', displayValue: row => row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : '备用（STANDBY）' }, { key: 'radio', label: '射频口' }, { key: 'avg_rssi', label: '平均 RSSI' }, { key: 'min_rssi', label: '最低 RSSI' }, { key: 'last_rssi', label: '最近 RSSI' }, { key: 'signal_grade', label: '信号质量' }, { key: 'valid_sample_count', label: '有效采样' }, { key: 'weak_sample_count', label: '低于阈值' }, { key: 'weak_ratio', label: '低信号比例', displayValue: row => row.weak_ratio == null ? '暂无数据' : `${(row.weak_ratio * 100).toFixed(1)}%` }, { key: 'last_seen', label: '最近采样时间' }]
 const parseColumns: NcTableColumn<MeshParseIssue>[] = [{ key: 'severity', label: '级别' }, { key: 'code', label: '异常类型' }, { key: 'message', label: '简要原因' }]
