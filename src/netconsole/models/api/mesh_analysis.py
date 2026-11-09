@@ -547,6 +547,10 @@ class MeshCounterSampleDTO(ApiModel):
 class MeshLinkDetailDTO(ApiModel):
     counter_samples: dict[str, MeshCounterSampleDTO] = Field(default_factory=dict)
     monitor_gap_before: bool = False
+    is_boundary_context: bool = False
+    source_file_id: int | None = None
+    raw_sample_version: str | None = None
+    derived_metric_version: str | None = None
     local_tx_delta: int | None = None
     peer_tx_delta: int | None = None
     local_rx_delta: int | None = None
@@ -647,6 +651,13 @@ class MeshLinkPageDTO(ApiModel):
     zero_link_count: int = 0
     downsampled: bool = False
     query_duration_ms: float = 0
+    query_kind: str = ""
+    sql_query_count: int = 0
+    raw_sample_complete: bool = False
+    raw_sample_version: str | None = None
+    raw_context_count: int = 0
+    coverage_time_from: str | None = None
+    coverage_time_to: str | None = None
 
 
 class MeshActiveBuildOrderDTO(ApiModel):

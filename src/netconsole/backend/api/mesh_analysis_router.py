@@ -690,6 +690,9 @@ def links(
     nearest_time: str = Query(default="", max_length=40),
     max_points: int = Query(default=1000, ge=100, le=2000),
     include_zero: bool = False,
+    raw_samples: bool = False,
+    include_context: bool = False,
+    raw_max_rows: int = Query(default=50_000, ge=100, le=100_000),
     exclude_depot: bool = False,
     exclude_parking: bool = False,
 ) -> MeshLinkPageDTO:
@@ -720,6 +723,9 @@ def links(
             nearest_time=nearest_time,
             max_points=max_points,
             include_zero=include_zero,
+            raw_samples=raw_samples,
+            include_context=include_context,
+            raw_max_rows=raw_max_rows,
             exclude_depot=exclude_depot,
             exclude_parking=exclude_parking,
         )

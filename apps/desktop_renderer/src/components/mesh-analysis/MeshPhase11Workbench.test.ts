@@ -156,6 +156,22 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     charts(wrapper)[0]!.vm.$emit('render-complete'); await flushPromises(); expect(wrapper.text()).toContain('1/13 图表完成')
   })
 
+  it('uses one complete raw response for charts, history and time selection', async () => {
+    const raw = { ...sample, record_id: 1, source_file_id: 1, establish_time: '2026-11-09 10:26:00.000' }
+    api.links.mockImplementation(async (_id, query) => query.raw_samples
+      ? { items: [raw], total: 1, page: 1, page_size: 1000, downsampled: false, raw_sample_complete: true, raw_sample_version: 'mesh-raw-v1', raw_context_count: 0, sql_query_count: 3, query_kind: 'raw_samples' }
+      : { items: [], total: 0 })
+    const wrapper = mounted(); await nav(wrapper, 4)
+    expect(api.links).toHaveBeenCalledOnce()
+    expect(api.links.mock.calls[0]![1]).toMatchObject({ raw_samples: true, include_context: true, raw_max_rows: 50000 })
+    expect(api.links.mock.calls[0]![1].metric_group).toBeUndefined()
+    expect(charts(wrapper)).toHaveLength(13)
+    const calls = api.links.mock.calls.length
+    charts(wrapper)[0]!.vm.$emit('time-select', raw.timestamp); await flushPromises()
+    expect(api.links.mock.calls.length).toBe(calls)
+    expect(wrapper.find('.phase11-detail').text()).toContain('AP-1')
+  })
+
   it('throttles repeated zoom to 180ms and queries every section for the final window', async () => {
     const wrapper = mounted(); await nav(wrapper, 4); vi.useFakeTimers()
     const first = range('20'), final = range('22')
@@ -178,7 +194,8 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     await vi.advanceTimersByTimeAsync(180); await flushPromises()
     expect(metrics()).toHaveLength(initialMetrics)
     expect(api.builds).toHaveBeenCalledTimes(2)
-    expect(api.links.mock.calls.filter(([, query]) => !query.metric_group && !query.nearest_time)).toHaveLength(2)
+    // One raw request covers the original window and the narrower window.
+    expect(api.links.mock.calls.filter(([, query]) => !query.metric_group && !query.nearest_time)).toHaveLength(1)
   })
 
   it('reuses complete history and build pages when the window narrows', async () => {
@@ -251,7 +268,7 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     const wrapper = mounted(); await nav(wrapper, 4)
     const signals = [...api.links.mock.calls.map(call => call[2] as AbortSignal), api.builds.mock.calls[0]![2] as AbortSignal]
     wrapper.unmount(); expect(signals.every(signal => signal.aborted)).toBe(true)
-    pending.resolve({ items: [sample], total: 1 }); await flushPromises(); expect(api.links).toHaveBeenCalledTimes(9)
+    pending.resolve({ items: [sample], total: 1 }); await flushPromises(); expect(api.links).toHaveBeenCalledTimes(1)
     const second = mounted(); api.links.mockResolvedValue({ items: [sample], total: 1 }); await nav(second, 4); vi.useFakeTimers()
     charts(second)[0]!.vm.$emit('viewport-change', range('20')); second.unmount(); const calls = api.links.mock.calls.length
     await vi.advanceTimersByTimeAsync(200); expect(api.links).toHaveBeenCalledTimes(calls)
@@ -274,7 +291,7 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     charts(wrapper)[0]!.vm.$emit('render-complete'); await flushPromises(); expect(wrapper.find('#monitor-rssi .phase-completed').exists()).toBe(true)
     api.links.mockResolvedValue({ items: [sample], total: 1 })
     await wrapper.find('#monitor-cpu button').trigger('click'); await flushPromises()
-    expect(api.links).toHaveBeenCalledTimes(10); expect(api.links.mock.calls.at(-1)?.[1].metric_group).toBe('cpu'); expect(charts(wrapper)).toHaveLength(13)
+    expect(api.links).toHaveBeenCalledTimes(11); expect(api.links.mock.calls.at(-1)?.[1].metric_group).toBe('cpu'); expect(charts(wrapper)).toHaveLength(13)
     expect(wrapper.find('#monitor-cpu .phase-rendering').exists()).toBe(true)
   })
 
@@ -295,7 +312,9 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     expect(metrics()).toHaveLength(8)
     ;(wrapper.vm as any).refreshData(); await flushPromises()
     expect(charts(wrapper)).toHaveLength(13); expect(wrapper.find('#monitor-rssi .phase-querying').exists()).toBe(true)
-    expect(metrics()).toHaveLength(16)
+    // A refresh invalidates the shared raw scope first; legacy metric
+    // fallbacks start only after that raw request returns.
+    expect(metrics()).toHaveLength(8)
     charts(wrapper).forEach(chart => chart.vm.$emit('render-complete')); await flushPromises()
     expect(wrapper.find('#monitor-rssi .phase-querying').exists()).toBe(true); expect(wrapper.text()).toContain('0/13 图表完成')
     pending.resolve({ items: [{ ...sample, local_rssi_db: -65 }], total: 1 }); await flushPromises()
@@ -342,8 +361,8 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     expect(wrapper.find('#monitor-rssi [role="status"]').text()).not.toContain('缓存命中')
     expect(metrics()).toHaveLength(24)
     await context(wrapper, range('20'))
-    expect(charts(wrapper)).toHaveLength(0); expect(wrapper.find('#monitor-rssi [role="status"]').text()).not.toContain('缓存命中')
-    expect(metrics()).toHaveLength(32)
+    expect(charts(wrapper)).toHaveLength(13); expect(wrapper.find('#monitor-rssi [role="status"]').text()).not.toContain('缓存命中')
+    expect(metrics()).toHaveLength(24)
     pending.resolve({ items: [], total: 0 }); await flushPromises()
   })
 

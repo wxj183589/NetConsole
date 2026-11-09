@@ -12,6 +12,7 @@ import { counterStatus } from './meshMonitorTooltip'
 import { meshTimestampMillis as millis, formatMeshViewportTimestamp as stamp } from './meshChartViewport'
 import { MeshCompleteMetricCache } from './meshCompleteMetricCache'
 import { MeshWindowPageCache } from './meshWindowPageCache'
+import { MESH_RAW_SAMPLE_VERSION, MeshRawSampleCache, deriveMeshRawSamples, meshRawIntervalQuery, meshRawRequestInterval, meshRawScopeKey, type MeshRawQuery } from './meshRawSampleCache'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 type Workspace = 'overview' | 'links' | 'rssi' | 'aps' | 'main' | 'switches' | 'artifacts'
 type Status = { phase: MeshLoadingPhase; message: string; cached: boolean }
@@ -57,10 +58,20 @@ let generation = 0, auxGeneration = 0, zoomTimer: ReturnType<typeof setTimeout> 
 let mainController = new AbortController(), auxController = new AbortController()
 const cache = new Map<string, { rows: MeshLinkDetail[]; group: MeshBusinessMetricGroup }>()
 const pending = new Map<string, Promise<void>>()
-const queryPending = new Map<string, ReturnType<typeof listMeshLinks>>()
-const sourceQueryCache = new Map<string, Awaited<ReturnType<typeof listMeshLinks>>>()
-const completeMetricCache = new MeshCompleteMetricCache<ReturnType<typeof query>, Awaited<ReturnType<typeof listMeshLinks>>>()
+const rawSampleCache = new MeshRawSampleCache()
+const rawPending = new Map<string, Promise<void>>()
+const rawRefreshScopes = new Set<string>()
+const rawFallbacks = new Map<string, RawFallback[]>()
+const legacySourceQueryCache = new Map<string, MeshLinkPage>()
+const legacySourceQueryPending = new Map<string, Promise<MeshLinkPage>>()
+const legacyCompleteMetricCache = new MeshCompleteMetricCache<ReturnType<typeof query>, MeshLinkPage>()
+let rawHttpRequests = 0
+let rawSqlQueries = 0
+let rawCacheHits = 0
+let rawGapQueries = 0
 type PageQuery = ReturnType<typeof query> & { page: number; page_size: number }
+type MeshLinkPage = Awaited<ReturnType<typeof listMeshLinks>>
+type RawFallback = { start: number; end: number; result: MeshLinkPage }
 const historyCache = new MeshWindowPageCache<PageQuery, MeshLinkDetail>((row, start, end) => { const time = millis(row.timestamp); return time !== null && time >= start && time <= end }, row => row.link_count === 0)
 const recordsCache = new MeshWindowPageCache<PageQuery & { peer: string }, MeshActiveBuildOrder>((row, start, end) => {
   const first = millis(row.observation_time || row.build_start_time), last = millis(row.observation_time || row.build_end_time)
@@ -85,28 +96,101 @@ function observePanel(element: unknown, key: MeshBusinessMetricKey): void {
   element.dataset.metric = key; panelElements.set(key, element); panelObserver.observe(element)
 }
 function metricSource(key: MeshBusinessMetricKey): string { return ['tx_rx', 'retry', 'error', 'garp', 'mul_join'].includes(key) ? 'counters' : ['tx_busy', 'rx_busy'].includes(key) ? 'busy' : key }
-function metricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false) {
-  const source = metricSource(key), id = `${props.sessionId}|${source}|${JSON.stringify(values)}`
-  if (refresh) sourceQueryCache.delete(id)
-  if (!refresh) {
-    const complete = completeMetricCache.get(`${props.sessionId}|${source}`, values)
-    if (complete) return Promise.resolve(complete)
-  }
-  let task = queryPending.get(id)
-  if (!task) {
-    const cached = sourceQueryCache.get(id)
-    if (cached) return Promise.resolve(cached)
-    task = listMeshLinks(props.sessionId, { ...values, metric_group: source, max_points: 1000, page_size: 1000 }, signal).then(result => {
-      if (!signal.aborted) { sourceQueryCache.set(id, result); completeMetricCache.put(`${props.sessionId}|${source}`, values, result); while (sourceQueryCache.size > 16) sourceQueryCache.delete(sourceQueryCache.keys().next().value!) }
-      return result
-    })
-    queryPending.set(id, task); void task.finally(() => { if (queryPending.get(id) === task) queryPending.delete(id) }).catch(() => undefined)
-  }
-  return task
-}
 function phase(key: MeshBusinessMetricKey, value: MeshLoadingPhase, message = '', cached = false): void { statuses.value[key] = { phase: value, message: message || meshLoadingPhaseLabel(value), cached } }
 function query() { return { time_from: windowRange.value.start, time_to: windowRange.value.end, radio: filters.value.radio, peer_ap_mac: filters.value.ap, exact_ap: true, link_role: filters.value.role, include_zero: filters.value.include_zero, ...scope.value } }
-function cancel(): void { generation++; selectionGeneration++; selectionController.abort(); selectionController = new AbortController(); clearTimeout(selectionTimer); selectionTimer = undefined; mainController.abort(); mainController = new AbortController(); pending.clear(); queryPending.clear(); clearTimeout(zoomTimer); definitions.forEach(d => { if (['PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING'].includes(statuses.value[d.key].phase)) phase(d.key, 'CANCELLED') }) }
+function rawQuery(values: ReturnType<typeof query>): MeshRawQuery { return { time_from: values.time_from, time_to: values.time_to, radio: values.radio, peer_ap_mac: values.peer_ap_mac, exact_ap: values.exact_ap, link_role: values.link_role, include_zero: values.include_zero, exclude_depot: values.exclude_depot, exclude_parking: values.exclude_parking } }
+function prepareRawRefresh(values: ReturnType<typeof query>): void {
+  const scopeKey = `${props.sessionId}|${meshRawScopeKey(rawQuery(values))}`
+  if (rawRefreshScopes.has(scopeKey)) return
+  rawSampleCache.clear(scopeKey)
+  rawFallbacks.delete(scopeKey)
+  legacySourceQueryCache.clear()
+  legacyCompleteMetricCache.clear()
+  rawRefreshScopes.add(scopeKey)
+  queueMicrotask(() => rawRefreshScopes.delete(scopeKey))
+}
+function fallbackFor(scopeKey: string, interval: { start: number; end: number }): RawFallback | undefined {
+  return rawFallbacks.get(scopeKey)?.find(item => item.start <= interval.start && item.end >= interval.end)
+}
+function fallbackItems(scopeKey: string, interval: { start: number; end: number }): MeshLinkDetail[] {
+  const fallback = fallbackFor(scopeKey, interval)
+  if (!fallback) return []
+  return fallback.result.items.filter(row => !row.is_boundary_context && (millis(row.timestamp) ?? -Infinity) >= interval.start && (millis(row.timestamp) ?? Infinity) <= interval.end)
+}
+async function loadRawInterval(values: MeshRawQuery, scopeKey: string, interval: { start: number; end: number }, signal: AbortSignal): Promise<void> {
+  const key = `${props.sessionId}|${scopeKey}|${interval.start}|${interval.end}`
+  const existing = rawPending.get(key)
+  if (existing) return existing
+  rawGapQueries++
+  rawHttpRequests++
+  const task = listMeshLinks(props.sessionId, { ...values, ...meshRawIntervalQuery(interval), raw_samples: true, include_context: true, raw_max_rows: 50_000, page_size: 1_000 }, signal).then(result => {
+    rawSqlQueries += result.sql_query_count || 0
+    if (signal.aborted) return
+    // Older backends (and third-party test doubles) ignore raw_samples. Keep
+    // their response request-local; it must never advance raw coverage.
+    if (result.raw_sample_version === undefined && result.raw_sample_complete === undefined) {
+      const current = rawFallbacks.get(scopeKey) || []
+      current.push({ start: interval.start, end: interval.end, result })
+      rawFallbacks.set(scopeKey, current.slice(-8))
+      return
+    }
+    if (result.raw_sample_version !== MESH_RAW_SAMPLE_VERSION || result.raw_sample_complete !== true) throw new Error('原始采样返回不完整，未写入共享缓存；请缩小时间范围后重试')
+    if (!rawSampleCache.put(scopeKey, interval, result)) throw new Error('原始采样版本或完整性校验失败，未写入共享缓存')
+  }).finally(() => { if (rawPending.get(key) === task) rawPending.delete(key) })
+  rawPending.set(key, task)
+  return task
+}
+async function loadRawSamples(values: ReturnType<typeof query>, signal: AbortSignal, refresh = false): Promise<MeshLinkDetail[]> {
+  const request = rawQuery(values), interval = meshRawRequestInterval(request)
+  if (!interval) return []
+  const scopeKey = `${props.sessionId}|${meshRawScopeKey(request)}`
+  if (refresh) prepareRawRefresh(values)
+  if (fallbackFor(scopeKey, interval)) return fallbackItems(scopeKey, interval)
+  const gaps = rawSampleCache.missing(scopeKey, interval)
+  if (!gaps.length) rawCacheHits++
+  await Promise.all(gaps.map(gap => loadRawInterval(request, scopeKey, gap, signal)))
+  if (fallbackFor(scopeKey, interval)) return fallbackItems(scopeKey, interval)
+  const remaining = rawSampleCache.missing(scopeKey, interval)
+  if (remaining.length) throw new Error('原始采样覆盖不完整，未生成派生指标')
+  return deriveMeshRawSamples(rawSampleCache.all(scopeKey, interval.end), interval)
+}
+function legacyMetricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false): Promise<MeshLinkPage> {
+  const source = metricSource(key), id = `${props.sessionId}|${source}|${JSON.stringify(values)}`
+  if (refresh) legacySourceQueryCache.delete(id)
+  const cached = legacySourceQueryCache.get(id)
+  if (cached) return Promise.resolve(cached)
+  if (!refresh) {
+    const complete = legacyCompleteMetricCache.get(`${props.sessionId}|${source}`, values)
+    if (complete) {
+      legacySourceQueryCache.set(id, complete)
+      return Promise.resolve(complete)
+    }
+  }
+  const pending = legacySourceQueryPending.get(id)
+  if (pending) return pending
+  const task = listMeshLinks(props.sessionId, { ...values, metric_group: source, max_points: 1000, page_size: 1000 }, signal).then(result => {
+    if (!signal.aborted) {
+      legacySourceQueryCache.set(id, result)
+      legacyCompleteMetricCache.put(`${props.sessionId}|${source}`, values, result)
+    }
+    return result
+  })
+  legacySourceQueryPending.set(id, task)
+  void task.finally(() => { if (legacySourceQueryPending.get(id) === task) legacySourceQueryPending.delete(id) }).catch(() => undefined)
+  return task
+}
+function metricQuery(_key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false) {
+  // LinkCnt=0 observations are sourced from the raw log, not mesh_links; the
+  // raw-sample contract intentionally rejects them, so retain the established
+  // metric endpoint for this explicit mixed-history view.
+  if (values.include_zero) return legacyMetricQuery(_key, values, signal, refresh)
+  const request = rawQuery(values), interval = meshRawRequestInterval(request), scopeKey = interval ? `${props.sessionId}|${meshRawScopeKey(request)}` : ''
+  return loadRawSamples(values, signal, refresh).then(items => {
+    if (interval && fallbackFor(scopeKey, interval)) return legacyMetricQuery(_key, values, signal, refresh)
+    return { items, total: items.length, page: 1, page_size: items.length, downsampled: false }
+  })
+}
+function cancel(): void { generation++; selectionGeneration++; selectionController.abort(); selectionController = new AbortController(); clearTimeout(selectionTimer); selectionTimer = undefined; mainController.abort(); mainController = new AbortController(); pending.clear(); rawPending.clear(); rawRefreshScopes.clear(); clearTimeout(zoomTimer); definitions.forEach(d => { if (['PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING'].includes(statuses.value[d.key].phase)) phase(d.key, 'CANCELLED') }) }
 function cancelApRequest(): void { apController.abort(); apController = new AbortController(); apLoading.value = false }
 function resetMain(): void { cancel(); completeIndex = []; autoSelect = true; fixedSelection.value = false; selectionMessage.value = ''; selectionCache.clear(); groups.value = {}; samples.value = {}; selectedLink.value = null; pointer.value = null; records.value = []; history.value = []; zeroTotal.value = 0; historyTotal.value = 0; recordTotal.value = 0; historyPage.value = 1; recordPage.value = 1 }
 function accept(key: MeshBusinessMetricKey, rows: MeshLinkDetail[], group: MeshBusinessMetricGroup): void { loadedScopes.set(key, JSON.stringify(query())); samples.value = { ...samples.value, [key]: rows }; groups.value = { ...groups.value, [key]: group }; if (autoSelect && !selectedLink.value && rows.length) selectLink(rows[0]!) }
@@ -185,9 +269,23 @@ async function loadRecords(): Promise<void> {
 async function loadHistory(): Promise<void> {
   const request = ++historyRequest, local = generation, signal = mainController.signal; historyLoading.value = true
   const values = { ...query(), page: historyPage.value, page_size: 100 }
-  try { const result = historyCache.get(props.sessionId, values) || await listMeshLinks(props.sessionId, values, signal); if (request === historyRequest && local === generation && !signal.aborted) { historyCache.put(props.sessionId, values, result); history.value = result.items; historyTotal.value = result.total; zeroTotal.value = result.zero_link_count || 0 } } catch (error) { if (!signal.aborted) ElMessage.warning(String(error)) } finally { if (request === historyRequest && local === generation) historyLoading.value = false }
+  try {
+    const cached = historyCache.get(props.sessionId, values)
+    let result = cached
+    if (!result) {
+      if (values.include_zero) result = await listMeshLinks(props.sessionId, values, signal)
+      else {
+        const items = await loadRawSamples(values, signal)
+        const start = (values.page - 1) * values.page_size
+        result = { items: items.slice(start, start + values.page_size), total: items.length, page: values.page, page_size: values.page_size, zero_link_count: items.filter(row => row.link_count === 0).length, downsampled: false }
+      }
+    }
+    if (request === historyRequest && local === generation && !signal.aborted) {
+      historyCache.put(props.sessionId, values, result); history.value = result.items; historyTotal.value = result.total; zeroTotal.value = result.zero_link_count || 0
+    }
+  } catch (error) { if (!signal.aborted) ElMessage.warning(String(error)) } finally { if (request === historyRequest && local === generation) historyLoading.value = false }
 }
-function loadMain(refresh = false): void { definitions.filter(d => typeof IntersectionObserver === 'undefined' || visibleMetrics.has(d.key)).forEach(d => { void loadMetric(d.key, refresh) }); void loadRecords(); void loadHistory() }
+function loadMain(refresh = false): void { if (refresh) prepareRawRefresh(query()); definitions.filter(d => typeof IntersectionObserver === 'undefined' || visibleMetrics.has(d.key)).forEach(d => { void loadMetric(d.key, refresh) }); void loadRecords(); void loadHistory() }
 function changeFilters(): void { resetMain(); loadMain() }
 function setWindow(value: MeshMonitorWindow): void {
   if (millis(value.start) === null || millis(value.end) === null || millis(value.start)! >= millis(value.end)!) { ElMessage.warning('请输入有效的起止时间'); return }
@@ -211,6 +309,7 @@ function selectTime(time: string, fixed = false): void {
 }
 async function locateTime(time: string): Promise<void> {
   const values = { ...query(), link_role: 'ACTIVE', include_zero: false }, id = `${props.sessionId}|${JSON.stringify(values)}|${time}`
+  const rawRequest = rawQuery(values), rawInterval = meshRawRequestInterval(rawRequest), rawScopeKey = rawInterval ? `${props.sessionId}|${meshRawScopeKey(rawRequest)}` : ''
   const acceptSelection = (row: MeshLinkDetail | null) => { selectedLink.value = row; pointer.value = row?.timestamp || time; selectionMessage.value = row ? `${fixedSelection.value ? '已固定' : '当前采样'} ${row.timestamp}` : '当前条件和时间窗口内无有效主用链路' }
   const current = ++selectionGeneration, local = generation
   selectionController.abort(); selectionController = new AbortController(); const signal = selectionController.signal
@@ -218,12 +317,35 @@ async function locateTime(time: string): Promise<void> {
   if (completeIndex.length) { acceptSelection(nearest(completeIndex, time)); return }
   selectionMessage.value = '正在定位主用链路采样…'
   try {
-    const result = await listMeshLinks(props.sessionId, { ...values, nearest_time: time, page_size: 1 }, signal)
+    const rows = await loadRawSamples(values, signal)
     if (current !== selectionGeneration || local !== generation || signal.aborted) return
-    const row = result.items.find(row => row.link_role === 'ACTIVE' && row.link_count !== 0) || null
+    if (rawInterval && fallbackFor(rawScopeKey, rawInterval)) {
+      let result: MeshLinkPage
+      try {
+        result = await listMeshLinks(props.sessionId, { ...values, nearest_time: time, page_size: 1 }, signal)
+      } catch (fallbackError) {
+        if (!signal.aborted && current === selectionGeneration) selectionMessage.value = fallbackError instanceof Error ? fallbackError.message : '时间点查询失败，请重试'
+        return
+      }
+      if (current !== selectionGeneration || local !== generation || signal.aborted) return
+      const row = result.items.find(item => item.link_role === 'ACTIVE' && item.link_count !== 0) || null
+      selectionCache.set(id, row); while (selectionCache.size > 128) selectionCache.delete(selectionCache.keys().next().value!)
+      acceptSelection(row)
+      return
+    }
+    const row = nearest(rows, time)
     selectionCache.set(id, row); while (selectionCache.size > 128) selectionCache.delete(selectionCache.keys().next().value!)
     acceptSelection(row)
-  } catch (error) { if (!signal.aborted && current === selectionGeneration) selectionMessage.value = error instanceof Error ? error.message : '时间点查询失败，请重试' }
+  } catch (error) {
+    if (signal.aborted || current !== selectionGeneration) return
+    try {
+      const result = await listMeshLinks(props.sessionId, { ...values, nearest_time: time, page_size: 1 }, signal)
+      if (current !== selectionGeneration || local !== generation || signal.aborted) return
+      const row = result.items.find(row => row.link_role === 'ACTIVE' && row.link_count !== 0) || null
+      selectionCache.set(id, row); while (selectionCache.size > 128) selectionCache.delete(selectionCache.keys().next().value!)
+      acceptSelection(row)
+    } catch (fallbackError) { if (!signal.aborted && current === selectionGeneration) selectionMessage.value = fallbackError instanceof Error ? fallbackError.message : '时间点查询失败，请重试' }
+  }
 }
 function selectMetric(key: MeshBusinessMetricKey): void { activeMetric.value = key; document.getElementById(`monitor-${key}`)?.scrollIntoView({ block: 'nearest', behavior: 'auto' }) }
 async function selectBuild(row: MeshActiveBuildOrder): Promise<void> {
@@ -241,10 +363,21 @@ function changeScope(): void { auxGeneration++; auxController.abort(); auxContro
 function openAp(row: MeshApSignal): void { resetMain(); filters.value.ap = row.peer_ap_mac || ''; filters.value.role = ''; switchWorkspace('main') }
 async function openContext(context: { ap?: string; radio?: number | null; start: string; end: string; focus?: string | null }): Promise<void> {
   resetMain(); autoSelect = !context.focus; filters.value.include_zero = false; filters.value.ap = context.ap || ''; filters.value.radio = context.radio ?? undefined; filters.value.role = 'ACTIVE'; windowRange.value = { start: context.start, end: context.end }; workspace.value = 'main'; emit('workspaceChange', 'main'); loadMain();
-  if (context.focus) { const local = generation, signal = mainController.signal; const result = await listMeshLinks(props.sessionId, { ...query(), time_from: context.focus, time_to: context.focus, page_size: 1 }, signal).catch(() => null); if (local === generation && result?.items[0]?.link_role === 'ACTIVE' && result.items[0].link_count !== 0) selectLink(result.items[0]) }
+  if (context.focus) {
+    const local = generation, signal = mainController.signal, values = query(), request = rawQuery(values), interval = meshRawRequestInterval(request), scopeKey = interval ? `${props.sessionId}|${meshRawScopeKey(request)}` : ''
+    const rows = await loadRawSamples(values, signal).catch(() => [])
+    if (local !== generation || signal.aborted) return
+    if (interval && fallbackFor(scopeKey, interval)) {
+      const result = await listMeshLinks(props.sessionId, { ...values, time_from: context.focus, time_to: context.focus, page_size: 1 }, signal).catch(() => null)
+      if (local === generation && result?.items[0]?.link_role === 'ACTIVE' && result.items[0].link_count !== 0) selectLink(result.items[0])
+    } else {
+      const row = nearest(rows, context.focus)
+      if (row) selectLink(row)
+    }
+  }
 }
 function refreshData(): void {
-  cancel(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); historyCache.clear(); recordsCache.clear(); loadedScopes.clear(); completeIndex = []; selectionCache.clear()
+  cancel(); cache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); loadedScopes.clear(); completeIndex = []; selectionCache.clear()
   auxGeneration++; auxController.abort(); auxController = new AbortController(); business.value = null
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
   if (workspace.value === 'main') loadMain(true)
@@ -254,12 +387,12 @@ function refreshData(): void {
 defineExpose({ openContext, switchWorkspace, refreshData })
 watch(() => props.sessionId, () => {
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
-  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); historyCache.clear(); recordsCache.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; workspace.value = 'overview'; emit('workspaceChange', 'overview');
+  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; workspace.value = 'overview'; emit('workspaceChange', 'overview');
   domain.value = { start: props.session.first_sample_time || '', end: props.session.last_sample_time || '' }; windowRange.value = { start: stamp(Math.max(millis(domain.value.start) || 0, (millis(domain.value.end) || 0) - 300_000)), end: domain.value.end }; void loadOverview()
 }, { immediate: true })
 onDeactivated(() => { pageActive = false; panelObserver?.disconnect(); cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoading.value = false; groups.value = {}; samples.value = {} })
 onActivated(() => { pageActive = true; panelElements.forEach(element => panelObserver?.observe(element)); if (workspace.value === 'main' && !Object.keys(groups.value).length) loadMain() })
-onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); sourceQueryCache.clear(); completeMetricCache.clear(); historyCache.clear(); recordsCache.clear() })
+onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear() })
 function roleLabel(row: MeshLinkDetail): string { return row.link_count === 0 ? '未连接（LinkCnt=0）' : row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : row.link_role === 'STANDBY' ? '备用（STANDBY）' : '未知' }
 const apColumns: NcTableColumn<MeshApSignal>[] = [{ key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'station', label: '归属站点' }, { key: 'section', label: '归属区间' }, { key: 'link_role', label: '链路角色', displayValue: row => row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : '备用（STANDBY）' }, { key: 'radio', label: '射频口' }, { key: 'avg_rssi', label: '平均 RSSI' }, { key: 'min_rssi', label: '最低 RSSI' }, { key: 'last_rssi', label: '最近 RSSI' }, { key: 'signal_grade', label: '信号质量' }, { key: 'valid_sample_count', label: '有效采样' }, { key: 'weak_sample_count', label: '低于阈值' }, { key: 'weak_ratio', label: '低信号比例', displayValue: row => row.weak_ratio == null ? '暂无数据' : `${(row.weak_ratio * 100).toFixed(1)}%` }, { key: 'last_seen', label: '最近采样时间' }]
 const parseColumns: NcTableColumn<MeshParseIssue>[] = [{ key: 'severity', label: '级别' }, { key: 'code', label: '异常类型' }, { key: 'message', label: '简要原因' }]

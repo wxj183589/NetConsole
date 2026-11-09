@@ -2,7 +2,7 @@ import { meshTimestampMillis } from './meshChartViewport'
 
 type WindowQuery = { time_from: string; time_to: string }
 type MetricResult = { items: unknown[]; total: number; downsampled?: boolean }
-type Interval = { start: number; end: number }
+export type Interval = { start: number; end: number }
 
 /** The API uses inclusive, millisecond-resolution boundaries. */
 export function meshMissingIntervals(request: Interval, coverage: Interval[]): Interval[] {
