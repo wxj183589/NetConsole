@@ -658,6 +658,8 @@ class MeshLinkPageDTO(ApiModel):
     raw_context_count: int = 0
     coverage_time_from: str | None = None
     coverage_time_to: str | None = None
+    query_id: str | None = None
+    operation_id: str | None = None
 
 
 class MeshActiveBuildOrderDTO(ApiModel):
@@ -732,6 +734,11 @@ class MeshActiveBuildOrderPageDTO(ApiModel):
     total: int = 0
     page: int = 1
     page_size: int = 100
+    query_duration_ms: float = 0
+    query_kind: str = ""
+    sql_query_count: int = 0
+    query_id: str | None = None
+    operation_id: str | None = None
 
 
 class MeshChartBackupLinkDTO(ApiModel):
@@ -1321,6 +1328,11 @@ class MeshApStatisticsPageDTO(ApiModel):
     total: int = 0
     page: int = 1
     page_size: int = 100
+    query_duration_ms: float = 0
+    query_kind: str = ""
+    sql_query_count: int = 0
+    query_id: str | None = None
+    operation_id: str | None = None
 
 
 class MeshReportArtifactDTO(ApiModel):

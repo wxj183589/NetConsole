@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { MeshLinkDetail } from '../../types/meshAnalysis'
 import { MESH_RAW_SAMPLE_VERSION, MeshRawSampleCache, deriveMeshRawSamples, meshRawSampleKey } from './meshRawSampleCache'
+import type { Interval } from './meshCompleteMetricCache'
 import { formatMeshViewportTimestamp } from './meshChartViewport'
 
 const BASE = Date.parse('2026-11-10T10:00:00.000')
@@ -44,6 +45,24 @@ describe('MESH raw sample cache', () => {
     expect(cache.visible('session-a', { start: BASE, end: BASE + 5_000 })).toHaveLength(2)
     expect(meshRawSampleKey(first)).not.toBe(meshRawSampleKey(sameTimeOtherLink))
     expect(cache.missing('session-b', { start: BASE, end: BASE + 5_000 })).toEqual([{ start: BASE, end: BASE + 5_000 }])
+  })
+
+  it('fills only the missing middle interval and then serves the full range from cache', () => {
+    const cache = new MeshRawSampleCache()
+    const requested: Interval[] = []
+    const a = { start: BASE, end: BASE + 1_000 }
+    const c = { start: BASE + 2_000, end: BASE + 3_000 }
+    cache.put('scope', a, page([row(1, 0), row(2, 1)]))
+    cache.put('scope', c, page([row(3, 2), row(4, 3)]))
+    const missing = cache.missing('scope', { start: BASE, end: BASE + 3_000 })
+    expect(missing).toEqual([{ start: BASE + 1_001, end: BASE + 1_999 }])
+    for (const interval of missing) {
+      requested.push(interval)
+      cache.put('scope', interval, page([row(5, 1.5)]))
+    }
+    expect(requested).toEqual([{ start: BASE + 1_001, end: BASE + 1_999 }])
+    expect(cache.missing('scope', { start: BASE, end: BASE + 3_000 })).toEqual([])
+    expect(cache.all('scope')).toHaveLength(5)
   })
 
   it('does not advance coverage for incomplete responses and evicts the least recently used scope', () => {

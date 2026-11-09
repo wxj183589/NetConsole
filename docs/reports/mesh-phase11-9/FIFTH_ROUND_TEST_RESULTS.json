@@ -1,0 +1,63 @@
+{
+  "phase": "11.9",
+  "round": 5,
+  "date": "2026-11-10",
+  "status": "PARTIAL",
+  "branch": "codex-A/global-dataroot-disk-policy",
+  "workspace_layout": "PASS",
+  "renderer": {
+    "typecheck": "PASS",
+    "targeted_files": 2,
+    "tests_passed": 43
+  },
+  "python": {
+    "targeted_modules": 4,
+    "tests_passed": 134,
+    "warnings": 2
+  },
+  "real_data": {
+    "authority": "D:\\NetConsoleData-dev",
+    "site": "宁波地铁12号线",
+    "session_id": "7c7b6df2-e67b-452a-ab1a-91760014501f:1",
+    "window": "2026-10-20 00:05:00.000..00:05:20.000",
+    "segmented_visible": [31, 30],
+    "full_visible": 61,
+    "duplicate_visible_ids": 0,
+    "missing_visible_ids": 0,
+    "include_zero_full_total": 62,
+    "include_zero_full_zero_count": 1,
+    "derived_field_by_field": "PASS",
+    "content_sha_integrity": "PASS",
+    "shm_mtime_integrity": "PARTIAL"
+  },
+  "cache_acceptance": {
+    "gap_fill": "PASS",
+    "hundred_interactions_http": 0,
+    "hundred_interactions_sql": 0,
+    "hundred_interactions_cache_hits_min": 100,
+    "ap_cache_limit": 32,
+    "raw_cache_scope_limit": 8,
+    "raw_cache_sample_limit": 100000
+  },
+  "electron": {
+    "isolated_smoke": "PASS",
+    "codex_runtime_ready": "PASS",
+    "window_width": 1920,
+    "window_height": 1080,
+    "real_mesh_workbench_with_real_data": "PENDING",
+    "heap_profile": "NOT_RUN",
+    "long_stability": "NOT_RUN"
+  },
+  "not_run": [
+    "full Python regression",
+    "full Renderer/Electron regression",
+    "real-data Electron workbench interaction trace",
+    "JS Heap/Canvas/ECharts profile",
+    "1/4/8 hour soak",
+    "Excel/WPS acceptance",
+    "real device acceptance"
+  ],
+  "push": false,
+  "merge": false,
+  "release": false
+}

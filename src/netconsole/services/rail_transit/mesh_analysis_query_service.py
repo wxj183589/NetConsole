@@ -19,7 +19,7 @@ from functools import lru_cache
 from threading import RLock
 from pathlib import Path
 from typing import Any, Callable
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.site_manager import SiteManager
@@ -924,13 +924,23 @@ class MeshAnalysisQueryService:
         raw_max_rows: int = 50_000,
         exclude_depot: bool = False,
         exclude_parking: bool = False,
+        trace: bool = False,
+        operation_id: str = "",
     ) -> MeshLinkPageDTO:
         started = perf_counter()
+        query_id = str(uuid4()) if trace else None
         context = self._context(site_id, session_id)
         if context.detail_db is None:
-            return MeshLinkPageDTO(page=page, page_size=page_size)
-        if raw_samples and (metric_group or nearest_time or include_zero):
-            raise MeshAnalysisQueryError("原始采样查询不能与指标、最近采样或 LinkCnt=0 模式同时使用")
+            return MeshLinkPageDTO(
+                page=page,
+                page_size=page_size,
+                query_duration_ms=round((perf_counter() - started) * 1000, 2) if trace else 0,
+                query_kind="raw_samples" if raw_samples else "nearest" if nearest_time else "metric" if metric_group else "page" if trace else "",
+                query_id=query_id,
+                operation_id=operation_id or None,
+            )
+        if raw_samples and (metric_group or nearest_time):
+            raise MeshAnalysisQueryError("原始采样查询不能与指标或最近采样模式同时使用")
         if raw_samples and (not time_from or not time_to):
             raise MeshAnalysisQueryError("原始采样查询需要明确的起止时间")
         raw_max_rows = min(max(int(raw_max_rows), 100), 100_000)
@@ -1063,6 +1073,8 @@ class MeshAnalysisQueryService:
                         sql_query_count=sql_query_count,
                         coverage_time_from=time_from or None,
                         coverage_time_to=time_to or None,
+                        query_id=query_id,
+                        operation_id=operation_id or None,
                     )
                 target_time = datetime.fromisoformat(nearest_time)
                 nearest = min(candidates, key=lambda item: (
@@ -1121,9 +1133,11 @@ class MeshAnalysisQueryService:
             cursor = conn.execute(
                 f"""
                 SELECT ml.id, ml.sample_id, ml.source_file_id, ml.sample_time, s.timestamp_tag,
-                       DENSE_RANK() OVER (
-                           ORDER BY ml.source_file_id, ml.sample_time, s.timestamp_tag
-                       ) - 1 AS sample_group_index,
+                       {(
+                           "CASE WHEN s.id IS NULL THEN NULL ELSE s.id - 1 END AS sample_group_index"
+                           if raw_samples
+                           else "DENSE_RANK() OVER (ORDER BY ml.source_file_id, ml.sample_time, s.timestamp_tag) - 1 AS sample_group_index"
+                       )},
                        ml.radio, ml.link_state, ml.peer_mac_raw, ml.peer_mac_normalized,
                        ml.peer_ap_name, ml.peer_ap_mac, ml.peer_site, ml.peer_radio_mac,
                        {location_select},
@@ -1201,17 +1215,26 @@ class MeshAnalysisQueryService:
             raw_sample_complete = False
             raw_context_count = 0
             if raw_samples:
+                database_total = total
                 target_rows = [dict(item) for item in cursor]
                 if len(target_rows) > raw_max_rows:
                     target_rows = target_rows[:raw_max_rows]
-                if total <= raw_max_rows and len(target_rows) == total:
-                    raw_sample_complete = True
+                visible_rows = [*target_rows, *zero_rows] if include_zero else target_rows
+                visible_rows.sort(key=lambda item: (str(item.get("sample_time") or ""), int(item.get("id") or 0)))
+                total = database_total + zero_count if include_zero else database_total
+                raw_sample_complete = (
+                    total <= raw_max_rows
+                    and len(target_rows) == database_total
+                    and len(visible_rows) == total
+                )
+                if len(visible_rows) > raw_max_rows:
+                    visible_rows = visible_rows[:raw_max_rows]
                 context_rows = self._raw_context_rows(conn, target_rows, time_from) if include_context else []
                 for item in context_rows:
                     item["is_boundary_context"] = True
                 raw_context_count = len(context_rows)
                 rows = sorted(
-                    [*context_rows, *target_rows],
+                    [*context_rows, *visible_rows],
                     key=lambda item: (str(item.get("sample_time") or ""), int(item.get("id") or 0)),
                 )
             else:
@@ -1227,7 +1250,7 @@ class MeshAnalysisQueryService:
                     )
                 except ValueError as exc:
                     raise MeshAnalysisQueryError(str(exc)) from exc
-            elif include_zero:
+            elif include_zero and not raw_samples:
                 if sort_by != "timestamp" or sort_order != "asc":
                     raise MeshAnalysisQueryError("零链路历史按采样时间正序查询")
                 total += zero_count
@@ -1337,6 +1360,8 @@ class MeshAnalysisQueryService:
             raw_context_count=raw_context_count,
             coverage_time_from=time_from or None,
             coverage_time_to=time_to or None,
+            query_id=query_id,
+            operation_id=operation_id or None,
         )
 
     @staticmethod
@@ -1446,10 +1471,29 @@ class MeshAnalysisQueryService:
         exclude_depot: bool = False,
         exclude_parking: bool = False,
         link_role: str = "",
+        trace: bool = False,
+        operation_id: str = "",
     ) -> MeshActiveBuildOrderPageDTO:
+        started = perf_counter()
+        query_id = str(uuid4()) if trace else None
+        sql_query_count = 0
+
+        def trace_sql(statement: str) -> None:
+            nonlocal sql_query_count
+            if statement.lstrip().upper().startswith(("SELECT", "WITH")):
+                sql_query_count += 1
+
         context = self._context(site_id, session_id)
         if context.detail_db is None:
-            return MeshActiveBuildOrderPageDTO(page=page, page_size=page_size)
+            return MeshActiveBuildOrderPageDTO(
+                page=page,
+                page_size=page_size,
+                query_duration_ms=round((perf_counter() - started) * 1000, 2) if trace else 0,
+                query_kind="active_build_order" if trace else "",
+                sql_query_count=sql_query_count,
+                query_id=query_id,
+                operation_id=operation_id or None,
+            )
         try:
             time_from = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
             time_to = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
@@ -1457,7 +1501,7 @@ class MeshAnalysisQueryService:
                 raise ValueError("reversed")
         except ValueError as exc:
             raise MeshAnalysisQueryError("监控时间范围无效") from exc
-        rows = self._build_rows(context)
+        rows = self._build_rows_with_trace(context, trace_sql if trace else None)
         ap_map = self._ap_map(site_id)
         items: list[MeshActiveBuildOrderDTO] = []
         peer_needle = peer.casefold().strip()
@@ -1611,6 +1655,11 @@ class MeshAnalysisQueryService:
             total=len(items),
             page=current,
             page_size=size,
+            query_duration_ms=round((perf_counter() - started) * 1000, 2) if trace else 0,
+            query_kind="active_build_order" if trace else "",
+            sql_query_count=sql_query_count,
+            query_id=query_id,
+            operation_id=operation_id or None,
         )
 
     def get_link_timeline(self, site_id: str, session_id: str, *, time_from: str = "", time_to: str = "", limit: int = 2_000) -> MeshTimelineDTO:
@@ -2906,6 +2955,8 @@ class MeshAnalysisQueryService:
         weak_signal_threshold: int | None = None,
         link_role: str = "ACTIVE",
         radio: int | None = None,
+        trace: bool = False,
+        operation_id: str = "",
     ) -> dict[str, Any]:
         from netconsole.services.mesh_business_statistics import (
             build_mesh_business_statistics,
@@ -2914,12 +2965,35 @@ class MeshAnalysisQueryService:
         )
         from netconsole.services.mesh_quality_analysis import load_default_rules
 
+        started = perf_counter()
+        query_id = str(uuid4()) if trace else None
+        sql_query_count = 0
+
+        def trace_sql(statement: str) -> None:
+            nonlocal sql_query_count
+            if statement.lstrip().upper().startswith(("SELECT", "WITH")):
+                sql_query_count += 1
+
+        def traced(result: dict[str, Any], cache_status: str) -> dict[str, Any]:
+            if not trace:
+                return result
+            payload = dict(result)
+            payload["_query_trace"] = {
+                "query_id": query_id,
+                "operation_id": operation_id or None,
+                "query_kind": "business_statistics",
+                "cache_status": cache_status,
+                "query_duration_ms": round((perf_counter() - started) * 1000, 2),
+                "sql_query_count": sql_query_count,
+            }
+            return payload
+
         context = self._context(site_id, session_id)
         params = load_site_mesh_analysis_params(self.paths, site_id)
         rules = effective_business_rules(params, load_default_rules())
         snapshot = self._ap_map(site_id)
         if context.detail_db is None:
-            return build_mesh_business_statistics(
+            return traced(build_mesh_business_statistics(
                 [],
                 rules,
                 snapshot,
@@ -2929,7 +3003,7 @@ class MeshAnalysisQueryService:
                 radio=radio,
                 exclude_depot=exclude_depot,
                 exclude_parking=exclude_parking,
-            )
+            ), "empty")
         path = context.detail_db
         wal = path.with_name(path.name + "-wal")
         signature = (
@@ -2949,8 +3023,10 @@ class MeshAnalysisQueryService:
         )
         cached = getattr(self, "_business_statistics_cache", None)
         if cached and cached[0] == signature:
-            return cached[1]
+            return traced(cached[1], "hit")
         with closing(self._connect_readonly(path)) as conn:
+            if trace:
+                conn.set_trace_callback(trace_sql)
             result = build_mesh_business_statistics(
                 iter_business_links(conn, context.detail_source_id),
                 rules,
@@ -2966,7 +3042,7 @@ class MeshAnalysisQueryService:
         self._business_statistics_cache = (
             (signature, result) if len(result["single_links"]) < 10000 else None
         )
-        return result
+        return traced(result, "miss")
 
     def list_ap_signal_statistics(
         self,
@@ -2985,6 +3061,8 @@ class MeshAnalysisQueryService:
         weak_signal_threshold: int | None = None,
         link_role: str = "ACTIVE",
         radio: int | None = None,
+        trace: bool = False,
+        operation_id: str = "",
     ) -> MeshApStatisticsPageDTO:
         from netconsole.services.mesh_business_statistics import statistics_page
 
@@ -2996,6 +3074,8 @@ class MeshAnalysisQueryService:
             weak_signal_threshold=weak_signal_threshold,
             link_role=link_role,
             radio=radio,
+            trace=trace,
+            operation_id=operation_id,
         )
         current, size = self._page(page, page_size)
         rows, total = statistics_page(
@@ -3008,12 +3088,21 @@ class MeshAnalysisQueryService:
             sort_by=sort_by,
             descending=descending,
         )
+        query_trace = result.get("_query_trace", {})
+        summary = dict(result["summary"])
+        if query_trace:
+            summary.update({key: query_trace.get(key) for key in ("query_duration_ms", "sql_query_count", "query_kind", "query_id", "operation_id")})
         return MeshApStatisticsPageDTO(
             items=[MeshApStatisticsDTO(**row) for row in rows],
             total=total,
             page=current,
             page_size=size,
-            summary=result["summary"],
+            summary=summary,
+            query_duration_ms=float(query_trace.get("query_duration_ms", 0) or 0),
+            query_kind=str(query_trace.get("query_kind", "") or ""),
+            sql_query_count=int(query_trace.get("sql_query_count", 0) or 0),
+            query_id=query_trace.get("query_id"),
+            operation_id=query_trace.get("operation_id"),
         )
 
     def list_single_links(
@@ -3415,6 +3504,13 @@ class MeshAnalysisQueryService:
         return result
 
     def _build_rows(self, context: _SessionContext) -> list[dict[str, Any]]:
+        return self._build_rows_with_trace(context)
+
+    def _build_rows_with_trace(
+        self,
+        context: _SessionContext,
+        trace_callback: Callable[[str], None] | None = None,
+    ) -> list[dict[str, Any]]:
         if context.detail_db is None:
             return []
         stat = context.detail_db.stat()
@@ -3424,9 +3520,8 @@ class MeshAnalysisQueryService:
             )
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             site_params = "{}"
-        return [
-            dict(row)
-            for row in self._build_rows_cached(
+        if trace_callback is None:
+            rows = self._build_rows_cached(
                 str(context.detail_db),
                 stat.st_mtime_ns,
                 stat.st_size,
@@ -3434,7 +3529,14 @@ class MeshAnalysisQueryService:
                 site_params,
                 "{}",
             )
-        ]
+        else:
+            repository = MeshMrRepository(context.detail_db, read_only=True, trace_callback=trace_callback)
+            rows = repository.query_active_link_build_order(
+                source_file_id=context.detail_source_id,
+                analysis_params=site_params or None,
+                fallback_analysis_params="{}",
+            )
+        return [dict(row) for row in rows]
 
     def _resolve_detail_source_id(self, detail_db: Path | None, source: dict[str, Any]) -> int:
         index_source_id = int(source["id"])

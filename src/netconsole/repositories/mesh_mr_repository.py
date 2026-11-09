@@ -10,7 +10,7 @@ from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from statistics import median
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from netconsole.core import app_logger
 from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
@@ -252,11 +252,13 @@ class MeshMrRepository:
         read_only: bool = False,
         parsed_dir: Path | None = None,
         index_database: bool | None = None,
+        trace_callback: Callable[[str], None] | None = None,
     ) -> None:
         self.path = path
         self.read_only = read_only
         self.parsed_dir = Path(parsed_dir) if parsed_dir is not None else self.path.parent / "parsed"
         self._index_database = index_database
+        self._trace_callback = trace_callback
         if read_only:
             if not self.path.is_file() or not self._is_compact_schema(self.path):
                 raise MeshSchemaRebuildRequired("MESH 派生数据库不存在或版本不兼容")
@@ -3765,6 +3767,8 @@ class MeshMrRepository:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only = ON")
             conn.execute("PRAGMA busy_timeout = 5000")
+            if self._trace_callback is not None:
+                conn.set_trace_callback(self._trace_callback)
             return conn
         conn = sqlite3.connect(self.path, timeout=30, factory=_ManagedConnection)
         conn.row_factory = sqlite3.Row
