@@ -185,13 +185,12 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
     expect(wrapper.emitted('selection-clear')).toEqual([[]])
   })
 
-  it('leaves ordinary wheel scrolling to the page and disables ECharts wheel capture', async () => {
+  it('zooms on ordinary wheel and disables ECharts wheel capture', async () => {
     const wrapper = mounted({ window: domain }); const chart = await visible(wrapper)
-    const event = wheel({ deltaY: 100, bubbles: true, cancelable: true })
+    const event = wheel({ deltaY: -100, bubbles: true, cancelable: true })
     wrapper.get('.mesh-metric-chart').element.dispatchEvent(event)
-    expect(event.defaultPrevented).toBe(false)
-    expect(wrapper.emitted('viewport-change')).toBeUndefined()
-    expect(chart.convertFromPixel).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(true)
+    expect(wrapper.emitted('viewport-change')).toEqual([[{ start: '2026-11-09 10:01:00.000', end: '2026-11-09 10:09:00.000' }]])
     expect(chart.setOption.mock.calls[0]![0].dataZoom[0]).toMatchObject({
       zoomOnMouseWheel: false, moveOnMouseWheel: false, preventDefaultMouseMove: false,
     })
@@ -199,7 +198,7 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
 
   it('zooms the shared time window around the actual Shift-wheel pixel time', async () => {
     const wrapper = mounted({ window: domain }); const chart = await visible(wrapper)
-    const event = wheel({ deltaY: 100, shiftKey: true, clientX: 240, clientY: 80, bubbles: true, cancelable: true })
+    const event = wheel({ deltaY: -100, shiftKey: true, clientX: 240, clientY: 80, bubbles: true, cancelable: true })
     wrapper.get('.mesh-metric-chart').element.dispatchEvent(event)
     expect(event.defaultPrevented).toBe(true)
     expect(chart.containPixel).toHaveBeenCalledWith({ gridIndex: 0 }, [240, 80])
@@ -217,8 +216,29 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
     host.dispatchEvent(outside)
     expect(outside.defaultPrevented).toBe(false)
     expect(wrapper.emitted('viewport-change')).toBeUndefined()
-    host.dispatchEvent(wheel({ deltaY: -100, shiftKey: true, cancelable: true }))
-    expect(wrapper.emitted('viewport-change')).toEqual([[domain]])
+    const boundary = wheel({ deltaY: 100, shiftKey: true, cancelable: true })
+    host.dispatchEvent(boundary)
+    expect(boundary.defaultPrevented).toBe(false)
+    expect(wrapper.emitted('viewport-change')).toBeUndefined()
+  })
+
+  it('zooms out around the pointer and preserves millisecond precision', async () => {
+    const window = { start: '2026-11-09 10:02:00.123', end: '2026-11-09 10:06:00.123' }
+    const wrapper = mounted({ window }); const chart = await visible(wrapper)
+    chart.convertFromPixel.mockReturnValue(millis('2026-11-09 10:03:00.123')!)
+    const event = wheel({ deltaY: 100, cancelable: true })
+    wrapper.get('.mesh-metric-chart').element.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(wrapper.emitted('viewport-change')).toEqual([[{ start: '2026-11-09 10:01:45.123', end: '2026-11-09 10:06:45.123' }]])
+  })
+
+  it('does not capture wheel at the minimum window', async () => {
+    const window = { start: '2026-11-09 10:05:00.000', end: '2026-11-09 10:05:00.100' }
+    const wrapper = mounted({ window }); await visible(wrapper)
+    const event = wheel({ deltaY: -100, cancelable: true })
+    wrapper.get('.mesh-metric-chart').element.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(wrapper.emitted('viewport-change')).toBeUndefined()
   })
 
   it('selects an arbitrary Shift-click time without requiring a clicked series point', async () => {
