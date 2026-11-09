@@ -535,7 +535,17 @@ class MeshAnalysisSessionDetailDTO(ApiModel):
     maintenance_state: MeshMaintenanceStateDTO
 
 
+class MeshCounterSampleDTO(ApiModel):
+    current: int | None = None
+    previous: int | None = None
+    delta: int | None = None
+    interval_seconds: float | None = None
+    per_second: float | None = None
+    status: str = "first"
+
+
 class MeshLinkDetailDTO(ApiModel):
+    counter_samples: dict[str, MeshCounterSampleDTO] = Field(default_factory=dict)
     monitor_gap_before: bool = False
     local_tx_delta: int | None = None
     peer_tx_delta: int | None = None

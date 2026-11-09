@@ -238,6 +238,7 @@ const en: Record<string, string> = {
   'common.yes': 'Yes', 'common.no': 'No',
   'table.no_data': 'No data', 'table.column_settings': 'Column settings',
   'table.autofit': 'Auto fit columns', 'table.reset_layout': 'Restore default layout',
+  'table.apply_query': 'Apply and query',
   'table.pin': 'Pin position', 'table.pin_left': 'Left', 'table.pin_right': 'Right',
   'table.unpinned': 'Unpinned', 'table.move_up': 'Move up', 'table.move_down': 'Move down',
   'job_center.business_result.label': 'Business result',

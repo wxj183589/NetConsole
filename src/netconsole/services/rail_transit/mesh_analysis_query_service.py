@@ -99,7 +99,7 @@ from netconsole.services.rail_transit.mesh_ap_location_service import (
     MeshApLocationSnapshot,
 )
 from netconsole.services.mesh_source_locator import MeshSourceLocator
-from netconsole.services.mesh_monitor_sampling import METRIC_FIELDS, select_monitor_rows
+from netconsole.services.mesh_monitor_sampling import METRIC_FIELDS, monitor_identity, select_monitor_rows
 from netconsole.parsers.mesh_log_parser import MeshLogParser
 
 
@@ -913,6 +913,7 @@ class MeshAnalysisQueryService:
         radio: int | None = None,
         exact_ap: bool = False,
         metric_group: str = "",
+        nearest_time: str = "",
         max_points: int = 1000,
         include_zero: bool = False,
         exclude_depot: bool = False,
@@ -922,10 +923,11 @@ class MeshAnalysisQueryService:
         context = self._context(site_id, session_id)
         if context.detail_db is None:
             return MeshLinkPageDTO(page=page, page_size=page_size)
-        if metric_group or include_zero or exact_ap:
+        if metric_group or include_zero or exact_ap or nearest_time:
             try:
                 time_from = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
                 time_to = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
+                nearest_time = datetime.fromisoformat(nearest_time).isoformat(sep=" ", timespec="milliseconds") if nearest_time else ""
                 if time_from and time_to and time_from > time_to:
                     raise ValueError("reversed")
             except ValueError as exc:
@@ -935,11 +937,15 @@ class MeshAnalysisQueryService:
         ap_map = self._ap_map(site_id)
         if metric_group and metric_group not in METRIC_FIELDS:
             raise MeshAnalysisQueryError("未知的监控指标")
-        if metric_group and (not time_from or not time_to):
+        if (metric_group or nearest_time) and (not time_from or not time_to):
             raise MeshAnalysisQueryError("监控查询需要明确的起止时间")
-        if metric_group or include_zero or radio is not None or exact_ap:
+        if metric_group or include_zero or radio is not None or exact_ap or nearest_time:
             clauses.append("ml.source_file_id = ?")
             values.append(context.detail_source_id)
+        if nearest_time:
+            clauses.append("ml.link_state = 'ACTIVE'")
+            # Time selection always resolves an actual connected ACTIVE record.
+            include_zero = False
         if radio is not None:
             clauses.append("ml.radio = ?")
             values.append(radio)
@@ -1011,6 +1017,28 @@ class MeshAnalysisQueryService:
         sort_column = {"timestamp": "ml.sample_time", "rssi": "ml.local_rssi_db", "peer_ap_name": "ml.peer_ap_name"}.get(sort_by, "ml.sample_time")
         with closing(self._connect_readonly(context.detail_db)) as conn:
             link_columns = self._table_columns(conn, "mesh_links")
+            if nearest_time:
+                candidates = []
+                for comparator, order in (("<=", "DESC"), (">=", "ASC")):
+                    candidate = conn.execute(
+                        f"SELECT ml.id, ml.sample_time FROM mesh_links ml {where} "
+                        f"AND ml.sample_time {comparator} ? "
+                        f"ORDER BY ml.sample_time {order}, ml.id {order} LIMIT 1",
+                        (*values, nearest_time),
+                    ).fetchone()
+                    if candidate is not None:
+                        candidates.append(candidate)
+                if not candidates:
+                    return MeshLinkPageDTO(page=1, page_size=1)
+                target_time = datetime.fromisoformat(nearest_time)
+                nearest = min(candidates, key=lambda item: (
+                    abs((datetime.fromisoformat(item["sample_time"]) - target_time).total_seconds()),
+                    item["sample_time"], item["id"],
+                ))
+                # The following projection reads one row and avoids a window-wide COUNT/rank.
+                where = "WHERE ml.id = ?"
+                values = [nearest["id"]]
+                current, size, offset = 1, 1, 0
             identity_select = ", ".join(
                 (
                     f"ml.{column}"
@@ -1032,7 +1060,21 @@ class MeshAnalysisQueryService:
                 )
                 for column in ("peer_section", "peer_location", "peer_direction")
             )
-            total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
+            counter_context_select = ""
+            if metric_group == "counters" and not nearest_time:
+                identity_fields = ("peer_mac_normalized", "establish_time", "peer_radio_mac", "peer_radio_label", "peer_ap_mac")
+                same_identity = " AND ".join(f"p.{field} IS ml.{field}" for field in identity_fields)
+                preceding = ("p.source_file_id = ml.source_file_id AND p.radio IS ml.radio AND p.sample_time <= ml.sample_time "
+                             "AND (p.sample_time < ml.sample_time OR (p.sample_time = ml.sample_time AND p.id < ml.id))")
+                counter_context_select = f"""
+                    , (SELECT NOT ({same_identity}) FROM mesh_links p
+                       WHERE {preceding} AND p.link_state IS ml.link_state
+                       ORDER BY p.sample_time DESC, p.id DESC LIMIT 1) AS monitor_raw_lane_changed
+                    , (SELECT p.link_state FROM mesh_links p
+                       WHERE {preceding} AND {same_identity}
+                       ORDER BY p.sample_time DESC, p.id DESC LIMIT 1) AS monitor_raw_physical_role
+                """
+            total = 1 if nearest_time else int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
             cursor = conn.execute(
                 f"""
                 SELECT ml.id, ml.sample_id, ml.source_file_id, ml.sample_time, s.timestamp_tag,
@@ -1061,6 +1103,7 @@ class MeshAnalysisQueryService:
                           AND se.radio = ml.radio
                           AND se.event_time = ml.sample_time
                         ORDER BY se.id LIMIT 1) AS event_type
+                       {counter_context_select}
                 FROM mesh_links ml
                 LEFT JOIN samples s ON s.id = ml.sample_id
                 LEFT JOIN source_files sf ON sf.id = ml.source_file_id
@@ -1108,7 +1151,9 @@ class MeshAnalysisQueryService:
                         raise MeshAnalysisQueryError("零链路观测过多，请缩小时间范围或选择单 AP")
             zero_count = len(zero_rows)
             combined = heapq.merge((dict(row) for row in cursor), sorted(zero_rows, key=lambda row: (row["sample_time"], row["id"])), key=lambda row: (row["sample_time"], row["id"])) if metric_group or include_zero else cursor
-            if metric_group:
+            if nearest_time:
+                rows = [self._nearest_counter_context(conn, dict(item), time_from, time_to, context.raw_path) for item in cursor]
+            elif metric_group:
                 try:
                     rows, total, zero_count = select_monitor_rows(
                         combined, metric_group, time_from, time_to,
@@ -1204,14 +1249,64 @@ class MeshAnalysisQueryService:
                     match_method=str(data.get("peer_match_rule") or data.get("peer_resolve_source") or "") or None,
                     **self._identity_payload(data, location),
                     warning=None if peer_name else "Peer AP 未匹配",
+                    counter_samples=data.get("counter_samples", {}),
                     **{field + "_delta": data.get(field + "_delta") for field in METRIC_FIELDS["counters"]},
                 )
             )
         return MeshLinkPageDTO(
             items=items, total=total, page=current, page_size=size, zero_link_count=zero_count,
-            downsampled=bool(metric_group and total > len(items)),
+            downsampled=bool(metric_group and not nearest_time and total > len(items)),
             query_duration_ms=round((perf_counter() - started) * 1000, 2),
         )
+
+    @staticmethod
+    def _nearest_counter_context(conn, target, time_from, time_to, raw_path):
+        """Read bounded physical history and the actual preceding role lane.
+
+        AP filters select the target only; they must not hide an intervening
+        ACTIVE switch or role transition when calculating its counter interval.
+        """
+        identity_fields = (
+            "source_file_id", "radio", "peer_mac_normalized", "establish_time",
+            "peer_radio_mac", "peer_radio_label", "peer_ap_mac",
+        )
+        identity_where = " AND ".join(f"{field} IS ?" for field in identity_fields)
+        before_where = "sample_time <= ? AND (sample_time < ? OR (sample_time = ? AND id < ?))"
+        before_values = (target["sample_time"], target["sample_time"], target["sample_time"], target["id"])
+        history = [dict(item) for item in conn.execute(
+            f"SELECT * FROM mesh_links WHERE {identity_where} AND {before_where} "
+            "AND sample_time >= ? ORDER BY sample_time DESC, id DESC LIMIT 102",
+            (*(target.get(field) for field in identity_fields), *before_values, time_from),
+        )]
+        previous_lane = conn.execute(
+            "SELECT * FROM mesh_links WHERE source_file_id = ? AND radio IS ? "
+            f"AND link_state = ? AND {before_where} AND sample_time >= ? "
+            "ORDER BY sample_time DESC, id DESC LIMIT 1",
+            (target["source_file_id"], target["radio"], target["link_state"], *before_values, time_from),
+        ).fetchone()
+        if previous_lane is not None and monitor_identity(dict(previous_lane)) != monitor_identity(target):
+            history.append(dict(previous_lane))
+        if history and raw_path is not None and raw_path.is_file():
+            stat = raw_path.stat()
+            start = min(item["sample_time"] for item in history)
+            with _ZERO_READ_LOCK:
+                # Reuse the stable viewport cache across pointer selections.
+                zeros = _zero_window(str(raw_path), stat.st_mtime_ns, stat.st_size, time_from, time_to, target["radio"])
+            latest_zero = None
+            for record in zeros:
+                stamp = record.sample_time.isoformat(sep=" ", timespec="milliseconds")
+                if not start <= stamp <= target["sample_time"]:
+                    continue
+                if latest_zero is None or stamp > latest_zero["sample_time"]:
+                    latest_zero = {"id": -record.source_line_number, "sample_time": stamp,
+                                   "source_file_id": target["source_file_id"], "radio": record.radio,
+                                   "link_state": "UNCONNECTED", "link_count": 0}
+            if latest_zero is not None:
+                history.append(latest_zero)
+        history.append(target)
+        history.sort(key=lambda item: (item["sample_time"], item["id"]))
+        enriched, *_ = select_monitor_rows(history, "counters", time_from, target["sample_time"], 2000)
+        return next(item for item in enriched if item["id"] == target["id"])
 
     def list_active_build_order(
         self,

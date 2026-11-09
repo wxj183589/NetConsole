@@ -19,6 +19,13 @@ METRIC_FIELDS = {
 }
 
 
+def monitor_identity(row: dict[str, Any]) -> tuple:
+    return tuple(row.get(field) for field in (
+        "source_file_id", "radio", "peer_mac_normalized", "establish_time",
+        "peer_radio_mac", "peer_radio_label", "peer_ap_mac", "local_ap_mac",
+    ))
+
+
 def select_monitor_rows(rows: Iterable[dict[str, Any]], group: str, start: str, end: str, budget: int):
     """Keep bucket extrema/nulls and both sides of every identity/role boundary.
 
@@ -34,22 +41,40 @@ def select_monitor_rows(rows: Iterable[dict[str, Any]], group: str, start: str, 
     previous: dict[tuple, dict[str, Any]] = {}
     physical_previous: dict[tuple, dict[str, Any]] = {}
     counters: dict[tuple, dict[str, Any]] = {}
-    intervals: deque[float] = deque(maxlen=101)
+    intervals: dict[tuple, deque[float]] = {}
     total = zero = 0
     for row in rows:
         row = dict(row)
         total += 1
         zero += row.get("link_count") == 0
-        key = (row.get("source_file_id"), row.get("radio"), row.get("peer_mac_normalized"), row.get("establish_time"))
+        key = monitor_identity(row)
         old_counter = counters.get(key)
         if group == "counters":
+            interval = (datetime.fromisoformat(row["sample_time"]) - datetime.fromisoformat(old_counter["sample_time"])).total_seconds() if old_counter else None
+            row["counter_samples"] = {}
             for field in fields:
                 value, before = row.get(field), old_counter.get(field) if old_counter else None
+                if old_counter is not None and (value is None) != (before is None):
+                    boundaries[row["id"]] = row
+                    boundaries[old_counter["id"]] = old_counter
                 if value is not None and before is not None and value < before:
                     boundaries[row["id"]] = row
                     boundaries[old_counter["id"]] = old_counter
                 row[field + "_delta"] = value - before if (value is not None and before is not None and value >= before and row.get("link_count") != 0 and row["sample_time"] > old_counter["sample_time"]) else None
-            counters[key] = row
+                state = ("missing" if value is None else "first" if old_counter is None else
+                         "invalid_interval" if interval is None or interval <= 0 else
+                         "missing" if before is None else "reset" if value < before else "valid")
+                delta = row[field + "_delta"]
+                row["counter_samples"][field] = {"current": value, "previous": before,
+                    "delta": delta, "interval_seconds": interval,
+                    "per_second": delta / interval if delta is not None and interval is not None and interval > 0 else None,
+                    "status": state}
+            # Duplicate/out-of-order records must not replace the last valid baseline.
+            if old_counter is None or interval > 0:
+                counters[key] = row
+            else:
+                boundaries[row["id"]] = row
+                boundaries[old_counter["id"]] = old_counter
             if len(counters) > budget:
                 raise ValueError("当前窗口链路过多，请缩小时间范围或选择单个 AP")
         lane = (row.get("source_file_id"), row.get("radio"), row.get("link_state"))
@@ -57,33 +82,50 @@ def select_monitor_rows(rows: Iterable[dict[str, Any]], group: str, start: str, 
         if physical_old is not None and physical_old.get("link_state") != row.get("link_state"):
             boundaries[physical_old["id"]] = physical_old
             boundaries[row["id"]] = row
-        physical_previous[key] = row
+        if physical_old is None or row["sample_time"] > physical_old["sample_time"]:
+            physical_previous[key] = row
         if len(physical_previous) > budget:
             raise ValueError("当前窗口链路过多，请缩小时间范围或选择单个 AP")
         old = previous.get(lane)
-        gap = (datetime.fromisoformat(row["sample_time"]) - datetime.fromisoformat(old["sample_time"])).total_seconds() if old else 0
-        threshold = min(max((median(intervals) if intervals else 1.0) * 5, 5.0), 60.0)
+        if group == "counters" and old_counter is None:
+            boundaries[row["id"]] = row
+        gap_old = old_counter if group == "counters" else old
+        gap = (datetime.fromisoformat(row["sample_time"]) - datetime.fromisoformat(gap_old["sample_time"])).total_seconds() if gap_old else 0
+        cadence = intervals.setdefault(key if group == "counters" else lane, deque(maxlen=101))
+        threshold = min(max((median(cadence) if cadence else 1.0) * 5, 5.0), 60.0)
         row["monitor_gap_before"] = gap > threshold
-        if group == "counters" and (row["monitor_gap_before"] or (physical_old is not None and physical_old.get("link_state") != row.get("link_state"))):
+        lane_changed = old is not None and monitor_identity(old) != key
+        lane_changed = lane_changed or bool(row.get("monitor_raw_lane_changed"))
+        raw_role_changed = row.get("monitor_raw_physical_role") not in (None, row.get("link_state"))
+        if group == "counters" and (lane_changed or raw_role_changed):
+            boundaries[row["id"]] = row
+            if old is not None:
+                boundaries[old["id"]] = old
+        if group == "counters" and (row["monitor_gap_before"] or lane_changed or raw_role_changed or row.get("link_count") == 0 or (physical_old is not None and physical_old.get("link_state") != row.get("link_state"))):
             for field in fields:
                 row[field + "_delta"] = None
+                row["counter_samples"][field].update(delta=None, per_second=None,
+                    status="gap" if row["monitor_gap_before"] else "link_changed")
         if row.get("link_count") == 0:
             for counter_key in tuple(counters):
                 if counter_key[:2] == key[:2]:
                     del counters[counter_key]
-        if 0 < gap <= threshold:
-            intervals.append(gap)
+        if gap > 0:
+            cadence.append(gap)
         if old is None or row["monitor_gap_before"] or (old.get("peer_mac_normalized"), old.get("establish_time"), old.get("link_count"), old.get("link_state")) != (row.get("peer_mac_normalized"), row.get("establish_time"), row.get("link_count"), row.get("link_state")):
             boundaries[row["id"]] = row
             if old is not None:
                 boundaries[old["id"]] = old
-        previous[lane] = row
+        if old is None or row["sample_time"] > old["sample_time"]:
+            previous[lane] = row
         if len(boundaries) > budget // 2:
             raise ValueError("当前窗口切换事件过密，请缩小时间范围；未丢弃切换边界")
         stamp = datetime.fromisoformat(row["sample_time"]).timestamp()
         bucket = min(buckets - 1, max(0, int((stamp - low) / max(1, high - low) * buckets)))
         for field in fields:
-            effective = field + "_delta" if group == "counters" else field
+            effective = field + "_per_second" if group == "counters" else field
+            if group == "counters":
+                row[effective] = row["counter_samples"][field]["per_second"]
             value = row.get(effective)
             if value is None:
                 extrema.setdefault((lane, bucket, field, "null"), row)

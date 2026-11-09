@@ -25,7 +25,10 @@ from netconsole.services.mesh_business_statistics import (
 )
 from netconsole.services.mesh_link_detail_export import (
     AP_SIGNAL_COLUMNS,
+    BUSINESS_AP_SIGNAL_COLUMNS,
+    BUSINESS_BUILD_COLUMNS,
     BUSINESS_LINK_COLUMNS,
+    BUSINESS_SINGLE_LINK_COLUMNS,
     LINK_DETAIL_EXPORT_COLUMNS,
     MeshLinkDetailExportCancelled,
     export_mesh_link_details_xlsx,
@@ -426,16 +429,31 @@ def test_detail_xlsx_modes_counts_styles_and_statistics(tmp_path, mode, empty):
     assert [cell.value for cell in detail[1]] == [label for label, _ in columns]
     headers = [cell.value for cell in detail[1]]
     if mode == "business":
-        assert {"原始 Peer MAC", "PEER Radio"} <= set(headers)
-        assert not {"Peer Radio MAC", "匹配规则", "身份来源"}.intersection(headers)
+        assert {"本端射频口", "对端射频口", "AP 名称", "AP MAC"} <= set(headers)
+        assert not {
+            "采样标识", "原始 Peer MAC", "Peer Radio MAC", "匹配规则",
+            "身份来源", "来源文件", "行号", "原始行起点", "原始行终点",
+        }.intersection(headers)
     else:
         assert {"原始 Peer MAC", "PEER Radio", "Peer Radio MAC", "匹配规则", "身份来源"} <= set(headers)
     assert detail.freeze_panes == "A2"
     assert detail.auto_filter.ref
     quality = book["AP 信号质量"]
+    quality_columns = AP_SIGNAL_COLUMNS if mode == "diagnostic" else BUSINESS_AP_SIGNAL_COLUMNS
     assert [cell.value for cell in quality[1]] == [
-        label for label, _ in AP_SIGNAL_COLUMNS
+        label for label, _ in quality_columns
     ]
+    if mode == "business":
+        assert [cell.value for cell in book["主链路明细"][1]] == [label for label, _ in BUSINESS_BUILD_COLUMNS]
+        assert [cell.value for cell in book["单链路风险"][1]] == [label for label, _ in BUSINESS_SINGLE_LINK_COLUMNS]
+        for sheet in (detail, quality, book["主链路明细"], book["单链路风险"]):
+            labels = [cell.value for cell in sheet[1]]
+            assert len(labels) == len(set(labels))
+            assert not any(
+                token in str(label)
+                for label in labels
+                for token in ("来源", "行号", "证据", "匹配规则", "身份来源", "原始 Peer", "PEER Radio")
+            )
     if rows:
         assert detail.max_row == 4
         weak = next(
@@ -469,7 +487,7 @@ def test_report_business_default_and_percent_format_without_mutating_intervals(
     book = load_workbook(
         MeshAnalysisExcelReportExporter().export(model, tmp_path / "report.xlsx")
     )
-    assert book["主链路建链顺序"].max_column == 17
+    assert book["主链路建链顺序"].max_column == len(BUSINESS_BUILD_COLUMNS)
     field = next(
         i for i, (_, key) in enumerate(AP_SIGNAL_COLUMNS) if key == "weak_ratio"
     )

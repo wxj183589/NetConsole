@@ -1,0 +1,1082 @@
+{
+  "validation_mode": "current_source_service_direct_readonly_no_runtime",
+  "readonly": true,
+  "context_binding": "fixed existing source_files row and actual selected AP identity; real SQL, sampler and DTO unchanged",
+  "all_connections": [
+    {
+      "path": "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\parsed\\列车01-MR-CW-2026_10_20_2meshlog.mesh.sqlite",
+      "mode": "ro",
+      "query_only": true
+    },
+    {
+      "path": "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\parsed\\列车01-MR-CW-2026_10_20_2meshlog.mesh.sqlite",
+      "mode": "ro",
+      "query_only": true
+    },
+    {
+      "path": "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\parsed\\列车01-MR-CW-2026_10_20_2meshlog.mesh.sqlite",
+      "mode": "ro",
+      "query_only": true
+    },
+    {
+      "path": "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\parsed\\列车01-MR-CW-2026_10_20_2meshlog.mesh.sqlite",
+      "mode": "ro",
+      "query_only": true
+    },
+    {
+      "path": "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\parsed\\列车01-MR-CW-2026_10_20_2meshlog.mesh.sqlite",
+      "mode": "ro",
+      "query_only": true
+    },
+    {
+      "path": "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\parsed\\列车01-MR-CW-2026_10_20_2meshlog.mesh.sqlite",
+      "mode": "ro",
+      "query_only": true
+    }
+  ],
+  "runtime_started": false,
+  "database_copied": false,
+  "narrow_query": {
+    "time_from": "2026-10-20 18:38:42.000",
+    "time_to": "2026-10-20 18:38:44.999",
+    "radio": 1,
+    "link_role": "ACTIVE",
+    "peer_ap_mac": "bc:5a:34:57:62:c0",
+    "exact_ap": true,
+    "max_points": 1000,
+    "page_size": 1000
+  },
+  "narrow_result": {
+    "status": "completed",
+    "wall_seconds": 0.002531,
+    "query_duration_ms": 2.5,
+    "total": 4,
+    "returned": 4,
+    "downsampled": false,
+    "sql_statements": 3,
+    "context_projection_executed": true
+  },
+  "points": [
+    {
+      "record_id": 107873,
+      "sample_time": "2026-10-20 18:38:42.656",
+      "previous_sample_time": null,
+      "raw_line": "[1] Active bc5a-3457-62df 2026/10/20 18:38:34 0d 00h 00m 08s 1  22/32    3%/5%   46%/47%  28/4     6/40 1361/6880  92/93     0/4999 11054/1564 2582/10676 2088/538 176/8 26/24 0/0",
+      "nearest_record_match": true,
+      "nearest_timing": {
+        "status": "completed",
+        "wall_seconds": 0.006117,
+        "query_duration_ms": 6.09,
+        "total": 1,
+        "returned": 1,
+        "downsampled": false,
+        "sql_statements": 6,
+        "context_projection_executed": false
+      },
+      "counters": {
+        "local_tx": {
+          "raw_current": 11054,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 11054,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 11054,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_tx": {
+          "raw_current": 1564,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 1564,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 1564,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_rx": {
+          "raw_current": 2582,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 2582,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 2582,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx": {
+          "raw_current": 10676,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 10676,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 10676,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_retry": {
+          "raw_current": 2088,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 2088,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 2088,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_retry": {
+          "raw_current": 538,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 538,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 538,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_err": {
+          "raw_current": 176,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 176,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 176,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_err": {
+          "raw_current": 8,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 8,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 8,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_tx_garp": {
+          "raw_current": 26,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 26,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 26,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx_garp": {
+          "raw_current": 24,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 24,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 24,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_tx_mul_join": {
+          "raw_current": 0,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 0,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 0,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx_mul_join": {
+          "raw_current": 0,
+          "raw_previous": null,
+          "expected_delta": null,
+          "expected_interval_seconds": null,
+          "expected_per_second": null,
+          "service_sample": {
+            "current": 0,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "nearest_sample": {
+            "current": 0,
+            "previous": null,
+            "delta": null,
+            "interval_seconds": null,
+            "per_second": null,
+            "status": "first"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        }
+      }
+    },
+    {
+      "record_id": 107877,
+      "sample_time": "2026-10-20 18:38:43.656",
+      "previous_sample_time": "2026-10-20 18:38:42.690",
+      "raw_line": "[1] Active bc5a-3457-62df 2026/10/20 18:38:34 0d 00h 00m 09s 1  28/40    3%/5%   46%/47%  28/4     6/40 2161/28820  92/93     0/4999 12388/1771 2833/11983 2310/584 181/8 26/24 0/0",
+      "nearest_record_match": true,
+      "nearest_timing": {
+        "status": "completed",
+        "wall_seconds": 0.690758,
+        "query_duration_ms": 690.73,
+        "total": 1,
+        "returned": 1,
+        "downsampled": false,
+        "sql_statements": 6,
+        "context_projection_executed": false
+      },
+      "counters": {
+        "local_tx": {
+          "raw_current": 12388,
+          "raw_previous": 11331,
+          "expected_delta": 1057,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 1094.2028985507247,
+          "service_sample": {
+            "current": 12388,
+            "previous": 11331,
+            "delta": 1057,
+            "interval_seconds": 0.966,
+            "per_second": 1094.2028985507247,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 12388,
+            "previous": 11331,
+            "delta": 1057,
+            "interval_seconds": 0.966,
+            "per_second": 1094.2028985507247,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_tx": {
+          "raw_current": 1771,
+          "raw_previous": 1579,
+          "expected_delta": 192,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 198.75776397515529,
+          "service_sample": {
+            "current": 1771,
+            "previous": 1579,
+            "delta": 192,
+            "interval_seconds": 0.966,
+            "per_second": 198.75776397515529,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 1771,
+            "previous": 1579,
+            "delta": 192,
+            "interval_seconds": 0.966,
+            "per_second": 198.75776397515529,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_rx": {
+          "raw_current": 2833,
+          "raw_previous": 2602,
+          "expected_delta": 231,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 239.13043478260872,
+          "service_sample": {
+            "current": 2833,
+            "previous": 2602,
+            "delta": 231,
+            "interval_seconds": 0.966,
+            "per_second": 239.13043478260872,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 2833,
+            "previous": 2602,
+            "delta": 231,
+            "interval_seconds": 0.966,
+            "per_second": 239.13043478260872,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx": {
+          "raw_current": 11983,
+          "raw_previous": 10937,
+          "expected_delta": 1046,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 1082.815734989648,
+          "service_sample": {
+            "current": 11983,
+            "previous": 10937,
+            "delta": 1046,
+            "interval_seconds": 0.966,
+            "per_second": 1082.815734989648,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 11983,
+            "previous": 10937,
+            "delta": 1046,
+            "interval_seconds": 0.966,
+            "per_second": 1082.815734989648,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_retry": {
+          "raw_current": 2310,
+          "raw_previous": 2167,
+          "expected_delta": 143,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 148.03312629399588,
+          "service_sample": {
+            "current": 2310,
+            "previous": 2167,
+            "delta": 143,
+            "interval_seconds": 0.966,
+            "per_second": 148.03312629399588,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 2310,
+            "previous": 2167,
+            "delta": 143,
+            "interval_seconds": 0.966,
+            "per_second": 148.03312629399588,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_retry": {
+          "raw_current": 584,
+          "raw_previous": 543,
+          "expected_delta": 41,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 42.44306418219462,
+          "service_sample": {
+            "current": 584,
+            "previous": 543,
+            "delta": 41,
+            "interval_seconds": 0.966,
+            "per_second": 42.44306418219462,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 584,
+            "previous": 543,
+            "delta": 41,
+            "interval_seconds": 0.966,
+            "per_second": 42.44306418219462,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_err": {
+          "raw_current": 181,
+          "raw_previous": 180,
+          "expected_delta": 1,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 1.0351966873706004,
+          "service_sample": {
+            "current": 181,
+            "previous": 180,
+            "delta": 1,
+            "interval_seconds": 0.966,
+            "per_second": 1.0351966873706004,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 181,
+            "previous": 180,
+            "delta": 1,
+            "interval_seconds": 0.966,
+            "per_second": 1.0351966873706004,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_err": {
+          "raw_current": 8,
+          "raw_previous": 8,
+          "expected_delta": 0,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 8,
+            "previous": 8,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 8,
+            "previous": 8,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_tx_garp": {
+          "raw_current": 26,
+          "raw_previous": 26,
+          "expected_delta": 0,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 26,
+            "previous": 26,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 26,
+            "previous": 26,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx_garp": {
+          "raw_current": 24,
+          "raw_previous": 24,
+          "expected_delta": 0,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 24,
+            "previous": 24,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 24,
+            "previous": 24,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_tx_mul_join": {
+          "raw_current": 0,
+          "raw_previous": 0,
+          "expected_delta": 0,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 0,
+            "previous": 0,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 0,
+            "previous": 0,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx_mul_join": {
+          "raw_current": 0,
+          "raw_previous": 0,
+          "expected_delta": 0,
+          "expected_interval_seconds": 0.966,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 0,
+            "previous": 0,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 0,
+            "previous": 0,
+            "delta": 0,
+            "interval_seconds": 0.966,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        }
+      }
+    },
+    {
+      "record_id": 107879,
+      "sample_time": "2026-10-20 18:38:44.656",
+      "previous_sample_time": "2026-10-20 18:38:43.656",
+      "raw_line": "[1] Active bc5a-3457-62df 2026/10/20 18:38:34 0d 00h 00m 10s 1  23/37    3%/5%   46%/47%  28/4     6/40 2161/28820  92/93     0/5000 13903/2168 3279/13467 2822/709 181/8 26/24 0/0",
+      "nearest_record_match": true,
+      "nearest_timing": {
+        "status": "completed",
+        "wall_seconds": 0.002696,
+        "query_duration_ms": 2.68,
+        "total": 1,
+        "returned": 1,
+        "downsampled": false,
+        "sql_statements": 6,
+        "context_projection_executed": false
+      },
+      "counters": {
+        "local_tx": {
+          "raw_current": 13903,
+          "raw_previous": 12388,
+          "expected_delta": 1515,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 1515.0,
+          "service_sample": {
+            "current": 13903,
+            "previous": 12388,
+            "delta": 1515,
+            "interval_seconds": 1.0,
+            "per_second": 1515.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 13903,
+            "previous": 12388,
+            "delta": 1515,
+            "interval_seconds": 1.0,
+            "per_second": 1515.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_tx": {
+          "raw_current": 2168,
+          "raw_previous": 1771,
+          "expected_delta": 397,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 397.0,
+          "service_sample": {
+            "current": 2168,
+            "previous": 1771,
+            "delta": 397,
+            "interval_seconds": 1.0,
+            "per_second": 397.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 2168,
+            "previous": 1771,
+            "delta": 397,
+            "interval_seconds": 1.0,
+            "per_second": 397.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_rx": {
+          "raw_current": 3279,
+          "raw_previous": 2833,
+          "expected_delta": 446,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 446.0,
+          "service_sample": {
+            "current": 3279,
+            "previous": 2833,
+            "delta": 446,
+            "interval_seconds": 1.0,
+            "per_second": 446.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 3279,
+            "previous": 2833,
+            "delta": 446,
+            "interval_seconds": 1.0,
+            "per_second": 446.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx": {
+          "raw_current": 13467,
+          "raw_previous": 11983,
+          "expected_delta": 1484,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 1484.0,
+          "service_sample": {
+            "current": 13467,
+            "previous": 11983,
+            "delta": 1484,
+            "interval_seconds": 1.0,
+            "per_second": 1484.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 13467,
+            "previous": 11983,
+            "delta": 1484,
+            "interval_seconds": 1.0,
+            "per_second": 1484.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_retry": {
+          "raw_current": 2822,
+          "raw_previous": 2310,
+          "expected_delta": 512,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 512.0,
+          "service_sample": {
+            "current": 2822,
+            "previous": 2310,
+            "delta": 512,
+            "interval_seconds": 1.0,
+            "per_second": 512.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 2822,
+            "previous": 2310,
+            "delta": 512,
+            "interval_seconds": 1.0,
+            "per_second": 512.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_retry": {
+          "raw_current": 709,
+          "raw_previous": 584,
+          "expected_delta": 125,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 125.0,
+          "service_sample": {
+            "current": 709,
+            "previous": 584,
+            "delta": 125,
+            "interval_seconds": 1.0,
+            "per_second": 125.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 709,
+            "previous": 584,
+            "delta": 125,
+            "interval_seconds": 1.0,
+            "per_second": 125.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_err": {
+          "raw_current": 181,
+          "raw_previous": 181,
+          "expected_delta": 0,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 181,
+            "previous": 181,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 181,
+            "previous": 181,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_err": {
+          "raw_current": 8,
+          "raw_previous": 8,
+          "expected_delta": 0,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 8,
+            "previous": 8,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 8,
+            "previous": 8,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_tx_garp": {
+          "raw_current": 26,
+          "raw_previous": 26,
+          "expected_delta": 0,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 26,
+            "previous": 26,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 26,
+            "previous": 26,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx_garp": {
+          "raw_current": 24,
+          "raw_previous": 24,
+          "expected_delta": 0,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 24,
+            "previous": 24,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 24,
+            "previous": 24,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "local_tx_mul_join": {
+          "raw_current": 0,
+          "raw_previous": 0,
+          "expected_delta": 0,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 0,
+            "previous": 0,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 0,
+            "previous": 0,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        },
+        "peer_rx_mul_join": {
+          "raw_current": 0,
+          "raw_previous": 0,
+          "expected_delta": 0,
+          "expected_interval_seconds": 1.0,
+          "expected_per_second": 0.0,
+          "service_sample": {
+            "current": 0,
+            "previous": 0,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "nearest_sample": {
+            "current": 0,
+            "previous": 0,
+            "delta": 0,
+            "interval_seconds": 1.0,
+            "per_second": 0.0,
+            "status": "valid"
+          },
+          "numerical_match": true,
+          "ordinary_nearest_metadata_match": true
+        }
+      }
+    }
+  ],
+  "all_nearest_records_match": true,
+  "all_counter_checks_match": true,
+  "all_ordinary_nearest_metadata_match": true,
+  "default_five_minute_query": {
+    "time_from": "2026-10-20 18:37:06.381",
+    "time_to": "2026-10-20 18:42:06.381",
+    "radio": 1,
+    "link_role": "ACTIVE",
+    "exact_ap": true,
+    "metric_group": "counters",
+    "max_points": 1000,
+    "page_size": 1000,
+    "include_zero": false
+  },
+  "default_five_minute_result": {
+    "status": "completed",
+    "wall_seconds": 2.190644,
+    "query_duration_ms": 2190.47,
+    "total": 465,
+    "returned": 240,
+    "downsampled": true,
+    "sql_statements": 3,
+    "context_projection_executed": true
+  },
+  "repeat_five_minute_result": {
+    "status": "completed",
+    "wall_seconds": 2.306224,
+    "query_duration_ms": 2306.04,
+    "total": 465,
+    "returned": 240,
+    "downsampled": true,
+    "sql_statements": 3,
+    "context_projection_executed": true
+  },
+  "fingerprints_before": {
+    "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\parsed\\列车01-MR-CW-2026_10_20_2meshlog.mesh.sqlite": {
+      "size": 156786688,
+      "mtime_ns": 1792497594999411400,
+      "sha256": "2b8bf5b5c7fdf350f2cb105eb1512d6f93b292354b5739942d2c49e6f78da61d"
+    },
+    "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\raw\\列车01-MR-CW-2026_10_20_2meshlog.log.gz": {
+      "size": 2892510,
+      "mtime_ns": 1792497555225691700,
+      "sha256": "f53990d5448f297ea8cbc6901d87132fcf3f616c61149feaa4e875829a3b0fc7"
+    }
+  },
+  "fingerprints_after": {
+    "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\parsed\\列车01-MR-CW-2026_10_20_2meshlog.mesh.sqlite": {
+      "size": 156786688,
+      "mtime_ns": 1792497594999411400,
+      "sha256": "2b8bf5b5c7fdf350f2cb105eb1512d6f93b292354b5739942d2c49e6f78da61d"
+    },
+    "D:\\NetConsoleData-dev\\sites\\宁波地铁12号线\\files\\rail_transit\\mr_raw_mesh\\列车01-MR-CW\\raw\\列车01-MR-CW-2026_10_20_2meshlog.log.gz": {
+      "size": 2892510,
+      "mtime_ns": 1792497555225691700,
+      "sha256": "f53990d5448f297ea8cbc6901d87132fcf3f616c61149feaa4e875829a3b0fc7"
+    }
+  },
+  "fingerprints_unchanged": true,
+  "limitations": [
+    "Direct Service verification does not establish runtime API, Electron or GUI acceptance.",
+    "The fixed AP snapshot uses the actual AP row and does not validate the location catalog.",
+    "45 second SQL progress cancellation bounds each query; raw archive parsing is outside the SQLite progress callback."
+  ]
+}
