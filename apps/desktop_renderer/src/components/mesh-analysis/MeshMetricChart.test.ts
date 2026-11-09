@@ -174,6 +174,17 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
     expect(wrapper.emitted('pointer-change')?.at(-1)).toEqual([null])
   })
 
+  it('pins a tooltip time on double click and clears the pin on the next double click', async () => {
+    const wrapper = mounted(); const chart = await visible(wrapper)
+    const time = millis(domain.start)! + 123456
+    chart.convertFromPixel.mockReturnValue(time)
+    chart.emit('dblclick', { event: { event: new MouseEvent('dblclick', { clientX: 117, clientY: 62 }) } })
+    expect(wrapper.emitted('time-select')).toEqual([[stamp(time), true]])
+    await wrapper.setProps({ selectionActive: true })
+    chart.emit('dblclick', { event: { event: new MouseEvent('dblclick', { clientX: 117, clientY: 62 }) } })
+    expect(wrapper.emitted('selection-clear')).toEqual([[]])
+  })
+
   it('leaves ordinary wheel scrolling to the page and disables ECharts wheel capture', async () => {
     const wrapper = mounted({ window: domain }); const chart = await visible(wrapper)
     const event = wheel({ deltaY: 100, bubbles: true, cancelable: true })
@@ -275,7 +286,7 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
     wrapper.unmount()
     expect(resizeObservers[0].disconnect).toHaveBeenCalledTimes(1)
     expect(intersections[0].disconnect).toHaveBeenCalledTimes(1)
-    for (const name of ['finished', 'datazoom', 'updateAxisPointer', 'click']) expect(chart.listeners.get(name)?.size).toBe(0)
+    for (const name of ['finished', 'datazoom', 'updateAxisPointer', 'click', 'dblclick']) expect(chart.listeners.get(name)?.size).toBe(0)
     expect(chart.zrListeners.get('globalout')?.size).toBe(0)
     expect(chart.dispose).toHaveBeenCalledTimes(1)
     staleFinished(); resizeObservers[0].callback()

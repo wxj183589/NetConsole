@@ -52,6 +52,15 @@ function onPointer(event: any): void {
   if (value !== null) emit('pointer-change', stamp(value))
 }
 function onClick(event: any): void { const original = event.event?.event; if (!original?.shiftKey && !original?.ctrlKey && event.data?.sample) emit('sample-select', event.data.sample) }
+function onDoubleClick(event: any): void {
+  if (props.selectionActive) { emit('selection-clear'); return }
+  const data = event?.data
+  const value = Array.isArray(data?.value) ? data.value[0] : data?.value
+  const fromPoint = millis(value)
+  const original = event?.event?.event
+  const time = fromPoint ?? (original instanceof MouseEvent ? pixelTime(original) : null)
+  if (time !== null) emit('time-select', stamp(time), true)
+}
 function onLeave(): void { emit('pointer-change', null) }
 function pixelTime(event: MouseEvent): number | null {
   if (!chart || !host.value) return null
@@ -92,7 +101,7 @@ async function render(): Promise<void> {
     const lines: MeshBusinessMetricLine[] = props.lines.length ? props.lines : [{ key: 'metric', label: '', side: 'local', data: props.points.map(point => ({ value: [point.timestamp, point.value], sample: point as unknown as MeshBusinessMetricSample })) }]
     if (!chart) {
       chart = core.init(host.value, undefined, createTimeChartInitOptions(lines.reduce((sum, line) => sum + line.data.length, 0), { useDirtyRect: false }))
-      chart.on('datazoom', onZoom); chart.on('updateAxisPointer', onPointer); chart.on('click', onClick); chart.getZr().on('globalout', onLeave)
+      chart.on('datazoom', onZoom); chart.on('updateAxisPointer', onPointer); chart.on('click', onClick); chart.on('dblclick', onDoubleClick); chart.getZr().on('globalout', onLeave)
     }
     if (finished) chart.off('finished', finished)
     finished = () => { if (!disposed && local === epoch) { if (finished) chart?.off('finished', finished); finished = null; emit('render-complete') } }
@@ -139,7 +148,7 @@ watch(() => [props.selectedSample, props.selectionActive], syncPointer)
 onBeforeUnmount(() => {
   disposed = true; epoch++; unsubscribeTheme?.(); resizeObserver?.disconnect(); intersectionObserver?.disconnect()
   host.value?.removeEventListener('wheel', onWheel); host.value?.removeEventListener('click', selectTime); host.value?.removeEventListener('mousemove', moveTime); host.value?.removeEventListener('keydown', onKey)
-  if (chart) { chart.off('datazoom', onZoom); chart.off('updateAxisPointer', onPointer); chart.off('click', onClick); if (finished) chart.off('finished', finished); chart.getZr().off('globalout', onLeave); chart.dispose(); chart = null }
+  if (chart) { chart.off('datazoom', onZoom); chart.off('updateAxisPointer', onPointer); chart.off('click', onClick); chart.off('dblclick', onDoubleClick); if (finished) chart.off('finished', finished); chart.getZr().off('globalout', onLeave); chart.dispose(); chart = null }
 })
 </script>
 <template><div class="mesh-metric-frame"><div ref="host" tabindex="0" class="mesh-metric-chart" :class="{ 'has-navigator': navigator, 'has-counters': lines.some(line => line.counterField) }" :data-window-start="window?.start" :data-window-end="window?.end" :data-pointer="pointer"></div><span v-if="lines.length ? !lines.some(line => line.data.some(point => point.value[1] !== null)) : !points.some(point => point.value !== null)" class="metric-empty">{{ emptyText }}</span></div></template>
