@@ -184,9 +184,13 @@ files/rail_transit/
 active/archive 并存时返回 `MIXED` 并去重。ZIP 下载只能通过后端按 `archive_id` 解析的 Artifact 端点，
 Renderer 和 Electron Bridge 都不接受数据根物理路径。
 
-Syslog 数据分三层：NDJSON/READY ZIP 是不可变原始证据；`ground_unattended_wmesh_events` 兼容保存去重后的
-WMESH、IFNET 和 CFGMAN 结构化事件；`ground_unattended_radio_interface_states`、
-`ground_unattended_mr_runtime_states` 与 `ground_unattended_radio_correlations` 是可重建投影。
+Syslog 数据分四层：NDJSON/READY ZIP 是不可变原始证据；`ground_unattended_wmesh_events` 兼容保存去重后的
+WMESH、IFNET 和 CFGMAN 结构化事件；`ground_unattended_syslog_position_states` 保存按 MR 归并的当前
+位置及 Event/Receive/Raw Persist/Parse Complete/Position Commit 时间，是可重建投影；
+`ground_unattended_radio_interface_states`、`ground_unattended_mr_runtime_states` 与
+`ground_unattended_radio_correlations` 是其他可重建投影。
+位置投影按有效事件时间处理乱序和重复，未识别或不完整事件不能清空已有 AP；原始记录、解析失败和
+有意义的切换历史仍保留在原始流与事件/时间轴中。位置表的更新与事件投影在同一 Repository 事务内完成。
 重复 UDP 报文仍保留在原始流，只增加结构化事件的 `duplicate_count`，不会重复切换接口状态或生成综合事件。
 
 活动长 Ping 首次查询按受控时间范围最多返回 3000 个点，完整运行最多返回 10000 个降采样点；增量游标

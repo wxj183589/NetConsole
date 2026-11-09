@@ -22,6 +22,8 @@
 - `boot_config.py`、`syslog_runtime.py`：Information Center 只读核验、受控修复与 WMESH UDP 接收；
   Receiver、raw writer 和 parser 分线程运行，内存队列溢出进入当前 run 的受管 `_spool`。正常停止等待
   raw、metadata 和投影收口；异常恢复按 at-least-once 重放保留 spool，不宣称 exactly-once。
+- `position_engine.py`：按 MR 的有效事件时间和接收序号归并 Syslog 位置；重复与旧事件幂等处理，
+  精确 AP 身份、当前/上一个 AP、事件历史和阶段时间写入同一位置投影事务。
 - `fleet_ping.py`、`heartbeat_state.py`：基础资料驱动的持续分片心跳、双 IP 任一成功聚合、单 MR 10 秒与双端交集 120 秒状态机、持久化及重启空窗保护。
 - `quick_ping.py`：独立 run、默认无限时长的人工诊断；有界 worker/缓存、逐 MR 分段、后台校验压缩、历史查询及终态保留策略。
 - `timeline.py`、`history_query.py`、`history_export.py`：统一事件时间轴、九类历史索引和独立 Export Process 全量筛选 CSV。
@@ -64,6 +66,10 @@ Backend 关闭另行停止 Heartbeat 分片并保存缓冲；停用独立心跳�
 ## 数据安全
 
 运行数据位于业务根的 `sites/<site_id>/files/rail_transit/ground_unattended/`，路径由 `PathResolver` 解析。归档校验失败时保留 active 原始数据；删除归档必须经过当前局点校验、显式确认和 Repository 状态检查。运行历史删除只移除历史 run 索引及其关联查询数据，不会自动删除历史归档 ZIP；记录级 Syslog 删除只能使用 opaque file/sequence/line 身份，Vue 与 Router 不接触物理路径、文件 API 或 SQL；锁、revision、文件哈希和 SQLite 派生清理由生命周期服务与 Repository 协作完成。自动测试只能使用 `RuntimeMode.TEST` 与 `<repository-parent>\test-data\NetConsole\<run-id>`。
+
+R2.3 位置语义：Event Time 不可信时使用 Receive Time 并标记时间精度受限；位置状态不因未识别 AP、
+不完整事件或解析失败而清空，AC 延迟快照不能覆盖较新的 Syslog 位置。Raw Writer、Parser 和位置
+批处理均为有界队列；健康接口必须能观测队列长度、最老等待时间、EPS、重复/乱序以及阶段延迟。
 
 ## 验证
 
