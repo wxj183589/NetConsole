@@ -245,6 +245,38 @@ def test_fleet_ping_restart_preserves_run_count_and_overlapping_summary(
     fleet.stop()
 
 
+def test_resident_totals_span_days_and_survive_target_removal(tmp_path) -> None:
+    repo = GroundUnattendedRepository(tmp_path / "ground.sqlite", site_id="site-a")
+    for day, count, rtt in (("2026-11-08", 2, 3.0), ("2026-11-09", 6, 5.0)):
+        repo.upsert_ping_summary({
+            "site_id": "site-a", "run_id": "heartbeat-resident", "bucket_kind": "daily",
+            "bucket_start": day + "T00:00:00Z", "bucket_end": day + "T23:59:59Z",
+            "target_ip": "192.0.2.10", "ap_identity": "", "raw_sample_count": count,
+            "sent_count": count, "success_count": count, "loss_count": 0,
+            "avg_rtt_ms": rtt, "min_rtt_ms": rtt, "max_rtt_ms": rtt,
+            "created_at": day + "T23:59:59Z",
+        })
+    fleet = FleetPingSupervisor(repository=repo, site_id="site-a", runner=_idle_runner)
+    fleet.start(
+        run_id="heartbeat-resident", run_date="resident", active_dir=tmp_path / "heartbeat",
+        period_ms=1000, timeout_ms=4000, packet_size=64, shard_size=2,
+        correlation_tolerance_seconds=15, switch_before_seconds=5, switch_after_seconds=5,
+    )
+    try:
+        target = _target("192.0.2.10", "train-1", "CT")
+        for _ in range(3):
+            fleet.update_targets([target])
+            row = fleet.target_summaries()[0]
+            assert row["sent_count"] == fleet.sample_count == 8
+            assert row["avg_rtt_ms"] == 4.5
+            fleet.update_targets([])
+            assert not fleet._stats and not fleet._persisted_target_stats
+            assert not fleet._latest_samples
+        assert len(repo.ping_summary_totals("heartbeat-resident")) == 1
+    finally:
+        assert fleet.stop()["success"]
+
+
 def test_fleet_ping_only_marks_real_ap_changes_as_transition(tmp_path) -> None:
     repo = GroundUnattendedRepository(
         tmp_path / "ground" / "index.sqlite", site_id="site-a"

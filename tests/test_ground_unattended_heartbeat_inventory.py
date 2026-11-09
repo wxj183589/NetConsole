@@ -11,7 +11,7 @@ from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ac_mesh_link import AcMeshLinkRecordDTO, AcMeshMrPageDTO, AcMeshMrStatusDTO
-from netconsole.models.api.ground_unattended import GroundHeartbeatInventoryApplyDTO
+from netconsole.models.api.ground_unattended import GroundHeartbeatInventoryApplyDTO, HeartbeatConfigDTO
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
@@ -37,10 +37,25 @@ def inventory_app(tmp_path, monkeypatch):
         list_mesh_import_context_mrs=lambda site_id: source.rows,
     )
     monkeypatch.setattr(AcMeshLinkQueryService, "list_mrs", lambda *args, **kwargs: AcMeshMrPageDTO())
+    service.supervisor.heartbeat.inventory_sync = service.inventory_sync
+    # Manual preview/apply tests own projection updates; the resident refresh
+    # would legitimately invalidate a preview between these two API calls.
+    service.supervisor.heartbeat._inventory_refresh_at = float("inf")
+    service.repository.save_heartbeat_config(HeartbeatConfigDTO(enabled=False))
     start = Mock(side_effect=AssertionError("inventory operations must not start probes"))
     monkeypatch.setattr(service.supervisor.fleet_ping, "start", start)
     return SimpleNamespace(app=app, paths=paths, service=service, repository=service.repository,
                            source=source, assets=assets, devices=devices, start=start)
+
+
+def _page(f, *args, **kwargs):
+    resident = f.service.supervisor.heartbeat
+    resident._inventory_refresh_at = 0.0
+    try:
+        resident._refresh_inventory()
+    except ValueError:
+        pass  # Preview/apply below asserts conflicts without mutating inventory.
+    return f.service.heartbeat(*args, **kwargs)
 
 
 def _apply(fixture, action: str):
@@ -61,12 +76,12 @@ def test_refresh_projects_unknown_without_run_and_is_idempotent(inventory_app):
     site = f.service.site_id
     preview = f.service.heartbeat_inventory_preview(site)
     assert (preview.added_count, preview.train_count, preview.device_count) == (2, 1, 2)
-    first = f.service.heartbeat(site)
+    first = _page(f, site)
     before = f.repository.list_inventory()
-    second = f.service.heartbeat(site)
+    second = _page(f, site)
     assert first == second
     assert f.repository.list_inventory() == before
-    assert first.run_id == ""
+    assert first.run_id == "heartbeat-resident"
     assert [mr.status for mr in first.mrs] == ["UNKNOWN", "UNKNOWN"]
     assert first.trains[0].status == "UNKNOWN"
     assert first.trains[0].mr_states == {"CT": "UNKNOWN", "CW": "UNKNOWN"}
@@ -77,7 +92,7 @@ def test_refresh_projects_unknown_without_run_and_is_idempotent(inventory_app):
 def test_heartbeat_projects_multiple_real_mesh_aps_and_stations(inventory_app, monkeypatch):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
+    _page(f, site)
     mr_uuid = str(f.devices[0].device_uuid)
     monkeypatch.setattr(AcMeshLinkQueryService, "list_mrs", lambda *_args, **_kwargs: AcMeshMrPageDTO(items=[
         AcMeshMrStatusDTO(
@@ -100,7 +115,7 @@ def test_heartbeat_projects_multiple_real_mesh_aps_and_stations(inventory_app, m
         ),
     ]))
 
-    page = f.service.heartbeat(site)
+    page = _page(f, site)
     mr = next(item for item in page.mrs if item.mr_uuid == mr_uuid)
 
     assert [item.name for item in mr.associated_aps] == ["AP-01", "AP-02"]
@@ -124,7 +139,7 @@ def test_heartbeat_keeps_21_train_42_mr_inventory_before_sampling(inventory_app)
             ))
     f.service.inventory_sync.base_query = SimpleNamespace(list_mesh_import_context_mrs=lambda _site: rows)
 
-    page = f.service.heartbeat(f.service.site_id)
+    page = _page(f, f.service.site_id)
 
     assert page.inventory_train_count == 21
     assert page.inventory_mr_count == 42
@@ -136,10 +151,10 @@ def test_heartbeat_keeps_21_train_42_mr_inventory_before_sampling(inventory_app)
 def test_selected_run_without_heartbeat_samples_keeps_inventory_visible(inventory_app):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
+    _page(f, site)
     _run(f.repository, run_id="empty-run", state="COMPLETED")
 
-    page = f.service.heartbeat(site, run_id="empty-run")
+    page = _page(f, site, run_id="empty-run")
 
     assert page.run_id == "empty-run"
     assert page.data_state == "STOPPED"
@@ -153,7 +168,7 @@ def test_selected_run_without_heartbeat_samples_keeps_inventory_visible(inventor
 def test_default_page_retains_stopped_samples_and_current_inventory(inventory_app):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
+    _page(f, site)
     _run(f.repository, run_id="stopped-run", state="COMPLETED")
     mr = f.source.rows[0]
     f.repository.upsert_heartbeat_snapshot("stopped-run", {
@@ -166,17 +181,18 @@ def test_default_page_retains_stopped_samples_and_current_inventory(inventory_ap
         "mr_uuid": cw.id, "train_id": cw.train_id, "role": "CW", "status": "UNKNOWN",
         "ip_states": [{"ip": cw.management_ip}],
     }, entity_type="MR", entity_id=cw.id)
-    page = f.service.heartbeat(site)
-    assert page.run_id == "stopped-run" and page.data_state == "STOPPED"
+    f.repository.migrate_resident_heartbeat("heartbeat-resident")
+    page = _page(f, site)
+    assert page.run_id == "heartbeat-resident" and page.data_state == "STOPPED"
     assert (page.total, page.total_mrs) == (1, 2)
     assert (page.heartbeat_statistics.sent_count, page.heartbeat_statistics.success_count,
             page.heartbeat_statistics.lost_count) == (7, 6, 1)
     f.source.rows = f.source.rows[:1]
-    current = f.service.heartbeat(site)
+    current = _page(f, site)
     assert current.total_mrs == 1 and current.mrs[0].mr_uuid == mr.id
-    assert f.service.heartbeat(site, run_id="stopped-run").total_mrs == 2
+    assert _page(f, site, run_id="stopped-run").total_mrs == 2
     _apply(f, "CLEAR_DATA")
-    cleared = f.service.heartbeat(site)
+    cleared = _page(f, site)
     assert cleared.total_mrs == 1 and cleared.heartbeat_statistics.sent_count == 0
     f.start.assert_not_called()
 
@@ -184,7 +200,7 @@ def test_default_page_retains_stopped_samples_and_current_inventory(inventory_ap
 def test_heartbeat_page_aggregates_real_ping_statistics(inventory_app):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
+    _page(f, site)
     _run(f.repository, run_id="stats-run", state="RUNNING")
     sample_at = datetime.now(timezone.utc).replace(microsecond=0)
     f.repository.upsert_heartbeat_snapshot("stats-run", {
@@ -196,7 +212,7 @@ def test_heartbeat_page_aggregates_real_ping_statistics(inventory_app):
         "ip_states": [{"ip": "192.0.2.2", "sent_count": 2, "received_count": 2, "lost_count": 0, "avg_rtt_ms": 2.0, "last_probe_at": sample_at.isoformat()}],
     }, entity_type="MR", entity_id=str(f.devices[1].device_uuid))
 
-    page = f.service.heartbeat(site, run_id="stats-run")
+    page = _page(f, site, run_id="stats-run")
 
     assert page.data_state == "RUNNING"
     assert page.heartbeat_statistics.sent_count == 6
@@ -210,19 +226,19 @@ def test_heartbeat_page_aggregates_real_ping_statistics(inventory_app):
 def test_changed_ip_invalidates_mr_and_old_train_online_aggregate(inventory_app):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
+    _page(f, site)
     _run(f.repository, state="RUNNING")
     for mr in f.source.rows:
-        f.repository.upsert_heartbeat_snapshot("run-1", {
+        f.repository.upsert_heartbeat_snapshot("heartbeat-resident", {
             "mr_uuid": mr.id, "train_id": mr.train_id, "role": mr.mr_position_code,
             "status": "ONLINE", "ip_states": [{"ip": mr.management_ip}],
         }, entity_type="MR", entity_id=mr.id)
-    f.repository.upsert_heartbeat_snapshot("run-1", {
+    f.repository.upsert_heartbeat_snapshot("heartbeat-resident", {
         "train_id": "train-01", "status": "BOTH_ONLINE", "mr_states": {"CT": "ONLINE", "CW": "ONLINE"},
     }, entity_type="TRAIN", entity_id="train-01")
-    assert f.service.heartbeat(site).trains[0].status == "BOTH_ONLINE"
+    assert _page(f, site).trains[0].status == "BOTH_ONLINE"
     f.source.rows[0] = f.source.rows[0].model_copy(update={"management_ip": "192.0.2.30", "train_no": "02"})
-    page = f.service.heartbeat(site)
+    page = _page(f, site)
     ct = next(mr for mr in page.mrs if mr.role == "CT")
     assert ct.status == "UNKNOWN" and ct.ip_states[0].ip == "192.0.2.30"
     assert page.trains[0].status == "UNKNOWN"
@@ -233,7 +249,7 @@ def test_changed_ip_invalidates_mr_and_old_train_online_aggregate(inventory_app)
 @pytest.mark.parametrize("conflict", ["uuid", "role"])
 def test_source_conflict_does_not_write_inventory(inventory_app, conflict):
     f = inventory_app
-    f.service.heartbeat(f.service.site_id)
+    _page(f, f.service.site_id)
     before = f.repository.list_inventory()
     replacement = {"id": f.source.rows[0].id} if conflict == "uuid" else {"mr_position_code": "CT"}
     f.source.rows[1] = f.source.rows[1].model_copy(update=replacement)
@@ -242,13 +258,13 @@ def test_source_conflict_does_not_write_inventory(inventory_app, conflict):
     with pytest.raises(GroundUnattendedError) as error:
         _apply(f, "SYNC")
     assert error.value.code == "HEARTBEAT_INVENTORY_CONFLICT"
-    assert f.service.heartbeat(f.service.site_id).source_conflicts
+    assert f.service.heartbeat_inventory_preview(f.service.site_id).conflict_count == 1
     assert f.repository.list_inventory() == before
 
 
 def test_clear_devices_preserves_assets_inventory_and_other_site_then_sync_restores(inventory_app):
     f = inventory_app
-    f.service.heartbeat(f.service.site_id)
+    _page(f, f.service.site_id)
     before = f.repository.list_inventory()
     other = GroundUnattendedRepository(f.repository.db_path, site_id="other")
     other.sync_inventory(trains=[{"train_id": "other-train"}], endpoints=[{
@@ -257,23 +273,23 @@ def test_clear_devices_preserves_assets_inventory_and_other_site_then_sync_resto
     other_before = other.list_inventory()
     result = _apply(f, "CLEAR_DEVICES")
     assert result.applied and not result.monitoring_enabled and result.disabled_count == 2
-    disabled_page = f.service.heartbeat(f.service.site_id)
+    disabled_page = _page(f, f.service.site_id)
     assert len(disabled_page.mrs) == 2
     assert disabled_page.data_state == "DISABLED"
-    assert f.service.supervisor._heartbeat_fleet_targets() == {}
+    assert f.service.supervisor.heartbeat._heartbeat_fleet_targets() == {}
     assert f.repository.list_inventory() == before
     assert other.list_inventory() == other_before
     assert all(f.assets.get_by_uuid(device.device_uuid) for device in f.devices)
     assert _apply(f, "SYNC").monitoring_enabled
-    assert len(f.service.heartbeat(f.service.site_id).mrs) == 2
-    assert len(f.service.supervisor._heartbeat_fleet_targets()) == 2
+    assert len(_page(f, f.service.site_id).mrs) == 2
+    assert len(f.service.supervisor.heartbeat._heartbeat_fleet_targets()) == 2
     f.start.assert_not_called()
 
 
 def test_clear_data_retains_shared_ping_raw_and_nonheartbeat_events(inventory_app):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
+    _page(f, site)
     _run(f.repository)
     other = GroundUnattendedRepository(f.repository.db_path, site_id="other")
     for repository in (f.repository, other):
@@ -300,34 +316,34 @@ def test_clear_data_retains_shared_ping_raw_and_nonheartbeat_events(inventory_ap
     assert len(other.list_events("run-1")) == 2
     assert len(other.list_ping_summaries("run-1")) == 1
     assert f.repository.heartbeat_inventory_state()["data_cleared_at"]
-    assert len(f.service.heartbeat(site).mrs) == 2
+    assert len(_page(f, site).mrs) == 2
 
 
 def test_clear_hides_old_loss_episodes_without_deleting_shared_history(inventory_app):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
+    _page(f, site)
     _run(f.repository)
     mr = f.source.rows[0]
     before = datetime.now(timezone.utc) - timedelta(seconds=10)
     event = {
-        "event_key": "before-clear", "run_id": "run-1", "mr_id": mr.id,
+        "event_key": "before-clear", "run_id": "heartbeat-resident", "mr_id": mr.id,
         "target_ip": mr.management_ip, "started_at": before.isoformat(),
         "ap_name": "original-ap", "station": "original-station", "loss_count": 2,
     }
     f.repository.apply_ping_loss_events([event])
-    assert f.service.heartbeat(site, mr_uuid=mr.id).mrs[0].loss_events
+    assert _page(f, site, mr_uuid=mr.id).mrs[0].loss_events
     _apply(f, "CLEAR_DATA")
-    assert f.service.heartbeat(site, mr_uuid=mr.id).mrs[0].loss_events == []
+    assert _page(f, site, mr_uuid=mr.id).mrs[0].loss_events == []
     assert f.service.mr_monitoring(site, mr_uuid=mr.id).loss_events == []
     after = datetime.now(timezone.utc) + timedelta(seconds=1)
     f.repository.apply_ping_loss_events([{**event, "event_key": "after-clear",
                                          "started_at": after.isoformat()}])
-    page = f.service.heartbeat(site, mr_uuid=mr.id)
+    page = _page(f, site, mr_uuid=mr.id)
     detail = f.service.mr_monitoring(site, mr_uuid=mr.id)
     assert [row["event_key"] for row in page.mrs[0].loss_events] == ["after-clear"]
     assert [row["event_key"] for row in detail.loss_events] == ["after-clear"]
-    history = f.repository.list_ping_loss_intervals("run-1")
+    history = f.repository.list_ping_loss_intervals("heartbeat-resident")
     assert len(history) == 2
     assert all(row["ap_name"] == "original-ap" and row["station"] == "original-station" for row in history)
 
@@ -335,9 +351,10 @@ def test_clear_hides_old_loss_episodes_without_deleting_shared_history(inventory
 def test_clear_restart_does_not_restore_old_open_loss_episode(inventory_app):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
-    run = _run(f.repository)
-    supervisor = f.service.supervisor
+    _page(f, site)
+    _run(f.repository)
+    run = {"run_id": "heartbeat-resident"}
+    supervisor = f.service.supervisor.heartbeat
     supervisor.fleet_ping.start = Mock()
     mr = f.source.rows[0]
     before = datetime.now(timezone.utc) - timedelta(seconds=10)
@@ -347,16 +364,15 @@ def test_clear_restart_does_not_restore_old_open_loss_episode(inventory_app):
         "ap_name": "original-ap", "station": "original-station", "loss_count": 2,
     }])
     original = f.repository.list_open_ping_loss_intervals(run["run_id"])[0]
-    profile = f.repository.get_profile()
-    supervisor._start_fleet_ping(run, profile)
+    supervisor._configure_heartbeat_targets(run["run_id"])
     supervisor._quiesce_heartbeat()
     _apply(f, "CLEAR_DATA")
-    supervisor._start_fleet_ping(run, profile)
+    supervisor._configure_heartbeat_targets(run["run_id"])
     target = supervisor._heartbeat_fleet_targets()[mr.management_ip]
     after = datetime.now(timezone.utc) + timedelta(seconds=1)
     supervisor._queue_heartbeat_loss_sample(target, SimpleNamespace(ok=False), after)
     supervisor._quiesce_heartbeat()
-    visible = next(row for row in f.service.heartbeat(site, mr_uuid=mr.id).mrs
+    visible = next(row for row in _page(f, site, mr_uuid=mr.id).mrs
                    if row.mr_uuid == mr.id).loss_events
     assert len(visible) == 1
     assert visible[0]["event_key"] != "before-clear"
@@ -364,7 +380,7 @@ def test_clear_restart_does_not_restore_old_open_loss_episode(inventory_app):
     # Reopen durable storage and rebuild trackers, as after a Backend restart.
     supervisor.repository = GroundUnattendedRepository(f.repository.db_path, site_id=site)
     supervisor._heartbeat_loss_trackers.clear()
-    supervisor._start_fleet_ping(run, profile)
+    supervisor._configure_heartbeat_targets(run["run_id"])
     tracker = supervisor._heartbeat_loss_trackers[f"heartbeat:{mr.id}:{mr.management_ip}"]
     assert tracker.state["event_key"] == new_key
     supervisor._queue_heartbeat_loss_sample(target, SimpleNamespace(ok=True), after + timedelta(seconds=1))
@@ -377,16 +393,16 @@ def test_clear_restart_does_not_restore_old_open_loss_episode(inventory_app):
 def test_clear_then_restart_same_daily_run_does_not_resurrect_memory_counters(inventory_app):
     f = inventory_app
     site = f.service.site_id
-    f.service.heartbeat(site)
-    run = _run(f.repository)
-    supervisor = f.service.supervisor
+    _page(f, site)
+    _run(f.repository)
+    run = {"run_id": "heartbeat-resident"}
+    supervisor = f.service.supervisor.heartbeat
     supervisor.fleet_ping.start = Mock()  # Lifecycle regression uses no network probes.
-    profile = f.repository.get_profile()
     mr = f.source.rows[0]
-    supervisor._start_fleet_ping(run, profile)
+    supervisor._configure_heartbeat_targets(run["run_id"])
     supervisor._heartbeat_engine.record_cycle(mr.id, {mr.management_ip: (True, 2.0)})
     supervisor._quiesce_heartbeat()
-    assert f.service.heartbeat(site).heartbeat_statistics.sent_count == 1
+    assert _page(f, site).heartbeat_statistics.sent_count == 1
     f.repository.upsert_ping_summary({
         "site_id": site, "run_id": run["run_id"], "bucket_kind": "daily",
         "bucket_start": "2026-11-07T00:00:00Z", "bucket_end": "2026-11-08T00:00:00Z",
@@ -394,13 +410,13 @@ def test_clear_then_restart_same_daily_run_does_not_resurrect_memory_counters(in
     })
     shared = f.repository.list_ping_summaries(run["run_id"])
     _apply(f, "CLEAR_DATA")
-    supervisor._start_fleet_ping(run, profile)
+    supervisor._configure_heartbeat_targets(run["run_id"])
     assert supervisor._heartbeat_engine.snapshot(mr.id).ip_states[0].sent_count == 0
     supervisor._heartbeat_engine.record_cycle(mr.id, {mr.management_ip: (True, 3.0)})
     supervisor._quiesce_heartbeat()
-    page = f.service.heartbeat(site)
+    page = _page(f, site)
     assert page.total_mrs == 2 and page.heartbeat_statistics.sent_count == 1
-    supervisor._start_fleet_ping(run, profile)
+    supervisor._configure_heartbeat_targets(run["run_id"])
     assert supervisor._heartbeat_engine.snapshot(mr.id).ip_states[0].sent_count == 1
     assert f.repository.list_ping_summaries(run["run_id"]) == shared
 
@@ -435,7 +451,7 @@ def test_confirmation_is_action_bound_stale_checked_and_run_guarded(inventory_ap
 @pytest.mark.parametrize("failure", ["conflict", "changed_source"])
 def test_failed_sync_does_not_reenable_selection_or_write_inventory(inventory_app, monkeypatch, failure):
     f = inventory_app
-    f.service.heartbeat(f.service.site_id)
+    _page(f, f.service.site_id)
     _apply(f, "CLEAR_DEVICES")
     before = f.repository.list_inventory()
     original = f.service.inventory_sync.collect
@@ -484,7 +500,7 @@ def test_state_change_after_preview_is_rejected_inside_apply_transaction(invento
 
 def test_sync_preview_ignores_live_heartbeat_history_growth(inventory_app):
     f = inventory_app
-    f.service.heartbeat(f.service.site_id)
+    _page(f, f.service.site_id)
     preview = f.service.heartbeat_inventory_preview(f.service.site_id)
     f.repository.upsert_heartbeat_snapshot("run-1", {"status": "ONLINE"}, entity_type="MR", entity_id="mr-1")
     latest = f.service.heartbeat_inventory_preview(f.service.site_id)
@@ -494,7 +510,7 @@ def test_sync_preview_ignores_live_heartbeat_history_growth(inventory_app):
 
 def test_clear_actions_do_not_need_readable_device_source(inventory_app, monkeypatch):
     f = inventory_app
-    f.service.heartbeat(f.service.site_id)
+    _page(f, f.service.site_id)
     monkeypatch.setattr(f.service.inventory_sync, "collect", Mock(side_effect=OSError("source unavailable")))
     assert _apply(f, "CLEAR_DEVICES").monitoring_enabled is False
     assert _apply(f, "CLEAR_DATA").applied

@@ -100,7 +100,7 @@ function openQuickPing(mrId: string) {
     <section v-if="runScopedTab" class="run-context-bar">
       <div>
         <b>数据运行上下文</b>
-        <span>Ping、深度采集、时间轴与 Syslog 使用同一个运行筛选，不再隐式跟随“最近一次”。</span>
+        <span>深度采集、时间轴与 Syslog 使用所选运行；心跳检测始终展示常驻监测状态。</span>
       </div>
       <el-select v-model="selectedRunId" filterable placeholder="选择运行日期">
         <el-option

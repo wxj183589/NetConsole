@@ -66,6 +66,7 @@ class GroundRawStreamQueryService:
         self.root = repository.db_path.parent.resolve()
         self.archive_reader = GroundArchiveReader(repository)
         self.identity_resolver = GroundDeviceIdentityResolver(repository)
+        self.heartbeat_runtime = None
 
     def ping_series(
         self,
@@ -1063,6 +1064,8 @@ class GroundRawStreamQueryService:
             cursor_state["after_sequence"] = _optional_int(latest.get("seq"))
         run = self.repository.get_run(run_id) if run_id else None
         target_state = str((run or {}).get("state") or "")
+        if run_id == "heartbeat-resident" and self.heartbeat_runtime is not None:
+            target_state = self.heartbeat_runtime().state
         result.update(
             {
                 "next_cursor": _encode_ping_cursor(cursor_state),
@@ -1076,7 +1079,7 @@ class GroundRawStreamQueryService:
                 .astimezone()
                 .isoformat(timespec="milliseconds"),
                 "active": target_state
-                in {"STARTING", "RUNNING", "PAUSED", "STOPPING"},
+                in {"STARTING", "RUNNING", "PAUSED", "STOPPING", "HEARTBEAT_DEGRADED"},
                 "target_state": target_state,
             }
         )
@@ -1318,7 +1321,7 @@ class GroundRawStreamQueryService:
         if run_id:
             run = self.repository.get_run(run_id)
             raw_files = self.repository.list_raw_files_for_run(run_id)
-            if run is None and not raw_files:
+            if run is None and not raw_files and run_id != "heartbeat-resident":
                 raise GroundRawQueryError("指定的无人值守运行不存在")
             role_values = _filter_values(mr_role)
             raw_times = [

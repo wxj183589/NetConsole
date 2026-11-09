@@ -61,24 +61,26 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
     return events, intervals
 
 
-def indexed_evidence(db_path: Path, *, site_id: str, run_id: str, mr_uuid: str, start: datetime, end: datetime) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+def indexed_evidence(db_path: Path, *, site_id: str, run_id: str | None, mr_uuid: str, start: datetime, end: datetime) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
     """Read bounded indexed facts in one read-only snapshot, respecting UTC offsets."""
     with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON")
         connection.execute("BEGIN")
+        run_clause = " AND run_id=?" if run_id is not None else ""
+        params = (site_id, *((run_id,) if run_id is not None else ()), mr_uuid, start.isoformat(), end.isoformat())
         mesh_rows = connection.execute(
-            "SELECT * FROM ground_unattended_wmesh_events WHERE site_id=? AND run_id=? AND device_uuid=? "
+            f"SELECT * FROM ground_unattended_wmesh_events WHERE site_id=?{run_clause} AND device_uuid=? "
             "AND (event_family='WMESH' OR (event_family='' AND event_type LIKE 'MESH_%')) "
             "AND julianday(receive_time)>=julianday(?) AND julianday(receive_time)<=julianday(?) "
             "ORDER BY julianday(receive_time) DESC,id DESC LIMIT 501",
-            (site_id, run_id, mr_uuid, start.isoformat(), end.isoformat()),
+            params,
         ).fetchall()
         ac_rows = connection.execute(
-            "SELECT * FROM ground_unattended_ac_snapshots WHERE site_id=? AND run_id=? AND mr_id=? "
+            f"SELECT * FROM ground_unattended_ac_snapshots WHERE site_id=?{run_clause} AND mr_id=? "
             "AND julianday(received_at)>=julianday(?) AND julianday(received_at)<=julianday(?) "
             "ORDER BY julianday(received_at) DESC,id DESC LIMIT 501",
-            (site_id, run_id, mr_uuid, start.isoformat(), end.isoformat()),
+            params,
         ).fetchall()
     def within(row: sqlite3.Row, key: str) -> bool:
         try:

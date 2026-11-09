@@ -672,6 +672,8 @@ def create_app(
                 )
                 return False
             try:
+                app.state.heartbeat_supervisor = ground_unattended_supervisor.heartbeat
+                await asyncio.to_thread(ground_unattended_supervisor.heartbeat.start)
                 await asyncio.to_thread(ground_unattended_supervisor.start)
                 app.state.unattended_ready = True
                 app.state.unattended_status = "ready"
@@ -871,6 +873,13 @@ def create_app(
             collect_run_recovery_task.cancel()
             await asyncio.gather(collect_run_recovery_task, return_exceptions=True)
             if ground_unattended_supervisor is not None:
+                try:
+                    await asyncio.to_thread(ground_unattended_supervisor.heartbeat.close)
+                except BaseException as exc:
+                    app_logger.log_error(
+                        "WEB_LIFESPAN_STOP_FAILED",
+                        f"component=heartbeat error={exc.__class__.__name__}: {exc}",
+                    )
                 try:
                     await asyncio.to_thread(ground_unattended_supervisor.close)
                 except BaseException as exc:
@@ -1276,18 +1285,22 @@ def create_app(
             ) = build_ground_runtime(target)
             try:
                 if old_ground_started:
+                    target_ground_supervisor.heartbeat.start()
                     target_ground_supervisor.start()
                 if old_ground_application_service is not None:
                     old_ground_application_service.close()
                 if old_ground_supervisor is not None:
+                    old_ground_supervisor.heartbeat.close()
                     old_ground_supervisor.close()
             except Exception:
+                target_ground_supervisor.heartbeat.close()
                 target_ground_supervisor.close()
                 raise
             ground_unattended_repository = target_ground_repository
             ground_unattended_supervisor = target_ground_supervisor
             app.state.ground_unattended_repository = target_ground_repository
             app.state.ground_unattended_supervisor = target_ground_supervisor
+            app.state.heartbeat_supervisor = target_ground_supervisor.heartbeat
             app.state.ground_unattended_application_service = target_ground_application_service
             app.state.ground_unattended_startup_error = ""
             app.state.unattended_error = ""

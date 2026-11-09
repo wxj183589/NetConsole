@@ -77,6 +77,7 @@ GroundDataAvailability = Literal[
     "CORRUPT",
 ]
 GroundHeartbeatDataState = Literal[
+    "HEARTBEAT_DEGRADED",
     "NO_INVENTORY",
     "NOT_STARTED",
     "INITIALIZING",
@@ -1625,7 +1626,30 @@ class GroundHeartbeatStatisticsDTO(ApiModel):
     latest_sample_at: str = ""
 
 
+class HeartbeatConfigDTO(ApiModel):
+    enabled: bool = True
+    interval_ms: int = Field(default=1000, ge=100, le=60000)
+    timeout_ms: int = Field(default=4000, ge=100, le=60000)
+    packet_size: int = Field(default=64, ge=1, le=65507)
+    shard_size: int = Field(default=12, ge=2, le=32)
+    warmup_seconds: int = Field(default=10, ge=0, le=300)
+    backup_policy: Literal["MONITOR", "PRIMARY_ONLY"] = "MONITOR"
+
+
+class HeartbeatRuntimeDTO(ApiModel):
+    state: str = "STOPPED"
+    enabled: bool = True
+    target_count: int = 0
+    process_count: int = 0
+    last_sample_at: str = ""
+    last_success_at: str = ""
+    last_error: str = ""
+    pending_events: int = 0
+    pending_loss_events: int = 0
+
+
 class GroundHeartbeatPageDTO(ApiModel):
+    runtime: HeartbeatRuntimeDTO = Field(default_factory=HeartbeatRuntimeDTO)
     monitoring_enabled: bool = True
     source_conflicts: list[str] = Field(default_factory=list)
     data_cleared_at: str = ""

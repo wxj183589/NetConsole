@@ -265,7 +265,7 @@ def test_manual_config_check_uses_inventory_when_ac_targets_are_missing() -> Non
 
     supervisor.repository = _Repository()
     supervisor.fleet_ping = _FleetPing()
-    supervisor._heartbeat_fleet_targets = lambda: {target.target_ip: target}
+    supervisor.heartbeat = SimpleNamespace(_heartbeat_fleet_targets=lambda: {target.target_ip: target})
     supervisor._manual_config_checks = {"mr-1": (False, True)}
     supervisor._config_futures = {}
     supervisor._config_executor = _Executor()

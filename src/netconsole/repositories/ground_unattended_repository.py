@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from netconsole.core.model_projection import project_row_for_model
-from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
+from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO, HeartbeatConfigDTO
 from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
 
@@ -20,6 +20,12 @@ def _filter_values(value: str | Iterable[str]) -> tuple[str, ...]:
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS ground_unattended_heartbeat_config (
+    site_id TEXT PRIMARY KEY,
+    config_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ground_unattended_schema (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -1546,6 +1552,46 @@ class GroundUnattendedRepository:
             result.append(item)
         return result
 
+    def get_heartbeat_config(self) -> HeartbeatConfigDTO:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT config_json FROM ground_unattended_heartbeat_config WHERE site_id=?",
+                (self.site_id,),
+            ).fetchone()
+        if row:
+            return HeartbeatConfigDTO.model_validate_json(row["config_json"])
+        # Adopt saved Fleet settings until the first independent configuration.
+        profile = self.get_profile()
+        return HeartbeatConfigDTO(
+            interval_ms=profile.fleet_ping_interval_ms,
+            timeout_ms=profile.fleet_ping_timeout_ms,
+            packet_size=profile.fleet_ping_packet_size,
+            shard_size=profile.fleet_ping_shard_size,
+            warmup_seconds=profile.fleet_ping_warmup_seconds,
+        )
+
+    def save_heartbeat_config(self, config: HeartbeatConfigDTO) -> HeartbeatConfigDTO:
+        config = HeartbeatConfigDTO.model_validate(config.model_dump())
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT INTO ground_unattended_heartbeat_config(site_id, config_json, updated_at) "
+                "VALUES(?, ?, ?) ON CONFLICT(site_id) DO UPDATE SET "
+                "config_json=excluded.config_json, updated_at=excluded.updated_at",
+                (self.site_id, config.model_dump_json(), datetime.now().astimezone().isoformat()),
+            )
+        return config
+
+    def initialize_heartbeat_config(self) -> HeartbeatConfigDTO:
+        """Freeze legacy defaults once without overwriting a concurrent save."""
+        config = self.get_heartbeat_config()
+        with self._transaction() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO ground_unattended_heartbeat_config "
+                "(site_id, config_json, updated_at) VALUES(?, ?, ?)",
+                (self.site_id, config.model_dump_json(), _now()),
+            )
+        return self.get_heartbeat_config()
+
     def heartbeat_inventory_state(self) -> dict[str, Any]:
         """Heartbeat selection is independent from the shared asset inventory."""
         with self._connection() as conn:
@@ -2281,6 +2327,31 @@ class GroundUnattendedRepository:
             ).fetchall()
         return [_decode_row(row) for row in rows]
 
+    def ping_summary_totals(self, stream_id: str, *, target_ips: Iterable[str] | None = None) -> list[dict[str, Any]]:
+        """Aggregate daily facts in SQLite; resident recovery stays bounded per IP."""
+        params: list[Any] = [self.site_id, stream_id]
+        where = ""
+        if target_ips is not None:
+            addresses = tuple(target_ips)
+            if not addresses:
+                return []
+            where = " AND target_ip IN (" + ",".join("?" for _ in addresses) + ")"
+            params.extend(addresses)
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT target_ip, SUM(raw_sample_count) AS raw_sample_count, "
+                "SUM(warmup_ignored_count) AS warmup_ignored_count, "
+                "SUM(sent_count) AS sent_count, SUM(success_count) AS success_count, "
+                "SUM(loss_count) AS loss_count, MIN(min_rtt_ms) AS min_rtt_ms, "
+                "MAX(max_rtt_ms) AS max_rtt_ms, "
+                "SUM(avg_rtt_ms * success_count) / NULLIF(SUM(success_count), 0) AS avg_rtt_ms, "
+                "MAX(continuous_loss_max_count) AS continuous_loss_max_count "
+                "FROM ground_unattended_ping_summaries "
+                f"WHERE site_id=? AND run_id=? AND bucket_kind='daily'{where} GROUP BY target_ip",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def save_deep_operation(self, values: dict[str, Any]) -> None:
         fields = tuple(values)
         updates = ", ".join(
@@ -2453,6 +2524,44 @@ class GroundUnattendedRepository:
         if row is None:
             raise RuntimeError("timeline projection was not saved")
         return int(row["id"]), bool(cursor.rowcount)
+
+    def migrate_resident_heartbeat(self, stream_id: str) -> None:
+        """Seed the resident stream once, preserving all original Run facts.
+
+        Only heartbeat episodes are copied; Quick Ping and Syslog are excluded.
+        The marker and data commit atomically so retries cannot reset counters.
+        """
+        marker = f"heartbeat_resident_v1:{self.site_id}"
+        with self._transaction() as conn:
+            if conn.execute("SELECT 1 FROM ground_unattended_schema WHERE key=?", (marker,)).fetchone():
+                return
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO ground_unattended_heartbeat_states
+                    (site_id, run_id, entity_type, entity_id, status, engine_state, snapshot_json, updated_at)
+                SELECT site_id, ?, entity_type, entity_id, status, engine_state, snapshot_json, updated_at
+                FROM (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY entity_type, entity_id ORDER BY updated_at DESC, run_id DESC
+                    ) AS rn FROM ground_unattended_heartbeat_states
+                    WHERE site_id=? AND run_id<>?
+                ) WHERE rn=1
+                """, (stream_id, self.site_id, stream_id),
+            )
+            columns = [row["name"] for row in conn.execute(
+                "PRAGMA table_info(ground_unattended_ping_loss_intervals)"
+            ) if row["name"] not in {"id", "run_id"}]
+            names = ", ".join(columns)
+            conn.execute(
+                f"INSERT OR IGNORE INTO ground_unattended_ping_loss_intervals (run_id, {names}) "
+                f"SELECT ?, {names} FROM ground_unattended_ping_loss_intervals "
+                "WHERE site_id=? AND run_id<>? AND event_key LIKE 'heartbeat:%' ORDER BY updated_at DESC",
+                (stream_id, self.site_id, stream_id),
+            )
+            conn.execute(
+                "INSERT INTO ground_unattended_schema(key, value, updated_at) VALUES(?, '1', ?)",
+                (marker, _now()),
+            )
 
     def upsert_heartbeat_snapshot(
         self,

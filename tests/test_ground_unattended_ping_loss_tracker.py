@@ -6,7 +6,7 @@ import pytest
 
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
 from netconsole.services.ground_unattended.heartbeat_state import HeartbeatTarget
-from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
+from netconsole.services.ground_unattended.heartbeat_supervisor import HeartbeatSupervisor
 
 from netconsole.services.ground_unattended.ping_loss import PingLossTracker
 from netconsole.services.ground_unattended.task_scheduler import GroundTaskScheduler
@@ -42,7 +42,7 @@ def test_repeated_outages_preserve_history_and_recover_after_repository_reopen(t
 
 
 def test_refresh_retains_live_tracker_and_prunes_removed_target():
-    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor = object.__new__(HeartbeatSupervisor)
     supervisor.repository = Mock()
     key = 'heartbeat:mr-1:127.0.0.1'
     tracker = PingLossTracker(key)

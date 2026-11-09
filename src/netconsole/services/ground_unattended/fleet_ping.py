@@ -255,6 +255,14 @@ class FleetPingSupervisor:
         self._last_sample_at = ""
         self._latest_samples: dict[str, tuple[str, float | None]] = {}
         self._last_sample_write_duration_ms = 0.0
+        self._shard_errors: dict[str, str] = {}
+        self._shard_retry_at: dict[str, float] = {}
+        self._shard_failures: dict[str, int] = {}
+
+    @property
+    def last_error(self) -> str:
+        with self._lock:
+            return "; ".join(self._shard_errors.values())
 
     def start(
         self,
@@ -282,7 +290,7 @@ class FleetPingSupervisor:
                 )
         self._recover_open_segments(run_id)
         persisted_run = self.repository.get_run(run_id) or {}
-        persisted_daily = self.repository.list_ping_summaries(run_id)
+        persisted_daily = self.repository.ping_summary_totals(run_id)
         with self._lock:
             if self._run_id == run_id:
                 return
@@ -291,7 +299,9 @@ class FleetPingSupervisor:
             self._stats = {}
             self._buckets = {}
             self._dirty_buckets = set()
-            self._sample_count = int(persisted_run.get("ping_sample_count") or 0)
+            self._sample_count = int(persisted_run.get("ping_sample_count") or sum(
+                int(row.get("raw_sample_count") or 0) for row in persisted_daily
+            ))
             self._sample_times.clear()
             self._last_sample_at = ""
             self._latest_samples.clear()
@@ -304,6 +314,9 @@ class FleetPingSupervisor:
             self._started_at = {}
             self._transition_at = {}
             self._backend_warnings = []
+            self._shard_errors.clear()
+            self._shard_retry_at.clear()
+            self._shard_failures.clear()
             self._output_dir = Path(active_dir) / "fleet_ping"
             self._output_dir.mkdir(parents=True, exist_ok=True)
             (self._output_dir / "layout.jsonl").write_text(
@@ -358,6 +371,7 @@ class FleetPingSupervisor:
             self._flush_summaries_locked()
             desired = {item.target_ip: item for item in targets if item.target_ip}
             removed = set(self._targets) - set(desired)
+            added = set(desired) - set(self._targets)
             now = datetime.now().astimezone().isoformat(timespec="milliseconds")
             if removed and self._run_id:
                 self.repository.deactivate_ping_targets(
@@ -397,11 +411,20 @@ class FleetPingSupervisor:
                         )
                     desired[address] = current
             self._targets = desired
+            for address in removed:
+                self._stats.pop(address, None)
+                self._latest_samples.pop(address, None)
+            if added and self._run_id:
+                self._persisted_target_stats.update({
+                    str(row["target_ip"]): self._stats_from_summary(row)
+                    for row in self.repository.ping_summary_totals(self._run_id, target_ips=added)
+                })
             for address in desired:
                 if address not in self._stats and address in self._persisted_target_stats:
                     self._stats[address] = self._copy_stats(
                         self._persisted_target_stats[address]
                     )
+            self._persisted_target_stats.clear()
             self._transition_at = {
                 address: value
                 for address, value in self._transition_at.items()
@@ -618,6 +641,15 @@ class FleetPingSupervisor:
         with self._lock:
             planned = self._plan_shards(addresses)
             old = dict(self._workers)
+        # Stop changed generations before starting replacements. Retain live
+        # workers on timeout so retries/close can still account for resources.
+        for shard_id, worker in old.items():
+            if planned.get(shard_id) != worker.targets:
+                worker.stop_event.set()
+                worker.thread.join(timeout=8)
+                if worker.thread.is_alive():
+                    raise RuntimeError(f"Heartbeat shard stop pending: {shard_id}")
+        with self._lock:
             replacements: dict[str, _ShardWorker] = {}
             for shard_id, shard_targets in planned.items():
                 current = old.get(shard_id)
@@ -628,10 +660,17 @@ class FleetPingSupervisor:
                 ):
                     replacements[shard_id] = current
                     continue
+                if time.monotonic() < self._shard_retry_at.get(shard_id, 0):
+                    if current is not None:
+                        replacements[shard_id] = current
+                    continue
                 worker = self._start_worker(shard_id, shard_targets)
                 replacements[shard_id] = worker
             self._workers = replacements
-        # 新分片先进入 runner，再关闭发生变化的旧分片，缩短时间轴空洞。
+            for shard_id in set(self._shard_errors) - set(planned):
+                self._shard_errors.pop(shard_id, None)
+                self._shard_retry_at.pop(shard_id, None)
+                self._shard_failures.pop(shard_id, None)
         for worker in replacements.values():
             if all(worker is not existing for existing in old.values()):
                 worker.started_event.wait(timeout=2)
@@ -684,7 +723,7 @@ class FleetPingSupervisor:
             if all(value not in shard.targets for shard in self._workers.values())
         ]
         for shard_id, worker in sorted(self._workers.items()):
-            kept = [value for value in worker.targets if value in remaining]
+            kept = [value for value in worker.targets if value in remaining][:self._shard_size]
             while len(kept) < self._shard_size and new_addresses:
                 value = new_addresses.pop(0)
                 if value in remaining and value not in kept:
@@ -753,6 +792,11 @@ class FleetPingSupervisor:
         except Exception as exc:
             if stop_event.is_set():
                 return
+            with self._lock:
+                failures = self._shard_failures.get(shard_id, 0) + 1
+                self._shard_failures[shard_id] = failures
+                self._shard_errors[shard_id] = f"{shard_id}: {type(exc).__name__}: {exc}"
+                self._shard_retry_at[shard_id] = time.monotonic() + min(30, 2 ** min(failures, 5))
             self.repository.add_event(
                 run_id=self._run_id,
                 event_type="ping_shard_failed",
@@ -781,6 +825,9 @@ class FleetPingSupervisor:
             self._sample_count += 1
             self._sample_times.append(time.monotonic())
             self._last_sample_at = ts.isoformat(timespec="milliseconds")
+            self._shard_errors.pop(shard_id, None)
+            self._shard_retry_at.pop(shard_id, None)
+            self._shard_failures.pop(shard_id, None)
             activation_started_at = self._started_at.get(sample.target, "")
             warmup_ignored = self._is_warmup(ts, activation_started_at)
             transition_context = self._transition_context(
