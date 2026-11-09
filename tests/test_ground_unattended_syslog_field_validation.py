@@ -667,6 +667,37 @@ def test_config_present_is_not_owned_and_cannot_be_revoked(tmp_path: Path) -> No
     assert not any(command.startswith("undo info-center loghost") for command in connection.commands)
 
 
+def test_repeated_join_rechecks_and_skips_duplicate_write(tmp_path: Path) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    first_connection = _ConfigConnection(
+        config_before="",
+        config_after=FULL_CONFIG_514,
+        info_before="Information Center: Disabled\nLog host: Disabled\n",
+        info_after=FULL_RUNTIME_514,
+    )
+    first = _service(paths, repository, first_connection).check(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
+    )
+    owner = repository.active_syslog_config_ownership(device_uuid, TARGET_IP, 514)
+    assert first.config_status == "CONFIG_SENT"
+    assert owner is not None
+
+    second_connection = _ConfigConnection(
+        config_before=FULL_CONFIG_514,
+        config_after=FULL_CONFIG_514,
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+    second = _service(paths, repository, second_connection).check(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
+    )
+    assert second.config_status == "CONFIG_PRESENT"
+    assert not any(command.startswith("info-center loghost ") for command in second_connection.commands)
+    assert repository.active_syslog_config_ownership(device_uuid, TARGET_IP, 514)["ownership_audit_id"] == owner["ownership_audit_id"]
+
+
 def test_only_verified_new_target_is_owned_and_exit_revokes_it(tmp_path: Path) -> None:
     paths, repository, device_uuid = _context(tmp_path)
     configured = _ConfigConnection(
