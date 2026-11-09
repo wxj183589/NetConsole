@@ -143,6 +143,9 @@ export interface MeshApCoverageAudit {
 
 export interface Page<T> {
   zero_link_count?: number; downsampled?: boolean; query_duration_ms?: number
+  query_kind?: string; sql_query_count?: number; raw_sample_complete?: boolean
+  raw_sample_version?: string | null; raw_context_count?: number
+  coverage_time_from?: string | null; coverage_time_to?: string | null
   items: T[]; total: number; page: number; page_size: number
   index_status?: string; indexed_session_count?: number; pending_session_count?: number
 }
@@ -216,7 +219,8 @@ export interface MeshIdentityMetadata {
 
 export interface MeshLinkDetail extends MeshIdentityMetadata {
   counter_samples?: Record<string, { current: number | null; previous: number | null; delta: number | null; interval_seconds: number | null; per_second: number | null; status: string }>
-  monitor_gap_before?: boolean
+  monitor_gap_before?: boolean; is_boundary_context?: boolean
+  source_file_id?: number | null; raw_sample_version?: string | null; derived_metric_version?: string | null
   local_tx_delta?: number | null; peer_tx_delta?: number | null; local_rx_delta?: number | null; peer_rx_delta?: number | null
   local_retry_delta?: number | null; peer_retry_delta?: number | null; local_err_delta?: number | null; peer_err_delta?: number | null
   local_tx_garp_delta?: number | null; peer_rx_garp_delta?: number | null; local_tx_mul_join_delta?: number | null; peer_rx_mul_join_delta?: number | null

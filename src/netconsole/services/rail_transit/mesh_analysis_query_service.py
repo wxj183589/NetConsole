@@ -115,6 +115,8 @@ _MAX_CHART_LOCATION_SEGMENTS = 256
 _MAX_TRACKSIDE_SERIES = 512
 _TARGET_CHART_PAYLOAD_BYTES = 4 * 1024 * 1024
 _MAX_CHART_PAYLOAD_BYTES = 16 * 1024 * 1024
+_RAW_SAMPLE_VERSION = "mesh-raw-v1"
+_DERIVED_METRIC_VERSION = "mesh-derived-v1"
 LOGGER = logging.getLogger(__name__)
 _ZERO_READ_LOCK = RLock()
 
@@ -917,6 +919,9 @@ class MeshAnalysisQueryService:
         nearest_time: str = "",
         max_points: int = 1000,
         include_zero: bool = False,
+        raw_samples: bool = False,
+        include_context: bool = False,
+        raw_max_rows: int = 50_000,
         exclude_depot: bool = False,
         exclude_parking: bool = False,
     ) -> MeshLinkPageDTO:
@@ -924,7 +929,12 @@ class MeshAnalysisQueryService:
         context = self._context(site_id, session_id)
         if context.detail_db is None:
             return MeshLinkPageDTO(page=page, page_size=page_size)
-        if metric_group or include_zero or exact_ap or nearest_time:
+        if raw_samples and (metric_group or nearest_time or include_zero):
+            raise MeshAnalysisQueryError("原始采样查询不能与指标、最近采样或 LinkCnt=0 模式同时使用")
+        if raw_samples and (not time_from or not time_to):
+            raise MeshAnalysisQueryError("原始采样查询需要明确的起止时间")
+        raw_max_rows = min(max(int(raw_max_rows), 100), 100_000)
+        if raw_samples or metric_group or include_zero or exact_ap or nearest_time:
             try:
                 time_from = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
                 time_to = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
@@ -940,7 +950,7 @@ class MeshAnalysisQueryService:
             raise MeshAnalysisQueryError("未知的监控指标")
         if (metric_group or nearest_time) and (not time_from or not time_to):
             raise MeshAnalysisQueryError("监控查询需要明确的起止时间")
-        if metric_group or include_zero or radio is not None or exact_ap or nearest_time:
+        if raw_samples or metric_group or include_zero or radio is not None or exact_ap or nearest_time:
             clauses.append("ml.source_file_id = ?")
             values.append(context.detail_source_id)
         if nearest_time:
@@ -1016,11 +1026,27 @@ class MeshAnalysisQueryService:
         offset = (current - 1) * size
         direction = "DESC" if sort_order == "desc" else "ASC"
         sort_column = {"timestamp": "ml.sample_time", "rssi": "ml.local_rssi_db", "peer_ap_name": "ml.peer_ap_name"}.get(sort_by, "ml.sample_time")
+        sql_query_count = 0
         with closing(self._connect_readonly(context.detail_db)) as conn:
+            def _trace(statement: str) -> None:
+                nonlocal sql_query_count
+                normalized = statement.lstrip().upper()
+                if normalized.startswith("SELECT") or normalized.startswith("WITH"):
+                    sql_query_count += 1
+
+            # Preserve caller-installed callbacks used by the nearest-query
+            # regression tests.  Raw/metric queries are the new trace-bearing
+            # path; the legacy paged/nearest path keeps its existing callback.
+            if raw_samples or metric_group:
+                try:
+                    conn.set_trace_callback(_trace)
+                except AttributeError:
+                    pass
             link_columns = self._table_columns(conn, "mesh_links")
             if nearest_time:
                 candidates = []
                 for comparator, order in (("<=", "DESC"), (">=", "ASC")):
+                    sql_query_count += 1
                     candidate = conn.execute(
                         f"SELECT ml.id, ml.sample_time FROM mesh_links ml {where} "
                         f"AND ml.sample_time {comparator} ? "
@@ -1030,7 +1056,14 @@ class MeshAnalysisQueryService:
                     if candidate is not None:
                         candidates.append(candidate)
                 if not candidates:
-                    return MeshLinkPageDTO(page=1, page_size=1)
+                    return MeshLinkPageDTO(
+                        page=1,
+                        page_size=1,
+                        query_kind="nearest",
+                        sql_query_count=sql_query_count,
+                        coverage_time_from=time_from or None,
+                        coverage_time_to=time_to or None,
+                    )
                 target_time = datetime.fromisoformat(nearest_time)
                 nearest = min(candidates, key=lambda item: (
                     abs((datetime.fromisoformat(item["sample_time"]) - target_time).total_seconds()),
@@ -1076,6 +1109,15 @@ class MeshAnalysisQueryService:
                        ORDER BY p.sample_time DESC, p.id DESC LIMIT 1) AS monitor_raw_physical_role
                 """
             total = 1 if nearest_time else int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
+            if raw_samples:
+                query_limit = "LIMIT ?"
+                query_values: tuple[Any, ...] = (*values, raw_max_rows + 1)
+            elif metric_group or include_zero:
+                query_limit = ""
+                query_values = tuple(values)
+            else:
+                query_limit = "LIMIT ? OFFSET ?"
+                query_values = (*values, size, offset)
             cursor = conn.execute(
                 f"""
                 SELECT ml.id, ml.sample_id, ml.source_file_id, ml.sample_time, s.timestamp_tag,
@@ -1110,10 +1152,15 @@ class MeshAnalysisQueryService:
                 LEFT JOIN source_files sf ON sf.id = ml.source_file_id
                 {where}
                 ORDER BY {sort_column} {direction}, s.timestamp_tag {direction}, ml.record_seq {direction}, ml.id {direction}
-                {'' if metric_group or include_zero else 'LIMIT ? OFFSET ?'}
+                {query_limit}
                 """,
-                tuple(values) if metric_group or include_zero else (*values, size, offset),
+                query_values,
             )
+            if nearest_time:
+                # The nearest path intentionally keeps caller-installed trace
+                # callbacks used by legacy regression tests. Count its fixed
+                # projection explicitly instead of replacing that callback.
+                sql_query_count += 1
             zero_rows = []
             if include_zero:
                 if context.raw_path is None or not context.raw_path.is_file():
@@ -1151,10 +1198,28 @@ class MeshAnalysisQueryService:
                     if len(zero_rows) > 20000:
                         raise MeshAnalysisQueryError("零链路观测过多，请缩小时间范围或选择单 AP")
             zero_count = len(zero_rows)
-            combined = heapq.merge((dict(row) for row in cursor), sorted(zero_rows, key=lambda row: (row["sample_time"], row["id"])), key=lambda row: (row["sample_time"], row["id"])) if metric_group or include_zero else cursor
-            if nearest_time:
+            raw_sample_complete = False
+            raw_context_count = 0
+            if raw_samples:
+                target_rows = [dict(item) for item in cursor]
+                if len(target_rows) > raw_max_rows:
+                    target_rows = target_rows[:raw_max_rows]
+                if total <= raw_max_rows and len(target_rows) == total:
+                    raw_sample_complete = True
+                context_rows = self._raw_context_rows(conn, target_rows, time_from) if include_context else []
+                for item in context_rows:
+                    item["is_boundary_context"] = True
+                raw_context_count = len(context_rows)
+                rows = sorted(
+                    [*context_rows, *target_rows],
+                    key=lambda item: (str(item.get("sample_time") or ""), int(item.get("id") or 0)),
+                )
+            else:
+                combined = heapq.merge((dict(row) for row in cursor), sorted(zero_rows, key=lambda row: (row["sample_time"], row["id"])), key=lambda row: (row["sample_time"], row["id"])) if metric_group or include_zero else cursor
+            if not raw_samples and nearest_time:
                 rows = [self._nearest_counter_context(conn, dict(item), time_from, time_to, context.raw_path) for item in cursor]
-            elif metric_group:
+                sql_query_count += 2 * len(rows)
+            elif not raw_samples and metric_group:
                 try:
                     rows, total, zero_count = select_monitor_rows(
                         combined, metric_group, time_from, time_to,
@@ -1167,7 +1232,7 @@ class MeshAnalysisQueryService:
                     raise MeshAnalysisQueryError("零链路历史按采样时间正序查询")
                 total += zero_count
                 rows = list(islice(combined, offset, offset + size))
-            else:
+            elif not raw_samples:
                 rows = cursor.fetchall()
         train_name, role = self._mr_identity(context.mr_name)
         items: list[MeshLinkDetailDTO] = []
@@ -1178,6 +1243,10 @@ class MeshAnalysisQueryService:
             items.append(
                 MeshLinkDetailDTO(
                     monitor_gap_before=bool(data.get("monitor_gap_before")),
+                    is_boundary_context=bool(data.get("is_boundary_context")),
+                    source_file_id=int(data["source_file_id"]) if data.get("source_file_id") is not None else None,
+                    raw_sample_version=_RAW_SAMPLE_VERSION if raw_samples else None,
+                    derived_metric_version=_DERIVED_METRIC_VERSION if metric_group else None,
                     record_id=int(data["id"]),
                     timestamp=str(data["sample_time"]),
                     train_name=train_name,
@@ -1256,9 +1325,56 @@ class MeshAnalysisQueryService:
             )
         return MeshLinkPageDTO(
             items=items, total=total, page=current, page_size=size, zero_link_count=zero_count,
-            downsampled=bool(metric_group and not nearest_time and total > len(items)),
+            downsampled=bool(
+                (metric_group and not nearest_time and total > len(items))
+                or (raw_samples and not raw_sample_complete)
+            ),
             query_duration_ms=round((perf_counter() - started) * 1000, 2),
+            query_kind=("raw_samples" if raw_samples else "nearest" if nearest_time else "metric" if metric_group else "page"),
+            sql_query_count=sql_query_count,
+            raw_sample_complete=raw_sample_complete,
+            raw_sample_version=_RAW_SAMPLE_VERSION if raw_samples else None,
+            raw_context_count=raw_context_count,
+            coverage_time_from=time_from or None,
+            coverage_time_to=time_to or None,
         )
+
+    @staticmethod
+    def _raw_context_rows(conn: sqlite3.Connection, target_rows: list[dict[str, Any]], start: str) -> list[dict[str, Any]]:
+        """Read one predecessor per raw link identity with one bounded SQL scan.
+
+        The predecessor deliberately ignores the visible AP/role filters.  It is
+        computation-only context: a role/AP transition immediately before a
+        requested interval must remain visible to the continuity calculator, but
+        must never be displayed or counted as part of the requested coverage.
+        """
+        if not target_rows or not start:
+            return []
+        identities = {monitor_identity(row) for row in target_rows}
+        source_ids = sorted({row.get("source_file_id") for row in target_rows if row.get("source_file_id") is not None})
+        radios = sorted({row.get("radio") for row in target_rows if row.get("radio") is not None})
+        if len(source_ids) != 1 or not radios:
+            return []
+        placeholders = ",".join("?" for _ in radios)
+        rows = conn.execute(
+            f"""
+            SELECT * FROM mesh_links
+            WHERE source_file_id = ?
+              AND radio IN ({placeholders})
+              AND sample_time < ?
+            ORDER BY sample_time DESC, id DESC
+            """,
+            (source_ids[0], *radios, start),
+        )
+        selected: dict[tuple, dict[str, Any]] = {}
+        for item in rows:
+            data = dict(item)
+            identity = monitor_identity(data)
+            if identity in identities and identity not in selected:
+                selected[identity] = data
+                if len(selected) == len(identities):
+                    break
+        return sorted(selected.values(), key=lambda item: (str(item.get("sample_time") or ""), int(item.get("id") or 0)))
 
     @staticmethod
     def _nearest_counter_context(conn, target, time_from, time_to, raw_path):
