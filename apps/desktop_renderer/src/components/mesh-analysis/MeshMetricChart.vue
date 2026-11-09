@@ -77,14 +77,16 @@ function selectTime(event: MouseEvent): void {
 function moveTime(event: MouseEvent): void { if (event.ctrlKey) selectTime(event) }
 function onKey(event: KeyboardEvent): void { if (event.key === 'Escape') emit('selection-clear') }
 function onWheel(event: WheelEvent): void {
-  if (!event.shiftKey || !props.window || !props.domain || !chart) return
+  if (!props.window || !props.domain || !chart) return
   const anchor = pixelTime(event), low = millis(props.domain.start), high = millis(props.domain.end), start = millis(props.window.start), end = millis(props.window.end)
-  if (anchor === null || low === null || high === null || start === null || end === null || !event.deltaY) return
-  event.preventDefault()
-  const width = Math.min(high - low, Math.max(100, (end - start) * (event.deltaY < 0 ? 1.25 : 0.8)))
+  if (anchor === null || low === null || high === null || start === null || end === null || !event.deltaY || high <= low || end <= start) return
+  const width = Math.min(high - low, Math.max(100, (end - start) * (event.deltaY < 0 ? 0.8 : 1.25)))
   const ratio = Math.max(0, Math.min(1, (anchor - start) / (end - start)))
   const next = Math.max(low, Math.min(high - width, anchor - width * ratio))
-  emit('viewport-change', { start: stamp(next), end: stamp(next + width) })
+  const result = { start: stamp(next), end: stamp(next + width) }
+  if (result.start === props.window.start && result.end === props.window.end) return
+  event.preventDefault()
+  emit('viewport-change', result)
 }
 function syncSelection(): void {
   if (!chart) return
