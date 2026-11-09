@@ -696,7 +696,8 @@ class MeshAnalysisQueryService:
                 message_expr = "COALESCE(message, '')" if "message" in columns else "''"
                 rows = conn.execute(
                     f"SELECT {code_expr} AS code, {severity_expr} AS severity, COUNT(*) AS count, "
-                    f"MIN({message_expr}) AS message FROM parse_issues GROUP BY code, severity ORDER BY count DESC LIMIT 20"
+                    f"MIN({message_expr}) AS message FROM parse_issues WHERE {severity_expr} <> 'INFO' "
+                    "GROUP BY code, severity ORDER BY count DESC LIMIT 20"
                 ).fetchall()
                 counts = conn.execute(
                     f"SELECT COUNT(*) AS total, SUM(CASE WHEN {severity_expr} = 'INFO' THEN 1 ELSE 0 END) AS info_count, "
@@ -719,8 +720,8 @@ class MeshAnalysisQueryService:
                         examples=[str(item["message"] or "") for item in example_rows if str(item["message"] or "")],
                     ))
                 return MeshParseIssueSummaryDTO(
-                    total_count=int(counts["total"] or 0),
-                    info_count=int(counts["info_count"] or 0),
+                    total_count=int(counts["warning_count"] or 0) + int(counts["error_count"] or 0),
+                    info_count=0,
                     warning_count=int(counts["warning_count"] or 0),
                     error_count=int(counts["error_count"] or 0),
                     groups=groups,
@@ -757,7 +758,7 @@ class MeshAnalysisQueryService:
             severity_expr = "UPPER(COALESCE(severity, 'WARNING'))" if "severity" in columns else "'WARNING'"
             code_column = next((name for name in ("issue_type", "code", "field_name") if name in columns), None)
             code_expr = f"COALESCE(NULLIF({code_column}, ''), 'parse_issue')" if code_column else "'parse_issue'"
-            filters: list[str] = []
+            filters: list[str] = [f"{severity_expr} <> 'INFO'"]
             args: list[Any] = []
             if severity:
                 filters.append(f"{severity_expr} = ?")
@@ -2786,6 +2787,9 @@ class MeshAnalysisQueryService:
         *,
         exclude_depot: bool = True,
         exclude_parking: bool = True,
+        weak_signal_threshold: int | None = None,
+        link_role: str = "ACTIVE",
+        radio: int | None = None,
     ) -> dict[str, Any]:
         from netconsole.services.mesh_business_statistics import (
             build_mesh_business_statistics,
@@ -2804,6 +2808,9 @@ class MeshAnalysisQueryService:
                 rules,
                 snapshot,
                 minimum_samples=params.ap_minimum_samples,
+                weak_signal_threshold=weak_signal_threshold,
+                link_role=link_role,
+                radio=radio,
                 exclude_depot=exclude_depot,
                 exclude_parking=exclude_parking,
             )
@@ -2820,6 +2827,9 @@ class MeshAnalysisQueryService:
             json.dumps(snapshot.to_serializable(), sort_keys=True),
             exclude_depot,
             exclude_parking,
+            weak_signal_threshold,
+            link_role,
+            radio,
         )
         cached = getattr(self, "_business_statistics_cache", None)
         if cached and cached[0] == signature:
@@ -2830,6 +2840,9 @@ class MeshAnalysisQueryService:
                 rules,
                 snapshot,
                 minimum_samples=params.ap_minimum_samples,
+                weak_signal_threshold=weak_signal_threshold,
+                link_role=link_role,
+                radio=radio,
                 exclude_depot=exclude_depot,
                 exclude_parking=exclude_parking,
             )
@@ -2853,6 +2866,9 @@ class MeshAnalysisQueryService:
         page_size: int = 100,
         exclude_depot: bool = True,
         exclude_parking: bool = True,
+        weak_signal_threshold: int | None = None,
+        link_role: str = "ACTIVE",
+        radio: int | None = None,
     ) -> MeshApStatisticsPageDTO:
         from netconsole.services.mesh_business_statistics import statistics_page
 
@@ -2861,6 +2877,9 @@ class MeshAnalysisQueryService:
             session_id,
             exclude_depot=exclude_depot,
             exclude_parking=exclude_parking,
+            weak_signal_threshold=weak_signal_threshold,
+            link_role=link_role,
+            radio=radio,
         )
         current, size = self._page(page, page_size)
         rows, total = statistics_page(

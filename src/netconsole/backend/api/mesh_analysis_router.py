@@ -1051,6 +1051,9 @@ def ap_signal_statistics(
     page_size: int = Query(default=100, ge=1, le=500),
     exclude_depot: bool = True,
     exclude_parking: bool = True,
+    weak_signal_threshold: int | None = Query(default=None, ge=1, le=200),
+    link_role: str = Query(default="ACTIVE", pattern="^(ACTIVE|STANDBY|ALL)$"),
+    radio: int | None = Query(default=None, ge=1, le=2),
 ) -> MeshApStatisticsPageDTO:
     return _query(
         lambda: _service(request).list_ap_signal_statistics(
@@ -1065,6 +1068,9 @@ def ap_signal_statistics(
             page_size=page_size,
             exclude_depot=exclude_depot,
             exclude_parking=exclude_parking,
+            weak_signal_threshold=weak_signal_threshold,
+            link_role=link_role,
+            radio=radio,
         )
     )
 

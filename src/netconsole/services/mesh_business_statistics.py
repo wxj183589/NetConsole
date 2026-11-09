@@ -237,6 +237,9 @@ def build_mesh_business_statistics(
     snapshot: MeshApLocationSnapshot,
     *,
     minimum_samples: int = 10,
+    weak_signal_threshold: int | None = None,
+    link_role: str = "ACTIVE",
+    radio: int | None = None,
     exclude_depot: bool = True,
     exclude_parking: bool = True,
     should_cancel: Callable[[], bool] | None = None,
@@ -249,8 +252,14 @@ def build_mesh_business_statistics(
     All continuous risk intervals are retained; ``qualifies_no_backup_event``
     exposes the existing minimum event duration without changing old events.
     """
-    aps: dict[str, dict] = {}
-    histograms: dict[str, Counter] = {}
+    weak_threshold = rules.rssi_warning_threshold if weak_signal_threshold is None else int(weak_signal_threshold)
+    if weak_threshold < 1 or weak_threshold > rules.rssi_good_threshold:
+        raise MeshBusinessParamsError("弱信号阈值必须为正数且不高于信号良好阈值")
+    selected_role = str(link_role or "ACTIVE").upper()
+    if selected_role not in {"ACTIVE", "STANDBY", "ALL"}:
+        raise MeshBusinessParamsError("AP 信号统计链路角色无效")
+    aps: dict[tuple[str, str, int | None], dict] = {}
+    histograms: dict[tuple[str, str, int | None], Counter] = {}
     risks: list[dict] = []
     current: dict[tuple[object, object], dict] = {}
     identity_cache: dict[tuple[str, ...], dict] = {}
@@ -395,36 +404,58 @@ def build_mesh_business_statistics(
             for row in sample_rows
             if str(row.get("link_state") or "").upper() == "ACTIVE"
         ]
+        if selected_role == "ACTIVE" and len(active) != 1:
+            finish(scope)
+            continue
+        sample_stat_keys: set[tuple[str, str, int | None]] = set()
+        for candidate in sample_rows:
+            role = str(candidate.get("link_state") or "").upper()
+            sample_radio = int(candidate["radio"]) if candidate.get("radio") is not None else None
+            if role not in {"ACTIVE", "STANDBY"} or (selected_role != "ALL" and role != selected_role):
+                continue
+            if radio is not None and sample_radio != radio:
+                continue
+            info = identity(candidate)
+            mac = info["peer_ap_mac"]
+            physical_key = normalize_mac_key(mac) if mac else f"unresolved:{candidate.get('peer_mac') or candidate.get('id') or index}"
+            stat_key = (physical_key, role, sample_radio)
+            if stat_key in sample_stat_keys:
+                continue
+            sample_stat_keys.add(stat_key)
+            timestamp = str(candidate.get("sample_time") or "")
+            ap = aps.setdefault(
+                stat_key,
+                {
+                    **info,
+                    "link_role": role,
+                    "radio": sample_radio,
+                    "valid_sample_count": 0,
+                    "weak_sample_count": 0,
+                    "first_seen": timestamp,
+                    "last_seen": "",
+                    "last_rssi": None,
+                    "_last_rssi_time": "",
+                },
+            )
+            ap["first_seen"] = min(ap["first_seen"], timestamp)
+            if timestamp >= ap["last_seen"]:
+                ap["last_seen"] = timestamp
+            rssi = candidate["mr_rssi"]
+            if rssi is not None and rssi > 0 and timestamp >= ap["_last_rssi_time"]:
+                ap["_last_rssi_time"] = timestamp
+                ap["last_rssi"] = rssi
+            histogram = histograms.setdefault(stat_key, Counter())
+            if rssi is not None and rssi > 0:
+                histogram[rssi] += 1
+                ap["valid_sample_count"] += 1
+                ap["weak_sample_count"] += int(rssi < weak_threshold)
         if len(active) != 1:
             finish(scope)
             continue
         row = active[0]
         info = identity(row)
         mac = info["peer_ap_mac"]
-        ap_key = (
-            normalize_mac_key(mac)
-            if mac
-            else f"unresolved:{row.get('peer_mac') or row.get('id') or index}"
-        )
-        ap = aps.setdefault(
-            ap_key,
-            {
-                **info,
-                "valid_sample_count": 0,
-                "weak_sample_count": 0,
-                "first_seen": str(row.get("sample_time") or ""),
-                "last_seen": "",
-            },
-        )
-        timestamp = str(row.get("sample_time") or "")
-        ap["first_seen"] = min(ap["first_seen"], timestamp)
-        ap["last_seen"] = max(ap["last_seen"], timestamp)
-        rssi = row["mr_rssi"]
-        histogram = histograms.setdefault(ap_key, Counter())
-        if rssi is not None and rssi > 0:
-            histogram[rssi] += 1
-            ap["valid_sample_count"] += 1
-            ap["weak_sample_count"] += int(rssi < rules.rssi_good_threshold)
+        ap_key = normalize_mac_key(mac) if mac else f"unresolved:{row.get('peer_mac') or row.get('id') or index}"
         if int(sample["available_backup_count"]) > 0:
             finish(scope)
             continue
@@ -503,11 +534,12 @@ def build_mesh_business_statistics(
                 "GOOD"
                 if p10 >= rules.rssi_good_threshold
                 else "WARNING"
-                if p10 >= rules.rssi_warning_threshold
+                if p10 >= weak_threshold
                 else "BAD"
             )
         )
         ap["signal_grade"] = grade
+        ap.pop("_last_rssi_time", None)
         ap.pop("station_type", None)
         ap.pop("station_scope", None)
         counts[grade] += 1
@@ -524,7 +556,7 @@ def build_mesh_business_statistics(
         "aps": list(aps.values()),
         "single_links": risks,
         "summary": {
-            "ap_total": sum(counts.values()) - counts["UNRECOGNIZED"],
+            "ap_total": len({ap["peer_ap_mac"] for ap in aps.values() if ap["peer_ap_mac"]}),
             "grades": counts,
             "single_link_count": len(risks),
             "single_link_seconds": sum(row["duration_seconds"] for row in risks),
@@ -534,7 +566,7 @@ def build_mesh_business_statistics(
             "single_link_radios": sorted({row["radio"] for row in risks}, key=str),
             "no_backup_event_min_seconds": rules.no_backup_min_seconds,
             "good_threshold": rules.rssi_good_threshold,
-            "warning_threshold": rules.rssi_warning_threshold,
+            "warning_threshold": weak_threshold,
             "backup_available_threshold": rules.backup_available_threshold,
             "minimum_samples": minimum_samples,
             "grade_metric": "ACTIVE_MR_RSSI_P10",

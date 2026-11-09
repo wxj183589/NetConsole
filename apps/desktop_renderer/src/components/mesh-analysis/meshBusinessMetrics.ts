@@ -7,7 +7,7 @@ export type MeshBusinessMetricKey =
   | 'noise'
   | 'tx_des_free_cnt'
   | 'counters'
-  | 'tx_rx' | 'retry' | 'error' | 'control' | 'tx_busy' | 'rx_busy'
+  | 'tx_rx' | 'retry' | 'error' | 'garp' | 'mul_join' | 'tx_busy' | 'rx_busy'
 
 export interface MeshBusinessMetricSample {
   [key: string]: unknown
@@ -99,7 +99,8 @@ GROUPS.push(
   { key: 'tx_rx', label: '发送/接收报文（Tx / Rx）', lines: counterDefinition.lines.slice(0, 2) },
   { key: 'retry', label: '重传次数（Retry）', lines: counterDefinition.lines.slice(2, 3) },
   { key: 'error', label: '错误报文数（Err）', lines: counterDefinition.lines.slice(3, 4) },
-  { key: 'control', label: 'GARP / 组播加入报文（MulJoin）', lines: counterDefinition.lines.slice(4) },
+  { key: 'garp', label: 'GARP 报文（GARP）', lines: counterDefinition.lines.slice(4, 5) },
+  { key: 'mul_join', label: '组播加入报文（MulJoin）', lines: counterDefinition.lines.slice(5, 6) },
 )
 export const meshMetricLabels: Record<string, string> = { rssi: '信号质量（RSSI）', cpu: 'CPU 利用率（CPU）', memory: '内存利用率（Memory）', busy: '发送/接收空口忙时（TxBusy / RxBusy）', tx_busy: '发送空口忙时（TxBusy）', rx_busy: '接收空口忙时（RxBusy）', rate: '协商速率（Rate）', noise: '无线底噪（Noise）', tx_des_free_cnt: '发送描述符空闲计数（TxDesFreeCnt）', tx: '发送报文（Tx）', rx: '接收报文（Rx）', retry: '重传次数（Retry）', error: '错误报文数（Err）', garp: 'GARP 报文（GARP）', mul_join: '组播加入报文（MulJoin）' }
 

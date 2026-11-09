@@ -1271,8 +1271,11 @@ class MeshAnomalyPageDTO(ApiModel):
 
 
 class MeshApStatisticsDTO(ApiModel):
+    link_role: str = "ACTIVE"
+    radio: int | None = None
     peer_mac_raw: str | None = None
     max_rssi: float | None = None
+    last_rssi: float | None = None
     p10_rssi: float | None = None
     valid_sample_count: int = 0
     weak_sample_count: int = 0
