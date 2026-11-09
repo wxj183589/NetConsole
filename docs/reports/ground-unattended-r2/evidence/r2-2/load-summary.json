@@ -1,0 +1,224 @@
+{
+  "status": "COMPLETED",
+  "fixture": {
+    "trains": 200,
+    "mrs": 400,
+    "ips": 800,
+    "scope": "actual fping loopback, no Ground Run"
+  },
+  "runtime": {
+    "runtime_mode": "electron-development",
+    "backend_ready": true,
+    "data_root": "<redacted>",
+    "storage_mode": "isolated_test",
+    "data_root_kind": "temporary",
+    "persistent": false,
+    "frontend_mode": "vite",
+    "active_tasks": 0,
+    "agent_controller_ready": true,
+    "traffic_supervisor_ready": true,
+    "version": "v1.5.12"
+  },
+  "electron_graceful_exit_code": 0,
+  "owned_after_cleanup": [
+    {
+      "pid": 48280,
+      "ppid": 61152,
+      "name": "node.exe",
+      "threads": 1,
+      "rss_bytes": 88444928,
+      "handles": 0,
+      "cpu_seconds": 4.03125
+    }
+  ],
+  "sqlite_integrity": {
+    "sites\\demo\\db\\agents.db": [
+      "ok"
+    ],
+    "sites\\demo\\db\\devices.db": [
+      "ok"
+    ],
+    "sites\\demo\\db\\tasks.db": [
+      "ok"
+    ],
+    "sites\\demo\\files\\backups\\database-migrations\\devices-site-2a97516c35-before-primary-address-20261110-005653-048b6d6a-f5b812651d2c2168.sqlite": [
+      "ok"
+    ],
+    "sites\\demo\\files\\network_tools\\iperf\\parsed\\iperf_results.sqlite": [
+      "ok"
+    ],
+    "sites\\demo\\files\\network_tools\\traffic\\parsed\\traffic_runs.sqlite": [
+      "ok"
+    ],
+    "sites\\demo\\files\\rail_transit\\ground_unattended\\index.sqlite": [
+      "ok"
+    ]
+  },
+  "metrics": [
+    {
+      "monotonic": 116914.1082113,
+      "runtime": {
+        "state": "RUNNING",
+        "enabled": true,
+        "target_count": 800,
+        "process_count": 67,
+        "last_sample_at": "2026-11-10T00:57:03.674+08:00",
+        "last_success_at": "2026-11-10T00:57:03.674+08:00",
+        "last_error": "",
+        "pending_events": 70,
+        "pending_loss_events": 0
+      },
+      "backend": {
+        "pid": 38076,
+        "ppid": 6892,
+        "name": "python.exe",
+        "threads": 179,
+        "rss_bytes": 240979968,
+        "handles": 702,
+        "cpu_seconds": 9.484375
+      },
+      "process_count": 145,
+      "fping_count": 67,
+      "tree_rss_bytes": 2293841920,
+      "tree_threads": 978,
+      "tree_cpu_seconds": 18.671875,
+      "ping_sample_write_duration_ms": 6.892699995660223,
+      "ping_sample_rate_per_second": 77
+    },
+    {
+      "monotonic": 116930.8551917,
+      "runtime": {
+        "state": "RUNNING",
+        "enabled": true,
+        "target_count": 800,
+        "process_count": 67,
+        "last_sample_at": "2026-11-10T00:57:19.111+08:00",
+        "last_success_at": "2026-11-10T00:57:19.111+08:00",
+        "last_error": "",
+        "pending_events": 0,
+        "pending_loss_events": 0
+      },
+      "backend": {
+        "pid": 38076,
+        "ppid": 6892,
+        "name": "python.exe",
+        "threads": 176,
+        "rss_bytes": 277245952,
+        "handles": 1006,
+        "cpu_seconds": 29.78125
+      },
+      "process_count": 145,
+      "fping_count": 67,
+      "tree_rss_bytes": 2347876352,
+      "tree_threads": 979,
+      "tree_cpu_seconds": 55.703125,
+      "ping_sample_write_duration_ms": 0.0577000027988106,
+      "ping_sample_rate_per_second": 800
+    },
+    {
+      "monotonic": 116940.9816537,
+      "runtime": {
+        "state": "RUNNING",
+        "enabled": true,
+        "target_count": 800,
+        "process_count": 67,
+        "last_sample_at": "2026-11-10T00:57:29.123+08:00",
+        "last_success_at": "2026-11-10T00:57:29.123+08:00",
+        "last_error": "",
+        "pending_events": 0,
+        "pending_loss_events": 0
+      },
+      "backend": {
+        "pid": 38076,
+        "ppid": 6892,
+        "name": "python.exe",
+        "threads": 177,
+        "rss_bytes": 296837120,
+        "handles": 1009,
+        "cpu_seconds": 35.765625
+      },
+      "process_count": 145,
+      "fping_count": 67,
+      "tree_rss_bytes": 2363764736,
+      "tree_threads": 976,
+      "tree_cpu_seconds": 71.8125,
+      "ping_sample_write_duration_ms": 0.0509000092279166,
+      "ping_sample_rate_per_second": 800
+    },
+    {
+      "monotonic": 116951.0249379,
+      "runtime": {
+        "state": "RUNNING",
+        "enabled": true,
+        "target_count": 800,
+        "process_count": 67,
+        "last_sample_at": "2026-11-10T00:57:39.257+08:00",
+        "last_success_at": "2026-11-10T00:57:39.258+08:00",
+        "last_error": "",
+        "pending_events": 0,
+        "pending_loss_events": 0
+      },
+      "backend": {
+        "pid": 38076,
+        "ppid": 6892,
+        "name": "python.exe",
+        "threads": 174,
+        "rss_bytes": 282263552,
+        "handles": 989,
+        "cpu_seconds": 41.3125
+      },
+      "process_count": 145,
+      "fping_count": 67,
+      "tree_rss_bytes": 2357985280,
+      "tree_threads": 977,
+      "tree_cpu_seconds": 91.625,
+      "ping_sample_write_duration_ms": 0.03650000144261867,
+      "ping_sample_rate_per_second": 800
+    },
+    {
+      "monotonic": 116961.1310563,
+      "runtime": {
+        "state": "RUNNING",
+        "enabled": true,
+        "target_count": 800,
+        "process_count": 67,
+        "last_sample_at": "2026-11-10T00:57:49.122+08:00",
+        "last_success_at": "2026-11-10T00:57:49.122+08:00",
+        "last_error": "",
+        "pending_events": 0,
+        "pending_loss_events": 0
+      },
+      "backend": {
+        "pid": 38076,
+        "ppid": 6892,
+        "name": "python.exe",
+        "threads": 174,
+        "rss_bytes": 333369344,
+        "handles": 1129,
+        "cpu_seconds": 46.21875
+      },
+      "process_count": 145,
+      "fping_count": 67,
+      "tree_rss_bytes": 2419826688,
+      "tree_threads": 977,
+      "tree_cpu_seconds": 106.875,
+      "ping_sample_write_duration_ms": 0.0985000078799203,
+      "ping_sample_rate_per_second": 800
+    }
+  ],
+  "cleanup_followup": "PID 48280 absent at 2026-11-10 follow-up; immediate snapshot retained one ending Vite node process",
+  "gzip_file_count": 331,
+  "gzip_crc_all_pass": true,
+  "mrs": 400,
+  "final_runtime": {
+    "state": "RUNNING",
+    "enabled": true,
+    "target_count": 800,
+    "process_count": 67,
+    "last_sample_at": "2026-11-10T00:57:49.122+08:00",
+    "last_success_at": "2026-11-10T00:57:49.122+08:00",
+    "last_error": "",
+    "pending_events": 0,
+    "pending_loss_events": 0
+  }
+}

@@ -1063,7 +1063,7 @@ async function runAction(key: string, callback: () => Promise<unknown>): Promise
 async function submitStop(archive: boolean): Promise<void> {
   const message = archive
     ? '将先正常停止并关闭全部活动文件，再创建正式归档。仅在 ZIP 生成和完整性校验成功后清理已归档 active 数据；归档失败时保留原始数据。'
-    : t('ground.v2.stop_without_archive_note', '将停止新的调度、心跳检测和 UDP 接收，清空内存队列并关闭原始文件，保存汇总但不执行归档。')
+    : t('ground.v2.stop_without_archive_note', '将停止新的调度和 UDP 接收，常驻心跳继续运行，清空内存队列并关闭原始文件，保存汇总但不执行归档。')
   await ElMessageBox.confirm(message, archive ? '确认停止并归档' : '确认正常停止', {
     type: 'warning',
     confirmButtonText: archive ? '停止并归档' : '正常停止',

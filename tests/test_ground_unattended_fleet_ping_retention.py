@@ -116,6 +116,7 @@ def test_summary_batch_rolls_back_all_rows_when_one_write_fails(tmp_path):
 
 def test_unchanged_targets_do_not_repeat_activation_writes():
     repo = Mock()
+    repo.ping_summary_totals.return_value = []
     repo.ensure_ping_target_activation.return_value = "2026-01-01T00:00:00+00:00"
     fleet = FleetPingSupervisor(repository=repo, site_id="site-a")
     fleet._run_id = "run-1"
@@ -124,6 +125,8 @@ def test_unchanged_targets_do_not_repeat_activation_writes():
     for _ in range(20):
         fleet.update_targets([target])
     repo.ensure_ping_target_activation.assert_called_once()
+    repo.ping_summary_totals.assert_called_once_with("run-1", target_ips={"127.0.0.1"})
     fleet.update_targets([])
     fleet.update_targets([target])
     assert repo.ensure_ping_target_activation.call_count == 2
+    assert repo.ping_summary_totals.call_count == 2

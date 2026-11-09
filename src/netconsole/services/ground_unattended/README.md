@@ -14,6 +14,8 @@
 ## 主要入口
 
 - `application_service.py`：API 用例边界、DTO 映射和当前局点约束。
+- `heartbeat_supervisor.py`：Backend lifespan 持有的常驻心跳 owner；库存热更新、独立配置、
+  稳定 resident 流、快照/丢包恢复、批量持久化和错误隔离；Ground 不控制其启停。
 - `supervisor.py`：时间窗状态机、恢复、常驻 AC Poller 编排、调度和停止归档。
 - `../ac/mesh_link_resident_polling_service.py`：每个 run/controller 唯一的 resident Task、受控控制/状态
   文件、单 Worker SSH 复用、间隔热更新、立即轮询、同 Task 重连和正常停止。
@@ -42,18 +44,19 @@
   `FpingConfig`，由共享 `FpingV5ProbeRunner` 进入运行态后才继续 SSH 深采。
 - `archive_service.py`：manifest、ZIP 校验、原子发布和保留清理。
 
-Profile 的 `deep_collection_master_enabled=false` 表示轻量监测模式：Supervisor 继续 AC、Fleet Ping、
-Syslog 和位置关联，Deep Scheduler 只同步/收尾已有任务，不再填充新槽位。每个 Ping 目标的激活时间
+Profile 的 `deep_collection_master_enabled=false` 表示轻量监测模式：Ground 继续 AC、
+Syslog 和位置关联；Heartbeat 始终按独立配置运行。Deep Scheduler 只同步/收尾已有任务，不再填充新槽位。每个 Ping 目标的激活时间
 持久化；默认前 10 秒仅写原始样本，不进入有效统计。
 
 普通停止和停止并归档使用 `ground_unattended_operations` 持久化操作状态。Supervisor 停止新的深度
 调度后先进入 `STOPPING_AC_POLLER`，请求每台 resident Worker 完成当前命令、关闭 SSH 并正常退出；
-之后再核对深采、fping worker、UDP 线程、监听端口可重新绑定、接收队列和 OPEN 文件。AC Poller 超时
+之后再核对深采、UDP 线程、监听端口可重新绑定、接收队列和 OPEN 文件。AC Poller 超时
 记录 controller/task/连接状态并有界强停，不伪装完成；归档通过回调更新准备、写入、校验、登记和清理
-阶段。暂停深度调度不会停止 AC Poller、Fleet Ping 或 Syslog。
+阶段。暂停深度调度不会停止 AC Poller 或 Syslog；任何 Run 终止均不停止常驻心跳。
+Backend 关闭另行停止 Heartbeat 分片并保存缓冲；停用独立心跳配置保留历史。
 
 `/status` 不回退最近一次已完成运行；活动运行、最近运行、活动操作和最近终态操作独立映射。页面统一
-使用 `selectedRunId` 查看 Ping、Syslog、时间轴和深度采集。当前运行默认最近 30 分钟，历史运行默认
+使用 `selectedRunId` 查看 Run 的 Ping、Syslog、时间轴和深度采集；心跳页查询 resident 流。当前运行默认最近 30 分钟，历史运行默认
 实际起止时间；active 文件已清理时可从 READY ZIP 读取，混合来源按稳定记录标识去重。Syslog API
 只投影公开 DTO 字段，不下发 `raw_bytes_base64`、内部局点或设备数据库标识；每次请求记录
 `GROUND_SYSLOG_QUERY_STARTED/COMPLETED/FAILED` 并通过响应头或错误详情返回 `request_id`。

@@ -16,6 +16,7 @@ from netconsole.core.database import Database
 from netconsole.core.model_projection import project_row_for_model
 from netconsole.core.paths import PathResolver
 from netconsole.services.site_manager import SiteManager
+from netconsole.services.ground_unattended.heartbeat_supervisor import HEARTBEAT_STREAM_ID
 from netconsole.models.api.ground_unattended import (
     GroundApIdentityDiagnosticsDTO,
     GroundActionResponseDTO,
@@ -54,6 +55,8 @@ from netconsole.models.api.ground_unattended import (
     GroundHeartbeatApDTO,
     GroundHeartbeatInventoryApplyDTO,
     GroundHeartbeatInventoryPreviewDTO,
+    HeartbeatConfigDTO,
+    HeartbeatRuntimeDTO,
     GroundHeartbeatPageDTO,
     GroundHeartbeatStatisticsDTO,
     GroundMrMonitoringDTO,
@@ -187,6 +190,9 @@ class GroundUnattendedApplicationService:
         self.desktop_action_service = desktop_action_service
         self.network_service = network_service or SystemNetworkApplicationService()
         self.raw_query = GroundRawStreamQueryService(repository)
+        resident = getattr(supervisor, "heartbeat", None)
+        if resident is not None:
+            self.raw_query.heartbeat_runtime = resident.status
         self.raw_deletion = GroundRawDataDeletionApplicationService(
             repository,
             process_adapter=process_adapter,
@@ -479,36 +485,31 @@ class GroundUnattendedApplicationService:
             )
         return saved
 
+    def heartbeat_config(self, site_id: str) -> HeartbeatConfigDTO:
+        self._require_site(site_id)
+        return self.repository.get_heartbeat_config()
+
+    def update_heartbeat_config(self, site_id: str, config: HeartbeatConfigDTO) -> HeartbeatConfigDTO:
+        self._require_site(site_id)
+        result = self.repository.save_heartbeat_config(config)
+        self.supervisor.heartbeat.config_updated()
+        return result
+
+    def heartbeat_runtime(self, site_id: str) -> HeartbeatRuntimeDTO:
+        self._require_site(site_id)
+        return self.supervisor.heartbeat.status()
+
     def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "") -> GroundHeartbeatPageDTO:
         """Read durable heartbeat facts without deriving reachability from AC data."""
         self._require_site(site_id)
         state = self.repository.heartbeat_inventory_state()
         source_conflicts: list[str] = []
-        active_run = self.repository.get_active_run()
-        # A page refresh reconciles the device projection once per source change;
-        # it never starts probes. Explicit clearing suppresses regeneration.
-        # During an active run the supervisor has already synchronized the
-        # inventory, and re-running the full source preview for every heartbeat
-        # read can occupy the backend thread pool. Explicit inventory sync
-        # remains available for changes while monitoring is active.
-        supervisor_running = bool(getattr(self.supervisor, "running", False))
-        if (
-            not run_id
-            and (not active_run or not supervisor_running)
-            and state["enabled"]
-            and self.inventory_sync is not None
-        ):
-            preview = self.inventory_sync.preview()
-            source_conflicts = preview["conflicts"]
-            if not source_conflicts and any(preview[key] for key in (
-                "added_count", "updated_count", "disabled_count",
-            )):
-                self.sync_inventory(site_id)
-        run = self._resolve_run(run_id)
-        resolved_id = str(run["run_id"]) if run else ""
-        is_current = not run_id or bool(
-            active_run and str(active_run["run_id"]) == resolved_id
-        )
+        resident = getattr(self.supervisor, "heartbeat", None)
+        is_current = not run_id or run_id == "heartbeat-resident"
+        heartbeat_config = self.repository.get_heartbeat_config()
+        run = None if is_current else self._resolve_run(run_id)
+        resolved_id = "heartbeat-resident" if is_current else str((run or {}).get("run_id") or "")
+        runtime = resident.status() if resident is not None else HeartbeatRuntimeDTO()
         inventory = self.repository.list_inventory(include_removed=not is_current)
         snapshot_rows = (
             self.repository.list_heartbeat_snapshots(resolved_id)
@@ -558,13 +559,16 @@ class GroundUnattendedApplicationService:
         ac_query = AcMeshLinkQueryService(self.paths)
         identity_rows: dict[str, Any] = {}
         ac_page = 1
-        while True:
-            result = ac_query.list_mrs(site_id, page=ac_page, page_size=200)
-            for item in result.items:
-                identity_rows[str(item.mr_device_id)] = item
-            if ac_page * 200 >= result.total:
-                break
-            ac_page += 1
+        try:
+            while True:
+                result = ac_query.list_mrs(site_id, page=ac_page, page_size=200)
+                for item in result.items:
+                    identity_rows[str(item.mr_device_id)] = item
+                if ac_page * 200 >= result.total:
+                    break
+                ac_page += 1
+        except Exception as exc:
+            source_conflicts.append(f"AC_ENRICHMENT_UNAVAILABLE: {type(exc).__name__}")
         recent_rtts = self.supervisor.fleet_ping.latest_mr_rtts(resolved_id) if is_current else {}
         mrs: list[GroundHeartbeatMrDTO] = []
         trains: list[GroundHeartbeatTrainDTO] = []
@@ -590,7 +594,7 @@ class GroundUnattendedApplicationService:
                     continue
                 if is_current or inventory_projection:
                     expected_ips = {str(endpoint.get("management_ip") or "")}
-                    if endpoint.get("backup_monitoring_strategy") == "MONITOR":
+                    if endpoint.get("backup_monitoring_strategy") == "MONITOR" and (not is_current or heartbeat_config.backup_policy == "MONITOR"):
                         expected_ips.add(str(endpoint.get("backup_management_ip") or ""))
                     expected_ips.discard("")
                     if {str(ip.get("ip") or "") for ip in payload.get("ip_states", [])} != expected_ips:
@@ -622,7 +626,7 @@ class GroundUnattendedApplicationService:
                 identity = identity_rows.get(mr_id)
                 associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
                 ips = [str(endpoint.get("management_ip") or "")]
-                if endpoint.get("backup_monitoring_strategy") == "MONITOR":
+                if endpoint.get("backup_monitoring_strategy") == "MONITOR" and (not is_current or heartbeat_config.backup_policy == "MONITOR"):
                     ips.append(str(endpoint.get("backup_management_ip") or ""))
                 projected = apply_syslog_projection({"mr_uuid": mr_id}, endpoint)
                 mrs.append(GroundHeartbeatMrDTO(
@@ -694,13 +698,15 @@ class GroundUnattendedApplicationService:
                     if candidate > latest_sample_at:
                         latest_sample_at = candidate
         has_samples = sent_count > 0 or success_count > 0 or lost_count > 0
-        run_state = str((run or {}).get("state") or "").upper()
+        run_state = runtime.state if is_current else str((run or {}).get("state") or "").upper()
         if not inventory:
             data_state = "DISABLED" if not state["enabled"] else "NO_INVENTORY"
             data_state_message = "已停用心跳监测对象" if not state["enabled"] else "当前局点没有已登记的心跳监测对象"
-        elif not state["enabled"]:
+        elif not state["enabled"] or (is_current and not runtime.enabled):
             data_state, data_state_message = "DISABLED", "心跳监测已停止，设备清单保留"
-        elif run_state in {"COMPLETED", "FINALIZING", "ARCHIVING"}:
+        elif is_current and run_state == "HEARTBEAT_DEGRADED":
+            data_state, data_state_message = "HEARTBEAT_DEGRADED", runtime.last_error or "心跳检测异常，后台正在重试"
+        elif run_state in {"STOPPED", "COMPLETED", "FINALIZING", "ARCHIVING"}:
             data_state, data_state_message = "STOPPED", "心跳监测已停止，保留设备清单和最近有效采样"
         elif not has_samples:
             data_state = (
@@ -723,7 +729,7 @@ class GroundUnattendedApplicationService:
                 age = (datetime.now().astimezone() - datetime.fromisoformat(latest_sample_at.replace("Z", "+00:00"))).total_seconds()
             except ValueError:
                 age = 0
-            if age > max(30, self.repository.get_profile().fleet_ping_timeout_ms / 1000 * 5):
+            if age > max(30, heartbeat_config.timeout_ms / 1000 * 5):
                 data_state, data_state_message = "STALE", "最近心跳采样已超过刷新阈值"
             else:
                 data_state, data_state_message = "RUNNING", "正在接收实时心跳采样"
@@ -757,7 +763,7 @@ class GroundUnattendedApplicationService:
         selected_ids = {row.train_id for row in trains}
         mrs = [row for row in mrs if row.train_id in selected_ids]
         return GroundHeartbeatPageDTO(
-            monitoring_enabled=bool(state["enabled"]), source_conflicts=source_conflicts,
+            runtime=runtime, monitoring_enabled=bool(state["enabled"] and (not is_current or runtime.enabled)), source_conflicts=source_conflicts,
             data_cleared_at=str(state["data_cleared_at"]),
             run_id=resolved_id, run_state=run_state,
             mrs=mrs, trains=trains, mr_counts=mr_counts, train_counts=train_counts,
@@ -793,7 +799,8 @@ class GroundUnattendedApplicationService:
                                          queried_start=start.isoformat(), queried_end=end.isoformat())
         series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
                                   start_time=start.isoformat(), end_time=end.isoformat(), max_points=2400)
-        rows, ac_rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id, run_id=heartbeat.run_id,
+        rows, ac_rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id,
+                                                   run_id=None if heartbeat.run_id == HEARTBEAT_STREAM_ID else heartbeat.run_id,
                                                    mr_uuid=mr_uuid, start=start, end=end)
         resolver = self._ap_display_resolver()
         resolver.preload_parsed(rows)
@@ -1300,9 +1307,9 @@ class GroundUnattendedApplicationService:
                 self.sync_inventory(site_id, heartbeat_revision=int(state["revision"]),
                                     heartbeat_preview_revision=payload.revision)
             else:
-                self.repository.apply_heartbeat_inventory_action(payload.action, expected_revision=int(state["revision"]))
+                self.supervisor.heartbeat.apply_inventory_action(payload.action, expected_revision=int(state["revision"]))
         except ValueError as exc:
-            raise GroundUnattendedError(str(exc).split(":")[0], "监测运行中或预览已过期，请停止监测后重新预览", status_code=409) from exc
+            raise GroundUnattendedError(str(exc).split(":")[0], "监测运行中或预览已过期，请先在设置中停用常驻 Heartbeat，等待停止后重新预览", status_code=409) from exc
         self.repository.add_event(
             event_type="heartbeat_inventory_managed", title="心跳监测管理操作",
             message=payload.action, details=preview.model_dump(mode="json"),

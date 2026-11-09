@@ -65,7 +65,7 @@ describe('persisted heartbeat UI', () => {
     wrapper.unmount()
   })
 
-  it('keeps the inventory while hidden and refreshes stopped status once without polling', async () => {
+  it('keeps the inventory while hidden and continues reading resident state after Run completion', async () => {
     vi.useFakeTimers()
     const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
     await flushPromises()
@@ -74,13 +74,12 @@ describe('persisted heartbeat UI', () => {
     expect(wrapper.findAll('.mr-card')).toHaveLength(2)
     ;(injected.current.pageVisible as { value: boolean }).value = true
     await flushPromises()
-    api.heartbeat.mockResolvedValue({ ...snapshot, data_state: 'STOPPED', run_state: 'COMPLETED' })
     ;(injected.current.status as { value: unknown }).value = { state: 'COMPLETED' }
     await flushPromises()
-    expect(wrapper.text()).toContain('已停止')
     const calls = api.heartbeat.mock.calls.length
-    await vi.advanceTimersByTimeAsync(60_000)
-    expect(api.heartbeat).toHaveBeenCalledTimes(calls)
+    await vi.advanceTimersByTimeAsync(6_000)
+    expect(api.heartbeat).toHaveBeenCalledTimes(calls + 2)
+    expect(api.heartbeat.mock.calls.at(-1)?.[0]).toBe('')
     expect(wrapper.findAll('.mr-card')).toHaveLength(2)
     wrapper.unmount()
   })
@@ -94,7 +93,7 @@ describe('persisted heartbeat UI', () => {
     wrapper.unmount()
   })
 
-  it('loads the initial snapshot once but does not poll while monitoring is stopped', async () => {
+  it('polls resident state even when there is no active Ground Run', async () => {
     vi.useFakeTimers()
     ;(injected.current.status as { value: unknown }).value = { state: 'STOPPED' }
     const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
@@ -102,11 +101,11 @@ describe('persisted heartbeat UI', () => {
 
     expect(api.heartbeat).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(api.heartbeat).toHaveBeenCalledTimes(1)
+    expect(api.heartbeat).toHaveBeenCalledTimes(21)
     wrapper.unmount()
   })
 
-  it('uses one completion chained timer while running and clears it on pause', async () => {
+  it('uses one completion chained timer and continues while the Ground Run is paused', async () => {
     vi.useFakeTimers()
     ;(injected.current.status as { value: unknown }).value = { state: 'RUNNING' }
     const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
@@ -122,7 +121,12 @@ describe('persisted heartbeat UI', () => {
     ;(injected.current.status as { value: unknown }).value = { state: 'PAUSED' }
     await flushPromises()
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(api.heartbeat).toHaveBeenCalledTimes(3)
+    expect(api.heartbeat).toHaveBeenCalledTimes(22)
+    await wrapper.findAll('button').find((button) => button.text() === '暂停刷新')!.trigger('click')
+    await flushPromises()
+    const calls = api.heartbeat.mock.calls.length
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(api.heartbeat).toHaveBeenCalledTimes(calls)
     wrapper.unmount()
   })
 
@@ -143,7 +147,8 @@ describe('persisted heartbeat UI', () => {
     await vi.advanceTimersByTimeAsync(1)
     await flushPromises()
     expect(api.heartbeat).toHaveBeenCalledTimes(3)
-    expect(wrapper.text()).toContain('run-after-retry')
+    expect(wrapper.text()).toContain('常驻 Heartbeat')
+    expect((wrapper.vm as unknown as { heartbeat: { run_id: string } }).heartbeat.run_id).toBe('run-after-retry')
     wrapper.unmount()
   })
 
@@ -219,7 +224,7 @@ describe('persisted heartbeat UI', () => {
     resolveOld(snapshot)
     await flushPromises()
     expect(oldSignal.aborted).toBe(true)
-    expect(wrapper.text()).toContain('run-2')
+    expect(api.heartbeat.mock.calls.at(-1)?.[0]).toBe('')
     expect((wrapper.vm as unknown as { heartbeatMrs: unknown[] }).heartbeatMrs).toEqual([])
     wrapper.unmount()
   })

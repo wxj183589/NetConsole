@@ -22,6 +22,7 @@ FORBIDDEN_ACTIVE_DOC_STEM_RE = re.compile(
 # Explicitly requested deliverables; this does not exempt other reports/audits.
 FIXED_REPORT_PATHS = frozenset(
     {
+        "reports/ground-unattended-r2/R2_2_HEARTBEAT_AUDIT.md",
         "reports/mesh-analysis-performance-optimization/01_ARCHITECTURE_AUDIT.md",
         "reports/mesh-analysis-scope-ui-optimization/01_EXCEL_FIELD_AUDIT.md",
         "reports/mesh-phase11-2/BILINGUAL_UI_AUDIT.md",

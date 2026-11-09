@@ -1677,7 +1677,7 @@ def test_saved_mr_backup_strategy_flows_to_inventory_and_heartbeat(tmp_path, mon
     from netconsole.core.site_identity import load_site_metadata
     from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
     from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
-    from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
+    from netconsole.services.ground_unattended.heartbeat_supervisor import HeartbeatSupervisor
 
     _enable_copy_write(monkeypatch)
     paths, _database = build_rail_transit_base_data_fixture(tmp_path)
@@ -1703,7 +1703,7 @@ def test_saved_mr_backup_strategy_flows_to_inventory_and_heartbeat(tmp_path, mon
     query = RailTransitBaseDataQueryService(paths)
     TrainInventorySyncService(paths, site_id="demo", repository=repository, base_query=query).synchronize()
     assert repository.get_inventory_endpoint("mr-01-ct")["backup_monitoring_strategy"] == strategy
-    supervisor = GroundUnattendedSupervisor(paths, site_id="demo", repository=repository, base_query=query, mesh_query=object(), vehicle_query=object())
+    supervisor = HeartbeatSupervisor(paths, site_id="demo", repository=repository, base_query=query)
     targets = supervisor._heartbeat_fleet_targets()
     assert "10.10.0.1" in targets
     assert ("192.0.2.21" in targets) is (strategy == "MONITOR")

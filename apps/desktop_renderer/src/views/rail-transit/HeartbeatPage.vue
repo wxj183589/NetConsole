@@ -23,7 +23,7 @@ const emit = defineEmits<{
   (event: 'refresh'): void; (event: 'show-train', row: GroundTrain): void; (event: 'toggle-priority', row: GroundTrain): void
   (event: 'toggle-enabled', row: GroundTrain): void; (event: 'show-ping-series', row: GroundPingTarget): void; (event: 'quick-ping', mrUuid: string): void
 }>()
-const { activeTab, pageVisible, pageActivated, selectedRunId, quickContextRevision, status: monitorStatus } = useGroundContext()
+const { activeTab, pageVisible, pageActivated, selectedRunId, quickContextRevision } = useGroundContext()
 const heartbeat = ref<GroundHeartbeatPage | null>(null), heartbeatError = ref(''), loading = ref(false)
 const search = ref(props.trainFilter), statusFilter = ref(''), station = ref(''), role = ref(''), abnormalOnly = ref(false), page = ref(1), pageSize = ref(50)
 const onlineOnly = ref(true), selectedSyslogMrs = ref<string[]>([]), syslogBusy = ref(false)
@@ -33,7 +33,6 @@ const selectedMr = ref<GroundHeartbeatMr | null>(null), selectedSection = ref('a
 const menu = ref<{ mr: GroundHeartbeatMr; x: number; y: number } | null>(null)
 const viewMode = ref<'vehicles' | 'aps'>('vehicles')
 const mounted = ref(false), active = computed(() => mounted.value && pageVisible.value && pageActivated.value && activeTab.value === 'heartbeat')
-const monitoringRunning = computed(() => monitorStatus?.value?.state === 'RUNNING')
 const heartbeatMrs = computed(() => heartbeat.value?.mrs || [])
 const quickPingVisible = computed(() => isFeatureVisible('ground_unattended.quick_ping') && isFeatureVisible('capability.ground_unattended.quick_ping'))
 const quickPingEnabled = computed(() => isFeatureEnabled('ground_unattended.quick_ping') && isFeatureEnabled('capability.ground_unattended.quick_ping'))
@@ -42,7 +41,7 @@ const terminal = useExternalTerminalLauncher()
 let generation = 0, controller: AbortController | null = null, timer: ReturnType<typeof setTimeout> | undefined, debounce: ReturnType<typeof setTimeout> | undefined
 let pollDelayMs = 3000
 const labels: Record<string, string> = { ONLINE: '在线', OFFLINE: '离线', OFFLINE_PENDING: '待确认', RECOVERING: '恢复中', UNKNOWN: '待检测', STALE: '数据过期', PAUSED: '已暂停', STOPPED: '已停止', BOTH_ONLINE: '双端在线', CT_ONLY: '仅 CT 可达', CW_ONLY: '仅 CW 可达', BOTH_UNREACHABLE_PENDING: '双端待确认', TRAIN_OFFLINE: '整车离线', SINGLE_ONLINE: '单端在线', SINGLE_OFFLINE: '单端离线', SINGLE_UNREACHABLE_PENDING: '单端待确认' }
-const dataStateLabels: Record<string, string> = { NO_INVENTORY: '暂无监测设备', DISABLED: '心跳监测已停用', STOPPED: '心跳监测已停止', NOT_STARTED: '监测任务未启动', INITIALIZING: '心跳任务初始化中', RUNNING: '正在实时检测', PAUSED: '心跳任务已暂停', STALE: '数据已过期', WAITING_FOR_SAMPLES: '设备已生成，等待首个采样', ERROR: '心跳任务异常' }
+const dataStateLabels: Record<string, string> = { NO_INVENTORY: '暂无监测设备', DISABLED: '心跳监测已停用', STOPPED: '心跳监测已停止', NOT_STARTED: '监测任务未启动', INITIALIZING: '心跳任务初始化中', RUNNING: '正在实时检测', PAUSED: '心跳任务已暂停', STALE: '数据已过期', WAITING_FOR_SAMPLES: '设备已生成，等待首个采样', HEARTBEAT_DEGRADED: '心跳检测异常，正在重试', ERROR: '心跳任务异常' }
 function stateLabel(value: string): string { return t(`ground.monitor.state_${value}`, labels[value] || value) }
 function stateType(value: string): 'success' | 'danger' | 'warning' | 'info' { return ['ONLINE', 'BOTH_ONLINE', 'SINGLE_ONLINE'].includes(value) ? 'success' : ['OFFLINE', 'TRAIN_OFFLINE', 'SINGLE_OFFLINE'].includes(value) ? 'danger' : ['UNKNOWN', 'STOPPED'].includes(value) ? 'info' : 'warning' }
 function mrFor(trainId: string, role: string): GroundHeartbeatMr | undefined { return heartbeatMrs.value.find((mr) => mr.train_id === trainId && mr.role === role) }
@@ -73,7 +72,7 @@ async function loadHeartbeat(): Promise<void> {
   if (!active.value || controller) return
   const current = generation, request = new AbortController(); controller = request; loading.value = true
   try {
-    const data = await getGroundHeartbeat(selectedRunId.value, { signal: request.signal }, { query: search.value.trim(), status: statusFilter.value, station: station.value, role: role.value, abnormal_only: abnormalOnly.value, page: page.value, page_size: pageSize.value })
+    const data = await getGroundHeartbeat('', { signal: request.signal }, { query: search.value.trim(), status: statusFilter.value, station: station.value, role: role.value, abnormal_only: abnormalOnly.value, page: page.value, page_size: pageSize.value })
     if (current !== generation || !active.value) return
     heartbeat.value = data; heartbeatError.value = ''; pollDelayMs = 3000
   } catch (error) {
@@ -91,7 +90,7 @@ async function loadHeartbeat(): Promise<void> {
 function scheduleNextPoll(): void {
   if (timer) clearTimeout(timer)
   timer = undefined
-  if (!active.value || !monitoringRunning.value || paused.value) return
+  if (!active.value || paused.value) return
   timer = setTimeout(() => { timer = undefined; void loadHeartbeat() }, pollDelayMs)
 }
 function stopPolling(): void { generation++; controller?.abort(); controller = null; if (timer) clearTimeout(timer); timer = undefined; if (debounce) clearTimeout(debounce); loading.value = false }
@@ -101,11 +100,6 @@ watch(active, (visible) => {
   restart()
 })
 watch([selectedRunId, quickContextRevision], () => restart(true))
-watch(() => monitorStatus?.value?.state, (next, previous) => {
-  if (next === previous) return
-  stopPolling()
-  if (active.value) void loadHeartbeat()
-})
 watch(search, () => { if (debounce) clearTimeout(debounce); debounce = setTimeout(() => { page.value = 1; restart() }, 250) })
 watch([statusFilter, station, role, abnormalOnly, pageSize], () => { if (page.value !== 1) page.value = 1; else restart() })
 watch(page, () => restart())
@@ -190,7 +184,7 @@ const metrics = computed(() => {
 </script>
 <template>
   <section class="heartbeat-page">
-    <header class="heading"><div><h2>{{ t('ground.monitor.title', '心跳检测') }}</h2><span class="subtitle">{{ t('ground.monitor.subtitle', '车载 AP 心跳监测 · 实时在线状态') }}</span><span class="muted">{{ heartbeat?.run_id || selectedRunId || t('ground.monitor.no_run', '未选择运行') }} · {{ heartbeat?.run_state || t('ground.monitor.not_started', '未启动') }}</span></div><div class="heading-actions"><el-button :loading="managementBusy" :disabled="!managementEnabled" @click="previewManagement('SYNC')">{{ t('ground.monitor.sync_devices', '重新同步设备') }}</el-button><el-button :disabled="!managementEnabled || managementBusy" @click="previewManagement('CLEAR_DATA')">{{ t('ground.monitor.clear_data', '清空心跳数据') }}</el-button><el-button @click="toggleRefresh">{{ paused ? t('ground.monitor.resume_refresh', '恢复刷新') : t('ground.monitor.pause_refresh', '暂停刷新') }}</el-button><el-button :loading="loading" @click="refresh">{{ t('common.refresh', '刷新') }}</el-button></div></header>
+    <header class="heading"><div><h2>{{ t('ground.monitor.title', '心跳检测') }}</h2><span class="subtitle">{{ t('ground.monitor.subtitle', '车载 AP 心跳监测 · 实时在线状态') }}</span><span class="muted">{{ t('ground.resident.title', '常驻 Heartbeat') }} · {{ heartbeat?.run_state || t('ground.monitor.not_started', '未启动') }}</span></div><div class="heading-actions"><el-button :loading="managementBusy" :disabled="!managementEnabled" @click="previewManagement('SYNC')">{{ t('ground.monitor.sync_devices', '重新同步设备') }}</el-button><el-button :disabled="!managementEnabled || managementBusy" @click="previewManagement('CLEAR_DATA')">{{ t('ground.monitor.clear_data', '清空心跳数据') }}</el-button><el-button @click="toggleRefresh">{{ paused ? t('ground.monitor.resume_refresh', '恢复刷新') : t('ground.monitor.pause_refresh', '暂停刷新') }}</el-button><el-button :loading="loading" @click="refresh">{{ t('common.refresh', '刷新') }}</el-button></div></header>
     <el-alert v-if="heartbeatError" :title="heartbeatError" type="error" :closable="false" />
     <el-alert v-if="managementError" :title="managementError" type="error" closable @close="managementError = ''" />
     <template v-if="heartbeat">

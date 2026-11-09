@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import HeartbeatSettings from './HeartbeatSettings.vue'
 import { useGroundContext } from './useGroundUnattended'
 const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecommendation, udpPortCheck, networkLoading, showAllAddresses, profileLoadError, visibleIpv4Addresses, returnAddressIsLocal, listenAddressIsLocal, loadAll, saveProfile, loadLocalAddresses, recommendSourceAddress, applyRecommendedAddress, checkUdpPort, togglePriority, applyDeepPingPreset, markDeepPingCustom, restoreDeepPingDefault } = useGroundContext()
 </script>
 
 <template>
 <section class="ground-subpage">
+        <HeartbeatSettings />
         <el-empty v-if="!profile" class="settings-empty" :description="t('ground.v2.settings_empty', '无人值守配置未加载')">
           <p class="muted">{{ profileLoadError || t('ground.v2.settings_init_note', '请确认 Backend 已完成无人值守服务初始化。') }}</p>
           <el-button :icon="Refresh" :loading="loading" type="primary" @click="loadAll()">{{ t('ground.v2.settings_reload', '重新加载配置') }}</el-button>
@@ -55,14 +57,6 @@ const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecomme
             <div class="form-actions"><el-button :disabled="!pingPresets.length" @click="restoreDeepPingDefault">{{ t('ground.v2.settings_restore_default', '恢复共享默认') }}</el-button></div>
           </section>
           <section><h2>{{ t('ground.ping_and_storage', '心跳检测与存储') }}</h2><div class="form-grid">
-            <el-form-item :label="t('ground.ping_interval', 'Ping 间隔（ms）')"><el-input-number v-model="profile.fleet_ping_interval_ms" :min="100" :max="60000" /></el-form-item>
-            <el-form-item :label="t('ground.ping_timeout', 'Ping 超时（ms）')"><el-input-number v-model="profile.fleet_ping_timeout_ms" :min="100" :max="60000" /></el-form-item>
-            <el-form-item :label="t('ground.packet_size', '包大小（字节）')"><el-input-number v-model="profile.fleet_ping_packet_size" :min="1" :max="65507" /></el-form-item>
-            <el-form-item :label="t('ground.shard_size', '每个 fping 分片目标数')"><el-input-number v-model="profile.fleet_ping_shard_size" :min="2" :max="32" /></el-form-item>
-            <el-form-item :label="t('ground.v2.settings_warmup', '启动预热忽略时间（秒）')"><el-input-number v-model="profile.fleet_ping_warmup_seconds" :min="0" :max="300" /></el-form-item>
-            <el-form-item :label="t('ground.v2.heartbeat_targets', '心跳检测目标')">
-              <span>{{ t('ground.v2.heartbeat_target_scope', '按基础资料中启用的 MR 主备管理 IP 持续采样，不受 AC 位置、正线或车辆段分类影响；深度采集仍独立调度。') }}</span>
-            </el-form-item>
             <el-form-item :label="t('ground.detail_retention', '详细数据保留天数')"><el-select v-model="profile.detail_retention_days"><el-option v-for="day in [7,15,30,60,90,180]" :key="day" :label="`${day} ${t('ground.v2.settings_days', '天')}`" :value="day" /></el-select></el-form-item>
             <el-form-item :label="t('ground.summary_retention', '汇总保留天数')"><el-input-number v-model="profile.summary_retention_days" :min="profile.detail_retention_days" :max="3650" /></el-form-item>
             <el-form-item :label="t('ground.warning_space', '空间预警阈值（GB）')"><el-input-number v-model="profile.storage_warning_free_gb" :min="0.1" :max="1024" /></el-form-item>

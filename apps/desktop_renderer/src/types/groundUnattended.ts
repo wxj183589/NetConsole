@@ -419,12 +419,35 @@ export interface GroundHeartbeatTrain {
   train_id: string; train_no: string; status: string; both_unreachable_since: string
   mr_states: Record<string, string>; updated_at: string
 }
-export type GroundHeartbeatDataState = 'NO_INVENTORY' | 'NOT_STARTED' | 'INITIALIZING' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'STALE' | 'WAITING_FOR_SAMPLES' | 'ERROR' | 'DISABLED'
+export type GroundHeartbeatDataState = 'HEARTBEAT_DEGRADED' | 'NO_INVENTORY' | 'NOT_STARTED' | 'INITIALIZING' | 'RUNNING' | 'PAUSED' | 'STOPPED' | 'STALE' | 'WAITING_FOR_SAMPLES' | 'ERROR' | 'DISABLED'
 export interface GroundHeartbeatStatistics {
   sent_count: number; success_count: number; lost_count: number
   average_rtt_ms: number | null; loss_rate_percent: number | null; latest_sample_at: string
 }
+export interface HeartbeatConfig {
+  enabled: boolean
+  interval_ms: number
+  timeout_ms: number
+  packet_size: number
+  shard_size: number
+  warmup_seconds: number
+  backup_policy: 'MONITOR' | 'PRIMARY_ONLY'
+}
+
+export interface HeartbeatRuntime {
+  state: string
+  enabled: boolean
+  target_count: number
+  process_count: number
+  last_sample_at: string
+  last_success_at: string
+  last_error: string
+  pending_events: number
+  pending_loss_events: number
+}
+
 export interface GroundHeartbeatPage {
+  runtime?: HeartbeatRuntime
   total?: number; total_mrs?: number; page?: number; page_size?: number; stations?: string[]
   run_id: string; run_state: string; mrs: GroundHeartbeatMr[]; trains: GroundHeartbeatTrain[]
   mr_counts: Record<string, number>; train_counts: Record<string, number>
