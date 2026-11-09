@@ -1,0 +1,52 @@
+{
+  "date": "2026-11-10",
+  "branch": "codex-A/global-dataroot-disk-policy",
+  "local_simulation": {
+    "status": "PASS",
+    "syslog_messages": 402,
+    "syslog_raw_records": 402,
+    "syslog_parsed_records": 402,
+    "position_updates": 200,
+    "final_ap_b_mrs": 100,
+    "duplicate_events": 100,
+    "out_of_order_events": 101,
+    "position_history_events": 300,
+    "position_latency_ms": {"p50": 3153, "p95": 4309, "p99": 4562},
+    "stage_p95_ms": {"receive_to_raw": 164, "raw_to_parse": 2311, "parse_to_position": 305},
+    "queues_at_completion": {"raw_writer": 0, "parser": 0, "oldest_wait_seconds": 0},
+    "dropped": 0
+  },
+  "ac": {
+    "status": "PASS",
+    "delta_counts": [
+      {"ADDED": 100, "UPDATED": 0, "REMOVED": 0, "UNCHANGED": 0, "UNKNOWN": 0},
+      {"ADDED": 0, "UPDATED": 99, "REMOVED": 1, "UNCHANGED": 0, "UNKNOWN": 1},
+      {"ADDED": 1, "UPDATED": 0, "REMOVED": 0, "UNCHANGED": 99, "UNKNOWN": 0}
+    ],
+    "delta_rows_persisted": 301,
+    "delayed_ac": {"SYSLOG_NEWER": 100},
+    "later_matching_ac": {"CONSISTENT": 100}
+  },
+  "heartbeat": {
+    "status": "PASS",
+    "mr_count": 100,
+    "target_count": 200,
+    "shard_count": 17,
+    "samples_at_stop": 2104,
+    "workers_alive_after_stop": 0
+  },
+  "tests": {
+    "ground_syslog_raw_position": {"status": "PASS", "passed": 74},
+    "ground_ac_heartbeat_faults": {"status": "PASS", "passed": 142},
+    "renderer": {"status": "PASS", "test_files": 210, "tests": 1535},
+    "electron": {"status": "PASS", "test_files": 38, "tests": 306, "typecheck": "PASS"},
+    "electron_isolated_smoke": "PASS",
+    "full_local_gate": "PARTIAL"
+  },
+  "acceptance": {
+    "LOCAL_ACCEPTANCE": "PARTIAL",
+    "FIELD_ACCEPTANCE": "NOT_AVAILABLE",
+    "LONG_STABILITY_8H": "NOT_RUN",
+    "ELECTRON_GUI_SCREENSHOT": "PARTIAL"
+  }
+}
