@@ -18,7 +18,7 @@
 
 ## 未执行
 
-- Vite production build、本轮 Python Ruff/py_compile、MESH Export Process 全消费者、Electron Vitest/原生运行、当前运行态 API、全 MESH Python/Renderer 全量、集成 Full Gate：未执行。
+- Electron Vitest/原生运行、当前运行态 API、全 MESH Python/Renderer 全量、MESH Export Process 全消费者、集成 Full Gate：未执行。本轮只执行 MESH 导出相关的 27 项定向用例。
 - 当前没有 MESH 业务代码修改；因此未扩大执行到全仓或无关业务测试。
 - 真实 Excel/WPS GUI 与 30分钟长稳不属于自动化测试已通过范围。
 
