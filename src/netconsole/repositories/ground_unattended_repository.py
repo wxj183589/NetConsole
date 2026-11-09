@@ -558,6 +558,49 @@ ON ground_unattended_wmesh_events(site_id, run_id, receive_time DESC, train_id);
 CREATE INDEX IF NOT EXISTS idx_ground_wmesh_device_latest
 ON ground_unattended_wmesh_events(site_id, device_uuid, receive_time DESC);
 
+CREATE TABLE IF NOT EXISTS ground_unattended_syslog_position_states (
+    site_id TEXT NOT NULL,
+    device_uuid TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    train_id TEXT NOT NULL DEFAULT '',
+    mr_role TEXT NOT NULL DEFAULT '',
+    current_ap_id TEXT NOT NULL DEFAULT '',
+    current_ap_name TEXT NOT NULL DEFAULT '',
+    current_ap_mac TEXT NOT NULL DEFAULT '',
+    previous_ap_id TEXT NOT NULL DEFAULT '',
+    previous_ap_name TEXT NOT NULL DEFAULT '',
+    previous_ap_mac TEXT NOT NULL DEFAULT '',
+    station TEXT NOT NULL DEFAULT '',
+    section TEXT NOT NULL DEFAULT '',
+    rssi INTEGER,
+    position_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+    position_quality TEXT NOT NULL DEFAULT 'UNKNOWN',
+    position_source TEXT NOT NULL DEFAULT 'SYSLOG',
+    last_event_type TEXT NOT NULL DEFAULT '',
+    last_event_time TEXT NOT NULL DEFAULT '',
+    last_event_time_source TEXT NOT NULL DEFAULT 'RECEIVE_TIME',
+    last_event_time_precision TEXT NOT NULL DEFAULT 'RECEIVE_TIME_ONLY',
+    last_receive_time TEXT NOT NULL DEFAULT '',
+    last_raw_persist_time TEXT NOT NULL DEFAULT '',
+    last_parse_complete_time TEXT NOT NULL DEFAULT '',
+    last_switch_time TEXT NOT NULL DEFAULT '',
+    last_position_commit_time TEXT NOT NULL DEFAULT '',
+    last_position_latency_ms REAL,
+    last_position_dedup_key TEXT NOT NULL DEFAULT '',
+    recent_position_dedup_keys_json TEXT NOT NULL DEFAULT '[]',
+    last_position_sequence INTEGER NOT NULL DEFAULT 0,
+    last_observed_identity_status TEXT NOT NULL DEFAULT '',
+    last_observed_ap_name TEXT NOT NULL DEFAULT '',
+    last_observed_ap_mac TEXT NOT NULL DEFAULT '',
+    position_event_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_event_count INTEGER NOT NULL DEFAULT 0,
+    out_of_order_event_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (site_id, device_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_ground_syslog_position_train
+ON ground_unattended_syslog_position_states(site_id, train_id, mr_role, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS ground_unattended_radio_interface_states (
     site_id TEXT NOT NULL,
     device_uuid TEXT NOT NULL,
@@ -976,6 +1019,10 @@ _OPERATION_MIGRATION_COLUMNS = {
     "triggered_at": "TEXT NOT NULL DEFAULT ''",
 }
 
+_POSITION_STATE_MIGRATION_COLUMNS = {
+    "recent_position_dedup_keys_json": "TEXT NOT NULL DEFAULT '[]'",
+}
+
 
 _RUN_STATES_ACTIVE = {
     "STARTING",
@@ -1071,6 +1118,11 @@ class GroundUnattendedRepository:
             )
             self._ensure_columns(
                 conn,
+                "ground_unattended_syslog_position_states",
+                _POSITION_STATE_MIGRATION_COLUMNS,
+            )
+            self._ensure_columns(
+                conn,
                 "ground_unattended_syslog_config_audits",
                 _CONFIG_AUDIT_MIGRATION_COLUMNS,
             )
@@ -1106,7 +1158,7 @@ class GroundUnattendedRepository:
             conn.execute(
                 """
                 INSERT INTO ground_unattended_schema(key, value, updated_at)
-                VALUES('schema_version', '13', ?)
+                VALUES('schema_version', '15', ?)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
                 """,
                 (_now(),),
@@ -3800,6 +3852,7 @@ class GroundUnattendedRepository:
         events: Iterable[dict[str, Any]],
         timeline: Iterable[dict[str, Any]],
         *,
+        position_states: Iterable[dict[str, Any]] = (),
         raw_checkpoints: Mapping[str, int] | None = None,
         completed_raw_file_ids: Iterable[str] = (),
         complete_closed_files: bool = False,
@@ -3808,17 +3861,19 @@ class GroundUnattendedRepository:
 
         event_values = list(events)
         timeline_values = list(timeline)
+        position_values = list(position_states)
         checkpoints = {
             str(file_id): max(0, int(line_number))
             for file_id, line_number in dict(raw_checkpoints or {}).items()
             if str(file_id)
         }
         completed = {str(file_id) for file_id in completed_raw_file_ids if str(file_id)}
-        if not event_values and not timeline_values and not checkpoints:
+        if not event_values and not timeline_values and not position_values and not checkpoints:
             return 0
         with self._transaction() as conn:
             inserted = self._insert_wmesh_events(conn, event_values)
             self._insert_timeline_events(conn, timeline_values)
+            self._upsert_syslog_position_states(conn, position_values)
             now = _now()
             for file_id, line_number in checkpoints.items():
                 row = conn.execute(
@@ -3847,6 +3902,97 @@ class GroundUnattendedRepository:
                     (parse_status, now, self.site_id, file_id),
                 )
         return inserted
+
+    def _upsert_syslog_position_states(
+        self,
+        conn: sqlite3.Connection,
+        values: list[dict[str, Any]],
+    ) -> None:
+        if not values:
+            return
+        fields = (
+            "site_id",
+            "device_uuid",
+            "run_id",
+            "train_id",
+            "mr_role",
+            "current_ap_id",
+            "current_ap_name",
+            "current_ap_mac",
+            "previous_ap_id",
+            "previous_ap_name",
+            "previous_ap_mac",
+            "station",
+            "section",
+            "rssi",
+            "position_status",
+            "position_quality",
+            "position_source",
+            "last_event_type",
+            "last_event_time",
+            "last_event_time_source",
+            "last_event_time_precision",
+            "last_receive_time",
+            "last_raw_persist_time",
+            "last_parse_complete_time",
+            "last_switch_time",
+            "last_position_commit_time",
+            "last_position_latency_ms",
+            "last_position_dedup_key",
+            "recent_position_dedup_keys_json",
+            "last_position_sequence",
+            "last_observed_identity_status",
+            "last_observed_ap_name",
+            "last_observed_ap_mac",
+            "position_event_count",
+            "duplicate_event_count",
+            "out_of_order_event_count",
+            "updated_at",
+        )
+        rows: list[tuple[Any, ...]] = []
+        now = _now()
+        for source in values:
+            row = dict(source)
+            device_uuid = str(row.get("device_uuid") or "").strip()
+            if not device_uuid:
+                continue
+            row.setdefault("site_id", self.site_id)
+            row.setdefault("updated_at", now)
+            values: list[Any] = []
+            for field in fields:
+                if field == "recent_position_dedup_keys_json":
+                    history = row.get("recent_position_dedup_keys", [])
+                    values.append(
+                        history
+                        if isinstance(history, str)
+                        else json.dumps(history if isinstance(history, list) else [], ensure_ascii=False)
+                    )
+                else:
+                    values.append(
+                        row.get(
+                            field,
+                            self.site_id
+                            if field == "site_id"
+                            else now
+                            if field == "updated_at"
+                            else "",
+                        )
+                    )
+            rows.append(tuple(values))
+        if not rows:
+            return
+        update_fields = ", ".join(
+            f"{field}=excluded.{field}" for field in fields if field not in {"site_id", "device_uuid"}
+        )
+        conn.executemany(
+            f"""
+            INSERT INTO ground_unattended_syslog_position_states
+                ({', '.join(fields)})
+            VALUES ({', '.join('?' for _ in fields)})
+            ON CONFLICT(site_id, device_uuid) DO UPDATE SET {update_fields}
+            """,
+            rows,
+        )
 
     def _insert_wmesh_events(
         self,
@@ -3900,6 +4046,7 @@ class GroundUnattendedRepository:
             raw_file_id = str(row.get("raw_file_id") or "")
             raw_line_number = row.get("raw_line_number")
             existing = None
+            duplicate_by_dedup_key = False
             if raw_file_id and raw_line_number not in {None, ""}:
                 existing = conn.execute(
                     "SELECT id FROM ground_unattended_wmesh_events "
@@ -3907,14 +4054,15 @@ class GroundUnattendedRepository:
                     "LIMIT 1",
                     (self.site_id, raw_file_id, int(raw_line_number)),
                 ).fetchone()
-            elif row.get("dedup_key"):
+            if existing is None and row.get("dedup_key"):
                 existing = conn.execute(
                     "SELECT id FROM ground_unattended_wmesh_events "
                     "WHERE site_id=? AND dedup_key=? LIMIT 1",
                     (self.site_id, str(row["dedup_key"])),
                 ).fetchone()
+                duplicate_by_dedup_key = existing is not None
             if existing is not None:
-                if not (raw_file_id and raw_line_number not in {None, ""}):
+                if duplicate_by_dedup_key:
                     conn.execute(
                         "UPDATE ground_unattended_wmesh_events "
                         "SET duplicate_count=duplicate_count+1 WHERE id=?",
@@ -4594,6 +4742,34 @@ class GroundUnattendedRepository:
             ).fetchone()
         return _decode_row(row) if row else None
 
+    def list_syslog_position_states(
+        self,
+        device_uuids: Iterable[str] = (),
+    ) -> list[dict[str, Any]]:
+        targets = sorted({str(value).strip() for value in device_uuids if str(value).strip()})
+        where = ["site_id=?"]
+        params: list[Any] = [self.site_id]
+        if targets:
+            placeholders = ",".join("?" for _ in targets)
+            where.append(f"device_uuid IN ({placeholders})")
+            params.extend(targets)
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_syslog_position_states "
+                f"WHERE {' AND '.join(where)} ORDER BY train_id, mr_role, device_uuid",
+                params,
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def get_syslog_position_state(self, device_uuid: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_syslog_position_states "
+                "WHERE site_id=? AND device_uuid=?",
+                (self.site_id, str(device_uuid)),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
     def latest_boot_session(self, device_uuid: str) -> dict[str, Any] | None:
         with self._connection() as conn:
             row = conn.execute(
@@ -4771,6 +4947,7 @@ class GroundUnattendedRepository:
             return {
                 "boot_by_device": {},
                 "wmesh_by_device": {},
+                "position_by_device": {},
                 "runtime_by_device": {},
                 "radio_by_device": {},
                 "audit_by_device": {},
@@ -4808,6 +4985,11 @@ class GroundUnattendedRepository:
                 """,
                 wmesh_params,
             ).fetchall()
+            position_rows = conn.execute(
+                "SELECT * FROM ground_unattended_syslog_position_states "
+                f"WHERE site_id=? AND device_uuid IN ({placeholders})",
+                params,
+            ).fetchall()
             runtime_rows = conn.execute(
                 "SELECT * FROM ground_unattended_mr_runtime_states "
                 f"WHERE site_id=? AND device_uuid IN ({placeholders})",
@@ -4844,6 +5026,9 @@ class GroundUnattendedRepository:
             },
             "wmesh_by_device": {
                 str(row["device_uuid"]): _decode_row(row) for row in wmesh_rows
+            },
+            "position_by_device": {
+                str(row["device_uuid"]): _decode_row(row) for row in position_rows
             },
             "runtime_by_device": {
                 str(row["device_uuid"]): _decode_row(row) for row in runtime_rows

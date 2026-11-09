@@ -55,6 +55,13 @@ export interface GroundEndpoint {
   ping_active: boolean; ping_sent_count: number; ping_success_count: number; ping_loss_rate_percent: number | null
   ping_avg_rtt_ms: number | null; active_operation_id: string; latest_session_id: string
   syslog_status: string; last_syslog_received_at: string; current_active_peer: string; last_link_switch_at: string
+  position_current_ap_id: string; position_current_ap_name: string; position_current_ap_mac: string
+  position_previous_ap_id: string; position_previous_ap_name: string; position_previous_ap_mac: string
+  position_station: string; position_section: string; position_status: string; position_quality: string
+  position_source: string; position_freshness: string; position_last_event_time: string
+  position_last_event_time_source: string; position_last_event_time_precision: string
+  position_last_receive_time: string; position_raw_persist_time: string; position_parse_complete_time: string
+  position_commit_time: string; position_latency_ms: number | null; position_ui_available_time: string
   boot_session_id: string; estimated_boot_time: string; uptime_seconds: number | null; boot_time_uncertainty_seconds: number
   reboot_reason: string; timezone_name: string; utc_offset_seconds: number | null; device_time_quality: string
   config_status: string; config_checked_at: string; managed_target_ip: string; managed_target_port: number | null
@@ -103,6 +110,9 @@ export interface GroundTrain {
   decision_revision: number; decision_source: string
   ping_inclusion_reason: string; ping_exclusion_reason: string; deep_exclusion_reason: string
   eligibility_status: string; exclusion_reason: string; current_ap_name: string; current_ap_mac: string
+  position_previous_ap_name: string; position_previous_ap_mac: string; position_source: string; position_freshness: string
+  position_status: string; position_quality: string; position_last_event_time: string; position_last_receive_time: string
+  position_commit_time: string; position_latency_ms: number | null; position_ui_available_time: string
   location_match_level: 'AP_EXACT' | 'AP_REGISTRY' | 'AP_ALIAS' | 'STATION_EXACT' | 'STATION_ALIAS' | 'UNMATCHED'
   location_match_reason: string; resolved_ap_id: string; resolved_ap_name: string; raw_peer_ap_name: string; raw_peer_ap_mac: string; canonical_station_name: string
   station: string; section: string; mileage: string; rssi: number | null; same_ap_duration_seconds: number
@@ -342,7 +352,7 @@ export interface GroundHealth {
   site_id: string; status: GroundHealthStatus; udp_running: boolean; udp_listen_address: string; udp_receive_rate_per_second: number; udp_received_count: number
   supervisor_running: boolean | null; run_state: string; run_elapsed_seconds: number | null
   udp_unidentified_count: number; udp_identity_conflict_count: number; udp_last_received_at: string
-  udp_queue_length: number; udp_queue_capacity: number; udp_dropped_count: number; raw_records_written: number; raw_bytes_written: number
+  udp_queue_length: number; udp_queue_capacity: number; udp_dropped_count: number; udp_socket_error_count: number; raw_records_written: number; raw_bytes_written: number
   raw_last_write_duration_ms: number; database_pending_count: number; database_last_batch_duration_ms: number; open_file_count: number
   raw_write_failed_count: number; raw_write_rate_bytes_per_second: number
   ping_target_count: number; ping_process_count: number; deep_queue_length: number; archive_pending_count: number; ac_pollers: GroundAcPollerHealth[]
@@ -350,9 +360,15 @@ export interface GroundHealth {
   archive_failed_count: number; disk_total_bytes: number; raw_file_count: number
   disk_free_bytes: number; last_error: string; updated_at: string
   receiver_alive: boolean; writer_alive: boolean; parser_alive: boolean
-  received: number; written: number; parsed: number; db_saved: number; dropped: number
+  received: number; written: number; parsed: number; parse_success_count: number; parse_error_count: number; parse_ignored_count: number; parser_rate_per_second: number; db_saved: number; dropped: number
   memory_queue_size: number; memory_queue_capacity: number; disk_queue_count: number
-  parser_queue_size: number; parser_queue_capacity: number; raw_file: string
+  parser_queue_size: number; parser_queue_capacity: number; raw_writer_queue_length: number; oldest_unprocessed_log_wait_seconds: number; parser_spool_failed_count: number
+  position_update_count: number; position_updates_per_second: number; position_duplicate_count: number; position_out_of_order_count: number
+  position_latency_p50_ms: number | null; position_latency_p95_ms: number | null; position_latency_p99_ms: number | null
+  stage_receive_to_raw_p50_ms: number | null; stage_receive_to_raw_p95_ms: number | null; stage_receive_to_raw_p99_ms: number | null
+  stage_raw_to_parse_p50_ms: number | null; stage_raw_to_parse_p95_ms: number | null; stage_raw_to_parse_p99_ms: number | null
+  stage_parse_to_position_p50_ms: number | null; stage_parse_to_position_p95_ms: number | null; stage_parse_to_position_p99_ms: number | null
+  raw_file: string
   raw_file_size: number; last_write_time: string
   spool_bytes: number; spool_files: number; disk_usage_percent: number
   spool_guard_state: string; spool_warning_percent: number; spool_critical_percent: number; spool_emergency_percent: number

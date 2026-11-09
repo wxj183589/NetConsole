@@ -120,6 +120,17 @@ UDP Receiver → 有界 Raw Queue → Raw Writer → 原始 NDJSON
                                   有界 Parser Queue → Parser Worker → 派生索引
 ```
 
+R2.3 的位置链路在 Parser 后增加按 MR 归并的 `PositionEngine`：事件按有效 Event Time
+和接收序号排序，重复事件幂等，旧事件不能覆盖新状态，未解析/未识别 AP 不清空已有位置。
+短时间内的中间状态可以合并持久化和增量 UI 刷新，但有效切换仍进入事件/历史投影。
+Raw Persist、Parse Complete、Position Commit 等阶段时间与 Event/Receive Time 分开记录；
+`ground_unattended_syslog_position_states` 只保存可重建的当前位置投影，原始 NDJSON 和结构化事件
+仍是证据源。位置状态向 API/UI 暴露来源、状态、新鲜度、当前/上一个 AP 和阶段延迟，过期状态不得标记为实时。
+
+正常负载的目标是 P95 ≤ 10 秒、P99 ≤ 30 秒；这不是毫秒级 SLA。健康快照同时暴露 Raw Writer/Parser
+积压、最老等待时间、接收/解析/位置 EPS、重复/乱序计数及位置和分阶段延迟分位数。
+自动化证据与现场 UDP、设备时钟、长稳和 GUI 验收分开记录，详见 [R2.3 交付报告](../../reports/ground-unattended-r2/README.md)。
+
 原始 envelope 先保存，解析失败和未知模块仍保留完整原文。支持 WMESH、IFNET、CFGMAN、WLAN、SYSTEM
 和 UNKNOWN 模块分类；解析失败另记诊断。Raw Writer 与 Parser 独立线程，Receiver 不进行压缩。
 接收/解析积压进入当前运行的受管 spool；正常停止有界排空并登记，异常恢复采用 at-least-once 重放。

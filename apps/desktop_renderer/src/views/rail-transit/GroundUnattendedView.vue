@@ -526,6 +526,22 @@ function openQuickPing(mrId: string) {
           <el-descriptions-item label="CW 会话">{{ selectedTrainCollection?.cw_session_id || '—' }}</el-descriptions-item>
           <el-descriptions-item label="CT Syslog">{{ groundStatusLabel(endpoint(selectedTrain, 'CT')?.syslog_status) }}</el-descriptions-item>
           <el-descriptions-item label="CW Syslog">{{ groundStatusLabel(endpoint(selectedTrain, 'CW')?.syslog_status) }}</el-descriptions-item>
+          <el-descriptions-item label="CT Syslog 当前 AP">
+            {{ endpoint(selectedTrain, 'CT')?.position_current_ap_name || '—' }}
+            <span v-if="endpoint(selectedTrain, 'CT')?.position_current_ap_mac"> / {{ endpoint(selectedTrain, 'CT')?.position_current_ap_mac }}</span>
+            <small> · {{ endpoint(selectedTrain, 'CT')?.position_freshness || 'NO_DATA' }} · {{ endpoint(selectedTrain, 'CT')?.position_source || '—' }}</small>
+          </el-descriptions-item>
+          <el-descriptions-item label="CW Syslog 当前 AP">
+            {{ endpoint(selectedTrain, 'CW')?.position_current_ap_name || '—' }}
+            <span v-if="endpoint(selectedTrain, 'CW')?.position_current_ap_mac"> / {{ endpoint(selectedTrain, 'CW')?.position_current_ap_mac }}</span>
+            <small> · {{ endpoint(selectedTrain, 'CW')?.position_freshness || 'NO_DATA' }} · {{ endpoint(selectedTrain, 'CW')?.position_source || '—' }}</small>
+          </el-descriptions-item>
+          <el-descriptions-item label="CT 上一个 AP">{{ endpoint(selectedTrain, 'CT')?.position_previous_ap_name || '—' }}<span v-if="endpoint(selectedTrain, 'CT')?.position_previous_ap_mac"> / {{ endpoint(selectedTrain, 'CT')?.position_previous_ap_mac }}</span></el-descriptions-item>
+          <el-descriptions-item label="CW 上一个 AP">{{ endpoint(selectedTrain, 'CW')?.position_previous_ap_name || '—' }}<span v-if="endpoint(selectedTrain, 'CW')?.position_previous_ap_mac"> / {{ endpoint(selectedTrain, 'CW')?.position_previous_ap_mac }}</span></el-descriptions-item>
+          <el-descriptions-item label="CT 位置时间">事件 {{ endpoint(selectedTrain, 'CT')?.position_last_event_time || '—' }} · 接收 {{ endpoint(selectedTrain, 'CT')?.position_last_receive_time || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="CW 位置时间">事件 {{ endpoint(selectedTrain, 'CW')?.position_last_event_time || '—' }} · 接收 {{ endpoint(selectedTrain, 'CW')?.position_last_receive_time || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="CT 位置更新延迟">{{ endpoint(selectedTrain, 'CT')?.position_latency_ms == null ? '—' : `${endpoint(selectedTrain, 'CT')?.position_latency_ms} ms` }} · {{ endpoint(selectedTrain, 'CT')?.position_commit_time || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="CW 位置更新延迟">{{ endpoint(selectedTrain, 'CW')?.position_latency_ms == null ? '—' : `${endpoint(selectedTrain, 'CW')?.position_latency_ms} ms` }} · {{ endpoint(selectedTrain, 'CW')?.position_commit_time || '—' }}</el-descriptions-item>
           <el-descriptions-item label="CT 射频 / 控制来源">{{ groundStatusLabel(endpoint(selectedTrain, 'CT')?.radio_overall_state || 'UNKNOWN') }} / {{ groundControlSourceLabel(endpoint(selectedTrain, 'CT')?.cfg_command_source) }}</el-descriptions-item>
           <el-descriptions-item label="CW 射频 / 控制来源">{{ groundStatusLabel(endpoint(selectedTrain, 'CW')?.radio_overall_state || 'UNKNOWN') }} / {{ groundControlSourceLabel(endpoint(selectedTrain, 'CW')?.cfg_command_source) }}</el-descriptions-item>
         </el-descriptions>

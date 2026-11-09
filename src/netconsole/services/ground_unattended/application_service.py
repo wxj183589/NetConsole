@@ -3949,6 +3949,7 @@ class GroundUnattendedApplicationService:
         )
         boot_by_device = dict(endpoint_snapshot["boot_by_device"])
         wmesh_by_device = dict(endpoint_snapshot["wmesh_by_device"])
+        position_by_device = dict(endpoint_snapshot.get("position_by_device") or {})
         runtime_by_device = dict(endpoint_snapshot["runtime_by_device"])
         radio_by_device = dict(endpoint_snapshot["radio_by_device"])
         audit_by_device = dict(endpoint_snapshot["audit_by_device"])
@@ -3963,6 +3964,7 @@ class GroundUnattendedApplicationService:
                 operation = operations.get((train.train_id, endpoint.endpoint)) or {}
                 boot = boot_by_device.get(endpoint.mr_id)
                 wmesh = wmesh_by_device.get(endpoint.mr_id)
+                position = position_by_device.get(endpoint.mr_id) or {}
                 radio_runtime = runtime_by_device.get(endpoint.mr_id)
                 radio_interfaces = (
                     [
@@ -3996,6 +3998,32 @@ class GroundUnattendedApplicationService:
                     wmesh_fresh
                     and str((wmesh or {}).get("event_type") or "").upper()
                     != "MESH_LINKDOWN"
+                )
+                position_received_at = self._parse_datetime(
+                    position.get("last_receive_time")
+                )
+                position_age_seconds = (
+                    max(0.0, (now - position_received_at.astimezone(now.tzinfo)).total_seconds())
+                    if position_received_at is not None
+                    else None
+                )
+                position_status = str(position.get("position_status") or "UNKNOWN")
+                position_freshness = (
+                    "NO_DATA"
+                    if position_received_at is None
+                    else "DISCONNECTED"
+                    if position_status == "DISCONNECTED"
+                    else "FRESH"
+                    if position_age_seconds is not None
+                    and position_age_seconds <= profile.ac_stale_grace_seconds
+                    else "STALE"
+                )
+                position_current_name = str(position.get("current_ap_name") or "")
+                position_current_mac = str(position.get("current_ap_mac") or "")
+                last_syslog_received_at = str(
+                    (boot or {}).get("last_syslog_received_at")
+                    or position.get("last_receive_time")
+                    or ""
                 )
                 info_center = dict((boot or {}).get("info_center_metrics") or {})
                 managed_ip = str(profile.syslog_server_ip or "")
@@ -4064,20 +4092,43 @@ class GroundUnattendedApplicationService:
                             else "",
                             "latest_session_id": str(operation.get("session_id") or ""),
                             "syslog_status": "ACTIVE"
-                            if (boot or {}).get("last_syslog_received_at")
+                            if last_syslog_received_at
                             else "WAITING",
-                            "last_syslog_received_at": str(
-                                (boot or {}).get("last_syslog_received_at") or ""
-                            ),
+                            "last_syslog_received_at": last_syslog_received_at,
                             "current_active_peer": str(
-                                (wmesh or {}).get("peer_name") or ""
-                            ) if wmesh_active else "",
+                                position_current_name
+                                if position_freshness in {"FRESH", "DISCONNECTED"}
+                                else (wmesh or {}).get("peer_name") or ""
+                            ) if position_freshness in {"FRESH", "DISCONNECTED"} or wmesh_active else "",
                             "last_link_switch_at": str(
-                                (wmesh or {}).get("receive_time") or ""
+                                position.get("last_switch_time")
+                                or (wmesh or {}).get("receive_time")
+                                or ""
                             )
-                            if (wmesh or {}).get("event_type")
-                            == "MESH_ACTIVELINK_SWITCH"
+                            if position.get("last_switch_time")
+                            or (wmesh or {}).get("event_type") == "MESH_ACTIVELINK_SWITCH"
                             else "",
+                            "position_current_ap_id": str(position.get("current_ap_id") or ""),
+                            "position_current_ap_name": position_current_name,
+                            "position_current_ap_mac": position_current_mac,
+                            "position_previous_ap_id": str(position.get("previous_ap_id") or ""),
+                            "position_previous_ap_name": str(position.get("previous_ap_name") or ""),
+                            "position_previous_ap_mac": str(position.get("previous_ap_mac") or ""),
+                            "position_station": str(position.get("station") or ""),
+                            "position_section": str(position.get("section") or ""),
+                            "position_status": position_status,
+                            "position_quality": str(position.get("position_quality") or "UNKNOWN"),
+                            "position_source": str(position.get("position_source") or ""),
+                            "position_freshness": position_freshness,
+                            "position_last_event_time": str(position.get("last_event_time") or ""),
+                            "position_last_event_time_source": str(position.get("last_event_time_source") or ""),
+                            "position_last_event_time_precision": str(position.get("last_event_time_precision") or ""),
+                            "position_last_receive_time": str(position.get("last_receive_time") or ""),
+                            "position_raw_persist_time": str(position.get("last_raw_persist_time") or ""),
+                            "position_parse_complete_time": str(position.get("last_parse_complete_time") or ""),
+                            "position_commit_time": str(position.get("last_position_commit_time") or ""),
+                            "position_latency_ms": position.get("last_position_latency_ms"),
+                            "position_ui_available_time": now.isoformat(timespec="milliseconds"),
                             "boot_session_id": str(
                                 (boot or {}).get("boot_session_id") or ""
                             ),
@@ -4167,7 +4218,56 @@ class GroundUnattendedApplicationService:
                         }
                     )
                 )
-            result.append(train.model_copy(update={"endpoints": endpoints}))
+            train_update: dict[str, Any] = {"endpoints": endpoints}
+            position_candidates = [
+                position_by_device.get(endpoint.mr_id) or {}
+                for endpoint in train.endpoints
+                if endpoint.mr_id and position_by_device.get(endpoint.mr_id)
+            ]
+            position_candidates = [
+                item
+                for item in position_candidates
+                if str(item.get("current_ap_name") or item.get("current_ap_mac") or "")
+                and str(item.get("position_quality") or "") == "EXACT_IDENTITY"
+            ]
+            if position_candidates:
+                latest_position = max(
+                    position_candidates,
+                    key=lambda item: str(
+                        item.get("last_position_commit_time")
+                        or item.get("last_event_time")
+                        or item.get("last_receive_time")
+                        or ""
+                    ),
+                )
+                train_update.update(
+                    {
+                        "current_ap_name": str(latest_position.get("current_ap_name") or ""),
+                        "current_ap_mac": str(latest_position.get("current_ap_mac") or ""),
+                        "position_previous_ap_name": str(latest_position.get("previous_ap_name") or ""),
+                        "position_previous_ap_mac": str(latest_position.get("previous_ap_mac") or ""),
+                        "station": str(latest_position.get("station") or train.station),
+                        "section": str(latest_position.get("section") or train.section),
+                        "rssi": latest_position.get("rssi"),
+                        "position_source": str(latest_position.get("position_source") or "SYSLOG"),
+                        "position_freshness": next(
+                            (
+                                endpoint.position_freshness
+                                for endpoint in endpoints
+                                if endpoint.mr_id == str(latest_position.get("device_uuid") or "")
+                            ),
+                            "STALE",
+                        ),
+                        "position_status": str(latest_position.get("position_status") or "UNKNOWN"),
+                        "position_quality": str(latest_position.get("position_quality") or "UNKNOWN"),
+                        "position_last_event_time": str(latest_position.get("last_event_time") or ""),
+                        "position_last_receive_time": str(latest_position.get("last_receive_time") or ""),
+                        "position_commit_time": str(latest_position.get("last_position_commit_time") or ""),
+                        "position_latency_ms": latest_position.get("last_position_latency_ms"),
+                        "position_ui_available_time": now.isoformat(timespec="milliseconds"),
+                    }
+                )
+            result.append(train.model_copy(update=train_update))
         return result
 
     def _syslog_health(self) -> dict[str, Any]:
