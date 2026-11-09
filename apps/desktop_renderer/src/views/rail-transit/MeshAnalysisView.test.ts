@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { meshArtifactDownloadRequest } from '../../api/meshAnalysis'
 import source from './MeshAnalysisView.vue?raw'
+import workbenchSource from '../../components/mesh-analysis/MeshPhase11Workbench.vue?raw'
 
 describe('Mesh analysis view', () => {
   it('shows persisted results and real import and report actions', () => {
@@ -9,11 +10,12 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('主 / 备链路')
     expect(source).toContain('<MeshPhase11Workbench')
     expect(source).toContain('@workspace-change="changeBusinessWorkspace"')
-    expect(source).toContain('<details class="legacy-analysis"')
+    expect(source).not.toContain('<details class="legacy-analysis"')
+    expect(source).toContain('<template #external>')
     expect(source).not.toContain('name="build-order"')
     expect(source).not.toContain('name="busy"')
     expect(source).toContain('切换事件')
-    expect(source).toContain('RSSI 分析')
+    expect(workbenchSource).toContain('RSSI 分析')
     expect(source).toContain('主用链路信号')
     expect(source).toContain('轨旁AP信号图')
     expect(source).not.toContain('<h3>全部 ACTIVE 主链路</h3>')
@@ -30,7 +32,7 @@ describe('Mesh analysis view', () => {
     expect(source).not.toContain('MeshUnavailableChart')
     expect(source).not.toContain('fping / iPerf 对齐')
     expect(source).not.toContain('getMeshAlignment')
-    expect(source).toContain('报告与来源')
+    expect(workbenchSource).toContain('报告与来源')
     expect(source).toContain('<el-pagination')
     expect(source).not.toContain("label: 'Peer Radio MAC'")
     expect(source).not.toContain('归属来源')
@@ -77,7 +79,7 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('getMeshTracksideSignalChart')
     expect(source).toContain('MeshTracksideSignalChartData')
     expect(source).toContain('<MeshTracksideSignalChart')
-    expect(source).toContain('轨旁图继续按窗口与 LOD 加载')
+    expect(source).toContain('缩放后可查看当前时间范围的轨旁 AP 信号')
     expect(source).not.toContain('轨旁图按 Peer Radio MAC / AP MAC / Peer MAC')
     expect(source).toContain("import RailRssiComparison from '../../components/rail-timeline/RailRssiComparison.vue'")
     expect(source).toContain('<RailRssiComparison')

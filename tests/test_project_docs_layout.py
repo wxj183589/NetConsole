@@ -19,9 +19,15 @@ FORBIDDEN_ACTIVE_DOC_STEM_RE = re.compile(
     r"(?:^|[_-])(?:ASSESSMENT|AUDIT|OBSERVATION_PLAN|MIGRATION_PLAN|HANDOFF|STATUS_REPORT|INVESTIGATION)(?:[_-]|$)",
     re.IGNORECASE,
 )
-# Explicitly requested deliverable; this does not exempt other reports/audits.
+# Explicitly requested deliverables; this does not exempt other reports/audits.
 FIXED_REPORT_PATHS = frozenset(
-    {"reports/mesh-analysis-performance-optimization/01_ARCHITECTURE_AUDIT.md"}
+    {
+        "reports/mesh-analysis-performance-optimization/01_ARCHITECTURE_AUDIT.md",
+        "reports/mesh-analysis-scope-ui-optimization/01_EXCEL_FIELD_AUDIT.md",
+        "reports/mesh-phase11-2/BILINGUAL_UI_AUDIT.md",
+        "reports/mesh-phase11-3/CHINESE_LABEL_AUDIT.md",
+        "reports/mesh-phase11-3/UI_NAVIGATION_AUDIT.md",
+    }
 )
 LEGACY_RENDERER_PATH_RE = re.compile(
     r"(?<!desktop_)apps[\\/]web(?:[\\/]|\b)", re.IGNORECASE
@@ -216,12 +222,11 @@ def test_transient_active_docs_filename_guard_excludes_archive_and_investigation
     investigation.parent.mkdir(parents=True)
     investigation.write_text("investigation", encoding="utf-8")
 
-    fixed_report = (
-        tmp_path
-        / "reports/mesh-analysis-performance-optimization/01_ARCHITECTURE_AUDIT.md"
-    )
-    fixed_report.parent.mkdir(parents=True)
-    fixed_report.write_text("explicit user deliverable", encoding="utf-8")
+    for relative_path in FIXED_REPORT_PATHS:
+        fixed_report = tmp_path / relative_path
+        fixed_report.parent.mkdir(parents=True, exist_ok=True)
+        fixed_report.write_text("explicit user deliverable", encoding="utf-8")
+    fixed_report = tmp_path / sorted(FIXED_REPORT_PATHS)[0]
     other_report = fixed_report.with_name("OTHER_AUDIT.md")
     other_report.write_text("unapproved transient report", encoding="utf-8")
     active_files.append(other_report)

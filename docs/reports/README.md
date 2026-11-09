@@ -4,5 +4,8 @@
 
 - [Mesh 原始日志分析性能优化与业务增强](./mesh-analysis-performance-optimization/README.md)：四档合成基准、AP 信号、单链路、导出和图表回归。
 - [Mesh Phase 9 范围与 UI 优化](./mesh-analysis-scope-ui-optimization/FINAL_REPORT.md)：Excel 字段、车辆段/停车场排除、单链路范围和图表初始视口。
+- [Mesh Phase 11.2](./mesh-phase11-2/FINAL_REPORT.md)：列草稿批量应用、双端指标、计数器真实间隔与三点核验。
+- [Mesh Phase 11.3](./mesh-phase11-3/FINAL_REPORT.md)：七项业务导航、中文指标、滚轮交互与共享时间轴。
+- [Mesh Phase 11.4](./mesh-phase11-4/FINAL_REPORT.md)：动态 Tooltip、时间点定位与统一 AP 详情；真实 Electron 验收阻塞。
 
 当前规范从[文档索引](../README.md)进入。临时日志、数据库、截图、安装包和测试缓存不提交到此目录。

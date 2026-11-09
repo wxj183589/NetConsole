@@ -278,22 +278,16 @@ const workbenchStub = defineComponent({
   setup(_props, { slots, expose, emit }) {
     const workspace = ref('overview')
     function switchWorkspace(value: string) { workspace.value = value; emit('workspaceChange', value) }
-    expose({ switchWorkspace, openContext: (context: unknown) => { mocks.workbenchOpenContext(context); switchWorkspace('main') } })
+    expose({ switchWorkspace, refreshData: () => undefined, openContext: (context: unknown) => { mocks.workbenchOpenContext(context); switchWorkspace('main') } })
     return () => h('section', { 'data-workspace': workspace.value }, [
-      ...['overview', 'parse', 'aps', 'main'].map(value => h('button', { 'data-workspace-target': value, onClick: () => switchWorkspace(value) }, value)),
+      ...['overview', 'links', 'rssi', 'aps', 'main', 'switches', 'artifacts'].map(value => h('button', { 'data-workspace-target': value, onClick: () => switchWorkspace(value) }, value)),
       workspace.value === 'overview' ? slots.overview?.() : null,
+      ['links', 'rssi', 'switches', 'artifacts'].includes(workspace.value) ? slots.external?.() : null,
     ])
   },
 })
-async function openLegacyTab(wrapper: VueWrapper, tab = 'rssi'): Promise<void> {
-  const detail = wrapper.get('details.legacy-analysis')
-  if (!(detail.element as HTMLDetailsElement).open) {
-    (detail.element as HTMLDetailsElement).open = true
-    await detail.trigger('toggle')
-  }
-  await nextTick()
-  const tabs = wrapper.findAllComponents(tabsStub).find(item => item.classes().includes('detail-tabs'))!
-  if (tabs.props('modelValue') !== tab) tabs.vm.$emit('update:modelValue', tab)
+async function openBusinessTab(wrapper: VueWrapper, tab = 'rssi'): Promise<void> {
+  await wrapper.get('[data-workspace-target="' + tab + '"]').trigger('click')
   await flushPromises()
 }
 const stubs: Record<string, Component | boolean> = {
@@ -745,7 +739,7 @@ async function mountHotfixRssiSession(
   await flushPromises()
   await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
   await flushPromises()
-  await openLegacyTab(wrapper)
+  await openBusinessTab(wrapper)
   await vi.waitFor(() => expect(mocks.getTracksideSignal).toHaveBeenCalledTimes(1))
   await flushPromises()
   await vi.waitFor(() => expect(
@@ -1608,7 +1602,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
 
     const meshUid = wrapper.getComponent(MeshAnalysisView).vm.$.uid
@@ -1635,7 +1629,7 @@ describe('Mesh analysis detail behavior', () => {
       await nextTick()
       await flushPromises()
       expect(wrapper.getComponent(MeshAnalysisView).vm.$.uid).toBe(meshUid)
-      expect(wrapper.get('.detail-tabs').attributes('modelvalue')).toBe('rssi')
+      expect(wrapper.findComponent(workbenchStub).attributes('data-workspace')).toBe('rssi')
       expect(activeRssiChart.props('active')).toBe(true)
       expect(tracksideChart.props('active')).toBe(true)
       expect(tracksideChart.props('seriesCache')).toBe(initialCache)
@@ -1736,7 +1730,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
     expect(mocks.getActivePath).toHaveBeenCalledTimes(1)
 
@@ -2112,20 +2106,14 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper, 'links')
-    const detailTabs = wrapper.findAllComponents(tabsStub).find((tabs) => tabs.classes().includes('detail-tabs'))!
-    const linkTable = wrapper.findAllComponents(dataTableStub).find(
-      (table) => table.props('tableId') === 'mesh-analysis-link-details:v3',
-    )!
-    detailTabs.vm.$emit('update:modelValue', 'links')
-    await flushPromises()
+    await openBusinessTab(wrapper, 'links')
     await vi.waitFor(() => expect(mocks.listLinks).toHaveBeenCalledTimes(1))
     mocks.listLinks.mockClear()
 
     await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('links')
+    expect(wrapper.findComponent(workbenchStub).attributes('data-workspace')).toBe('links')
     expect(mocks.listLinks).toHaveBeenCalledTimes(1)
     const refreshedLinkTable = wrapper.findAllComponents(dataTableStub).find(
       (table) => table.props('tableId') === 'mesh-analysis-link-details:v3',
@@ -2134,15 +2122,13 @@ describe('Mesh analysis detail behavior', () => {
       expect.objectContaining({ peer_ap_name: '轨旁AP-24' }),
     ])
 
-    detailTabs.vm.$emit('update:modelValue', 'rssi')
-    await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
     mocks.getActivePath.mockClear()
     await wrapper.findAll('button').find((button) => button.text() === '刷新结果')!.trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('.detail-tabs').attributes('modelvalue')).toBe('rssi')
+    expect(wrapper.findComponent(workbenchStub).attributes('data-workspace')).toBe('rssi')
     expect(mocks.getActivePath).toHaveBeenCalled()
     wrapper.unmount()
   })
@@ -2338,7 +2324,7 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
 
-    await openLegacyTab(wrapper, 'links')
+    await openBusinessTab(wrapper, 'links')
     const tables = wrapper.findAllComponents(dataTableStub)
     const linkTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-link-details:v3')!
     const resolvedLinkColumns = linkTable.props('columns') as Array<{ key: string; fixed?: string; width?: number }>
@@ -2354,7 +2340,7 @@ describe('Mesh analysis detail behavior', () => {
       'identity_source', 'identity_rule', 'identity_reason', 'source_file', 'source_line_number',
     ]) expect(linkKeys).not.toContain(key)
     expect(resolvedLinkColumns.find((column) => column.key === 'section')?.width).toBe(190)
-    await openLegacyTab(wrapper, 'switches')
+    await openBusinessTab(wrapper, 'switches')
     const switchTable = wrapper.findAllComponents(dataTableStub).find((table) => table.props('tableId') === 'mesh-analysis-switch-events:v3')!
     const switchKeys = (switchTable.props('columns') as Array<{ key: string }>).map((column) => column.key)
     expect(switchKeys).toEqual([
@@ -2437,11 +2423,7 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
 
-    await openLegacyTab(wrapper, 'switches')
-    const detailTabs = wrapper.findAllComponents(tabsStub)
-      .find((tabs) => tabs.classes().includes('detail-tabs'))!
-    await detailTabs.vm.$emit('update:modelValue', 'switches')
-    await flushPromises()
+    await openBusinessTab(wrapper, 'switches')
 
     expect(mocks.listSwitchEvents).toHaveBeenLastCalledWith('session-switch-page', {
       page: 1,
@@ -2475,7 +2457,7 @@ describe('Mesh analysis detail behavior', () => {
     })
 
     const radioFilter = switchPane.findAllComponents(NcMultiValueFilter)
-      .find((filter: VueWrapper<any>) => filter.props('placeholder') === '全部 Radio')!
+      .find((filter: VueWrapper<any>) => filter.props('placeholder') === '全部射频口')!
     await radioFilter.vm.$emit('update:modelValue', ['1'])
     await radioFilter.vm.$emit('change', ['1'])
     await flushPromises()
@@ -2904,7 +2886,7 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
     await wrapper.find('.sessions-toggle').trigger('click')
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
     expect(mocks.getActivePath).toHaveBeenLastCalledWith('session-locked', {
       max_points: 2000,
@@ -2940,7 +2922,7 @@ describe('Mesh analysis detail behavior', () => {
 
     await wrapper.findAll('button').filter((button) => button.text() === '查看')[1].trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     expect(wrapper.text()).not.toContain('已锁定 2026-07-20 10:00:01.123')
     expect(wrapper.findAll('button').some((button) => button.text() === '锁定当前时间范围')).toBe(true)
     wrapper.unmount()
@@ -3034,8 +3016,8 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
 
     expect(mocks.getActivePath).toHaveBeenCalledTimes(1)
@@ -3098,7 +3080,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
 
     expect(mocks.getActivePath).toHaveBeenCalledTimes(1)
@@ -3568,7 +3550,7 @@ describe('Mesh analysis detail behavior', () => {
 
     await wrapper.find('.sessions-toggle').trigger('click')
     expect(sessionStorage.getItem('netconsole.mesh-analysis.session-expanded')).toBe('true')
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
     expect(mocks.getActivePath).toHaveBeenCalledWith('session-1', {
       max_points: 2000,
@@ -3740,7 +3722,7 @@ describe('Mesh analysis detail behavior', () => {
     wrapper.unmount()
   })
 
-  it('keeps retained signal analysis collapsed across the four business workspaces', async () => {
+  it('opens retained signal analysis through one of seven business entries without duplicate navigation', async () => {
     const session = refreshTestSession('session-workspaces')
     mocks.listSessions.mockResolvedValue({ items: [session], total: 1, page: 1, page_size: 50 })
     mocks.getSession.mockResolvedValue(refreshTestDetail(session))
@@ -3749,21 +3731,24 @@ describe('Mesh analysis detail behavior', () => {
     await wrapper.findAll('button').find(button => button.text() === '查看')!.trigger('click')
     await flushPromises()
     expect(wrapper.findComponent(workbenchStub).props('sessionId')).toBe(session.session_id)
-    expect(wrapper.get('details.legacy-analysis').attributes('open')).toBeUndefined()
+    expect(wrapper.find('details.legacy-analysis').exists()).toBe(false)
     expect(wrapper.find('.detail-tabs').exists()).toBe(false)
     expect(mocks.getActivePath).not.toHaveBeenCalled()
-    for (const workspace of ['parse', 'aps', 'main', 'overview']) {
+    expect(wrapper.findAll('[data-workspace-target]')).toHaveLength(7)
+    for (const workspace of ['aps', 'main', 'overview']) {
       await wrapper.get('[data-workspace-target="' + workspace + '"]').trigger('click')
       expect(wrapper.findComponent(workbenchStub).attributes('data-workspace')).toBe(workspace)
       expect(wrapper.find('.detail-tabs').exists()).toBe(false)
       expect(mocks.getActivePath).not.toHaveBeenCalled()
     }
-    await openLegacyTab(wrapper)
-    expect(wrapper.get('.detail-tabs').attributes('modelvalue')).toBe('rssi')
+    await openBusinessTab(wrapper)
+    expect(wrapper.findComponent(workbenchStub).attributes('data-workspace')).toBe('rssi')
+    expect(wrapper.find('#pane-rssi').exists()).toBe(true)
+    expect(wrapper.find('.detail-tabs').exists()).toBe(false)
     expect(mocks.getActivePath).toHaveBeenCalledWith(session.session_id, expect.any(Object), expect.any(AbortSignal))
     await wrapper.get('[data-workspace-target="main"]').trigger('click')
     await wrapper.get('[data-workspace-target="overview"]').trigger('click')
-    expect(wrapper.get('details.legacy-analysis').attributes('open')).toBeUndefined()
+    expect(wrapper.find('#pane-rssi').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -3816,7 +3801,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
 
     expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
@@ -3925,7 +3910,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
 
     const activeChart = wrapper.findAllComponents(meshChartStub).find((chart) => chart.props('scope') === 'active')
@@ -3973,7 +3958,7 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
 
     expect(wrapper.text()).toContain('主链 RSSI 数据加载失败：请求超时，请重试。')
@@ -4021,14 +4006,14 @@ describe('Mesh analysis detail behavior', () => {
     await flushPromises()
     await wrapper.findAll('button').find((button) => button.text() === '查看')!.trigger('click')
     await flushPromises()
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
     expect(signals).toHaveLength(1)
 
     const radioSelect = wrapper.findAllComponents(selectStub).find((select) => (
       select.props('modelValue') === 1
       &&
-      select.findAll('[data-option-label]').some((option) => option.text() === 'Radio 2')
+      select.findAll('[data-option-label]').some((option) => option.text() === '射频口 2')
     ))!
     await radioSelect.vm.$emit('update:modelValue', 2)
     await radioSelect.vm.$emit('change', 2)
@@ -4081,7 +4066,7 @@ describe('Mesh analysis detail behavior', () => {
     mocks.getActivePath.mockClear()
     mocks.getTracksideSignal.mockClear()
     mocks.chartApplyViewport.mockClear()
-    await openLegacyTab(wrapper, 'links')
+    await openBusinessTab(wrapper, 'links')
     const tables = wrapper.findAllComponents(dataTableStub)
     const linkTable = tables.find((table) => table.props('tableId') === 'mesh-analysis-link-details:v3')!
     await linkTable.vm.$emit('row-dblclick', linkRow)
@@ -4207,11 +4192,11 @@ describe('Mesh analysis detail behavior', () => {
     const wrapper = mount(MeshAnalysisView, { global: { stubs, directives: { loading: () => undefined } } })
     await flushPromises()
     expect(wrapper.findComponent(workbenchStub).attributes('data-workspace')).toBe('overview')
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     expect(wrapper.text()).toContain('上次轨旁图因渲染进程内存不足退出')
     expect(mocks.getTracksideSignal).not.toHaveBeenCalled()
 
-    await openLegacyTab(wrapper)
+    await openBusinessTab(wrapper)
     await flushPromises()
     expect(mocks.getActivePath).toHaveBeenCalled()
     expect(mocks.getTracksideSignal).not.toHaveBeenCalled()

@@ -213,6 +213,7 @@ export interface MeshIdentityMetadata {
 }
 
 export interface MeshLinkDetail extends MeshIdentityMetadata {
+  counter_samples?: Record<string, { current: number | null; previous: number | null; delta: number | null; interval_seconds: number | null; per_second: number | null; status: string }>
   monitor_gap_before?: boolean
   local_tx_delta?: number | null; peer_tx_delta?: number | null; local_rx_delta?: number | null; peer_rx_delta?: number | null
   local_retry_delta?: number | null; peer_retry_delta?: number | null; local_err_delta?: number | null; peer_err_delta?: number | null

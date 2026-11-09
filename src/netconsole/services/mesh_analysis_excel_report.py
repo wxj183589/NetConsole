@@ -15,6 +15,9 @@ from netconsole.services.mesh_chart_payload import preserve_extrema_indices, ren
 from netconsole.services.mesh_link_detail_export import (
     ACTIVE_BUILD_ORDER_COLUMNS,
     AP_SIGNAL_COLUMNS,
+    BUSINESS_AP_SIGNAL_COLUMNS,
+    BUSINESS_COLUMN_LABELS,
+    BUSINESS_SINGLE_LINK_COLUMNS,
     SINGLE_LINK_COLUMNS,
     BUSINESS_BUILD_COLUMNS,
     BUSINESS_VALUE_LABELS,
@@ -771,8 +774,8 @@ class MeshAnalysisExcelReportExporter:
         for sheet, rows, attr_name in pending_charts:
             _add_active_path_chart(workbook, sheet, rows, attr_name)
         for name, columns, attr in (
-            ("AP 信号质量", AP_SIGNAL_COLUMNS, "ap_signal_quality"),
-            ("单链路风险", SINGLE_LINK_COLUMNS, "single_link_intervals"),
+            ("AP 信号质量", AP_SIGNAL_COLUMNS if model.options.export_mode == "diagnostic" else BUSINESS_AP_SIGNAL_COLUMNS, "ap_signal_quality"),
+            ("单链路风险", SINGLE_LINK_COLUMNS if model.options.export_mode == "diagnostic" else BUSINESS_SINGLE_LINK_COLUMNS, "single_link_intervals"),
         ):
             rows = getattr(model, attr)
             self._write_sheet(
@@ -799,13 +802,19 @@ class MeshAnalysisExcelReportExporter:
         progress: ProgressCallback,
     ):
         field_list = list(fields)
+        business = getattr(getattr(workbook, "_mesh_report_options", None), "export_mode", "business") == "business"
+        labels = [
+            BUSINESS_COLUMN_LABELS.get(field, _field_label(field, attr_name))
+            if business else _field_label(field, attr_name)
+            for field in field_list
+        ]
         sheet = workbook.create_sheet(sheet_name)
         is_parameter_sheet = attr_name == "analysis_parameters"
         header_row = 2 if is_parameter_sheet else 1
         sheet.freeze_panes = "A3" if is_parameter_sheet else "A2"
         scan_limit = int(getattr(getattr(workbook, "_mesh_report_options", None), "autofit_scan_limit", 2000) or 2000)
         width_tracker = _WidthTracker(field_list, scan_limit=scan_limit if attr_name in LARGE_SHEET_ATTRS else 100000)
-        width_tracker.feed([_field_label(field, attr_name) for field in field_list])
+        width_tracker.feed(labels)
         if attr_name == "parse_issues" and not rows:
             rows = [{"issue_sequence": 1, "issue_type": "N/A", "severity": "INFO", "message": EMPTY_PARSE_ISSUES_TEXT}]
         elif not rows:
@@ -818,7 +827,7 @@ class MeshAnalysisExcelReportExporter:
         if is_parameter_sheet:
             sheet.merged_cells.add(f"A1:{get_column_letter(len(field_list))}1")
             sheet.append([_title_cell(sheet, "分析参数与阈值"), *[None] * (len(field_list) - 1)])
-        sheet.append([_header_cell(sheet, _field_label(field, attr_name)) for field in field_list])
+        sheet.append([_header_cell(sheet, label) for label in labels])
         total_rows = len(rows)
         for index, row in enumerate(rows, 1):
             if index % 1000 == 0:

@@ -308,16 +308,9 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const folderInput = ref<HTMLInputElement | null>(null)
 const activeTab = ref('overview')
 const businessWorkbench = ref<InstanceType<typeof MeshPhase11Workbench> | null>(null)
-const legacyExpanded = ref(false)
 function changeBusinessWorkspace(value: string): void {
-  if (value !== 'overview') { legacyExpanded.value = false; activeTab.value = 'overview' }
-}
-function toggleLegacy(event: Event): void {
-  legacyExpanded.value = (event.target as HTMLDetailsElement).open
-  if (legacyExpanded.value) {
-    if (chartRadio.value === null) chartRadio.value = selected.value?.available_radios?.[0] ?? null
-    if (activeTab.value === 'overview') activeTab.value = 'rssi'
-  } else activeTab.value = 'overview'
+  activeTab.value = ['links', 'rssi', 'switches', 'artifacts'].includes(value) ? value : 'overview'
+  if (value === 'rssi' && chartRadio.value === null) chartRadio.value = selected.value?.available_radios?.[0] ?? null
 }
 const busyMode = ref<'active' | 'peer'>('active')
 const showRssiPeer = ref(false)
@@ -696,7 +689,7 @@ const activePaneAlertMessages = computed(() => [...new Set([
   rssiFocusLabel.value,
   rssiActiveError.value ? `主链 RSSI 数据加载失败：${rssiActiveError.value}` : '',
   lockedAnalysisRange.value
-    ? `已锁定 ${lockedRangeLabel.value} · Radio ${lockedAnalysisRange.value.radio ?? '全部'} · RSSI 可见采样 ${lockedAnalysisRange.value.sample_count} 点`
+    ? `已锁定 ${lockedRangeLabel.value} · 射频口 ${lockedAnalysisRange.value.radio ?? '全部'} · RSSI 可见采样 ${lockedAnalysisRange.value.sample_count} 点`
     : '',
   chartData.value?.downsample_warning || '',
   degradedChartNotice(chartData.value?.response_budget?.degraded),
@@ -749,7 +742,7 @@ const coverageColumns: NcTableColumn<NonNullable<MeshApCoverageAudit['connected'
 ]
 const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
   { key: 'sequence', label: '序号', valueType: 'number', width: 75, fixed: 'left', hideable: false },
-  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, fixed: 'left', hideable: false },
+  { key: 'local_radio', label: '射频口', valueType: 'number', width: 80, fixed: 'left', hideable: false },
   { key: 'first_sample_time', label: '首个采样时间', valueType: 'datetime', minWidth: 215, hideable: false },
   { key: 'peer_ap_name', label: 'AP 名称', valueType: 'name', minWidth: 175, hideable: false, displayValue: (row) => row.peer_ap_name || '未关联' },
   { key: 'peer_ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 145 },
@@ -765,74 +758,74 @@ const buildOrderColumns: NcTableColumn<MeshActiveBuildOrder>[] = [
   { key: 'min_mr_rssi', label: '最小 RSSI', valueType: 'number', width: 105 },
   { key: 'max_mr_rssi', label: '最大 RSSI', valueType: 'number', width: 105 },
   { key: 'p10_mr_rssi', label: 'P10 RSSI', valueType: 'number', width: 100 },
-  { key: 'avg_tx_busy', label: '平均 TxBusy', valueType: 'percentage', minWidth: 115 },
-  { key: 'avg_rx_busy', label: '平均 RxBusy', valueType: 'percentage', minWidth: 115 },
+  { key: 'avg_tx_busy', label: '本端平均发送空口忙时', valueType: 'percentage', minWidth: 115 },
+  { key: 'avg_rx_busy', label: '本端平均接收空口忙时', valueType: 'percentage', minWidth: 115 },
   { key: 'link_establishment_accepted', label: '建链门限', valueType: 'status', minWidth: 105, displayValue: (row) => row.link_establishment_accepted ? '通过' : '未通过' },
   { key: 'link_establishment_reason', label: '建链门限原因', align: 'left', alignmentReason: 'long-text', minWidth: 320 },
   { key: 'build_result', label: '建链结果', valueType: 'status', minWidth: 125 },
   { key: 'judge_reason', label: '判定原因', align: 'left', alignmentReason: 'long-text', minWidth: 260 },
   { key: 'pingpong_type', label: '乒乓类型', minWidth: 120 },
-  { key: 'avg_peer_tx_busy', label: 'Peer 平均 TxBusy', valueType: 'percentage', minWidth: 135, visible: false },
-  { key: 'avg_peer_rx_busy', label: 'Peer 平均 RxBusy', valueType: 'percentage', minWidth: 135, visible: false },
+  { key: 'avg_peer_tx_busy', label: '对端平均发送空口忙时', valueType: 'percentage', minWidth: 135, visible: false },
+  { key: 'avg_peer_rx_busy', label: '对端平均接收空口忙时', valueType: 'percentage', minWidth: 135, visible: false },
   { key: 'main_link_switch_time_ms', label: '切换稳定基准(ms)', valueType: 'duration', minWidth: 155, visible: false },
   { key: 'short_threshold_seconds', label: '短时阈值(s)', valueType: 'duration', minWidth: 110, visible: false },
   { key: 'is_same_physical_ap_radio_switch', label: '同 AP 双射频', width: 120, visible: false, displayValue: (row) => row.is_same_physical_ap_radio_switch ? '是' : '否' },
-  { key: 'pingpong_group_id', label: '乒乓 Group', minWidth: 130, visible: false },
+  { key: 'pingpong_group_id', label: '乒乓组', minWidth: 130, visible: false },
   { key: 'middle_ap_dwell_ms', label: '中间 AP 驻留(ms)', valueType: 'duration', minWidth: 145, visible: false },
   { key: 'pingpong_return_duration_ms', label: '返回时间(ms)', valueType: 'duration', minWidth: 120, visible: false },
-  { key: 'previous_ap', label: 'previous AP', minWidth: 140, visible: false },
-  { key: 'middle_ap', label: 'middle AP', minWidth: 140, visible: false },
-  { key: 'return_ap', label: 'return AP', minWidth: 140, visible: false },
+  { key: 'previous_ap', label: '前序 AP', minWidth: 140, visible: false },
+  { key: 'middle_ap', label: '中间 AP', minWidth: 140, visible: false },
+  { key: 'return_ap', label: '返回 AP', minWidth: 140, visible: false },
   { key: 'actions', label: '操作', valueType: 'actions', width: 105, fixed: 'right', hideable: false },
 ]
 const linkColumns: NcTableColumn<MeshLinkDetail>[] = [
   { key: 'timestamp', label: '采样时间', valueType: 'datetime', width: 215, hideable: false },
-  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, hideable: false },
+  { key: 'local_radio', label: '射频口', valueType: 'number', width: 80, hideable: false },
   { key: 'link_role', label: '状态', width: 90, hideable: false },
   { key: 'peer_ap_name', label: 'AP 名称', valueType: 'name', minWidth: 175, displayValue: (row) => row.peer_ap_name || '未关联' },
   { key: 'local_rssi_db', label: 'MR 侧 RSSI 差值', valueType: 'number', minWidth: 130 },
-  { key: 'peer_rssi_db', label: 'Peer 侧 RSSI 差值', valueType: 'number', minWidth: 140 },
+  { key: 'peer_rssi_db', label: '对端 RSSI 差值', valueType: 'number', minWidth: 140 },
   { key: 'peer_ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'station', label: '归属站点', width: 130 },
   { key: 'section', label: '归属区间', width: 190 },
   { key: 'peer_radio', label: '对端射频口', minWidth: 105 },
   { key: 'establish_time', label: '建链时间', valueType: 'datetime', width: 210 },
   { key: 'duration_text', label: '链路时长', width: 140 },
-  { key: 'link_count', label: 'LinkCnt', valueType: 'number', width: 90 },
+  { key: 'link_count', label: '链路计数', valueType: 'number', width: 90 },
   { key: 'local_noise_dbm', label: 'MR 侧底噪', valueType: 'number', minWidth: 105 },
-  { key: 'peer_noise_dbm', label: 'Peer 侧底噪', valueType: 'number', minWidth: 115 },
+  { key: 'peer_noise_dbm', label: '对端底噪', valueType: 'number', minWidth: 115 },
   { key: 'local_signal_dbm', label: 'MR 接收信号', valueType: 'number', minWidth: 115 },
-  { key: 'peer_signal_dbm', label: 'Peer 接收信号', valueType: 'number', minWidth: 125 },
-  { key: 'local_rate_raw', label: 'MR 侧协商速率原始值', minWidth: 170 },
-  { key: 'peer_rate_raw', label: 'Peer 侧协商速率原始值', minWidth: 180 },
-  { key: 'local_tx_busy', label: 'L_TxBusy', valueType: 'percentage', width: 100 },
-  { key: 'peer_tx_busy', label: 'P_TxBusy', valueType: 'percentage', width: 100 },
-  { key: 'local_rx_busy', label: 'L_RxBusy', valueType: 'percentage', width: 100 },
-  { key: 'peer_rx_busy', label: 'P_RxBusy', valueType: 'percentage', width: 100 },
+  { key: 'peer_signal_dbm', label: '对端接收信号', valueType: 'number', minWidth: 125 },
+  { key: 'local_rate_raw', label: '本端协商速率', minWidth: 170 },
+  { key: 'peer_rate_raw', label: '对端协商速率', minWidth: 180 },
+  { key: 'local_tx_busy', label: '本端发送空口忙时', valueType: 'percentage', width: 100 },
+  { key: 'peer_tx_busy', label: '对端发送空口忙时', valueType: 'percentage', width: 100 },
+  { key: 'local_rx_busy', label: '本端接收空口忙时', valueType: 'percentage', width: 100 },
+  { key: 'peer_rx_busy', label: '对端接收空口忙时', valueType: 'percentage', width: 100 },
   { key: 'mileage', label: '里程', valueType: 'mileage', width: 120 },
   { key: 'line_side', label: '方向', width: 95 },
-  { key: 'local_cpu_percent', label: 'MR CPU', valueType: 'percentage', width: 100, visible: false },
-  { key: 'peer_cpu_percent', label: 'Peer CPU', valueType: 'percentage', width: 100, visible: false },
-  { key: 'local_mem_percent', label: 'MR 内存', valueType: 'percentage', width: 100, visible: false },
-  { key: 'peer_mem_percent', label: 'Peer 内存', valueType: 'percentage', width: 105, visible: false },
-  { key: 'local_tx_des_free_cnt', label: 'Local TxDesFreeCnt', valueType: 'number', minWidth: 145, visible: false },
-  { key: 'peer_tx_des_free_cnt', label: 'Peer TxDesFreeCnt', valueType: 'number', minWidth: 145, visible: false },
-  { key: 'local_tx', label: 'LocalTx', valueType: 'number', width: 95, visible: false },
-  { key: 'peer_tx', label: 'PeerTx', valueType: 'number', width: 95, visible: false },
-  { key: 'local_rx', label: 'LocalRx', valueType: 'number', width: 95, visible: false },
-  { key: 'peer_rx', label: 'PeerRx', valueType: 'number', width: 95, visible: false },
-  { key: 'local_retry', label: 'LocalRetry', valueType: 'number', minWidth: 105, visible: false },
-  { key: 'peer_retry', label: 'PeerRetry', valueType: 'number', minWidth: 105, visible: false },
-  { key: 'local_err', label: 'LocalErr', valueType: 'number', width: 100, visible: false },
-  { key: 'peer_err', label: 'PeerErr', valueType: 'number', width: 100, visible: false },
-  { key: 'local_tx_garp', label: 'Local Tx GARP', valueType: 'number', minWidth: 120, visible: false },
-  { key: 'peer_rx_garp', label: 'Peer Rx GARP', valueType: 'number', minWidth: 120, visible: false },
-  { key: 'local_tx_mul_join', label: 'Local Multicast Join', valueType: 'number', minWidth: 150, visible: false },
-  { key: 'peer_rx_mul_join', label: 'Peer Multicast Join', valueType: 'number', minWidth: 150, visible: false },
+  { key: 'local_cpu_percent', label: '本端 CPU 利用率', valueType: 'percentage', width: 100, visible: false },
+  { key: 'peer_cpu_percent', label: '对端 CPU 利用率', valueType: 'percentage', width: 100, visible: false },
+  { key: 'local_mem_percent', label: '本端内存利用率', valueType: 'percentage', width: 100, visible: false },
+  { key: 'peer_mem_percent', label: '对端内存利用率', valueType: 'percentage', width: 105, visible: false },
+  { key: 'local_tx_des_free_cnt', label: '本端发送描述符空闲计数', valueType: 'number', minWidth: 145, visible: false },
+  { key: 'peer_tx_des_free_cnt', label: '对端发送描述符空闲计数', valueType: 'number', minWidth: 145, visible: false },
+  { key: 'local_tx', label: '本端发送报文', valueType: 'number', width: 95, visible: false },
+  { key: 'peer_tx', label: '对端发送报文', valueType: 'number', width: 95, visible: false },
+  { key: 'local_rx', label: '本端接收报文', valueType: 'number', width: 95, visible: false },
+  { key: 'peer_rx', label: '对端接收报文', valueType: 'number', width: 95, visible: false },
+  { key: 'local_retry', label: '本端重传报文', valueType: 'number', minWidth: 105, visible: false },
+  { key: 'peer_retry', label: '对端重传报文', valueType: 'number', minWidth: 105, visible: false },
+  { key: 'local_err', label: '本端错误报文', valueType: 'number', width: 100, visible: false },
+  { key: 'peer_err', label: '对端错误报文', valueType: 'number', width: 100, visible: false },
+  { key: 'local_tx_garp', label: '本端发送 GARP 报文', valueType: 'number', minWidth: 120, visible: false },
+  { key: 'peer_rx_garp', label: '对端接收 GARP 报文', valueType: 'number', minWidth: 120, visible: false },
+  { key: 'local_tx_mul_join', label: '本端发送组播加入报文', valueType: 'number', minWidth: 150, visible: false },
+  { key: 'peer_rx_mul_join', label: '对端接收组播加入报文', valueType: 'number', minWidth: 150, visible: false },
 ]
 const switchColumns: NcTableColumn<MeshSwitchEvent>[] = [
   { key: 'timestamp', label: '切换时间', valueType: 'datetime', widthMode: 'content', minWidth: 215, hideable: false },
-  { key: 'local_radio', label: 'Radio', valueType: 'number', width: 80, hideable: false },
+  { key: 'local_radio', label: '射频口', valueType: 'number', width: 80, hideable: false },
   { key: 'from_ap_name', label: '原 AP', valueType: 'name', minWidth: 150 },
   { key: 'from_peer_mac', label: '原 AP MAC', valueType: 'mac', minWidth: 145 },
   { key: 'to_ap_name', label: '目标 AP', valueType: 'name', minWidth: 150 },
@@ -1332,7 +1325,7 @@ async function restoreRendererRecovery(): Promise<void> {
   chartRadio.value = recovery.radio ?? chartRadio.value
   if (recovery.mode === 'normal') {
     businessWorkbench.value?.switchWorkspace('overview')
-    legacyExpanded.value = true
+    businessWorkbench.value?.switchWorkspace('rssi')
     loadedTabs.rssi = true
     activeTab.value = 'rssi'
     await loadFullRssiCharts()
@@ -1876,6 +1869,7 @@ function resetSessionDetailState(
   activeTabValue: string,
   chartRadioValue: number | null,
   preserveRecovery: boolean,
+  preserveWorkbench = false,
 ): void {
   for (const target of ['rssi', 'trackside', 'busy'] as const) {
     if (meshLoadingStatus[target].phase !== 'IDLE' && meshLoadingStatus[target].phase !== 'COMPLETED') {
@@ -1898,7 +1892,8 @@ function resetSessionDetailState(
     tracksideRecoveryBlocked.value = false
     tracksideRecoveryReason.value = ''
   }
-  selected.value = null; buildOrders.value = []; buildOrderVisits.value = []; buildOrderTotal.value = 0; links.value = []; linkTotal.value = 0; switches.value = []; switchTotal.value = 0; switchFilters.page = 1
+  if (!preserveWorkbench) selected.value = null
+  buildOrders.value = []; buildOrderVisits.value = []; buildOrderTotal.value = 0; links.value = []; linkTotal.value = 0; switches.value = []; switchTotal.value = 0; switchFilters.page = 1
   rssiActivePath.value = null; rssiActiveLoading.value = false; rssiActiveLoaded.value = false; rssiActiveError.value = ''; busyActivePath.value = null; busyPeerPath.value = null
   selectedSegment.value = null; focusTimestamp.value = ''; rssiFocusLabel.value = ''; chartRadio.value = chartRadioValue; rssiViewport.value = null; busyViewport.value = null
   committedRssiViewport.value = null; pendingRssiQueryViewport.value = null; rssiViewportInteracting.value = false
@@ -1943,11 +1938,12 @@ async function openSessionById(
       && (detail.available_radios || []).includes(preservedView.chartRadio)
       ? preservedView.chartRadio
       : null
-    resetSessionDetailState(preservedView.activeTab, preservedRadio, preserveRecovery)
+    resetSessionDetailState(preservedView.activeTab, preservedRadio, preserveRecovery, true)
     await nextTick()
     if (generation !== detailGeneration || signal.aborted || pendingRequestedSessionId.value !== id) return
   }
   selected.value = detail
+  if (preservedView) businessWorkbench.value?.refreshData()
   if (!preservedView) rssiResolutionMode.value = initialMeshResolution(detail.session.link_record_count)
   requestWorkspaceTabTitle(`MESH：${detail.session.mr_name || detail.session.train_name}`)
   reportRendererWorkload('session-selected')
@@ -3191,7 +3187,7 @@ function closeBuildOrderModal(): void {
 
 async function showLinkChart(row: MeshLinkDetail): Promise<void> {
   businessWorkbench.value?.switchWorkspace('overview')
-  legacyExpanded.value = true
+  businessWorkbench.value?.switchWorkspace('rssi')
   clearTimeLock()
   focusTimestamp.value = row.timestamp
   allPeerVisits.value = false
@@ -4976,21 +4972,12 @@ function exportTimestamp(now = new Date()): string {
         @scope-change="meshBusinessScope = $event"
         @workspace-change="changeBusinessWorkspace"
       >
-      <template #overview>
-      <details class="legacy-analysis" :open="legacyExpanded" @toggle="toggleLegacy">
-      <summary>信号分析、切换事件与报告</summary>
-      <div v-if="legacyExpanded">
-      <el-tabs v-model="activeTab" class="detail-tabs">
-        <el-tab-pane label="链路明细" name="links" />
-        <el-tab-pane label="RSSI 分析" name="rssi" />
-        <el-tab-pane label="切换事件" name="switches" />
-        <el-tab-pane label="报告与来源" name="artifacts" />
-      </el-tabs>
+      <template #external>
       <div class="detail-tab-content">
         <div v-if="activeTab === 'links'" id="pane-links" class="table-pane">
-          <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="Peer AP / MAC / 站点" /><NcMultiValueFilter v-model="linkFilters.link_roles" :options="['ACTIVE', 'STANDBY']" :labels="{ ACTIVE: '主链路', STANDBY: '备份链路' }" placeholder="全部链路角色" /><el-button @click="reloadLinks(1)">筛选</el-button></div>
+          <div class="toolbar"><el-input v-model="linkFilters.query" clearable placeholder="对端 AP / MAC / 站点" /><NcMultiValueFilter v-model="linkFilters.link_roles" :options="['ACTIVE', 'STANDBY']" :labels="{ ACTIVE: '主链路', STANDBY: '备份链路' }" placeholder="全部链路角色" /><el-button @click="reloadLinks(1)">筛选</el-button></div>
           <div ref="linkTableHost" class="table-host" :style="{ height: `${linkPanel.height.value}px` }">
-            <NcDataTable table-id="mesh-analysis-link-details:v3" route-key="/rail-transit/mesh-analysis" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border height="100%" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role }}</span></template></NcDataTable>
+            <NcDataTable table-id="mesh-analysis-link-details:v3" route-key="/rail-transit/mesh-analysis" :data="links" :columns="linkColumns" :stripe="false" :row-class-name="linkRowClass" border height="100%" @row-dblclick="showLinkChart"><template #cell-link_role="{ row }"><span :class="roleClass(row.link_role)">{{ row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : row.link_role === 'STANDBY' ? '备用（STANDBY）' : row.link_role }}</span></template></NcDataTable>
           </div>
           <div class="pagination"><span>共 {{ linkTotal }} 条</span><el-pagination v-model:page-size="linkFilters.page_size" :page-sizes="[100, 500, 1000]" :current-page="linkFilters.page" layout="sizes, prev, pager, next" :total="linkTotal" @size-change="() => reloadLinks(1)" @current-change="reloadLinks" /></div>
         </div>
@@ -5024,14 +5011,14 @@ function exportTimestamp(now = new Date()): string {
               <el-button :icon="FullScreen" :type="rssiImmersive ? 'primary' : undefined" @click="toggleRssiImmersive">
                 {{ rssiImmersive ? '退出沉浸' : '沉浸对比' }}
               </el-button>
-              <el-select v-model="chartRadio" placeholder="选择 Radio" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`Radio ${radio}`" :value="radio" /></el-select>
+              <el-select v-model="chartRadio" placeholder="选择射频口" @change="changeChartRadio"><el-option v-for="radio in availableChartRadios" :key="radio" :label="`射频口 ${radio}`" :value="radio" /></el-select>
               <span class="toolbar-label">主链 RSSI 精度</span>
               <el-select :title="mt('auto_note')" v-model="rssiResolutionMode" @change="changeRssiResolutionMode"><el-option :label="mt('full')" value="full" /><el-option label="高精度" value="high" /><el-option label="概览" value="overview" /></el-select>
               <span class="toolbar-label">业务叠加精度</span>
               <el-select v-model="visiblePoints" @change="reloadCurrentChart"><el-option label="600 点" :value="600" /><el-option label="1200 点" :value="1200" /><el-option label="2000 点" :value="2000" /><el-option label="4000 点（高精度）" :value="4000" /></el-select>
             </div>
             <div class="rssi-chart-toolbar__row">
-              <el-checkbox v-model="showRssiPeer">显示 Peer 侧 RSSI</el-checkbox>
+              <el-checkbox v-model="showRssiPeer">显示对端 RSSI</el-checkbox>
               <el-button :icon="showSwitchLines ? View : Hide" @click="showSwitchLines = !showSwitchLines">显示切换时刻线</el-button>
               <el-button :icon="showSwitchPoints ? View : Hide" @click="showSwitchPoints = !showSwitchPoints">显示切换节点</el-button>
               <el-button :icon="showLocationBand ? View : Hide" @click="showLocationBand = !showLocationBand">显示站点/区间</el-button>
@@ -5121,7 +5108,7 @@ function exportTimestamp(now = new Date()): string {
                     </el-popover>
                   </div>
                   <div v-if="tracksideSignal && tracksideLoaded" class="chart-fact-groups">
-                    <section><strong>链路概况</strong><span>采样时刻 {{ formatChartCount(tracksideSignal.returned_frames) }} / {{ formatChartCount(tracksideSignal.total_frames) }}</span><span>ACTIVE {{ formatChartCount(tracksideSignal.returned_active_link_points) }} / {{ formatChartCount(tracksideSignal.active_link_points) }}</span><span>STANDBY {{ formatChartCount(tracksideSignal.returned_standby_link_points) }} / {{ formatChartCount(tracksideSignal.standby_link_points) }}</span><span>AP/Radio 序列 {{ formatChartCount(tracksideSignal.returned_series) }} / {{ formatChartCount(tracksideSignal.total_series) }}</span></section>
+                    <section><strong>链路概况</strong><span>采样时刻 {{ formatChartCount(tracksideSignal.returned_frames) }} / {{ formatChartCount(tracksideSignal.total_frames) }}</span><span>主链路 {{ formatChartCount(tracksideSignal.returned_active_link_points) }} / {{ formatChartCount(tracksideSignal.active_link_points) }}</span><span>备份链路 {{ formatChartCount(tracksideSignal.returned_standby_link_points) }} / {{ formatChartCount(tracksideSignal.standby_link_points) }}</span><span>AP/射频口序列 {{ formatChartCount(tracksideSignal.returned_series) }} / {{ formatChartCount(tracksideSignal.total_series) }}</span></section>
                     <section><strong>信号与窗口</strong><span>总链路点 {{ formatChartCount(tracksideSignal.returned_link_points) }} / {{ formatChartCount(tracksideSignal.total_link_points) }}</span><span>三角链路 {{ formatChartCount(tracksideSignal.returned_triangle_link_points ?? 0) }} / {{ formatChartCount(tracksideSignal.triangle_link_points ?? 0) }}</span><span>{{ chartWindowLabel(tracksideChartWindow.start, tracksideChartWindow.end) }}</span></section>
                     <span>时间范围 {{ chartWindowLabel(tracksideChartWindow.start, tracksideChartWindow.end) }}</span>
                   </div>
@@ -5135,12 +5122,12 @@ function exportTimestamp(now = new Date()): string {
             </RailRssiComparison>
           </div>
           <div v-if="selectedChartEvent" class="selected-switch"><span>切换：{{ selectedChartEvent.from_ap_name || selectedChartEvent.from_peer_mac || '—' }} → {{ selectedChartEvent.to_ap_name || selectedChartEvent.to_peer_mac || '—' }} · {{ selectedChartEvent.timestamp }}</span><el-button link type="primary" @click="showSwitchInBuildOrder">查看建链顺序</el-button></div>
-          <p class="hint">{{ chartData?.rssi_line ? `主链 RSSI 使用 ${chartData.rssi_line.returned_points} / ${chartData.rssi_line.total_points} 个真实有效 ACTIVE 样本；业务 Overlay 独立按预算返回` : (chartData?.downsampled ? `主链 RSSI 从 ${chartData.total_points} 点按所选精度返回 ${chartData.returned_points} 点` : `主链 RSSI 展示 ${chartData?.returned_points ?? 0} 个真实结构化样本`) }}；轨旁图继续按窗口与 LOD 加载，Full 模式缩放不会重新请求主线。</p>
+          <p class="hint">{{ chartData?.rssi_line ? `主链 RSSI 展示 ${chartData.rssi_line.returned_points} / ${chartData.rssi_line.total_points} 个有效主链路采样` : (chartData?.downsampled ? `主链 RSSI 从 ${chartData.total_points} 点按所选精度展示 ${chartData.returned_points} 点` : `主链 RSSI 展示 ${chartData?.returned_points ?? 0} 个有效采样`) }}；缩放后可查看当前时间范围的轨旁 AP 信号。</p>
         </div>
 
         <div v-if="activeTab === 'switches'" id="pane-switches" class="table-pane" v-loading="switchLoading">
           <div class="toolbar">
-            <NcMultiValueFilter v-model="switchFilters.radios" :options="['1', '2']" :labels="{ '1': 'Radio 1', '2': 'Radio 2' }" placeholder="全部 Radio" @change="changeSwitchFilters" />
+            <NcMultiValueFilter v-model="switchFilters.radios" :options="['1', '2']" :labels="{ '1': '射频口 1', '2': '射频口 2' }" placeholder="全部射频口" @change="changeSwitchFilters" />
             <NcMultiValueFilter v-model="switchFilters.result_filters" :options="['normal', 'short', 'pingpong']" :labels="{ normal: '正常切换', short: '短时建链', pingpong: '乒乓切换' }" placeholder="全部切换分类" @change="changeSwitchFilters" />
           </div>
           <div ref="switchTableHost" class="table-host" :style="{ height: `${switchTableHeight}px` }">
@@ -5166,8 +5153,6 @@ function exportTimestamp(now = new Date()): string {
           <el-alert v-if="rawTail?.message" :title="rawTail.message" type="info" :closable="false" /><pre v-if="rawTail?.available">{{ rawTail.lines.join('\n') }}</pre>
         </div>
       </div>
-      </div>
-      </details>
       </template>
       </MeshPhase11Workbench>
     </div>

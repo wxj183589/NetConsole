@@ -559,7 +559,7 @@ describe('AppLayout workspace tabs with real async routes', () => {
     expect(wrapper.findComponent({ name: 'MeshAnalysisView' }).exists()).toBe(true)
     await findButtonByText(wrapper, '[data-first-row] button', '查看')!.trigger('click')
     await flushPromises()
-    const rssiTab = findButtonByText(wrapper, '.el-tabs__item', 'RSSI 分析')
+    const rssiTab = findButtonByText(wrapper, '.phase11-nav button', 'RSSI 分析')
     expect(rssiTab).toBeDefined()
     await rssiTab!.trigger('click')
     await flushPromises()
@@ -664,7 +664,7 @@ describe('AppLayout workspace tabs with real async routes', () => {
     expect(workspace.tabs.filter((tab) => tab.routeName === 'mesh-analysis')).toHaveLength(1)
     expect(workspace.activeTab?.routeFullPath).toContain(`session_id=${secondSession.session_id}`)
     expect(wrapper.getComponent({ name: 'MeshAnalysisView' }).vm.$.uid).toBe(meshUid)
-    expect(wrapper.get('.detail-heading h2').text()).toBe(secondSession.mr_name)
+    expect(wrapper.get('.page-heading__current-log').text()).toContain(secondSession.mr_name)
     expect(counters.sessionRequests.mock.calls.map(([id]) => id)).toEqual([
       session.session_id,
       secondSession.session_id,
@@ -678,7 +678,7 @@ describe('AppLayout workspace tabs with real async routes', () => {
     await workspace.openOrActivateRoute(`/rail-transit/mesh-analysis?session_id=${session.session_id}`)
     await flushPromises()
     expect(wrapper.getComponent({ name: 'MeshAnalysisView' }).vm.$.uid).toBe(meshUid)
-    expect(wrapper.get('.detail-heading h2').text()).toBe(session.mr_name)
+    expect(wrapper.get('.page-heading__current-log').text()).toContain(session.mr_name)
     expect(workspace.tabs.filter((tab) => tab.routeName === 'mesh-analysis')).toHaveLength(1)
     expect(counters.sessionRequests.mock.calls.map(([id]) => id)).toEqual([
       session.session_id,

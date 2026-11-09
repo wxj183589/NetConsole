@@ -258,19 +258,30 @@ ACTIVE_BUILD_ORDER_EXPORT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("来源文件", "source_file"),
 )
 
+BUSINESS_COLUMN_LABELS = {
+    "radio": "本端射频口",
+    "peer_radio": "对端射频口",
+    "peer_ap_name": "AP 名称",
+    "peer_ap_mac": "AP MAC",
+    "avg_tx_busy": "本端平均发送空口忙时",
+    "avg_rx_busy": "本端平均接收空口忙时",
+}
 BUSINESS_LINK_COLUMNS = tuple(
-    (header, field)
+    (BUSINESS_COLUMN_LABELS.get(field, header), field)
     for header, field in LINK_DETAIL_EXPORT_COLUMNS
-    if field not in {"peer_radio_mac", "peer_match_rule", "peer_identity_source"}
+    if field not in {
+        "timestamp_tag", "peer_mac_raw", "peer_radio_mac", "peer_match_rule",
+        "peer_identity_source", "archived_filename", "source_line_number",
+        "raw_line_start", "raw_line_end",
+    }
 )
 BUSINESS_BUILD_COLUMNS = tuple(
-    (label, field)
+    (BUSINESS_COLUMN_LABELS.get(field, label), field)
     for label, field in ACTIVE_BUILD_ORDER_EXPORT_COLUMNS
     if field
     in {
         "sequence",
         "radio",
-        "peer_mac_raw",
         "peer_ap_name",
         "peer_ap_mac",
         "peer_site",
@@ -325,6 +336,17 @@ SINGLE_LINK_COLUMNS = (
     ("开始行号", "source_line_number_start"),
     ("结束行号", "source_line_number_end"),
     ("ACTIVE Peer 证据", "active_peer_mac"),
+)
+BUSINESS_AP_SIGNAL_COLUMNS = tuple(
+    (label, field) for label, field in AP_SIGNAL_COLUMNS if field != "peer_mac_raw"
+)
+BUSINESS_SINGLE_LINK_COLUMNS = tuple(
+    (BUSINESS_COLUMN_LABELS.get(field, label), field)
+    for label, field in SINGLE_LINK_COLUMNS
+    if field not in {
+        "source_file_id", "source_line_number_start",
+        "source_line_number_end", "active_peer_mac",
+    }
 )
 BUSINESS_VALUE_LABELS = {
     "GOOD": "信号良好",
@@ -602,8 +624,8 @@ def export_mesh_link_details_xlsx(
             should_cancel,
         )
         for name, columns, key in (
-            ("AP 信号质量", AP_SIGNAL_COLUMNS, "aps"),
-            ("单链路风险", SINGLE_LINK_COLUMNS, "single_links"),
+            ("AP 信号质量", AP_SIGNAL_COLUMNS if export_mode == "diagnostic" else BUSINESS_AP_SIGNAL_COLUMNS, "aps"),
+            ("单链路风险", SINGLE_LINK_COLUMNS if export_mode == "diagnostic" else BUSINESS_SINGLE_LINK_COLUMNS, "single_links"),
         ):
             _write_basic_sheet_xlsx(
                 workbook.add_worksheet(name),

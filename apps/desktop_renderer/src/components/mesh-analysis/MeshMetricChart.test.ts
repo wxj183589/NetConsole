@@ -27,7 +27,10 @@ const echarts = vi.hoisted(() => {
         if (action.type === 'dataZoom') emit('datazoom', action)
         if (action.type === 'updateAxisPointer') emit('updateAxisPointer', { axesInfo: [{ value: 0 }] })
       }),
-      convertToPixel: vi.fn(() => 120), getHeight: vi.fn(() => 190), getZr: vi.fn(() => zr),
+      convertToPixel: vi.fn(() => 120),
+      containPixel: vi.fn(() => true),
+      convertFromPixel: vi.fn(() => new Date('2026-11-09T10:05:00').getTime()),
+      getHeight: vi.fn(() => 190), getZr: vi.fn(() => zr),
     }
   }
   return { createChart, init: vi.fn(() => createChart()), use: vi.fn() }
@@ -39,6 +42,12 @@ vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
 
 const domain = { start: '2026-11-09 10:00:00.000', end: '2026-11-09 10:10:00.000' }
 const point = { timestamp: domain.start, value: -45 }
+function wheel(options: WheelEventInit): WheelEvent {
+  // happy-dom 20 WheelEvent omits MouseEvent modifier/coordinate properties.
+  const event = new MouseEvent('wheel', options)
+  Object.defineProperty(event, 'deltaY', { value: options.deltaY ?? 0 })
+  return event as WheelEvent
+}
 let wrappers: VueWrapper[] = []
 let resizeObservers: Array<{ callback: () => void; observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = []
 let intersections: Array<{ callback: (entries: Array<{ isIntersecting: boolean }>) => void; observe: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }> = []
@@ -163,6 +172,98 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
     expect(wrapper.emitted('sample-select')).toEqual([[point]])
     chart.zrListeners.get('globalout')!.forEach(listener => listener())
     expect(wrapper.emitted('pointer-change')?.at(-1)).toEqual([null])
+  })
+
+  it('leaves ordinary wheel scrolling to the page and disables ECharts wheel capture', async () => {
+    const wrapper = mounted({ window: domain }); const chart = await visible(wrapper)
+    const event = wheel({ deltaY: 100, bubbles: true, cancelable: true })
+    wrapper.get('.mesh-metric-chart').element.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(wrapper.emitted('viewport-change')).toBeUndefined()
+    expect(chart.convertFromPixel).not.toHaveBeenCalled()
+    expect(chart.setOption.mock.calls[0]![0].dataZoom[0]).toMatchObject({
+      zoomOnMouseWheel: false, moveOnMouseWheel: false, preventDefaultMouseMove: false,
+    })
+  })
+
+  it('zooms the shared time window around the actual Shift-wheel pixel time', async () => {
+    const wrapper = mounted({ window: domain }); const chart = await visible(wrapper)
+    const event = wheel({ deltaY: 100, shiftKey: true, clientX: 240, clientY: 80, bubbles: true, cancelable: true })
+    wrapper.get('.mesh-metric-chart').element.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+    expect(chart.containPixel).toHaveBeenCalledWith({ gridIndex: 0 }, [240, 80])
+    expect(chart.convertFromPixel).toHaveBeenCalledWith({ xAxisIndex: 0 }, 240)
+    expect(wrapper.emitted('viewport-change')).toEqual([[{
+      start: '2026-11-09 10:01:00.000', end: '2026-11-09 10:09:00.000',
+    }]])
+  })
+
+  it('ignores Shift-wheel outside the plot and keeps zoom-out inside the domain', async () => {
+    const wrapper = mounted({ window: domain }); const chart = await visible(wrapper)
+    const host = wrapper.get('.mesh-metric-chart').element
+    chart.containPixel.mockReturnValueOnce(false)
+    const outside = wheel({ deltaY: 100, shiftKey: true, cancelable: true })
+    host.dispatchEvent(outside)
+    expect(outside.defaultPrevented).toBe(false)
+    expect(wrapper.emitted('viewport-change')).toBeUndefined()
+    host.dispatchEvent(wheel({ deltaY: -100, shiftKey: true, cancelable: true }))
+    expect(wrapper.emitted('viewport-change')).toEqual([[domain]])
+  })
+
+  it('selects an arbitrary Shift-click time without requiring a clicked series point', async () => {
+    const wrapper = mounted(); const chart = await visible(wrapper)
+    const time = millis(domain.start)! + 123456
+    chart.convertFromPixel.mockReturnValue(time)
+    await wrapper.get('.mesh-metric-chart').trigger('click', { button: 0, shiftKey: true, clientX: 117, clientY: 62 })
+    expect(wrapper.emitted('time-select')).toEqual([[stamp(time), true]])
+    expect(wrapper.emitted('sample-select')).toBeUndefined()
+    chart.zrListeners.get('globalout')!.forEach(listener => listener())
+    expect(wrapper.emitted('selection-clear')).toBeUndefined()
+    expect(wrapper.emitted('time-select')).toHaveLength(1)
+  })
+
+  it('emits Ctrl movement timestamps and clears selection with Escape only', async () => {
+    const wrapper = mounted(); const chart = await visible(wrapper)
+    const host = wrapper.get('.mesh-metric-chart')
+    await host.trigger('mousemove', { clientX: 100, clientY: 70 })
+    expect(wrapper.emitted('time-select')).toBeUndefined()
+    await host.trigger('mousemove', { ctrlKey: true, clientX: 123, clientY: 70 })
+    expect(wrapper.emitted('time-select')).toEqual([['2026-11-09 10:05:00.000', false]])
+    chart.containPixel.mockReturnValueOnce(false)
+    await host.trigger('mousemove', { ctrlKey: true, clientX: 123, clientY: 70 })
+    expect(wrapper.emitted('time-select')).toHaveLength(1)
+    await host.trigger('keydown', { key: 'Enter' })
+    expect(wrapper.emitted('selection-clear')).toBeUndefined()
+    await host.trigger('keydown', { key: 'Escape' })
+    expect(wrapper.emitted('selection-clear')).toEqual([[]])
+  })
+
+  it('updates a fixed selection without recreating data and retains its pointer on leave', async () => {
+    const sample = { timestamp: domain.start, local_cpu_percent: 12 }
+    const lines = [{ key: 'cpu_local', label: '本端 CPU', side: 'local' as const, data: [{ value: [domain.start, 12] as [string, number], sample }] }]
+    const wrapper = mounted({ lines }); const chart = await visible(wrapper)
+    const selectedTime = '2026-11-09 10:00:00.123'
+    await wrapper.setProps({ selectedTime })
+    expect(echarts.init).toHaveBeenCalledTimes(1)
+    expect(chart.setOption).toHaveBeenLastCalledWith({ series: [{ id: 'cpu_local', markLine: { data: [{ xAxis: millis(selectedTime) }] } }] }, { lazyUpdate: true })
+    chart.zrListeners.get('globalout')!.forEach(listener => listener())
+    expect(wrapper.props('selectedTime')).toBe(selectedTime)
+    expect(wrapper.emitted('selection-clear')).toBeUndefined()
+    await wrapper.setProps({ selectedTime: null })
+    expect(chart.setOption).toHaveBeenLastCalledWith({ series: [{ id: 'cpu_local', markLine: { data: [] } }] }, { lazyUpdate: true })
+  })
+
+  it('removes native wheel, click, movement and keyboard listeners when unmounted', async () => {
+    const wrapper = mounted({ window: domain }); await visible(wrapper)
+    const host = wrapper.get('.mesh-metric-chart').element
+    wrapper.unmount()
+    host.dispatchEvent(wheel({ shiftKey: true, deltaY: 100, cancelable: true }))
+    host.dispatchEvent(new MouseEvent('click', { shiftKey: true, button: 0 }))
+    host.dispatchEvent(new MouseEvent('mousemove', { ctrlKey: true }))
+    host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(wrapper.emitted('viewport-change')).toBeUndefined()
+    expect(wrapper.emitted('time-select')).toBeUndefined()
+    expect(wrapper.emitted('selection-clear')).toBeUndefined()
   })
 
   it('reuses the chart on resize and removes all observers and events on unmount', async () => {
