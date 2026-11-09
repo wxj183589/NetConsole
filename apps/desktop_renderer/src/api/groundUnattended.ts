@@ -121,6 +121,10 @@ export const requestGroundConfigCheck = (deviceUuid = '', allowTargetPortChange 
     explicit_confirmation: allowTargetPortChange,
   }),
 })
+export const requestGroundSyslogControl = (deviceUuids: string[], mode: 'JOIN' | 'EXIT'): Promise<GroundActionResponse> => apiRequest(`${root}/syslog-control`, {
+  method: 'POST',
+  body: JSON.stringify({ device_uuids: deviceUuids, mode }),
+})
 export const getGroundHealth = (options: RequestInit = {}): Promise<GroundHealth> => apiRequest(`${root}/health`, options)
 export const getGroundSyslogTransportStatus = (options: RequestInit = {}): Promise<GroundSyslogTransportStatus> => apiRequest(`${root}/syslog-transport-status`, options)
 export const listGroundRawFiles = (options: RequestInit = {}): Promise<GroundPage<GroundRawFile>> => apiRequest(`${root}/raw-files?limit=100`, options)

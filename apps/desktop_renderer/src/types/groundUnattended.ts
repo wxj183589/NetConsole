@@ -4,7 +4,7 @@ export type GroundDataAvailability = 'ACTIVE_RAW' | 'ARCHIVED_RAW' | 'MIXED' | '
 
 export interface GroundProfile {
   site_id: string; enabled: boolean; schedule_start_time: string; schedule_end_time: string; timezone: string
-  ac_poll_interval_seconds: number; stationary_exclusion_minutes: number; ac_stale_grace_seconds: number
+  ac_poll_interval_seconds: number; ac_mesh_link_poll_interval_seconds: number; stationary_exclusion_minutes: number; ac_stale_grace_seconds: number
   ac_ping_correlation_tolerance_seconds: number; ap_switch_before_seconds: number; ap_switch_after_seconds: number
   max_active_trains: number; max_active_mrs: number; max_starting_mrs: number; max_finalizing_mrs: number
   deep_collection_master_enabled: boolean
@@ -20,6 +20,8 @@ export interface GroundProfile {
   event_batch_size: number; event_batch_interval_seconds: number; boot_time_tolerance_seconds: number; config_check_cooldown_seconds: number
   syslog_server_ip: string; syslog_server_port: number; ping_raw_retention_days: number; syslog_raw_retention_days: number
   allow_external_syslog_address: boolean; syslog_auto_repair_enabled: boolean
+  syslog_receiver_auto_start_enabled: boolean; boot_check_auto_start_enabled: boolean
+  ac_mesh_link_auto_collection_enabled: boolean
   minimum_valid_collection_minutes: number; preferred_collection_minutes: number; maximum_collection_minutes: number
   start_jitter_seconds: number; start_batch_size: number; detail_retention_days: number; summary_retention_days: number
   storage_warning_free_gb: number; storage_critical_free_gb: number; created_at: string; updated_at: string
@@ -185,7 +187,7 @@ export interface GroundArchiveDetail {
     archive_sha256: string; manifest_sha256: string; file_count: number; legacy_manifest: boolean; message: string
   }
 }
-export interface GroundActionResponse { accepted: boolean; state: GroundRunState; run_id: string; operation_id: string; message: string }
+export interface GroundActionResponse { accepted: boolean; state: GroundRunState; run_id: string; operation_id: string; task_id?: string; message: string }
 export type GroundQuickPingState = 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'TIME_LIMIT' | 'INTERRUPTED'
 export interface GroundQuickPingTarget {
   target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_role: string; address_role: 'PRIMARY' | 'BACKUP'
@@ -406,6 +408,8 @@ export interface GroundHeartbeatAp {
 export interface GroundHeartbeatMr {
   resolved_ap_name?: string; identity_status?: string; ac_data_status?: string; station?: string; section?: string; current_rtt_ms?: number | null
   mr_uuid: string; train_id: string; train_no: string; mr_name: string; role: string
+  management_ip?: string; backup_management_ip?: string
+  syslog_status?: 'NOT_CONFIGURED' | 'CONFIGURING' | 'CONFIGURED' | 'VERIFYING' | 'EXITING' | 'EXITED' | 'FAILED' | 'UNKNOWN'; syslog_last_error?: string
   status: string; engine_state: string; unreachable_since: string; last_success_at: string
   last_recovery_at: string; consecutive_recovery_successes: number; updated_at: string
   ip_states: GroundHeartbeatIp[]; associated_aps?: GroundHeartbeatAp[]; associated_stations?: string[]

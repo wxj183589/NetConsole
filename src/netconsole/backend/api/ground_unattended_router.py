@@ -21,6 +21,7 @@ from netconsole.models.api.ground_unattended import (
     GroundArchiveBatchDeleteResponseDTO,
     GroundArchivePageDTO,
     GroundConfigCheckRequestDTO,
+    GroundSyslogControlRequestDTO,
     GroundDeepCollectionPageDTO,
     GroundDeepCollectionRecordPageDTO,
     GroundHealthDTO,
@@ -380,6 +381,19 @@ def config_check(
             allow_target_port_change=payload.allow_target_port_change,
             explicit_confirmation=payload.explicit_confirmation,
         )
+    )
+
+
+@router.post(
+    "/syslog-control",
+    response_model=GroundActionResponseDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def syslog_control(
+    request: Request, payload: GroundSyslogControlRequestDTO
+) -> GroundActionResponseDTO:
+    return _call(
+        lambda: _service(request).request_syslog_control(_site_id(request), payload)
     )
 
 

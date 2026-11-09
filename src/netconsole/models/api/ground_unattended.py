@@ -116,7 +116,8 @@ class GroundUnattendedProfileDTO(ApiModel):
         default="23:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
     )
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
-    ac_poll_interval_seconds: int = Field(default=10, ge=3, le=300)
+    ac_poll_interval_seconds: int = Field(default=60, ge=3, le=300)
+    ac_mesh_link_poll_interval_seconds: int = Field(default=300, ge=30, le=3600)
     stationary_exclusion_minutes: int = Field(default=10, ge=1, le=180)
     ac_stale_grace_seconds: int = Field(default=120, ge=0, le=3600)
     ac_ping_correlation_tolerance_seconds: int = Field(default=15, ge=1, le=300)
@@ -146,7 +147,10 @@ class GroundUnattendedProfileDTO(ApiModel):
     config_check_cooldown_seconds: int = Field(default=1800, ge=30, le=86_400)
     syslog_server_ip: str = Field(default="", max_length=255)
     syslog_server_port: int = Field(default=514, ge=1, le=65_535)
-    syslog_auto_repair_enabled: bool = True
+    syslog_receiver_auto_start_enabled: bool = False
+    boot_check_auto_start_enabled: bool = False
+    syslog_auto_repair_enabled: bool = False
+    ac_mesh_link_auto_collection_enabled: bool = False
     allow_external_syslog_address: bool = False
     ping_raw_retention_days: int = Field(default=30, ge=1, le=3650)
     syslog_raw_retention_days: int = Field(default=30, ge=1, le=3650)
@@ -509,6 +513,11 @@ class GroundConfigCheckRequestDTO(ApiModel):
     mode: Literal["VERIFY_ONLY", "AUTO_REPAIR"] = "AUTO_REPAIR"
     allow_target_port_change: bool = False
     explicit_confirmation: bool = False
+
+
+class GroundSyslogControlRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(default_factory=list, max_length=200)
+    mode: Literal["JOIN", "EXIT"] = "JOIN"
 
 
 class GroundMrRuntimeStatusDTO(ApiModel):
@@ -1052,6 +1061,7 @@ class GroundActionResponseDTO(ApiModel):
     state: GroundRunState
     run_id: str = ""
     operation_id: str = ""
+    task_id: str = ""
     message: str = ""
 
 
@@ -1577,6 +1587,13 @@ class GroundHeartbeatMrDTO(ApiModel):
     train_no: str = ""
     mr_name: str = ""
     role: str = ""
+    management_ip: str = ""
+    backup_management_ip: str = ""
+    syslog_status: Literal[
+        "NOT_CONFIGURED", "CONFIGURING", "CONFIGURED", "VERIFYING",
+        "EXITING", "EXITED", "FAILED", "UNKNOWN"
+    ] = "UNKNOWN"
+    syslog_last_error: str = ""
     status: str = "UNKNOWN"
     engine_state: str = "STOPPED"
     unreachable_since: str = ""
@@ -1658,6 +1675,7 @@ class GroundArchiveBatchDeleteItemDTO(ApiModel):
     state: str = ""
     run_id: str = ""
     operation_id: str = ""
+    task_id: str = ""
     message: str = ""
 
 
