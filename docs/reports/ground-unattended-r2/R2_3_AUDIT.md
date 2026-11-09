@@ -26,4 +26,4 @@
 
 ## 风险边界
 
-设备没有可信 Event Time 时，系统使用 Receive Time 并标记 `RECEIVE_TIME_ONLY`，不伪造设备事件发生时间。Raw Persist Time 记录在 Raw Writer 写入边界前，尚未定义为 `fsync` 完成时间；该语义需在性能验收中继续明确。自动化使用临时数据库和脱敏/合成事件，不读取真实业务数据。
+设备没有可信 Event Time 时，系统使用 Receive Time 并标记 `RECEIVE_TIME_ONLY`，不伪造设备事件发生时间。Raw Persist Time 记录在 Raw Writer `write` 返回边界，尚未定义为 `fsync` 完成时间；该语义需在性能验收中继续明确。自动化使用临时数据库和脱敏/合成事件，不读取真实业务数据。
