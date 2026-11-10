@@ -1,0 +1,37 @@
+{
+  "schema": "netconsole.mesh.phase11.10.screenshot-manifest.v1",
+  "status": "PASS",
+  "source_commit": "78cc161e42d9cd50f475fae0f4b636d8b75a8633",
+  "runtime": {
+    "electron_main_pid": 42676,
+    "renderer_pid": 61540,
+    "session_id": "80716c07-6bd9-47d8-b76d-ace1e55624d1:1",
+    "outer_size": "1920x1080",
+    "content_size": "1904x1041",
+    "inner_size": "1904x1041",
+    "dpr": 1,
+    "capture": "Windows desktop window capture"
+  },
+  "screenshots": [
+    {"file": "screenshots/01-analysis-overview.png", "width": 1920, "height": 1080, "bytes": 105511, "workspace": "分析概览", "status": "PASS"},
+    {"file": "screenshots/02-link-details.png", "width": 1920, "height": 1080, "bytes": 164255, "workspace": "链路明细", "status": "PASS"},
+    {"file": "screenshots/03-rssi-analysis.png", "width": 1920, "height": 1080, "bytes": 296209, "workspace": "RSSI 分析", "status": "PASS"},
+    {"file": "screenshots/04-ap-status.png", "width": 1920, "height": 1080, "bytes": 150230, "workspace": "AP 情况", "status": "PASS"},
+    {"file": "screenshots/05-main-monitor-overview.png", "width": 1920, "height": 1080, "bytes": 301207, "workspace": "主链路监控", "status": "PASS"},
+    {"file": "screenshots/06-main-monitor-lower-metrics.png", "width": 1920, "height": 1080, "bytes": 456752, "workspace": "主链路监控", "status": "PASS"},
+    {"file": "screenshots/07-switch-events.png", "width": 1920, "height": 1080, "bytes": 176848, "workspace": "切换事件", "status": "PASS"},
+    {"file": "screenshots/08-wheel-zoom-in.png", "width": 1920, "height": 1080, "bytes": 368456, "workspace": "主链路监控", "operation": "wheel", "status": "PASS"},
+    {"file": "screenshots/09-wheel-zoom-out.png", "width": 1920, "height": 1080, "bytes": 321971, "workspace": "主链路监控", "operation": "wheel", "status": "PASS"},
+    {"file": "screenshots/10-wheel-anchor-comparison.png", "width": 1920, "height": 1080, "bytes": 340543, "workspace": "主链路监控", "operation": "25/50/75 percent anchors", "status": "PASS"},
+    {"file": "screenshots/11-counter-tooltip.png", "width": 1920, "height": 1080, "bytes": 253983, "workspace": "主链路监控", "operation": "counter tooltip", "status": "PASS"},
+    {"file": "screenshots/12-tooltip-pinned.png", "width": 1920, "height": 1080, "bytes": 257410, "workspace": "主链路监控", "operation": "double click pin and Esc", "status": "PASS"},
+    {"file": "screenshots/13-shift-time-selection.png", "width": 1920, "height": 1080, "bytes": 259882, "workspace": "主链路监控", "operation": "Shift select", "status": "PASS"},
+    {"file": "screenshots/14-ctrl-time-browser.png", "width": 1920, "height": 1080, "bytes": 260254, "workspace": "主链路监控", "operation": "Ctrl browser", "status": "PASS"},
+    {"file": "screenshots/15-ap-radio-switch.png", "width": 1920, "height": 1080, "bytes": 127016, "workspace": "AP 情况", "operation": "Radio 2 empty result", "status": "PASS"},
+    {"file": "screenshots/16-right-detail.png", "width": 1920, "height": 1080, "bytes": 340085, "workspace": "主链路监控", "operation": "right detail", "status": "PASS"},
+    {"file": "screenshots/17-link-gap-discontinuity.png", "width": 1920, "height": 1080, "bytes": 194616, "workspace": "主链路监控", "operation": "gap discontinuity", "status": "PASS"},
+    {"file": "screenshots/18-report-export.png", "width": 1920, "height": 1080, "bytes": 174128, "workspace": "报告与来源", "operation": "report task completed", "status": "PASS"},
+    {"file": "screenshots/19-page-reentry.png", "width": 1920, "height": 1080, "bytes": 113546, "workspace": "MESH reentry", "status": "PASS"},
+    {"file": "screenshots/20-final-monitor.png", "width": 1920, "height": 1080, "workspace": "主链路监控", "operation": "final full-range idle", "status": "PASS"}
+  ]
+}

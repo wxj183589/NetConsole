@@ -186,6 +186,14 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
     expect(wrapper.emitted('selection-clear')).toEqual([[]])
   })
 
+  it('uses the native double-click fallback when ECharts has no point data', async () => {
+    const wrapper = mounted(); const chart = await visible(wrapper)
+    const time = millis(domain.start)! + 234567
+    chart.convertFromPixel.mockReturnValue(time)
+    await wrapper.get('.mesh-metric-chart').trigger('dblclick', { button: 0, clientX: 117, clientY: 62 })
+    expect(wrapper.emitted('time-select')).toEqual([[stamp(time), true]])
+  })
+
   it('zooms on ordinary wheel and disables ECharts wheel capture', async () => {
     const wrapper = mounted({ window: domain }); const chart = await visible(wrapper)
     const event = wheel({ deltaY: -100, bubbles: true, cancelable: true })
