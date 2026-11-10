@@ -74,6 +74,11 @@ def test_raw_query_returns_visible_rows_and_one_identity_predecessor(tmp_path):
     assert [item.is_boundary_context for item in result.items] == [True, False, False]
     assert result.items[0].timestamp == "2026-07-14 10:00:00.000"
     assert result.sql_query_count >= 3
+    assert [item.purpose for item in result.sql_query_ranges] == ["target_count", "target_rows", "boundary_context"]
+    assert result.sql_query_ranges[0].record_count == 2
+    assert result.sql_query_ranges[1].visible is True
+    assert result.sql_query_ranges[2].visible is False
+    assert result.sql_query_ranges[2].time_to == "2026-07-14 10:00:01.000"
 
 
 def test_raw_query_is_precisely_bounded_and_does_not_mark_truncated_rows_complete(tmp_path):
@@ -96,6 +101,7 @@ def test_raw_query_is_precisely_bounded_and_does_not_mark_truncated_rows_complet
     assert result.total == 101
     assert result.raw_sample_complete is False
     assert result.downsampled is True
+    assert result.sql_query_ranges[1].record_count == 101
 
 
 def test_raw_query_context_ignores_visible_role_filter(tmp_path):
@@ -215,3 +221,4 @@ def test_raw_query_http_exposes_version_completeness_and_sql_trace(tmp_path):
     assert payload["raw_sample_complete"] is True
     assert payload["sql_query_count"] >= 3
     assert payload["raw_context_count"] == 0
+    assert [item["purpose"] for item in payload["sql_query_ranges"]] == ["target_count", "target_rows", "boundary_context"]

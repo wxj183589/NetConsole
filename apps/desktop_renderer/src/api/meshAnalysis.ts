@@ -12,7 +12,7 @@ import { meshSessionPathSegment } from '../validation/opaqueIdentifier'
 
 const root = '/api/rail-transit/mesh-analysis'
 
-type QueryValue = string | number | boolean | null | undefined | readonly (string | number)[]
+export type QueryValue = string | number | boolean | null | undefined | readonly (string | number)[]
 
 function qs(values: Record<string, QueryValue>): string {
   const params = new URLSearchParams()

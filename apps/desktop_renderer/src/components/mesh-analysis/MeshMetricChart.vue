@@ -7,12 +7,14 @@ import { meshTimestampMillis as millis, formatMeshViewportTimestamp as stamp } f
 import type { MeshBusinessMetricLine, MeshBusinessMetricSample } from './meshBusinessMetrics'
 import { meshMonitorTooltip } from './meshMonitorTooltip'
 import { meshSideColor } from './meshMetricColors'
+import { createMeshChartLifecycleHandle } from './meshLifecycleDiagnostics'
 import type { MeshLinkDetail } from '../../types/meshAnalysis'
 export interface MeshMetricPoint { timestamp: string; value: number | null }
 export interface MeshMonitorWindow { start: string; end: string }
 const props = withDefaults(defineProps<{ points?: MeshMetricPoint[]; lines?: MeshBusinessMetricLine[]; unit?: string; emptyText?: string; domain?: MeshMonitorWindow; window?: MeshMonitorWindow; pointer?: string | null; selectedTime?: string | null; selectedSample?: MeshLinkDetail | null; selectionActive?: boolean; navigator?: boolean }>(), { points: () => [], lines: () => [], unit: '', emptyText: '暂无有效数据', pointer: null, selectedTime: null, selectedSample: null, selectionActive: false, navigator: false })
 const emit = defineEmits<{ 'render-complete': []; 'render-error': [error: string]; 'viewport-change': [window: MeshMonitorWindow]; 'pointer-change': [time: string | null]; 'sample-select': [sample: unknown]; 'time-select': [time: string, fixed: boolean]; 'selection-clear': [] }>()
 const host = ref<HTMLDivElement | null>(null)
+const lifecycle = createMeshChartLifecycleHandle()
 let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let intersectionObserver: IntersectionObserver | null = null
@@ -103,6 +105,7 @@ async function render(): Promise<void> {
     const lines: MeshBusinessMetricLine[] = props.lines.length ? props.lines : [{ key: 'metric', label: '', side: 'local', data: props.points.map(point => ({ value: [point.timestamp, point.value], sample: point as unknown as MeshBusinessMetricSample })) }]
     if (!chart) {
       chart = core.init(host.value, undefined, createTimeChartInitOptions(lines.reduce((sum, line) => sum + line.data.length, 0), { useDirtyRect: false }))
+      lifecycle.initialize(host.value)
       chart.on('datazoom', onZoom); chart.on('updateAxisPointer', onPointer); chart.on('click', onClick); chart.on('dblclick', onDoubleClick); chart.getZr().on('globalout', onLeave)
     }
     if (finished) chart.off('finished', finished)
@@ -120,6 +123,7 @@ async function render(): Promise<void> {
       dataZoom: [{ type: 'inside', filterMode: 'none', zoomOnMouseWheel: false, moveOnMouseWheel: false, preventDefaultMouseMove: false, throttle: 100, startValue: millis(props.window?.start), endValue: millis(props.window?.end) }, ...(props.navigator ? [{ ...createNetConsoleDataZoomStyle(theme), type: 'slider', filterMode: 'none', height: 18, bottom: 5, showDataShadow: false, startValue: millis(props.window?.start), endValue: millis(props.window?.end) }] : [])],
       series: lines.map(line => ({ id: line.key, name: line.label, type: 'line', showSymbol: true, symbolSize: 4, connectNulls: false, lineStyle: { color: meshSideColor(line.side), width: 1.3, type: line.side === 'peer' ? 'dashed' : 'solid' }, data: line.data, markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: theme.warning }, data: props.selectedTime ? [{ xAxis: millis(props.selectedTime) }] : [] }, itemStyle: { color: meshSideColor(line.side) } })),
     }, { replaceMerge: ['series', 'dataZoom'], lazyUpdate: false })
+    lifecycle.syncCanvas(host.value)
     syncPointer()
   } catch (error) {
     if (local === epoch && !disposed) {
@@ -131,13 +135,18 @@ async function render(): Promise<void> {
 }
 function resize(): void { chart?.resize() }
 onMounted(async () => {
+  lifecycle.mount()
   await nextTick(); if (disposed || !host.value) return
   host.value.addEventListener('wheel', onWheel, { passive: false, capture: true })
+  lifecycle.addNativeListener('wheel')
   host.value.addEventListener('click', selectTime)
+  lifecycle.addNativeListener('click')
   host.value.addEventListener('mousemove', moveTime)
+  lifecycle.addNativeListener('mousemove')
   host.value.addEventListener('keydown', onKey)
+  lifecycle.addNativeListener('keydown')
   unsubscribeTheme = subscribeNetConsoleChartTheme(() => { void render() })
-  resizeObserver = new ResizeObserver(resize); resizeObserver.observe(host.value)
+  resizeObserver = new ResizeObserver(resize); resizeObserver.observe(host.value); lifecycle.addResizeObserver()
   if (typeof IntersectionObserver === 'undefined') { visible = true; void render(); return }
   intersectionObserver = new IntersectionObserver(entries => { const next = entries.some(entry => entry.isIntersecting); if (next && !visible) { visible = true; void render() } else visible = next }, { rootMargin: '240px' })
   intersectionObserver.observe(host.value)
@@ -149,8 +158,13 @@ watch(() => props.pointer, syncPointer)
 watch(() => [props.selectedSample, props.selectionActive], syncPointer)
 onBeforeUnmount(() => {
   disposed = true; epoch++; unsubscribeTheme?.(); resizeObserver?.disconnect(); intersectionObserver?.disconnect()
-  host.value?.removeEventListener('wheel', onWheel, true); host.value?.removeEventListener('click', selectTime); host.value?.removeEventListener('mousemove', moveTime); host.value?.removeEventListener('keydown', onKey)
+  lifecycle.removeResizeObserver()
+  host.value?.removeEventListener('wheel', onWheel, true); lifecycle.removeNativeListener('wheel')
+  host.value?.removeEventListener('click', selectTime); lifecycle.removeNativeListener('click')
+  host.value?.removeEventListener('mousemove', moveTime); lifecycle.removeNativeListener('mousemove')
+  host.value?.removeEventListener('keydown', onKey); lifecycle.removeNativeListener('keydown')
   if (chart) { chart.off('datazoom', onZoom); chart.off('updateAxisPointer', onPointer); chart.off('click', onClick); chart.off('dblclick', onDoubleClick); if (finished) chart.off('finished', finished); chart.getZr().off('globalout', onLeave); chart.dispose(); chart = null }
+  lifecycle.dispose(host.value); lifecycle.unmount()
 })
 </script>
 <template><div class="mesh-metric-frame"><div ref="host" tabindex="0" class="mesh-metric-chart" :class="{ 'has-navigator': navigator, 'has-counters': lines.some(line => line.counterField) }" :data-window-start="window?.start" :data-window-end="window?.end" :data-pointer="pointer"></div><span v-if="lines.length ? !lines.some(line => line.data.some(point => point.value[1] !== null)) : !points.some(point => point.value !== null)" class="metric-empty">{{ emptyText }}</span></div></template>

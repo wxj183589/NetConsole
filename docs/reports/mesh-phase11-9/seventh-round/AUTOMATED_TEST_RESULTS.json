@@ -1,0 +1,44 @@
+{
+  "phase": "11.9-seventh-round",
+  "status": "PARTIAL_WITH_CORE_MESH_ACCEPTANCE",
+  "branch": "codex-A/global-dataroot-disk-policy",
+  "product_base": ["b6d8b16c", "e9ff4275"],
+  "tests": {
+    "renderer_mesh": {"status": "PASS", "files": 33, "tests": 341},
+    "python_mesh_ac_identity_rebuild": {"status": "PASS", "tests": 495, "warnings": 3},
+    "renderer_build": {"status": "PASS", "command": "pnpm run build"},
+    "electron_typecheck": {"status": "PASS", "command": "pnpm run typecheck"},
+    "electron_build_main": {"status": "PASS", "command": "pnpm run build:main"},
+    "ruff": {"status": "PASS", "command": ".venv\\Scripts\\python.exe -m ruff check src tests"},
+    "compileall": {"status": "PASS", "command": ".venv\\Scripts\\python.exe -m compileall -q src tests"},
+    "diff_check": {"status": "PASS", "command": "git diff --check"},
+    "workspace_layout": {"status": "FAIL_EXISTING_WORKSPACE_DOCS", "full": false, "repo_only": false}
+  },
+  "real_electron": {
+    "status": "PASS_FOR_TARGETED_SCOPE",
+    "snapshot_root": "D:/study/NetConsole-Workspace/test-data/NetConsole/mesh-phase11-8-run-001",
+    "session_id": "80716c07-6bd9-47d8-b76d-ace1e55624d1:1",
+    "charts": 13,
+    "business_fields": 14,
+    "page_errors": 0,
+    "console_errors": 0,
+    "repeat_abc_http_delta": 0,
+    "repeat_abc_sql_delta": 0
+  },
+  "gates": {
+    "request_attribution_94_9": "PASS",
+    "hot_cache_http_sql_zero": "PASS",
+    "gap_fill_only_b": "PASS",
+    "segmented_equals_one_shot": "PASS",
+    "echarts_listener_lifecycle": "PASS_FOR_OBSERVED_RUNTIME",
+    "catalog_change": "EXPECTED_RUNTIME_WRITE",
+    "workspace_baseline": "BLOCKED_BY_EXISTING_UNAPPROVED_TOP_LEVEL_DOCS",
+    "overall": "PARTIAL"
+  },
+  "evidence": {
+    "request_attribution": "docs/reports/mesh-phase11-9/seventh-round/REQUEST_ATTRIBUTION.md",
+    "gap_fill": "docs/reports/mesh-phase11-9/seventh-round/GAP_FILL_EVIDENCE.json",
+    "lifecycle": "docs/reports/mesh-phase11-9/seventh-round/ECHARTS_LIFECYCLE_EVIDENCE.json",
+    "catalog": "docs/reports/mesh-phase11-9/seventh-round/CATALOG_CHANGE_ANALYSIS.md"
+  }
+}

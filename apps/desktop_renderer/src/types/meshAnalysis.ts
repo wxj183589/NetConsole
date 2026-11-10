@@ -146,9 +146,14 @@ export interface Page<T> {
   query_kind?: string; sql_query_count?: number; raw_sample_complete?: boolean
   raw_sample_version?: string | null; raw_context_count?: number
   coverage_time_from?: string | null; coverage_time_to?: string | null
+  sql_query_ranges?: MeshSqlQueryRange[]
   query_id?: string | null; operation_id?: string | null
   items: T[]; total: number; page: number; page_size: number
   index_status?: string; indexed_session_count?: number; pending_session_count?: number
+}
+export interface MeshSqlQueryRange {
+  purpose: string; time_from?: string | null; time_to?: string | null
+  visible: boolean; record_count: number
 }
 export interface MeshImportContext {
   site_id: string; revision: string; profiles: MeshProfile[]
