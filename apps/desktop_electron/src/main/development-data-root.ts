@@ -20,7 +20,11 @@ const configuredProjectRoot = process.env.NETCONSOLE_PROJECT_ROOT?.trim()
 const projectRoot = configuredProjectRoot
   ? resolve(configuredProjectRoot)
   : resolve(process.cwd(), '..', '..')
-export const WINDOWS_TEST_DATA_ROOT = resolve(projectRoot, '..', 'test-data', 'NetConsole')
+const projectParent = resolve(projectRoot, '..')
+const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'
+  ? resolve(projectParent, '..')
+  : projectParent
+export const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')
 
 export function resolveDesktopStorageContext(
   environment: NodeJS.ProcessEnv = process.env,

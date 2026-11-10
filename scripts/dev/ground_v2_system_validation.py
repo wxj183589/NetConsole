@@ -26,7 +26,9 @@ import traceback
 import urllib.request
 
 REPO = Path(__file__).resolve().parents[2]
-BASE = REPO.parent / "test-data" / "NetConsole"
+WORKSPACE = REPO.parent.parent if REPO.parent.name.casefold() == "worktrees" else REPO.parent
+BASE = WORKSPACE / "test-data" / "NetConsole"
+MAIN_REPO = WORKSPACE / "NetConsole"
 PREFIX = "/api/rail-transit/ground-unattended"
 
 
@@ -68,11 +70,11 @@ def fixture(root):
     with db.connect() as conn:
         group = conn.execute("INSERT INTO device_groups(site_id,name,sort_order,created_at,updated_at) VALUES('demo','车载-MR',1,?,?)", (now, now)).lastrowid
         rows = []
-        for index in range(120):
+        for index in range(100):
             train = index // 2 + 1
             role = "CT" if index % 2 == 0 else "CW"
             rows.append((f"test-mr-{index + 1:03}", f"列车{train:03}-MR-{role}", f"MR{train:03}{role}", group,
-                         f"127.0.0.{index + 1}", f"127.0.0.{121 + index}" if index < 80 else "", now, now))
+                         f"127.0.0.{index + 1}", f"127.0.1.{index + 1}", now, now))
         conn.executemany("""INSERT INTO devices(device_uuid,name,system_name,group_id,device_vendor,device_type,
             primary_address,backup_address,protocol,port,created_at,updated_at)
             VALUES(?,?,?,?,'H3C','Cloud-AP',?,?,'ssh',22,?,?)""", rows)
@@ -84,8 +86,8 @@ def fixture(root):
         "network_domain": "default", "created_at": now, "updated_at": now,
     })
     mrs = RailTransitBaseDataQueryService(paths).list_mrs("demo", page_size=200)
-    if mrs.total != 120:
-        raise RuntimeError(f"Fixture reconciliation expected 120 MRs; got {mrs.total}")
+    if mrs.total != 100:
+        raise RuntimeError(f"Fixture reconciliation expected 100 MRs; got {mrs.total}")
     return paths.site_db_path("demo")
 
 
@@ -185,13 +187,20 @@ class Harness:
             return json.load(response)
 
     def cdp(self, expression, *, main=False):
-        self.bridge.stdin.write(json.dumps({"port": self.main_port if main else self.cdp_port, "main": main, "expression": expression}) + "\n")
-        self.bridge.stdin.flush()
-        line = self.bridge.stdout.readline()
-        data = json.loads(line)
-        if not data["ok"]:
-            raise RuntimeError(data["error"])
-        return data["result"].get("result", {}).get("value")
+        request = json.dumps({"port": self.main_port if main else self.cdp_port, "main": main, "expression": expression}) + "\n"
+        last_error = None
+        for _ in range(12):
+            self.bridge.stdin.write(request)
+            self.bridge.stdin.flush()
+            line = self.bridge.stdout.readline()
+            data = json.loads(line)
+            if data["ok"]:
+                return data["result"].get("result", {}).get("value")
+            last_error = data["error"]
+            if "Inspected target navigated or closed" not in str(last_error):
+                break
+            time.sleep(0.5)
+        raise RuntimeError(last_error)
 
     def api(self, path, method="GET", payload=None):
         # Actual renderer fetch, its desktop cookie, actual loopback Backend.
@@ -227,18 +236,27 @@ class Harness:
 
     def run(self):
         db_path = fixture(self.root)
-        self.summary["fixture"] = {"trains": 60, "mrs": 120, "ips": 200, "dual_ip_mrs": 80, "single_ip_mrs": 40}
+        self.summary["fixture"] = {"trains": 50, "mrs": 100, "ips": 200, "dual_ip_mrs": 100, "single_ip_mrs": 0,
+                                    "heartbeat_target_mode": "primary_and_backup", "heartbeat_expected_target_count": 200}
         env = os.environ.copy()
         env.pop("ELECTRON_RUN_AS_NODE", None)
-        env.update({"NETCONSOLE_RUNTIME_MODE": "test", "NETCONSOLE_STORAGE_MODE": "isolated_test", "NETCONSOLE_DEV_TEMP_DATA_ROOT": "1",
+        env.update({"NETCONSOLE_RUNTIME_MODE": "test", "NETCONSOLE_STORAGE_MODE": "isolated_test", "NETCONSOLE_ISOLATED_SMOKE": "1", "NETCONSOLE_DEV_TEMP_DATA_ROOT": "1",
                     "NETCONSOLE_DATA_ROOT": str(self.root), "NETCONSOLE_PROJECT_ROOT": str(REPO), "NETCONSOLE_DEV_MODE": "1",
-                    "NETCONSOLE_PYTHON": str(REPO / ".venv/Scripts/python.exe"), "NETCONSOLE_DEV_BACKEND_PORT": str(self.backend_port),
+                    "NETCONSOLE_PYTHON": os.environ.get("NETCONSOLE_VALIDATION_PYTHON", str(MAIN_REPO / ".venv/Scripts/python.exe")), "NETCONSOLE_DEV_BACKEND_PORT": str(self.backend_port),
                     "NETCONSOLE_DEV_SESSION_TOKEN": self.token, "NETCONSOLE_RENDERER_DEV_URL": f"http://127.0.0.1:{self.vite_port}",
                     "VITE_API_BASE": f"http://127.0.0.1:{self.backend_port}", "VITE_DEV_SESSION_TOKEN": self.token})
         node = shutil.which("node")
         self.launch([node, str(REPO / "apps/desktop_renderer/node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", str(self.vite_port), "--strictPort"], "vite", env, REPO / "apps/desktop_renderer")
         self.wait(lambda: urllib.request.urlopen(f"http://127.0.0.1:{self.vite_port}", timeout=2).status == 200)
-        electron = self.launch([str(REPO / "apps/desktop_electron/node_modules/electron/dist/electron.exe"),
+        electron_binary = Path(os.environ.get("NETCONSOLE_ELECTRON_BIN", "")) if os.environ.get("NETCONSOLE_ELECTRON_BIN") else REPO / "apps/desktop_electron/node_modules/electron/dist/electron.exe"
+        if not electron_binary.is_file():
+            electron_binary = MAIN_REPO / "apps/desktop_electron/node_modules/electron/dist/electron.exe"
+        if not electron_binary.is_file():
+            raise RuntimeError(f"Electron binary not found in candidate or main dependency: {electron_binary}")
+        user_data_dir = self.root / "runtime" / "electron" / "user-data"
+        user_data_dir.mkdir(parents=True, exist_ok=True)
+        electron = self.launch([str(electron_binary),
+                                f"--user-data-dir={user_data_dir}",
                                 f"--remote-debugging-port={self.cdp_port}", f"--inspect={self.main_port}", str(REPO / "apps/desktop_electron")], "electron", env)
         self.electron = electron
         self.bridge = subprocess.Popen([node, str(REPO / "scripts/dev/ground_v2_cdp.mjs")], stdin=subprocess.PIPE,
@@ -259,12 +277,22 @@ class Harness:
             raise RuntimeError("No existing unicast local adapter address for the profile validation")
         profile.update({"enabled": True, "schedule_start_time": "00:00", "schedule_end_time": "23:59", "deep_collection_master_enabled": False,
                         "udp_listen_host": "127.0.0.1", "udp_listen_port": self.udp_port, "syslog_server_ip": local_ips[0],
-                        "syslog_server_port": self.udp_port, "syslog_auto_repair_enabled": False, "fleet_ping_interval_ms": 1000,
+                        "syslog_server_port": self.udp_port, "syslog_receiver_auto_start_enabled": True,
+                        "syslog_auto_repair_enabled": False, "fleet_ping_interval_ms": 1000,
                         "fleet_ping_timeout_ms": 4000, "fleet_ping_packet_size": 64, "fleet_ping_shard_size": 32})
         self.api("/profile", "PUT", profile)
         self.summary["inventory"] = self.api("/inventory/sync", "POST")
         self.api("/start", "POST")
-        health = self.wait(lambda: (item if (item := self.api("/health")).get("ping_target_count") == 200 and item.get("udp_running") else None), 60)
+        def wait_for_ground_start():
+            item = self.api("/health")
+            self.summary["last_start_health_probe"] = {
+                key: item.get(key)
+                for key in ("status", "run_state", "ping_target_count", "ping_process_count", "udp_running",
+                            "receiver_alive", "writer_alive", "parser_alive", "last_error")
+            }
+            return item if item.get("ping_target_count") == 200 and item.get("udp_running") else None
+
+        health = self.wait(wait_for_ground_start, 60)
         self.summary["initial_health"] = health
         quick_targets = [{"target_ip": f"127.0.0.{i + 1}", "mr_id": f"test-mr-{i + 1:03}"} for i in range(8)]
         quick = self.api("/quick-ping", "POST", {"targets": quick_targets, "interval_ms": 200, "timeout_ms": 1000, "packet_size": 64, "duration_seconds": None})
@@ -306,14 +334,29 @@ class Harness:
         self.summary["final_health_before_stop"] = self.api("/health")
         self.summary["final_heartbeat"] = self.api("/heartbeat?page_size=200")
         self.summary["quick_ping_stop"] = self.api(f"/quick-ping/{quick['run_id']}/stop", "POST")
-        self.summary["stop"] = self.api("/stop", "POST")
+        try:
+            self.summary["stop"] = self.api("/stop", "POST")
+        except RuntimeError as exc:
+            # The visible Electron GUI may have already stopped Ground while
+            # this harness is still sampling. Treat that explicit idempotent
+            # end state as evidence, but keep all other stop failures fatal.
+            if "RUN_NOT_ACTIVE" not in str(exc):
+                raise
+            self.summary["stop"] = {"accepted": False, "already_stopped_by_ui": True, "detail": str(exc)}
         # FINALIZING is still active: accepting it previously hid blocked
         # writers and allowed shutdown to race the resource drain.
         self.wait(lambda: not self.api("/status").get("active_run_id"), 90)
         self.summary["final_health_after_stop"] = self.api("/health")
         final_health = self.summary["final_health_after_stop"]
-        if final_health.get("ping_target_count") or final_health.get("udp_running"):
-            raise RuntimeError("Ground stop left Ping or UDP resources active")
+        self.summary["heartbeat_resident_after_ground_stop"] = {
+            "target_count": final_health.get("ping_target_count"),
+            "process_count": final_health.get("ping_process_count"),
+            "required": True,
+        }
+        if final_health.get("udp_running") or final_health.get("receiver_alive") or final_health.get("writer_alive") or final_health.get("parser_alive"):
+            raise RuntimeError("Ground stop left Syslog pipeline resources active")
+        if final_health.get("ping_target_count") != 200 or final_health.get("ping_process_count", 0) <= 0:
+            raise RuntimeError("Ground stop did not preserve resident Heartbeat")
         self.summary["status"] = "COMPLETED"
         self.summary["db_path"] = str(db_path)
 
