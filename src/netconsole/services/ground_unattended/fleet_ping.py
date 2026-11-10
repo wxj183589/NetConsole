@@ -822,7 +822,6 @@ class FleetPingSupervisor:
             if target is None or not self._run_id:
                 return
             ts = _parse_sample_ts(sample.ts)
-            self._sample_count += 1
             self._sample_times.append(time.monotonic())
             self._last_sample_at = ts.isoformat(timespec="milliseconds")
             self._shard_errors.pop(shard_id, None)
@@ -833,7 +832,7 @@ class FleetPingSupervisor:
             transition_context = self._transition_context(
                 ts, self._transition_at.get(sample.target, "")
             )
-            sample_id = f"{self._run_id}:{sample.target}:{sample.seq or self._sample_count}:{sample.ts}"
+            sample_id = f"{self._run_id}:{sample.target}:{sample.seq or self._sample_count + 1}:{sample.ts}"
             payload = {
                 "sample_id": sample_id,
                 "ts": ts.isoformat(timespec="milliseconds"),
@@ -924,6 +923,12 @@ class FleetPingSupervisor:
                         message=f"{exc.__class__.__name__}: {exc}",
                         details={"target_ip": sample.target, "mr_id": target.mr_id},
                     )
+            # Publish the sample count only after the callback has consumed the
+            # sample. Heartbeat consumers use this counter as a lightweight
+            # completion signal before reading their persisted snapshot; doing
+            # it earlier allowed that reader to observe a count whose callback
+            # was still in flight.
+            self._sample_count += 1
 
     def _bucket_keys(self, ts: datetime, target: FleetPingTarget):
         minute = ts.replace(second=0, microsecond=0)

@@ -184,9 +184,7 @@ def validate_installation_data_root(
     if root == application_root or root.is_relative_to(application_root):
         raise DataRootConfigurationError("数据根不得位于程序安装目录")
     if sys.platform == "win32":
-        disk = describe_data_root_location(root)
-        if disk.drive_type_code in (0, 1, None):
-            raise DataRootConfigurationError("数据目录所在磁盘不可访问，请选择其他位置")
+        _require_windows_fixed_drive(root)
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -238,6 +236,18 @@ def _windows_drive_type(root: Path) -> int:
         return int(ctypes.windll.kernel32.GetDriveTypeW(drive_root))
     except AttributeError as exc:
         raise DataRootConfigurationError("无法验证数据目录所在磁盘类型") from exc
+
+
+def _require_windows_fixed_drive(root: Path) -> None:
+    """Require an accessible fixed local drive for installer validation.
+
+    Keep this small compatibility seam separate from the richer disk
+    description API.  Installer/backend tests and callers can replace the
+    policy check without having to fake all disk metadata collection.
+    """
+
+    if _windows_drive_type(root) != 3:
+        raise DataRootConfigurationError("数据目录必须位于本地固定磁盘")
 
 
 def _require_no_data_root_path_conflicts(root: Path) -> None:

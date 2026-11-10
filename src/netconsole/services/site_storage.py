@@ -118,8 +118,7 @@ class DataRootSnapshot:
     recommended_data_root: Path | None = None
 
     def to_public(self) -> dict[str, object]:
-        disk = self.disk or {}
-        return {
+        value = {
             "data_root": str(self.data_root) if self.persistent else "<temporary>",
             "default_data_root": str(self.default_data_root)
             if self.persistent
@@ -129,11 +128,20 @@ class DataRootSnapshot:
             "storage_mode": self.storage_mode,
             "data_root_kind": self.data_root_kind,
             "persistent": self.persistent,
-            "disk": disk,
-            "recommended_data_root": str(self.recommended_data_root)
-            if self.recommended_data_root is not None and self.persistent
-            else "<unavailable>",
         }
+        # Isolated test storage is deliberately a stable, redacted contract;
+        # disk probing and installation suggestions belong only to persistent
+        # desktop storage.
+        if self.persistent:
+            value.update(
+                {
+                    "disk": self.disk or {},
+                    "recommended_data_root": str(self.recommended_data_root)
+                    if self.recommended_data_root is not None
+                    else "<unavailable>",
+                }
+            )
+        return value
 
 
 _REGISTRY_NAME = "site_registry.json"
