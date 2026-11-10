@@ -1,10 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs'
-import { dirname, delimiter, resolve } from 'node:path'
+import { basename, dirname, delimiter, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const projectRoot = resolve(appRoot, '..', '..')
+const projectParent = resolve(projectRoot, '..')
+const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'
+  ? resolve(projectParent, '..')
+  : projectParent
 const packageJson = JSON.parse(readFileSync(resolve(appRoot, 'package.json'), 'utf8'))
 const version = String(packageJson.version)
 const python = discoverPython()
@@ -81,6 +85,6 @@ function discoverPython() {
   const relative = process.platform === 'win32'
     ? ['.venv', 'Scripts', 'python.exe']
     : ['.venv', 'bin', 'python']
-  const candidate = resolve(projectRoot, ...relative)
-  return existsSync(candidate) ? candidate : undefined
+  const candidates = [resolve(projectRoot, ...relative), resolve(workspaceRoot, 'NetConsole', ...relative)]
+  return candidates.find((candidate) => existsSync(candidate))
 }

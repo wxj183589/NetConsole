@@ -293,6 +293,8 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('constraints.txt')
     expect(script).toContain('NetConsoleBackend.exe')
     expect(script).toContain("'.venv', 'Scripts', 'python.exe'")
+    expect(script).toContain("const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'")
+    expect(script).toContain("resolve(workspaceRoot, 'NetConsole', ...relative)")
     expect(script).toContain("'--release'")
   })
 
@@ -322,7 +324,8 @@ describe('Electron-only packaging', () => {
   it('runs the packaged Electron smoke only in a unique D-drive test root', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 
-    expect(script).toContain("const WINDOWS_TEST_DATA_ROOT = resolve(projectRoot, '..', 'test-data', 'NetConsole')")
+    expect(script).toContain("const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'")
+    expect(script).toContain("const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')")
     expect(script).toContain("mkdtempSync(join(WINDOWS_TEST_DATA_ROOT, 'NetConsole-package-smoke-'))")
     expect(script).toContain("NETCONSOLE_RUNTIME_MODE: 'test'")
     expect(script).toContain("NETCONSOLE_STORAGE_MODE: 'isolated_test'")

@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
-import { join, relative, resolve } from 'node:path'
+import { basename, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import {
   assertProductionApIdentityStartupSmokeLogs,
@@ -12,7 +12,11 @@ import {
 const appRoot = resolve(import.meta.dirname, '..')
 const projectRoot = resolve(appRoot, '..', '..')
 const unpackedRoot = resolve(projectRoot, 'dist', 'electron', 'win-unpacked')
-const WINDOWS_TEST_DATA_ROOT = resolve(projectRoot, '..', 'test-data', 'NetConsole')
+const projectParent = resolve(projectRoot, '..')
+const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'
+  ? resolve(projectParent, '..')
+  : projectParent
+const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')
 const buildEdition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim().toLowerCase()
 if (!['full', 'customer'].includes(buildEdition)) {
   throw new Error(`NETCONSOLE_BUILD_EDITION 仅允许 full/customer，当前为：${buildEdition}`)
