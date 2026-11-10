@@ -21,4 +21,4 @@
 | 原脏分支 tip | 已保全 | `refs/archive/netconsole-final-integration/20261111/global-dataroot-disk-policy` |
 | 远程旧任务分支 | 保留 | 未确认远程所有权和完成状态，不执行远程删除 |
 
-最终产品代码合并提交为 `5294f1ea7e1a1829e38d77c167f5e2d088ed0d99`；当前最终文档 HEAD 为 `98e3d68c811229816d14228799ffc0235e7ab567`。制品仍明确记录其构建源码提交为 `5294f1ea7e1a1829e38d77c167f5e2d088ed0d99`。
+最终产品代码合并提交为 `5294f1ea7e1a1829e38d77c167f5e2d088ed0d99`；报告文件由随后连续的本地文档提交补齐，最终 HEAD 以收尾复核命令为准。制品仍明确记录其构建源码提交为 `5294f1ea7e1a1829e38d77c167f5e2d088ed0d99`。
