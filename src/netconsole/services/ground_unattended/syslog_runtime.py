@@ -1007,6 +1007,7 @@ class SyslogUdpReceiver:
         self._stage_raw_to_parse_samples: deque[float] = deque(maxlen=5000)
         self._stage_parse_to_commit_samples: deque[float] = deque(maxlen=5000)
         self._pending_receive_times: dict[int, str] = {}
+        self._pending_receive_order: deque[tuple[int, str]] = deque()
         self._pending_lock = threading.Lock()
         self._spool_warning_percent = 70.0
         self._spool_critical_percent = 85.0
@@ -1087,6 +1088,7 @@ class SyslogUdpReceiver:
         self._stage_parse_to_commit_samples.clear()
         with self._pending_lock:
             self._pending_receive_times.clear()
+            self._pending_receive_order.clear()
         thresholds = (
             float(spool_warning_percent),
             float(spool_critical_percent),
@@ -1561,10 +1563,11 @@ class SyslogUdpReceiver:
 
     def _track_pending(self, envelope: UdpEnvelope) -> None:
         with self._pending_lock:
-            self._pending_receive_times.setdefault(
-                int(envelope.global_receive_sequence),
-                str(envelope.receive_time),
-            )
+            sequence = int(envelope.global_receive_sequence)
+            if sequence not in self._pending_receive_times:
+                receive_time = str(envelope.receive_time)
+                self._pending_receive_times[sequence] = receive_time
+                self._pending_receive_order.append((sequence, receive_time))
 
     def _forget_pending(self, envelope: UdpEnvelope) -> None:
         with self._pending_lock:
@@ -1572,14 +1575,21 @@ class SyslogUdpReceiver:
 
     def _oldest_pending_wait_seconds(self) -> float:
         with self._pending_lock:
-            values = tuple(self._pending_receive_times.values())
-        if not values:
+            while (
+                self._pending_receive_order
+                and self._pending_receive_order[0][0]
+                not in self._pending_receive_times
+            ):
+                self._pending_receive_order.popleft()
+            value = (
+                self._pending_receive_order[0][1]
+                if self._pending_receive_order
+                else ""
+            )
+        parsed = _datetime_or_none(value)
+        if parsed is None:
             return 0.0
-        parsed = [_datetime_or_none(value) for value in values]
-        parsed = [value for value in parsed if value is not None]
-        if not parsed:
-            return 0.0
-        return max(0.0, (datetime.now().astimezone() - min(parsed)).total_seconds())
+        return max(0.0, (datetime.now().astimezone() - parsed).total_seconds())
 
     def _recv_loop(self) -> None:
         while not self._stop.is_set():
