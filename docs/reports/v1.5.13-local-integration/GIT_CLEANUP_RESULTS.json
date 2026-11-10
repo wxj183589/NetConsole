@@ -1,0 +1,70 @@
+{
+  "date": "2026-11-10",
+  "agent": "codex-A",
+  "codex_thread": "01a1c156-09ca-7f72-8f55-2195aeb037c4",
+  "initial_target_branch": "main",
+  "initial_target_head": "37b0df95a3208d0d03380e76ccfe5419af1422f1",
+  "functional_merge_head": "c2db3f79808fdadfa53f8eddb846ee0da18a6861",
+  "changelog_path": "docs/CHANGELOG.md",
+  "changelog_version": "v1.5.13",
+  "changelog_commit": "f2bbc8ee3f6de1f36bc24f6a1f52708e238d811a",
+  "devstatus_commit": "b85f37be57b7365918d06867227f7462b33d930e",
+  "deleted_local_branches": [
+    {
+      "name": "codex-A/v1.5.13-local-integration",
+      "head_before_delete": "f2bbc8ee3f6de1f36bc24f6a1f52708e238d811a",
+      "proof": "git merge-base --is-ancestor branch main = true",
+      "method": "git branch -d"
+    }
+  ],
+  "retained_local_branches": [
+    {
+      "name": "codex-A/global-dataroot-disk-policy",
+      "head": "d244ebcca674c0e16228fb4d9eba83423f4a6664",
+      "reason": "active dirty DataRoot worktree; original MESH/Ground ancestry remains"
+    },
+    {
+      "name": "codex-A/r2-3-2-ground-unattended",
+      "head": "a91a1916685d073a25842b9851bcb62123af5a6d",
+      "reason": "active Ground worktree with untracked reports and unique commits"
+    },
+    {
+      "name": "codex-A/mesh-analysis-performance-optimization",
+      "head": "4d2fb5d3073469ece9d1bc697de3b50f5c777e58",
+      "reason": "patch-equivalent by git cherry, but original SHA is not main ancestor; safe -d refused; remote tracking exists"
+    },
+    {
+      "name": "codex-A/mesh-analysis-scope-ui-optimization",
+      "head": "9cd098ed821eeb5eab3f3d8f4c53a9a927f82013",
+      "reason": "patch-equivalent by git cherry, but original SHAs are not main ancestors; safe -d refused; remote tracking exists"
+    }
+  ],
+  "removed_worktrees": [
+    {
+      "path": "D:/study/NetConsole-Workspace/worktrees/v1.5.13-local-integration-01a1c156",
+      "branch": "main",
+      "method": "git worktree remove",
+      "force": false
+    }
+  ],
+  "retained_worktrees": [
+    {
+      "path": "D:/study/NetConsole-Workspace/NetConsole",
+      "branch": "codex-A/global-dataroot-disk-policy",
+      "reason": "16 tracked dirty DataRoot files"
+    },
+    {
+      "path": "D:/study/NetConsole-Workspace/worktrees/r2-3-2-ground-unattended",
+      "branch": "codex-A/r2-3-2-ground-unattended",
+      "reason": "14 untracked Ground acceptance reports; active parallel task"
+    }
+  ],
+  "push": false,
+  "release": false,
+  "package_generated": false,
+  "data_loss": 0,
+  "workspace_layout": "BASELINE_BLOCKER_D_STUDY_NETCONSOLE_WORKSPACE_DOCS",
+  "long_stability": "NOT_RERUN",
+  "integration_test_status": "PARTIAL",
+  "devstatus_status": "PASS"
+}
