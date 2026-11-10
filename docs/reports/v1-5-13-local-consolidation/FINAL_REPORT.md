@@ -32,7 +32,7 @@
 
 - 合并分支数：2 条有效代码线（R2.3.3、v1.5.13）；11 个 Ground 提交和 2 个 v1.5.13 提交移植。
 - 已包含、无需重复合并：2 条 Mesh 分支；其提交均为 `git cherry` 等价补丁。
-- 回收 Worktree：2 个 Ground Worktree 已回收；当前 v1.5.13 候选 Worktree 在 main 更新后回收；dirty 主仓库不回收。
+- 回收 Worktree：3 个集成 Worktree（r2-3-2、r2-3-3、v1.5.13）均已回收；dirty 主仓库不回收。
 - 分支清理：5 条已完成分支已用非强制 `git branch -d` 删除；dirty 的 `global-dataroot-disk-policy` 保留，所有原始 tip 由 archive refs 保全。
 - 原始主线：`293377a1`；ancestry reconciliation 后候选 HEAD：`e83b87e9`；最终 main HEAD 以本报告提交后的 Git 核验为准。
 - Worktree 回收数量：3 个（r2-3-2、r2-3-3、v1.5.13）；主仓库 dirty Worktree 和非 Git `worktrees/test-data` 不计入回收。

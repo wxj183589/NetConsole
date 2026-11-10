@@ -12,6 +12,6 @@
 | `codex-A/mesh-analysis-scope-ui-optimization` | `9cd098ed` | 已删除；archive ref 保留 | 其提交由候选等价补丁包含，未重复合并 |
 | `codex-A/r2-3-2-ground-unattended` | `d3588c5d` | 已删除；Worktree 已回收 | R2.3.3 历史包含其提交，已完成非强制删除 |
 | `codex-A/r2-3-3-ground-unattended` | `18043b99` | 已删除；Worktree 已回收 | 11 个非重复提交已移植，已完成非强制删除 |
-| `codex-A/v1-5-13-full-portable` | `201b0bc0` | 已删除；Worktree 待最终 main 更新后回收 | v1.5.13 两个非重复提交已移植，候选仍在此 Worktree |
+| `codex-A/v1-5-13-full-portable` | `201b0bc0` | 已删除；Worktree 已回收 | v1.5.13 两个非重复提交已移植，原始 tip 由 archive ref 保全 |
 
 未扫描或治理独立的 `D:\study\fping`、真实数据根及用户目录数据。

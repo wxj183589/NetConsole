@@ -15,4 +15,4 @@
 - `597bc100`：记录 `codex-A/r2-3-3-ground-unattended` 等价移植历史。
 - `e83b87e9`：记录 `codex-A/v1-5-13-full-portable` 等价移植历史。
 
-截至本报告更新前，集成候选 HEAD 为 `e83b87e98bd747865ac88ab8e347fe633358ddb1`；本报告更新提交后，使用该最终候选提交原子更新未被 Worktree 占用的本地 `main`。
+集成候选 HEAD 为 `e83b87e98bd747865ac88ab8e347fe633358ddb1`；报告提交 `ac8697cd` 已在确认 `main` 仍为原始起点后，通过带旧值校验的 `git update-ref` 原子更新本地 `main`，随后候选 Worktree 已安全回收。
