@@ -6,12 +6,12 @@
 
 该运行启动真实可见 Windows Electron、候选 Vite Renderer、隔离 Backend/DataRoot 和合成 inventory（50 trains / 100 MR / 200 Heartbeat targets）。`evidence.json` 记录了运行概览、Heartbeat、Syslog、AC-Mesh-Link、筛选目标 MR、正常停止和 Renderer reload 的成功交互。
 
-同一次 GUI 运行中的 AP 切换截图：
+同一次 GUI 运行中的 AP 切换截图（证据文件保留在 Workspace `test-data`，不随源码提交）：
 
-- [AP-A 前截图](../../../../../test-data/NetConsole/r2_3_2-electron-gui-switch-023-20261110/gui/03-syslog-mr001-before.png)：筛选 `列车001-MR-CT`，当前 AP 为 `R232-AP-A-001`。
-- [AP-B 后截图](../../../../../test-data/NetConsole/r2_3_2-electron-gui-switch-023-20261110/gui/05-syslog-mr001-after.png)：同一筛选，当前 AP 为 `R232-AP-B-001`。
-- [Ground 停止后 Heartbeat 截图](../../../../../test-data/NetConsole/r2_3_2-electron-gui-switch-023-20261110/gui/06-ground-stopped-heartbeat-resident.png)。
-- [交互证据](../../../../../test-data/NetConsole/r2_3_2-electron-gui-switch-023-20261110/gui/evidence.json)。
+- `test-data/NetConsole/r2_3_2-electron-gui-switch-023-20261110/gui/03-syslog-mr001-before.png`：筛选 `列车001-MR-CT`，当前 AP 为 `R232-AP-A-001`。
+- `test-data/NetConsole/r2_3_2-electron-gui-switch-023-20261110/gui/05-syslog-mr001-after.png`：同一筛选，当前 AP 为 `R232-AP-B-001`。
+- `test-data/NetConsole/r2_3_2-electron-gui-switch-023-20261110/gui/06-ground-stopped-heartbeat-resident.png`。
+- `test-data/NetConsole/r2_3_2-electron-gui-switch-023-20261110/gui/evidence.json`。
 
 ## API / SQLite 交叉核验
 
