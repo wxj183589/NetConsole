@@ -1,0 +1,52 @@
+{
+  "phase": "11.9-seventh-round",
+  "status": "PARTIAL",
+  "source": "docs/reports/mesh-phase11-9/sixth-round/sixth-round-runtime-evidence.json",
+  "sixth_round_totals": {
+    "http_records": 94,
+    "http_200": 81,
+    "http_failed": 13,
+    "sql_queries": 9,
+    "request_method": "GET",
+    "sql_ranges_recorded": false
+  },
+  "request_attribution": [
+    {"category": "首次必要加载", "request_ids": [261, 263, 264, 265, 266, 267], "count": 6, "http_200": 6, "failed": 0, "sql": 5},
+    {"category": "区间变化或 transition 取消", "request_ids": [281, 282, 283, 284, 285, 286, 287, 288, 289, 290], "count": 10, "http_200": 0, "failed": 10, "sql": 0, "failure_observation": "net::ERR_ABORTED/主动取消"},
+    {"category": "显式详情、分页、AP/路径/事件页面", "request_ids": [293, 294, 295, 296, 297, 298, 299], "count": 7, "http_200": 4, "failed": 3, "sql": 0},
+    {"category": "第二次冷/重入加载", "request_ids": [562, 563, 564, 565, 566], "count": 5, "http_200": 5, "failed": 0, "sql": 4},
+    {"category": "后台 overview 刷新", "request_ids": ["overview_except_261"], "count": 65, "http_200": 65, "failed": 0, "sql": 0},
+    {"category": "重入后的 parse-issues 刷新", "request_ids": [579], "count": 1, "http_200": 1, "failed": 0, "sql": 0}
+  ],
+  "route_counts": {
+    "overview": 66,
+    "session_detail": 2,
+    "active_build_order": 9,
+    "business_summary": 2,
+    "links": 9,
+    "parse_issues": 2,
+    "ap_signal_statistics": 1,
+    "active_path": 1,
+    "switch_events": 1,
+    "artifacts": 1
+  },
+  "sql_request_records": [
+    {"ledger_id": 265, "operation_id": "mesh-op-mwa03ncw-1", "route": "business-summary", "query_kind": "business_statistics", "status": 200, "sql_query_count": 1, "query_params": {"exclude_depot": "true", "exclude_parking": "true", "mesh_trace": "true", "mesh_operation_id": "mesh-op-mwa03ncw-1"}, "sql_ranges": "NOT_RECORDED_IN_SIXTH_LEDGER"},
+    {"ledger_id": 266, "operation_id": "mesh-op-mwa03shm-2", "route": "active-build-order", "query_kind": "active_build_order", "status": 200, "sql_query_count": 1, "query_params": {"time_from": "2026-10-20 18:37:06.381", "time_to": "2026-10-20 18:42:06.381", "radio": "1", "exact_ap": "true", "link_role": "ACTIVE", "include_zero": "false", "exclude_depot": "true", "exclude_parking": "true"}, "sql_ranges": "NOT_RECORDED_IN_SIXTH_LEDGER"},
+    {"ledger_id": 267, "operation_id": "mesh-op-mwa03shn-5", "route": "links", "query_kind": "raw_samples", "status": 200, "sql_query_count": 3, "query_params": {"time_from": "2026-10-20 18:37:06.381", "time_to": "2026-10-20 18:42:06.381", "radio": "1", "exact_ap": "true", "link_role": "ACTIVE", "include_zero": "false", "exclude_depot": "true", "exclude_parking": "true", "raw_samples": "true", "include_context": "true", "raw_max_rows": "50000"}, "sql_ranges": "NOT_RECORDED_IN_SIXTH_LEDGER"},
+    {"ledger_id": 565, "operation_id": "mesh-op-mwa0646e-2", "route": "active-build-order", "query_kind": "active_build_order", "status": 200, "sql_query_count": 1, "query_params": {"time_from": "2026-10-20 18:37:06.381", "time_to": "2026-10-20 18:42:06.381", "radio": "1", "exact_ap": "true", "link_role": "ACTIVE", "include_zero": "false", "exclude_depot": "true", "exclude_parking": "true"}, "sql_ranges": "NOT_RECORDED_IN_SIXTH_LEDGER"},
+    {"ledger_id": 566, "operation_id": "mesh-op-mwa0646f-5", "route": "links", "query_kind": "raw_samples", "status": 200, "sql_query_count": 3, "query_params": {"time_from": "2026-10-20 18:37:06.381", "time_to": "2026-10-20 18:42:06.381", "radio": "1", "exact_ap": "true", "link_role": "ACTIVE", "include_zero": "false", "exclude_depot": "true", "exclude_parking": "true", "raw_samples": "true", "include_context": "true", "raw_max_rows": "50000"}, "sql_ranges": "NOT_RECORDED_IN_SIXTH_LEDGER"}
+  ],
+  "failed_request_ids": [281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 293, 294, 296],
+  "seventh_round_hot_cache_delta": {
+    "operation": "5 cycles of 链路明细 -> 主链路监控 after initialization",
+    "before_trace_events": 9,
+    "after_trace_events": 10,
+    "raw_counter_before": {"http_requests": 1, "sql_queries": 3, "cache_hits": 8, "gap_queries": 1},
+    "raw_counter_after": {"http_requests": 1, "sql_queries": 3, "cache_hits": 8, "gap_queries": 1},
+    "hot_cached_data_http_delta": 0,
+    "hot_cached_data_sql_delta": 0,
+    "outside_hot_set_request": "/sessions/.../links?page=1&page_size=100&sort_order=asc",
+    "outside_hot_set_sql_delta": 0
+  }
+}

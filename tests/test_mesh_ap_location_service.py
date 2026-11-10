@@ -115,6 +115,7 @@ def test_location_snapshot_serialization_round_trip_is_worker_safe() -> None:
             "identity_status": "matched",
             "identity_source": "BASE_DATA_AP_MAC",
             "identity_reason": "",
+                "station_type": "UNKNOWN",
         }
     ]
     assert restored.resolve({"peer_ap_mac": "000000000040"}) == MeshApLocation(

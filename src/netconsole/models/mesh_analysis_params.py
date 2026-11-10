@@ -12,6 +12,12 @@ WIFI_TYPE_CHOICES = ("WiFi5", "WiFi6", "其他")
 
 @dataclass(frozen=True)
 class MeshAnalysisParams:
+    # None inherits the existing quality-rule resource; explicit Site/task
+    # values affect only that analysis, never the global thresholds.
+    rssi_good_threshold: int | None = None
+    rssi_warning_threshold: int | None = None
+    backup_available_threshold: int | None = None
+    ap_minimum_samples: int = 10
     link_time_window: int = 4000
     link_switch_threshold: int = 10
     link_hold_rssi: int = 22
@@ -46,6 +52,10 @@ class MeshAnalysisParams:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "rssi_good_threshold": self.rssi_good_threshold,
+            "rssi_warning_threshold": self.rssi_warning_threshold,
+            "backup_available_threshold": self.backup_available_threshold,
+            "ap_minimum_samples": self.ap_minimum_samples,
             "link_time_window": int(self.link_time_window),
             "link_switch_threshold": int(self.link_switch_threshold),
             "link_hold_rssi": int(self.link_hold_rssi),
@@ -83,6 +93,16 @@ def normalize_mesh_analysis_params(value: object | None) -> MeshAnalysisParams:
         default.link_time_window,
     )
     return MeshAnalysisParams(
+        rssi_good_threshold=_optional_positive_int(data.get("rssi_good_threshold")),
+        rssi_warning_threshold=_optional_positive_int(
+            data.get("rssi_warning_threshold")
+        ),
+        backup_available_threshold=_optional_positive_int(
+            data.get("backup_available_threshold")
+        ),
+        ap_minimum_samples=_positive_int(
+            data.get("ap_minimum_samples"), default.ap_minimum_samples
+        ),
         link_time_window=link_time_window,
         link_switch_threshold=_non_negative_int(
             _value(data, "link_switch_threshold", "link-switch-threshold"),

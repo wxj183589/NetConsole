@@ -1,0 +1,124 @@
+{
+  "phase": "11.9 fourth round",
+  "date": "2026-11-10",
+  "branch": "codex-A/global-dataroot-disk-policy",
+  "implementation_commit": "67059ab9",
+  "status": "PHASE_11_9_FOURTH_ROUND=PARTIAL",
+  "change_impact": "L3",
+  "push": false,
+  "merge": false,
+  "release": false,
+  "tests": {
+    "renderer_mesh_vitest": {
+      "files": 26,
+      "passed": 244,
+      "failed": 0
+    },
+    "renderer_vue_tsc": "PASS",
+    "python_mesh_regression": {
+      "passed": 131,
+      "failed": 0,
+      "warnings": 2
+    },
+    "python_raw_sampling_nearest": {
+      "passed": 29,
+      "failed": 0,
+      "warnings": 1
+    },
+    "ruff": "PASS",
+    "py_compile": "PASS",
+    "git_diff_check": "PASS_WITH_LINE_ENDING_WARNINGS"
+  },
+  "implementation": {
+    "raw_sample_version": "mesh-raw-v1",
+    "derived_metric_version": "mesh-derived-v1",
+    "default_cache_max_scopes": 8,
+    "default_cache_max_samples": 100000,
+    "frontend_raw_max_rows": 50000,
+    "raw_coverage_requires": [
+      "matching raw_sample_version",
+      "raw_sample_complete=true",
+      "downsampled=false"
+    ],
+    "shared_consumers": [
+      "non-zero-link metric charts",
+      "history list",
+      "time selection",
+      "right-side local detail"
+    ],
+    "legacy_or_independent_paths": [
+      "include_zero metric endpoint",
+      "AP statistics",
+      "active build order/build pagination",
+      "summary and parse issues"
+    ]
+  },
+  "real_data": {
+    "root": "D:\\NetConsoleData-dev",
+    "site": "宁波地铁12号线",
+    "session": "7c7b6df2-e67b-452a-ab1a-91760014501f:1",
+    "mr": "列车03-MR-CW",
+    "radio": 1,
+    "mesh_links": 110058,
+    "samples": 39167,
+    "source_files": 1,
+    "switch_events": 2692,
+    "time_from": "2026-10-20 00:00:32.413",
+    "time_to": "2026-10-20 18:01:07.949",
+    "twenty_second": {
+      "visible": 61,
+      "items_with_context": 64,
+      "context": 3,
+      "active_visible": 21,
+      "standby_visible": 40,
+      "active_context": 1,
+      "standby_context": 2,
+      "visible_lane_identities": 4,
+      "sql_queries": 3,
+      "complete": true
+    },
+    "segments": {
+      "segment_1_visible": 31,
+      "segment_1_items": 34,
+      "segment_2_visible": 30,
+      "segment_2_items": 33,
+      "full_visible": 61,
+      "full_items": 64,
+      "visible_ids_equal_after_concatenation": true,
+      "duplicate_visible_records": 0,
+      "missing_visible_records": 0
+    }
+  },
+  "http_sql": {
+    "raw_segment_1": {"status": 200, "total": 31, "items": 34, "context": 3, "sql": 3, "query_ms": 29.69},
+    "raw_segment_2": {"status": 200, "total": 30, "items": 33, "context": 3, "sql": 3, "query_ms": 9.98},
+    "raw_full": {"status": 200, "total": 61, "items": 64, "context": 3, "sql": 3, "query_ms": 30.4},
+    "nearest": {"status": 200, "total": 1, "sql": 5, "query_ms": 600.99, "note": "includes existing raw gzip/zero-link work; not chart render time"},
+    "scope": "minimal FastAPI app with real Router/Service/SQLite; not full Electron global profiler"
+  },
+  "performance": {
+    "raw_5m_service_ms": 65.99,
+    "raw_20s_service_ms": 33.54,
+    "raw_1h_service_ms": 660.3,
+    "metric_20s_service_ms": 31.52,
+    "frontend_heap": "NOT_MEASURED",
+    "long_stability": "NOT_RUN",
+    "electron_gui": "NOT_RUN"
+  },
+  "sha256": {
+    "catalog": {"size": 110592, "before": "48b64eabb5047bea2a0aac932c6a26068fd03d13c65c1683f14d4d4fd009ccfd", "after_same": true},
+    "index_mesh_sqlite": {"size": 249856, "before": "b89146547fa0577fd2643660347de942b2aef7493736e1f586a0b94225e73cb0", "after_same": true},
+    "parsed_mesh_sqlite": {"size": 158621696, "before": "27efefb951be073e9f43d22c8bbd583ca7a86ded225f8a8ad9d7a5e2551524fc", "after_same": true},
+    "parsed_wal": {"size": 0, "before": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "after_same": true},
+    "parsed_shm": {"size": 32768, "before": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb", "after_same": true, "mtime_changed": true},
+    "raw_gzip": {"size": 2953314, "before": "282e2166cc7abf15a8e20794db7a5f83174768fabe807ae2b74da3c639a3d2bc", "after_same": true}
+  },
+  "open_items": [
+    "真实 Electron derived fields full-vs-segmented comparison",
+    "real reverse/three/multi/overlap gap scenarios",
+    "full workbench HTTP/SQL trace",
+    "active-scope cache pin/refcount",
+    "JS Heap, 100 operations and long stability",
+    "include_zero and independent auxiliary consumers unified raw path"
+  ]
+}

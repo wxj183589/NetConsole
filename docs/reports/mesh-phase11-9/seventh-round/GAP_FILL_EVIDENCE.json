@@ -1,0 +1,47 @@
+{
+  "status": "PASS",
+  "identity": {
+    "site_id": "宁波地铁12号线",
+    "session_id": "80716c07-6bd9-47d8-b76d-ace1e55624d1:1",
+    "radio": 1,
+    "exact_ap": true,
+    "link_role": "ACTIVE",
+    "include_zero": false,
+    "exclude_depot": true,
+    "exclude_parking": true,
+    "peer_ap_mac": ""
+  },
+  "segments": {
+    "A": {"time_from": "2026-10-20 18:30:00.000", "time_to": "2026-10-20 18:33:00.000", "operation_id": "mesh-op-mwa4bpt4-c", "status": 200, "sql_query_count": 3, "target_count": 285, "items": 286, "boundary_context": 1},
+    "C": {"requested_time_from": "2026-10-20 18:35:00.000", "requested_time_to": "2026-10-20 18:38:00.000", "actual_time_from": "2026-10-20 18:35:00.000", "actual_time_to": "2026-10-20 18:37:06.380", "operation_id": "mesh-op-mwa4btzd-m", "status": 200, "sql_query_count": 3, "target_count": 175, "items": 176, "boundary_context": 1},
+    "B": {"time_from": "2026-10-20 18:33:00.001", "time_to": "2026-10-20 18:34:59.999", "operation_id": "mesh-op-mwa4bxzz-w", "status": 200, "sql_query_count": 3, "target_count": 181, "items": 182, "boundary_context": 1}
+  },
+  "sql_query_ranges": {
+    "A": [
+      {"purpose": "target_count", "time_from": "2026-10-20 18:30:00.000", "time_to": "2026-10-20 18:33:00.000", "visible": false, "record_count": 285},
+      {"purpose": "target_rows", "time_from": "2026-10-20 18:30:00.000", "time_to": "2026-10-20 18:33:00.000", "visible": true, "record_count": 285},
+      {"purpose": "boundary_context", "time_from": null, "time_to": "2026-10-20 18:30:00.000", "visible": false, "record_count": 1}
+    ],
+    "C": [
+      {"purpose": "target_count", "time_from": "2026-10-20 18:35:00.000", "time_to": "2026-10-20 18:37:06.380", "visible": false, "record_count": 175},
+      {"purpose": "target_rows", "time_from": "2026-10-20 18:35:00.000", "time_to": "2026-10-20 18:37:06.380", "visible": true, "record_count": 175},
+      {"purpose": "boundary_context", "time_from": null, "time_to": "2026-10-20 18:35:00.000", "visible": false, "record_count": 1}
+    ],
+    "B": [
+      {"purpose": "target_count", "time_from": "2026-10-20 18:33:00.001", "time_to": "2026-10-20 18:34:59.999", "visible": false, "record_count": 181},
+      {"purpose": "target_rows", "time_from": "2026-10-20 18:33:00.001", "time_to": "2026-10-20 18:34:59.999", "visible": true, "record_count": 181},
+      {"purpose": "boundary_context", "time_from": null, "time_to": "2026-10-20 18:33:00.001", "visible": false, "record_count": 1}
+    ]
+  },
+  "one_shot_reference": {"operation_id": "comparison-full", "time_from": "2026-10-20 18:30:00.000", "time_to": "2026-10-20 18:38:00.000", "status": 200, "sql_query_count": 3, "raw_rows": 724, "visible_rows": 723, "boundary_context": 1},
+  "field_comparison": {
+    "segmented_raw_count": 724,
+    "segmented_derived_count": 723,
+    "one_shot_derived_count": 723,
+    "equal": true,
+    "firstMismatch": null,
+    "base_fields": ["record_id", "timestamp", "source_file_id", "local_radio", "peer_mac", "peer_ap_mac", "link_role", "link_count", "local_tx", "peer_tx", "local_rx", "peer_rx", "local_retry", "peer_retry", "local_err", "peer_err", "monitor_gap_before"],
+    "derived_fields": ["current", "previous", "delta", "interval_seconds", "per_second", "status"]
+  },
+  "repeat_abc": {"raw_http_before": 10, "raw_http_after": 10, "raw_sql_before": 18, "raw_sql_after": 18, "new_http_trace_events": 0, "http_delta": 0, "sql_delta": 0}
+}

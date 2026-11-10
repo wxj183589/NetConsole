@@ -1,0 +1,14 @@
+{
+  "phase": "11.9",
+  "status": "PARTIAL",
+  "tests": {
+    "renderer_targeted_vitest": { "status": "PASS", "files": 2, "tests": 36, "api": "mocked" },
+    "typescript": "PASS",
+    "renderer_build": "PASS",
+    "workspace_layout": "PASS",
+    "real_http_sql_100_interactions": "NOT_RUN",
+    "real_data_benchmark": "NOT_RUN",
+    "data_integrity_hashes": "NOT_RUN",
+    "echarts_instance_stability": "NOT_RUN"
+  }
+}

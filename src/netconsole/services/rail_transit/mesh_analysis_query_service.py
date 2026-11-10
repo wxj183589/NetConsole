@@ -7,6 +7,8 @@ import logging
 import math
 import re
 import sqlite3
+import heapq
+from itertools import islice
 from time import perf_counter
 from bisect import bisect_right
 from collections import defaultdict
@@ -14,9 +16,10 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
+from threading import RLock
 from pathlib import Path
 from typing import Any, Callable
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.site_manager import SiteManager
@@ -71,6 +74,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshTracksideSignalRangeDTO,
     MeshTracksideSignalSeriesDTO,
     MeshTimelineDTO,
+    MeshSqlQueryRangeDTO,
 )
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_from_json, mesh_analysis_params_to_json
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY
@@ -96,6 +100,8 @@ from netconsole.services.rail_transit.mesh_ap_location_service import (
     MeshApLocationSnapshot,
 )
 from netconsole.services.mesh_source_locator import MeshSourceLocator
+from netconsole.services.mesh_monitor_sampling import METRIC_FIELDS, monitor_identity, select_monitor_rows
+from netconsole.parsers.mesh_log_parser import MeshLogParser
 
 
 _SESSION_ID_RE = re.compile(r"^(?P<mr_id>[0-9a-fA-F-]{8,64}):(?P<source_id>[1-9][0-9]*)$")
@@ -110,7 +116,24 @@ _MAX_CHART_LOCATION_SEGMENTS = 256
 _MAX_TRACKSIDE_SERIES = 512
 _TARGET_CHART_PAYLOAD_BYTES = 4 * 1024 * 1024
 _MAX_CHART_PAYLOAD_BYTES = 16 * 1024 * 1024
+_RAW_SAMPLE_VERSION = "mesh-raw-v1"
+_DERIVED_METRIC_VERSION = "mesh-derived-v1"
 LOGGER = logging.getLogger(__name__)
+_ZERO_READ_LOCK = RLock()
+
+
+@lru_cache(maxsize=4)
+def _zero_window(path: str, modified: int, size: int, start: str, end: str, radio: int | None):
+    # The file identity invalidates cached observations without touching archived logs.
+    rows = []
+    for record in MeshLogParser().iter_zero_observations(Path(path)):
+        stamp = record.sample_time.isoformat(sep=" ", timespec="milliseconds")
+        if (start and stamp < start) or (end and stamp > end) or (radio is not None and record.radio != radio):
+            continue
+        rows.append(record)
+        if len(rows) > 20000:
+            raise MeshAnalysisQueryError("零链路观测过多，请缩小时间范围")
+    return tuple(rows)
 _DETAIL_CAPABILITY_TABLES = {
     "links": frozenset({"mesh_links"}),
     "timeline": frozenset({"active_segments"}),
@@ -676,7 +699,8 @@ class MeshAnalysisQueryService:
                 message_expr = "COALESCE(message, '')" if "message" in columns else "''"
                 rows = conn.execute(
                     f"SELECT {code_expr} AS code, {severity_expr} AS severity, COUNT(*) AS count, "
-                    f"MIN({message_expr}) AS message FROM parse_issues GROUP BY code, severity ORDER BY count DESC LIMIT 20"
+                    f"MIN({message_expr}) AS message FROM parse_issues WHERE {severity_expr} <> 'INFO' "
+                    "GROUP BY code, severity ORDER BY count DESC LIMIT 20"
                 ).fetchall()
                 counts = conn.execute(
                     f"SELECT COUNT(*) AS total, SUM(CASE WHEN {severity_expr} = 'INFO' THEN 1 ELSE 0 END) AS info_count, "
@@ -699,8 +723,8 @@ class MeshAnalysisQueryService:
                         examples=[str(item["message"] or "") for item in example_rows if str(item["message"] or "")],
                     ))
                 return MeshParseIssueSummaryDTO(
-                    total_count=int(counts["total"] or 0),
-                    info_count=int(counts["info_count"] or 0),
+                    total_count=int(counts["warning_count"] or 0) + int(counts["error_count"] or 0),
+                    info_count=0,
                     warning_count=int(counts["warning_count"] or 0),
                     error_count=int(counts["error_count"] or 0),
                     groups=groups,
@@ -737,7 +761,7 @@ class MeshAnalysisQueryService:
             severity_expr = "UPPER(COALESCE(severity, 'WARNING'))" if "severity" in columns else "'WARNING'"
             code_column = next((name for name in ("issue_type", "code", "field_name") if name in columns), None)
             code_expr = f"COALESCE(NULLIF({code_column}, ''), 'parse_issue')" if code_column else "'parse_issue'"
-            filters: list[str] = []
+            filters: list[str] = [f"{severity_expr} <> 'INFO'"]
             args: list[Any] = []
             if severity:
                 filters.append(f"{severity_expr} = ?")
@@ -890,18 +914,78 @@ class MeshAnalysisQueryService:
         page_size: int = 100,
         sort_by: str = "timestamp",
         sort_order: str = "asc",
+        radio: int | None = None,
+        exact_ap: bool = False,
+        metric_group: str = "",
+        nearest_time: str = "",
+        max_points: int = 1000,
+        include_zero: bool = False,
+        raw_samples: bool = False,
+        include_context: bool = False,
+        raw_max_rows: int = 50_000,
+        exclude_depot: bool = False,
+        exclude_parking: bool = False,
+        trace: bool = False,
+        operation_id: str = "",
     ) -> MeshLinkPageDTO:
+        started = perf_counter()
+        query_id = str(uuid4()) if trace else None
         context = self._context(site_id, session_id)
         if context.detail_db is None:
-            return MeshLinkPageDTO(page=page, page_size=page_size)
+            return MeshLinkPageDTO(
+                page=page,
+                page_size=page_size,
+                query_duration_ms=round((perf_counter() - started) * 1000, 2) if trace else 0,
+                query_kind="raw_samples" if raw_samples else "nearest" if nearest_time else "metric" if metric_group else "page" if trace else "",
+                query_id=query_id,
+                operation_id=operation_id or None,
+            )
+        if raw_samples and (metric_group or nearest_time):
+            raise MeshAnalysisQueryError("原始采样查询不能与指标或最近采样模式同时使用")
+        if raw_samples and (not time_from or not time_to):
+            raise MeshAnalysisQueryError("原始采样查询需要明确的起止时间")
+        raw_max_rows = min(max(int(raw_max_rows), 100), 100_000)
+        if raw_samples or metric_group or include_zero or exact_ap or nearest_time:
+            try:
+                time_from = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
+                time_to = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
+                nearest_time = datetime.fromisoformat(nearest_time).isoformat(sep=" ", timespec="milliseconds") if nearest_time else ""
+                if time_from and time_to and time_from > time_to:
+                    raise ValueError("reversed")
+            except ValueError as exc:
+                raise MeshAnalysisQueryError("监控时间范围无效") from exc
         clauses: list[str] = []
         values: list[Any] = []
         ap_map = self._ap_map(site_id)
+        if metric_group and metric_group not in METRIC_FIELDS:
+            raise MeshAnalysisQueryError("未知的监控指标")
+        if (metric_group or nearest_time) and (not time_from or not time_to):
+            raise MeshAnalysisQueryError("监控查询需要明确的起止时间")
+        if raw_samples or metric_group or include_zero or radio is not None or exact_ap or nearest_time:
+            clauses.append("ml.source_file_id = ?")
+            values.append(context.detail_source_id)
+        if nearest_time:
+            clauses.append("ml.link_state = 'ACTIVE'")
+            # Time selection always resolves an actual connected ACTIVE record.
+            include_zero = False
+        if radio is not None:
+            clauses.append("ml.radio = ?")
+            values.append(radio)
+        if exact_ap and peer_ap_mac:
+            clauses.append("LOWER(REPLACE(REPLACE(COALESCE(ml.peer_ap_mac, ''), ':', ''), '-', '')) = ?")
+            values.append(self._mac_key(peer_ap_mac))
+        clauses.append("COALESCE(ml.link_count, 1) <> 0")
+        excluded_macs = sorted({self._mac_key(location.mac) for location in ap_map.values()
+                                if (exclude_depot and location.station_type == "DEPOT")
+                                or (exclude_parking and location.station_type == "PARKING")})
+        if excluded_macs:
+            clauses.append("LOWER(REPLACE(REPLACE(COALESCE(ml.peer_ap_mac, ''), ':', ''), '-', '')) NOT IN (" + ",".join("?" for _ in excluded_macs) + ")")
+            values.extend(excluded_macs)
         for column, value in (
             ("ml.peer_ap_name", peer_ap_name),
             ("ml.peer_ap_mac", self._mac_key(peer_ap_mac)),
         ):
-            if value:
+            if value and not (exact_ap and column == "ml.peer_ap_mac"):
                 clauses.append(f"LOWER(COALESCE({column}, '')) LIKE ?")
                 values.append(f"%{str(value).casefold()}%")
         selected_roles = [str(value).strip().upper() for value in (link_roles or []) if str(value).strip()]
@@ -953,8 +1037,56 @@ class MeshAnalysisQueryService:
         offset = (current - 1) * size
         direction = "DESC" if sort_order == "desc" else "ASC"
         sort_column = {"timestamp": "ml.sample_time", "rssi": "ml.local_rssi_db", "peer_ap_name": "ml.peer_ap_name"}.get(sort_by, "ml.sample_time")
+        sql_query_count = 0
+        sql_query_ranges: list[MeshSqlQueryRangeDTO] = []
         with closing(self._connect_readonly(context.detail_db)) as conn:
+            def _trace(statement: str) -> None:
+                nonlocal sql_query_count
+                normalized = statement.lstrip().upper()
+                if normalized.startswith("SELECT") or normalized.startswith("WITH"):
+                    sql_query_count += 1
+
+            # Preserve caller-installed callbacks used by the nearest-query
+            # regression tests.  Raw/metric queries are the new trace-bearing
+            # path; the legacy paged/nearest path keeps its existing callback.
+            if raw_samples or metric_group:
+                try:
+                    conn.set_trace_callback(_trace)
+                except AttributeError:
+                    pass
             link_columns = self._table_columns(conn, "mesh_links")
+            if nearest_time:
+                candidates = []
+                for comparator, order in (("<=", "DESC"), (">=", "ASC")):
+                    sql_query_count += 1
+                    candidate = conn.execute(
+                        f"SELECT ml.id, ml.sample_time FROM mesh_links ml {where} "
+                        f"AND ml.sample_time {comparator} ? "
+                        f"ORDER BY ml.sample_time {order}, ml.id {order} LIMIT 1",
+                        (*values, nearest_time),
+                    ).fetchone()
+                    if candidate is not None:
+                        candidates.append(candidate)
+                if not candidates:
+                    return MeshLinkPageDTO(
+                        page=1,
+                        page_size=1,
+                        query_kind="nearest",
+                        sql_query_count=sql_query_count,
+                        coverage_time_from=time_from or None,
+                        coverage_time_to=time_to or None,
+                        query_id=query_id,
+                        operation_id=operation_id or None,
+                    )
+                target_time = datetime.fromisoformat(nearest_time)
+                nearest = min(candidates, key=lambda item: (
+                    abs((datetime.fromisoformat(item["sample_time"]) - target_time).total_seconds()),
+                    item["sample_time"], item["id"],
+                ))
+                # The following projection reads one row and avoids a window-wide COUNT/rank.
+                where = "WHERE ml.id = ?"
+                values = [nearest["id"]]
+                current, size, offset = 1, 1, 0
             identity_select = ", ".join(
                 (
                     f"ml.{column}"
@@ -976,13 +1108,38 @@ class MeshAnalysisQueryService:
                 )
                 for column in ("peer_section", "peer_location", "peer_direction")
             )
-            total = int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
-            rows = conn.execute(
+            counter_context_select = ""
+            if metric_group == "counters" and not nearest_time:
+                identity_fields = ("peer_mac_normalized", "establish_time", "peer_radio_mac", "peer_radio_label", "peer_ap_mac")
+                same_identity = " AND ".join(f"p.{field} IS ml.{field}" for field in identity_fields)
+                preceding = ("p.source_file_id = ml.source_file_id AND p.radio IS ml.radio AND p.sample_time <= ml.sample_time "
+                             "AND (p.sample_time < ml.sample_time OR (p.sample_time = ml.sample_time AND p.id < ml.id))")
+                counter_context_select = f"""
+                    , (SELECT NOT ({same_identity}) FROM mesh_links p
+                       WHERE {preceding} AND p.link_state IS ml.link_state
+                       ORDER BY p.sample_time DESC, p.id DESC LIMIT 1) AS monitor_raw_lane_changed
+                    , (SELECT p.link_state FROM mesh_links p
+                       WHERE {preceding} AND {same_identity}
+                       ORDER BY p.sample_time DESC, p.id DESC LIMIT 1) AS monitor_raw_physical_role
+                """
+            total = 1 if nearest_time else int(conn.execute(f"SELECT COUNT(*) FROM mesh_links ml {where}", values).fetchone()[0] or 0)
+            if raw_samples:
+                query_limit = "LIMIT ?"
+                query_values: tuple[Any, ...] = (*values, raw_max_rows + 1)
+            elif metric_group or include_zero:
+                query_limit = ""
+                query_values = tuple(values)
+            else:
+                query_limit = "LIMIT ? OFFSET ?"
+                query_values = (*values, size, offset)
+            cursor = conn.execute(
                 f"""
                 SELECT ml.id, ml.sample_id, ml.source_file_id, ml.sample_time, s.timestamp_tag,
-                       DENSE_RANK() OVER (
-                           ORDER BY ml.source_file_id, ml.sample_time, s.timestamp_tag
-                       ) - 1 AS sample_group_index,
+                       {(
+                           "CASE WHEN s.id IS NULL THEN NULL ELSE s.id - 1 END AS sample_group_index"
+                           if raw_samples
+                           else "DENSE_RANK() OVER (ORDER BY ml.source_file_id, ml.sample_time, s.timestamp_tag) - 1 AS sample_group_index"
+                       )},
                        ml.radio, ml.link_state, ml.peer_mac_raw, ml.peer_mac_normalized,
                        ml.peer_ap_name, ml.peer_ap_mac, ml.peer_site, ml.peer_radio_mac,
                        {location_select},
@@ -1005,15 +1162,130 @@ class MeshAnalysisQueryService:
                           AND se.radio = ml.radio
                           AND se.event_time = ml.sample_time
                         ORDER BY se.id LIMIT 1) AS event_type
+                       {counter_context_select}
                 FROM mesh_links ml
                 LEFT JOIN samples s ON s.id = ml.sample_id
                 LEFT JOIN source_files sf ON sf.id = ml.source_file_id
                 {where}
                 ORDER BY {sort_column} {direction}, s.timestamp_tag {direction}, ml.record_seq {direction}, ml.id {direction}
-                LIMIT ? OFFSET ?
+                {query_limit}
                 """,
-                (*values, size, offset),
-            ).fetchall()
+                query_values,
+            )
+            if nearest_time:
+                # The nearest path intentionally keeps caller-installed trace
+                # callbacks used by legacy regression tests. Count its fixed
+                # projection explicitly instead of replacing that callback.
+                sql_query_count += 1
+            zero_rows = []
+            if include_zero:
+                if context.raw_path is None or not context.raw_path.is_file():
+                    raise MeshAnalysisQueryError("原始日志不可用，无法查询 LinkCnt=0")
+                stat = context.raw_path.stat()
+                with _ZERO_READ_LOCK:
+                    observations = _zero_window(str(context.raw_path), stat.st_mtime_ns, stat.st_size, time_from, time_to, radio)
+                for record in observations:
+                    stamp = record.sample_time.isoformat(sep=" ", timespec="milliseconds")
+                    data = {**record.metrics, "id": -record.source_line_number,
+                            "sample_time": stamp, "radio": record.radio, "link_count": 0,
+                            "link_state": "UNCONNECTED", "source_file_id": context.detail_source_id,
+                            "peer_mac_raw": record.peer_mac_raw, "peer_mac_normalized": record.peer_mac_normalized,
+                            "establish_time": record.establish_time.isoformat(sep=" ") if record.establish_time else None,
+                            "duration_seconds": record.duration_seconds, "duration_text": record.duration_text,
+                            "source_line_number": record.source_line_number, "source_file": context.raw_path.name,
+                            "local_noise_dbm": record.local_noise_dbm, "peer_noise_dbm": record.peer_noise_dbm}
+                    location = self._locate_ap(ap_map, data)
+                    ap_mac = self._resolved_ap_mac(data, location)
+                    if radio is not None and record.radio != radio:
+                        continue
+                    if (time_from and stamp < time_from) or (time_to and stamp > time_to):
+                        continue
+                    if peer_ap_mac and self._mac_key(peer_ap_mac) != self._mac_key(ap_mac or record.peer_mac_normalized or ""):
+                        continue
+                    if peer_ap_name and peer_ap_name.casefold() not in str(location.name).casefold():
+                        continue
+                    if self._mac_key(ap_mac or "") in excluded_macs:
+                        continue
+                    if any(value and value.casefold() not in str(getattr(location, field)).casefold() for field, value in (("station", station), ("section", section), ("line_side", line_side))):
+                        continue
+                    if query and query.casefold() not in (str(location.name) + " " + str(ap_mac) + " " + record.peer_mac_raw).casefold():
+                        continue
+                    zero_rows.append(data)
+                    if len(zero_rows) > 20000:
+                        raise MeshAnalysisQueryError("零链路观测过多，请缩小时间范围或选择单 AP")
+            zero_count = len(zero_rows)
+            raw_sample_complete = False
+            raw_context_count = 0
+            if raw_samples:
+                database_total = total
+                target_rows = [dict(item) for item in cursor]
+                target_sql_count = len(target_rows)
+                if len(target_rows) > raw_max_rows:
+                    target_rows = target_rows[:raw_max_rows]
+                visible_rows = [*target_rows, *zero_rows] if include_zero else target_rows
+                visible_rows.sort(key=lambda item: (str(item.get("sample_time") or ""), int(item.get("id") or 0)))
+                total = database_total + zero_count if include_zero else database_total
+                raw_sample_complete = (
+                    total <= raw_max_rows
+                    and len(target_rows) == database_total
+                    and len(visible_rows) == total
+                )
+                if len(visible_rows) > raw_max_rows:
+                    visible_rows = visible_rows[:raw_max_rows]
+                context_rows = self._raw_context_rows(conn, target_rows, time_from) if include_context else []
+                for item in context_rows:
+                    item["is_boundary_context"] = True
+                raw_context_count = len(context_rows)
+                sql_query_ranges = [
+                    MeshSqlQueryRangeDTO(
+                        purpose="target_count",
+                        time_from=time_from or None,
+                        time_to=time_to or None,
+                        visible=False,
+                        record_count=database_total,
+                    ),
+                    MeshSqlQueryRangeDTO(
+                        purpose="target_rows",
+                        time_from=time_from or None,
+                        time_to=time_to or None,
+                        visible=True,
+                        record_count=target_sql_count,
+                    ),
+                ]
+                if include_context and target_rows:
+                    sql_query_ranges.append(
+                        MeshSqlQueryRangeDTO(
+                            purpose="boundary_context",
+                            time_from=None,
+                            time_to=time_from or None,
+                            visible=False,
+                            record_count=raw_context_count,
+                        )
+                    )
+                rows = sorted(
+                    [*context_rows, *visible_rows],
+                    key=lambda item: (str(item.get("sample_time") or ""), int(item.get("id") or 0)),
+                )
+            else:
+                combined = heapq.merge((dict(row) for row in cursor), sorted(zero_rows, key=lambda row: (row["sample_time"], row["id"])), key=lambda row: (row["sample_time"], row["id"])) if metric_group or include_zero else cursor
+            if not raw_samples and nearest_time:
+                rows = [self._nearest_counter_context(conn, dict(item), time_from, time_to, context.raw_path) for item in cursor]
+                sql_query_count += 2 * len(rows)
+            elif not raw_samples and metric_group:
+                try:
+                    rows, total, zero_count = select_monitor_rows(
+                        combined, metric_group, time_from, time_to,
+                        min(2000, max(100, max_points)),
+                    )
+                except ValueError as exc:
+                    raise MeshAnalysisQueryError(str(exc)) from exc
+            elif include_zero and not raw_samples:
+                if sort_by != "timestamp" or sort_order != "asc":
+                    raise MeshAnalysisQueryError("零链路历史按采样时间正序查询")
+                total += zero_count
+                rows = list(islice(combined, offset, offset + size))
+            elif not raw_samples:
+                rows = cursor.fetchall()
         train_name, role = self._mr_identity(context.mr_name)
         items: list[MeshLinkDetailDTO] = []
         for row in rows:
@@ -1022,6 +1294,11 @@ class MeshAnalysisQueryService:
             peer_name = self._resolved_ap_name(data, location)
             items.append(
                 MeshLinkDetailDTO(
+                    monitor_gap_before=bool(data.get("monitor_gap_before")),
+                    is_boundary_context=bool(data.get("is_boundary_context")),
+                    source_file_id=int(data["source_file_id"]) if data.get("source_file_id") is not None else None,
+                    raw_sample_version=_RAW_SAMPLE_VERSION if raw_samples else None,
+                    derived_metric_version=_DERIVED_METRIC_VERSION if metric_group else None,
                     record_id=int(data["id"]),
                     timestamp=str(data["sample_time"]),
                     train_name=train_name,
@@ -1094,9 +1371,114 @@ class MeshAnalysisQueryService:
                     match_method=str(data.get("peer_match_rule") or data.get("peer_resolve_source") or "") or None,
                     **self._identity_payload(data, location),
                     warning=None if peer_name else "Peer AP 未匹配",
+                    counter_samples=data.get("counter_samples", {}),
+                    **{field + "_delta": data.get(field + "_delta") for field in METRIC_FIELDS["counters"]},
                 )
             )
-        return MeshLinkPageDTO(items=items, total=total, page=current, page_size=size)
+        return MeshLinkPageDTO(
+            items=items, total=total, page=current, page_size=size, zero_link_count=zero_count,
+            downsampled=bool(
+                (metric_group and not nearest_time and total > len(items))
+                or (raw_samples and not raw_sample_complete)
+            ),
+            query_duration_ms=round((perf_counter() - started) * 1000, 2),
+            query_kind=("raw_samples" if raw_samples else "nearest" if nearest_time else "metric" if metric_group else "page"),
+            sql_query_count=sql_query_count,
+            raw_sample_complete=raw_sample_complete,
+            raw_sample_version=_RAW_SAMPLE_VERSION if raw_samples else None,
+            raw_context_count=raw_context_count,
+            coverage_time_from=time_from or None,
+            coverage_time_to=time_to or None,
+            sql_query_ranges=sql_query_ranges,
+            query_id=query_id,
+            operation_id=operation_id or None,
+        )
+
+    @staticmethod
+    def _raw_context_rows(conn: sqlite3.Connection, target_rows: list[dict[str, Any]], start: str) -> list[dict[str, Any]]:
+        """Read one predecessor per raw link identity with one bounded SQL scan.
+
+        The predecessor deliberately ignores the visible AP/role filters.  It is
+        computation-only context: a role/AP transition immediately before a
+        requested interval must remain visible to the continuity calculator, but
+        must never be displayed or counted as part of the requested coverage.
+        """
+        if not target_rows or not start:
+            return []
+        identities = {monitor_identity(row) for row in target_rows}
+        source_ids = sorted({row.get("source_file_id") for row in target_rows if row.get("source_file_id") is not None})
+        radios = sorted({row.get("radio") for row in target_rows if row.get("radio") is not None})
+        if len(source_ids) != 1 or not radios:
+            return []
+        placeholders = ",".join("?" for _ in radios)
+        rows = conn.execute(
+            f"""
+            SELECT * FROM mesh_links
+            WHERE source_file_id = ?
+              AND radio IN ({placeholders})
+              AND sample_time < ?
+            ORDER BY sample_time DESC, id DESC
+            """,
+            (source_ids[0], *radios, start),
+        )
+        selected: dict[tuple, dict[str, Any]] = {}
+        for item in rows:
+            data = dict(item)
+            identity = monitor_identity(data)
+            if identity in identities and identity not in selected:
+                selected[identity] = data
+                if len(selected) == len(identities):
+                    break
+        return sorted(selected.values(), key=lambda item: (str(item.get("sample_time") or ""), int(item.get("id") or 0)))
+
+    @staticmethod
+    def _nearest_counter_context(conn, target, time_from, time_to, raw_path):
+        """Read bounded physical history and the actual preceding role lane.
+
+        AP filters select the target only; they must not hide an intervening
+        ACTIVE switch or role transition when calculating its counter interval.
+        """
+        identity_fields = (
+            "source_file_id", "radio", "peer_mac_normalized", "establish_time",
+            "peer_radio_mac", "peer_radio_label", "peer_ap_mac",
+        )
+        identity_where = " AND ".join(f"{field} IS ?" for field in identity_fields)
+        before_where = "sample_time <= ? AND (sample_time < ? OR (sample_time = ? AND id < ?))"
+        before_values = (target["sample_time"], target["sample_time"], target["sample_time"], target["id"])
+        history = [dict(item) for item in conn.execute(
+            f"SELECT * FROM mesh_links WHERE {identity_where} AND {before_where} "
+            "AND sample_time >= ? ORDER BY sample_time DESC, id DESC LIMIT 102",
+            (*(target.get(field) for field in identity_fields), *before_values, time_from),
+        )]
+        previous_lane = conn.execute(
+            "SELECT * FROM mesh_links WHERE source_file_id = ? AND radio IS ? "
+            f"AND link_state = ? AND {before_where} AND sample_time >= ? "
+            "ORDER BY sample_time DESC, id DESC LIMIT 1",
+            (target["source_file_id"], target["radio"], target["link_state"], *before_values, time_from),
+        ).fetchone()
+        if previous_lane is not None and monitor_identity(dict(previous_lane)) != monitor_identity(target):
+            history.append(dict(previous_lane))
+        if history and raw_path is not None and raw_path.is_file():
+            stat = raw_path.stat()
+            start = min(item["sample_time"] for item in history)
+            with _ZERO_READ_LOCK:
+                # Reuse the stable viewport cache across pointer selections.
+                zeros = _zero_window(str(raw_path), stat.st_mtime_ns, stat.st_size, time_from, time_to, target["radio"])
+            latest_zero = None
+            for record in zeros:
+                stamp = record.sample_time.isoformat(sep=" ", timespec="milliseconds")
+                if not start <= stamp <= target["sample_time"]:
+                    continue
+                if latest_zero is None or stamp > latest_zero["sample_time"]:
+                    latest_zero = {"id": -record.source_line_number, "sample_time": stamp,
+                                   "source_file_id": target["source_file_id"], "radio": record.radio,
+                                   "link_state": "UNCONNECTED", "link_count": 0}
+            if latest_zero is not None:
+                history.append(latest_zero)
+        history.append(target)
+        history.sort(key=lambda item: (item["sample_time"], item["id"]))
+        enriched, *_ = select_monitor_rows(history, "counters", time_from, target["sample_time"], 2000)
+        return next(item for item in enriched if item["id"] == target["id"])
 
     def list_active_build_order(
         self,
@@ -1115,20 +1497,59 @@ class MeshAnalysisQueryService:
         page: int = 1,
         page_size: int = 100,
         sort_order: str = "desc",
+        include_zero: bool = False,
+        exclude_depot: bool = False,
+        exclude_parking: bool = False,
+        link_role: str = "",
+        trace: bool = False,
+        operation_id: str = "",
     ) -> MeshActiveBuildOrderPageDTO:
+        started = perf_counter()
+        query_id = str(uuid4()) if trace else None
+        sql_query_count = 0
+
+        def trace_sql(statement: str) -> None:
+            nonlocal sql_query_count
+            if statement.lstrip().upper().startswith(("SELECT", "WITH")):
+                sql_query_count += 1
+
         context = self._context(site_id, session_id)
         if context.detail_db is None:
-            return MeshActiveBuildOrderPageDTO(page=page, page_size=page_size)
-        rows = self._build_rows(context)
+            return MeshActiveBuildOrderPageDTO(
+                page=page,
+                page_size=page_size,
+                query_duration_ms=round((perf_counter() - started) * 1000, 2) if trace else 0,
+                query_kind="active_build_order" if trace else "",
+                sql_query_count=sql_query_count,
+                query_id=query_id,
+                operation_id=operation_id or None,
+            )
+        try:
+            time_from = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
+            time_to = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
+            if time_from and time_to and time_from > time_to:
+                raise ValueError("reversed")
+        except ValueError as exc:
+            raise MeshAnalysisQueryError("监控时间范围无效") from exc
+        rows = self._build_rows_with_trace(context, trace_sql if trace else None)
         ap_map = self._ap_map(site_id)
         items: list[MeshActiveBuildOrderDTO] = []
         peer_needle = peer.casefold().strip()
+        peer_mac_key = self._mac_key(peer)
+        peer_is_mac = len(peer_mac_key) == 12 and all(character in "0123456789abcdefABCDEF:-. " for character in peer)
         station_needle = station.casefold().strip()
         result_needle = build_result.casefold().strip()
         selected_radios = {int(value) for value in (radios or [])}
         selected_results = {str(value).casefold().strip() for value in (build_results or []) if str(value).strip()}
+        excluded_macs = {self._mac_key(location.mac) for location in ap_map.values()
+                         if (exclude_depot and location.station_type == "DEPOT")
+                         or (exclude_parking and location.station_type == "PARKING")}
         for row in rows:
+            if link_role and link_role.upper() != "ACTIVE":
+                continue
             location = self._locate_ap(ap_map, row)
+            if self._mac_key(self._resolved_ap_mac(row, location) or "") in excluded_macs:
+                continue
             peer_text = " ".join(
                 str(row.get(key) or "")
                 for key in ("active_peer_mac", "peer_ap_name", "peer_ap_mac", "peer_radio", "peer_radio_mac")
@@ -1140,7 +1561,7 @@ class MeshAnalysisQueryService:
                 continue
             if not selected_radios and radio is not None and self._int(row.get("radio")) != int(radio):
                 continue
-            if peer_needle and peer_needle not in peer_text:
+            if peer_needle and (peer_mac_key not in {self._mac_key(row.get(key)) for key in ("active_peer_mac", "peer_ap_mac", "peer_radio_mac")} if peer_is_mac else peer_needle not in peer_text):
                 continue
             if station_needle and station_needle not in f"{resolved_station} {location.section}".casefold():
                 continue
@@ -1171,6 +1592,7 @@ class MeshAnalysisQueryService:
                     section=self._resolved_location_value(row, location, "section"),
                     mileage=self._resolved_location_value(row, location, "mileage"),
                     line_side=self._resolved_location_value(row, location, "line_side"),
+                    first_sample_time=str(row.get("first_sample_time") or start_time) or None,
                     build_start_time=start_time,
                     build_end_time=end_time,
                     main_link_duration_seconds=self._number(row.get("main_link_duration_seconds")),
@@ -1215,8 +1637,45 @@ class MeshAnalysisQueryService:
                     source_file=str(row.get("source_file") or context.source.get("archived_filename") or ""),
                 )
             )
+        if include_zero and not pingpong_only and (not selected_results or "unconnected" in selected_results) and (not result_needle or result_needle == "unconnected"):
+            if context.raw_path is None or not context.raw_path.is_file():
+                raise MeshAnalysisQueryError("原始日志不可用，无法查询 LinkCnt=0")
+            try:
+                zero_start = datetime.fromisoformat(time_from).isoformat(sep=" ", timespec="milliseconds") if time_from else ""
+                zero_end = datetime.fromisoformat(time_to).isoformat(sep=" ", timespec="milliseconds") if time_to else ""
+                if zero_start and zero_end and zero_start > zero_end:
+                    raise ValueError("reversed")
+            except ValueError as exc:
+                raise MeshAnalysisQueryError("监控时间范围无效") from exc
+            stat = context.raw_path.stat()
+            with _ZERO_READ_LOCK:
+                observations = _zero_window(str(context.raw_path), stat.st_mtime_ns, stat.st_size, zero_start, zero_end, radio if not selected_radios else None)
+            for record in observations:
+                if selected_radios and record.radio not in selected_radios:
+                    continue
+                data = {"peer_mac_raw": record.peer_mac_raw, "peer_mac_normalized": record.peer_mac_normalized}
+                location = self._locate_ap(ap_map, data)
+                ap_mac = self._resolved_ap_mac(data, location)
+                name = self._resolved_ap_name(data, location)
+                resolved_station = self._resolved_location_value(data, location, "station") or ""
+                if self._mac_key(ap_mac or "") in excluded_macs:
+                    continue
+                if peer_needle and (peer_mac_key not in {self._mac_key(value) for value in (record.peer_mac_raw, record.peer_mac_normalized, ap_mac)} if peer_is_mac else peer_needle not in f"{record.peer_mac_raw} {record.peer_mac_normalized} {ap_mac or ''} {name or ''}".casefold()):
+                    continue
+                if station_needle and station_needle not in f"{resolved_station} {location.section}".casefold():
+                    continue
+                stamp = record.sample_time.isoformat(sep=" ", timespec="milliseconds")
+                items.append(MeshActiveBuildOrderDTO(
+                    sequence=-record.source_line_number, source_file_id=context.source_id,
+                    link_count=0, observation_time=stamp, local_radio=record.radio,
+                    peer_mac_raw=record.peer_mac_raw, active_peer_mac=record.peer_mac_normalized or "",
+                    peer_ap_name=name, peer_ap_mac=ap_mac, station=resolved_station or None,
+                    section=self._resolved_location_value(data, location, "section"),
+                    build_start_time="", build_end_time="", first_sample_time=stamp,
+                    sample_count=1, build_result="UNCONNECTED", judge_reason="采样时 LinkCnt=0，未形成有效链路",
+                ))
         items.sort(
-            key=lambda item: (item.build_start_time, item.sequence),
+            key=lambda item: (item.observation_time or item.build_start_time, item.sequence),
             reverse=sort_order.lower() != "asc",
         )
         current, size = self._page(page, page_size)
@@ -1226,6 +1685,11 @@ class MeshAnalysisQueryService:
             total=len(items),
             page=current,
             page_size=size,
+            query_duration_ms=round((perf_counter() - started) * 1000, 2) if trace else 0,
+            query_kind="active_build_order" if trace else "",
+            sql_query_count=sql_query_count,
+            query_id=query_id,
+            operation_id=operation_id or None,
         )
 
     def get_link_timeline(self, site_id: str, session_id: str, *, time_from: str = "", time_to: str = "", limit: int = 2_000) -> MeshTimelineDTO:
@@ -2154,6 +2618,14 @@ class MeshAnalysisQueryService:
         with closing(self._connect_readonly(context.detail_db)) as conn:
             link_columns = self._table_columns(conn, "mesh_links")
         timestamp_expr = "timestamp_tag" if "timestamp_tag" in link_columns else "''"
+        counter_fields = (
+            "local_tx", "peer_tx", "local_rx", "peer_rx",
+            "local_retry", "peer_retry", "local_err", "peer_err",
+            "local_tx_garp", "peer_rx_garp", "local_tx_mul_join", "peer_rx_mul_join",
+        )
+        counter_output_names = {"local_err": "local_error", "peer_err": "peer_error"}
+        def column_or_null(column: str) -> str:
+            return column if column in link_columns else f"NULL AS {column}"
         identity_select = ", ".join(
             (
                 column
@@ -2169,41 +2641,59 @@ class MeshAnalysisQueryService:
                 "peer_identity_reason",
             )
         )
+        counter_select = ", ".join(column_or_null(column) for column in counter_fields)
+        identity_key_select = ", ".join(
+            column_or_null(column)
+            for column in ("source_file_id", "radio", "peer_ap_mac", "peer_mac_normalized", "peer_mac_raw", "establish_time", "session_id")
+        )
+        session_key = "NULLIF(session_id, '')" if "session_id" in link_columns else "NULL"
+        ap_key = "NULLIF(peer_ap_mac, '')" if "peer_ap_mac" in link_columns else "NULL"
+        normalized_peer_key = "NULLIF(peer_mac_normalized, '')" if "peer_mac_normalized" in link_columns else "NULL"
+        raw_peer_key = "NULLIF(peer_mac_raw, '')" if "peer_mac_raw" in link_columns else "NULL"
+        establish_key = "establish_time" if "establish_time" in link_columns else "NULL"
+        partition_key = (
+            f"source_file_id, radio, COALESCE({session_key}, ''), COALESCE({ap_key}, ''), "
+            f"COALESCE({normalized_peer_key}, {raw_peer_key}, ''), COALESCE({establish_key}, '')"
+        )
+        lag_select = ", ".join(
+            f"LAG({field}) OVER sample_partition AS previous_{field}"
+            for field in counter_fields
+        )
+        delta_select = ",\n                       ".join(
+            f"CASE WHEN {field} IS NULL OR previous_{field} IS NULL OR {field} < previous_{field} THEN NULL ELSE {field} - previous_{field} END AS {field}_delta"
+            for field in counter_fields
+        )
+        rate_select = ",\n                       ".join(
+            f"CASE WHEN {field}_delta IS NULL OR sample_interval_seconds IS NULL OR sample_interval_seconds <= 0 THEN NULL ELSE CAST({field}_delta AS REAL) / sample_interval_seconds END AS {field}_per_second"
+            for field in counter_fields
+        )
+        delta_filter = " OR ".join(f"{field}_delta IS NOT NULL" for field in counter_fields)
         counter_cte = f"""
             WITH ordered AS (
-                SELECT id, source_file_id, sample_time, {timestamp_expr} AS timestamp_tag, radio, peer_ap_name,
-                       peer_ap_mac, peer_mac_normalized, peer_radio_mac, {identity_select},
-                       local_retry, peer_retry, local_err, peer_err,
-                       LAG(local_retry) OVER sample_partition AS previous_local_retry,
-                       LAG(peer_retry) OVER sample_partition AS previous_peer_retry,
-                       LAG(local_err) OVER sample_partition AS previous_local_err,
-                       LAG(peer_err) OVER sample_partition AS previous_peer_err
+                SELECT id, sample_time, {timestamp_expr} AS timestamp_tag, peer_ap_name,
+                       peer_radio_mac, {identity_select}, {identity_key_select}, {counter_select},
+                       LAG(sample_time) OVER sample_partition AS previous_sample_time,
+                       {lag_select}
                 FROM mesh_links
                 WINDOW sample_partition AS (
-                    PARTITION BY source_file_id, radio,
-                        COALESCE(NULLIF(session_id, ''), NULLIF(peer_mac_normalized, ''), peer_mac_raw, '')
+                    PARTITION BY {partition_key}
                     ORDER BY sample_time, {timestamp_expr}, id
                 )
             ), deltas AS (
                 SELECT *,
-                       CASE WHEN local_retry IS NULL OR previous_local_retry IS NULL
-                                      OR local_retry < previous_local_retry
-                            THEN NULL ELSE local_retry - previous_local_retry END AS local_retry_delta,
-                       CASE WHEN peer_retry IS NULL OR previous_peer_retry IS NULL
-                                      OR peer_retry < previous_peer_retry
-                            THEN NULL ELSE peer_retry - previous_peer_retry END AS peer_retry_delta,
-                       CASE WHEN local_err IS NULL OR previous_local_err IS NULL
-                                      OR local_err < previous_local_err
-                            THEN NULL ELSE local_err - previous_local_err END AS local_error_delta,
-                       CASE WHEN peer_err IS NULL OR previous_peer_err IS NULL
-                                      OR peer_err < previous_peer_err
-                            THEN NULL ELSE peer_err - previous_peer_err END AS peer_error_delta
+                       CASE WHEN previous_sample_time IS NULL OR sample_time IS NULL
+                                  THEN NULL
+                            ELSE ROUND((julianday(sample_time) - julianday(previous_sample_time)) * 86400.0, 6)
+                       END AS sample_interval_seconds,
+                       {delta_select}
                 FROM ordered
+            ), rates AS (
+                SELECT *, {rate_select}
+                FROM deltas
             ), filtered AS (
-                SELECT * FROM deltas
+                SELECT * FROM rates
                 WHERE {time_where}
-                  AND (local_retry_delta IS NOT NULL OR peer_retry_delta IS NOT NULL
-                       OR local_error_delta IS NOT NULL OR peer_error_delta IS NOT NULL)
+                  AND ({delta_filter})
             )
         """
         with closing(self._connect_readonly(context.detail_db)) as conn:
@@ -2234,10 +2724,15 @@ class MeshAnalysisQueryService:
                     peer_ap_name=self._resolved_ap_name(data, location),
                     peer_ap_mac=self._resolved_ap_mac(data, location),
                     **self._identity_payload(data, location),
-                    local_retry_delta=int(data["local_retry_delta"]) if data["local_retry_delta"] is not None else None,
-                    peer_retry_delta=int(data["peer_retry_delta"]) if data["peer_retry_delta"] is not None else None,
-                    local_error_delta=int(data["local_error_delta"]) if data["local_error_delta"] is not None else None,
-                    peer_error_delta=int(data["peer_error_delta"]) if data["peer_error_delta"] is not None else None,
+                    sample_interval_seconds=self._number(data.get("sample_interval_seconds")),
+                    **{
+                        f"{counter_output_names.get(field, field)}_delta": self._int(data.get(f"{field}_delta"))
+                        for field in counter_fields
+                    },
+                    **{
+                        f"{counter_output_names.get(field, field)}_per_second": self._number(data.get(f"{field}_per_second"))
+                        for field in counter_fields
+                    },
                 )
             )
         return MeshCounterDeltaPageDTO(items=items, total=total, downsampled=step > 1)
@@ -2479,6 +2974,200 @@ class MeshAnalysisQueryService:
         current, size = self._page(page, page_size)
         start = (current - 1) * size
         return MeshApStatisticsPageDTO(items=items[start : start + size], total=len(items), page=current, page_size=size)
+
+    def business_statistics(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        exclude_depot: bool = True,
+        exclude_parking: bool = True,
+        weak_signal_threshold: int | None = None,
+        link_role: str = "ACTIVE",
+        radio: int | None = None,
+        trace: bool = False,
+        operation_id: str = "",
+    ) -> dict[str, Any]:
+        from netconsole.services.mesh_business_statistics import (
+            build_mesh_business_statistics,
+            effective_business_rules,
+            iter_business_links,
+        )
+        from netconsole.services.mesh_quality_analysis import load_default_rules
+
+        started = perf_counter()
+        query_id = str(uuid4()) if trace else None
+        sql_query_count = 0
+
+        def trace_sql(statement: str) -> None:
+            nonlocal sql_query_count
+            if statement.lstrip().upper().startswith(("SELECT", "WITH")):
+                sql_query_count += 1
+
+        def traced(result: dict[str, Any], cache_status: str) -> dict[str, Any]:
+            if not trace:
+                return result
+            payload = dict(result)
+            payload["_query_trace"] = {
+                "query_id": query_id,
+                "operation_id": operation_id or None,
+                "query_kind": "business_statistics",
+                "cache_status": cache_status,
+                "query_duration_ms": round((perf_counter() - started) * 1000, 2),
+                "sql_query_count": sql_query_count,
+            }
+            return payload
+
+        context = self._context(site_id, session_id)
+        params = load_site_mesh_analysis_params(self.paths, site_id)
+        rules = effective_business_rules(params, load_default_rules())
+        snapshot = self._ap_map(site_id)
+        if context.detail_db is None:
+            return traced(build_mesh_business_statistics(
+                [],
+                rules,
+                snapshot,
+                minimum_samples=params.ap_minimum_samples,
+                weak_signal_threshold=weak_signal_threshold,
+                link_role=link_role,
+                radio=radio,
+                exclude_depot=exclude_depot,
+                exclude_parking=exclude_parking,
+            ), "empty")
+        path = context.detail_db
+        wal = path.with_name(path.name + "-wal")
+        signature = (
+            str(path),
+            context.detail_source_id,
+            path.stat().st_mtime_ns,
+            path.stat().st_size,
+            (wal.stat().st_mtime_ns, wal.stat().st_size) if wal.exists() else None,
+            repr(rules),
+            repr(params),
+            json.dumps(snapshot.to_serializable(), sort_keys=True),
+            exclude_depot,
+            exclude_parking,
+            weak_signal_threshold,
+            link_role,
+            radio,
+        )
+        cached = getattr(self, "_business_statistics_cache", None)
+        if cached and cached[0] == signature:
+            return traced(cached[1], "hit")
+        with closing(self._connect_readonly(path)) as conn:
+            if trace:
+                conn.set_trace_callback(trace_sql)
+            result = build_mesh_business_statistics(
+                iter_business_links(conn, context.detail_source_id),
+                rules,
+                snapshot,
+                minimum_samples=params.ap_minimum_samples,
+                weak_signal_threshold=weak_signal_threshold,
+                link_role=link_role,
+                radio=radio,
+                exclude_depot=exclude_depot,
+                exclude_parking=exclude_parking,
+            )
+        # One session only; large interval collections are not retained by the cache.
+        self._business_statistics_cache = (
+            (signature, result) if len(result["single_links"]) < 10000 else None
+        )
+        return traced(result, "miss")
+
+    def list_ap_signal_statistics(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        query: str = "",
+        station: str = "",
+        signal_grade: str = "",
+        sort_by: str = "peer_ap_name",
+        descending: bool = False,
+        page: int = 1,
+        page_size: int = 100,
+        exclude_depot: bool = True,
+        exclude_parking: bool = True,
+        weak_signal_threshold: int | None = None,
+        link_role: str = "ACTIVE",
+        radio: int | None = None,
+        trace: bool = False,
+        operation_id: str = "",
+    ) -> MeshApStatisticsPageDTO:
+        from netconsole.services.mesh_business_statistics import statistics_page
+
+        result = self.business_statistics(
+            site_id,
+            session_id,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+            weak_signal_threshold=weak_signal_threshold,
+            link_role=link_role,
+            radio=radio,
+            trace=trace,
+            operation_id=operation_id,
+        )
+        current, size = self._page(page, page_size)
+        rows, total = statistics_page(
+            result["aps"],
+            page=current,
+            page_size=size,
+            query=query,
+            station=station,
+            grade=signal_grade,
+            sort_by=sort_by,
+            descending=descending,
+        )
+        query_trace = result.get("_query_trace", {})
+        summary = dict(result["summary"])
+        if query_trace:
+            summary.update({key: query_trace.get(key) for key in ("query_duration_ms", "sql_query_count", "query_kind", "query_id", "operation_id")})
+        return MeshApStatisticsPageDTO(
+            items=[MeshApStatisticsDTO(**row) for row in rows],
+            total=total,
+            page=current,
+            page_size=size,
+            summary=summary,
+            query_duration_ms=float(query_trace.get("query_duration_ms", 0) or 0),
+            query_kind=str(query_trace.get("query_kind", "") or ""),
+            sql_query_count=int(query_trace.get("sql_query_count", 0) or 0),
+            query_id=query_trace.get("query_id"),
+            operation_id=query_trace.get("operation_id"),
+        )
+
+    def list_single_links(
+        self,
+        site_id: str,
+        session_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        exclude_depot: bool = True,
+        exclude_parking: bool = True,
+    ) -> dict:
+        from netconsole.services.mesh_business_statistics import statistics_page
+
+        result = self.business_statistics(
+            site_id,
+            session_id,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+        )
+        current, size = self._page(page, page_size)
+        rows, total = statistics_page(
+            result["single_links"],
+            page=current,
+            page_size=size,
+            sort_by="duration_seconds",
+            descending=True,
+        )
+        return {
+            "items": rows,
+            "total": total,
+            "page": current,
+            "page_size": size,
+            "summary": result["summary"],
+        }
 
     def list_report_artifacts(self, site_id: str, session_id: str) -> list[MeshReportArtifactDTO]:
         return [item.dto for item in self._artifact_candidates(self._context(site_id, session_id))]
@@ -2845,6 +3534,13 @@ class MeshAnalysisQueryService:
         return result
 
     def _build_rows(self, context: _SessionContext) -> list[dict[str, Any]]:
+        return self._build_rows_with_trace(context)
+
+    def _build_rows_with_trace(
+        self,
+        context: _SessionContext,
+        trace_callback: Callable[[str], None] | None = None,
+    ) -> list[dict[str, Any]]:
         if context.detail_db is None:
             return []
         stat = context.detail_db.stat()
@@ -2854,9 +3550,8 @@ class MeshAnalysisQueryService:
             )
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             site_params = "{}"
-        return [
-            dict(row)
-            for row in self._build_rows_cached(
+        if trace_callback is None:
+            rows = self._build_rows_cached(
                 str(context.detail_db),
                 stat.st_mtime_ns,
                 stat.st_size,
@@ -2864,7 +3559,14 @@ class MeshAnalysisQueryService:
                 site_params,
                 "{}",
             )
-        ]
+        else:
+            repository = MeshMrRepository(context.detail_db, read_only=True, trace_callback=trace_callback)
+            rows = repository.query_active_link_build_order(
+                source_file_id=context.detail_source_id,
+                analysis_params=site_params or None,
+                fallback_analysis_params="{}",
+            )
+        return [dict(row) for row in rows]
 
     def _resolve_detail_source_id(self, detail_db: Path | None, source: dict[str, Any]) -> int:
         index_source_id = int(source["id"])

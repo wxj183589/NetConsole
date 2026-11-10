@@ -268,6 +268,12 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("capability.mesh.import", "MESH 原始日志导入", "module.mesh_analysis", "action"),
     FeatureItem("capability.mesh.report_export", "MESH 分析报告导出", "module.mesh_analysis", "action"),
     FeatureItem("capability.mesh.coverage_audit", "MESH AP 覆盖核查", "module.mesh_analysis", "action"),
+    FeatureItem(
+        "capability.mesh.business_statistics",
+        "MESH AP 信号及单链路统计",
+        "module.mesh_analysis",
+        "action",
+    ),
     FeatureItem("capability.mesh.source_open_location", "打开 MESH 原始日志本地目录", "module.mesh_analysis", "action"),
     FeatureItem("capability.rail_transit.task_control", "轨交任务控制", "module.rail_transit", "action", requires=("internal.rail_task_control",), delivery_requires=("internal.rail_task_control",)),
     FeatureItem("capability.rail_transit.wireless_dashboard", "轨道交通无线看板", "module.rail_transit", "page"),

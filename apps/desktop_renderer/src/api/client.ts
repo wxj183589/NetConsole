@@ -43,6 +43,12 @@ import {
 } from '../platform/buildIdentity'
 import { t } from '../i18n/runtime'
 import { reportApiPerformance } from '../platform/performanceProfiling'
+import {
+  beginMeshHttpTrace,
+  completeMeshHttpTrace,
+  failMeshHttpTrace,
+  recordMeshHttpPayload,
+} from './meshHttpTrace'
 
 export type RendererBuildMeta = RendererBuildMetadata
 
@@ -303,6 +309,7 @@ async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = 
   const queryRequest = method === 'GET' || method === 'HEAD'
   const attempts = queryRequest ? QUERY_MAX_ATTEMPTS : 1
   let response: Response | undefined
+  let completedMeshTrace: ReturnType<typeof beginMeshHttpTrace> = null
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const runtime = getRuntimeConfig()
@@ -314,9 +321,13 @@ async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = 
       credentials: options.credentials ?? (runtime.hostType === 'electron' ? 'include' : 'same-origin'),
     }
     const url = resolveApiUrl(path)
+    const meshTrace = beginMeshHttpTrace(path, method, attempt)
     try {
       response = await fetchWithQueryTimeout(url, path, requestOptions, queryRequest)
+      completeMeshHttpTrace(meshTrace, response)
+      completedMeshTrace = meshTrace
     } catch (reason) {
+      failMeshHttpTrace(meshTrace, reason)
       if (
         queryRequest
         && attempt < attempts
@@ -387,6 +398,7 @@ async function apiRequestInternal<T>(path: string, options: ApiRequestOptions = 
     return undefined as T
   }
   const payload = await readJsonResponse<T>(response, path, 'INVALID_JSON_RESPONSE')
+  recordMeshHttpPayload(completedMeshTrace, payload)
   reportApiPerformance({
     path,
     method,

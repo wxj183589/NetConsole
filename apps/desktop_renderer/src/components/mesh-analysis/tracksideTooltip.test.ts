@@ -4,6 +4,7 @@ import {
   displayTracksideTooltipMetric,
   sortTracksideTooltipEntries,
   tracksideTooltipApLabel,
+  tracksideTooltipPeerRadioPort,
   type TracksideTooltipEntry,
 } from './tracksideTooltip'
 
@@ -62,6 +63,12 @@ describe('trackside tooltip view-model helpers', () => {
   it('uses a stable user-facing fallback for a missing AP name', () => {
     expect(tracksideTooltipApLabel(entries[1])).toBe('AP-A')
     expect(tracksideTooltipApLabel({ ...entries[1], apName: null })).toBe('轨旁 AP 未知')
+  })
+
+  it('normalizes the peer radio port and keeps unknown values empty', () => {
+    expect(tracksideTooltipPeerRadioPort('radio1')).toBe('1')
+    expect(tracksideTooltipPeerRadioPort('Radio 2')).toBe('2')
+    expect(tracksideTooltipPeerRadioPort(null)).toBe('—')
   })
 
 })

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { MeshChartEvent, MeshChartPoint } from '../../types/meshAnalysis'
-import { buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip, buildMeshSwitchPointTooltip } from './meshRssiTooltip'
+import { buildMeshRssiQuickTooltip, buildMeshRssiTooltip, buildMeshRssiZeroRunTooltip, buildMeshSwitchPointTooltip, peerRadioPort } from './meshRssiTooltip'
 
 const point: MeshChartPoint = {
   link_id: 1,
@@ -69,6 +69,12 @@ const event: MeshChartEvent = {
 }
 
 describe('MESH RSSI tooltip', () => {
+  it('normalizes the peer radio port without using the local radio', () => {
+    expect(peerRadioPort('radio1')).toBe('1')
+    expect(peerRadioPort('Radio 2')).toBe('2')
+    expect(peerRadioPort('')).toBe('—')
+  })
+
   it('keeps the upper ACTIVE-path tooltip layout separate from the trackside template', () => {
     const html = buildMeshRssiTooltip(point)
 
@@ -79,10 +85,7 @@ describe('MESH RSSI tooltip', () => {
       '<strong>主链路</strong>',
       '状态：ACTIVE',
       '当前轨旁 AP：&lt;主 AP&gt;',
-      'Radio：Radio 1',
-      'Peer MAC：main-peer',
-      '当前轨旁 AP MAC：main-ap',
-      'Peer Radio MAC：—',
+      '对端射频口：1',
       'MR / 轨旁 AP 接收信号：31 / 29',
       'LinkCnt：2（△ 三角链路）',
       '<strong>空口负载</strong>',
@@ -90,7 +93,7 @@ describe('MESH RSSI tooltip', () => {
       '轨旁 AP TX/RX Busy：— / —',
       '归属站点 / 区间：站点&amp;一 / —',
       '建链持续时间：1 s',
-      '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35"><strong>备份链路</strong><br>1. 备份 AP<br>AP MAC：backup-ap<br>MR / 轨旁 AP 接收信号：30 / 28<br>LinkCnt：1<br>Radio：Radio 1<br>归属站点 / 区间：站点二 / 区间二',
+      '<hr class="mesh-rssi-tooltip__divider" style="margin:8px 0;border:0;border-top:1px solid currentColor;opacity:.35"><strong>备份链路</strong><br>1. 备份 AP<br>对端射频口：1<br>MR / 轨旁 AP 接收信号：30 / 28<br>LinkCnt：1<br>归属站点 / 区间：站点二 / 区间二',
       '',
       '</div>',
     ].join('<br>'))
@@ -116,6 +119,10 @@ describe('MESH RSSI tooltip', () => {
     expect(html).toContain('站点&amp;一')
     expect(html).toContain(`切换事件时间：${point.timestamp}`)
     expect(html).toContain(`对齐采样时间：${point.timestamp}`)
+    expect(html).toContain('切出：原 AP')
+    expect(html).toContain('切入：目标 AP')
+    expect(html).not.toContain('from-mac')
+    expect(html).not.toContain('to-mac')
   })
 
   it('keeps missing RSSI values missing without signal fallback or zero fill', () => {
@@ -183,6 +190,24 @@ describe('MESH RSSI tooltip', () => {
     expect(html.toLowerCase()).not.toContain('dbm')
   })
 
+  it('does not fall back to peer MAC when an AP name is missing', () => {
+    const html = buildMeshRssiTooltip(undefined, {
+      ...event,
+      from_ap_name: null,
+      to_ap_name: null,
+    })
+    expect(html).toContain('切出：—')
+    expect(html).toContain('切入：—')
+    expect(html).not.toContain('from-mac')
+    expect(html).not.toContain('to-mac')
+  })
+
+  it('keeps the quick tooltip free of peer MAC fallbacks', () => {
+    const html = buildMeshRssiQuickTooltip({ ...point, peer_ap_name: null, peer_mac: 'hidden-peer-mac' })
+    expect(html).toContain('AP 轨旁 AP 未知')
+    expect(html).not.toContain('hidden-peer-mac')
+  })
+
   it('renders radio, peer radio, state, and sample-level busy values without null artifacts', () => {
     const html = buildMeshRssiTooltip({
       ...point,
@@ -196,10 +221,10 @@ describe('MESH RSSI tooltip', () => {
     })
 
     expect(html).toContain('状态：ACTIVE')
-    expect(html).toContain('Radio：Radio 1')
-    expect(html).toContain('Peer MAC：1c94-6876-8c6f')
-    expect(html).toContain('当前轨旁 AP MAC：4073-4d64-e180')
-    expect(html).toContain('Peer Radio MAC：0011-2233-4455')
+    expect(html).toContain('对端射频口：1')
+    expect(html).not.toContain('Peer MAC：')
+    expect(html).not.toContain('当前轨旁 AP MAC：')
+    expect(html).not.toContain('Peer Radio MAC：')
     expect(html).toContain('MR TX/RX Busy：31 % / 22 %')
     expect(html).toContain('轨旁 AP TX/RX Busy：45 % / 27 %')
     expect(html).not.toMatch(/undefined|NaN|null%/)

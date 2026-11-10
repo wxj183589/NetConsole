@@ -148,7 +148,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 - 切换会话、来源、Radio 或重新请求轨旁数据时，前端先 Abort 旧请求、推进 generation、卸载旧图、清空外部 Map 和 payload 引用，下一次 tick 才安装新 payload；迟到响应不得重新挂回页面。组件卸载必须 dispose ECharts、解绑 ECharts/ZRender/Window/Resize 监听并取消 RAF/计时器。
 - 每个 Renderer 同时处于加载或缓存状态的轨旁图最多两份，第 3 份请求必须在构建 cache/ECharts 前拒绝并提示先释放现有图表。会话切换和组件卸载按顺序释放 ECharts/Canvas、轨旁 series cache、颜色表及其冲突 Map/Set，并断开 metadata、frame、Tooltip 和选择状态引用；运行时同时统计 MESH 实例、活动详情请求、cache/chart 当前数与累计 build/dispose、series/point/metadata/conflict edge/Canvas/ECharts 数量。Electron 将该快照以 `MESH_MEMORY_PROFILE` 记录，并补充 `app.getAppMetrics()` 可获得的 Renderer private bytes 和 working set；当前 bridge 无法可靠取得 array buffer 时必须明确记录 unavailable，不得用 heap 或其他值代替。
 - Peer、切换线、切换节点、位置带、主题和 resize 属于纯展示更新，必须保持当前视口。页面内锁定范围不持久化，切换会话、来源、Radio、ACTIVE/Peer 模式或 AP 经过区段时解除。
-- `active-path` 首次打开默认按完整日志域请求 Full 主链，`trackside-signal` 仍按完整日志域请求受预算约束的概览。RSSI 父页明确分离完整日志 `fullDomain`、本地实时 `previewViewport`、最近发布成功的 `committedViewport` 和待查询 `queryRange`：Full 主线加载后保存在 `shallowRef/markRaw`，用户缩放只由客户端 DataZoom 裁剪，不重新请求或替换主线；轨旁图在 pointer/touch 结束 200 ms 或无可靠 pointerup 的 450 ms idle 后请求最终窗口。程序化镜像同步、布局切换、Resize、共享 pointer 和 KeepAlive 恢复不得触发主线查询。
+- `active-path` 首次打开按记录规模选择：已知不超过50,000条请求 Full，大于50,000条或规模未知请求 overview；概览模式缩放局部窗口请求 high，恢复全域回到 overview，显式 Full 仍保留。`trackside-signal` 仍按完整日志域请求受预算约束的概览。RSSI 父页明确分离完整日志 `fullDomain`、本地实时 `previewViewport`、最近发布成功的 `committedViewport` 和待查询 `queryRange`：Full 主线加载后保存在 `shallowRef/markRaw`，用户缩放只由客户端 DataZoom 裁剪，不重新请求或替换主线；轨旁图在 pointer/touch 结束 200 ms 或无可靠 pointerup 的 450 ms idle 后请求最终窗口。程序化镜像同步、布局切换、Resize、共享 pointer 和 KeepAlive 恢复不得触发主线查询。
 - `high/overview` 精度兼容原同窗口批次语义：主链与轨旁请求使用相同 session、Radio、`time_from/time_to` 和 generation，两个结果与新轨旁 cache 全部就绪后成组发布，失败或 Abort 保留旧图。Full 模式中只有轨旁窗口响应替换轨旁 cache，主链继续使用完整数据；重置视图恢复客户端完整主线 viewport，并按需重载轨旁完整域概览。
 - 两个 RSSI 图表分别维护逻辑 viewport、最后真实应用到当前 ECharts render epoch 的 applied viewport。ECharts init、`clear()` 或包含 DataZoom 的全量 `setOption` 会使 applied 状态失效；即使逻辑范围和 revision 未变化，数据全量替换后也必须对 inside/slider 两个 DataZoom 执行 silent `dispatchAction` 恢复 `startValue/endValue`。会话 `first_sample_time/last_sample_time` 始终作为完整时间域，窗口响应不能缩短共享 xAxis/DataZoom 边界。锁定范围后的同期空口负载查询继续使用相同窗口语义。
 - 固定规模转换回归由 `tracksideSeriesCache.test.ts` 覆盖 770 个主备混合序列、44,251 个返回链路点和 18,188 个 frame，并验证十次 cache 释放。真实 Chromium Canvas 的 API payload、浅层安装、cache/option 构建、首次 `setOption`、首次可交互、当前 frame Tooltip 100 次构建耗时、两批共 40 次纯 resize 布局切换、long task、heap、十次会话残留 heap、Renderer/GPU 退出和 GPU feature status 可在 `apps/desktop_electron` 运行 `pnpm run profile:mesh-chart` 复验；设置 `NETCONSOLE_MESH_PROFILE_SOFTWARE=1` 时只在画像进程中验证软件渲染。脚本默认使用上述真实规模和显式 GC，不访问现场日志或设备，正式应用不增加 V8 内存参数也不关闭硬件加速。
@@ -157,7 +157,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 
 ## 7. Excel 报表
 
-正式报表走 Export Process，先写临时文件再原子替换。综合工作簿固定围绕：报告总览、分析参数与阈值、原始文件清单、数据质量总览、主链路建链顺序、主链路切换分析、全部 ACTIVE RSSI 分析、单 AP 分时段统计、空口负载分析、无备份链路风险、解析问题、原始证据。综合报告不再输出完整链路明细、全局 AP 聚合或 Peer 排名。
+正式报表走 Export Process，先写临时文件再原子替换。综合工作簿固定围绕：报告总览、分析参数与阈值、原始文件清单、数据质量总览、主链路建链顺序、主链路切换分析、全部 ACTIVE RSSI 分析、单 AP 分时段统计、空口负载分析、无备份链路风险、解析问题、原始证据。综合报告不输出完整链路明细或 Peer 排名；新增基于完整唯一 ACTIVE MR RSSI 的物理 AP 信号质量及连续单链路风险表。
 
 每个 `source_file_id`/原始日志独立生成和追溯报告，不得把不同日志拼成一份无法定位来源的结论。报告面向业主、项目经理和普通维护人员：总览先用可读语言说明有效数据、主要异常、影响范围和建议，再提供算法字段与证据表。AP 明细与问题 AP 必须尽可能带发生时间、归属站点、区间、MAC、里程和来源；缺失时明确“未解析”，不能猜测。WiFi 4/5/6、旧日志和只有 Peer MAC 的兼容结论只按实际 parser/fixture 覆盖范围声明。
 
@@ -167,7 +167,7 @@ RSSI 数值按规则文件既定口径比较。两套 profile 当前 fping 平�
 
 宽列、原始行、诊断和建议使用受控列宽与换行，兼顾 Microsoft Excel/WPS。目标文件被占用时给出可操作提示；取消或失败不得保留伪完整 workbook。
 
-独立“导出链路明细”使用 `mesh_link_detail_export`，创建“链路明细”“主链路明细”和“分析参数”三个工作表。链路明细分批读取完整来源数据，主链路明细直接复用 `query_active_link_build_order`，不得按当前页面分页截断或在导出器重算建链结果。
+独立“导出链路明细”使用 `mesh_link_detail_export`，创建“链路明细”“主链路明细”“分析参数”“AP 信号质量”“单链路风险”工作表。默认 business 精简模式，diagnostic 保留原宽列；原始导出完整契约不变。链路明细分批读取完整来源数据，主链路明细直接复用 `query_active_link_build_order`，不得按当前页面分页截断或在导出器重算建链结果。
 
 Electron 的“生成分析报告”和“导出链路明细”都在创建任务前选择最终 `.xlsx` 路径；取消不创建任务。Artifact 就绪后按预选路径、大小和 SHA-256 落盘，不再弹第二次窗口。本地保存失败保留原 Artifact，Task Center 可重新选择位置且不重新分析或生成；历史报告/明细仍由用户点击后另存，页面或任务恢复不得自动打开 Save As。Browser 开发模式只能报告下载已启动，不能报告已保存到具体本地目录。
 
@@ -210,3 +210,11 @@ MESH catalog、Profile `mesh.sqlite` 与来源 detail SQLite 分别保存会话�
 - CLI 与 HTTP/Job Center 计划必须绑定 canonical site/profile/source、operation、source/catalog revision、实际 RAW/parsed identity、parser 或 Identity revision、peer set（identity remap）及稳定 plan digest。worker 在 canonical site 级 MESH lock 内重新读取并验证；任何 drift、provider failure、越界路径或 reparse point 都拒绝并要求重新计划。
 - Production identity remap 固定一个已有 AP Identity revision，不调用 `ensure_index()`，不触发 AP Identity rebuild；投影与 detail/source metadata 失败时恢复维护前 SQLite snapshot。RSSI、Busy、链路行数、ACTIVE/STANDBY 与 switch facts 必须保持不变。
 - Production raw/archive source delete 在 durable recovery owner 完成前 fail closed；Production batch source delete 在逐来源 immutable plan 完成前 fail closed。单来源 parsed-only delete 仍需独立 delete capability、显式确认、引用/active-task 保护、plan revalidation 与同一 MESH lock。Development/isolated 行为保持原有能力。
+
+## 11. 物理 AP 与单链路专项统计
+
+物理 AP 以规范物理 MAC 唯一归并，精确 Alias/历史投影冲突保留未识别和 Peer 证据，不凭名称或 Peer MAC 猜设备。信号只取唯一 ACTIVE 的正有限 MR RSSI，精确线性插值 P10 以有效良好/关注阈值分级；未达 minimum_samples 标为数据不足。任务覆盖 > 当前局点 > 既有规则资源；原全局规则资源不变。
+
+单链路复用 build_sample_quality 的 active_peer_count=1 且 available_backup_count=0，区分无STANDBY、备链弱、备链RSSI缺失。同 source/Radio/AP/类型且间隙<=2秒合并，时长为末减首；所有区段保留，qualifies_no_backup_event 单独表达旧NO_BACKUP事件时长门槛，不改变原事件。多Radio时长累加可重叠。
+
+新增业务摘要及按需分页API，旧ap-statistics保留。统计/导出始终读取完整事实；缓存含DB/WAL、来源、有效规则/参数与身份快照，风险区段过大不缓存。综合报告和建链列表仍物化，不声明全链路恒定内存。

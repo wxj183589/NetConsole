@@ -1,4 +1,9 @@
 [
+  {"path":"tests/test_mesh_monitor_nearest.py","classification":"TEST_ONLY","owner":"mesh","reason":"仅在RuntimeMode.TEST隔离测试根创建最小MESH SQLite fixture，验证最近ACTIVE采样、计数器上下文及只读查询；不访问真实业务数据库。"},
+  {"path":"src/netconsole/export_worker.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"Mesh Export Process 仅以 mode=ro 读取会话 Parsed SQLite，流式构造业务统计；不创建、迁移或修改来源数据库。"},
+  {"path":"src/netconsole/services/mesh_business_statistics.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"通过调用方只读连接游标读取 Mesh 事实；自身仅创建 :memory: 连接对已聚合结果筛选排序分页，不落盘、不修改业务数据库。"},
+  {"path":"scripts/maintenance/benchmark_mesh_business.py","classification":"TEST_ONLY","owner":"mesh","reason":"四档 Mesh 专项基准仅在唯一 canonical test-data 子目录生成 synthetic SQLite/log/导出 fixture；不访问真实数据根。"},
+  {"path":"tests/test_mesh_business_statistics.py","classification":"TEST_ONLY","owner":"mesh","reason":"仅在隔离测试根构造 Mesh 历史 schema、WAL 与身份映射 fixture，验证全量统计及缓存失效。"},
   {"path":"src/netconsole/services/ground_unattended/monitoring.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"ground","reason":"MR 综合监测以 mode=ro、query_only 和单一只读事务有界读取当前局点、运行和 MR 的既有事件与 AC 证据，不创建或修改数据库。"},
   {"path":"tests/test_ground_unattended_monitoring.py","classification":"TEST_ONLY","owner":"ground","reason":"仅在 RuntimeMode.TEST 隔离测试根验证 MR 综合监测与只读证据边界。"},
   {"path":"scripts/dev/ground_v2_soak.py","classification":"TEST_ONLY","owner":"ground","reason":"Synthetic component soak creates an exclusive canonical test root and checks only its own generated SQLite integrity; no real business data or runtime connection path."},
@@ -89,6 +94,7 @@
   {"path":"tests/test_job_center_cleanup.py","classification":"TEST_ONLY","owner":"test","reason":"Job Center 清理测试读取临时 tasks.db 断言到期与隐藏字段。"},
   {"path":"tests/test_legacy_runtime_data_tools.py","classification":"TEST_ONLY","owner":"test","reason":"历史数据迁移测试 fixture。"},
   {"path":"tests/test_mesh_log_analysis.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 分析测试 fixture。"},
+  {"path":"tests/test_mesh_monitor_zero_query.py","classification":"TEST_ONLY","owner":"test","reason":"仅修改 tmp_path 隔离 fixture 的 MAC 格式，验证精确 AP 查询兼容性。"},
   {"path":"tests/test_mesh_analysis_query_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 旧 schema、损坏库和迁移路径只读隔离测试 fixture。"},
   {"path":"tests/test_mesh_bundle_import_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH ZIP 隔离导入、staging 路径改写与 manifest 提交测试 fixture。"},
   {"path":"tests/test_mesh_source_rebuild_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 单一来源恢复、重建隔离和 bundle SHA 校验测试 fixture。"},

@@ -1,0 +1,152 @@
+{
+  "schema": "netconsole.mesh.phase11.10.electron-interaction-trace.v1",
+  "status": "PASS_WITH_EXTERNAL_BLOCKERS",
+  "runtime": {
+    "electron_main_pid": 42676,
+    "renderer_pid": 61540,
+    "backend_port": 8133,
+    "cdp_port": 9224,
+    "session_id": "80716c07-6bd9-47d8-b76d-ace1e55624d1:1",
+    "train": "列车01",
+    "mr": "列车01-MR-CW",
+    "domain": {
+      "start": "2026-10-20 09:42:06.657",
+      "end": "2026-10-20 18:42:06.381"
+    },
+    "window": "1920x1080",
+    "content": "1904x1041",
+    "dpr": 1
+  },
+  "steps": [
+    {
+      "id": "launch",
+      "action": "启动真实 Electron、Renderer、Python Service 和隔离数据根",
+      "result": "PASS",
+      "evidence": "Backend Online；页面加载完成（2.5 s）"
+    },
+    {
+      "id": "navigation",
+      "action": "依次进入七项 MESH 工作区",
+      "result": "PASS",
+      "evidence": "01-07"
+    },
+    {
+      "id": "main-metrics",
+      "action": "滚动加载全部 13 项主链路指标",
+      "result": "PASS",
+      "evidence": "UI 13/13 图表完成；05、06、20"
+    },
+    {
+      "id": "wheel-anchor-25",
+      "action": "25% 横向锚点普通 wheel",
+      "result": "PASS",
+      "window": "2026-10-20 10:04:51.581 -> 17:16:51.360",
+      "evidence": "08"
+    },
+    {
+      "id": "wheel-anchor-50",
+      "action": "50% 横向锚点普通 wheel",
+      "result": "PASS",
+      "window": "2026-10-20 10:33:55.651 -> 17:45:55.430",
+      "evidence": "10"
+    },
+    {
+      "id": "wheel-anchor-75",
+      "action": "75% 横向锚点普通 wheel",
+      "result": "PASS",
+      "window": "2026-10-20 11:02:52.828 -> 18:14:52.607",
+      "evidence": "09、10"
+    },
+    {
+      "id": "counter-tooltip",
+      "action": "移动到计数器点查看 previous、delta、interval、rate、status",
+      "result": "PASS",
+      "evidence": "11"
+    },
+    {
+      "id": "double-click-pin",
+      "action": "双击图表时间固定 tooltip，鼠标移出后按 Esc",
+      "result": "PASS",
+      "evidence": "12；native dblclick fallback"
+    },
+    {
+      "id": "shift-select",
+      "action": "Shift 左键选择时间",
+      "result": "PASS",
+      "evidence": "13；右侧详情更新"
+    },
+    {
+      "id": "ctrl-browser",
+      "action": "Ctrl 动态浏览时间",
+      "result": "PASS",
+      "evidence": "14；不覆盖固定选择"
+    },
+    {
+      "id": "radio-switch",
+      "action": "Radio 1 -> Radio 2 -> Radio 1",
+      "result": "PASS",
+      "evidence": "15、16；Radio 2 为真实空数据"
+    },
+    {
+      "id": "gap",
+      "action": "缩窄到 70 秒窗口检查 Link gap",
+      "result": "PASS",
+      "window": "2026-10-20 09:42:30 -> 09:43:40",
+      "evidence": "17"
+    },
+    {
+      "id": "link-role-filter",
+      "action": "链路明细选择主链路并点击筛选",
+      "result": "PASS",
+      "before_total": 108700,
+      "after_total": 44470,
+      "visible_role": "ACTIVE"
+    },
+    {
+      "id": "link-text-filter",
+      "action": "链路明细查询 Z04-27",
+      "result": "PASS",
+      "after_total": 97,
+      "all_97_rows_match": true
+    },
+    {
+      "id": "column-settings",
+      "action": "列设置启用本端 CPU 利用率并应用",
+      "result": "PASS",
+      "visible_header": "本端 CPU 利用率"
+    },
+    {
+      "id": "report-export",
+      "action": "真实按钮生成分析报告并通过 Windows 保存对话框保存",
+      "result": "PASS",
+      "task_id": "rail-export-0e74a309303441b596e0a56c41e7582c",
+      "status": "COMPLETED",
+      "evidence": "18"
+    },
+    {
+      "id": "link-export",
+      "action": "真实按钮导出链路明细并通过 Windows 保存对话框保存",
+      "result": "PASS",
+      "task_id": "rail-export-ce2a5b646a724293bf2646d980cea4f8",
+      "status": "COMPLETED",
+      "message": "报告完整性校验完成",
+      "output_bytes": 21996609
+    },
+    {
+      "id": "page-reentry",
+      "action": "离开 MESH 到无线页面再重新进入",
+      "result": "PASS",
+      "evidence": "19；会话和任务状态恢复"
+    },
+    {
+      "id": "final",
+      "action": "回到完整范围主链路监控并保持空闲",
+      "result": "PASS",
+      "evidence": "20；无 crash、无 error page"
+    }
+  ],
+  "external_blockers": [
+    "Excel executable not installed; WPS GUI PASS",
+    "Workspace layout baseline blocked by unrelated top-level docs"
+  ]
+}

@@ -269,6 +269,10 @@ class MeshRebuildRequestDTO(ApiModel):
 
 
 class MeshAnalysisParamsDTO(ApiModel):
+    rssi_good_threshold: int | None = Field(default=None, gt=0, le=200)
+    rssi_warning_threshold: int | None = Field(default=None, gt=0, le=200)
+    backup_available_threshold: int | None = Field(default=None, gt=0, le=200)
+    ap_minimum_samples: int = Field(default=10, ge=2, le=10000)
     link_time_window: int = Field(default=4000, gt=0, le=600_000)
     link_switch_threshold: int = Field(default=10, ge=0, le=200)
     link_hold_rssi: int = Field(default=22, ge=0, le=200)
@@ -285,16 +289,23 @@ class MeshAnalysisParamsDTO(ApiModel):
 
 
 class MeshAnalysisParamsOverrideDTO(MeshAnalysisParamsDTO):
-    pass
+    # Routers forward exclude_unset=True so partial task overrides retain Site values.
+    main_link_switch_time_ms: int = Field(default=4000, gt=0, le=600_000)
+    short_link_tolerance_ms: int = Field(default=500, ge=0, le=600_000)
+    pingpong_tolerance_ms: int = Field(default=500, ge=0, le=600_000)
 
 
 class MeshReportRequestDTO(ApiModel):
+    export_mode: Literal["business", "diagnostic"] = "business"
     analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
 
 
 class MeshLinkDetailExportRequestDTO(ApiModel):
+    export_mode: Literal["business", "diagnostic"] = "business"
     source_file_id: int = Field(gt=0)
     analysis_params_override: MeshAnalysisParamsOverrideDTO | None = None
+    exclude_depot: bool = True
+    exclude_parking: bool = True
 
 
 class MeshRawLinkExportRequestDTO(ApiModel):
@@ -524,7 +535,34 @@ class MeshAnalysisSessionDetailDTO(ApiModel):
     maintenance_state: MeshMaintenanceStateDTO
 
 
+class MeshCounterSampleDTO(ApiModel):
+    current: int | None = None
+    previous: int | None = None
+    delta: int | None = None
+    interval_seconds: float | None = None
+    per_second: float | None = None
+    status: str = "first"
+
+
 class MeshLinkDetailDTO(ApiModel):
+    counter_samples: dict[str, MeshCounterSampleDTO] = Field(default_factory=dict)
+    monitor_gap_before: bool = False
+    is_boundary_context: bool = False
+    source_file_id: int | None = None
+    raw_sample_version: str | None = None
+    derived_metric_version: str | None = None
+    local_tx_delta: int | None = None
+    peer_tx_delta: int | None = None
+    local_rx_delta: int | None = None
+    peer_rx_delta: int | None = None
+    local_retry_delta: int | None = None
+    peer_retry_delta: int | None = None
+    local_err_delta: int | None = None
+    peer_err_delta: int | None = None
+    local_tx_garp_delta: int | None = None
+    peer_rx_garp_delta: int | None = None
+    local_tx_mul_join_delta: int | None = None
+    peer_rx_mul_join_delta: int | None = None
     record_id: int
     timestamp: str
     timestamp_tag: str = ""
@@ -605,15 +643,38 @@ class MeshLinkDetailDTO(ApiModel):
     warning: str | None = None
 
 
+class MeshSqlQueryRangeDTO(ApiModel):
+    purpose: str
+    time_from: str | None = None
+    time_to: str | None = None
+    visible: bool = False
+    record_count: int = 0
+
+
 class MeshLinkPageDTO(ApiModel):
     items: list[MeshLinkDetailDTO] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 100
+    zero_link_count: int = 0
+    downsampled: bool = False
+    query_duration_ms: float = 0
+    query_kind: str = ""
+    sql_query_count: int = 0
+    raw_sample_complete: bool = False
+    raw_sample_version: str | None = None
+    raw_context_count: int = 0
+    coverage_time_from: str | None = None
+    coverage_time_to: str | None = None
+    sql_query_ranges: list[MeshSqlQueryRangeDTO] = Field(default_factory=list)
+    query_id: str | None = None
+    operation_id: str | None = None
 
 
 class MeshActiveBuildOrderDTO(ApiModel):
     sequence: int
+    link_count: int | None = None
+    observation_time: str | None = None
     source_file_id: int | None = None
     anchor_link_id: int | None = None
     local_radio: int | None = None
@@ -632,6 +693,7 @@ class MeshActiveBuildOrderDTO(ApiModel):
     section: str | None = None
     mileage: str | None = None
     line_side: str | None = None
+    first_sample_time: str | None = None
     build_start_time: str
     build_end_time: str
     main_link_duration_seconds: float | None = None
@@ -681,6 +743,11 @@ class MeshActiveBuildOrderPageDTO(ApiModel):
     total: int = 0
     page: int = 1
     page_size: int = 100
+    query_duration_ms: float = 0
+    query_kind: str = ""
+    sql_query_count: int = 0
+    query_id: str | None = None
+    operation_id: str | None = None
 
 
 class MeshChartBackupLinkDTO(ApiModel):
@@ -1177,6 +1244,27 @@ class MeshCounterDeltaPointDTO(ApiModel):
     peer_retry_delta: int | None = None
     local_error_delta: int | None = None
     peer_error_delta: int | None = None
+    sample_interval_seconds: float | None = None
+    local_tx_delta: int | None = None
+    peer_tx_delta: int | None = None
+    local_rx_delta: int | None = None
+    peer_rx_delta: int | None = None
+    local_retry_per_second: float | None = None
+    peer_retry_per_second: float | None = None
+    local_error_per_second: float | None = None
+    peer_error_per_second: float | None = None
+    local_tx_per_second: float | None = None
+    peer_tx_per_second: float | None = None
+    local_rx_per_second: float | None = None
+    peer_rx_per_second: float | None = None
+    local_tx_garp_delta: int | None = None
+    peer_rx_garp_delta: int | None = None
+    local_tx_mul_join_delta: int | None = None
+    peer_rx_mul_join_delta: int | None = None
+    local_tx_garp_per_second: float | None = None
+    peer_rx_garp_per_second: float | None = None
+    local_tx_mul_join_per_second: float | None = None
+    peer_rx_mul_join_per_second: float | None = None
 
 
 class MeshCounterDeltaPageDTO(ApiModel):
@@ -1210,6 +1298,18 @@ class MeshAnomalyPageDTO(ApiModel):
 
 
 class MeshApStatisticsDTO(ApiModel):
+    link_role: str = "ACTIVE"
+    radio: int | None = None
+    peer_mac_raw: str | None = None
+    max_rssi: float | None = None
+    last_rssi: float | None = None
+    p10_rssi: float | None = None
+    valid_sample_count: int = 0
+    weak_sample_count: int = 0
+    weak_ratio: float | None = None
+    first_seen: str | None = None
+    last_seen: str | None = None
+    signal_grade: str = "INSUFFICIENT"
     peer_ap_name: str | None = None
     peer_ap_mac: str | None = None
     station: str | None = None
@@ -1232,10 +1332,16 @@ class MeshApStatisticsDTO(ApiModel):
 
 
 class MeshApStatisticsPageDTO(ApiModel):
+    summary: dict[str, object] = Field(default_factory=dict)
     items: list[MeshApStatisticsDTO] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 100
+    query_duration_ms: float = 0
+    query_kind: str = ""
+    sql_query_count: int = 0
+    query_id: str | None = None
+    operation_id: str | None = None
 
 
 class MeshReportArtifactDTO(ApiModel):

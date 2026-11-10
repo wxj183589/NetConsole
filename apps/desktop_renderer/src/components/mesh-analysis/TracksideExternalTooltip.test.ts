@@ -11,6 +11,7 @@ const entries: TracksideTooltipEntry[] = [
     metaId: 2,
     apName: 'AP-B',
     radio: 2,
+    peerRadio: 'Radio 2',
     role: 'STANDBY',
     tracksideRssi: null,
     mrRssi: null,
@@ -25,6 +26,7 @@ const entries: TracksideTooltipEntry[] = [
     metaId: 1,
     apName: 'AP-A',
     radio: 1,
+    peerRadio: 'Radio 1',
     role: 'ACTIVE',
     tracksideRssi: 29,
     mrRssi: 21,
@@ -53,8 +55,8 @@ describe('TracksideExternalTooltip', () => {
       '○ STANDBY',
     ])
     expect(wrapper.findAll('.trackside-tooltip-entry__ap').map((item) => item.text())).toEqual([
-      'AP：AP-A · Radio 1',
-      'AP：AP-B · Radio 2',
+      'AP：AP-A · 对端射频口 1',
+      'AP：AP-B · 对端射频口 2',
     ])
     expect(wrapper.text().match(/采样时间：/g)).toHaveLength(1)
     expect(wrapper.text()).toContain('轨旁 / MR RSSI：29 / 21')
