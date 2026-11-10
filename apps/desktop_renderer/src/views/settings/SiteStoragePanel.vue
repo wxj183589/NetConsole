@@ -760,6 +760,21 @@ async function chooseRoot(): Promise<void> {
   finally { busy.value = false }
 }
 
+async function verifyRoot(): Promise<void> {
+  const selected = await getPlatformAdapter().selectDataRootDirectory()
+  if (selected.cancelled || !selected.path) return
+  busy.value = true
+  try {
+    const result = await validateDataRoot(selected.path)
+    const free = result.free_bytes ?? result.disk?.free_bytes ?? 0
+    const warning = result.disk?.warnings?.[0]
+    ElMessage[warning ? 'warning' : 'success'](
+      `${result.path} 可用，剩余空间 ${formatBytes(free)}${warning ? `；${warning}` : ''}`,
+    )
+  } catch (cause) { showError(cause, '数据根验证失败') }
+  finally { busy.value = false }
+}
+
 async function moveSite(site: SiteRecord): Promise<void> {
   const selected = await getPlatformAdapter().selectDataRootDirectory()
   if (selected.cancelled || !selected.path) return
@@ -904,7 +919,21 @@ function displayValue(value: unknown): string { if (value === null || value === 
         <el-button size="small" @click="openTask(task.task_id)">打开任务中心</el-button>
       </div>
     </div>
-    <div v-if="root" class="root-summary"><span>{{ root.persistent ? '全局数据根' : '临时测试数据根' }}</span><code :title="root.persistent ? root.data_root : undefined">{{ root.data_root }}</code><span>{{ root.site_count }} 个局点</span><template v-if="root.persistent"><el-button data-testid="migrate-data-root" size="small" @click="chooseRoot">选择并迁移</el-button><el-button data-testid="restore-data-root" size="small" :disabled="root.data_root === root.default_data_root" @click="restoreDefaultRoot">恢复默认路径</el-button></template></div>
+    <div v-if="root" class="root-summary">
+      <span>{{ root.persistent ? '全局数据根' : '临时测试数据根' }}</span>
+      <code :title="root.persistent ? root.data_root : undefined">{{ root.data_root }}</code>
+      <span>{{ root.site_count }} 个局点</span>
+      <template v-if="root.persistent">
+        <span>磁盘：{{ root.disk?.drive_root || '未知' }}（{{ root.disk?.drive_type || '未知' }}）</span>
+        <span>剩余：{{ formatBytes(root.disk?.free_bytes || 0) }}</span>
+        <span>推荐：<code>{{ root.recommended_data_root }}</code></span>
+        <el-button data-testid="verify-data-root" size="small" :disabled="busy" @click="verifyRoot">验证目录</el-button>
+        <el-button data-testid="migrate-data-root" size="small" :disabled="busy" @click="chooseRoot">选择并迁移</el-button>
+        <el-button data-testid="restore-data-root" size="small" :disabled="root.data_root === root.default_data_root || busy" @click="restoreDefaultRoot">恢复默认路径</el-button>
+      </template>
+    </div>
+    <el-alert v-if="root?.persistent && root.disk?.is_system_drive" type="info" :closable="false" show-icon title="建议将 NetConsole 业务数据存放在非系统盘，以降低系统重装或系统盘空间不足造成的数据风险。继续使用 C 盘不会影响软件正常运行。" />
+    <el-alert v-if="root?.persistent && root.disk?.warnings?.length" type="warning" :closable="false" show-icon :title="root.disk.warnings.join('；')" />
     <div v-if="root?.persistent" class="site-batch-toolbar">
       <el-checkbox :model-value="sites.length > 0 && selectedBundleSites.length === sites.length" :indeterminate="selectedBundleSites.length > 0 && selectedBundleSites.length < sites.length" :disabled="busy" @change="(checked: boolean) => { selectedBundleSites = checked ? sites.map((site) => site.site_id) : [] }">{{ siteStorageText('site_storage.batch_export.select_all', '选择全部局点') }}</el-checkbox>
       <span>{{ siteStorageText('site_storage.batch_export.instructions', '勾选要打包的局点，再点击“批量导出轻量包”') }}</span>

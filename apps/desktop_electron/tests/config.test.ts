@@ -116,7 +116,6 @@ describe('desktop config', () => {
       },
       fileExists: () => true,
     })
-
     expect(config.dataRoot).toBe('C:\\NetConsoleData')
   })
 

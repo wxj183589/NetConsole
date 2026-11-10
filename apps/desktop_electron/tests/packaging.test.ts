@@ -98,6 +98,7 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('GetDriveTypeW')
     expect(script).toContain('优先非系统盘，C 盘也可用')
     expect(script).not.toContain('禁止将业务数据存放在系统盘')
+    expect(script).not.toContain('当前配置禁止将业务数据存放在系统盘')
     expect(script).toContain('REUSE_EXISTING_DATA')
     expect(script).toContain('FRESH_CLEAN_INSTALL')
     expect(script).toContain('MIGRATE_EXISTING_DATA')

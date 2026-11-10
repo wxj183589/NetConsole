@@ -2,15 +2,15 @@
 
 ## 安装器选择与机器级指针
 
-Windows 的 electron-builder NSIS 向导先选择程序安装位置，再显示“选择 NetConsole 数据存放位置”页面。该页面说明数据库、MR/MESH 原始日志、采集文件、报告和备份会持续增长，优先推荐非系统本地固定磁盘，但 C 盘的合法目录也可以使用；它检查目录可写、可重命名、SQLite 写锁、至少 10 GB 可用空间，并推荐 100 GB 以上。
+Windows 的 electron-builder NSIS 向导先选择程序安装位置，再显示“选择 NetConsole 数据存放位置”页面。该页面说明数据库、MR/MESH 原始日志、采集文件、报告和备份会持续增长，默认优先推荐非系统本地固定磁盘；C 盘和其他具有有效读写权限的本地路径始终合法。它检查目录可写、可重命名、SQLite 写锁、文件系统兼容性和可用空间，并推荐 100 GB 以上。
 
 安装器先规范化路径并在零写入状态下识别目录状态：不存在、空目录、合法旧数据根以及含普通文件的目录都允许继续，普通文件会原样保留。只有 NetConsole 必需路径 `config/`、`sites/`、`runtime/`、`agents/`、`migrations/`、`staging/` 或 `config/storage-manifest.json` 已被错误类型文件/符号链接占用，才按真实路径冲突停止。随后执行可写与重命名探测；探测成功后不得再按“目录非空”拒绝。探测只在候选根内部创建带唯一后缀的 `.netconsole-install-probe-*.tmp`，写入固定短内容、刷新并关闭句柄后，在同一目录重命名为 `.tmp.renamed`，回读内容并删除本轮探测文件。探测不使用安装器 `%TEMP%`、不跨卷移动、不重命名数据根、也不读取或覆盖现有数据库和采集文件。失败提示记录具体步骤和 Win32 错误码，并区分目录创建/写入、权限、占用、文件系统重命名能力、回读和清理；已有数据根中的历史探测残留不得导致新探测名称冲突。
 
-安装器在发布机器级指针前调用打包 Backend 完成候选根校验，并在真正空根中原子创建完整目录结构、`config/storage-manifest.json`、一个已登记但不含示例设备的空局点及 `application.json`；该首启初始化幂等且失败会回滚已创建的局点/配置。已有 manifest 只做兼容性校验，损坏、根不一致或版本不兼容时安装失败且原文件不被覆盖。校验和初始化全部成功后，唯一持久化路径指针才写入 `HKLM\Software\NetConsole\DataRoot`。manifest 记录 `format_version`、`data_root`、`created_at`、`last_opened_at`、`installation_id`、schema 和迁移兼容字段。运行时优先使用显式 `NETCONSOLE_DATA_ROOT`，否则读取该机器级指针；未配置时停止启动，绝不回退 LocalAppData、用户目录、安装目录或仓库，也不自动猜测 C 盘路径。
+安装器在发布机器级指针前调用打包 Backend 完成候选根校验，并在真正空根中原子创建完整目录结构、`config/storage-manifest.json`、一个已登记但不含示例设备的空局点及 `application.json`；该首启初始化幂等且失败会回滚已创建的局点/配置。已有 manifest 只做兼容性校验，损坏、根不一致或版本不兼容时安装失败且原文件不被覆盖。校验和初始化全部成功后，唯一持久化路径指针才写入机器级注册表。manifest 记录 `format_version`、`data_root`、`created_at`、`last_opened_at`、`installation_id`、schema 和迁移兼容字段。运行时优先使用显式 `NETCONSOLE_DATA_ROOT`，否则读取该机器级指针；便携版使用程序目录旁的 `portable-data-root.json` 和程序目录下的 `data` 默认根；未配置时停止启动，不会静默切换到其他空根。首次初始化优先选择可用的非系统固定磁盘，若不存在则推荐 C 盘下的 `C:\ProgramData\NetConsole\Data`，不会因为位于 C 盘而拒绝。
 
 空目录直接初始化为新数据根；已有 manifest 或 `config/` + `sites/` 的合法根会原样复用；含无冲突普通文件的目录在保留原文件的同时创建 NetConsole 必需结构。安装器不会自动拼接 `NetConsoleData` 子目录，也不会删除、改名或覆盖用户已有文件。枚举会输出实际条目并跳过 `.`、`..` 和旧 v1.4.3 固定名称探测残留，便于诊断 Windows 空目录或历史探测状态。升级/修复默认继续使用已登记根；选择不同根时，打包后的 Backend 在更新注册表前执行 sibling staging、SQLite 校验和原子发布，旧根保持不删除。普通卸载保留数据根及其机器级指针。
 
-`app_root` 是程序和只读资源位置，`data_root` 是唯一的业务数据位置，`site_root` 是 `<data_root>/sites/<site_id>`。路径事实源是 `src/netconsole/core/paths.py`，运行时不得从当前工作目录、源码目录、安装目录、用户目录、LocalAppData 或系统 Temp 推导数据根。
+`app_root` 是程序和只读资源位置，`data_root` 是唯一的业务数据位置，`site_root` 是 `<data_root>/sites/<site_id>`。路径事实源是 `src/netconsole/core/paths.py`，运行时不得从当前工作目录、源码目录、安装目录或系统 Temp 推导数据根；用户明确选择的 C 盘或其他本地路径可以作为数据根。
 
 正式安装包和安装态使用机器级正式数据根；源码/Electron 的真实开发验收使用独立的长期开发数据 Authority：
 
@@ -37,7 +37,14 @@ D:\NetConsoleData
 └─ staging/                # 可恢复的受控迁移暂存
 ```
 
-优先级为：显式 `NETCONSOLE_DATA_ROOT`、便携版程序目录旁的配置文件、安装器写入的 `HKLM\Software\NetConsole\DataRoot`。Electron bootstrap 只保存局点/界面上下文，不是数据根事实源；未配置机器级根时直接失败。候选根必须是绝对路径、可写、本地固定磁盘，不得使用系统临时目录、仓库或安装目录；C 盘是合法但低优先级的显式选择，不满足校验时直接失败，绝不新建用户目录或源码目录的回退数据。便携版默认的程序目录下 `data` 是唯一例外，并由便携标记明确选择。
+优先级为：显式 `NETCONSOLE_DATA_ROOT`、便携版程序目录旁的配置文件、安装器写入的机器级 DataRoot 指针。Electron bootstrap 只保存局点/界面上下文，不是数据根事实源。候选根必须是绝对路径、可写、可被 SQLite 访问且不在 Temp、仓库或程序安装目录内；系统盘、用户自定义 C 盘目录和非系统盘均可用。网络盘、可移动盘和临时介质会显示稳定性风险提示，只有磁盘不可访问、权限不足、文件系统不兼容或空间不足时才阻止继续。便携版默认的程序目录下 `data` 是唯一例外，并由便携标记明确选择。
+
+## 磁盘选择策略
+
+- 默认优先 `D:\NetConsoleData` 或其他可用的非系统固定磁盘；不存在可用非系统盘时推荐 `C:\ProgramData\NetConsole\Data`。
+- C 盘始终是合法的数据根位置。界面提示“建议将 NetConsole 业务数据存放在非系统盘，以降低系统重装或系统盘空间不足造成的数据风险。继续使用 C 盘不会影响软件正常运行。”，但不阻止继续。
+- 目录验证显示当前路径、所在磁盘、磁盘类型、总空间、剩余空间、推荐位置和风险提示，并执行读写、同目录重命名、SQLite 写锁及文件系统兼容性检查。
+- 空间不足只提示并允许用户改选其他位置；程序升级、卸载、Portable 目录删除和迁移失败都不得清空历史数据或静默切换到空白 DataRoot。
 
 自动化测试必须以 `RuntimeMode.TEST` 显式设置 `NETCONSOLE_DATA_ROOT=<repository-parent>/test-data/NetConsole/<run-id>`。未设置、直接使用测试根、或位于该根以外都会失败；测试结束仅清理自己的 `run-id`。源码真实开发验收由调用方显式选择 `D:\NetConsoleData-dev`，不得用测试根替代长期开发 Authority。
 

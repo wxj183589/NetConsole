@@ -28,6 +28,10 @@ from netconsole.core.device_credential_store import (
 )
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.paths import PathResolver
+from netconsole.core.data_root_configuration import (
+    describe_data_root_location,
+    recommended_data_root,
+)
 from netconsole.core.runtime_environment import persistent_storage
 from netconsole.services.site_manager import DEFAULT_SITE, SiteManager
 from netconsole.core.version import APP_VERSION
@@ -110,8 +114,11 @@ class DataRootSnapshot:
     storage_mode: str
     data_root_kind: str
     persistent: bool
+    disk: dict[str, object] | None = None
+    recommended_data_root: Path | None = None
 
     def to_public(self) -> dict[str, object]:
+        disk = self.disk or {}
         return {
             "data_root": str(self.data_root) if self.persistent else "<temporary>",
             "default_data_root": str(self.default_data_root)
@@ -122,6 +129,10 @@ class DataRootSnapshot:
             "storage_mode": self.storage_mode,
             "data_root_kind": self.data_root_kind,
             "persistent": self.persistent,
+            "disk": disk,
+            "recommended_data_root": str(self.recommended_data_root)
+            if self.recommended_data_root is not None and self.persistent
+            else "<unavailable>",
         }
 
 
@@ -1491,6 +1502,7 @@ class DataRootApplicationService:
         )
 
         mode = desktop_storage_mode()
+        disk = None if not persistent_storage() else describe_data_root_location(self.paths.data_root).to_public()
         return DataRootSnapshot(
             self.paths.data_root,
             _default_data_root(self.paths),
@@ -1499,16 +1511,21 @@ class DataRootApplicationService:
             mode,
             "temporary" if mode == "isolated_test" else "persistent",
             persistent_storage(),
+            disk,
+            recommended_data_root(),
         )
 
     def validate(self, target: Path) -> dict[str, object]:
         candidate = self._validate_target(target)
+        disk = describe_data_root_location(candidate).to_public()
         return {
             "valid": True,
             "path": str(candidate),
             "free_bytes": shutil.disk_usage(
                 candidate if candidate.exists() else candidate.parent
             ).free,
+            "disk": disk,
+            "recommended_data_root": str(recommended_data_root()),
         }
 
     def migrate(

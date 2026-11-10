@@ -134,6 +134,16 @@ export interface DataRootSnapshot {
   storage_mode: 'persistent' | 'isolated_test'
   data_root_kind: 'persistent' | 'temporary'
   persistent: boolean
+  disk?: {
+    drive_root: string
+    drive_type: string
+    drive_type_code?: number | null
+    is_system_drive: boolean
+    total_bytes?: number | null
+    free_bytes?: number | null
+    warnings: string[]
+  }
+  recommended_data_root?: string
 }
 
 export interface SiteTaskResponse { task_id: string; task_type: string }
@@ -239,7 +249,7 @@ export const exportLightweightBundle = (siteIds: string[], destinationPath: stri
   body: JSON.stringify({ site_ids: siteIds, destination_path: destinationPath, table_preferences: tablePreferences }),
 })
 export const importSite = (payload: { package_path: string; site_id?: string; display_name?: string; replace_site_id?: string; raw_only?: boolean; conflict_resolutions?: SiteConflictResolution[] }, authorizationToken = SITE_OPERATION_AUTHORIZATION.import) => apiRequest<SiteTaskResponse>('/api/v1/sites/import', { method: 'POST', body: JSON.stringify({ ...payload, authorization_token: authorizationToken }) })
-export const validateDataRoot = (path: string) => apiRequest<{ valid: boolean; path: string; free_bytes: number }>('/api/v1/storage/data-root/validate', { method: 'POST', body: JSON.stringify({ path }) })
+export const validateDataRoot = (path: string) => apiRequest<{ valid: boolean; path: string; free_bytes: number; disk?: DataRootSnapshot['disk']; recommended_data_root?: string }>('/api/v1/storage/data-root/validate', { method: 'POST', body: JSON.stringify({ path }) })
 export const migrateDataRoot = (path: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.dataRootMigration) => apiRequest<SiteTaskResponse>('/api/v1/storage/data-root/migrate', { method: 'POST', body: JSON.stringify({ path, authorization_token: authorizationToken }) })
 export const migrateSite = (siteId: string, destinationRoot: string, authorizationToken = SITE_OPERATION_AUTHORIZATION.migrate) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/migrate`, { method: 'POST', body: JSON.stringify({ destination_root: destinationRoot, authorization_token: authorizationToken }) })
 export const auditSite = (siteId: string) => apiRequest<SiteTaskResponse>(`/api/v1/sites/${encodeURIComponent(siteId)}/audit`, { method: 'POST' })

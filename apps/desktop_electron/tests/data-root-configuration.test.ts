@@ -137,7 +137,7 @@ describe('desktop machine data-root configuration', () => {
 
   it('turns missing installer configuration into a user-facing recovery message', () => {
     const message = formatDesktopDataRootConfigurationError(
-      new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置。'),
+      new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择数据存放位置；优先推荐非系统盘，也可以使用 C:\\ProgramData\\NetConsole\\Data。'),
     )
     expect(message).toContain('尚未完成数据目录配置')
     expect(message).toContain('重新运行安装程序')

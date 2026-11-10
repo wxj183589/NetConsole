@@ -237,6 +237,7 @@ Var NetConsoleDataRootProbeErrorSource
 Var NetConsoleDataRootNormalized
 Var NetConsoleDataRootDriveRoot
 Var NetConsoleDataRootDriveType
+    Var NetConsoleDataRootDriveWarning
 Var NetConsoleDataRootExists
 
 {normalizer}
