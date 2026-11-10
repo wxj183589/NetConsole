@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import MeshMetricChart, { type MeshMonitorWindow } from './MeshMetricChart.vue'
 import NcDataTable from '../table/NcDataTable.vue'
 import type { NcTableColumn } from '../table/NcTableColumn'
-import { getMeshBusinessSummary, listMeshApSignalStatistics, listMeshLinks, listMeshParseIssues, listMeshActiveBuildOrder } from '../../api/meshAnalysis'
+import { getMeshBusinessSummary, listMeshApSignalStatistics, listMeshLinks, listMeshParseIssues, listMeshActiveBuildOrder, type QueryValue } from '../../api/meshAnalysis'
 import type { MeshActiveBuildOrder, MeshAnalysisSession, MeshApSignal, MeshBusinessSummary, MeshLinkDetail, MeshParseIssue, MeshApSignalPage } from '../../types/meshAnalysis'
 import { buildMeshBusinessMetricGroups, meshMetricLabels, type MeshBusinessMetricKey, type MeshBusinessMetricGroup } from './meshBusinessMetrics'
 import { meshLoadingPhaseLabel, type MeshLoadingPhase } from './meshLoadingState'
@@ -14,6 +14,8 @@ import { MeshCompleteMetricCache } from './meshCompleteMetricCache'
 import { MeshWindowPageCache } from './meshWindowPageCache'
 import { MESH_RAW_SAMPLE_VERSION, MeshRawSampleCache, deriveMeshRawSamples, meshRawIntervalQuery, meshRawRequestInterval, meshRawScopeKey, type MeshRawQuery } from './meshRawSampleCache'
 import { meshQueryTrace, tracedMeshValues } from './meshQueryTrace'
+import { getMeshHttpTraceSnapshot } from '../../api/meshHttpTrace'
+import { getMeshLifecycleSnapshot } from './meshLifecycleDiagnostics'
 import { loadUiPreference, saveUiPreference } from '../../platform/uiPreferences'
 type Workspace = 'overview' | 'links' | 'rssi' | 'aps' | 'main' | 'switches' | 'artifacts'
 type Status = { phase: MeshLoadingPhase; message: string; cached: boolean }
@@ -79,6 +81,9 @@ const workbenchDiagnosticsOwner = {}
 type WorkbenchDiagnostics = {
   owner: object
   snapshot: () => Record<string, unknown>
+  set_window?: (value: MeshMonitorWindow) => void
+  refresh?: () => void
+  raw_samples?: () => MeshLinkDetail[]
 }
 function workbenchDiagnosticsSnapshot(): Record<string, unknown> {
   return {
@@ -92,6 +97,8 @@ function workbenchDiagnosticsSnapshot(): Record<string, unknown> {
     metric_cache_entries: cache.size,
     raw_cache: rawSampleCache.stats(),
     raw_counters: { http_requests: rawHttpRequests, sql_queries: rawSqlQueries, cache_hits: rawCacheHits, gap_queries: rawGapQueries },
+    http_trace: getMeshHttpTraceSnapshot(),
+    echarts_lifecycle: getMeshLifecycleSnapshot(),
     ap_cache_entries: apCache.size,
     ap_pending: apPending.size,
     records_pending: recordsPending.size,
@@ -105,7 +112,17 @@ function workbenchDiagnosticsSnapshot(): Record<string, unknown> {
 function publishWorkbenchDiagnostics(): void {
   if (!import.meta.env.DEV || typeof globalThis === 'undefined') return
   const target = globalThis as typeof globalThis & { [WORKBENCH_DIAGNOSTICS_GLOBAL]?: WorkbenchDiagnostics }
-  target[WORKBENCH_DIAGNOSTICS_GLOBAL] = { owner: workbenchDiagnosticsOwner, snapshot: workbenchDiagnosticsSnapshot }
+  target[WORKBENCH_DIAGNOSTICS_GLOBAL] = {
+    owner: workbenchDiagnosticsOwner,
+    snapshot: workbenchDiagnosticsSnapshot,
+    set_window: value => setWindow(value),
+    refresh: () => refreshData(),
+    raw_samples: () => {
+      const request = meshRawRequestInterval(rawQuery(query()))
+      if (!request) return []
+      return rawSampleCache.all(`${props.sessionId}|${meshRawScopeKey(rawQuery(query()))}`, request.end)
+    },
+  }
 }
 publishWorkbenchDiagnostics()
 type PageQuery = ReturnType<typeof query> & { page: number; page_size: number }
@@ -217,25 +234,29 @@ async function loadRawSamples(values: ReturnType<typeof query>, signal: AbortSig
 }
 function legacyMetricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false): Promise<MeshLinkPage> {
   const source = metricSource(key), id = `${props.sessionId}|${source}|${JSON.stringify(values)}`
+  const operationId = meshQueryTrace.begin('legacy_metric', id)
   if (refresh) legacySourceQueryCache.delete(id)
   const cached = legacySourceQueryCache.get(id)
-  if (cached) return Promise.resolve(cached)
+  if (cached) { meshQueryTrace.cache(operationId, 'legacy_metric', 'hit', 'source page cache'); return Promise.resolve(cached) }
   if (!refresh) {
     const complete = legacyCompleteMetricCache.get(`${props.sessionId}|${source}`, values)
     if (complete) {
       legacySourceQueryCache.set(id, complete)
+      meshQueryTrace.cache(operationId, 'legacy_metric', 'hit', 'complete metric cache')
       return Promise.resolve(complete)
     }
   }
   const pending = legacySourceQueryPending.get(id)
-  if (pending) return pending
-  const task = listMeshLinks(props.sessionId, { ...values, metric_group: source, max_points: 1000, page_size: 1000 }, signal).then(result => {
+  if (pending) { meshQueryTrace.cache(operationId, 'legacy_metric', 'hit', 'pending request'); return pending }
+  meshQueryTrace.cache(operationId, 'legacy_metric', 'miss', 'legacy backend fallback')
+  const task = listMeshLinks(props.sessionId, tracedMeshValues({ ...values, metric_group: source, max_points: 1000, page_size: 1000 }, operationId), signal).then(result => {
+    meshQueryTrace.http(operationId, 'legacy_metric', result)
     if (!signal.aborted) {
       legacySourceQueryCache.set(id, result)
       legacyCompleteMetricCache.put(`${props.sessionId}|${source}`, values, result)
     }
     return result
-  })
+  }).catch(error => { meshQueryTrace.error(operationId, 'legacy_metric', error); throw error })
   legacySourceQueryPending.set(id, task)
   void task.finally(() => { if (legacySourceQueryPending.get(id) === task) legacySourceQueryPending.delete(id) }).catch(() => undefined)
   return task
@@ -256,7 +277,7 @@ async function loadMetric(key: MeshBusinessMetricKey, refresh = false): Promise<
   const local = generation, signal = mainController.signal, values = query(), id = `${props.sessionId}|${key}|${JSON.stringify(values)}`
   if (pending.has(id)) return pending.get(id)
   const hit = cache.get(id)
-  if (hit && !refresh) { phase(key, 'RENDERING', '正在绘制缓存图表', true); accept(key, hit.rows, hit.group) }
+  if (hit && !refresh) { phase(key, 'RENDERING', '正在绘制缓存图表', true); accept(key, hit.rows, hit.group); return }
   phase(key, 'QUERYING', `${hit ? '正在刷新' : '正在查询'} ${definitions.find(d => d.key === key)?.label} 数据`, Boolean(hit))
   const task = (async () => {
     try {
@@ -424,6 +445,13 @@ function selectTime(time: string, fixed = false): void {
   if (selectionTimer) return
   selectionTimer = setTimeout(() => { selectionTimer = undefined; void locateTime(requestedTime) }, fixed ? 0 : 80)
 }
+function tracedMeshLinkPage(queryKind: string, values: Record<string, QueryValue>, signal: AbortSignal, detail = ''): Promise<MeshLinkPage> {
+  const operationId = meshQueryTrace.begin(queryKind, detail || JSON.stringify(values))
+  meshQueryTrace.cache(operationId, queryKind, 'bypass', 'direct link query')
+  return listMeshLinks(props.sessionId, tracedMeshValues(values, operationId), signal)
+    .then(result => { meshQueryTrace.http(operationId, queryKind, result); return result })
+    .catch(error => { meshQueryTrace.error(operationId, queryKind, error); throw error })
+}
 async function locateTime(time: string): Promise<void> {
   const values = { ...query(), link_role: 'ACTIVE', include_zero: false }, id = `${props.sessionId}|${JSON.stringify(values)}|${time}`
   const rawRequest = rawQuery(values), rawInterval = meshRawRequestInterval(rawRequest), rawScopeKey = rawInterval ? `${props.sessionId}|${meshRawScopeKey(rawRequest)}` : ''
@@ -439,7 +467,7 @@ async function locateTime(time: string): Promise<void> {
     if (rawInterval && fallbackFor(rawScopeKey, rawInterval)) {
       let result: MeshLinkPage
       try {
-        result = await listMeshLinks(props.sessionId, { ...values, nearest_time: time, page_size: 1 }, signal)
+        result = await tracedMeshLinkPage('nearest', { ...values, nearest_time: time, page_size: 1 }, signal, `${id}|fallback`)
       } catch (fallbackError) {
         if (!signal.aborted && current === selectionGeneration) selectionMessage.value = fallbackError instanceof Error ? fallbackError.message : '时间点查询失败，请重试'
         return
@@ -456,7 +484,7 @@ async function locateTime(time: string): Promise<void> {
   } catch (error) {
     if (signal.aborted || current !== selectionGeneration) return
     try {
-      const result = await listMeshLinks(props.sessionId, { ...values, nearest_time: time, page_size: 1 }, signal)
+      const result = await tracedMeshLinkPage('nearest', { ...values, nearest_time: time, page_size: 1 }, signal, `${id}|raw-error`)
       if (current !== selectionGeneration || local !== generation || signal.aborted) return
       const row = result.items.find(row => row.link_role === 'ACTIVE' && row.link_count !== 0) || null
       selectionCache.set(id, row); while (selectionCache.size > 128) selectionCache.delete(selectionCache.keys().next().value!)
@@ -500,7 +528,7 @@ async function openContext(context: { ap?: string; radio?: number | null; start:
     const rows = await loadRawSamples(values, signal).catch(() => [])
     if (local !== generation || signal.aborted) return
     if (interval && fallbackFor(scopeKey, interval)) {
-      const result = await listMeshLinks(props.sessionId, { ...values, time_from: context.focus, time_to: context.focus, page_size: 1 }, signal).catch(() => null)
+      const result = await tracedMeshLinkPage('context_focus', { ...values, time_from: context.focus, time_to: context.focus, page_size: 1 }, signal, `${props.sessionId}|${context.focus}`).catch(() => null)
       if (local === generation && result?.items[0]?.link_role === 'ACTIVE' && result.items[0].link_count !== 0) selectLink(result.items[0])
     } else {
       const row = nearest(rows, context.focus)

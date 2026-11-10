@@ -74,6 +74,7 @@ from netconsole.models.api.mesh_analysis import (
     MeshTracksideSignalRangeDTO,
     MeshTracksideSignalSeriesDTO,
     MeshTimelineDTO,
+    MeshSqlQueryRangeDTO,
 )
 from netconsole.models.mesh_analysis_params import mesh_analysis_params_from_json, mesh_analysis_params_to_json
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY
@@ -1037,6 +1038,7 @@ class MeshAnalysisQueryService:
         direction = "DESC" if sort_order == "desc" else "ASC"
         sort_column = {"timestamp": "ml.sample_time", "rssi": "ml.local_rssi_db", "peer_ap_name": "ml.peer_ap_name"}.get(sort_by, "ml.sample_time")
         sql_query_count = 0
+        sql_query_ranges: list[MeshSqlQueryRangeDTO] = []
         with closing(self._connect_readonly(context.detail_db)) as conn:
             def _trace(statement: str) -> None:
                 nonlocal sql_query_count
@@ -1217,6 +1219,7 @@ class MeshAnalysisQueryService:
             if raw_samples:
                 database_total = total
                 target_rows = [dict(item) for item in cursor]
+                target_sql_count = len(target_rows)
                 if len(target_rows) > raw_max_rows:
                     target_rows = target_rows[:raw_max_rows]
                 visible_rows = [*target_rows, *zero_rows] if include_zero else target_rows
@@ -1233,6 +1236,32 @@ class MeshAnalysisQueryService:
                 for item in context_rows:
                     item["is_boundary_context"] = True
                 raw_context_count = len(context_rows)
+                sql_query_ranges = [
+                    MeshSqlQueryRangeDTO(
+                        purpose="target_count",
+                        time_from=time_from or None,
+                        time_to=time_to or None,
+                        visible=False,
+                        record_count=database_total,
+                    ),
+                    MeshSqlQueryRangeDTO(
+                        purpose="target_rows",
+                        time_from=time_from or None,
+                        time_to=time_to or None,
+                        visible=True,
+                        record_count=target_sql_count,
+                    ),
+                ]
+                if include_context and target_rows:
+                    sql_query_ranges.append(
+                        MeshSqlQueryRangeDTO(
+                            purpose="boundary_context",
+                            time_from=None,
+                            time_to=time_from or None,
+                            visible=False,
+                            record_count=raw_context_count,
+                        )
+                    )
                 rows = sorted(
                     [*context_rows, *visible_rows],
                     key=lambda item: (str(item.get("sample_time") or ""), int(item.get("id") or 0)),
@@ -1360,6 +1389,7 @@ class MeshAnalysisQueryService:
             raw_context_count=raw_context_count,
             coverage_time_from=time_from or None,
             coverage_time_to=time_to or None,
+            sql_query_ranges=sql_query_ranges,
             query_id=query_id,
             operation_id=operation_id or None,
         )

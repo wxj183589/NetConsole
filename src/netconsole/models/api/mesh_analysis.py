@@ -643,6 +643,14 @@ class MeshLinkDetailDTO(ApiModel):
     warning: str | None = None
 
 
+class MeshSqlQueryRangeDTO(ApiModel):
+    purpose: str
+    time_from: str | None = None
+    time_to: str | None = None
+    visible: bool = False
+    record_count: int = 0
+
+
 class MeshLinkPageDTO(ApiModel):
     items: list[MeshLinkDetailDTO] = Field(default_factory=list)
     total: int = 0
@@ -658,6 +666,7 @@ class MeshLinkPageDTO(ApiModel):
     raw_context_count: int = 0
     coverage_time_from: str | None = None
     coverage_time_to: str | None = None
+    sql_query_ranges: list[MeshSqlQueryRangeDTO] = Field(default_factory=list)
     query_id: str | None = None
     operation_id: str | None = None
 

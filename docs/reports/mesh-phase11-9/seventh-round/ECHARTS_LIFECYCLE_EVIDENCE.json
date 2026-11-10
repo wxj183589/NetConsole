@@ -1,0 +1,12 @@
+{
+  "status": "PASS_FOR_OBSERVED_RUNTIME",
+  "diagnostics": {"enabled_in": ["development", "test"], "production_default": false, "global_monkey_patch": false},
+  "session_id": "80716c07-6bd9-47d8-b76d-ace1e55624d1:1",
+  "snapshots": [
+    {"stage": "all_13_charts_loaded", "component_count": 13, "active_echarts_instances": 13, "init_count": 13, "dispose_count": 0, "active_canvas_count": 13, "wheel_listeners": 13, "datazoom_listeners": 13, "tooltip_listeners": 13, "resize_observers": 13, "native_listener_count": 52, "mount_count": 13, "unmount_count": 0, "inflight_mesh_requests": 0},
+    {"stage": "left_workbench", "component_count": 0, "active_echarts_instances": 0, "init_count": 26, "dispose_count": 26, "active_canvas_count": 0, "wheel_listeners": 0, "datazoom_listeners": 0, "tooltip_listeners": 0, "resize_observers": 0, "native_listener_count": 0, "mount_count": 26, "unmount_count": 26, "inflight_mesh_requests": 0},
+    {"stage": "returned_lazy_viewport", "component_count": 5, "active_echarts_instances": 5, "init_count": 31, "dispose_count": 26, "active_canvas_count": 5, "wheel_listeners": 5, "datazoom_listeners": 5, "tooltip_listeners": 5, "resize_observers": 5, "native_listener_count": 20, "mount_count": 31, "unmount_count": 26, "inflight_mesh_requests": 0},
+    {"stage": "returned_all_13_after_scroll", "component_count": 13, "active_echarts_instances": 13, "init_count": 39, "dispose_count": 26, "active_canvas_count": 13, "wheel_listeners": 13, "datazoom_listeners": 13, "tooltip_listeners": 13, "resize_observers": 13, "native_listener_count": 52, "mount_count": 39, "unmount_count": 26, "inflight_mesh_requests": 0}
+  ],
+  "leave_invariant": {"active_echarts_instances": 0, "active_canvas_count": 0, "wheel_listeners": 0, "datazoom_listeners": 0, "tooltip_listeners": 0, "resize_observers": 0, "native_listener_count": 0, "inflight_mesh_requests": 0}
+}

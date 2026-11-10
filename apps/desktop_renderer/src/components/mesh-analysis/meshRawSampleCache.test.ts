@@ -63,6 +63,10 @@ describe('MESH raw sample cache', () => {
     expect(requested).toEqual([{ start: BASE + 1_001, end: BASE + 1_999 }])
     expect(cache.missing('scope', { start: BASE, end: BASE + 3_000 })).toEqual([])
     expect(cache.all('scope')).toHaveLength(5)
+    expect(cache.stats().coverage).toEqual([{
+      scopeKey: 'scope',
+      intervals: [{ start: BASE, end: BASE + 3_000 }],
+    }])
   })
 
   it('does not advance coverage for incomplete responses and evicts the least recently used scope', () => {

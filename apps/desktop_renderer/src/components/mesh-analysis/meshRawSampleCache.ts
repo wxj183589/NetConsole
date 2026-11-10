@@ -85,6 +85,7 @@ export type MeshRawCacheStats = {
   scopes: number
   samples: number
   coveredIntervals: number
+  coverage: Array<{ scopeKey: string; intervals: Interval[] }>
 }
 
 /**
@@ -159,11 +160,13 @@ export class MeshRawSampleCache {
   stats(): MeshRawCacheStats {
     let samples = 0
     let coveredIntervals = 0
-    for (const scope of this.scopes.values()) {
+    const coverage: Array<{ scopeKey: string; intervals: Interval[] }> = []
+    for (const [scopeKey, scope] of this.scopes.entries()) {
       samples += scope.samples.size
       coveredIntervals += scope.coverage.length
+      coverage.push({ scopeKey, intervals: scope.coverage.map(interval => ({ ...interval })) })
     }
-    return { scopes: this.scopes.size, samples, coveredIntervals }
+    return { scopes: this.scopes.size, samples, coveredIntervals, coverage }
   }
 
   private evict(): void {

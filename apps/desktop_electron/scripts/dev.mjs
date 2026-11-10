@@ -17,6 +17,7 @@ const typescriptCli = resolve(dirname(require.resolve('typescript/package.json')
 const buildScript = resolve(appRoot, 'scripts', 'build.mjs')
 const devPort = Number.parseInt(process.env.NETCONSOLE_DEV_PORT || '5173', 10)
 if (!Number.isInteger(devPort) || devPort < 1 || devPort > 65_535) throw new Error('NETCONSOLE_DEV_PORT must be a valid TCP port')
+const devToolsPort = resolveOptionalPort(process.env.NETCONSOLE_DEVTOOLS_PORT, 'NETCONSOLE_DEVTOOLS_PORT')
 const devUrl = `http://127.0.0.1:${devPort}`
 const smoke = process.argv.includes('--smoke') || process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1'
 const taskCenterSmoke = process.argv.includes('--task-center') || process.argv.includes('--task-window')
@@ -43,6 +44,13 @@ function resolveCodexBackendPort(value) {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {
     throw new Error('NETCONSOLE_DEV_BACKEND_PORT must be between 1 and 65535')
   }
+  return port
+}
+
+function resolveOptionalPort(value, name) {
+  if (value == null || value.trim() === '') return 0
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error(`${name} must be between 1 and 65535`)
   return port
 }
 
@@ -312,7 +320,10 @@ try {
   delete electronEnv.NETCONSOLE_DEV_TEMP_USER_DATA_ROOT
   delete electronEnv.NETCONSOLE_STORAGE_MODE
   if (codex) process.stdout.write('Electron starting\n')
-  electron = spawn(electronExecutable, [appRoot], {
+  electron = spawn(electronExecutable, [
+    ...(devToolsPort ? [`--remote-debugging-port=${devToolsPort}`] : []),
+    appRoot,
+  ], {
     cwd: projectRoot,
     stdio: 'inherit',
     shell: false,

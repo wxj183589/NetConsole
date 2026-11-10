@@ -3,6 +3,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MeshMetricChart from './MeshMetricChart.vue'
 import { formatMeshViewportTimestamp as stamp, meshTimestampMillis as millis } from './meshChartViewport'
+import { getMeshLifecycleSnapshot } from './meshLifecycleDiagnostics'
 
 const echarts = vi.hoisted(() => {
   type Listener = (event?: any) => void
@@ -323,6 +324,31 @@ describe('MeshMetricChart lifecycle and shared timeline', () => {
     staleFinished(); resizeObservers[0].callback()
     expect(wrapper.emitted('render-complete')).toBeUndefined()
     expect(chart.resize).toHaveBeenCalledTimes(1)
+  })
+
+  it('publishes balanced ECharts and listener lifecycle counts for a real chart component', async () => {
+    const before = getMeshLifecycleSnapshot()
+    const wrapper = mounted({ window: domain })
+    await visible(wrapper)
+    const active = getMeshLifecycleSnapshot()
+    expect(active.component_count).toBe(before.component_count + 1)
+    expect(active.active_echarts_instances).toBe(before.active_echarts_instances + 1)
+    expect(active.datazoom_listeners).toBe(before.datazoom_listeners + 1)
+    expect(active.tooltip_listeners).toBe(before.tooltip_listeners + 1)
+    expect(active.wheel_listeners).toBe(before.wheel_listeners + 1)
+    expect(active.resize_observers).toBe(before.resize_observers + 1)
+    wrapper.unmount()
+    const after = getMeshLifecycleSnapshot()
+    expect(after.component_count).toBe(before.component_count)
+    expect(after.active_echarts_instances).toBe(before.active_echarts_instances)
+    expect(after.datazoom_listeners).toBe(before.datazoom_listeners)
+    expect(after.tooltip_listeners).toBe(before.tooltip_listeners)
+    expect(after.wheel_listeners).toBe(before.wheel_listeners)
+    expect(after.resize_observers).toBe(before.resize_observers)
+    expect(after.init_count).toBe(before.init_count + 1)
+    expect(after.dispose_count).toBe(before.dispose_count + 1)
+    expect(after.mount_count).toBe(before.mount_count + 1)
+    expect(after.unmount_count).toBe(before.unmount_count + 1)
   })
 
   it('does not initialize if unmounted while its asynchronous render is pending', async () => {
