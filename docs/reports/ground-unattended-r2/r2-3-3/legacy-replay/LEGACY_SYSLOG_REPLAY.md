@@ -30,4 +30,3 @@
 ## 原始时间阶段限制
 
 归档没有原始 `Raw Persist Time`、`Parse Complete Time`、`Position Commit Time`、`UI Available Time`。因此本次只报告离线读取、解析、归并和持久化处理耗时，不能从归档反推出线上 Event Time→UI Available 延迟，也不能用于宣称 P95/P99 30 秒指标。
-

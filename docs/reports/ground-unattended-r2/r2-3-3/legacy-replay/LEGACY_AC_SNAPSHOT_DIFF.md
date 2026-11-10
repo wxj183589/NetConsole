@@ -25,4 +25,3 @@ AC `peer_ap_mac` 只作为精确物理 AP 身份种子，未使用模糊名称�
 ## Syslog 优先级边界
 
 Syslog 与 AC 的比较使用 `CONSISTENT`、`SYSLOG_NEWER`、`AC_NEWER`、`STALE`、`UNKNOWN` 等现有状态；本次归档中以 120 秒新鲜度阈值统计为 `AC_NEWER=29`、`STALE=6`。回放只生成对照，不改变 Syslog Current，因此满足 AC 延迟快照不得无条件覆盖更新位置的边界。
-
