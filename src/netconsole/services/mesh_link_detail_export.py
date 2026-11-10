@@ -1458,7 +1458,7 @@ def _metric(row: dict[str, object], metrics: dict[str, object], key: str, fallba
 
 
 def _raw_metric(row: dict[str, object], metrics: dict[str, object], key: str) -> object:
-    """Return a parser value without display formatting or unit conversion."""
+    """Return a raw parser value without presentation conversion."""
 
     return _metric(row, metrics, key)
 

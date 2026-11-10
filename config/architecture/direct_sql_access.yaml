@@ -194,5 +194,6 @@
   {"path":"tests/test_task_repository_initialization.py","classification":"TEST_ONLY","owner":"test","reason":"TaskRepository initialization idempotency tests use isolated temporary tasks.db fixtures."},
   {"path":"tests/test_p7_schema_startup_authority.py","classification":"TEST_ONLY","owner":"test","reason":"P7.3-B authority tests use isolated temporary SQLite and fixture SiteRegistry roots only."},
   {"path":"tests/test_ac_mesh_link_mr_view.py","classification":"TEST_ONLY","owner":"test","reason":"AC MR view tests construct isolated pytest SQLite fixtures only."},
-  {"path":"scripts/dev/ground_v2_system_validation.py","classification":"TEST_ONLY","owner":"test","reason":"Owned Electron validation creates a unique isolated test-data root and reads only its SQLite files for post-shutdown integrity checks."}
+  {"path":"scripts/dev/ground_v2_system_validation.py","classification":"TEST_ONLY","owner":"test","reason":"Owned Electron validation creates a unique isolated test-data root and reads only its SQLite files for post-shutdown integrity checks."},
+  {"path":"tests/test_mesh_raw_sample_query.py","classification":"TEST_ONLY","owner":"mesh","reason":"MESH raw sample query tests build and mutate only isolated pytest SQLite fixtures; no runtime or real data root is accessed."}
 ]
