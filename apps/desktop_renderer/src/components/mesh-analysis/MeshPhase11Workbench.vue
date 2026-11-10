@@ -74,6 +74,40 @@ let rawHttpRequests = 0
 let rawSqlQueries = 0
 let rawCacheHits = 0
 let rawGapQueries = 0
+const WORKBENCH_DIAGNOSTICS_GLOBAL = '__NETCONSOLE_MESH_WORKBENCH_DIAGNOSTICS__'
+const workbenchDiagnosticsOwner = {}
+type WorkbenchDiagnostics = {
+  owner: object
+  snapshot: () => Record<string, unknown>
+}
+function workbenchDiagnosticsSnapshot(): Record<string, unknown> {
+  return {
+    session_id: props.sessionId,
+    workspace: workspace.value,
+    window: { ...windowRange.value },
+    domain: { ...domain.value },
+    completed_metrics: completed.value,
+    status_phases: Object.fromEntries(definitions.map(definition => [definition.key, statuses.value[definition.key].phase])),
+    loaded_metrics: Object.keys(groups.value),
+    metric_cache_entries: cache.size,
+    raw_cache: rawSampleCache.stats(),
+    raw_counters: { http_requests: rawHttpRequests, sql_queries: rawSqlQueries, cache_hits: rawCacheHits, gap_queries: rawGapQueries },
+    ap_cache_entries: apCache.size,
+    ap_pending: apPending.size,
+    records_pending: recordsPending.size,
+    raw_pending: rawPending.size,
+    metric_pending: pending.size,
+    history_total: historyTotal.value,
+    record_total: recordTotal.value,
+    selected_timestamp: selectedLink.value?.timestamp ?? null,
+  }
+}
+function publishWorkbenchDiagnostics(): void {
+  if (!import.meta.env.DEV || typeof globalThis === 'undefined') return
+  const target = globalThis as typeof globalThis & { [WORKBENCH_DIAGNOSTICS_GLOBAL]?: WorkbenchDiagnostics }
+  target[WORKBENCH_DIAGNOSTICS_GLOBAL] = { owner: workbenchDiagnosticsOwner, snapshot: workbenchDiagnosticsSnapshot }
+}
+publishWorkbenchDiagnostics()
 type PageQuery = ReturnType<typeof query> & { page: number; page_size: number }
 type MeshLinkPage = Awaited<ReturnType<typeof listMeshLinks>>
 type RawFallback = { start: number; end: number; result: MeshLinkPage }
@@ -490,7 +524,7 @@ watch(() => props.sessionId, () => {
 }, { immediate: true })
 onDeactivated(() => { pageActive = false; panelObserver?.disconnect(); cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoading.value = false; groups.value = {}; samples.value = {} })
 onActivated(() => { pageActive = true; panelElements.forEach(element => panelObserver?.observe(element)); if (workspace.value === 'main' && !Object.keys(groups.value).length) loadMain() })
-onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); apCache.clear(); apPending.clear(); recordsPending.clear(); meshQueryTrace.clear() })
+onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); apCache.clear(); apPending.clear(); recordsPending.clear(); meshQueryTrace.clear(); const target = globalThis as typeof globalThis & { [WORKBENCH_DIAGNOSTICS_GLOBAL]?: WorkbenchDiagnostics }; if (target[WORKBENCH_DIAGNOSTICS_GLOBAL]?.owner === workbenchDiagnosticsOwner) delete target[WORKBENCH_DIAGNOSTICS_GLOBAL] })
 function roleLabel(row: MeshLinkDetail): string { return row.link_count === 0 ? '未连接（LinkCnt=0）' : row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : row.link_role === 'STANDBY' ? '备用（STANDBY）' : '未知' }
 const apColumns: NcTableColumn<MeshApSignal>[] = [{ key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'station', label: '归属站点' }, { key: 'section', label: '归属区间' }, { key: 'link_role', label: '链路角色', displayValue: row => row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : '备用（STANDBY）' }, { key: 'radio', label: '射频口' }, { key: 'avg_rssi', label: '平均 RSSI' }, { key: 'min_rssi', label: '最低 RSSI' }, { key: 'last_rssi', label: '最近 RSSI' }, { key: 'signal_grade', label: '信号质量' }, { key: 'valid_sample_count', label: '有效采样' }, { key: 'weak_sample_count', label: '低于阈值' }, { key: 'weak_ratio', label: '低信号比例', displayValue: row => row.weak_ratio == null ? '暂无数据' : `${(row.weak_ratio * 100).toFixed(1)}%` }, { key: 'last_seen', label: '最近采样时间' }]
 const parseColumns: NcTableColumn<MeshParseIssue>[] = [{ key: 'severity', label: '级别' }, { key: 'code', label: '异常类型' }, { key: 'message', label: '简要原因' }]
