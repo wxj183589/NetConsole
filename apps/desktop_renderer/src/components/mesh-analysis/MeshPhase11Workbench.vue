@@ -164,7 +164,7 @@ function observePanel(element: unknown, key: MeshBusinessMetricKey): void {
 function metricSource(key: MeshBusinessMetricKey): string { return ['tx_rx', 'retry', 'error', 'garp', 'mul_join'].includes(key) ? 'counters' : ['tx_busy', 'rx_busy'].includes(key) ? 'busy' : key }
 function phase(key: MeshBusinessMetricKey, value: MeshLoadingPhase, message = '', cached = false): void { statuses.value[key] = { phase: value, message: message || meshLoadingPhaseLabel(value), cached } }
 function query() { return { time_from: windowRange.value.start, time_to: windowRange.value.end, radio: filters.value.radio, peer_ap_mac: filters.value.ap, exact_ap: true, link_role: filters.value.role, include_zero: filters.value.include_zero, ...scope.value } }
-function rawQuery(values: ReturnType<typeof query>): MeshRawQuery { return { time_from: values.time_from, time_to: values.time_to, radio: values.radio, peer_ap_mac: values.peer_ap_mac, exact_ap: values.exact_ap, include_zero: true, exclude_depot: values.exclude_depot, exclude_parking: values.exclude_parking } }
+function rawQuery(values: ReturnType<typeof query>): MeshRawQuery { return { time_from: values.time_from, time_to: values.time_to, radio: values.radio, peer_ap_mac: values.peer_ap_mac, exact_ap: values.exact_ap, link_role: '', include_zero: true, exclude_depot: values.exclude_depot, exclude_parking: values.exclude_parking } }
 function filterRawRows(values: ReturnType<typeof query>, rows: MeshLinkDetail[]): MeshLinkDetail[] {
   return rows.filter(row => {
     if (!values.include_zero && row.link_count === 0) return false
@@ -225,7 +225,7 @@ async function loadRawSamples(values: ReturnType<typeof query>, signal: AbortSig
   if (refresh) prepareRawRefresh(values)
   if (fallbackFor(scopeKey, interval)) {
     meshQueryTrace.cache(operationId, 'raw_samples', 'bypass', 'legacy backend fallback')
-    return filterRawRows(values, fallbackItems(scopeKey, interval))
+    return fallbackItems(scopeKey, interval)
   }
   const gaps = rawSampleCache.missing(scopeKey, interval)
   if (!gaps.length) {
@@ -235,17 +235,17 @@ async function loadRawSamples(values: ReturnType<typeof query>, signal: AbortSig
   await Promise.all(gaps.map(gap => loadRawInterval(request, scopeKey, gap, signal)))
   if (fallbackFor(scopeKey, interval)) {
     meshQueryTrace.cache(operationId, 'raw_samples', 'bypass', 'legacy backend fallback')
-    return filterRawRows(values, fallbackItems(scopeKey, interval))
+    return fallbackItems(scopeKey, interval)
   }
   const remaining = rawSampleCache.missing(scopeKey, interval)
   if (remaining.length) throw new Error('原始采样覆盖不完整，未生成派生指标')
   const derivedKey = `${scopeKey}|${interval.start}|${interval.end}`
   const cached = derivedMetricCache.get(derivedKey)
-  if (cached) return filterRawRows(values, cached)
+  if (cached) return cached
   const derived = deriveMeshRawSamples(rawSampleCache.all(scopeKey, interval.end), interval)
   derivedMetricCache.set(derivedKey, derived)
   while (derivedMetricCache.size > 8) derivedMetricCache.delete(derivedMetricCache.keys().next().value!)
-  return filterRawRows(values, derived)
+  return derived
 }
 function legacyMetricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false): Promise<MeshLinkPage> {
   const source = metricSource(key), id = `${props.sessionId}|${source}|${JSON.stringify(values)}`
@@ -280,7 +280,8 @@ function metricQuery(_key: MeshBusinessMetricKey, values: ReturnType<typeof quer
   const request = rawQuery(values), interval = meshRawRequestInterval(request), scopeKey = interval ? `${props.sessionId}|${meshRawScopeKey(request)}` : ''
   return loadRawSamples(values, signal, refresh).then(items => {
     if (interval && fallbackFor(scopeKey, interval)) return legacyMetricQuery(_key, values, signal, refresh)
-    return { items, total: items.length, page: 1, page_size: items.length, downsampled: false }
+    const visible = filterRawRows(values, items)
+    return { items: visible, total: visible.length, page: 1, page_size: visible.length, downsampled: false }
   })
 }
 function cancel(): void { generation++; selectionGeneration++; selectionController.abort(); selectionController = new AbortController(); clearTimeout(selectionTimer); selectionTimer = undefined; mainController.abort(); mainController = new AbortController(); pending.clear(); rawPending.clear(); rawRefreshScopes.clear(); clearTimeout(zoomTimer); definitions.forEach(d => { if (['PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING'].includes(statuses.value[d.key].phase)) phase(d.key, 'CANCELLED') }) }
@@ -501,7 +502,7 @@ async function locateTime(time: string): Promise<void> {
   if (completeIndex.length) { acceptSelection(nearest(completeIndex, time)); return }
   selectionMessage.value = '正在定位主用链路采样…'
   try {
-    const rows = await loadRawSamples(values, signal)
+    const rows = filterRawRows(values, await loadRawSamples(values, signal))
     if (current !== selectionGeneration || local !== generation || signal.aborted) return
     if (rawInterval && fallbackFor(rawScopeKey, rawInterval)) {
       let result: MeshLinkPage
@@ -564,7 +565,7 @@ async function openContext(context: { ap?: string; radio?: number | null; start:
   resetMain(); autoSelect = !context.focus; filters.value.include_zero = false; filters.value.ap = context.ap || ''; filters.value.radio = context.radio ?? undefined; filters.value.role = 'ACTIVE'; windowRange.value = { start: context.start, end: context.end }; workspace.value = 'main'; emit('workspaceChange', 'main'); loadMain();
   if (context.focus) {
     const local = generation, signal = mainController.signal, values = query(), request = rawQuery(values), interval = meshRawRequestInterval(request), scopeKey = interval ? `${props.sessionId}|${meshRawScopeKey(request)}` : ''
-    const rows = await loadRawSamples(values, signal).catch(() => [])
+    const rows = await loadRawSamples(values, signal).then(items => filterRawRows(values, items)).catch(() => [])
     if (local !== generation || signal.aborted) return
     if (interval && fallbackFor(scopeKey, interval)) {
       const result = await tracedMeshLinkPage('context_focus', { ...values, time_from: context.focus, time_to: context.focus, page_size: 1 }, signal, `${props.sessionId}|${context.focus}`).catch(() => null)

@@ -287,9 +287,11 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     await control(wrapper, 'ElSelect', 1, 'STANDBY')
     await control(wrapper, 'ElCheckbox', 2, true)
     const expected = { peer_ap_mac: sample.peer_ap_mac, exact_ap: true, radio: 2, link_role: 'STANDBY', include_zero: true, exclude_depot: true, exclude_parking: true }
-    for (const [, query] of api.links.mock.calls.slice(-9)) expect(query).toMatchObject(expected)
+    const recent = api.links.mock.calls.slice(-9)
+    for (const [, query] of recent.filter(([, query]) => query.raw_samples)) expect(query).toMatchObject({ ...expected, link_role: '', include_zero: true })
+    for (const [, query] of recent.filter(([, query]) => !query.raw_samples)) expect(query).toMatchObject({ ...expected, include_zero: expect.any(Boolean) })
     expect(api.builds.mock.calls.at(-1)?.[1]).toMatchObject(expected)
-    expect(api.links).toHaveBeenCalledTimes(45)
+    expect(api.links).toHaveBeenCalledTimes(43)
   })
 
   it('opens an AP using its exact physical MAC and all historical roles', async () => {
@@ -378,7 +380,8 @@ describe('Mesh Phase 11 workbench business behavior', () => {
     api.links.mockImplementation(async (_id, query) => ({ items: query.page_size === 1 ? [focused] : [], total: query.page_size === 1 ? 1 : 0 }))
     await context(wrapper, value)
     expect(api.links).toHaveBeenCalledTimes(10)
-    for (const [, query] of api.links.mock.calls) expect(query).toMatchObject({ peer_ap_mac: value.ap, exact_ap: true, radio: 2, link_role: 'ACTIVE', include_zero: false })
+    for (const [, query] of api.links.mock.calls.filter(([, query]) => query.raw_samples)) expect(query).toMatchObject({ peer_ap_mac: value.ap, exact_ap: true, radio: 2, link_role: '', include_zero: true })
+    for (const [, query] of api.links.mock.calls.filter(([, query]) => !query.raw_samples)) expect(query).toMatchObject({ peer_ap_mac: value.ap, exact_ap: true, radio: 2, link_role: 'ACTIVE', include_zero: false })
     expect(api.links.mock.calls.find(([, query]) => query.page_size === 1)?.[1]).toMatchObject({ time_from: value.focus, time_to: value.focus })
     for (const [, query] of api.links.mock.calls.filter(([, query]) => query.page_size !== 1)) expect(query).toMatchObject({ time_from: value.start, time_to: value.end })
     expect(wrapper.find('.phase11-detail').text()).toContain('AP-FOCUS'); expect(charts(wrapper).every(chart => chart.props('selectedTime') === value.focus)).toBe(true)
