@@ -1,3 +1,7 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -7,6 +11,7 @@ import {
   readMachineDataRoot,
   resolveDesktopDataRootConfiguration,
 } from '../src/main/data-root-configuration'
+import { PortableDataRootStore } from '../src/main/portable-data-root'
 
 describe('desktop machine data-root configuration', () => {
   it('uses an explicit root before the machine-wide installer pointer', () => {
@@ -71,6 +76,63 @@ describe('desktop machine data-root configuration', () => {
       environment: {},
       queryRegistry: () => ({ status: 1 }),
     })).toThrow('尚未配置')
+  })
+
+  it('uses the executable-directory data root for an unconfigured portable package', () => {
+    const result = resolveDesktopDataRootConfiguration({
+      platform: 'win32',
+      portableMode: true,
+      portableAppRoot: 'D:\\NetConsole-portable',
+      environment: {},
+      queryRegistry: () => {
+        throw new Error('portable startup must not read the installer registry')
+      },
+    })
+
+    expect(result).toEqual({
+      dataRoot: 'D:\\NetConsole-portable\\data',
+      source: 'portable_default',
+    })
+  })
+
+  it('persists and restores a portable custom root without changing old data', () => {
+    const portableRoot = mkdtempSync(join(tmpdir(), 'netconsole-portable-root-'))
+    const customRoot = mkdtempSync(join(tmpdir(), 'netconsole-portable-business-'))
+    try {
+      writeFileSync(join(portableRoot, 'keep.txt'), 'keep', 'utf8')
+      const store = new PortableDataRootStore(portableRoot)
+      store.save(customRoot)
+
+      const result = resolveDesktopDataRootConfiguration({
+        platform: 'win32',
+        portableMode: true,
+        portableAppRoot: portableRoot,
+        environment: {},
+      })
+
+      expect(result).toEqual({ dataRoot: customRoot, source: 'portable_configuration' })
+      expect(store.load()).toBe(customRoot)
+      expect(readFileSync(join(portableRoot, 'keep.txt'), 'utf8')).toBe('keep')
+      expect(existsSync(join(portableRoot, 'data'))).toBe(false)
+    } finally {
+      rmSync(portableRoot, { recursive: true, force: true })
+      rmSync(customRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('fails closed on malformed portable root configuration', () => {
+    const portableRoot = mkdtempSync(join(tmpdir(), 'netconsole-portable-invalid-'))
+    try {
+      writeFileSync(join(portableRoot, 'portable-data-root.json'), '{not-json', 'utf8')
+      expect(() => resolveDesktopDataRootConfiguration({
+        platform: 'win32',
+        portableMode: true,
+        portableAppRoot: portableRoot,
+        environment: {},
+      })).toThrow('配置无法读取')
+    } finally {
+      rmSync(portableRoot, { recursive: true, force: true })
+    }
   })
 
   it('turns missing installer configuration into a user-facing recovery message', () => {

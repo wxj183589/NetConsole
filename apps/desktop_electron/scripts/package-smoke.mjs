@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { basename, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -12,10 +12,12 @@ import {
 const appRoot = resolve(import.meta.dirname, '..')
 const projectRoot = resolve(appRoot, '..', '..')
 const unpackedRoot = resolve(projectRoot, 'dist', 'electron', 'win-unpacked')
-const projectParent = resolve(projectRoot, '..')
-const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'
-  ? resolve(projectParent, '..')
-  : projectParent
+const repositoryParent = resolve(projectRoot, '..')
+const workspaceRoot = basename(repositoryParent).toLowerCase() === 'worktrees'
+  && basename(resolve(repositoryParent, '..')).toLowerCase() === 'netconsole-workspace'
+  && existsSync(resolve(repositoryParent, '..', 'NetConsole', '.git'))
+  ? resolve(repositoryParent, '..')
+  : repositoryParent
 const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')
 const buildEdition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim().toLowerCase()
 if (!['full', 'customer'].includes(buildEdition)) {

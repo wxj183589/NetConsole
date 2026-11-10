@@ -19,6 +19,7 @@ describe('Electron-only packaging', () => {
     expect(appVersion).toBeDefined()
     expect(packageJson.scripts.package).toBe('pnpm run package:all')
     expect(packageJson.scripts['package:all']).toBe('node scripts/build-edition-installer.mjs both')
+    expect(packageJson.scripts['package:portable']).toBe('node scripts/package-portable.mjs')
     expect(packageJson.scripts).not.toHaveProperty('package:legacy')
     expect(packageJson.scripts['smoke:package']).toContain('package-smoke.mjs')
     expect(packageJson.build.productName).toBe(`NetConsole v${appVersion} by wxj`)
@@ -95,7 +96,8 @@ describe('Electron-only packaging', () => {
     expect(script).toContain('NetConsoleDataRootBrowseButton')
     expect(script).toContain('NetConsole v${NETCONSOLE_INSTALLER_APP_VERSION}')
     expect(script).toContain('GetDriveTypeW')
-    expect(script).toContain('禁止将业务数据存放在系统盘')
+    expect(script).toContain('优先非系统盘，C 盘也可用')
+    expect(script).not.toContain('禁止将业务数据存放在系统盘')
     expect(script).toContain('REUSE_EXISTING_DATA')
     expect(script).toContain('FRESH_CLEAN_INSTALL')
     expect(script).toContain('MIGRATE_EXISTING_DATA')
@@ -296,6 +298,18 @@ describe('Electron-only packaging', () => {
     expect(script).toContain("const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'")
     expect(script).toContain("resolve(workspaceRoot, 'NetConsole', ...relative)")
     expect(script).toContain("'--release'")
+    expect(script).toContain('NETCONSOLE_PORTABLE_BUILD')
+  })
+
+  it('packages a portable marker alongside the Windows unpacked app', () => {
+    const script = readFileSync(resolve(appRoot, 'scripts', 'package-portable.mjs'), 'utf8')
+
+    expect(script).toContain("portable.mode")
+    expect(script).toContain("NetConsole portable mode")
+    expect(script).toContain("Compress-Archive")
+    expect(script).toContain("win-unpacked")
+    expect(script).toContain("NetConsole-${version}-portable.zip")
+    expect(script).toContain('NETCONSOLE_PORTABLE_BUILD')
   })
 
   it('scans the packaged app for forbidden Qt runtime files', () => {
@@ -324,8 +338,8 @@ describe('Electron-only packaging', () => {
   it('runs the packaged Electron smoke only in a unique D-drive test root', () => {
     const script = readFileSync(resolve(appRoot, 'scripts', 'package-smoke.mjs'), 'utf8')
 
-    expect(script).toContain("const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'")
     expect(script).toContain("const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')")
+    expect(script).toContain("basename(repositoryParent).toLowerCase() === 'worktrees'")
     expect(script).toContain("mkdtempSync(join(WINDOWS_TEST_DATA_ROOT, 'NetConsole-package-smoke-'))")
     expect(script).toContain("NETCONSOLE_RUNTIME_MODE: 'test'")
     expect(script).toContain("NETCONSOLE_STORAGE_MODE: 'isolated_test'")

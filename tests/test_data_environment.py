@@ -118,6 +118,25 @@ def test_source_startup_recovers_missing_metadata_without_creating_a_site(
     assert list((tmp_path / "sites").iterdir()) == []
 
 
+def test_portable_startup_initializes_empty_metadata_without_demo_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "desktop-packaged")
+    monkeypatch.setenv("NETCONSOLE_DATA_ROOT", str(tmp_path))
+    monkeypatch.setenv("NETCONSOLE_PORTABLE_MODE", "1")
+    monkeypatch.setenv("NETCONSOLE_PORTABLE_APP_ROOT", str(tmp_path / "portable-app"))
+
+    info = prepare_startup_environment(tmp_path)
+
+    assert info.mode is DataEnvironmentMode.PRODUCTION
+    assert json.loads((tmp_path / "runtime_mode.json").read_text(encoding="utf-8"))["created_from"] == "portable-first-run"
+    assert (tmp_path / "config" / "storage-manifest.json").is_file()
+    assert (tmp_path / "sites").is_dir()
+    assert list((tmp_path / "sites").iterdir()) == []
+    assert not (tmp_path / "sites" / "demo").exists()
+    assert not (tmp_path / "sites" / "default").exists()
+
+
 def test_source_startup_rejects_unknown_root_content_before_metadata_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

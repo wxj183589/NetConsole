@@ -5,6 +5,8 @@ import { basename, join, resolve, sep } from 'node:path'
 const repositoryRoot = resolve(import.meta.dirname, '..', '..', '..')
 const repositoryParent = resolve(repositoryRoot, '..')
 const workspaceRoot = basename(repositoryParent).toLowerCase() === 'worktrees'
+  && basename(resolve(repositoryParent, '..')).toLowerCase() === 'netconsole-workspace'
+  && existsSync(resolve(repositoryParent, '..', 'NetConsole', '.git'))
   ? resolve(repositoryParent, '..')
   : repositoryParent
 const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')

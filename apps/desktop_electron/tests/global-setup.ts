@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -6,6 +6,8 @@ export default function setup(): () => void {
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
   const repositoryParent = resolve(repositoryRoot, '..')
   const workspaceRoot = basename(repositoryParent).toLowerCase() === 'worktrees'
+    && basename(resolve(repositoryParent, '..')).toLowerCase() === 'netconsole-workspace'
+    && existsSync(resolve(repositoryParent, '..', 'NetConsole', '.git'))
     ? resolve(repositoryParent, '..')
     : repositoryParent
   const testBase = resolve(workspaceRoot, 'test-data', 'NetConsole')

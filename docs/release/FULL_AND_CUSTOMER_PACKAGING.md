@@ -53,7 +53,10 @@ $env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD = "使用环境变量覆盖值"
 pnpm package:all
 pnpm package:full
 pnpm package:customer
+pnpm package:portable
 ```
+
+`package:portable` 使用当前 Full 源码生成 Windows 免安装目录和 ZIP；它会在程序目录写入 `portable.mode` 标记，运行时默认从同目录的 `data` 读取业务数据。该命令只生成本地候选制品，不替代正式 Full/Customer 发布门禁，也不自动写入 `release/`。
 
 ## 一键本地打包
 

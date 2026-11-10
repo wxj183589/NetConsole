@@ -24,6 +24,8 @@ export interface DesktopConfig {
   backendExecutable: string
   backendArgumentsPrefix: string[]
   backendPythonPath?: string
+  portableMode: boolean
+  portableAppRoot?: string
   devServerUrl?: string
   rendererOrigin?: string
   startupTimeoutMs: number
@@ -40,6 +42,8 @@ export interface DesktopConfigInput {
   env?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   fileExists?: (path: string) => boolean
+  portableMode?: boolean
+  portableAppRoot?: string
 }
 
 export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
@@ -74,6 +78,8 @@ export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
       ? ['--electron-backend']
       : ['-m', 'netconsole.backend.electron_runtime'],
     ...(!input.isPackaged ? { backendPythonPath: resolve(projectRoot, 'src') } : {}),
+    portableMode: Boolean(input.portableMode && input.portableAppRoot),
+    ...(input.portableAppRoot ? { portableAppRoot: resolveDeveloperPath(input.portableAppRoot, '', 'portable application directory') } : {}),
     ...(devServerUrl ? { devServerUrl, rendererOrigin: new URL(devServerUrl).origin } : {}),
     startupTimeoutMs: parseTimeout(env.NETCONSOLE_BACKEND_TIMEOUT_MS),
   }
@@ -96,11 +102,14 @@ function resolveDesktopDataRoot(
       : 'NETCONSOLE_DATA_ROOT is required outside Windows')
   }
   const fromProject = relative(projectRoot, candidate)
-  if (!fromProject || (!fromProject.startsWith('..') && !isAbsolute(fromProject))) {
+  const portableDefault = input.portableMode && input.portableAppRoot
+    ? resolve(input.portableAppRoot, 'data')
+    : undefined
+  if (
+    (!fromProject || (!fromProject.startsWith('..') && !isAbsolute(fromProject)))
+    && candidate !== portableDefault
+  ) {
     throw new Error('Electron data root must not be inside the project or installation directory')
-  }
-  if (platform === 'win32' && (env.SystemDrive?.trim() || 'C:').toLowerCase() === candidate.slice(0, 2).toLowerCase()) {
-    throw new Error('Electron data root must not be on the system drive')
   }
   return candidate
 }

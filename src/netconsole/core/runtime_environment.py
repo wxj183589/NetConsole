@@ -212,6 +212,9 @@ def prepare_startup_environment(data_root: Path) -> DataEnvironmentInfo:
     manifest = root / "config" / "storage-manifest.json"
     if marker.is_file() or manifest.is_file():
         return data_environment(root)
+    if _portable_runtime_is_explicitly_selected():
+        _recover_portable_metadata(root)
+        return data_environment(root)
     if not _source_development_root_is_explicitly_selected():
         return data_environment(root)
     _recover_source_development_metadata(root)
@@ -224,6 +227,57 @@ def _source_development_root_is_explicitly_selected() -> bool:
         == "desktop-development"
         and bool(str(os.environ.get("NETCONSOLE_DATA_ROOT") or "").strip())
     )
+
+
+def _portable_runtime_is_explicitly_selected() -> bool:
+    return (
+        str(os.environ.get('NETCONSOLE_PORTABLE_MODE') or '').strip() == '1'
+        and bool(str(os.environ.get('NETCONSOLE_PORTABLE_APP_ROOT') or '').strip())
+    )
+
+
+def _recover_portable_metadata(root: Path) -> None:
+    """Initialize only a truly empty portable root; never guess over old data."""
+
+    allowed_directories = {
+        'agents',
+        'backups',
+        'config',
+        'migrations',
+        'runtime',
+        'sites',
+        'staging',
+    }
+    try:
+        entries = tuple(root.iterdir()) if root.exists() else ()
+    except OSError as exc:
+        raise RuntimeError(f'便携版数据根无法读取，拒绝初始化：{root}') from exc
+    for entry in entries:
+        if entry.name not in allowed_directories or not entry.is_dir() or entry.is_symlink():
+            raise RuntimeError(
+                f'便携版数据根包含未识别内容，拒绝创建替代数据库：{entry.name}'
+            )
+        if entry.name in {'config', 'sites', 'agents', 'backups', 'migrations', 'staging'}:
+            try:
+                if any(entry.iterdir()):
+                    raise RuntimeError(
+                        f'便携版数据根已有业务内容，缺少可验证存储元数据：{entry.name}'
+                    )
+            except OSError as exc:
+                raise RuntimeError(f'便携版数据根无法检查目录：{entry}') from exc
+    write_data_environment(
+        root,
+        DataEnvironmentInfo(
+            DataEnvironmentMode.PRODUCTION,
+            created_from='portable-first-run',
+            created_time='',
+            readonly_warning=True,
+        ),
+    )
+    from netconsole.core.paths import PathResolver
+    from netconsole.core.storage_manifest import prepare_storage_manifest
+
+    prepare_storage_manifest(PathResolver(data_root=root))
 
 
 def _recover_source_development_metadata(root: Path) -> None:
@@ -535,19 +589,24 @@ def _validate_windows_data_root(candidate: Path, mode: RuntimeMode) -> None:
                 f"测试数据根必须位于 {test_root}{os.sep}<run-id>，且不能直接使用测试根目录"
             )
         return
-    system_drive = str(os.environ.get("SystemDrive") or "C:").rstrip("\\/").casefold()
-    if candidate.drive.rstrip("\\/").casefold() == system_drive:
-        raise RuntimeError(f"NetConsole 数据根不得位于系统盘：{candidate}")
+    portable_root = str(os.environ.get("NETCONSOLE_PORTABLE_APP_ROOT") or "").strip()
+    if str(os.environ.get("NETCONSOLE_PORTABLE_MODE") or "").strip() == "1" and portable_root:
+        try:
+            application_root = Path(portable_root).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeError("便携版程序目录无效，拒绝选择便携数据根") from exc
+        portable_default = (application_root / "data").resolve()
+        if candidate == portable_default:
+            return
+        if candidate == application_root or candidate.is_relative_to(application_root):
+            raise RuntimeError(f"便携版数据根不得位于程序目录：{candidate}")
     forbidden_roots = {
-        "AppData": (os.environ.get("LOCALAPPDATA"), os.environ.get("APPDATA")),
         "系统临时目录": (os.environ.get("TEMP"), os.environ.get("TMP")),
-        "用户 Profile": (os.environ.get("USERPROFILE"),),
         "程序安装目录": (
             os.environ.get("ProgramFiles"),
             os.environ.get("ProgramFiles(x86)"),
             os.environ.get("ProgramW6432"),
         ),
-        "Windows 目录": (os.environ.get("SystemRoot"), os.environ.get("WINDIR")),
     }
     for label, values in forbidden_roots.items():
         for raw_root in values:
