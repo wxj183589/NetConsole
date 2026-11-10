@@ -1,0 +1,36 @@
+{
+  "version": "1.5.13",
+  "generated_at": "2026-11-11",
+  "source": {
+    "repository": "D:/study/NetConsole-Workspace/NetConsole",
+    "build_commit": "5294f1ea7e1a1829e38d77c167f5e2d088ed0d99",
+    "build_dirty": false,
+    "build_time_utc": "2026-11-10T17:27:42Z"
+  },
+  "portable": {
+    "status": "PASS",
+    "file_name": "NetConsole-1.5.13-portable.zip",
+    "dist_path": "D:/study/NetConsole-Workspace/NetConsole/dist/electron/NetConsole-1.5.13-portable.zip",
+    "release_path": "D:/study/NetConsole-Workspace/release/v1.5.13/build-20261111-012953-5294f1ea/NetConsole-1.5.13-portable.zip",
+    "size_bytes": 215712396,
+    "sha256": "9B74C04FE738E6D3F847C6A616F4354331D859AD77F637FD678F1D86CB30DD51",
+    "smoke": "PASS",
+    "default_data_root": "<program_dir>/data",
+    "fresh_package_contains_portable_data_root_json": false
+  },
+  "installer": {
+    "status": "BLOCKED_BY_UPSTREAM_PROTECTION",
+    "file_name": null,
+    "size_bytes": null,
+    "sha256": null,
+    "smoke": "NOT_RUN",
+    "reason": "正式安装器必须在最终提交推送到 upstream 后构建"
+  },
+  "integration": {
+    "local_main_merge": "PASS_WITH_GATE_CAVEATS",
+    "remote_main_push": "BLOCKED_BY_BRANCH_PROTECTION",
+    "full_local_gate": "PARTIAL",
+    "release_readiness": "NOT_READY",
+    "github_release_created": false
+  }
+}
