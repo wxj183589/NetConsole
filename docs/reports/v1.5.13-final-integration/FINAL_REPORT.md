@@ -21,6 +21,7 @@ Portable：`NetConsole-1.5.13-portable.zip`，215,712,396 bytes，SHA256 `9B74C0
 - Portable：解压后 `NetConsole.exe` 退出码 0，默认程序目录 `data` 创建，未生成 Demo 业务数据；package-smoke PASS。
 - Installer：正式构建被 `正式安装器必须在最终提交推送到 upstream 后构建` 阻断，smoke 未运行。
 - GitHub：`git push github main` 被 `GH013` 拒绝，原因是必须 Pull Request 且缺少 `Engineering hardening blocking gates` 状态检查；未 force push。
+- DevStatus：Commit `f9c30f3d69e432824454ddd537061cede22b26c1` 已通过普通 `git push github main` 推送成功，远程 `github/main` 已复核为同一提交。
 
 ## 清理与数据影响
 
