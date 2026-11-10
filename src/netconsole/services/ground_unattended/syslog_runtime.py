@@ -917,6 +917,9 @@ class WmeshRealtimeParser:
 class SyslogUdpReceiver:
     """一个局点一个 UDP socket；recv 与解析/落盘严格分线程。"""
 
+    _SPOOL_FLUSH_BATCH_SIZE = 64
+    _SPOOL_GUARD_REFRESH_INTERVAL_SECONDS = 1.0
+
     def __init__(
         self,
         *,
@@ -980,6 +983,7 @@ class SyslogUdpReceiver:
         self._parser_spool_read_handle: Any | None = None
         self._disk_spool_read_offset = 0
         self._parser_spool_read_offset = 0
+        self._disk_spool_since_flush = 0
         self._parser_spool_count = 0
         self._parser_spool_since_flush = 0
         self._disk_queue_count = 0
@@ -1008,6 +1012,7 @@ class SyslogUdpReceiver:
         self._spool_critical_percent = 85.0
         self._spool_emergency_percent = 95.0
         self._spool_guard_state = "NORMAL"
+        self._last_spool_guard_refresh_monotonic = 0.0
         self._storage_profile = StorageIOProfile.conservative()
         self._ap_resolver = GroundApDisplayResolver(
             ap_identity_query_service
@@ -1097,7 +1102,9 @@ class SyslogUdpReceiver:
             self._spool_emergency_percent,
         ) = thresholds
         self._spool_guard_state = "NORMAL"
+        self._last_spool_guard_refresh_monotonic = 0.0
         self._disk_spool_read_offset = 0
+        self._disk_spool_since_flush = 0
         self._parser_spool_count = 0
         self._parser_spool_since_flush = 0
         self._event_batch_size = max(1, int(event_batch_size))
@@ -1351,7 +1358,7 @@ class SyslogUdpReceiver:
         elapsed = max(0.001, time.monotonic() - self._started_monotonic) if self._started_monotonic else 1.0
         writer = self._writer
         compression_worker = self._compression_worker
-        self._refresh_spool_guard()
+        self._refresh_spool_guard(force=True)
         spool_metrics = self._spool_metrics()
         parser_queue_length = self._parser_queue.qsize() + max(0, int(self._parser_spool_count))
         position_latency = tuple(self._position_latency_samples)
@@ -1493,7 +1500,15 @@ class SyslogUdpReceiver:
                 "disk_usage_percent": 0.0,
             }
 
-    def _refresh_spool_guard(self) -> None:
+    def _refresh_spool_guard(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if (
+            not force
+            and now - self._last_spool_guard_refresh_monotonic
+            < self._SPOOL_GUARD_REFRESH_INTERVAL_SECONDS
+        ):
+            return
+        self._last_spool_guard_refresh_monotonic = now
         metrics = self._spool_metrics()
         usage = float(metrics["disk_usage_percent"])
         if usage >= self._spool_emergency_percent:
@@ -1619,7 +1634,10 @@ class SyslogUdpReceiver:
                 if handle is None:
                     raise OSError("UDP spool handle is closed")
                 handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
-                handle.flush()
+                self._disk_spool_since_flush += 1
+                if self._disk_spool_since_flush >= self._SPOOL_FLUSH_BATCH_SIZE:
+                    handle.flush()
+                    self._disk_spool_since_flush = 0
             self._disk_queue_count += 1
         except OSError as exc:
             self._last_error = f"{exc.__class__.__name__}: {exc}"
@@ -1633,6 +1651,11 @@ class SyslogUdpReceiver:
             handle = self._disk_spool_read_handle
             if handle is None:
                 return None
+            if self._disk_spool_since_flush and self._queue.empty():
+                writer = self._disk_spool_handle
+                if writer is not None:
+                    writer.flush()
+                self._disk_spool_since_flush = 0
             handle.seek(self._disk_spool_read_offset)
             line = handle.readline()
             if not line:
@@ -1754,11 +1777,9 @@ class SyslogUdpReceiver:
                 if handle is None:
                     raise OSError("parser spool handle is closed")
                 handle.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
-                # The reader uses a separate handle; flush every append so the
-                # final partial batch is immediately replayable and durable.
-                handle.flush()
                 self._parser_spool_since_flush += 1
-                if self._parser_spool_since_flush >= 64:
+                if self._parser_spool_since_flush >= self._SPOOL_FLUSH_BATCH_SIZE:
+                    handle.flush()
                     self._parser_spool_since_flush = 0
         except OSError as exc:
             self._parser_spool_failed_count += 1
@@ -1775,6 +1796,11 @@ class SyslogUdpReceiver:
             handle = self._parser_spool_read_handle
             if handle is None:
                 return None
+            if self._parser_spool_since_flush and self._parser_queue.empty():
+                writer = self._parser_spool_handle
+                if writer is not None:
+                    writer.flush()
+                self._parser_spool_since_flush = 0
             handle.seek(self._parser_spool_read_offset)
             line = handle.readline()
             if not line:
