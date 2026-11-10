@@ -535,19 +535,13 @@ def _validate_windows_data_root(candidate: Path, mode: RuntimeMode) -> None:
                 f"测试数据根必须位于 {test_root}{os.sep}<run-id>，且不能直接使用测试根目录"
             )
         return
-    system_drive = str(os.environ.get("SystemDrive") or "C:").rstrip("\\/").casefold()
-    if candidate.drive.rstrip("\\/").casefold() == system_drive:
-        raise RuntimeError(f"NetConsole 数据根不得位于系统盘：{candidate}")
     forbidden_roots = {
-        "AppData": (os.environ.get("LOCALAPPDATA"), os.environ.get("APPDATA")),
         "系统临时目录": (os.environ.get("TEMP"), os.environ.get("TMP")),
-        "用户 Profile": (os.environ.get("USERPROFILE"),),
         "程序安装目录": (
             os.environ.get("ProgramFiles"),
             os.environ.get("ProgramFiles(x86)"),
             os.environ.get("ProgramW6432"),
         ),
-        "Windows 目录": (os.environ.get("SystemRoot"), os.environ.get("WINDIR")),
     }
     for label, values in forbidden_roots.items():
         for raw_root in values:

@@ -103,8 +103,8 @@ describe('desktop config', () => {
     })).toThrow('must not be inside')
   })
 
-  it('rejects a persistent desktop data root on the system drive', () => {
-    expect(() => loadDesktopConfig({
+  it('accepts a persistent desktop data root on the system drive', () => {
+    const config = loadDesktopConfig({
       isPackaged: false,
       appPath: 'D:\\repo\\apps\\desktop_electron',
       resourcesPath: 'D:\\resources',
@@ -115,7 +115,8 @@ describe('desktop config', () => {
         SystemDrive: 'C:',
       },
       fileExists: () => true,
-    })).toThrow('system drive')
+    })
+    expect(config.dataRoot).toBe('C:\\NetConsoleData')
   })
 
   it('does not invent demo when persistent bootstrap has no valid site', () => {

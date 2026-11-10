@@ -34,7 +34,7 @@ export function resolveDesktopStorageContext(
       throw new Error('Persistent desktop runtime must not use temporary storage markers')
     }
     if (!configuredRoot) {
-      throw new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置。')
+      throw new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择数据存放位置；优先推荐非系统盘，也可以使用 C:\\ProgramData\\NetConsole\\Data。')
     }
     const dataRoot = validatePersistentDataRoot(
       configuredRoot,
@@ -111,19 +111,10 @@ function validatePersistentDataRoot(
     throw new Error('NetConsole data root must not use the system temporary directory')
   }
   if (platform === 'win32') {
-    const systemDrive = (environment.SystemDrive?.trim() || 'C:').toLowerCase()
-    if (target.slice(0, 2).toLowerCase() === systemDrive) {
-      throw new Error(`NetConsole 数据根不得位于系统盘：${target}`)
-    }
     const forbiddenRoots: Array<[string, string | undefined]> = [
-      ['AppData', environment.LOCALAPPDATA],
-      ['AppData', environment.APPDATA],
-      ['用户 Profile', environment.USERPROFILE],
       ['程序安装目录', environment.ProgramFiles],
       ['程序安装目录', environment['ProgramFiles(x86)']],
       ['程序安装目录', environment.ProgramW6432],
-      ['Windows 目录', environment.SystemRoot],
-      ['Windows 目录', environment.WINDIR],
     ]
     for (const [label, rawRoot] of forbiddenRoots) {
       if (!rawRoot || !isAbsolute(rawRoot)) continue

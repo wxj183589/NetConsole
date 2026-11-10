@@ -92,15 +92,12 @@ function resolveDesktopDataRoot(
     candidate = resolveDeveloperPath(override, '', 'NETCONSOLE_DATA_ROOT')
   } else {
     throw new Error(platform === 'win32'
-      ? '尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置。'
+      ? '尚未配置 NetConsole 数据目录。请通过安装程序选择数据存放位置；优先推荐非系统盘，也可以使用 C:\\ProgramData\\NetConsole\\Data。'
       : 'NETCONSOLE_DATA_ROOT is required outside Windows')
   }
   const fromProject = relative(projectRoot, candidate)
   if (!fromProject || (!fromProject.startsWith('..') && !isAbsolute(fromProject))) {
     throw new Error('Electron data root must not be inside the project or installation directory')
-  }
-  if (platform === 'win32' && (env.SystemDrive?.trim() || 'C:').toLowerCase() === candidate.slice(0, 2).toLowerCase()) {
-    throw new Error('Electron data root must not be on the system drive')
   }
   return candidate
 }

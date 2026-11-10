@@ -420,6 +420,7 @@ Var NetConsoleDataRootHasEntries
 Var NetConsoleDataRootNormalized
 Var NetConsoleDataRootDriveRoot
 Var NetConsoleDataRootDriveType
+Var NetConsoleDataRootDriveWarning
 Var NetConsoleDataRootExists
 Var NetConsoleDataRootBusinessData
 Var NetConsoleDataRootPathsMatch
@@ -523,6 +524,10 @@ Function NetConsoleSelectDefaultDataRoot
   IntOp $2 $2 + 4
   Goto NetConsoleSelectDefaultDataRootLoop
   NetConsoleSelectDefaultDataRootDone:
+  ; A machine without a usable non-system fixed disk still gets a legal
+  ; system-drive suggestion.  C: is valid; it is only a lower-priority
+  ; recommendation because reinstalling Windows can affect that volume.
+  StrCpy $NetConsoleDataRoot "C:\ProgramData\NetConsole\Data"
 FunctionEnd
 
 Function NetConsoleInstallModePageCreate
@@ -814,7 +819,7 @@ Function NetConsoleRefreshDataRootPageText
 FunctionEnd
 
 Function NetConsoleBrowseDataRoot
-  nsDialogs::SelectFolderDialog "选择 NetConsole 数据存放位置（非系统固定磁盘）" "$NetConsoleDataRoot"
+  nsDialogs::SelectFolderDialog "选择 NetConsole 数据存放位置（优先非系统盘，C 盘也可用）" "$NetConsoleDataRoot"
   Pop $0
   ${If} $0 != error
     StrCpy $NetConsoleDataRoot "$0"
@@ -873,6 +878,7 @@ Function NetConsoleValidateDataRootLocation
   StrCpy $NetConsoleDataRootNormalized ""
   StrCpy $NetConsoleDataRootDriveRoot ""
   StrCpy $NetConsoleDataRootDriveType "0"
+  StrCpy $NetConsoleDataRootDriveWarning ""
   StrCpy $NetConsoleDataRootExists "0"
   DetailPrint "DataRoot selected path: $NetConsoleDataRoot"
   ${If} $NetConsoleDataRoot == ""
@@ -894,18 +900,6 @@ Function NetConsoleValidateDataRootLocation
     StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
     Return
   ${EndIf}
-  ReadEnvStr $0 "SystemDrive"
-  ${If} $0 == ""
-    StrCpy $0 "C:"
-  ${EndIf}
-  StrCpy $1 "$NetConsoleDataRoot" 2
-  ${If} $1 == $0
-    StrCpy $NetConsoleDataRootProbeResult "当前配置禁止将业务数据存放在系统盘"
-    StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_SYSTEM_DRIVE"
-    StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
-    Return
-  ${EndIf}
-
   ; GetDriveTypeW accepts a root path such as E:\, never E:\NetConsoleData.
   StrCpy $1 "$NetConsoleDataRoot" 3
   StrCpy $NetConsoleDataRootDriveRoot "$1"
@@ -913,19 +907,22 @@ Function NetConsoleValidateDataRootLocation
   StrCpy $NetConsoleDataRootDriveType "$2"
   DetailPrint "DataRoot drive root: $NetConsoleDataRootDriveRoot"
   DetailPrint "DataRoot GetDriveTypeW: $NetConsoleDataRootDriveType"
-  ${If} $NetConsoleDataRootDriveType != 3
-    ${If} $NetConsoleDataRootDriveType == 1
-      StrCpy $NetConsoleDataRootProbeResult "数据目录所在磁盘不可访问，请恢复原磁盘或选择其他磁盘"
-      StrCpy $NetConsoleDataRootProbeErrorCode "DRIVE_NO_ROOT_DIR"
-    ${ElseIf} $NetConsoleDataRootDriveType == 4
-      StrCpy $NetConsoleDataRootProbeResult "数据目录不能位于网络映射盘"
-      StrCpy $NetConsoleDataRootProbeErrorCode "DRIVE_REMOTE"
-    ${Else}
-      StrCpy $NetConsoleDataRootProbeResult "数据目录必须位于本地固定磁盘，不能使用 U 盘、光驱或临时映射盘"
-      StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_NOT_FIXED_DRIVE"
-    ${EndIf}
-    StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
+  ${If} $NetConsoleDataRootDriveType == 0
+    StrCpy $NetConsoleDataRootProbeResult "数据目录所在磁盘不可访问，请恢复原磁盘或选择其他位置"
+    StrCpy $NetConsoleDataRootProbeErrorCode "DRIVE_UNKNOWN"
+    StrCpy $NetConsoleDataRootProbeErrorSource "Windows API"
     Return
+  ${ElseIf} $NetConsoleDataRootDriveType == 1
+    StrCpy $NetConsoleDataRootProbeResult "数据目录所在磁盘不存在，请恢复原磁盘或选择其他位置"
+    StrCpy $NetConsoleDataRootProbeErrorCode "DRIVE_NO_ROOT_DIR"
+    StrCpy $NetConsoleDataRootProbeErrorSource "Windows API"
+    Return
+  ${ElseIf} $NetConsoleDataRootDriveType == 2
+    StrCpy $NetConsoleDataRootDriveWarning "可移动磁盘可能被拔出，建议改用固定本地磁盘。"
+  ${ElseIf} $NetConsoleDataRootDriveType == 4
+    StrCpy $NetConsoleDataRootDriveWarning "网络盘受连接和锁定稳定性影响，建议改用固定本地磁盘。"
+  ${ElseIf} $NetConsoleDataRootDriveType == 5
+    StrCpy $NetConsoleDataRootDriveWarning "临时介质不适合持续保存业务数据。"
   ${EndIf}
   IfFileExists "$NetConsoleDataRoot\." 0 +2
     StrCpy $NetConsoleDataRootExists "1"
@@ -1180,6 +1177,9 @@ Function NetConsoleDataRootPageLeave
     DetailPrint "DataRoot location validation failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
     MessageBox MB_ICONSTOP "数据目录位置校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\n错误来源：$NetConsoleDataRootProbeErrorSource$\r$\n错误码：$NetConsoleDataRootProbeErrorCode"
     Abort
+  ${EndIf}
+  ${If} $NetConsoleDataRootDriveWarning != ""
+    MessageBox MB_ICONEXCLAMATION "数据目录风险提示：$NetConsoleDataRootDriveWarning$\r$\n$\r$\n如果目录具备有效读写权限，仍可以继续使用。"
   ${EndIf}
   Call NetConsoleDataRootCheckBusinessData
   Call NetConsoleDataRootPathsMatch

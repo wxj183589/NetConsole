@@ -237,6 +237,7 @@ Var NetConsoleDataRootProbeErrorSource
 Var NetConsoleDataRootNormalized
 Var NetConsoleDataRootDriveRoot
 Var NetConsoleDataRootDriveType
+    Var NetConsoleDataRootDriveWarning
 Var NetConsoleDataRootExists
 
 {normalizer}
@@ -314,11 +315,7 @@ SectionEnd
         "NC_PATH_INVALID_CHARACTER",
         "NSIS 参数",
     ]
-    assert records["system"][:3] == [
-        "当前配置禁止将业务数据存放在系统盘",
-        "NC_PATH_SYSTEM_DRIVE",
-        "NSIS 参数",
-    ]
+    assert records["system"][:3] == ["ok", "0", "无"]
     for target in (
         missing,
         chinese_missing,

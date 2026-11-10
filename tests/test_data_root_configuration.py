@@ -16,6 +16,7 @@ from netconsole.core import data_root_configuration
 from netconsole.core.sites import SiteManager
 from netconsole.core.data_root_configuration import (
     DataRootConfigurationError,
+    describe_data_root_location,
     validate_installation_data_root,
 )
 from netconsole.core import runtime_environment
@@ -29,6 +30,37 @@ from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMod
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_data_root_location_reports_capacity_and_disk_type(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        data_root_configuration.shutil,
+        "disk_usage",
+        lambda _path: namedtuple("usage", "total used free")(100, 90, 10),
+    )
+    monkeypatch.setenv("SystemDrive", tmp_path.anchor or "C:")
+
+    info = describe_data_root_location(tmp_path)
+
+    assert info.total_bytes == 100
+    assert info.free_bytes == 10
+    assert info.drive_type in {"unknown", "fixed", "removable", "network", "cdrom"}
+
+
+def test_data_root_location_warns_when_space_is_low(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        data_root_configuration.shutil,
+        "disk_usage",
+        lambda _path: namedtuple("usage", "total used free")(100, 90, 1),
+    )
+
+    info = describe_data_root_location(tmp_path)
+
+    assert any("可用空间低于 10 GB" in warning for warning in info.warnings)
 
 
 def _allow_non_production_test_root(
