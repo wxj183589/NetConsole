@@ -523,6 +523,9 @@ Function NetConsoleSelectDefaultDataRoot
   IntOp $2 $2 + 4
   Goto NetConsoleSelectDefaultDataRootLoop
   NetConsoleSelectDefaultDataRootDone:
+  ; C: is a legal fallback when no other local fixed disk is available.
+  ; The UI recommends a non-system disk, but must not reject C:.
+  StrCpy $NetConsoleDataRoot "C:\ProgramData\NetConsole\Data"
 FunctionEnd
 
 Function NetConsoleInstallModePageCreate
@@ -814,7 +817,7 @@ Function NetConsoleRefreshDataRootPageText
 FunctionEnd
 
 Function NetConsoleBrowseDataRoot
-  nsDialogs::SelectFolderDialog "选择 NetConsole 数据存放位置（非系统固定磁盘）" "$NetConsoleDataRoot"
+  nsDialogs::SelectFolderDialog "选择 NetConsole 数据存放位置（优先非系统盘，C 盘也可用）" "$NetConsoleDataRoot"
   Pop $0
   ${If} $0 != error
     StrCpy $NetConsoleDataRoot "$0"
@@ -894,18 +897,6 @@ Function NetConsoleValidateDataRootLocation
     StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
     Return
   ${EndIf}
-  ReadEnvStr $0 "SystemDrive"
-  ${If} $0 == ""
-    StrCpy $0 "C:"
-  ${EndIf}
-  StrCpy $1 "$NetConsoleDataRoot" 2
-  ${If} $1 == $0
-    StrCpy $NetConsoleDataRootProbeResult "当前配置禁止将业务数据存放在系统盘"
-    StrCpy $NetConsoleDataRootProbeErrorCode "NC_PATH_SYSTEM_DRIVE"
-    StrCpy $NetConsoleDataRootProbeErrorSource "NSIS 参数"
-    Return
-  ${EndIf}
-
   ; GetDriveTypeW accepts a root path such as E:\, never E:\NetConsoleData.
   StrCpy $1 "$NetConsoleDataRoot" 3
   StrCpy $NetConsoleDataRootDriveRoot "$1"

@@ -729,6 +729,25 @@ def test_legacy_registry_without_site_info_fields_returns_null(tmp_path: Path) -
     assert loaded["project_type"] is None
 
 
+def test_first_run_initialization_supports_portable_default_site_without_demo_data(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    service = SiteApplicationService(paths)
+
+    record = service.initialize_first_run_site(
+        site_id="default",
+        display_name="默认局点",
+    )
+
+    assert record is not None
+    assert record.site_id == "default"
+    assert paths.site_dir("default").is_dir()
+    assert not paths.site_dir("demo").exists()
+    with sqlite3.connect(paths.site_db_path("default")) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM devices").fetchone() == (0,)
+
+
 def test_site_trash_moves_directory_and_unregisters_site(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     sites = SiteApplicationService(paths)

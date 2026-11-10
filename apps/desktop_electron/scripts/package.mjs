@@ -12,6 +12,7 @@ const releaseRoot = resolve(projectRoot, 'dist', '_build', 'backend-release', `v
 const stagingRoot = resolve(appRoot, 'dist', 'package-resources')
 const backendStaging = resolve(stagingRoot, 'backend')
 const edition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim().toLowerCase()
+const portableBuild = process.env.NETCONSOLE_PORTABLE_BUILD === '1'
 
 if (!python) throw new Error('未找到项目 .venv Python，无法构建 NetConsoleBackend.exe')
 if (!['full', 'customer'].includes(edition)) {
@@ -22,11 +23,13 @@ const env = { ...process.env, NETCONSOLE_BUILD_EDITION: edition }
 const sourceRoot = resolve(projectRoot, 'src')
 env.PYTHONPATH = env.PYTHONPATH ? `${sourceRoot}${delimiter}${env.PYTHONPATH}` : sourceRoot
 
-execFileSync(
-  python,
-  ['-m', 'scripts.build.build_installer', '--prepare-identity'],
-  { cwd: projectRoot, env, stdio: 'inherit' },
-)
+if (!portableBuild) {
+  execFileSync(
+    python,
+    ['-m', 'scripts.build.build_installer', '--prepare-identity'],
+    { cwd: projectRoot, env, stdio: 'inherit' },
+  )
+}
 
 execFileSync(
   python,

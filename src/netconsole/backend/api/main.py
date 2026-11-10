@@ -1774,7 +1774,14 @@ def _recover_legacy_registry(
     entries = _startup_site_entries(paths)
     if not entries:
         try:
-            SiteApplicationService(paths).initialize_first_run_site()
+            initializer = SiteApplicationService(paths)
+            if str(os.environ.get("NETCONSOLE_PORTABLE_MODE") or "").strip() == "1":
+                initializer.initialize_first_run_site(
+                    site_id="default",
+                    display_name="默认局点",
+                )
+            else:
+                initializer.initialize_first_run_site()
         except SiteStorageError as exc:
             _raise_active_site_startup_error(
                 paths, exc.code, str(exc), cause=exc

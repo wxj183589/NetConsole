@@ -881,7 +881,11 @@ class SiteApplicationService:
         self._runtime_rebind_handler = handler
 
     def initialize_first_run_site(
-        self, *, allow_unrelated_root_entries: bool = False
+        self,
+        *,
+        allow_unrelated_root_entries: bool = False,
+        site_id: str = DEFAULT_SITE,
+        display_name: str = "默认局点",
     ) -> SiteRecord | None:
         """为真正空的数据根创建一个没有业务设备的首个局点。
 
@@ -889,6 +893,9 @@ class SiteApplicationService:
         ``create_site``。任何已有 Registry、局点目录或应用配置都会保留并
         交由启动恢复逻辑处理，避免覆盖升级把未知数据误判为新安装。
         """
+
+        selected_site_id = validate_site_id(site_id)
+        selected_display_name = str(display_name or "默认局点").strip() or selected_site_id
 
         with storage_lock(self.paths, "first-run-initialization"):
             records = self.registry.persisted_records()
@@ -911,7 +918,7 @@ class SiteApplicationService:
                 return None
             self.paths.sites_dir.mkdir(parents=True, exist_ok=True)
             existing_entries = list(self.paths.sites_dir.iterdir())
-            site_root = self.paths.site_dir(DEFAULT_SITE)
+            site_root = self.paths.site_dir(selected_site_id)
             if site_root.exists() and not self.paths.app_config_path.exists() and not self.paths.legacy_app_config_path.exists():
                 raise SiteStorageError(
                     "FIRST_RUN_INCOMPLETE_SITE",
@@ -931,16 +938,16 @@ class SiteApplicationService:
             try:
                 site_root.mkdir(parents=False, exist_ok=False)
                 ownership_marker.write_text(ownership_token, encoding="ascii")
-                self.manager.init_site_database(DEFAULT_SITE, with_demo_data=False)
+                self.manager.init_site_database(selected_site_id, with_demo_data=False)
                 self.manager.save_site_metadata(
-                    DEFAULT_SITE,
+                    selected_site_id,
                     {
-                        "display_name": "默认局点",
+                        "display_name": selected_display_name,
                         "remark": "安装初始化的空局点，不包含示例设备",
                     },
                 )
                 record = self.registry.register(
-                    SiteRecord(DEFAULT_SITE, "默认局点", site_root)
+                    SiteRecord(selected_site_id, selected_display_name, site_root)
                 )
                 self.manager.set_current_site_reference(
                     site_root.name, site_id=record.site_id

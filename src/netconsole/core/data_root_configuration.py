@@ -61,7 +61,7 @@ def resolve_persistent_data_root(*, test_mode: bool) -> DataRootConfiguration:
     if configured_machine_root is not None:
         return DataRootConfiguration(configured_machine_root, "machine_configuration")
     raise DataRootConfigurationError(
-        "尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置，"
+        "尚未配置 NetConsole 数据目录。请通过安装程序选择数据存放位置；优先推荐非系统盘，也可以使用 C 盘的 C:\\ProgramData\\NetConsole\\Data，"
         "或显式设置 NETCONSOLE_DATA_ROOT。"
     )
 

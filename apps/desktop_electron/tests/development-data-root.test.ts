@@ -26,6 +26,27 @@ describe('Electron desktop storage context', () => {
     }, 'C:\\Temp', 'win32')).toThrow('程序安装目录')
   })
 
+  it('accepts a persistent root on C: while keeping the installation-tree guard', () => {
+    expect(resolveDesktopStorageContext({
+      NETCONSOLE_STORAGE_MODE: 'persistent',
+      NETCONSOLE_DATA_ROOT: 'C:\\ProgramData\\NetConsole\\Data',
+    }, 'D:\\Temp', 'win32')).toMatchObject({
+      mode: 'persistent',
+      persistent: true,
+      dataRoot: 'C:\\ProgramData\\NetConsole\\Data',
+    })
+  })
+
+  it('rejects a custom portable root inside the executable directory', () => {
+    expect(() => resolveDesktopStorageContext({
+      NETCONSOLE_STORAGE_MODE: 'persistent',
+      NETCONSOLE_DATA_ROOT: 'D:\\Portable\\custom-data',
+    }, 'C:\\Temp', 'win32', {
+      portableMode: true,
+      portableAppRoot: 'D:\\Portable',
+    })).toThrow('程序目录')
+  })
+
   it('accepts and cleans only the exact isolated runtime layout', () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'netconsole-electron-test-'))
     const runtimeRoot = join(tempRoot, 'NetConsole-Codex-safe')
