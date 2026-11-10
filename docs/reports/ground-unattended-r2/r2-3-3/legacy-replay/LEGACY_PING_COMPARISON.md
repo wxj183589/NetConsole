@@ -25,4 +25,3 @@
 - 最大：2,971.00 ms
 
 监督器离线停止结果：`success=true`、无 worker、无 fping 进程、摘要元数据持久化成功、压缩 worker 停止成功。
-

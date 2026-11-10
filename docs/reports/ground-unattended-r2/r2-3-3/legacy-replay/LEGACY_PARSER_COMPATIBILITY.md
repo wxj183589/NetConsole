@@ -19,4 +19,3 @@
 | 非业务未解析 | 170 |
 
 170 条未解析行全部有非 WMESH 标记（SYSLOG_RESTART、SHELL_CMD、SHELL_CMD_EXECUTESUCCESS、IFNET/5/LINK_UPDOWN），不属于 WMESH Parser 漏解析。归档中的 `parse_status=PENDING` 是归档采集状态，不能直接解释为当前 Parser 失败；当前 Parser 已完成上述业务分类。
-

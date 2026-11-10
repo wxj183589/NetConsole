@@ -34,4 +34,3 @@
 ## manifest 摘要与实际数据覆盖
 
 manifest 声明主线列车 11、Ping 目标 42、Syslog 记录 40,290、原始文件 218。实际 Syslog 普通文件读取到 40,290 行，Ping 普通文件读取到 216,743 行；Ping 的 manifest/日汇总计数低于原始文件计数，详见 [LEGACY_PING_COMPARISON.md](LEGACY_PING_COMPARISON.md)。
-
