@@ -22,4 +22,3 @@
 ## 结论
 
 在可观测指标范围内，30 分钟没有错误、inflight 泄漏或 Canvas 数量增长；由于 ECharts instance 和 listener 数不能从当前 Electron probe 直接读取，Heap gate 为 `PARTIAL` 而非 PASS。
-

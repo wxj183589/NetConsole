@@ -39,4 +39,3 @@
 | Workspace 全量布局检查 | PARTIAL | 本轮临时 harness 已退役；检查仍被既有 `D:\study\NetConsole-Workspace\docs` 顶层目录阻断 |
 
 详细证据见同目录的 HTTP/SQL、交互、gap、性能、Heap、数据完整性和回归报告。
-

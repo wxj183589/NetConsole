@@ -21,4 +21,3 @@
 ## 保留条件
 
 活动 DataRoot 和 Ground worktree 仍有用户/并行任务状态，不能回收。旧 MESH 分支无 worktree，但因提交身份差异和远端追踪保留，详见 `BRANCH_INVENTORY.md`。
-

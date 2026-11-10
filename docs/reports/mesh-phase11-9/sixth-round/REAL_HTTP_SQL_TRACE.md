@@ -36,4 +36,3 @@
 ## 缓存 gate
 
 主运行动作 ledger 中，主链路 nav、两次 wheel、13 个 chart wheel、tooltip、Shift、Ctrl、Esc、详情点击、页面重入等缓存范围动作均记录 `http_requests=0`、`sql_queries=0`。区间扩大操作记录了 raw cache `gap` / page cache `miss`，并出现被取消的 transition request；因此报告同时保留“缓存范围 0/0”和“全运行 94/9”两个不同口径。
-

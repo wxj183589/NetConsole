@@ -27,4 +27,3 @@
 - 真实 Electron 工作台交互、筛选/分页/列设置以及 MESH Excel/链路明细导出回归。
 
 未将 DataRoot、Ground、Job Center 或未完成的 Excel 实机、真实设备、长期稳定性验收写入 v1.5.13 完成项。
-

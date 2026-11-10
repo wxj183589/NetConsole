@@ -1,9 +1,9 @@
 # NetConsole MESH 原始日志分析 Phase 11.9 第六轮最终报告
 
-日期：2026-11-10  
-Branch：`codex-A/global-dataroot-disk-policy`  
-交付提交：`b6d8b16c`  
-真实运行采样提交：`de7ca957d371cd8bc29b60d05f69f4c85d8b2190`（dirty）  
+日期：2026-11-10
+Branch：`codex-A/global-dataroot-disk-policy`
+交付提交：`b6d8b16c`
+真实运行采样提交：`de7ca957d371cd8bc29b60d05f69f4c85d8b2190`（dirty）
 目标会话：`80716c07-6bd9-47d8-b76d-ace1e55624d1:1`
 
 ## 最终状态
@@ -72,4 +72,3 @@ Branch：`codex-A/global-dataroot-disk-policy`
 ## 交付判断
 
 第六轮的“真实 Electron + 全工作台 + 缓存交互 + 长稳”主路径已经有可复核证据，但由于上述数据与可观测性边界，Phase 11.9 overall 不宣称 PASS。下一轮应优先：使用 candidate 记录并隔离 catalog 写入、在 probe 中以 bigint 记录 mtime_ns、输出按 A/B/C 分段的 raw gap query attribution，并增加 ECharts instance/listener 的受控诊断接口。
-

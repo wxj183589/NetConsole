@@ -1,6 +1,6 @@
 # Raw cache gap fill 验收
 
-日期：2026-11-10  
+日期：2026-11-10
 测试：`apps/desktop_renderer/src/components/mesh-analysis/meshRawSampleCache.test.ts`
 
 构造同一 scope 的两个完整区间：

@@ -1,7 +1,7 @@
 # NetConsole v1.5.13 Final Integration Report
 
-日期：2026-11-11  
-Agent：`codex-A`  
+日期：2026-11-11
+Agent：`codex-A`
 Codex-Thread：`v1.5.13-final-integration`
 
 ## 最终状态

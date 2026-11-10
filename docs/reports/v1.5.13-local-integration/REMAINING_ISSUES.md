@@ -15,4 +15,3 @@
 - `codex-A/global-dataroot-disk-policy` 的 DataRoot dirty 修改未合入。
 - `codex-A/r2-3-2-ground-unattended` 的 Ground worktree、未跟踪报告和独有提交未清理。
 - 两个旧 MESH 分支保留，因补丁等价但原提交身份非 main 祖先，且存在远端历史。
-

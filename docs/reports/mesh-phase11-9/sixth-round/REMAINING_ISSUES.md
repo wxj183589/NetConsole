@@ -8,4 +8,3 @@
 6. ECharts instance count 与 event listener count 当前无法从 Electron probe 直接观测；30 分钟 Heap 结果因此保持 PARTIAL。
 7. Workspace layout checker 仍报告既有 `D:\study\NetConsole-Workspace\docs` 顶层目录；本轮 harness 已退役，没有删除该既有目录。
 8. Excel/WPS、真实设备/现场数据、生产根和跨机器验收不在本轮结论内。
-

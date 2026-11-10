@@ -34,4 +34,3 @@ AC-MESH 组合运行的唯一失败为 `test_interval_update_and_immediate_refre
 ## 数据边界
 
 测试使用 Workspace 隔离根；未以 Production 或 `D:/NetConsoleData-dev` 作为运行根，未复制完整真实数据、未改真实数据库、设备或 fping。
-

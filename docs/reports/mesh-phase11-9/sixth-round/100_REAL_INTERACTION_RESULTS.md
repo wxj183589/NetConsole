@@ -22,4 +22,3 @@
 ## 截图
 
 10 张固定文件均存在，尺寸均为原生 `1920x1080`；截图没有通过浏览器窗口拉伸。完整 inventory 见 `SCREENSHOT_INVENTORY.md`。
-

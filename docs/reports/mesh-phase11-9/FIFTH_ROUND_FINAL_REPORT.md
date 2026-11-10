@@ -1,7 +1,7 @@
 # NetConsole MESH Phase 11.9 第五轮最终报告
 
-日期：2026-11-10  
-Branch：`codex-A/global-dataroot-disk-policy`  
+日期：2026-11-10
+Branch：`codex-A/global-dataroot-disk-policy`
 最终状态：`PHASE_11_9_FIFTH_ROUND=PARTIAL`
 
 ## 本轮交付

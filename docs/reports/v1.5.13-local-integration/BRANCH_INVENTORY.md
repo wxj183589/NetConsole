@@ -22,4 +22,3 @@
 ## 未删除对象的原因
 
 两个旧 MESH 分支是通过 cherry-pick 进入本轮集成树的，内容由 `git cherry main <branch>` 的 `-` 结果证明已等价包含，但提交身份不是 `main` 的祖先。按要求不使用 `git branch -D`，因此不以“看起来已合并”强行删除。当前 DataRoot 和 Ground 是明确并行任务，必须保留。
-

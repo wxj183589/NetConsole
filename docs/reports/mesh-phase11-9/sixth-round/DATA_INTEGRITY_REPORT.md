@@ -32,4 +32,3 @@
 ## 结论
 
 输入 raw/parsed/target session 数据内容未变，隔离 catalog 有可见 metadata 变更，文件时间证据不完整；数据完整性 gate 为 `PARTIAL`。
-

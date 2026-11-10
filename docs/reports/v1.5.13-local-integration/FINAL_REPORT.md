@@ -33,4 +33,3 @@
 ## 数据和安全
 
 未访问 Production `D:\NetConsoleData`，未以 `D:\NetConsoleData-dev` 作为运行根，未复制完整 Site/数据库，未操作设备或 `D:\study\fping`。测试只使用 Workspace 隔离测试根和本轮临时 worktree 依赖；数据影响为 0。
-

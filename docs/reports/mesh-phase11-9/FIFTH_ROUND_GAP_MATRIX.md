@@ -1,7 +1,7 @@
 # NetConsole MESH Phase 11.9 第五轮差距矩阵
 
-日期：2026-11-10  
-Branch：`codex-A/global-dataroot-disk-policy`  
+日期：2026-11-10
+Branch：`codex-A/global-dataroot-disk-policy`
 结论：`PHASE_11_9_FIFTH_ROUND=PARTIAL`
 
 本轮按“证据已完成”与“仍未证明”分开记录，不把 mock、代码检查或隔离 Electron 启动升级为真实业务 GUI 验收。

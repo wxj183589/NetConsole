@@ -1,6 +1,6 @@
 # 宁波地铁12号线真实 full-vs-segmented 派生对照
 
-日期：2026-11-10  
+日期：2026-11-10
 数据：只读 `D:\NetConsoleData-dev`，站点“宁波地铁12号线”，Session `7c7b6df2-e67b-452a-ab1a-91760014501f:1`，MR `列车03-MR-CW`，Radio 1，detail source 1。未访问 Production。
 
 ## 查询结果

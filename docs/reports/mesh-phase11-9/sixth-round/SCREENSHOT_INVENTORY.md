@@ -16,4 +16,3 @@
 | `10-page-reentry.png` | 46580 | 34 | page re-entry main | 18:38:57.542–18:39:23.312 |
 
 采样源码提交均为 `de7ca957d371cd8bc29b60d05f69f4c85d8b2190` dirty working tree。补充运行仅用于在真实 Electron 中等待完成并补拍 08/09，不改变截图命名约束。
-
