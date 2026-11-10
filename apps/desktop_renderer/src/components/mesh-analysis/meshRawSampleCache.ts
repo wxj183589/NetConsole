@@ -189,6 +189,10 @@ function sameLinkRole(previous: MeshLinkDetail, current: MeshLinkDetail): boolea
   return previous.link_role === current.link_role
 }
 
+function sourceRadioKey(row: MeshLinkDetail): string {
+  return `${row.source_file_id ?? ''}|${row.local_radio ?? ''}`
+}
+
 function counterRecord(field: CounterField, row: MeshLinkDetail): number | null {
   return numberValue(row[field])
 }
@@ -240,7 +244,10 @@ export function deriveMeshRawSamples(rows: MeshLinkDetail[], request: Interval):
     }
     if (old && interval !== null && interval > 0) samples.push(interval)
     cadence.set(lane, samples.slice(-101))
-    if (resetBaseline) previous.delete(lane)
+    if (resetBaseline) {
+      const sourceRadio = sourceRadioKey(row)
+      for (const [key, prior] of previous) if (sourceRadioKey(prior) === sourceRadio) previous.delete(key)
+    }
     else if (!old || interval === null || interval > 0) previous.set(lane, row)
     if (!row.is_boundary_context && currentTime >= request.start && currentTime <= request.end) derived.push(row)
   }

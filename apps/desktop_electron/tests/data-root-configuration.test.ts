@@ -120,6 +120,35 @@ describe('desktop machine data-root configuration', () => {
     }
   })
 
+  it('uses the writable user-data fallback when the portable app directory is read-only', () => {
+    const base = mkdtempSync(join(tmpdir(), 'netconsole-portable-fallback-'))
+    const portableRoot = join(base, 'portable-app')
+    const fallbackRoot = mkdtempSync(join(tmpdir(), 'netconsole-portable-user-data-'))
+    const fallbackPath = join(fallbackRoot, 'portable-data-root.json')
+    const customRoot = mkdtempSync(join(tmpdir(), 'netconsole-portable-business-'))
+    try {
+      const store = new PortableDataRootStore(portableRoot, undefined, fallbackPath)
+      store.save(customRoot)
+
+      const result = resolveDesktopDataRootConfiguration({
+        platform: 'win32',
+        portableMode: true,
+        portableAppRoot: portableRoot,
+        portableDataRootFallbackPath: fallbackPath,
+        environment: {},
+      })
+
+      expect(result).toEqual({ dataRoot: customRoot, source: 'portable_configuration' })
+      expect(store.load()).toBe(customRoot)
+      expect(existsSync(join(portableRoot, 'portable-data-root.json'))).toBe(false)
+      expect(existsSync(fallbackPath)).toBe(true)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+      rmSync(fallbackRoot, { recursive: true, force: true })
+      rmSync(customRoot, { recursive: true, force: true })
+    }
+  })
+
   it('fails closed on malformed portable root configuration', () => {
     const portableRoot = mkdtempSync(join(tmpdir(), 'netconsole-portable-invalid-'))
     try {

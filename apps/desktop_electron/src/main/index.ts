@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type CloseToTrayState, type NativeActionResult, type RendererHostReport, type RendererRecoveryState, type RendererWorkloadReport, type SiteStorageRestartRequest, type TaskWindowContext, type WorkspaceWindowOpenRequest, type WorkspaceWindowSnapshot, type WorkspaceWindowStateResult } from '../shared/bridge'
 import { PythonBackendManager, type BackendRuntimeInfo } from './backend-manager'
@@ -71,8 +71,11 @@ const portableAppRoot = app.isPackaged ? resolve(dirname(process.execPath)) : un
 const portableMode = portableAppRoot
   ? detectPortableMode({ portableAppRoot, environment: process.env })
   : false
+const portableDataRootFallbackPath = portableAppRoot && portableMode
+  ? join(app.getPath('userData'), 'portable-data-root.json')
+  : undefined
 const portableDataRootStore = portableAppRoot && portableMode
-  ? new PortableDataRootStore(portableAppRoot)
+  ? new PortableDataRootStore(portableAppRoot, undefined, portableDataRootFallbackPath)
   : undefined
 
 try {
@@ -93,6 +96,7 @@ function initializeDesktopStorage(rootOverride?: string): void {
     : resolveDesktopDataRootConfiguration({
       portableAppRoot,
       portableMode,
+      portableDataRootFallbackPath,
     })
   try {
     desktopDataRootResolution = resolution

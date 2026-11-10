@@ -43,20 +43,27 @@ export function detectPortableMode(options: {
 export class PortableDataRootStore {
   readonly path: string
   readonly portableAppRoot: string
+  readonly fallbackPath?: string
 
-  constructor(portableAppRoot: string, private readonly fileExists: (path: string) => boolean = existsSync) {
+  constructor(
+    portableAppRoot: string,
+    private readonly fileExists: (path: string) => boolean = existsSync,
+    fallbackPath?: string,
+  ) {
     this.portableAppRoot = requireAbsolutePath(portableAppRoot, 'portable application directory')
     this.path = join(this.portableAppRoot, PORTABLE_DATA_ROOT_CONFIGURATION)
+    this.fallbackPath = fallbackPath ? requireAbsolutePath(fallbackPath, 'portable data root fallback configuration') : undefined
   }
 
   load(): string | undefined {
-    if (!this.fileExists(this.path)) return undefined
+    const configurationPath = [this.fallbackPath, this.path].find(path => path && this.fileExists(path))
+    if (!configurationPath) return undefined
     let parsed: unknown
     try {
-      parsed = JSON.parse(readFileSync(this.path, 'utf8'))
+      parsed = JSON.parse(readFileSync(configurationPath, 'utf8'))
     } catch (cause) {
       throw new PortableDataRootConfigurationError(
-        `便携版数据根配置无法读取：${this.path}`,
+        `便携版数据根配置无法读取：${configurationPath}`,
         { cause },
       )
     }
@@ -78,16 +85,28 @@ export class PortableDataRootStore {
     const normalized = dataRoot ? requireAbsolutePath(dataRoot, '便携版 data_root') : undefined
     if (!normalized || normalized === defaultPortableDataRoot(this.portableAppRoot)) {
       rmSync(this.path, { force: true })
+      if (this.fallbackPath) rmSync(this.fallbackPath, { force: true })
       return
     }
-    const temporary = `${this.path}.${process.pid}.tmp`
+    try {
+      this.writeConfiguration(this.path, normalized)
+      if (this.fallbackPath) rmSync(this.fallbackPath, { force: true })
+      return
+    } catch (primaryCause) {
+      if (!this.fallbackPath) throw primaryCause
+      this.writeConfiguration(this.fallbackPath, normalized)
+    }
+  }
+
+  private writeConfiguration(path: string, dataRoot: string): void {
+    const temporary = `${path}.${process.pid}.tmp`
     try {
       writeFileSync(
         temporary,
-        `${JSON.stringify({ schema_version: 1, data_root: normalized }, null, 2)}\n`,
+        `${JSON.stringify({ schema_version: 1, data_root: dataRoot }, null, 2)}\n`,
         { encoding: 'utf8', flag: 'w' },
       )
-      renameSync(temporary, this.path)
+      renameSync(temporary, path)
     } finally {
       rmSync(temporary, { force: true })
     }

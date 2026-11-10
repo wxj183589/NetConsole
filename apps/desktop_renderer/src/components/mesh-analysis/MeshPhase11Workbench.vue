@@ -164,7 +164,14 @@ function observePanel(element: unknown, key: MeshBusinessMetricKey): void {
 function metricSource(key: MeshBusinessMetricKey): string { return ['tx_rx', 'retry', 'error', 'garp', 'mul_join'].includes(key) ? 'counters' : ['tx_busy', 'rx_busy'].includes(key) ? 'busy' : key }
 function phase(key: MeshBusinessMetricKey, value: MeshLoadingPhase, message = '', cached = false): void { statuses.value[key] = { phase: value, message: message || meshLoadingPhaseLabel(value), cached } }
 function query() { return { time_from: windowRange.value.start, time_to: windowRange.value.end, radio: filters.value.radio, peer_ap_mac: filters.value.ap, exact_ap: true, link_role: filters.value.role, include_zero: filters.value.include_zero, ...scope.value } }
-function rawQuery(values: ReturnType<typeof query>): MeshRawQuery { return { time_from: values.time_from, time_to: values.time_to, radio: values.radio, peer_ap_mac: values.peer_ap_mac, exact_ap: values.exact_ap, link_role: values.link_role, include_zero: values.include_zero, exclude_depot: values.exclude_depot, exclude_parking: values.exclude_parking } }
+function rawQuery(values: ReturnType<typeof query>): MeshRawQuery { return { time_from: values.time_from, time_to: values.time_to, radio: values.radio, peer_ap_mac: values.peer_ap_mac, exact_ap: values.exact_ap, include_zero: true, exclude_depot: values.exclude_depot, exclude_parking: values.exclude_parking } }
+function filterRawRows(values: ReturnType<typeof query>, rows: MeshLinkDetail[]): MeshLinkDetail[] {
+  return rows.filter(row => {
+    if (!values.include_zero && row.link_count === 0) return false
+    if (values.link_role && row.link_count !== 0 && row.link_role !== values.link_role) return false
+    return true
+  })
+}
 function prepareRawRefresh(values: ReturnType<typeof query>): void {
   const scopeKey = `${props.sessionId}|${meshRawScopeKey(rawQuery(values))}`
   if (rawRefreshScopes.has(scopeKey)) return
@@ -218,7 +225,7 @@ async function loadRawSamples(values: ReturnType<typeof query>, signal: AbortSig
   if (refresh) prepareRawRefresh(values)
   if (fallbackFor(scopeKey, interval)) {
     meshQueryTrace.cache(operationId, 'raw_samples', 'bypass', 'legacy backend fallback')
-    return fallbackItems(scopeKey, interval)
+    return filterRawRows(values, fallbackItems(scopeKey, interval))
   }
   const gaps = rawSampleCache.missing(scopeKey, interval)
   if (!gaps.length) {
@@ -228,17 +235,17 @@ async function loadRawSamples(values: ReturnType<typeof query>, signal: AbortSig
   await Promise.all(gaps.map(gap => loadRawInterval(request, scopeKey, gap, signal)))
   if (fallbackFor(scopeKey, interval)) {
     meshQueryTrace.cache(operationId, 'raw_samples', 'bypass', 'legacy backend fallback')
-    return fallbackItems(scopeKey, interval)
+    return filterRawRows(values, fallbackItems(scopeKey, interval))
   }
   const remaining = rawSampleCache.missing(scopeKey, interval)
   if (remaining.length) throw new Error('原始采样覆盖不完整，未生成派生指标')
   const derivedKey = `${scopeKey}|${interval.start}|${interval.end}`
   const cached = derivedMetricCache.get(derivedKey)
-  if (cached) return cached
+  if (cached) return filterRawRows(values, cached)
   const derived = deriveMeshRawSamples(rawSampleCache.all(scopeKey, interval.end), interval)
   derivedMetricCache.set(derivedKey, derived)
   while (derivedMetricCache.size > 8) derivedMetricCache.delete(derivedMetricCache.keys().next().value!)
-  return derived
+  return filterRawRows(values, derived)
 }
 function legacyMetricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false): Promise<MeshLinkPage> {
   const source = metricSource(key), id = `${props.sessionId}|${source}|${JSON.stringify(values)}`

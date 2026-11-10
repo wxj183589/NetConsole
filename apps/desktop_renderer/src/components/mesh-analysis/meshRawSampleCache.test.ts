@@ -109,4 +109,20 @@ describe('MESH raw sample cache', () => {
     expect(result[4]!.monitor_gap_before).toBe(true)
     expect(JSON.stringify(source)).toBe(snapshot)
   })
+
+  it('clears every same-radio counter baseline after a zero-link observation', () => {
+    const source = [
+      row(1, 0, { local_tx: 100 }),
+      row(2, 1, { local_tx: 120 }),
+      row(3, 2, {
+        local_tx: 0, link_count: 0, link_role: '', link_status: '', peer_mac: '', peer_ap_mac: '',
+        peer_radio: '', peer_radio_mac: '', establish_time: '',
+      }),
+      row(4, 3, { local_tx: 140 }),
+    ]
+    const result = deriveMeshRawSamples(source, { start: BASE, end: BASE + 3_000 })
+    expect(result[3]!.counter_samples?.local_tx?.status).toBe('first')
+    expect(result[3]!.counter_samples?.local_tx?.previous).toBeNull()
+    expect(result[3]!.counter_samples?.local_tx?.delta).toBeNull()
+  })
 })

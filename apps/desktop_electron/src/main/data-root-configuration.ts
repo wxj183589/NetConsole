@@ -43,6 +43,7 @@ export function resolveDesktopDataRootConfiguration(options: {
   queryRegistry?: RegistryQuery
   portableAppRoot?: string
   portableMode?: boolean
+  portableDataRootFallbackPath?: string
   fileExists?: (path: string) => boolean
 } = {}): DesktopDataRootResolution {
   const environment = options.environment ?? process.env
@@ -60,7 +61,11 @@ export function resolveDesktopDataRootConfiguration(options: {
     environment,
     fileExists: options.fileExists,
   }))) {
-    const store = new PortableDataRootStore(options.portableAppRoot, options.fileExists)
+    const store = new PortableDataRootStore(
+      options.portableAppRoot,
+      options.fileExists,
+      options.portableDataRootFallbackPath,
+    )
     const configured = store.load()
     return configured
       ? { dataRoot: configured, source: 'portable_configuration' }
