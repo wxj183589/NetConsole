@@ -2,6 +2,7 @@
   "phase": "11.9-sixth-round",
   "status": "PARTIAL",
   "branch": "codex-A/global-dataroot-disk-policy",
+  "delivery_commit": "b6d8b16c",
   "runtime_source_commit": "de7ca957d371cd8bc29b60d05f69f4c85d8b2190",
   "runtime": {
     "electron_pid": 46580,

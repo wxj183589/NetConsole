@@ -2,6 +2,7 @@
 
 日期：2026-11-10  
 Branch：`codex-A/global-dataroot-disk-policy`  
+交付提交：`b6d8b16c`  
 真实运行采样提交：`de7ca957d371cd8bc29b60d05f69f4c85d8b2190`（dirty）  
 目标会话：`80716c07-6bd9-47d8-b76d-ace1e55624d1:1`
 
