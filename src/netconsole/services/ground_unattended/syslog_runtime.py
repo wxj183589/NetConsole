@@ -2419,8 +2419,12 @@ class SyslogUdpReceiver:
                 details["position_commit_time"] = position_commit_time
                 event_time = event.get("event_time")
                 event_source = str(event.get("event_time_source") or "")
-                latency_start = event_time if event_source == "DEVICE_TIME" else event.get("receive_time")
-                latency = _stage_duration_ms(latency_start, position_commit_time)
+                latency = _position_latency_ms(
+                    event_time=event_time,
+                    event_source=event_source,
+                    receive_time=event.get("receive_time"),
+                    committed_at=position_commit_time,
+                )
                 if latency is not None:
                     details["position_latency_ms"] = latency
                 if details.get("position_state_changed") and not (
@@ -2461,12 +2465,12 @@ class SyslogUdpReceiver:
                     break
         for device_uuid, state in position_states.items():
             event_source = str(state.get("last_event_time_source") or "")
-            latency_start = (
-                state.get("last_event_time")
-                if event_source == "DEVICE_TIME"
-                else state.get("last_receive_time")
+            latency = _position_latency_ms(
+                event_time=state.get("last_event_time"),
+                event_source=event_source,
+                receive_time=state.get("last_receive_time"),
+                committed_at=position_commit_time,
             )
-            latency = _stage_duration_ms(latency_start, position_commit_time)
             state["last_position_commit_time"] = position_commit_time
             state["last_position_latency_ms"] = latency
         try:
@@ -2517,21 +2521,21 @@ class SyslogUdpReceiver:
             details = dict(event.get("details") or {})
             if details.get("position_result"):
                 details["position_commit_time"] = commit_time
-                latency = _stage_duration_ms(
-                    event.get("event_time")
-                    if str(event.get("event_time_source") or "") == "DEVICE_TIME"
-                    else event.get("receive_time"),
-                    commit_time,
+                latency = _position_latency_ms(
+                    event_time=event.get("event_time"),
+                    event_source=str(event.get("event_time_source") or ""),
+                    receive_time=event.get("receive_time"),
+                    committed_at=commit_time,
                 )
                 if latency is not None:
                     details["position_latency_ms"] = latency
                 event["details"] = details
         for state in position_states.values():
-            latency = _stage_duration_ms(
-                state.get("last_event_time")
-                if str(state.get("last_event_time_source") or "") == "DEVICE_TIME"
-                else state.get("last_receive_time"),
-                commit_time,
+            latency = _position_latency_ms(
+                event_time=state.get("last_event_time"),
+                event_source=str(state.get("last_event_time_source") or ""),
+                receive_time=state.get("last_receive_time"),
+                committed_at=commit_time,
             )
             state["last_position_commit_time"] = commit_time
             state["last_position_latency_ms"] = latency
@@ -2938,6 +2942,27 @@ def _stage_duration_ms(start: object, end: object) -> float | None:
         return None
     value = (ended - started).total_seconds() * 1000
     return round(value, 3) if value >= 0 else None
+
+
+def _position_latency_ms(
+    *,
+    event_time: object,
+    event_source: str,
+    receive_time: object,
+    committed_at: object,
+) -> float | None:
+    """Measure position latency without losing samples to device-clock lead.
+
+    A device timestamp can legitimately be ahead of the host clock.  Position
+    ordering still uses the device timestamp, but a negative latency is not a
+    useful metric; use the host receive time as the measurement fallback.
+    """
+
+    if str(event_source or "") == "DEVICE_TIME":
+        latency = _stage_duration_ms(event_time, committed_at)
+        if latency is not None:
+            return latency
+    return _stage_duration_ms(receive_time, committed_at)
 
 
 def _percentile(values: tuple[float, ...], percentile: int) -> float | None:
