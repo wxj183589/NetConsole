@@ -6,7 +6,7 @@ import NcDataTable from '../table/NcDataTable.vue'
 import type { NcTableColumn } from '../table/NcTableColumn'
 import { getMeshBusinessSummary, listMeshApSignalStatistics, listMeshLinks, listMeshParseIssues, listMeshActiveBuildOrder, type QueryValue } from '../../api/meshAnalysis'
 import type { MeshActiveBuildOrder, MeshAnalysisSession, MeshApSignal, MeshBusinessSummary, MeshLinkDetail, MeshParseIssue, MeshApSignalPage } from '../../types/meshAnalysis'
-import { buildMeshBusinessMetricGroups, meshMetricLabels, type MeshBusinessMetricKey, type MeshBusinessMetricGroup } from './meshBusinessMetrics'
+import { buildMeshBusinessMetricGroups, meshMetricLabels, sampleMeshBusinessMetricSamples, type MeshBusinessMetricKey, type MeshBusinessMetricGroup, type MeshBusinessMetricSample } from './meshBusinessMetrics'
 import { meshLoadingPhaseLabel, type MeshLoadingPhase } from './meshLoadingState'
 import { counterStatus } from './meshMonitorTooltip'
 import { meshTimestampMillis as millis, formatMeshViewportTimestamp as stamp } from './meshChartViewport'
@@ -54,14 +54,15 @@ const definitions: Array<{ key: MeshBusinessMetricKey; label: string; unit: stri
   { key: 'tx_rx', label: '发送/接收报文（Tx / Rx）', unit: '次/s' }, { key: 'retry', label: '重传次数（Retry）', unit: '次/s' }, { key: 'error', label: '错误报文数（Err）', unit: '次/s' }, { key: 'garp', label: 'GARP 报文（GARP）', unit: '次/s' }, { key: 'mul_join', label: '组播加入报文（MulJoin）', unit: '次/s' },
 ]
 const groups = shallowRef<Partial<Record<MeshBusinessMetricKey, MeshBusinessMetricGroup>>>({})
-const samples = shallowRef<Partial<Record<MeshBusinessMetricKey, MeshLinkDetail[]>>>({})
+const samples = shallowRef<Partial<Record<MeshBusinessMetricKey, MeshBusinessMetricSample[]>>>({})
 const statuses = ref(Object.fromEntries(definitions.map(d => [d.key, { phase: 'IDLE', message: '', cached: false }])) as Record<MeshBusinessMetricKey, Status>)
 let autoSelect = true, selectionGeneration = 0, recordRequest = 0, historyRequest = 0, apRequest = 0
 let generation = 0, auxGeneration = 0, zoomTimer: ReturnType<typeof setTimeout> | undefined
 let mainController = new AbortController(), auxController = new AbortController()
-const cache = new Map<string, { rows: MeshLinkDetail[]; group: MeshBusinessMetricGroup }>()
+const cache = new Map<string, { rows: MeshBusinessMetricSample[]; group: MeshBusinessMetricGroup }>()
 const pending = new Map<string, Promise<void>>()
 const rawSampleCache = new MeshRawSampleCache()
+const derivedMetricCache = new Map<string, MeshLinkDetail[]>()
 const rawPending = new Map<string, Promise<void>>()
 const rawRefreshScopes = new Set<string>()
 const rawFallbacks = new Map<string, RawFallback[]>()
@@ -168,6 +169,7 @@ function prepareRawRefresh(values: ReturnType<typeof query>): void {
   const scopeKey = `${props.sessionId}|${meshRawScopeKey(rawQuery(values))}`
   if (rawRefreshScopes.has(scopeKey)) return
   rawSampleCache.clear(scopeKey)
+  for (const key of [...derivedMetricCache.keys()]) if (key.startsWith(`${scopeKey}|`)) derivedMetricCache.delete(key)
   rawFallbacks.delete(scopeKey)
   legacySourceQueryCache.clear()
   legacyCompleteMetricCache.clear()
@@ -230,7 +232,13 @@ async function loadRawSamples(values: ReturnType<typeof query>, signal: AbortSig
   }
   const remaining = rawSampleCache.missing(scopeKey, interval)
   if (remaining.length) throw new Error('原始采样覆盖不完整，未生成派生指标')
-  return deriveMeshRawSamples(rawSampleCache.all(scopeKey, interval.end), interval)
+  const derivedKey = `${scopeKey}|${interval.start}|${interval.end}`
+  const cached = derivedMetricCache.get(derivedKey)
+  if (cached) return cached
+  const derived = deriveMeshRawSamples(rawSampleCache.all(scopeKey, interval.end), interval)
+  derivedMetricCache.set(derivedKey, derived)
+  while (derivedMetricCache.size > 8) derivedMetricCache.delete(derivedMetricCache.keys().next().value!)
+  return derived
 }
 function legacyMetricQuery(key: MeshBusinessMetricKey, values: ReturnType<typeof query>, signal: AbortSignal, refresh = false): Promise<MeshLinkPage> {
   const source = metricSource(key), id = `${props.sessionId}|${source}|${JSON.stringify(values)}`
@@ -271,7 +279,7 @@ function metricQuery(_key: MeshBusinessMetricKey, values: ReturnType<typeof quer
 function cancel(): void { generation++; selectionGeneration++; selectionController.abort(); selectionController = new AbortController(); clearTimeout(selectionTimer); selectionTimer = undefined; mainController.abort(); mainController = new AbortController(); pending.clear(); rawPending.clear(); rawRefreshScopes.clear(); clearTimeout(zoomTimer); definitions.forEach(d => { if (['PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING'].includes(statuses.value[d.key].phase)) phase(d.key, 'CANCELLED') }) }
 function cancelApRequest(): void { apController.abort(); apController = new AbortController(); apLoading.value = false }
 function resetMain(): void { cancel(); completeIndex = []; autoSelect = true; fixedSelection.value = false; selectionMessage.value = ''; selectionCache.clear(); groups.value = {}; samples.value = {}; selectedLink.value = null; pointer.value = null; records.value = []; history.value = []; zeroTotal.value = 0; historyTotal.value = 0; recordTotal.value = 0; historyPage.value = 1; recordPage.value = 1 }
-function accept(key: MeshBusinessMetricKey, rows: MeshLinkDetail[], group: MeshBusinessMetricGroup): void { loadedScopes.set(key, JSON.stringify(query())); samples.value = { ...samples.value, [key]: rows }; groups.value = { ...groups.value, [key]: group }; if (autoSelect && !selectedLink.value && rows.length) selectLink(rows[0]!) }
+function accept(key: MeshBusinessMetricKey, rows: MeshBusinessMetricSample[], group: MeshBusinessMetricGroup): void { loadedScopes.set(key, JSON.stringify(query())); samples.value = { ...samples.value, [key]: rows }; groups.value = { ...groups.value, [key]: group }; if (autoSelect && !selectedLink.value && rows.length) selectLink(rows[0] as unknown as MeshLinkDetail) }
 function finishChart(key: MeshBusinessMetricKey): void { if (statuses.value[key].phase === 'RENDERING') phase(key, 'COMPLETED', '', statuses.value[key].cached) }
 async function loadMetric(key: MeshBusinessMetricKey, refresh = false): Promise<void> {
   const local = generation, signal = mainController.signal, values = query(), id = `${props.sessionId}|${key}|${JSON.stringify(values)}`
@@ -283,16 +291,40 @@ async function loadMetric(key: MeshBusinessMetricKey, refresh = false): Promise<
     try {
       const result = await metricQuery(key, values, signal, refresh)
       if (local !== generation || signal.aborted) return
-      if (key === 'tx_rx' && result.downsampled === false && result.total === result.items.length) completeIndex = result.items.filter(row => row.link_role === 'ACTIVE' && row.link_count !== 0 && (millis(row.timestamp) ?? -Infinity) >= millis(values.time_from)! && (millis(row.timestamp) ?? Infinity) <= millis(values.time_to)!).sort((a, b) => (millis(a.timestamp) ?? 0) - (millis(b.timestamp) ?? 0))
+      if (key === 'tx_rx' && result.downsampled === false && result.total === result.items.length) completeIndex = result.items.filter(row => row.link_role === 'ACTIVE' && row.link_count !== 0 && (millis(row.timestamp) ?? -Infinity) >= millis(values.time_from)! && (millis(row.timestamp) ?? Infinity) <= millis(values.time_to)!).sort((a, b) => (millis(a.timestamp) ?? 0) - (millis(b.timestamp) ?? 0)) as MeshLinkDetail[]
       phase(key, 'PROCESSING', metricSource(key) === 'counters' ? '正在整理计数器每秒速率' : '正在整理链路数据')
       await nextTick()
       if (local !== generation || signal.aborted) return
       const numeric = (value: unknown): number | null => value == null || value === '' || !Number.isFinite(Number(value)) ? null : Number(value)
-      const adapted = result.items.map(row => ({ ...row, local_rssi: row.local_rssi_db, peer_rssi: row.peer_rssi_db, local_rate_raw: numeric(row.local_rate_raw), peer_rate_raw: numeric(row.peer_rate_raw), local_error_delta: row.local_err_delta, peer_error_delta: row.peer_err_delta }))
+      const chartRows = sampleMeshBusinessMetricSamples(result.items, 4000)
+      const adapted: MeshBusinessMetricSample[] = chartRows.map(row => ({
+        record_id: row.record_id, timestamp: row.timestamp, timestamp_tag: row.timestamp_tag,
+        peer_ap_name: row.peer_ap_name, peer_ap_mac: row.peer_ap_mac, peer_mac: row.peer_mac,
+        peer_mac_raw: row.peer_mac_raw, local_radio: row.local_radio, peer_radio: row.peer_radio,
+        link_role: row.link_role, establish_time: row.establish_time, duration_seconds: row.duration_seconds,
+        link_count: row.link_count, station: row.station, section: row.section,
+        monitor_gap_before: row.monitor_gap_before, counter_samples: row.counter_samples,
+        local_rssi_db: row.local_rssi_db, peer_rssi_db: row.peer_rssi_db, local_rssi: row.local_rssi_db, peer_rssi: row.peer_rssi_db,
+        local_cpu_percent: row.local_cpu_percent, peer_cpu_percent: row.peer_cpu_percent,
+        local_mem_percent: row.local_mem_percent, peer_mem_percent: row.peer_mem_percent,
+        local_tx_busy: row.local_tx_busy, peer_tx_busy: row.peer_tx_busy, local_rx_busy: row.local_rx_busy, peer_rx_busy: row.peer_rx_busy,
+        local_rate_raw: numeric(row.local_rate_raw), peer_rate_raw: numeric(row.peer_rate_raw),
+        local_noise_dbm: row.local_noise_dbm, peer_noise_dbm: row.peer_noise_dbm,
+        local_tx_des_free_cnt: row.local_tx_des_free_cnt, peer_tx_des_free_cnt: row.peer_tx_des_free_cnt,
+        local_tx_delta: row.local_tx_delta, peer_tx_delta: row.peer_tx_delta, local_rx_delta: row.local_rx_delta, peer_rx_delta: row.peer_rx_delta,
+        local_retry_delta: row.local_retry_delta, peer_retry_delta: row.peer_retry_delta,
+        local_error_delta: row.local_err_delta, peer_error_delta: row.peer_err_delta,
+        local_tx_garp_delta: row.local_tx_garp_delta, peer_rx_garp_delta: row.peer_rx_garp_delta,
+        local_tx_mul_join_delta: row.local_tx_mul_join_delta, peer_rx_mul_join_delta: row.peer_rx_mul_join_delta,
+        local_tx: row.local_tx, peer_tx: row.peer_tx, local_rx: row.local_rx, peer_rx: row.peer_rx,
+        local_retry: row.local_retry, peer_retry: row.peer_retry, local_err: row.local_err, peer_err: row.peer_err,
+        local_tx_garp: row.local_tx_garp, peer_rx_garp: row.peer_rx_garp,
+        local_tx_mul_join: row.local_tx_mul_join, peer_rx_mul_join: row.peer_rx_mul_join,
+      }))
       const group = buildMeshBusinessMetricGroups(adapted, key)[0]!
-      cache.set(id, { rows: result.items, group }); while (cache.size > 16) cache.delete(cache.keys().next().value!)
+      cache.set(id, { rows: adapted, group }); while (cache.size > 16) cache.delete(cache.keys().next().value!)
       phase(key, 'RENDERING', result.items.length ? '正在绘制图表' : '正在绘制空数据视图', Boolean(hit))
-      accept(key, result.items, group)
+      accept(key, adapted, group)
     } catch (error) { if (local === generation) phase(key, signal.aborted ? 'CANCELLED' : 'ERROR', signal.aborted ? '' : error instanceof Error ? error.message : '查询失败') }
     finally { if (local === generation) pending.delete(id) }
   })()
@@ -537,7 +569,7 @@ async function openContext(context: { ap?: string; radio?: number | null; start:
   }
 }
 function refreshData(): void {
-  cancel(); cache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); apCache.clear(); apPending.clear(); recordsPending.clear(); loadedScopes.clear(); completeIndex = []; selectionCache.clear()
+  cancel(); cache.clear(); derivedMetricCache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); apCache.clear(); apPending.clear(); recordsPending.clear(); loadedScopes.clear(); completeIndex = []; selectionCache.clear()
   auxGeneration++; auxController.abort(); auxController = new AbortController(); business.value = null
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
   if (workspace.value === 'main') loadMain(true)
@@ -547,12 +579,12 @@ function refreshData(): void {
 defineExpose({ openContext, switchWorkspace, refreshData })
 watch(() => props.sessionId, () => {
   parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoaded = false; parseLoading.value = false
-  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); apCache.clear(); apPending.clear(); recordsPending.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; meshQueryTrace.clear(); workspace.value = 'overview'; emit('workspaceChange', 'overview');
+  resetMain(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); cache.clear(); derivedMetricCache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); apCache.clear(); apPending.clear(); recordsPending.clear(); loadedScopes.clear(); business.value = null; aps.value = []; parseIssues.value = []; meshQueryTrace.clear(); workspace.value = 'overview'; emit('workspaceChange', 'overview');
   domain.value = { start: props.session.first_sample_time || '', end: props.session.last_sample_time || '' }; windowRange.value = { start: stamp(Math.max(millis(domain.value.start) || 0, (millis(domain.value.end) || 0) - 300_000)), end: domain.value.end }; void loadOverview()
 }, { immediate: true })
 onDeactivated(() => { pageActive = false; panelObserver?.disconnect(); cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); auxController = new AbortController(); parseGeneration++; parseController.abort(); parseController = new AbortController(); parseLoading.value = false; groups.value = {}; samples.value = {} })
 onActivated(() => { pageActive = true; panelElements.forEach(element => panelObserver?.observe(element)); if (workspace.value === 'main' && !Object.keys(groups.value).length) loadMain() })
-onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); apCache.clear(); apPending.clear(); recordsPending.clear(); meshQueryTrace.clear(); const target = globalThis as typeof globalThis & { [WORKBENCH_DIAGNOSTICS_GLOBAL]?: WorkbenchDiagnostics }; if (target[WORKBENCH_DIAGNOSTICS_GLOBAL]?.owner === workbenchDiagnosticsOwner) delete target[WORKBENCH_DIAGNOSTICS_GLOBAL] })
+onBeforeUnmount(() => { pageActive = false; cancel(); cancelApRequest(); auxGeneration++; auxController.abort(); parseGeneration++; parseController.abort(); panelObserver?.disconnect(); cache.clear(); derivedMetricCache.clear(); rawSampleCache.clear(); rawFallbacks.clear(); legacySourceQueryCache.clear(); legacySourceQueryPending.clear(); legacyCompleteMetricCache.clear(); historyCache.clear(); recordsCache.clear(); apCache.clear(); apPending.clear(); recordsPending.clear(); meshQueryTrace.clear(); const target = globalThis as typeof globalThis & { [WORKBENCH_DIAGNOSTICS_GLOBAL]?: WorkbenchDiagnostics }; if (target[WORKBENCH_DIAGNOSTICS_GLOBAL]?.owner === workbenchDiagnosticsOwner) delete target[WORKBENCH_DIAGNOSTICS_GLOBAL] })
 function roleLabel(row: MeshLinkDetail): string { return row.link_count === 0 ? '未连接（LinkCnt=0）' : row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : row.link_role === 'STANDBY' ? '备用（STANDBY）' : '未知' }
 const apColumns: NcTableColumn<MeshApSignal>[] = [{ key: 'peer_ap_name', label: 'AP 名称' }, { key: 'peer_ap_mac', label: 'AP MAC' }, { key: 'station', label: '归属站点' }, { key: 'section', label: '归属区间' }, { key: 'link_role', label: '链路角色', displayValue: row => row.link_role === 'ACTIVE' ? '主用（ACTIVE）' : '备用（STANDBY）' }, { key: 'radio', label: '射频口' }, { key: 'avg_rssi', label: '平均 RSSI' }, { key: 'min_rssi', label: '最低 RSSI' }, { key: 'last_rssi', label: '最近 RSSI' }, { key: 'signal_grade', label: '信号质量' }, { key: 'valid_sample_count', label: '有效采样' }, { key: 'weak_sample_count', label: '低于阈值' }, { key: 'weak_ratio', label: '低信号比例', displayValue: row => row.weak_ratio == null ? '暂无数据' : `${(row.weak_ratio * 100).toFixed(1)}%` }, { key: 'last_seen', label: '最近采样时间' }]
 const parseColumns: NcTableColumn<MeshParseIssue>[] = [{ key: 'severity', label: '级别' }, { key: 'code', label: '异常类型' }, { key: 'message', label: '简要原因' }]

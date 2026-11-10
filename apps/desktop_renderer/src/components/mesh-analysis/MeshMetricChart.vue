@@ -19,6 +19,8 @@ let chart: EChartsType | null = null
 let resizeObserver: ResizeObserver | null = null
 let intersectionObserver: IntersectionObserver | null = null
 let disposed = false, visible = false, epoch = 0, applying = false
+let lastNativeDoubleClickAt = 0
+let lastEchartsDoubleClickAt = 0
 let finished: (() => void) | null = null
 let unsubscribeTheme: (() => void) | null = null
 function syncWindow(): void {
@@ -54,15 +56,30 @@ function onPointer(event: any): void {
   if (value !== null) emit('pointer-change', stamp(value))
 }
 function onClick(event: any): void { const original = event.event?.event; if (!original?.shiftKey && !original?.ctrlKey && event.data?.sample) emit('sample-select', event.data.sample) }
+function emitDoubleClick(time: number | null, source: 'native' | 'echarts'): void {
+  const now = Date.now()
+  if (source === 'native' && now - lastEchartsDoubleClickAt < 80) return
+  if (source === 'echarts' && now - lastNativeDoubleClickAt < 80) return
+  if (props.selectionActive) {
+    if (source === 'native') lastNativeDoubleClickAt = now
+    else lastEchartsDoubleClickAt = now
+    emit('selection-clear')
+    return
+  }
+  if (time === null) return
+  if (source === 'native') lastNativeDoubleClickAt = now
+  else lastEchartsDoubleClickAt = now
+  emit('time-select', stamp(time), true)
+}
 function onDoubleClick(event: any): void {
-  if (props.selectionActive) { emit('selection-clear'); return }
   const data = event?.data
   const value = Array.isArray(data?.value) ? data.value[0] : data?.value
   const fromPoint = millis(value)
   const original = event?.event?.event
-  const time = fromPoint ?? (original instanceof MouseEvent ? pixelTime(original) : null)
-  if (time !== null) emit('time-select', stamp(time), true)
+  const time = fromPoint ?? (original && typeof original.clientX === 'number' ? pixelTime(original as MouseEvent) : null)
+  emitDoubleClick(time, 'echarts')
 }
+function onNativeDoubleClick(event: MouseEvent): void { event.preventDefault(); emitDoubleClick(pixelTime(event), 'native') }
 function onLeave(): void { emit('pointer-change', null) }
 function pixelTime(event: MouseEvent): number | null {
   if (!chart || !host.value) return null
@@ -141,6 +158,8 @@ onMounted(async () => {
   lifecycle.addNativeListener('wheel')
   host.value.addEventListener('click', selectTime)
   lifecycle.addNativeListener('click')
+  host.value.addEventListener('dblclick', onNativeDoubleClick)
+  lifecycle.addNativeListener('dblclick')
   host.value.addEventListener('mousemove', moveTime)
   lifecycle.addNativeListener('mousemove')
   host.value.addEventListener('keydown', onKey)
@@ -161,6 +180,7 @@ onBeforeUnmount(() => {
   lifecycle.removeResizeObserver()
   host.value?.removeEventListener('wheel', onWheel, true); lifecycle.removeNativeListener('wheel')
   host.value?.removeEventListener('click', selectTime); lifecycle.removeNativeListener('click')
+  host.value?.removeEventListener('dblclick', onNativeDoubleClick); lifecycle.removeNativeListener('dblclick')
   host.value?.removeEventListener('mousemove', moveTime); lifecycle.removeNativeListener('mousemove')
   host.value?.removeEventListener('keydown', onKey); lifecycle.removeNativeListener('keydown')
   if (chart) { chart.off('datazoom', onZoom); chart.off('updateAxisPointer', onPointer); chart.off('click', onClick); chart.off('dblclick', onDoubleClick); if (finished) chart.off('finished', finished); chart.getZr().off('globalout', onLeave); chart.dispose(); chart = null }

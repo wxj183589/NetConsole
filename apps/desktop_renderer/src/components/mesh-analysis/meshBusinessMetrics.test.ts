@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildMeshBusinessMetricGroups, type MeshBusinessMetricSample } from './meshBusinessMetrics'
+import { buildMeshBusinessMetricGroups, sampleMeshBusinessMetricSamples, type MeshBusinessMetricSample } from './meshBusinessMetrics'
 
 const samples: MeshBusinessMetricSample[] = [
   {
@@ -55,5 +55,17 @@ describe('mesh business metric groups', () => {
   it('leaves zero-link observations empty and continuous samples connected', () => {
     expect(buildMeshBusinessMetricGroups([{ ...samples[0]!, link_count: 0 }]).flatMap(group => group.lines).every(line => line.data[0]!.value[1] === null)).toBe(true)
     expect(buildMeshBusinessMetricGroups([samples[0]!, { ...samples[0]!, timestamp: 'next' }]).flatMap(group => group.lines).every(line => line.data.length === 2)).toBe(true)
+  })
+
+  it('bounds chart samples while retaining continuity boundaries and endpoints', () => {
+    const rows = Array.from({ length: 20 }, (_, index) => ({
+      ...samples[0]!, timestamp: `t-${index}`, peer_mac: index < 10 ? 'a' : 'b', monitor_gap_before: index === 15,
+    }))
+    const result = sampleMeshBusinessMetricSamples(rows, 6)
+    expect(result.length).toBeGreaterThanOrEqual(6)
+    expect(result[0]!.timestamp).toBe('t-0')
+    expect(result.at(-1)!.timestamp).toBe('t-19')
+    expect(result.map(row => row.timestamp)).toContain('t-10')
+    expect(result.map(row => row.timestamp)).toContain('t-15')
   })
 })
