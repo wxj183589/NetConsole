@@ -1,0 +1,119 @@
+{
+  "schema": "netconsole.ground_unattended.legacy_replay.acceptance.v1",
+  "site_id": "hzl10",
+  "run_id": "ground_20261109_fe484f124afe",
+  "archive": {
+    "file_name": "2026-11-09_ground_unattended.zip",
+    "sha256": "19519d67f395ee18fc45b178bb36a1868946c716284c152441055464e0b59c41",
+    "sha256_unchanged": true,
+    "zip_crc": "PASS",
+    "manifest_member_sha_mismatch": 0,
+    "json_or_encoding_errors": 0
+  },
+  "syslog": {
+    "raw_records": 40290,
+    "parser_structured_records": 40120,
+    "wmesh_records": 39827,
+    "mesh_linkup": 14276,
+    "mesh_linkdown": 14228,
+    "mesh_active_switch": 11323,
+    "non_business_unparsed": 170,
+    "raw_duplicate_records": 0,
+    "semantic_duplicate_groups": 49,
+    "semantic_duplicate_records": 49,
+    "device_time_records": 39757,
+    "receive_time_only_records": 363,
+    "unconfirmed_source_ip_records": 39704
+  },
+  "replay": {
+    "strict_repository_receive": {
+      "position_states": 35,
+      "unique_wmesh_projection_rows": 39778,
+      "position_updates": 32484,
+      "out_of_order": 69,
+      "failures": 0
+    },
+    "expanded_position_engine_receive": {
+      "position_states": 35,
+      "wmesh_events": 39827,
+      "position_updates": 32815,
+      "duplicates": 36,
+      "out_of_order": 69,
+      "failures": 0
+    },
+    "expanded_position_engine_event_time": {
+      "position_states": 35,
+      "wmesh_events": 39827,
+      "position_updates": 32875,
+      "duplicates": 36,
+      "out_of_order": 0,
+      "failures": 0
+    }
+  },
+  "scheduler_comparison": {
+    "old_wmesh": 497,
+    "match": 496,
+    "duplicate_event": 1,
+    "old_only": 0,
+    "new_only_raw_observation": 39330
+  },
+  "position_comparison": {
+    "scheduler_current_comparable": 26,
+    "scheduler_current_match": 26,
+    "scheduler_previous_comparable": 22,
+    "scheduler_previous_match": 22,
+    "ac_ordering_only_ac_newer": 35,
+    "ac_stale_120s": 6
+  },
+  "ping": {
+    "raw_samples": 216743,
+    "manifest_samples": 207524,
+    "daily_summary_samples": 207509,
+    "targets": 42,
+    "success_including_warmup": 208540,
+    "loss_including_warmup": 8203,
+    "effective_success": 208395,
+    "effective_loss": 8194,
+    "rtt_p50_ms": 4.14,
+    "rtt_p95_ms": 13.6,
+    "rtt_p99_ms": 23.0,
+    "daily_summary_target_mismatches": 39,
+    "offline_supervisor_stop": "PASS"
+  },
+  "ac": {
+    "snapshots": 389,
+    "rows": 37511,
+    "delta_added": 213,
+    "delta_updated": 9057,
+    "delta_removed": 174,
+    "delta_unchanged": 28089,
+    "delta_unknown": 152,
+    "rejected_stale_or_incomplete": 2
+  },
+  "timeline": {
+    "records": 225897,
+    "correlation": 216590,
+    "correlation_update": 9307,
+    "all_three_channel_mr": 35
+  },
+  "acceptance": {
+    "ARCHIVE_INTEGRITY": "PASS",
+    "ARCHIVE_DEDUPLICATION": "PASS",
+    "SYSLOG_REPLAY": "PASS",
+    "WMESH_LINKUP": "PASS",
+    "WMESH_LINKDOWN": "PASS",
+    "WMESH_ACTIVE_SWITCH": "PASS",
+    "MR_IDENTITY_MAPPING": "PASS_WITH_LIMITATION",
+    "AP_IDENTITY_MAPPING": "PASS_WITH_LIMITATION",
+    "POSITION_CORRECTNESS": "PASS_WITH_LIMITATION",
+    "POSITION_HISTORY": "PASS",
+    "PING_HISTORY": "REVIEW",
+    "AC_SNAPSHOT_DELTA": "PASS",
+    "SYSLOG_AC_RECONCILIATION": "PASS",
+    "THREE_CHANNEL_TIMELINE": "PASS",
+    "LEGACY_COMPATIBILITY": "PASS",
+    "FULL_LOCAL_REGRESSION": "PENDING_LOCAL_GATES",
+    "LEGACY_REPLAY_ACCEPTANCE": "PASS_WITH_LIMITATION"
+  },
+  "online_latency_measurement": "NOT_ELIGIBLE_ARCHIVE_MISSING_STAGE_TIMES"
+}

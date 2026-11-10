@@ -40,12 +40,14 @@ class _Connection:
         *,
         fail_mesh_call: int = 0,
         invalid_mesh_call: int = 0,
+        timeout_mesh_call: int = 0,
     ) -> None:
         self.commands: list[str] = []
         self.closed_count = 0
         self.mesh_calls = 0
         self.fail_mesh_call = fail_mesh_call
         self.invalid_mesh_call = invalid_mesh_call
+        self.timeout_mesh_call = timeout_mesh_call
 
     def send_command(self, command: str, timeout: int) -> str:
         assert timeout == 20
@@ -56,6 +58,8 @@ class _Connection:
             return "12:00:00 Beijing Tue 07/14/2026"
         if command == "display wlan mesh-link ap":
             self.mesh_calls += 1
+            if self.mesh_calls == self.timeout_mesh_call:
+                raise TimeoutError("simulated AC query timeout")
             if self.mesh_calls == self.fail_mesh_call:
                 raise EOFError("session closed")
             if self.mesh_calls == self.invalid_mesh_call:
@@ -274,6 +278,45 @@ def test_resident_worker_reuses_one_connection_for_multiple_polls(
     assert connection.closed_count == 1
     assert result["connection_state"] == "STOPPED"
     assert result["poll_count"] >= 3
+    assert result["last_query_succeeded"] is True
+    assert result["last_query_started_at"]
+    assert result["last_query_completed_at"]
+    assert result["last_query_duration_ms"] is not None
+    assert result["snapshot_processing_duration_ms"] is not None
+    assert int(result["snapshot_change_count"] or 0) >= 0
+
+
+def test_query_timeout_is_counted_and_recovered_by_resident_worker(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    control, status = _control(paths)
+    connections = [_Connection(timeout_mesh_call=1), _Connection()]
+
+    def factory(_config):
+        return connections.pop(0)
+
+    service = AcMeshLinkResidentPollingWorkerService(
+        paths,
+        connection_factory=factory,
+        backoff_seconds=(0.01,),
+        jitter_ratio=0,
+        wait_slice_seconds=0.01,
+    )
+    thread, result, errors = _run_until(
+        service,
+        _context(paths),
+        status,
+        lambda row: int(row.get("success_count") or 0) >= 1
+        and int(row.get("query_timeout_count") or 0) >= 1,
+    )
+    _request_stop(control)
+    thread.join(timeout=2)
+
+    assert errors == []
+    assert result["query_timeout_count"] >= 1
+    assert result["last_query_succeeded"] is True
+    assert result["last_query_failure_at"]
 
 
 def test_connection_failure_reconnects_inside_same_task(

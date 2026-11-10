@@ -98,6 +98,11 @@ class MeshLinkConnection(Protocol):
 ConnectionFactory = Callable[[OnlineMrConnectionConfig], MeshLinkConnection]
 
 
+def _looks_like_timeout(error: BaseException) -> bool:
+    text = f"{error.__class__.__name__}: {error}".casefold()
+    return isinstance(error, TimeoutError) or "timeout" in text or "timed out" in text
+
+
 @dataclass(frozen=True)
 class AcMeshLinkRefreshStart:
     task: TaskSnapshot
@@ -469,6 +474,48 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
         outputs: dict[str, str] = {}
         history_output = ""
         resident = source_type == "ac_resident_poll"
+        query_started_at = self.now_provider().isoformat(timespec="milliseconds")
+        query_started_monotonic = time.monotonic()
+        query_completed_at = ""
+        query_duration_ms: float | None = None
+        query_timed_out = False
+        processing_started_monotonic: float | None = None
+
+        def attach_query_metrics(error: BaseException) -> None:
+            completed_at = query_completed_at or self.now_provider().isoformat(
+                timespec="milliseconds"
+            )
+            duration = query_duration_ms
+            if duration is None:
+                duration = round(
+                    (time.monotonic() - query_started_monotonic) * 1000, 3
+                )
+            processing_duration = (
+                round((time.monotonic() - processing_started_monotonic) * 1000, 3)
+                if processing_started_monotonic is not None
+                else None
+            )
+            setattr(
+                error,
+                "ac_query_metrics",
+                {
+                    "last_query_started_at": query_started_at,
+                    "last_query_completed_at": completed_at,
+                    "last_query_duration_ms": duration,
+                    "last_query_succeeded": bool(query_completed_at),
+                    "last_query_timed_out": query_timed_out
+                    or _looks_like_timeout(error),
+                    "last_query_success_at": query_completed_at
+                    if query_completed_at
+                    else "",
+                    "last_query_failure_at": ""
+                    if query_completed_at
+                    else completed_at,
+                    "snapshot_processing_duration_ms": processing_duration,
+                    "snapshot_change_count": 0,
+                },
+            )
+
         try:
             for command in MESH_LINK_REFRESH_COMMANDS[1:]:
                 context.check_cancelled()
@@ -476,7 +523,10 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
                     outputs[command] = str(
                         connection.send_command(command, command_timeout) or ""
                     )
-                except Exception:
+                except Exception as command_error:
+                    query_timed_out = query_timed_out or _looks_like_timeout(
+                        command_error
+                    )
                     raise AcMeshLinkConnectionError(
                         AcMeshLinkRefreshErrorCode.COMMAND_FAILED,
                         "Mesh-Link 白名单命令执行失败，当前会话需要重连。",
@@ -488,11 +538,21 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
                     history_output = str(
                         connection.send_command(command, command_timeout) or ""
                     )
-                except Exception:
+                except Exception as command_error:
+                    query_timed_out = query_timed_out or _looks_like_timeout(
+                        command_error
+                    )
                     raise AcMeshLinkConnectionError(
                         AcMeshLinkRefreshErrorCode.COMMAND_FAILED,
                         "Mesh-Link 切换历史命令执行失败，当前会话需要重连。",
                     ) from None
+            query_completed_at = self.now_provider().isoformat(
+                timespec="milliseconds"
+            )
+            query_duration_ms = round(
+                (time.monotonic() - query_started_monotonic) * 1000, 3
+            )
+            processing_started_monotonic = time.monotonic()
             self._emit_progress(
                 context,
                 resident=resident,
@@ -557,13 +617,40 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
             registered.update(load_vehicle_mr_mapping_trains(repository))
             registered.update(build_mapping_trains(mappings))
             ap_lookup = self._read_only_ap_lookup(site)
+            previous_states = store.load_current_states()
             trains = build_train_states(
                 registered,
                 parse_result,
                 ap_lookup,
-                store.load_current_states(),
+                previous_states,
                 build_mapping_lookup(mappings),
             )
+            current_ids = {train.train_id for train in trains}
+
+            def state_signature(value: object) -> tuple[object, ...]:
+                if value is None:
+                    return ()
+                first = getattr(value, "tc1", None)
+                second = getattr(value, "tc2", None)
+                return (
+                    getattr(value, "status", ""),
+                    getattr(value, "current_station", ""),
+                    getattr(value, "status_reason", ""),
+                    getattr(first, "seen", False),
+                    getattr(first, "station", ""),
+                    getattr(first, "ap_name", ""),
+                    getattr(first, "rssi", None),
+                    getattr(second, "seen", False),
+                    getattr(second, "station", ""),
+                    getattr(second, "ap_name", ""),
+                    getattr(second, "rssi", None),
+                )
+
+            snapshot_change_count = sum(
+                state_signature(previous_states.get(train.train_id))
+                != state_signature(train)
+                for train in trains
+            ) + len(set(previous_states) - current_ids)
             try:
                 snapshot_id = store.persist_snapshot(
                     session_id,
@@ -583,6 +670,11 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
             self._finish_meta(target, snapshot_id)
             store.update_session(
                 session_id, "已完成", ac_time=parse_result.ac_time, stopped=True
+            )
+            snapshot_processing_duration_ms = round(
+                (time.monotonic() - (processing_started_monotonic or time.monotonic()))
+                * 1000,
+                3,
             )
             self._emit_progress(
                 context,
@@ -605,10 +697,20 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
                 "raw_output_reference": raw_reference,
                 "parser_version": MESH_LINK_PARSER_VERSION,
                 "records_count": len(parse_result.links),
+                "last_query_started_at": query_started_at,
+                "last_query_completed_at": query_completed_at,
+                "last_query_duration_ms": query_duration_ms,
+                "last_query_succeeded": True,
+                "last_query_timed_out": False,
+                "last_query_success_at": query_completed_at,
+                "last_query_failure_at": "",
+                "snapshot_processing_duration_ms": snapshot_processing_duration_ms,
+                "snapshot_change_count": snapshot_change_count,
                 "warning_count": len(warnings),
                 "warnings": warnings,
             }
-        except BackgroundTaskCancelled:
+        except BackgroundTaskCancelled as exc:
+            attach_query_metrics(exc)
             store.update_session(
                 session_id, "已取消", error="用户取消", stopped=True
             )
@@ -618,22 +720,26 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
                 self._preserve_failure(staging, failure)
             raise
         except AcMeshLinkRefreshError as exc:
+            attach_query_metrics(exc)
             store.update_session(session_id, "失败", error=exc.message, stopped=True)
             if moved_to_target:
                 self._move_target_to_failure(target, failure)
             else:
                 self._preserve_failure(staging, failure)
             raise
-        except Exception:
+        except Exception as exc:
+            attach_query_metrics(exc)
             store.update_session(session_id, "失败", error="内部错误", stopped=True)
             if moved_to_target:
                 self._move_target_to_failure(target, failure)
             else:
                 self._preserve_failure(staging, failure)
-            raise AcMeshLinkRefreshError(
+            wrapped = AcMeshLinkRefreshError(
                 AcMeshLinkRefreshErrorCode.INTERNAL_ERROR,
                 "Mesh-Link 刷新发生内部错误，旧快照已保留。",
-            ) from None
+            )
+            attach_query_metrics(wrapped)
+            raise wrapped from None
 
     @staticmethod
     def _emit_progress(

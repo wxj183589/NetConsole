@@ -137,6 +137,10 @@ class _OpenRawFile:
 class RawCompressionWorker:
     """后台压缩已关闭的 raw 文件，不占用 UDP 接收线程。"""
 
+    _DISCOVERY_INTERVAL_SECONDS = 0.25
+    _DISCOVERY_LIMIT = 128
+    _FILE_TRACK_LIMIT = 4096
+
     def __init__(
         self,
         *,
@@ -164,6 +168,11 @@ class RawCompressionWorker:
         self._completed_count = 0
         self._failed_count = 0
         self._skipped_count = 0
+        self._queue_full_count = 0
+        self._recovery_count = 0
+        self._skipped_files: set[str] = set()
+        self._failed_files: dict[str, str] = {}
+        self._last_queue_full_notice_at = 0.0
         self._last_error = ""
         self._thread.start()
 
@@ -172,30 +181,64 @@ class RawCompressionWorker:
         return self._thread.is_alive()
 
     def submit(self, values: dict[str, Any], path: Path) -> bool:
+        return self._submit(values, path, recovered=False)
+
+    def _submit(
+        self, values: dict[str, Any], path: Path, *, recovered: bool
+    ) -> bool:
         file_id = str(values.get("file_id") or "")
         with self._lock:
             if file_id in self._pending_files:
                 return True
+            if not recovered:
+                self._failed_files.pop(file_id, None)
             self._pending_files.add(file_id)
         try:
             self._queue.put_nowait((dict(values), Path(path)))
         except queue.Full:
+            should_record_health = False
+            now = time.monotonic()
             with self._lock:
                 self._pending_files.discard(file_id)
                 self._skipped_count += 1
+                self._queue_full_count += 1
+                if file_id:
+                    self._skipped_files.add(file_id)
+                    if len(self._skipped_files) > self._FILE_TRACK_LIMIT:
+                        self._skipped_files.pop()
                 self._last_error = "compression queue is full"
-            self._record_health(
-                severity="warning",
-                code=f"{self.data_type.upper()}_COMPRESSION_QUEUE_FULL",
-                message=f"{self._label} raw 压缩队列已满，保留未压缩原始文件",
-                details={"queue_capacity": self._queue.maxsize},
-            )
+                if (
+                    self._queue_full_count == 1
+                    or now - self._last_queue_full_notice_at >= 1.0
+                ):
+                    self._last_queue_full_notice_at = now
+                    should_record_health = True
+            if should_record_health:
+                self._record_health(
+                    severity="warning",
+                    code=f"{self.data_type.upper()}_COMPRESSION_QUEUE_FULL",
+                    message=f"{self._label} raw 压缩队列已满，保留未压缩原始文件，稍后按登记索引重试",
+                    details={
+                        "queue_capacity": self._queue.maxsize,
+                        "queue_size": self._queue.qsize(),
+                        "recovery": "REGISTRY_REDISCOVERY",
+                    },
+                )
             return False
         with self._lock:
             self._submitted_count += 1
+            if recovered and file_id in self._skipped_files:
+                self._recovery_count += 1
+                self._skipped_files.discard(file_id)
         return True
 
     def snapshot(self) -> dict[str, Any]:
+        try:
+            pending_count: int | None = self.repository.count_pending_raw_compression(
+                run_id=self.run_id, data_type=self.data_type
+            )
+        except Exception:
+            pending_count = None
         with self._lock:
             return {
                 "compression_queue_size": self._queue.qsize(),
@@ -204,6 +247,9 @@ class RawCompressionWorker:
                 "compression_completed_count": self._completed_count,
                 "compression_failed_count": self._failed_count,
                 "compression_skipped_count": self._skipped_count,
+                "compression_queue_full_count": self._queue_full_count,
+                "compression_recovery_count": self._recovery_count,
+                "compression_pending_count": pending_count,
                 "compression_last_error": self._last_error,
                 "compression_worker_alive": self.alive,
             }
@@ -214,7 +260,20 @@ class RawCompressionWorker:
         return not self._thread.is_alive()
 
     def _run(self) -> None:
-        while not self._stop.is_set() or not self._queue.empty():
+        next_discovery_at = 0.0
+        while True:
+            now = time.monotonic()
+            if now >= next_discovery_at:
+                self._discover_pending()
+                next_discovery_at = now + self._DISCOVERY_INTERVAL_SECONDS
+            if self._stop.is_set() and self._queue.empty():
+                # A queue-full submission remains CLOSED + gzip_path='' in the
+                # registry. Drain one bounded rediscovery round before exit so
+                # normal shutdown also proves recovery without an overflow
+                # queue. Failed files are excluded until a new worker starts.
+                if not self._discover_pending():
+                    return
+                next_discovery_at = time.monotonic() + self._DISCOVERY_INTERVAL_SECONDS
             try:
                 values, path = self._queue.get(timeout=0.1)
             except queue.Empty:
@@ -232,6 +291,11 @@ class RawCompressionWorker:
                 error = f"{exc.__class__.__name__}: {exc}"
                 with self._lock:
                     self._failed_count += 1
+                    file_id = str(values.get("file_id") or "")
+                    if file_id:
+                        self._failed_files[file_id] = error
+                        if len(self._failed_files) > self._FILE_TRACK_LIMIT:
+                            self._failed_files.pop(next(iter(self._failed_files)))
                     self._last_error = error
                 self._record_health(
                     severity="error",
@@ -243,6 +307,35 @@ class RawCompressionWorker:
                 with self._lock:
                     self._pending_files.discard(str(values.get("file_id") or ""))
                 self._queue.task_done()
+
+    def _discover_pending(self) -> int:
+        with self._lock:
+            excluded = tuple(self._failed_files)
+        try:
+            rows = self.repository.list_pending_raw_compression(
+                run_id=self.run_id,
+                data_type=self.data_type,
+                limit=self._DISCOVERY_LIMIT,
+                exclude_file_ids=excluded,
+            )
+        except Exception as exc:
+            with self._lock:
+                self._last_error = f"{exc.__class__.__name__}: {exc}"
+            return 0
+        accepted = 0
+        for values in rows:
+            file_id = str(values.get("file_id") or "")
+            with self._lock:
+                if not file_id or file_id in self._pending_files:
+                    continue
+                recovered = file_id in self._skipped_files
+            path = self.repository.db_path.parent / str(
+                values.get("relative_path") or ""
+            )
+            if not self._submit(values, path, recovered=recovered):
+                break
+            accepted += 1
+        return accepted
 
     def _compress(self, values: dict[str, Any], path: Path) -> None:
         existing = self.repository.get_raw_file(str(values["file_id"]))
@@ -1354,6 +1447,9 @@ class SyslogUdpReceiver:
                     "compression_completed_count": 0,
                     "compression_failed_count": 0,
                     "compression_skipped_count": 0,
+                    "compression_queue_full_count": 0,
+                    "compression_recovery_count": 0,
+                    "compression_pending_count": None,
                     "compression_last_error": "",
                     "compression_worker_alive": False,
                 }

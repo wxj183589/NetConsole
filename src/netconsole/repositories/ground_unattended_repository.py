@@ -3583,6 +3583,77 @@ class GroundUnattendedRepository:
             )
             return cursor.rowcount == 1
 
+    def list_pending_raw_compression(
+        self,
+        *,
+        run_id: str = "",
+        data_type: str = "syslog",
+        limit: int = 128,
+        exclude_file_ids: Iterable[str] = (),
+    ) -> list[dict[str, Any]]:
+        """Return closed raw files that still need gzip registration.
+
+        The raw-file registry is the durable recovery index for compression.
+        A bounded caller can rediscover work after an in-memory compression
+        queue was full without keeping an unbounded overflow queue.
+        """
+        where = [
+            "site_id=?",
+            "status='CLOSED'",
+            "archive_status!='ARCHIVED'",
+            "(gzip_path IS NULL OR gzip_path='')",
+        ]
+        params: list[Any] = [self.site_id]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        if data_type:
+            where.append("data_type=?")
+            params.append(data_type)
+        excluded = tuple(
+            dict.fromkeys(
+                str(file_id).strip()
+                for file_id in exclude_file_ids
+                if str(file_id).strip()
+            )
+        )
+        if excluded:
+            placeholders = ", ".join("?" for _ in excluded)
+            where.append(f"file_id NOT IN ({placeholders})")
+            params.extend(excluded)
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_raw_files "
+                f"WHERE {' AND '.join(where)} "
+                "ORDER BY start_time, created_at, file_id LIMIT ?",
+                (*params, max(1, min(int(limit), 1000))),
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def count_pending_raw_compression(
+        self, *, run_id: str = "", data_type: str = "syslog"
+    ) -> int:
+        where = [
+            "site_id=?",
+            "status='CLOSED'",
+            "archive_status!='ARCHIVED'",
+            "(gzip_path IS NULL OR gzip_path='')",
+        ]
+        params: list[Any] = [self.site_id]
+        if run_id:
+            where.append("run_id=?")
+            params.append(run_id)
+        if data_type:
+            where.append("data_type=?")
+            params.append(data_type)
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM ground_unattended_raw_files "
+                f"WHERE {' AND '.join(where)}",
+                params,
+            ).fetchone()
+        return int(row[0] if row else 0)
+
     def list_raw_files(
         self,
         *,
