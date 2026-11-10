@@ -380,6 +380,7 @@ class GroundUnattendedEndpointDTO(ApiModel):
     position_parse_complete_time: str = ""
     position_commit_time: str = ""
     position_latency_ms: float | None = None
+    position_api_available_time: str = ""
     position_ui_available_time: str = ""
     position_reconciliation_status: str = "UNKNOWN"
     position_reconciliation_reason: str = ""
@@ -499,6 +500,7 @@ class GroundUnattendedTrainDTO(ApiModel):
     position_last_receive_time: str = ""
     position_commit_time: str = ""
     position_latency_ms: float | None = None
+    position_api_available_time: str = ""
     position_ui_available_time: str = ""
     position_reconciliation_status: str = "UNKNOWN"
     position_reconciliation_reason: str = ""
@@ -659,6 +661,15 @@ class GroundAcPollerHealthDTO(ApiModel):
     heartbeat_age_seconds: float | None = None
     last_success_age_seconds: float | None = None
     last_error: str = ""
+    last_query_started_at: str = ""
+    last_query_completed_at: str = ""
+    last_query_duration_ms: float | None = None
+    last_query_succeeded: bool | None = None
+    query_timeout_count: int = 0
+    last_query_success_at: str = ""
+    last_query_failure_at: str = ""
+    snapshot_processing_duration_ms: float | None = None
+    snapshot_change_count: int = 0
 
 
 class GroundHealthDTO(ApiModel):
@@ -766,6 +777,9 @@ class GroundHealthDTO(ApiModel):
     compression_completed_count: int = 0
     compression_failed_count: int = 0
     compression_skipped_count: int = 0
+    compression_queue_full_count: int = 0
+    compression_recovery_count: int = 0
+    compression_pending_count: int | None = None
     compression_last_error: str = ""
     compression_worker_alive: bool = False
     task_queue_lengths: dict[str, int] = Field(default_factory=dict)

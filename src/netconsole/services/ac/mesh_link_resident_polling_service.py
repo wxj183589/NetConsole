@@ -547,6 +547,15 @@ class AcMeshLinkResidentPollingWorkerService:
             "last_poll_started_at": "",
             "last_poll_completed_at": "",
             "last_success_at": "",
+            "last_query_started_at": "",
+            "last_query_completed_at": "",
+            "last_query_duration_ms": None,
+            "last_query_succeeded": None,
+            "query_timeout_count": 0,
+            "last_query_success_at": "",
+            "last_query_failure_at": "",
+            "snapshot_processing_duration_ms": None,
+            "snapshot_change_count": 0,
             "next_poll_at": "",
             "poll_interval_seconds": self._interval(
                 params.get("poll_interval_seconds")
@@ -732,6 +741,13 @@ class AcMeshLinkResidentPollingWorkerService:
                     state["poll_count"] = int(state["poll_count"]) + 1
                     poll_number = int(state["poll_count"])
                     state["last_poll_started_at"] = self._now_iso()
+                    state["last_query_started_at"] = state["last_poll_started_at"]
+                    state["last_query_completed_at"] = ""
+                    state["last_query_duration_ms"] = None
+                    state["last_query_succeeded"] = None
+                    state["snapshot_processing_duration_ms"] = None
+                    state["snapshot_change_count"] = 0
+                    query_started_monotonic = self.monotonic_provider()
                     state["next_poll_at"] = ""
                     self._publish(
                         context,
@@ -758,6 +774,17 @@ class AcMeshLinkResidentPollingWorkerService:
                             source_type=MESH_LINK_RESIDENT_SOURCE_TYPE,
                         )
                     except AcMeshLinkConnectionError as exc:
+                        self._apply_query_metrics(
+                            state,
+                            getattr(exc, "ac_query_metrics", None),
+                            fallback_completed_at=self._now_iso(),
+                            fallback_duration_ms=(
+                                self.monotonic_provider() - query_started_monotonic
+                            )
+                            * 1000,
+                            fallback_succeeded=False,
+                            fallback_timed_out=self._looks_like_timeout(exc),
+                        )
                         state["failure_count"] = int(
                             state["failure_count"]
                         ) + 1
@@ -783,6 +810,17 @@ class AcMeshLinkResidentPollingWorkerService:
                         )
                         continue
                     except AcMeshLinkRefreshError as exc:
+                        self._apply_query_metrics(
+                            state,
+                            getattr(exc, "ac_query_metrics", None),
+                            fallback_completed_at=self._now_iso(),
+                            fallback_duration_ms=(
+                                self.monotonic_provider() - query_started_monotonic
+                            )
+                            * 1000,
+                            fallback_succeeded=False,
+                            fallback_timed_out=self._looks_like_timeout(exc),
+                        )
                         state["failure_count"] = int(
                             state["failure_count"]
                         ) + 1
@@ -793,6 +831,17 @@ class AcMeshLinkResidentPollingWorkerService:
                         state["last_error_message"] = exc.message
                         state["last_poll_completed_at"] = self._now_iso()
                     else:
+                        self._apply_query_metrics(
+                            state,
+                            result,
+                            fallback_completed_at=self._now_iso(),
+                            fallback_duration_ms=(
+                                self.monotonic_provider() - query_started_monotonic
+                            )
+                            * 1000,
+                            fallback_succeeded=True,
+                            fallback_timed_out=False,
+                        )
                         state["success_count"] = int(
                             state["success_count"]
                         ) + 1
@@ -948,6 +997,64 @@ class AcMeshLinkResidentPollingWorkerService:
                 if key not in {"schema_version"}
             },
         )
+
+    @staticmethod
+    def _looks_like_timeout(error: BaseException) -> bool:
+        text = f"{error.__class__.__name__}: {error}".casefold()
+        return isinstance(error, TimeoutError) or "timeout" in text or "timed out" in text
+
+    @classmethod
+    def _apply_query_metrics(
+        cls,
+        state: dict[str, object],
+        metrics: object,
+        *,
+        fallback_completed_at: str,
+        fallback_duration_ms: float,
+        fallback_succeeded: bool,
+        fallback_timed_out: bool,
+    ) -> None:
+        values = metrics if isinstance(metrics, dict) else {}
+        state["last_query_started_at"] = str(
+            values.get("last_query_started_at")
+            or state.get("last_query_started_at")
+            or ""
+        )
+        state["last_query_completed_at"] = str(
+            values.get("last_query_completed_at") or fallback_completed_at
+        )
+        duration = values.get("last_query_duration_ms")
+        try:
+            state["last_query_duration_ms"] = round(
+                float(duration)
+                if duration is not None
+                else float(fallback_duration_ms),
+                3,
+            )
+        except (TypeError, ValueError):
+            state["last_query_duration_ms"] = round(float(fallback_duration_ms), 3)
+        succeeded = values.get("last_query_succeeded")
+        state["last_query_succeeded"] = (
+            bool(succeeded) if succeeded is not None else fallback_succeeded
+        )
+        timed_out = bool(values.get("last_query_timed_out")) or fallback_timed_out
+        if timed_out:
+            state["query_timeout_count"] = int(state.get("query_timeout_count") or 0) + 1
+        success_at = str(values.get("last_query_success_at") or "")
+        failure_at = str(values.get("last_query_failure_at") or "")
+        if success_at:
+            state["last_query_success_at"] = success_at
+        if failure_at:
+            state["last_query_failure_at"] = failure_at
+        state["snapshot_processing_duration_ms"] = values.get(
+            "snapshot_processing_duration_ms"
+        )
+        try:
+            state["snapshot_change_count"] = int(
+                values.get("snapshot_change_count") or 0
+            )
+        except (TypeError, ValueError):
+            state["snapshot_change_count"] = 0
 
     def _backoff(self, index: int) -> float:
         base = self.backoff_seconds[min(index, len(self.backoff_seconds) - 1)]

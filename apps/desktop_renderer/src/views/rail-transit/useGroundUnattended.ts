@@ -1,4 +1,4 @@
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Box, CopyDocument, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
@@ -80,6 +80,8 @@ const profile = ref<GroundProfile | null>(null)
 const pingPresets = ref<OnlineMrPingPreset[]>([])
 
 const trains = ref<GroundTrain[]>([])
+
+const positionRendererTiming = reactive<Record<string, { uiAvailableAt: string; uiVisibleAt: string }>>({})
 
 const pingTargets = ref<GroundPingTarget[]>([])
 
@@ -276,6 +278,10 @@ let pollInFlight = false
 let loadAllInFlight = false
 
 let disposed = false
+
+let positionTimingFrame: number | undefined
+
+let positionTimingFrameIsRaf = false
 
 let siteContextReloadPending = false
 
@@ -711,7 +717,32 @@ const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signa
   }
 }, silent)
 
-const loadTrains = (silent = true) => latestRequest('trains', '正线车辆', (signal) => listGroundTrains({ signal }), (value) => { trains.value = value.items }, silent)
+const applyRendererPositionTiming = (items: GroundTrain[]): void => {
+  const uiAvailableAt = new Date().toISOString()
+  Object.keys(positionRendererTiming).forEach((key) => { delete positionRendererTiming[key] })
+  items.forEach((item) => { positionRendererTiming[item.train_id] = { uiAvailableAt, uiVisibleAt: '' } })
+  trains.value = items
+  // This is a renderer paint-ready marker, not the backend/API timestamp.
+  // The Electron evidence still uses the visible DOM/screenshot boundary.
+  void nextTick(() => {
+    if (disposed) return
+    const schedulePaint = window.requestAnimationFrame
+      ? (callback: FrameRequestCallback) => window.requestAnimationFrame(callback)
+      : (callback: FrameRequestCallback) => window.setTimeout(() => callback(performance.now()), 0)
+    positionTimingFrameIsRaf = Boolean(window.requestAnimationFrame)
+    positionTimingFrame = schedulePaint(() => {
+      positionTimingFrame = undefined
+      if (disposed) return
+      const uiVisibleAt = new Date().toISOString()
+      trains.value.forEach((item) => {
+        const timing = positionRendererTiming[item.train_id]
+        if (timing) timing.uiVisibleAt = uiVisibleAt
+      })
+    })
+  })
+}
+
+const loadTrains = (silent = true) => latestRequest('trains', '正线车辆', (signal) => listGroundTrains({ signal }), (value) => { applyRendererPositionTiming(value.items) }, silent)
 
 const loadPingTargets = (silent = true) => latestRequest('ping', t('ground.heartbeat', '心跳检测'), (signal) => listGroundPingTargets(selectedRunId.value, { signal }), (value) => { pingTargets.value = value.items }, silent)
 
@@ -2111,6 +2142,11 @@ onBeforeUnmount(() => {
   abortRequests()
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
   if (completedOperationTimer !== undefined) window.clearTimeout(completedOperationTimer)
+  if (positionTimingFrame !== undefined) {
+    if (positionTimingFrameIsRaf && window.cancelAnimationFrame) window.cancelAnimationFrame(positionTimingFrame)
+    else window.clearTimeout(positionTimingFrame)
+    positionTimingFrame = undefined
+  }
 })
 return {
 computed,
@@ -2217,6 +2253,7 @@ status,
 profile,
 pingPresets,
 trains,
+  positionRendererTiming,
 pingTargets,
 deepCollections,
 selectedDeepCollector,

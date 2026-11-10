@@ -170,6 +170,70 @@ def test_gzip_duplicate_submission_and_transient_failure(tmp_path: Path, monkeyp
     assert repository.get_raw_file(file_id)["gzip_path"]
 
 
+def test_compression_queue_full_is_recovered_from_closed_raw_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground" / "index.sqlite", site_id="site-a"
+    )
+    worker = RawCompressionWorker(
+        repository=repository, queue_capacity=1, run_id="bounded-full"
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    original = worker._compress
+    calls = 0
+
+    def blocked(values, path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            assert release.wait(5)
+        original(values, path)
+
+    monkeypatch.setattr(worker, "_compress", blocked)
+    file_ids: list[str] = []
+    try:
+        for index in range(4):
+            writer = RawStreamWriter(
+                root=tmp_path / "ground" / "raw",
+                repository=repository,
+                site_id="site-a",
+                run_id="bounded-full",
+                run_date="2026-11-07",
+                data_type="syslog",
+                compression_worker=worker,
+            )
+            file_id, _ = writer.write(
+                {"train_id": f"mr-{index}", "raw_text": f"raw-{index}"},
+                datetime.now(timezone.utc),
+            )
+            writer.close()
+            file_ids.append(file_id)
+            if index == 0:
+                assert entered.wait(2)
+        assert worker.snapshot()["compression_queue_full_count"] >= 2
+        assert worker.snapshot()["compression_pending_count"] >= 2
+        release.set()
+        _wait_until(
+            lambda: worker.snapshot()["compression_recovery_count"] >= 2
+            and worker.snapshot()["compression_pending_count"] == 0,
+            timeout=10,
+        )
+    finally:
+        release.set()
+        assert worker.stop(10)
+
+    assert worker.snapshot()["compression_recovery_count"] >= 2
+    assert all(repository.get_raw_file(file_id)["gzip_path"] for file_id in file_ids)
+    assert all(
+        (repository.db_path.parent / repository.get_raw_file(file_id)["gzip_path"]).is_file()
+        for file_id in file_ids
+    )
+
+
 def _send(port: int, count: int, source: str = "127.0.0.1") -> None:
     payload = (
         b"%Jul  3 19:19:27:496 2026 MR-CT-01 "

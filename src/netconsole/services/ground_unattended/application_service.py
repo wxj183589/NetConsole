@@ -212,6 +212,13 @@ class GroundUnattendedApplicationService:
         self._ap_display_cache = GroundApDisplayResolver(
             self.ap_identity_query_service
         )
+        # API availability is a transition timestamp, not a per-query clock.
+        # Keeping the timestamp stable while the committed position state is
+        # unchanged preserves list/detail snapshot consistency and still
+        # records when this service first observed the new state.
+        self._position_api_availability: dict[
+            str, tuple[tuple[str, ...], str]
+        ] = {}
         self.inventory_sync = (
             TrainInventorySyncService(
                 paths,
@@ -1927,6 +1934,37 @@ class GroundUnattendedApplicationService:
                     heartbeat_age_seconds=heartbeat_age,
                     last_success_age_seconds=success_age,
                     last_error=str(row.get("last_error_message") or ""),
+                    last_query_started_at=str(
+                        row.get("last_query_started_at") or ""
+                    ),
+                    last_query_completed_at=str(
+                        row.get("last_query_completed_at") or ""
+                    ),
+                    last_query_duration_ms=(
+                        float(row["last_query_duration_ms"])
+                        if row.get("last_query_duration_ms") is not None
+                        else None
+                    ),
+                    last_query_succeeded=(
+                        bool(row["last_query_succeeded"])
+                        if row.get("last_query_succeeded") is not None
+                        else None
+                    ),
+                    query_timeout_count=int(row.get("query_timeout_count") or 0),
+                    last_query_success_at=str(
+                        row.get("last_query_success_at") or ""
+                    ),
+                    last_query_failure_at=str(
+                        row.get("last_query_failure_at") or ""
+                    ),
+                    snapshot_processing_duration_ms=(
+                        float(row["snapshot_processing_duration_ms"])
+                        if row.get("snapshot_processing_duration_ms") is not None
+                        else None
+                    ),
+                    snapshot_change_count=int(
+                        row.get("snapshot_change_count") or 0
+                    ),
                 )
             )
         return result
@@ -4132,7 +4170,10 @@ class GroundUnattendedApplicationService:
                             "position_parse_complete_time": str(position.get("last_parse_complete_time") or ""),
                             "position_commit_time": str(position.get("last_position_commit_time") or ""),
                             "position_latency_ms": position.get("last_position_latency_ms"),
-                            "position_ui_available_time": now.isoformat(timespec="milliseconds"),
+                            "position_api_available_time": self._position_api_available_time(
+                                f"endpoint:{endpoint.mr_id}", position
+                            ),
+                            "position_ui_available_time": "",
                             "position_reconciliation_status": str(
                                 reconciliation.get("state") or "UNKNOWN"
                             ),
@@ -4255,6 +4296,15 @@ class GroundUnattendedApplicationService:
                         or ""
                     ),
                 )
+                latest_device_uuid = str(latest_position.get("device_uuid") or "")
+                latest_api_available_at = next(
+                    (
+                        endpoint.position_api_available_time
+                        for endpoint in endpoints
+                        if endpoint.mr_id == latest_device_uuid
+                    ),
+                    "",
+                )
                 train_update.update(
                     {
                         "current_ap_name": str(latest_position.get("current_ap_name") or ""),
@@ -4279,7 +4329,8 @@ class GroundUnattendedApplicationService:
                         "position_last_receive_time": str(latest_position.get("last_receive_time") or ""),
                         "position_commit_time": str(latest_position.get("last_position_commit_time") or ""),
                         "position_latency_ms": latest_position.get("last_position_latency_ms"),
-                        "position_ui_available_time": now.isoformat(timespec="milliseconds"),
+                        "position_api_available_time": latest_api_available_at,
+                        "position_ui_available_time": "",
                         "position_reconciliation_status": str(
                             reconciliation_by_device.get(
                                 str(latest_position.get("device_uuid") or ""), {}
@@ -4305,6 +4356,37 @@ class GroundUnattendedApplicationService:
                 )
             result.append(train.model_copy(update=train_update))
         return result
+
+    def _position_api_available_time(
+        self, key: str, position: Mapping[str, Any]
+    ) -> str:
+        state = tuple(
+            str(position.get(name) or "")
+            for name in (
+                "device_uuid",
+                "current_ap_id",
+                "current_ap_name",
+                "current_ap_mac",
+                "previous_ap_id",
+                "previous_ap_name",
+                "previous_ap_mac",
+                "last_event_time",
+                "last_receive_time",
+                "last_position_commit_time",
+            )
+        )
+        if not any(state):
+            return ""
+        previous = self._position_api_availability.get(key)
+        if previous is not None and previous[0] == state:
+            return previous[1]
+        available_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        self._position_api_availability[key] = (state, available_at)
+        if len(self._position_api_availability) > 4096:
+            self._position_api_availability.pop(
+                next(iter(self._position_api_availability))
+            )
+        return available_at
 
     def _syslog_health(self) -> dict[str, Any]:
         receiver = getattr(self.supervisor, "syslog_receiver", None)

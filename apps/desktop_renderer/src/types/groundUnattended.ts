@@ -61,7 +61,7 @@ export interface GroundEndpoint {
   position_source: string; position_freshness: string; position_last_event_time: string
   position_last_event_time_source: string; position_last_event_time_precision: string
   position_last_receive_time: string; position_raw_persist_time: string; position_parse_complete_time: string
-  position_commit_time: string; position_latency_ms: number | null; position_ui_available_time: string
+  position_commit_time: string; position_latency_ms: number | null; position_api_available_time: string; position_ui_available_time: string; position_ui_visible_time?: string
   position_reconciliation_status: string; position_reconciliation_reason: string; position_reconciliation_ac_time: string
   boot_session_id: string; estimated_boot_time: string; uptime_seconds: number | null; boot_time_uncertainty_seconds: number
   reboot_reason: string; timezone_name: string; utc_offset_seconds: number | null; device_time_quality: string
@@ -113,7 +113,7 @@ export interface GroundTrain {
   eligibility_status: string; exclusion_reason: string; current_ap_name: string; current_ap_mac: string
   position_previous_ap_name: string; position_previous_ap_mac: string; position_source: string; position_freshness: string
   position_status: string; position_quality: string; position_last_event_time: string; position_last_receive_time: string
-  position_commit_time: string; position_latency_ms: number | null; position_ui_available_time: string
+  position_commit_time: string; position_latency_ms: number | null; position_api_available_time: string; position_ui_available_time: string; position_ui_visible_time?: string
   position_reconciliation_status: string; position_reconciliation_reason: string; position_reconciliation_ac_time: string
   location_match_level: 'AP_EXACT' | 'AP_REGISTRY' | 'AP_ALIAS' | 'STATION_EXACT' | 'STATION_ALIAS' | 'UNMATCHED'
   location_match_reason: string; resolved_ap_id: string; resolved_ap_name: string; raw_peer_ap_name: string; raw_peer_ap_mac: string; canonical_station_name: string
@@ -349,6 +349,8 @@ export interface GroundAcPollerHealth {
   last_success_at: string; latest_snapshot_id: number | null; next_poll_at: string; poll_interval_seconds: number
   poll_count: number; success_count: number; failure_count: number; reconnect_count: number; consecutive_failures: number
   heartbeat_at: string; heartbeat_age_seconds: number | null; last_success_age_seconds: number | null; last_error: string
+  last_query_started_at: string; last_query_completed_at: string; last_query_duration_ms: number | null; last_query_succeeded: boolean | null
+  query_timeout_count: number; last_query_success_at: string; last_query_failure_at: string; snapshot_processing_duration_ms: number | null; snapshot_change_count: number
 }
 export interface GroundHealth {
   site_id: string; status: GroundHealthStatus; udp_running: boolean; udp_listen_address: string; udp_receive_rate_per_second: number; udp_received_count: number
@@ -382,6 +384,7 @@ export interface GroundHealth {
   compression_queue_size: number; compression_queue_capacity: number
   compression_submitted_count: number; compression_completed_count: number
   compression_failed_count: number; compression_skipped_count: number
+  compression_queue_full_count: number; compression_recovery_count: number; compression_pending_count: number | null
   compression_last_error: string; compression_worker_alive: boolean
 }
 export interface GroundRawFile { file_id: string; site_id: string; run_id: string; train_id: string; device_id: number | null; mr_role: string; data_type: string; relative_path: string; start_time: string; end_time: string; record_count: number; size_bytes: number; sha256: string; status: string; archive_status: string; parse_status: string; compressed_path: string; created_at: string; updated_at: string }
