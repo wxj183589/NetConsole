@@ -60,7 +60,9 @@ def fixture(root):
     os.environ["NETCONSOLE_DATA_ROOT"] = str(root)
     from netconsole.core.database import Database
     from netconsole.core.paths import PathResolver
+    from netconsole.repositories.ac_repository import AcRepository
     from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+    from netconsole.services.ap_identity import ApIdentityQueryService
 
     paths = PathResolver(app_root=REPO, data_root=root)
     paths.ensure_site_dirs("demo")
@@ -79,6 +81,22 @@ def fixture(root):
             primary_address,backup_address,protocol,port,created_at,updated_at)
             VALUES(?,?,?,?,'H3C','Cloud-AP',?,?,'ssh',22,?,?)""", rows)
         conn.commit()
+    ap_repository = AcRepository(db)
+    for ap_name, ap_mac in (
+        ("R232-AP-A-001", "0200-0000-0001"),
+        ("R232-AP-B-001", "0200-0000-0002"),
+    ):
+        ap_repository.upsert_ap_extension_point(
+            {
+                "ap_name": ap_name,
+                "ap_point_code": ap_name,
+                "ap_vendor": "H3C",
+                "ap_mac_display": ap_mac,
+                "station_name": "R232-SYNTHETIC-STATION",
+                "belong_type": "station",
+            }
+        )
+    ApIdentityQueryService(db).rebuild_index("r2_3_2_gui_ap_switch_fixture")
     paths.app_config_path.parent.mkdir(parents=True, exist_ok=True)
     write_json(paths.app_config_path, {"current_site": "demo"})
     write_json(paths.site_dir("demo") / "site_meta.json", {
@@ -164,6 +182,10 @@ class Harness:
         self.children = []
         self.logs = []
         self.sent = 0
+        self.ap_switch_enabled = os.environ.get("NETCONSOLE_GUI_AP_SWITCH") == "1"
+        self.ap_switch_delay_seconds = float(os.environ.get("NETCONSOLE_GUI_AP_SWITCH_DELAY_SECONDS", "8"))
+        self.ap_switch_at = None
+        self.ap_switch_sent = 0
         self.stop_udp = threading.Event()
         self.started = None
         self.summary = {"status": "PREPARING", "requested_seconds": args.seconds, "root": str(self.root),
@@ -229,7 +251,16 @@ class Harness:
                 stamp = datetime.now().strftime("%b %d %H:%M:%S %Y")
                 for index in range(20):
                     train, role = index // 2 + 1, "CT" if index % 2 == 0 else "CW"
-                    message = f"<189>{stamp} MR{train:03}{role} %%10WMESH/5/MESH_LINKUP: Mesh Link on the interface WLAN-MeshLink841 is up: peer MAC = 0200-0000-0001, peer radio mode = 3, RSSI = 25 validation_seq={self.sent} " + "x" * 600
+                    peer_mac = "0200-0000-0001"
+                    if (
+                        self.ap_switch_enabled
+                        and self.ap_switch_at is not None
+                        and time.monotonic() >= self.ap_switch_at
+                        and index == 0
+                    ):
+                        peer_mac = "0200-0000-0002"
+                        self.ap_switch_sent += 1
+                    message = f"<189>{stamp} MR{train:03}{role} %%10WMESH/5/MESH_LINKUP: Mesh Link on the interface WLAN-MeshLink841 is up: peer MAC = {peer_mac}, peer radio mode = 3, RSSI = 25 validation_seq={self.sent} " + "x" * 600
                     sock.sendto(message.encode(), ("127.0.0.1", self.udp_port))
                     self.sent += 1
                 self.stop_udp.wait(0.2)
@@ -237,7 +268,8 @@ class Harness:
     def run(self):
         db_path = fixture(self.root)
         self.summary["fixture"] = {"trains": 50, "mrs": 100, "ips": 200, "dual_ip_mrs": 100, "single_ip_mrs": 0,
-                                    "heartbeat_target_mode": "primary_and_backup", "heartbeat_expected_target_count": 200}
+                                    "heartbeat_target_mode": "primary_and_backup", "heartbeat_expected_target_count": 200,
+                                    "ap_switch": {"enabled": self.ap_switch_enabled, "target": "test-mr-001", "from": "R232-AP-A-001", "to": "R232-AP-B-001", "delay_seconds": self.ap_switch_delay_seconds}}
         env = os.environ.copy()
         env.pop("ELECTRON_RUN_AS_NODE", None)
         env.update({"NETCONSOLE_RUNTIME_MODE": "test", "NETCONSOLE_STORAGE_MODE": "isolated_test", "NETCONSOLE_ISOLATED_SMOKE": "1", "NETCONSOLE_DEV_TEMP_DATA_ROOT": "1",
@@ -300,6 +332,8 @@ class Harness:
         # Keep the real Ground route mounted without triggering a document reload.
         self.cdp("history.pushState({},'', '/rail-transit/ground-unattended');dispatchEvent(new PopStateEvent('popstate'));true")
         self.wait(lambda: self.cdp("location.pathname==='/rail-transit/ground-unattended'"))
+        if self.ap_switch_enabled:
+            self.ap_switch_at = time.monotonic() + self.ap_switch_delay_seconds
         self.udp_thread = threading.Thread(target=self.udp_sender, daemon=True)
         self.udp_thread.start()
         self.started = time.monotonic()
@@ -331,6 +365,7 @@ class Harness:
         self.stop_udp.set()
         self.udp_thread.join(3)
         self.summary["udp_sent"] = self.sent
+        self.summary["ap_switch_messages_sent"] = self.ap_switch_sent
         self.summary["final_health_before_stop"] = self.api("/health")
         self.summary["final_heartbeat"] = self.api("/heartbeat?page_size=200")
         self.summary["quick_ping_stop"] = self.api(f"/quick-ping/{quick['run_id']}/stop", "POST")

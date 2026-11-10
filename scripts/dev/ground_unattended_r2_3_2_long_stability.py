@@ -648,10 +648,10 @@ def _run(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     final_ap_b_count = sum(
         str(row.get("current_ap_name") or "").startswith("R232-AP-B-") for row in states
     )
-    raw_record_count = sum(
-        int(row.get("record_count") or 0)
-        for row in repository.list_raw_files(data_type="syslog")
-    )
+    # ``list_raw_files`` is intentionally paginated for runtime callers.  Do
+    # not use its default page as a soak total; the receiver stop snapshot is
+    # the authoritative count after the bounded drain has completed.
+    raw_record_count = int(receiver_health_before_stop.get("written") or 0)
     ac_summary = {
         "polls": ac_metrics["polls"],
         "accepted_snapshots": ac_metrics["accepted_snapshots"],

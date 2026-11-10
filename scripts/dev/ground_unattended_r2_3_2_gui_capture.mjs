@@ -44,7 +44,29 @@ try {
   await capture('01-overview-before')
   await openTab('心跳检测', '02-heartbeat')
   await openTab('Syslog 日志', '03-syslog')
+  const beforeMrFilter = page.getByPlaceholder('MR 设备名称')
+  if (await beforeMrFilter.count()) {
+    await beforeMrFilter.fill('列车001-MR-CT')
+    await page.getByRole('button', { name: '查询', exact: true }).click({ timeout: 15_000 })
+    await page.waitForTimeout(1_500)
+    evidence.interactions.push({ action: 'filter_initial_mr', ok: true, value: '列车001-MR-CT', url: page.url() })
+    await capture('03-syslog-mr001-before')
+  } else {
+    evidence.interactions.push({ action: 'filter_initial_mr', ok: false, error: 'MR 设备名称 filter not found' })
+  }
   await openTab('AC-Mesh-Link', '04-ac-reconcile')
+  await page.waitForTimeout(12_000)
+  await openTab('Syslog 日志', '05-syslog-after-switch')
+  const mrFilter = page.getByPlaceholder('MR 设备名称')
+  if (await mrFilter.count()) {
+    await mrFilter.fill('列车001-MR-CT')
+    await page.getByRole('button', { name: '查询', exact: true }).click({ timeout: 15_000 })
+    await page.waitForTimeout(1_500)
+    evidence.interactions.push({ action: 'filter_switched_mr', ok: true, value: '列车001-MR-CT', url: page.url() })
+    await capture('05-syslog-mr001-after')
+  } else {
+    evidence.interactions.push({ action: 'filter_switched_mr', ok: false, error: 'MR 设备名称 filter not found' })
+  }
   await openTab('运行概览', '05-overview-after')
   const stopButton = page.getByRole('button', { name: '正常停止', exact: true })
   if (await stopButton.count() && await stopButton.isEnabled()) {
