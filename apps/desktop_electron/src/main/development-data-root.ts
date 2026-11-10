@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, isAbsolute, resolve, sep } from 'node:path'
 
@@ -16,16 +16,28 @@ export interface DesktopStorageContext {
   tempRoot: string
 }
 
+export interface DesktopStorageResolutionOptions {
+  portableMode?: boolean
+  portableAppRoot?: string
+}
+
 const configuredProjectRoot = process.env.NETCONSOLE_PROJECT_ROOT?.trim()
 const projectRoot = configuredProjectRoot
   ? resolve(configuredProjectRoot)
   : resolve(process.cwd(), '..', '..')
-export const WINDOWS_TEST_DATA_ROOT = resolve(projectRoot, '..', 'test-data', 'NetConsole')
+const repositoryParent = resolve(projectRoot, '..')
+const workspaceRoot = basename(repositoryParent).toLowerCase() === 'worktrees'
+  && basename(resolve(repositoryParent, '..')).toLowerCase() === 'netconsole-workspace'
+  && existsSync(resolve(repositoryParent, '..', 'NetConsole', '.git'))
+  ? resolve(repositoryParent, '..')
+  : repositoryParent
+export const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')
 
 export function resolveDesktopStorageContext(
   environment: NodeJS.ProcessEnv = process.env,
   systemTempRoot = tmpdir(),
   platform: NodeJS.Platform = process.platform,
+  options: DesktopStorageResolutionOptions = {},
 ): DesktopStorageContext {
   const requestedMode = environment.NETCONSOLE_STORAGE_MODE?.trim() || 'persistent'
   const configuredRoot = environment.NETCONSOLE_DATA_ROOT?.trim()
@@ -34,13 +46,14 @@ export function resolveDesktopStorageContext(
       throw new Error('Persistent desktop runtime must not use temporary storage markers')
     }
     if (!configuredRoot) {
-      throw new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置。')
+      throw new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择数据存放位置；优先推荐非系统盘，也可以使用 C:\\ProgramData\\NetConsole\\Data。')
     }
     const dataRoot = validatePersistentDataRoot(
       configuredRoot,
       environment,
       systemTempRoot,
       platform,
+      options,
     )
     return buildContext('persistent', dataRoot)
   }
@@ -103,6 +116,7 @@ function validatePersistentDataRoot(
   environment: NodeJS.ProcessEnv,
   systemTempRoot: string,
   platform: NodeJS.Platform,
+  options: DesktopStorageResolutionOptions,
 ): string {
   if (!value || !isAbsolute(value)) throw new Error('NETCONSOLE_DATA_ROOT must be an absolute path')
   const target = resolve(value)
@@ -111,24 +125,29 @@ function validatePersistentDataRoot(
     throw new Error('NetConsole data root must not use the system temporary directory')
   }
   if (platform === 'win32') {
-    const systemDrive = (environment.SystemDrive?.trim() || 'C:').toLowerCase()
-    if (target.slice(0, 2).toLowerCase() === systemDrive) {
-      throw new Error(`NetConsole 数据根不得位于系统盘：${target}`)
+    const portableDefault = options.portableMode && options.portableAppRoot
+      ? resolve(options.portableAppRoot, 'data')
+      : undefined
+    const portableApplicationRoot = options.portableMode && options.portableAppRoot
+      ? resolve(options.portableAppRoot)
+      : undefined
+    if (
+      portableApplicationRoot
+      && (target === portableApplicationRoot || target.startsWith(`${portableApplicationRoot}${sep}`))
+      && target !== portableDefault
+    ) {
+      throw new Error(`便携版数据根不得位于程序目录：${target}`)
     }
     const forbiddenRoots: Array<[string, string | undefined]> = [
-      ['AppData', environment.LOCALAPPDATA],
-      ['AppData', environment.APPDATA],
-      ['用户 Profile', environment.USERPROFILE],
       ['程序安装目录', environment.ProgramFiles],
       ['程序安装目录', environment['ProgramFiles(x86)']],
       ['程序安装目录', environment.ProgramW6432],
-      ['Windows 目录', environment.SystemRoot],
-      ['Windows 目录', environment.WINDIR],
     ]
     for (const [label, rawRoot] of forbiddenRoots) {
       if (!rawRoot || !isAbsolute(rawRoot)) continue
       const root = resolve(rawRoot)
       if (target === root || target.startsWith(`${root}${sep}`)) {
+        if (target === portableDefault) continue
         throw new Error(`NetConsole 数据根不得位于${label}：${target}`)
       }
     }

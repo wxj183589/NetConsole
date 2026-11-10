@@ -565,6 +565,20 @@ class MrSyslogConfigService:
                 previous=previous_metrics,
                 current=metrics,
             )
+            prior_ownership = self.repository.active_syslog_config_ownership(
+                device_uuid, target_ip, target_port
+            )
+            loghost_command = f"info-center loghost {target_ip} port {target_port}"
+            newly_owned = bool(verified and loghost_command in applied)
+            ownership = {
+                "managed_by_netconsole": int(newly_owned or prior_ownership is not None),
+                "created_by_netconsole": int(newly_owned or prior_ownership is not None),
+                "managed_target_ip": target_ip if newly_owned or prior_ownership else "",
+                "managed_target_port": target_port if newly_owned or prior_ownership else None,
+                "ownership_audit_id": audit_id if newly_owned else str((prior_ownership or {}).get("ownership_audit_id") or ""),
+                "ownership_status": "ACTIVE" if newly_owned or prior_ownership else "NOT_OWNED",
+                "revoked_at": "",
+            }
             self.repository.save_syslog_config_audit(
                 {
                     "audit_id": audit_id,
@@ -581,6 +595,7 @@ class MrSyslogConfigService:
                     "evidence_path": evidence_path,
                     "evidence_sha256": _sha256(self.repository.db_path.parent / evidence_path),
                     "managed_profile_version": MANAGED_PROFILE_VERSION,
+                    **ownership,
                 }
             )
             if status == "CONFIG_VERIFY_FAILED":
@@ -694,6 +709,182 @@ class MrSyslogConfigService:
                 message=f"{exc.__class__.__name__}: {exc}",
                 details={"device_uuid": device_uuid, "audit_id": audit_id},
             )
+            raise
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+
+    def exit(
+        self,
+        *,
+        run_id: str,
+        run_date: str,
+        device_uuid: str,
+        target_ip: str,
+        target_port: int,
+    ) -> dict[str, Any]:
+        """Remove only a target previously recorded as managed by NetConsole."""
+        target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
+        target_port = int(target_port)
+        if not 1 <= target_port <= 65_535:
+            raise ValueError("Syslog 目标端口必须在 1～65535 之间")
+        endpoint = self.repository.get_inventory_endpoint(device_uuid)
+        if endpoint is None or endpoint.get("binding_status") != "ACTIVE":
+            raise ValueError("MR 不在当前无人值守设备清单中")
+        device = DeviceRepository(Database(self.paths.site_db_path(self.site_id))).get_by_uuid(device_uuid)
+        if device is None:
+            raise ValueError("设备管理中已找不到 MR")
+        if str(device.device_vendor or "H3C").casefold() != "h3c":
+            raise ValueError("当前 Syslog Profile 仅适配 H3C MR")
+        ownership = self.repository.active_syslog_config_ownership(
+            device_uuid, target_ip, target_port
+        )
+        if ownership is None:
+            raise ValueError("没有匹配当前目标的 ACTIVE NetConsole 所有权记录，拒绝撤销")
+        previous = ownership
+
+        config = _connection_config(self.site_id, device, paths=self.paths)
+        validate_command_list(READ_COMMANDS, "ground_unattended_syslog_read")
+        audit_id = f"sysaudit_{uuid.uuid4().hex}"
+        checked_at = self.now_provider()
+        applied: tuple[str, ...] = ()
+        evidence: dict[str, Any] = {
+            "operation": "EXIT",
+            "target": {"ip": target_ip, "port": target_port},
+            "display_info_center_before": "",
+            "configuration_before": "",
+            "applied_commands": [],
+            "command_results": [],
+            "display_info_center_after": "",
+            "configuration_after": "",
+            "checked_at": checked_at.isoformat(timespec="milliseconds"),
+            "verified_at": "",
+            "managed_profile_version": MANAGED_PROFILE_VERSION,
+        }
+        connection: MrCommandConnection | None = None
+        status = "EXIT_FAILED"
+        boot = self.repository.latest_boot_session(device_uuid) or {}
+        try:
+            connection = self.connection_factory(config)
+            screen_output = str(connection.send_command(READ_COMMANDS[0], config.command_timeout) or "")
+            if _command_failed(screen_output):
+                raise RuntimeError("screen-length disable 执行失败")
+            info_before = str(connection.send_command("display info-center", config.command_timeout) or "")
+            if _command_failed(info_before):
+                raise RuntimeError("display info-center 执行失败")
+            runtime_before = parse_info_center_runtime(info_before)
+            before_hosts = {(host.ip, host.port) for host in runtime_before.log_hosts}
+            evidence["display_info_center_before"] = info_before
+            configuration_before, before_command, before_fallback = self._read_configuration(
+                connection, config.command_timeout
+            )
+            evidence["configuration_before"] = configuration_before
+            evidence["configuration_before_command"] = before_command
+            evidence["configuration_before_fallback_used"] = before_fallback
+            if (target_ip, target_port) not in before_hosts:
+                status = "EXITED"
+                info_after = info_before
+                configuration_after = configuration_before
+            else:
+                applied = build_syslog_exit_commands(target_ip, target_port)
+                _validate_syslog_exit_commands(applied, target_ip=target_ip, target_port=target_port)
+                evidence["applied_commands"] = list(applied)
+                for item in applied:
+                    output = str(connection.send_command(item, config.command_timeout) or "")
+                    result = {"command": item, "output": output, "failed": _command_failed(output)}
+                    evidence["command_results"].append(result)
+                    if result["failed"]:
+                        raise RuntimeError(f"Syslog 退出命令执行失败：{item}")
+                info_after = str(connection.send_command("display info-center", config.command_timeout) or "")
+                if _command_failed(info_after):
+                    raise RuntimeError("退出后 display info-center 复查失败")
+                runtime_after = parse_info_center_runtime(info_after)
+                after_hosts = {(host.ip, host.port) for host in runtime_after.log_hosts}
+                configuration_after, after_command, after_fallback = self._read_configuration(
+                    connection, config.command_timeout
+                )
+                evidence["configuration_after_command"] = after_command
+                evidence["configuration_after_fallback_used"] = after_fallback
+                if (target_ip, target_port) in after_hosts:
+                    status = "EXIT_VERIFY_FAILED"
+                elif before_hosts - {(target_ip, target_port)} != after_hosts:
+                    status = "EXIT_VERIFY_FAILED"
+                    evidence["other_loghosts_before"] = sorted(before_hosts - {(target_ip, target_port)})
+                    evidence["other_loghosts_after"] = sorted(after_hosts)
+                else:
+                    status = "EXITED"
+            evidence["display_info_center_after"] = info_after
+            evidence["configuration_after"] = configuration_after
+            if status == "EXITED":
+                evidence["verified_at"] = self.now_provider().isoformat(timespec="milliseconds")
+            evidence_path = self._write_evidence(run_date, device_uuid, audit_id, evidence)
+            if boot:
+                boot.update({
+                    "config_status": status,
+                    "config_checked_at": checked_at.isoformat(timespec="milliseconds"),
+                    "version_evidence_path": evidence_path,
+                })
+                self.repository.upsert_boot_session(boot)
+            if status != "EXITED":
+                raise RuntimeError("退出命令已执行，但重新读取配置未确认目标撤销")
+            self.repository.save_syslog_config_audit({
+                "audit_id": audit_id,
+                "boot_session_id": str(boot.get("boot_session_id") or previous.get("boot_session_id") or ""),
+                "device_uuid": device_uuid,
+                "train_id": endpoint.get("train_id", ""),
+                "mr_role": endpoint.get("mr_role", ""),
+                "checked_at": checked_at.isoformat(timespec="milliseconds"),
+                "target_ip": target_ip,
+                "target_port": target_port,
+                "status": status,
+                "applied_commands": list(applied),
+                "evidence_path": evidence_path,
+                "evidence_sha256": _sha256(self.repository.db_path.parent / evidence_path),
+                "managed_profile_version": MANAGED_PROFILE_VERSION,
+                "managed_by_netconsole": int(status != "EXITED"),
+                "created_by_netconsole": 1,
+                "managed_target_ip": target_ip,
+                "managed_target_port": target_port,
+                "ownership_audit_id": str(ownership.get("ownership_audit_id") or ownership.get("audit_id") or ""),
+                "ownership_status": "REVOKED" if status == "EXITED" else "ACTIVE",
+                "revoked_at": checked_at.isoformat(timespec="milliseconds") if status == "EXITED" else "",
+            })
+            self.repository.add_event(
+                run_id=run_id, event_type="mr_syslog_exit", severity="info" if status == "EXITED" else "warning",
+                train_id=str(endpoint.get("train_id") or ""), mr_id=device_uuid,
+                title="MR Syslog 上报已退出" if status == "EXITED" else "MR Syslog 退出验证失败",
+                message=status, details={"audit_id": audit_id, "target_ip": target_ip, "target_port": target_port},
+            )
+            return {"device_uuid": device_uuid, "status": status, "audit_id": audit_id}
+        except Exception as exc:
+            evidence["error_code"] = exc.__class__.__name__
+            evidence["error_message"] = str(exc)
+            try:
+                evidence_path = self._write_evidence(run_date, device_uuid, audit_id, evidence)
+            except OSError:
+                evidence_path = ""
+            if boot:
+                boot.update({"config_status": "EXIT_FAILED", "config_checked_at": checked_at.isoformat(timespec="milliseconds"),
+                             "version_evidence_path": evidence_path or str(boot.get("version_evidence_path") or "")})
+                self.repository.upsert_boot_session(boot)
+            self.repository.save_syslog_config_audit({
+                "audit_id": audit_id, "boot_session_id": str(boot.get("boot_session_id") or previous.get("boot_session_id") or ""),
+                "device_uuid": device_uuid, "train_id": endpoint.get("train_id", ""), "mr_role": endpoint.get("mr_role", ""),
+                "checked_at": checked_at.isoformat(timespec="milliseconds"), "target_ip": target_ip, "target_port": target_port,
+                "status": "EXIT_FAILED", "applied_commands": list(applied), "evidence_path": evidence_path,
+                "error_code": exc.__class__.__name__, "error_message": str(exc), "managed_profile_version": MANAGED_PROFILE_VERSION,
+                "managed_by_netconsole": 1, "created_by_netconsole": 1,
+                "managed_target_ip": target_ip, "managed_target_port": target_port,
+                "ownership_audit_id": str(ownership.get("ownership_audit_id") or ownership.get("audit_id") or ""),
+                "ownership_status": "ACTIVE", "revoked_at": "",
+            })
+            self.repository.add_event(run_id=run_id, event_type="mr_syslog_exit_failed", severity="error",
+                                      train_id=str(endpoint.get("train_id") or ""), mr_id=device_uuid,
+                                      title="MR Syslog 退出失败", message=f"{exc.__class__.__name__}: {exc}",
+                                      details={"audit_id": audit_id})
             raise
         finally:
             if connection is not None:
@@ -926,6 +1117,22 @@ def build_syslog_config_commands(repair_commands: tuple[str, ...]) -> tuple[str,
     return ("system-view", *repair_commands, "return")
 
 
+def build_syslog_exit_commands(target_ip: str, target_port: int) -> tuple[str, ...]:
+    normalized_ip = str(ipaddress.ip_address(str(target_ip).strip()))
+    port = int(target_port)
+    if not 1 <= port <= 65_535:
+        raise ValueError("Syslog 目标端口必须在 1～65535 之间")
+    return ("system-view", f"undo info-center loghost {normalized_ip} port {port}", "return")
+
+
+def _validate_syslog_exit_commands(
+    commands: tuple[str, ...], *, target_ip: str, target_port: int
+) -> None:
+    expected = build_syslog_exit_commands(target_ip, target_port)
+    if commands != expected:
+        raise ValueError("Syslog 退出命令不在精确目标白名单中")
+
+
 def _validate_syslog_write_commands(
     commands: tuple[str, ...], *, target_ip: str, target_port: int
 ) -> None:
@@ -1040,6 +1247,7 @@ __all__ = [
     "SyslogProfileVerification",
     "analyze_syslog_config",
     "build_syslog_config_commands",
+    "build_syslog_exit_commands",
     "sanitize_syslog_evidence",
     "verify_syslog_profile",
 ]

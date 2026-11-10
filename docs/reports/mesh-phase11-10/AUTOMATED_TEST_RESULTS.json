@@ -1,0 +1,100 @@
+{
+  "schema": "netconsole.mesh.phase11.10.automated-test-results.v1",
+  "phase": "11.10",
+  "status": "PASS_WITH_EXTERNAL_BLOCKERS",
+  "product_branch": "codex-A/global-dataroot-disk-policy",
+  "product_base_commit": "78cc161e42d9cd50f475fae0f4b636d8b75a8633",
+  "real_electron": {
+    "status": "PASS",
+    "main_pid": 42676,
+    "renderer_pid": 61540,
+    "backend_port": 8133,
+    "renderer_port": 5193,
+    "cdp_port": 9224,
+    "window": {
+      "outer_width": 1920,
+      "outer_height": 1080,
+      "content_width": 1904,
+      "content_height": 1041,
+      "inner_width": 1904,
+      "inner_height": 1041,
+      "device_pixel_ratio": 1
+    }
+  },
+  "tests": [
+    {
+      "suite": "renderer-targeted-mesh",
+      "command": "pnpm exec vitest run src/components/mesh-analysis/meshBusinessMetrics.test.ts src/components/mesh-analysis/MeshMetricChart.test.ts src/components/mesh-analysis/meshCharts.mount.test.ts src/components/mesh-analysis/MeshPhase11Workbench.test.ts",
+      "files": 4,
+      "passed": 106,
+      "failed": 0,
+      "status": "PASS"
+    },
+    {
+      "suite": "renderer-full",
+      "command": "pnpm exec vitest run",
+      "files": 211,
+      "passed": 1541,
+      "failed": 0,
+      "duration_seconds": 45.72,
+      "status": "PASS",
+      "notes": "console 中有既有 localhost:3000 ECONNREFUSED 噪声，未导致测试失败"
+    },
+    {
+      "suite": "python-mesh-ac-mesh",
+      "command": "python -m pytest -q test_mesh_*.py test_ac_mesh_link_*.py test_mr_mesh_identity_shadow.py",
+      "passed": 491,
+      "failed": 0,
+      "warnings": 3,
+      "status": "PASS"
+    },
+    {
+      "suite": "renderer-build",
+      "command": "pnpm run build",
+      "status": "PASS",
+      "notes": "3445 modules；仅有大 chunk warning"
+    },
+    {
+      "suite": "electron-main-build",
+      "command": "pnpm run build:main",
+      "status": "PASS",
+      "notes": "typecheck + build"
+    },
+    {
+      "suite": "ruff",
+      "command": "python -m ruff check src/netconsole tests/test_mesh_*.py tests/test_ac_mesh_link_*.py tests/test_mr_mesh_identity_shadow.py",
+      "status": "PASS"
+    },
+    {
+      "suite": "compileall",
+      "command": "python -m compileall -q src/netconsole",
+      "status": "PASS"
+    },
+    {
+      "suite": "git-diff-check",
+      "command": "git diff --check",
+      "status": "PASS",
+      "notes": "仅报告 LF to CRLF 工作区提示"
+    },
+    {
+      "suite": "workspace-layout",
+      "command": "python -m scripts.check_workspace_layout",
+      "status": "BLOCKED",
+      "reason": "既有 D:\\study\\NetConsole-Workspace\\docs 触发 UNAPPROVED_WORKSPACE_TOP_LEVEL；本轮未修改"
+    }
+  ],
+  "business_acceptance": {
+    "navigation": "PASS",
+    "main_metrics_13_of_13": "PASS",
+    "wheel_time_axis_tooltip": "PASS",
+    "ap_radio_switch": "PASS",
+    "link_detail_filter_sort_pagination_column_settings": "PASS",
+    "link_continuity": "PASS",
+    "report_export": "PASS",
+    "link_detail_export": "PASS",
+    "wps_gui": "PASS",
+    "excel_gui": "NOT_RUN_EXTERNAL_BLOCKER",
+    "screenshot_count": 20,
+    "screenshot_size": "1920x1080"
+  }
+}

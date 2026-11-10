@@ -36,7 +36,7 @@ const echartsMock = vi.hoisted(() => {
 
 vi.mock('echarts/core', () => ({ init: echartsMock.init, use: echartsMock.use }))
 vi.mock('echarts/charts', () => ({ LineChart: {}, ScatterChart: {} }))
-vi.mock('echarts/components', () => ({ DataZoomComponent: {}, GridComponent: {}, LegendComponent: {}, MarkAreaComponent: {}, MarkLineComponent: {}, ToolboxComponent: {}, TooltipComponent: {} }))
+vi.mock('echarts/components', () => ({ DataZoomComponent: {}, GridComponent: {}, LegendComponent: {}, MarkAreaComponent: {}, MarkLineComponent: {}, TitleComponent: {}, ToolboxComponent: {}, TooltipComponent: {} }))
 vi.mock('echarts/renderers', () => ({ CanvasRenderer: {} }))
 
 const chartPoint: MeshChartPoint = {
@@ -140,6 +140,19 @@ describe('MESH charts mount and render', () => {
     Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => 430 })
   })
 
+  it('selects the historical timestamp from RSSI switch lines with scalar ECharts values', async () => {
+    const wrapper = mount(MeshRssiChart, { props: { points: [chartPoint], events: [chartEvent], showSwitchLines: true } })
+    await flushPromises()
+    const click = echartsMock.chart.on.mock.calls.find(([event]) => event === 'click')?.[1] as (payload: unknown) => void
+    click({ data: { value: chartEvent.timestamp, meshEvent: chartEvent } })
+    expect(wrapper.emitted('select-time')?.[0]).toEqual([chartEvent.timestamp])
+    const doubleClick = echartsMock.chart.on.mock.calls.find(([event]) => event === 'dblclick')?.[1] as (payload: unknown) => void
+    doubleClick({ data: { value: chartEvent.timestamp, meshEvent: chartEvent } })
+    await nextTick()
+    expect(wrapper.find('[data-mesh-rssi-pinned-tooltip]').text()).toContain(chartEvent.timestamp)
+    wrapper.unmount()
+  })
+
   it('mounts active charts, renders real series and disposes ECharts', async () => {
     const wrappers = [
       mount(MeshSwitchRssiChart, { props: { events: [{ event_id: 1, timestamp: '2026-07-20T10:00:00.123Z', event_type: 'switch', mr_name: 'MR-1', local_radio: 1, from_peer_mac: null, to_peer_mac: null, from_ap_name: 'AP-1', to_ap_name: 'AP-2', before_rssi: -40, after_rssi: -45, duration_ms: null, is_short_link: false, is_pingpong: false, station: null, section: null, warning: null }] } }),
@@ -159,6 +172,14 @@ describe('MESH charts mount and render', () => {
       useDirtyRect: false,
     })
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(3)
+    expect(wrappers[1].emitted('render-complete')).toHaveLength(1)
+    expect(wrappers[1].emitted('render-complete')?.[0]?.[0]).toMatchObject({
+      chart: 'rssi', phase: 'COMPLETED', point_count: 2,
+    })
+    expect(wrappers[2].emitted('render-complete')).toHaveLength(1)
+    expect(wrappers[2].emitted('render-complete')?.[0]?.[0]).toMatchObject({
+      chart: 'busy', phase: 'COMPLETED', point_count: 1,
+    })
     const options = echartsMock.chart.setOption.mock.calls.map(([option]) => option as { series: Array<{ name: string; type: string }> })
     expect(options[0].series.every((item) => item.type === 'scatter')).toBe(true)
     expect(options[1].series.map((item) => item.name)).toEqual(['当前 ACTIVE MR 侧 RSSI', '切换节点'])
@@ -194,7 +215,18 @@ describe('MESH charts mount and render', () => {
 
     wrappers.forEach((wrapper) => wrapper.unmount())
     expect(echartsMock.chart.dispose).toHaveBeenCalledTimes(3)
-    expect(echartsMock.chart.off).toHaveBeenCalledTimes(6)
+    expect(echartsMock.chart.off).toHaveBeenCalledTimes(8)
+  })
+
+  it('reports a render-complete event for the trackside chart', async () => {
+    const wrapper = mount(MeshTracksideSignalChart, { props: { series: tracksideSeries } })
+    await flushPromises()
+
+    expect(wrapper.emitted('render-complete')).toHaveLength(1)
+    expect(wrapper.emitted('render-complete')?.[0]?.[0]).toMatchObject({
+      chart: 'trackside', phase: 'COMPLETED', point_count: 2,
+    })
+    wrapper.unmount()
   })
 
   it('renders LinkCnt=2 as a non-fault triangle overlay without adding an RSSI curve', async () => {
@@ -263,8 +295,8 @@ describe('MESH charts mount and render', () => {
     expect(tooltipHtml).toContain('采样时间：2026-07-20T10:00:01.123Z')
     expect(tooltipHtml).toContain('状态：ACTIVE')
     expect(tooltipHtml).toContain('当前轨旁 AP：AP0128')
-    expect(tooltipHtml).toContain('Radio：Radio 1')
-    expect(tooltipHtml).toContain('当前轨旁 AP MAC：0000-0000-1128')
+    expect(tooltipHtml).toContain('对端射频口：1')
+    expect(tooltipHtml).not.toContain('当前轨旁 AP MAC：')
     expect(tooltipHtml).toContain('MR / 轨旁 AP 接收信号：41 / 44')
     expect(tooltipHtml).toContain('MR TX/RX Busy：31 % / 22 %')
     expect(tooltipHtml).toContain('轨旁 AP TX/RX Busy：45 % / 27 %')
@@ -1043,10 +1075,10 @@ describe('MESH charts mount and render', () => {
     const markers = tooltip.findAll('.trackside-tooltip-entry__marker')
     expect(roleRows.map((item) => item.text())).toEqual(['● ACTIVE', '○ STANDBY', '○ STANDBY', '○ STANDBY'])
     expect(apRows.map((item) => item.text())).toEqual([
-      'AP：AP-A · Radio 1',
-      'AP：AP-B · Radio 1',
-      'AP：AP-C · Radio 1',
-      'AP：AP-D · Radio 1',
+      'AP：AP-A · 对端射频口 1',
+      'AP：AP-B · 对端射频口 1',
+      'AP：AP-C · 对端射频口 1',
+      'AP：AP-D · 对端射频口 1',
     ])
     expect(tooltip.text().match(/采样时间：/g)).toHaveLength(1)
     expect(tooltip.text()).toContain('采样时间：2026-07-20 10:05:00.852')
@@ -1068,7 +1100,8 @@ describe('MESH charts mount and render', () => {
     expect(detailPanel.findAll('.trackside-frame-detail-entry')).toHaveLength(4)
     expect(detailPanel.text()).toContain('ACTIVE 1 条 · STANDBY 3 条 · 共 4 条')
     expect(detailPanel.text()).toContain('采样时间：2026-07-20 10:05:00.852')
-    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
+    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(true)
+    expect(wrapper.find('[data-trackside-external-tooltip]').text()).toContain('已固定')
     expect(echartsMock.chart.setOption).toHaveBeenCalledTimes(initialSetOptionCount)
     expect(echartsMock.chart.clear).toHaveBeenCalledTimes(initialClearCount)
     expect(echartsMock.chart.resize).toHaveBeenCalledTimes(initialResizeCount)
@@ -1168,6 +1201,18 @@ describe('MESH charts mount and render', () => {
     expect(wrapper.get('[data-trackside-frame-detail-panel]').text()).toContain(
       '采样时间：2024-10-22 14:39:23.000',
     )
+    expect(wrapper.get('[data-trackside-external-tooltip]').text()).toContain(
+      '采样时间：2024-10-22 14:39:23.000',
+    )
+    await wrapper.get('.trackside-external-tooltip__pin').trigger('click')
+    expect(wrapper.find('[data-trackside-frame-detail-panel]').exists()).toBe(false)
+    expect(wrapper.find('[data-trackside-external-tooltip]').exists()).toBe(false)
+    wrapper.get('.chart').element.dispatchEvent(new MouseEvent('pointermove', {
+      bubbles: true,
+      clientX: 100,
+    }))
+    updateAxisPointer({ axesInfo: [{ value: firstTime }] })
+    await nextTick()
     expect(wrapper.get('[data-trackside-external-tooltip]').text()).toContain(
       '采样时间：2024-10-22 14:39:13.000',
     )
@@ -1723,8 +1768,19 @@ describe('MESH charts mount and render', () => {
     const tooltip = option.tooltip.formatter([{ data: nodes.data?.[0] }])
     expect(tooltip).toContain('<strong>切换事件</strong>')
     expect(tooltip).toContain('对齐空口采样时间')
+    const pointTooltip = option.tooltip.formatter([{ data: { meta: chartPoint } }])
+    expect(pointTooltip).toContain('对端射频口：1')
+    expect(pointTooltip).not.toContain('Peer MAC')
+    expect(pointTooltip).not.toContain('Radio：1')
     expect(tooltip).not.toContain('切换耗时')
     expect(tooltip).not.toContain('切换类型')
+    const doubleClick = echartsMock.chart.on.mock.calls.find(([event]) => event === 'dblclick')?.[1] as ((payload: unknown) => void) | undefined
+    doubleClick?.({ data: { meta: chartPoint } })
+    await nextTick()
+    expect(wrapper.find('[data-mesh-busy-pinned-tooltip]').exists()).toBe(true)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await nextTick()
+    expect(wrapper.find('[data-mesh-busy-pinned-tooltip]').exists()).toBe(false)
     wrapper.unmount()
   })
 

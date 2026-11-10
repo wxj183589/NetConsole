@@ -77,6 +77,7 @@ GroundDataAvailability = Literal[
     "CORRUPT",
 ]
 GroundHeartbeatDataState = Literal[
+    "HEARTBEAT_DEGRADED",
     "NO_INVENTORY",
     "NOT_STARTED",
     "INITIALIZING",
@@ -116,7 +117,8 @@ class GroundUnattendedProfileDTO(ApiModel):
         default="23:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
     )
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
-    ac_poll_interval_seconds: int = Field(default=10, ge=3, le=300)
+    ac_poll_interval_seconds: int = Field(default=60, ge=3, le=300)
+    ac_mesh_link_poll_interval_seconds: int = Field(default=300, ge=30, le=3600)
     stationary_exclusion_minutes: int = Field(default=10, ge=1, le=180)
     ac_stale_grace_seconds: int = Field(default=120, ge=0, le=3600)
     ac_ping_correlation_tolerance_seconds: int = Field(default=15, ge=1, le=300)
@@ -146,7 +148,10 @@ class GroundUnattendedProfileDTO(ApiModel):
     config_check_cooldown_seconds: int = Field(default=1800, ge=30, le=86_400)
     syslog_server_ip: str = Field(default="", max_length=255)
     syslog_server_port: int = Field(default=514, ge=1, le=65_535)
-    syslog_auto_repair_enabled: bool = True
+    syslog_receiver_auto_start_enabled: bool = False
+    boot_check_auto_start_enabled: bool = False
+    syslog_auto_repair_enabled: bool = False
+    ac_mesh_link_auto_collection_enabled: bool = False
     allow_external_syslog_address: bool = False
     ping_raw_retention_days: int = Field(default=30, ge=1, le=3650)
     syslog_raw_retention_days: int = Field(default=30, ge=1, le=3650)
@@ -355,6 +360,31 @@ class GroundUnattendedEndpointDTO(ApiModel):
     last_syslog_received_at: str = ""
     current_active_peer: str = ""
     last_link_switch_at: str = ""
+    position_current_ap_id: str = ""
+    position_current_ap_name: str = ""
+    position_current_ap_mac: str = ""
+    position_previous_ap_id: str = ""
+    position_previous_ap_name: str = ""
+    position_previous_ap_mac: str = ""
+    position_station: str = ""
+    position_section: str = ""
+    position_status: str = "UNKNOWN"
+    position_quality: str = "UNKNOWN"
+    position_source: str = ""
+    position_freshness: str = "NO_DATA"
+    position_last_event_time: str = ""
+    position_last_event_time_source: str = ""
+    position_last_event_time_precision: str = ""
+    position_last_receive_time: str = ""
+    position_raw_persist_time: str = ""
+    position_parse_complete_time: str = ""
+    position_commit_time: str = ""
+    position_latency_ms: float | None = None
+    position_api_available_time: str = ""
+    position_ui_available_time: str = ""
+    position_reconciliation_status: str = "UNKNOWN"
+    position_reconciliation_reason: str = ""
+    position_reconciliation_ac_time: str = ""
     boot_session_id: str = ""
     estimated_boot_time: str = ""
     uptime_seconds: int | None = None
@@ -460,6 +490,21 @@ class GroundUnattendedTrainDTO(ApiModel):
     canonical_station_name: str = ""
     current_ap_name: str = ""
     current_ap_mac: str = ""
+    position_previous_ap_name: str = ""
+    position_previous_ap_mac: str = ""
+    position_source: str = ""
+    position_freshness: str = "NO_DATA"
+    position_status: str = "UNKNOWN"
+    position_quality: str = "UNKNOWN"
+    position_last_event_time: str = ""
+    position_last_receive_time: str = ""
+    position_commit_time: str = ""
+    position_latency_ms: float | None = None
+    position_api_available_time: str = ""
+    position_ui_available_time: str = ""
+    position_reconciliation_status: str = "UNKNOWN"
+    position_reconciliation_reason: str = ""
+    position_reconciliation_ac_time: str = ""
     station: str = ""
     section: str = ""
     mileage: str = ""
@@ -509,6 +554,11 @@ class GroundConfigCheckRequestDTO(ApiModel):
     mode: Literal["VERIFY_ONLY", "AUTO_REPAIR"] = "AUTO_REPAIR"
     allow_target_port_change: bool = False
     explicit_confirmation: bool = False
+
+
+class GroundSyslogControlRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(default_factory=list, max_length=200)
+    mode: Literal["JOIN", "EXIT"] = "JOIN"
 
 
 class GroundMrRuntimeStatusDTO(ApiModel):
@@ -611,6 +661,15 @@ class GroundAcPollerHealthDTO(ApiModel):
     heartbeat_age_seconds: float | None = None
     last_success_age_seconds: float | None = None
     last_error: str = ""
+    last_query_started_at: str = ""
+    last_query_completed_at: str = ""
+    last_query_duration_ms: float | None = None
+    last_query_succeeded: bool | None = None
+    query_timeout_count: int = 0
+    last_query_success_at: str = ""
+    last_query_failure_at: str = ""
+    snapshot_processing_duration_ms: float | None = None
+    snapshot_change_count: int = 0
 
 
 class GroundHealthDTO(ApiModel):
@@ -630,6 +689,7 @@ class GroundHealthDTO(ApiModel):
     udp_queue_capacity: int = 0
     udp_queue_pressure: float = Field(default=0.0, ge=0.0, le=1.0)
     udp_dropped_count: int = 0
+    udp_socket_error_count: int = 0
     raw_records_written: int = 0
     raw_write_failed_count: int = 0
     raw_bytes_written: int = 0
@@ -659,6 +719,10 @@ class GroundHealthDTO(ApiModel):
     received: int = 0
     written: int = 0
     parsed: int = 0
+    parse_success_count: int = 0
+    parse_error_count: int = 0
+    parse_ignored_count: int = 0
+    parser_rate_per_second: float = 0.0
     db_saved: int = 0
     dropped: int = 0
     memory_queue_size: int = 0
@@ -666,6 +730,25 @@ class GroundHealthDTO(ApiModel):
     disk_queue_count: int = 0
     parser_queue_size: int = 0
     parser_queue_capacity: int = 0
+    raw_writer_queue_length: int = 0
+    oldest_unprocessed_log_wait_seconds: float = 0.0
+    parser_spool_failed_count: int = 0
+    position_update_count: int = 0
+    position_updates_per_second: float = 0.0
+    position_duplicate_count: int = 0
+    position_out_of_order_count: int = 0
+    position_latency_p50_ms: float | None = None
+    position_latency_p95_ms: float | None = None
+    position_latency_p99_ms: float | None = None
+    stage_receive_to_raw_p50_ms: float | None = None
+    stage_receive_to_raw_p95_ms: float | None = None
+    stage_receive_to_raw_p99_ms: float | None = None
+    stage_raw_to_parse_p50_ms: float | None = None
+    stage_raw_to_parse_p95_ms: float | None = None
+    stage_raw_to_parse_p99_ms: float | None = None
+    stage_parse_to_position_p50_ms: float | None = None
+    stage_parse_to_position_p95_ms: float | None = None
+    stage_parse_to_position_p99_ms: float | None = None
     raw_file: str = ""
     raw_file_size: int = 0
     last_write_time: str = ""
@@ -694,6 +777,9 @@ class GroundHealthDTO(ApiModel):
     compression_completed_count: int = 0
     compression_failed_count: int = 0
     compression_skipped_count: int = 0
+    compression_queue_full_count: int = 0
+    compression_recovery_count: int = 0
+    compression_pending_count: int | None = None
     compression_last_error: str = ""
     compression_worker_alive: bool = False
     task_queue_lengths: dict[str, int] = Field(default_factory=dict)
@@ -1052,6 +1138,7 @@ class GroundActionResponseDTO(ApiModel):
     state: GroundRunState
     run_id: str = ""
     operation_id: str = ""
+    task_id: str = ""
     message: str = ""
 
 
@@ -1577,6 +1664,13 @@ class GroundHeartbeatMrDTO(ApiModel):
     train_no: str = ""
     mr_name: str = ""
     role: str = ""
+    management_ip: str = ""
+    backup_management_ip: str = ""
+    syslog_status: Literal[
+        "NOT_CONFIGURED", "CONFIGURING", "CONFIGURED", "VERIFYING",
+        "EXITING", "EXITED", "FAILED", "UNKNOWN"
+    ] = "UNKNOWN"
+    syslog_last_error: str = ""
     status: str = "UNKNOWN"
     engine_state: str = "STOPPED"
     unreachable_since: str = ""
@@ -1608,7 +1702,30 @@ class GroundHeartbeatStatisticsDTO(ApiModel):
     latest_sample_at: str = ""
 
 
+class HeartbeatConfigDTO(ApiModel):
+    enabled: bool = True
+    interval_ms: int = Field(default=1000, ge=100, le=60000)
+    timeout_ms: int = Field(default=4000, ge=100, le=60000)
+    packet_size: int = Field(default=64, ge=1, le=65507)
+    shard_size: int = Field(default=12, ge=2, le=32)
+    warmup_seconds: int = Field(default=10, ge=0, le=300)
+    backup_policy: Literal["MONITOR", "PRIMARY_ONLY"] = "MONITOR"
+
+
+class HeartbeatRuntimeDTO(ApiModel):
+    state: str = "STOPPED"
+    enabled: bool = True
+    target_count: int = 0
+    process_count: int = 0
+    last_sample_at: str = ""
+    last_success_at: str = ""
+    last_error: str = ""
+    pending_events: int = 0
+    pending_loss_events: int = 0
+
+
 class GroundHeartbeatPageDTO(ApiModel):
+    runtime: HeartbeatRuntimeDTO = Field(default_factory=HeartbeatRuntimeDTO)
     monitoring_enabled: bool = True
     source_conflicts: list[str] = Field(default_factory=list)
     data_cleared_at: str = ""
@@ -1658,6 +1775,7 @@ class GroundArchiveBatchDeleteItemDTO(ApiModel):
     state: str = ""
     run_id: str = ""
     operation_id: str = ""
+    task_id: str = ""
     message: str = ""
 
 

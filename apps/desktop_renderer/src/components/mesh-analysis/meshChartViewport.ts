@@ -233,6 +233,46 @@ export function createFullMeshViewportFromDomain(
   }
 }
 
+export function createEffectiveMeshViewportFromSamples(
+  domain: MeshSharedTimeDomain,
+  timestamps: string[],
+  source: MeshChartViewportSource = 'initial',
+  sourceChart: MeshRssiChartSource = 'programmatic',
+  revision = 0,
+): MeshChartViewport | null {
+  const fullStart = meshTimestampMillis(domain.full_start_time)
+  const fullEnd = meshTimestampMillis(domain.full_end_time)
+  const points = orderedTimestamps(timestamps)
+  if (fullStart === null || fullEnd === null || fullStart >= fullEnd || !points.length) return null
+
+  const first = Math.max(fullStart, points[0].millis)
+  const last = Math.min(fullEnd, points.at(-1)!.millis)
+  if (first >= last) return createFullMeshViewportFromDomain(domain, source, sourceChart, revision)
+
+  const intervals = points.slice(1)
+    .map((point, index) => point.millis - points[index].millis)
+    .filter((interval) => interval > 0 && interval <= 60_000)
+    .sort((left, right) => left - right)
+  const medianInterval = intervals.length ? intervals[Math.floor(intervals.length / 2)] : 5_000
+  const dataSpan = last - first
+  const padding = Math.min(60_000, Math.max(5_000, medianInterval * 3, dataSpan * 0.05))
+  const start = Math.max(fullStart, first - padding)
+  const end = Math.min(fullEnd, last + padding)
+  const fullSpan = fullEnd - fullStart
+  const viewport = enforceMinimumMeshViewport({
+    start_time: formatMeshViewportTimestamp(start),
+    end_time: formatMeshViewportTimestamp(end),
+    start_percent: percent(start, fullStart, fullEnd),
+    end_percent: percent(end, fullStart, fullEnd),
+    full_start_time: domain.full_start_time,
+    full_end_time: domain.full_end_time,
+    source,
+    source_chart: sourceChart,
+    revision,
+  }, domain)
+  return viewport && fullSpan > 0 ? viewport : null
+}
+
 export function resolveMeshSharedTimeDomain(
   preferredStart: string | null | undefined,
   preferredEnd: string | null | undefined,

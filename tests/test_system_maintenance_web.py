@@ -617,7 +617,7 @@ def test_changelog_api_returns_canonical_released_history_in_runtime_format(tmp_
     assert payload.content == expected
     assert response.status_code == 200, response.text
     assert response.json() == payload.model_dump()
-    assert payload.content.count(f"{APP_VERSION} - 2026-11-08") == 1
+    assert payload.content.count(f"{APP_VERSION} - 2026-11-10") == 1
     assert payload.content.count("v1.5.9 - 2026-10-13") == 1
     assert payload.content.count("v1.5.8 - 2026-09-13") == 1
     assert payload.content.count("v1.5.7 - 2026-09-13") == 1

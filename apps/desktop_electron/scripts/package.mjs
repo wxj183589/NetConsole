@@ -1,10 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, readFileSync, rmSync } from 'node:fs'
-import { dirname, delimiter, resolve } from 'node:path'
+import { basename, dirname, delimiter, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const projectRoot = resolve(appRoot, '..', '..')
+const projectParent = resolve(projectRoot, '..')
+const workspaceRoot = basename(projectParent).toLowerCase() === 'worktrees'
+  ? resolve(projectParent, '..')
+  : projectParent
 const packageJson = JSON.parse(readFileSync(resolve(appRoot, 'package.json'), 'utf8'))
 const version = String(packageJson.version)
 const python = discoverPython()
@@ -12,6 +16,7 @@ const releaseRoot = resolve(projectRoot, 'dist', '_build', 'backend-release', `v
 const stagingRoot = resolve(appRoot, 'dist', 'package-resources')
 const backendStaging = resolve(stagingRoot, 'backend')
 const edition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim().toLowerCase()
+const portableBuild = process.env.NETCONSOLE_PORTABLE_BUILD === '1'
 
 if (!python) throw new Error('未找到项目 .venv Python，无法构建 NetConsoleBackend.exe')
 if (!['full', 'customer'].includes(edition)) {
@@ -22,11 +27,13 @@ const env = { ...process.env, NETCONSOLE_BUILD_EDITION: edition }
 const sourceRoot = resolve(projectRoot, 'src')
 env.PYTHONPATH = env.PYTHONPATH ? `${sourceRoot}${delimiter}${env.PYTHONPATH}` : sourceRoot
 
-execFileSync(
-  python,
-  ['-m', 'scripts.build.build_installer', '--prepare-identity'],
-  { cwd: projectRoot, env, stdio: 'inherit' },
-)
+if (!portableBuild) {
+  execFileSync(
+    python,
+    ['-m', 'scripts.build.build_installer', '--prepare-identity'],
+    { cwd: projectRoot, env, stdio: 'inherit' },
+  )
+}
 
 execFileSync(
   python,
@@ -81,6 +88,6 @@ function discoverPython() {
   const relative = process.platform === 'win32'
     ? ['.venv', 'Scripts', 'python.exe']
     : ['.venv', 'bin', 'python']
-  const candidate = resolve(projectRoot, ...relative)
-  return existsSync(candidate) ? candidate : undefined
+  const candidates = [resolve(projectRoot, ...relative), resolve(workspaceRoot, 'NetConsole', ...relative)]
+  return candidates.find((candidate) => existsSync(candidate))
 }

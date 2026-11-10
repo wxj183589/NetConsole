@@ -103,6 +103,7 @@ from netconsole.services.mesh_import_limits import (
 from netconsole.services.mesh_analysis_params_service import (
     load_site_mesh_analysis_params,
     mesh_analysis_params_template,
+    resolve_mesh_task_params,
     save_site_mesh_analysis_params,
 )
 from netconsole.models.mesh_analysis_params import normalize_mesh_analysis_params
@@ -3347,7 +3348,10 @@ class RailTransitWebApplicationService:
         session_id: str,
         *,
         analysis_params_override: dict[str, object] | None = None,
+        export_mode: str = "business",
     ) -> RailTransitTaskDTO:
+        if export_mode not in {"business", "diagnostic"}:
+            raise RailTransitWebError("MESH_EXPORT_MODE_INVALID", "不支持的导出模式")
         site_id = self._site(site_id)
         try:
             context = self.mesh_query_service._context(site_id, session_id)
@@ -3359,9 +3363,12 @@ class RailTransitWebApplicationService:
             site_analysis_params = load_site_mesh_analysis_params(self.paths, site_id).to_dict()
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             site_analysis_params = {}
-        task_analysis_params = normalize_mesh_analysis_params(
-            analysis_params_override if analysis_params_override is not None else site_analysis_params
-        ).to_dict()
+        try:
+            task_analysis_params = resolve_mesh_task_params(
+                site_analysis_params, analysis_params_override
+            ).to_dict()
+        except ValueError as exc:
+            raise RailTransitWebError("MESH_ANALYSIS_PARAMS_INVALID", str(exc)) from exc
         ap_location_snapshot = self.mesh_query_service.ap_location_snapshot(site_id).to_serializable()
         output_root = self.paths.mesh_mr_export_dir(site_id, context.safe_folder_name).resolve()
         self._require_within(output_root, self.paths.site_mesh_root(site_id).resolve())
@@ -3390,10 +3397,11 @@ class RailTransitWebApplicationService:
                 "payload": {
                     "mr_name": context.mr_name,
                     "source_file_ids": [context.detail_source_id],
-                        "options": {
-                            "report_name": f"{context.mr_name} MESH 分析报告",
-                            "analysis_params_override": task_analysis_params,
-                            "site_analysis_params": site_analysis_params,
+                    "options": {
+                        "report_name": f"{context.mr_name} MESH 分析报告",
+                        "export_mode": export_mode,
+                        "analysis_params_override": task_analysis_params,
+                        "site_analysis_params": site_analysis_params,
                         "ap_location_snapshot": ap_location_snapshot,
                     },
                 }
@@ -3423,7 +3431,12 @@ class RailTransitWebApplicationService:
         *,
         source_file_id: int,
         analysis_params_override: dict[str, object] | None = None,
+        export_mode: str = "business",
+        exclude_depot: bool = True,
+        exclude_parking: bool = True,
     ) -> RailTransitTaskDTO:
+        if export_mode not in {"business", "diagnostic"}:
+            raise RailTransitWebError("MESH_EXPORT_MODE_INVALID", "不支持的导出模式")
         site_id = self._site(site_id)
         try:
             context = self.mesh_query_service._context(site_id, session_id)
@@ -3437,9 +3450,12 @@ class RailTransitWebApplicationService:
             site_analysis_params = load_site_mesh_analysis_params(self.paths, site_id).to_dict()
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             site_analysis_params = {}
-        task_analysis_params = normalize_mesh_analysis_params(
-            analysis_params_override if analysis_params_override is not None else site_analysis_params
-        ).to_dict()
+        try:
+            task_analysis_params = resolve_mesh_task_params(
+                site_analysis_params, analysis_params_override
+            ).to_dict()
+        except ValueError as exc:
+            raise RailTransitWebError("MESH_ANALYSIS_PARAMS_INVALID", str(exc)) from exc
         ap_location_snapshot = self.mesh_query_service.ap_location_snapshot(site_id).to_serializable()
         output_root = self.paths.mesh_mr_export_dir(site_id, context.safe_folder_name).resolve()
         self._require_within(output_root, self.paths.site_mesh_root(site_id).resolve())
@@ -3467,6 +3483,9 @@ class RailTransitWebApplicationService:
             filters={"source_file_id": context.detail_source_id},
             params={
                 "analysis_params": task_analysis_params,
+                "export_mode": export_mode,
+                "exclude_depot": exclude_depot,
+                "exclude_parking": exclude_parking,
                 "fallback_analysis_params": site_analysis_params,
                 "ap_location_snapshot": ap_location_snapshot,
             },

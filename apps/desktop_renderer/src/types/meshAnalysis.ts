@@ -142,8 +142,18 @@ export interface MeshApCoverageAudit {
 }
 
 export interface Page<T> {
+  zero_link_count?: number; downsampled?: boolean; query_duration_ms?: number
+  query_kind?: string; sql_query_count?: number; raw_sample_complete?: boolean
+  raw_sample_version?: string | null; raw_context_count?: number
+  coverage_time_from?: string | null; coverage_time_to?: string | null
+  sql_query_ranges?: MeshSqlQueryRange[]
+  query_id?: string | null; operation_id?: string | null
   items: T[]; total: number; page: number; page_size: number
   index_status?: string; indexed_session_count?: number; pending_session_count?: number
+}
+export interface MeshSqlQueryRange {
+  purpose: string; time_from?: string | null; time_to?: string | null
+  visible: boolean; record_count: number
 }
 export interface MeshImportContext {
   site_id: string; revision: string; profiles: MeshProfile[]
@@ -166,10 +176,37 @@ export interface MeshRawSource {
   identity_index_revision: number; identity_current_revision: number; identity_mapped_at: string; identity_mapping_status: string
 }
 export interface MeshAnalysisParams {
+  rssi_good_threshold?: number | null; rssi_warning_threshold?: number | null; backup_available_threshold?: number | null
+  ap_minimum_samples?: number
   link_time_window: number; link_switch_threshold: number; link_hold_rssi: number; link_establish_threshold: number
   main_link_switch_time_ms: number; short_link_tolerance_ms: number; pingpong_tolerance_ms: number; pingpong_return_window_ms: number | null
   merge_same_physical_ap_dual_radio: boolean; include_log_boundary_segments: boolean; sample_interval_ms: number | null
   service_type: 'PIS' | 'CBTC' | '信号' | '其他'; wifi_type: 'WiFi5' | 'WiFi6' | '其他'
+}
+
+export interface MeshApSignal {
+    link_role: 'ACTIVE' | 'STANDBY'; radio: number | null
+  peer_ap_name: string | null; peer_ap_mac: string | null; peer_mac_raw: string | null
+  station: string; section: string; match_status: string
+    avg_rssi: number | null; min_rssi: number | null; max_rssi: number | null; last_rssi: number | null; p10_rssi: number | null
+  valid_sample_count: number; weak_sample_count: number; weak_ratio: number | null
+  first_seen: string; last_seen: string; signal_grade: string
+}
+export interface MeshApSignalPage extends Page<MeshApSignal> { summary?: MeshBusinessSummary }
+export interface MeshSingleLink {
+  radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; station: string; section: string
+  start_time: string; end_time: string; duration_seconds: number; sample_count: number
+  standby_peer_count: number; available_backup_count: number; best_backup_rssi: number | null
+  risk_type: string; diagnosis: string; source_file_id: number
+  source_line_number_start: number | null; source_line_number_end: number | null; active_peer_mac: string | null
+}
+export interface MeshBusinessSummary {
+  ap_total: number; grades: Record<string, number>; single_link_count: number; single_link_seconds: number
+  single_link_ap_count: number; single_link_radios: number[]
+  good_threshold: number; warning_threshold: number; backup_available_threshold: number; minimum_samples: number
+    exclude_depot: boolean; exclude_parking: boolean; scope_label: string
+  query_duration_ms?: number; sql_query_count?: number; query_kind?: string
+  query_id?: string | null; operation_id?: string | null
 }
 export interface MeshMaintenanceState {
   schema_current: string; schema_latest: string; schema_status: 'current' | 'outdated' | 'missing' | 'unreadable'
@@ -189,6 +226,12 @@ export interface MeshIdentityMetadata {
 }
 
 export interface MeshLinkDetail extends MeshIdentityMetadata {
+  counter_samples?: Record<string, { current: number | null; previous: number | null; delta: number | null; interval_seconds: number | null; per_second: number | null; status: string }>
+  monitor_gap_before?: boolean; is_boundary_context?: boolean
+  source_file_id?: number | null; raw_sample_version?: string | null; derived_metric_version?: string | null
+  local_tx_delta?: number | null; peer_tx_delta?: number | null; local_rx_delta?: number | null; peer_rx_delta?: number | null
+  local_retry_delta?: number | null; peer_retry_delta?: number | null; local_err_delta?: number | null; peer_err_delta?: number | null
+  local_tx_garp_delta?: number | null; peer_rx_garp_delta?: number | null; local_tx_mul_join_delta?: number | null; peer_rx_mul_join_delta?: number | null
   record_id: number; timestamp: string; timestamp_tag: string | null; sample_group_index: number | null; train_name: string; mr_name: string; mr_role: string
   local_radio: number | null; peer_mac_raw?: string | null; peer_mac: string | null; peer_ap_name: string | null; peer_ap_mac: string | null; peer_radio: string | null; peer_radio_mac: string | null
   link_role: string; link_status: string; establish_time: string | null; duration_text: string | null; duration_seconds: number | null; link_count: number | null
@@ -207,9 +250,11 @@ export interface MeshLinkDetail extends MeshIdentityMetadata {
 }
 
 export interface MeshActiveBuildOrder extends MeshIdentityMetadata {
+  link_count?: number | null; observation_time?: string | null
   sequence: number; source_file_id: number | null; local_radio: number | null; peer_mac_raw?: string; active_peer_mac: string
   peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; mileage: string | null; line_side: string | null
   peer_radio: string | null; peer_radio_mac?: string | null; anchor_link_id: number | null
+  first_sample_time?: string | null
   build_start_time: string; build_end_time: string; main_link_duration_seconds: number | null; reported_duration_seconds: number | null
   sample_count: number; avg_mr_rssi: number | null; min_mr_rssi: number | null; max_mr_rssi: number | null; p10_mr_rssi: number | null
   avg_tx_busy: number | null; avg_rx_busy: number | null; avg_peer_tx_busy: number | null; avg_peer_rx_busy: number | null
@@ -360,7 +405,16 @@ export interface MeshRssi { statistics: { min_rssi: number | null; max_rssi: num
 export interface MeshChannelBusy { timestamp: string; local_radio: number | null; ctl_busy: number | null; tx_busy: number | null; rx_busy: number | null; total_busy: number | null; peer_ap_name: string | null; station: string | null; section: string | null; source_type: string; warning: string | null }
 export interface MeshRatePoint extends MeshIdentityMetadata { timestamp: string; local_radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_rate_raw: number | null; peer_rate_raw: number | null }
 export interface MeshRatePage { items: MeshRatePoint[]; total: number; downsampled: boolean }
-export interface MeshCounterDeltaPoint extends MeshIdentityMetadata { timestamp: string; local_radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null; local_retry_delta: number | null; peer_retry_delta: number | null; local_error_delta: number | null; peer_error_delta: number | null }
+export interface MeshCounterDeltaPoint extends MeshIdentityMetadata {
+  timestamp: string; local_radio: number | null; peer_ap_name: string | null; peer_ap_mac: string | null
+  sample_interval_seconds?: number | null
+  local_tx_delta?: number | null; peer_tx_delta?: number | null; local_rx_delta?: number | null; peer_rx_delta?: number | null
+  local_retry_delta: number | null; peer_retry_delta: number | null; local_error_delta: number | null; peer_error_delta: number | null
+  local_tx_garp_delta?: number | null; peer_rx_garp_delta?: number | null; local_tx_mul_join_delta?: number | null; peer_rx_mul_join_delta?: number | null
+  local_tx_per_second?: number | null; peer_tx_per_second?: number | null; local_rx_per_second?: number | null; peer_rx_per_second?: number | null
+  local_retry_per_second?: number | null; peer_retry_per_second?: number | null; local_error_per_second?: number | null; peer_error_per_second?: number | null
+  local_tx_garp_per_second?: number | null; peer_rx_garp_per_second?: number | null; local_tx_mul_join_per_second?: number | null; peer_rx_mul_join_per_second?: number | null
+}
 export interface MeshCounterDeltaPage { items: MeshCounterDeltaPoint[]; total: number; downsampled: boolean }
 export interface MeshAnomaly { anomaly_id: string; severity: string; anomaly_type: string; start_time: string | null; end_time: string | null; train_name: string; mr_name: string; peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; description: string; evidence_reference: string | null; rule_version: string | null }
 export interface MeshArtifact { artifact_id: string; artifact_type: string; name: string; size_bytes: number; modified_at: string | null; status: string; source: string; downloadable: boolean; deletable?: boolean }

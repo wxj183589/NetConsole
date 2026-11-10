@@ -89,6 +89,9 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/counter-deltas?site_id=demo&max_points=10",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/anomalies?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/ap-statistics?site_id=demo",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/ap-signal-statistics?site_id=demo",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/business-summary?site_id=demo",
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/single-links?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/artifacts?site_id=demo",
             f"/api/rail-transit/mesh-analysis/sessions/{encoded}/raw-sources?site_id=demo",
         ]
@@ -205,6 +208,39 @@ def test_mesh_analysis_queries_keep_analysis_files_unchanged(tmp_path: Path) -> 
         for route in routes
         if route.path not in generated_report_paths
     )
+
+
+def test_mesh_workbench_trace_carries_operation_and_sql_metadata(tmp_path: Path) -> None:
+    paths, session_id, _detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    app = create_app(paths=paths, frontend_dist=tmp_path / "missing-dist")
+    app.state.mesh_analysis_query_service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())
+    encoded = quote(session_id, safe="")
+
+    with TestClient(app) as client:
+        build = client.get(
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/active-build-order"
+            "?site_id=demo&mesh_trace=true&mesh_operation_id=build-1"
+        )
+        aps = client.get(
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/ap-signal-statistics"
+            "?site_id=demo&mesh_trace=true&mesh_operation_id=aps-1"
+        )
+        summary = client.get(
+            f"/api/rail-transit/mesh-analysis/sessions/{encoded}/business-summary"
+            "?site_id=demo&mesh_trace=true&mesh_operation_id=summary-1"
+        )
+
+    assert build.status_code == aps.status_code == summary.status_code == 200
+    assert build.json()["operation_id"] == "build-1"
+    assert build.json()["query_id"]
+    assert build.json()["sql_query_count"] > 0
+    assert aps.json()["operation_id"] == "aps-1"
+    assert aps.json()["query_id"]
+    assert aps.json()["sql_query_count"] > 0
+    assert summary.json()["operation_id"] == "summary-1"
+    assert summary.json()["query_id"]
+    assert summary.json()["sql_query_count"] == 0
+    assert summary.json()["query_kind"] == "business_statistics"
 
 
 def test_mesh_chart_safety_limit_maps_to_http_413(tmp_path: Path) -> None:

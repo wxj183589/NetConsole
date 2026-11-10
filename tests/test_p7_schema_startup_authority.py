@@ -568,6 +568,26 @@ def test_production_startup_initializes_an_empty_root_without_demo_devices(
     assert json.loads(paths.app_config_path.read_text(encoding="utf-8"))["active_site_id"] == "demo"
 
 
+def test_portable_startup_initializes_default_site_without_demo_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "fresh-portable"
+    root.mkdir()
+    _production_patches(monkeypatch)
+    monkeypatch.setenv("NETCONSOLE_PORTABLE_MODE", "1")
+    monkeypatch.setenv("NETCONSOLE_PORTABLE_APP_ROOT", str(tmp_path / "portable-app"))
+    monkeypatch.setattr(
+        backend_main, "_recover_orphaned_collect_runs", lambda *_args, **_kwargs: []
+    )
+    paths = PathResolver(data_root=root)
+
+    assert backend_main._current_site_name(paths) == "default"
+    assert paths.site_dir("default").is_dir()
+    assert not paths.site_dir("demo").exists()
+    with sqlite3.connect(paths.site_db_path("default")) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM devices").fetchone() == (0,)
+
+
 def test_production_startup_recovers_unique_legacy_site_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

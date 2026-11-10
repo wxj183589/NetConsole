@@ -1,10 +1,12 @@
 <script setup lang="ts">
+import HeartbeatSettings from './HeartbeatSettings.vue'
 import { useGroundContext } from './useGroundUnattended'
 const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecommendation, udpPortCheck, networkLoading, showAllAddresses, profileLoadError, visibleIpv4Addresses, returnAddressIsLocal, listenAddressIsLocal, loadAll, saveProfile, loadLocalAddresses, recommendSourceAddress, applyRecommendedAddress, checkUdpPort, togglePriority, applyDeepPingPreset, markDeepPingCustom, restoreDeepPingDefault } = useGroundContext()
 </script>
 
 <template>
 <section class="ground-subpage">
+        <HeartbeatSettings />
         <el-empty v-if="!profile" class="settings-empty" :description="t('ground.v2.settings_empty', '无人值守配置未加载')">
           <p class="muted">{{ profileLoadError || t('ground.v2.settings_init_note', '请确认 Backend 已完成无人值守服务初始化。') }}</p>
           <el-button :icon="Refresh" :loading="loading" type="primary" @click="loadAll()">{{ t('ground.v2.settings_reload', '重新加载配置') }}</el-button>
@@ -19,7 +21,8 @@ const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecomme
                 <el-option :label="t('ground.v2.settings_timezone_utc', '协调世界时（UTC）')" value="UTC" />
               </el-select>
             </el-form-item>
-            <el-form-item :label="t('ground.ac_poll', 'AC 轮询间隔（秒）')"><el-input-number v-model="profile.ac_poll_interval_seconds" :min="3" :max="300" /></el-form-item>
+            <el-form-item :label="t('ground.ac_poll', 'AC 轮询间隔（秒）')"><el-input-number v-model="profile.ac_poll_interval_seconds" :min="3" :max="300" /><small>新建配置默认 60 秒，已保存的周期保持不变。</small></el-form-item>
+            <el-form-item label="AC-Mesh-Link 采集间隔（秒）"><el-input-number v-model="profile.ac_mesh_link_poll_interval_seconds" :min="30" :max="3600" /><small>与 AC 基础轮询周期分开设置。</small></el-form-item>
             <el-form-item :label="t('ground.stationary', '同 AP 静止阈值（分钟）')"><el-input-number v-model="profile.stationary_exclusion_minutes" :min="1" :max="180" /></el-form-item>
             <el-form-item :label="t('ground.ac_grace', 'AC 异常 Ping 宽限（秒）')"><el-input-number v-model="profile.ac_stale_grace_seconds" :min="0" :max="3600" /></el-form-item>
             <el-form-item :label="t('ground.correlation_tolerance', 'AC/Ping 关联偏差（秒）')"><el-input-number v-model="profile.ac_ping_correlation_tolerance_seconds" :min="1" :max="300" /></el-form-item>
@@ -54,14 +57,6 @@ const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecomme
             <div class="form-actions"><el-button :disabled="!pingPresets.length" @click="restoreDeepPingDefault">{{ t('ground.v2.settings_restore_default', '恢复共享默认') }}</el-button></div>
           </section>
           <section><h2>{{ t('ground.ping_and_storage', '心跳检测与存储') }}</h2><div class="form-grid">
-            <el-form-item :label="t('ground.ping_interval', 'Ping 间隔（ms）')"><el-input-number v-model="profile.fleet_ping_interval_ms" :min="100" :max="60000" /></el-form-item>
-            <el-form-item :label="t('ground.ping_timeout', 'Ping 超时（ms）')"><el-input-number v-model="profile.fleet_ping_timeout_ms" :min="100" :max="60000" /></el-form-item>
-            <el-form-item :label="t('ground.packet_size', '包大小（字节）')"><el-input-number v-model="profile.fleet_ping_packet_size" :min="1" :max="65507" /></el-form-item>
-            <el-form-item :label="t('ground.shard_size', '每个 fping 分片目标数')"><el-input-number v-model="profile.fleet_ping_shard_size" :min="2" :max="32" /></el-form-item>
-            <el-form-item :label="t('ground.v2.settings_warmup', '启动预热忽略时间（秒）')"><el-input-number v-model="profile.fleet_ping_warmup_seconds" :min="0" :max="300" /></el-form-item>
-            <el-form-item :label="t('ground.v2.heartbeat_targets', '心跳检测目标')">
-              <span>{{ t('ground.v2.heartbeat_target_scope', '按基础资料中启用的 MR 主备管理 IP 持续采样，不受 AC 位置、正线或车辆段分类影响；深度采集仍独立调度。') }}</span>
-            </el-form-item>
             <el-form-item :label="t('ground.detail_retention', '详细数据保留天数')"><el-select v-model="profile.detail_retention_days"><el-option v-for="day in [7,15,30,60,90,180]" :key="day" :label="`${day} ${t('ground.v2.settings_days', '天')}`" :value="day" /></el-select></el-form-item>
             <el-form-item :label="t('ground.summary_retention', '汇总保留天数')"><el-input-number v-model="profile.summary_retention_days" :min="profile.detail_retention_days" :max="3650" /></el-form-item>
             <el-form-item :label="t('ground.warning_space', '空间预警阈值（GB）')"><el-input-number v-model="profile.storage_warning_free_gb" :min="0.1" :max="1024" /></el-form-item>
@@ -76,6 +71,9 @@ const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecomme
               <el-checkbox v-model="showAllAddresses">{{ t('ground.v2.settings_show_virtual', '显示虚拟与其他地址') }}</el-checkbox>
             </div>
             <div class="form-grid">
+            <el-form-item label="UDP Syslog Receiver 自动启动"><el-switch v-model="profile.syslog_receiver_auto_start_enabled" /><small>关闭后仅手动启用待启停控件，目前由无人值守运行配置统一持有运行生命周期。</small></el-form-item>
+            <el-form-item label="MR 上电检查自动启动"><el-switch v-model="profile.boot_check_auto_start_enabled" /></el-form-item>
+            <el-form-item label="AC-Mesh-Link 自动采集"><el-switch v-model="profile.ac_mesh_link_auto_collection_enabled" /><small>关闭后不自动启动 Mesh-Link 常驻 Worker，心跳仍由 Backend 独立运行。</small></el-form-item>
             <el-form-item :label="t('ground.v2.settings_listen_address', '本机监听地址')">
               <el-select v-model="profile.udp_listen_host" filterable allow-create>
                 <el-option :label="t('ground.v2.settings_all_adapters', '0.0.0.0 · 监听全部本机网卡')" value="0.0.0.0" />
@@ -97,7 +95,7 @@ const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecomme
             <el-form-item :label="t('ground.v2.settings_boot_tolerance', '上电时间误差（秒）')"><el-input-number v-model="profile.boot_time_tolerance_seconds" :min="10" :max="900" /></el-form-item>
             <el-form-item :label="t('ground.v2.settings_auto_repair', '自动补齐 MR Syslog 临时配置')">
               <el-switch v-model="profile.syslog_auto_repair_enabled" />
-              <small>{{ t('ground.v2.settings_repair_note', '无人值守启动或检测到 MR 新上电周期时，自动检查并补齐 Profile v2 临时配置；不会保存设备配置，也不会由 CFGMAN 事件触发。') }}</small>
+              <small>{{ t('ground.v2.settings_repair_note', '仅在上电检查自动启动和 Syslog 自动修复均启用时补齐临时配置；人工检查入口仍可用。') }}</small>
             </el-form-item>
           </div>
           <div v-if="sourceRecommendation" class="network-status">

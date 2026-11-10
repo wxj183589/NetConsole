@@ -229,7 +229,7 @@ def test_current_heartbeat_hides_departed_mr_but_keeps_historical_facts(tmp_path
     # A real recovery worker would concurrently finalize the old disabled run.
     monkeypatch.setattr(app.state.ground_unattended_supervisor, "start", lambda: None)
     with TestClient(app) as client:
-        current = client.get("/api/rail-transit/ground-unattended/heartbeat?run_id=changed-inventory")
+        current = client.get("/api/rail-transit/ground-unattended/heartbeat")
         assert current.status_code == 200
         assert current.json()["mrs"] == []
         assert current.json()["trains"] == []

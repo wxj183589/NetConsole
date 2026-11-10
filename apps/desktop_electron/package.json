@@ -1,7 +1,7 @@
 {
   "name": "netconsole-desktop-electron",
   "private": true,
-  "version": "1.5.12",
+  "version": "1.5.13",
   "description": "NetConsole Electron desktop host",
   "author": "WXJ",
   "type": "module",
@@ -21,6 +21,7 @@
     "build:renderer": "pnpm --dir ../desktop_renderer build",
     "package:prepare": "pnpm run build:main && node scripts/package.mjs",
     "package:dir": "pnpm run package:prepare && electron-builder --dir --win --x64",
+    "package:portable": "node scripts/package-portable.mjs",
     "package": "pnpm run package:all",
     "package:all": "node scripts/build-edition-installer.mjs both",
     "package:full": "node scripts/build-edition-installer.mjs full",
@@ -39,7 +40,7 @@
   },
   "build": {
     "appId": "com.loveok.netconsole",
-    "productName": "NetConsole v1.5.12 by wxj",
+    "productName": "NetConsole v1.5.13 by wxj",
     "electronDist": "node_modules/electron/dist",
     "asar": true,
     "directories": {

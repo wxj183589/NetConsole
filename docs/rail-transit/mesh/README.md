@@ -4,6 +4,8 @@
 
 当前 `/rail-transit/mesh-analysis` 是 Electron/Vue 的离线 MESH 分析工作台，Feature key 为 `module.mesh_analysis`。页面负责受控导入、来源匹配、重建任务、主链路建链顺序、链路明细、动态图和报告任务；原始日志、parsed SQLite 和 session ID 仍由 Python Core/Job/Export Process 管理，Vue 不实现解析或业务判定。
 
+Phase 11.6 全量审计和验收记录见 [mesh-phase11-6/FINAL_ACCEPTANCE.md](../../reports/mesh-phase11-6/FINAL_ACCEPTANCE.md)。该报告区分自动化结果、真实只读 Service 证据与尚未完成的 Electron、DPI、Excel/WPS 和长稳验收。
+
 ```text
 catalog.sqlite
   -> MR/mesh.sqlite 来源索引

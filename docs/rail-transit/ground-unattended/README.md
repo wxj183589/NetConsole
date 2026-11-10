@@ -5,16 +5,18 @@
 地面无人值守是原版 NetConsole 的车载 MR 全天监测与故障追溯工作台，路由为
 `/rail-transit/ground-unattended`，主 Feature 为 `module.ground_unattended`。
 正式调用链为 Vue 页面 → FastAPI Router → `GroundUnattendedApplicationService` →
-领域 Service / `GroundUnattendedRepository`。由既有 `GroundUnattendedSupervisor` 统一协调
-无人值守生命周期，不创建第二套 Supervisor、设备连接系统或数据库。
+领域 Service / `GroundUnattendedRepository`。`GroundUnattendedSupervisor` 协调 Run；
+`HeartbeatSupervisor` 由 Backend lifespan 独立启停，复用既有 Fleet 和状态引擎。
 
 页面关闭、切页和隐藏只停止 Renderer 查询；后台心跳、AC、Syslog 和深采由 Backend lifespan 管理。
+Ground 停止、结束计划或进入 ERROR 不停止常驻心跳。
 默认窗口仍为 `07:00–23:00 / Asia/Shanghai`，支持跨午夜；暂停调度不停止心跳和 Syslog。
 `/status` 的活动运行、最近运行、活动操作和最近终态操作分别返回，历史完成运行不冒充当前运行。
 正常停止和停止归档通过持久 operation 收口，Backend 退出与用户停止意图分别持久化。
 
 功能关闭时不创建本模块运行资源；索引失败返回本功能结构化错误，不阻断其他业务启动。
-运行中修改配置遵循既有冻结/热更新边界，不能通过保存表单突然重启 fping 或 SSH。
+Ground 配置仍遵循既有冻结/热更新边界。独立 `/heartbeat/config` 持久化心跳启用、周期、
+超时、分片和主备策略；热更新先排空旧分片，再应用参数，不新增 Supervisor。
 
 ## 十个页面
 
@@ -35,9 +37,21 @@
 | 设置 | `/profile`、库存同步、网络辅助及现有运行/存储配置 |
 
 原独立“列车在线情况”导航已移除，旧路由重定向到无人值守；AC 查询及其他模块使用的公共能力保留。
-历史查看使用明确 `selectedRunId`，不把历史曲线与当前任务混合。普通表格使用 `NcDataTable`；
+Run 历史查看使用明确 `selectedRunId`；心跳页始终读取常驻流，不随 Run 选择切换。普通表格使用 `NcDataTable`；
 日志页使用 `NcLogWorkspace` 与服务端分页，表体承担主滚动，筛选和分页保持可见。
 轮询使用在途防重、取消、代次和过期响应丢弃；隐藏/卸载时释放请求、图表和监听器。
+
+## 常驻 Heartbeat 生命周期
+
+`/heartbeat/runtime` 查询状态，`PUT /heartbeat/config` 独立启停。默认启用；首次初始化继承旧
+Profile 的 Fleet 参数，之后独立保存。Backend 每 5 秒检查 MR 基础资料变化；查询 API 不承担同步。
+每 Site 只有一个 Heartbeat owner，重复 start 幂等，Site 切换关闭旧实例，Backend 关闭安全排空。
+停用保留历史，清空库存须先停用并等待分片停止。分片失败有界退避，状态明确为
+`HEARTBEAT_DEGRADED`；库存读取失败继续最后一次已验证目标。
+
+`heartbeat-resident` 是持久数据流标识，不创建 Ground Run。原始心跳写入业务目录 `heartbeat/`，
+不随每日 Ground 归档删除。首次迁移复制最近旧快照和心跳丢包区间，保留旧 Run；幂等标记防止
+用户清空后再次恢复旧记录。累计汇总按目标恢复，重启空窗不视作设备失败。
 
 ## 心跳目标与状态
 
@@ -105,6 +119,17 @@ UDP Receiver → 有界 Raw Queue → Raw Writer → 原始 NDJSON
                                           ↓
                                   有界 Parser Queue → Parser Worker → 派生索引
 ```
+
+R2.3 的位置链路在 Parser 后增加按 MR 归并的 `PositionEngine`：事件按有效 Event Time
+和接收序号排序，重复事件幂等，旧事件不能覆盖新状态，未解析/未识别 AP 不清空已有位置。
+短时间内的中间状态可以合并持久化和增量 UI 刷新，但有效切换仍进入事件/历史投影。
+Raw Persist、Parse Complete、Position Commit 等阶段时间与 Event/Receive Time 分开记录；
+`ground_unattended_syslog_position_states` 只保存可重建的当前位置投影，原始 NDJSON 和结构化事件
+仍是证据源。位置状态向 API/UI 暴露来源、状态、新鲜度、当前/上一个 AP 和阶段延迟，过期状态不得标记为实时。
+
+正常负载的目标是 P95 ≤ 10 秒、P99 ≤ 30 秒；这不是毫秒级 SLA。健康快照同时暴露 Raw Writer/Parser
+积压、最老等待时间、接收/解析/位置 EPS、重复/乱序计数及位置和分阶段延迟分位数。
+自动化证据与现场 UDP、设备时钟、长稳和 GUI 验收分开记录，详见 [R2.3 交付报告](../../reports/ground-unattended-r2/README.md)。
 
 原始 envelope 先保存，解析失败和未知模块仍保留完整原文。支持 WMESH、IFNET、CFGMAN、WLAN、SYSTEM
 和 UNKNOWN 模块分类；解析失败另记诊断。Raw Writer 与 Parser 独立线程，Receiver 不进行压缩。

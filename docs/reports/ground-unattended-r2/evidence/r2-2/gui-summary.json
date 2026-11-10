@@ -1,0 +1,306 @@
+{
+  "status": "COMPLETED",
+  "fixture": {
+    "trains": 60,
+    "mrs": 120,
+    "ips": 200,
+    "scope": "synthetic loopback only"
+  },
+  "runtime": {
+    "runtime_mode": "electron-development",
+    "backend_ready": true,
+    "data_root": "<redacted>",
+    "storage_mode": "isolated_test",
+    "data_root_kind": "temporary",
+    "persistent": false,
+    "frontend_mode": "vite",
+    "active_tasks": 0,
+    "agent_controller_ready": true,
+    "traffic_supervisor_ready": true,
+    "version": "v1.5.12"
+  },
+  "renderer": {
+    "url": "http://127.0.0.1:60825/?netconsole_host=electron",
+    "title": "NetConsole v1.5.12 by wxj",
+    "ready": "complete"
+  },
+  "no_run_heartbeat": {
+    "state": "RUNNING",
+    "enabled": true,
+    "target_count": 200,
+    "process_count": 17,
+    "last_sample_at": "2026-11-10T00:54:22.984+08:00",
+    "last_success_at": "2026-11-10T00:54:22.984+08:00",
+    "last_error": "",
+    "pending_events": 64,
+    "pending_loss_events": 0
+  },
+  "away_from_page": {
+    "state": "RUNNING",
+    "enabled": true,
+    "target_count": 200,
+    "process_count": 17,
+    "last_sample_at": "2026-11-10T00:54:23.977+08:00",
+    "last_success_at": "2026-11-10T00:54:23.977+08:00",
+    "last_error": "",
+    "pending_events": 0,
+    "pending_loss_events": 0
+  },
+  "after_renderer_reload": {
+    "state": "RUNNING",
+    "enabled": true,
+    "target_count": 200,
+    "process_count": 17,
+    "last_sample_at": "2026-11-10T00:54:24.848+08:00",
+    "last_success_at": "2026-11-10T00:54:24.848+08:00",
+    "last_error": "",
+    "pending_events": 0,
+    "pending_loss_events": 0
+  },
+  "after_ground_stop": {
+    "state": "RUNNING",
+    "enabled": true,
+    "target_count": 200,
+    "process_count": 17,
+    "last_sample_at": "2026-11-10T00:54:24.978+08:00",
+    "last_success_at": "2026-11-10T00:54:24.978+08:00",
+    "last_error": "",
+    "pending_events": 0,
+    "pending_loss_events": 0
+  },
+  "electron_graceful_exit_code": 0,
+  "owned_after_cleanup": [],
+  "sqlite_integrity": {
+    "sites\\demo\\db\\agents.db": [
+      "ok"
+    ],
+    "sites\\demo\\db\\devices.db": [
+      "ok"
+    ],
+    "sites\\demo\\db\\tasks.db": [
+      "ok"
+    ],
+    "sites\\demo\\files\\backups\\database-migrations\\devices-site-2a97516c35-before-primary-address-20261110-005415-25234a26-8cc2cd141c61c254.sqlite": [
+      "ok"
+    ],
+    "sites\\demo\\files\\network_tools\\iperf\\parsed\\iperf_results.sqlite": [
+      "ok"
+    ],
+    "sites\\demo\\files\\network_tools\\traffic\\parsed\\traffic_runs.sqlite": [
+      "ok"
+    ],
+    "sites\\demo\\files\\rail_transit\\ground_unattended\\index.sqlite": [
+      "ok"
+    ]
+  },
+  "inventory": {
+    "total": 60,
+    "total_mrs": 120,
+    "run_id": "heartbeat-resident",
+    "runtime": {
+      "state": "RUNNING",
+      "enabled": true,
+      "target_count": 200,
+      "process_count": 17,
+      "last_sample_at": "2026-11-10T00:54:22.984+08:00",
+      "last_success_at": "2026-11-10T00:54:22.984+08:00",
+      "last_error": "",
+      "pending_events": 64,
+      "pending_loss_events": 0
+    },
+    "sent_count": 166,
+    "sample_mr": {
+      "resolved_ap_name": "",
+      "identity_status": "unresolved",
+      "ac_data_status": "no_data",
+      "station": "",
+      "section": "",
+      "current_rtt_ms": null,
+      "mr_uuid": "test-mr-001",
+      "train_id": "train:01",
+      "train_no": "01",
+      "mr_name": "列车001-MR-CT",
+      "role": "CT",
+      "management_ip": "127.0.0.1",
+      "backup_management_ip": "127.0.0.121",
+      "syslog_status": "NOT_CONFIGURED",
+      "syslog_last_error": "",
+      "status": "ONLINE",
+      "engine_state": "RUNNING",
+      "unreachable_since": "",
+      "last_success_at": "2026-11-09T16:54:19.879+00:00",
+      "last_recovery_at": "",
+      "consecutive_recovery_successes": 0,
+      "updated_at": "2026-11-10T00:54:20.779+08:00",
+      "ip_states": [
+        {
+          "ip": "127.0.0.1",
+          "sent_count": 1,
+          "received_count": 1,
+          "lost_count": 0,
+          "min_rtt_ms": 0.411,
+          "avg_rtt_ms": 0.411,
+          "max_rtt_ms": 0.411,
+          "last_probe_at": "2026-11-09T16:54:19.837+00:00",
+          "last_success_at": "2026-11-09T16:54:19.837+00:00",
+          "unreachable_since": ""
+        },
+        {
+          "ip": "127.0.0.121",
+          "sent_count": 1,
+          "received_count": 1,
+          "lost_count": 0,
+          "min_rtt_ms": 0.211,
+          "avg_rtt_ms": 0.211,
+          "max_rtt_ms": 0.211,
+          "last_probe_at": "2026-11-09T16:54:19.879+00:00",
+          "last_success_at": "2026-11-09T16:54:19.879+00:00",
+          "unreachable_since": ""
+        }
+      ],
+      "associated_aps": [],
+      "associated_stations": [],
+      "loss_events": []
+    }
+  },
+  "before_backend_restart": {
+    "total": 60,
+    "total_mrs": 120,
+    "run_id": "heartbeat-resident",
+    "runtime": {
+      "state": "RUNNING",
+      "enabled": true,
+      "target_count": 200,
+      "process_count": 17,
+      "last_sample_at": "2026-11-10T00:54:26.977+08:00",
+      "last_success_at": "2026-11-10T00:54:26.977+08:00",
+      "last_error": "",
+      "pending_events": 0,
+      "pending_loss_events": 0
+    },
+    "sent_count": 1400,
+    "sample_mr": {
+      "resolved_ap_name": "",
+      "identity_status": "unresolved",
+      "ac_data_status": "no_data",
+      "station": "",
+      "section": "",
+      "current_rtt_ms": null,
+      "mr_uuid": "test-mr-001",
+      "train_id": "train:01",
+      "train_no": "01",
+      "mr_name": "列车001-MR-CT",
+      "role": "CT",
+      "management_ip": "127.0.0.1",
+      "backup_management_ip": "127.0.0.121",
+      "syslog_status": "NOT_CONFIGURED",
+      "syslog_last_error": "",
+      "status": "ONLINE",
+      "engine_state": "RUNNING",
+      "unreachable_since": "",
+      "last_success_at": "2026-11-09T16:54:25.848+00:00",
+      "last_recovery_at": "",
+      "consecutive_recovery_successes": 0,
+      "updated_at": "2026-11-10T00:54:26.289+08:00",
+      "ip_states": [
+        {
+          "ip": "127.0.0.1",
+          "sent_count": 7,
+          "received_count": 7,
+          "lost_count": 0,
+          "min_rtt_ms": 0.171,
+          "avg_rtt_ms": 0.2547142857142857,
+          "max_rtt_ms": 0.411,
+          "last_probe_at": "2026-11-09T16:54:25.837+00:00",
+          "last_success_at": "2026-11-09T16:54:25.837+00:00",
+          "unreachable_since": ""
+        },
+        {
+          "ip": "127.0.0.121",
+          "sent_count": 7,
+          "received_count": 7,
+          "lost_count": 0,
+          "min_rtt_ms": 0.17,
+          "avg_rtt_ms": 0.22957142857142857,
+          "max_rtt_ms": 0.357,
+          "last_probe_at": "2026-11-09T16:54:25.848+00:00",
+          "last_success_at": "2026-11-09T16:54:25.848+00:00",
+          "unreachable_since": ""
+        }
+      ],
+      "associated_aps": [],
+      "associated_stations": [],
+      "loss_events": []
+    }
+  },
+  "after_backend_restart": {
+    "total": 60,
+    "total_mrs": 120,
+    "run_id": "heartbeat-resident",
+    "runtime": {
+      "state": "RUNNING",
+      "enabled": true,
+      "target_count": 200,
+      "process_count": 17,
+      "last_sample_at": "2026-11-10T00:54:37.754+08:00",
+      "last_success_at": "2026-11-10T00:54:37.754+08:00",
+      "last_error": "",
+      "pending_events": 14,
+      "pending_loss_events": 0
+    },
+    "sent_count": 2058,
+    "sample_mr": {
+      "resolved_ap_name": "",
+      "identity_status": "unresolved",
+      "ac_data_status": "no_data",
+      "station": "",
+      "section": "",
+      "current_rtt_ms": 0.227,
+      "mr_uuid": "test-mr-001",
+      "train_id": "train:01",
+      "train_no": "01",
+      "mr_name": "列车001-MR-CT",
+      "role": "CT",
+      "management_ip": "127.0.0.1",
+      "backup_management_ip": "127.0.0.121",
+      "syslog_status": "NOT_CONFIGURED",
+      "syslog_last_error": "",
+      "status": "ONLINE",
+      "engine_state": "RUNNING",
+      "unreachable_since": "",
+      "last_success_at": "2026-11-09T16:54:37.025+00:00",
+      "last_recovery_at": "",
+      "consecutive_recovery_successes": 0,
+      "updated_at": "2026-11-10T00:54:37.818+08:00",
+      "ip_states": [
+        {
+          "ip": "127.0.0.1",
+          "sent_count": 11,
+          "received_count": 11,
+          "lost_count": 0,
+          "min_rtt_ms": 0.158,
+          "avg_rtt_ms": 0.25563636363636366,
+          "max_rtt_ms": 0.411,
+          "last_probe_at": "2026-11-09T16:54:36.881+00:00",
+          "last_success_at": "2026-11-09T16:54:36.881+00:00",
+          "unreachable_since": ""
+        },
+        {
+          "ip": "127.0.0.121",
+          "sent_count": 11,
+          "received_count": 11,
+          "lost_count": 0,
+          "min_rtt_ms": 0.17,
+          "avg_rtt_ms": 0.22854545454545452,
+          "max_rtt_ms": 0.357,
+          "last_probe_at": "2026-11-09T16:54:37.025+00:00",
+          "last_success_at": "2026-11-09T16:54:37.025+00:00",
+          "unreachable_since": ""
+        }
+      ],
+      "associated_aps": [],
+      "associated_stations": [],
+      "loss_events": []
+    }
+  }
+}

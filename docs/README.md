@@ -22,6 +22,7 @@
 - [测试基线](./testing/BASELINE.md)：风险分层、定向测试、消费者回归和完整门禁。
 - [Change Impact Framework](./development/CHANGE_IMPACT_FRAMEWORK.md)：L1-L4、共享契约和合并后验证。
 - [变更记录](./CHANGELOG.md)：用户可见与重要架构变化。
+- [专项报告](./reports/README.md)：用户明确指定的固定交付报告及验收边界。
 
 ## Build & Release
 
@@ -54,3 +55,5 @@
 ## Maintenance
 
 提交前运行 Markdown 相对链接检查、根文件 allowlist Gate 和适用的文档 Guard。活动文档不得引用已删除的 standalone Renderer 目录；除 `docs/archive/` 与 `docs/investigations/` 外，任何活动文档目录都不得新增 Assessment、Audit、Observation Plan、Migration Plan、Handoff、Status Report 或临时 Investigation 过程文件。真正的业务规划文档（例如 Trackside AP Planning）使用明确的领域名称，不按通用 `PLAN` 关键字误杀；历史迁移资料不得写成当前架构。
+
+用户本次明确指定的 `reports/mesh-analysis-performance-optimization/01_ARCHITECTURE_AUDIT.md` 为精确路径例外；不扩展到其它 Audit 文件或整个 reports 目录。

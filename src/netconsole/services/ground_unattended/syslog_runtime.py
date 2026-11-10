@@ -12,7 +12,8 @@ import socket
 import threading
 import time
 import uuid
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ from netconsole.services.ground_unattended.radio_control import (
     GroundRadioControlCorrelationService,
     control_event_dedup_key,
 )
+from netconsole.services.ground_unattended.position_engine import PositionEngine
 
 _WMESH_EVENT_RE = re.compile(
     r"WMESH/\d+/(?P<event>MESH_LINKUP|MESH_LINKDOWN|MESH_ACTIVELINK_SWITCH)\s*:",
@@ -116,6 +118,7 @@ class _PersistedEnvelope:
     record: dict[str, Any]
     raw_file_id: str
     raw_line_number: int
+    raw_persist_time: str = ""
 
 
 @dataclass
@@ -133,6 +136,10 @@ class _OpenRawFile:
 
 class RawCompressionWorker:
     """后台压缩已关闭的 raw 文件，不占用 UDP 接收线程。"""
+
+    _DISCOVERY_INTERVAL_SECONDS = 0.25
+    _DISCOVERY_LIMIT = 128
+    _FILE_TRACK_LIMIT = 4096
 
     def __init__(
         self,
@@ -161,6 +168,11 @@ class RawCompressionWorker:
         self._completed_count = 0
         self._failed_count = 0
         self._skipped_count = 0
+        self._queue_full_count = 0
+        self._recovery_count = 0
+        self._skipped_files: set[str] = set()
+        self._failed_files: dict[str, str] = {}
+        self._last_queue_full_notice_at = 0.0
         self._last_error = ""
         self._thread.start()
 
@@ -169,30 +181,64 @@ class RawCompressionWorker:
         return self._thread.is_alive()
 
     def submit(self, values: dict[str, Any], path: Path) -> bool:
+        return self._submit(values, path, recovered=False)
+
+    def _submit(
+        self, values: dict[str, Any], path: Path, *, recovered: bool
+    ) -> bool:
         file_id = str(values.get("file_id") or "")
         with self._lock:
             if file_id in self._pending_files:
                 return True
+            if not recovered:
+                self._failed_files.pop(file_id, None)
             self._pending_files.add(file_id)
         try:
             self._queue.put_nowait((dict(values), Path(path)))
         except queue.Full:
+            should_record_health = False
+            now = time.monotonic()
             with self._lock:
                 self._pending_files.discard(file_id)
                 self._skipped_count += 1
+                self._queue_full_count += 1
+                if file_id:
+                    self._skipped_files.add(file_id)
+                    if len(self._skipped_files) > self._FILE_TRACK_LIMIT:
+                        self._skipped_files.pop()
                 self._last_error = "compression queue is full"
-            self._record_health(
-                severity="warning",
-                code=f"{self.data_type.upper()}_COMPRESSION_QUEUE_FULL",
-                message=f"{self._label} raw 压缩队列已满，保留未压缩原始文件",
-                details={"queue_capacity": self._queue.maxsize},
-            )
+                if (
+                    self._queue_full_count == 1
+                    or now - self._last_queue_full_notice_at >= 1.0
+                ):
+                    self._last_queue_full_notice_at = now
+                    should_record_health = True
+            if should_record_health:
+                self._record_health(
+                    severity="warning",
+                    code=f"{self.data_type.upper()}_COMPRESSION_QUEUE_FULL",
+                    message=f"{self._label} raw 压缩队列已满，保留未压缩原始文件，稍后按登记索引重试",
+                    details={
+                        "queue_capacity": self._queue.maxsize,
+                        "queue_size": self._queue.qsize(),
+                        "recovery": "REGISTRY_REDISCOVERY",
+                    },
+                )
             return False
         with self._lock:
             self._submitted_count += 1
+            if recovered and file_id in self._skipped_files:
+                self._recovery_count += 1
+                self._skipped_files.discard(file_id)
         return True
 
     def snapshot(self) -> dict[str, Any]:
+        try:
+            pending_count: int | None = self.repository.count_pending_raw_compression(
+                run_id=self.run_id, data_type=self.data_type
+            )
+        except Exception:
+            pending_count = None
         with self._lock:
             return {
                 "compression_queue_size": self._queue.qsize(),
@@ -201,6 +247,9 @@ class RawCompressionWorker:
                 "compression_completed_count": self._completed_count,
                 "compression_failed_count": self._failed_count,
                 "compression_skipped_count": self._skipped_count,
+                "compression_queue_full_count": self._queue_full_count,
+                "compression_recovery_count": self._recovery_count,
+                "compression_pending_count": pending_count,
                 "compression_last_error": self._last_error,
                 "compression_worker_alive": self.alive,
             }
@@ -211,7 +260,20 @@ class RawCompressionWorker:
         return not self._thread.is_alive()
 
     def _run(self) -> None:
-        while not self._stop.is_set() or not self._queue.empty():
+        next_discovery_at = 0.0
+        while True:
+            now = time.monotonic()
+            if now >= next_discovery_at:
+                self._discover_pending()
+                next_discovery_at = now + self._DISCOVERY_INTERVAL_SECONDS
+            if self._stop.is_set() and self._queue.empty():
+                # A queue-full submission remains CLOSED + gzip_path='' in the
+                # registry. Drain one bounded rediscovery round before exit so
+                # normal shutdown also proves recovery without an overflow
+                # queue. Failed files are excluded until a new worker starts.
+                if not self._discover_pending():
+                    return
+                next_discovery_at = time.monotonic() + self._DISCOVERY_INTERVAL_SECONDS
             try:
                 values, path = self._queue.get(timeout=0.1)
             except queue.Empty:
@@ -229,6 +291,11 @@ class RawCompressionWorker:
                 error = f"{exc.__class__.__name__}: {exc}"
                 with self._lock:
                     self._failed_count += 1
+                    file_id = str(values.get("file_id") or "")
+                    if file_id:
+                        self._failed_files[file_id] = error
+                        if len(self._failed_files) > self._FILE_TRACK_LIMIT:
+                            self._failed_files.pop(next(iter(self._failed_files)))
                     self._last_error = error
                 self._record_health(
                     severity="error",
@@ -240,6 +307,35 @@ class RawCompressionWorker:
                 with self._lock:
                     self._pending_files.discard(str(values.get("file_id") or ""))
                 self._queue.task_done()
+
+    def _discover_pending(self) -> int:
+        with self._lock:
+            excluded = tuple(self._failed_files)
+        try:
+            rows = self.repository.list_pending_raw_compression(
+                run_id=self.run_id,
+                data_type=self.data_type,
+                limit=self._DISCOVERY_LIMIT,
+                exclude_file_ids=excluded,
+            )
+        except Exception as exc:
+            with self._lock:
+                self._last_error = f"{exc.__class__.__name__}: {exc}"
+            return 0
+        accepted = 0
+        for values in rows:
+            file_id = str(values.get("file_id") or "")
+            with self._lock:
+                if not file_id or file_id in self._pending_files:
+                    continue
+                recovered = file_id in self._skipped_files
+            path = self.repository.db_path.parent / str(
+                values.get("relative_path") or ""
+            )
+            if not self._submit(values, path, recovered=recovered):
+                break
+            accepted += 1
+        return accepted
 
     def _compress(self, values: dict[str, Any], path: Path) -> None:
         existing = self.repository.get_raw_file(str(values["file_id"]))
@@ -379,6 +475,7 @@ class RawStreamWriter:
         self.records_written = 0
         self.bytes_written = 0
         self.last_write_duration_ms = 0.0
+        self.last_raw_persist_time = ""
         self.flush_count = 0
         self.durable_sync_count = 0
         self.flush_bytes_total = 0
@@ -449,6 +546,9 @@ class RawStreamWriter:
             and current.size_bytes >= self.max_file_size_bytes
         ):
             self._close_one(key, received_at.isoformat(timespec="milliseconds"))
+        self.last_raw_persist_time = datetime.now().astimezone().isoformat(
+            timespec="milliseconds"
+        )
         self.last_write_duration_ms = (time.perf_counter() - started) * 1000
         return current.file_id, current.record_count
 
@@ -817,6 +917,9 @@ class WmeshRealtimeParser:
 class SyslogUdpReceiver:
     """一个局点一个 UDP socket；recv 与解析/落盘严格分线程。"""
 
+    _SPOOL_FLUSH_BATCH_SIZE = 64
+    _SPOOL_GUARD_REFRESH_INTERVAL_SECONDS = 1.0
+
     def __init__(
         self,
         *,
@@ -868,6 +971,8 @@ class SyslogUdpReceiver:
         self._batch_duration_ms = 0.0
         self._reported_dropped_count = 0
         self._reported_pressure = False
+        self._reported_parser_pressure = False
+        self._reported_backlog_warning = False
         self._disk_spool_path: Path | None = None
         self._parser_spool_path: Path | None = None
         self._spool_dir: Path | None = None
@@ -878,18 +983,37 @@ class SyslogUdpReceiver:
         self._parser_spool_read_handle: Any | None = None
         self._disk_spool_read_offset = 0
         self._parser_spool_read_offset = 0
+        self._disk_spool_since_flush = 0
         self._parser_spool_count = 0
         self._parser_spool_since_flush = 0
         self._disk_queue_count = 0
         self._written_count = 0
         self._parsed_count = 0
+        self._parse_success_count = 0
+        self._parse_error_count = 0
+        self._parse_ignored_count = 0
         self._db_saved_count = 0
+        self._udp_receive_error_count = 0
+        self._parser_spool_failed_count = 0
         self._last_write_time = ""
         self._raw_file_size = 0
+        self._position_engine = PositionEngine()
+        self._position_batch: dict[str, dict[str, Any]] = {}
+        self._position_update_count = 0
+        self._position_duplicate_count = 0
+        self._position_out_of_order_count = 0
+        self._position_latency_samples: deque[float] = deque(maxlen=5000)
+        self._stage_receive_to_raw_samples: deque[float] = deque(maxlen=5000)
+        self._stage_raw_to_parse_samples: deque[float] = deque(maxlen=5000)
+        self._stage_parse_to_commit_samples: deque[float] = deque(maxlen=5000)
+        self._pending_receive_times: dict[int, str] = {}
+        self._pending_receive_order: deque[tuple[int, str]] = deque()
+        self._pending_lock = threading.Lock()
         self._spool_warning_percent = 70.0
         self._spool_critical_percent = 85.0
         self._spool_emergency_percent = 95.0
         self._spool_guard_state = "NORMAL"
+        self._last_spool_guard_refresh_monotonic = 0.0
         self._storage_profile = StorageIOProfile.conservative()
         self._ap_resolver = GroundApDisplayResolver(
             ap_identity_query_service
@@ -939,12 +1063,32 @@ class SyslogUdpReceiver:
         self._reported_dropped_count = 0
         self._projection_error = ""
         self._reported_pressure = False
+        self._reported_parser_pressure = False
+        self._reported_backlog_warning = False
         self._disk_queue_count = 0
         self._written_count = 0
         self._parsed_count = 0
+        self._parse_success_count = 0
+        self._parse_error_count = 0
+        self._parse_ignored_count = 0
         self._db_saved_count = 0
+        self._udp_receive_error_count = 0
+        self._parser_spool_failed_count = 0
         self._last_write_time = ""
         self._raw_file_size = 0
+        self._position_engine = PositionEngine()
+        self._position_engine.restore(self.repository.list_syslog_position_states())
+        self._position_batch = {}
+        self._position_update_count = 0
+        self._position_duplicate_count = 0
+        self._position_out_of_order_count = 0
+        self._position_latency_samples.clear()
+        self._stage_receive_to_raw_samples.clear()
+        self._stage_raw_to_parse_samples.clear()
+        self._stage_parse_to_commit_samples.clear()
+        with self._pending_lock:
+            self._pending_receive_times.clear()
+            self._pending_receive_order.clear()
         thresholds = (
             float(spool_warning_percent),
             float(spool_critical_percent),
@@ -960,7 +1104,9 @@ class SyslogUdpReceiver:
             self._spool_emergency_percent,
         ) = thresholds
         self._spool_guard_state = "NORMAL"
+        self._last_spool_guard_refresh_monotonic = 0.0
         self._disk_spool_read_offset = 0
+        self._disk_spool_since_flush = 0
         self._parser_spool_count = 0
         self._parser_spool_since_flush = 0
         self._event_batch_size = max(1, int(event_batch_size))
@@ -1214,8 +1360,13 @@ class SyslogUdpReceiver:
         elapsed = max(0.001, time.monotonic() - self._started_monotonic) if self._started_monotonic else 1.0
         writer = self._writer
         compression_worker = self._compression_worker
-        self._refresh_spool_guard()
+        self._refresh_spool_guard(force=True)
         spool_metrics = self._spool_metrics()
+        parser_queue_length = self._parser_queue.qsize() + max(0, int(self._parser_spool_count))
+        position_latency = tuple(self._position_latency_samples)
+        receive_to_raw = tuple(self._stage_receive_to_raw_samples)
+        raw_to_parse = tuple(self._stage_raw_to_parse_samples)
+        parse_to_commit = tuple(self._stage_parse_to_commit_samples)
         return {
             "udp_running": self.running,
             "udp_listen_address": self._listen_address,
@@ -1228,6 +1379,7 @@ class SyslogUdpReceiver:
             "udp_queue_capacity": self._queue.maxsize,
             "udp_queue_pressure": round(self._queue.qsize() / self._queue.maxsize, 4),
             "udp_dropped_count": self._dropped_count,
+            "udp_socket_error_count": self._udp_receive_error_count,
             "raw_records_written": writer.records_written if writer else 0,
             "raw_bytes_written": writer.bytes_written if writer else 0,
             "raw_write_rate_bytes_per_second": round(writer.bytes_written / elapsed, 3) if writer else 0.0,
@@ -1240,12 +1392,37 @@ class SyslogUdpReceiver:
             "received": self._received_count,
             "written": self._written_count,
             "parsed": self._parsed_count,
+            "parse_success_count": self._parse_success_count,
+            "parse_error_count": self._parse_error_count,
+            "parse_ignored_count": self._parse_ignored_count,
+            "parser_rate_per_second": round(self._parse_success_count / elapsed, 3),
             "db_saved": self._db_saved_count,
             "dropped": self._dropped_count,
             "raw_write_failed_count": self._raw_write_failed_count,
             "disk_queue_count": self._disk_queue_count,
-            "parser_queue_size": self._parser_queue.qsize(),
+            "parser_queue_size": parser_queue_length,
             "parser_queue_capacity": self._parser_queue.maxsize,
+            "raw_writer_queue_length": self._queue.qsize() + max(0, int(self._disk_queue_count)),
+            "oldest_unprocessed_log_wait_seconds": round(
+                self._oldest_pending_wait_seconds(), 3
+            ),
+            "parser_spool_failed_count": self._parser_spool_failed_count,
+            "position_update_count": self._position_update_count,
+            "position_updates_per_second": round(self._position_update_count / elapsed, 3),
+            "position_duplicate_count": self._position_duplicate_count,
+            "position_out_of_order_count": self._position_out_of_order_count,
+            "position_latency_p50_ms": _percentile(position_latency, 50),
+            "position_latency_p95_ms": _percentile(position_latency, 95),
+            "position_latency_p99_ms": _percentile(position_latency, 99),
+            "stage_receive_to_raw_p50_ms": _percentile(receive_to_raw, 50),
+            "stage_receive_to_raw_p95_ms": _percentile(receive_to_raw, 95),
+            "stage_receive_to_raw_p99_ms": _percentile(receive_to_raw, 99),
+            "stage_raw_to_parse_p50_ms": _percentile(raw_to_parse, 50),
+            "stage_raw_to_parse_p95_ms": _percentile(raw_to_parse, 95),
+            "stage_raw_to_parse_p99_ms": _percentile(raw_to_parse, 99),
+            "stage_parse_to_position_p50_ms": _percentile(parse_to_commit, 50),
+            "stage_parse_to_position_p95_ms": _percentile(parse_to_commit, 95),
+            "stage_parse_to_position_p99_ms": _percentile(parse_to_commit, 99),
             "memory_queue_size": self._queue.qsize(),
             "memory_queue_capacity": self._queue.maxsize,
             "writer_alive": bool(self._writer_thread and self._writer_thread.is_alive()),
@@ -1279,6 +1456,9 @@ class SyslogUdpReceiver:
                     "compression_completed_count": 0,
                     "compression_failed_count": 0,
                     "compression_skipped_count": 0,
+                    "compression_queue_full_count": 0,
+                    "compression_recovery_count": 0,
+                    "compression_pending_count": None,
                     "compression_last_error": "",
                     "compression_worker_alive": False,
                 }
@@ -1322,7 +1502,15 @@ class SyslogUdpReceiver:
                 "disk_usage_percent": 0.0,
             }
 
-    def _refresh_spool_guard(self) -> None:
+    def _refresh_spool_guard(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if (
+            not force
+            and now - self._last_spool_guard_refresh_monotonic
+            < self._SPOOL_GUARD_REFRESH_INTERVAL_SECONDS
+        ):
+            return
+        self._last_spool_guard_refresh_monotonic = now
         metrics = self._spool_metrics()
         usage = float(metrics["disk_usage_percent"])
         if usage >= self._spool_emergency_percent:
@@ -1373,6 +1561,36 @@ class SyslogUdpReceiver:
         self._source_receive_sequences[key] = value
         return value
 
+    def _track_pending(self, envelope: UdpEnvelope) -> None:
+        with self._pending_lock:
+            sequence = int(envelope.global_receive_sequence)
+            if sequence not in self._pending_receive_times:
+                receive_time = str(envelope.receive_time)
+                self._pending_receive_times[sequence] = receive_time
+                self._pending_receive_order.append((sequence, receive_time))
+
+    def _forget_pending(self, envelope: UdpEnvelope) -> None:
+        with self._pending_lock:
+            self._pending_receive_times.pop(int(envelope.global_receive_sequence), None)
+
+    def _oldest_pending_wait_seconds(self) -> float:
+        with self._pending_lock:
+            while (
+                self._pending_receive_order
+                and self._pending_receive_order[0][0]
+                not in self._pending_receive_times
+            ):
+                self._pending_receive_order.popleft()
+            value = (
+                self._pending_receive_order[0][1]
+                if self._pending_receive_order
+                else ""
+            )
+        parsed = _datetime_or_none(value)
+        if parsed is None:
+            return 0.0
+        return max(0.0, (datetime.now().astimezone() - parsed).total_seconds())
+
     def _recv_loop(self) -> None:
         while not self._stop.is_set():
             sock = self._socket
@@ -1382,7 +1600,10 @@ class SyslogUdpReceiver:
                 payload, address = sock.recvfrom(65_535)
             except socket.timeout:
                 continue
-            except OSError:
+            except OSError as exc:
+                if not self._stop.is_set():
+                    self._udp_receive_error_count += 1
+                    self._last_error = f"{exc.__class__.__name__}: {exc}"
                 return
             envelope = UdpEnvelope(
                 source_ip=str(address[0]),
@@ -1396,6 +1617,7 @@ class SyslogUdpReceiver:
             )
             self._received_count += 1
             self._last_received_at = envelope.receive_time
+            self._track_pending(envelope)
             try:
                 self._queue.put_nowait(envelope)
             except queue.Full:
@@ -1422,7 +1644,10 @@ class SyslogUdpReceiver:
                 if handle is None:
                     raise OSError("UDP spool handle is closed")
                 handle.write(json.dumps(payload, separators=(",", ":")) + "\n")
-                handle.flush()
+                self._disk_spool_since_flush += 1
+                if self._disk_spool_since_flush >= self._SPOOL_FLUSH_BATCH_SIZE:
+                    handle.flush()
+                    self._disk_spool_since_flush = 0
             self._disk_queue_count += 1
         except OSError as exc:
             self._last_error = f"{exc.__class__.__name__}: {exc}"
@@ -1436,6 +1661,11 @@ class SyslogUdpReceiver:
             handle = self._disk_spool_read_handle
             if handle is None:
                 return None
+            if self._disk_spool_since_flush and self._queue.empty():
+                writer = self._disk_spool_handle
+                if writer is not None:
+                    writer.flush()
+                self._disk_spool_since_flush = 0
             handle.seek(self._disk_spool_read_offset)
             line = handle.readline()
             if not line:
@@ -1443,7 +1673,7 @@ class SyslogUdpReceiver:
             self._disk_spool_read_offset = handle.tell()
         try:
             value = json.loads(line)
-            return UdpEnvelope(
+            envelope = UdpEnvelope(
                 source_ip=str(value["source_ip"]),
                 source_port=int(value["source_port"]),
                 receive_time=str(value["receive_time"]),
@@ -1451,6 +1681,8 @@ class SyslogUdpReceiver:
                 source_receive_sequence=int(value["source_receive_sequence"]),
                 payload=base64.b64decode(str(value["payload"])),
             )
+            self._track_pending(envelope)
+            return envelope
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             return None
 
@@ -1469,11 +1701,13 @@ class SyslogUdpReceiver:
                     continue
             else:
                 self._disk_queue_count = max(0, self._disk_queue_count - 1)
+                self._track_pending(envelope)
             if envelope is None:
                 continue
             try:
                 record, receive_time = self._build_raw_record(envelope)
                 if self._writer is None:
+                    self._forget_pending(envelope)
                     continue
                 try:
                     file_id, line_number = self._writer.write(record, receive_time)
@@ -1482,19 +1716,31 @@ class SyslogUdpReceiver:
                     self._last_error = self._raw_write_error
                     self._raw_write_failed_count += 1
                     self._dropped_count += 1
+                    self._forget_pending(envelope)
                     continue
+                raw_persist_time = str(
+                    getattr(self._writer, "last_raw_persist_time", "")
+                    or datetime.now().astimezone().isoformat(timespec="milliseconds")
+                )
                 self._written_count += 1
                 self._last_write_time = envelope.receive_time
                 self._raw_file_size = self._raw_file_size_for(file_id)
                 self._raw_checkpoints[file_id] = line_number
                 # Blocking here is intentional backpressure: the raw write has completed.
-                persisted = _PersistedEnvelope(envelope, record, file_id, line_number)
+                persisted = _PersistedEnvelope(
+                    envelope,
+                    record,
+                    file_id,
+                    line_number,
+                    raw_persist_time,
+                )
                 try:
                     self._parser_queue.put_nowait(persisted)
                 except queue.Full:
                     self._spool_persisted(persisted)
             except Exception as exc:
                 self._last_error = f"{exc.__class__.__name__}: {exc}"
+                self._forget_pending(envelope)
             finally:
                 if from_memory:
                     try:
@@ -1518,6 +1764,8 @@ class SyslogUdpReceiver:
         path = self._parser_spool_path
         if path is None:
             self._last_error = "parser spool is unavailable after raw write"
+            self._parser_spool_failed_count += 1
+            self._forget_pending(persisted.envelope)
             return
         value = {
             "envelope": {
@@ -1531,18 +1779,23 @@ class SyslogUdpReceiver:
             "record": persisted.record,
             "raw_file_id": persisted.raw_file_id,
             "raw_line_number": persisted.raw_line_number,
+            "raw_persist_time": persisted.raw_persist_time,
         }
-        with self._disk_spool_lock:
-            handle = self._parser_spool_handle
-            if handle is None:
-                raise OSError("parser spool handle is closed")
-            handle.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
-            # The reader uses a separate handle; flush every append so the
-            # final partial batch is immediately replayable and durable.
-            handle.flush()
-            self._parser_spool_since_flush += 1
-            if self._parser_spool_since_flush >= 64:
-                self._parser_spool_since_flush = 0
+        try:
+            with self._disk_spool_lock:
+                handle = self._parser_spool_handle
+                if handle is None:
+                    raise OSError("parser spool handle is closed")
+                handle.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n")
+                self._parser_spool_since_flush += 1
+                if self._parser_spool_since_flush >= self._SPOOL_FLUSH_BATCH_SIZE:
+                    handle.flush()
+                    self._parser_spool_since_flush = 0
+        except OSError as exc:
+            self._parser_spool_failed_count += 1
+            self._last_error = f"{exc.__class__.__name__}: {exc}"
+            self._forget_pending(persisted.envelope)
+            return
         self._parser_spool_count += 1
 
     def _next_parser_spooled(self) -> _PersistedEnvelope | None:
@@ -1553,6 +1806,11 @@ class SyslogUdpReceiver:
             handle = self._parser_spool_read_handle
             if handle is None:
                 return None
+            if self._parser_spool_since_flush and self._parser_queue.empty():
+                writer = self._parser_spool_handle
+                if writer is not None:
+                    writer.flush()
+                self._parser_spool_since_flush = 0
             handle.seek(self._parser_spool_read_offset)
             line = handle.readline()
             if not line:
@@ -1572,6 +1830,7 @@ class SyslogUdpReceiver:
             return _PersistedEnvelope(
                 envelope, dict(value.get("record") or {}),
                 str(value["raw_file_id"]), int(value["raw_line_number"]),
+                str(value.get("raw_persist_time") or ""),
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             self._last_error = "invalid parser spool record"
@@ -1602,7 +1861,9 @@ class SyslogUdpReceiver:
                     code="SYSLOG_PROCESS_FAILED",
                     message=self._last_error,
                 )
+                self._parse_error_count += 1
             finally:
+                self._forget_pending(persisted.envelope)
                 if from_memory:
                     self._parser_queue.task_done()
             self._flush_if_due()
@@ -1617,6 +1878,7 @@ class SyslogUdpReceiver:
                 self._process(persisted.envelope, persisted)
                 self._parsed_count += 1
             finally:
+                self._forget_pending(persisted.envelope)
                 self._parser_queue.task_done()
 
     def _build_raw_record(
@@ -1695,6 +1957,7 @@ class SyslogUdpReceiver:
                 details = dict(parsed.get("details") or {})
                 details["expected_internal_change"] = expected
                 parsed["details"] = details
+        parse_complete_time = datetime.now().astimezone().isoformat(timespec="milliseconds")
         quality, clock_offset_ms = self._quality(
             endpoint,
             identity_status,
@@ -1801,10 +2064,15 @@ class SyslogUdpReceiver:
             ),
             "parsed_details": parsed_details,
         }
+        raw_persist_time = persisted.raw_persist_time if persisted is not None else ""
         if persisted is None:
             if self._writer is None:
                 return
             file_id, line_number = self._writer.write(record, receive_time)
+            raw_persist_time = str(
+                getattr(self._writer, "last_raw_persist_time", "")
+                or datetime.now().astimezone().isoformat(timespec="milliseconds")
+            )
             self._written_count += 1
             self._last_write_time = envelope.receive_time
             self._raw_file_size = self._raw_file_size_for(file_id)
@@ -1814,7 +2082,9 @@ class SyslogUdpReceiver:
             file_id = persisted.raw_file_id
             line_number = persisted.raw_line_number
         if parsed is None:
+            self._parse_ignored_count += 1
             return
+        self._parse_success_count += 1
         use_device_time = quality not in {"CLOCK_OFFSET", "CLOCK_JUMP"} and bool(
             parsed.get("device_time")
         )
@@ -1839,13 +2109,28 @@ class SyslogUdpReceiver:
             "event_time_source": (
                 "DEVICE_TIME" if use_device_time else "RECEIVE_TIME"
             ),
+            "event_time_precision": (
+                "DEVICE_TIMESTAMP" if use_device_time else "RECEIVE_TIME_ONLY"
+            ),
             "details": {
                 **dict(parsed.get("details") or {}),
                 "facility": facility,
                 "severity": severity,
                 "identity_status": identity_status,
+                "source_identity_status": identity_status,
                 "global_receive_sequence": envelope.global_receive_sequence,
                 "source_receive_sequence": envelope.source_receive_sequence,
+                "event_time": str(
+                    parsed.get("device_time") if use_device_time else envelope.receive_time
+                ),
+                "receive_time": envelope.receive_time,
+                "raw_persist_time": raw_persist_time,
+                "parse_complete_time": parse_complete_time,
+                "position_commit_time": "",
+                "event_time_precision": (
+                    "DEVICE_TIMESTAMP" if use_device_time else "RECEIVE_TIME_ONLY"
+                ),
+                "time_precision_limited": not use_device_time,
             },
         }
         event.update(
@@ -1854,7 +2139,34 @@ class SyslogUdpReceiver:
                 "section": str(parsed.get("section") or ""),
             }
         )
+        event["position_dedup_key"] = self._position_dedup_key(
+            event, raw_text=raw_text
+        )
         event_family = str(parsed.get("event_family") or "")
+        position_result = None
+        if event_family == "WMESH" and record["device_uuid"]:
+            position_result = self._position_engine.apply(
+                event,
+                raw_persist_time=raw_persist_time,
+                parse_complete_time=parse_complete_time,
+            )
+            event["dedup_key"] = f"position:{event['position_dedup_key']}"
+            event["details"].update(
+                {
+                    "position_dedup_key": event["position_dedup_key"],
+                    "position_result": position_result.reason,
+                    "position_state_changed": position_result.position_changed,
+                    "position_duplicate": position_result.duplicate,
+                    "position_out_of_order": position_result.out_of_order,
+                }
+            )
+            self._position_batch[record["device_uuid"]] = dict(position_result.state)
+            if position_result.position_changed:
+                self._position_update_count += 1
+            if position_result.duplicate:
+                self._position_duplicate_count += 1
+            if position_result.out_of_order:
+                self._position_out_of_order_count += 1
         if (
             event_family in {"IFNET", "CFGMAN"}
             and record["device_uuid"]
@@ -1899,6 +2211,22 @@ class SyslogUdpReceiver:
                         "device_time": str(parsed.get("device_time") or ""),
                         "received_at": envelope.receive_time,
                         "event_time_source": event["event_time_source"],
+                        "event_time_precision": event["event_time_precision"],
+                        "raw_persist_time": raw_persist_time,
+                        "parse_complete_time": parse_complete_time,
+                        "position_commit_time": "",
+                        "position_result": (
+                            position_result.reason if position_result is not None else ""
+                        ),
+                        "position_state_changed": (
+                            position_result.position_changed if position_result is not None else False
+                        ),
+                        "position_duplicate": (
+                            position_result.duplicate if position_result is not None else False
+                        ),
+                        "position_out_of_order": (
+                            position_result.out_of_order if position_result is not None else False
+                        ),
                     },
                 }
             )
@@ -1911,6 +2239,25 @@ class SyslogUdpReceiver:
                 identity_verified=True,
             )
         self._db_saved_count += 1 if parsed is not None else 0
+
+    @staticmethod
+    def _position_dedup_key(event: Mapping[str, Any], *, raw_text: str) -> str:
+        details = event.get("details")
+        details = details if isinstance(details, Mapping) else {}
+        source = str(event.get("event_time_source") or "")
+        payload = {
+            "device_uuid": str(event.get("device_uuid") or ""),
+            "event_type": str(event.get("event_type") or "").upper(),
+            "event_time": str(event.get("event_time") or "") if source == "DEVICE_TIME" else "",
+            "peer_ap_id": str(details.get("peer_ap_id") or ""),
+            "peer_ap_mac": str(details.get("peer_ap_mac") or ""),
+            "previous_peer_ap_id": str(details.get("previous_peer_ap_id") or ""),
+            "previous_peer_ap_mac": str(details.get("previous_peer_ap_mac") or ""),
+            "raw_text": raw_text if source != "DEVICE_TIME" else "",
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
     def _resolve_identity(
         self, source_ip: str, hostname: str
@@ -1989,6 +2336,42 @@ class SyslogUdpReceiver:
             )
         elif pressure < 0.5:
             self._reported_pressure = False
+        parser_length = self._parser_queue.qsize() + max(0, int(self._parser_spool_count))
+        parser_capacity = self._parser_queue.maxsize
+        parser_pressure = parser_length / parser_capacity if parser_capacity else 0.0
+        oldest_wait = self._oldest_pending_wait_seconds()
+        if parser_pressure >= 0.8 and not self._reported_parser_pressure:
+            self._reported_parser_pressure = True
+            self.repository.add_health_event(
+                run_id=self._run_id,
+                component="syslog_parser",
+                severity="warning",
+                code="SYSLOG_PARSER_QUEUE_PRESSURE",
+                message="Syslog Parser 队列接近容量上限",
+                details={
+                    "queue_length": parser_length,
+                    "queue_capacity": parser_capacity,
+                    "oldest_wait_seconds": round(oldest_wait, 3),
+                },
+            )
+        elif parser_pressure < 0.5:
+            self._reported_parser_pressure = False
+        if oldest_wait >= 30.0 and not self._reported_backlog_warning:
+            self._reported_backlog_warning = True
+            self.repository.add_health_event(
+                run_id=self._run_id,
+                component="syslog_pipeline",
+                severity="warning",
+                code="SYSLOG_BACKLOG_WAITING",
+                message="Syslog 最老未处理日志等待时间已超过 30 秒",
+                details={
+                    "oldest_wait_seconds": round(oldest_wait, 3),
+                    "raw_writer_queue_length": queue_length,
+                    "parser_queue_length": parser_length,
+                },
+            )
+        elif oldest_wait < 15.0:
+            self._reported_backlog_warning = False
         if self._dropped_count > self._reported_dropped_count:
             added = self._dropped_count - self._reported_dropped_count
             self._reported_dropped_count = self._dropped_count
@@ -2024,7 +2407,10 @@ class SyslogUdpReceiver:
                 }
             )
         projection_pending = bool(
-            self._event_batch or self._timeline_batch or self._raw_checkpoints
+            self._event_batch
+            or self._timeline_batch
+            or self._raw_checkpoints
+            or self._position_batch
         )
         if len(self._event_batch) >= self._event_batch_size or (
             projection_pending
@@ -2036,19 +2422,100 @@ class SyslogUdpReceiver:
         if (
             not self._event_batch
             and not self._timeline_batch
+            and not self._position_batch
             and not self._raw_checkpoints
         ):
             return True
         started = time.perf_counter()
         events = list(self._event_batch)
         timeline = list(self._timeline_batch)
+        position_states = {
+            device_uuid: dict(state)
+            for device_uuid, state in self._position_batch.items()
+        }
         checkpoints = dict(self._raw_checkpoints)
+        position_commit_time = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        pending_position_latencies: list[float] = []
+        pending_receive_to_raw: list[float] = []
+        pending_raw_to_parse: list[float] = []
+        pending_parse_to_commit: list[float] = []
+        for event in events:
+            details = dict(event.get("details") or {})
+            receive_to_raw = _stage_duration_ms(
+                details.get("receive_time"), details.get("raw_persist_time")
+            )
+            raw_to_parse = _stage_duration_ms(
+                details.get("raw_persist_time"), details.get("parse_complete_time")
+            )
+            if receive_to_raw is not None:
+                pending_receive_to_raw.append(receive_to_raw)
+            if raw_to_parse is not None:
+                pending_raw_to_parse.append(raw_to_parse)
+            if details.get("position_result"):
+                details["position_commit_time"] = position_commit_time
+                event_time = event.get("event_time")
+                event_source = str(event.get("event_time_source") or "")
+                latency = _position_latency_ms(
+                    event_time=event_time,
+                    event_source=event_source,
+                    receive_time=event.get("receive_time"),
+                    committed_at=position_commit_time,
+                )
+                if latency is not None:
+                    details["position_latency_ms"] = latency
+                if details.get("position_state_changed") and not (
+                    details.get("position_duplicate") or details.get("position_out_of_order")
+                ):
+                    if latency is not None:
+                        pending_position_latencies.append(latency)
+                    parse_to_commit = _stage_duration_ms(
+                        details.get("parse_complete_time"), position_commit_time
+                    )
+                    if parse_to_commit is not None:
+                        pending_parse_to_commit.append(parse_to_commit)
+            event["details"] = details
+        for item in timeline:
+            details = dict(item.get("details") or {})
+            raw_file_id = str(details.get("raw_file_id") or "")
+            raw_line_number = details.get("raw_line_number")
+            for event in events:
+                if (
+                    raw_file_id
+                    and raw_file_id == str(event.get("raw_file_id") or "")
+                    and raw_line_number == event.get("raw_line_number")
+                ):
+                    event_details = dict(event.get("details") or {})
+                    details.update(
+                        {
+                            key: event_details[key]
+                            for key in (
+                                "raw_persist_time",
+                                "parse_complete_time",
+                                "position_commit_time",
+                                "position_latency_ms",
+                            )
+                            if key in event_details
+                        }
+                    )
+                    item["details"] = details
+                    break
+        for device_uuid, state in position_states.items():
+            event_source = str(state.get("last_event_time_source") or "")
+            latency = _position_latency_ms(
+                event_time=state.get("last_event_time"),
+                event_source=event_source,
+                receive_time=state.get("last_receive_time"),
+                committed_at=position_commit_time,
+            )
+            state["last_position_commit_time"] = position_commit_time
+            state["last_position_latency_ms"] = latency
         try:
             if self._writer is not None and self._writer.open_file_count:
                 self._writer.flush_through(checkpoints)
             self.repository.commit_wmesh_projection_batch(
                 events,
                 timeline,
+                position_states=position_states.values(),
                 raw_checkpoints=checkpoints,
                 complete_closed_files=True,
             )
@@ -2058,12 +2525,70 @@ class SyslogUdpReceiver:
         self._projection_error = ""
         del self._event_batch[: len(events)]
         del self._timeline_batch[: len(timeline)]
+        self._position_batch.clear()
+        for device_uuid, state in position_states.items():
+            self._position_engine.mark_committed(
+                device_uuid,
+                committed_at=str(state.get("last_position_commit_time") or position_commit_time),
+                latency_ms=state.get("last_position_latency_ms"),
+            )
         for file_id, line_number in checkpoints.items():
             if self._raw_checkpoints.get(file_id, 0) <= line_number:
                 self._raw_checkpoints.pop(file_id, None)
         self._batch_duration_ms = (time.perf_counter() - started) * 1000
         self._last_batch_at = time.monotonic()
+        self._position_latency_samples.extend(pending_position_latencies)
+        self._stage_receive_to_raw_samples.extend(pending_receive_to_raw)
+        self._stage_raw_to_parse_samples.extend(pending_raw_to_parse)
+        self._stage_parse_to_commit_samples.extend(pending_parse_to_commit)
         return True
+
+    def _commit_recovery_projection_batch(
+        self,
+        events: list[dict[str, Any]],
+        timeline: list[dict[str, Any]],
+        position_states: dict[str, dict[str, Any]],
+        *,
+        raw_checkpoints: Mapping[str, int],
+        completed_raw_file_ids: Iterable[str] = (),
+    ) -> int:
+        commit_time = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        for event in events:
+            details = dict(event.get("details") or {})
+            if details.get("position_result"):
+                details["position_commit_time"] = commit_time
+                latency = _position_latency_ms(
+                    event_time=event.get("event_time"),
+                    event_source=str(event.get("event_time_source") or ""),
+                    receive_time=event.get("receive_time"),
+                    committed_at=commit_time,
+                )
+                if latency is not None:
+                    details["position_latency_ms"] = latency
+                event["details"] = details
+        for state in position_states.values():
+            latency = _position_latency_ms(
+                event_time=state.get("last_event_time"),
+                event_source=str(state.get("last_event_time_source") or ""),
+                receive_time=state.get("last_receive_time"),
+                committed_at=commit_time,
+            )
+            state["last_position_commit_time"] = commit_time
+            state["last_position_latency_ms"] = latency
+        inserted = self.repository.commit_wmesh_projection_batch(
+            events,
+            timeline,
+            position_states=position_states.values(),
+            raw_checkpoints=raw_checkpoints,
+            completed_raw_file_ids=completed_raw_file_ids,
+        )
+        for device_uuid, state in position_states.items():
+            self._position_engine.mark_committed(
+                device_uuid,
+                committed_at=commit_time,
+                latency_ms=state.get("last_position_latency_ms"),
+            )
+        return inserted
 
     def replay_pending_events(self, *, max_records: int = 5_000) -> dict[str, int]:
         """Boundedly rebuild structured WMESH projections from crash-safe raw files."""
@@ -2094,6 +2619,7 @@ class SyslogUdpReceiver:
             file_id = str(row.get("file_id") or "")
             event_batch: list[dict[str, Any]] = []
             timeline_batch: list[dict[str, Any]] = []
+            position_batch: dict[str, dict[str, Any]] = {}
             file_size = path.stat().st_size
             with path.open("rb") as handle:
                 cursor, last_processed_offset = _seek_recovery_cursor(
@@ -2129,11 +2655,17 @@ class SyslogUdpReceiver:
                     event, timeline = projection
                     event_batch.append(event)
                     timeline_batch.append(timeline)
+                    device_uuid = str(event.get("device_uuid") or "")
+                    if device_uuid:
+                        state = self._position_engine.state(device_uuid)
+                        if state is not None:
+                            position_batch[device_uuid] = state
                     if len(event_batch) >= 100:
                         events_projected += (
-                            self.repository.commit_wmesh_projection_batch(
+                            self._commit_recovery_projection_batch(
                                 event_batch,
                                 timeline_batch,
+                                position_batch,
                                 raw_checkpoints={file_id: last_processed_line},
                             )
                         )
@@ -2143,10 +2675,12 @@ class SyslogUdpReceiver:
                             byte_offset=last_processed_offset,
                         )
                         event_batch, timeline_batch = [], []
+                        position_batch = {}
             completed = last_processed_offset >= file_size
-            events_projected += self.repository.commit_wmesh_projection_batch(
+            events_projected += self._commit_recovery_projection_batch(
                 event_batch,
                 timeline_batch,
+                position_batch,
                 raw_checkpoints={file_id: last_processed_line},
                 completed_raw_file_ids=(file_id,) if completed else (),
             )
@@ -2244,11 +2778,41 @@ class SyslogUdpReceiver:
             "event_time_source": (
                 "DEVICE_TIME" if use_device_time else "RECEIVE_TIME"
             ),
+            "event_time_precision": (
+                "DEVICE_TIMESTAMP" if use_device_time else "RECEIVE_TIME_ONLY"
+            ),
             "dedup_key": f"raw-syslog:{raw_file_id}:{raw_line_number}",
             "station": str(parsed.get("station") or ""),
             "section": str(parsed.get("section") or ""),
             "details": details,
         }
+        raw_persist_time = str(record.get("raw_persist_time") or "")
+        parse_complete_time = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        event["position_dedup_key"] = self._position_dedup_key(
+            event, raw_text=raw_text
+        )
+        position_result = self._position_engine.apply(
+            event,
+            raw_persist_time=raw_persist_time,
+            parse_complete_time=parse_complete_time,
+        )
+        event["dedup_key"] = f"position:{event['position_dedup_key']}"
+        event["details"].update(
+            {
+                "event_time": event_time,
+                "receive_time": event["receive_time"],
+                "raw_persist_time": raw_persist_time,
+                "parse_complete_time": parse_complete_time,
+                "position_commit_time": "",
+                "event_time_precision": event["event_time_precision"],
+                "time_precision_limited": not use_device_time,
+                "position_dedup_key": event["position_dedup_key"],
+                "position_result": position_result.reason,
+                "position_state_changed": position_result.position_changed,
+                "position_duplicate": position_result.duplicate,
+                "position_out_of_order": position_result.out_of_order,
+            }
+        )
         timeline = {
             "run_id": self._run_id,
             "ts": event_time,
@@ -2272,6 +2836,14 @@ class SyslogUdpReceiver:
                 "device_time": str(parsed.get("device_time") or ""),
                 "received_at": receive_time.isoformat(timespec="milliseconds"),
                 "event_time_source": event["event_time_source"],
+                "event_time_precision": event["event_time_precision"],
+                "raw_persist_time": raw_persist_time,
+                "parse_complete_time": parse_complete_time,
+                "position_commit_time": "",
+                "position_result": position_result.reason,
+                "position_state_changed": position_result.position_changed,
+                "position_duplicate": position_result.duplicate,
+                "position_out_of_order": position_result.out_of_order,
             },
         }
         return event, timeline
@@ -2397,6 +2969,44 @@ def _datetime_or_none(value: str) -> datetime | None:
         return result if result.tzinfo else result.astimezone()
     except (TypeError, ValueError):
         return None
+
+
+def _stage_duration_ms(start: object, end: object) -> float | None:
+    started = _datetime_or_none(str(start or ""))
+    ended = _datetime_or_none(str(end or ""))
+    if started is None or ended is None:
+        return None
+    value = (ended - started).total_seconds() * 1000
+    return round(value, 3) if value >= 0 else None
+
+
+def _position_latency_ms(
+    *,
+    event_time: object,
+    event_source: str,
+    receive_time: object,
+    committed_at: object,
+) -> float | None:
+    """Measure position latency without losing samples to device-clock lead.
+
+    A device timestamp can legitimately be ahead of the host clock.  Position
+    ordering still uses the device timestamp, but a negative latency is not a
+    useful metric; use the host receive time as the measurement fallback.
+    """
+
+    if str(event_source or "") == "DEVICE_TIME":
+        latency = _stage_duration_ms(event_time, committed_at)
+        if latency is not None:
+            return latency
+    return _stage_duration_ms(receive_time, committed_at)
+
+
+def _percentile(values: tuple[float, ...], percentile: int) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    rank = max(0, min(len(ordered) - 1, int((percentile / 100) * len(ordered) + 0.999999) - 1))
+    return round(ordered[rank], 3)
 
 
 def _safe_component(value: str) -> str:

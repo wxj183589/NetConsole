@@ -103,8 +103,8 @@ describe('desktop config', () => {
     })).toThrow('must not be inside')
   })
 
-  it('rejects a persistent desktop data root on the system drive', () => {
-    expect(() => loadDesktopConfig({
+  it('accepts a persistent desktop data root on the system drive', () => {
+    const config = loadDesktopConfig({
       isPackaged: false,
       appPath: 'D:\\repo\\apps\\desktop_electron',
       resourcesPath: 'D:\\resources',
@@ -115,7 +115,28 @@ describe('desktop config', () => {
         SystemDrive: 'C:',
       },
       fileExists: () => true,
-    })).toThrow('system drive')
+    })
+    expect(config.dataRoot).toBe('C:\\NetConsoleData')
+  })
+
+  it('allows the portable default root beneath the executable directory', () => {
+    const config = loadDesktopConfig({
+      isPackaged: true,
+      appPath: 'C:\\Portable\\resources\\app.asar',
+      resourcesPath: 'C:\\Portable\\resources',
+      platform: 'win32',
+      env: { NETCONSOLE_DATA_ROOT: 'C:\\Portable\\data' },
+      resolvedDataRoot: 'C:\\Portable\\data',
+      portableMode: true,
+      portableAppRoot: 'C:\\Portable',
+      fileExists: () => true,
+    })
+
+    expect(config).toMatchObject({
+      dataRoot: 'C:\\Portable\\data',
+      portableMode: true,
+      portableAppRoot: 'C:\\Portable',
+    })
   })
 
   it('does not invent demo when persistent bootstrap has no valid site', () => {

@@ -96,6 +96,32 @@ class MeshLogParser:
             return False
         return False
 
+    def iter_zero_observations(self, path: Path) -> Iterable[MeshLogRecord]:
+        """Read discarded zero slots without changing persisted valid-link semantics."""
+        radio, sample_time, tag = None, None, None
+        for line_number, start, end, line in _iter_decoded_lines(path):
+            raw = line.rstrip("\r\n")
+            stripped = raw.strip()
+            match = TIMESTAMP_RE.match(stripped)
+            if match:
+                try:
+                    radio = int(match.group("radio"))
+                    sample_time = _parse_sample_time(match.group("date"), match.group("time"))
+                    tag = match.group("tag")
+                except ValueError:
+                    sample_time = None
+                continue
+            if not stripped.startswith("["):
+                continue
+            parts = stripped.split()
+            if len(parts) <= 9 or parts[9] != "0":
+                continue
+            record, _ = self._parse_record_line(
+                stripped, raw, path, line_number, start, end, path.stem, radio, sample_time, tag,
+            )
+            if record is not None and record.link_count == 0:
+                yield record
+
     def parse_file(
         self,
         path: Path,

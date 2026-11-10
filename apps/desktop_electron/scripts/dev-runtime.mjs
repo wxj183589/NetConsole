@@ -3,7 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { basename, join, resolve, sep } from 'node:path'
 
 const repositoryRoot = resolve(import.meta.dirname, '..', '..', '..')
-const WINDOWS_TEST_DATA_ROOT = resolve(repositoryRoot, '..', 'test-data', 'NetConsole')
+const repositoryParent = resolve(repositoryRoot, '..')
+const workspaceRoot = basename(repositoryParent).toLowerCase() === 'worktrees'
+  && basename(resolve(repositoryParent, '..')).toLowerCase() === 'netconsole-workspace'
+  && existsSync(resolve(repositoryParent, '..', 'NetConsole', '.git'))
+  ? resolve(repositoryParent, '..')
+  : repositoryParent
+const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')
 
 export function discoverProjectPython({ projectRoot, commonRoot, environment = process.env, platform = process.platform, probe = true, log = () => undefined }) {
   log('ELECTRON_PYTHON_DISCOVERY_START')

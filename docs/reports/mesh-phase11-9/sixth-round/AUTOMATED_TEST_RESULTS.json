@@ -1,0 +1,42 @@
+{
+  "phase": "11.9-sixth-round",
+  "status": "PARTIAL",
+  "branch": "codex-A/global-dataroot-disk-policy",
+  "delivery_commit": "b6d8b16c",
+  "runtime_source_commit": "de7ca957d371cd8bc29b60d05f69f4c85d8b2190",
+  "runtime": {
+    "electron_pid": 46580,
+    "supplement_electron_pid": 52192,
+    "session_id": "80716c07-6bd9-47d8-b76d-ace1e55624d1:1",
+    "snapshot_root": "D:/study/NetConsole-Workspace/test-data/NetConsole/mesh-phase11-8-run-001",
+    "source_root_not_used": "D:/NetConsoleData-dev",
+    "http_records": 94,
+    "http_200": 81,
+    "http_failed": 13,
+    "sql_queries": 9,
+    "stability_seconds": 1803,
+    "stability_samples": 30,
+    "stability_interactions": 117,
+    "screenshots": 10
+  },
+  "tests": {
+    "renderer_mesh": {"status": "PASS", "files": 30, "tests": 330},
+    "python_mesh": {"status": "PASS", "tests": 491, "warnings": 3},
+    "electron_typecheck": "PASS",
+    "vue_typecheck": "PASS",
+    "electron_build_main": "PASS",
+    "ruff_src_tests": "PASS",
+    "python_compileall": "PASS",
+    "git_diff_check": "PASS",
+    "workspace_layout_repo_only": "FAIL_EXISTING_WORKSPACE_DOCS",
+    "workspace_layout_full": "FAIL_EXISTING_WORKSPACE_DOCS"
+  },
+  "gates": {
+    "real_electron_workbench": "PASS",
+    "cached_actions_http_sql_zero": "PASS_FOR_CACHED_ACTIONS",
+    "gap_fill_only_b_proof": "PARTIAL",
+    "heap_long_stability": "PARTIAL_UNOBSERVABLE_ECHARTS_AND_LISTENERS",
+    "data_integrity": "PARTIAL_CATALOG_CHANGED_MTIME_UNRECORDED"
+  },
+  "evidence": "docs/reports/mesh-phase11-9/sixth-round/sixth-round-runtime-evidence.json"
+}

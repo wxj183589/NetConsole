@@ -15,8 +15,8 @@ from netconsole.services.ground_unattended.heartbeat_state import (
     HeartbeatTarget,
     TrainConnectivityAggregator,
 )
+from netconsole.services.ground_unattended.heartbeat_supervisor import HeartbeatSupervisor
 from netconsole.services.ground_unattended.supervisor import (
-    GroundUnattendedSupervisor,
     _merge_heartbeat_targets,
 )
 
@@ -373,7 +373,7 @@ def test_stopped_fleet_ping_callback_does_not_mutate_heartbeat_state() -> None:
         add_health_event=Mock(),
         upsert_heartbeat_snapshot=Mock(),
     )
-    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor = object.__new__(HeartbeatSupervisor)
     supervisor._heartbeat_lock = threading.RLock()
     supervisor._heartbeat_run_id = "run-1"
     supervisor._heartbeat_engine = engine
@@ -386,9 +386,9 @@ def test_stopped_fleet_ping_callback_does_not_mutate_heartbeat_state() -> None:
     supervisor.repository = repository
     supervisor.now_provider = lambda: _at(1)
 
-    GroundUnattendedSupervisor._quiesce_heartbeat(supervisor)
+    HeartbeatSupervisor._quiesce_heartbeat(supervisor)
 
-    GroundUnattendedSupervisor._on_fleet_ping_sample(
+    HeartbeatSupervisor._on_fleet_ping_sample(
         supervisor,
         FleetPingTarget(
             target_ip="192.0.2.1",
@@ -436,19 +436,19 @@ def test_train_offline_timer_advances_during_heartbeat_refresh() -> None:
     engine.record_cycle("mr-ct", {"192.0.2.1": False}, at=_at(0))
     engine.record_cycle("mr-cw", {"192.0.2.2": False}, at=_at(0))
     train_connectivity = TrainConnectivityAggregator()
-    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor = object.__new__(HeartbeatSupervisor)
     supervisor._heartbeat_engine = engine
     supervisor._train_connectivity = train_connectivity
     supervisor._heartbeat_dirty_mrs = set()
     supervisor._heartbeat_dirty_trains = set()
 
-    GroundUnattendedSupervisor._refresh_train_heartbeat_snapshots_locked(
+    HeartbeatSupervisor._refresh_train_heartbeat_snapshots_locked(
         supervisor, engine.snapshots(), at=_at(0)
     )
     assert train_connectivity.snapshot("train-1").status == "BOTH_UNREACHABLE_PENDING"
 
     supervisor._heartbeat_dirty_trains.clear()
-    GroundUnattendedSupervisor._refresh_train_heartbeat_snapshots_locked(
+    HeartbeatSupervisor._refresh_train_heartbeat_snapshots_locked(
         supervisor, (), at=_at(120)
     )
 

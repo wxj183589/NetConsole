@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   acceptMeshSharedViewport,
+  createEffectiveMeshViewportFromSamples,
   createFullMeshViewport,
   enforceMinimumMeshViewport,
   isFullRssiViewport,
@@ -116,6 +117,41 @@ describe('MESH chart viewport', () => {
     )).toEqual({
       full_start_time: '2026-07-20 09:00:00.000',
       full_end_time: '2026-07-20 12:00:00.000',
+    })
+  })
+
+  it('focuses initial view on effective samples while preserving the full session domain', () => {
+    const domain = {
+      full_start_time: '2026-07-20 05:51:25.000',
+      full_end_time: '2026-07-20 07:00:41.000',
+    }
+    const viewport = createEffectiveMeshViewportFromSamples(domain, [
+      '2026-07-20 06:23:00.000',
+      '2026-07-20 06:23:01.000',
+      '2026-07-20 06:32:00.000',
+    ])
+    expect(viewport).toMatchObject({
+      start_time: '2026-07-20 06:22:33.000',
+      end_time: '2026-07-20 06:32:27.000',
+      ...domain,
+      source: 'initial',
+    })
+    expect(viewport?.start_percent).toBeGreaterThan(0)
+    expect(viewport?.end_percent).toBeLessThan(100)
+  })
+
+  it('uses the session bounds when valid samples cover the full time domain', () => {
+    const domain = {
+      full_start_time: '2026-07-20 09:00:00.000',
+      full_end_time: '2026-07-20 09:00:10.000',
+    }
+    expect(createEffectiveMeshViewportFromSamples(domain, [
+      domain.full_start_time,
+      domain.full_end_time,
+    ])).toMatchObject({
+      start_time: domain.full_start_time,
+      end_time: domain.full_end_time,
+      ...domain,
     })
   })
 

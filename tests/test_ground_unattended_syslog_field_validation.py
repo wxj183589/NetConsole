@@ -642,6 +642,157 @@ def test_complete_config_skips_write_and_verified_log_becomes_active(tmp_path: P
     assert endpoint["syslog_hostname"] == "TEST-MR-CT"
 
 
+def test_config_present_is_not_owned_and_cannot_be_revoked(tmp_path: Path) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    connection = _ConfigConnection(
+        config_before=FULL_CONFIG_514,
+        config_after=FULL_CONFIG_514,
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+    result = _service(paths, repository, connection).check(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
+    )
+
+    assert result.config_status == "CONFIG_PRESENT"
+    audit = repository.latest_syslog_config_audit(device_uuid)
+    assert audit["ownership_status"] == "NOT_OWNED"
+    assert audit["created_by_netconsole"] == 0
+    with pytest.raises(ValueError, match="ACTIVE NetConsole 所有权"):
+        _service(paths, repository, connection).exit(
+            run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+            target_ip=TARGET_IP, target_port=514,
+        )
+    assert not any(command.startswith("undo info-center loghost") for command in connection.commands)
+
+
+def test_repeated_join_rechecks_and_skips_duplicate_write(tmp_path: Path) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    first_connection = _ConfigConnection(
+        config_before="",
+        config_after=FULL_CONFIG_514,
+        info_before="Information Center: Disabled\nLog host: Disabled\n",
+        info_after=FULL_RUNTIME_514,
+    )
+    first = _service(paths, repository, first_connection).check(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
+    )
+    owner = repository.active_syslog_config_ownership(device_uuid, TARGET_IP, 514)
+    assert first.config_status == "CONFIG_SENT"
+    assert owner is not None
+
+    second_connection = _ConfigConnection(
+        config_before=FULL_CONFIG_514,
+        config_after=FULL_CONFIG_514,
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+    second = _service(paths, repository, second_connection).check(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
+    )
+    assert second.config_status == "CONFIG_PRESENT"
+    assert not any(command.startswith("info-center loghost ") for command in second_connection.commands)
+    assert repository.active_syslog_config_ownership(device_uuid, TARGET_IP, 514)["ownership_audit_id"] == owner["ownership_audit_id"]
+
+
+def test_only_verified_new_target_is_owned_and_exit_revokes_it(tmp_path: Path) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    configured = _ConfigConnection(
+        config_before="",
+        config_after=FULL_CONFIG_514,
+        info_before="Information Center: Disabled\nLog host: Disabled\n",
+        info_after=FULL_RUNTIME_514,
+    )
+    result = _service(paths, repository, configured).check(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
+    )
+    assert result.config_status == "CONFIG_SENT"
+    owned = repository.latest_syslog_config_audit(device_uuid)
+    assert owned["ownership_status"] == "ACTIVE"
+    assert owned["created_by_netconsole"] == 1
+    assert owned["ownership_audit_id"] == owned["audit_id"]
+
+    absent_runtime = FULL_RUNTIME_514.replace(
+        f"    {TARGET_IP},\n    port number: 514, host facility: local7\n", ""
+    ).replace("Log host: Enabled", "Log host: Disabled")
+    exited = _ConfigConnection(
+        config_before=FULL_CONFIG_514,
+        config_after="info-center enable\n" + SOURCE_RULES_CONFIG,
+        info_before=FULL_RUNTIME_514,
+        info_after=absent_runtime,
+    )
+    result = _service(paths, repository, exited).exit(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514,
+    )
+    assert result["status"] == "EXITED"
+    revoked = repository.latest_syslog_config_audit(device_uuid)
+    assert revoked["ownership_status"] == "REVOKED"
+    assert revoked["ownership_audit_id"] == owned["audit_id"]
+    assert f"undo info-center loghost {TARGET_IP} port 514" in exited.commands
+
+
+def test_failed_exit_preserves_active_ownership_for_retry(tmp_path: Path) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    configured = _ConfigConnection(
+        config_before="",
+        config_after=FULL_CONFIG_514,
+        info_before="Information Center: Disabled\nLog host: Disabled\n",
+        info_after=FULL_RUNTIME_514,
+    )
+    _service(paths, repository, configured).check(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
+    )
+    failed = _ConfigConnection(
+        config_before=FULL_CONFIG_514,
+        config_after=FULL_CONFIG_514,
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+    with pytest.raises(RuntimeError, match="未确认目标撤销"):
+        _service(paths, repository, failed).exit(
+            run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+            target_ip=TARGET_IP, target_port=514,
+        )
+    audit = repository.latest_syslog_config_audit(device_uuid)
+    assert audit["status"] == "EXIT_FAILED"
+    assert audit["ownership_status"] == "ACTIVE"
+    assert audit["managed_target_ip"] == TARGET_IP
+
+
+def test_legacy_config_audits_migrate_as_unknown_ownership(tmp_path: Path) -> None:
+    paths, repository, device_uuid = _context(tmp_path)
+    connection = _ConfigConnection(
+        config_before=FULL_CONFIG_514,
+        config_after=FULL_CONFIG_514,
+        info_before=FULL_RUNTIME_514,
+        info_after=FULL_RUNTIME_514,
+    )
+    _service(paths, repository, connection).check(
+        run_id="run-1", run_date="2026-07-26", device_uuid=device_uuid,
+        target_ip=TARGET_IP, target_port=514, boot_tolerance_seconds=120,
+    )
+    with sqlite3.connect(repository.db_path) as conn:
+        for column in (
+            "managed_by_netconsole", "created_by_netconsole", "managed_target_ip",
+            "managed_target_port", "ownership_audit_id", "ownership_status", "revoked_at",
+        ):
+            conn.execute(
+                f'ALTER TABLE ground_unattended_syslog_config_audits DROP COLUMN "{column}"'
+            )
+    migrated = GroundUnattendedRepository(repository.db_path, site_id="site-a")
+    audit = migrated.latest_syslog_config_audit(device_uuid)
+    assert audit["status"] == "CONFIG_PRESENT"
+    assert audit["ownership_status"] == "UNKNOWN"
+    assert audit["managed_by_netconsole"] == 0
+    assert migrated.active_syslog_config_ownership(device_uuid, TARGET_IP, 514) is None
+
+
 def test_default_enable_and_port_omission_is_config_present_without_write(
     tmp_path: Path,
 ) -> None:
@@ -948,7 +1099,7 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
         "triggered_at",
     } <= operation_columns
     assert legacy_operation == ("UNKNOWN", "", "", "", "", "", "")
-    assert schema_version == "13"
+    assert schema_version == "16"
 
 
 def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Path) -> None:

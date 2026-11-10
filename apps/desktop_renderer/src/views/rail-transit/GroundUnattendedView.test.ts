@@ -5,9 +5,10 @@ import viewSource from './GroundUnattendedView.vue?raw'
 import runtimeSource from './useGroundUnattended.ts?raw'
 import apiSource from '../../api/groundUnattended.ts?raw'
 import meshPageSource from './AcMeshLinkPage.vue?raw'
+import heartbeatSettingsSource from './HeartbeatSettings.vue?raw'
 const pageSources = import.meta.glob('./*Page.vue', { query: '?raw', import: 'default', eager: true })
 const styleSource = readFileSync(new URL('./groundUnattended.css', import.meta.url), 'utf8')
-const source = [viewSource, runtimeSource, styleSource, ...Object.values(pageSources)].join('\n')
+const source = [viewSource, runtimeSource, styleSource, heartbeatSettingsSource, ...Object.values(pageSources)].join('\n')
 
 describe('Ground unattended page', () => {
   it('uses heartbeat terminology and inventory targets in the fixed ten-page order', () => {
@@ -38,8 +39,8 @@ describe('Ground unattended page', () => {
   it('exposes schedule, ping, concurrency, retention and priority controls', () => {
     for (const field of [
       'schedule_start_time', 'schedule_end_time', 'ac_poll_interval_seconds', 'stationary_exclusion_minutes',
-      'max_active_trains', 'max_active_mrs', 'fleet_ping_interval_ms', 'fleet_ping_timeout_ms',
-      'fleet_ping_warmup_seconds', 'deep_collection_master_enabled',
+      'max_active_trains', 'max_active_mrs', 'config.interval_ms', 'config.timeout_ms', 'config.shard_size', 'config.backup_policy',
+      'config.warmup_seconds', 'deep_collection_master_enabled',
       'detail_retention_days', 'summary_retention_days', 'togglePriority',
     ]) expect(source).toContain(field)
   })

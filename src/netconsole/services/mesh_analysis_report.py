@@ -10,7 +10,9 @@ from statistics import mean, median
 from typing import Callable, Mapping
 
 from netconsole.models.mesh_log_models import LINK_STATE_ACTIVE, LINK_STATE_STANDBY, PAIRED_METRICS, format_mac_h3c, normalize_link_state
-from netconsole.models.mesh_analysis_params import DEFAULT_MESH_ANALYSIS_PARAMS, MeshAnalysisParams, normalize_mesh_analysis_params
+from netconsole.models.mesh_analysis_params import (
+    DEFAULT_MESH_ANALYSIS_PARAMS, MeshAnalysisParams,
+)
 from netconsole.repositories.mesh_mr_repository import DERIVED_ANALYSIS_VERSION, MIN_NORMAL_ACTIVE_SAMPLE_COUNT, PARSER_VERSION, MeshMrRepository
 from netconsole.services.mesh_chart_payload import build_chart_payload
 from netconsole.services.mesh_rssi_stats import calc_numeric_stats
@@ -36,6 +38,8 @@ _CURRENT_VALUE_UNSET = object()
 
 @dataclass(frozen=True)
 class MeshReportOptions:
+    export_mode: str = "business"
+    ap_minimum_samples: int = 10
     report_name: str = ""
     data_source_type: str = MR_RAW_MESH_LOG
     start_time: str | None = None
@@ -123,6 +127,8 @@ class MeshAnalysisReportModel:
     active_path_rssi: list[dict[str, object]] = field(default_factory=list)
     peer_visit_statistics: list[dict[str, object]] = field(default_factory=list)
     active_path_busy: list[dict[str, object]] = field(default_factory=list)
+    ap_signal_quality: list[dict[str, object]] = field(default_factory=list)
+    single_link_intervals: list[dict[str, object]] = field(default_factory=list)
 
 
 class MeshReportCancelled(RuntimeError):
@@ -156,6 +162,18 @@ class MeshAnalysisReportService:
         self._raise_if_cancelled(should_cancel)
 
         rules = self._rules_from_options(options)
+        from netconsole.services.mesh_business_statistics import (
+            build_mesh_business_statistics,
+            business_sort_key,
+        )
+
+        business_statistics = build_mesh_business_statistics(
+            sorted(links, key=business_sort_key),
+            rules,
+            location_snapshot,
+            minimum_samples=options.ap_minimum_samples,
+            should_cancel=should_cancel,
+        )
         analysis_parameters = build_analysis_parameter_rows(options, source_files, rules, links)
         quality_report = build_quality_report(
             links,
@@ -271,6 +289,8 @@ class MeshAnalysisReportService:
             active_path_rssi=active_path_rssi,
             peer_visit_statistics=peer_visit_statistics,
             active_path_busy=active_path_busy,
+            ap_signal_quality=business_statistics["aps"],
+            single_link_intervals=business_statistics["single_links"],
         )
 
     def _rules_from_options(self, options: MeshReportOptions) -> MeshQualityRules:
@@ -406,18 +426,32 @@ def resolve_report_analysis_params(
     options: MeshReportOptions,
     source_snapshot: object | None,
 ) -> MeshAnalysisParams:
-    merged = DEFAULT_MESH_ANALYSIS_PARAMS.to_dict()
-    for candidate in (
-        _mapping(options.site_analysis_params),
+    from netconsole.services.mesh_analysis_params_service import (
+        resolve_mesh_task_params,
+    )
+
+    return resolve_mesh_task_params(
+        {
+            **DEFAULT_MESH_ANALYSIS_PARAMS.to_dict(),
+            **_mapping(options.site_analysis_params),
+        },
         _mapping(options.analysis_params_override),
-    ):
-        merged.update(candidate)
-    return normalize_mesh_analysis_params(merged)
+    )
 
 
 def with_report_analysis_params(options: MeshReportOptions, params: MeshAnalysisParams) -> MeshReportOptions:
     return replace(
         options,
+        rssi_good_threshold=params.rssi_good_threshold
+        if params.rssi_good_threshold is not None
+        else options.rssi_good_threshold,
+        rssi_warning_threshold=params.rssi_warning_threshold
+        if params.rssi_warning_threshold is not None
+        else options.rssi_warning_threshold,
+        backup_available_threshold=params.backup_available_threshold
+        if params.backup_available_threshold is not None
+        else options.backup_available_threshold,
+        ap_minimum_samples=params.ap_minimum_samples,
         short_active_segment_seconds=params.short_link_threshold_ms / 1000.0,
         main_link_switch_time_ms=params.link_time_window,
         short_link_tolerance_ms=params.short_link_tolerance_ms,
@@ -594,6 +628,23 @@ def build_analysis_parameter_rows(
     add("项目和环境", "Parser 版本", "parser_version", "", PARSER_VERSION, "MESH compact 数据解析版本", default_value=PARSER_VERSION)
     add("项目和环境", "Derived analysis 版本", "derived_analysis_version", "", DERIVED_ANALYSIS_VERSION, "主链路派生分析版本", default_value=DERIVED_ANALYSIS_VERSION)
     add("项目和环境", "报告规则版本", "report_rule_version", "", MESH_REPORT_RULE_VERSION, "综合分析报告结构和规则版本", default_value=MESH_REPORT_RULE_VERSION)
+    add(
+        "AP 信号质量",
+        "最小有效样本",
+        "ap_minimum_samples",
+        "个",
+        options.ap_minimum_samples,
+        "唯一 ACTIVE 的有效 MR RSSI；不足时标记数据不足；按物理 MAC 合并",
+    )
+    add(
+        "AP 信号质量",
+        "分级指标",
+        "ap_grade_metric",
+        "",
+        "ACTIVE_MR_RSSI_P10",
+        "P10 >= 良好阈值为良好；>= 关注阈值为关注；否则较差；弱信号指低于良好阈值",
+        remark="mesh_business_v1",
+    )
     return rows
 
 

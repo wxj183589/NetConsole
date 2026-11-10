@@ -66,6 +66,14 @@ def test_indexed_evidence_is_site_run_mr_scoped_and_read_only(tmp_path):
     mesh, ac, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
     assert len(mesh) == len(ac) == 1 and not truncated
     with closing(sqlite3.connect(path)) as conn:
+        conn.execute("INSERT INTO ground_unattended_ac_snapshots(snapshot_id,site_id,run_id,mr_id,received_at,peer_ap_mac,freshness_status) VALUES(?,?,?,?,?,?,?)",
+                     ("ac-2", "demo", "run-2", "mr-1", "2026-11-07T11:11:00Z", "00:11:22:33:44:66", "fresh"))
+        conn.commit()
+    _, resident_ac, _ = indexed_evidence(path, site_id="demo", run_id=None, mr_uuid="mr-1", start=start, end=end)
+    assert {row["snapshot_id"] for row in resident_ac} == {"ac-1", "ac-2"}
+    _, old_ac, _ = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
+    assert [row["snapshot_id"] for row in old_ac] == ["ac-1"]
+    with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM ground_unattended_wmesh_events").fetchone()[0] == 2
 
 

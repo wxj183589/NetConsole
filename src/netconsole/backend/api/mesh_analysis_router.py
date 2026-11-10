@@ -238,10 +238,12 @@ def _gui_production_authorization(request: Request, operation: str) -> str:
 
 
 def _query(callback: Callable[[], T]) -> T:
+    from netconsole.services.mesh_business_statistics import MeshBusinessParamsError
+
     with map_api_errors("Mesh 分析结果暂时不可读取"):
         try:
             return callback()
-        except MeshAnalysisTimeRangeError as exc:
+        except (MeshAnalysisTimeRangeError, MeshBusinessParamsError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
         except (MeshAnalysisPayloadLimitError, MeshChartSelectionLimitError) as exc:
             raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail=str(exc)) from exc
@@ -682,6 +684,19 @@ def links(
     page_size: int = Query(default=100, ge=1, le=1_000),
     sort_by: str = Query(default="timestamp", pattern="^(timestamp|rssi|peer_ap_name)$"),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
+    radio: int | None = Query(default=None, ge=1, le=64),
+    exact_ap: bool = False,
+    metric_group: str = Query(default="", pattern="^(|rssi|cpu|memory|busy|rate|noise|tx_des_free_cnt|counters)$"),
+    nearest_time: str = Query(default="", max_length=40),
+    max_points: int = Query(default=1000, ge=100, le=2000),
+    include_zero: bool = False,
+    raw_samples: bool = False,
+    include_context: bool = False,
+    raw_max_rows: int = Query(default=50_000, ge=100, le=100_000),
+    exclude_depot: bool = False,
+    exclude_parking: bool = False,
+    mesh_trace: bool = False,
+    mesh_operation_id: str = Query(default="", max_length=100),
 ) -> MeshLinkPageDTO:
     return _query(
         lambda: _service(request).list_link_details(
@@ -704,6 +719,19 @@ def links(
             page_size=page_size,
             sort_by=sort_by,
             sort_order=sort_order,
+            radio=radio,
+            exact_ap=exact_ap,
+            metric_group=metric_group,
+            nearest_time=nearest_time,
+            max_points=max_points,
+            include_zero=include_zero,
+            raw_samples=raw_samples,
+            include_context=include_context,
+            raw_max_rows=raw_max_rows,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+            trace=mesh_trace,
+            operation_id=mesh_operation_id,
         )
     )
 
@@ -820,11 +848,17 @@ def active_build_order(
     build_result: str = Query(default="", max_length=50),
     build_results: list[str] = Query(default=[], max_length=10),
     pingpong_only: bool = False,
+    include_zero: bool = False,
+    exclude_depot: bool = False,
+    exclude_parking: bool = False,
+    link_role: str = Query(default="", pattern="^(|ACTIVE|STANDBY)$"),
     time_from: str = Query(default="", max_length=40),
     time_to: str = Query(default="", max_length=40),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1_000),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    mesh_trace: bool = False,
+    mesh_operation_id: str = Query(default="", max_length=100),
 ) -> MeshActiveBuildOrderPageDTO:
     return _query(
         lambda: _service(request).list_active_build_order(
@@ -837,11 +871,17 @@ def active_build_order(
             build_result=build_result,
             build_results=build_results,
             pingpong_only=pingpong_only,
+            include_zero=include_zero,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+            link_role=link_role,
             time_from=time_from,
             time_to=time_to,
             page=page,
             page_size=page_size,
             sort_order=sort_order,
+            trace=mesh_trace,
+            operation_id=mesh_operation_id,
         )
     )
 
@@ -962,7 +1002,7 @@ def peer_segment_chart(
 @router.get(
     "/sessions/{session_id}/counter-deltas",
     response_model=MeshCounterDeltaPageDTO,
-    summary="读取 MESH Retry 与 Error 计数器增量",
+    summary="读取 MESH Tx/Rx、Retry、Error、GARP 与 MulJoin 计数器增量",
 )
 def counter_deltas(
     request: Request,
@@ -1005,6 +1045,105 @@ def ap_statistics(
     page_size: int = Query(default=100, ge=1, le=500),
 ) -> MeshApStatisticsPageDTO:
     return _query(lambda: _service(request).list_ap_statistics(_site_id(request, site_id), session_id, query=query, page=page, page_size=page_size))
+
+
+@router.get(
+    "/sessions/{session_id}/ap-signal-statistics",
+    response_model=MeshApStatisticsPageDTO,
+    dependencies=[Depends(require_feature("capability.mesh.business_statistics"))],
+)
+def ap_signal_statistics(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    query: str = Query(default="", max_length=200),
+    station: str = Query(default="", max_length=200),
+    signal_grade: str = Query(default="", max_length=30),
+    sort_by: str = Query(default="peer_ap_name", max_length=30),
+    descending: bool = False,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+    exclude_depot: bool = True,
+    exclude_parking: bool = True,
+    weak_signal_threshold: int | None = Query(default=None, ge=1, le=200),
+    link_role: str = Query(default="ACTIVE", pattern="^(ACTIVE|STANDBY|ALL)$"),
+    radio: int | None = Query(default=None, ge=1, le=2),
+    mesh_trace: bool = False,
+    mesh_operation_id: str = Query(default="", max_length=100),
+) -> MeshApStatisticsPageDTO:
+    return _query(
+        lambda: _service(request).list_ap_signal_statistics(
+            _site_id(request, site_id),
+            session_id,
+            query=query,
+            station=station,
+            signal_grade=signal_grade,
+            sort_by=sort_by,
+            descending=descending,
+            page=page,
+            page_size=page_size,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+            weak_signal_threshold=weak_signal_threshold,
+            link_role=link_role,
+            radio=radio,
+            trace=mesh_trace,
+            operation_id=mesh_operation_id,
+        )
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/business-summary",
+    dependencies=[Depends(require_feature("capability.mesh.business_statistics"))],
+)
+def business_summary(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    exclude_depot: bool = True,
+    exclude_parking: bool = True,
+    mesh_trace: bool = False,
+    mesh_operation_id: str = Query(default="", max_length=100),
+) -> dict:
+    def execute() -> dict:
+        result = _service(request).business_statistics(
+            _site_id(request, site_id),
+            session_id,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+            trace=mesh_trace,
+            operation_id=mesh_operation_id,
+        )
+        summary = dict(result["summary"])
+        summary.update({key: result.get("_query_trace", {}).get(key) for key in ("query_duration_ms", "sql_query_count", "query_kind", "query_id", "operation_id") if key in result.get("_query_trace", {})})
+        return summary
+
+    return _query(execute)
+
+
+@router.get(
+    "/sessions/{session_id}/single-links",
+    dependencies=[Depends(require_feature("capability.mesh.business_statistics"))],
+)
+def single_links(
+    request: Request,
+    session_id: str,
+    site_id: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=500),
+    exclude_depot: bool = True,
+    exclude_parking: bool = True,
+) -> dict:
+    return _query(
+        lambda: _service(request).list_single_links(
+            _site_id(request, site_id),
+            session_id,
+            page=page,
+            page_size=page_size,
+            exclude_depot=exclude_depot,
+            exclude_parking=exclude_parking,
+        ))
 
 
 @router.get("/sessions/{session_id}/artifacts", response_model=list[MeshReportArtifactDTO])
@@ -1225,7 +1364,9 @@ def start_report(
 ) -> RailTransitTaskDTO:
     try:
         override = (
-            payload.analysis_params_override.model_dump(exclude_none=True)
+            payload.analysis_params_override.model_dump(
+                exclude_none=True, exclude_unset=True
+            )
             if payload and payload.analysis_params_override
             else None
         )
@@ -1233,6 +1374,7 @@ def start_report(
             _current_site_id(request),
             session_id,
             analysis_params_override=override,
+            export_mode=payload.export_mode if payload else "business",
         )
     except RailTransitWebError as exc:
         raise HTTPException(
@@ -1265,7 +1407,12 @@ def start_link_detail_export(
             _current_site_id(request),
             session_id,
             source_file_id=payload.source_file_id,
-            analysis_params_override=payload.analysis_params_override.model_dump(exclude_none=True) if payload.analysis_params_override else None,
+            analysis_params_override=payload.analysis_params_override.model_dump(
+                exclude_none=True, exclude_unset=True
+            ) if payload.analysis_params_override else None,
+            export_mode=payload.export_mode,
+            exclude_depot=payload.exclude_depot,
+            exclude_parking=payload.exclude_parking,
         )
     except RailTransitWebError as exc:
         raise HTTPException(

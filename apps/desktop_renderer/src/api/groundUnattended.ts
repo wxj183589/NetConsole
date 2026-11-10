@@ -2,6 +2,7 @@ import type { RailTransitTask } from '../types/railTransitWeb'
 import { ApiRequestError, apiRequest, getHealth } from './client'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type {
+  HeartbeatConfig, HeartbeatRuntime,
   GroundDeepTaskPage,
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundDeepCollectionRecordPage, GroundPage, GroundPingTarget,
   GroundProfile, GroundStatus, GroundTimelineEvent, GroundTrain, GroundHealth, GroundInventorySummary, GroundRawFile, GroundTrainPolicy,
@@ -15,6 +16,13 @@ import type {
 } from '../types/groundUnattended'
 
 const root = '/api/rail-transit/ground-unattended'
+
+export const getHeartbeatConfig = (options: RequestInit = {}): Promise<HeartbeatConfig> =>
+  apiRequest(`${root}/heartbeat/config`, options)
+export const updateHeartbeatConfig = (config: HeartbeatConfig, options: RequestInit = {}): Promise<HeartbeatConfig> =>
+  apiRequest(`${root}/heartbeat/config`, { ...options, method: 'PUT', body: JSON.stringify(config) })
+export const getHeartbeatRuntime = (options: RequestInit = {}): Promise<HeartbeatRuntime> =>
+  apiRequest(`${root}/heartbeat/runtime`, options)
 
 export const getGroundHeartbeat = (runId = '', options: RequestInit = {}, filters: { query?: string; status?: string; station?: string; role?: string; abnormal_only?: boolean; page?: number; page_size?: number } = {}): Promise<GroundHeartbeatPage> => {
   const query = new URLSearchParams({ run_id: runId })
@@ -120,6 +128,10 @@ export const requestGroundConfigCheck = (deviceUuid = '', allowTargetPortChange 
     allow_target_port_change: allowTargetPortChange,
     explicit_confirmation: allowTargetPortChange,
   }),
+})
+export const requestGroundSyslogControl = (deviceUuids: string[], mode: 'JOIN' | 'EXIT'): Promise<GroundActionResponse> => apiRequest(`${root}/syslog-control`, {
+  method: 'POST',
+  body: JSON.stringify({ device_uuids: deviceUuids, mode }),
 })
 export const getGroundHealth = (options: RequestInit = {}): Promise<GroundHealth> => apiRequest(`${root}/health`, options)
 export const getGroundSyslogTransportStatus = (options: RequestInit = {}): Promise<GroundSyslogTransportStatus> => apiRequest(`${root}/syslog-transport-status`, options)

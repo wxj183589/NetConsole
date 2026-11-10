@@ -29,9 +29,9 @@ def test_canonical_and_runtime_changelogs_have_one_ordered_content_fingerprint()
 
     assert [section.version for section in canonical_sections[:4]] == [
         APP_VERSION,
+        "v1.5.12",
         "v1.5.11",
         "v1.5.10",
-        "v1.5.9",
     ]
     assert len({section.version for section in canonical_sections}) == len(canonical_sections)
     assert len({section.version for section in runtime_sections}) == len(runtime_sections)

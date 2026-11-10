@@ -36,7 +36,36 @@ def save_site_mesh_analysis_params(
     """按当前局点身份原子保存完整 MESH 分析默认参数。"""
 
     normalized = normalize_mesh_analysis_params(params)
+    validate_mesh_business_params(normalized)
     SiteManager(paths).save_site_metadata(site_name, {MESH_ANALYSIS_PARAMS_METADATA_KEY: normalized.to_dict()})
+
+
+def validate_mesh_business_params(params: MeshAnalysisParams) -> None:
+    from netconsole.services.mesh_business_statistics import effective_business_rules
+    from netconsole.services.mesh_quality_analysis import load_default_rules
+
+    effective_business_rules(params, load_default_rules())
+
+
+def resolve_mesh_task_params(
+    site_params: Mapping[str, object], override: Mapping[str, object] | None
+) -> MeshAnalysisParams:
+    values = dict(site_params)
+    for key, value in (override or {}).items():
+        if (
+            key
+            in {
+                "rssi_good_threshold",
+                "rssi_warning_threshold",
+                "backup_available_threshold",
+            }
+            and value is None
+        ):
+            continue
+        values[key] = value
+    params = normalize_mesh_analysis_params(values)
+    validate_mesh_business_params(params)
+    return params
 
 
 def mesh_analysis_params_template(service_type: str) -> MeshAnalysisParams:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import socket
+import threading
+from concurrent.futures import Future
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -14,12 +16,19 @@ from netconsole.repositories.ground_unattended_repository import (
 )
 from netconsole.services.ground_unattended.schedule import schedule_window
 from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
+from netconsole.services.ground_unattended.fleet_ping import FleetPingTarget
 
 
 def test_default_and_regular_schedule_window() -> None:
     profile = GroundUnattendedProfileDTO(site_id="site-a")
     assert profile.schedule_start_time == "07:00"
     assert profile.schedule_end_time == "23:00"
+    assert profile.ac_poll_interval_seconds == 60
+    assert profile.ac_mesh_link_poll_interval_seconds == 300
+    assert profile.syslog_receiver_auto_start_enabled is False
+    assert profile.boot_check_auto_start_enabled is False
+    assert profile.syslog_auto_repair_enabled is False
+    assert profile.ac_mesh_link_auto_collection_enabled is False
     active = schedule_window(
         datetime.fromisoformat("2026-07-25T07:00:00+08:00"), "07:00", "23:00", "Asia/Shanghai"
     )
@@ -188,6 +197,322 @@ def test_running_profile_applies_depot_ping_switch_without_restarting_run() -> N
     assert effective.ping_depot_trains_enabled is True
     assert effective.fleet_ping_interval_ms == 1000
     assert supervisor._active_profile.ping_depot_trains_enabled is False
+
+
+def test_running_profile_hot_updates_ac_and_background_switches() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor._active_profile = GroundUnattendedProfileDTO(
+        site_id="site-a",
+        ac_poll_interval_seconds=60,
+        ac_mesh_link_poll_interval_seconds=300,
+        syslog_receiver_auto_start_enabled=False,
+        boot_check_auto_start_enabled=False,
+        syslog_auto_repair_enabled=False,
+        ac_mesh_link_auto_collection_enabled=False,
+    )
+    latest = supervisor._active_profile.model_copy(
+        update={
+            "ac_poll_interval_seconds": 90,
+            "ac_mesh_link_poll_interval_seconds": 600,
+            "syslog_receiver_auto_start_enabled": True,
+            "boot_check_auto_start_enabled": True,
+            "syslog_auto_repair_enabled": True,
+            "ac_mesh_link_auto_collection_enabled": True,
+        }
+    )
+
+    effective = supervisor._runtime_profile(latest)
+
+    assert effective.ac_poll_interval_seconds == 90
+    assert effective.ac_mesh_link_poll_interval_seconds == 600
+    assert effective.syslog_receiver_auto_start_enabled is True
+    assert effective.boot_check_auto_start_enabled is True
+    assert effective.syslog_auto_repair_enabled is True
+    assert effective.ac_mesh_link_auto_collection_enabled is True
+    assert supervisor._active_profile.ac_poll_interval_seconds == 60
+
+
+def test_manual_config_check_uses_inventory_when_ac_targets_are_missing() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    target = FleetPingTarget(
+        target_ip="192.0.2.10",
+        train_id="train-1",
+        train_no="01",
+        mr_id="mr-1",
+        mr_position_code="CT",
+    )
+    submitted: list[dict[str, object]] = []
+
+    class _Repository:
+        def list_inventory(self, *, include_removed: bool):
+            return [{"train_id": "train-1", "priority": False, "scheduling_priority": 0}]
+
+        def latest_syslog_config_audit(self, _device_uuid):
+            return None
+
+    class _FleetPing:
+        def target_summaries(self):
+            return []
+
+    class _Executor:
+        def submit(self, _function, **kwargs):
+            submitted.append(kwargs)
+            return object()
+
+    class _ConfigService:
+        def check(self, **_kwargs):
+            return None
+
+    supervisor.repository = _Repository()
+    supervisor.fleet_ping = _FleetPing()
+    supervisor.heartbeat = SimpleNamespace(_heartbeat_fleet_targets=lambda: {target.target_ip: target})
+    supervisor._manual_config_checks = {"mr-1": (False, True)}
+    supervisor._config_futures = {}
+    supervisor._config_executor = _Executor()
+    supervisor.config_service = _ConfigService()
+    supervisor._now = lambda: datetime.fromisoformat("2026-07-25T08:00:00+08:00")
+
+    profile = GroundUnattendedProfileDTO(
+        site_id="site-a",
+        syslog_server_ip="192.0.2.100",
+        syslog_server_port=514,
+    )
+    supervisor._schedule_config_checks(
+        {"run_id": "run-1", "run_date": "2026-07-25"}, profile, {}
+    )
+
+    assert len(submitted) == 1
+    assert submitted[0]["device_uuid"] == "mr-1"
+    assert submitted[0]["repair_enabled"] is True
+
+
+def test_syslog_task_cancel_discards_queued_devices_and_finishes_task() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._manual_config_checks = {"mr-1": (False, True)}
+    supervisor._manual_config_task_ids = {"mr-1": "task-1"}
+    supervisor._manual_syslog_exits = set()
+    supervisor._manual_syslog_exit_task_ids = {}
+    supervisor._config_future_meta = {}
+    supervisor._config_futures = {}
+    supervisor._syslog_task_progress = {
+        "task-1": {
+            "current": 0,
+            "total": 1,
+            "success": 0,
+            "failed": 0,
+            "results": [],
+        }
+    }
+    supervisor._cancelled_syslog_tasks = set()
+    supervisor._wake_event = threading.Event()
+    recorded: list[tuple[str, dict[str, object]]] = []
+    supervisor._record_syslog_task_event = (
+        lambda task_id, event_type, payload: recorded.append((event_type, payload))
+    )
+
+    assert supervisor.cancel_syslog_task("task-1") is True
+
+    assert supervisor._manual_config_checks == {}
+    assert supervisor._manual_config_task_ids == {}
+    assert supervisor._syslog_task_progress == {}
+    assert recorded == [
+        (
+            "finished",
+            {
+                "terminal_state": "CANCELLED",
+                "message": "Syslog 批次任务已取消",
+                "result": {
+                    "success_count": 0,
+                    "failed_count": 0,
+                    "business_status": "CANCELLED",
+                },
+            },
+        )
+    ]
+
+
+def test_repeated_syslog_requests_keep_independent_fifo_entries() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._wake_event = threading.Event()
+    supervisor._manual_syslog_queue = []
+    supervisor._manual_config_checks = {}
+    supervisor._manual_config_task_ids = {}
+    supervisor._manual_syslog_exits = set()
+    supervisor._manual_syslog_exit_task_ids = {}
+
+    supervisor.request_config_check("mr-1", task_id="task-1")
+    supervisor.request_config_check("mr-1", task_id="task-2")
+    supervisor.request_syslog_exit("mr-1", task_id="task-3")
+
+    assert [
+        (item["task_id"], item["device_uuid"], item["op"])
+        for item in supervisor._manual_syslog_queue
+    ] == [
+        ("task-1", "mr-1", "JOIN"),
+        ("task-2", "mr-1", "JOIN"),
+        ("task-3", "mr-1", "EXIT"),
+    ]
+
+
+def test_syslog_cancel_only_removes_its_batch_and_records_device_result() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._wake_event = threading.Event()
+    supervisor._manual_syslog_queue = [
+        {"task_id": "task-1", "device_uuid": "mr-1", "op": "JOIN"},
+        {"task_id": "task-2", "device_uuid": "mr-1", "op": "JOIN"},
+    ]
+    supervisor._manual_config_checks = {"mr-1": (False, True)}
+    supervisor._manual_config_task_ids = {"mr-1": "task-1"}
+    supervisor._manual_syslog_exits = set()
+    supervisor._manual_syslog_exit_task_ids = {}
+    supervisor._config_future_meta = {}
+    supervisor._config_futures = {}
+    supervisor._syslog_task_progress = {
+        task_id: {"current": 0, "total": 1, "success": 0, "failed": 0, "results": []}
+        for task_id in ("task-1", "task-2")
+    }
+    supervisor._syslog_task_devices = {"task-1": {"mr-1"}, "task-2": {"mr-1"}}
+    supervisor._cancelled_syslog_tasks = set()
+    events: list[tuple[str, str, dict[str, object]]] = []
+    supervisor._record_syslog_task_event = (
+        lambda task_id, event_type, payload: events.append((task_id, event_type, payload))
+    )
+
+    assert supervisor.cancel_syslog_task("task-1") is True
+
+    assert [item["task_id"] for item in supervisor._manual_syslog_queue] == ["task-2"]
+    assert supervisor._syslog_task_progress["task-2"]["current"] == 0
+    finished = [payload for task_id, kind, payload in events if task_id == "task-1" and kind == "finished"]
+    assert finished[0]["result"]["devices"] == [
+        {"device_uuid": "mr-1", "status": "CANCELLED", "audit_id": ""}
+    ]
+
+
+def test_syslog_batch_results_map_service_status_per_task() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    first = Future()
+    first.set_result(SimpleNamespace(config_status="CONFIG_SENT", audit_id="audit-1"))
+    second = Future()
+    second.set_result(SimpleNamespace(config_status="CONFIG_PRESENT", audit_id="audit-2"))
+    supervisor._config_futures = {"mr-1": first, "mr-2": second}
+    supervisor._config_future_meta = {
+        "mr-1": {"task_id": "task-1", "operation": "JOIN"},
+        "mr-2": {"task_id": "task-2", "operation": "JOIN"},
+    }
+    supervisor._syslog_task_progress = {
+        task_id: {"current": 0, "total": 1, "success": 0, "failed": 0, "results": [], "in_flight": 1}
+        for task_id in ("task-1", "task-2")
+    }
+    supervisor._cancelled_syslog_tasks = set()
+    events: list[tuple[str, str, dict[str, object]]] = []
+    supervisor._record_syslog_task_event = (
+        lambda task_id, event_type, payload: events.append((task_id, event_type, payload))
+    )
+
+    supervisor._collect_config_checks()
+
+    results = {
+        task_id: payload["device_result"]
+        for task_id, kind, payload in events
+        if kind == "progress"
+    }
+    assert results == {
+        "task-1": {
+            "device_uuid": "mr-1", "operation": "JOIN", "status": "CONFIGURED",
+            "audit_id": "audit-1", "error": "",
+        },
+        "task-2": {
+            "device_uuid": "mr-2", "operation": "JOIN", "status": "ALREADY_CONFIGURED",
+            "audit_id": "audit-2", "error": "",
+        },
+    }
+
+
+def test_running_syslog_batches_recover_independently_after_restart() -> None:
+    class _TaskService:
+        def list_tasks(self, *, statuses, limit, site_name):
+            assert site_name == "site-a"
+            return [
+                SimpleNamespace(
+                    task_id="task-1",
+                    task_type="ground_unattended_syslog_control",
+                    created_time="2026-07-26T01:00:00Z",
+                    total=1,
+                ),
+                SimpleNamespace(
+                    task_id="task-2",
+                    task_type="ground_unattended_syslog_control",
+                    created_time="2026-07-26T01:01:00Z",
+                    total=1,
+                ),
+            ]
+
+        def list_events(self, task_id, *, limit, site_name):
+            assert site_name == "site-a"
+            assert limit == 2000
+            if task_id == "task-1":
+                return [
+                    {
+                        "payload": {
+                            "event": "BATCH_DEVICES",
+                            "device_uuids": ["mr-1", "mr-2"],
+                            "operation": "JOIN",
+                        }
+                    },
+                    {
+                        "payload": {
+                            "event": "DEVICE_QUEUED",
+                            "device_uuid": "mr-1",
+                            "operation": "JOIN",
+                        }
+                    }
+                ]
+            return [
+                {
+                    "payload": {
+                        "event": "DEVICE_QUEUED",
+                        "device_uuid": "mr-1",
+                        "operation": "JOIN",
+                    }
+                },
+                {
+                    "payload": {
+                        "device_result": {
+                            "device_uuid": "mr-1",
+                            "status": "ALREADY_CONFIGURED",
+                            "audit_id": "audit-2",
+                        }
+                    }
+                },
+            ]
+
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor.site_id = "site-a"
+    supervisor.task_service = _TaskService()
+    supervisor._manual_syslog_queue = []
+    supervisor._syslog_task_progress = {}
+    supervisor._syslog_task_devices = {}
+    finished: dict[str, dict[str, object]] = {}
+
+    def _finish(task_id: str, **kwargs: object) -> None:
+        finished[task_id] = dict(supervisor._syslog_task_progress[task_id])
+
+    supervisor._finish_syslog_task = _finish
+
+    supervisor._recover_syslog_batch_tasks()
+
+    assert supervisor._manual_syslog_queue == [
+        {"op": "JOIN", "device_uuid": "mr-1", "task_id": "task-1"},
+        {"op": "JOIN", "device_uuid": "mr-2", "task_id": "task-1"},
+    ]
+    assert supervisor._syslog_task_devices == {"task-1": {"mr-1", "mr-2"}}
+    assert supervisor._syslog_task_progress["task-1"]["current"] == 0
+    assert finished["task-2"]["results"] == [
+        {"device_uuid": "mr-1", "status": "ALREADY_CONFIGURED", "audit_id": "audit-2"}
+    ]
 
 
 def test_supervisor_auto_starts_and_finishes_at_window_boundary(tmp_path) -> None:

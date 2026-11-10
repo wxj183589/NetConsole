@@ -68,6 +68,10 @@ from netconsole.infrastructure.desktop import LocalDesktopAdapter, UnavailableDe
 from netconsole.models.api.common import ErrorDetail, ErrorResponse
 from netconsole.repositories.device_detail_repository import DeviceDetailRepository
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.ac_repository import AcRepository
+from netconsole.services.ac.ac_resource_service import AcResourceService
+from netconsole.services.ac.ac_service import AcService
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import AcMeshLinkRefreshApplicationService
 from netconsole.services.ac.mesh_link_resident_polling_service import (
@@ -609,6 +613,14 @@ def create_app(
         )
         supervisor: GroundUnattendedSupervisor | None = None
         try:
+            site_database = Database(paths.site_db_path(target_site_name))
+            ac_basic_service = AcService(
+                AcResourceService(
+                    DeviceRepository(site_database),
+                    AcRepository(site_database),
+                    paths,
+                )
+            )
             supervisor = GroundUnattendedSupervisor(
                 paths,
                 site_id=target_site_name,
@@ -618,10 +630,12 @@ def create_app(
                 vehicle_query=app.state.vehicle_mr_online_query_service,
                 ac_refresh_service=ac_mesh_link_refresh_service,
                 ac_resident_service=ac_mesh_link_resident_service,
+                ac_basic_service=ac_basic_service,
                 online_mr_application_service=online_mr_application_service,
                 online_mr_query_service=online_mr_query_service,
                 network_service=app.state.system_network_application_service,
                 ap_identity_query_service=ap_identity_query,
+                task_service=task_service,
             )
             application_service = GroundUnattendedApplicationService(
                 paths,
@@ -633,6 +647,7 @@ def create_app(
                 network_service=app.state.system_network_application_service,
                 process_adapter=web_process_adapter,
                 ap_identity_query_service=ap_identity_query,
+                task_service=task_service,
             )
             return repository, supervisor, application_service
         except Exception:
@@ -657,6 +672,8 @@ def create_app(
                 )
                 return False
             try:
+                app.state.heartbeat_supervisor = ground_unattended_supervisor.heartbeat
+                await asyncio.to_thread(ground_unattended_supervisor.heartbeat.start)
                 await asyncio.to_thread(ground_unattended_supervisor.start)
                 app.state.unattended_ready = True
                 app.state.unattended_status = "ready"
@@ -856,6 +873,13 @@ def create_app(
             collect_run_recovery_task.cancel()
             await asyncio.gather(collect_run_recovery_task, return_exceptions=True)
             if ground_unattended_supervisor is not None:
+                try:
+                    await asyncio.to_thread(ground_unattended_supervisor.heartbeat.close)
+                except BaseException as exc:
+                    app_logger.log_error(
+                        "WEB_LIFESPAN_STOP_FAILED",
+                        f"component=heartbeat error={exc.__class__.__name__}: {exc}",
+                    )
                 try:
                     await asyncio.to_thread(ground_unattended_supervisor.close)
                 except BaseException as exc:
@@ -1261,18 +1285,22 @@ def create_app(
             ) = build_ground_runtime(target)
             try:
                 if old_ground_started:
+                    target_ground_supervisor.heartbeat.start()
                     target_ground_supervisor.start()
                 if old_ground_application_service is not None:
                     old_ground_application_service.close()
                 if old_ground_supervisor is not None:
+                    old_ground_supervisor.heartbeat.close()
                     old_ground_supervisor.close()
             except Exception:
+                target_ground_supervisor.heartbeat.close()
                 target_ground_supervisor.close()
                 raise
             ground_unattended_repository = target_ground_repository
             ground_unattended_supervisor = target_ground_supervisor
             app.state.ground_unattended_repository = target_ground_repository
             app.state.ground_unattended_supervisor = target_ground_supervisor
+            app.state.heartbeat_supervisor = target_ground_supervisor.heartbeat
             app.state.ground_unattended_application_service = target_ground_application_service
             app.state.ground_unattended_startup_error = ""
             app.state.unattended_error = ""
@@ -1746,7 +1774,14 @@ def _recover_legacy_registry(
     entries = _startup_site_entries(paths)
     if not entries:
         try:
-            SiteApplicationService(paths).initialize_first_run_site()
+            initializer = SiteApplicationService(paths)
+            if str(os.environ.get("NETCONSOLE_PORTABLE_MODE") or "").strip() == "1":
+                initializer.initialize_first_run_site(
+                    site_id="default",
+                    display_name="默认局点",
+                )
+            else:
+                initializer.initialize_first_run_site()
         except SiteStorageError as exc:
             _raise_active_site_startup_error(
                 paths, exc.code, str(exc), cause=exc

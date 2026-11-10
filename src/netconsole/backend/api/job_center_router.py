@@ -301,6 +301,17 @@ async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
                     status_code=status.HTTP_409_CONFLICT,
                     detail="AC 常驻轮询已结束或不在当前进程",
                 )
+        elif task.owner == "ground_unattended" and task.type == "ground_unattended_syslog_control":
+            supervisor = request.app.state.ground_unattended_supervisor
+            if supervisor is None or not supervisor.cancel_syslog_task(task_id):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Syslog 任务已结束或不可取消")
+            request.app.state.task_service.record_external_event(
+                task_id,
+                "state",
+                {"state": "STOPPING", "message": "已请求取消 Syslog 批次任务"},
+                site_name=task.site_name,
+                source="api",
+            )
         elif task.owner == NETWORK_TOOL_OWNER:
             if task.type in NETWORK_TOOLBOX_TASK_TYPES:
                 request.app.state.network_tools_service.cancel_network_task(task_id)

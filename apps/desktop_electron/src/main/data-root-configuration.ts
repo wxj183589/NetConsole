@@ -2,10 +2,16 @@ import { spawnSync } from 'node:child_process'
 import { isAbsolute, resolve } from 'node:path'
 import { TextDecoder } from 'node:util'
 
+import {
+  defaultPortableDataRoot,
+  detectPortableMode,
+  PortableDataRootStore,
+} from './portable-data-root'
+
 export const DATA_ROOT_REGISTRY_KEY = 'HKLM\\Software\\NetConsole'
 export const DATA_ROOT_REGISTRY_VALUE = 'DataRoot'
 
-export type DesktopDataRootSource = 'environment' | 'machine_configuration'
+export type DesktopDataRootSource = 'environment' | 'machine_configuration' | 'portable_default' | 'portable_configuration'
 
 export interface DesktopDataRootResolution {
   dataRoot: string
@@ -14,8 +20,14 @@ export interface DesktopDataRootResolution {
 
 export function formatDesktopDataRootConfigurationError(cause: unknown): string {
   const detail = cause instanceof Error ? cause.message : String(cause)
+  if (cause && typeof cause === 'object' && 'code' in cause && (cause as { code?: unknown }).code === 'PORTABLE_DATA_ROOT_UNAVAILABLE') {
+    return `${detail}\n\n便携版默认数据目录不可用。请选择一个可写的其他数据目录；取消选择后将退出，NetConsole 不会创建替代数据库。`
+  }
+  if (cause && typeof cause === 'object' && 'code' in cause && (cause as { code?: unknown }).code === 'PORTABLE_DATA_ROOT_CONFIGURATION_INVALID') {
+    return `${detail}\n\n便携版数据根配置无效。请修复或删除便携版程序目录中的配置文件后重试；不会静默切换到其他数据目录。`
+  }
   if (/尚未配置|runtime_mode\.json|storage-manifest\.json|数据目录/.test(detail)) {
-    return `NetConsole 尚未完成数据目录配置。${detail}\n\n请重新运行安装程序，选择非系统盘上的本地固定磁盘目录；安装未完成前不会切换或猜测其他数据目录。`
+    return `NetConsole 尚未完成数据目录配置。${detail}\n\n请重新运行安装程序选择数据目录；优先推荐非系统盘，也可以使用 C:\\ProgramData\\NetConsole\\Data。安装未完成前不会切换或猜测其他数据目录。`
   }
   return `NetConsole 本地运行环境配置失败。${detail}\n\n请查看安装器诊断日志，排除配置问题后重新安装。`
 }
@@ -29,6 +41,10 @@ export function resolveDesktopDataRootConfiguration(options: {
   environment?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   queryRegistry?: RegistryQuery
+  portableAppRoot?: string
+  portableMode?: boolean
+  portableDataRootFallbackPath?: string
+  fileExists?: (path: string) => boolean
 } = {}): DesktopDataRootResolution {
   const environment = options.environment ?? process.env
   const platform = options.platform ?? process.platform
@@ -40,12 +56,27 @@ export function resolveDesktopDataRootConfiguration(options: {
   if ((environment.NETCONSOLE_RUNTIME_MODE ?? '').trim().toLowerCase() === 'test') {
     throw new Error('测试模式必须显式设置 NETCONSOLE_DATA_ROOT')
   }
+  if (options.portableAppRoot && (options.portableMode ?? detectPortableMode({
+    portableAppRoot: options.portableAppRoot,
+    environment,
+    fileExists: options.fileExists,
+  }))) {
+    const store = new PortableDataRootStore(
+      options.portableAppRoot,
+      options.fileExists,
+      options.portableDataRootFallbackPath,
+    )
+    const configured = store.load()
+    return configured
+      ? { dataRoot: configured, source: 'portable_configuration' }
+      : { dataRoot: defaultPortableDataRoot(options.portableAppRoot), source: 'portable_default' }
+  }
   if (platform !== 'win32') {
     throw new Error('NETCONSOLE_DATA_ROOT must be configured outside Windows')
   }
   const machineRoot = readMachineDataRoot(options.queryRegistry ?? defaultRegistryQuery)
   if (!machineRoot) {
-    throw new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择非系统盘的数据存放位置。')
+    throw new Error('尚未配置 NetConsole 数据目录。请通过安装程序选择数据存放位置；优先推荐非系统盘，也可以使用 C:\\ProgramData\\NetConsole\\Data。')
   }
   return { dataRoot: machineRoot, source: 'machine_configuration' }
 }

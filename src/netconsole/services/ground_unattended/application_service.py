@@ -16,6 +16,7 @@ from netconsole.core.database import Database
 from netconsole.core.model_projection import project_row_for_model
 from netconsole.core.paths import PathResolver
 from netconsole.services.site_manager import SiteManager
+from netconsole.services.ground_unattended.heartbeat_supervisor import HEARTBEAT_STREAM_ID
 from netconsole.models.api.ground_unattended import (
     GroundApIdentityDiagnosticsDTO,
     GroundActionResponseDTO,
@@ -49,10 +50,13 @@ from netconsole.models.api.ground_unattended import (
     GroundAcPollerHealthDTO,
     GroundHealthDTO,
     GroundHeartbeatMrDTO,
+    GroundSyslogControlRequestDTO,
     GroundHeartbeatIpDTO,
     GroundHeartbeatApDTO,
     GroundHeartbeatInventoryApplyDTO,
     GroundHeartbeatInventoryPreviewDTO,
+    HeartbeatConfigDTO,
+    HeartbeatRuntimeDTO,
     GroundHeartbeatPageDTO,
     GroundHeartbeatStatisticsDTO,
     GroundMrMonitoringDTO,
@@ -130,6 +134,7 @@ from netconsole.services.system_network_application_service import (
 )
 from netconsole.services.online_mr.errors import OnlineMrQueryError
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
+from netconsole.services.job_center.task_application_service import TaskApplicationService
 
 
 class DesktopActionResultPort(Protocol):
@@ -169,11 +174,13 @@ class GroundUnattendedApplicationService:
         process_adapter: GroundDeletionProcessPort | None = None,
         ap_identity_query_service: ApIdentityQueryService | None = None,
         quick_ping_service: QuickPingService | None = None,
+        task_service: TaskApplicationService | None = None,
     ) -> None:
         self.paths = paths
         self.site_id = site_id
         self.repository = repository
         self.supervisor = supervisor
+        self.task_service = task_service
         self.quick_ping = quick_ping_service or QuickPingService(
             site_id=site_id,
             output_root=paths.ground_unattended_root(site_id),
@@ -183,6 +190,9 @@ class GroundUnattendedApplicationService:
         self.desktop_action_service = desktop_action_service
         self.network_service = network_service or SystemNetworkApplicationService()
         self.raw_query = GroundRawStreamQueryService(repository)
+        resident = getattr(supervisor, "heartbeat", None)
+        if resident is not None:
+            self.raw_query.heartbeat_runtime = resident.status
         self.raw_deletion = GroundRawDataDeletionApplicationService(
             repository,
             process_adapter=process_adapter,
@@ -202,6 +212,13 @@ class GroundUnattendedApplicationService:
         self._ap_display_cache = GroundApDisplayResolver(
             self.ap_identity_query_service
         )
+        # API availability is a transition timestamp, not a per-query clock.
+        # Keeping the timestamp stable while the committed position state is
+        # unchanged preserves list/detail snapshot consistency and still
+        # records when this service first observed the new state.
+        self._position_api_availability: dict[
+            str, tuple[tuple[str, ...], str]
+        ] = {}
         self.inventory_sync = (
             TrainInventorySyncService(
                 paths,
@@ -475,36 +492,31 @@ class GroundUnattendedApplicationService:
             )
         return saved
 
+    def heartbeat_config(self, site_id: str) -> HeartbeatConfigDTO:
+        self._require_site(site_id)
+        return self.repository.get_heartbeat_config()
+
+    def update_heartbeat_config(self, site_id: str, config: HeartbeatConfigDTO) -> HeartbeatConfigDTO:
+        self._require_site(site_id)
+        result = self.repository.save_heartbeat_config(config)
+        self.supervisor.heartbeat.config_updated()
+        return result
+
+    def heartbeat_runtime(self, site_id: str) -> HeartbeatRuntimeDTO:
+        self._require_site(site_id)
+        return self.supervisor.heartbeat.status()
+
     def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "") -> GroundHeartbeatPageDTO:
         """Read durable heartbeat facts without deriving reachability from AC data."""
         self._require_site(site_id)
         state = self.repository.heartbeat_inventory_state()
         source_conflicts: list[str] = []
-        active_run = self.repository.get_active_run()
-        # A page refresh reconciles the device projection once per source change;
-        # it never starts probes. Explicit clearing suppresses regeneration.
-        # During an active run the supervisor has already synchronized the
-        # inventory, and re-running the full source preview for every heartbeat
-        # read can occupy the backend thread pool. Explicit inventory sync
-        # remains available for changes while monitoring is active.
-        supervisor_running = bool(getattr(self.supervisor, "running", False))
-        if (
-            not run_id
-            and (not active_run or not supervisor_running)
-            and state["enabled"]
-            and self.inventory_sync is not None
-        ):
-            preview = self.inventory_sync.preview()
-            source_conflicts = preview["conflicts"]
-            if not source_conflicts and any(preview[key] for key in (
-                "added_count", "updated_count", "disabled_count",
-            )):
-                self.sync_inventory(site_id)
-        run = self._resolve_run(run_id)
-        resolved_id = str(run["run_id"]) if run else ""
-        is_current = not run_id or bool(
-            active_run and str(active_run["run_id"]) == resolved_id
-        )
+        resident = getattr(self.supervisor, "heartbeat", None)
+        is_current = not run_id or run_id == "heartbeat-resident"
+        heartbeat_config = self.repository.get_heartbeat_config()
+        run = None if is_current else self._resolve_run(run_id)
+        resolved_id = "heartbeat-resident" if is_current else str((run or {}).get("run_id") or "")
+        runtime = resident.status() if resident is not None else HeartbeatRuntimeDTO()
         inventory = self.repository.list_inventory(include_removed=not is_current)
         snapshot_rows = (
             self.repository.list_heartbeat_snapshots(resolved_id)
@@ -525,19 +537,45 @@ class GroundUnattendedApplicationService:
             str(endpoint.get("device_uuid") or ""): endpoint
             for row in inventory for endpoint in row.get("endpoints", [])
         }
+        syslog_audits = self.repository.latest_syslog_config_audits(endpoints)
+
+        def apply_syslog_projection(payload: dict[str, Any], endpoint: dict[str, Any]) -> dict[str, Any]:
+            audit = syslog_audits.get(str(payload.get("mr_uuid") or ""), {})
+            audit_status = str(audit.get("status") or "").upper()
+            payload["management_ip"] = str(endpoint.get("management_ip") or "")
+            payload["backup_management_ip"] = str(endpoint.get("backup_management_ip") or "")
+            payload["syslog_status"] = {
+                "CONFIGURING": "CONFIGURING",
+                "VERIFYING": "VERIFYING",
+                "EXITING": "EXITING",
+                "EXITED": "EXITED",
+                "CONFIG_SENT": "CONFIGURED",
+                "CONFIG_REPAIRED": "CONFIGURED",
+                "CONFIG_PRESENT": "CONFIGURED",
+                "CONFIG_VERIFY_FAILED": "FAILED",
+                "EXIT_VERIFY_FAILED": "FAILED",
+                "CONFIG_FAILED": "FAILED",
+                "EXIT_FAILED": "FAILED",
+                "TARGET_PORT_CONFLICT": "FAILED",
+            }.get(audit_status, "NOT_CONFIGURED" if audit_status in {"", "AUTO_REPAIR_DISABLED"} else "UNKNOWN")
+            payload["syslog_last_error"] = str(audit.get("error_message") or "")
+            return payload
         # Reuse the AC view's exact physical MR identity contract; its peer AP is
         # deliberately not the MR body identity or location.
         from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
         ac_query = AcMeshLinkQueryService(self.paths)
         identity_rows: dict[str, Any] = {}
         ac_page = 1
-        while True:
-            result = ac_query.list_mrs(site_id, page=ac_page, page_size=200)
-            for item in result.items:
-                identity_rows[str(item.mr_device_id)] = item
-            if ac_page * 200 >= result.total:
-                break
-            ac_page += 1
+        try:
+            while True:
+                result = ac_query.list_mrs(site_id, page=ac_page, page_size=200)
+                for item in result.items:
+                    identity_rows[str(item.mr_device_id)] = item
+                if ac_page * 200 >= result.total:
+                    break
+                ac_page += 1
+        except Exception as exc:
+            source_conflicts.append(f"AC_ENRICHMENT_UNAVAILABLE: {type(exc).__name__}")
         recent_rtts = self.supervisor.fleet_ping.latest_mr_rtts(resolved_id) if is_current else {}
         mrs: list[GroundHeartbeatMrDTO] = []
         trains: list[GroundHeartbeatTrainDTO] = []
@@ -563,12 +601,13 @@ class GroundUnattendedApplicationService:
                     continue
                 if is_current or inventory_projection:
                     expected_ips = {str(endpoint.get("management_ip") or "")}
-                    if endpoint.get("backup_monitoring_strategy") == "MONITOR":
+                    if endpoint.get("backup_monitoring_strategy") == "MONITOR" and (not is_current or heartbeat_config.backup_policy == "MONITOR"):
                         expected_ips.add(str(endpoint.get("backup_management_ip") or ""))
                     expected_ips.discard("")
                     if {str(ip.get("ip") or "") for ip in payload.get("ip_states", [])} != expected_ips:
                         continue
                 payload["mr_name"] = str(endpoint.get("device_name") or "")
+                apply_syslog_projection(payload, endpoint)
                 identity = identity_rows.get(str(payload.get("mr_uuid") or ""))
                 if identity is not None:
                     associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
@@ -594,13 +633,18 @@ class GroundUnattendedApplicationService:
                 identity = identity_rows.get(mr_id)
                 associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
                 ips = [str(endpoint.get("management_ip") or "")]
-                if endpoint.get("backup_monitoring_strategy") == "MONITOR":
+                if endpoint.get("backup_monitoring_strategy") == "MONITOR" and (not is_current or heartbeat_config.backup_policy == "MONITOR"):
                     ips.append(str(endpoint.get("backup_management_ip") or ""))
+                projected = apply_syslog_projection({"mr_uuid": mr_id}, endpoint)
                 mrs.append(GroundHeartbeatMrDTO(
                     mr_uuid=mr_id, train_id=str(endpoint.get("train_id") or ""),
                     train_no=str(train.get("train_no") or ""),
                     mr_name=str(endpoint.get("device_name") or ""),
                     role=str(endpoint.get("mr_role") or ""),
+                    management_ip=str(endpoint.get("management_ip") or ""),
+                    backup_management_ip=str(endpoint.get("backup_management_ip") or ""),
+                    syslog_status=str(projected.get("syslog_status") or "NOT_CONFIGURED"),  # type: ignore[arg-type]
+                    syslog_last_error=str(projected.get("syslog_last_error") or ""),
                     resolved_ap_name=identity.resolved_ap if identity else "",
                     station=identity.resolved_ap_station if identity else "",
                     section=identity.resolved_ap_section if identity else "",
@@ -661,13 +705,15 @@ class GroundUnattendedApplicationService:
                     if candidate > latest_sample_at:
                         latest_sample_at = candidate
         has_samples = sent_count > 0 or success_count > 0 or lost_count > 0
-        run_state = str((run or {}).get("state") or "").upper()
+        run_state = runtime.state if is_current else str((run or {}).get("state") or "").upper()
         if not inventory:
             data_state = "DISABLED" if not state["enabled"] else "NO_INVENTORY"
             data_state_message = "已停用心跳监测对象" if not state["enabled"] else "当前局点没有已登记的心跳监测对象"
-        elif not state["enabled"]:
+        elif not state["enabled"] or (is_current and not runtime.enabled):
             data_state, data_state_message = "DISABLED", "心跳监测已停止，设备清单保留"
-        elif run_state in {"COMPLETED", "FINALIZING", "ARCHIVING"}:
+        elif is_current and run_state == "HEARTBEAT_DEGRADED":
+            data_state, data_state_message = "HEARTBEAT_DEGRADED", runtime.last_error or "心跳检测异常，后台正在重试"
+        elif run_state in {"STOPPED", "COMPLETED", "FINALIZING", "ARCHIVING"}:
             data_state, data_state_message = "STOPPED", "心跳监测已停止，保留设备清单和最近有效采样"
         elif not has_samples:
             data_state = (
@@ -690,7 +736,7 @@ class GroundUnattendedApplicationService:
                 age = (datetime.now().astimezone() - datetime.fromisoformat(latest_sample_at.replace("Z", "+00:00"))).total_seconds()
             except ValueError:
                 age = 0
-            if age > max(30, self.repository.get_profile().fleet_ping_timeout_ms / 1000 * 5):
+            if age > max(30, heartbeat_config.timeout_ms / 1000 * 5):
                 data_state, data_state_message = "STALE", "最近心跳采样已超过刷新阈值"
             else:
                 data_state, data_state_message = "RUNNING", "正在接收实时心跳采样"
@@ -724,7 +770,7 @@ class GroundUnattendedApplicationService:
         selected_ids = {row.train_id for row in trains}
         mrs = [row for row in mrs if row.train_id in selected_ids]
         return GroundHeartbeatPageDTO(
-            monitoring_enabled=bool(state["enabled"]), source_conflicts=source_conflicts,
+            runtime=runtime, monitoring_enabled=bool(state["enabled"] and (not is_current or runtime.enabled)), source_conflicts=source_conflicts,
             data_cleared_at=str(state["data_cleared_at"]),
             run_id=resolved_id, run_state=run_state,
             mrs=mrs, trains=trains, mr_counts=mr_counts, train_counts=train_counts,
@@ -760,7 +806,8 @@ class GroundUnattendedApplicationService:
                                          queried_start=start.isoformat(), queried_end=end.isoformat())
         series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
                                   start_time=start.isoformat(), end_time=end.isoformat(), max_points=2400)
-        rows, ac_rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id, run_id=heartbeat.run_id,
+        rows, ac_rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id,
+                                                   run_id=None if heartbeat.run_id == HEARTBEAT_STREAM_ID else heartbeat.run_id,
                                                    mr_uuid=mr_uuid, start=start, end=end)
         resolver = self._ap_display_resolver()
         resolver.preload_parsed(rows)
@@ -1267,9 +1314,9 @@ class GroundUnattendedApplicationService:
                 self.sync_inventory(site_id, heartbeat_revision=int(state["revision"]),
                                     heartbeat_preview_revision=payload.revision)
             else:
-                self.repository.apply_heartbeat_inventory_action(payload.action, expected_revision=int(state["revision"]))
+                self.supervisor.heartbeat.apply_inventory_action(payload.action, expected_revision=int(state["revision"]))
         except ValueError as exc:
-            raise GroundUnattendedError(str(exc).split(":")[0], "监测运行中或预览已过期，请停止监测后重新预览", status_code=409) from exc
+            raise GroundUnattendedError(str(exc).split(":")[0], "监测运行中或预览已过期，请先在设置中停用常驻 Heartbeat，等待停止后重新预览", status_code=409) from exc
         self.repository.add_event(
             event_type="heartbeat_inventory_managed", title="心跳监测管理操作",
             message=payload.action, details=preview.model_dump(mode="json"),
@@ -1389,15 +1436,159 @@ class GroundUnattendedApplicationService:
             )
         self.supervisor.request_config_check(
             device_uuid,
-            repair_enabled=(
-                mode == "AUTO_REPAIR" and profile.syslog_auto_repair_enabled
-            ),
+            # This endpoint is an explicit operator action.  The profile flag
+            # gates only unattended boot checks; a manual repair request keeps
+            # its existing meaning and is still recorded by the audit service.
+            repair_enabled=mode == "AUTO_REPAIR",
             allow_target_port_change=allow_target_port_change,
         )
         return GroundActionResponseDTO(
             state=str(run["state"]),
             run_id=str(run["run_id"]),
             message="MR 配置检查请求已提交",
+        )
+
+    def request_syslog_control(
+        self,
+        site_id: str,
+        payload: GroundSyslogControlRequestDTO,
+    ) -> GroundActionResponseDTO:
+        run = self._active(site_id)
+        profile = self.repository.get_profile()
+        self._validate_network_profile(profile, require_syslog=True)
+        requested = list(dict.fromkeys(str(item).strip() for item in payload.device_uuids if str(item).strip()))
+        if not requested:
+            raise GroundUnattendedError("MR_REQUIRED", "至少选择一台 MR", status_code=422)
+        inventory = {str(row.get("device_uuid") or ""): row for row in self.repository.list_inventory() for row in row.get("endpoints", [])}
+        selected: list[str] = []
+        address_owners: dict[str, str] = {}
+        for endpoint in inventory.values():
+            owner = str(endpoint.get("device_uuid") or "")
+            for field in ("management_ip", "backup_management_ip"):
+                raw_ip = str(endpoint.get(field) or "").strip()
+                if not raw_ip:
+                    continue
+                try:
+                    normalized_ip = str(ipaddress.ip_address(raw_ip))
+                except ValueError:
+                    continue
+                previous_owner = address_owners.setdefault(normalized_ip, owner)
+                if previous_owner != owner:
+                    address_owners[normalized_ip] = "<conflict>"
+        for device_uuid in requested:
+            endpoint = inventory.get(device_uuid)
+            if endpoint is None:
+                raise GroundUnattendedError("MR_NOT_FOUND", f"MR 不在当前无人值守清单中: {device_uuid}", status_code=404)
+            if payload.mode == "JOIN":
+                live = next((row for row in self.supervisor.fleet_ping.target_summaries() if str(row.get("mr_id") or "") == device_uuid), None)
+                if not live or str(live.get("status") or "").upper() != "ONLINE":
+                    raise GroundUnattendedError("MR_NOT_ONLINE", f"MR 当前不在线，不能加入 Syslog: {device_uuid}", status_code=409)
+                if not str(endpoint.get("management_ip") or "").strip():
+                    raise GroundUnattendedError("MR_MANAGEMENT_IP_MISSING", f"MR 没有有效管理地址: {device_uuid}", status_code=409)
+                for field in ("management_ip", "backup_management_ip"):
+                    raw_ip = str(endpoint.get(field) or "").strip()
+                    if not raw_ip:
+                        continue
+                    try:
+                        normalized_ip = str(ipaddress.ip_address(raw_ip))
+                    except ValueError as exc:
+                        raise GroundUnattendedError("MR_MANAGEMENT_IP_INVALID", f"MR 管理地址无效: {device_uuid}", status_code=409) from exc
+                    if address_owners.get(normalized_ip) == "<conflict>":
+                        raise GroundUnattendedError("MR_MANAGEMENT_IP_CONFLICT", f"MR 主备地址与其他 MR 冲突: {device_uuid}", status_code=409)
+            selected.append(device_uuid)
+        task_id = f"ground-syslog-{uuid.uuid4().hex}"
+        if self.task_service is not None:
+            self.task_service.create_external_task(
+                task_id=task_id,
+                task_type="ground_unattended_syslog_control",
+                task_name=f"MR Syslog {'加入' if payload.mode == 'JOIN' else '退出'}",
+                source="local",
+                site_name=site_id,
+                owner="ground_unattended",
+                device=str(len(selected)),
+            )
+            self.task_service.record_external_event(
+                task_id,
+                "state",
+                {
+                    "state": "RUNNING",
+                    "current": 0,
+                    "total": len(selected),
+                    "stage": f"SYSLOG_{payload.mode}",
+                    "message": "Syslog 批次任务已开始",
+                },
+                site_name=site_id,
+                source="ground_unattended",
+            )
+            self.task_service.record_external_event(
+                task_id,
+                "progress",
+                {
+                    "event": "BATCH_DEVICES",
+                    "operation": payload.mode,
+                    "device_uuids": list(selected),
+                },
+                site_name=site_id,
+                source="ground_unattended",
+            )
+        register_task = getattr(self.supervisor, "register_syslog_task", None)
+        if callable(register_task):
+            register_for_devices = getattr(
+                self.supervisor, "register_syslog_task_for_devices", None
+            )
+            if callable(register_for_devices):
+                register_for_devices(task_id, len(selected), selected)
+            else:
+                register_task(task_id, len(selected))
+        if payload.mode == "JOIN":
+            for device_uuid in selected:
+                if self.task_service is not None:
+                    self.task_service.record_external_event(
+                        task_id,
+                        "progress",
+                        {
+                            "event": "DEVICE_QUEUED",
+                            "device_uuid": device_uuid,
+                            "operation": "JOIN",
+                            "status": "QUEUED",
+                        },
+                        site_name=site_id,
+                        source="ground_unattended",
+                    )
+                try:
+                    self.supervisor.request_config_check(
+                        device_uuid, repair_enabled=True, task_id=task_id
+                    )
+                except TypeError as exc:
+                    if "task_id" not in str(exc):
+                        raise
+                    self.supervisor.request_config_check(device_uuid, repair_enabled=True)
+            message = f"已提交 {len(selected)} 台 MR 加入 Syslog 上报"
+        else:
+            for device_uuid in selected:
+                if self.task_service is not None:
+                    self.task_service.record_external_event(
+                        task_id,
+                        "progress",
+                        {
+                            "event": "DEVICE_QUEUED",
+                            "device_uuid": device_uuid,
+                            "operation": "EXIT",
+                            "status": "QUEUED",
+                        },
+                        site_name=site_id,
+                        source="ground_unattended",
+                    )
+                try:
+                    self.supervisor.request_syslog_exit(device_uuid, task_id=task_id)
+                except TypeError as exc:
+                    if "task_id" not in str(exc):
+                        raise
+                    self.supervisor.request_syslog_exit(device_uuid)
+            message = f"已提交 {len(selected)} 台 MR 退出 Syslog 上报"
+        return GroundActionResponseDTO(
+            state=str(run["state"]), run_id=str(run["run_id"]), task_id=task_id,
+            message=message,
         )
 
     def health(self, site_id: str) -> GroundHealthDTO:
@@ -1743,6 +1934,37 @@ class GroundUnattendedApplicationService:
                     heartbeat_age_seconds=heartbeat_age,
                     last_success_age_seconds=success_age,
                     last_error=str(row.get("last_error_message") or ""),
+                    last_query_started_at=str(
+                        row.get("last_query_started_at") or ""
+                    ),
+                    last_query_completed_at=str(
+                        row.get("last_query_completed_at") or ""
+                    ),
+                    last_query_duration_ms=(
+                        float(row["last_query_duration_ms"])
+                        if row.get("last_query_duration_ms") is not None
+                        else None
+                    ),
+                    last_query_succeeded=(
+                        bool(row["last_query_succeeded"])
+                        if row.get("last_query_succeeded") is not None
+                        else None
+                    ),
+                    query_timeout_count=int(row.get("query_timeout_count") or 0),
+                    last_query_success_at=str(
+                        row.get("last_query_success_at") or ""
+                    ),
+                    last_query_failure_at=str(
+                        row.get("last_query_failure_at") or ""
+                    ),
+                    snapshot_processing_duration_ms=(
+                        float(row["snapshot_processing_duration_ms"])
+                        if row.get("snapshot_processing_duration_ms") is not None
+                        else None
+                    ),
+                    snapshot_change_count=int(
+                        row.get("snapshot_change_count") or 0
+                    ),
                 )
             )
         return result
@@ -3765,6 +3987,10 @@ class GroundUnattendedApplicationService:
         )
         boot_by_device = dict(endpoint_snapshot["boot_by_device"])
         wmesh_by_device = dict(endpoint_snapshot["wmesh_by_device"])
+        position_by_device = dict(endpoint_snapshot.get("position_by_device") or {})
+        reconciliation_by_device = dict(
+            endpoint_snapshot.get("reconciliation_by_device") or {}
+        )
         runtime_by_device = dict(endpoint_snapshot["runtime_by_device"])
         radio_by_device = dict(endpoint_snapshot["radio_by_device"])
         audit_by_device = dict(endpoint_snapshot["audit_by_device"])
@@ -3779,6 +4005,8 @@ class GroundUnattendedApplicationService:
                 operation = operations.get((train.train_id, endpoint.endpoint)) or {}
                 boot = boot_by_device.get(endpoint.mr_id)
                 wmesh = wmesh_by_device.get(endpoint.mr_id)
+                position = position_by_device.get(endpoint.mr_id) or {}
+                reconciliation = reconciliation_by_device.get(endpoint.mr_id) or {}
                 radio_runtime = runtime_by_device.get(endpoint.mr_id)
                 radio_interfaces = (
                     [
@@ -3812,6 +4040,32 @@ class GroundUnattendedApplicationService:
                     wmesh_fresh
                     and str((wmesh or {}).get("event_type") or "").upper()
                     != "MESH_LINKDOWN"
+                )
+                position_received_at = self._parse_datetime(
+                    position.get("last_receive_time")
+                )
+                position_age_seconds = (
+                    max(0.0, (now - position_received_at.astimezone(now.tzinfo)).total_seconds())
+                    if position_received_at is not None
+                    else None
+                )
+                position_status = str(position.get("position_status") or "UNKNOWN")
+                position_freshness = (
+                    "NO_DATA"
+                    if position_received_at is None
+                    else "DISCONNECTED"
+                    if position_status == "DISCONNECTED"
+                    else "FRESH"
+                    if position_age_seconds is not None
+                    and position_age_seconds <= profile.ac_stale_grace_seconds
+                    else "STALE"
+                )
+                position_current_name = str(position.get("current_ap_name") or "")
+                position_current_mac = str(position.get("current_ap_mac") or "")
+                last_syslog_received_at = str(
+                    (boot or {}).get("last_syslog_received_at")
+                    or position.get("last_receive_time")
+                    or ""
                 )
                 info_center = dict((boot or {}).get("info_center_metrics") or {})
                 managed_ip = str(profile.syslog_server_ip or "")
@@ -3880,20 +4134,57 @@ class GroundUnattendedApplicationService:
                             else "",
                             "latest_session_id": str(operation.get("session_id") or ""),
                             "syslog_status": "ACTIVE"
-                            if (boot or {}).get("last_syslog_received_at")
+                            if last_syslog_received_at
                             else "WAITING",
-                            "last_syslog_received_at": str(
-                                (boot or {}).get("last_syslog_received_at") or ""
-                            ),
+                            "last_syslog_received_at": last_syslog_received_at,
                             "current_active_peer": str(
-                                (wmesh or {}).get("peer_name") or ""
-                            ) if wmesh_active else "",
+                                position_current_name
+                                if position_freshness in {"FRESH", "DISCONNECTED"}
+                                else (wmesh or {}).get("peer_name") or ""
+                            ) if position_freshness in {"FRESH", "DISCONNECTED"} or wmesh_active else "",
                             "last_link_switch_at": str(
-                                (wmesh or {}).get("receive_time") or ""
+                                position.get("last_switch_time")
+                                or (wmesh or {}).get("receive_time")
+                                or ""
                             )
-                            if (wmesh or {}).get("event_type")
-                            == "MESH_ACTIVELINK_SWITCH"
+                            if position.get("last_switch_time")
+                            or (wmesh or {}).get("event_type") == "MESH_ACTIVELINK_SWITCH"
                             else "",
+                            "position_current_ap_id": str(position.get("current_ap_id") or ""),
+                            "position_current_ap_name": position_current_name,
+                            "position_current_ap_mac": position_current_mac,
+                            "position_previous_ap_id": str(position.get("previous_ap_id") or ""),
+                            "position_previous_ap_name": str(position.get("previous_ap_name") or ""),
+                            "position_previous_ap_mac": str(position.get("previous_ap_mac") or ""),
+                            "position_station": str(position.get("station") or ""),
+                            "position_section": str(position.get("section") or ""),
+                            "position_status": position_status,
+                            "position_quality": str(position.get("position_quality") or "UNKNOWN"),
+                            "position_source": str(position.get("position_source") or ""),
+                            "position_freshness": position_freshness,
+                            "position_last_event_time": str(position.get("last_event_time") or ""),
+                            "position_last_event_time_source": str(position.get("last_event_time_source") or ""),
+                            "position_last_event_time_precision": str(position.get("last_event_time_precision") or ""),
+                            "position_last_receive_time": str(position.get("last_receive_time") or ""),
+                            "position_raw_persist_time": str(position.get("last_raw_persist_time") or ""),
+                            "position_parse_complete_time": str(position.get("last_parse_complete_time") or ""),
+                            "position_commit_time": str(position.get("last_position_commit_time") or ""),
+                            "position_latency_ms": position.get("last_position_latency_ms"),
+                            "position_api_available_time": self._position_api_available_time(
+                                f"endpoint:{endpoint.mr_id}", position
+                            ),
+                            "position_ui_available_time": "",
+                            "position_reconciliation_status": str(
+                                reconciliation.get("state") or "UNKNOWN"
+                            ),
+                            "position_reconciliation_reason": str(
+                                reconciliation.get("reason") or ""
+                            ),
+                            "position_reconciliation_ac_time": str(
+                                reconciliation.get("ac_event_time")
+                                or reconciliation.get("ac_received_at")
+                                or ""
+                            ),
                             "boot_session_id": str(
                                 (boot or {}).get("boot_session_id") or ""
                             ),
@@ -3983,8 +4274,119 @@ class GroundUnattendedApplicationService:
                         }
                     )
                 )
-            result.append(train.model_copy(update={"endpoints": endpoints}))
+            train_update: dict[str, Any] = {"endpoints": endpoints}
+            position_candidates = [
+                position_by_device.get(endpoint.mr_id) or {}
+                for endpoint in train.endpoints
+                if endpoint.mr_id and position_by_device.get(endpoint.mr_id)
+            ]
+            position_candidates = [
+                item
+                for item in position_candidates
+                if str(item.get("current_ap_name") or item.get("current_ap_mac") or "")
+                and str(item.get("position_quality") or "") == "EXACT_IDENTITY"
+            ]
+            if position_candidates:
+                latest_position = max(
+                    position_candidates,
+                    key=lambda item: str(
+                        item.get("last_position_commit_time")
+                        or item.get("last_event_time")
+                        or item.get("last_receive_time")
+                        or ""
+                    ),
+                )
+                latest_device_uuid = str(latest_position.get("device_uuid") or "")
+                latest_api_available_at = next(
+                    (
+                        endpoint.position_api_available_time
+                        for endpoint in endpoints
+                        if endpoint.mr_id == latest_device_uuid
+                    ),
+                    "",
+                )
+                train_update.update(
+                    {
+                        "current_ap_name": str(latest_position.get("current_ap_name") or ""),
+                        "current_ap_mac": str(latest_position.get("current_ap_mac") or ""),
+                        "position_previous_ap_name": str(latest_position.get("previous_ap_name") or ""),
+                        "position_previous_ap_mac": str(latest_position.get("previous_ap_mac") or ""),
+                        "station": str(latest_position.get("station") or train.station),
+                        "section": str(latest_position.get("section") or train.section),
+                        "rssi": latest_position.get("rssi"),
+                        "position_source": str(latest_position.get("position_source") or "SYSLOG"),
+                        "position_freshness": next(
+                            (
+                                endpoint.position_freshness
+                                for endpoint in endpoints
+                                if endpoint.mr_id == str(latest_position.get("device_uuid") or "")
+                            ),
+                            "STALE",
+                        ),
+                        "position_status": str(latest_position.get("position_status") or "UNKNOWN"),
+                        "position_quality": str(latest_position.get("position_quality") or "UNKNOWN"),
+                        "position_last_event_time": str(latest_position.get("last_event_time") or ""),
+                        "position_last_receive_time": str(latest_position.get("last_receive_time") or ""),
+                        "position_commit_time": str(latest_position.get("last_position_commit_time") or ""),
+                        "position_latency_ms": latest_position.get("last_position_latency_ms"),
+                        "position_api_available_time": latest_api_available_at,
+                        "position_ui_available_time": "",
+                        "position_reconciliation_status": str(
+                            reconciliation_by_device.get(
+                                str(latest_position.get("device_uuid") or ""), {}
+                            ).get("state")
+                            or "UNKNOWN"
+                        ),
+                        "position_reconciliation_reason": str(
+                            reconciliation_by_device.get(
+                                str(latest_position.get("device_uuid") or ""), {}
+                            ).get("reason")
+                            or ""
+                        ),
+                        "position_reconciliation_ac_time": str(
+                            reconciliation_by_device.get(
+                                str(latest_position.get("device_uuid") or ""), {}
+                            ).get("ac_event_time")
+                            or reconciliation_by_device.get(
+                                str(latest_position.get("device_uuid") or ""), {}
+                            ).get("ac_received_at")
+                            or ""
+                        ),
+                    }
+                )
+            result.append(train.model_copy(update=train_update))
         return result
+
+    def _position_api_available_time(
+        self, key: str, position: Mapping[str, Any]
+    ) -> str:
+        state = tuple(
+            str(position.get(name) or "")
+            for name in (
+                "device_uuid",
+                "current_ap_id",
+                "current_ap_name",
+                "current_ap_mac",
+                "previous_ap_id",
+                "previous_ap_name",
+                "previous_ap_mac",
+                "last_event_time",
+                "last_receive_time",
+                "last_position_commit_time",
+            )
+        )
+        if not any(state):
+            return ""
+        previous = self._position_api_availability.get(key)
+        if previous is not None and previous[0] == state:
+            return previous[1]
+        available_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+        self._position_api_availability[key] = (state, available_at)
+        if len(self._position_api_availability) > 4096:
+            self._position_api_availability.pop(
+                next(iter(self._position_api_availability))
+            )
+        return available_at
 
     def _syslog_health(self) -> dict[str, Any]:
         receiver = getattr(self.supervisor, "syslog_receiver", None)

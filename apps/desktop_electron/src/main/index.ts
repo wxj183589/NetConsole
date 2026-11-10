@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification as ElectronNotification, screen, shell, Tray } from 'electron'
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 
 import { DESKTOP_IPC, DESKTOP_SESSION_COOKIE, DESKTOP_SESSION_HEADER, type CloseToTrayState, type NativeActionResult, type RendererHostReport, type RendererRecoveryState, type RendererWorkloadReport, type SiteStorageRestartRequest, type TaskWindowContext, type WorkspaceWindowOpenRequest, type WorkspaceWindowSnapshot, type WorkspaceWindowStateResult } from '../shared/bridge'
 import { PythonBackendManager, type BackendRuntimeInfo } from './backend-manager'
@@ -15,6 +15,12 @@ import { formatTraySyncDiagnostic } from './tray-sync-diagnostic'
 import { buildChildProcessGoneDiagnostic, logDevelopmentGpuFeatureStatus } from './gpu-diagnostics'
 import { ensureDesktopRuntimePaths, resolveDesktopStorageContext } from './development-data-root'
 import { formatDesktopDataRootConfigurationError, resolveDesktopDataRootConfiguration } from './data-root-configuration'
+import {
+  defaultPortableDataRoot,
+  detectPortableMode,
+  PortableDataRootStore,
+  PortableDataRootUnavailableError,
+} from './portable-data-root'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
 import { ExternalToolStore } from './external-tool-store'
@@ -61,26 +67,65 @@ import {
 let desktopDataRootResolution!: ReturnType<typeof resolveDesktopDataRootConfiguration>
 let desktopStorageContext!: ReturnType<typeof resolveDesktopStorageContext>
 let desktopStartupConfigurationError: unknown
+const portableAppRoot = app.isPackaged ? resolve(dirname(process.execPath)) : undefined
+const portableMode = portableAppRoot
+  ? detectPortableMode({ portableAppRoot, environment: process.env })
+  : false
+const portableDataRootFallbackPath = portableAppRoot && portableMode
+  ? join(app.getPath('userData'), 'portable-data-root.json')
+  : undefined
+const portableDataRootStore = portableAppRoot && portableMode
+  ? new PortableDataRootStore(portableAppRoot, undefined, portableDataRootFallbackPath)
+  : undefined
+
 try {
-  desktopDataRootResolution = resolveDesktopDataRootConfiguration()
-  desktopStorageContext = resolveDesktopStorageContext({
-    ...process.env,
-    NETCONSOLE_DATA_ROOT: desktopDataRootResolution.dataRoot,
-  })
-  ensureDesktopRuntimePaths(desktopStorageContext)
-  app.setPath('userData', desktopStorageContext.userDataRoot)
-  app.setPath('sessionData', desktopStorageContext.sessionDataRoot)
-  app.setPath('cache', desktopStorageContext.cacheRoot)
-  app.setPath('logs', desktopStorageContext.logsRoot)
-  app.setPath('crashDumps', desktopStorageContext.crashDumpsRoot)
-  app.setPath('temp', desktopStorageContext.tempRoot)
-  assertElectronStoragePaths()
-  app.enableSandbox()
+  initializeDesktopStorage()
 } catch (cause) {
   // DataRoot failures happen before app.whenReady(). Keep the process alive
   // long enough to show a useful recovery dialog instead of an opaque JS
   // exception, without selecting any fallback path.
   desktopStartupConfigurationError = cause
+}
+
+function initializeDesktopStorage(rootOverride?: string): void {
+  const resolution = rootOverride
+    ? {
+      dataRoot: resolve(rootOverride),
+      source: 'portable_configuration' as const,
+    }
+    : resolveDesktopDataRootConfiguration({
+      portableAppRoot,
+      portableMode,
+      portableDataRootFallbackPath,
+    })
+  try {
+    desktopDataRootResolution = resolution
+    desktopStorageContext = resolveDesktopStorageContext({
+      ...process.env,
+      NETCONSOLE_DATA_ROOT: resolution.dataRoot,
+    }, undefined, process.platform, {
+      portableMode,
+      portableAppRoot,
+    })
+    ensureDesktopRuntimePaths(desktopStorageContext)
+    app.setPath('userData', desktopStorageContext.userDataRoot)
+    app.setPath('sessionData', desktopStorageContext.sessionDataRoot)
+    app.setPath('cache', desktopStorageContext.cacheRoot)
+    app.setPath('logs', desktopStorageContext.logsRoot)
+    app.setPath('crashDumps', desktopStorageContext.crashDumpsRoot)
+    app.setPath('temp', desktopStorageContext.tempRoot)
+    assertElectronStoragePaths()
+    app.enableSandbox()
+  } catch (cause) {
+    if (
+      !rootOverride
+      && resolution.source === 'portable_default'
+      && portableMode
+    ) {
+      throw new PortableDataRootUnavailableError(resolution.dataRoot, cause)
+    }
+    throw cause
+  }
 }
 
 let mainWindow: BrowserWindow | undefined
@@ -165,11 +210,47 @@ process.once('SIGTERM', () => requestExit(0))
 if (hasSingleInstanceLock) {
   void app.whenReady().then(async () => {
     if (desktopStartupConfigurationError) {
+      if (desktopStartupConfigurationError instanceof PortableDataRootUnavailableError) {
+        if (await recoverPortableDataRoot()) {
+          desktopStartupConfigurationError = undefined
+        } else {
+          await showDesktopStartupConfigurationError(desktopStartupConfigurationError)
+          return
+        }
+      }
+    }
+    if (desktopStartupConfigurationError) {
       await showDesktopStartupConfigurationError(desktopStartupConfigurationError)
       return
     }
     await startDesktop()
   }).catch((cause) => handleFatalStartup(cause))
+}
+
+async function recoverPortableDataRoot(): Promise<boolean> {
+  if (!portableMode || !portableAppRoot || !portableDataRootStore) return false
+  const result = await dialog.showOpenDialog({
+    title: '选择 NetConsole 便携版数据目录',
+    message: '便携版程序目录不可写，请选择一个可写的业务数据目录。不会自动迁移或覆盖旧数据。',
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  const selected = result.canceled ? undefined : result.filePaths[0]
+  if (!selected) return false
+  try {
+    initializeDesktopStorage(selected)
+    portableDataRootStore.save(resolve(selected) === defaultPortableDataRoot(portableAppRoot) ? undefined : selected)
+    return true
+  } catch (cause) {
+    await dialog.showMessageBox({
+      type: 'error',
+      title: '便携版数据目录不可用',
+      message: '未能使用所选数据目录',
+      detail: formatDesktopDataRootConfigurationError(cause),
+      buttons: ['退出'],
+      noLink: true,
+    })
+    return false
+  }
 }
 
 async function showDesktopStartupConfigurationError(cause: unknown): Promise<void> {
@@ -198,6 +279,8 @@ async function startDesktop(): Promise<void> {
     resolvedDataRoot: desktopStorageContext.dataRoot,
     bootstrapActiveSiteId: bootstrap.active_site_id,
     storageMode: desktopStorageContext.mode,
+    portableMode,
+    portableAppRoot,
   })
   if (resolve(config.dataRoot) !== resolve(desktopStorageContext.dataRoot)) {
     throw new Error('Electron、Backend 和持久化配置的数据根不一致，已停止启动。')
@@ -231,8 +314,16 @@ async function startDesktop(): Promise<void> {
     // A warm replacement cannot bind the fixed development port still owned
     // by the serving Backend. Port 0 keeps production behavior unchanged and
     // asks the development replacement to announce a free loopback port.
+    environment: {
+      ...(config.portableMode ? {
+        NETCONSOLE_PORTABLE_MODE: '1',
+        ...(config.portableAppRoot ? { NETCONSOLE_PORTABLE_APP_ROOT: config.portableAppRoot } : {}),
+      } : {}),
+      ...(warmReplacement ? {
+        NETCONSOLE_DEV_BACKEND_PORT: '',
+      } : {}),
+    },
     ...(warmReplacement ? {
-      environment: { NETCONSOLE_DEV_BACKEND_PORT: '' },
       warmHandoffOwnerId: readWarmHandoffOwnerId(dataRoot, activeSiteId),
     } : {}),
     logger,
@@ -746,9 +837,15 @@ async function restartManagedBackendForDataRoot(
   nextRoot: string,
   nextSite: string,
 ): Promise<void> {
+  const previousPortableDataRoot = portableDataRootStore?.load()
   await currentBackend.stop()
   const workspaceCheckpoint = workspaceWindowController?.prepareSiteSwitchSnapshots()
   try {
+    if (portableDataRootStore) {
+      portableDataRootStore.save(
+        resolve(nextRoot) === defaultPortableDataRoot(portableAppRoot!) ? undefined : nextRoot,
+      )
+    }
     currentBackend.configureStorage(nextRoot, nextSite)
     const runtime = await currentBackend.start()
     await applyManagedBackendRuntime(runtime, nextRoot, nextSite)
@@ -760,6 +857,16 @@ async function restartManagedBackendForDataRoot(
     logger('DATA_ROOT_BACKEND_RESTARTED')
     setImmediate(() => { void reloadManagedRenderersAfterBackendRestart() })
   } catch (cause) {
+    if (portableDataRootStore) {
+      try {
+        portableDataRootStore.save(previousPortableDataRoot)
+      } catch (restorePointerCause) {
+        logger(
+          'PORTABLE_DATA_ROOT_POINTER_RESTORE_FAILED',
+          `type=${restorePointerCause instanceof Error ? restorePointerCause.name : 'unknown'}`,
+        )
+      }
+    }
     try {
       await currentBackend.stop()
       currentBackend.configureStorage(previousRoot, previousSite)

@@ -1064,6 +1064,8 @@ class JobCenterQueryService:
             and task_type == "ac_mesh_link_resident_poll"
         ):
             return True, ""
+        if owner == "ground_unattended" and task_type == "ground_unattended_syslog_control":
+            return True, ""
         if owner == NETWORK_TOOL_OWNER:
             return True, ""
         if owner == COMMAND_REFERENCE_WEB_OWNER and task_type == COMMAND_REFERENCE_EXPORT_TASK:

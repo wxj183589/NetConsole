@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, sha
 import { ElMessage } from 'element-plus'
 
 import { t } from '../../i18n/runtime'
-import NcColumnSettings, { type NcColumnSettingItem } from './NcColumnSettings.vue'
+import NcColumnSettings, { type NcColumnSettingItem, type NcColumnDraftOptions } from './NcColumnSettings.vue'
 import NcTableCell from './NcTableCell.vue'
 import {
   normalizeNcTableColumn,
@@ -76,6 +76,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'header-dragend': [newWidth: number, oldWidth: number, column: unknown, event: MouseEvent]
   'row-contextmenu': [row: Row, column: { property?: string; columnKey?: string; label?: string }, event: MouseEvent]
+  'row-click': [row: Row, column: unknown, event: MouseEvent]
   'selection-change': [rows: Row[]]
 }>()
 
@@ -134,6 +135,13 @@ watch(() => props.language, (language) => {
 })
 
 const normalizedColumns = computed(() => props.columns.map(normalizeNcTableColumn))
+const defaultSettingColumns = computed<NcColumnSettingItem[]>(() => normalizedColumns.value.map(column => ({
+  key: column.key,
+  label: column.label,
+  visible: column.hideable ? column.visible : true,
+  hideable: column.hideable,
+  fixed: column.fixed === 'left' || column.fixed === 'right' ? column.fixed : false,
+})))
 
 function reconcileCurrentPreference(value?: NcTablePreferences | null): NcTablePreferences {
   return reconcileTablePreferences(normalizedColumns.value, value)
@@ -278,6 +286,19 @@ function toggleColumn(key: string, visible: boolean): void {
     const target = columns.find((column) => column.key === key)
     if (target) target.visible = visible
   })
+}
+function applyColumns(columns: NcColumnSettingItem[], options?: NcColumnDraftOptions): void {
+  const next = reconcileCurrentPreference(options?.reset ? undefined : preferences.value)
+  const byKey = new Map(columns.map(column => [column.key, column]))
+  next.order = columns.map(column => column.key)
+  next.columns = next.columns.map(column => {
+    const draft = byKey.get(column.key)
+    const result = draft ? { ...column, visible: draft.visible, fixed: draft.fixed } : column
+    if (options?.autofit) delete result.width
+    return result
+  })
+  if (options?.autofit) manualWidths.value = {}
+  if (JSON.stringify(next) !== JSON.stringify(reconcileCurrentPreference(preferences.value))) commitPreference(next)
 }
 
 function moveColumn(key: string, direction: -1 | 1): void {
@@ -461,6 +482,10 @@ function handleSelectionChange(rows: Row[]): void {
   emit('selection-change', rows)
 }
 
+function handleRowClick(row: Row, column: unknown, event: MouseEvent): void {
+  emit('row-click', row, column, event)
+}
+
 function refreshFonts(): void {
   const element = containerRef.value
   if (!element || typeof getComputedStyle === 'undefined') return
@@ -536,7 +561,9 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
       <NcColumnSettings
         v-if="showColumnSettings"
         :columns="settingColumns"
+        :default-columns="defaultSettingColumns"
         :preference-state="preferenceSaveState"
+        @apply="applyColumns"
         @toggle="toggleColumn"
         @move="moveColumn"
         @pin="cyclePin"
@@ -564,6 +591,7 @@ defineExpose({ tableRef, availableWidth, resolvedTableWidth, recalculate, resetL
         scrollbar-always-on
         @header-dragend="handleHeaderDragEnd"
         @row-contextmenu="handleRowContextMenu"
+        @row-click="handleRowClick"
         @selection-change="handleSelectionChange"
       >
         <template

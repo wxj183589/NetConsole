@@ -2,14 +2,20 @@ import { describe, expect, it } from 'vitest'
 
 import { meshArtifactDownloadRequest } from '../../api/meshAnalysis'
 import source from './MeshAnalysisView.vue?raw'
+import workbenchSource from '../../components/mesh-analysis/MeshPhase11Workbench.vue?raw'
 
 describe('Mesh analysis view', () => {
   it('shows persisted results and real import and report actions', () => {
-    expect(source).toContain('Mesh 原始日志分析')
+    expect(source).toContain('MR 原始 MESH 日志分析')
     expect(source).toContain('主 / 备链路')
-    expect(source).toContain('主链路建链顺序')
+    expect(source).toContain('<MeshPhase11Workbench')
+    expect(source).toContain('@workspace-change="changeBusinessWorkspace"')
+    expect(source).not.toContain('<details class="legacy-analysis"')
+    expect(source).toContain('<template #external>')
+    expect(source).not.toContain('name="build-order"')
+    expect(source).not.toContain('name="busy"')
     expect(source).toContain('切换事件')
-    expect(source).toContain('RSSI 分析')
+    expect(workbenchSource).toContain('RSSI 分析')
     expect(source).toContain('主用链路信号')
     expect(source).toContain('轨旁AP信号图')
     expect(source).not.toContain('<h3>全部 ACTIVE 主链路</h3>')
@@ -26,9 +32,9 @@ describe('Mesh analysis view', () => {
     expect(source).not.toContain('MeshUnavailableChart')
     expect(source).not.toContain('fping / iPerf 对齐')
     expect(source).not.toContain('getMeshAlignment')
-    expect(source).toContain('报告与来源')
+    expect(workbenchSource).toContain('报告与来源')
     expect(source).toContain('<el-pagination')
-    expect(source).toContain('peer_radio_mac')
+    expect(source).not.toContain("label: 'Peer Radio MAC'")
     expect(source).not.toContain('归属来源')
     expect(source).toContain('previewMeshImport')
     expect(source).toContain('applyMeshBundleImport')
@@ -73,7 +79,7 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('getMeshTracksideSignalChart')
     expect(source).toContain('MeshTracksideSignalChartData')
     expect(source).toContain('<MeshTracksideSignalChart')
-    expect(source).toContain('轨旁图继续按窗口与 LOD 加载')
+    expect(source).toContain('缩放后可查看当前时间范围的轨旁 AP 信号')
     expect(source).not.toContain('轨旁图按 Peer Radio MAC / AP MAC / Peer MAC')
     expect(source).toContain("import RailRssiComparison from '../../components/rail-timeline/RailRssiComparison.vue'")
     expect(source).toContain('<RailRssiComparison')
@@ -103,8 +109,8 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('getMeshPeerSegmentChart')
     expect(source).toContain('mesh-analysis-airload.show-switch-lines')
     expect(source).toContain('mesh-analysis-airload.show-switch-points')
-    expect(source).toContain(':show-switch-lines="showBusySwitchLines"')
-    expect(source).toContain(':show-switch-points="showBusySwitchPoints"')
+    expect(source).toContain(':show-switch-lines="true"')
+    expect(source).toContain(':show-switch-points="true"')
     expect(source).toContain("openTaskWindow({ module: 'rail'")
     expect(source).not.toContain('cancelRailTransitTask')
     expect(source).toContain('生成分析报告')
@@ -132,6 +138,25 @@ describe('Mesh analysis view', () => {
     expect(source).not.toContain('absolute_path')
   })
 
+  it('exposes real staged loading state and per-chart render completion', () => {
+    for (const phase of ['IDLE', 'PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING', 'COMPLETED', 'ERROR', 'CANCELLED']) {
+      expect(source).toContain(`'${phase}'`)
+    }
+    expect(source).toContain('正在查询数据库')
+    expect(source).toContain('正在整理链路数据')
+    expect(source).toContain('正在绘制主链 RSSI 图')
+    expect(source).toContain('@render-complete="handleMeshChartRenderComplete"')
+    expect(source).toContain('@render-error="handleMeshChartRenderError"')
+    expect(source).toContain('缓存命中')
+    expect(source).toContain('无有效数据')
+    expect(source).toContain('已取消加载')
+    expect(source).toContain('mesh-chart-status-row--global')
+    expect(source).toContain('initialSkeletonVisible')
+    expect(source).toContain('mesh-initial-skeleton__metrics')
+    expect(source).toContain('startInitialSkeletonDelay')
+    expect(source).toContain('clearInitialSkeletonDelay')
+  })
+
   it('uses the unified platform download instead of navigating the renderer', () => {
     expect(source).toContain('meshArtifactDownloadRequest')
     expect(source).toContain('downloadBackendResource')
@@ -152,7 +177,8 @@ describe('Mesh analysis view', () => {
     expect(source).not.toContain('<el-table')
     expect(source).not.toContain('<el-table-column')
     expect(source).not.toContain('preference-scope')
-    expect(source).toContain('mesh-analysis-active-build-order:v2')
+    expect(source).not.toContain('table-id="mesh-analysis-active-build-order:v2"')
+    expect(source).toContain(':session-id="selected.session.session_id"')
     expect(source).toContain('mesh-analysis-link-details:v3')
     expect(source).toContain('mesh-analysis-switch-events:v3')
     expect(source).not.toContain('AP 统计')
@@ -160,6 +186,11 @@ describe('Mesh analysis view', () => {
     expect(source).toContain('打开任务中心')
     expect(source).toContain("alignmentReason: 'long-text'")
     expect(source).toContain("alignmentReason: 'path'")
+
+    for (const columnName of ['sessionColumns', 'coverageColumns', 'buildOrderColumns', 'linkColumns', 'parseIssueColumns']) {
+      const block = source.match(new RegExp(`const ${columnName}:[\\s\\S]*?\\n\\]`))?.[0] || ''
+      expect(block).not.toMatch(/label: '(?:来源文件|来源类型|身份来源|匹配规则|Peer Radio MAC|原始 Peer MAC|规范 Peer MAC|行号)'/)
+    }
 
     const tableIds = [...source.matchAll(/table-id="([^"]+)"/g)].map((match) => match[1])
     expect(tableIds.length).toBeGreaterThanOrEqual(6)

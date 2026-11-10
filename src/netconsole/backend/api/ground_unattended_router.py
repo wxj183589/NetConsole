@@ -21,10 +21,13 @@ from netconsole.models.api.ground_unattended import (
     GroundArchiveBatchDeleteResponseDTO,
     GroundArchivePageDTO,
     GroundConfigCheckRequestDTO,
+    GroundSyslogControlRequestDTO,
     GroundDeepCollectionPageDTO,
     GroundDeepCollectionRecordPageDTO,
     GroundHealthDTO,
     GroundHeartbeatPageDTO,
+    HeartbeatConfigDTO,
+    HeartbeatRuntimeDTO,
     GroundHeartbeatInventoryRequestDTO,
     GroundHeartbeatInventoryApplyDTO,
     GroundHeartbeatInventoryPreviewDTO,
@@ -102,6 +105,24 @@ def _service(request: Request) -> GroundUnattendedApplicationService:
 
 def _site_id(request: Request) -> str:
     return _service(request).current_site_id()
+
+
+@router.get("/heartbeat/config", response_model=HeartbeatConfigDTO)
+def get_heartbeat_config(request: Request) -> HeartbeatConfigDTO:
+    return _call(lambda: _service(request).heartbeat_config(_site_id(request)))
+
+
+@router.put(
+    "/heartbeat/config", response_model=HeartbeatConfigDTO,
+    dependencies=[Depends(require_feature("capability.ground_unattended.heartbeat_inventory_manage"))],
+)
+def update_heartbeat_config(request: Request, payload: HeartbeatConfigDTO) -> HeartbeatConfigDTO:
+    return _call(lambda: _service(request).update_heartbeat_config(_site_id(request), payload))
+
+
+@router.get("/heartbeat/runtime", response_model=HeartbeatRuntimeDTO)
+def get_heartbeat_runtime(request: Request) -> HeartbeatRuntimeDTO:
+    return _call(lambda: _service(request).heartbeat_runtime(_site_id(request)))
 
 
 @router.post(
@@ -380,6 +401,19 @@ def config_check(
             allow_target_port_change=payload.allow_target_port_change,
             explicit_confirmation=payload.explicit_confirmation,
         )
+    )
+
+
+@router.post(
+    "/syslog-control",
+    response_model=GroundActionResponseDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def syslog_control(
+    request: Request, payload: GroundSyslogControlRequestDTO
+) -> GroundActionResponseDTO:
+    return _call(
+        lambda: _service(request).request_syslog_control(_site_id(request), payload)
     )
 
 
