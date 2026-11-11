@@ -172,12 +172,7 @@ def _looks_like_sqlite(path: Path) -> bool:
     return name.endswith(MESH_SUFFIXES) or name.endswith(".mesh.sqlite")
 
 
-def _sqlite_metadata(path: Path) -> dict[str, Any]:
-    before = _file_snapshot(path)
-    wal_path = _sidecar(path, "-wal")
-    shm_path = _sidecar(path, "-shm")
-    wal_before = _file_snapshot(wal_path)
-    shm_before = _file_snapshot(shm_path)
+def _inspect_sqlite_once(path: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "sqlite_header": False,
         "schema_version": "",
@@ -189,12 +184,6 @@ def _sqlite_metadata(path: Path) -> dict[str, Any]:
         "session_count": None,
         "error": "",
         "read_conflict": False,
-        "main_snapshot_before": before,
-        "main_snapshot_after": None,
-        "wal_snapshot_before": wal_before,
-        "wal_snapshot_after": None,
-        "shm_snapshot_before": shm_before,
-        "shm_snapshot_after": None,
     }
     try:
         with path.open("rb") as handle:
@@ -222,18 +211,107 @@ def _sqlite_metadata(path: Path) -> dict[str, Any]:
             result["error"] = f"sqlite:{type(exc).__name__}: {exc}"
             if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).casefold():
                 result["read_conflict"] = True
-    result["main_snapshot_after"] = _file_snapshot(path)
-    result["wal_snapshot_after"] = _file_snapshot(wal_path)
-    result["shm_snapshot_after"] = _file_snapshot(shm_path)
-    result["snapshot_stable"] = all(
+    return result
+
+
+def _sqlite_metadata(path: Path) -> dict[str, Any]:
+    """Inspect SQLite twice and separate observer side effects from external changes.
+
+    A read-only connection may update the WAL index/SHM mtime while settling a stale
+    sidecar left by an interrupted writer. The second independent observation lets us
+    record that first-probe effect without treating it as confirmed external activity.
+    """
+    before = _file_snapshot(path)
+    wal_path = _sidecar(path, "-wal")
+    shm_path = _sidecar(path, "-shm")
+    wal_before = _file_snapshot(wal_path)
+    shm_before = _file_snapshot(shm_path)
+    first = _inspect_sqlite_once(path)
+    after_first = _file_snapshot(path)
+    wal_after_first = _file_snapshot(wal_path)
+    shm_after_first = _file_snapshot(shm_path)
+    second = _inspect_sqlite_once(path)
+    after_second = _file_snapshot(path)
+    wal_after_second = _file_snapshot(wal_path)
+    shm_after_second = _file_snapshot(shm_path)
+
+    result: dict[str, Any] = dict(first)
+    result["second_probe_error"] = second.get("error") or ""
+    result["second_probe_read_conflict"] = bool(second.get("read_conflict"))
+    if second.get("error") or second.get("read_conflict"):
+        result["error"] = "; ".join(
+            value
+            for value in (first.get("error"), second.get("error"))
+            if value
+        )
+        result["read_conflict"] = bool(
+            first.get("read_conflict") or second.get("read_conflict")
+        )
+    elif not first.get("error"):
+        # The second result is the latest complete read, while the first result
+        # remains available through the probe evidence below.
+        for field in (
+            "sqlite_header",
+            "schema_version",
+            "sqlite_schema",
+            "quick_check",
+            "integrity_check",
+            "table_names",
+            "source_file_count",
+            "session_count",
+        ):
+            result[field] = second.get(field)
+
+    main_changed = not _snapshot_stable(before, after_second)
+    wal_changed = not _snapshot_stable(wal_before, wal_after_second)
+    shm_changed_first = not _snapshot_stable(shm_before, shm_after_first)
+    shm_changed_second = not _snapshot_stable(shm_after_first, shm_after_second)
+    settled_stable = all(
         (
-            _snapshot_stable(result["main_snapshot_before"], result["main_snapshot_after"]),
-            _snapshot_stable(result["wal_snapshot_before"], result["wal_snapshot_after"]),
-            _snapshot_stable(result["shm_snapshot_before"], result["shm_snapshot_after"]),
+            _snapshot_stable(after_first, after_second),
+            _snapshot_stable(wal_after_first, wal_after_second),
+            _snapshot_stable(shm_after_first, shm_after_second),
         )
     )
-    result["wal_size"] = int((result["wal_snapshot_after"] or {}).get("file_size") or 0)
-    result["shm_size"] = int((result["shm_snapshot_after"] or {}).get("file_size") or 0)
+    auditor_shm_side_effect = bool(
+        shm_changed_first
+        and not shm_changed_second
+        and not main_changed
+        and not wal_changed
+        and not result.get("read_conflict")
+        and not result.get("error")
+    )
+    result.update(
+        {
+            "main_snapshot_before": before,
+            "main_snapshot_after": after_second,
+            "wal_snapshot_before": wal_before,
+            "wal_snapshot_after": wal_after_second,
+            "shm_snapshot_before": shm_before,
+            "shm_snapshot_after": shm_after_second,
+            "main_snapshot_after_first_probe": after_first,
+            "wal_snapshot_after_first_probe": wal_after_first,
+            "shm_snapshot_after_first_probe": shm_after_first,
+            "main_changed_during_observation": main_changed,
+            "wal_changed_during_observation": wal_changed,
+            "shm_changed_during_first_probe": shm_changed_first,
+            "shm_changed_during_second_probe": shm_changed_second,
+            "settled_snapshot_stable": settled_stable,
+            "snapshot_stable": all(
+                (
+                    _snapshot_stable(before, after_second),
+                    _snapshot_stable(wal_before, wal_after_second),
+                    _snapshot_stable(shm_before, shm_after_second),
+                )
+            ),
+            "observer_stable": settled_stable,
+            "auditor_shm_side_effect_observed": auditor_shm_side_effect,
+            "unexplained_shm_change": bool(shm_changed_second),
+            "probe_count": 2,
+            "wal_size": int((wal_after_second or {}).get("file_size") or 0),
+            "shm_size": int((shm_after_second or {}).get("file_size") or 0),
+        }
+    )
     return result
 
 
@@ -504,22 +582,47 @@ def _activity_state(
     *,
     runtime_processes: list[str],
     active_task_references: int,
+    unknown_task_references: int,
+    recovery_references: int,
+    reference_queries_ok: bool,
+    maintenance_window_authorized: bool,
 ) -> str:
-    main_changed = not _snapshot_stable(
-        metadata.get("main_snapshot_before"), metadata.get("main_snapshot_after")
-    )
-    wal_before = metadata.get("wal_snapshot_before")
-    wal_after = metadata.get("wal_snapshot_after")
-    wal_changed = not _snapshot_stable(wal_before, wal_after)
-    if main_changed or (wal_before is not None or wal_after is not None) and wal_changed:
+    if metadata.get("main_changed_during_observation") or metadata.get(
+        "wal_changed_during_observation"
+    ):
         return "ACTIVE_CONFIRMED"
-    if metadata.get("read_conflict") or runtime_processes or active_task_references:
+    if (
+        metadata.get("read_conflict")
+        or runtime_processes
+        or active_task_references
+        or unknown_task_references
+        or recovery_references
+        or not reference_queries_ok
+    ):
         return "ACTIVITY_UNKNOWN"
-    if metadata.get("wal_size") or metadata.get("shm_size"):
+    # A non-empty WAL means there is uncheckpointed state. It remains protected
+    # even when two read-only probes happen to observe stable sidecars.
+    if metadata.get("wal_size"):
         return "SIDECAR_PRESENT_UNCONFIRMED"
-    if metadata.get("snapshot_stable"):
+    if metadata.get("unexplained_shm_change"):
+        return "SIDECAR_PRESENT_UNCONFIRMED"
+    if not maintenance_window_authorized:
+        return (
+            "SIDECAR_PRESENT_UNCONFIRMED"
+            if metadata.get("shm_size")
+            else "ACTIVITY_UNKNOWN"
+        )
+    if metadata.get("error") or metadata.get("quick_check") != "ok" or metadata.get(
+        "integrity_check"
+    ) != "ok":
+        return "ACTIVITY_UNKNOWN"
+    if metadata.get("settled_snapshot_stable") and (
+        not metadata.get("shm_size")
+        or metadata.get("auditor_shm_side_effect_observed")
+        or not metadata.get("shm_changed_during_first_probe")
+    ):
         return "IDLE_CONFIRMED"
-    return "ACTIVITY_UNKNOWN"
+    return "SIDECAR_PRESENT_UNCONFIRMED"
 
 
 def _task_reference_counts(
@@ -558,6 +661,8 @@ def _db_record(
     recovery_texts: list[dict[str, str]],
     runtime_processes: list[str],
     catalog_available: bool,
+    source_index_query_ok: bool,
+    maintenance_window_authorized: bool,
 ) -> dict[str, Any]:
     metadata = _sqlite_metadata(path)
     stat = path.stat()
@@ -726,6 +831,14 @@ def _db_record(
         metadata,
         runtime_processes=runtime_processes,
         active_task_references=active_task_count,
+        unknown_task_references=unknown_task_count,
+        recovery_references=len(recovery_matches),
+        reference_queries_ok=bool(
+            catalog_available
+            and task_info.get("status") == "OK"
+            and (db_type not in {"parsed", "rebuild_temp"} or source_index_query_ok)
+        ),
+        maintenance_window_authorized=maintenance_window_authorized,
     )
     if activity_state == "ACTIVE_CONFIRMED":
         reasons.add("ACTIVE_CONFIRMED")
@@ -775,14 +888,47 @@ def _db_record(
         "activity_state": activity_state,
         "activity_probe": {
             "snapshot_stable": metadata.get("snapshot_stable"),
+            "settled_snapshot_stable": metadata.get("settled_snapshot_stable"),
+            "observer_stable": metadata.get("observer_stable"),
+            "probe_count": metadata.get("probe_count", 0),
             "read_conflict": metadata.get("read_conflict"),
+            "second_probe_error": metadata.get("second_probe_error") or "",
+            "main_changed_during_observation": metadata.get(
+                "main_changed_during_observation"
+            ),
+            "wal_changed_during_observation": metadata.get(
+                "wal_changed_during_observation"
+            ),
+            "shm_changed_during_first_probe": metadata.get(
+                "shm_changed_during_first_probe"
+            ),
+            "shm_changed_during_second_probe": metadata.get(
+                "shm_changed_during_second_probe"
+            ),
+            "auditor_shm_side_effect_observed": metadata.get(
+                "auditor_shm_side_effect_observed"
+            ),
+            "unexplained_shm_change": metadata.get("unexplained_shm_change"),
+            "maintenance_window_authorized": maintenance_window_authorized,
+            "source_index_query_ok": source_index_query_ok,
+            "task_query_status": task_info.get("status"),
+            "catalog_available": catalog_available,
             "runtime_processes": runtime_processes,
             "main_snapshot_before": metadata.get("main_snapshot_before"),
             "main_snapshot_after": metadata.get("main_snapshot_after"),
+            "main_snapshot_after_first_probe": metadata.get(
+                "main_snapshot_after_first_probe"
+            ),
             "wal_snapshot_before": metadata.get("wal_snapshot_before"),
             "wal_snapshot_after": metadata.get("wal_snapshot_after"),
+            "wal_snapshot_after_first_probe": metadata.get(
+                "wal_snapshot_after_first_probe"
+            ),
             "shm_snapshot_before": metadata.get("shm_snapshot_before"),
             "shm_snapshot_after": metadata.get("shm_snapshot_after"),
+            "shm_snapshot_after_first_probe": metadata.get(
+                "shm_snapshot_after_first_probe"
+            ),
         },
         "source_record_count": len(source_rows),
         "source_reference_count": len(source_refs),
@@ -808,6 +954,8 @@ def _db_record(
         "recovery_references": recovery_matches,
         "evidence": evidence,
         "runtime_processes": runtime_processes,
+        "maintenance_window_authorized": maintenance_window_authorized,
+        "source_index_query_ok": source_index_query_ok,
         "rebuild_target_path": physical_record["rebuild_target_path"],
     }
     base_record["final_status"] = _classify(
@@ -836,7 +984,12 @@ def _finalize_rebuild_records(records: list[dict[str, Any]]) -> None:
             "formal_database_path": target_path,
             "formal_database_exists": bool(target),
             "formal_database_healthy": False,
+            "formal_database_quick_check": "",
+            "formal_database_integrity_check": "",
             "formal_database_session_reference_count": 0,
+            "physical_source_reference_count": record.get("source_reference_count", 0),
+            "physical_session_reference_count": record.get("session_reference_count", 0),
+            "filename_fallback_reference_count": record.get("fallback_reference_count", 0),
             "actual_path_reference_count": record.get("source_reference_count", 0),
             "internal_source_identity_count": record.get("internal_source_identity_count", 0),
             "active_task_reference_count": record.get("active_task_reference_count", 0),
@@ -847,6 +1000,8 @@ def _finalize_rebuild_records(records: list[dict[str, Any]]) -> None:
         if target:
             healthy = target.get("quick_check") == "ok" and target.get("integrity_check") == "ok"
             review["formal_database_healthy"] = healthy
+            review["formal_database_quick_check"] = target.get("quick_check") or ""
+            review["formal_database_integrity_check"] = target.get("integrity_check") or ""
             review["formal_database_session_reference_count"] = target.get(
                 "session_reference_count", 0
             )
@@ -903,6 +1058,7 @@ def audit_root(
     *,
     writer_active: bool = False,
     runtime_processes: list[str] | None = None,
+    maintenance_window_authorized: bool = False,
 ) -> dict[str, Any]:
     root = root.resolve()
     sites_root = root / "sites"
@@ -914,10 +1070,12 @@ def audit_root(
         "environment": "PRODUCTION" if root.name.casefold() == "netconsoledata" else "DEV_REAL",
         "writer_active": writer_active,
         "runtime_processes": runtime_processes,
+        "maintenance_window_authorized": maintenance_window_authorized,
         "sites_scanned": 0,
         "mr_profiles_scanned": 0,
         "records": [],
         "task_activity": [],
+        "source_index_query_errors": [],
         "errors": [],
     }
     if not sites_root.is_dir():
@@ -956,12 +1114,15 @@ def audit_root(
         artifact_texts = _artifact_texts(site_dir)
         recovery_texts = _recovery_texts(mesh_root)
         index_sources: dict[str, list[dict[str, Any]]] = {}
+        index_source_query_ok: dict[str, bool] = {}
         for safe_name in profiles:
             index_path = mesh_root / safe_name / "mesh.sqlite"
             if index_path.is_file():
                 rows, error = _read_rows(index_path, "source_files")
                 if error:
                     result["errors"].append(f"{index_path}: {error}")
+                    result["source_index_query_errors"].append(str(index_path))
+                index_source_query_ok[safe_name] = not bool(error)
                 index_sources[safe_name] = rows
         for path in sorted(_walk_files(mesh_root), key=lambda item: str(item).casefold()):
             if not _looks_like_sqlite(path):
@@ -996,6 +1157,8 @@ def audit_root(
                 recovery_texts=recovery_texts,
                 runtime_processes=runtime_processes,
                 catalog_available=catalog_available,
+                source_index_query_ok=index_source_query_ok.get(profile_safe, False),
+                maintenance_window_authorized=maintenance_window_authorized,
             )
             result["records"].append(record)
     _finalize_rebuild_records(result["records"])
@@ -1007,6 +1170,7 @@ def audit_roots(
     *,
     writer_active_roots: set[Path] | None = None,
     runtime_processes_by_root: dict[Path, list[str]] | None = None,
+    maintenance_window_authorized: bool = False,
 ) -> dict[str, Any]:
     active = {path.resolve() for path in (writer_active_roots or set())}
     process_map = {path.resolve(): value for path, value in (runtime_processes_by_root or {}).items()}
@@ -1015,13 +1179,15 @@ def audit_roots(
             Path(root),
             writer_active=Path(root).resolve() in active,
             runtime_processes=process_map.get(Path(root).resolve(), []),
+            maintenance_window_authorized=maintenance_window_authorized,
         )
         for root in roots
     ]
     records = [record for item in root_results for record in item["records"]]
     return {
-        "format": "netconsole-mesh-database-reference-audit-v2",
+        "format": "netconsole-mesh-database-reference-audit-v3",
         "generated_at": now_iso(),
+        "maintenance_window_authorized": maintenance_window_authorized,
         "roots": root_results,
         "records": records,
         "summary": _summary(root_results, records),
@@ -1074,6 +1240,25 @@ def _summary_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             if record.get("final_status") == "ORPHAN_CANDIDATE"
         ),
         "unknown_database_count": by_status["UNKNOWN_PROTECT"] + by_status["INSPECTION_FAILED"],
+        "auditor_shm_side_effect_count": sum(
+            bool((record.get("activity_probe") or {}).get("auditor_shm_side_effect_observed"))
+            for record in records
+        ),
+        "unexplained_shm_change_count": sum(
+            bool((record.get("activity_probe") or {}).get("unexplained_shm_change"))
+            for record in records
+        ),
+        "external_main_or_wal_change_count": sum(
+            bool(
+                (record.get("activity_probe") or {}).get(
+                    "main_changed_during_observation"
+                )
+                or (record.get("activity_probe") or {}).get(
+                    "wal_changed_during_observation"
+                )
+            )
+            for record in records
+        ),
         "status_counts": by_status,
     }
 
@@ -1106,17 +1291,22 @@ def _summary(root_results: list[dict[str, Any]], records: list[dict[str, Any]]) 
         "raw_logs_modified_count": 0,
         "active_database_modified_count": 0,
         "unconfirmed_database_removed_count": 0,
+        "maintenance_window_authorized": all(
+            bool(item.get("maintenance_window_authorized")) for item in root_results
+        )
+        if root_results
+        else False,
     }
 
 
 def _md_escape(value: object) -> str:
-    return str(value or "").replace("|", "\\|").replace("\n", " ")
+    return ("" if value is None else str(value)).replace("|", "\\|").replace("\n", " ")
 
 
 def render_inventory(audit: dict[str, Any]) -> str:
     summary = audit["summary"]
     lines = [
-        "# MESH_DATABASE_INVENTORY_V2",
+        "# MESH_DATABASE_ACTIVITY_AUDIT_V3",
         "",
         f"生成时间：`{audit['generated_at']}`",
         "",
@@ -1131,6 +1321,10 @@ def render_inventory(audit: dict[str, Any]) -> str:
         f"- IDLE_CONFIRMED：{summary['idle_database_count']}",
         f"- SIDECAR_PRESENT_UNCONFIRMED：{summary['sidecar_unconfirmed_count']}",
         f"- ACTIVITY_UNKNOWN：{summary['activity_unknown_count']}",
+        f"- 审计器首次只读 SHM 自影响：{summary.get('auditor_shm_side_effect_count', 0)}",
+        f"- 第二次观察仍未解释的 SHM 变化：{summary.get('unexplained_shm_change_count', 0)}",
+        f"- 主库/WAL 外部变化：{summary.get('external_main_or_wal_change_count', 0)}",
+        f"- 维护窗口授权：`{'YES' if summary.get('maintenance_window_authorized') else 'NO'}`",
         "",
         "## 按数据根统计",
         "",
@@ -1166,8 +1360,8 @@ def render_inventory(audit: dict[str, Any]) -> str:
             "",
             "## 逐文件身份与检查",
             "",
-            "| 环境 | 局点 | MR Profile | 数据库类型 | canonical_path | relative_path | file_size | mtime_ns | sha256 | sqlite_schema | quick_check | integrity_check | wal_size | shm_size | file_identity | activity_state | final_status |",
-            "|---|---|---|---|---|---|---:|---:|---|---|---|---|---:|---:|---|---|---|",
+            "| 环境 | 局点 | MR Profile | 数据库类型 | canonical_path | relative_path | file_size | mtime_ns | sha256 | sqlite_schema | quick_check | integrity_check | wal_size | shm_size | file_identity | probe_count | settled_stable | auditor_shm_effect | unexplained_shm_change | external_main_or_wal_change | activity_state | final_status |",
+            "|---|---|---|---|---|---|---:|---:|---|---|---|---|---:|---:|---|---:|---|---|---|---|---|---|",
         ]
     )
     for record in audit["records"]:
@@ -1191,6 +1385,20 @@ def render_inventory(audit: dict[str, Any]) -> str:
                     record.get("wal_size", 0),
                     record.get("shm_size", 0),
                     record.get("file_identity"),
+                    (record.get("activity_probe") or {}).get("probe_count", 0),
+                    (record.get("activity_probe") or {}).get("settled_snapshot_stable"),
+                    (record.get("activity_probe") or {}).get(
+                        "auditor_shm_side_effect_observed"
+                    ),
+                    (record.get("activity_probe") or {}).get("unexplained_shm_change"),
+                    bool(
+                        (record.get("activity_probe") or {}).get(
+                            "main_changed_during_observation"
+                        )
+                        or (record.get("activity_probe") or {}).get(
+                            "wal_changed_during_observation"
+                        )
+                    ),
                     record.get("activity_state"),
                     record.get("final_status"),
                 )
@@ -1203,7 +1411,7 @@ def render_inventory(audit: dict[str, Any]) -> str:
 def render_reference_audit(audit: dict[str, Any]) -> str:
     summary = audit["summary"]
     lines = [
-        "# MESH_DATABASE_REFERENCE_AUDIT_V2",
+        "# MESH_DATABASE_REFERENCE_AUDIT_V3",
         "",
         f"生成时间：`{audit['generated_at']}`",
         "",
@@ -1212,6 +1420,7 @@ def render_reference_audit(audit: dict[str, Any]) -> str:
         f"- 来源物理路径引用：{summary['source_reference_count']}；会话物理路径引用：{summary['session_reference_count']}；文件名回退：{summary['fallback_reference_count']}",
         f"- 活动任务引用：{summary['active_task_reference_count']}；历史任务引用：{summary['historical_task_reference_count']}；未知任务引用：{summary['unknown_reference_count']}",
         f"- 恢复依赖：{summary['recovery_reference_count']}；备份引用：{summary['backup_reference_count']}",
+        f"- 审计器 SHM 自影响：{summary.get('auditor_shm_side_effect_count', 0)}；未解释 SHM 变化：{summary.get('unexplained_shm_change_count', 0)}；主库/WAL 外部变化：{summary.get('external_main_or_wal_change_count', 0)}",
         "",
         "| 文件 | 数据库类型 | activity_state | final_status | 来源物理引用 | 会话引用 | 文件名回退 | 活动任务 | 历史任务 | 未知任务 | 恢复依赖 | 备份引用 | 内部 source identity | 保护原因 |",
         "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
@@ -1272,7 +1481,7 @@ def render_candidates(audit: dict[str, Any]) -> dict[str, Any]:
         if record.get("status") == "ORPHAN_CANDIDATE"
     ]
     return {
-        "format": "netconsole-mesh-orphan-candidates-v2",
+        "format": "netconsole-mesh-orphan-candidates-v3",
         "generated_at": audit["generated_at"],
         "summary": audit["summary"],
         "candidates": candidates,
@@ -1298,9 +1507,27 @@ def render_final_report(audit: dict[str, Any], *, operation: dict[str, Any] | No
     reference_status = "PASS"
     if summary["unknown_reference_count"] or summary["recovery_reference_count"] or summary["sidecar_unconfirmed_count"]:
         reference_status = "PARTIAL"
+    activity_status = "PASS"
+    if (
+        summary["active_database_count"]
+        or summary["activity_unknown_count"]
+        or summary["sidecar_unconfirmed_count"]
+        or summary.get("unexplained_shm_change_count")
+    ):
+        activity_status = "PARTIAL"
+    rebuild_records = [
+        record
+        for record in audit["records"]
+        if record.get("database_type") == "rebuild_temp"
+    ]
+    rebuild_status = "PASS"
+    if any(record.get("final_status") == "INSPECTION_FAILED" for record in rebuild_records):
+        rebuild_status = "FAIL"
+    elif any(record.get("final_status") != "ORPHAN_CANDIDATE" for record in rebuild_records):
+        rebuild_status = "PARTIAL"
     previous = audit.get("previous_summary") or {}
     lines = [
-        "# MESH_DATABASE_CLEANUP_REVIEW_V2",
+        "# MESH_DATABASE_V3_FINAL_REPORT",
         "",
         f"生成时间：`{audit['generated_at']}`",
         f"总体状态：`{status}`",
@@ -1308,19 +1535,29 @@ def render_final_report(audit: dict[str, Any], *, operation: dict[str, Any] | No
         "## 结论",
         "",
         "AUDIT_IMPLEMENTATION=PASS",
+        f"ACTIVITY_DETECTION={activity_status}",
         f"REFERENCE_CHECK={reference_status}",
+        f"REBUILD_REVIEW={rebuild_status}",
         "PRODUCTION_CLEANUP=NOT_EXECUTED",
         f"DATA_SAFETY={'PASS' if summary['raw_logs_modified_count'] == 0 and summary['active_database_modified_count'] == 0 and summary['unconfirmed_database_removed_count'] == 0 else 'FAIL'}",
         f"OVERALL_STATUS={status}",
         f"ORPHAN_CANDIDATES={summary['orphan_candidate_count']}",
         "DATABASES_REMOVED=0",
         "",
-        "## V1 / V2 对比",
+        "## V2 / V3 对比",
         "",
-        f"- V1 SQLite：{previous.get('sqlite_database_count', '未提供')}；V2 SQLite：{summary['sqlite_database_count']}",
-        f"- V1 parsed：{previous.get('parsed_database_count', '未提供')}；V2 parsed：{summary['parsed_database_count']}",
-        f"- V1 ACTIVE_PROTECT：{previous.get('active_database_count', '未提供')}；V2 ACTIVE_CONFIRMED：{summary['active_database_count']}",
-        f"- V1 候选：{previous.get('orphan_candidate_count', '未提供')}；V2 候选：{summary['orphan_candidate_count']}",
+        f"- V2 SQLite：{previous.get('sqlite_database_count', '未提供')}；V3 SQLite：{summary['sqlite_database_count']}",
+        f"- V2 parsed：{previous.get('parsed_database_count', '未提供')}；V3 parsed：{summary['parsed_database_count']}",
+        f"- V2 活动/静止/SHM 不确定：{previous.get('active_database_count', '未提供')}/{previous.get('idle_database_count', '未提供')}/{previous.get('sidecar_unconfirmed_count', '未提供')}；V3：{summary['active_database_count']}/{summary['idle_database_count']}/{summary['sidecar_unconfirmed_count']}",
+        f"- V2 候选：{previous.get('orphan_candidate_count', '未提供')}；V3 候选：{summary['orphan_candidate_count']}",
+        "",
+        "## SHM 时间戳变化根因",
+        "",
+        "隔离测试复现：遗留 WAL/SHM 的 SQLite 第一次 `mode=ro` 打开可能只更新 SHM 的 mtime_ns；后续独立只读观察稳定，`quick_check` 与 `integrity_check` 未继续修改。生产审计因此记录首次观察自影响，但不把它单独认定为外部写入。",
+        f"- 审计器自影响模式：{summary.get('auditor_shm_side_effect_count', 0)} 个数据库",
+        f"- 第二次观察仍有未解释 SHM 变化：{summary.get('unexplained_shm_change_count', 0)} 个数据库",
+        f"- 主库或 WAL 发生变化：{summary.get('external_main_or_wal_change_count', 0)} 个数据库",
+        f"- 维护窗口授权：`{'YES' if summary.get('maintenance_window_authorized') else 'NO'}`；未获授权时不将 SHM 侧车提升为 IDLE_CONFIRMED。",
         "",
         "## 盘点统计",
         "",
@@ -1387,8 +1624,8 @@ def render_final_report(audit: dict[str, Any], *, operation: dict[str, Any] | No
         "",
         "正式库健康、已接管会话、临时库无物理路径引用且活动状态可确认为 IDLE，才允许进入 ORPHAN_CANDIDATE；source_file_id/内部来源身份相同不构成物理文件引用。",
         "",
-        "| 文件名 | 大小 | SHA-256 | 对应正式库 | 实际来源引用 | 会话引用 | 重建任务 | 恢复依赖 | 最终分类 | 判定依据 |",
-        "|---|---:|---|---|---:|---:|---|---:|---|---|",
+        "| 文件名 | 大小 | SHA-256 | 对应正式库 | 物理来源引用 | 物理会话引用 | 文件名回退 | 内部来源身份 | 活动任务 | 恢复依赖 | 正式库 quick_check | 正式库 integrity_check | 正式库会话接管 | 活动状态 | 最终分类 | 判定依据 |",
+        "|---|---:|---|---|---:|---:|---:|---:|---:|---:|---|---|---:|---|---|---|",
         ]
     )
     for record in audit["records"]:
@@ -1405,10 +1642,16 @@ def render_final_report(audit: dict[str, Any], *, operation: dict[str, Any] | No
                     record.get("file_size"),
                     record.get("sha256"),
                     review.get("formal_database_path"),
-                    review.get("actual_path_reference_count"),
-                    review.get("formal_database_session_reference_count"),
+                    review.get("physical_source_reference_count", record.get("source_reference_count", 0)),
+                    review.get("physical_session_reference_count", record.get("session_reference_count", 0)),
+                    review.get("filename_fallback_reference_count", record.get("fallback_reference_count", 0)),
+                    review.get("internal_source_identity_count", record.get("internal_source_identity_count", 0)),
                     f"active={review.get('active_task_reference_count', 0)}, historical={review.get('historical_task_reference_count', 0)}",
                     review.get("recovery_reference_count"),
+                    review.get("formal_database_quick_check"),
+                    review.get("formal_database_integrity_check"),
+                    review.get("formal_database_session_reference_count"),
+                    record.get("activity_state"),
                     record.get("final_status"),
                     basis,
                 )
@@ -1417,19 +1660,28 @@ def render_final_report(audit: dict[str, Any], *, operation: dict[str, Any] | No
         )
     lines.extend(
         [
+        "## 静止判定与保护边界",
+        "",
+        "IDLE_CONFIRMED 需要维护窗口授权、两次观察结果稳定、主库/WAL 内容未变化、WAL 为空、无活动/未知任务、无恢复依赖、引用查询成功、无锁冲突且 SQLite 完整性检查通过。仅有 WAL=0、SHM 存在/不存在、任务列表为空或文件时间久远均不足以确认静止。",
+        f"- 已确认静止数据库：{summary['idle_database_count']}",
+        f"- 已确认孤儿数据库：{summary['orphan_candidate_count']}",
+        f"- 潜在可回收空间：{summary['orphan_candidate_bytes']} bytes",
+        "- 本轮生产没有维护窗口授权，因此 SHM 侧车数据库仍保持保护，不执行孤儿确认或回收。",
+        "",
         "## 保护边界与回滚",
         "",
         "- 本轮不执行生产备份、隔离、删除、VACUUM、Schema 重建或强制 checkpoint；不删除 WAL/SHM，不结束 Backend/Worker。",
         "- catalog.sqlite、正式 parsed、已登记 source index、物理引用、历史分析、恢复 Journal、备份和未知数据库均保留。",
         "- 原始 MESH 日志、历史报告、Excel、导出文件和既有数据库备份不作为清理目标。",
         "",
-        "## 测试与未解决风险",
+        "## 测试、Git 状态与未解决风险",
         "",
-        "- 自动测试结果见任务交接；真实 Electron 页面、真实报告打开和设备验收不由本审计器冒充通过。",
-        "- Backend/Worker 进程、任务状态、文件前后快照或 WAL/SHM 无法证明静止时，保持保护，不将其标记为可清理。",
+        f"- 测试结果：{audit.get('validation', {}).get('test_result', '由任务交接记录，未由审计器自动执行')}。",
+        f"- Git：branch=`{audit.get('git', {}).get('branch', '未提供')}`；HEAD=`{audit.get('git', {}).get('head', '未提供')}`；status=`{audit.get('git', {}).get('status', '未提供')}`。",
+        "- 文件句柄级外部进程证据不是本审计器可用的充分证明；无法确认时保持保护。真实 Electron 页面、真实报告打开和设备验收不由本审计器冒充通过。",
         "- Workspace 基线已有顶层 docs 目录布局检查失败，本任务未清理该既有目录。",
         "",
-        "证据文件：`MESH_DATABASE_INVENTORY_V2.md`、`MESH_DATABASE_REFERENCE_AUDIT_V2.md`、`MESH_ORPHAN_CANDIDATES_V2.json`。",
+        "证据文件：`MESH_DATABASE_ACTIVITY_AUDIT_V3.md`、`MESH_DATABASE_REFERENCE_AUDIT_V3.md`、`MESH_ORPHAN_CANDIDATES_V3.json`。",
         ]
     )
     return "\n".join(lines) + "\n"
@@ -1438,28 +1690,60 @@ def render_final_report(audit: dict[str, Any], *, operation: dict[str, Any] | No
 def _load_previous_summary(report_dir: Path | None) -> dict[str, Any]:
     if report_dir is None:
         return {}
-    candidate_path = report_dir / "MESH_ORPHAN_CANDIDATES.json"
-    try:
-        value = json.loads(candidate_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    summary = value.get("summary") if isinstance(value, dict) else None
-    return dict(summary) if isinstance(summary, dict) else {}
+    for name in (
+        "MESH_ORPHAN_CANDIDATES_V2.json",
+        "MESH_ORPHAN_CANDIDATES.json",
+        "MESH_ORPHAN_CANDIDATES_V3.json",
+    ):
+        candidate_path = report_dir / name
+        try:
+            value = json.loads(candidate_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        summary = value.get("summary") if isinstance(value, dict) else None
+        if isinstance(summary, dict):
+            return dict(summary)
+    return {}
+
+
+def _git_evidence() -> dict[str, str]:
+    repo_root = Path(__file__).resolve().parents[2]
+
+    def run(*args: str) -> str:
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"UNAVAILABLE: {type(exc).__name__}"
+        return completed.stdout.strip() or completed.stderr.strip()
+
+    status = run("status", "--short")
+    return {
+        "branch": run("branch", "--show-current"),
+        "head": run("rev-parse", "--short", "HEAD"),
+        "status": status or "CLEAN",
+    }
 
 
 def write_reports(audit: dict[str, Any], output_dir: Path, *, operation: dict[str, Any] | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "MESH_DATABASE_INVENTORY_V2.md").write_text(
+    (output_dir / "MESH_DATABASE_ACTIVITY_AUDIT_V3.md").write_text(
         render_inventory(audit), encoding="utf-8"
     )
-    (output_dir / "MESH_DATABASE_REFERENCE_AUDIT_V2.md").write_text(
+    (output_dir / "MESH_DATABASE_REFERENCE_AUDIT_V3.md").write_text(
         render_reference_audit(audit), encoding="utf-8"
     )
-    (output_dir / "MESH_ORPHAN_CANDIDATES_V2.json").write_text(
+    (output_dir / "MESH_ORPHAN_CANDIDATES_V3.json").write_text(
         json.dumps(render_candidates(audit), ensure_ascii=False, indent=2, default=str) + "\n",
         encoding="utf-8",
     )
-    (output_dir / "MESH_DATABASE_CLEANUP_REVIEW_V2.md").write_text(
+    (output_dir / "MESH_DATABASE_V3_FINAL_REPORT.md").write_text(
         render_final_report(audit, operation=operation), encoding="utf-8"
     )
 
@@ -1587,6 +1871,15 @@ def _parser() -> argparse.ArgumentParser:
         default=datetime.now(UTC).strftime("mesh-audit-%Y%m%dT%H%M%SZ"),
     )
     parser.add_argument("--previous-report-dir", type=Path)
+    parser.add_argument(
+        "--maintenance-window",
+        action="store_true",
+        help="仅在已获准、Backend/Worker 正常退出的维护窗口中允许确认 IDLE_CONFIRMED",
+    )
+    parser.add_argument(
+        "--validation-summary",
+        default="未提供；审计器不代替 pytest/Ruff/Gate",
+    )
     parser.add_argument("--authorize-write", action="store_true")
     return parser
 
@@ -1601,8 +1894,11 @@ def main(argv: list[str] | None = None) -> int:
     audit = audit_roots(
         roots,
         runtime_processes_by_root={root: runtime_processes for root in production},
+        maintenance_window_authorized=args.maintenance_window,
     )
     audit["previous_summary"] = _load_previous_summary(args.previous_report_dir)
+    audit["git"] = _git_evidence()
+    audit["validation"] = {"test_result": args.validation_summary}
     operation: dict[str, Any] = {}
     if args.mode == "backup":
         candidates = [
