@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -25,17 +26,31 @@ UTC = timezone.utc
 
 STATUS_ORDER = (
     "INSPECTION_FAILED",
-    "ACTIVE_PROTECT",
-    "TASK_REFERENCED",
+    "ACTIVE_CONFIRMED",
+    "TASK_ACTIVE_PROTECT",
+    "RECOVERY_PROTECT",
     "SESSION_REFERENCED",
-    "REGISTERED_PROTECT",
+    "SOURCE_REFERENCED",
+    "CATALOG_PROTECT",
+    "SOURCE_INDEX_PROTECT",
     "BACKUP_PROTECT",
+    "HISTORICAL_TASK_PROTECT",
+    "SIDECAR_PRESENT_UNCONFIRMED",
+    "ACTIVITY_UNKNOWN",
     "UNKNOWN_PROTECT",
     "ORPHAN_CANDIDATE",
 )
 ACTIVE_TASK_STATES = {"PENDING", "STARTING", "RUNNING", "STOPPING"}
 SQLITE_HEADER = b"SQLite format 3\x00"
 MESH_SUFFIXES = (".sqlite", ".sqlite3", ".db")
+REBUILD_NAME_RE = re.compile(
+    r"^\.(?P<target>.+)\.(?P<operation_id>[0-9a-f]{32})\.rebuild\.sqlite$",
+    re.IGNORECASE,
+)
+RUNTIME_PROCESS_IMAGES = (
+    "NetConsoleBackend.exe",
+    "NetConsoleWorker.exe",
+)
 
 
 def now_iso() -> str:
@@ -48,6 +63,39 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _file_snapshot(path: Path) -> dict[str, Any] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {
+        "canonical_path": str(path.resolve()),
+        "file_size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+        "file_identity": f"{int(stat.st_dev)}:{int(stat.st_ino)}",
+    }
+
+
+def _snapshot_stable(before: dict[str, Any] | None, after: dict[str, Any] | None) -> bool:
+    if before is None and after is None:
+        return True
+    if before is None or after is None:
+        return False
+    return all(
+        before.get(field) == after.get(field)
+        for field in ("canonical_path", "file_size", "mtime_ns", "file_identity")
+    )
+
+
+def _is_rebuild_database(path: Path) -> bool:
+    return REBUILD_NAME_RE.fullmatch(path.name) is not None
+
+
+def _rebuild_target_name(path: Path) -> str:
+    match = REBUILD_NAME_RE.fullmatch(path.name)
+    return str(match.group("target")) if match else ""
 
 
 def _ro_uri(path: Path) -> str:
@@ -125,40 +173,67 @@ def _looks_like_sqlite(path: Path) -> bool:
 
 
 def _sqlite_metadata(path: Path) -> dict[str, Any]:
+    before = _file_snapshot(path)
+    wal_path = _sidecar(path, "-wal")
+    shm_path = _sidecar(path, "-shm")
+    wal_before = _file_snapshot(wal_path)
+    shm_before = _file_snapshot(shm_path)
     result: dict[str, Any] = {
         "sqlite_header": False,
         "schema_version": "",
+        "sqlite_schema": "",
         "quick_check": "not_checked",
         "integrity_check": "not_checked",
         "table_names": [],
         "source_file_count": None,
         "session_count": None,
         "error": "",
+        "read_conflict": False,
+        "main_snapshot_before": before,
+        "main_snapshot_after": None,
+        "wal_snapshot_before": wal_before,
+        "wal_snapshot_after": None,
+        "shm_snapshot_before": shm_before,
+        "shm_snapshot_after": None,
     }
     try:
         with path.open("rb") as handle:
             result["sqlite_header"] = handle.read(len(SQLITE_HEADER)) == SQLITE_HEADER
     except OSError as exc:
         result["error"] = f"header:{type(exc).__name__}: {exc}"
-        return result
-    if not result["sqlite_header"]:
+    if not result["error"] and not result["sqlite_header"]:
         result["error"] = "文件头不是 SQLite format 3"
-        return result
-    try:
-        with read_only_connection(path) as connection:
-            tables = _table_names(connection)
-            result["table_names"] = sorted(tables)
-            result["schema_version"] = _schema_version(connection, tables)
-            result["source_file_count"] = _count(connection, tables, "source_files")
-            result["session_count"] = _count(connection, tables, "mesh_sessions")
-            result["quick_check"] = str(
-                connection.execute("PRAGMA quick_check").fetchone()[0]
-            )
-            result["integrity_check"] = str(
-                connection.execute("PRAGMA integrity_check").fetchone()[0]
-            )
-    except (OSError, sqlite3.Error) as exc:
-        result["error"] = f"sqlite:{type(exc).__name__}: {exc}"
+    if result["sqlite_header"] and not result["error"]:
+        try:
+            with read_only_connection(path) as connection:
+                tables = _table_names(connection)
+                result["table_names"] = sorted(tables)
+                result["schema_version"] = _schema_version(connection, tables)
+                result["sqlite_schema"] = result["schema_version"]
+                result["source_file_count"] = _count(connection, tables, "source_files")
+                result["session_count"] = _count(connection, tables, "mesh_sessions")
+                result["quick_check"] = str(
+                    connection.execute("PRAGMA quick_check").fetchone()[0]
+                )
+                result["integrity_check"] = str(
+                    connection.execute("PRAGMA integrity_check").fetchone()[0]
+                )
+        except (OSError, sqlite3.Error) as exc:
+            result["error"] = f"sqlite:{type(exc).__name__}: {exc}"
+            if isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).casefold():
+                result["read_conflict"] = True
+    result["main_snapshot_after"] = _file_snapshot(path)
+    result["wal_snapshot_after"] = _file_snapshot(wal_path)
+    result["shm_snapshot_after"] = _file_snapshot(shm_path)
+    result["snapshot_stable"] = all(
+        (
+            _snapshot_stable(result["main_snapshot_before"], result["main_snapshot_after"]),
+            _snapshot_stable(result["wal_snapshot_before"], result["wal_snapshot_after"]),
+            _snapshot_stable(result["shm_snapshot_before"], result["shm_snapshot_after"]),
+        )
+    )
+    result["wal_size"] = int((result["wal_snapshot_after"] or {}).get("file_size") or 0)
+    result["shm_size"] = int((result["shm_snapshot_after"] or {}).get("file_size") or 0)
     return result
 
 
@@ -191,15 +266,22 @@ def _path_match(candidate: Path, parsed_root: Path, value: object) -> str:
         return ""
     try:
         value_path = Path(text)
-        if value_path.is_absolute() and value_path.resolve() == candidate.resolve():
-            return "exact_path"
-        if not value_path.is_absolute():
-            resolved = (parsed_root / value_path).resolve()
-            if resolved == candidate.resolve() and _within(resolved, parsed_root):
-                return "relative_path"
-        if value_path.name.casefold() == candidate.name.casefold() and _within(
-            candidate, parsed_root
-        ):
+        candidate_resolved = candidate.resolve()
+        if value_path.is_absolute():
+            if value_path.resolve() == candidate_resolved:
+                return "exact_path"
+            fallback = (parsed_root / value_path.name).resolve()
+            if fallback == candidate_resolved and _within(candidate_resolved, parsed_root):
+                return "filename_fallback"
+            return ""
+        profile_relative = (parsed_root.parent / value_path).resolve()
+        parsed_relative = (parsed_root / value_path).resolve()
+        if profile_relative == candidate_resolved and _within(candidate_resolved, parsed_root):
+            return "relative_path"
+        if parsed_relative == candidate_resolved and _within(candidate_resolved, parsed_root):
+            return "relative_path"
+        fallback = (parsed_root / value_path.name).resolve()
+        if fallback == candidate_resolved and _within(candidate_resolved, parsed_root):
             return "filename_fallback"
     except (OSError, ValueError):
         return ""
@@ -217,17 +299,24 @@ def _profile_name_from_path(mesh_root: Path, path: Path) -> str:
 def _active_backend_processes() -> list[str]:
     if os.name != "nt":
         return []
-    try:
-        completed = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq NetConsoleBackend.exe", "/FO", "CSV", "/NH"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
+    result: list[str] = []
+    for image in RUNTIME_PROCESS_IMAGES:
+        try:
+            completed = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        result.extend(
+            f"{image}: {line.strip()}"
+            for line in completed.stdout.splitlines()
+            if line.strip() and "INFO:" not in line.upper()
         )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    return result
 
 
 def _task_texts(site_dir: Path) -> dict[str, Any]:
@@ -235,6 +324,7 @@ def _task_texts(site_dir: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": "MISSING" if not task_db.is_file() else "OK",
         "active_tasks": [],
+        "task_states": {},
         "texts": [],
         "error": "",
     }
@@ -277,6 +367,8 @@ def _task_texts(site_dir: Path) -> dict[str, Any]:
                     "text": text,
                 }
                 result["texts"].append(item)
+                if item["task_id"]:
+                    result["task_states"][item["task_id"]] = item["status"]
                 if item["status"].upper() in ACTIVE_TASK_STATES:
                     result["active_tasks"].append(item)
             for table, columns_to_read in (
@@ -297,7 +389,9 @@ def _task_texts(site_dir: Path) -> dict[str, Any]:
                         {
                             "task_id": str(value.get("task_id") or ""),
                             "task_type": table,
-                            "status": "",
+                            "status": result["task_states"].get(
+                                str(value.get("task_id") or ""), ""
+                            ),
                             "text": json.dumps(value, ensure_ascii=False, default=str),
                         }
                     )
@@ -339,17 +433,38 @@ def _backup_texts(root: Path) -> list[dict[str, str]]:
     return result
 
 
+def _recovery_texts(mesh_root: Path) -> list[dict[str, str]]:
+    """Read only small recovery/journal descriptors, never raw or SQLite bodies."""
+    result: list[dict[str, str]] = []
+    markers = ("journal", "recovery", "rebuild", "maintenance", "migration")
+    allowed_suffixes = {".json", ".journal", ".txt", ".log", ".manifest"}
+    for path in _walk_files(mesh_root):
+        lowered = path.name.casefold()
+        if not any(marker in lowered for marker in markers):
+            continue
+        if path.suffix.casefold() not in allowed_suffixes:
+            continue
+        try:
+            if path.stat().st_size > 8 * 1024 * 1024:
+                continue
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        result.append({"path": str(path), "text": text})
+    return result
+
+
 def _tokens(record: dict[str, Any]) -> list[str]:
+    basename = str(record.get("basename") or "")
     values = [
         record.get("path"),
         record.get("relative_path"),
-        record.get("basename"),
-        record.get("profile_id"),
-        record.get("session_id"),
         record.get("sha256"),
         record.get("content_sha256"),
+        record.get("file_identity"),
     ]
-    values.extend(record.get("source_names") or [])
+    if basename.casefold() not in {"mesh.sqlite", "catalog.sqlite"}:
+        values.append(basename)
     return sorted(
         {str(value).casefold() for value in values if str(value or "").strip()},
         key=len,
@@ -363,7 +478,15 @@ def _matching_texts(tokens: list[str], texts: Iterable[dict[str, str]]) -> list[
         text = str(item.get("text") or "").casefold()
         hit = next((token for token in tokens if token in text), "")
         if hit:
-            matches.append({"path": str(item.get("path") or ""), "token": hit})
+            matches.append(
+                {
+                    "path": str(item.get("path") or ""),
+                    "token": hit,
+                    "task_id": str(item.get("task_id") or ""),
+                    "status": str(item.get("status") or ""),
+                    "task_type": str(item.get("task_type") or ""),
+                }
+            )
     return matches
 
 
@@ -376,6 +499,49 @@ def _classify(reasons: set[str], *, inspection_failed: bool) -> str:
     return "ORPHAN_CANDIDATE"
 
 
+def _activity_state(
+    metadata: dict[str, Any],
+    *,
+    runtime_processes: list[str],
+    active_task_references: int,
+) -> str:
+    main_changed = not _snapshot_stable(
+        metadata.get("main_snapshot_before"), metadata.get("main_snapshot_after")
+    )
+    wal_before = metadata.get("wal_snapshot_before")
+    wal_after = metadata.get("wal_snapshot_after")
+    wal_changed = not _snapshot_stable(wal_before, wal_after)
+    if main_changed or (wal_before is not None or wal_after is not None) and wal_changed:
+        return "ACTIVE_CONFIRMED"
+    if metadata.get("read_conflict") or runtime_processes or active_task_references:
+        return "ACTIVITY_UNKNOWN"
+    if metadata.get("wal_size") or metadata.get("shm_size"):
+        return "SIDECAR_PRESENT_UNCONFIRMED"
+    if metadata.get("snapshot_stable"):
+        return "IDLE_CONFIRMED"
+    return "ACTIVITY_UNKNOWN"
+
+
+def _task_reference_counts(
+    task_matches: list[dict[str, str]],
+    task_info: dict[str, Any],
+) -> tuple[list[dict[str, str]], int, int, int]:
+    active: list[dict[str, str]] = []
+    historical: list[dict[str, str]] = []
+    unknown: list[dict[str, str]] = []
+    task_states = task_info.get("task_states") or {}
+    for match in task_matches:
+        state = str(match.get("status") or task_states.get(match.get("task_id"), "")).upper()
+        item = {**match, "resolved_status": state or "UNKNOWN"}
+        if state in ACTIVE_TASK_STATES:
+            active.append(item)
+        elif state in {"COMPLETED", "FAILED", "CANCELLED", "CANCELED", "STOPPED"}:
+            historical.append(item)
+        else:
+            unknown.append(item)
+    return active + historical + unknown, len(active), len(historical), len(unknown)
+
+
 def _db_record(
     *,
     root: Path,
@@ -386,34 +552,35 @@ def _db_record(
     profile: dict[str, Any] | None,
     source_rows: list[dict[str, Any]],
     catalog_sessions: list[dict[str, Any]],
-    profile_sources: dict[str, list[dict[str, Any]]],
     task_info: dict[str, Any],
     artifact_texts: list[dict[str, str]],
     backup_texts: list[dict[str, str]],
-    writer_active: bool,
+    recovery_texts: list[dict[str, str]],
+    runtime_processes: list[str],
+    catalog_available: bool,
 ) -> dict[str, Any]:
-    stat = path.stat()
     metadata = _sqlite_metadata(path)
+    stat = path.stat()
+    canonical_path = str(path.resolve())
     try:
         relative = path.relative_to(root).as_posix()
     except ValueError:
-        relative = str(path)
+        relative = canonical_path
     safe_name = _profile_name_from_path(mesh_root, path)
     profile = profile or {}
     profile_id = str(profile.get("mr_id") or "")
     mr_name = str(profile.get("display_name") or safe_name)
-    reasons: set[str] = set()
-    evidence: list[dict[str, Any]] = []
+    parsed_root = path.parent
     source_refs: list[dict[str, Any]] = []
     fallback_refs: list[dict[str, Any]] = []
     session_refs: list[dict[str, Any]] = []
     detail_sources: list[dict[str, Any]] = []
-    if db_type == "parsed":
-        parsed_root = path.parent
-        try:
-            detail_sources, _ = _read_rows(path, "source_files")
-        except Exception:
-            detail_sources = []
+    internal_identities: list[dict[str, Any]] = []
+    reasons: set[str] = set()
+    evidence: list[dict[str, Any]] = []
+
+    if db_type in {"parsed", "rebuild_temp"}:
+        detail_sources, _ = _read_rows(path, "source_files")
         for source in source_rows:
             matches: list[str] = []
             for field in ("parsed_db_path", "parsed_relative_path"):
@@ -436,16 +603,16 @@ def _db_record(
                 source_refs.append(item)
                 if "filename_fallback" in matches:
                     fallback_refs.append(item)
-        for source in detail_sources:
-            source_names = {
-                _clean_text(source.get(field)).casefold()
+        for detail_source in detail_sources:
+            detail_names = {
+                _clean_text(detail_source.get(field)).casefold()
                 for field in ("original_filename", "archived_filename")
-                if _clean_text(source.get(field))
+                if _clean_text(detail_source.get(field))
             }
-            source_hashes = {
-                _clean_text(source.get(field)).casefold()
+            detail_hashes = {
+                _clean_text(detail_source.get(field)).casefold()
                 for field in ("sha256", "content_sha256")
-                if _clean_text(source.get(field))
+                if _clean_text(detail_source.get(field))
             }
             for index_source in source_rows:
                 index_names = {
@@ -458,14 +625,14 @@ def _db_record(
                     for field in ("sha256", "content_sha256")
                     if _clean_text(index_source.get(field))
                 }
-                if (source_names & index_names) or (source_hashes & index_hashes):
-                    item = {
-                        "mr_id": profile_id,
-                        "source_file_id": index_source.get("id"),
-                        "match_types": ["detail_source_identity"],
-                    }
-                    if item not in source_refs:
-                        source_refs.append(item)
+                if (detail_names & index_names) or (detail_hashes & index_hashes):
+                    internal_identities.append(
+                        {
+                            "detail_source_id": detail_source.get("id"),
+                            "index_source_file_id": index_source.get("id"),
+                            "match_types": ["detail_source_identity"],
+                        }
+                    )
         for session in catalog_sessions:
             if str(session.get("mr_id") or "") != profile_id:
                 continue
@@ -479,18 +646,26 @@ def _db_record(
                     }
                 )
         if source_refs:
-            reasons.add("REGISTERED_PROTECT")
-            evidence.append({"kind": "source_files", "count": len(source_refs)})
+            reasons.add("SOURCE_REFERENCED")
+            evidence.append({"kind": "source_files_physical_path", "count": len(source_refs)})
         if session_refs:
             reasons.add("SESSION_REFERENCED")
-            evidence.append({"kind": "mesh_session_index", "count": len(session_refs)})
+            evidence.append({"kind": "mesh_session_index_physical_path", "count": len(session_refs)})
+        if internal_identities:
+            evidence.append(
+                {
+                    "kind": "internal_source_identity_only",
+                    "count": len(internal_identities),
+                    "note": "不作为物理数据库引用或会话引用",
+                }
+            )
     elif db_type == "catalog":
-        reasons.add("REGISTERED_PROTECT")
+        reasons.add("CATALOG_PROTECT")
         evidence.append({"kind": "catalog_authority"})
     elif db_type == "source_index":
         if profile_id:
-            reasons.add("REGISTERED_PROTECT")
-            evidence.append({"kind": "mr_profile", "mr_id": profile_id})
+            reasons.add("SOURCE_INDEX_PROTECT")
+            evidence.append({"kind": "registered_profile", "mr_id": profile_id})
         else:
             reasons.add("UNKNOWN_PROTECT")
             evidence.append({"kind": "unregistered_source_index"})
@@ -504,74 +679,36 @@ def _db_record(
             value = _clean_text(source.get(field))
             if value and value not in raw_names:
                 raw_names.append(value)
-    base_record: dict[str, Any] = {
-        "data_root": str(root),
-        "environment": "PRODUCTION" if root.name.casefold() == "netconsoledata" else "DEV_REAL",
-        "site": site_dir.name,
-        "mr_profile_id": profile_id,
-        "mr_name": mr_name,
-        "safe_folder_name": safe_name,
-        "database_type": db_type,
-        "path": str(path),
+    physical_record = {
+        "path": canonical_path,
+        "canonical_path": canonical_path,
         "relative_path": relative,
         "basename": path.name,
-        "size_bytes": stat.st_size,
-        "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
-        "mtime_ns": stat.st_mtime_ns,
-        "sha256": sha256_file(path),
-        "wal_path": str(_sidecar(path, "-wal")),
-        "wal_bytes": _sidecar(path, "-wal").stat().st_size if _sidecar(path, "-wal").is_file() else 0,
-        "shm_path": str(_sidecar(path, "-shm")),
-        "shm_bytes": _sidecar(path, "-shm").stat().st_size if _sidecar(path, "-shm").is_file() else 0,
-        "schema_version": metadata.get("schema_version") or "",
-        "quick_check": metadata.get("quick_check"),
-        "integrity_check": metadata.get("integrity_check"),
-        "inspection_error": metadata.get("error") or "",
-        "table_names": metadata.get("table_names") or [],
-        "source_record_count": len(source_rows),
-        "detail_source_record_count": len(detail_sources),
-        "analysis_session_reference_count": len(session_refs),
-        "filename_fallback_reference_count": len(fallback_refs),
-        "activity_task_reference_count": 0,
-        "report_reference_count": 0,
-        "backup_reference_count": 0,
-        "source_names": raw_names,
-        "source_references": source_refs,
-        "session_references": session_refs,
-        "evidence": evidence,
-        "writer_active": writer_active,
+        "sha256": "",
+        "file_identity": (metadata.get("main_snapshot_after") or {}).get("file_identity", ""),
+        "rebuild_target_path": str(path.parent / _rebuild_target_name(path)) if db_type == "rebuild_temp" else "",
     }
-    tokens = _tokens(
-        {
-            "path": path,
-            "relative_path": relative,
-            "basename": path.name,
-            "profile_id": profile_id,
-            "source_names": raw_names,
-            "sha256": base_record["sha256"],
-        }
-    )
+    physical_record["sha256"] = sha256_file(path)
+    tokens = _tokens(physical_record)
     task_matches = _matching_texts(tokens, task_info.get("texts") or [])
+    task_matches, active_task_count, historical_task_count, unknown_task_count = _task_reference_counts(
+        task_matches, task_info
+    )
     report_matches = _matching_texts(tokens, artifact_texts)
     backup_matches = _matching_texts(tokens, backup_texts)
-    if task_matches:
-        reasons.add("TASK_REFERENCED")
-        base_record["activity_task_reference_count"] = len(task_matches)
-        base_record["task_references"] = task_matches
-    else:
-        base_record["task_references"] = []
+    recovery_matches = _matching_texts(tokens, recovery_texts)
+    if active_task_count:
+        reasons.add("TASK_ACTIVE_PROTECT")
+    if historical_task_count:
+        reasons.add("HISTORICAL_TASK_PROTECT")
+    if unknown_task_count:
+        reasons.add("UNKNOWN_PROTECT")
     if report_matches:
         reasons.add("SESSION_REFERENCED")
-        base_record["report_reference_count"] = len(report_matches)
-        base_record["report_references"] = report_matches
-    else:
-        base_record["report_references"] = []
     if backup_matches:
         reasons.add("BACKUP_PROTECT")
-        base_record["backup_reference_count"] = len(backup_matches)
-        base_record["backup_references"] = backup_matches
-    else:
-        base_record["backup_references"] = []
+    if recovery_matches:
+        reasons.add("RECOVERY_PROTECT")
     if task_info.get("status") != "OK":
         reasons.add("UNKNOWN_PROTECT")
         evidence.append(
@@ -581,39 +718,202 @@ def _db_record(
                 "error": task_info.get("error") or "",
             }
         )
-    if writer_active or base_record["wal_bytes"] > 0 or base_record["shm_bytes"] > 0:
-        reasons.add("ACTIVE_PROTECT")
-        evidence.append(
-            {
-                "kind": "runtime_sidecar_or_writer",
-                "writer_active": writer_active,
-                "wal_bytes": base_record["wal_bytes"],
-                "shm_bytes": base_record["shm_bytes"],
-            }
-        )
-    if base_record["inspection_error"] or base_record["quick_check"] != "ok" or base_record["integrity_check"] != "ok":
+    if not catalog_available:
+        reasons.add("UNKNOWN_PROTECT")
+        evidence.append({"kind": "catalog_state_unavailable"})
+
+    activity_state = _activity_state(
+        metadata,
+        runtime_processes=runtime_processes,
+        active_task_references=active_task_count,
+    )
+    if activity_state == "ACTIVE_CONFIRMED":
+        reasons.add("ACTIVE_CONFIRMED")
+    elif activity_state == "SIDECAR_PRESENT_UNCONFIRMED":
+        reasons.add("SIDECAR_PRESENT_UNCONFIRMED")
+    elif activity_state == "ACTIVITY_UNKNOWN":
+        reasons.add("ACTIVITY_UNKNOWN")
+    if metadata.get("error") or metadata.get("quick_check") != "ok" or metadata.get("integrity_check") != "ok":
         reasons.add("INSPECTION_FAILED")
-    if db_type == "parsed" and not profile_id:
+    if db_type in {"parsed", "rebuild_temp"} and not profile_id:
         reasons.add("UNKNOWN_PROTECT")
-    if db_type == "parsed" and not source_rows and not source_refs and not session_refs and profile_id:
-        # A parsed file under a registered profile but without an index source is
-        # not safe to call orphaned: the index may be stale or unreadable.
+    if db_type == "parsed" and profile_id and not source_refs and not session_refs:
         reasons.add("UNKNOWN_PROTECT")
-        evidence.append({"kind": "registered_profile_without_source_reference"})
-    base_record["status"] = _classify(reasons, inspection_failed="INSPECTION_FAILED" in reasons)
+        evidence.append({"kind": "registered_profile_without_physical_source_reference"})
+
+    snapshot = metadata.get("main_snapshot_after") or {}
+    base_record: dict[str, Any] = {
+        "data_root": str(root),
+        "environment": "PRODUCTION" if root.name.casefold() == "netconsoledata" else "DEV_REAL",
+        "site": site_dir.name,
+        "mr_profile_id": profile_id,
+        "mr_name": mr_name,
+        "safe_folder_name": safe_name,
+        "database_type": db_type,
+        "path": canonical_path,
+        "canonical_path": canonical_path,
+        "relative_path": relative,
+        "basename": path.name,
+        "file_size": int(snapshot.get("file_size") or stat.st_size),
+        "size_bytes": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+        "mtime_ns": int(snapshot.get("mtime_ns") or stat.st_mtime_ns),
+        "sha256": physical_record["sha256"],
+        "file_identity": snapshot.get("file_identity") or "",
+        "sqlite_schema": metadata.get("sqlite_schema") or "",
+        "schema_version": metadata.get("schema_version") or "",
+        "quick_check": metadata.get("quick_check"),
+        "integrity_check": metadata.get("integrity_check"),
+        "inspection_error": metadata.get("error") or "",
+        "table_names": metadata.get("table_names") or [],
+        "wal_path": str(_sidecar(path, "-wal")),
+        "wal_size": int(metadata.get("wal_size") or 0),
+        "wal_bytes": int(metadata.get("wal_size") or 0),
+        "shm_path": str(_sidecar(path, "-shm")),
+        "shm_size": int(metadata.get("shm_size") or 0),
+        "shm_bytes": int(metadata.get("shm_size") or 0),
+        "activity_state": activity_state,
+        "activity_probe": {
+            "snapshot_stable": metadata.get("snapshot_stable"),
+            "read_conflict": metadata.get("read_conflict"),
+            "runtime_processes": runtime_processes,
+            "main_snapshot_before": metadata.get("main_snapshot_before"),
+            "main_snapshot_after": metadata.get("main_snapshot_after"),
+            "wal_snapshot_before": metadata.get("wal_snapshot_before"),
+            "wal_snapshot_after": metadata.get("wal_snapshot_after"),
+            "shm_snapshot_before": metadata.get("shm_snapshot_before"),
+            "shm_snapshot_after": metadata.get("shm_snapshot_after"),
+        },
+        "source_record_count": len(source_rows),
+        "source_reference_count": len(source_refs),
+        "session_reference_count": len(session_refs),
+        "analysis_session_reference_count": len(session_refs),
+        "fallback_reference_count": len(fallback_refs),
+        "filename_fallback_reference_count": len(fallback_refs),
+        "active_task_reference_count": active_task_count,
+        "activity_task_reference_count": active_task_count,
+        "historical_task_reference_count": historical_task_count,
+        "unknown_task_reference_count": unknown_task_count,
+        "report_reference_count": len(report_matches),
+        "backup_reference_count": len(backup_matches),
+        "recovery_reference_count": len(recovery_matches),
+        "internal_source_identity_count": len(internal_identities),
+        "source_names": raw_names,
+        "source_references": source_refs,
+        "session_references": session_refs,
+        "internal_source_identities": internal_identities,
+        "task_references": task_matches,
+        "report_references": report_matches,
+        "backup_references": backup_matches,
+        "recovery_references": recovery_matches,
+        "evidence": evidence,
+        "runtime_processes": runtime_processes,
+        "rebuild_target_path": physical_record["rebuild_target_path"],
+    }
+    base_record["final_status"] = _classify(
+        reasons, inspection_failed="INSPECTION_FAILED" in reasons
+    )
+    base_record["status"] = base_record["final_status"]
     base_record["protection_reasons"] = sorted(reasons)
-    base_record["allowed_for_backup"] = base_record["status"] == "ORPHAN_CANDIDATE"
+    base_record["allowed_for_backup"] = (
+        base_record["final_status"] == "ORPHAN_CANDIDATE"
+        and activity_state == "IDLE_CONFIRMED"
+    )
     base_record["allowed_for_isolation"] = False
     return base_record
 
 
-def audit_root(root: Path, *, writer_active: bool = False) -> dict[str, Any]:
+def _finalize_rebuild_records(records: list[dict[str, Any]]) -> None:
+    by_path = {str(record.get("canonical_path")): record for record in records}
+    for record in records:
+        if record.get("database_type") != "rebuild_temp":
+            continue
+        reasons = set(record.get("protection_reasons") or [])
+        target_path = str(record.get("rebuild_target_path") or "")
+        target = by_path.get(str(Path(target_path).resolve())) if target_path else None
+        review: dict[str, Any] = {
+            "temporary_path": record.get("canonical_path"),
+            "formal_database_path": target_path,
+            "formal_database_exists": bool(target),
+            "formal_database_healthy": False,
+            "formal_database_session_reference_count": 0,
+            "actual_path_reference_count": record.get("source_reference_count", 0),
+            "internal_source_identity_count": record.get("internal_source_identity_count", 0),
+            "active_task_reference_count": record.get("active_task_reference_count", 0),
+            "historical_task_reference_count": record.get("historical_task_reference_count", 0),
+            "recovery_reference_count": record.get("recovery_reference_count", 0),
+            "backup_reference_count": record.get("backup_reference_count", 0),
+        }
+        if target:
+            healthy = target.get("quick_check") == "ok" and target.get("integrity_check") == "ok"
+            review["formal_database_healthy"] = healthy
+            review["formal_database_session_reference_count"] = target.get(
+                "session_reference_count", 0
+            )
+            review["formal_database_activity_state"] = target.get("activity_state")
+            if not healthy or not target.get("session_reference_count"):
+                reasons.add("UNKNOWN_PROTECT")
+            else:
+                reasons.add("FORMAL_DATABASE_TAKES_SESSION")
+        else:
+            reasons.add("UNKNOWN_PROTECT")
+        if record.get("activity_state") != "IDLE_CONFIRMED":
+            reasons.add(str(record.get("activity_state") or "ACTIVITY_UNKNOWN"))
+        blocked = {
+            "INSPECTION_FAILED",
+            "ACTIVE_CONFIRMED",
+            "TASK_ACTIVE_PROTECT",
+            "RECOVERY_PROTECT",
+            "SESSION_REFERENCED",
+            "SOURCE_REFERENCED",
+            "BACKUP_PROTECT",
+            "HISTORICAL_TASK_PROTECT",
+            "SIDECAR_PRESENT_UNCONFIRMED",
+            "ACTIVITY_UNKNOWN",
+            "UNKNOWN_PROTECT",
+        }
+        can_candidate = (
+            target is not None
+            and bool(review["formal_database_healthy"])
+            and int(review["formal_database_session_reference_count"] or 0) > 0
+            and record.get("activity_state") == "IDLE_CONFIRMED"
+            and not any(reason in reasons for reason in blocked)
+            and not record.get("source_reference_count")
+            and not record.get("session_reference_count")
+            and not record.get("active_task_reference_count")
+            and not record.get("historical_task_reference_count")
+            and not record.get("recovery_reference_count")
+            and not record.get("backup_reference_count")
+        )
+        if can_candidate:
+            reasons.add("ORPHAN_CANDIDATE")
+        else:
+            reasons.add("UNKNOWN_PROTECT")
+        record["rebuild_review"] = review
+        record["protection_reasons"] = sorted(reasons)
+        record["final_status"] = _classify(
+            reasons, inspection_failed="INSPECTION_FAILED" in reasons
+        )
+        record["status"] = record["final_status"]
+        record["allowed_for_backup"] = can_candidate
+
+
+def audit_root(
+    root: Path,
+    *,
+    writer_active: bool = False,
+    runtime_processes: list[str] | None = None,
+) -> dict[str, Any]:
     root = root.resolve()
     sites_root = root / "sites"
+    runtime_processes = list(runtime_processes or [])
+    if writer_active and not runtime_processes:
+        runtime_processes = ["legacy_writer_active"]
     result: dict[str, Any] = {
         "data_root": str(root),
         "environment": "PRODUCTION" if root.name.casefold() == "netconsoledata" else "DEV_REAL",
         "writer_active": writer_active,
+        "runtime_processes": runtime_processes,
         "sites_scanned": 0,
         "mr_profiles_scanned": 0,
         "records": [],
@@ -634,29 +934,29 @@ def audit_root(root: Path, *, writer_active: bool = False) -> dict[str, Any]:
         catalog_path = mesh_root / "catalog.sqlite"
         profiles: dict[str, dict[str, Any]] = {}
         catalog_sessions: list[dict[str, Any]] = []
+        catalog_available = catalog_path.is_file()
         if catalog_path.is_file():
             profile_rows, profile_error = _read_rows(catalog_path, "mr_profiles")
             if profile_error:
                 result["errors"].append(f"{catalog_path}: {profile_error}")
-            profiles = {
-                str(row.get("safe_folder_name") or ""): row for row in profile_rows
-            }
+                catalog_available = False
+            profiles = {str(row.get("safe_folder_name") or ""): row for row in profile_rows}
             catalog_sessions, session_error = _read_rows(catalog_path, "mesh_session_index")
             if session_error:
                 result["errors"].append(f"{catalog_path}: {session_error}")
+                catalog_available = False
             result["mr_profiles_scanned"] += len(profiles)
+        else:
+            result["errors"].append(f"{mesh_root}: catalog.sqlite 不存在")
         task_info = _task_texts(site_dir)
         if task_info.get("active_tasks"):
             result["task_activity"].extend(
-                {
-                    "site": site_dir.name,
-                    **item,
-                }
-                for item in task_info["active_tasks"]
+                {"site": site_dir.name, **item} for item in task_info["active_tasks"]
             )
         artifact_texts = _artifact_texts(site_dir)
+        recovery_texts = _recovery_texts(mesh_root)
         index_sources: dict[str, list[dict[str, Any]]] = {}
-        for safe_name, profile in profiles.items():
+        for safe_name in profiles:
             index_path = mesh_root / safe_name / "mesh.sqlite"
             if index_path.is_file():
                 rows, error = _read_rows(index_path, "source_files")
@@ -671,8 +971,12 @@ def audit_root(root: Path, *, writer_active: bool = False) -> dict[str, Any]:
             profile = profiles.get(profile_safe)
             if path == catalog_path:
                 db_type = "catalog"
-            elif path.name.casefold() == "mesh.sqlite":
+            elif path.name.casefold() == "mesh.sqlite" and "parsed" not in {
+                part.casefold() for part in relative.parts
+            }:
                 db_type = "source_index"
+            elif _is_rebuild_database(path):
+                db_type = "rebuild_temp"
             elif "parsed" in {part.casefold() for part in relative.parts}:
                 db_type = "parsed"
             else:
@@ -686,22 +990,37 @@ def audit_root(root: Path, *, writer_active: bool = False) -> dict[str, Any]:
                 profile=profile,
                 source_rows=index_sources.get(profile_safe, []),
                 catalog_sessions=catalog_sessions,
-                profile_sources=index_sources,
                 task_info=task_info,
                 artifact_texts=artifact_texts,
                 backup_texts=backup_texts,
-                writer_active=writer_active,
+                recovery_texts=recovery_texts,
+                runtime_processes=runtime_processes,
+                catalog_available=catalog_available,
             )
             result["records"].append(record)
+    _finalize_rebuild_records(result["records"])
     return result
 
 
-def audit_roots(roots: Iterable[Path], *, writer_active_roots: set[Path] | None = None) -> dict[str, Any]:
+def audit_roots(
+    roots: Iterable[Path],
+    *,
+    writer_active_roots: set[Path] | None = None,
+    runtime_processes_by_root: dict[Path, list[str]] | None = None,
+) -> dict[str, Any]:
     active = {path.resolve() for path in (writer_active_roots or set())}
-    root_results = [audit_root(Path(root), writer_active=Path(root).resolve() in active) for root in roots]
+    process_map = {path.resolve(): value for path, value in (runtime_processes_by_root or {}).items()}
+    root_results = [
+        audit_root(
+            Path(root),
+            writer_active=Path(root).resolve() in active,
+            runtime_processes=process_map.get(Path(root).resolve(), []),
+        )
+        for root in roots
+    ]
     records = [record for item in root_results for record in item["records"]]
     return {
-        "format": "netconsole-mesh-database-reference-audit-v1",
+        "format": "netconsole-mesh-database-reference-audit-v2",
         "generated_at": now_iso(),
         "roots": root_results,
         "records": records,
@@ -709,22 +1028,81 @@ def audit_roots(roots: Iterable[Path], *, writer_active_roots: set[Path] | None 
     }
 
 
-def _summary(root_results: list[dict[str, Any]], records: list[dict[str, Any]]) -> dict[str, Any]:
-    by_status = {status: sum(record.get("status") == status for record in records) for status in STATUS_ORDER}
+def _summary_for_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    by_status = {
+        status: sum(record.get("final_status") == status for record in records)
+        for status in STATUS_ORDER
+    }
+    by_activity = {
+        state: sum(record.get("activity_state") == state for record in records)
+        for state in (
+            "ACTIVE_CONFIRMED",
+            "IDLE_CONFIRMED",
+            "SIDECAR_PRESENT_UNCONFIRMED",
+            "ACTIVITY_UNKNOWN",
+        )
+    }
     parsed = [record for record in records if record.get("database_type") == "parsed"]
+    rebuild = [record for record in records if record.get("database_type") == "rebuild_temp"]
+    return {
+        "sqlite_database_count": len(records),
+        "parsed_database_count": len(parsed),
+        "parsed_database_bytes": sum(int(item.get("file_size") or 0) for item in parsed),
+        "rebuild_database_count": len(rebuild),
+        "rebuild_database_bytes": sum(int(item.get("file_size") or 0) for item in rebuild),
+        "activity_counts": by_activity,
+        "active_database_count": by_activity["ACTIVE_CONFIRMED"],
+        "idle_database_count": by_activity["IDLE_CONFIRMED"],
+        "sidecar_unconfirmed_count": by_activity["SIDECAR_PRESENT_UNCONFIRMED"],
+        "activity_unknown_count": by_activity["ACTIVITY_UNKNOWN"],
+        "catalog_protected_count": sum(record.get("database_type") == "catalog" for record in records),
+        "source_index_protected_count": sum(record.get("database_type") == "source_index" for record in records),
+        "source_reference_count": sum(int(record.get("source_reference_count") or 0) for record in records),
+        "source_referenced_database_count": sum(bool(record.get("source_reference_count")) for record in records),
+        "session_reference_count": sum(int(record.get("session_reference_count") or 0) for record in records),
+        "session_referenced_database_count": sum(bool(record.get("session_reference_count")) for record in records),
+        "fallback_reference_count": sum(int(record.get("fallback_reference_count") or 0) for record in records),
+        "active_task_reference_count": sum(int(record.get("active_task_reference_count") or 0) for record in records),
+        "historical_task_reference_count": sum(int(record.get("historical_task_reference_count") or 0) for record in records),
+        "unknown_reference_count": sum(int(record.get("unknown_task_reference_count") or 0) for record in records),
+        "recovery_reference_count": sum(int(record.get("recovery_reference_count") or 0) for record in records),
+        "backup_reference_count": sum(int(record.get("backup_reference_count") or 0) for record in records),
+        "orphan_candidate_count": by_status["ORPHAN_CANDIDATE"],
+        "orphan_candidate_bytes": sum(
+            int(record.get("file_size") or 0)
+            for record in records
+            if record.get("final_status") == "ORPHAN_CANDIDATE"
+        ),
+        "unknown_database_count": by_status["UNKNOWN_PROTECT"] + by_status["INSPECTION_FAILED"],
+        "status_counts": by_status,
+    }
+
+
+def _summary(root_results: list[dict[str, Any]], records: list[dict[str, Any]]) -> dict[str, Any]:
+    totals = _summary_for_records(records)
+    environments: dict[str, Any] = {}
+    for item in root_results:
+        environment = str(item.get("environment") or "UNKNOWN")
+        current = environments.setdefault(
+            environment,
+            {"site_count": 0, "mr_profile_count": 0, "data_roots": [], "summary": None},
+        )
+        current["site_count"] += int(item.get("sites_scanned") or 0)
+        current["mr_profile_count"] += int(item.get("mr_profiles_scanned") or 0)
+        current["data_roots"].append(item.get("data_root"))
+        current["summary"] = _summary_for_records(
+            [
+                record
+                for root_item in root_results
+                if root_item.get("environment") == environment
+                for record in root_item.get("records") or []
+            ]
+        )
     return {
         "site_count": sum(int(item.get("sites_scanned") or 0) for item in root_results),
         "mr_profile_count": sum(int(item.get("mr_profiles_scanned") or 0) for item in root_results),
-        "sqlite_database_count": len(records),
-        "parsed_database_count": len(parsed),
-        "parsed_database_bytes": sum(int(item.get("size_bytes") or 0) for item in parsed),
-        "active_database_count": by_status["ACTIVE_PROTECT"],
-        "registered_database_count": by_status["REGISTERED_PROTECT"],
-        "session_referenced_database_count": by_status["SESSION_REFERENCED"],
-        "task_referenced_database_count": by_status["TASK_REFERENCED"],
-        "unknown_database_count": by_status["UNKNOWN_PROTECT"] + by_status["INSPECTION_FAILED"],
-        "orphan_candidate_count": by_status["ORPHAN_CANDIDATE"],
-        "status_counts": by_status,
+        **totals,
+        "environments": environments,
         "raw_logs_modified_count": 0,
         "active_database_modified_count": 0,
         "unconfirmed_database_removed_count": 0,
@@ -738,20 +1116,60 @@ def _md_escape(value: object) -> str:
 def render_inventory(audit: dict[str, Any]) -> str:
     summary = audit["summary"]
     lines = [
-        "# MESH_DATABASE_INVENTORY",
+        "# MESH_DATABASE_INVENTORY_V2",
         "",
         f"生成时间：`{audit['generated_at']}`",
         "",
-        "本报告由只读 SQLite `mode=ro` 连接生成；未初始化 Repository，未执行 WAL checkpoint、VACUUM、迁移或文件移动。",
+        "本报告由只读 SQLite `mode=ro` 连接生成；未初始化 Repository，未执行 WAL checkpoint、VACUUM、迁移或文件移动。SHM 存在不直接等同于活动写入。",
         "",
         f"- 扫描局点：{summary['site_count']}",
         f"- MR Profile：{summary['mr_profile_count']}",
         f"- SQLite 总数：{summary['sqlite_database_count']}",
         f"- parsed 总数：{summary['parsed_database_count']}（{summary['parsed_database_bytes']} bytes）",
+        f"- rebuild 临时库总数：{summary['rebuild_database_count']}（{summary['rebuild_database_bytes']} bytes）",
+        f"- ACTIVE_CONFIRMED：{summary['active_database_count']}",
+        f"- IDLE_CONFIRMED：{summary['idle_database_count']}",
+        f"- SIDECAR_PRESENT_UNCONFIRMED：{summary['sidecar_unconfirmed_count']}",
+        f"- ACTIVITY_UNKNOWN：{summary['activity_unknown_count']}",
         "",
-        "| 环境 | 局点 | MR Profile | 数据库类型 | 相对路径 | 字节 | 修改时间 | Schema | quick_check | integrity_check | WAL/SHM | 状态 |",
-        "|---|---|---|---|---|---:|---|---|---|---|---|---|",
+        "## 按数据根统计",
+        "",
+        "| 环境 | 数据根 | 局点 | MR Profile | SQLite | parsed | rebuild | ACTIVE_CONFIRMED | IDLE_CONFIRMED | SHM 不确定 | ACTIVITY_UNKNOWN |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
+    for environment, item in summary.get("environments", {}).items():
+        scoped = item.get("summary") or {}
+        activity = scoped.get("activity_counts") or {}
+        for data_root in item.get("data_roots") or []:
+            lines.append(
+                "| "
+                + " | ".join(
+                    _md_escape(value)
+                    for value in (
+                        environment,
+                        data_root,
+                        item.get("site_count"),
+                        item.get("mr_profile_count"),
+                        scoped.get("sqlite_database_count"),
+                        scoped.get("parsed_database_count"),
+                        scoped.get("rebuild_database_count"),
+                        activity.get("ACTIVE_CONFIRMED", 0),
+                        activity.get("IDLE_CONFIRMED", 0),
+                        activity.get("SIDECAR_PRESENT_UNCONFIRMED", 0),
+                        activity.get("ACTIVITY_UNKNOWN", 0),
+                    )
+                )
+                + " |"
+            )
+    lines.extend(
+        [
+            "",
+            "## 逐文件身份与检查",
+            "",
+            "| 环境 | 局点 | MR Profile | 数据库类型 | canonical_path | relative_path | file_size | mtime_ns | sha256 | sqlite_schema | quick_check | integrity_check | wal_size | shm_size | file_identity | activity_state | final_status |",
+            "|---|---|---|---|---|---|---:|---:|---|---|---|---|---:|---:|---|---|---|",
+        ]
+    )
     for record in audit["records"]:
         lines.append(
             "| "
@@ -762,14 +1180,19 @@ def render_inventory(audit: dict[str, Any]) -> str:
                     record.get("site"),
                     record.get("mr_name") or record.get("mr_profile_id"),
                     record.get("database_type"),
+                    record.get("canonical_path"),
                     record.get("relative_path"),
-                    record.get("size_bytes"),
-                    record.get("modified_at"),
-                    record.get("schema_version"),
+                    record.get("file_size"),
+                    record.get("mtime_ns"),
+                    record.get("sha256"),
+                    record.get("sqlite_schema"),
                     record.get("quick_check"),
                     record.get("integrity_check"),
-                    f"{record.get('wal_bytes', 0)}/{record.get('shm_bytes', 0)}",
-                    record.get("status"),
+                    record.get("wal_size", 0),
+                    record.get("shm_size", 0),
+                    record.get("file_identity"),
+                    record.get("activity_state"),
+                    record.get("final_status"),
                 )
             )
             + " |"
@@ -778,15 +1201,20 @@ def render_inventory(audit: dict[str, Any]) -> str:
 
 
 def render_reference_audit(audit: dict[str, Any]) -> str:
+    summary = audit["summary"]
     lines = [
-        "# MESH_DATABASE_REFERENCE_AUDIT",
+        "# MESH_DATABASE_REFERENCE_AUDIT_V2",
         "",
         f"生成时间：`{audit['generated_at']}`",
         "",
-        "判定优先级：INSPECTION_FAILED / ACTIVE_PROTECT / TASK_REFERENCED / SESSION_REFERENCED / REGISTERED_PROTECT / BACKUP_PROTECT / UNKNOWN_PROTECT / ORPHAN_CANDIDATE。未知、WAL/SHM、活动写入和无法核验的引用均保护。",
+        "最终状态与引用统计分离。detail_source_identity 只表示两个数据库内部来源身份一致，不表示该物理数据库被分析会话打开。",
         "",
-        "| 文件 | 来源记录 | 分析会话引用 | 文件名回退 | 活动任务引用 | 报告引用 | 备份引用 | 判定依据 | 状态 |",
-        "|---|---:|---:|---:|---:|---:|---:|---|---|",
+        f"- 来源物理路径引用：{summary['source_reference_count']}；会话物理路径引用：{summary['session_reference_count']}；文件名回退：{summary['fallback_reference_count']}",
+        f"- 活动任务引用：{summary['active_task_reference_count']}；历史任务引用：{summary['historical_task_reference_count']}；未知任务引用：{summary['unknown_reference_count']}",
+        f"- 恢复依赖：{summary['recovery_reference_count']}；备份引用：{summary['backup_reference_count']}",
+        "",
+        "| 文件 | 数据库类型 | activity_state | final_status | 来源物理引用 | 会话引用 | 文件名回退 | 活动任务 | 历史任务 | 未知任务 | 恢复依赖 | 备份引用 | 内部 source identity | 保护原因 |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for record in audit["records"]:
         reasons = ", ".join(record.get("protection_reasons") or [])
@@ -796,27 +1224,44 @@ def render_reference_audit(audit: dict[str, Any]) -> str:
                 _md_escape(value)
                 for value in (
                     record.get("path"),
-                    record.get("source_record_count"),
-                    record.get("analysis_session_reference_count"),
-                    record.get("filename_fallback_reference_count"),
-                    record.get("activity_task_reference_count"),
-                    record.get("report_reference_count"),
+                    record.get("database_type"),
+                    record.get("activity_state"),
+                    record.get("final_status"),
+                    record.get("source_reference_count"),
+                    record.get("session_reference_count"),
+                    record.get("fallback_reference_count"),
+                    record.get("active_task_reference_count"),
+                    record.get("historical_task_reference_count"),
+                    record.get("unknown_task_reference_count"),
+                    record.get("recovery_reference_count"),
                     record.get("backup_reference_count"),
+                    record.get("internal_source_identity_count"),
                     reasons,
-                    record.get("status"),
                 )
             )
             + " |"
         )
-        if record.get("source_references") or record.get("session_references") or record.get("task_references"):
+        if (
+            record.get("source_references")
+            or record.get("session_references")
+            or record.get("task_references")
+            or record.get("recovery_references")
+            or record.get("rebuild_review")
+        ):
             lines.append("")
             lines.append(f"- `{record['path']}` 证据：")
             for item in record.get("source_references") or []:
-                lines.append(f"  - source_files: `{json.dumps(item, ensure_ascii=False, default=str)}`")
+                lines.append(f"  - physical source_files: `{json.dumps(item, ensure_ascii=False, default=str)}`")
             for item in record.get("session_references") or []:
-                lines.append(f"  - mesh_session_index: `{json.dumps(item, ensure_ascii=False, default=str)}`")
+                lines.append(f"  - physical mesh_session_index: `{json.dumps(item, ensure_ascii=False, default=str)}`")
             for item in record.get("task_references") or []:
                 lines.append(f"  - task: `{json.dumps(item, ensure_ascii=False, default=str)}`")
+            for item in record.get("recovery_references") or []:
+                lines.append(f"  - recovery: `{json.dumps(item, ensure_ascii=False, default=str)}`")
+            if record.get("rebuild_review"):
+                lines.append(
+                    f"  - rebuild_review: `{json.dumps(record['rebuild_review'], ensure_ascii=False, default=str)}`"
+                )
     return "\n".join(lines) + "\n"
 
 
@@ -827,10 +1272,15 @@ def render_candidates(audit: dict[str, Any]) -> dict[str, Any]:
         if record.get("status") == "ORPHAN_CANDIDATE"
     ]
     return {
-        "format": "netconsole-mesh-orphan-candidates-v1",
+        "format": "netconsole-mesh-orphan-candidates-v2",
         "generated_at": audit["generated_at"],
         "summary": audit["summary"],
         "candidates": candidates,
+        "rebuild_review": [
+            record
+            for record in audit["records"]
+            if record.get("database_type") == "rebuild_temp"
+        ],
     }
 
 
@@ -838,70 +1288,178 @@ def render_final_report(audit: dict[str, Any], *, operation: dict[str, Any] | No
     summary = dict(audit["summary"])
     operation = operation or {}
     status = "PASS"
-    if summary["unknown_database_count"] or summary["active_database_count"]:
+    if (
+        summary["unknown_database_count"]
+        or summary["active_database_count"]
+        or summary["activity_unknown_count"]
+        or summary["sidecar_unconfirmed_count"]
+    ):
         status = "PARTIAL/BLOCKED"
+    reference_status = "PASS"
+    if summary["unknown_reference_count"] or summary["recovery_reference_count"] or summary["sidecar_unconfirmed_count"]:
+        reference_status = "PARTIAL"
+    previous = audit.get("previous_summary") or {}
     lines = [
-        "# MESH_DATABASE_CLEANUP_FINAL_REPORT",
+        "# MESH_DATABASE_CLEANUP_REVIEW_V2",
         "",
         f"生成时间：`{audit['generated_at']}`",
         f"总体状态：`{status}`",
         "",
         "## 结论",
         "",
-        f"ORPHAN_CANDIDATES={summary['orphan_candidate_count']}",
-        f"DATABASES_REMOVED={int(operation.get('isolated_count') or 0)}",
+        "AUDIT_IMPLEMENTATION=PASS",
+        f"REFERENCE_CHECK={reference_status}",
+        "PRODUCTION_CLEANUP=NOT_EXECUTED",
         f"DATA_SAFETY={'PASS' if summary['raw_logs_modified_count'] == 0 and summary['active_database_modified_count'] == 0 and summary['unconfirmed_database_removed_count'] == 0 else 'FAIL'}",
+        f"OVERALL_STATUS={status}",
+        f"ORPHAN_CANDIDATES={summary['orphan_candidate_count']}",
+        "DATABASES_REMOVED=0",
+        "",
+        "## V1 / V2 对比",
+        "",
+        f"- V1 SQLite：{previous.get('sqlite_database_count', '未提供')}；V2 SQLite：{summary['sqlite_database_count']}",
+        f"- V1 parsed：{previous.get('parsed_database_count', '未提供')}；V2 parsed：{summary['parsed_database_count']}",
+        f"- V1 ACTIVE_PROTECT：{previous.get('active_database_count', '未提供')}；V2 ACTIVE_CONFIRMED：{summary['active_database_count']}",
+        f"- V1 候选：{previous.get('orphan_candidate_count', '未提供')}；V2 候选：{summary['orphan_candidate_count']}",
         "",
         "## 盘点统计",
         "",
         f"- 扫描局点数量：{summary['site_count']}",
         f"- 扫描 MR 数量：{summary['mr_profile_count']}",
         f"- SQLite 数据库总数：{summary['sqlite_database_count']}",
-        f"- 活动数据库数量：{summary['active_database_count']}",
-        f"- 已登记数据库数量：{summary['registered_database_count']}",
-        f"- 分析会话引用数据库数量：{summary['session_referenced_database_count']}",
+        f"- parsed 数据库：{summary['parsed_database_count']}（{summary['parsed_database_bytes']} bytes）",
+        f"- rebuild 临时数据库：{summary['rebuild_database_count']}（{summary['rebuild_database_bytes']} bytes）",
+        f"- ACTIVE_CONFIRMED：{summary['active_database_count']}",
+        f"- IDLE_CONFIRMED：{summary['idle_database_count']}",
+        f"- SHM/WAL 状态不确定：{summary['sidecar_unconfirmed_count']}",
+        f"- ACTIVITY_UNKNOWN：{summary['activity_unknown_count']}",
+        f"- catalog 保护：{summary['catalog_protected_count']}；source index 保护：{summary['source_index_protected_count']}",
+        f"- 来源物理路径引用：{summary['source_reference_count']}",
+        f"- 分析会话物理路径引用：{summary['session_reference_count']}",
+        f"- 文件名回退引用：{summary['fallback_reference_count']}",
+        f"- 活动任务引用：{summary['active_task_reference_count']}",
+        f"- 历史任务引用：{summary['historical_task_reference_count']}",
+        f"- 未知任务引用：{summary['unknown_reference_count']}",
+        f"- 恢复依赖：{summary['recovery_reference_count']}",
+        f"- 备份引用：{summary['backup_reference_count']}",
         f"- 未确认数据库数量：{summary['unknown_database_count']}",
         f"- 真正的孤儿候选数量：{summary['orphan_candidate_count']}",
-        f"- 成功备份数量：{int(operation.get('backup_success_count') or 0)}",
-        f"- 备份校验失败数量：{int(operation.get('backup_failure_count') or 0)}",
-        f"- 成功隔离数量：{int(operation.get('isolated_count') or 0)}",
-        f"- 隔离失败数量：{int(operation.get('isolation_failure_count') or 0)}",
-        f"- 回收的逻辑文件大小：{int(operation.get('isolated_bytes') or 0)} bytes",
-        f"- 实际磁盘空间变化：{int(operation.get('disk_bytes_delta') or 0)} bytes",
+        f"- 潜在可回收空间：{summary['orphan_candidate_bytes']} bytes",
         f"- 原始日志修改数量：{summary['raw_logs_modified_count']}",
         f"- 活动数据库修改数量：{summary['active_database_modified_count']}",
         f"- 未确认数据库删除数量：{summary['unconfirmed_database_removed_count']}",
         "",
+        "## 按数据根统计",
+        "",
+        "| 环境 | SQLite | parsed | rebuild | ACTIVE_CONFIRMED | IDLE_CONFIRMED | SHM 不确定 | ACTIVITY_UNKNOWN | 来源引用 | 会话引用 | 历史任务 | 活动任务 | 恢复依赖 | 孤儿候选 |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for environment, item in summary.get("environments", {}).items():
+        scoped = item.get("summary") or {}
+        activity = scoped.get("activity_counts") or {}
+        lines.append(
+            "| "
+            + " | ".join(
+                _md_escape(value)
+                for value in (
+                    environment,
+                    scoped.get("sqlite_database_count"),
+                    scoped.get("parsed_database_count"),
+                    scoped.get("rebuild_database_count"),
+                    activity.get("ACTIVE_CONFIRMED", 0),
+                    activity.get("IDLE_CONFIRMED", 0),
+                    activity.get("SIDECAR_PRESENT_UNCONFIRMED", 0),
+                    activity.get("ACTIVITY_UNKNOWN", 0),
+                    scoped.get("source_reference_count"),
+                    scoped.get("session_reference_count"),
+                    scoped.get("historical_task_reference_count"),
+                    scoped.get("active_task_reference_count"),
+                    scoped.get("recovery_reference_count"),
+                    scoped.get("orphan_candidate_count"),
+                )
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+        "",
+        "## 7 个 rebuild 临时数据库专项",
+        "",
+        "正式库健康、已接管会话、临时库无物理路径引用且活动状态可确认为 IDLE，才允许进入 ORPHAN_CANDIDATE；source_file_id/内部来源身份相同不构成物理文件引用。",
+        "",
+        "| 文件名 | 大小 | SHA-256 | 对应正式库 | 实际来源引用 | 会话引用 | 重建任务 | 恢复依赖 | 最终分类 | 判定依据 |",
+        "|---|---:|---|---|---:|---:|---|---:|---|---|",
+        ]
+    )
+    for record in audit["records"]:
+        if record.get("database_type") != "rebuild_temp":
+            continue
+        review = record.get("rebuild_review") or {}
+        basis = ", ".join(record.get("protection_reasons") or [])
+        lines.append(
+            "| "
+            + " | ".join(
+                _md_escape(value)
+                for value in (
+                    record.get("basename"),
+                    record.get("file_size"),
+                    record.get("sha256"),
+                    review.get("formal_database_path"),
+                    review.get("actual_path_reference_count"),
+                    review.get("formal_database_session_reference_count"),
+                    f"active={review.get('active_task_reference_count', 0)}, historical={review.get('historical_task_reference_count', 0)}",
+                    review.get("recovery_reference_count"),
+                    record.get("final_status"),
+                    basis,
+                )
+            )
+            + " |"
+        )
+    lines.extend(
+        [
         "## 保护边界与回滚",
         "",
-        "- catalog.sqlite、已登记 Profile 的 mesh.sqlite、来源引用、会话引用、活动任务、WAL/SHM、备份和未知数据库均保留。",
-        "- 本轮没有永久删除；若未来通过显式 backup/isolate 阶段，回滚映射写入备份 manifest，原始路径会记录在隔离清单。",
+        "- 本轮不执行生产备份、隔离、删除、VACUUM、Schema 重建或强制 checkpoint；不删除 WAL/SHM，不结束 Backend/Worker。",
+        "- catalog.sqlite、正式 parsed、已登记 source index、物理引用、历史分析、恢复 Journal、备份和未知数据库均保留。",
         "- 原始 MESH 日志、历史报告、Excel、导出文件和既有数据库备份不作为清理目标。",
         "",
         "## 测试与未解决风险",
         "",
         "- 自动测试结果见任务交接；真实 Electron 页面、真实报告打开和设备验收不由本审计器冒充通过。",
-        "- 生产 Backend/SQLite 写入者未取得停机/静止证据时，结果保持 PARTIAL/BLOCKED。",
+        "- Backend/Worker 进程、任务状态、文件前后快照或 WAL/SHM 无法证明静止时，保持保护，不将其标记为可清理。",
         "- Workspace 基线已有顶层 docs 目录布局检查失败，本任务未清理该既有目录。",
         "",
-        "证据文件：`MESH_DATABASE_INVENTORY.md`、`MESH_DATABASE_REFERENCE_AUDIT.md`、`MESH_ORPHAN_CANDIDATES.json`。",
-    ]
+        "证据文件：`MESH_DATABASE_INVENTORY_V2.md`、`MESH_DATABASE_REFERENCE_AUDIT_V2.md`、`MESH_ORPHAN_CANDIDATES_V2.json`。",
+        ]
+    )
     return "\n".join(lines) + "\n"
+
+
+def _load_previous_summary(report_dir: Path | None) -> dict[str, Any]:
+    if report_dir is None:
+        return {}
+    candidate_path = report_dir / "MESH_ORPHAN_CANDIDATES.json"
+    try:
+        value = json.loads(candidate_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    summary = value.get("summary") if isinstance(value, dict) else None
+    return dict(summary) if isinstance(summary, dict) else {}
 
 
 def write_reports(audit: dict[str, Any], output_dir: Path, *, operation: dict[str, Any] | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "MESH_DATABASE_INVENTORY.md").write_text(
+    (output_dir / "MESH_DATABASE_INVENTORY_V2.md").write_text(
         render_inventory(audit), encoding="utf-8"
     )
-    (output_dir / "MESH_DATABASE_REFERENCE_AUDIT.md").write_text(
+    (output_dir / "MESH_DATABASE_REFERENCE_AUDIT_V2.md").write_text(
         render_reference_audit(audit), encoding="utf-8"
     )
-    (output_dir / "MESH_ORPHAN_CANDIDATES.json").write_text(
+    (output_dir / "MESH_ORPHAN_CANDIDATES_V2.json").write_text(
         json.dumps(render_candidates(audit), ensure_ascii=False, indent=2, default=str) + "\n",
         encoding="utf-8",
     )
-    (output_dir / "MESH_DATABASE_CLEANUP_FINAL_REPORT.md").write_text(
+    (output_dir / "MESH_DATABASE_CLEANUP_REVIEW_V2.md").write_text(
         render_final_report(audit, operation=operation), encoding="utf-8"
     )
 
@@ -931,11 +1489,17 @@ def backup_candidates(candidates: list[dict[str, Any]], *, audit_id: str) -> dic
         source = Path(str(record.get("path") or "")).resolve()
         item: dict[str, Any] = {"source": str(source), "status": "FAILED"}
         try:
-            if record.get("status") != "ORPHAN_CANDIDATE":
+            if record.get("final_status", record.get("status")) != "ORPHAN_CANDIDATE":
                 raise RuntimeError("当前状态不是 ORPHAN_CANDIDATE")
             if not source.is_file() or _sidecar(source, "-wal").exists() or _sidecar(source, "-shm").exists():
                 raise RuntimeError("源文件不存在或存在 WAL/SHM 侧车")
-            if int(record.get("size_bytes") or -1) != source.stat().st_size or sha256_file(source) != str(record.get("sha256") or ""):
+            current = _file_snapshot(source) or {}
+            if (
+                int(record.get("file_size", record.get("size_bytes")) or -1) != current.get("file_size")
+                or int(record.get("mtime_ns") or -1) != current.get("mtime_ns")
+                or str(record.get("file_identity") or "") != current.get("file_identity")
+                or sha256_file(source) != str(record.get("sha256") or "")
+            ):
                 raise RuntimeError("清理前复核发现文件快照变化")
             root = Path(str(record.get("data_root") or "")).resolve()
             store = DatabaseBackupStore(PathResolver(data_root=root))
@@ -1022,6 +1586,7 @@ def _parser() -> argparse.ArgumentParser:
         "--audit-id",
         default=datetime.now(UTC).strftime("mesh-audit-%Y%m%dT%H%M%SZ"),
     )
+    parser.add_argument("--previous-report-dir", type=Path)
     parser.add_argument("--authorize-write", action="store_true")
     return parser
 
@@ -1030,13 +1595,21 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     roots = [Path(value).resolve() for value in args.data_root]
     production = {root for root in roots if root.name.casefold() == "netconsoledata"}
-    writer_active = set(production) if _active_backend_processes() else set()
+    runtime_processes = _active_backend_processes()
     if args.mode in {"backup", "isolate"} and not args.authorize_write:
         raise SystemExit("backup/isolate 需要显式 --authorize-write；默认只读")
-    audit = audit_roots(roots, writer_active_roots=writer_active)
+    audit = audit_roots(
+        roots,
+        runtime_processes_by_root={root: runtime_processes for root in production},
+    )
+    audit["previous_summary"] = _load_previous_summary(args.previous_report_dir)
     operation: dict[str, Any] = {}
     if args.mode == "backup":
-        candidates = [record for record in audit["records"] if record.get("status") == "ORPHAN_CANDIDATE"]
+        candidates = [
+            record
+            for record in audit["records"]
+            if record.get("final_status") == "ORPHAN_CANDIDATE"
+        ]
         operation = backup_candidates(candidates, audit_id=str(args.audit_id))
         (args.output_dir / "MESH_BACKUP_MANIFEST.json").parent.mkdir(parents=True, exist_ok=True)
         (args.output_dir / "MESH_BACKUP_MANIFEST.json").write_text(

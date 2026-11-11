@@ -18,7 +18,7 @@ from datetime import datetime
 from functools import lru_cache
 from threading import RLock
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import UUID, uuid4
 
 from netconsole.core.paths import PathResolver
@@ -547,28 +547,13 @@ class MeshAnalysisQueryService:
     ) -> bool:
         if str(source.get("parsed_deleted_at") or "").strip():
             return True
+        parsed_root = self.paths.mesh_mr_parsed_dir(site_id, safe_name).resolve()
         recorded_value = str(source.get("parsed_db_path") or "").strip().strip("'\"")
         relative_value = str(source.get("parsed_relative_path") or "").strip().strip("'\"")
         if not recorded_value and not relative_value:
             return True
-        parsed_root = self.paths.mesh_mr_parsed_dir(site_id, safe_name).resolve()
-        candidates: list[Path] = []
-        if recorded_value:
-            recorded = Path(recorded_value)
-            candidates.append(recorded)
-            if recorded.name:
-                candidates.append(parsed_root / recorded.name)
-        if relative_value:
-            relative = Path(relative_value)
-            candidates.append(parsed_root / relative.name)
-        for candidate in dict.fromkeys(candidates):
-            try:
-                resolved = candidate.resolve()
-                if self._within(resolved, parsed_root) and resolved.is_file():
-                    return True
-            except OSError:
-                continue
-        return False
+        detail, _relocated = self._resolve_detail_path(parsed_root, source)
+        return detail is not None
 
     def _current_identity_revision(self, site_id: str) -> int:
         """Read the AP Identity index revision without mutating the site database."""
@@ -3375,16 +3360,7 @@ class MeshAnalysisQueryService:
         safe_name = str(profile["safe_folder_name"])
         mr_root = self._validated_mr_root(site_id, safe_name)
         parsed_root = self.paths.mesh_mr_parsed_dir(site_id, safe_name).resolve()
-        recorded = Path(str(source.get("parsed_db_path") or "").strip().strip("'\"")) if source.get("parsed_db_path") else None
-        detail: Path | None = None
-        relocated = False
-        if recorded is not None and recorded.is_file() and self._within(recorded, parsed_root):
-            detail = recorded.resolve()
-        elif recorded is not None and recorded.name:
-            fallback = (parsed_root / recorded.name).resolve()
-            if fallback.is_file() and self._within(fallback, parsed_root):
-                detail = fallback
-                relocated = True
+        detail, relocated = self._resolve_detail_path(parsed_root, source)
         raw_path = MeshSourceLocator(self.paths).locate(site_id, profile, source).raw_path
         return _SessionContext(
             site_id=site_id,
@@ -3402,6 +3378,45 @@ class MeshAnalysisQueryService:
             raw_path=raw_path,
             relocated_detail=relocated,
         )
+
+    @classmethod
+    def _resolve_detail_path(
+        cls,
+        parsed_root: Path,
+        source: Mapping[str, Any],
+    ) -> tuple[Path | None, bool]:
+        """Resolve the same safe path/fallback contract used by query listing.
+
+        ``parsed_relative_path`` is stored relative to the MR profile root by
+        the rebuild service, while older rows may contain an absolute path from
+        another data root. In both cases the only fallback allowed here is the
+        basename inside the current parsed directory.
+        """
+        values = (
+            ("parsed_db_path", source.get("parsed_db_path")),
+            ("parsed_relative_path", source.get("parsed_relative_path")),
+        )
+        for field, value in values:
+            text = str(value or "").strip().strip("'\"")
+            if not text:
+                continue
+            candidate = Path(text)
+            try:
+                if candidate.is_absolute():
+                    resolved = candidate.resolve()
+                    if cls._within(resolved, parsed_root) and resolved.is_file():
+                        return resolved, False
+                    fallback = (parsed_root / candidate.name).resolve()
+                else:
+                    profile_relative = (parsed_root.parent / candidate).resolve()
+                    if cls._within(profile_relative, parsed_root) and profile_relative.is_file():
+                        return profile_relative, False
+                    fallback = (parsed_root / candidate.name).resolve()
+                if cls._within(fallback, parsed_root) and fallback.is_file():
+                    return fallback, True
+            except OSError:
+                continue
+        return None, False
 
     def _session_dto(self, context: _SessionContext, stats: dict[str, Any] | None = None) -> MeshAnalysisSessionDTO:
         stats = stats or self._stats(context)

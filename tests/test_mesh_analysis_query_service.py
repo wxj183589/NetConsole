@@ -1251,6 +1251,25 @@ def test_relocated_detail_path_uses_current_parsed_file_without_writing(tmp_path
     assert _fingerprint(detail) == before
 
 
+def test_parsed_relative_path_resolves_current_detail_without_source_id_guess(
+    tmp_path: Path,
+) -> None:
+    paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
+    index = paths.mesh_mr_db_path("demo", "列车01-MR-CT")
+    with sqlite3.connect(index) as conn:
+        conn.execute("ALTER TABLE source_files ADD COLUMN parsed_relative_path TEXT DEFAULT ''")
+        conn.execute(
+            "UPDATE source_files SET parsed_db_path = '', parsed_relative_path = ? WHERE id = 1",
+            (f"parsed/{detail.name}",),
+        )
+
+    service = MeshAnalysisQueryService(paths, base_query=EmptyBaseQuery())  # type: ignore[arg-type]
+    result = service.get_analysis_session("demo", session_id)
+
+    assert result.session.link_record_count == 4
+    assert not any(warning.code == "parsed_missing" for warning in result.warnings)
+
+
 def test_info_only_parse_diagnostics_do_not_make_session_partial(tmp_path: Path) -> None:
     paths, session_id, detail, _raw, _report = create_mesh_analysis_fixture(tmp_path)
     with sqlite3.connect(detail) as conn:
