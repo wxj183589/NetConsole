@@ -1,0 +1,26 @@
+{
+  "schema": "netconsole.v1.5.13.dual-artifact-manifest",
+  "version": "1.5.13",
+  "main_commit": "afd1b4fc35f2ac2e2ae8d3a52e783ea7b0ac630c",
+  "pr": 107,
+  "edition": "full",
+  "custom_edition_retired": true,
+  "published": false,
+  "installer": {
+    "path": "D:\\study\\NetConsole-Workspace\\release\\v1.5.13\\build-20261111-0735-afd1b4fc\\NetConsole-Full-1.5.13.0-afd1b4fc-x64-setup.exe",
+    "size": 158267994,
+    "sha256": "cdd345c38220f596b00f564ac1016fae172c21350263df76d651d196bc02af66",
+    "release_manifest": "NetConsole-Full-1.5.13.0-afd1b4fc-x64-setup.exe.release.json",
+    "package_smoke": "PASS",
+    "real_windows_install": "PENDING"
+  },
+  "portable": {
+    "path": "D:\\study\\NetConsole-Workspace\\release\\v1.5.13\\build-20261111-0735-afd1b4fc\\NetConsole-1.5.13-portable.zip",
+    "size": 215714508,
+    "sha256": "aa554084a61038b3cd0ef11fe94ec5dc0614b54bd11ee2415a52d13e2427d57a",
+    "archive_test": "PASS",
+    "portable_marker": "portable.mode"
+  },
+  "gui_acceptance": "AUTOMATED_STARTUP_PASS_MANUAL_GUI_NOT_AVAILABLE",
+  "field_acceptance": "NOT_AVAILABLE"
+}
