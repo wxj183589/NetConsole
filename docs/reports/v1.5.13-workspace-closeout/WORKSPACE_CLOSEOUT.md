@@ -1,7 +1,7 @@
 # NetConsole v1.5.13 工作区最终收口报告
 
-日期：2026-11-11（Asia/Shanghai）  
-Agent：codex-A  
+日期：2026-11-11（Asia/Shanghai）
+Agent：codex-A
 Codex-Thread：`01a1c697-18fa-7f63-89fb-337c76c7c29d`
 
 ## 范围与保护边界
