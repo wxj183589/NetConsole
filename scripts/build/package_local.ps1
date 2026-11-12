@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("full", "customer", "both", "preflight")]
-    [string]$Edition = "both",
+    [ValidateSet("full", "preflight")]
+    [string]$Edition = "full",
     [switch]$NoOpenOutput
 )
 
@@ -190,8 +190,7 @@ function Get-ExpectedEditions {
 
     switch ($BuildEdition) {
         "full" { return @("full") }
-        "customer" { return @("customer") }
-        default { return @("full", "customer") }
+        default { return @("full") }
     }
 }
 
@@ -258,9 +257,6 @@ function Get-VerifiedArtifacts {
         }
         if ($manifest.package_smoke -ne "PASS") {
             throw "$expectedEdition 发布清单未记录 package smoke 通过。"
-        }
-        if ($expectedEdition -eq "customer" -and $manifest.admin_unlock_configured -ne $true) {
-            throw "Customer 发布清单缺少维护密码配置标记。"
         }
         if ($expectedEdition -eq "full" -and $manifest.admin_unlock_configured -ne $false) {
             throw "Full 发布清单不应携带维护密码配置标记。"
@@ -561,20 +557,15 @@ try {
     if ($Edition -eq "preflight") {
         Write-Stage 3 "预检模式"
         Invoke-PackageWindows -PowerShellPath $powerShellPath -ProjectRoot $projectRoot `
-            -PackageScript $packageScript -BuildEdition "both" -ChildLogPath $childLogPath -PreflightOnly
+            -PackageScript $packageScript -BuildEdition "full" -ChildLogPath $childLogPath -PreflightOnly
         Write-StageComplete 3 "预检模式"
         Write-Host "预检通过；未安装依赖、未运行测试、未生成安装包。" -ForegroundColor Green
         exit 0
     }
 
-    Write-Stage 3 "校验客户版维护密码来源"
-    if ($Edition -eq "full") {
-        Write-Host "Full-only 构建不需要客户版维护密码。"
-    }
-    else {
-        Write-Host "Customer 密码由 Python canonical resolver 解析（环境变量覆盖或内置默认值）。"
-    }
-    Write-StageComplete 3 "客户版维护密码来源"
+    Write-Stage 3 "确认 Full-only 交付策略"
+    Write-Host "当前正式交付仅包含 Full Installer；Customer 版本机制已退役。"
+    Write-StageComplete 3 "Full-only 交付策略"
 
     Write-Stage 4 "安装锁定依赖"
     Write-Stage 5 "运行 Web 与 Electron 测试"

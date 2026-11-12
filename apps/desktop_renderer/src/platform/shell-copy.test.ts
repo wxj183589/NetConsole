@@ -24,7 +24,7 @@ describe('desktop renderer product copy', () => {
     expect(layout).not.toMatch(/>\s*NC\s*</)
     expect(dashboard).toContain('当前版本功能状态')
     expect(dashboard).toContain('查看命令说明')
-    expect(layout).toContain('本地网络运维控制台')
+    expect(layout).not.toContain('本地网络运维控制台')
     expect(`${html}${layout}${dashboard}`).not.toContain('Electron + Qt 并行迁移')
     expect(`${html}${layout}${dashboard}`).not.toContain('NetConsole Web</')
   })

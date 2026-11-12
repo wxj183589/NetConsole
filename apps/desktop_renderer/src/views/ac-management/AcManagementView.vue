@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { Download, Refresh, View } from '@element-plus/icons-vue'
+import { Download, MoreFilled, Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useRoute } from 'vue-router'
 
 import { getAcApCurrentLldp, getAcApRecentChanges } from '../../api/acManagement'
-import { listStations } from '../../api/railTransitBaseData'
 import {
   confirmAcActionPlan,
   createAcActionPlan,
@@ -37,6 +36,7 @@ import type {
   AcActionPlan,
   AcWebTask,
 } from '../../types/acWebParity'
+import { listAllStations } from './stationPagination'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import {
   apOpticalStatusPresentation,
@@ -62,6 +62,9 @@ const {
   launchSelectedFitApTerminal,
 } = useExternalTerminalLauncher()
 const activeTab = ref('aps')
+const acDetailsExpanded = ref(false)
+const acStatsExpanded = ref(false)
+const fitApAdvancedExpanded = ref(false)
 const detailVisible = ref(false)
 const configVisible = ref(false)
 const configSearch = ref('')
@@ -91,6 +94,15 @@ const resourceExportSaving = ref(false)
 const lastResourceExportTask = ref<AcWebTask | null>(null)
 const recentInvariantWarnings = new Set<string>()
 const recentTitle = computed(() => ({ radio: 'Radio 最近变化', lldp: 'LLDP 最近变化', optical: '光衰最近变化' }[recentKind.value]))
+const fitApAdvancedFilterCount = computed(() => [
+  store.multiFilters.sections.length,
+  store.multiFilters.models.length,
+  store.multiFilters.switches.length,
+  store.filters.section,
+  store.filters.model,
+  store.filters.switch,
+].filter(Boolean).length)
+const fitApAdvancedFiltersActive = computed(() => fitApAdvancedFilterCount.value > 0)
 
 function recentChangeCount(kind: 'radio' | 'lldp' | 'optical'): number {
   const count = Number(store.selected?.recent_change_counts?.[kind] || 0)
@@ -281,6 +293,16 @@ function clearFilters(): void {
   store.applyFilters()
 }
 
+function clearFitApAdvancedFilters(): void {
+  store.filters.section = ''
+  store.filters.model = ''
+  store.filters.switch = ''
+  store.multiFilters.sections = []
+  store.multiFilters.models = []
+  store.multiFilters.switches = []
+  store.applyFilters()
+}
+
 function setApSelected(apId: string, selected: boolean): void {
   const next = new Set(selectedApIds.value)
   if (selected) next.add(apId)
@@ -423,8 +445,7 @@ async function startVerboseRefresh(scope: 'all' | 'selected'): Promise<void> {
 
 async function loadStations(): Promise<void> {
   try {
-    const result = await listStations({ page: 1, page_size: 500, sort_order: 'asc' })
-    stations.value = result.items.filter((item) => item.enabled !== false)
+    stations.value = (await listAllStations()).filter((item) => item.enabled !== false)
   } catch {
     stations.value = []
   }
@@ -784,76 +805,80 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 
 <template>
   <section class="ac-management">
-    <div class="page-toolbar">
+    <div class="page-toolbar page-toolbar--compact">
       <div>
         <h2>{{ store.activeAc?.name || 'AC 管理' }}</h2>
         <p>{{ store.summary?.site_id || '--' }} · 数据源：{{ store.activeAc?.data_source || 'SQLite 已采集数据' }} · 更新于 {{ formatTime(store.summary?.updated_at || '') }}</p>
       </div>
       <div class="toolbar-actions">
-        <el-select :model-value="store.filters.ac_id" placeholder="选择 AC" style="width: 220px" @change="store.setAcId">
+        <el-select :model-value="store.filters.ac_id" placeholder="选择 AC" style="width: 190px" @change="store.setAcId">
           <el-option v-for="ac in store.summary?.acs || []" :key="ac.id" :label="`${ac.name} (${ac.management_ip || '--'})`" :value="ac.id" />
         </el-select>
-        <el-button
-          v-if="isFeatureEnabled('capability.ac.open_management')"
-          :disabled="!desktopHost || !store.activeAc?.web_url"
-          @click="openAcWeb"
-        >打开 AC Web</el-button>
         <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新已有数据</el-button>
-        <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startAcInfoRefresh">更新 AC 信息</el-button>
         <el-button type="primary" :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startFitApRefresh">更新 FIT-AP 资源</el-button>
-        <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="startVerboseRefresh('all')">获取全部 AP 详细信息</el-button>
-        <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!selectedApIds.size || taskActive" @click="startVerboseRefresh('selected')">获取已选择 AP 详细信息</el-button>
-        <el-button :icon="Refresh" :loading="store.refreshStarting" :disabled="!store.filters.ac_id || taskActive" @click="store.startOpticalRefresh">更新光衰</el-button>
-        <span v-if="isFeatureEnabled('capability.ac.dangerous_actions')" class="toolbar-separator" aria-hidden="true" />
-        <el-button
-          v-if="isFeatureEnabled('capability.ac.dangerous_actions')"
-          :loading="actionLoading.persist_auto_ap"
-          :disabled="!store.filters.ac_id || acActionConflict"
-          @click="prepareAcAction('persist_auto_ap')"
-        >{{ t('ac.action.persist_auto_ap', '一键固化新上线 AP') }}</el-button>
-        <el-button
-          v-if="isFeatureEnabled('capability.ac.dangerous_actions')"
-          :loading="actionLoading.enable_ap_remote_login"
-          :disabled="!store.filters.ac_id || acActionConflict"
-          @click="prepareAcAction('enable_ap_remote_login')"
-        >{{ t('ac.action.enable_remote_login', '一键开启 AP 远程登入') }}</el-button>
+        <el-dropdown trigger="click">
+          <el-button :icon="MoreFilled">更多操作</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-if="isFeatureEnabled('capability.ac.open_management')" :disabled="!desktopHost || !store.activeAc?.web_url" @click="openAcWeb">打开 AC Web</el-dropdown-item>
+              <el-dropdown-item :disabled="!store.filters.ac_id || taskActive" @click="store.startAcInfoRefresh">更新 AC 信息</el-dropdown-item>
+              <el-dropdown-item :disabled="!store.filters.ac_id || taskActive" @click="startVerboseRefresh('all')">获取全部 AP 详细信息</el-dropdown-item>
+              <el-dropdown-item :disabled="!selectedApIds.size || taskActive" @click="startVerboseRefresh('selected')">获取已选择 AP 详细信息</el-dropdown-item>
+              <el-dropdown-item :disabled="!store.filters.ac_id || taskActive" @click="store.startOpticalRefresh">更新光衰</el-dropdown-item>
+              <el-dropdown-item v-if="isFeatureEnabled('capability.ac.dangerous_actions')" :disabled="!store.filters.ac_id || acActionConflict" @click="prepareAcAction('persist_auto_ap')">{{ t('ac.action.persist_auto_ap', '一键固化新上线 AP') }}</el-dropdown-item>
+              <el-dropdown-item v-if="isFeatureEnabled('capability.ac.dangerous_actions')" :disabled="!store.filters.ac_id || acActionConflict" @click="prepareAcAction('enable_ap_remote_login')">{{ t('ac.action.enable_remote_login', '一键开启 AP 远程登入') }}</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </div>
 
     <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
-    <el-descriptions v-else-if="store.activeAc" :column="4" border class="ac-info-strip">
-      <el-descriptions-item label="AC 型号">{{ display(store.activeAc.model) }}</el-descriptions-item>
-      <el-descriptions-item label="软件版本">{{ display(store.activeAc.software_version) }}</el-descriptions-item>
-      <el-descriptions-item label="CPU 使用率">{{ display(store.activeAc.cpu_usage) }}</el-descriptions-item>
-      <el-descriptions-item label="内存使用率">{{ display(store.activeAc.memory_usage) }}</el-descriptions-item>
-      <el-descriptions-item label="管理地址">{{ display(store.activeAc.management_ip) }}</el-descriptions-item>
-      <el-descriptions-item label="HTTPS 端口">{{ display(store.activeAc.https_port) }}</el-descriptions-item>
-    </el-descriptions>
-
-    <div v-if="store.activeAc" class="summary-grid">
-      <article><span>AP 总数</span><strong>{{ store.activeAc?.ap_total || 0 }}</strong></article>
-      <article class="success"><span>在线 AP</span><strong>{{ store.activeAc?.online_aps || 0 }}</strong></article>
-      <article class="danger"><span>离线 AP</span><strong>{{ store.activeAc?.offline_aps || 0 }}</strong></article>
-      <article class="warning" :title="unauthenticatedCountTitle(store.activeAc)"><span>未认证 AP（AC实时）</span><strong>{{ unauthenticatedCountLabel(store.activeAc) }}</strong></article>
-      <article><span>Radio 总数</span><strong>{{ store.activeAc?.radio_total || 0 }}</strong></article>
-      <article class="danger"><span>关联光衰异常</span><strong>{{ store.activeAc?.optical_anomalies || 0 }}</strong></article>
+    <div v-else-if="store.activeAc" class="ac-info-strip">
+      <div class="ac-info-summary"><span>型号 {{ display(store.activeAc.model) }}</span><span>版本 {{ display(store.activeAc.software_version) }}</span><span>管理地址 {{ display(store.activeAc.management_ip) }}:{{ display(store.activeAc.https_port) }}</span><el-button link type="primary" @click="acDetailsExpanded = !acDetailsExpanded">{{ acDetailsExpanded ? '收起 AC 详情' : '展开 AC 详情' }}</el-button></div>
+      <el-descriptions v-if="acDetailsExpanded" :column="4" border class="ac-info-details">
+        <el-descriptions-item label="AC 型号">{{ display(store.activeAc.model) }}</el-descriptions-item>
+        <el-descriptions-item label="软件版本">{{ display(store.activeAc.software_version) }}</el-descriptions-item>
+        <el-descriptions-item label="CPU 使用率">{{ display(store.activeAc.cpu_usage) }}</el-descriptions-item>
+        <el-descriptions-item label="内存使用率">{{ display(store.activeAc.memory_usage) }}</el-descriptions-item>
+        <el-descriptions-item label="管理地址">{{ display(store.activeAc.management_ip) }}</el-descriptions-item>
+        <el-descriptions-item label="HTTPS 端口">{{ display(store.activeAc.https_port) }}</el-descriptions-item>
+      </el-descriptions>
     </div>
+
+    <div v-if="store.activeAc" class="summary-grid summary-grid--compact">
+      <article><span>AP 总数</span><strong>{{ store.activeAc?.ap_total || 0 }}</strong></article>
+      <article class="success"><span>在线</span><strong>{{ store.activeAc?.online_aps || 0 }}</strong></article>
+      <article class="danger"><span>离线</span><strong>{{ store.activeAc?.offline_aps || 0 }}</strong></article>
+      <article class="warning" :title="unauthenticatedCountTitle(store.activeAc)"><span>未认证</span><strong>{{ unauthenticatedCountLabel(store.activeAc) }}</strong></article>
+      <article><span>Radio</span><strong>{{ store.activeAc?.radio_total || 0 }}</strong></article>
+      <article class="danger"><span>光衰异常</span><strong>{{ store.activeAc?.optical_anomalies || 0 }}</strong></article>
+      <el-button class="stats-expand-button" link type="primary" @click="acStatsExpanded = !acStatsExpanded">{{ acStatsExpanded ? '收起统计详情' : '统计详情' }}</el-button>
+    </div>
+    <div v-if="store.activeAc && acStatsExpanded" class="stats-detail">在线 AP {{ store.activeAc.online_aps || 0 }} / 离线 AP {{ store.activeAc.offline_aps || 0 }} · 未认证 AP {{ unauthenticatedCountLabel(store.activeAc) }} · 关联光衰异常 {{ store.activeAc.optical_anomalies || 0 }}</div>
 
     <div class="content-card">
       <el-tabs v-model="activeTab" class="ac-tabs">
         <el-tab-pane label="FIT-AP 资源" name="aps">
-          <div class="filter-bar">
+          <div class="filter-bar filter-bar--compact">
             <el-input v-model="store.filters.query" clearable placeholder="AP 名称 / IP / MAC" @keyup.enter="store.applyFilters" />
             <NcMultiValueFilter v-model="store.multiFilters.statuses" :options="['online', 'offline', 'unauthenticated']" :labels="{ online: '在线', offline: '离线', unauthenticated: '未认证' }" placeholder="全部 AP 状态" />
             <NcMultiValueFilter v-model="store.multiFilters.optical_statuses" :options="['normal', 'abnormal', 'no_data']" :labels="{ normal: '正常', abnormal: '光衰大', no_data: '无数据' }" placeholder="全部光衰状态" />
             <NcMultiValueFilter v-model="store.multiFilters.stations" :options="store.filterOptions.stations" placeholder="全部归属站点" />
+            <el-button type="primary" @click="store.applyFilters">应用筛选</el-button>
+            <el-button :type="fitApAdvancedFiltersActive ? 'primary' : undefined" plain @click="fitApAdvancedExpanded = !fitApAdvancedExpanded">更多筛选<span v-if="fitApAdvancedFilterCount">（{{ fitApAdvancedFilterCount }}）</span></el-button>
+            <el-button @click="clearFilters">清除</el-button>
+          </div>
+          <div v-if="fitApAdvancedExpanded" class="advanced-filter-panel">
             <NcMultiValueFilter v-model="store.multiFilters.sections" :options="store.filterOptions.sections" placeholder="全部归属区间" />
             <NcMultiValueFilter v-model="store.multiFilters.models" :options="store.filterOptions.models" placeholder="全部型号" />
             <NcMultiValueFilter v-model="store.multiFilters.switches" :options="store.filterOptions.switches" placeholder="全部交换机" />
-            <el-button type="primary" @click="store.applyFilters">应用筛选</el-button>
-            <el-button @click="clearFilters">清除</el-button>
+            <el-button v-if="fitApAdvancedFiltersActive" link type="primary" @click="clearFitApAdvancedFilters">清除高级筛选</el-button>
+          </div>
+          <div v-if="fitApAdvancedFiltersActive" class="filter-active-note">高级筛选已生效；筛选、导出与分页保持同一范围。</div>
+          <div class="filter-actions">
             <el-button @click="selectCurrentPage">选择本页</el-button>
             <el-button @click="invertCurrentPage">反选本页</el-button>
             <el-button :disabled="!selectedApIds.size" @click="selectedApIds = new Set()">清空选择</el-button>
@@ -1139,11 +1164,16 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 .page-error { margin-bottom: 16px; }
 .page-toolbar, .config-toolbar, .detail-heading, .config-searchbar, .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .page-toolbar { margin-bottom: 16px; }
+.page-toolbar--compact { margin-bottom: 10px; }
 .page-toolbar h2, .config-toolbar h3, .detail-heading h2 { margin: 0; }
 .page-toolbar p, .config-toolbar p, .detail-heading p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
 .toolbar-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; min-width: 0; }
 .toolbar-separator { width: 1px; height: 24px; background: var(--nc-divider); }
-.ac-info-strip { margin-bottom: 12px; }
+.ac-info-strip { margin-bottom: 10px; padding: 8px 12px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 8px; }
+.ac-info-summary { display: flex; align-items: center; gap: 16px; min-width: 0; color: var(--nc-text-secondary); font-size: 12px; }
+.ac-info-summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ac-info-summary .el-button { margin-left: auto; flex: 0 0 auto; }
+.ac-info-details { margin-top: 8px; }
 .summary-grid { display: grid; grid-template-columns: repeat(6, minmax(125px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .summary-grid article { padding: 15px 17px; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-top: 3px solid var(--nc-border-strong); border-radius: 10px; }
 .summary-grid article.success { border-top-color: var(--nc-success); }
@@ -1151,9 +1181,19 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 .summary-grid article.danger { border-top-color: var(--nc-danger); }
 .summary-grid span { display: block; color: var(--nc-text-secondary); font-size: 12px; }
 .summary-grid strong { display: block; margin-top: 6px; color: var(--nc-text-primary); font-size: 24px; }
+.summary-grid--compact { display: flex; align-items: stretch; gap: 8px; margin-bottom: 10px; overflow-x: auto; }
+.summary-grid--compact article { display: flex; min-width: 118px; flex: 1 0 118px; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border-top-width: 2px; border-radius: 7px; }
+.summary-grid--compact article span { white-space: nowrap; }
+.summary-grid--compact article strong { margin-top: 0; font-size: 17px; }
+.stats-expand-button { align-self: center; flex: 0 0 auto; white-space: nowrap; }
+.stats-detail, .filter-active-note { margin: -4px 0 10px; padding: 6px 10px; color: var(--nc-text-secondary); background: var(--nc-bg-page); border-left: 3px solid var(--nc-primary); font-size: 12px; }
 .content-card { overflow: hidden; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }
 .ac-tabs :deep(.el-tabs__header) { margin: 0; padding: 0 18px; }
 .filter-bar { display: grid; grid-template-columns: minmax(220px, 1.5fr) repeat(6, minmax(115px, 1fr)) auto auto auto; gap: 8px; padding: 14px; border-bottom: 1px solid var(--nc-divider); }
+.filter-bar--compact { grid-template-columns: minmax(220px, 1.5fr) repeat(3, minmax(120px, 1fr)) auto auto auto; padding: 10px 12px 8px; }
+.advanced-filter-panel, .filter-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--nc-divider); }
+.advanced-filter-panel > .nc-multi-value-filter { flex: 0 1 180px; min-width: 150px; }
+.filter-actions { padding-top: 6px; padding-bottom: 8px; }
 .column-picker :deep(.el-checkbox) { margin-right: 8px; }
 .pagination-row { padding: 12px 16px; color: var(--nc-text-secondary); font-size: 12px; }
 .config-toolbar { padding: 15px 18px; border-bottom: 1px solid var(--nc-divider); }
@@ -1187,6 +1227,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 @media (max-width: 1400px) {
   .summary-grid { grid-template-columns: repeat(3, 1fr); }
   .filter-bar { grid-template-columns: repeat(4, minmax(150px, 1fr)); }
+  .filter-bar--compact { grid-template-columns: minmax(180px, 1.5fr) repeat(2, minmax(130px, 1fr)) auto auto auto; }
 }
 @media (max-width: 900px) {
   .page-toolbar, .config-toolbar { align-items: flex-start; flex-direction: column; }

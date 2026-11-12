@@ -83,7 +83,6 @@ export const navigationRegistry: NavigationItem[] = [
   item({ navigation_id: 'logs', title: '日志中心', route_name: 'logs', route_path: '/logs', feature_id: 'module.logs', order: 110, icon: 'system', legacy_page_id: 'logs', legacy_feature_id: 'module.logs', parity_state: 'IMPLEMENTED_UNVERIFIED', desktop_only: false, internal_only: false, implemented: true }),
   item({ navigation_id: 'storage-management', title: '存储管理', route_name: 'storage-management', route_path: '/storage-management', order: 115, icon: 'system', parity_state: 'READ_ONLY', desktop_only: true, internal_only: false, implemented: true }),
   item({ navigation_id: 'settings', title: '系统设置', route_name: 'system-settings', route_path: '/settings', feature_id: 'module.system_settings', order: 120, icon: 'system', legacy_page_id: 'system_settings', legacy_feature_id: 'module.system_settings', parity_state: 'PARTIAL', desktop_only: true, internal_only: false, implemented: true }),
-  item({ navigation_id: 'feature-flags', title: '版本与功能交付', route_name: 'edition-feature-profiles', route_path: '/feature-flags', feature_id: 'internal.feature_switch', order: 130, icon: 'system', legacy_page_id: 'feature_flags', legacy_feature_id: 'internal.feature_switch', parity_state: 'IMPLEMENTED_UNVERIFIED', desktop_only: true, internal_only: true, implemented: true }),
 ]
 
 export function flattenNavigation(items: NavigationItem[] = navigationRegistry): NavigationItem[] {

@@ -10,7 +10,7 @@
 
 ## 主要入口
 
-`package_windows.ps1` 是 Windows Full/Customer 正式安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责单实例、日志，并在全部 Gate 通过后以 `D:\study\NetConsole-Workspace\release\<version>\build-<number>-<short-sha>` 保存构建制品；Customer 密码由 Core 统一解析器提供环境变量覆盖或内置默认值。构建不会自动升级版本，也不会把未经发布门禁验证的制品标记为 `published=true`。新版本通过版本 PR 更新唯一版本来源；合并 main、完成全量回归和正式 Full/Customer 构建后，才可创建指向最终 main commit 的 annotated tag 与 GitHub Release。
+`package_windows.ps1` 是 Windows Full 正式安装包链路，`package_windows.bat` 可用于从传统终端启动。项目根目录的 `一键打包安装包.cmd` 调用 `package_local.ps1`，负责单实例、日志，并在全部 Gate 通过后以 `D:\study\NetConsole-Workspace\release\<version>\build-<number>-<short-sha>` 保存构建制品；旧 Customer 密码与配置仅由兼容代码识别，不是当前构建输入。构建不会自动升级版本，也不会把未经发布门禁验证的制品标记为 `published=true`。新版本通过版本 PR 更新唯一版本来源；合并 main、完成全量回归和正式 Full 构建后，才可创建指向最终 main commit 的 annotated tag 与 GitHub Release。
 
 `build_release.py` 构建 Backend；`release.py` 的旧 Git 发布编排已停用，仅保留 PE 版本资源文本生成函数供构建使用，直接调用其 CLI 会失败关闭。`check_packaged_runtime.py`、`check_runtime_deps.py`、`pyinstaller_artifact_inventory.py` 和工具校验脚本提供门禁。
 

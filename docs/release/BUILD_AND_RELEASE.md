@@ -2,6 +2,10 @@
 
 NetConsole v1.5.13 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
+## v1.5.13 当前交付边界
+
+当前正式输出仅为 Full Installer 与 Full Portable。旧 Customer 构建、客户版密码、运行时解锁和功能矩阵编辑不再属于当前发布入口；历史配置、脚本和报告只在确认依赖后保留兼容/事实记录。正式包只接受 `full/full` Feature Profile，开发中、隐藏和 internal-only 能力仍由 Feature Registry/Feature Gate 保护。
+
 安装包升级和卸载不得删除 Electron `userData/bootstrap.json` 或用户选择的数据根。electron-builder 的既有 NSIS 安装器必须分别显示程序安装目录与数据存放目录；数据根在完成路径、磁盘、可写/重命名、SQLite 锁与空间校验后，由打包 Backend 在空根或含无冲突普通文件的目录中原子初始化标准结构与 `storage-manifest.json`，或验证已有 manifest 兼容性，最后才写入 `HKLM\Software\NetConsole\DataRoot`。初始化/兼容性校验失败不得发布指针，也不得覆盖已有 manifest 或普通文件。发布 smoke 在唯一 `<repository-parent>\test-data\NetConsole\<run-id>` 中以 `RuntimeMode.TEST` 运行并自动清理，绝不读取机器级指针或真实数据根；同时确认仓库根没有生成 `data/` 或新的 `.local/` 运行数据。
 
 安装器的数据流程固定为三态：`REUSE_EXISTING_DATA` 沿用并严格验证已有根，不生成空局点；`FRESH_CLEAN_INSTALL` 忽略旧 DataRoot、旧 `application.json/app.json`、Electron bootstrap 和旧局点，只在新目标不存在已知 NetConsole 结构时初始化新的 manifest、installation_id、空 demo 局点、SiteRegistry、application.json 和 devices.db；`MIGRATE_EXISTING_DATA` 只有在用户明确选择时才调用受控 DataRoot Migration。用户仅改变路径不会隐式触发迁移；有效旧根不能被清洁安装覆盖，未知 NetConsole 结构 fail-closed，普通非 NetConsole 文件保留。
@@ -16,7 +20,7 @@ NSIS 必须显式启用 Unicode 安装器，并先在零写入状态下识别候
 
 外层 NSIS 必须把 app 版本、完整/短 Git commit、UTC 构建时间、build ID、数据根策略版本及策略源码 SHA-256 写入 PE 版本资源，并在数据根页面显示可核对的短身份。最终 EXE 还必须内嵌本轮 installer manifest 和实际参与编译的数据根 include 源码。post-build Gate 使用支持 NSIS handler 的完整 7-Zip 直接打开最终 `setup.exe`，复核 `NSIS-3 Unicode`、PE 身份、内嵌 manifest/源码哈希、新文案存在、三段旧阻止文案不存在、EXE 晚于策略源码和本轮构建开始时间、两次 SHA-256 一致，以及内层 Backend/Frontend commit 均等于 Installer commit 且 `dirty=false`。构建机可安装完整版 7-Zip，或通过 `NETCONSOLE_7Z` 指向支持 `Nsis` format handler 的 `7z.exe`；electron-builder 缓存中的精简 `7za.exe` 不满足此门禁。
 
-Full/Customer 正式安装器的 PE 版本资源还必须包含 `InstallerEdition` 与
+Full 正式安装器的 PE 版本资源还必须包含 `InstallerEdition` 与
 `InstallerFeatureProfile`，并与 edition manifest、Backend `build_info.json` 和包内 Feature Profile
 严格相等；不能只依赖文件名表达版本类型。
 
@@ -50,7 +54,7 @@ python -m pip check
 
 正式发布的身份事实来自构建开始时的 Git，而不是 `src/netconsole/core/version.py` 中的手工提交号或时间。`scripts/build/build_metadata.py` 在一次发布调用中读取 `git rev-parse HEAD` 与 `git status --porcelain`，生成并复用 `app_version / product_version / build_number / file_version / git_commit_full / git_commit_short / build_time_utc / build_dirty / build_source / frontend_commit / backend_commit / published`；时间固定为 ISO 8601 UTC。`ProductVersion` 是三段正式版本，`FileVersion` 是 `ProductVersion.BuildNumber`，Build Number 只读取显式 `NETCONSOLE_BUILD_NUMBER`，默认 `0`。Vite、PyInstaller、Backend 自检、Electron package smoke 共用这一快照，分阶段校验时还会重新确认快照对应当前 Git 来源。
 
-正式候选必须按“版本 PR 与完整审查 → 合并 main → main 全量回归 → 中文提交并推送最终提交 → 确认工作区 clean 且 HEAD 与 upstream 一致 → Windows Full/Customer 正式构建 → Package Smoke 与制品身份验证 → 归档制品 → 创建 annotated tag 和 GitHub Release”的顺序执行。版本号只在版本 PR 中显式更新唯一来源 `src/netconsole/core/version.py` 及所有同步引用。`scripts/build/release.py` 的旧 Git 发布编排已停用，调用时会失败关闭；该模块仅保留 PE 版本资源文本生成函数供构建使用。`scripts/build/package_windows.ps1` 才是正式安装包入口；构建不会替代 PR、全量回归或 Release Tag/上传门禁。开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
+正式候选必须按“版本 PR 与完整审查 → 合并 main → main 全量回归 → 中文提交并推送最终提交 → 确认工作区 clean 且 HEAD 与 upstream 一致 → Windows Full 正式构建 → Package Smoke 与制品身份验证 → 归档制品 → 创建 annotated tag 和 GitHub Release”的顺序执行。版本号只在版本 PR 中显式更新唯一来源 `src/netconsole/core/version.py` 及所有同步引用。`scripts/build/release.py` 的旧 Git 发布编排已停用，调用时会失败关闭；该模块仅保留 PE 版本资源文本生成函数供构建使用。`scripts/build/package_windows.ps1` 才是正式安装包入口；构建不会替代 PR、全量回归或 Release Tag/上传门禁。开发构建允许 `build_dirty=true`，但其 `build_source=git-development`，不能冒充正式包。最终包级输出必须包含 `SOURCE_GIT_HEAD / PACKAGED_BACKEND_COMMIT / PACKAGED_FRONTEND_COMMIT / SELF_CHECK_COMMIT / PACKAGED_BUILD_TIME / PACKAGED_DIRTY`，提交号不一致或 dirty 不为 false 都必须停止发布。
 
 先在仓库根目录执行：
 
@@ -118,7 +122,7 @@ Package smoke 还会在最终冻结的 `resources/backend/NetConsoleBackend.exe`
 重复迁移备份。该 smoke 不读取机器级数据根，也不修改真实局点数据库。若构建机没有可用
 的最终冻结 Backend，只能报告 Python/应用层定向测试，不能声称正式 Backend smoke 已通过。
 
-干净 PyInstaller 构建会先在临时 build 目录生成并嵌入 `_internal/netconsole/assets/runtime/{build_info.json,feature_flags.json,build-metadata.json}`。PyInstaller 中间态使用 fail-closed 的 `customer/production` 基线；Electron edition staging 随后必须通过 `prepare_electron_edition.py` 将最终包内基线改写为 Full 的 `full/full` 或 Customer 的 `customer/customer`。构建身份来自本次 Git 快照，不从源码硬编码或客户机外部配置取值。Backend dist 校验与 Electron package smoke 都会解析最终 JSON，校验设备管理/采集/导入导出、文件下载、网络工具、AC、列车在线、Online MR、MESH，以及 Full 包的轨旁 AP WPS 云同步等必要生产能力，并拒绝任何 `feature_flags.local.json`。冻结运行时即使缺少或损坏 `feature_flags.json`，也必须通过 Registry fallback 保留必要生产能力，同时继续隐藏 internal/development 功能；Customer fallback 还必须关闭 Full-only 能力。`client_package` 仅是构建/发布元数据，不能作为正式运行时通用拒绝条件。
+干净 PyInstaller 构建会先在临时 build 目录生成并嵌入 `_internal/netconsole/assets/runtime/{build_info.json,feature_flags.json,build-metadata.json}`。PyInstaller 中间态使用 fail-closed 的兼容基线；Electron edition staging 随后必须通过 `prepare_electron_edition.py` 将最终包内基线改写为 Full 的 `full/full`。构建身份来自本次 Git 快照，不从源码硬编码或客户机外部配置取值。Backend dist 校验与 Electron package smoke 都会解析最终 JSON，校验设备管理/采集/导入导出、文件下载、网络工具、AC、列车在线、Online MR、MESH，以及 Full 包的轨旁 AP WPS 云同步等必要生产能力，并拒绝任何 `feature_flags.local.json`。冻结运行时即使缺少或损坏 `feature_flags.json`，也必须通过 Registry fallback 保留必要生产能力，同时继续隐藏 internal/development 功能。`client_package` 仅是构建/发布元数据，不能作为正式运行时通用拒绝条件。
 
 系统设置的“正式包环境自检”验证 Backend、前后端构建标识、只读生产 Feature policy、当前局点、数据根、`tasks.db`、`devices.db`、非秘密凭据状态表、fping/iPerf3、Electron Bridge，以及 REST/WebSocket 中文探针。自检不返回本机绝对路径或凭据。完整功能与人工验收状态见[正式包功能矩阵](./PACKAGED_FEATURE_MATRIX.md)。
 

@@ -1,117 +1,56 @@
-# 完整版与客户版打包
+# Full Installer 与 Full Portable 交付
 
-NetConsole 使用同一套 Electron、Vue 和 Python Backend 源码生成两个独立安装包，不复制客户版工程。
+NetConsole v1.5.13 的当前正式产品只有：
 
-## 功能配置职责
+- Full Installer：Windows NSIS 安装版。
+- Full Portable：Windows 免安装版。
 
-| 配置目标 | 文件或作用域 | 保存后影响 | 用途 |
-| --- | --- | --- | --- |
-| 完整版默认配置 | `config/profiles/features/full.json` | 不改变当前运行状态 | 下次构建 Full 安装包 |
-| 客户版交付配置 | `config/profiles/features/customer.json` | 不改变当前运行状态 | 下次构建 Customer 安装包 |
-| 当前会话预览 | Backend 当前进程内存 | 立即刷新导航、路由和 Backend Gate | 验证尚未保存的模板草稿 |
+两种形态共享同一套 Electron、Vue、Python Backend、Feature Registry 和数据根契约；Portable 只改变启动与数据根承载方式，不裁剪正式功能。
 
-源码开发态的“版本与功能交付”是 Full/Customer 模板的唯一矩阵编辑入口。系统设置不再提供第二套运行时矩阵，只显示当前版本状态，并可退出会话预览、清除历史运行时覆盖或重新加载 Feature Gate。会话预览不写模板或 `runtime/feature_flags.local.json`，退出预览或重启 Backend 后恢复。旧覆盖文件仅作为升级兼容状态展示，必须由用户显式确认后写回空覆盖集合；正式包继续忽略该文件。
+## 当前交付边界
 
-客户版每项功能使用单一三态，避免“纳入客户版”和运行状态相互冲突：
+正式包使用包内只读 `full/full` Feature Profile。开发中、隐藏、危险、未验收和 internal-only 能力仍由 Feature Registry 与现有 Feature Gate 保护，不因“全功能”名称而自动开放。
 
-| 客户版状态 | `client_package` | `enabled` | `visible` |
-| --- | ---: | ---: | ---: |
-| 不交付 | `false` | `false` | `false` |
-| 交付并显示 | `true` | `true` | `true` |
-| 交付但隐藏 | `true` | `true` | `false` |
+旧 Customer 模板、客户版密码字段、Customer 运行时解锁和功能矩阵服务仅作为历史配置/旧构建兼容材料保留。它们不再有 Renderer 导航、页面、版本号隐藏操作、Backend HTTP API 或当前正式打包入口，也不能重新启用 Customer 交付。
 
-完整版仍使用“显示并启用 / 隐藏入口但保留能力 / 关闭”。业务分类默认只展示模块，展开后显示页面与操作；`cap.*` 技术能力单独折叠并只读，由依赖检查和自动修复带出。
-
-Feature Registry 明确区分三种关系：
-
-- `parent_id` 只表达界面树和交付父级闭包，不参与运行时 Gate 依赖计算；
-- `requires` 表达运行时技术依赖；
-- `delivery_requires` 表达客户版交付依赖。
-
-Backend 的检查接口返回结构化依赖问题，页面按缺失依赖聚合展示。自动修复只修改当前草稿：运行依赖会启用并隐藏，客户交付依赖还会纳入客户版；内部、开发中、隐藏或已停用能力不能通过自动修复进入客户版。用户确认保存后才写 Full/Customer 模板。
-
-当前客户模板已将 `module.train_online` 和 `capability.rail_transit.task_control` 作为“交付但隐藏”的必要能力，并明确排除未交付的 Online MR 会话定位和删除动作。
-
-## 模板门禁
-
-`scripts/build/prepare_electron_edition.py` 在写入 Electron Backend 内嵌资源前校验目标 Profile；`scripts/build/build_release.py` 的各版本载荷准备复用同一入口。校验覆盖 Registry 中的功能状态、运行依赖、客户交付父级、`delivery_requires`、内部功能和非正式状态泄漏。Full 或 Customer 模板存在问题时构建立即失败，并以 `FULL PROFILE INVALID` 或 `CUSTOMER PROFILE INVALID` 列出具体依赖链。
+历史报告和 CHANGELOG 中确实发生过的 Customer 构建保持原样，不将历史事实改写为从未存在。
 
 ## 构建命令
 
-正式构建仍要求 Windows、干净工作区、最终提交已推送到 upstream，以及完整的既有发布门禁。
-
-如需覆盖项目内置的客户版维护密码，可在当前 PowerShell 会话设置环境变量；不设置或设置为空时，统一解析器使用内置默认值：
+正式构建要求 Windows、干净工作区、HEAD 与 upstream 对齐并通过既有发布门禁：
 
 ```powershell
-$env:NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD = "使用环境变量覆盖值"
-.\scripts\build\package_windows.ps1
+.\scripts\build\package_windows.ps1 -Edition full
 ```
 
-也可在 `apps/desktop_electron` 中按版本执行：
+Electron 工作目录中的入口为：
 
 ```powershell
-pnpm package:all
+pnpm package
 pnpm package:full
-pnpm package:customer
 pnpm package:portable
 ```
 
-`package:portable` 使用当前 Full 源码生成 Windows 免安装目录和 ZIP；它会在程序目录写入 `portable.mode` 标记，运行时默认从同目录的 `data` 读取业务数据。该命令只生成本地候选制品，不替代正式 Full/Customer 发布门禁，也不自动写入 `release/`。
+`pnpm package` 等价于 `package:full`。`package:portable` 生成 Full Portable 候选；它使用程序目录或显式 Portable 数据根，不自动写入正式 `release` 目录。
 
-## 一键本地打包
+以下入口已退役并不再接受：`package:customer`、`package:all`、`both` 选择，以及 Customer 维护密码环境变量作为正式构建输入。
 
-项目根目录的 `一键打包安装包.cmd` 是面向 Windows 用户的双击入口。它只负责定位仓库、初始化 UTF-8 控制台并调用 `scripts/build/package_local.ps1`；正式构建、版本注入和安装包 Gate 仍由 `scripts/build/package_windows.ps1` 及现有 `package:full`、`package:customer`、`package:all` 完成。
+## 运行时与兼容性
 
-机器需要安装 Git、包含 Corepack 的 Node.js 24 和项目 `.venv`，无需另外全局安装 pnpm。脚本优先使用当前 `PATH` 中的 `pnpm.cmd`；未找到时通过 Node 同目录的 Corepack 调用固定 `pnpm@11.16.0`，并在不会被正式构建清理的 `dist/_package_tool_shims` 中创建仅供本轮子进程继承的临时代理，同时把代理绝对路径显式传给嵌套安装器构建进程。构建结束或失败后会恢复进程原始 `PATH` 和相关进程环境，并删除代理及空容器目录，不执行 `corepack enable`、全局 npm 安装或系统环境变量修改。如果 Node 不含 Corepack，环境预检会在测试和构建前明确停止。
+正式包不读取外部 `feature_flags.local.json` 作为产品功能开关。旧配置文件仍可由兼容层识别或升级，但不会恢复 Customer 入口，也不会改变 Full/Portable 的正式功能边界。
 
-普通使用时直接双击脚本，默认生成 Full 和 Customer 两个版本。也可以从命令行选择单个版本或只做预检：
+旧 `/feature-flags` 地址保留一个明确的退役提示页，避免旧书签出现白屏；它不是功能配置页面。系统设置不再显示版本类型、客户预览、运行时覆盖清除或 Feature Gate 重载操作。
 
-```text
-一键打包安装包.cmd full
-一键打包安装包.cmd customer
-一键打包安装包.cmd both
-一键打包安装包.cmd preflight
-```
+版本号只打开更新日志。Shift-click、客户版密码、临时 Full 解锁和重新锁回 Customer 均已从当前产品链移除。
 
-Customer 或 `both` 构建统一调用 Core 的客户版维护密码解析器：非空 `NETCONSOLE_CUSTOMER_UNLOCK_PASSWORD` 作为环境变量覆盖值，不存在或为空时使用内置默认值。构建流程不会交互询问密码；实际密码只在当前构建进程及其必要子进程中存在，不会写入命令行、日志、JSON、摘要、脚本或 Git 配置。Full-only 构建不依赖客户版密码。
+## 制品验收
 
-每次运行会在 `dist/package-logs/` 生成独立的 `package-YYYYMMDD-HHmmss.log`。验证通过的制品先写入 `D:\study\NetConsole-Workspace\release\.staging-<唯一 ID>`，全部校验完成后再原子重命名为 `D:\study\NetConsole-Workspace\release\v<版本>`，目录内包含本次选择对应的安装包、`.exe.release.json`、`SHA256SUMS.txt`、`BUILD_SUMMARY.json` 和 `BUILD_SUMMARY.md`。目标版本目录已存在时立即停止，禁止覆盖或混入另一候选。成功后自动打开该目录；Explorer 打开失败不会改变构建结果。失败只清理本次 staging，不删除已有正式发布目录、其他构建输出或业务数据。
+Installer 与 Portable 都必须复核：
 
-仓库内 `dist/` 只是 Renderer、Electron、PyInstaller、Agent、日志和 smoke 的可再生构建输出；`D:\study\NetConsole-Workspace\release` 是唯一正式制品库。普通构建清理可以删除整个 `dist/`，但不得触碰外部正式制品库。
+- `edition=full`、`feature_profile=full` 和 Full Feature Profile；
+- Installer、Backend、Renderer 的 commit 与构建身份一致；
+- `admin_unlock_enabled=false`，包内不存在客户维护密码哈希；
+- 正式功能可用，但开发/隐藏/internal-only 能力仍关闭；
+- `package_smoke=PASS`、`packaged_dirty=false`，真实 Windows 安装/升级/卸载另行记录。
 
-脚本会阻止脏工作树、HEAD 未与 upstream 对齐、Git/Node/Corepack/pnpm/`.venv` 不可用、依赖或磁盘预检失败以及并行打包。`preflight` 只执行环境与 Git 检查，不安装依赖、不运行测试、不生成安装包。摘要明确区分“自动构建和包内校验已通过”与真实 Windows 人工验收；当前 `MANUAL_GUI_ACCEPTANCE=PASS`，但修复/升级/卸载的完整安装器生命周期仍为 `PENDING_REAL_DEVICE`，自动成功不等同于完整生命周期验收通过。
-
-输出名称包含版本类型：
-
-```text
-NetConsole-Full-<version>-<git-short>-x64-setup.exe
-NetConsole-Customer-<version>-<git-short>-x64-setup.exe
-```
-
-每个安装包都有独立的 `.exe.release.json`。最终 Gate 会直接打开 NSIS 内层载荷，核对：
-
-- Backend 的 `edition` 与 `feature_profile`；
-- Full 包不携带客户维护密码哈希；
-- Customer 包携带可验证的 PBKDF2 哈希参数；
-- 明文维护密码不出现在包内身份 JSON；
-- Installer、Backend 和 Frontend commit 一致且 `dirty=false`；
-- 原有 NSIS、数据根、PE 版本资源、SHA-256 和发布策略门禁全部通过。
-
-release manifest 与构建摘要还必须记录 `package_smoke=PASS`、`server_installation_status=PENDING`；自动化只能声明服务器安装验收待执行，不能把 package smoke 冒充真实安装结果。
-
-## 客户版临时开启完整功能
-
-Customer 包默认执行 `customer.json`。在桌面右上角版本号处按住 `Shift` 单击，可输入打包时配置的维护密码。校验成功后，Backend 仅在当前进程会话中切换到包内 `full.json`：
-
-- 不写客户数据；
-- 不写浏览器 `localStorage`；
-- 不启用外部 Feature override 文件；
-- 重启后自动恢复客户模式；
-- 再次 `Shift` 单击版本号可主动恢复客户模式；
-- 连续错误密码会触发短时限流。
-
-维护密码只在打包进程中通过环境变量传入，仓库和客户版模板不得保存明文密码。
-
-## 功能业务分类
-
-版本与功能交付不再只按父级粗略归类，当前分为：基础与桌面、任务与 Agent、设备管理、AC 与 FIT-AP、配置采集与文件、轨道交通基础资料、轨旁 AP、列车在线与无人值守、车载 MR 采集与分析、MESH 日志分析、轨道交通综合、网络测试与工具集、日志/命令/系统维护、内部与实验功能。
+自动构建成功不能替代真实 Windows GUI 安装、升级、卸载、签名或现场设备验收。历史 Customer 制品和报告不得为了当前 Full-only 门禁删除。

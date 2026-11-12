@@ -146,6 +146,16 @@ const buttonStub = defineComponent({
   inheritAttrs: false,
   setup(_props, { slots }) { const attrs = useAttrs(); return () => h('button', attrs, slots.default?.()) },
 })
+const dropdownStub = defineComponent({
+  inheritAttrs: false,
+  setup(_props, { slots }) { return () => h('div', [slots.default?.(), slots.dropdown?.()]) },
+})
+const dropdownItemStub = defineComponent({
+  inheritAttrs: false,
+  props: { disabled: Boolean },
+  emits: ['click'],
+  setup(props, { attrs, slots, emit }) { return () => h('button', { ...attrs, disabled: props.disabled, onClick: () => emit('click') }, slots.default?.()) },
+})
 const alertStub = defineComponent({
   props: { title: { type: String, default: '' } },
   setup(props, { slots }) { return () => h('div', [props.title, slots.default?.()]) },
@@ -298,6 +308,9 @@ const stubs: Record<string, Component | boolean> = {
   ElCollapse: passthrough,
   ElCollapseItem: passthrough,
   ElDialog: dialogStub,
+  ElDropdown: dropdownStub,
+  ElDropdownItem: dropdownItemStub,
+  ElDropdownMenu: passthrough,
   ElDivider: passthrough,
   ElForm: passthrough,
   ElFormItem: passthrough,

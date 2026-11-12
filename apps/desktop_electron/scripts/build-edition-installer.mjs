@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url'
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const projectRoot = resolve(appRoot, '..', '..')
-const selection = String(process.argv[2] || 'both').trim().toLowerCase()
+const selection = String(process.argv[2] || 'full').trim().toLowerCase()
 const python = discoverPython()
 
-if (!['full', 'customer', 'both'].includes(selection)) {
-  throw new Error(`版本选择仅允许 full/customer/both，当前为：${selection}`)
+if (selection !== 'full') {
+  throw new Error(`当前正式交付仅允许 Full Installer，当前为：${selection}`)
 }
 if (!python) throw new Error('未找到项目 .venv Python，无法构建版本安装包')
 

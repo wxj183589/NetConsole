@@ -3,15 +3,14 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, 
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  clearFeatureRuntimeOverrides, exitFeatureSettingsPreview, getFeatureRuntimeStatus, getSystemSettings,
-  reloadFeatureGate, reloadSystemSettings, saveSystemSettings, getRuntimeSelfCheck,
+  getSystemSettings, reloadSystemSettings, saveSystemSettings, getRuntimeSelfCheck,
 } from '../../api/systemSettings'
-import { isFeatureEnabled, loadRendererFeatures } from '../../features'
+import { isFeatureEnabled } from '../../features'
 import { t } from '../../i18n/runtime'
 import { getPlatformAdapter, resolveWebSocketUrl } from '../../platform/runtime'
 import { applySystemAppearance } from '../../settings/appearance'
 import { useConfirm } from '../../components/feedback/useConfirm'
-import type { FeatureRuntimeStatus, RuntimeSelfCheckItem, RuntimeSelfCheckSnapshot, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
+import type { RuntimeSelfCheckItem, RuntimeSelfCheckSnapshot, SystemSettingsSnapshot, SystemSettingsValues } from '../../types/systemSettings'
 import SiteStoragePanel from './SiteStoragePanel.vue'
 import DatabaseUpgradePanel from '../../components/settings/DatabaseUpgradePanel.vue'
 import SiteSSHRelayPanel from './SiteSSHRelayPanel.vue'
@@ -27,8 +26,6 @@ const router = useRouter()
 const snapshot = ref<SystemSettingsSnapshot | null>(null)
 const baseline = ref<SystemSettingsValues | null>(null)
 const form = reactive<SystemSettingsValues>(cloneValues(emptyValues))
-const featureRuntimeStatus = ref<FeatureRuntimeStatus | null>(null)
-const featureActionLoading = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -46,15 +43,6 @@ let removeCloseToTrayListener: (() => void) | undefined
 let traySiteSwitchInProgress = ''
 const dirty = computed(() => Boolean(baseline.value && JSON.stringify(form) !== JSON.stringify(baseline.value)))
 const anyDirty = computed(() => dirty.value)
-const editionLabel = computed(() => {
-  const edition = featureRuntimeStatus.value?.edition
-  return edition === 'customer' ? '客户版' : edition === 'full' ? '完整版' : edition === 'engineer' ? '工程版' : '开发版'
-})
-const runtimeStateLabel = computed(() => {
-  const state = featureRuntimeStatus.value?.state
-  return state === 'session_preview' ? '当前会话预览' : state === 'customer_unlocked' ? '客户版临时解锁' : '正常'
-})
-
 onMounted(() => {
   window.addEventListener('beforeunload', beforeUnload)
   void load()
@@ -85,7 +73,6 @@ async function load(): Promise<void> {
   try {
     try { acceptSnapshot(await getSystemSettings()) }
     catch (cause) { error.value = message(cause, '系统设置加载失败') }
-    await loadFeatureRuntimeStatus()
   } finally { loading.value = false }
 }
 
@@ -221,59 +208,7 @@ async function reload(): Promise<void> {
   try {
     try { acceptSnapshot(await reloadSystemSettings()); ElMessage.success('系统设置已重载') }
     catch (cause) { restoreAppearance(); showError(cause, '重载失败') }
-    await loadFeatureRuntimeStatus()
   } finally { loading.value = false }
-}
-
-async function loadFeatureRuntimeStatus(): Promise<void> {
-  try {
-    featureRuntimeStatus.value = await getFeatureRuntimeStatus()
-  } catch (cause) {
-    error.value = message(cause, '当前版本状态加载失败')
-  }
-}
-
-async function openFeatureDelivery(): Promise<void> {
-  await router.push('/feature-flags')
-}
-
-async function exitRuntimePreview(): Promise<void> {
-  featureActionLoading.value = true
-  try {
-    await exitFeatureSettingsPreview('customer')
-    await loadRendererFeatures(true)
-    featureRuntimeStatus.value = await getFeatureRuntimeStatus()
-    ElMessage.success('已退出会话预览')
-  } catch (cause) {
-    showError(cause, '退出会话预览失败')
-  } finally {
-    featureActionLoading.value = false
-  }
-}
-
-async function clearRuntimeOverrides(): Promise<void> {
-  if (!await confirmAction('清除历史运行时功能覆盖？模板文件和业务数据不会被修改。')) return
-  featureActionLoading.value = true
-  try {
-    featureRuntimeStatus.value = await clearFeatureRuntimeOverrides()
-    ElMessage.success('历史运行时覆盖已清除')
-  } catch (cause) {
-    showError(cause, '清除历史运行时覆盖失败')
-  } finally {
-    featureActionLoading.value = false
-  }
-}
-
-async function reloadRuntimeGate(): Promise<void> {
-  featureActionLoading.value = true
-  try {
-    featureRuntimeStatus.value = await reloadFeatureGate()
-    ElMessage.success('Feature Gate 已重新加载')
-  } catch (cause) {
-    showError(cause, 'Feature Gate 重新加载失败')
-  } finally {
-    featureActionLoading.value = false
-  }
 }
 
 function acceptSnapshot(value: SystemSettingsSnapshot): void {
@@ -350,9 +285,6 @@ async function nativeAction(action: 'open_settings_config' | 'open_current_site'
     if (result.success) ElMessage.success('操作已完成')
     else showError(new Error(result.error || '操作失败'), '操作失败')
   } catch (cause) { showError(cause, '本机操作失败') }
-}
-async function confirmAction(text: string): Promise<boolean> {
-  return confirm({ type: 'WARNING', title: '确认操作', message: text, confirmText: '确认操作' })
 }
 function showError(cause: unknown, fallback: string): void { error.value = message(cause, fallback); ElMessage.error(error.value) }
 function message(cause: unknown, fallback: string): string { return cause instanceof Error && cause.message ? cause.message : fallback }
@@ -440,46 +372,10 @@ function message(cause: unknown, fallback: string): string { return cause instan
 
     <DatabaseUpgradePanel v-if="isFeatureEnabled('module.database_upgrade')" />
 
-    <section class="settings-band feature-status-band">
-      <div class="section-heading">
-        <h2>当前版本状态</h2>
-        <div class="inline-actions">
-          <el-button
-            v-if="featureRuntimeStatus?.configuration_available"
-            data-testid="open-feature-delivery"
-            @click="openFeatureDelivery"
-          >打开版本与功能交付</el-button>
-          <el-button
-            v-if="featureRuntimeStatus?.preview_active"
-            data-testid="exit-feature-preview"
-            :loading="featureActionLoading"
-            @click="exitRuntimePreview"
-          >退出会话预览</el-button>
-          <el-button
-            data-testid="clear-runtime-overrides"
-            :disabled="!featureRuntimeStatus?.local_override_count"
-            :loading="featureActionLoading"
-            @click="clearRuntimeOverrides"
-          >清除历史运行时覆盖</el-button>
-          <el-button
-            data-testid="reload-feature-gate"
-            :loading="featureActionLoading"
-            @click="reloadRuntimeGate"
-          >重新加载 Feature Gate</el-button>
-        </div>
-      </div>
-      <dl class="version-facts">
-        <div><dt>版本类型</dt><dd>{{ editionLabel }}</dd></div>
-        <div><dt>基础模板</dt><dd>{{ featureRuntimeStatus?.base_profile || '--' }}</dd></div>
-        <div><dt>当前状态</dt><dd><el-tag :type="featureRuntimeStatus?.state === 'normal' ? 'success' : 'warning'">{{ runtimeStateLabel }}</el-tag></dd></div>
-        <div><dt>本地覆盖</dt><dd>{{ featureRuntimeStatus?.local_override_count ? `${featureRuntimeStatus.local_override_count} 项` : '无' }}</dd></div>
-      </dl>
-    </section>
   </section>
 </template>
 
 <style scoped>
 .settings-page{display:flex;flex-direction:column;gap:16px;max-width:1680px;margin:0 auto}.settings-toolbar,.settings-actions,.section-heading,.inline-actions,.color-control,.desktop-shell-setting{display:flex;align-items:center;gap:10px}.settings-toolbar,.section-heading,.desktop-shell-setting{justify-content:space-between}.settings-toolbar h1,.settings-band h2{margin:0}.settings-toolbar p,.desktop-shell-setting p,.settings-help{margin:6px 0 0;color:var(--nc-text-secondary)}.settings-actions,.inline-actions{flex-wrap:wrap;justify-content:flex-end}.settings-band{padding:18px 20px;background:var(--el-bg-color);border:1px solid var(--el-border-color-light);border-radius:8px}.settings-band h2{margin-bottom:16px;font-size:17px}.settings-grid{display:grid;grid-template-columns:repeat(3,minmax(210px,1fr));gap:0 18px}.settings-grid .wide{grid-column:span 2}.el-select,.el-input-number{width:100%}.color-swatch{width:24px;height:24px;border:1px solid var(--nc-border-strong);border-radius:4px}.site-facts{display:grid;grid-template-columns:1fr 2fr;gap:12px}.site-facts div{min-width:0}.site-facts dt{color:var(--nc-text-secondary);font-size:12px}.site-facts dd{margin:5px 0;overflow-wrap:anywhere;font-family:Consolas,monospace}.self-check-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.self-check-grid article{padding:12px;border:1px solid var(--el-border-color-light);border-radius:6px}.self-check-grid article>div{display:flex;align-items:center;justify-content:space-between;gap:8px}.self-check-grid p{margin:8px 0 0}.self-check-grid small{display:block;margin-top:6px;color:var(--nc-text-secondary)}.section-heading h2{margin-bottom:0}
-.version-facts{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:14px;margin:18px 0 0}.version-facts div{min-width:0;padding-left:12px;border-left:3px solid var(--el-border-color)}.version-facts dt{color:var(--nc-text-secondary);font-size:12px}.version-facts dd{margin:6px 0 0;font-weight:600;overflow-wrap:anywhere}
-@media(max-width:900px){.settings-toolbar,.section-heading,.desktop-shell-setting{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts,.self-check-grid,.version-facts{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}}
+@media(max-width:900px){.settings-toolbar,.section-heading,.desktop-shell-setting{align-items:flex-start;flex-direction:column}.settings-actions,.inline-actions{justify-content:flex-start}.settings-grid,.site-facts,.self-check-grid{grid-template-columns:1fr}.settings-grid .wide{grid-column:auto}}
 </style>

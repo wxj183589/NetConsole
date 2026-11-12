@@ -111,6 +111,7 @@ describe('Desktop Renderer Feature Gate', () => {
 
     const customerNavigation = flattenNavigation(visibleNavigation(isFeatureVisible)).map((item) => item.navigation_id)
     expect(customerNavigation).toContain('devices')
+    expect(customerNavigation).not.toContain('feature-flags')
     expect(customerNavigation).not.toContain('rail.ground-unattended')
     expect(isFeatureVisible('module.devices')).toBe(true)
     expect(isFeatureVisible('module.ground_unattended')).toBe(false)

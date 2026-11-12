@@ -44,16 +44,6 @@ function snapshot(): SystemSettingsSnapshot {
   return { version: 'missing', values, defaults: { ...values, terminal_paths: { putty: '', securecrt: '', xshell: '' } }, current_site_name: 'demo', current_site_path: 'C:\\data\\sites\\demo', language_status: 'BLOCKED_ON_GLOBAL_I18N' }
 }
 
-const runtimeStatus = () => ({
-  edition: 'dev',
-  base_profile: 'full',
-  active_profile: 'full',
-  state: 'normal' as const,
-  preview_active: false,
-  session_override_active: false,
-  local_override_count: 0,
-  configuration_available: true,
-})
 const selfCheckSnapshot = () => ({
   status: 'normal' as const,
   checked_at: '2026-07-24T08:00:00+00:00',
@@ -95,7 +85,6 @@ const SiteStoragePanelStub = defineComponent({
 
 async function mounted(): Promise<{ wrapper: VueWrapper; router: ReturnType<typeof createRouter> }> {
   vi.mocked(api.getSystemSettings).mockResolvedValue(snapshot())
-  vi.mocked(api.getFeatureRuntimeStatus).mockResolvedValue(runtimeStatus())
   vi.mocked(api.getRuntimeSelfCheck).mockResolvedValue(selfCheckSnapshot())
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/settings', component: SystemSettingsView }, { path: '/tools', component: defineComponent({ template: '<div>tools</div>' }) }, { path: '/feature-flags', component: defineComponent({ template: '<div>feature delivery</div>' }) }, { path: '/other', component: defineComponent({ template: '<div>other</div>' }) }] })
   await router.push('/settings'); await router.isReady()
@@ -117,7 +106,6 @@ beforeEach(() => {
   siteStorageFocus.mockClear()
   siteStorageRequestSwitch.mockClear()
   confirmAction.mockResolvedValue(true)
-  vi.mocked(api.getFeatureRuntimeStatus).mockResolvedValue(runtimeStatus())
   settingsBridge.selectSettingsTool.mockResolvedValue({ cancelled: false, path: 'C:\\tools\\Xshell.exe' })
   settingsBridge.selectSettingsDirectory.mockResolvedValue({ cancelled: false, path: 'C:\\sessions' })
   settingsBridge.selectSettingsColor.mockResolvedValue({ cancelled: false, color: '#2563EB' })
@@ -215,41 +203,14 @@ describe('SystemSettingsView mounted behavior', () => {
     wrapper.unmount()
   })
 
-  it('shows only the read-only version status and opens the single delivery editor', async () => {
-    const { wrapper, router } = await mounted()
-
-    expect(wrapper.text()).toContain('当前版本状态')
-    expect(wrapper.text()).toContain('开发版')
-    expect(wrapper.text()).not.toContain('搜索功能或 ID')
-    await wrapper.find('[data-testid="open-feature-delivery"]').trigger('click')
-    await flushPromises()
-    expect(router.currentRoute.value.path).toBe('/feature-flags')
-    wrapper.unmount()
-  })
-
-  it('clears legacy runtime overrides only after confirmation', async () => {
-    vi.mocked(api.getFeatureRuntimeStatus).mockResolvedValueOnce({ ...runtimeStatus(), local_override_count: 3 })
-    vi.mocked(api.clearFeatureRuntimeOverrides).mockResolvedValueOnce(runtimeStatus())
+  it('does not expose the retired version delivery controls', async () => {
     const { wrapper } = await mounted()
 
-    await wrapper.find('[data-testid="clear-runtime-overrides"]').trigger('click')
-    await flushPromises()
-
-    expect(confirmAction).toHaveBeenCalledOnce()
-    expect(api.clearFeatureRuntimeOverrides).toHaveBeenCalledOnce()
-    expect(wrapper.text()).toContain('本地覆盖')
-    wrapper.unmount()
-  })
-
-  it('keeps the status card but hides template editing in packaged runtime', async () => {
-    vi.mocked(api.getFeatureRuntimeStatus).mockResolvedValueOnce({
-      ...runtimeStatus(), edition: 'customer', base_profile: 'customer', active_profile: 'customer', configuration_available: false,
-    })
-    const { wrapper } = await mounted()
-
-    expect(wrapper.find('#site-storage-management').exists()).toBe(true)
-    expect(wrapper.text()).toContain('客户版')
+    expect(wrapper.text()).not.toContain('当前版本状态')
+    expect(wrapper.text()).not.toContain('版本与功能交付')
     expect(wrapper.find('[data-testid="open-feature-delivery"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="clear-runtime-overrides"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="reload-feature-gate"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

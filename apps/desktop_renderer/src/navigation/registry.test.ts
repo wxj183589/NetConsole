@@ -25,7 +25,6 @@ describe('Web navigation registry', () => {
       '日志中心',
       '存储管理',
       '系统设置',
-      '版本与功能交付',
     ])
   })
 

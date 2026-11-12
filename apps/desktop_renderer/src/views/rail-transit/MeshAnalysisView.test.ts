@@ -138,6 +138,15 @@ describe('Mesh analysis view', () => {
     expect(source).not.toContain('absolute_path')
   })
 
+  it('keeps import controls hidden, mapping tables locally scrollable, and raw tail bounded', () => {
+    expect(source).toContain('.mesh-page{display:flex;min-height:0;min-width:0;flex-direction:column;gap:16px}')
+    expect(source).toContain('.jump-actions{min-width:0;flex:none;flex-wrap:wrap}')
+    expect(source).toContain('.hidden-input{display:none}')
+    expect(source).toContain('.bundle-table-wrap{max-width:100%;margin-top:12px;overflow-x:auto}')
+    expect(source).toContain('pre{max-width:100%;max-height:360px;padding:12px;overflow:auto;')
+    expect(source).toContain('width="min(1180px, 96vw)"')
+  })
+
   it('exposes real staged loading state and per-chart render completion', () => {
     for (const phase of ['IDLE', 'PREPARING', 'QUERYING', 'PROCESSING', 'RENDERING', 'COMPLETED', 'ERROR', 'CANCELLED']) {
       expect(source).toContain(`'${phase}'`)

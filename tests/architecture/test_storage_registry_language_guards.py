@@ -101,6 +101,27 @@ def test_storage_registry_guard_rejects_second_database_in_registered_source(
     assert "physical database declaration" in unregistered[0].message
 
 
+def test_storage_registry_guard_ignores_sqlite_suffix_constants(tmp_path: Path) -> None:
+    source = tmp_path / "suffix_constants.py"
+    source.write_text(
+        'MESH_SUFFIXES = (".sqlite", ".sqlite3", ".db")\n',
+        encoding="utf-8",
+    )
+    registry = _registry(
+        tmp_path / "registry.json",
+        source="some/other/source.py",
+        database="sites/{site_id}/db/devices.db",
+    )
+
+    findings = storage_registry_findings(
+        registry,
+        source_roots=[tmp_path],
+        direct_sql_path=_direct_sql(tmp_path / "direct.json"),
+    )
+
+    assert not any(item.rule_id == "UNREGISTERED_STORAGE" for item in findings)
+
+
 def test_storage_registry_guard_does_not_borrow_wildcard_from_another_store(
     tmp_path: Path,
 ) -> None:

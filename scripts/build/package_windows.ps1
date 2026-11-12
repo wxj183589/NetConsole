@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet("full", "customer", "both")]
-    [string]$Edition = "both",
+    [ValidateSet("full")]
+    [string]$Edition = "full",
     [switch]$NoOpenOutput,
     [switch]$PreflightOnly
 )
@@ -100,11 +100,7 @@ try {
     $rendererRoot = Join-Path $projectRoot "apps\desktop_renderer"
     $pythonPath = Join-Path $projectRoot ".venv\Scripts\python.exe"
     $artifactRoot = Join-Path $projectRoot "dist\electron"
-    $expectedEditions = switch ($Edition) {
-        "full" { @("full"); break }
-        "customer" { @("customer"); break }
-        default { @("full", "customer") }
-    }
+    $expectedEditions = @("full")
 
     Write-Step "检查构建环境"
     $gitPath = Resolve-NativeCommand "git.exe"
@@ -150,15 +146,6 @@ try {
 
     Invoke-Native $pythonPath @("-m", "pip", "check") $projectRoot
 
-    if ($Edition -ne "full") {
-        $passwordSource = Invoke-NativeCapture $pythonPath @(
-            "-c",
-            "from netconsole.core.feature_flags import resolve_customer_unlock_password; print(resolve_customer_unlock_password().source)"
-        ) $projectRoot
-        Write-Host "CUSTOMER_PASSWORD_SOURCE=$passwordSource"
-        Write-Host "CUSTOMER_BUILD_PREFLIGHT=PASS"
-    }
-
     if ($PreflightOnly) {
         Write-Host ""
         Write-Host "预检通过；未安装依赖、未运行测试、未生成安装包。" -ForegroundColor Green
@@ -202,11 +189,7 @@ try {
     Write-Step "运行 Electron 测试"
     Invoke-Native $pnpmPath @("test") $desktopRoot
 
-    $packageScript = switch ($Edition) {
-        "full" { "package:full" }
-        "customer" { "package:customer" }
-        default { "package:all" }
-    }
+    $packageScript = "package:full"
     Write-Step "构建并验证 $Edition Windows 安装包"
     Invoke-Native $pnpmPath @("run", $packageScript) $desktopRoot
 
@@ -217,7 +200,7 @@ try {
         throw "构建结束时源码状态已变化，拒绝交付。frozen=$head，HEAD=$finalHead，upstream=$finalUpstream"
     }
 
-    Write-Step "复核双版本发布清单与安装包"
+    Write-Step "复核 Full 发布清单与安装包"
     $manifests = @(
         Get-ChildItem -LiteralPath $artifactRoot -Filter "*.exe.release.json" -File |
             Sort-Object LastWriteTimeUtc -Descending
@@ -272,9 +255,6 @@ try {
         if ($releaseManifest.edition_payload_verified -ne $true) {
             throw "$edition 发布清单未通过包内版本策略校验。"
         }
-        if ($edition -eq "customer" -and $releaseManifest.admin_unlock_configured -ne $true) {
-            throw "客户版未配置维护密码哈希。"
-        }
         if ($edition -eq "full" -and $releaseManifest.admin_unlock_configured -ne $false) {
             throw "完整版不应携带客户维护密码哈希。"
         }
@@ -302,7 +282,7 @@ try {
     }
 
     Write-Host ""
-    Write-Host "双版本自动打包完成。" -ForegroundColor Green
+    Write-Host "Full 自动打包完成。" -ForegroundColor Green
     foreach ($item in $verified) {
         Write-Host "[$($item.Edition)] 安装包 : $($item.ArtifactPath)"
         Write-Host "[$($item.Edition)] 发布清单: $($item.ManifestPath)"

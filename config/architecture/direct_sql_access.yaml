@@ -132,6 +132,7 @@
   {"path":"tests/test_vehicle_mr_online.py","classification":"TEST_ONLY","owner":"test","reason":"Vehicle MR 测试 fixture。"},
   {"path":"scripts/maintenance/remap_mesh_identity.py","classification":"MIGRATION_TOOL","owner":"mesh","reason":"显式 MESH 身份重映射维护工具仅对用户指定的分析库执行受控迁移。"},
   {"path":"scripts/maintenance/rebuild_mesh_parsed_data.py","classification":"MIGRATION_TOOL","owner":"mesh","reason":"显式 MESH 派生数据重建维护工具仅以 mode=ro 预检受管 catalog、source index 与 parsed SQLite；apply 复用受授权 Service 写入。"},
+  {"path":"scripts/maintenance/audit_mesh_database_cleanup.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"mesh","reason":"MESH 数据库维护审计及已验证备份复核仅使用 mode=ro/query_only 连接执行 SQLite 元数据、quick_check 和 integrity_check；数据库写入与隔离由独立受授权流程控制。"},
   {"path":"tests/test_mesh_identity_remap.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 身份重映射测试构造 pytest 临时 SQLite 副本。"},
   {"path":"tests/test_mesh_source_delete_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 来源删除服务测试构造临时 SQLite 副本。"},
   {"path":"tests/test_database_upgrade_api.py","classification":"TEST_ONLY","owner":"test","reason":"数据库升级 API 测试 fixture。"},
@@ -139,6 +140,7 @@
   {"path":"tests/test_mesh_derived_data_maintenance_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 派生数据库维护测试 fixture。"},
   {"path":"tests/test_mesh_local_scan_service.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 本地扫描测试 fixture。"}
 ,
+  {"path":"tests/test_mesh_database_cleanup_audit.py","classification":"TEST_ONLY","owner":"test","reason":"MESH 数据库维护审计测试仅在 pytest tmp_path 构造、更新和并发验证隔离 SQLite fixture；不访问真实数据根。"},
   {"path":"src/netconsole/repositories/wps_sync_repository.py","classification":"REPOSITORY_REQUIRED","owner":"wps","reason":"WPS sync Repository."},
   {"path":"tests/test_online_mr_traffic_analysis.py","classification":"TEST_ONLY","owner":"test","reason":"Online MR traffic analysis test fixture."},
   {"path":"tests/test_wps_trackside_ap_sync.py","classification":"TEST_ONLY","owner":"test","reason":"WPS trackside sync test fixture."},
