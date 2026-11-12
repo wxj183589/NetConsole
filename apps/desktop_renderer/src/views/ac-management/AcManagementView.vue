@@ -5,7 +5,6 @@ import { ElMessage } from 'element-plus'
 import { useRoute } from 'vue-router'
 
 import { getAcApCurrentLldp, getAcApRecentChanges } from '../../api/acManagement'
-import { listStations } from '../../api/railTransitBaseData'
 import {
   confirmAcActionPlan,
   createAcActionPlan,
@@ -37,6 +36,7 @@ import type {
   AcActionPlan,
   AcWebTask,
 } from '../../types/acWebParity'
+import { listAllStations } from './stationPagination'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import {
   apOpticalStatusPresentation,
@@ -445,8 +445,7 @@ async function startVerboseRefresh(scope: 'all' | 'selected'): Promise<void> {
 
 async function loadStations(): Promise<void> {
   try {
-    const result = await listStations({ page: 1, page_size: 500, sort_order: 'asc' })
-    stations.value = result.items.filter((item) => item.enabled !== false)
+    stations.value = (await listAllStations()).filter((item) => item.enabled !== false)
   } catch {
     stations.value = []
   }

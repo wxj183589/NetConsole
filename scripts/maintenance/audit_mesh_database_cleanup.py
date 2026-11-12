@@ -1007,6 +1007,7 @@ def _db_record(
     artifact_texts: list[dict[str, str]],
     backup_texts: list[dict[str, str]],
     recovery_texts: list[dict[str, str]],
+    allowed_backup_manifest_paths: set[Path] | None,
     runtime_processes: list[str],
     catalog_available: bool,
     source_index_query_ok: bool,
@@ -1149,6 +1150,15 @@ def _db_record(
     )
     report_matches = _matching_texts(tokens, artifact_texts)
     backup_matches = _matching_texts(tokens, backup_texts)
+    allowed_backup_paths = {
+        path.resolve() for path in (allowed_backup_manifest_paths or set())
+    }
+    if allowed_backup_paths:
+        backup_matches = [
+            item
+            for item in backup_matches
+            if Path(str(item.get("path") or "")).resolve() not in allowed_backup_paths
+        ]
     recovery_matches = _matching_texts(tokens, recovery_texts)
     if active_task_count:
         reasons.add("TASK_ACTIVE_PROTECT")
@@ -1408,6 +1418,7 @@ def audit_root(
     runtime_processes: list[str] | None = None,
     maintenance_window_authorized: bool = False,
     selected_paths: set[Path] | None = None,
+    allowed_backup_manifest_paths: set[Path] | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
     sites_root = root / "sites"
@@ -1525,6 +1536,7 @@ def audit_root(
                 artifact_texts=artifact_texts,
                 backup_texts=backup_texts,
                 recovery_texts=recovery_texts,
+                allowed_backup_manifest_paths=allowed_backup_manifest_paths,
                 runtime_processes=runtime_processes,
                 catalog_available=catalog_available,
                 source_index_query_ok=index_source_query_ok.get(profile_safe, False),
@@ -1542,6 +1554,7 @@ def audit_roots(
     runtime_processes_by_root: dict[Path, list[str]] | None = None,
     maintenance_window_authorized: bool = False,
     selected_paths_by_root: dict[Path, set[Path]] | None = None,
+    allowed_backup_manifest_paths: set[Path] | None = None,
 ) -> dict[str, Any]:
     active = {path.resolve() for path in (writer_active_roots or set())}
     process_map = {path.resolve(): value for path, value in (runtime_processes_by_root or {}).items()}
@@ -1556,6 +1569,7 @@ def audit_roots(
             runtime_processes=process_map.get(Path(root).resolve(), []),
             maintenance_window_authorized=maintenance_window_authorized,
             selected_paths=(selected_map.get(Path(root).resolve()) if selected_paths_by_root is not None else None),
+            allowed_backup_manifest_paths=allowed_backup_manifest_paths,
         )
         for root in roots
     ]
@@ -2307,6 +2321,7 @@ def audit_v4(
     *,
     previous_report_dir: Path,
     maintenance_authorized: bool = False,
+    allowed_backup_manifest_paths: set[Path] | None = None,
 ) -> dict[str, Any]:
     scope = _load_v3_rebuild_scope(previous_report_dir)
     runtime_evidence = _runtime_process_evidence()
@@ -2337,6 +2352,7 @@ def audit_v4(
         runtime_processes_by_root=runtime_by_root,
         maintenance_window_authorized=maintenance_authorized,
         selected_paths_by_root=selected,
+        allowed_backup_manifest_paths=allowed_backup_manifest_paths,
     ) if selected else {
         "format": "netconsole-mesh-database-reference-audit-v3",
         "generated_at": now_iso(),
@@ -2614,6 +2630,61 @@ def _v41_candidate_manifest_scope(payload: dict[str, Any]) -> dict[str, set[str]
     return {"data_roots": roots, "sites": sites, "mr_profiles": mr_profiles, "paths": paths}
 
 
+def _v41_candidate_binding(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the immutable identity used to bind authorization to live candidates."""
+    binding: list[dict[str, Any]] = []
+    for item in items:
+        record = item.get("record") or {}
+        path_text = item.get("path") or record.get("canonical_path")
+        if not path_text:
+            continue
+        path = Path(str(path_text)).resolve()
+        formal_text = item.get("formal_database_path") or record.get("rebuild_target_path")
+        snapshot = record.get("actual_snapshot_before_audit") or {}
+        binding.append(
+            {
+                "data_root": str(Path(str(record.get("data_root") or "")).resolve()),
+                "site": str(record.get("site") or ""),
+                "mr_profile_id": str(item.get("mr_profile_id") or record.get("mr_profile_id") or ""),
+                "path": str(path),
+                "formal_database_path": str(Path(str(formal_text)).resolve()) if formal_text else "",
+                "file_identity": str(record.get("file_identity") or snapshot.get("file_identity") or ""),
+                "sha256": str(record.get("sha256") or record.get("actual_sha256_before_audit") or ""),
+                "file_size": int(record.get("file_size") or 0),
+                "mtime_ns": int(record.get("mtime_ns") or snapshot.get("mtime_ns") or 0),
+                "activity_state": str(item.get("activity_state") or record.get("activity_state") or ""),
+                "source_reference_count": int(record.get("source_reference_count") or 0),
+                "session_reference_count": int(record.get("session_reference_count") or 0),
+                "fallback_reference_count": int(record.get("fallback_reference_count") or 0),
+                "recovery_reference_count": int(record.get("recovery_reference_count") or 0),
+                "backup_reference_count": int(record.get("backup_reference_count") or 0),
+                "formal_database_session_reference_count": int(
+                    (item.get("rebuild_review") or {}).get("formal_database_session_reference_count") or 0
+                ),
+            }
+        )
+    return sorted(binding, key=lambda item: (item["data_root"].casefold(), item["path"].casefold()))
+
+
+def _v41_candidate_binding_sha256(items: Iterable[dict[str, Any]]) -> str:
+    payload = json.dumps(
+        _v41_candidate_binding(items),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _v41_candidate_binding_errors(
+    candidate_manifest: dict[str, Any],
+    actual_candidates: Iterable[dict[str, Any]],
+) -> list[str]:
+    expected = _v41_candidate_binding(candidate_manifest.get("candidates") or [])
+    actual = _v41_candidate_binding(actual_candidates)
+    return [] if expected == actual else ["当前 live audit 候选身份/范围与授权候选 Manifest 不一致"]
+
+
 def _v41_parse_window(value: object) -> tuple[datetime, datetime] | None:
     if not isinstance(value, dict):
         return None
@@ -2635,6 +2706,9 @@ def _v41_validate_authorization(
     requested_mode: str,
     candidate_manifest_path: Path,
     candidate_manifest: dict[str, Any],
+    actual_candidates: Iterable[dict[str, Any]] | None = None,
+    previous_report_dir: Path | None = None,
+    v4_report_dir: Path | None = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": "NOT_PROVIDED" if authorization_path is None else "FAIL",
@@ -2697,6 +2771,23 @@ def _v41_validate_authorization(
         actual_hash = sha256_file(candidate_manifest_path)
         if actual_hash != str(payload.get("candidate_manifest_sha256") or ""):
             result["errors"].append("候选 Manifest SHA-256 不匹配")
+    if actual_candidates is not None and requested_mode != "AUDIT_ONLY":
+        actual_binding_sha256 = _v41_candidate_binding_sha256(actual_candidates)
+        result["candidate_binding_sha256"] = actual_binding_sha256
+        declared_binding_sha256 = str(payload.get("candidate_binding_sha256") or "")
+        if not declared_binding_sha256:
+            result["errors"].append("授权缺少 candidate_binding_sha256，禁止绑定 live candidate")
+        elif declared_binding_sha256 != actual_binding_sha256:
+            result["errors"].append("授权 candidate_binding_sha256 与当前 live candidate 不一致")
+        result["errors"].extend(_v41_candidate_binding_errors(candidate_manifest, actual_candidates))
+        if previous_report_dir is not None:
+            declared_previous = Path(str(payload.get("previous_report_dir") or "")).resolve()
+            if declared_previous != previous_report_dir.resolve():
+                result["errors"].append("授权 previous_report_dir 与本轮参数不一致")
+        if v4_report_dir is not None:
+            declared_v4 = Path(str(payload.get("v4_report_dir") or "")).resolve()
+            if declared_v4 != v4_report_dir.resolve():
+                result["errors"].append("授权 v4_report_dir 与本轮参数不一致")
     if requested_mode == "ISOLATE_APPROVED":
         if not payload.get("backup_manifest") or not payload.get("backup_manifest_sha256"):
             result["errors"].append("ISOLATE_APPROVED 必须绑定已验证 Backup Manifest")
@@ -2865,6 +2956,93 @@ def _v41_backup_candidates(
     return result
 
 
+def _v41_revalidate_backup_entry(backup_entry: dict[str, Any]) -> tuple[bool, str]:
+    """Revalidate the backup artifact read-only immediately before isolation."""
+    backup_directory = Path(str(backup_entry.get("backup_path") or "")).resolve()
+    backup_database = Path(str(backup_entry.get("backup_database_path") or "")).resolve()
+    if not backup_directory.is_dir() or backup_database.parent != backup_directory:
+        return False, "Backup 目录或数据库路径不在声明的备份目录内"
+    if _is_reparse(backup_directory) or _is_reparse(backup_database):
+        return False, "Backup 目录或数据库是符号链接/Junction"
+    declared_validation = backup_entry.get("backup_validation") or {}
+    expected_sha256 = str(backup_entry.get("backup_sha256") or declared_validation.get("sha256") or "")
+    expected_size = int(backup_entry.get("backup_size") or declared_validation.get("size_bytes") or 0)
+    if not backup_database.is_file() or not expected_sha256 or expected_size <= 0:
+        return False, "Backup 缺少可复核的文件、大小或 SHA-256"
+    if backup_database.stat().st_size != expected_size or sha256_file(backup_database) != expected_sha256:
+        return False, "Backup 文件大小或 SHA-256 已变化"
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"{backup_database.as_uri()}?mode=ro", uri=True, timeout=30)
+        connection.execute("PRAGMA query_only = ON")
+        quick_check = str(connection.execute("PRAGMA quick_check").fetchone()[0])
+        integrity_check = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
+    except sqlite3.Error as exc:
+        return False, f"Backup SQLite 只读完整性复核失败：{exc}"
+    finally:
+        if connection is not None:
+            connection.close()
+    if quick_check != "ok" or integrity_check != "ok":
+        return False, f"Backup SQLite 完整性复核不是 ok：{quick_check}/{integrity_check}"
+    if declared_validation.get("restorable") is not True:
+        return False, "Backup Manifest 未声明 restorable=true"
+    return True, ""
+
+
+def _v41_authorized_backup_manifest_paths(
+    supplied_payload: dict[str, Any] | None,
+    *,
+    authorization: dict[str, Any],
+    candidate_manifest: dict[str, Any],
+) -> tuple[set[Path], str]:
+    if not supplied_payload:
+        return set(), "未提供可验证的 Backup Manifest"
+    if supplied_payload.get("format") != "netconsole-mesh-v4-1-backup-manifest":
+        return set(), "Backup Manifest format 不匹配"
+    if supplied_payload.get("backup_workflow") != "PASS":
+        return set(), "Backup Manifest 不是 PASS"
+    backup_auth = supplied_payload.get("authorization") or {}
+    backup_payload = backup_auth.get("payload") or {}
+    current_payload = authorization.get("payload") or {}
+    if backup_auth.get("status") != "PASS" or backup_payload.get("mode") != "BACKUP_ONLY":
+        return set(), "Backup Manifest 未绑定已通过的 BACKUP_ONLY 授权"
+    for field in ("data_roots", "sites", "mr_profiles", "candidate_paths", "candidate_manifest_sha256"):
+        if backup_payload.get(field) != current_payload.get(field):
+            return set(), f"Backup Manifest 授权范围字段不一致：{field}"
+    approved_sources = _v41_candidate_manifest_scope(candidate_manifest)["paths"]
+    entries = [
+        item for item in supplied_payload.get("entries") or []
+        if isinstance(item, dict) and item.get("state") == "BACKUP_VERIFIED"
+    ]
+    if not entries or int(supplied_payload.get("backup_success_count") or 0) != len(entries):
+        return set(), "Backup Manifest 已验证条目数量不一致"
+    paths: set[Path] = set()
+    sources: set[str] = set()
+    for entry in entries:
+        source = str(Path(str(entry.get("source") or "")).resolve())
+        if source not in approved_sources or source in sources:
+            return set(), "Backup Manifest source 不属于当前候选或存在重复"
+        valid, reason = _v41_revalidate_backup_entry(entry)
+        if not valid:
+            return set(), reason
+        backup_manifest_path = (Path(str(entry.get("backup_path") or "")).resolve() / "manifest.json").resolve()
+        data_root = next(
+            (
+                Path(str(item.get("record", {}).get("data_root") or "")).resolve()
+                for item in candidate_manifest.get("candidates") or []
+                if str(Path(str(item.get("path") or item.get("record", {}).get("canonical_path") or "")).resolve()) == source
+            ),
+            None,
+        )
+        if data_root is None or not _within(backup_manifest_path, data_root / "backups"):
+            return set(), "当前授权 Backup Manifest 路径不在候选数据根的受控 backups 内"
+        if not backup_manifest_path.is_file() or _is_reparse(backup_manifest_path):
+            return set(), "当前授权 Backup Manifest 内部 manifest 不存在或为 Reparse Point"
+        paths.add(backup_manifest_path)
+        sources.add(source)
+    return paths, ""
+
+
 def _v41_isolation_target(quarantine: Path, source: Path, main_source: Path) -> Path:
     suffix = source.name[len(main_source.name) :] if source.name.startswith(main_source.name) else ""
     return quarantine / f"{main_source.name}.isolated{suffix}"
@@ -2904,6 +3082,9 @@ def _v41_isolate_backup_manifest(
             "moved_files": [],
         }
         try:
+            backup_valid, backup_error = _v41_revalidate_backup_entry(backup_entry)
+            if not backup_valid:
+                raise RuntimeError(backup_error)
             group = handle_groups.get(str(source)) or {}
             if group.get("status") != HANDLE_FREE_CONFIRMED:
                 raise RuntimeError(f"隔离前句柄状态不是 HANDLE_FREE_CONFIRMED：{group.get('status')}")
@@ -3060,17 +3241,37 @@ def audit_v41(
     candidate_manifest, manifest_error = _v41_load_json(candidate_manifest_path)
     if candidate_manifest is None:
         candidate_manifest = {"candidates": [], "target_results": []}
-    authorization = _v41_validate_authorization(
+    pre_authorization = _v41_validate_authorization(
         authorization_file,
         requested_mode=execution_mode,
         candidate_manifest_path=candidate_manifest_path,
         candidate_manifest=candidate_manifest,
     )
-    authorized = authorization.get("status") == "PASS"
+    pre_authorized = pre_authorization.get("status") == "PASS"
+    supplied_payload: dict[str, Any] | None = None
+    supplied_backup_path: Path | None = None
+    supplied_backup_error = ""
+    allowed_backup_manifest_paths: set[Path] = set()
+    if execution_mode == "ISOLATE_APPROVED" and pre_authorized:
+        pre_payload = pre_authorization.get("payload") or {}
+        supplied_backup_path = (backup_manifest or Path(str(pre_payload.get("backup_manifest") or ""))).resolve()
+        supplied_payload, supplied_backup_error = _v41_load_json(supplied_backup_path)
+        expected_hash = str(pre_payload.get("backup_manifest_sha256") or "")
+        if supplied_payload is not None and not supplied_backup_error:
+            if not expected_hash or sha256_file(supplied_backup_path) != expected_hash:
+                supplied_backup_error = "Backup Manifest SHA-256 不匹配"
+                supplied_payload = None
+            else:
+                allowed_backup_manifest_paths, supplied_backup_error = _v41_authorized_backup_manifest_paths(
+                    supplied_payload,
+                    authorization=pre_authorization,
+                    candidate_manifest=candidate_manifest,
+                )
     base = audit_v4(
         roots,
         previous_report_dir=previous_report_dir,
-        maintenance_authorized=authorized,
+        maintenance_authorized=pre_authorized,
+        allowed_backup_manifest_paths=allowed_backup_manifest_paths,
     )
     target_results = list(base.get("target_results") or [])
     handle_groups = _handle_groups_for_targets(target_results)
@@ -3088,7 +3289,7 @@ def audit_v41(
         item["handle_group"] = group_result
         item["windows_handle_status"] = handle_status
         blockers = set(item.get("blockers") or [])
-        if authorized:
+        if pre_authorized:
             blockers.discard("MAINTENANCE_AUTHORIZED_NO")
         if handle_status == HANDLE_FREE_CONFIRMED:
             # V4 only knew the optional handle.exe/runtime evidence. Replace
@@ -3099,8 +3300,26 @@ def audit_v41(
             blockers.add(handle_status)
         item["blockers"] = sorted(blockers)
         item["orphan_candidate"] = bool(
-            authorized and handle_status == HANDLE_FREE_CONFIRMED and not blockers
+            pre_authorized and handle_status == HANDLE_FREE_CONFIRMED and not blockers
         )
+    provisional_candidates = [item for item in target_results if item.get("orphan_candidate")]
+    authorization = _v41_validate_authorization(
+        authorization_file,
+        requested_mode=execution_mode,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest=candidate_manifest,
+        actual_candidates=provisional_candidates,
+        previous_report_dir=previous_report_dir,
+        v4_report_dir=v4_report_dir,
+    )
+    authorized = authorization.get("status") == "PASS"
+    if not authorized:
+        for item in target_results:
+            if item.get("orphan_candidate"):
+                blockers = set(item.get("blockers") or [])
+                blockers.add("MAINTENANCE_AUTHORIZED_NO")
+                item["blockers"] = sorted(blockers)
+                item["orphan_candidate"] = False
     candidates = [item for item in target_results if item.get("orphan_candidate")]
     handle_detection = (
         "PASS"
@@ -3153,50 +3372,85 @@ def audit_v41(
             manifest_path=output_dir / "MESH_DATABASE_V4_1_BACKUP_MANIFEST.json",
         )
     elif execution_mode == "ISOLATE_APPROVED" and authorized:
-        payload = authorization.get("payload") or {}
-        supplied_backup = backup_manifest or Path(str(payload.get("backup_manifest") or ""))
-        supplied_backup = supplied_backup.resolve()
-        supplied_payload, supplied_error = _v41_load_json(supplied_backup)
-        if supplied_payload is not None and not supplied_error:
-            expected_hash = str(payload.get("backup_manifest_sha256") or "")
-            if expected_hash and sha256_file(supplied_backup) == expected_hash:
+        if supplied_payload is None or supplied_backup_error:
+            isolation_result["reason"] = supplied_backup_error or "无法读取 Backup Manifest"
+        else:
+            # A second, read-only audit is mandatory immediately before any
+            # move. It catches newly restored source/session/recovery refs and
+            # file identity drift after BACKUP_ONLY. Only the exact, revalidated
+            # current backup manifests are exempted from BACKUP_REFERENCE.
+            recheck_base = audit_v4(
+                roots,
+                previous_report_dir=previous_report_dir,
+                maintenance_authorized=True,
+                allowed_backup_manifest_paths=allowed_backup_manifest_paths,
+            )
+            recheck_target_results = list(recheck_base.get("target_results") or [])
+            recheck_groups = _handle_groups_for_targets(recheck_target_results)
+            recheck_group_results: dict[str, dict[str, Any]] = {}
+            for group in recheck_groups:
+                recheck_group_results[group["rebuild_path"]] = {
+                    **group,
+                    **_handle_group_audit(Path(path) for path in group["paths"]),
+                }
+            recheck_candidates: list[dict[str, Any]] = []
+            for item in recheck_target_results:
+                rebuild_path = str(Path(str(item.get("path") or "")).resolve())
+                group_result = recheck_group_results.get(rebuild_path) or {}
+                handle_status = str(group_result.get("status") or HANDLE_UNCONFIRMED)
+                blockers = set(item.get("blockers") or [])
+                if handle_status == HANDLE_FREE_CONFIRMED:
+                    blockers.discard("WINDOWS_HANDLE_UNCONFIRMED")
+                else:
+                    blockers.add(handle_status)
+                item["handle_group_status"] = handle_status
+                item["handle_group"] = group_result
+                item["windows_handle_status"] = handle_status
+                item["blockers"] = sorted(blockers)
+                item["orphan_candidate"] = bool(
+                    handle_status == HANDLE_FREE_CONFIRMED and not blockers
+                )
+                if item["orphan_candidate"]:
+                    recheck_candidates.append(item)
+            if _v41_candidate_binding(recheck_candidates) != _v41_candidate_binding(candidates):
+                isolation_result["reason"] = (
+                    "隔离前 live re-audit 候选身份/范围已变化（含来源、会话、恢复引用或文件身份变化），禁止隔离。"
+                )
+            else:
                 verified_entries = [
                     item
                     for item in supplied_payload.get("entries") or []
                     if item.get("state") == "BACKUP_VERIFIED"
                 ]
-                backup_sources = [
+                backup_sources = sorted(
                     str(Path(str(item.get("source") or "")).resolve())
                     for item in verified_entries
-                ]
+                )
                 approved_sources = sorted(
                     str(Path(str(item.get("path") or "")).resolve())
-                    for item in candidates
+                    for item in recheck_candidates
                 )
                 backup_manifest_valid = (
                     supplied_payload.get("format") == "netconsole-mesh-v4-1-backup-manifest"
                     and supplied_payload.get("backup_workflow") == "PASS"
                     and int(supplied_payload.get("backup_success_count") or 0) == len(verified_entries)
                     and len(backup_sources) == len(set(backup_sources))
-                    and sorted(backup_sources) == approved_sources
+                    and backup_sources == approved_sources
                     and (supplied_payload.get("authorization") or {}).get("status") == "PASS"
+                    and all(_v41_revalidate_backup_entry(item)[0] for item in verified_entries)
                 )
                 if not backup_manifest_valid:
                     isolation_result["reason"] = (
-                        "Backup Manifest 未通过格式、已验证状态、授权或当前候选精确范围校验，禁止隔离。"
+                        "Backup Manifest 未通过格式、已验证状态、授权、完整性或当前候选精确范围校验，禁止隔离。"
                     )
                 else:
                     isolation_result = _v41_isolate_backup_manifest(
                         supplied_payload,
                         audit_id=audit_id,
-                        handle_groups=group_results,
+                        handle_groups=recheck_group_results,
                         authorization=authorization,
                         manifest_path=output_dir / "MESH_DATABASE_V4_1_ISOLATION_MANIFEST.json",
                     )
-            else:
-                isolation_result["reason"] = "Backup Manifest SHA-256 不匹配，禁止隔离。"
-        else:
-            isolation_result["reason"] = f"无法读取 Backup Manifest：{supplied_error}"
     elif execution_mode == "AUDIT_ONLY":
         backup_result["reason"] = "AUDIT_ONLY：只读检查，不创建生产备份。"
         isolation_result["reason"] = "AUDIT_ONLY：只读检查，不执行隔离。"

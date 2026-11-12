@@ -147,6 +147,15 @@ describe('AC Management resource view', () => {
     expect(source).not.toContain('<el-input v-model="store.filters.switch"')
   })
 
+  it('loads every station page within the backend contract and retains bounded export scopes', () => {
+    expect(source).toContain('listAllStations')
+    expect(source).toContain("filter((item) => item.enabled !== false)")
+    expect(source).not.toContain('page_size: 500')
+    expect(source).toContain('导出当前筛选结果')
+    expect(source).toContain('导出已选择 AP')
+    expect(source).toContain('导出当前 AC 全部 AP')
+  })
+
   it('adds a bounded row context menu while retaining detail and copy actions', () => {
     expect(source).toContain(':context-menu-items="fitApContextMenuItems"')
     expect(source).toContain('NcDataTableContextMenuItem')

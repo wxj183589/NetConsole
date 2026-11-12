@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import shutil
 import sqlite3
 import subprocess
@@ -8,6 +9,8 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import pytest
 
 from scripts.maintenance import audit_mesh_database_cleanup as audit_module
 from scripts.maintenance.audit_mesh_database_cleanup import (
@@ -23,6 +26,7 @@ from scripts.maintenance.audit_mesh_database_cleanup import (
     _v41_isolate_backup_manifest,
     _v41_rollback_isolation,
     _v41_validate_authorization,
+    _v41_candidate_binding_sha256,
     write_reports,
     write_v4_reports,
 )
@@ -122,6 +126,75 @@ def _v41_candidate_fixture(tmp_path: Path) -> tuple[Path, Path, dict[str, object
         "orphan_candidate": True,
     }
     return root, rebuild, candidate
+
+
+def _authorized_isolation_fixture(tmp_path: Path) -> dict[str, object]:
+    root, rebuild, candidate = _v41_candidate_fixture(tmp_path)
+    v3_output = tmp_path / "v3"
+    v4_output = tmp_path / "v4"
+    v4_output.mkdir()
+    candidate_manifest = v4_output / "MESH_DATABASE_V4_CANDIDATES.json"
+    candidate_manifest.write_text(
+        json.dumps({"candidates": [candidate]}, default=str), encoding="utf-8"
+    )
+    scope = candidate["record"]
+    window_start = datetime.now(timezone.utc) - timedelta(minutes=1)
+    window_end = datetime.now(timezone.utc) + timedelta(minutes=5)
+    common_payload = {
+        "format": "netconsole-mesh-maintenance-authorization-v1",
+        "authorized": True,
+        "confirmation": {
+            "confirmed": True,
+            "operator": "test-operator",
+            "confirmed_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "operation_scope": "exact MESH candidate maintenance",
+        "maintenance_window": {
+            "start": window_start.isoformat(),
+            "end": window_end.isoformat(),
+        },
+        "data_roots": [str(Path(str(scope["data_root"])).resolve())],
+        "sites": [str(scope["site"])],
+        "mr_profiles": [str(scope["mr_profile_id"])],
+        "candidate_paths": [str(Path(str(candidate["path"])).resolve())],
+        "candidate_manifest": str(candidate_manifest.resolve()),
+        "candidate_manifest_sha256": audit_module.sha256_file(candidate_manifest),
+        "candidate_binding_sha256": _v41_candidate_binding_sha256([candidate]),
+        "previous_report_dir": str(v3_output.resolve()),
+        "v4_report_dir": str(v4_output.resolve()),
+    }
+    backup_authorization = {
+        "status": "PASS",
+        "payload": {**common_payload, "mode": "BACKUP_ONLY"},
+    }
+    backup = _v41_backup_candidates(
+        [candidate], audit_id="authorized-backup", authorization=backup_authorization
+    )
+    backup_path = tmp_path / "verified-backup-manifest.json"
+    backup_path.write_text(json.dumps(backup, default=str), encoding="utf-8")
+    authorization_path = tmp_path / "isolation-authorization.json"
+    authorization_path.write_text(
+        json.dumps(
+            {
+                **common_payload,
+                "mode": "ISOLATE_APPROVED",
+                "backup_manifest": str(backup_path.resolve()),
+                "backup_manifest_sha256": audit_module.sha256_file(backup_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "root": root,
+        "rebuild": rebuild,
+        "candidate": candidate,
+        "v3_output": v3_output,
+        "v4_output": v4_output,
+        "candidate_manifest": candidate_manifest,
+        "backup": backup,
+        "backup_path": backup_path,
+        "authorization_path": authorization_path,
+    }
 
 
 def _insert_task(root: Path, task_id: str, status: str, result: object = None) -> None:
@@ -571,6 +644,7 @@ def test_v41_backup_isolation_and_rollback_are_independent_and_idempotent(tmp_pa
     )
 
     assert backup["backup_workflow"] == "PASS"
+    assert backup["execution_mode"] == "BACKUP_ONLY"
     assert backup["backup_success_count"] == 1
     backup_entry = backup["entries"][0]
     assert backup_entry["state"] == "BACKUP_VERIFIED"
@@ -589,6 +663,7 @@ def test_v41_backup_isolation_and_rollback_are_independent_and_idempotent(tmp_pa
     )
 
     assert isolation["workflow"] == "PASS"
+    assert isolation["execution_mode"] == "ISOLATE_APPROVED"
     assert isolation["isolated_count"] == 1
     moved = isolation["entries"][0]["moved_files"]
     assert not rebuild.exists()
@@ -831,6 +906,130 @@ def test_v41_authorization_is_required_and_binds_exact_scope_and_manifest_hash(t
     )
     assert drifted["status"] == "FAIL"
     assert any("SHA-256" in error for error in drifted["errors"])
+
+
+def test_v41_authorization_rejects_cross_root_and_report_directory_drift(tmp_path: Path) -> None:
+    fixture = _authorized_isolation_fixture(tmp_path)
+    candidate = fixture["candidate"]
+    actual = copy.deepcopy(candidate)
+    actual_record = actual["record"]
+    actual_record["data_root"] = str(tmp_path / "other-data")
+    actual["path"] = str(tmp_path / "other-data" / "sites" / "site-a" / "candidate.rebuild.sqlite")
+    authorization = _v41_validate_authorization(
+        fixture["authorization_path"],
+        requested_mode="ISOLATE_APPROVED",
+        candidate_manifest_path=fixture["candidate_manifest"],
+        candidate_manifest=json.loads(fixture["candidate_manifest"].read_text(encoding="utf-8")),
+        actual_candidates=[actual],
+        previous_report_dir=tmp_path / "wrong-v3",
+        v4_report_dir=fixture["v4_output"],
+    )
+
+    assert authorization["status"] == "FAIL"
+    assert any("live candidate" in error or "previous_report_dir" in error for error in authorization["errors"])
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        ("source_reference_count", 1, "PHYSICAL_SOURCE_REFERENCE"),
+        ("session_reference_count", 1, "PHYSICAL_SESSION_REFERENCE"),
+        ("recovery_reference_count", 1, "RECOVERY_REFERENCE"),
+        ("file_identity", "changed-file-identity", None),
+    ],
+)
+def test_v41_isolation_reaudits_current_candidate_after_backup(
+    tmp_path: Path,
+    monkeypatch,
+    mutation: tuple[str, object, str | None],
+) -> None:
+    fixture = _authorized_isolation_fixture(tmp_path)
+    candidate = fixture["candidate"]
+    first_record = candidate["record"]
+    base = {
+        "generated_at": "2026-11-13T00:00:00+00:00",
+        "target_results": [
+            {
+                "path": str(fixture["rebuild"]),
+                "formal_database_path": candidate["formal_database_path"],
+                "orphan_candidate": False,
+                "blockers": [],
+                "record": first_record,
+                "rebuild_review": candidate["rebuild_review"],
+                "activity_state": "IDLE_CONFIRMED",
+            }
+        ],
+        "runtime_evidence": {"backend_worker": [], "electron": [], "python_mesh": []},
+        "status": {"activity_verification": "PASS", "reference_check": "PASS"},
+        "git": {},
+    }
+    changed = copy.deepcopy(base)
+    changed_record = changed["target_results"][0]["record"]
+    field, value, blocker = mutation
+    changed_record[field] = value
+    if blocker:
+        changed["target_results"][0]["blockers"] = [blocker]
+    calls = 0
+
+    def fake_audit_v4(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return base if calls == 1 else changed
+
+    monkeypatch.setattr(audit_module, "audit_v4", fake_audit_v4)
+    monkeypatch.setattr(
+        audit_module,
+        "_handle_group_audit",
+        lambda paths: {
+            "status": "HANDLE_FREE_CONFIRMED",
+            "paths": [str(Path(path)) for path in paths],
+            "files": [],
+            "restart_manager": {"status": "EMPTY", "processes": []},
+        },
+    )
+
+    audit = audit_v41(
+        [fixture["root"]],
+        previous_report_dir=fixture["v3_output"],
+        v4_report_dir=fixture["v4_output"],
+        output_dir=tmp_path / "v4.1",
+        execution_mode="ISOLATE_APPROVED",
+        authorization_file=fixture["authorization_path"],
+        backup_manifest=fixture["backup_path"],
+    )
+
+    assert calls == 2
+    assert audit["status"]["production_isolation"] == "NOT_EXECUTED"
+    assert audit["isolation_manifest"]["workflow"] == "NOT_EXECUTED"
+    assert "隔离前 live re-audit" in audit["isolation_manifest"]["reason"]
+    assert fixture["rebuild"].is_file()
+
+
+def test_v41_current_backup_reference_is_exempt_but_external_reference_blocks(tmp_path: Path) -> None:
+    root, rebuild, candidate = _v41_candidate_fixture(tmp_path)
+    authorization = {"status": "PASS", "payload": {"operator": "test"}}
+    backup = _v41_backup_candidates([candidate], audit_id="reference-backup", authorization=authorization)
+    current_manifest = Path(backup["entries"][0]["backup_path"]) / "manifest.json"
+    external_manifest = root / "backups" / "external" / "manifest.json"
+    external_manifest.parent.mkdir(parents=True, exist_ok=True)
+    external_manifest.write_text(json.dumps({"source": str(rebuild)}), encoding="utf-8")
+
+    blocked = audit_root(
+        root,
+        maintenance_window_authorized=True,
+        selected_paths={rebuild},
+    )["records"][0]
+    exempted = audit_root(
+        root,
+        maintenance_window_authorized=True,
+        selected_paths={rebuild},
+        allowed_backup_manifest_paths={current_manifest},
+    )["records"][0]
+
+    assert blocked["backup_reference_count"] >= 2
+    assert any(item["path"] == str(external_manifest) for item in blocked["backup_references"])
+    assert exempted["backup_reference_count"] == 1
+    assert exempted["backup_references"][0]["path"] == str(external_manifest)
 
 
 def test_audit_does_not_modify_raw_evidence(tmp_path: Path) -> None:
