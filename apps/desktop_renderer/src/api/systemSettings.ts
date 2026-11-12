@@ -1,9 +1,5 @@
 import { apiRequest } from './client'
 import type {
-  FeatureConfigurationTarget,
-  FeatureRuntimeStatus,
-  FeatureSetting,
-  FeatureSettingsSnapshot,
   NetworkComponentMode,
   NetworkComponentName,
   NetworkComponentsSnapshot,
@@ -26,31 +22,3 @@ export const saveNetworkComponent = (
   method: 'PUT',
   body: JSON.stringify({ mode, custom_path: customPath, expected_version: expectedVersion }),
 })
-export const getFeatureSettings = (target: FeatureConfigurationTarget = 'customer') => apiRequest<FeatureSettingsSnapshot>(`/api/settings/features?target=${encodeURIComponent(target)}`)
-export const saveFeatureSettings = (items: FeatureSetting[], target: FeatureConfigurationTarget) => featureRequest('/api/settings/features', items, target, 'PUT')
-export const checkFeatureSettings = (items: FeatureSetting[], target: FeatureConfigurationTarget) => featureRequest('/api/settings/features/check', items, target, 'POST')
-export const autoFixFeatureSettings = (items: FeatureSetting[], target: FeatureConfigurationTarget) => featureRequest('/api/settings/features/auto-fix', items, target, 'POST')
-export const previewFeatureSettings = (items: FeatureSetting[], target: FeatureConfigurationTarget) => featureRequest('/api/settings/features/preview', items, target, 'POST')
-export const exitFeatureSettingsPreview = (target: FeatureConfigurationTarget = 'customer') => apiRequest<FeatureSettingsSnapshot>(`/api/settings/features/preview/exit?target=${encodeURIComponent(target)}`, { method: 'POST' })
-export const restoreFeatureSettings = (target: FeatureConfigurationTarget) => apiRequest<FeatureSettingsSnapshot>('/api/settings/features/restore', { method: 'POST', body: JSON.stringify({ target, confirmed: true }) })
-export const getFeatureRuntimeStatus = () => apiRequest<FeatureRuntimeStatus>('/api/settings/features/runtime-status')
-export const clearFeatureRuntimeOverrides = () => apiRequest<FeatureRuntimeStatus>('/api/settings/features/runtime-overrides/clear', { method: 'POST', body: JSON.stringify({ confirmed: true }) })
-export const reloadFeatureGate = () => apiRequest<FeatureRuntimeStatus>('/api/settings/features/reload', { method: 'POST' })
-
-function featureRequest(
-  path: string,
-  items: FeatureSetting[],
-  target: FeatureConfigurationTarget,
-  method: 'PUT' | 'POST',
-) {
-  const updates = items.map(({ feature_id, visible, enabled, package_included }) => ({
-    feature_id,
-    visible,
-    enabled,
-    package_included,
-  }))
-  return apiRequest<FeatureSettingsSnapshot>(path, {
-    method,
-    body: JSON.stringify({ target, items: updates, confirmed: true }),
-  })
-}

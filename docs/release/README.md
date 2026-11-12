@@ -3,7 +3,7 @@
 本目录维护 Backend、Electron、NSIS、版本、依赖合规和正式制品的当前规则。
 
 - [构建与发布](./BUILD_AND_RELEASE.md)
-- [Full 与 Customer 打包](./FULL_AND_CUSTOMER_PACKAGING.md)
+- [Full Installer 与 Full Portable 交付](./FULL_AND_CUSTOMER_PACKAGING.md)
 - [正式包功能状态](./PACKAGED_FEATURE_MATRIX.md)
 - [v1.5.5 最终验收收口（2026-09-09）](./V1.5.5_FINAL_ACCEPTANCE_20260909.md)
 - [第三方依赖](./THIRD_PARTY_DEPENDENCIES.md)

@@ -20,8 +20,8 @@ const workspaceRoot = basename(repositoryParent).toLowerCase() === 'worktrees'
   : repositoryParent
 const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')
 const buildEdition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim().toLowerCase()
-if (!['full', 'customer'].includes(buildEdition)) {
-  throw new Error(`NETCONSOLE_BUILD_EDITION 仅允许 full/customer，当前为：${buildEdition}`)
+if (buildEdition !== 'full') {
+  throw new Error(`NETCONSOLE_BUILD_EDITION 当前仅允许 full，当前为：${buildEdition}`)
 }
 const apIdentityStartupSmokeScenarios = parsePackageApIdentityStartupSmoke(
   process.env.NETCONSOLE_PACKAGE_AP_IDENTITY_STARTUP_SMOKE,
@@ -158,13 +158,6 @@ const requiredProductionFeatureIds = [
   'module.system_settings',
   'module.train_communication',
   'mesh.generate_report',
-]
-const requiredPackagedCoreFeatureIds = [
-  'module.logs',
-  'module.system_settings',
-  'module.task_center',
-  'module.logs',
-  'module.system_settings',
 ]
 const expectedPackagedPythonLicenses = {
   pyinstaller: {
@@ -409,9 +402,7 @@ try {
   rmSync(smokeRoot, { recursive: true, force: true })
 }
 
-const editionSmokeScope = buildEdition === 'customer'
-  ? 'customer feature policy and core Backend smoke'
-  : 'ground unattended status HTTP 200'
+const editionSmokeScope = 'ground unattended status HTTP 200'
 console.log(`Electron packaged smoke passed with frozen timezone data, device compatibility profiles, device database migration/list HTTP 200, ${editionSmokeScope}, MESH import context idempotency, four duplicate basenames, duplicate-safe archive naming, frozen Worker Chinese protocol, no Qt residue, and NOTICE/SBOM metadata.`)
 
 function validateFrozenWorkerTextProtocol(dataRoot) {
@@ -623,7 +614,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
     const effectiveWpsSync = effectiveFeatures?.items?.find(
       (item) => item?.feature_id === 'capability.trackside_ap.wps_sync',
     )
-    const effectiveWpsExpected = edition === 'full'
+    const effectiveWpsExpected = true
     if (
       !effectiveWpsSync
       || effectiveWpsSync.visible !== effectiveWpsExpected
@@ -641,7 +632,6 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
     }
     const changelog = JSON.parse(changelogBody)
     validatePackagedChangelog(changelog)
-    if (edition !== 'customer') {
     const url =
       `http://127.0.0.1:${port}/api/rail-transit/ground-unattended/status`
     for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -677,18 +667,6 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
           `第 ${attempt} 次无人值守状态响应不符合冻结运行契约：${responseBody}`,
         )
       }
-    }
-    // Customer 包不交付设备采集写入能力，MESH 场景依赖该能力创建测试设备。
-    // 该版本仍验证无人值守状态契约，完整 MESH 导入链路由 Full 包 smoke 覆盖。
-    }
-    if (edition === 'customer') {
-      child.stdin.write(`${JSON.stringify({ command: 'shutdown' })}\n`)
-      await withTimeout(shutdownAck, 10_000, '冻结 Backend 正常停止确认超时')
-      child.stdin.write(`${JSON.stringify({ command: 'exit' })}\n`)
-      const code = await withTimeout(exited, 10_000, '冻结 Backend 退出超时')
-      if (code !== 0) throw new Error(`冻结 Backend 非正常退出：exit=${code}`)
-      await assertLoopbackPortReleased(port)
-      return
     }
     const requestJson = async (path, init = {}, expectedStatus = 200) => {
       const response = await fetch(`http://127.0.0.1:${port}${path}`, {
@@ -1147,9 +1125,7 @@ function validatePackagedRuntimeFeaturePolicy() {
   if (featureFlags.profile !== edition || !featureFlags.features || typeof featureFlags.features !== 'object') {
     throw new Error(`Electron 包缺少有效 ${edition} Feature Profile。`)
   }
-  const requiredFeatureIds = edition === 'customer'
-    ? requiredPackagedCoreFeatureIds
-    : requiredProductionFeatureIds
+  const requiredFeatureIds = requiredProductionFeatureIds
   for (const featureId of requiredFeatureIds) {
     const state = featureFlags.features[featureId]
     if (!state || state.visible !== true || state.enabled !== true || state.internal_only === true) {
@@ -1157,7 +1133,7 @@ function validatePackagedRuntimeFeaturePolicy() {
     }
   }
   const wpsSyncState = featureFlags.features['capability.trackside_ap.wps_sync']
-  const wpsSyncExpected = edition === 'full'
+  const wpsSyncExpected = true
   if (!wpsSyncState || wpsSyncState.internal_only !== false || (
     wpsSyncState.visible !== wpsSyncExpected
     || wpsSyncState.enabled !== wpsSyncExpected
@@ -1168,11 +1144,6 @@ function validatePackagedRuntimeFeaturePolicy() {
   for (const [featureId, state] of Object.entries(featureFlags.features)) {
     if (state.enabled !== true && state.visible === true) {
       throw new Error(`Electron 包功能状态非法：已禁用功能仍显示入口：${featureId}`)
-    }
-    if (edition === 'customer' && state.client_package === true && (
-      state.internal_only === true || state.enabled !== true
-    )) {
-      throw new Error(`Customer 包交付状态非法：${featureId}`)
     }
   }
   for (const path of [

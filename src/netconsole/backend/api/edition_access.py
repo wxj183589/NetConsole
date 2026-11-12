@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from threading import RLock
 from typing import Any
 
@@ -32,11 +31,11 @@ class EditionUnlockThrottledError(EditionAccessError):
 
 
 def ensure_edition_gate(app: Any) -> FeatureGate:
-    """Activate the embedded full profile for a packaged Full edition.
+    """Activate the embedded Full profile without exposing edition switching.
 
-    Packaged customer policy remains sealed until a password-authenticated session
-    explicitly replaces it. The replacement still reads only embedded profiles and
-    never enables local feature override files.
+    Customer delivery and runtime unlock are retired. This compatibility helper
+    only preserves the packaged Full startup contract and never enables local
+    feature override files.
     """
 
     with _lock_for(app):
@@ -61,75 +60,25 @@ def unlock_customer_edition(
     *,
     operator: str = "desktop",
 ) -> FeatureGate:
-    with _lock_for(app):
-        gate = _require_gate(app)
-        if gate.edition != "customer" or not gate.is_admin_unlock_configured():
-            raise EditionUnlockNotAvailableError("当前版本未配置完整功能解锁")
-        if gate.is_session_override_active():
-            return gate
-
-        locked_until = float(getattr(app.state, _LOCKED_UNTIL_ATTRIBUTE, 0.0) or 0.0)
-        now = time.monotonic()
-        if locked_until > now:
-            raise EditionUnlockThrottledError("密码错误次数过多，请稍后重试")
-        if not password or not gate.verify_admin_unlock_password(password):
-            _record_failed_attempt(app, now)
-            raise EditionUnlockPasswordError("维护密码不正确")
-
-        replacement = _new_session_gate(gate)
-        replacement.enable_session_full_mode(
-            reason="customer_edition_admin_unlock",
-            operator=operator,
-        )
-        _replace_gate(app, replacement)
-        _clear_failed_attempts(app)
-        app_logger.log_info(
-            "CUSTOMER_EDITION_FULL_MODE_ENABLED",
-            (
-                f"edition={replacement.edition} base_profile={replacement.base_profile} "
-                f"active_profile={replacement.profile} operator={operator}"
-            ),
-        )
-        return replacement
+    del app, password, operator
+    raise EditionUnlockNotAvailableError("Customer 版本交付机制已退役")
 
 
 def lock_customer_edition(app: Any) -> FeatureGate:
-    with _lock_for(app):
-        gate = _require_gate(app)
-        if gate.edition != "customer":
-            raise EditionUnlockNotAvailableError("当前版本不是客户版")
-        replacement = FeatureGate(
-            root=gate.root,
-            allow_local_override=False,
-            packaged_runtime=True,
-            runtime_path=gate.runtime_path,
-        )
-        _replace_gate(app, replacement)
-        _clear_failed_attempts(app)
-        app_logger.log_info(
-            "CUSTOMER_EDITION_FULL_MODE_DISABLED",
-            (
-                f"edition={replacement.edition} profile={replacement.profile} "
-                f"source={replacement.current_profile_source()}"
-            ),
-        )
-        return replacement
+    del app
+    raise EditionUnlockNotAvailableError("Customer 版本交付机制已退役")
 
 
 def edition_runtime_status(app: Any) -> dict[str, Any]:
     gate = ensure_edition_gate(app)
-    full_features_active = gate.edition == "full" or gate.is_session_override_active()
+    full_features_active = gate.edition == "full"
     return {
         "edition": gate.edition,
         "base_profile": gate.base_profile,
         "active_profile": gate.profile,
         "full_features_active": full_features_active,
-        "admin_unlock_available": (
-            gate.edition == "customer" and gate.is_admin_unlock_configured()
-        ),
-        "relock_available": (
-            gate.edition == "customer" and gate.is_session_override_active()
-        ),
+        "admin_unlock_available": False,
+        "relock_available": False,
         "packaged_runtime": is_packaged_runtime(),
         "profile_source": gate.current_profile_source(),
     }

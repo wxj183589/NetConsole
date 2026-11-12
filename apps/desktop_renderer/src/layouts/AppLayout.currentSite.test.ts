@@ -14,7 +14,7 @@ describe('App layout current site entry', () => {
     expect(source).toContain("import CurrentSiteIndicator from '../components/CurrentSiteIndicator.vue'")
     expect(source).toContain('<CurrentSiteIndicator />')
     expect(source.match(/<CurrentSiteIndicator /g)).toHaveLength(1)
-    expect(styles).toContain('.current-site-slot { flex: 0 1 420px; min-width: 0; overflow: hidden; }')
+    expect(styles).toContain('.current-site-slot { flex: 0 1 360px; min-width: 0; overflow: hidden; }')
     expect(styles).toContain('.header-status { display: flex; flex: 0 0 auto;')
     expect(styles).toContain('overflow: hidden; background: var(--nc-bg-header)')
   })

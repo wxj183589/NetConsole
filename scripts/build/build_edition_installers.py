@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import json
 import os
 import shutil
 import tempfile
@@ -10,10 +9,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from netconsole.core.feature_flags import (
-    CUSTOMER_UNLOCK_PASSWORD_ENV,
-    resolve_customer_unlock_password,
-)
 from scripts.build import build_installer as installer
 from scripts.build.prepare_electron_edition import (
     BUILD_EDITIONS,
@@ -21,8 +16,8 @@ from scripts.build.prepare_electron_edition import (
     prepare_electron_edition,
 )
 
-EDITION_SELECTIONS = (*BUILD_EDITIONS, "both")
-EDITION_LABELS = {"full": "Full", "customer": "Customer"}
+EDITION_SELECTIONS = BUILD_EDITIONS
+EDITION_LABELS = {"full": "Full"}
 BACKEND_STAGING = installer.DESKTOP_ROOT / "dist" / "package-resources" / "backend"
 PNPM_PATH_ENV = "NETCONSOLE_PNPM_PATH"
 
@@ -33,9 +28,9 @@ class EditionInstallerError(RuntimeError):
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Build verified NetConsole Full and Customer NSIS installers"
+        description="Build the verified NetConsole Full NSIS installer"
     )
-    parser.add_argument("--editions", choices=EDITION_SELECTIONS, default="both")
+    parser.add_argument("--editions", choices=EDITION_SELECTIONS, default="full")
     args = parser.parse_args()
     try:
         results = build_edition_installers(args.editions)
@@ -51,9 +46,6 @@ def main() -> int:
 
 def build_edition_installers(selection: str) -> list[dict[str, Any]]:
     editions = _selected_editions(selection)
-    customer_password = (
-        resolve_customer_unlock_password().value if "customer" in editions else ""
-    )
 
     installer.require_clean_synced_git()
     installer.clean_installer_outputs()
@@ -65,10 +57,6 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
     initial_edition = editions[0]
     prepare_env = os.environ.copy()
     prepare_env["NETCONSOLE_BUILD_EDITION"] = initial_edition
-    if initial_edition == "customer":
-        prepare_env[CUSTOMER_UNLOCK_PASSWORD_ENV] = customer_password
-    else:
-        prepare_env.pop(CUSTOMER_UNLOCK_PASSWORD_ENV, None)
     _configure_temporary_directory(prepare_env, suffix="prepare")
     installer._run(
         [pnpm, "run", "package:prepare"],
@@ -84,7 +72,6 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
             prepare_electron_edition(
                 BACKEND_STAGING,
                 edition=edition,
-                customer_password=customer_password if edition == "customer" else None,
             )
             manifest = _write_edition_identity(base_manifest, edition)
             _clear_electron_output()
@@ -99,7 +86,6 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
 
             build_env = os.environ.copy()
             build_env["NETCONSOLE_BUILD_EDITION"] = edition
-            build_env.pop(CUSTOMER_UNLOCK_PASSWORD_ENV, None)
             _configure_temporary_directory(build_env, suffix=edition)
             installer._run(
                 [
@@ -124,9 +110,6 @@ def build_edition_installers(selection: str) -> list[dict[str, Any]]:
                 _verify_packaged_edition(
                     artifact,
                     edition=edition,
-                    customer_password=(
-                        customer_password if edition == "customer" else ""
-                    ),
                 )
             )
             result["package_smoke"] = "PASS"
@@ -166,10 +149,8 @@ def _resolve_pnpm_command() -> str | None:
 
 
 def _selected_editions(selection: str) -> tuple[str, ...]:
-    if selection == "both":
-        return ("full", "customer")
     if selection not in BUILD_EDITIONS:
-        raise EditionInstallerError(f"不支持的版本选择：{selection}")
+        raise EditionInstallerError(f"当前正式交付仅允许 Full：{selection}")
     return (selection,)
 
 
@@ -237,7 +218,6 @@ def _verify_packaged_edition(
     artifact: Path,
     *,
     edition: str,
-    customer_password: str,
 ) -> dict[str, Any]:
     seven_zip = installer.discover_full_7zip()
     installer.BUILD_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
@@ -277,12 +257,7 @@ def _verify_packaged_edition(
         raise EditionInstallerError("最终安装包的 Backend feature_profile 不匹配")
     if feature_flags.get("profile") != edition:
         raise EditionInstallerError("最终安装包的 Feature Profile 不匹配")
-    serialized = json.dumps(build_info, ensure_ascii=False)
-    if customer_password and customer_password in serialized:
-        raise EditionInstallerError("最终安装包身份文件包含明文维护密码")
     admin_unlock_configured = bool(build_info.get("admin_unlock_enabled"))
-    if edition == "customer" and not admin_unlock_configured:
-        raise EditionInstallerError("最终客户版未配置维护密码哈希")
     if edition == "full" and admin_unlock_configured:
         raise EditionInstallerError("最终完整版不应配置客户维护密码")
     return {

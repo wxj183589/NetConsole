@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 from pathlib import Path
 
@@ -12,7 +11,6 @@ from netconsole.backend.api import system_settings_router
 from netconsole.backend.api.main import create_app
 from netconsole.core import settings as settings_module
 from netconsole.core.feature_flags import FeatureGate
-from netconsole.core.i18n import TRANSLATIONS
 from netconsole.core.paths import PathResolver
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.services.external_tool_service import ExternalToolLaunchResult
@@ -20,18 +18,6 @@ from netconsole.services import runtime_self_check_service as self_check_module
 
 
 TOKEN = "settings-test-session-token-123456"
-
-
-def _feature_updates(items: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        {
-            "feature_id": item["feature_id"],
-            "visible": item["visible"],
-            "enabled": item["enabled"],
-            "package_included": item.get("package_included"),
-        }
-        for item in items
-    ]
 
 
 def _client(tmp_path: Path) -> tuple[TestClient, PathResolver]:
@@ -301,189 +287,31 @@ def test_failed_api_save_rolls_back_service_get_and_disk(
     assert current["version"] == saved["version"]
 
 
-def test_feature_template_preview_is_session_only(tmp_path: Path) -> None:
-    client, paths = _client(tmp_path)
-    snapshot = client.get("/api/settings/features?target=full")
-    assert snapshot.status_code == 200
-    items = snapshot.json()["items"]
-    target = next(item for item in items if item["feature_id"] == "module.agent")
-    target.update({"visible": False, "enabled": False})
-
-    updates = _feature_updates(items)
-    payload = {"target": "full", "items": updates, "confirmed": True}
-    assert client.post(
-        "/api/settings/features/preview",
-        json={**payload, "confirmed": False},
-    ).status_code == 422
-    preview = client.post("/api/settings/features/preview", json=payload)
-    assert preview.status_code == 200
-    assert preview.json()["preview_active"] is True
-    effective = client.get("/api/features").json()["items"]
-    assert next(
-        item for item in effective if item["feature_id"] == "module.agent"
-    )["visible"] is False
-
-    exited = client.post("/api/settings/features/preview/exit?target=full")
-    assert exited.status_code == 200
-    assert exited.json()["preview_active"] is False
-    assert not (paths.runtime_dir / "feature_flags.local.json").exists()
-
-
-def test_feature_profile_check_auto_fix_and_save_use_backend_dependency_contract(
-    tmp_path: Path,
-) -> None:
-    client, paths = _client(tmp_path)
-    snapshot = client.get("/api/settings/features?target=customer").json()
-    assert all(item["title"] for item in snapshot["items"])
-    assert all(
-        re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+", item["title"])
-        is None
-        for item in snapshot["items"]
-    )
-    devices_module = next(
-        item for item in snapshot["items"] if item["feature_id"] == "module.devices"
-    )
-    assert devices_module["title"] != "nav.devices"
-    job_center = next(
-        item for item in snapshot["items"] if item["feature_id"] == "module.task_center"
-    )
-    assert job_center["locked"] is True
-    assert job_center["package_editable"] is False
-    target = next(
-        item for item in snapshot["items"] if item["feature_id"] == "module.agent"
-    )
-    assert target["group_title"] == "任务与 Agent"
-    assert target["scope"] == "global"
-    assert target["dependencies"] == ["internal.task_center"]
-    assert target["delivery_dependencies"] == ["internal.task_center"]
-    train_online = next(
-        item for item in snapshot["items"] if item["feature_id"] == "module.train_online"
-    )
-    train_online.update(
-        visible=False,
-        enabled=False,
-        package_included=False,
-    )
-    payload = {
-        "target": "customer",
-        "items": _feature_updates(snapshot["items"]),
-        "confirmed": True,
-    }
-
-    checked = client.post("/api/settings/features/check", json=payload)
-    assert checked.status_code == 200
-    assert any(
-        issue["dependency_id"] == "module.train_online"
-        and issue["issue_type"] == "delivery_parent_missing"
-        for issue in checked.json()["dependency_issues"]
-    )
-    fixed = client.post("/api/settings/features/auto-fix", json=payload)
-    assert fixed.status_code == 200
-    assert fixed.json()["dependency_issues"] == []
-    fixed_train_online = next(
-        item
-        for item in fixed.json()["items"]
-        if item["feature_id"] == "module.train_online"
-    )
-    assert {
-        "visible": fixed_train_online["visible"],
-        "enabled": fixed_train_online["enabled"],
-        "package_included": fixed_train_online["package_included"],
-    } == {
-        "visible": False,
-        "enabled": True,
-        "package_included": True,
-    }
-    saved = client.put(
-        "/api/settings/features",
-        json={
-            "target": "customer",
-            "items": _feature_updates(fixed.json()["items"]),
-            "confirmed": True,
-        },
-    )
-    assert saved.status_code == 200
-    assert (paths.app_root / "config/profiles/features/customer.json").is_file()
-    assert not (paths.runtime_dir / "feature_flags.local.json").exists()
-
-
-def test_runtime_feature_status_and_legacy_override_clear_are_separate_from_templates(
-    tmp_path: Path,
-) -> None:
-    client, paths = _client(tmp_path)
-    paths.runtime_dir.mkdir(parents=True, exist_ok=True)
-    override_path = paths.runtime_dir / "feature_flags.local.json"
-    override_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "features": {
-                    "module.agent": {
-                        "visible": False,
-                        "enabled": True,
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    client.app.state.feature_gate.reload()
-
-    status = client.get("/api/settings/features/runtime-status")
-    assert status.status_code == 200
-    assert status.json()["local_override_count"] == 1
-    assert client.post(
-        "/api/settings/features/runtime-overrides/clear",
-        json={"confirmed": False},
-    ).status_code == 422
-    cleared = client.post(
-        "/api/settings/features/runtime-overrides/clear",
-        json={"confirmed": True},
-    )
-    assert cleared.status_code == 200
-    assert cleared.json()["local_override_count"] == 0
-    assert json.loads(override_path.read_text(encoding="utf-8"))["features"] == {}
-    assert not (paths.app_root / "config/profiles/features/customer.json").exists()
-
-
-def test_feature_update_rejects_release_fields(tmp_path: Path) -> None:
-    client, _paths = _client(tmp_path)
-    snapshot = client.get("/api/settings/features").json()
-
-    response = client.put(
-        "/api/settings/features",
-        json={"items": snapshot["items"], "confirmed": True},
-    )
-
-    assert response.status_code == 422
-    assert "client_package" in response.text
-
-
-def test_feature_check_defaults_to_customer_profile(tmp_path: Path) -> None:
-    client, _paths = _client(tmp_path)
-    snapshot = client.get("/api/settings/features").json()
-
-    response = client.post(
-        "/api/settings/features/check",
-        json={"items": _feature_updates(snapshot["items"]), "confirmed": False},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["target"] == "customer"
-
-
-def test_feature_title_uses_readable_fallback_when_translation_is_missing(
-    tmp_path: Path, monkeypatch
-) -> None:
-    monkeypatch.delitem(TRANSLATIONS["zh_CN"], "nav.devices")
+def test_retired_feature_delivery_endpoints_are_not_exposed(tmp_path: Path) -> None:
     client, _paths = _client(tmp_path)
 
-    snapshot = client.get("/api/settings/features").json()
-    devices_module = next(
-        item for item in snapshot["items"] if item["feature_id"] == "module.devices"
-    )
+    for method, path, payload in (
+        ("get", "/api/settings/features", None),
+        ("put", "/api/settings/features", {"items": []}),
+        ("post", "/api/settings/features/check", {"items": []}),
+        ("post", "/api/settings/features/auto-fix", {"items": []}),
+        ("post", "/api/settings/features/preview", {"items": []}),
+        ("post", "/api/settings/features/preview/exit", None),
+        ("post", "/api/settings/features/restore", {"confirmed": True}),
+        ("get", "/api/settings/features/runtime-status", None),
+        ("post", "/api/settings/features/runtime-overrides/clear", {"confirmed": True}),
+        ("post", "/api/settings/features/reload", None),
+    ):
+        response = client.request(method, path, json=payload)
+        assert response.status_code == 404, (method, path, response.text)
 
-    assert devices_module["title"] == "Devices"
+    for method, path, payload in (
+        ("get", "/api/features/edition", None),
+        ("post", "/api/features/edition/unlock", {"password": "legacy"}),
+        ("post", "/api/features/edition/lock", {}),
+    ):
+        response = client.request(method, path, json=payload)
+        assert response.status_code == 404, (method, path, response.text)
 
 
 def test_browser_runtime_cannot_read_or_write_settings(tmp_path: Path) -> None:
@@ -510,5 +338,4 @@ def test_packaged_runtime_keeps_settings_but_rejects_feature_configuration(
         ("post", "/api/settings/features/restore", {"confirmed": True}),
     ):
         response = client.request(method, path, json=payload)
-        assert response.status_code == 403
-        assert "固定生产功能集" in response.json()["detail"]
+        assert response.status_code == 404

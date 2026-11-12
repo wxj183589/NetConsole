@@ -19,8 +19,8 @@ const edition = String(process.env.NETCONSOLE_BUILD_EDITION || 'full').trim().to
 const portableBuild = process.env.NETCONSOLE_PORTABLE_BUILD === '1'
 
 if (!python) throw new Error('未找到项目 .venv Python，无法构建 NetConsoleBackend.exe')
-if (!['full', 'customer'].includes(edition)) {
-  throw new Error(`NETCONSOLE_BUILD_EDITION 仅允许 full/customer，当前为：${edition}`)
+if (edition !== 'full') {
+  throw new Error(`NETCONSOLE_BUILD_EDITION 当前仅允许 full，当前为：${edition}`)
 }
 
 const env = { ...process.env, NETCONSOLE_BUILD_EDITION: edition }

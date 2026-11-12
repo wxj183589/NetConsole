@@ -7,18 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from netconsole.core.feature_flags import (
-    CUSTOMER_UNLOCK_PASSWORD_MIN_LENGTH,
     default_profile,
     embedded_runtime_dir,
-    hash_admin_unlock_password,
     install_embedded_feature_files,
     profiles_dir,
-    resolve_customer_unlock_password,
     validate_feature_profile_payload,
-    verify_admin_unlock_password,
 )
 
-BUILD_EDITIONS = ("full", "customer")
+BUILD_EDITIONS = ("full",)
 EDITION_ENV = "NETCONSOLE_BUILD_EDITION"
 
 
@@ -32,23 +28,15 @@ def prepare_electron_edition(
     edition: str,
     customer_password: str | None = None,
 ) -> dict[str, Any]:
+    del customer_password
     target = Path(backend_root).resolve()
     normalized_edition = edition.strip().lower()
     if normalized_edition not in BUILD_EDITIONS:
         raise EditionPreparationError(
-            f"不支持的 Electron 打包版本：{edition!r}；仅允许 full/customer"
+            f"不支持的 Electron 打包版本：{edition!r}；当前正式交付仅允许 full"
         )
     if not target.is_dir() or not (target / "NetConsoleBackend.exe").is_file():
         raise EditionPreparationError(f"Electron Backend 载荷不存在：{target}")
-
-    password = ""
-    if normalized_edition == "customer":
-        resolved_password = resolve_customer_unlock_password(customer_password)
-        password = resolved_password.value
-    if normalized_edition == "customer" and len(password) < CUSTOMER_UNLOCK_PASSWORD_MIN_LENGTH:
-        raise EditionPreparationError(
-            f"客户版维护密码必须至少 {CUSTOMER_UNLOCK_PASSWORD_MIN_LENGTH} 位"
-        )
 
     profile = normalized_edition
     build_info: dict[str, Any] = {
@@ -56,9 +44,6 @@ def prepare_electron_edition(
         "feature_profile": profile,
         "admin_unlock_enabled": False,
     }
-    if normalized_edition == "customer":
-        build_info.update(hash_admin_unlock_password(password))
-
     feature_flags = _load_profile_payload(profile)
     full_flags = _load_profile_payload("full")
     install_embedded_feature_files(
@@ -77,7 +62,6 @@ def prepare_electron_edition(
         embedded_feature_flags,
         edition=normalized_edition,
         profile=profile,
-        customer_password=password,
     )
     if (target / "runtime").exists():
         raise EditionPreparationError(
@@ -122,7 +106,6 @@ def _validate_embedded_identity(
     *,
     edition: str,
     profile: str,
-    customer_password: str,
 ) -> None:
     if build_info.get("edition") != edition:
         raise EditionPreparationError("包内 build_info edition 与目标版本不一致")
@@ -131,21 +114,7 @@ def _validate_embedded_identity(
     if feature_flags.get("profile") != profile:
         raise EditionPreparationError("包内 feature_flags profile 与目标版本不一致")
 
-    serialized = json.dumps(build_info, ensure_ascii=False)
-    if customer_password and customer_password in serialized:
-        raise EditionPreparationError("客户维护密码不得以明文写入包内身份文件")
-    if edition == "customer":
-        required = (
-            "admin_unlock_enabled",
-            "admin_unlock_hash",
-            "admin_unlock_salt",
-            "admin_unlock_iterations",
-        )
-        if not all(build_info.get(key) for key in required):
-            raise EditionPreparationError("客户版缺少完整的维护密码哈希参数")
-        if not verify_admin_unlock_password(build_info, customer_password):
-            raise EditionPreparationError("客户版维护密码哈希回读校验失败")
-    elif any(
+    if any(
         key in build_info
         for key in (
             "admin_unlock_hash",

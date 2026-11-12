@@ -31,11 +31,11 @@
   --nc-radius-base: 8px;
   --nc-radius-lg: 10px;
   --nc-card-padding: 16px;
-  --nc-content-padding: 20px;
+  --nc-content-padding: 16px;
   --nc-content-max-width: none;
-  --nc-card-gap: 16px;
+  --nc-card-gap: 12px;
   --nc-table-row-height: 40px;
-  --nc-shell-header-height: 56px;
+  --nc-shell-header-height: 52px;
   --nc-shell-sidebar-width: 220px;
   --nc-shell-sidebar-collapsed-width: 64px;
 

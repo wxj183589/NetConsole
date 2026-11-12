@@ -5,35 +5,25 @@ from types import SimpleNamespace
 import pytest
 
 from netconsole.backend.api.edition_access import (
-    EditionUnlockPasswordError,
+    EditionUnlockNotAvailableError,
     ensure_edition_gate,
     lock_customer_edition,
     unlock_customer_edition,
 )
-from netconsole.core.feature_flags import (
-    CUSTOMER_UNLOCK_PASSWORD_DEFAULT,
-    FeatureGate,
-    default_profile,
-    hash_admin_unlock_password,
-    install_embedded_feature_files,
-)
+from netconsole.core.feature_flags import FeatureGate, default_profile, install_embedded_feature_files
 
 
-def _app_with_gate(tmp_path, *, edition: str, password: str = ""):
-    full_flags = default_profile("full")
-    profile = "customer" if edition == "customer" else "full"
-    build_info = {
-        "edition": edition,
-        "feature_profile": profile,
-        "admin_unlock_enabled": False,
-    }
-    if password:
-        build_info.update(hash_admin_unlock_password(password, salt="test-salt"))
+def _app_with_gate(tmp_path, *, edition: str):
+    profile = edition if edition == "customer" else "full"
     install_embedded_feature_files(
         tmp_path,
-        build_info=build_info,
+        build_info={
+            "edition": edition,
+            "feature_profile": profile,
+            "admin_unlock_enabled": False,
+        },
         feature_flags=default_profile(profile),
-        session_full_flags=full_flags,
+        session_full_flags=default_profile("full"),
     )
     gate = FeatureGate(
         root=tmp_path,
@@ -42,13 +32,12 @@ def _app_with_gate(tmp_path, *, edition: str, password: str = ""):
         runtime_path=tmp_path / "runtime",
     )
     settings_service = SimpleNamespace(feature_gate=gate)
-    app = SimpleNamespace(
+    return SimpleNamespace(
         state=SimpleNamespace(
             feature_gate=gate,
             settings_application_service=settings_service,
         )
     )
-    return app
 
 
 def test_full_edition_activates_embedded_full_profile_and_syncs_services(tmp_path) -> None:
@@ -63,78 +52,16 @@ def test_full_edition_activates_embedded_full_profile_and_syncs_services(tmp_pat
     assert app.state.settings_application_service.feature_gate is gate
 
 
-def test_customer_unlock_is_session_only_and_relock_restores_packaged_gate(tmp_path) -> None:
-    password = "customer-maintenance-password"
-    app = _app_with_gate(tmp_path, edition="customer", password=password)
-
-    unlocked = unlock_customer_edition(app, password)
-
-    assert unlocked.edition == "customer"
-    assert unlocked.base_profile == "customer"
-    assert unlocked.profile == "full"
-    assert unlocked.is_session_override_active() is True
-    assert unlocked.packaged_policy.active is False
-    assert app.state.settings_application_service.feature_gate is unlocked
-
-    locked = lock_customer_edition(app)
-
-    assert locked.edition == "customer"
-    assert locked.profile == "customer"
-    assert locked.is_session_override_active() is False
-    assert locked.packaged_policy.active is True
-    assert app.state.feature_gate is locked
-    assert app.state.settings_application_service.feature_gate is locked
-
-
-def test_customer_unlock_accepts_builtin_default_password(tmp_path) -> None:
-    app = _app_with_gate(
-        tmp_path,
-        edition="customer",
-        password=CUSTOMER_UNLOCK_PASSWORD_DEFAULT,
-    )
-
-    unlocked = unlock_customer_edition(app, CUSTOMER_UNLOCK_PASSWORD_DEFAULT)
-
-    assert unlocked.profile == "full"
-    assert unlocked.is_session_override_active() is True
-
-
-def test_customer_unlock_rejects_wrong_password_without_replacing_gate(tmp_path) -> None:
-    app = _app_with_gate(
-        tmp_path,
-        edition="customer",
-        password="customer-maintenance-password",
-    )
+@pytest.mark.parametrize("operation", ["unlock", "lock"])
+def test_customer_runtime_switch_is_retired_and_does_not_replace_gate(tmp_path, operation) -> None:
+    app = _app_with_gate(tmp_path, edition="customer")
     original = app.state.feature_gate
 
-    with pytest.raises(EditionUnlockPasswordError, match="维护密码不正确"):
-        unlock_customer_edition(app, "wrong-password")
+    with pytest.raises(EditionUnlockNotAvailableError, match="Customer 版本交付机制已退役"):
+        if operation == "unlock":
+            unlock_customer_edition(app, "legacy-password")
+        else:
+            lock_customer_edition(app)
 
     assert app.state.feature_gate is original
     assert app.state.settings_application_service.feature_gate is original
-
-
-@pytest.mark.parametrize(
-    "wrong_password",
-    (
-        CUSTOMER_UNLOCK_PASSWORD_DEFAULT[0].lower()
-        + CUSTOMER_UNLOCK_PASSWORD_DEFAULT[1:],
-        CUSTOMER_UNLOCK_PASSWORD_DEFAULT[:-1],
-        CUSTOMER_UNLOCK_PASSWORD_DEFAULT.replace("@", ""),
-        CUSTOMER_UNLOCK_PASSWORD_DEFAULT + "7",
-        "",
-        f" {CUSTOMER_UNLOCK_PASSWORD_DEFAULT}",
-        f"{CUSTOMER_UNLOCK_PASSWORD_DEFAULT} ",
-    ),
-)
-def test_customer_unlock_rejects_default_password_variants(
-    tmp_path, wrong_password: str
-) -> None:
-    app = _app_with_gate(
-        tmp_path,
-        edition="customer",
-        password=CUSTOMER_UNLOCK_PASSWORD_DEFAULT,
-    )
-
-    with pytest.raises(EditionUnlockPasswordError, match="维护密码不正确"):
-        unlock_customer_edition(app, wrong_password)
