@@ -64,6 +64,7 @@ SQLITE_LITERAL_TOKEN_PATTERN = re.compile(
     r"(?P<database>[A-Za-z0-9_{}.*-]+\.(?:db|sqlite|sqlite3)(?:-[A-Za-z0-9_{}.*-]+)?)",
     re.IGNORECASE,
 )
+SQLITE_SUFFIX_LITERALS = frozenset({".db", ".sqlite", ".sqlite3"})
 NON_PYTHON_STORAGE_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".mjs", ".cjs", ".go"})
 NON_PYTHON_STORAGE_MARKERS = re.compile(
     r"(?:"
@@ -622,7 +623,13 @@ def storage_registry_findings(
                     candidate_lines.append((int(getattr(node, "lineno", 0)), _qualified_name(node.func, aliases)))
                 elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                     value = node.value.strip()
-                    if SQLITE_LITERAL_PATTERN.search(value) or "CREATE TABLE" in value.upper():
+                    if (
+                        (
+                            SQLITE_LITERAL_PATTERN.search(value)
+                            and value.casefold() not in SQLITE_SUFFIX_LITERALS
+                        )
+                        or "CREATE TABLE" in value.upper()
+                    ):
                         candidate_lines.append((int(getattr(node, "lineno", 0)), value[:120]))
                     database_literals.extend(
                         (int(getattr(node, "lineno", 0)), match.group("database"))
@@ -797,6 +804,8 @@ def _unregistered_database_literal_findings(
     seen: set[tuple[int, str]] = set()
     for line, literal in literals:
         database = literal.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        if database in SQLITE_SUFFIX_LITERALS:
+            continue
         if database.startswith("*."):
             continue
         key = (line, database)

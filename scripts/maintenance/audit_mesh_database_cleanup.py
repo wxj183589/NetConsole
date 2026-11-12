@@ -2151,8 +2151,16 @@ def _load_v3_rebuild_scope(report_dir: Path) -> dict[str, Any]:
         raw_path = _clean_text(item.get("canonical_path") or item.get("path"))
         raw_target = _clean_text(rebuild_review.get("formal_database_path"))
         raw_data_root = _clean_text(item.get("data_root"))
-        path = Path(raw_path).resolve() if raw_path else Path("__missing_v3_rebuild__.sqlite").resolve()
-        target = Path(raw_target).resolve() if raw_target else Path("__missing_v3_formal__.sqlite").resolve()
+        path = (
+            Path(raw_path).resolve()
+            if raw_path
+            else Path("__missing_v3_rebuild__").with_suffix(".sqlite").resolve()
+        )
+        target = (
+            Path(raw_target).resolve()
+            if raw_target
+            else Path("__missing_v3_formal__").with_suffix(".sqlite").resolve()
+        )
         data_root = Path(raw_data_root).resolve() if raw_data_root else Path("__missing_v3_root__").resolve()
         identity = _file_snapshot(path)
         actual_hash = ""
