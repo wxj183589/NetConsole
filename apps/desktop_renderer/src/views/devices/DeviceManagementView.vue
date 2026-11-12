@@ -2,7 +2,7 @@
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElButton, ElMessage, ElNotification } from 'element-plus'
 import { useRouter } from 'vue-router'
-import { Connection, CopyDocument, Delete, Download, Edit, FolderOpened, Hide, Plus, Refresh, Upload, View } from '@element-plus/icons-vue'
+import { Connection, Delete, Edit, FolderOpened, Hide, MoreFilled, Plus, Refresh, View } from '@element-plus/icons-vue'
 
 import { ApiRequestError } from '../../api/client'
 import { isFeatureEnabled } from '../../features'
@@ -216,6 +216,14 @@ const filters = reactive({
   page: 1,
   page_size: 50,
 })
+const advancedFiltersExpanded = ref(false)
+const advancedFilterCount = computed(() => [
+  filters.vendor_values.length,
+  filters.project_phase_values.length,
+  filters.work_scope_status_values.length !== 1 || filters.work_scope_status_values[0] !== 'included' ? filters.work_scope_status_values.length || 1 : 0,
+  filters.sort_by !== 'default' || filters.sort_order !== 'asc' ? 1 : 0,
+].filter(Boolean).length)
+const advancedFiltersActive = computed(() => advancedFilterCount.value > 0)
 const activeSiteId = ref('')
 let queryStateReady = false
 let siteContextGeneration = 0
@@ -557,6 +565,15 @@ async function loadDevices(resetPage = false, preserveSelection = false): Promis
   } finally {
     loading.value = false
   }
+}
+
+function clearAdvancedFilters(): void {
+  filters.vendor_values = []
+  filters.project_phase_values = []
+  filters.work_scope_status_values = ['included']
+  filters.sort_by = 'default'
+  filters.sort_order = 'asc'
+  loadDevices(true)
 }
 
 function trackConnectionTestTasks(tasks: DeviceTaskReference[]): void {
@@ -1922,61 +1939,69 @@ function deviceListErrorMessage(cause: unknown): string {
 
 <template>
   <section class="device-management">
-    <div class="page-heading">
+    <div class="page-heading page-heading--compact">
       <div><h1>设备管理</h1><p>管理当前局点设备、连接参数、采集任务和导入导出。</p></div>
-      <div class="heading-actions"><el-button type="primary" :icon="Plus" :disabled="!isFeatureEnabled('capability.devices.write')" @click="openCreate">新建设备</el-button><el-button :icon="FolderOpened" :disabled="!desktopHost || !isFeatureEnabled('capability.devices.desktop_actions')" @click="openTerminalSettings">外部终端配置</el-button><el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button></div>
+      <div class="heading-actions"><el-button type="primary" :icon="Plus" :disabled="!isFeatureEnabled('capability.devices.write')" @click="openCreate">新建设备</el-button><el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button></div>
     </div>
 
-    <div class="content-card filters">
-      <el-input v-model="filters.search" clearable placeholder="搜索名称、地址、站点、类型或分组" @keyup.enter="loadDevices(true)" />
+    <div class="content-card filters filters--compact">
+      <div class="filter-core-row">
+        <el-input v-model="filters.search" clearable placeholder="搜索名称或地址" @keyup.enter="loadDevices(true)" />
       <NcMultiValueFilter v-model="filters.group_values" :options="['__ungrouped__', ...pageData.groups.map((group) => String(group.id))]" :labels="{ __ungrouped__: '未分组', ...Object.fromEntries(pageData.groups.map((group) => [String(group.id), group.name])) }" placeholder="全部分组" @change="loadDevices(true)" />
       <NcMultiValueFilter v-model="filters.device_type_values" :options="DEVICE_TYPE_OPTIONS" placeholder="全部类型" @change="loadDevices(true)" />
-      <NcMultiValueFilter v-model="filters.vendor_values" :options="DEVICE_VENDOR_OPTIONS.map((vendor) => vendor.value)" :labels="Object.fromEntries(DEVICE_VENDOR_OPTIONS.map((vendor) => [vendor.value, vendor.label]))" allow-custom placeholder="全部厂商" @change="loadDevices(true)" />
-      <NcMultiValueFilter v-model="filters.project_phase_values" :options="['phase_1', 'phase_2', 'phase_3', 'other', 'unspecified']" :labels="{ phase_1: '一期', phase_2: '二期', phase_3: '三期', other: '其他', unspecified: '未指定' }" placeholder="全部建设阶段" @change="loadDevices(true)" />
-      <NcMultiValueFilter v-model="filters.work_scope_status_values" :options="['included', 'excluded']" :labels="{ included: '参与当前调试', excluded: '暂不参与' }" placeholder="全部工作状态" @change="loadDevices(true)" />
       <NcMultiValueFilter v-model="filters.connection_status_values" :options="['UNKNOWN', 'TESTING', 'REACHABLE', 'UNREACHABLE', 'AUTH_FAILED', 'ERROR']" :labels="{ UNKNOWN: '未测试', TESTING: '测试中', REACHABLE: '可达', UNREACHABLE: '不可达', AUTH_FAILED: '认证失败', ERROR: '任务异常' }" placeholder="全部连接状态" @change="loadDevices(true)" />
-      <el-select v-model="filters.sort_by" @change="loadDevices(true)">
-        <el-option label="默认排序（分组优先 + 名称自然排序）" value="default" />
-        <el-option label="按名称" value="name" /><el-option label="按地址" value="primary_address" />
-        <el-option label="按站点" value="station" /><el-option label="按资料更新时间" value="metadata_updated_at" />
-        <el-option label="按最后采集时间" value="last_collected_at" />
-        <el-option label="按采集状态" value="last_collect_status" /><el-option label="按连接状态" value="status" />
-      </el-select>
-      <el-select v-model="filters.sort_order" @change="loadDevices(true)">
-        <el-option label="升序" value="asc" /><el-option label="降序" value="desc" />
-      </el-select>
-      <el-button type="primary" @click="loadDevices(true)">筛选</el-button>
+      <el-button type="primary" @click="loadDevices(true)">查询</el-button>
+      <el-button :type="advancedFiltersActive ? 'primary' : undefined" plain @click="advancedFiltersExpanded = !advancedFiltersExpanded">更多筛选<span v-if="advancedFilterCount">（{{ advancedFilterCount }}）</span></el-button>
+      </div>
+      <div v-if="advancedFiltersExpanded" class="advanced-filter-panel">
+        <NcMultiValueFilter v-model="filters.vendor_values" :options="DEVICE_VENDOR_OPTIONS.map((vendor) => vendor.value)" :labels="Object.fromEntries(DEVICE_VENDOR_OPTIONS.map((vendor) => [vendor.value, vendor.label]))" allow-custom placeholder="全部厂商" @change="loadDevices(true)" />
+        <NcMultiValueFilter v-model="filters.project_phase_values" :options="['phase_1', 'phase_2', 'phase_3', 'other', 'unspecified']" :labels="{ phase_1: '一期', phase_2: '二期', phase_3: '三期', other: '其他', unspecified: '未指定' }" placeholder="全部建设阶段" @change="loadDevices(true)" />
+        <NcMultiValueFilter v-model="filters.work_scope_status_values" :options="['included', 'excluded']" :labels="{ included: '参与当前调试', excluded: '暂不参与' }" placeholder="全部工作状态" @change="loadDevices(true)" />
+        <el-select v-model="filters.sort_by" @change="loadDevices(true)">
+          <el-option label="默认排序（分组优先 + 名称自然排序）" value="default" />
+          <el-option label="按名称" value="name" /><el-option label="按地址" value="primary_address" />
+          <el-option label="按站点" value="station" /><el-option label="按资料更新时间" value="metadata_updated_at" />
+          <el-option label="按最后采集时间" value="last_collected_at" />
+          <el-option label="按采集状态" value="last_collect_status" /><el-option label="按连接状态" value="status" />
+        </el-select>
+        <el-select v-model="filters.sort_order" @change="loadDevices(true)">
+          <el-option label="升序" value="asc" /><el-option label="降序" value="desc" />
+        </el-select>
+        <el-button v-if="advancedFiltersActive" link type="primary" @click="clearAdvancedFilters">清除高级筛选</el-button>
+      </div>
+      <div v-if="advancedFiltersActive" class="filter-active-note">高级筛选已生效；默认列表仍按当前筛选范围查询。</div>
     </div>
 
     <div class="content-card action-bar">
       <span>已选 {{ selectedUuids.length }} 台</span>
       <el-button class="device-action-secondary" type="primary" plain :icon="Connection" :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.connection_test')" @click="startSelectedConnectionTests">测试连接</el-button>
       <el-button class="device-action-secondary" type="primary" plain data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('capability.devices.collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
-      <el-button class="device-action-secondary" type="primary" plain :icon="FolderOpened" :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('capability.devices.desktop_actions')" @click="requestTerminal()">外部终端</el-button>
       <el-button :icon="Edit" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="editSelected">编辑</el-button>
-      <el-button :icon="CopyDocument" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="duplicateSelected">复制</el-button>
       <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="deleteSelected">批量删除</el-button>
-      <el-button :icon="FolderOpened" :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="groupAssignVisible = true">设置分组</el-button>
-      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="openClassificationDialog('phase')">设置建设阶段</el-button>
-      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="openClassificationDialog('status')">设置当前工作状态</el-button>
-      <el-button :icon="Plus" :disabled="!isFeatureEnabled('capability.devices.write')" @click="groupVisible = true">分组管理</el-button>
-      <span v-if="batchRefreshSubmitting">{{ batchRefreshProgressText || `正在更新 0/${batchRefreshTargetCount} 台设备` }}</span>
-      <el-button :icon="Download" :title="selectedDiagnosticHasUnsupportedVendor ? '设备诊断当前仅支持 H3C 设备' : undefined" :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.collect')" @click="downloadDiagnostics">下载诊断</el-button>
-      <el-button :icon="Upload" :disabled="!isFeatureEnabled('capability.devices.import')" @click="openImportDialog('UPDATE_ONLY')">批量更新设备</el-button>
-      <el-button :icon="Upload" :disabled="!isFeatureEnabled('capability.devices.import')" @click="openImportDialog('UPSERT')">导入 CSV</el-button>
-      <el-button
-        data-testid="device-export-template"
-        :icon="Download"
-        :loading="templateExportSubmitting"
-        :disabled="templateExportActive || !isFeatureEnabled('capability.devices.export')"
-        @click="exportTemplate"
-      >下载模板</el-button>
-      <el-dropdown>
-        <el-button :icon="Download" :loading="csvExportSubmitting" :disabled="!isFeatureEnabled('capability.devices.export')">导出</el-button>
-        <template #dropdown><el-dropdown-menu><el-dropdown-item data-testid="device-export-csv-no-credentials" :disabled="csvExportActive || !isFeatureEnabled('capability.devices.export')" @click="exportCsv(false)">CSV 导出（不含凭据）</el-dropdown-item><el-dropdown-item :disabled="csvExportActive || !isFeatureEnabled('capability.devices.export')" @click="exportCsv(true)">CSV 导出（含凭据）</el-dropdown-item><el-dropdown-item :disabled="!isFeatureEnabled('capability.devices.export')" @click="openSecureCrtExport">SecureCRT 会话</el-dropdown-item></el-dropdown-menu></template>
+      <el-dropdown trigger="click">
+        <el-button :icon="MoreFilled">更多操作</el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item :disabled="!desktopHost || !isFeatureEnabled('capability.devices.desktop_actions')" @click="openTerminalSettings">外部终端配置</el-dropdown-item>
+            <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="duplicateSelected">复制设备</el-dropdown-item>
+            <el-dropdown-item :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('capability.devices.desktop_actions')" @click="requestTerminal()">外部终端</el-dropdown-item>
+            <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="groupAssignVisible = true">设置分组</el-dropdown-item>
+            <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="openClassificationDialog('phase')">设置建设阶段</el-dropdown-item>
+            <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" data-testid="device-set-work-status" @click="openClassificationDialog('status')">设置当前工作状态</el-dropdown-item>
+            <el-dropdown-item :disabled="!isFeatureEnabled('capability.devices.write')" @click="groupVisible = true">分组管理</el-dropdown-item>
+            <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.collect')" @click="downloadDiagnostics">下载诊断</el-dropdown-item>
+            <el-dropdown-item :disabled="!isFeatureEnabled('capability.devices.import')" @click="openImportDialog('UPDATE_ONLY')">批量更新设备</el-dropdown-item>
+            <el-dropdown-item :disabled="!isFeatureEnabled('capability.devices.import')" @click="openImportDialog('UPSERT')">导入 CSV</el-dropdown-item>
+            <el-dropdown-item data-testid="device-export-template" :disabled="templateExportActive || !isFeatureEnabled('capability.devices.export')" @click="exportTemplate">下载模板</el-dropdown-item>
+            <el-dropdown-item data-testid="device-export-csv-no-credentials" :disabled="csvExportActive || !isFeatureEnabled('capability.devices.export')" @click="exportCsv(false)">CSV 导出（不含凭据）</el-dropdown-item>
+            <el-dropdown-item :disabled="csvExportActive || !isFeatureEnabled('capability.devices.export')" @click="exportCsv(true)">CSV 导出（含凭据）</el-dropdown-item>
+            <el-dropdown-item :disabled="!isFeatureEnabled('capability.devices.export')" @click="openSecureCrtExport">SecureCRT 会话</el-dropdown-item>
+            <el-dropdown-item :disabled="!selectedUuids.length" @click="clearSelection">清空选择</el-dropdown-item>
+            <el-dropdown-item :disabled="!pageData.items.length" @click="invertSelection">反选当前页</el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
       </el-dropdown>
-      <el-button :disabled="!selectedUuids.length" @click="clearSelection">清空选择</el-button>
-      <el-button :disabled="!pageData.items.length" @click="invertSelection">反选当前页</el-button>
+      <span v-if="batchRefreshSubmitting">{{ batchRefreshProgressText || `正在更新 0/${batchRefreshTargetCount} 台设备` }}</span>
     </div>
     <el-alert
       v-if="!(filters.work_scope_status_values.length === 1 && filters.work_scope_status_values[0] === 'included')"
@@ -2307,14 +2332,21 @@ function deviceListErrorMessage(cause: unknown): string {
 <style scoped>
 .device-management { display: flex; width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0; flex-direction: column; margin: 0; overflow: hidden; }
 .page-heading, .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.page-heading--compact { margin-bottom: 10px; }
 .heading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .group-list { margin-top: 16px; max-height: 260px; overflow-y: auto; }
 .group-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--el-border-color-lighter); }
 .page-heading h1, .detail-heading h2, .detail-section h3 { margin: 0; }
 .page-heading p, .detail-heading p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 13px; }
-.filters { display: grid; grid-template-columns: minmax(240px, 2fr) repeat(8, minmax(120px, 1fr)) auto; gap: 10px; padding: 14px; margin-bottom: 14px; }
+.filters { display: grid; gap: 10px; padding: 14px; margin-bottom: 14px; }
+.filters--compact { padding: 10px 12px; }
+.filter-core-row, .advanced-filter-panel { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px; }
+.filter-core-row > .el-input { flex: 1 1 260px; min-width: 190px; }
+.filter-core-row > .nc-multi-value-filter, .filter-core-row > .el-button, .advanced-filter-panel > .nc-multi-value-filter, .advanced-filter-panel > .el-select { flex: 0 1 170px; min-width: 140px; }
+.advanced-filter-panel { padding-top: 8px; border-top: 1px solid var(--nc-divider); }
+.filter-active-note { color: var(--nc-text-secondary); font-size: 12px; }
 .state-alert { margin-bottom: 14px; }
-.action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 14px; margin-bottom: 14px; }
+.action-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; margin-bottom: 10px; }
 .action-bar > span { margin-right: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .task-summary { margin-bottom: 14px; }
 .classification-reason { margin: 14px 0; }
@@ -2358,6 +2390,6 @@ function deviceListErrorMessage(cause: unknown): string {
 .import-result-toolbar { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 8px; }
 @media (max-width: 760px) { .import-options { grid-template-columns: 1fr; } }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-@media (max-width: 1280px) { .filters { grid-template-columns: repeat(3, minmax(150px, 1fr)); } }
+@media (max-width: 1280px) { .filter-core-row > .el-input { flex-basis: 220px; } }
 @media (max-width: 760px) { .device-management { height: auto; min-height: 100%; overflow: visible; } .table-card { min-height: 55dvh; flex: none; } .filters, .form-grid, .form-grid.two-columns, .export-scope-summary { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
 </style>

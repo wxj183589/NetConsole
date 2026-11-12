@@ -23,11 +23,11 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
   position: relative;
   z-index: 20;
   display: flex;
-  flex: 0 0 38px;
+  flex: 0 0 34px;
   align-items: center;
   gap: 2px;
   min-width: 0;
-  height: 38px;
+  height: 34px;
   padding: 0 8px;
   border-bottom: 1px solid var(--nc-border-light);
   background: var(--nc-bg-header);
@@ -167,7 +167,7 @@ body { overflow: hidden; color: var(--nc-text-primary); background: var(--nc-bg-
 .app-menu .el-menu--inline .el-menu-item { min-width: 0; padding-left: 46px !important; color: var(--nc-text-secondary); }
 .app-menu .el-menu--inline .el-menu-item:hover { color: var(--nc-text-primary); background: var(--nc-bg-hover); }
 .app-menu .el-menu--inline .el-menu-item.is-active { color: var(--nc-text-active); background: var(--nc-bg-active); }
-.app-header { display: flex; align-items: center; gap: 12px; height: var(--nc-shell-header-height); padding: 0 var(--nc-content-padding); overflow: hidden; background: var(--nc-bg-header); border-bottom: 1px solid var(--nc-divider); }
+.app-header.el-header { --el-header-height: var(--nc-shell-header-height); display: flex; min-height: var(--nc-shell-header-height); align-items: center; gap: 12px; height: var(--nc-shell-header-height); padding: 0 var(--nc-content-padding); overflow: hidden; background: var(--nc-bg-header); border-bottom: 1px solid var(--nc-divider); }
 .header-leading { display: flex; flex: 1 1 320px; align-items: center; min-width: 0; overflow: hidden; }
 .sidebar-toggle { margin-right: 6px; }
 .header-leading > div:last-child { min-width: 0; }

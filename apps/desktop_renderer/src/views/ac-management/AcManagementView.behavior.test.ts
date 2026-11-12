@@ -72,6 +72,22 @@ const buttonStub = defineComponent({
   },
 })
 
+const dropdownStub = defineComponent({
+  inheritAttrs: false,
+  setup(_props, { slots }) {
+    return () => h('div', [slots.default?.(), slots.dropdown?.()])
+  },
+})
+
+const dropdownItemStub = defineComponent({
+  inheritAttrs: false,
+  props: { disabled: Boolean },
+  emits: ['click'],
+  setup(props, { attrs, slots, emit }) {
+    return () => h('button', { ...attrs, disabled: props.disabled, onClick: () => emit('click') }, slots.default?.())
+  },
+})
+
 const descriptionsItemStub = defineComponent({
   props: { label: { type: String, default: '' } },
   setup(props, { slots }) {
@@ -128,8 +144,8 @@ const stubs: Record<string, Component> = {
   ElDescriptions: passthrough,
   ElDescriptionsItem: descriptionsItemStub,
   ElDrawer: passthrough,
-  ElDropdown: passthrough,
-  ElDropdownItem: passthrough,
+  ElDropdown: dropdownStub,
+  ElDropdownItem: dropdownItemStub,
   ElDropdownMenu: passthrough,
   ElDialog: dialogStub,
   ElEmpty: passthrough,
@@ -396,8 +412,10 @@ describe('AC Management optical detail behavior', () => {
     wrapper.unmount()
   })
 
-  it('renders generated FIT-AP resource filter options', () => {
+  it('renders generated FIT-AP resource filter options', async () => {
     const wrapper = mountView()
+
+    await wrapper.findAll('button').find((button) => button.text().includes('更多筛选'))?.trigger('click')
 
     expect(wrapper.text()).toContain('小洋江站')
     expect(wrapper.text()).toContain('小洋江-鄞州大道')

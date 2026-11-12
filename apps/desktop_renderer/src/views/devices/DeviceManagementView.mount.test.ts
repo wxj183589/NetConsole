@@ -267,6 +267,15 @@ const buttonStub = defineComponent({
   },
 })
 
+const dropdownItemStub = defineComponent({
+  inheritAttrs: false,
+  props: { disabled: Boolean },
+  emits: ['click'],
+  setup(props, { attrs, emit, slots }) {
+    return () => h('button', { ...attrs, disabled: props.disabled, onClick: (event: Event) => emit('click', event) }, slots.default?.())
+  },
+})
+
 const inputStub = defineComponent({
   inheritAttrs: false,
   props: { modelValue: { type: [String, Number], default: '' }, disabled: Boolean },
@@ -336,7 +345,7 @@ const elementStubs: Record<string, Component | boolean> = {
   ElDialog: dialogStub,
   ElDrawer: dialogStub,
   ElDropdown: dropdownStub,
-  ElDropdownItem: passthrough,
+  ElDropdownItem: dropdownItemStub,
   ElDropdownMenu: passthrough,
   ElEmpty: passthrough,
   ElForm: passthrough,
