@@ -8,13 +8,16 @@ import sys
 import time
 from pathlib import Path
 
+from scripts.maintenance import audit_mesh_database_cleanup as audit_module
 from scripts.maintenance.audit_mesh_database_cleanup import (
     _sqlite_metadata,
     audit_root,
     audit_roots,
+    audit_v4,
     backup_candidates,
     isolate_backups,
     write_reports,
+    write_v4_reports,
 )
 
 
@@ -74,6 +77,22 @@ def _mesh_fixture(tmp_path: Path, *, fallback: bool = False) -> tuple[Path, Path
         ],
     )
     return root, index, parsed
+
+
+def _v4_mesh_fixture(tmp_path: Path) -> tuple[Path, list[Path], list[Path]]:
+    root, _, parsed = _mesh_fixture(tmp_path)
+    rebuilds: list[Path] = []
+    formals: list[Path] = []
+    for index in range(7):
+        formal = parsed.with_name(f"formal-{index}.mesh.sqlite")
+        shutil.copy2(parsed, formal)
+        rebuild = formal.with_name(
+            f".{formal.name}.0123456789abcdef0123456789abcdef.rebuild.sqlite"
+        )
+        shutil.copy2(formal, rebuild)
+        formals.append(formal)
+        rebuilds.append(rebuild)
+    return root, rebuilds, formals
 
 
 def _insert_task(root: Path, task_id: str, status: str, result: object = None) -> None:
@@ -365,6 +384,131 @@ def test_v3_json_and_markdown_rebuild_reference_counts_match(tmp_path: Path) -> 
     assert values["文件名回退"] == "0"
     assert values["内部来源身份"] == "1"
     assert values["正式库会话接管"] == "1"
+
+
+def test_v4_without_maintenance_authorization_writes_empty_manifests(tmp_path: Path, monkeypatch) -> None:
+    root, rebuilds, formals = _v4_mesh_fixture(tmp_path)
+    v3_output = tmp_path / "v3"
+    write_reports(audit_roots([root], maintenance_window_authorized=True), v3_output)
+    before = {path: path.read_bytes() for path in [*rebuilds, *formals]}
+    monkeypatch.setattr(
+        audit_module,
+        "_runtime_process_evidence",
+        lambda: {
+            "backend_worker": ["NetConsoleBackend.exe"],
+            "electron": [],
+            "python_mesh": [],
+            "handle_probe": "UNAVAILABLE",
+            "notes": ["test"],
+        },
+    )
+
+    audit = audit_v4([root], previous_report_dir=v3_output)
+    v4_output = tmp_path / "v4"
+    write_v4_reports(audit, v4_output)
+
+    assert len(audit["target_results"]) == 7
+    assert audit["status"]["activity_verification"] == "PARTIAL"
+    assert audit["status"]["reference_check"] == "PASS"
+    assert audit["status"]["backup_verification"] == "NOT_EXECUTED"
+    assert audit["status"]["isolation"] == "NOT_EXECUTED"
+    assert audit["status"]["production_isolation"] == "NOT_EXECUTED"
+    assert audit["status"]["orphan_candidates"] == 0
+    assert audit["status"]["databases_isolated"] == 0
+    assert audit["status"]["databases_removed"] == 0
+    assert audit["status"]["overall_status"] == "BLOCKED"
+    assert "ACTIVITY_UNKNOWN" in audit["target_results"][0]["blockers"]
+    assert json.loads(
+        (v4_output / "MESH_DATABASE_V4_BACKUP_MANIFEST.json").read_text(encoding="utf-8")
+    )["entries"] == []
+    assert json.loads(
+        (v4_output / "MESH_DATABASE_V4_ISOLATION_MANIFEST.json").read_text(encoding="utf-8")
+    )["entries"] == []
+    assert {path: path.read_bytes() for path in [*rebuilds, *formals]} == before
+
+
+def test_v4_identity_drift_blocks_exact_rebuild_scope(tmp_path: Path, monkeypatch) -> None:
+    root, _, _ = _v4_mesh_fixture(tmp_path)
+    v3_output = tmp_path / "v3"
+    write_reports(audit_roots([root], maintenance_window_authorized=True), v3_output)
+    candidate_path = v3_output / "MESH_ORPHAN_CANDIDATES_V3.json"
+    payload = json.loads(candidate_path.read_text(encoding="utf-8"))
+    payload["rebuild_review"][0]["sha256"] = "0" * 64
+    candidate_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        audit_module,
+        "_runtime_process_evidence",
+        lambda: {
+            "backend_worker": [],
+            "electron": [],
+            "python_mesh": [],
+            "handle_probe": "UNAVAILABLE",
+            "notes": [],
+        },
+    )
+
+    audit = audit_v4([root], previous_report_dir=v3_output)
+
+    drifted = audit["target_results"][0]
+    assert "V3_IDENTITY_DRIFT" in drifted["blockers"]
+    assert audit["status"]["orphan_candidates"] == 0
+    assert audit["status"]["data_safety"] == "PASS"
+
+
+def test_v4_corrupt_formal_database_blocks_candidate(tmp_path: Path, monkeypatch) -> None:
+    root, _, formals = _v4_mesh_fixture(tmp_path)
+    v3_output = tmp_path / "v3"
+    write_reports(audit_roots([root], maintenance_window_authorized=True), v3_output)
+    formals[0].write_bytes(b"corrupt formal database")
+    monkeypatch.setattr(
+        audit_module,
+        "_runtime_process_evidence",
+        lambda: {
+            "backend_worker": [],
+            "electron": [],
+            "python_mesh": [],
+            "handle_probe": "UNAVAILABLE",
+            "notes": [],
+        },
+    )
+
+    audit = audit_v4([root], previous_report_dir=v3_output)
+
+    blocked = audit["target_results"][0]
+    assert blocked["orphan_candidate"] is False
+    assert "FORMAL_DATABASE_UNHEALTHY" in blocked["blockers"]
+    assert audit["status"]["orphan_candidates"] == 0
+
+
+def test_v4_wal_and_recovery_evidence_remain_protected(tmp_path: Path, monkeypatch) -> None:
+    root, rebuilds, _ = _v4_mesh_fixture(tmp_path)
+    v3_output = tmp_path / "v3"
+    write_reports(audit_roots([root], maintenance_window_authorized=True), v3_output)
+    rebuilds[0].with_name(rebuilds[0].name + "-wal").write_bytes(b"pending")
+    (rebuilds[0].parent / "recovery-journal.json").write_text(
+        json.dumps({"database": str(rebuilds[0])}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "_runtime_process_evidence",
+        lambda: {
+            "backend_worker": [],
+            "electron": [],
+            "python_mesh": [],
+            "handle_probe": "UNAVAILABLE",
+            "notes": [],
+        },
+    )
+
+    audit = audit_v4([root], previous_report_dir=v3_output)
+
+    protected = audit["target_results"][0]
+    assert protected["orphan_candidate"] is False
+    assert "RECOVERY_REFERENCE" in protected["blockers"]
+    assert any(
+        state in protected["blockers"]
+        for state in ("SIDECAR_PRESENT_UNCONFIRMED", "ACTIVITY_UNKNOWN")
+    )
 
 
 def test_audit_does_not_modify_raw_evidence(tmp_path: Path) -> None:
