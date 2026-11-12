@@ -2737,6 +2737,21 @@ def _v41_target_record(item: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def _v41_exact_file_group(source: Path, file_group: Iterable[dict[str, Any]]) -> bool:
+    items = list(file_group)
+    expected = {
+        str(source.resolve()),
+        str(_sidecar(source, "-wal").resolve()),
+        str(_sidecar(source, "-shm").resolve()),
+    }
+    actual = {
+        str(Path(str(item.get("path") or "")).resolve())
+        for item in items
+        if item.get("path")
+    }
+    return len(items) == len(expected) and actual == expected
+
+
 def _v41_backup_candidates(
     candidates: list[dict[str, Any]],
     *,
@@ -2892,6 +2907,12 @@ def _v41_isolate_backup_manifest(
             group = handle_groups.get(str(source)) or {}
             if group.get("status") != HANDLE_FREE_CONFIRMED:
                 raise RuntimeError(f"隔离前句柄状态不是 HANDLE_FREE_CONFIRMED：{group.get('status')}")
+            if not _is_rebuild_database(source) or _is_reparse(source):
+                raise RuntimeError("隔离源不是精确 rebuild 文件或为符号链接")
+            if not _v41_exact_file_group(source, entry["file_group"]):
+                raise RuntimeError("Backup Manifest 文件组不是源库及其精确 WAL/SHM 组")
+            if not audit_id or audit_id in {".", ".."} or Path(audit_id).name != audit_id:
+                raise RuntimeError("audit_id 不是安全的单级隔离标识")
             root = next(
                 (
                     parent
@@ -2903,7 +2924,10 @@ def _v41_isolate_backup_manifest(
             if root is None:
                 raise RuntimeError("无法从源路径解析 sites 根")
             data_root = root.parent.resolve()
-            quarantine = (data_root / "backups" / "mesh_orphan_quarantine" / audit_id).resolve()
+            quarantine_root = (data_root / "backups" / "mesh_orphan_quarantine").resolve()
+            quarantine = (quarantine_root / audit_id).resolve()
+            if not _within(quarantine, quarantine_root):
+                raise RuntimeError("隔离目录越过受控 quarantine 根")
             if quarantine.drive.casefold() != source.drive.casefold():
                 raise RuntimeError("隔离目录与源文件不在同一卷")
             main_source = source
@@ -3064,15 +3088,19 @@ def audit_v41(
         item["handle_group"] = group_result
         item["windows_handle_status"] = handle_status
         blockers = set(item.get("blockers") or [])
+        if authorized:
+            blockers.discard("MAINTENANCE_AUTHORIZED_NO")
         if handle_status == HANDLE_FREE_CONFIRMED:
-            # V4's runtime evidence cannot prove this after the native probe
-            # runs.  Remove only that stale derived blocker; preserve every
-            # independent activity/reference/formal-database blocker.
+            # V4 only knew the optional handle.exe/runtime evidence. Replace
+            # that stale blocker with the V4.1 native result before deciding
+            # whether the target can become a candidate.
             blockers.discard("WINDOWS_HANDLE_UNCONFIRMED")
         else:
-            item["orphan_candidate"] = False
             blockers.add(handle_status)
         item["blockers"] = sorted(blockers)
+        item["orphan_candidate"] = bool(
+            authorized and handle_status == HANDLE_FREE_CONFIRMED and not blockers
+        )
     candidates = [item for item in target_results if item.get("orphan_candidate")]
     handle_detection = (
         "PASS"
@@ -3132,13 +3160,39 @@ def audit_v41(
         if supplied_payload is not None and not supplied_error:
             expected_hash = str(payload.get("backup_manifest_sha256") or "")
             if expected_hash and sha256_file(supplied_backup) == expected_hash:
-                isolation_result = _v41_isolate_backup_manifest(
-                    supplied_payload,
-                    audit_id=audit_id,
-                    handle_groups=group_results,
-                    authorization=authorization,
-                    manifest_path=output_dir / "MESH_DATABASE_V4_1_ISOLATION_MANIFEST.json",
+                verified_entries = [
+                    item
+                    for item in supplied_payload.get("entries") or []
+                    if item.get("state") == "BACKUP_VERIFIED"
+                ]
+                backup_sources = [
+                    str(Path(str(item.get("source") or "")).resolve())
+                    for item in verified_entries
+                ]
+                approved_sources = sorted(
+                    str(Path(str(item.get("path") or "")).resolve())
+                    for item in candidates
                 )
+                backup_manifest_valid = (
+                    supplied_payload.get("format") == "netconsole-mesh-v4-1-backup-manifest"
+                    and supplied_payload.get("backup_workflow") == "PASS"
+                    and int(supplied_payload.get("backup_success_count") or 0) == len(verified_entries)
+                    and len(backup_sources) == len(set(backup_sources))
+                    and sorted(backup_sources) == approved_sources
+                    and (supplied_payload.get("authorization") or {}).get("status") == "PASS"
+                )
+                if not backup_manifest_valid:
+                    isolation_result["reason"] = (
+                        "Backup Manifest 未通过格式、已验证状态、授权或当前候选精确范围校验，禁止隔离。"
+                    )
+                else:
+                    isolation_result = _v41_isolate_backup_manifest(
+                        supplied_payload,
+                        audit_id=audit_id,
+                        handle_groups=group_results,
+                        authorization=authorization,
+                        manifest_path=output_dir / "MESH_DATABASE_V4_1_ISOLATION_MANIFEST.json",
+                    )
             else:
                 isolation_result["reason"] = "Backup Manifest SHA-256 不匹配，禁止隔离。"
         else:

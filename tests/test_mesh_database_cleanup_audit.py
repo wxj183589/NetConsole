@@ -625,6 +625,93 @@ def test_v41_rollback_conflict_never_deletes_new_source(tmp_path: Path) -> None:
     assert Path(moved[0]["target"]).is_file()
 
 
+def test_v41_native_handle_result_can_unlock_an_authorized_candidate(tmp_path: Path, monkeypatch) -> None:
+    root, rebuild, candidate = _v41_candidate_fixture(tmp_path)
+    v3_output = tmp_path / "v3"
+    v4_output = tmp_path / "v4"
+    v4_output.mkdir()
+    (v4_output / "MESH_DATABASE_V4_CANDIDATES.json").write_text(
+        json.dumps({"candidates": [candidate]}), encoding="utf-8"
+    )
+    base = {
+        "generated_at": "2026-11-12T00:00:00+00:00",
+        "target_results": [
+            {
+                "path": str(rebuild),
+                "formal_database_path": candidate["formal_database_path"],
+                "orphan_candidate": False,
+                "blockers": ["WINDOWS_HANDLE_UNCONFIRMED"],
+                "record": candidate["record"],
+                "rebuild_review": candidate["rebuild_review"],
+                "activity_state": "IDLE_CONFIRMED",
+            }
+        ],
+        "runtime_evidence": {
+            "backend_worker": [],
+            "electron": [],
+            "python_mesh": [],
+        },
+        "status": {"activity_verification": "PASS", "reference_check": "PASS"},
+        "git": {},
+    }
+    seen: list[dict[str, object]] = []
+    monkeypatch.setattr(audit_module, "audit_v4", lambda *args, **kwargs: base)
+    monkeypatch.setattr(
+        audit_module,
+        "_v41_validate_authorization",
+        lambda *args, **kwargs: {"status": "PASS", "payload": {}, "errors": []},
+    )
+    monkeypatch.setattr(
+        audit_module,
+        "_handle_group_audit",
+        lambda paths: {
+            "status": "HANDLE_FREE_CONFIRMED",
+            "paths": [str(Path(path)) for path in paths],
+            "files": [],
+            "restart_manager": {"status": "EMPTY", "processes": []},
+        },
+    )
+
+    def fake_backup(candidates, **kwargs):
+        seen.extend(candidates)
+        return {
+            "backup_workflow": "PASS",
+            "backup_success_count": len(candidates),
+            "backup_failure_count": 0,
+            "entries": [],
+        }
+
+    monkeypatch.setattr(audit_module, "_v41_backup_candidates", fake_backup)
+    audit = audit_v41(
+        [root],
+        previous_report_dir=v3_output,
+        v4_report_dir=v4_output,
+        output_dir=tmp_path / "v4.1",
+        execution_mode="BACKUP_ONLY",
+    )
+
+    assert len(seen) == 1
+    assert audit["status"]["orphan_candidates"] == 1
+    assert audit["status"]["production_backup"] == "PASS"
+
+
+def test_v41_isolation_rejects_quarantine_path_escape_without_moving_source(tmp_path: Path) -> None:
+    root, rebuild, candidate = _v41_candidate_fixture(tmp_path)
+    authorization = {"status": "PASS", "payload": {"operator": "test"}}
+    backup = _v41_backup_candidates([candidate], audit_id="escape-backup", authorization=authorization)
+
+    isolation = _v41_isolate_backup_manifest(
+        backup,
+        audit_id="..\\escape",
+        handle_groups={str(rebuild.resolve()): {"status": "HANDLE_FREE_CONFIRMED"}},
+        authorization=authorization,
+    )
+
+    assert isolation["workflow"] == "FAIL"
+    assert isolation["isolated_count"] == 0
+    assert rebuild.is_file()
+
+
 def test_v41_audit_only_does_not_authorize_backup_or_isolation(tmp_path: Path, monkeypatch) -> None:
     root, rebuilds, _ = _v4_mesh_fixture(tmp_path)
     v3_output = tmp_path / "v3"
