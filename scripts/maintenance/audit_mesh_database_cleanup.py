@@ -8,6 +8,9 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+from ctypes import wintypes
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -16,9 +19,10 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 
 UTC = timezone.utc
@@ -51,6 +55,36 @@ RUNTIME_PROCESS_IMAGES = (
     "NetConsoleBackend.exe",
     "NetConsoleWorker.exe",
 )
+V41_EXECUTION_MODES = ("AUDIT_ONLY", "BACKUP_ONLY", "ISOLATE_APPROVED")
+HANDLE_FREE_CONFIRMED = "HANDLE_FREE_CONFIRMED"
+HANDLE_OCCUPIED = "HANDLE_OCCUPIED"
+HANDLE_UNCONFIRMED = "HANDLE_UNCONFIRMED"
+HANDLE_PROBE_FAILED = "HANDLE_PROBE_FAILED"
+ERROR_MORE_DATA = 234
+ERROR_SHARING_VIOLATION = 32
+ERROR_LOCK_VIOLATION = 33
+ERROR_ACCESS_DENIED = 5
+ERROR_FILE_NOT_FOUND = 2
+ERROR_PATH_NOT_FOUND = 3
+GENERIC_READ = 0x80000000
+OPEN_EXISTING = 3
+INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class _RmUniqueProcess(ctypes.Structure):
+    _fields_ = [("dwProcessId", wintypes.DWORD), ("ProcessStartTime", wintypes.FILETIME)]
+
+
+class _RmProcessInfo(ctypes.Structure):
+    _fields_ = [
+        ("Process", _RmUniqueProcess),
+        ("strAppName", wintypes.WCHAR * 257),
+        ("strServiceShortName", wintypes.WCHAR * 65),
+        ("ApplicationType", wintypes.DWORD),
+        ("AppStatus", wintypes.DWORD),
+        ("TSSessionId", wintypes.DWORD),
+        ("bRestartable", wintypes.BOOL),
+    ]
 
 
 def now_iso() -> str:
@@ -102,12 +136,16 @@ def _ro_uri(path: Path) -> str:
     return f"{path.resolve().as_uri()}?mode=ro"
 
 
-def read_only_connection(path: Path) -> sqlite3.Connection:
+@contextmanager
+def read_only_connection(path: Path) -> Iterator[sqlite3.Connection]:
     connection = sqlite3.connect(_ro_uri(path), uri=True, timeout=3)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    connection.execute("PRAGMA busy_timeout=3000")
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA busy_timeout=3000")
+        yield connection
+    finally:
+        connection.close()
 
 
 def _table_names(connection: sqlite3.Connection) -> set[str]:
@@ -464,6 +502,247 @@ def _runtime_process_evidence() -> dict[str, Any]:
     else:
         evidence["notes"].append("handle.exe unavailable; Windows file-handle ownership is unconfirmed")
     return evidence
+
+
+def _restart_manager_probe(paths: list[Path]) -> dict[str, Any]:
+    """Use Windows Restart Manager only as one part of a read-only handle probe."""
+    result: dict[str, Any] = {
+        "status": "UNAVAILABLE",
+        "processes": [],
+        "error_code": 0,
+        "error": "",
+        "coverage": "Restart Manager resource registration and process listing only",
+    }
+    if os.name != "nt":
+        result["error"] = "Windows API unavailable on this host"
+        return result
+    existing = [path for path in paths if path.is_file()]
+    if not existing:
+        result.update(status="NO_FILES", coverage="No existing file required registration")
+        return result
+    try:
+        dll = ctypes.WinDLL("rstrtmgr.dll", use_last_error=True)
+        start = dll.RmStartSession
+        start.argtypes = [ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR]
+        start.restype = wintypes.DWORD
+        register = dll.RmRegisterResources
+        register.argtypes = [
+            wintypes.DWORD,
+            wintypes.UINT,
+            ctypes.POINTER(wintypes.LPWSTR),
+            wintypes.UINT,
+            ctypes.c_void_p,
+            wintypes.UINT,
+            ctypes.POINTER(wintypes.LPWSTR),
+        ]
+        register.restype = wintypes.DWORD
+        get_list = dll.RmGetList
+        get_list.argtypes = [
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.UINT),
+            ctypes.POINTER(wintypes.UINT),
+            ctypes.POINTER(_RmProcessInfo),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        get_list.restype = wintypes.DWORD
+        end = dll.RmEndSession
+        end.argtypes = [wintypes.DWORD]
+        end.restype = wintypes.DWORD
+    except (AttributeError, OSError) as exc:
+        result.update(status="FAILED", error=f"Restart Manager load failed: {type(exc).__name__}: {exc}")
+        return result
+
+    session = wintypes.DWORD(0)
+    session_key = ctypes.create_unicode_buffer(33)
+    code = int(start(ctypes.byref(session), 0, session_key))
+    if code != 0:
+        result.update(status="FAILED", error_code=code, error=f"RmStartSession failed: {code}")
+        return result
+    try:
+        buffers = [ctypes.create_unicode_buffer(str(path.resolve())) for path in existing]
+        resource_paths = (wintypes.LPWSTR * len(buffers))()
+        for index, buffer in enumerate(buffers):
+            resource_paths[index] = ctypes.cast(buffer, wintypes.LPWSTR)
+        code = int(register(session, len(buffers), resource_paths, 0, None, 0, None))
+        if code != 0:
+            result.update(status="FAILED", error_code=code, error=f"RmRegisterResources failed: {code}")
+            return result
+        needed = wintypes.UINT(0)
+        count = wintypes.UINT(0)
+        reason = wintypes.DWORD(0)
+        code = int(get_list(session, ctypes.byref(needed), ctypes.byref(count), None, ctypes.byref(reason)))
+        if code not in (0, ERROR_MORE_DATA):
+            result.update(status="FAILED", error_code=code, error=f"RmGetList sizing failed: {code}")
+            return result
+        capacity = max(int(needed.value), int(count.value), 1)
+        info_array = (_RmProcessInfo * capacity)()
+        count = wintypes.UINT(capacity)
+        code = int(
+            get_list(
+                session,
+                ctypes.byref(needed),
+                ctypes.byref(count),
+                info_array,
+                ctypes.byref(reason),
+            )
+        )
+        if code not in (0, ERROR_MORE_DATA):
+            result.update(status="FAILED", error_code=code, error=f"RmGetList failed: {code}")
+            return result
+        result["processes"] = [
+            {
+                "pid": int(info_array[index].Process.dwProcessId),
+                "application": str(info_array[index].strAppName),
+                "service": str(info_array[index].strServiceShortName),
+                "application_type": int(info_array[index].ApplicationType),
+                "session_id": int(info_array[index].TSSessionId),
+            }
+            for index in range(min(int(count.value), capacity))
+        ]
+        result["status"] = "OCCUPIED" if result["processes"] else "EMPTY"
+        result["restart_reason"] = int(reason.value)
+        return result
+    finally:
+        end_code = int(end(session))
+        if end_code and not result.get("error"):
+            result["error_code"] = end_code
+            result["error"] = f"RmEndSession failed: {end_code}"
+
+
+def _exclusive_open_probe(path: Path) -> dict[str, Any]:
+    """Attempt a short read-only Windows sharing conflict probe and release immediately."""
+    result = {
+        "status": "UNAVAILABLE",
+        "error_code": 0,
+        "error": "",
+        "operation": "CreateFileW(GENERIC_READ, share=0) then CloseHandle",
+    }
+    if not path.is_file():
+        result["status"] = "NOT_PRESENT"
+        return result
+    if os.name != "nt":
+        result["error"] = "Windows API unavailable on this host"
+        return result
+    try:
+        kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+    except (AttributeError, OSError) as exc:
+        result["status"] = "FAILED"
+        result["error"] = f"CreateFileW load failed: {type(exc).__name__}: {exc}"
+        return result
+    handle = create_file(str(path.resolve()), GENERIC_READ, 0, None, OPEN_EXISTING, 0, None)
+    if handle == INVALID_HANDLE_VALUE:
+        code = int(ctypes.get_last_error())
+        result["error_code"] = code
+        if code in (ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION):
+            result["status"] = "OCCUPIED"
+        elif code in (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND):
+            result["status"] = "NOT_PRESENT"
+        elif code == ERROR_ACCESS_DENIED:
+            result["status"] = "UNCONFIRMED"
+        else:
+            result["status"] = "FAILED"
+        result["error"] = f"CreateFileW failed: {code}"
+        return result
+    try:
+        result["status"] = "FREE"
+        return result
+    finally:
+        if not close_handle(handle):
+            result["status"] = "FAILED"
+            result["error"] = f"CloseHandle failed: {ctypes.get_last_error()}"
+
+
+def _handle_group_audit(paths: Iterable[Path]) -> dict[str, Any]:
+    unique_paths = sorted({Path(path).resolve() for path in paths}, key=lambda item: str(item).casefold())
+    restart = _restart_manager_probe(unique_paths)
+    restart_processes = restart.get("processes") or []
+    files: list[dict[str, Any]] = []
+    for path in unique_paths:
+        sharing = _exclusive_open_probe(path)
+        if sharing["status"] == "OCCUPIED" or restart_processes:
+            status = HANDLE_OCCUPIED
+        elif sharing["status"] == "FAILED":
+            status = HANDLE_PROBE_FAILED
+        elif sharing["status"] in {"UNCONFIRMED", "UNAVAILABLE"}:
+            status = HANDLE_UNCONFIRMED
+        elif sharing["status"] == "NOT_PRESENT":
+            status = "NOT_PRESENT"
+        elif restart["status"] == "EMPTY":
+            status = HANDLE_FREE_CONFIRMED
+        else:
+            status = HANDLE_UNCONFIRMED
+        files.append(
+            {
+                "path": str(path),
+                "exists": path.is_file(),
+                "restart_manager": restart,
+                "sharing_probe": sharing,
+                "status": status,
+            }
+        )
+    present_statuses = [item["status"] for item in files if item["status"] != "NOT_PRESENT"]
+    if any(status == HANDLE_OCCUPIED for status in present_statuses):
+        overall = HANDLE_OCCUPIED
+    elif any(status == HANDLE_PROBE_FAILED for status in present_statuses):
+        overall = HANDLE_PROBE_FAILED
+    elif any(status == HANDLE_UNCONFIRMED for status in present_statuses):
+        overall = HANDLE_UNCONFIRMED
+    elif all(status in {HANDLE_FREE_CONFIRMED, "NOT_PRESENT"} for status in (item["status"] for item in files)):
+        overall = HANDLE_FREE_CONFIRMED
+    else:
+        overall = HANDLE_UNCONFIRMED
+    return {
+        "status": overall,
+        "paths": [str(path) for path in unique_paths],
+        "files": files,
+        "restart_manager": restart,
+        "limitations": [
+            "Restart Manager 仅列出可识别的注册资源进程，不穷尽所有句柄来源。",
+            "HANDLE_FREE_CONFIRMED 仅在 Restart Manager 空结果与短时 share=0 读取探针同时通过时给出。",
+            "未执行第三方 handle.exe，不终止进程、不关闭其他进程句柄、不修改 SQLite。",
+        ],
+    }
+
+
+def _handle_groups_for_targets(target_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for target in target_results:
+        rebuild = Path(str(target.get("path") or "")).resolve()
+        formal = Path(str(target.get("formal_database_path") or "")).resolve()
+        key = (str(rebuild), str(formal))
+        if key in seen:
+            continue
+        seen.add(key)
+        groups.append(
+            {
+                "rebuild_path": str(rebuild),
+                "formal_database_path": str(formal),
+                "paths": [
+                    str(rebuild),
+                    str(_sidecar(rebuild, "-wal")),
+                    str(_sidecar(rebuild, "-shm")),
+                    str(formal),
+                    str(_sidecar(formal, "-wal")),
+                    str(_sidecar(formal, "-shm")),
+                ],
+            }
+        )
+    return groups
 
 
 def _task_texts(site_dir: Path) -> dict[str, Any]:
@@ -2293,6 +2572,847 @@ def write_v4_reports(audit: dict[str, Any], output_dir: Path) -> None:
     )
 
 
+def _write_v41_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _v41_load_json(path: Path) -> tuple[dict[str, Any] | None, str]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if not isinstance(value, dict):
+        return None, "JSON 根必须是对象"
+    return value, ""
+
+
+def _v41_candidate_manifest_scope(payload: dict[str, Any]) -> dict[str, set[str]]:
+    candidates = payload.get("candidates") or []
+    roots: set[str] = set()
+    sites: set[str] = set()
+    mr_profiles: set[str] = set()
+    paths: set[str] = set()
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        record = item.get("record") or {}
+        path = item.get("path") or record.get("canonical_path")
+        if path:
+            paths.add(str(Path(str(path)).resolve()))
+        if record.get("data_root"):
+            roots.add(str(Path(str(record["data_root"])).resolve()))
+        if record.get("site"):
+            sites.add(str(record["site"]))
+        if item.get("mr_profile_id") or record.get("mr_profile_id"):
+            mr_profiles.add(str(item.get("mr_profile_id") or record.get("mr_profile_id")))
+    return {"data_roots": roots, "sites": sites, "mr_profiles": mr_profiles, "paths": paths}
+
+
+def _v41_parse_window(value: object) -> tuple[datetime, datetime] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        start = datetime.fromisoformat(str(value.get("start") or "").replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(value.get("end") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=UTC)
+    return start.astimezone(UTC), end.astimezone(UTC)
+
+
+def _v41_validate_authorization(
+    authorization_path: Path | None,
+    *,
+    requested_mode: str,
+    candidate_manifest_path: Path,
+    candidate_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "NOT_PROVIDED" if authorization_path is None else "FAIL",
+        "path": str(authorization_path.resolve()) if authorization_path else "",
+        "errors": [],
+        "payload": {},
+    }
+    if requested_mode == "AUDIT_ONLY":
+        result["status"] = "NOT_REQUIRED"
+        return result
+    if authorization_path is None:
+        result["errors"].append("未提供实际操作人员授权文件")
+        return result
+    payload, error = _v41_load_json(authorization_path)
+    if payload is None:
+        result["errors"].append(error)
+        return result
+    result["payload"] = payload
+    if payload.get("format") != "netconsole-mesh-maintenance-authorization-v1":
+        result["errors"].append("授权文件 format 不匹配")
+    if payload.get("mode") != requested_mode:
+        result["errors"].append(f"授权 mode 必须为 {requested_mode}")
+    if payload.get("authorized") is not True:
+        result["errors"].append("authorized 必须由实际操作人员明确设置为 true")
+    confirmation = payload.get("confirmation")
+    if not isinstance(confirmation, dict) or confirmation.get("confirmed") is not True:
+        result["errors"].append("缺少显式 confirmation.confirmed=true")
+    if not isinstance(confirmation, dict) or not confirmation.get("operator"):
+        result["errors"].append("缺少 confirmation.operator")
+    if not isinstance(confirmation, dict) or not confirmation.get("confirmed_at"):
+        result["errors"].append("缺少 confirmation.confirmed_at")
+    if not str(payload.get("operation_scope") or "").strip():
+        result["errors"].append("缺少 operation_scope")
+    window = _v41_parse_window(payload.get("maintenance_window"))
+    if window is None:
+        result["errors"].append("maintenance_window 必须包含有效 start/end")
+    elif not window[0] <= datetime.now(UTC) <= window[1]:
+        result["errors"].append("当前时间不在维护窗口内")
+    scope = _v41_candidate_manifest_scope(candidate_manifest)
+    declared_roots = {
+        str(Path(str(item)).resolve()) for item in payload.get("data_roots") or []
+    }
+    declared_sites = {str(item) for item in payload.get("sites") or []}
+    declared_mr_profiles = {str(item) for item in payload.get("mr_profiles") or []}
+    declared_paths = {
+        str(Path(str(item)).resolve()) for item in payload.get("candidate_paths") or []
+    }
+    if declared_roots != scope["data_roots"]:
+        result["errors"].append("授权 data_roots 与候选 Manifest 不一致")
+    if declared_sites != scope["sites"]:
+        result["errors"].append("授权 sites 与候选 Manifest 不一致")
+    if declared_mr_profiles != scope["mr_profiles"]:
+        result["errors"].append("授权 mr_profiles 与候选 Manifest 不一致")
+    if declared_paths != scope["paths"]:
+        result["errors"].append("授权 candidate_paths 与候选 Manifest 不一致")
+    declared_manifest = Path(str(payload.get("candidate_manifest") or "")).resolve()
+    if declared_manifest != candidate_manifest_path.resolve():
+        result["errors"].append("授权 candidate_manifest 不是本轮 V4 Manifest")
+    else:
+        actual_hash = sha256_file(candidate_manifest_path)
+        if actual_hash != str(payload.get("candidate_manifest_sha256") or ""):
+            result["errors"].append("候选 Manifest SHA-256 不匹配")
+    if requested_mode == "ISOLATE_APPROVED":
+        if not payload.get("backup_manifest") or not payload.get("backup_manifest_sha256"):
+            result["errors"].append("ISOLATE_APPROVED 必须绑定已验证 Backup Manifest")
+    if not result["errors"]:
+        result["status"] = "PASS"
+    return result
+
+
+def _v41_file_group_snapshot(paths: Iterable[Path]) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    for path in sorted({Path(item).resolve() for item in paths}, key=lambda item: str(item).casefold()):
+        snapshot = _file_snapshot(path)
+        item = {"path": str(path), "exists": bool(snapshot)}
+        if snapshot:
+            item.update(snapshot, sha256=sha256_file(path))
+        else:
+            item.update(canonical_path=str(path), file_size=0, mtime_ns=0, file_identity="", sha256="")
+        snapshots.append(item)
+    return snapshots
+
+
+def _v41_group_snapshot_matches(expected: list[dict[str, Any]], paths: Iterable[Path]) -> bool:
+    actual = {item["path"]: item for item in _v41_file_group_snapshot(paths)}
+    for item in expected:
+        current = actual.get(str(Path(str(item.get("path") or "")).resolve()))
+        if current is None:
+            return False
+        for field in ("exists", "file_size", "file_identity", "sha256"):
+            if current.get(field) != item.get(field):
+                return False
+    return True
+
+
+def _v41_target_record(item: dict[str, Any]) -> dict[str, Any]:
+    record = dict(item.get("record") or {})
+    if not record:
+        record = dict(item)
+    return record
+
+
+def _v41_backup_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    audit_id: str,
+    authorization: dict[str, Any],
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    source_root = Path(__file__).resolve().parents[2] / "src"
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+    from netconsole.core.paths import PathResolver
+    from netconsole.services.database_upgrade.backup_store import DatabaseBackupStore
+
+    result: dict[str, Any] = {
+        "format": "netconsole-mesh-v4-1-backup-manifest",
+        "audit_id": audit_id,
+        "execution_mode": "BACKUP_ONLY",
+        "authorization": authorization,
+        "created_at": now_iso(),
+        "backup_success_count": 0,
+        "backup_failure_count": 0,
+        "entries": [],
+    }
+    for candidate in candidates:
+        record = _v41_target_record(candidate)
+        source = Path(str(candidate.get("path") or record.get("canonical_path") or "")).resolve()
+        entry: dict[str, Any] = {
+            "state": "PENDING",
+            "source": str(source),
+            "formal_database_path": candidate.get("formal_database_path") or record.get("rebuild_target_path"),
+            "file_group": candidate.get("file_group") or _v41_file_group_snapshot(
+                [source, _sidecar(source, "-wal"), _sidecar(source, "-shm")]
+            ),
+        }
+        try:
+            if candidate.get("orphan_candidate") is not True:
+                raise RuntimeError("当前文件不是 ORPHAN_CANDIDATE")
+            if record.get("activity_state") != "IDLE_CONFIRMED":
+                raise RuntimeError("活动状态不是 IDLE_CONFIRMED")
+            if candidate.get("reference_check") != "PASS":
+                raise RuntimeError("引用检查不是 PASS")
+            if candidate.get("windows_handle_status") != HANDLE_FREE_CONFIRMED:
+                raise RuntimeError("文件组句柄不是 HANDLE_FREE_CONFIRMED")
+            review = candidate.get("rebuild_review") or {}
+            if not review.get("formal_database_healthy") or not int(
+                review.get("formal_database_session_reference_count") or 0
+            ):
+                raise RuntimeError("正式库健康或会话接管门槛未通过")
+            if not source.is_file() or not _is_rebuild_database(source):
+                raise RuntimeError("源文件不存在或不是精确 rebuild 文件")
+            if not _v41_group_snapshot_matches(entry["file_group"], [Path(item["path"]) for item in entry["file_group"]]):
+                raise RuntimeError("隔离前文件组快照已变化")
+            root = Path(str(record.get("data_root") or "")).resolve()
+            if not _within(source, root) or _is_reparse(source):
+                raise RuntimeError("源路径越界或为符号链接")
+            store = DatabaseBackupStore(PathResolver(data_root=root))
+            entry["state"] = "BACKUP_CREATING"
+            created = store.create(
+                source_path=source,
+                database_kind="mesh_derived_orphan",
+                scope_type="mesh_orphan_cleanup_v4_1",
+                scope_id=f"{record.get('site', '')}_{record.get('safe_folder_name', '')}",
+                task_id=audit_id,
+                old_version=str(record.get("schema_version") or ""),
+                target_version=str(record.get("schema_version") or ""),
+                strategy="MESH_V4_1_SQLITE_BACKUP_API",
+                reason="MESH V4.1 authorized orphan candidate backup",
+                metadata={
+                    "formal_database_path": entry["formal_database_path"],
+                    "source_file_identity": (entry["file_group"][0] or {}).get("file_identity", ""),
+                    "source_sha256": (entry["file_group"][0] or {}).get("sha256", ""),
+                    "authorization": authorization,
+                },
+                checkpoint={"wal": "verified_absent_or_zero", "shm": "verified_by_handle_probe"},
+            )
+            validated = store.validate(str(created["backup_id"]))
+            validation = validated.get("validation") or {}
+            if not validation.get("restorable") or validation.get("quick_check") != "ok" or validation.get("integrity_check") != "ok":
+                raise RuntimeError("SQLite Backup API 备份独立完整性校验失败")
+            if not _v41_group_snapshot_matches(entry["file_group"], [Path(item["path"]) for item in entry["file_group"]]):
+                raise RuntimeError("备份期间源文件组发生变化")
+            entry.update(
+                {
+                    "state": "BACKUP_VERIFIED",
+                    "backup_id": created.get("backup_id"),
+                    "backup_path": created.get("path"),
+                    "backup_database_path": validation.get("path"),
+                    "backup_size": validation.get("size_bytes", 0),
+                    "backup_sha256": validation.get("sha256", ""),
+                    "backup_schema": validation.get("schema_version", ""),
+                    "backup_validation": validation,
+                    "verified_at": now_iso(),
+                }
+            )
+            result["backup_success_count"] += 1
+        except Exception as exc:
+            entry.update(state="FAILED", error=f"{type(exc).__name__}: {exc}")
+            result["backup_failure_count"] += 1
+        result["entries"].append(entry)
+        if manifest_path:
+            _write_v41_json(manifest_path, result)
+    result["backup_workflow"] = (
+        "PASS"
+        if result["backup_success_count"] == len(candidates) and not result["backup_failure_count"]
+        else "FAIL"
+        if result["backup_failure_count"]
+        else "NOT_EXECUTED"
+    )
+    if manifest_path:
+        _write_v41_json(manifest_path, result)
+    return result
+
+
+def _v41_isolation_target(quarantine: Path, source: Path, main_source: Path) -> Path:
+    suffix = source.name[len(main_source.name) :] if source.name.startswith(main_source.name) else ""
+    return quarantine / f"{main_source.name}.isolated{suffix}"
+
+
+def _v41_isolate_backup_manifest(
+    backup_manifest: dict[str, Any],
+    *,
+    audit_id: str,
+    handle_groups: dict[str, dict[str, Any]],
+    authorization: dict[str, Any],
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    result = {
+        "format": "netconsole-mesh-v4-1-isolation-manifest",
+        "audit_id": audit_id,
+        "execution_mode": "ISOLATE_APPROVED",
+        "authorization": authorization,
+        "created_at": now_iso(),
+        "isolated_count": 0,
+        "logical_isolation_bytes": 0,
+        "actual_released_bytes": 0,
+        "entries": [],
+    }
+    entries = backup_manifest.get("entries") or []
+    for backup_entry in entries:
+        if backup_entry.get("state") != "BACKUP_VERIFIED":
+            continue
+        source = Path(str(backup_entry.get("source") or "")).resolve()
+        entry = {
+            "state": "PENDING",
+            "source": str(source),
+            "formal_database_path": backup_entry.get("formal_database_path"),
+            "backup_id": backup_entry.get("backup_id"),
+            "backup_path": backup_entry.get("backup_path"),
+            "file_group": backup_entry.get("file_group") or [],
+            "moved_files": [],
+        }
+        try:
+            group = handle_groups.get(str(source)) or {}
+            if group.get("status") != HANDLE_FREE_CONFIRMED:
+                raise RuntimeError(f"隔离前句柄状态不是 HANDLE_FREE_CONFIRMED：{group.get('status')}")
+            root = next(
+                (
+                    parent
+                    for parent in source.parents
+                    if parent.name.casefold() == "sites"
+                ),
+                None,
+            )
+            if root is None:
+                raise RuntimeError("无法从源路径解析 sites 根")
+            data_root = root.parent.resolve()
+            quarantine = (data_root / "backups" / "mesh_orphan_quarantine" / audit_id).resolve()
+            if quarantine.drive.casefold() != source.drive.casefold():
+                raise RuntimeError("隔离目录与源文件不在同一卷")
+            main_source = source
+            group_paths = [Path(str(item["path"])).resolve() for item in entry["file_group"]]
+            if not _v41_group_snapshot_matches(entry["file_group"], group_paths):
+                raise RuntimeError("隔离前文件组快照已变化")
+            quarantine.mkdir(parents=True, exist_ok=True)
+            targets: list[tuple[Path, Path, dict[str, Any]]] = []
+            for item in entry["file_group"]:
+                current = Path(str(item["path"])).resolve()
+                if not item.get("exists"):
+                    continue
+                target = _v41_isolation_target(quarantine, current, main_source)
+                if target.exists():
+                    raise RuntimeError(f"隔离目标已存在：{target}")
+                targets.append((current, target, item))
+            entry["state"] = "ISOLATING"
+            result["entries"].append(entry)
+            if manifest_path:
+                _write_v41_json(manifest_path, result)
+            for current, target, snapshot in targets:
+                if target.exists():
+                    raise RuntimeError(f"隔离目标在移动前出现：{target}")
+                current.rename(target)
+                entry["moved_files"].append(
+                    {
+                        "source": str(current),
+                        "target": str(target),
+                        "file_size": snapshot.get("file_size", 0),
+                        "file_identity": snapshot.get("file_identity", ""),
+                        "sha256": snapshot.get("sha256", ""),
+                    }
+                )
+                entry["logical_isolation_bytes"] = int(entry.get("logical_isolation_bytes") or 0) + int(
+                    snapshot.get("file_size") or 0
+                )
+                if manifest_path:
+                    _write_v41_json(manifest_path, result)
+            entry.update(state="ISOLATED", isolated_at=now_iso())
+            result["isolated_count"] += 1
+            result["logical_isolation_bytes"] += int(entry.get("logical_isolation_bytes") or 0)
+        except Exception as exc:
+            entry.update(state="ROLLBACK_REQUIRED" if entry.get("moved_files") else "FAILED")
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+        if entry not in result["entries"]:
+            result["entries"].append(entry)
+        if manifest_path:
+            _write_v41_json(manifest_path, result)
+        if entry.get("state") == "ROLLBACK_REQUIRED":
+            result["workflow"] = "PARTIAL"
+            break
+    result["workflow"] = result.get("workflow") or (
+        "PASS"
+        if result["isolated_count"] == len([item for item in entries if item.get("state") == "BACKUP_VERIFIED"])
+        and not any(item.get("state") in {"FAILED", "ROLLBACK_REQUIRED"} for item in result.get("entries") or [])
+        else "NOT_EXECUTED"
+        if not entries
+        else "FAIL"
+    )
+    if manifest_path:
+        _write_v41_json(manifest_path, result)
+    return result
+
+
+def _v41_rollback_isolation(
+    isolation_manifest: dict[str, Any],
+    *,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    result = dict(isolation_manifest)
+    result["rollback_started_at"] = now_iso()
+    entries = result.get("entries") or []
+    for entry in entries:
+        if entry.get("state") == "ROLLED_BACK":
+            continue
+        moved = entry.get("moved_files") or []
+        try:
+            for item in reversed(moved):
+                source = Path(str(item.get("source") or "")).resolve()
+                target = Path(str(item.get("target") or "")).resolve()
+                if source.exists() and target.exists():
+                    raise RuntimeError(f"回滚路径冲突：源和隔离目标同时存在：{source}")
+                if source.exists() and not target.exists():
+                    continue
+                if not target.is_file():
+                    raise RuntimeError(f"回滚目标不存在：{target}")
+                if sha256_file(target) != str(item.get("sha256") or ""):
+                    raise RuntimeError(f"隔离文件 SHA-256 变化：{target}")
+                source.parent.mkdir(parents=True, exist_ok=True)
+                if source.exists():
+                    raise RuntimeError(f"回滚不得覆盖新文件：{source}")
+                target.rename(source)
+            entry["state"] = "ROLLED_BACK"
+            entry["rolled_back_at"] = now_iso()
+        except Exception as exc:
+            entry["state"] = "ROLLBACK_REQUIRED"
+            entry["rollback_error"] = f"{type(exc).__name__}: {exc}"
+            if manifest_path:
+                _write_v41_json(manifest_path, result)
+            break
+        if manifest_path:
+            _write_v41_json(manifest_path, result)
+    result["rollback_workflow"] = (
+        "PASS"
+        if entries and all(item.get("state") == "ROLLED_BACK" for item in entries)
+        else "NOT_EXECUTED"
+        if not entries
+        else "FAIL"
+    )
+    if manifest_path:
+        _write_v41_json(manifest_path, result)
+    return result
+
+
+def audit_v41(
+    roots: Iterable[Path],
+    *,
+    previous_report_dir: Path,
+    v4_report_dir: Path,
+    output_dir: Path,
+    execution_mode: str = "AUDIT_ONLY",
+    authorization_file: Path | None = None,
+    audit_id: str = "mesh-v4-1",
+    backup_manifest: Path | None = None,
+    test_workflow_status: str = "NOT_EXECUTED",
+) -> dict[str, Any]:
+    if execution_mode not in V41_EXECUTION_MODES:
+        raise ValueError(f"不支持的 V4.1 execution mode：{execution_mode}")
+    candidate_manifest_path = v4_report_dir / "MESH_DATABASE_V4_CANDIDATES.json"
+    candidate_manifest, manifest_error = _v41_load_json(candidate_manifest_path)
+    if candidate_manifest is None:
+        candidate_manifest = {"candidates": [], "target_results": []}
+    authorization = _v41_validate_authorization(
+        authorization_file,
+        requested_mode=execution_mode,
+        candidate_manifest_path=candidate_manifest_path,
+        candidate_manifest=candidate_manifest,
+    )
+    authorized = authorization.get("status") == "PASS"
+    base = audit_v4(
+        roots,
+        previous_report_dir=previous_report_dir,
+        maintenance_authorized=authorized,
+    )
+    target_results = list(base.get("target_results") or [])
+    handle_groups = _handle_groups_for_targets(target_results)
+    group_results: dict[str, dict[str, Any]] = {}
+    for group in handle_groups:
+        group_audit = _handle_group_audit(Path(path) for path in group["paths"])
+        group_result = {**group, **group_audit}
+        group_results[group["rebuild_path"]] = group_result
+    handle_statuses = [item.get("status") for item in group_results.values()]
+    for item in target_results:
+        rebuild_path = str(Path(str(item.get("path") or "")).resolve())
+        group_result = group_results.get(rebuild_path) or {}
+        handle_status = str(group_result.get("status") or HANDLE_UNCONFIRMED)
+        item["handle_group_status"] = handle_status
+        item["handle_group"] = group_result
+        item["windows_handle_status"] = handle_status
+        blockers = set(item.get("blockers") or [])
+        if handle_status == HANDLE_FREE_CONFIRMED:
+            # V4's runtime evidence cannot prove this after the native probe
+            # runs.  Remove only that stale derived blocker; preserve every
+            # independent activity/reference/formal-database blocker.
+            blockers.discard("WINDOWS_HANDLE_UNCONFIRMED")
+        else:
+            item["orphan_candidate"] = False
+            blockers.add(handle_status)
+        item["blockers"] = sorted(blockers)
+    candidates = [item for item in target_results if item.get("orphan_candidate")]
+    handle_detection = (
+        "PASS"
+        if os.name == "nt" and handle_statuses and HANDLE_PROBE_FAILED not in handle_statuses
+        else "PARTIAL"
+        if handle_statuses
+        else "FAIL"
+    )
+    if handle_statuses and all(status == HANDLE_FREE_CONFIRMED for status in handle_statuses):
+        handle_detection = "PASS"
+    windows_runtime = (
+        "PASS"
+        if authorized
+        and base["status"].get("activity_verification") == "PASS"
+        and handle_statuses
+        and all(status == HANDLE_FREE_CONFIRMED for status in handle_statuses)
+        and not base["runtime_evidence"].get("backend_worker")
+        and not base["runtime_evidence"].get("electron")
+        and not base["runtime_evidence"].get("python_mesh")
+        else "FAIL"
+        if HANDLE_PROBE_FAILED in handle_statuses
+        else "PARTIAL"
+    )
+    backup_result: dict[str, Any] = {
+        "format": "netconsole-mesh-v4-1-backup-manifest",
+        "execution_mode": execution_mode,
+        "authorization": authorization,
+        "backup_success_count": 0,
+        "backup_failure_count": 0,
+        "entries": [],
+        "backup_workflow": "NOT_EXECUTED",
+        "reason": "未同时满足授权、静止、引用、正式库和句柄门禁；未创建生产备份。",
+    }
+    isolation_result: dict[str, Any] = {
+        "format": "netconsole-mesh-v4-1-isolation-manifest",
+        "execution_mode": execution_mode,
+        "authorization": authorization,
+        "isolated_count": 0,
+        "logical_isolation_bytes": 0,
+        "actual_released_bytes": 0,
+        "entries": [],
+        "workflow": "NOT_EXECUTED",
+        "reason": "未同时满足授权、备份和隔离前复核门禁；未移动生产文件。",
+    }
+    if execution_mode == "BACKUP_ONLY" and authorized and candidates:
+        backup_result = _v41_backup_candidates(
+            candidates,
+            audit_id=audit_id,
+            authorization=authorization,
+            manifest_path=output_dir / "MESH_DATABASE_V4_1_BACKUP_MANIFEST.json",
+        )
+    elif execution_mode == "ISOLATE_APPROVED" and authorized:
+        payload = authorization.get("payload") or {}
+        supplied_backup = backup_manifest or Path(str(payload.get("backup_manifest") or ""))
+        supplied_backup = supplied_backup.resolve()
+        supplied_payload, supplied_error = _v41_load_json(supplied_backup)
+        if supplied_payload is not None and not supplied_error:
+            expected_hash = str(payload.get("backup_manifest_sha256") or "")
+            if expected_hash and sha256_file(supplied_backup) == expected_hash:
+                isolation_result = _v41_isolate_backup_manifest(
+                    supplied_payload,
+                    audit_id=audit_id,
+                    handle_groups=group_results,
+                    authorization=authorization,
+                    manifest_path=output_dir / "MESH_DATABASE_V4_1_ISOLATION_MANIFEST.json",
+                )
+            else:
+                isolation_result["reason"] = "Backup Manifest SHA-256 不匹配，禁止隔离。"
+        else:
+            isolation_result["reason"] = f"无法读取 Backup Manifest：{supplied_error}"
+    elif execution_mode == "AUDIT_ONLY":
+        backup_result["reason"] = "AUDIT_ONLY：只读检查，不创建生产备份。"
+        isolation_result["reason"] = "AUDIT_ONLY：只读检查，不执行隔离。"
+    if not (output_dir / "MESH_DATABASE_V4_1_BACKUP_MANIFEST.json").is_file():
+        _write_v41_json(output_dir / "MESH_DATABASE_V4_1_BACKUP_MANIFEST.json", backup_result)
+    if not (output_dir / "MESH_DATABASE_V4_1_ISOLATION_MANIFEST.json").is_file():
+        _write_v41_json(output_dir / "MESH_DATABASE_V4_1_ISOLATION_MANIFEST.json", isolation_result)
+    production_backup = (
+        "PASS"
+        if backup_result.get("backup_workflow") == "PASS"
+        else "FAIL"
+        if backup_result.get("backup_failure_count")
+        else "NOT_EXECUTED"
+    )
+    production_isolation = (
+        "PASS"
+        if isolation_result.get("workflow") == "PASS"
+        else "FAIL"
+        if isolation_result.get("workflow") in {"FAIL", "PARTIAL"}
+        else "NOT_EXECUTED"
+    )
+    workflow_status = test_workflow_status if test_workflow_status in {"PASS", "PARTIAL", "FAIL"} else "PARTIAL"
+    overall = (
+        "FAIL"
+        if production_backup == "FAIL" or production_isolation == "FAIL"
+        else "BLOCKED"
+        if not authorized
+        else "PASS"
+        if production_isolation == "PASS"
+        else "PARTIAL"
+    )
+    base.update(
+        {
+            "format": "netconsole-mesh-database-reference-audit-v4-1",
+            "execution_mode": execution_mode,
+            "authorization": authorization,
+            "target_results": target_results,
+            "candidates": candidates,
+            "handle_groups": list(group_results.values()),
+            "handle_audit": {
+                "status": "HANDLE_OCCUPIED"
+                if HANDLE_OCCUPIED in handle_statuses
+                else HANDLE_PROBE_FAILED
+                if HANDLE_PROBE_FAILED in handle_statuses
+                else HANDLE_UNCONFIRMED
+                if HANDLE_UNCONFIRMED in handle_statuses
+                else HANDLE_FREE_CONFIRMED
+                if handle_statuses
+                else HANDLE_PROBE_FAILED,
+                "groups": list(group_results.values()),
+            },
+            "backup_manifest": backup_result,
+            "isolation_manifest": isolation_result,
+            "test_workflow_status": workflow_status,
+            "status": {
+                "handle_detection": handle_detection,
+                "windows_runtime_verification": windows_runtime,
+                "maintenance_authorized": "YES" if authorized else "NO",
+                "activity_verification": "PASS"
+                if windows_runtime == "PASS"
+                else "FAIL"
+                if windows_runtime == "FAIL"
+                else "PARTIAL",
+                "reference_check": base["status"].get("reference_check", "PARTIAL"),
+                "backup_workflow": workflow_status,
+                "isolation_workflow": workflow_status,
+                "rollback_workflow": workflow_status,
+                "production_backup": production_backup,
+                "production_isolation": production_isolation,
+                "data_safety": "PASS" if overall != "FAIL" else "FAIL",
+                "databases_removed": 0,
+                "orphan_candidates": len(candidates),
+                "databases_isolated": int(isolation_result.get("isolated_count") or 0),
+                "logical_isolation_bytes": int(isolation_result.get("logical_isolation_bytes") or 0),
+                "actual_released_bytes": 0,
+                "raw_logs_modified": 0,
+                "formal_databases_modified": 0,
+                "overall_status": overall,
+            },
+        }
+    )
+    if manifest_error:
+        base["scope_error"] = manifest_error
+        base["status"]["overall_status"] = "BLOCKED"
+    return base
+
+
+def render_v41_final_report(audit: dict[str, Any]) -> str:
+    status = audit["status"]
+    lines = [
+        "# MESH_DATABASE_V4_1_FINAL_REPORT",
+        "",
+        f"生成时间：`{audit['generated_at']}`",
+        f"HANDLE_DETECTION={status['handle_detection']}",
+        f"WINDOWS_RUNTIME_VERIFICATION={status['windows_runtime_verification']}",
+        f"MAINTENANCE_AUTHORIZED={status['maintenance_authorized']}",
+        f"ACTIVITY_VERIFICATION={status['activity_verification']}",
+        f"REFERENCE_CHECK={status['reference_check']}",
+        f"BACKUP_WORKFLOW={status['backup_workflow']}",
+        f"ISOLATION_WORKFLOW={status['isolation_workflow']}",
+        f"ROLLBACK_WORKFLOW={status['rollback_workflow']}",
+        f"PRODUCTION_BACKUP={status['production_backup']}",
+        f"PRODUCTION_ISOLATION={status['production_isolation']}",
+        f"DATA_SAFETY={status['data_safety']}",
+        f"DATABASES_REMOVED={status['databases_removed']}",
+        f"OVERALL_STATUS={status['overall_status']}",
+        "",
+        "## 维护授权与运行状态",
+        "",
+        f"- Execution mode：`{audit.get('execution_mode')}`；授权文件：`{audit.get('authorization', {}).get('status')}`。",
+        f"- Backend/Worker：`{json.dumps(audit.get('runtime_evidence', {}).get('backend_worker') or [], ensure_ascii=False)}`",
+        f"- Electron：`{json.dumps(audit.get('runtime_evidence', {}).get('electron') or [], ensure_ascii=False)}`",
+        f"- Python/MESH：`{json.dumps(audit.get('runtime_evidence', {}).get('python_mesh') or [], ensure_ascii=False)}`",
+        "- 未终止进程、未关闭外部句柄、未删除 WAL/SHM、未 checkpoint、未 VACUUM。",
+        "",
+        "## Windows 文件句柄检测",
+        "",
+        "- 采用 Windows Restart Manager 资源登记 + `CreateFileW(GENERIC_READ, share=0)` 短时访问冲突探针；完成后立即 CloseHandle。",
+        "- Restart Manager 空结果不单独作为无句柄证明；只有与短时共享冲突探针共同通过时才给出 `HANDLE_FREE_CONFIRMED`。",
+        f"- 文件组总状态：`{audit.get('handle_audit', {}).get('status')}`；目标组数量：{len(audit.get('handle_groups') or [])}。",
+        "- handle.exe 为可选辅助工具，本轮未自动安装或执行第三方工具；权限不足、未知句柄来源和 API 失败均保持保护。",
+        "",
+        "## 7 个 rebuild 最新结论",
+        "",
+        "| rebuild | formal DB | 句柄组 | 活动 | 引用 | 正式库 | 判定 | 阻断 |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for item in audit.get("target_results") or []:
+        record = item.get("record") or {}
+        review = item.get("rebuild_review") or {}
+        refs = f"source={record.get('source_reference_count', 0)}, session={record.get('session_reference_count', 0)}, task={record.get('active_task_reference_count', 0)}/{record.get('historical_task_reference_count', 0)}/{record.get('unknown_task_reference_count', 0)}, recovery={record.get('recovery_reference_count', 0)}"
+        lines.append(
+            "| "
+            + " | ".join(
+                _md_escape(value)
+                for value in (
+                    Path(str(item.get("path") or "")).name,
+                    item.get("formal_database_path"),
+                    item.get("handle_group_status"),
+                    item.get("activity_state"),
+                    refs,
+                    f"{review.get('formal_database_quick_check', '')}/{review.get('formal_database_integrity_check', '')}",
+                    "ORPHAN_CANDIDATE" if item.get("orphan_candidate") else "PROTECTED",
+                    ", ".join(item.get("blockers") or []),
+                )
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## 备份、隔离、回滚与数据影响",
+            "",
+            f"- 候选：{status['orphan_candidates']}；备份成功：{audit.get('backup_manifest', {}).get('backup_success_count', 0)}；隔离成功：{status['databases_isolated']}。",
+            f"- 逻辑隔离大小：{status['logical_isolation_bytes']} bytes；实际释放磁盘空间：{status['actual_released_bytes']} bytes。",
+            f"- 原始日志修改：{status['raw_logs_modified']}；正式数据库修改：{status['formal_databases_modified']}；永久删除：{status['databases_removed']}。",
+            "- 隔离包含主库/WAL/SHM 文件组的逐文件映射；任何组内变化、目标冲突或失败都会进入 ROLLBACK_REQUIRED 并停止后续危险操作。",
+            "",
+            "## 测试证据与剩余阻断",
+            "",
+            f"- 测试工作流状态：`{audit.get('test_workflow_status')}`；验证摘要：{audit.get('validation', {}).get('test_result', '未提供')}。",
+            "- 真实生产备份/隔离：没有授权时保持 NOT_EXECUTED；不能用 TEST 根通过替代生产授权。",
+            "- V3 的 5 个未解释 SHM 变化和 1 个 DEV_REAL ACTIVITY_UNKNOWN 继续保护。",
+            f"- Git：branch=`{audit.get('git', {}).get('branch', '未提供')}`；HEAD=`{audit.get('git', {}).get('head', '未提供')}`；status=`{audit.get('git', {}).get('status', '未提供')}`。",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def render_v41_handle_report(audit: dict[str, Any]) -> str:
+    lines = [
+        "# MESH_WINDOWS_HANDLE_AUDIT",
+        "",
+        f"HANDLE_DETECTION={audit['status']['handle_detection']}",
+        f"WINDOWS_RUNTIME_VERIFICATION={audit['status']['windows_runtime_verification']}",
+        f"整体句柄状态：`{audit.get('handle_audit', {}).get('status')}`",
+        "",
+        "## 探测实现",
+        "",
+        "- Windows Restart Manager：RmStartSession / RmRegisterResources / RmGetList / RmEndSession。",
+        "- Windows 共享冲突：CreateFileW 只读、share=0，成功后立即 CloseHandle。",
+        "- 探测对象：每个 rebuild 主库、WAL、SHM 及对应正式数据库文件组。",
+        "- 不执行终止进程、关闭外部句柄、checkpoint、VACUUM、Journal Mode 修改或第三方工具安装。",
+        "",
+        "## 文件组结果",
+        "",
+        "| rebuild | formal | overall | 文件探针 | Restart Manager 进程 |",
+        "|---|---|---|---|---|",
+    ]
+    for group in audit.get("handle_groups") or []:
+        statuses = ", ".join(f"{Path(item['path']).name}={item['status']}" for item in group.get("files") or [])
+        processes = group.get("restart_manager", {}).get("processes") or []
+        lines.append(
+            "| "
+            + " | ".join(
+                _md_escape(value)
+                for value in (
+                    Path(group["rebuild_path"]).name,
+                    Path(group["formal_database_path"]).name,
+                    group.get("status"),
+                    statuses,
+                    json.dumps(processes, ensure_ascii=False),
+                )
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## 覆盖范围与盲区",
+            "",
+            "- Restart Manager 只报告能够注册/识别的资源占用者，不等价于系统级句柄枚举。",
+            "- share=0 访问冲突可识别常见不兼容共享模式，但不能证明所有允许共享读取的句柄都不存在。",
+            "- 权限不足、路径失效、网络路径、符号链接和未知内核/服务句柄均失败关闭；不得因检测失败放行隔离。",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def write_v41_reports(audit: dict[str, Any], output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "MESH_DATABASE_V4_1_FINAL_REPORT.md").write_text(
+        render_v41_final_report(audit), encoding="utf-8"
+    )
+    (output_dir / "MESH_WINDOWS_HANDLE_AUDIT.md").write_text(
+        render_v41_handle_report(audit), encoding="utf-8"
+    )
+    readiness = {
+        "format": "netconsole-mesh-maintenance-readiness-v4-1",
+        "generated_at": audit["generated_at"],
+        "execution_mode": audit.get("execution_mode"),
+        "authorization": audit.get("authorization"),
+        "status": audit.get("status"),
+        "target_count": len(audit.get("target_results") or []),
+        "handle_groups": audit.get("handle_groups"),
+        "backup_manifest_path": str(output_dir / "MESH_DATABASE_V4_1_BACKUP_MANIFEST.json"),
+        "isolation_manifest_path": str(output_dir / "MESH_DATABASE_V4_1_ISOLATION_MANIFEST.json"),
+        "validation": audit.get("validation"),
+    }
+    _write_v41_json(output_dir / "MESH_MAINTENANCE_READINESS.json", readiness)
+    backup_report = {
+        "format": "netconsole-mesh-backup-isolation-test-report-v4-1",
+        "generated_at": audit["generated_at"],
+        "workflow_status": audit.get("test_workflow_status"),
+        "production_backup": audit["status"].get("production_backup"),
+        "production_isolation": audit["status"].get("production_isolation"),
+        "backup_manifest": audit.get("backup_manifest"),
+        "validation": audit.get("validation"),
+        "test_scope": "仅允许隔离 TEST 数据根；不得把 TEST 通过升级为生产授权。",
+    }
+    (output_dir / "MESH_BACKUP_ISOLATION_TEST_REPORT.md").write_text(
+        "# MESH_BACKUP_ISOLATION_TEST_REPORT\n\n"
+        + json.dumps(backup_report, ensure_ascii=False, indent=2, default=str)
+        + "\n",
+        encoding="utf-8",
+    )
+    rollback_report = {
+        "format": "netconsole-mesh-rollback-test-report-v4-1",
+        "generated_at": audit["generated_at"],
+        "workflow_status": audit.get("test_workflow_status"),
+        "rollback_manifest": audit.get("isolation_manifest"),
+        "rollback_rule": "原路径出现新文件、目标冲突或哈希变化时报告冲突，不删除文件解决。",
+        "validation": audit.get("validation"),
+    }
+    (output_dir / "MESH_ROLLBACK_TEST_REPORT.md").write_text(
+        "# MESH_ROLLBACK_TEST_REPORT\n\n"
+        + json.dumps(rollback_report, ensure_ascii=False, indent=2, default=str)
+        + "\n",
+        encoding="utf-8",
+    )
 def write_reports(audit: dict[str, Any], output_dir: Path, *, operation: dict[str, Any] | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "MESH_DATABASE_ACTIVITY_AUDIT_V3.md").write_text(
@@ -2427,7 +3547,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", action="append", required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--mode", choices=("audit", "backup", "isolate", "v4"), default="audit")
+    parser.add_argument("--mode", choices=("audit", "backup", "isolate", "v4", "v4.1"), default="audit")
     parser.add_argument(
         "--audit-id",
         default=datetime.now(UTC).strftime("mesh-audit-%Y%m%dT%H%M%SZ"),
@@ -2444,6 +3564,20 @@ def _parser() -> argparse.ArgumentParser:
         help="V4 专用：明确提供维护授权证据后才允许进入候选门禁；默认只读阻断",
     )
     parser.add_argument(
+        "--execution-mode",
+        choices=V41_EXECUTION_MODES,
+        default="AUDIT_ONLY",
+        help="V4.1 执行模式；AUDIT_ONLY 不写生产，其他模式必须提供实际操作人员授权文件",
+    )
+    parser.add_argument("--authorization-file", type=Path)
+    parser.add_argument("--v4-report-dir", type=Path)
+    parser.add_argument("--backup-manifest", type=Path)
+    parser.add_argument(
+        "--test-workflow-status",
+        choices=("PASS", "PARTIAL", "FAIL", "NOT_EXECUTED"),
+        default="NOT_EXECUTED",
+    )
+    parser.add_argument(
         "--validation-summary",
         default="未提供；审计器不代替 pytest/Ruff/Gate",
     )
@@ -2454,6 +3588,33 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     roots = [Path(value).resolve() for value in args.data_root]
+    if args.mode == "v4.1":
+        if args.previous_report_dir is None:
+            raise SystemExit("v4.1 需要 --previous-report-dir 指向 V3 报告目录")
+        if args.v4_report_dir is None:
+            raise SystemExit("v4.1 需要 --v4-report-dir 指向 V4 报告目录")
+        audit = audit_v41(
+            roots,
+            previous_report_dir=args.previous_report_dir,
+            v4_report_dir=args.v4_report_dir,
+            output_dir=args.output_dir,
+            execution_mode=args.execution_mode,
+            authorization_file=args.authorization_file,
+            audit_id=str(args.audit_id),
+            backup_manifest=args.backup_manifest,
+            test_workflow_status=args.test_workflow_status,
+        )
+        audit["validation"] = {"test_result": args.validation_summary}
+        write_v41_reports(audit, args.output_dir)
+        print(
+            json.dumps(
+                {"summary": audit["status"], "handle_audit": audit["handle_audit"]},
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+        )
+        return 0
     if args.mode == "v4":
         if args.previous_report_dir is None:
             raise SystemExit("v4 需要 --previous-report-dir 指向 V3 报告目录")
