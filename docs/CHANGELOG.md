@@ -12,6 +12,7 @@
 
 - Heartbeat 改为 Backend 常驻监督，支持基础资料驱动、主备 IP 聚合、跨运行历史恢复和独立配置；Heartbeat 不再依赖 Ground 页面是否打开。
 - Syslog 持续接收后先保留 Raw，再批量解析和按 MR 增量归并；Position Engine 按有效事件时间处理重复、乱序、延迟和连续 AP 切换，保留历史并保护当前/上一位置。
+- 收口旧 AP `MESH_LINKDOWN` 语义：非当前 AP 的有效旧链路事件仅保留诊断信息，不推进位置时间锚点，避免将已过期的 Current AP 重新标记为 Fresh。
 - 补充 Raw Writer/Parser/Position Commit/UI Available 阶段时间、队列积压、EPS、重复/乱序和位置延迟指标；未知 AP 或不完整事件不会覆盖已有位置。
 - AC 使用增量账本和可信快照对账，避免旧快照、延迟快照或不完整结果无条件覆盖较新的 Syslog 位置；历史归档回放和短时突发队列保护纳入本地回归。
 
