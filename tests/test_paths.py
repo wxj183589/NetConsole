@@ -187,6 +187,8 @@ def test_managed_worktree_uses_canonical_workspace_test_data_root(tmp_path: Path
         workspace / "test-data" / "NetConsole"
     ).resolve()
 
+    assert runtime_environment.repository_workspace_root(worktree) == workspace.resolve()
+
     (worktree / ".git").unlink()
     assert runtime_environment.test_data_root_base(worktree) == (
         workspace / "worktrees" / "test-data" / "NetConsole"

@@ -124,7 +124,18 @@ def repository_workspace_root(repository_root: Path | None = None) -> Path:
     """
 
     source_root = Path(repository_root or _source_project_root()).expanduser().resolve()
-    return source_root.parent
+    checkout_parent = source_root.parent
+    if (
+        checkout_parent.name.casefold() == "worktrees"
+        and checkout_parent.parent.name.casefold() == "netconsole-workspace"
+        and (source_root / ".git").is_file()
+        and (checkout_parent.parent / "NetConsole" / ".git").is_dir()
+    ):
+        # Managed worktrees share the parent Workspace's test-data and report
+        # containers.  Returning ``Workspace\worktrees`` here incorrectly
+        # rejects those canonical isolated paths in maintenance safety guards.
+        return checkout_parent.parent
+    return checkout_parent
 
 
 def validate_data_root(candidate: Path, *, mode: RuntimeMode | None = None) -> Path:
