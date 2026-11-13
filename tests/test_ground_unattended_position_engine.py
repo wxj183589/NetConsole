@@ -215,6 +215,9 @@ def test_old_ap_linkdown_does_not_disconnect_newer_current_ap() -> None:
     assert late_down.state["current_ap_name"] == "AP-B"
     assert late_down.state["position_status"] == "VALID"
     assert late_down.state["position_quality"] == "EXACT_IDENTITY"
+    assert late_down.state["last_event_time"] == "2026-11-10T10:00:05+08:00"
+    assert late_down.state["last_receive_time"] == "2026-11-10T10:00:05+08:00"
+    assert late_down.state["last_position_sequence"] == 2
     assert late_down.position_changed is False
 
 

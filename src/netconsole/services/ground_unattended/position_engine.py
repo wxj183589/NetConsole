@@ -273,6 +273,14 @@ class PositionEngine:
             and resolution_status in _VALID_RESOLUTION_STATUSES
             and (current_ap["id"] or current_ap["mac"] or current_ap["name"])
         )
+        current_key = _identity_key(state)
+        incoming_key = current_ap["id"] or current_ap["mac"] or current_ap["name"]
+        stale_linkdown = bool(
+            event_type == "MESH_LINKDOWN"
+            and current_valid
+            and current_key
+            and current_key != incoming_key
+        )
 
         state.update(
             {
@@ -296,7 +304,7 @@ class PositionEngine:
             event_time_source=event_source,
         )
 
-        if current_valid:
+        if current_valid and not stale_linkdown:
             state.update(
                 {
                     "last_event_type": event_type,
@@ -323,8 +331,6 @@ class PositionEngine:
             # license to erase the last known exact AP. If the Current is empty,
             # retain the exact endpoint carried by the disconnect as a bounded
             # last-known position.
-            current_key = _identity_key(state)
-            incoming_key = current_ap["id"] or current_ap["mac"] or current_ap["name"]
             if not current_key:
                 self._set_current(state, current_ap)
                 state["station"] = _text(event.get("station"))
@@ -346,7 +352,6 @@ class PositionEngine:
                 state["position_status"] = "DISCONNECTED"
                 state["position_quality"] = "EXACT_IDENTITY"
         else:
-            incoming_key = current_ap["id"] or current_ap["mac"] or current_ap["name"]
             previous_key = _identity_key(state)
             if incoming_key != previous_key:
                 if previous_key:
