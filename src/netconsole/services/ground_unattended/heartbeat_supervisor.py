@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from collections import deque
 from datetime import datetime
 from typing import Any
@@ -434,16 +435,35 @@ class HeartbeatSupervisor:
         pending = getattr(self, "_heartbeat_pending_loss_events", None)
         if pending is None:
             pending = self._heartbeat_pending_loss_events = deque()
+        metadata = {"ap_name": "", "station": "", "section": ""}
+        needs_position_context = (
+            (not sample.ok and tracker.state is None)
+            or (bool(sample.ok) and tracker.state is not None)
+        )
+        if needs_position_context:
+            try:
+                position = self.repository.get_syslog_position_state(target.mr_id)
+                if isinstance(position, Mapping):
+                    metadata = {
+                        "ap_name": str(
+                            position.get("current_ap_name")
+                            or position.get("current_ap_mac")
+                            or ""
+                        ),
+                        "station": str(position.get("station") or ""),
+                        "section": str(position.get("section") or ""),
+                    }
+            except Exception:  # pragma: no cover - repository failures are non-fatal
+                LOGGER.debug(
+                    "failed to load Syslog position context for heartbeat loss",
+                    exc_info=True,
+                )
         try:
             tracker.enqueue_observation(
                 pending,
                 success=bool(sample.ok),
                 at=timestamp,
-                metadata={
-                    "ap_name": target.current_ap_name,
-                    "station": target.station,
-                    "section": target.section,
-                },
+                metadata=metadata,
                 fields=dict(run_id=self._heartbeat_run_id, target_ip=target.target_ip,
                             train_id=target.train_id, mr_id=target.mr_id, mr_role=target.mr_position_code),
             )

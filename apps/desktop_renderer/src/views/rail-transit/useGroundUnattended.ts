@@ -523,7 +523,7 @@ const pingColumns: NcTableColumn<GroundPingTarget>[] = [
   { key: 'avg_rtt_ms', label: t('ground.avg_rtt', '平均 RTT'), valueType: 'number', displayValue: (row) => metric(row.avg_rtt_ms, 'ms') },
   { key: 'max_rtt_ms', label: t('ground.max_rtt', '最大 RTT'), valueType: 'number', displayValue: (row) => metric(row.max_rtt_ms, 'ms') },
   { key: 'continuous_loss_max_seconds', label: t('ground.longest_loss', '最长连续丢包'), valueType: 'duration', displayValue: (row) => `${row.continuous_loss_max_count} / ${row.continuous_loss_max_seconds.toFixed(1)}s` },
-  { key: 'current_ap_name', label: t('ground.current_ap', '当前 AP'), valueType: 'name' },
+  { key: 'current_ap_name', label: 'AC 参考 AP', valueType: 'name' },
   { key: 'station', label: t('ground.station', '站点'), valueType: 'text' },
   { key: 'section', label: t('ground.section', '区间'), valueType: 'text' },
   { key: 'updated_at', label: t('ground.updated_at', '更新时间'), valueType: 'datetime' },

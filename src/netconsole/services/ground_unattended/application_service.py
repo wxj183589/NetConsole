@@ -160,6 +160,52 @@ class GroundUnattendedError(ValueError):
         self.status_code = status_code
 
 
+def _syslog_position_projection(
+    position: Mapping[str, Any],
+    *,
+    now: datetime,
+    stale_after_seconds: float,
+) -> dict[str, str]:
+    """Project a Syslog position without using AC as a realtime fallback."""
+    received_at = str(position.get("last_receive_time") or "")
+    received_dt: datetime | None = None
+    if received_at:
+        try:
+            received_dt = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+            if received_dt.tzinfo is None:
+                received_dt = received_dt.replace(tzinfo=now.tzinfo)
+        except ValueError:
+            received_dt = None
+    age_seconds = (
+        max(0.0, (now - received_dt.astimezone(now.tzinfo)).total_seconds())
+        if received_dt is not None
+        else None
+    )
+    status = str(position.get("position_status") or "UNKNOWN")
+    quality = str(position.get("position_quality") or "UNKNOWN")
+    freshness = (
+        "NO_DATA"
+        if received_dt is None
+        else "STALE"
+        if age_seconds is None or age_seconds > stale_after_seconds
+        else "DISCONNECTED"
+        if status == "DISCONNECTED"
+        else "FRESH"
+    )
+    current_name = str(position.get("current_ap_name") or "")
+    return {
+        "position_freshness": freshness,
+        "current_active_peer": (
+            current_name
+            if freshness == "FRESH"
+            and status == "VALID"
+            and quality == "EXACT_IDENTITY"
+            else ""
+        ),
+        "last_link_switch_at": str(position.get("last_switch_time") or ""),
+    }
+
+
 class GroundUnattendedApplicationService:
     def __init__(
         self,
@@ -3986,7 +4032,6 @@ class GroundUnattendedApplicationService:
             run_id=run_id,
         )
         boot_by_device = dict(endpoint_snapshot["boot_by_device"])
-        wmesh_by_device = dict(endpoint_snapshot["wmesh_by_device"])
         position_by_device = dict(endpoint_snapshot.get("position_by_device") or {})
         reconciliation_by_device = dict(
             endpoint_snapshot.get("reconciliation_by_device") or {}
@@ -4004,7 +4049,6 @@ class GroundUnattendedApplicationService:
                 summary = summaries.get(mr_key) or summaries.get(end_key) or {}
                 operation = operations.get((train.train_id, endpoint.endpoint)) or {}
                 boot = boot_by_device.get(endpoint.mr_id)
-                wmesh = wmesh_by_device.get(endpoint.mr_id)
                 position = position_by_device.get(endpoint.mr_id) or {}
                 reconciliation = reconciliation_by_device.get(endpoint.mr_id) or {}
                 radio_runtime = runtime_by_device.get(endpoint.mr_id)
@@ -4017,49 +4061,12 @@ class GroundUnattendedApplicationService:
                     else []
                 )
                 config_audit = audit_by_device.get(endpoint.mr_id)
-                wmesh_received_at = self._parse_datetime(
-                    (wmesh or {}).get("receive_time")
-                )
-                wmesh_age_seconds = (
-                    max(
-                        0.0,
-                        (
-                            now
-                            - wmesh_received_at.astimezone(now.tzinfo)
-                        ).total_seconds(),
-                    )
-                    if wmesh_received_at is not None
-                    else None
-                )
-                wmesh_fresh = bool(
-                    wmesh_received_at is not None
-                    and wmesh_age_seconds is not None
-                    and wmesh_age_seconds <= profile.ac_stale_grace_seconds
-                )
-                wmesh_active = bool(
-                    wmesh_fresh
-                    and str((wmesh or {}).get("event_type") or "").upper()
-                    != "MESH_LINKDOWN"
-                )
-                position_received_at = self._parse_datetime(
-                    position.get("last_receive_time")
-                )
-                position_age_seconds = (
-                    max(0.0, (now - position_received_at.astimezone(now.tzinfo)).total_seconds())
-                    if position_received_at is not None
-                    else None
+                position_projection = _syslog_position_projection(
+                    position,
+                    now=now,
+                    stale_after_seconds=profile.ac_stale_grace_seconds,
                 )
                 position_status = str(position.get("position_status") or "UNKNOWN")
-                position_freshness = (
-                    "NO_DATA"
-                    if position_received_at is None
-                    else "DISCONNECTED"
-                    if position_status == "DISCONNECTED"
-                    else "FRESH"
-                    if position_age_seconds is not None
-                    and position_age_seconds <= profile.ac_stale_grace_seconds
-                    else "STALE"
-                )
                 position_current_name = str(position.get("current_ap_name") or "")
                 position_current_mac = str(position.get("current_ap_mac") or "")
                 last_syslog_received_at = str(
@@ -4137,19 +4144,8 @@ class GroundUnattendedApplicationService:
                             if last_syslog_received_at
                             else "WAITING",
                             "last_syslog_received_at": last_syslog_received_at,
-                            "current_active_peer": str(
-                                position_current_name
-                                if position_freshness in {"FRESH", "DISCONNECTED"}
-                                else (wmesh or {}).get("peer_name") or ""
-                            ) if position_freshness in {"FRESH", "DISCONNECTED"} or wmesh_active else "",
-                            "last_link_switch_at": str(
-                                position.get("last_switch_time")
-                                or (wmesh or {}).get("receive_time")
-                                or ""
-                            )
-                            if position.get("last_switch_time")
-                            or (wmesh or {}).get("event_type") == "MESH_ACTIVELINK_SWITCH"
-                            else "",
+                            "current_active_peer": position_projection["current_active_peer"],
+                            "last_link_switch_at": position_projection["last_link_switch_at"],
                             "position_current_ap_id": str(position.get("current_ap_id") or ""),
                             "position_current_ap_name": position_current_name,
                             "position_current_ap_mac": position_current_mac,
@@ -4161,7 +4157,7 @@ class GroundUnattendedApplicationService:
                             "position_status": position_status,
                             "position_quality": str(position.get("position_quality") or "UNKNOWN"),
                             "position_source": str(position.get("position_source") or ""),
-                            "position_freshness": position_freshness,
+                            "position_freshness": position_projection["position_freshness"],
                             "position_last_event_time": str(position.get("last_event_time") or ""),
                             "position_last_event_time_source": str(position.get("last_event_time_source") or ""),
                             "position_last_event_time_precision": str(position.get("last_event_time_precision") or ""),

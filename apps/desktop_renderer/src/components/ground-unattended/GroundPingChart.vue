@@ -242,11 +242,11 @@ function tooltip(raw: unknown): string {
     `管理 IP：${escapeHtml(point.target_ip)}`,
     `结果：${point.warmup_ignored ? '预热忽略' : point.ok ? '成功' : '丢包'}`,
     `RTT：${escapeHtml(point.rtt_ms == null ? '无' : `${point.rtt_ms} ms`)}`,
-    `轨旁 AP：${escapeHtml(point.current_ap_name || '未知')}`,
+    `AC 参考 AP：${escapeHtml(point.current_ap_name || '未知')}`,
     `AP MAC：${escapeHtml(point.current_ap_mac || '未知')}`,
     `站点 / 区间：${escapeHtml(point.station || '未知')} / ${escapeHtml(point.section || '未知')}`,
     `里程 / RSSI：${escapeHtml(point.mileage || '未知')} / ${escapeHtml(point.rssi ?? '未知')}`,
-    `AC 位置时间：${escapeHtml(point.ac_received_at || '未知')}`,
+    `AC 参考时间：${escapeHtml(point.ac_received_at || '未知')}`,
     `切换窗口：${escapeHtml(groundTransitionContextLabel(point.ap_transition_context))}`,
   ].join('<br/>')
 }
