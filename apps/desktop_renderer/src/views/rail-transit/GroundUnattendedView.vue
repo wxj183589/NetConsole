@@ -256,7 +256,7 @@ function openQuickPing(mrId: string) {
           <span>扫描记录 <b>{{ pingSeries?.diagnostics.records_scanned ?? 0 }}</b></span>
           <span>匹配记录 <b>{{ pingSeries?.diagnostics.matched_count ?? 0 }}</b></span>
           <span>当前状态 <b>{{ groundStatusLabel(pingSeries?.target_state || selectedPingTarget.data_availability) }}</b></span>
-          <span>当前 AP <b>{{ pingLiveStats.currentAp || '未知' }}</b></span>
+          <span>AC 参考 AP <b>{{ pingLiveStats.currentAp || '未知' }}</b></span>
           <span>站点 / 区间 <b>{{ pingLiveStats.station || '未知' }} / {{ pingLiveStats.section || '未知' }}</b></span>
           <span>最近样本 <b>{{ pingLiveStats.latestAt || '尚无样本' }}</b></span>
           <span v-if="pingSeries?.diagnostics.truncated">查询预算已截断</span>
@@ -311,7 +311,7 @@ function openQuickPing(mrId: string) {
             <el-table-column prop="duration_seconds" label="持续时间（秒）" width="130" />
             <el-table-column prop="loss_count" label="丢包数" width="90" />
             <el-table-column prop="mr_name" label="MR" min-width="150" />
-            <el-table-column prop="current_ap_name" label="AP" min-width="150" />
+            <el-table-column prop="current_ap_name" label="Syslog 最后识别 AP" min-width="170" />
             <el-table-column prop="station" label="站点" min-width="130" />
             <el-table-column prop="section" label="区间" min-width="130" />
             <el-table-column prop="ap_transition_context" label="AP 切换前后" min-width="140"><template #default="{ row }">{{ groundTransitionContextLabel(row.ap_transition_context) }}</template></el-table-column>
@@ -337,7 +337,7 @@ function openQuickPing(mrId: string) {
           <span>开始 <b>{{ selectedDeepCollector.started_at || '尚未开始' }}</b></span>
           <span>最后记录 <b>{{ selectedDeepCollector.last_record_at || '尚未收到数据' }}</b></span>
           <span>原始数据 <b>{{ bytes(selectedDeepCollector.bytes_written) }}</b></span>
-          <span>AP / 站点 <b>{{ selectedDeepCollector.current_ap || '未知' }} / {{ selectedDeepCollector.station || '未知' }}</b></span>
+          <span>AC 参考 AP / 站点 <b>{{ selectedDeepCollector.current_ap || '未知' }} / {{ selectedDeepCollector.station || '未知' }}</b></span>
           <span>fping <b>{{ selectedDeepCollector.fping_status }} / {{ selectedDeepCollector.fping_target_ip || '等待目标' }}</b></span>
           <span>fping 样本 <b>{{ selectedDeepCollector.fping_sample_count }}</b></span>
           <span>fping 参数 <b>{{ selectedDeepCollector.fping_interval_ms || '—' }} / {{ selectedDeepCollector.fping_timeout_ms || '—' }} ms · {{ selectedDeepCollector.fping_packet_size || '—' }} Bytes</b></span>
@@ -513,7 +513,8 @@ function openQuickPing(mrId: string) {
           <el-descriptions-item label="位置判定来源">{{ selectedTrain.location_class_source }}</el-descriptions-item>
           <el-descriptions-item label="Ping 纳入原因" :title="selectedTrain.ping_reason_code">{{ selectedTrain.ping_reason_text || '未评估' }}</el-descriptions-item>
           <el-descriptions-item label="深采资格" :title="selectedTrain.deep_collection_reason_code">{{ selectedTrain.deep_collection_reason_text || '未评估' }}</el-descriptions-item>
-          <el-descriptions-item :label="t('ground.current_ap', '当前 AP')">{{ selectedTrain.current_ap_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="AC 参考 AP">{{ selectedTrain.resolved_ap_name || selectedTrain.raw_peer_ap_name || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="Syslog 最后识别 AP">{{ endpoint(selectedTrain, 'CT')?.position_current_ap_name || endpoint(selectedTrain, 'CW')?.position_current_ap_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="位置匹配等级">{{ groundStatusLabel(selectedTrain.location_match_level) }}</el-descriptions-item>
           <el-descriptions-item label="原始 AP 名称">{{ selectedTrain.raw_peer_ap_name || '—' }}</el-descriptions-item>
           <el-descriptions-item label="原始 AP MAC">{{ selectedTrain.raw_peer_ap_mac || '—' }}</el-descriptions-item>

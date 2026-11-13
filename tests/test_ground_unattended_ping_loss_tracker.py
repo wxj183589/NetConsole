@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from collections import deque
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
 from netconsole.services.ground_unattended.heartbeat_state import HeartbeatTarget
 from netconsole.services.ground_unattended.heartbeat_supervisor import HeartbeatSupervisor
+from netconsole.services.ground_unattended.fleet_ping import FleetPingTarget
 
 from netconsole.services.ground_unattended.ping_loss import PingLossTracker
 from netconsole.services.ground_unattended.task_scheduler import GroundTaskScheduler
@@ -110,6 +112,42 @@ def test_loss_tracker_records_episode_and_recovery_context() -> None:
     assert recovered["duration_seconds"] == 5
     assert recovered["last_success_station"] == "S2"
     assert tracker.state is None
+
+
+def test_heartbeat_loss_context_uses_last_syslog_position_not_ac_target_snapshot() -> None:
+    supervisor = object.__new__(HeartbeatSupervisor)
+    supervisor.repository = Mock()
+    supervisor.repository.get_syslog_position_state.return_value = {
+        "current_ap_name": "SYSLOG-AP-B",
+        "current_ap_mac": "aa:aa:aa:aa:aa:02",
+        "station": "S2",
+        "section": "K2",
+    }
+    supervisor._heartbeat_loss_trackers = {}
+    supervisor._heartbeat_pending_loss_events = deque()
+    supervisor._heartbeat_run_id = "heartbeat-resident"
+    target = FleetPingTarget(
+        target_ip="192.0.2.10",
+        train_id="train-1",
+        train_no="1",
+        mr_id="mr-1",
+        mr_position_code="CT",
+        current_ap_name="AC-OLD",
+        station="AC-S1",
+        section="AC-K1",
+    )
+
+    supervisor._queue_heartbeat_loss_sample(
+        target,
+        SimpleNamespace(ok=False),
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+    event = supervisor._heartbeat_pending_loss_events[0]
+    assert event["ap_name"] == "SYSLOG-AP-B"
+    assert event["station"] == "S2"
+    assert event["section"] == "K2"
+    supervisor.repository.get_syslog_position_state.assert_called_once_with("mr-1")
 
 
 def test_scheduler_keeps_domains_bounded_and_deduplicated() -> None:

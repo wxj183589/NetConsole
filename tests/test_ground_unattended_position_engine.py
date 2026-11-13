@@ -163,6 +163,61 @@ def test_unknown_ap_and_linkdown_preserve_last_known_location() -> None:
     assert disconnected.state["position_status"] == "DISCONNECTED"
 
 
+def test_unresolved_event_does_not_advance_last_valid_position_anchor() -> None:
+    engine = PositionEngine()
+    engine.apply(_event("MESH_LINKUP", "2026-11-10T10:00:00+08:00", sequence=1))
+
+    unresolved = engine.apply(
+        _event(
+            "MESH_ACTIVELINK_SWITCH",
+            "2026-11-10T10:00:05+08:00",
+            ap_id="unknown",
+            ap_name="UNKNOWN-AP",
+            ap_mac="aa:aa:aa:aa:aa:99",
+            sequence=2,
+            identity_status="unresolved",
+            resolution_status="UNRESOLVED",
+        )
+    )
+
+    assert unresolved.state["current_ap_name"] == "AP-A"
+    assert unresolved.state["last_event_time"] == "2026-11-10T10:00:00+08:00"
+    assert unresolved.state["last_receive_time"] == "2026-11-10T10:00:00+08:00"
+    assert unresolved.state["last_position_sequence"] == 1
+    assert unresolved.state["last_observed_ap_name"] == "UNKNOWN-AP"
+
+
+def test_old_ap_linkdown_does_not_disconnect_newer_current_ap() -> None:
+    engine = PositionEngine()
+    engine.apply(_event("MESH_LINKUP", "2026-11-10T10:00:00+08:00", sequence=1))
+    engine.apply(
+        _event(
+            "MESH_ACTIVELINK_SWITCH",
+            "2026-11-10T10:00:05+08:00",
+            ap_id="ap-b",
+            ap_name="AP-B",
+            ap_mac="aa:aa:aa:aa:aa:02",
+            sequence=2,
+        )
+    )
+
+    late_down = engine.apply(
+        _event(
+            "MESH_LINKDOWN",
+            "2026-11-10T10:00:06+08:00",
+            ap_id="ap-a",
+            ap_name="AP-A",
+            ap_mac="aa:aa:aa:aa:aa:01",
+            sequence=3,
+        )
+    )
+
+    assert late_down.state["current_ap_name"] == "AP-B"
+    assert late_down.state["position_status"] == "VALID"
+    assert late_down.state["position_quality"] == "EXACT_IDENTITY"
+    assert late_down.position_changed is False
+
+
 def test_state_can_be_restored_after_backend_restart() -> None:
     source = PositionEngine()
     source.apply(_event("MESH_LINKUP", "2026-11-10T10:00:00+08:00"))

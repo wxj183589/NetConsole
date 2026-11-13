@@ -280,15 +280,6 @@ class PositionEngine:
                 "train_id": _text(event.get("train_id"))
                 or _text(state.get("train_id")),
                 "mr_role": _text(event.get("mr_role")) or _text(state.get("mr_role")),
-                "last_event_type": event_type,
-                "last_event_time": event_time,
-                "last_event_time_source": event_source,
-                "last_event_time_precision": event_precision,
-                "last_receive_time": _text(event.get("receive_time")),
-                "last_raw_persist_time": _text(raw_persist_time),
-                "last_parse_complete_time": _text(parse_complete_time),
-                "last_position_dedup_key": dedup_key,
-                "last_position_sequence": sequence,
                 "last_observed_identity_status": identity_status or "unknown",
                 "last_observed_ap_name": current_ap["name"],
                 "last_observed_ap_mac": current_ap["mac"]
@@ -305,8 +296,26 @@ class PositionEngine:
             event_time_source=event_source,
         )
 
+        if current_valid:
+            state.update(
+                {
+                    "last_event_type": event_type,
+                    "last_event_time": event_time,
+                    "last_event_time_source": event_source,
+                    "last_event_time_precision": event_precision,
+                    "last_receive_time": _text(event.get("receive_time")),
+                    "last_raw_persist_time": _text(raw_persist_time),
+                    "last_parse_complete_time": _text(parse_complete_time),
+                    "last_position_dedup_key": dedup_key,
+                    "last_position_sequence": sequence,
+                }
+            )
+
         position_changed = False
         if not current_valid:
+            # An unresolved observation is retained for diagnostics, but it is
+            # not a new position fact and must not advance the freshness/order
+            # anchor used by the last valid Syslog identity.
             state["position_quality"] = "UNRESOLVED_IDENTITY"
             state["position_status"] = "STALE" if _identity_key(state) else "UNRESOLVED"
         elif event_type == "MESH_LINKDOWN":
@@ -326,14 +335,16 @@ class PositionEngine:
                     else details.get("new_rssi")
                 )
                 position_changed = True
+                state["position_status"] = "DISCONNECTED"
+                state["position_quality"] = "EXACT_IDENTITY"
             elif current_key == incoming_key:
                 state["rssi"] = (
                     details.get("rssi")
                     if details.get("rssi") is not None
                     else state.get("rssi")
                 )
-            state["position_status"] = "DISCONNECTED"
-            state["position_quality"] = "EXACT_IDENTITY"
+                state["position_status"] = "DISCONNECTED"
+                state["position_quality"] = "EXACT_IDENTITY"
         else:
             incoming_key = current_ap["id"] or current_ap["mac"] or current_ap["name"]
             previous_key = _identity_key(state)
@@ -364,7 +375,7 @@ class PositionEngine:
                 )
             state["position_status"] = "VALID"
             state["position_quality"] = "EXACT_IDENTITY"
-            if event_type in {"MESH_LINKUP", "MESH_ACTIVELINK_SWITCH"}:
+            if event_type == "MESH_ACTIVELINK_SWITCH":
                 state["last_switch_time"] = event_time
 
         return PositionApplyResult(
