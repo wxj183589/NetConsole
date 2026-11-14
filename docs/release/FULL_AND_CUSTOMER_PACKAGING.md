@@ -1,6 +1,6 @@
 # Full Installer 与 Full Portable 交付
 
-NetConsole v1.5.13 的当前正式产品只有：
+NetConsole v1.5.14 的当前正式产品只有：
 
 - Full Installer：Windows NSIS 安装版。
 - Full Portable：Windows 免安装版。

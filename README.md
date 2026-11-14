@@ -91,7 +91,7 @@ flowchart TB
 - FastAPI/Python runtime 中的 Router 只做 DTO、鉴权和 Service 调用；Application Services 编排用例。
 - Domain Services / Parsers 负责设备与业务规则，Repositories 负责 SQLite、受控文件和事务。
 - 网络、磁盘、解析和导出等长任务进入后台 Job 或独立 Export Process；Infrastructure 通过受控适配器访问设备和工具。
-- 独立 Windows Go Agent 已从 v1.5.13 产品体系退役；Online MR 与 Traffic 只保留本机能力，历史 Agent 字段仅用于兼容读取。
+- 独立 Windows Go Agent 已在 v1.5.13 从产品体系退役；v1.5.14 的 Online MR 与 Traffic 继续只保留本机能力，历史 Agent 字段仅用于兼容读取。
 
 详细说明见 [当前架构](docs/ARCHITECTURE.md)、[Electron Desktop](docs/architecture/DESKTOP.md) 和 [仓库目录规范](docs/development/repository-layout.md)。
 

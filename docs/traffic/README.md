@@ -2,7 +2,7 @@
 
 ## 1. 当前边界
 
-Traffic 是 NetConsole 的本机流量测试能力，统一承载本地 iPerf Server/Client、高频 Ping、TCP 端口探测、事件、样本、摘要、任务关联和历史查询。独立 Windows Go Agent、AgentTrafficAdapter、AgentSupervisor、远程 iPerf、远端任务映射和远程结果同步已在 v1.5.13 退役。
+Traffic 是 NetConsole 的本机流量测试能力，统一承载本地 iPerf Server/Client、高频 Ping、TCP 端口探测、事件、样本、摘要、任务关联和历史查询。独立 Windows Go Agent、AgentTrafficAdapter、AgentSupervisor、远程 iPerf、远端任务映射和远程结果同步已在 v1.5.13 退役；v1.5.14 继续维持本机能力边界。
 
 当前调用链为：
 

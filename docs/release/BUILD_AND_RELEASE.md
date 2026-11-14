@@ -1,8 +1,8 @@
 # 构建与发布
 
-NetConsole v1.5.13 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
+NetConsole v1.5.14 的正式桌面产品只有 Electron + Vue + Python Backend。Python Backend 使用 PyInstaller 生成受 Electron 管理的 `NetConsoleBackend.exe`；PyInstaller、测试工具和许可证/SBOM 工具只属于构建环境，不属于产品运行时依赖。
 
-## v1.5.13 当前交付边界
+## v1.5.14 当前交付边界
 
 当前正式输出仅为 Full Installer 与 Full Portable。旧 Customer 构建、客户版密码、运行时解锁和功能矩阵编辑不再属于当前发布入口；历史配置、脚本和报告只在确认依赖后保留兼容/事实记录。正式包只接受 `full/full` Feature Profile，开发中、隐藏和 internal-only 能力仍由 Feature Registry/Feature Gate 保护。
 

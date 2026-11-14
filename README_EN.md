@@ -92,7 +92,7 @@ flowchart TB
 - The FastAPI/Python runtime Router handles DTOs, authentication, and Service calls; Application Services orchestrate use cases.
 - Domain Services / Parsers own device and business rules, while Repositories own SQLite, controlled files, and transactions.
 - Network, disk, parsing, and export work runs in background jobs or dedicated export processes; Infrastructure accesses devices and tools through controlled adapters.
-- The independent Windows Go Agent was retired from the v1.5.13 product line. Online MR and Traffic retain local execution only; historical Agent fields remain read-only compatibility data.
+- The independent Windows Go Agent was retired from the product line in v1.5.13. In v1.5.14, Online MR and Traffic retain local execution only; historical Agent fields remain read-only compatibility data.
 
 See [Current architecture](./docs/ARCHITECTURE.md), [Electron Desktop](./docs/architecture/DESKTOP.md), and the [repository layout](./docs/development/repository-layout.md).
 

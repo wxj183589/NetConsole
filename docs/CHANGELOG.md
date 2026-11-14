@@ -1,5 +1,17 @@
 # NetConsole 更新日志
 
+## v1.5.14 - 2026-11-14
+
+### 正式维护与双包交付
+
+- 本版本是 Agent 体系退役后的正式维护与打包版本，不再包含独立 Windows Go Agent。
+- Agent 管理页面、相关 API/WebSocket、远程执行及专用构建发布链路已经退役；Online MR 和 Traffic 保留现有非 Agent 能力。
+- 保留轨旁 AP、AC/FIT-AP、LLDP、交换机接口匹配、Rx/Tx 实际光衰、历史记录、筛选和 Excel 导出能力。
+- 保留地面无人值守 Syslog、Heartbeat、PositionEngine，以及既有数据导入、数据库兼容和历史归档边界。
+- 历史 `switch_interface_assets` AC 光衰候选不纳入正式产品，不恢复、不移植，也不生成没有采集事实的光衰数据。
+- 正式交付仅提供 Full Installer 和 Full Portable；本次完成版本同步、源码/包级门禁、定向与回归测试、双包构建、完整性检查和 SHA-256 归档。
+- 自动化构建与包级 Smoke 不替代真实 Windows 安装、升级、卸载、Server 2016 和现场设备人工验收；上述现场验收仍待执行。
+
 ## v1.5.13 - 2026-11-10（Agent 退役与本地执行收口）
 
 ### Agent 体系退役
