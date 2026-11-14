@@ -15,6 +15,7 @@
 - 收口旧 AP `MESH_LINKDOWN` 语义：非当前 AP 的有效旧链路事件仅保留诊断信息，不推进位置时间锚点，避免将已过期的 Current AP 重新标记为 Fresh。
 - 补充 Raw Writer/Parser/Position Commit/UI Available 阶段时间、队列积压、EPS、重复/乱序和位置延迟指标；未知 AP 或不完整事件不会覆盖已有位置。
 - AC 使用增量账本和可信快照对账，避免旧快照、延迟快照或不完整结果无条件覆盖较新的 Syslog 位置；历史归档回放和短时突发队列保护纳入本地回归。
+- 完成杭州地铁 10 号线真实历史 Syslog 归档回放归档：40,290 条原始记录、39,827 条 WMESH、11,323 条主用链路切换，Current 26/26、Previous 22/22，旧 AP LINKDOWN 保护 11,486/11,486；报告与隔离机器结果可追溯，现场实时验收仍独立 pending。
 
 ### MESH 分析
 
