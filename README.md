@@ -68,7 +68,7 @@ IP、VLAN、拓扑与配置         AP 规划、车载资料、业务关系     
 - 配置采集、文本/快照对比、受控 SFTP 文件下载
 - 后台 Job、取消、进度、日志和 XLSX/CSV/PDF 等导出流程
 
-通用的 SSH、SNMP、设备管理、配置采集、Ping、吞吐测试、文件管理和 Windows Go Agent 能力，都是无线诊断的数据采集与工程基础设施，也可以作为更广泛现场网络工程的工具集使用。
+通用的 SSH、SNMP、设备管理、配置采集、Ping、吞吐测试和文件管理能力，都是无线诊断的数据采集与工程基础设施，也可以作为更广泛现场网络工程的工具集使用。
 
 ## 架构摘要
 
@@ -84,16 +84,16 @@ flowchart TB
     A --> I["Infrastructure / Device Adapters"]
     P --> S["SQLite / Controlled Files"]
     J --> S
-    I --> X["SSH / SNMP / Agent / SFTP / Tools"]
+    I --> X["SSH / SNMP / SFTP / Tools"]
 ```
 
 - Electron 是正式 Windows 桌面外壳，Vue 是唯一主界面。
 - FastAPI/Python runtime 中的 Router 只做 DTO、鉴权和 Service 调用；Application Services 编排用例。
 - Domain Services / Parsers 负责设备与业务规则，Repositories 负责 SQLite、受控文件和事务。
 - 网络、磁盘、解析和导出等长任务进入后台 Job 或独立 Export Process；Infrastructure 通过受控适配器访问设备和工具。
-- Windows Go Agent 是独立的可选采集进程；Linux/CentOS 离线部署、主动注册和多 Controller 不属于当前交付范围。
+- 独立 Windows Go Agent 已从 v1.5.13 产品体系退役；Online MR 与 Traffic 只保留本机能力，历史 Agent 字段仅用于兼容读取。
 
-详细说明见 [当前架构](docs/ARCHITECTURE.md)、[Electron Desktop](docs/architecture/DESKTOP.md)、[Agent](docs/agent/README.md) 和 [仓库目录规范](docs/development/repository-layout.md)。
+详细说明见 [当前架构](docs/ARCHITECTURE.md)、[Electron Desktop](docs/architecture/DESKTOP.md) 和 [仓库目录规范](docs/development/repository-layout.md)。
 
 ## 项目状态
 
@@ -116,7 +116,7 @@ NetConsole 处于持续开发阶段。当前正式桌面目标是 Windows，代�
            → 优化前后对比 → 数据驱动优化
 ```
 
-Infrastructure & Network Tooling 路线会持续补充更多厂商适配、交换机和链路诊断、配置分析、Agent、文件管理与数据导入导出，但这些扩展仍服务于更完整的无线诊断上下文。
+Infrastructure & Network Tooling 路线会持续补充更多厂商适配、交换机和链路诊断、配置分析、文件管理与数据导入导出，但这些扩展仍服务于更完整的无线诊断上下文。
 
 ## 使用方式
 
@@ -170,7 +170,6 @@ pnpm dev:codex
 - [AC/FIT-AP 管理](docs/rail-transit/AC_MANAGEMENT.md)
 - [配置采集与快照对比](docs/device-management/CONFIG_COLLECTION.md)
 - [局点与数据存储](docs/storage/README.md)
-- [Windows Go Agent](docs/agent/README.md)
 
 ## 贡献与安全
 

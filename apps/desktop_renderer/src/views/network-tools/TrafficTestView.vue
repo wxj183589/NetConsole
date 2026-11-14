@@ -153,15 +153,12 @@ async function refreshAll(): Promise<void> {
 }
 
 function targetRequest(value: string): TrafficExecutionTargetRequest {
-  if (!value || value === 'LOCAL') return { kind: 'LOCAL' }
-  const agentId = value.replace(/^AGENT:/, '')
-  const target = store.targets.find((item) => item.agent_id === agentId)
-  return { kind: 'AGENT', agent_id: agentId, display_name: target?.display_name || agentId }
+  return { kind: 'LOCAL' }
 }
 
 function chooseDefaultTargets(): void {
   const first = store.targets.find((target) => target.available)
-  const value = first ? (first.kind === 'LOCAL' ? 'LOCAL' : `AGENT:${first.agent_id}`) : 'LOCAL'
+  const value = first?.kind === 'LOCAL' ? 'LOCAL' : 'LOCAL'
   if (!serverForm.target) serverForm.target = value
   if (!clientForm.target) clientForm.target = value
   if (!fpingForm.target) fpingForm.target = value
@@ -200,7 +197,7 @@ function clearCurrentView(): void {
       <el-card class="control-card" shadow="never">
         <template #header>
           <div class="card-header">
-            <div><h2>流量测试</h2><p>本地或 Agent 执行，统一关联任务中心</p></div>
+            <div><h2>流量测试</h2><p>本机执行，统一关联任务中心</p></div>
             <el-button :icon="Refresh" :loading="store.loading" @click="refreshAll">刷新</el-button>
           </div>
         </template>
@@ -221,7 +218,7 @@ function clearCurrentView(): void {
                 <el-form-item label="包大小"><el-input-number v-model="fpingForm.packet_size" :min="1" :max="65507" /></el-form-item>
                 <el-form-item label="次数"><el-input-number v-model="fpingForm.count" :min="1" :max="1000000" :disabled="fpingForm.continuous" /></el-form-item>
               </div>
-              <el-form-item label="源地址（Agent 可用）"><el-input v-model="fpingForm.source_address" clearable /></el-form-item>
+              <el-form-item label="源地址"><el-input v-model="fpingForm.source_address" clearable /></el-form-item>
               <el-checkbox v-model="fpingForm.continuous">持续运行，直到手动停止</el-checkbox>
               <div class="form-actions"><el-button type="primary" :loading="store.starting" @click="startFping">开始高频 Ping</el-button></div>
             </el-form>
@@ -292,7 +289,7 @@ function clearCurrentView(): void {
           <el-descriptions :column="2" border>
             <el-descriptions-item label="Run ID">{{ store.selected.traffic_run_id }}</el-descriptions-item>
             <el-descriptions-item label="类型">{{ store.selected.test_type }}</el-descriptions-item>
-            <el-descriptions-item label="执行端">{{ store.selected.executor_kind === 'LOCAL' ? '本机' : store.selected.agent_id }}</el-descriptions-item>
+            <el-descriptions-item label="执行端">本机</el-descriptions-item>
             <el-descriptions-item label="更新时间">{{ formatTime(store.selected.updated_at) }}</el-descriptions-item>
             <el-descriptions-item label="错误" :span="2">{{ store.selected.error_message || '—' }}</el-descriptions-item>
           </el-descriptions>

@@ -116,7 +116,7 @@ flowchart LR
 
 ## Agent 与 Electron
 
-独立 Windows Agent 的真实配置、目标、任务、日志和采集包位于 `<data_root>/agents/local/`。Agent 的交付程序与工具仍是只读发布物；它们不成为运行数据根，也不回退到 LocalAppData。详细规则见 [独立 Agent](../agent/README.md)。
+独立 Windows Agent 已退役。历史 `<data_root>/agents/` 内容只作为旧数据迁移和局点包兼容来源保留，不由当前运行时创建、更新或打包；当前 Electron 与 Backend 只使用既有 `sites/`、`runtime/`、`migrations/` 和 `staging/` 边界。
 
 Electron 多窗口共用一个 Electron Main 和一个受管 Backend。所有窗口、Backend 子进程和 Worker 都传递同一个 `NETCONSOLE_DATA_ROOT`。Backend 排他锁位于 `runtime/locks/netconsole-backend.lock`，因此开发版和正式版不能同时写同一真实根。
 

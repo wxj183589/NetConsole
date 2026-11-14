@@ -23,6 +23,7 @@ WORKSPACE_TOP_LEVEL = frozenset(
         "reports",
         "temp",
         "archives",
+        "branch-archives",
         "backups",
         ".idea",
         "diagnostic",

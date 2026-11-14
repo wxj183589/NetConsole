@@ -1,6 +1,6 @@
 # Windows x64 工具资源目录
 
-这是源码资源目录。Agent 构建脚本从这里白名单复制 `fping` 和 `iperf3` 到交付包内的 `tools/windows-x64/`；运行时不直接扫描仓库根 `tools/`，也不使用 `apps/agent/tools/`。
+这是源码资源目录。桌面发布脚本从这里白名单复制 `fping` 和 `iperf3` 到交付包内的 `tools/windows-x64/`；运行时不直接扫描仓库根 `tools/`，也不使用已退役的 Agent 目录。
 
 ```text
 windows-x64/

@@ -313,7 +313,7 @@ describe('desktop file logger lifecycle', () => {
 describe('desktop log redaction', () => {
   it.each([
     ['authorization=Bearer bearer-token', 'bearer-token'],
-    ['agent_token=agent-secret', 'agent-secret'],
+    ['session_token=session-secret', 'session-secret'],
     ['community: private-community', 'private-community'],
     ['ssh_key=private-key-material', 'private-key-material'],
     ['passphrase="quoted-passphrase"', 'quoted-passphrase'],

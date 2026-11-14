@@ -82,15 +82,6 @@ class _AnalysisQuery:
         return MeshAnalysisSessionPageDTO()
 
 
-class _AgentService:
-    calls = 0
-
-    @classmethod
-    def list_agents(cls):
-        cls.calls += 1
-        return [{"agent_id": "agent-1", "name": "本机 Agent", "base_url": "http://127.0.0.1:18080", "enabled": True, "authentication_type": "none", "has_credential": False, "status": "ONLINE", "last_checked_at": "2026-07-14T10:07:00"}]
-
-
 def _service(tmp_path: Path) -> WirelessDashboardQueryService:
     return WirelessDashboardQueryService(
         PathResolver(app_root=tmp_path, data_root=tmp_path),
@@ -101,13 +92,11 @@ def _service(tmp_path: Path) -> WirelessDashboardQueryService:
         online_mr_query=_OnlineQuery(),
         job_query=_JobQuery(),
         mesh_analysis_query=_AnalysisQuery(),
-        agent_service=_AgentService(),
         cache_ttl_seconds=60,
     )
 
 
 def test_dashboard_aggregates_existing_statuses_and_reuses_site_version_cache(tmp_path: Path) -> None:
-    _AgentService.calls = 0
     service = _service(tmp_path)
 
     first = service.get_dashboard("demo")
@@ -116,27 +105,10 @@ def test_dashboard_aggregates_existing_statuses_and_reuses_site_version_cache(tm
     assert first.summary.ap_total == 10
     assert first.summary.registered_trains == 1
     assert first.summary.active_online_mr_sessions == 1
-    assert first.summary.agent_total == 1
     assert first.summary.data_version
     assert first.summary.cached is False
     assert second.summary.cached is True
     assert second.summary.data_version == first.summary.data_version
-    assert _AgentService.calls == 1
     assert {item.id for item in first.alerts.items} >= {"ac-offline", "ac-unauthenticated", "optical-ap-1", "mesh-stale", "train-12", "task-task-1", "base-data-quality", "mesh-analysis-warning"}
     assert all(item.severity in {"critical", "warning"} for item in first.alerts.items)
     assert FEATURE_BY_ID["capability.rail_transit.wireless_dashboard"].parent_id == "module.rail_transit"
-
-
-def test_dashboard_agent_section_never_calls_remote_probe(tmp_path: Path) -> None:
-    class _NoRemoteAgent(_AgentService):
-        @staticmethod
-        def probe_agent(*_args, **_kwargs):
-            raise AssertionError("dashboard must not probe Agent")
-
-    service = WirelessDashboardQueryService(
-        PathResolver(app_root=tmp_path, data_root=tmp_path),
-        base_query=_BaseQuery(), ac_query=_AcQuery(), mesh_query=_MeshQuery(), train_query=_TrainQuery(),
-        online_mr_query=_OnlineQuery(), job_query=_JobQuery(), mesh_analysis_query=_AnalysisQuery(), agent_service=_NoRemoteAgent(),
-    )
-
-    assert service.get_dashboard("demo").agents.online == 1

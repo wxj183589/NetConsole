@@ -4,7 +4,6 @@ import { useRoute } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
-import OnlineMrAgentControlPanel from '../../components/OnlineMrAgentControlPanel.vue'
 import OnlineMrLocalControl from '../../components/OnlineMrLocalControl.vue'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
@@ -28,7 +27,6 @@ const controlMrId = computed({
 })
 const controlError = ref('')
 const controlSiteId = ref('')
-const executorTab = ref('local')
 const meshRawOutput = ref<HTMLElement | null>(null)
 const fpingRawOutput = ref<HTMLElement | null>(null)
 const otherRawOutput = ref<HTMLElement | null>(null)
@@ -411,14 +409,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <el-alert v-if="controlError" :title="controlError" type="error" :closable="false" show-icon />
-      <el-tabs v-if="controlMr && controlSiteId" v-model="executorTab" type="border-card">
-        <el-tab-pane label="LOCAL 本地执行" name="local">
-          <OnlineMrLocalControl :site-id="controlSiteId" :mr="controlMr" @refresh="store.refreshOverview" />
-        </el-tab-pane>
-        <el-tab-pane label="AGENT 远程执行" name="agent">
-          <OnlineMrAgentControlPanel :site-id="controlSiteId" :mr="controlMr" />
-        </el-tab-pane>
-      </el-tabs>
+      <div v-if="controlMr && controlSiteId">
+        <OnlineMrLocalControl :site-id="controlSiteId" :mr="controlMr" @refresh="store.refreshOverview" />
+      </div>
       <el-empty v-else description="当前局点没有已登记且绑定设备的 MR" />
     </section>
 

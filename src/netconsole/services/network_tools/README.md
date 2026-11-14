@@ -14,7 +14,7 @@
 
 ## 依赖关系
 
-服务依赖 `resources/tools`、Tool Path Resolver、Network Repository/Job Center 和 Windows 编码适配；Agent 远端流量由 Traffic/Agent Service 管理。
+服务依赖 `resources/tools`、Tool Path Resolver、Network Repository/Job Center 和 Windows 编码适配；Traffic 只由本机适配器执行。
 
 ## 数据与状态
 
@@ -30,4 +30,4 @@
 
 ## 相关文档
 
-参见 [统一流量测试](../../../../docs/traffic/README.md)、[Agent 流量协议](../../../../docs/agent/TRAFFIC_API.md) 和 [网络工具 Skill](../../../../.agents/skills/traffic-test-skill/SKILL.md)。
+参见 [统一流量测试](../../../../docs/traffic/README.md) 和 [网络工具 Skill](../../../../.agents/skills/traffic-test-skill/SKILL.md)。

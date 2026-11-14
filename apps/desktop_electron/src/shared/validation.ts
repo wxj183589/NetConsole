@@ -71,7 +71,6 @@ const WORKSPACE_ALLOWED_PATHS = new Set([
   '/network-tools/toolbox',
   '/network-tools/wireless-scan',
   '/tasks',
-  '/agents',
   '/settings',
   '/command-reference',
   '/logs',

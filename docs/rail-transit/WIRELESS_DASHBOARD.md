@@ -40,7 +40,6 @@ GET /api/rail-transit/wireless-dashboard/alerts
 GET /api/rail-transit/wireless-dashboard/freshness
 GET /api/rail-transit/wireless-dashboard/recent-operations
 GET /api/rail-transit/wireless-dashboard/analysis
-GET /api/rail-transit/wireless-dashboard/agents
 ```
 
 Router 只调用 `WirelessDashboardQueryService`，不直接查询 SQLite 或文件。聚合服务再调用既有 Query Service，并以“局点 + 数据版本”保存 2 秒进程内快照缓存。缓存不落盘、不改变数据版本，也不是正式数据源。

@@ -107,12 +107,6 @@
       "client_package": true,
       "internal_only": false
     },
-    "module.agent": {
-      "visible": false,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
     "module.task_center": {
       "visible": true,
       "enabled": true,
@@ -431,12 +425,6 @@
       "client_package": true,
       "internal_only": false
     },
-    "online_mr.agent_packages": {
-      "visible": false,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
     "module.online_mr": {
       "visible": false,
       "enabled": false,
@@ -480,12 +468,6 @@
       "internal_only": false
     },
     "capability.online_mr.local_control": {
-      "visible": false,
-      "enabled": false,
-      "client_package": false,
-      "internal_only": false
-    },
-    "capability.online_mr.agent_control": {
       "visible": false,
       "enabled": false,
       "client_package": false,

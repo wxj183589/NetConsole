@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
-from netconsole.models.agent import AgentStatus
 from netconsole.models.task_snapshot import utc_now_iso
 from netconsole.models.task_state import TaskState
 from netconsole.models.traffic_test import (
@@ -22,39 +21,6 @@ from netconsole.services.job_center.task_application_service import TaskApplicat
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.event_hub import TrafficEventHub
 from netconsole.services.traffic.web_application_service import TrafficWebApplicationService
-
-
-class FakeAgentService:
-    def __init__(self) -> None:
-        self.started = False
-        self.stopped = False
-
-    async def start(self) -> None:
-        self.started = True
-
-    async def stop(self) -> None:
-        self.stopped = True
-
-    def list_agents(self) -> list[dict[str, object]]:
-        return [
-            {
-                "agent_id": "agent-1",
-                "name": "车站 Agent",
-                "enabled": True,
-                "status": AgentStatus.ONLINE.value,
-                "platform": "windows",
-                "architecture": "amd64",
-                "version": "1.0.0",
-                "capabilities": {"iperf_server": True, "iperf_client": True, "fping": True},
-            },
-            {
-                "agent_id": "agent-2",
-                "name": "离线 Agent",
-                "enabled": True,
-                "status": AgentStatus.OFFLINE.value,
-                "capabilities": {"fping": True},
-            },
-        ]
 
 
 class FakeTrafficService:
@@ -181,25 +147,21 @@ def _app(tmp_path):
     paths = PathResolver(tmp_path)
     Database(paths.site_db_path("demo")).initialize()
     traffic = FakeTrafficService()
-    agent = FakeAgentService()
     app = create_app(
         paths=paths,
         task_service=TaskApplicationService(paths=paths),
-        agent_service=agent,
         traffic_service=traffic,
         frontend_dist=tmp_path / "missing",
     )
-    app.state.traffic_web_application_service = TrafficWebApplicationService(traffic, agent)
-    return app, traffic, agent
+    app.state.traffic_web_application_service = TrafficWebApplicationService(traffic)
+    return app, traffic
 
 
 def test_traffic_rest_targets_start_list_detail_cancel_and_retry(tmp_path) -> None:
-    app, traffic, _agent = _app(tmp_path)
+    app, traffic = _app(tmp_path)
     with TestClient(app) as client:
         targets = client.get("/api/traffic/execution-targets").json()
-        assert [target["id"] for target in targets] == ["LOCAL", "agent-1", "agent-2"]
-        assert targets[1]["available"] is True
-        assert targets[2]["available"] is False
+        assert [target["id"] for target in targets] == ["LOCAL"]
 
         response = client.post(
             "/api/traffic/fping",
@@ -221,7 +183,7 @@ def test_traffic_rest_targets_start_list_detail_cancel_and_retry(tmp_path) -> No
 
 
 def test_traffic_rest_error_is_standardized_and_path_redacted(tmp_path) -> None:
-    app, _traffic, _agent = _app(tmp_path)
+    app, _traffic = _app(tmp_path)
     with TestClient(app) as client:
         response = client.get("/api/traffic/runs/missing")
     assert response.status_code == 404
@@ -243,7 +205,7 @@ def test_traffic_rest_error_is_standardized_and_path_redacted(tmp_path) -> None:
 
 
 def test_traffic_websocket_uses_dedicated_incremental_channel(tmp_path) -> None:
-    app, traffic, _agent = _app(tmp_path)
+    app, traffic = _app(tmp_path)
     with TestClient(app) as client:
         run_id = client.post("/api/traffic/fping", json={"targets": ["192.0.2.1"]}).json()["run"]["traffic_run_id"]
         with client.websocket_connect(f"/ws/traffic/{run_id}?after_event=0&after_sample=1") as websocket:
@@ -255,9 +217,7 @@ def test_traffic_websocket_uses_dedicated_incremental_channel(tmp_path) -> None:
 
 
 def test_fastapi_lifespan_starts_and_stops_traffic_service(tmp_path) -> None:
-    app, traffic, agent = _app(tmp_path)
+    app, traffic = _app(tmp_path)
     with TestClient(app):
-        assert agent.started is True
         assert traffic.started is True
     assert traffic.stopped is True
-    assert agent.stopped is True

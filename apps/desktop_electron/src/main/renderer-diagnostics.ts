@@ -249,7 +249,6 @@ function diagnosticRoute(pathname: string): string {
   if (!segment) return '/'
   if (new Set([
     'ac-management',
-    'agents',
     'api',
     'command-reference',
     'config-center',

@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
-  Connection,
   DataBoard,
   Briefcase,
   Files,
@@ -73,7 +72,6 @@ const iconComponents = {
   network: Operation,
   tools: Briefcase,
   tasks: Operation,
-  agent: Connection,
   system: Setting,
 }
 

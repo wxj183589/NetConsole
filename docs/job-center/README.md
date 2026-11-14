@@ -114,7 +114,7 @@ Worker 写帧前使用固定的 `1,048,576 bytes`（1 MiB）上限执行 JSON �
 - `ExportJob` 是导出专用模型，增加 output/tmp/db/filter/context 等字段。
 - 两类任务共享事件字段和 JSONL 解析，但使用不同 worker 和 manager，避免导出规则污染普通任务。
 - 七状态是宿主生命周期契约，不改写 Worker 的五类既有 JSONL 事件；现有页面继续消费 `progress/log/finished/error/cancelled`。
-- 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；阶段 4B-2 允许 `TaskApplicationService.create_external_task/record_external_event` 将 Agent Traffic 映射到同一任务中心，但它仍不是独立 Controller daemon。
+- 当前已提供任务历史、TaskRepository、FastAPI 任务路由和 WebSocket；历史外部任务字段仍可读取，但当前 Job Center 只创建本地任务。
 
 ## 调度状态与业务结果
 
@@ -146,14 +146,14 @@ Online MR 业务阶段使用 `OnlineMrPhase`，不会扩展七状态 Task 契约
 
 LOCAL 入口通过 Worker 内纯 Python `OnlineMrTrafficCoordinator` 管理 fping/iPerf；普通停止、显式时长到期和 SSH 异常都必须等 Traffic 与 SSH writer 收口后才写 metadata、发布 ZIP 并结束 Task。`stop_operation()` 使用协作取消；`force_stop_operation()` 先短暂协作等待，再调用有界进程树强停。`online_mr_task_sessions` schema v2 保存实际时长、停止原因、强停标记和错误摘要；Task/Session/Mapping 终态由同一应用服务幂等 reconcile，重复停止不得二次取消或重复生成 ZIP。
 
-`online_mr_agent_packages_sync` 和 `online_mr_agent_package_import` 是两个一次性 Job。前者只读 Agent 状态、工具、包及当前局点设备候选；后者只下载并导入用户选中的既有包。认证 Token 只通过受管进程的临时环境传递，任务参数和 Job 文件只保存 Profile ID、地址和非敏感选项。取消检查继续传入流式下载。默认关闭的 AGENT executor 已通过独立 Application Service/Executor 提供固定 start/status/normal stop 和自动包导入，不复用这两个 handler，也不提供远端强停或任意命令。
+历史 `online_mr_agent_packages_sync`、`online_mr_agent_package_import` Job 已随独立 Agent 退役；当前 Job Center 不注册 Agent handler，历史任务只按兼容读取并保留原始记录。
 
 ## Task Center API
 
 - `GET /api/tasks`：任务列表，可按七状态过滤；
 - `GET /api/tasks/{id}`：任务详情；
 - `GET /api/tasks/{id}/events`：结构化状态、进度和日志事件；
-- `POST /api/tasks/{id}/cancel`：只对本地 Runtime-backed 任务写协作取消并进入 `STOPPING`；Agent Traffic 必须由后续 Traffic API 调用 `TrafficTestApplicationService.cancel()`，通用任务 API 不会伪造远端停止成功；
+- `POST /api/tasks/{id}/cancel`：只对本地 Runtime-backed 任务写协作取消并进入 `STOPPING`；通用任务 API 不伪造已经退役的远端停止成功；
 - `/ws/tasks`：初始快照与 Event Hub/SQLite 增量事件。
 
 面向 Vue 全局任务中心的 `/api/job-center` 还提供受控历史管理：
@@ -296,9 +296,7 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - Controller 侧 `LocalProcessAdapter` 只负责 `Popen`、双管道读取、等待、Job Object 进程树回收和 terminate/kill，状态仍由既有 `TaskApplicationService/TaskRuntime` 管理；`shutdown(timeout_seconds)` 的 timeout 是取消派发、协作等待、terminate、kill 和最终状态收口共用的总预算，不再按阶段累加；取消持久化或磁盘写入变慢时不会阻塞宿主超过 deadline；`prepare/Popen/mark_running` 不持有状态锁，关闭与慢启动并发时会拒绝登记并立即回收新进程；Traffic 只订阅完成回调同步自身 Run 终态；
 - Worker Job JSON、Task 快照和日志不得写入设备密码、Community 或临时凭据；确需向本地 Worker 传递时，只能通过带长度上限的一次性 stdin 敏感启动帧，消费后清零字节缓冲。敏感启动帧丢失时任务明确失败，不得从 Task 数据恢复或把凭据降级写入参数。
 - Worker stdout 只返回低频进度、摘要和唯一终态；iPerf interval、RTT、丢包和原始区间直接写 `TrafficEventStore`/业务 Repository，不进入全局 Task Event 表；
-- Agent Traffic 不进入 Worker Process。`AgentTrafficSupervisor` 在持有会话凭据的 Controller 进程内轮询，并通过外部任务入口持久化状态；
-- Agent Task 使用 `source=agent, owner_pid=0`，因此不会被本地 orphan 核对误判；本地 Traffic 继续沿用宿主 PID 退出后标记 `FAILED` 的规则；
-- `sync_state` 只表示远端同步健康度，不是第八个 Task 生命周期状态。完整边界见 [统一流量测试架构](../traffic/README.md)。
+- 历史 Agent Traffic 任务不再进入 Worker Process、轮询或状态同步；本地 Traffic 继续沿用宿主 PID 退出后标记 `FAILED` 的规则。旧 `sync_state` 仅为兼容字段，完整边界见 [统一流量测试架构](../traffic/README.md)。
 
 ## 在线 MR 长运行 Job
 
@@ -308,7 +306,7 @@ Vue 只向具名 FastAPI endpoint 提交白名单 DTO；Router 调用对应 Appl
 - 用户停止由对应 owner Application Service 请求 TaskRuntime 写入协作取消。在线 MR 使用可配置的清理宽限期，让 handler 关闭采集循环、SSH 和文件句柄、更新会话状态并完成打包；超时再由 LocalProcessAdapter 强制回收进程树。
 - 停止后的压缩包原子写入 session 的 `outputs` 目录；失败时删除临时包但保留完整 session/raw 目录。
 - Vue 可通过受控游标轮询或 WebSocket 跟踪日志尾部，但不得在 Renderer 做大文件解析。手动和实时解析使用 `online_mr_parse` Job，分析报告使用 Export Process。
-- LOCAL 执行端仍是本地 Worker Process；Windows Go Agent 的单 Agent、单 MR 执行器已经实现但默认关闭，只提供固定 start/status/normal stop、Controller 到期停止和安全包导入。CentOS Agent、多 Agent 编排和远端强停尚未实现。
+- LOCAL 执行端仍是本地 Worker Process；独立 Agent 执行器已退役，历史 Agent 任务只保留只读兼容，不再提供远程启动、停止或包导入。
 
 ## MESH 本地扫描与补录 Job
 

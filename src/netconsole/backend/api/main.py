@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from http.cookies import SimpleCookie
 from pathlib import Path
 from time import perf_counter
-from typing import Callable, NoReturn
+from typing import Any, Callable, NoReturn
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
@@ -79,7 +79,6 @@ from netconsole.services.ac.mesh_link_resident_polling_service import (
 )
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_identity import ApIdentityQueryService
-from netconsole.services.agent.controller import AgentControllerError, AgentControllerService
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
 from netconsole.services.command_reference_application_service import CommandReferenceApplicationService
 from netconsole.services.device_management_web_service import DeviceManagementWebService
@@ -94,8 +93,6 @@ from netconsole.services.network_tools.application_service import NetworkToolsAp
 from netconsole.services.online_mr.api_facade import OnlineMrApiFacade
 from netconsole.services.online_mr.errors import OnlineMrQueryError, OnlineMrQueryErrorCode
 from netconsole.services.online_mr.application_service import OnlineMrApplicationService
-from netconsole.services.online_mr.agent_controller_service import OnlineMrAgentControllerService
-from netconsole.services.online_mr.agent_web_control_service import OnlineMrAgentWebControlService
 from netconsole.services.online_mr.errors import OnlineMrWebControlError
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr.web_control_service import OnlineMrWebControlService
@@ -153,7 +150,7 @@ from netconsole.services.storage_audit import StorageAuditService
 
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
-_SECRET_RE = re.compile(r"(?i)((?:x-agent-token|token)\s*[:=]\s*)[^\s,;]+")
+_SECRET_RE = re.compile(r"(?i)(token\s*[:=]\s*)[^\s,;]+")
 DESKTOP_SESSION_COOKIE = "netconsole_desktop_session"
 DESKTOP_SESSION_HEADER = "x-netconsole-session"
 _DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS = 1.0
@@ -206,9 +203,7 @@ class DesktopSessionMiddleware:
                     "details": {},
                 },
             }
-            if str(scope.get("path") or "").startswith(
-                ("/api/rail-transit/online-mr-control", "/api/rail-transit/online-mr-agent")
-            )
+            if str(scope.get("path") or "").startswith("/api/rail-transit/online-mr-control")
             else {"detail": "desktop session required"}
         )
         response = JSONResponse(status_code=401, content=content)
@@ -242,13 +237,10 @@ class RuntimeServicesAdmissionMiddleware:
     """Reject service-dependent writes while deferred runtime services are unavailable."""
 
     _PREFIXES = (
-        "/api/agents",
         "/api/traffic",
         "/api/file-management",
         "/api/online-mr-control",
-        "/api/online-mr-agent",
         "/api/rail-transit/online-mr-control",
-        "/api/rail-transit/online-mr-agent",
         "/api/rail-transit/ground-unattended",
     )
 
@@ -365,7 +357,7 @@ def create_app(
     paths: PathResolver | None = None,
     task_service: TaskApplicationService | None = None,
     desktop_action_service: DesktopActionService | None = None,
-    agent_service: AgentControllerService | None = None,
+    agent_service: Any | None = None,
     traffic_service: TrafficTestApplicationService | None = None,
     ac_mesh_link_refresh_service: AcMeshLinkRefreshApplicationService | None = None,
     ac_mesh_link_resident_service: AcMeshLinkResidentPollingApplicationService
@@ -377,8 +369,6 @@ def create_app(
     online_mr_application_service: OnlineMrApplicationService | None = None,
     online_mr_web_control_service: OnlineMrWebControlService | None = None,
     online_mr_web_control_enabled: bool | None = None,
-    online_mr_agent_web_control_service: OnlineMrAgentWebControlService | None = None,
-    online_mr_agent_executor_enabled: bool | None = None,
     api_documentation_enabled: bool | None = None,
     development_api_enabled: bool = False,
     development_runtime_label: str = "development",
@@ -453,15 +443,6 @@ def create_app(
         and runtime_mode is RuntimeMode.DESKTOP
         and desktop_session_token
     )
-    if online_mr_agent_executor_enabled is None:
-        online_mr_agent_executor_enabled = (
-            os.environ.get("ONLINE_MR_AGENT_EXECUTOR_ENABLED", "0") == "1"
-        )
-    online_mr_agent_executor_enabled = bool(
-        online_mr_agent_executor_enabled
-        and runtime_mode is RuntimeMode.DESKTOP
-        and desktop_session_token
-    )
     if task_service is None:
         task_service = TaskApplicationService(
             paths=paths,
@@ -471,14 +452,11 @@ def create_app(
             # recovered AC action can persist its plan audit as well.
             reconcile_on_start=False,
         )
-    if agent_service is None:
-        agent_service = AgentControllerService(paths=paths, site_name=site_name)
     if traffic_service is None:
         traffic_service = TrafficTestApplicationService(
             paths=paths,
             site_name=site_name,
             task_service=task_service,
-            agent_controller=agent_service,
             reconcile_on_start=not defer_runtime_start,
         )
     if ac_mesh_link_refresh_service is None:
@@ -580,8 +558,7 @@ def create_app(
         (ground_unattended_feature_enabled and runtime_mode is RuntimeMode.DESKTOP)
         or (
             online_mr_web_control_service is None
-            and online_mr_agent_web_control_service is None
-            and (online_mr_web_control_enabled or online_mr_agent_executor_enabled)
+            and online_mr_web_control_enabled
         )
     )
     if owns_online_mr_application_service:
@@ -589,7 +566,6 @@ def create_app(
             paths,
             site_name=site_name,
             task_service=task_service,
-            agent_profile_controller=agent_service,
         )
 
     ground_unattended_repository: GroundUnattendedRepository | None = None
@@ -740,7 +716,6 @@ def create_app(
                 if callable(reconcile_tasks):
                     await asyncio.to_thread(reconcile_tasks)
                 await run_task_event_retention()
-                await agent_service.start()
                 reconcile_traffic = getattr(traffic_service, "reconcile_local_runs", None)
                 if callable(reconcile_traffic):
                     await asyncio.to_thread(reconcile_traffic)
@@ -847,7 +822,6 @@ def create_app(
             else:
                 await start_site_ssh_relay()
                 unattended_started = await start_unattended_services()
-                await agent_service.start()
                 await traffic_service.start()
                 file_management_service.start()
                 app.state.runtime_services_ready = unattended_started
@@ -936,13 +910,6 @@ def create_app(
                         "WEB_LIFESPAN_STOP_FAILED",
                         f"component={component} error={result.__class__.__name__}: {result}",
                     )
-            try:
-                await agent_service.stop()
-            except Exception as exc:
-                app_logger.log_error(
-                    "WEB_LIFESPAN_STOP_FAILED",
-                    f"component=agent error={exc.__class__.__name__}: {exc}",
-                )
             if owns_online_mr_application_service and online_mr_application_service is not None:
                 try:
                     online_mr_application_service.close()
@@ -981,7 +948,6 @@ def create_app(
     app.add_middleware(RuntimeServicesAdmissionMiddleware, state=app.state)
     app.add_middleware(PerformanceProfilingMiddleware)
     app.state.online_mr_web_control_enabled = online_mr_web_control_enabled
-    app.state.online_mr_agent_executor_enabled = online_mr_agent_executor_enabled
     app.state.runtime_services_ready = False
     app.state.runtime_services_status = "starting"
     app.state.runtime_services_error = ""
@@ -1051,12 +1017,8 @@ def create_app(
         paths,
         config_cancel_capability=config_collection_service.cancel_capability,
     )
-    app.state.agent_service = agent_service
     app.state.traffic_service = traffic_service
-    app.state.traffic_web_application_service = TrafficWebApplicationService(
-        traffic_service,
-        agent_service,
-    )
+    app.state.traffic_web_application_service = TrafficWebApplicationService(traffic_service)
     app.state.network_tools_service = NetworkToolsApplicationService(traffic_service)
     app.state.device_compatibility_service = device_compatibility_service
     app.state.device_management_service = device_management_service
@@ -1080,22 +1042,10 @@ def create_app(
         app.state.online_mr_query_service,
         enabled=online_mr_web_control_enabled,
     )
-    app.state.online_mr_agent_web_control_service = (
-        online_mr_agent_web_control_service
-        or OnlineMrAgentWebControlService(
-            paths,
-            online_mr_application_service,
-            app.state.online_mr_web_control_service,
-            app.state.online_mr_query_service,
-            OnlineMrAgentControllerService(paths, profile_controller=agent_service),
-            enabled=online_mr_agent_executor_enabled,
-        )
-    )
     app.state.online_mr_api_facade = OnlineMrApiFacade(
         paths,
         app.state.online_mr_query_service,
         app.state.online_mr_web_control_service,
-        app.state.online_mr_agent_web_control_service,
     )
     app.state.vehicle_mr_online_query_service = VehicleMrOnlineQueryService(
         paths,
@@ -1124,7 +1074,6 @@ def create_app(
         online_mr_query=app.state.online_mr_query_service,
         job_query=app.state.job_center_query_service,
         mesh_analysis_query=app.state.mesh_analysis_query_service,
-        agent_service=agent_service,
     )
     if rail_base_data_write_feature_enabled is None:
         rail_base_data_write_feature_enabled = feature_gate.is_enabled(WRITE_FEATURE_ID)
@@ -1252,9 +1201,6 @@ def create_app(
             rebind(target)
         else:
             task_service.site_name = target
-        rebind = getattr(agent_service, "rebind_site", None)
-        if callable(rebind):
-            rebind(target)
         rebind = getattr(device_management_service, "rebind_site", None)
         if callable(rebind):
             rebind(target)
@@ -1338,11 +1284,6 @@ def create_app(
             )
             return response
 
-    @app.exception_handler(AgentControllerError)
-    async def agent_error_handler(_: Request, exc: AgentControllerError) -> JSONResponse:
-        payload = ErrorResponse(error=ErrorDetail(code=exc.code, message=exc.message))
-        return JSONResponse(status_code=exc.status_code, content=payload.model_dump(mode="json"))
-
     @app.exception_handler(TrafficTestError)
     async def traffic_error_handler(_: Request, exc: TrafficTestError) -> JSONResponse:
         payload = ErrorResponse(
@@ -1366,9 +1307,7 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        if request.url.path.startswith(
-            ("/api/rail-transit/online-mr-control", "/api/rail-transit/online-mr-agent")
-        ):
+        if request.url.path.startswith("/api/rail-transit/online-mr-control"):
             errors = [
                 {key: value for key, value in item.items() if key in {"type", "loc", "msg"}}
                 for item in exc.errors()
@@ -2377,23 +2316,15 @@ def _traffic_error_status(code: str) -> int:
         normalized = TrafficErrorCode(code)
     except ValueError:
         return 400
-    if normalized in {TrafficErrorCode.RESULT_NOT_FOUND, TrafficErrorCode.AGENT_NOT_FOUND, TrafficErrorCode.REMOTE_TASK_NOT_FOUND}:
+    if normalized in {TrafficErrorCode.RESULT_NOT_FOUND, TrafficErrorCode.REMOTE_TASK_NOT_FOUND}:
         return 404
     if normalized in {TrafficErrorCode.INVALID_CONFIG, TrafficErrorCode.EXECUTION_TARGET_INVALID, TrafficErrorCode.EVENT_CURSOR_INVALID}:
         return 422
-    if normalized in {
-        TrafficErrorCode.AGENT_DISABLED,
-        TrafficErrorCode.AGENT_CREDENTIAL_REQUIRED,
-        TrafficErrorCode.CAPABILITY_UNSUPPORTED,
-        TrafficErrorCode.SERVER_PORT_IN_USE,
-    }:
+    if normalized in {TrafficErrorCode.CAPABILITY_UNSUPPORTED, TrafficErrorCode.SERVER_PORT_IN_USE}:
         return 409
-    if normalized is TrafficErrorCode.AGENT_UNAUTHORIZED:
-        return 401
     if normalized in {TrafficErrorCode.CONNECTION_TIMEOUT, TrafficErrorCode.CANCEL_TIMEOUT}:
         return 504
     if normalized in {
-        TrafficErrorCode.AGENT_OFFLINE,
         TrafficErrorCode.REMOTE_SYNC_FAILED,
         TrafficErrorCode.SERVER_NOT_READY,
         TrafficErrorCode.CONNECTION_REFUSED,

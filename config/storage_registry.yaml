@@ -856,13 +856,13 @@
     {
       "id": "site.agents",
       "relative_path": "sites/{site_id}/db/agents.db",
-      "owner": "AgentRepository",
-      "code_owners": ["agent"],
+      "owner": "Legacy schema compatibility",
+      "code_owners": ["storage", "data"],
       "data_type": "OPERATIONAL_CURRENT",
-      "authority": "registered Agent current state and reconciliation metadata",
-      "producer": ["AgentRepository"],
-      "consumers": ["Agent controller", "Task reconciliation"],
-      "retention_owner": "AgentRepository",
+      "authority": "historical agents.db retained for site-package and schema compatibility only",
+      "producer": ["NO_ACTIVE_PRODUCER_PROVEN"],
+      "consumers": ["legacy database import", "site-package compatibility"],
+      "retention_owner": "Site storage compatibility boundary",
       "rebuildable": false,
       "site_package_policy": "FULL_MIGRATION include; sanitized/field package explicitly exclude",
       "backup_policy": "site database rollback policy",
@@ -870,7 +870,7 @@
       "schema_version": "repository",
       "allowed_data_classes": ["OPERATIONAL_CURRENT"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "HISTORICAL_RAW_FACT"],
-      "source_locations": ["src/netconsole/repositories/agent_repository.py"]
+      "source_locations": ["src/netconsole/services/site_storage.py", "src/netconsole/services/site_sync.py"]
     },
     {
       "id": "site.ground.index",
@@ -1441,7 +1441,7 @@
       "schema_version": "session package manifest",
       "allowed_data_classes": ["ARTIFACT_OR_RAW_FILE"],
       "forbidden_data_classes": ["BACKUP_ROLLBACK", "CACHE_REBUILDABLE"],
-      "source_locations": ["src/netconsole/services/online_mr/agent_package_importer.py", "src/netconsole/services/online_mr/session_lifecycle.py"]
+      "source_locations": ["src/netconsole/services/online_mr/session_lifecycle.py", "src/netconsole/services/online_mr/application_service.py"]
     },
     {
       "id": "site.online_mr.session_metadata",
@@ -1450,7 +1450,7 @@
       "code_owners": ["online-mr"],
       "data_type": "OPERATIONAL_CURRENT",
       "authority": "session identity, MR mapping and restart/replay metadata",
-      "producer": ["OnlineMrSessionStore", "Agent package importer"],
+      "producer": ["OnlineMrSessionStore", "Online MR session lifecycle"],
       "consumers": ["Online MR restart", "offline replay", "MESH import", "package"],
       "retention_owner": "Online MR session lifecycle",
       "rebuildable": false,
@@ -1460,7 +1460,7 @@
       "schema_version": "session metadata",
       "allowed_data_classes": ["OPERATIONAL_CURRENT"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "STAGING_TEMPORARY"],
-      "source_locations": ["src/netconsole/services/online_mr_session_store.py", "src/netconsole/services/online_mr/agent_package_importer.py"]
+      "source_locations": ["src/netconsole/services/online_mr_session_store.py", "src/netconsole/services/online_mr/session_lifecycle.py"]
     },
     {
       "id": "site.online_mr.session_logs",
@@ -1579,11 +1579,11 @@
     {
       "id": "site.traffic.raw",
       "relative_path": "sites/{site_id}/files/network_tools/traffic/runs/**",
-      "owner": "Traffic application adapters",
+      "owner": "Traffic local application adapter",
       "code_owners": ["traffic"],
       "data_type": "ARTIFACT_OR_RAW_FILE",
-      "authority": "per-run Ping/iPerf raw evidence and Agent package references",
-      "producer": ["Traffic local adapter", "Traffic Agent adapter"],
+      "authority": "per-run Ping/iPerf raw evidence from the local execution adapter",
+      "producer": ["Traffic local adapter"],
       "consumers": ["Traffic reconciliation", "Task detail", "diagnostics"],
       "retention_owner": "Traffic application service",
       "rebuildable": false,
@@ -1593,7 +1593,7 @@
       "schema_version": "traffic run directory contract",
       "allowed_data_classes": ["ARTIFACT_OR_RAW_FILE"],
       "forbidden_data_classes": ["BACKUP_ROLLBACK", "CACHE_REBUILDABLE"],
-      "source_locations": ["src/netconsole/services/traffic/local_adapter.py", "src/netconsole/services/traffic/agent_adapter.py"]
+      "source_locations": ["src/netconsole/services/traffic/local_adapter.py"]
     },
     {
       "id": "site.traffic.iperf_results",
@@ -1788,32 +1788,32 @@
     {
       "id": "site.online_mr.import_downloads",
       "relative_path": "sites/{site_id}/files/imports/online_mr/downloads/**",
-      "owner": "OnlineMrAgentDownloadService",
+      "owner": "Legacy Online MR package compatibility",
       "code_owners": ["online-mr"],
       "data_type": "ARTIFACT_OR_RAW_FILE",
-      "authority": "hash-verified downloaded Agent package retained as import evidence",
-      "producer": ["OnlineMrAgentDownloadService"],
-      "consumers": ["Online MR package importer", "reimport", "audit"],
+      "authority": "historical hash-verified package retained only as legacy import evidence; no active producer",
+      "producer": ["NO_ACTIVE_PRODUCER_PROVEN"],
+      "consumers": ["legacy package inspection", "audit"],
       "retention_owner": "Online MR import lifecycle",
       "rebuildable": false,
       "site_package_policy": "include only when selected as the session raw authority",
       "backup_policy": "avoid permanent package plus unpacked raw duplication without owner decision",
       "migration_policy": "stream to .part, hash verify, atomic rename; failure/cancel removes only .part",
-      "schema_version": "Agent package",
+      "schema_version": "legacy Agent package",
       "allowed_data_classes": ["ARTIFACT_OR_RAW_FILE", "STAGING_TEMPORARY"],
       "forbidden_data_classes": ["BACKUP_ROLLBACK", "CACHE_REBUILDABLE"],
-      "source_locations": ["src/netconsole/services/online_mr/agent_download_service.py", "src/netconsole/services/online_mr/agent_package_importer.py"]
+      "source_locations": ["src/netconsole/services/online_mr/session_lifecycle.py", "docs/rail-transit/online-mr/README.md"]
     },
     {
       "id": "site.online_mr.import_staging",
       "relative_path": "sites/{site_id}/files/imports/online_mr/.*.tmp/**",
-      "owner": "OnlineMrAgentPackageImporter",
+      "owner": "Legacy Online MR package compatibility",
       "code_owners": ["online-mr"],
       "data_type": "STAGING_TEMPORARY",
-      "authority": "non-authoritative hash-verified extraction staging before atomic session publish",
-      "producer": ["OnlineMrAgentPackageImporter"],
-      "consumers": ["Online MR import finalize/recovery"],
-      "retention_owner": "OnlineMrAgentPackageImporter",
+      "authority": "historical non-authoritative extraction staging retained only for compatibility inspection; no active producer",
+      "producer": ["NO_ACTIVE_PRODUCER_PROVEN"],
+      "consumers": ["legacy package inspection", "audit"],
+      "retention_owner": "Legacy compatibility boundary",
       "rebuildable": true,
       "site_package_policy": "exclude; successful, failed and interrupted imports must clean or recover it",
       "backup_policy": "none; source package and published session remain protected",
@@ -1821,7 +1821,7 @@
       "schema_version": "import staging contract",
       "allowed_data_classes": ["STAGING_TEMPORARY"],
       "forbidden_data_classes": ["OPERATIONAL_CURRENT", "BACKUP_ROLLBACK"],
-      "source_locations": ["src/netconsole/services/online_mr/agent_package_importer.py"]
+      "source_locations": ["src/netconsole/services/online_mr/session_lifecycle.py", "docs/rail-transit/online-mr/README.md"]
     },
     {
       "id": "site.web_artifact.manifests",
@@ -2001,13 +2001,13 @@
     {
       "id": "site.agents.sqlite_sidecars",
       "relative_path": "sites/{site_id}/db/agents.db-*",
-      "owner": "AgentRepository SQLite runtime",
-      "code_owners": ["agent", "data"],
+      "owner": "Legacy SQLite compatibility",
+      "code_owners": ["storage", "data"],
       "data_type": "STAGING_TEMPORARY",
-      "authority": "SQLite WAL/SHM runtime state for agents.db",
-      "producer": ["AgentRepository through connect_sqlite"],
-      "consumers": ["SQLite crash recovery"],
-      "retention_owner": "AgentRepository connection lifecycle",
+      "authority": "historical SQLite sidecars retained only for compatibility inspection",
+      "producer": ["NO_ACTIVE_PRODUCER_PROVEN"],
+      "consumers": ["legacy package inspection"],
+      "retention_owner": "Site storage compatibility boundary",
       "rebuildable": true,
       "site_package_policy": "exclude; snapshot agents.db through SQLite Online Backup",
       "backup_policy": "never copy sidecars as independent backups",
@@ -2015,7 +2015,7 @@
       "schema_version": "SQLite runtime",
       "allowed_data_classes": ["STAGING_TEMPORARY"],
       "forbidden_data_classes": ["BACKUP_ROLLBACK", "ARTIFACT_OR_RAW_FILE"],
-      "source_locations": ["src/netconsole/repositories/agent_repository.py", "src/netconsole/core/sqlite_utils.py"]
+      "source_locations": ["src/netconsole/services/site_storage.py", "src/netconsole/core/sqlite_utils.py"]
     },
     {
       "id": "site.ground.index_sidecars",
@@ -2629,25 +2629,6 @@
       "source_locations": ["src/netconsole/core/paths.py", "src/netconsole/services/app_auto_cleanup.py"]
     },
     {
-      "id": "agent.tasks.packages",
-      "relative_path": "agent-data/tasks|packages/**",
-      "owner": "Windows Go Agent",
-      "code_owners": ["agent"],
-      "data_type": "OPERATIONAL_CURRENT",
-      "authority": "Agent task recovery metadata and collection package before Controller acknowledgement",
-      "producer": ["apps/agent"],
-      "consumers": ["Agent restart", "Controller sync", "package download"],
-      "retention_owner": "Agent task/package lifecycle",
-      "rebuildable": false,
-      "site_package_policy": "not part of Controller Site Package",
-      "backup_policy": "none; acknowledged packages retire by Agent policy",
-      "migration_policy": "versioned JSON/package manifest",
-      "schema_version": "Agent V1 contracts",
-      "allowed_data_classes": ["OPERATIONAL_CURRENT", "ARTIFACT_OR_RAW_FILE"],
-      "forbidden_data_classes": ["BACKUP_ROLLBACK"],
-      "source_locations": ["apps/agent/internal/core", "apps/agent/internal/mr", "apps/agent/internal/packagex"]
-    },
-    {
       "id": "global.config.root_files",
       "relative_path": "config/{config_file}",
       "owner": "PathResolver and application configuration services",
@@ -3235,7 +3216,7 @@
       "schema_version": "Agent config JSON",
       "allowed_data_classes": ["OPERATIONAL_CURRENT"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "DISPOSABLE_DERIVED"],
-      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "apps/agent/README.md"]
+      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "docs/storage/DATA_ROOT.md"]
     },
     {
       "id": "global.legacy_agent.targets",
@@ -3254,7 +3235,7 @@
       "schema_version": "Agent targets JSON",
       "allowed_data_classes": ["OPERATIONAL_CURRENT"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "DISPOSABLE_DERIVED"],
-      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "apps/agent/README.md"]
+      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "docs/storage/DATA_ROOT.md"]
     },
     {
       "id": "global.legacy_agent.data",
@@ -3273,7 +3254,7 @@
       "schema_version": "legacy Agent data tree",
       "allowed_data_classes": ["ARTIFACT_OR_RAW_FILE"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "STAGING_TEMPORARY", "DISPOSABLE_DERIVED"],
-      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "apps/agent/README.md"]
+      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "docs/storage/DATA_ROOT.md"]
     },
     {
       "id": "global.legacy_agent.packages",
@@ -3292,7 +3273,7 @@
       "schema_version": "Agent package",
       "allowed_data_classes": ["ARTIFACT_OR_RAW_FILE"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "STAGING_TEMPORARY", "DISPOSABLE_DERIVED"],
-      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "apps/agent/README.md"]
+      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "docs/storage/DATA_ROOT.md"]
     },
     {
       "id": "global.legacy_agent.logs",
@@ -3311,7 +3292,7 @@
       "schema_version": "Agent log",
       "allowed_data_classes": ["HISTORICAL_RAW_FACT"],
       "forbidden_data_classes": ["CACHE_REBUILDABLE", "STAGING_TEMPORARY", "DISPOSABLE_DERIVED"],
-      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "apps/agent/README.md"]
+      "source_locations": ["scripts/maintenance/migrate_unified_data_root.py", "docs/storage/DATA_ROOT.md"]
     },
     {
       "id": "global.data_root.staging",

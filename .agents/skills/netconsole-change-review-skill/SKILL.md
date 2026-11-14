@@ -79,7 +79,7 @@ L3/L4 未列清消费者、兼容风险、测试矩阵、并行修改和合并�
 | Task/Job/Worker | Devices、AC、Config、File、MESH、Online MR、Ground、Trackside、Network、Export | `netconsole-job-center-skill` + 对应领域 Skill |
 | Export/Artifact/file contract | Devices、FIT-AP、Trackside、MESH、Online MR、Config、Network、Task Center | `netconsole-export-report-skill` + `netconsole-user-file-interaction-skill` |
 | Feature Registry/snapshot | 全部导航、FeatureGate、Full/Customer、Settings、Electron production、Packaging | `netconsole-release-packaging-skill` + 受影响领域 Skill |
-| DataRoot/SQLite/migration | Site、devices/tasks/agents DB、MESH/Online MR/Ground 派生数据、Installer | `netconsole-data-safety-skill`; 安装器再加 `netconsole-release-packaging-skill` |
+| DataRoot/SQLite/migration | Site、devices/tasks DB、MESH/Online MR/Ground 派生数据、Installer | `netconsole-data-safety-skill`; 安装器再加 `netconsole-release-packaging-skill` |
 | Electron Main/Preload/IPC/lifecycle | 所有受管窗口、Renderer runtime、Backend、Bridge、download/save、tray | `netconsole-electron-desktop-skill` |
 
 领域路由：设备管理用 `netconsole-device-management-skill`；轨交基础资料用 `netconsole-rail-base-data-skill`；轨旁 AP 用 `netconsole-trackside-ap-skill`；地面无人值守用 `netconsole-ground-unattended-skill`；发布制品用 `netconsole-release-packaging-skill`。只有真实跨域时组合，不无条件加载全部 Skill。

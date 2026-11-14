@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from netconsole.models.agent import AgentStatus
 from netconsole.models.task_state import TaskState
 from netconsole.models.traffic_test import ExecutionTargetKind, TrafficRun, TrafficRunPage, TrafficTestType
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
@@ -72,33 +71,6 @@ class FakeTrafficService:
         return {}
 
 
-class FakeAgentService:
-    def list_agents(self) -> list[dict[str, object]]:
-        return [
-            {
-                "agent_id": "online",
-                "name": "在线 Agent",
-                "enabled": True,
-                "status": AgentStatus.ONLINE.value,
-                "capabilities": {"iperf_client": True},
-            },
-            {
-                "agent_id": "missing-tool",
-                "name": "缺工具 Agent",
-                "enabled": True,
-                "status": AgentStatus.ONLINE.value,
-                "capabilities": {},
-            },
-            {
-                "agent_id": "offline",
-                "name": "不可达 Agent",
-                "enabled": True,
-                "status": AgentStatus.OFFLINE.value,
-                "capabilities": {"fping": True},
-            },
-        ]
-
-
 def _run(
     run_id: str,
     *,
@@ -157,17 +129,13 @@ def test_web_service_delegates_run_query_and_caps_page_size() -> None:
     assert capped.has_more is True
 
 
-def test_web_service_reports_local_capability_and_agent_unavailability() -> None:
-    service = TrafficWebApplicationService(FakeTrafficService([]), FakeAgentService())
+def test_web_service_reports_only_local_capability() -> None:
+    service = TrafficWebApplicationService(FakeTrafficService([]))
 
     targets = service.list_execution_targets()
+    assert len(targets) == 1
     assert targets[0].id == "LOCAL"
     assert targets[0].available is True
-    assert targets[1].available is True
-    assert targets[2].available is False
-    assert targets[2].unavailable_reason == "Agent 未报告流量测试能力"
-    assert targets[3].available is False
-    assert targets[3].unavailable_reason == "Agent 当前不在线"
 
 
 def test_web_service_cancel_is_idempotent_for_repeated_and_concurrent_calls() -> None:
@@ -210,12 +178,12 @@ def test_web_service_retries_failed_runs_but_rejects_nonterminal_and_preserves_c
     assert traffic.retry_calls == ["task-failed"]
 
     traffic.retry_error = TrafficTestError(
-        TrafficErrorCode.AGENT_CREDENTIAL_REQUIRED,
-        "Agent Token 未加载",
+        TrafficErrorCode.PROCESS_START_FAILED,
+        "本地流量任务启动失败",
     )
     with pytest.raises(TrafficTestError) as credential_error:
         asyncio.run(service.retry_run("failed"))
-    assert credential_error.value.code == TrafficErrorCode.AGENT_CREDENTIAL_REQUIRED.value
+    assert credential_error.value.code == TrafficErrorCode.PROCESS_START_FAILED.value
 
 
 def test_traffic_router_keeps_business_orchestration_out_of_the_router() -> None:

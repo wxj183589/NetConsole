@@ -14,6 +14,5 @@ class DevelopmentRuntimeStatusResponse(BaseModel):
     persistent: bool
     frontend_mode: str
     active_tasks: int = Field(ge=0)
-    agent_controller_ready: bool
-    traffic_supervisor_ready: bool
+    traffic_service_ready: bool
     version: str

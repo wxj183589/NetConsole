@@ -93,14 +93,6 @@ FEATURES: tuple[FeatureItem, ...] = (
         default_visible=False,
     ),
     FeatureItem(
-        "module.agent",
-        "Agent 管理",
-        None,
-        "module",
-        requires=("internal.task_center",),
-        delivery_requires=("internal.task_center",),
-    ),
-    FeatureItem(
         "module.task_center",
         "任务中心",
         None,
@@ -228,7 +220,6 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("online_mr.analysis_link_details", "online_mr.link_details", "rail.online_mr_analysis", "tab"),
     FeatureItem("online_mr.analysis_fping_1s", "online_mr.fping_1s_summary", "rail.online_mr_analysis", "tab"),
     FeatureItem("online_mr.collection_notes", "online_mr.collection_note", "rail.online_mr_collection", "action"),
-    FeatureItem("online_mr.agent_packages", "online_mr.agent_packages.entry", "rail.online_mr_collection", "action"),
     FeatureItem(
         "module.online_mr",
         "车载 MR 实时展示",
@@ -253,13 +244,6 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem(
         "capability.online_mr.local_control",
         "本地 Online MR 受控启停",
-        "module.train_communication",
-        "action",
-        status=FeatureStatus.DEVELOPMENT,
-    ),
-    FeatureItem(
-        "capability.online_mr.agent_control",
-        "Agent Online MR 受控启停",
         "module.train_communication",
         "action",
         status=FeatureStatus.DEVELOPMENT,
@@ -404,7 +388,7 @@ if len(FEATURE_BY_ID) != len(FEATURES):
 
 FEATURE_GROUPS = (
     ("foundation", "基础与桌面"),
-    ("tasks", "任务与 Agent"),
+    ("tasks", "任务中心"),
     ("devices", "设备管理"),
     ("ac", "AC 与 FIT-AP"),
     ("configuration", "配置采集与文件"),
@@ -492,7 +476,7 @@ def group_id_of(feature_id: str) -> str:
         return "internal"
 
     lineage = _lineage_of(feature_id)
-    if lineage & {"module.agent", "module.task_center"}:
+    if "module.task_center" in lineage:
         return "tasks"
     if lineage & {
         "module.trackside_ap",

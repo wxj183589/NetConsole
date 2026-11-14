@@ -71,7 +71,6 @@ describe('real Python backend integration', () => {
       stopTimeoutMs: 8_000,
       environment: {
         ONLINE_MR_WEB_CONTROL_ENABLED: '0',
-        ONLINE_MR_AGENT_EXECUTOR_ENABLED: '0',
       },
       logger: (event, detail) => logs.push(`${event} ${detail ?? ''}`),
     })

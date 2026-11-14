@@ -27,7 +27,6 @@
     "feature_delivery": "Feature and edition delivery",
     "data_platform": "DataRoot and database platform",
     "electron_runtime": "Electron runtime",
-    "agent": "Windows Go Agent",
     "release_engineering": "Build and release"
   },
   "low_risk_patterns": [
@@ -298,7 +297,6 @@
         "network_tools",
         "system_settings",
         "task_job",
-        "agent",
         "feature_delivery",
         "electron_runtime",
         "release_engineering"
@@ -376,7 +374,6 @@
         "mesh",
         "online_mr",
         "ground_unattended",
-        "agent",
         "system_settings",
         "electron_runtime",
         "release_engineering"
@@ -512,7 +509,6 @@
         "renderer_platform",
         "data_platform",
         "electron_runtime",
-        "agent",
         "release_engineering"
       ],
       "compatibility_risks": [

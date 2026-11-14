@@ -14,7 +14,7 @@ from netconsole.services.device_command_profile_service import (
 ROOT = Path(__file__).resolve().parents[2]
 REFERENCE_PATH = ROOT / "resources" / "command_reference.json"
 DEVICE_PROFILE_PATH = ROOT / "resources" / "device_command_profiles.json"
-SCAN_DIRS = ("src/netconsole", "apps/agent/mr_collector_py")
+SCAN_DIRS = ("src/netconsole",)
 TEXT_SUFFIXES = {".py"}
 SKIP_PATH_PARTS = {"build", "__pycache__"}
 DEFERRED_PROFILE_MIGRATION_COMMANDS: set[tuple[str, str]] = set()

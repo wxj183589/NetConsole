@@ -17,19 +17,11 @@ const selected = computed({
 })
 
 function valueOf(target: TrafficExecutionTarget): string {
-  return target.kind === 'LOCAL' ? 'LOCAL' : `AGENT:${target.agent_id}`
-}
-
-function capabilityKey(): string {
-  if (props.testType === 'IPERF_SERVER') return 'iperf_server'
-  if (props.testType === 'IPERF_CLIENT') return 'iperf_client'
-  if (props.testType === 'TCP_PORT_TEST') return 'tcp_ping_probe'
-  return 'fping'
+  return target.kind === 'LOCAL' ? 'LOCAL' : target.id
 }
 
 function disabledReason(target: TrafficExecutionTarget): string {
   if (!target.available) return target.unavailable_reason || '执行端不可用'
-  if (target.kind === 'AGENT' && !target.capabilities[capabilityKey()]) return 'Agent 不支持当前测试类型'
   return ''
 }
 </script>
@@ -46,7 +38,7 @@ function disabledReason(target: TrafficExecutionTarget): string {
       <div class="target-option">
         <span>{{ target.display_name }}</span>
         <small v-if="disabledReason(target)">{{ disabledReason(target) }}</small>
-        <small v-else>{{ target.kind === 'LOCAL' ? '本地执行' : `${target.platform || 'agent'} ${target.version || ''}` }}</small>
+        <small v-else>本地执行</small>
       </div>
     </el-option>
   </el-select>

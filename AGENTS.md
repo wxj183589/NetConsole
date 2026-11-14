@@ -4,7 +4,7 @@
 
 - NetConsole 是 Windows 本地网络设备采集与分析工具。正式桌面产品为 Electron Main + Preload + Vue，FastAPI/Python Core 是永久业务层；Qt/PySide6 源码、运行时和回退入口已退出活动架构，不得重新引入。
 - 真实版本从 `src/netconsole/core/version.py` 读取，用户可见功能从 `src/netconsole/core/feature_registry.py` 读取，数据路径从 `src/netconsole/core/paths.py` 读取。
-- Windows Go Agent V1 已位于 `apps/agent/`，包含独立 API、内嵌 Web、fping/iPerf、MR sidecar 和采集包；Traffic REST/WebSocket 与 Vue 流量测试页面已接入，CentOS 离线部署、主动注册和多 Controller 仍未实现。
+- 独立 Windows Go Agent、Agent 管理、远程执行链和 Agent 发布流程已退役；Online MR 与 Traffic 只保留本机能力，历史数据库中的 Agent 字段仅作兼容读取，不得恢复新的 Agent 入口。
 - 开发前先读当前代码、测试和 `docs/README.md`，不依赖旧会话或旧项目假设。
 
 ## Workspace 与 Authority 定义
@@ -63,7 +63,7 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 ## 构建产物与正式发布目录
 
-- 仓库内 `D:\study\NetConsole-Workspace\NetConsole\dist\` 只保存可由源码、锁文件和构建脚本重新生成的临时输出，包括 Renderer、Electron、PyInstaller、Agent、日志和 smoke 中间产物；它不是正式制品库，可由受控清理整体删除。
+- 仓库内 `D:\study\NetConsole-Workspace\NetConsole\dist\` 只保存可由源码、锁文件和构建脚本重新生成的 Renderer、Electron、Backend、日志和 smoke 中间产物；它不是正式制品库，可由受控清理整体删除。
 - 正式发布制品的唯一持久根是 `D:\study\NetConsole-Workspace\release\<version>\`。正式打包入口必须在全部 Gate 通过后，把安装包、release manifest、SHA-256 清单和构建摘要一起原子发布到该目录；已存在的版本目录不得覆盖或混入另一候选。
 - 普通 `build`、`package`、`rebuild` 只读取当前 `APP_VERSION`，不得自动 `+1`、修改版本源或写入 `published=true`；同版本构建使用 `Build Number + Git short SHA` 区分。自动更新只接受 `published=true` 且更高的三段 `ProductVersion`。
 - 禁止把 `C:\NetConsoleRelease`、`D:\NetConsoleRelease`、仓库内 `dist\release` 或 `dist\v<version>` 用作持久发布目录。PyInstaller Backend 中间输出统一位于 `dist\_build\backend-release\`。
@@ -116,16 +116,15 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
 - 新业务代码不得直接建立在仓库根目录；新增顶层目录前必须先检查并按需更新唯一权威 [Workspace 目录规范](./docs/development/workspace-layout.md) 和仓库内部 [目录规范](./docs/development/repository-layout.md)，说明唯一职责并获得用户明确确认。
 - 任务生成的 report、audit、acceptance、migration、handoff、benchmark、test evidence、investigation result、spec、baseline 或 diagnostic summary，如果用户未明确指定输出路径，禁止直接写入仓库根目录；创建前必须先检查 [仓库目录规范](./docs/development/repository-layout.md)，默认归入 `docs/development/`、`docs/architecture/`、`docs/investigations/`、`docs/archive/` 或对应领域目录。任务要求生成 `XXX_REPORT.md` 不等于允许创建根目录裸文件。
-- Electron、Web、Agent 分别进入 `apps/desktop_electron`、`apps/desktop_renderer`、`apps/agent`；共享 Python 业务代码进入 `src/netconsole`。不得重新创建 `apps/desktop` 或 `src/netconsole/ui`；`apps/desktop_electron` 只放 main/preload/shared 和必要打包元数据，不复制 Vue 或 Python Core。
+- Electron、Web 分别进入 `apps/desktop_electron`、`apps/desktop_renderer`；共享 Python 业务代码进入 `src/netconsole`。不得重新创建 `apps/desktop`、`apps/agent` 或 `src/netconsole/ui`；`apps/desktop_electron` 只放 main/preload/shared 和必要打包元数据，不复制 Vue 或 Python Core。
 - 不为符合架构示意图创建空的 `domain/application/infrastructure` 层，也不机械搬移现有包；按真实用例逐步收敛依赖。
 - 配置、版本化资源、测试 fixtures 和脚本分别进入 `config`、`resources`、`tests`、`scripts/build|dev|maintenance`，不得创建 `misc`、`temp`、`new`、`project` 等模糊目录。
 - 运行数据、日志、数据库、抓包、采集结果、缓存、临时导出和正式报告不得写入或提交仓库；开发态使用 `.local/`，打包态使用系统应用数据目录或用户选择的导出目录。
 - 移动文件后必须同步检查 Python import、测试、构建参数、批处理、前端工作目录、Agent 入口、文档和资源定位。
 - 禁止使用 `Path.cwd()` 定位源码、资源、配置或运行数据；禁止用临时 `sys.path` 修改掩盖包结构问题。
-- 不允许提交 `.venv`、缓存、日志、数据库、安装包、构建产物和临时导出文件；`resources/tools` 中已记录来源与许可证的 fping/iPerf 运行依赖是已审计例外。根 `tools/` 只用于开发、诊断和维护，`apps/agent/tools/` 禁止作为运行时工具来源。
-- `apps/agent` 二级目录只保留 `cmd`、`internal`、`mr_collector_py`、`web`、`scripts`、`resources/config` 和项目元文件；示例配置命名为 `config.example.json`/`targets.example.json`，真实配置不得回写源码目录。Agent 开发运行数据使用 `.local/agent/`，构建产物使用 `dist/agent/`；禁止保留 `apps/agent/bin`、`data`、`dist`、`logs`、`packages`、`tmp` 和 `apps/agent/tools` 作为运行目录或工具来源。
-- 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。除标准 `apps/desktop_electron`、`apps/desktop_renderer` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent/tools`、`apps/desktop`、`apps/agent/tools`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
-- 修改 Agent 构建、工具、配置或路径时，必须同步检查 `apps/agent/README.md`、`docs/agent/README.md`、`docs/release/BUILD_AND_RELEASE.md`、`resources/tools/README.md` 和 `docs/development/repository-layout.md`；重要文档链接必须在提交前验证。
+- 不允许提交 `.venv`、缓存、日志、数据库、安装包、构建产物和临时导出文件；`resources/tools` 中已记录来源与许可证的 fping/iPerf 运行依赖是已审计例外。根 `tools/` 只用于开发、诊断和维护。
+- 文档中的源码文件路径必须使用 `src/netconsole/...`；只有 Python import、模块或包名语境可以写 `netconsole.*`，不得写成 `src.netconsole.*`。除标准 `apps/desktop_electron`、`apps/desktop_renderer` 和 `src/netconsole` 归位外，不得新建旧根目录 `agent`、`apps/agent`、`apps/desktop`、`frontend`、`desktop`、`netconsole`、`profiles` 或 `project`。
+- 独立 Agent 已正式退役；不得重新添加 Agent API、WebSocket、管理页面、远程执行器、健康轮询、采集包同步、Go/EXE 构建或发布入口。fping、iPerf、Netmiko、SSH/Telnet 和通用设备采集等仍被正式业务使用的公共能力必须保留。
 - 目录职责不明确时先审计内容、Git 跟踪状态和引用关系，不得先新建目录或静默删除数据。
 
 ## Workspace 目录规则是强制开发约束
@@ -146,7 +145,6 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 | `netconsole-device-files-skill` | 只读 SFTP、主机密钥、下载队列和 `.part` | 普通 SSH、配置采集 |
 | `netconsole-config-collection-skill` | 配置快照、两文件对比、裁剪和差异导出 | AC 快照、普通文本 diff |
 | `netconsole-online-mr-skill` | 车载 MR 实时采集、Ping/iPerf、会话打包 | 离线 MESH 分析 |
-| `netconsole-agent-skill` | Windows Go Agent API、构建、工具、配置、targets、MR sidecar 和运行目录 | CentOS 离线部署；纯流量语义；纯 MR 命令规则 |
 | `netconsole-device-management-skill` | 设备 CRUD、连接/采集、CSV、凭据和外部终端 | AC/FIT-AP、SFTP、配置快照 |
 | `netconsole-electron-desktop-skill` | Electron Main/Preload/IPC、Backend 生命周期、窗口与托盘 | 普通 Vue 业务、NSIS/发布制品 |
 | `netconsole-rail-base-data-skill` | 轨交基础资料、站点/区间、轨旁规划、revision 和事务保存 | 轨旁运行态、Ground、Online MR 采集 |

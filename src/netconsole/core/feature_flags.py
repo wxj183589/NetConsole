@@ -50,7 +50,6 @@ PACKAGED_PRODUCTION_FEATURE_IDS = PACKAGED_CORE_FEATURE_IDS | frozenset(
         "module.rail_transit",
         "network_tools.traffic",
         "online_mr.advanced_ping",
-        "online_mr.agent_packages",
         "online_mr.analysis_fping_1s",
         "online_mr.analysis_link_details",
         "online_mr.collection_notes",

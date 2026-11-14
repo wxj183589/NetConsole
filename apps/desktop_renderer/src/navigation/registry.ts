@@ -19,7 +19,7 @@ export interface NavigationItem {
   feature_id?: string
   parent_id?: string
   order: number
-  icon: 'dashboard' | 'devices' | 'ac' | 'rail' | 'config' | 'files' | 'network' | 'tools' | 'tasks' | 'agent' | 'system'
+  icon: 'dashboard' | 'devices' | 'ac' | 'rail' | 'config' | 'files' | 'network' | 'tools' | 'tasks' | 'system'
   legacy_page_id?: string
   legacy_feature_id?: string
   /** @deprecated 仅用于读取 schema v1 历史数据；新注册项必须使用 legacy_page_id。 */
@@ -79,7 +79,6 @@ export const navigationRegistry: NavigationItem[] = [
     item({ navigation_id: 'tools.network-components', title: '网络测试组件', route_name: 'tools-network-components', route_path: '/tools/network-components', feature_id: 'capability.network_tools.components', parent_id: 'tools', order: 50, icon: 'tools', parity_state: 'IMPLEMENTED_UNVERIFIED', desktop_only: true, internal_only: false, implemented: true }),
   ] }),
   item({ navigation_id: 'tasks', title: '任务中心', route_name: 'tasks', route_path: '/tasks', feature_id: 'module.task_center', order: 80, icon: 'tasks', parity_state: 'PARTIAL', desktop_only: false, internal_only: false, implemented: true }),
-  item({ navigation_id: 'agents', title: 'Agent 管理', route_name: 'agents', route_path: '/agents', feature_id: 'module.agent', order: 90, icon: 'agent', parity_state: 'PARTIAL', desktop_only: false, internal_only: false, implemented: true }),
   item({ navigation_id: 'logs', title: '日志中心', route_name: 'logs', route_path: '/logs', feature_id: 'module.logs', order: 110, icon: 'system', legacy_page_id: 'logs', legacy_feature_id: 'module.logs', parity_state: 'IMPLEMENTED_UNVERIFIED', desktop_only: false, internal_only: false, implemented: true }),
   item({ navigation_id: 'storage-management', title: '存储管理', route_name: 'storage-management', route_path: '/storage-management', order: 115, icon: 'system', parity_state: 'READ_ONLY', desktop_only: true, internal_only: false, implemented: true }),
   item({ navigation_id: 'settings', title: '系统设置', route_name: 'system-settings', route_path: '/settings', feature_id: 'module.system_settings', order: 120, icon: 'system', legacy_page_id: 'system_settings', legacy_feature_id: 'module.system_settings', parity_state: 'PARTIAL', desktop_only: true, internal_only: false, implemented: true }),

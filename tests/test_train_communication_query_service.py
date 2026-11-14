@@ -165,7 +165,6 @@ def test_aggregates_ct_tc_mesh_sessions_and_traffic_without_merging_roles(tmp_pa
     assert summary.registered_trains == 1
     assert summary.registered_mrs == 2
     assert summary.active_online_mr_sessions == 1
-    assert summary.agent_imported_sessions == 1
     assert ct.peer_ap_name == "AP-01"
     assert ct.station == "车站A"
     assert ct.fping_latest_rtt_ms == 3.2
@@ -176,7 +175,7 @@ def test_aggregates_ct_tc_mesh_sessions_and_traffic_without_merging_roles(tmp_pa
     assert tc.communication_status in {"warning", "stale"}
     assert row.communication_status == "warning"
     assert service.get_related_tasks("demo", "mr-ct")[0].id == "task-1"
-    assert service.get_related_packages("demo", "mr-tc")[0].import_status == "imported"
+    assert service.get_related_packages("demo", "mr-tc")[0].import_status == "not_applicable"
 
 
 def test_peer_conflict_is_explicit_and_formal_mesh_location_wins(tmp_path: Path) -> None:

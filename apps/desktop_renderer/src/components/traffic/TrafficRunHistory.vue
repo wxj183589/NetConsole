@@ -36,7 +36,7 @@ function typeLabel(value: string): string {
 }
 
 function executorLabel(run: TrafficRun): string {
-  return run.executor_kind === 'LOCAL' ? '本机' : run.agent_id || 'Agent'
+  return run.executor_kind === 'LOCAL' ? '本机' : '已退役执行端'
 }
 
 function formatTime(value: string): string {

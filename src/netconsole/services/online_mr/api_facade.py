@@ -5,9 +5,7 @@ import json
 from netconsole.core.paths import PathResolver
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.online_mr import OnlineMrBusinessTable
-from netconsole.models.api.online_mr_agent_control import OnlineMrAgentWebStartRequestDTO
 from netconsole.models.api.online_mr_control import OnlineMrWebStartRequestDTO
-from netconsole.services.online_mr.agent_web_control_service import OnlineMrAgentWebControlService
 from netconsole.services.online_mr.errors import OnlineMrSiteContextError, OnlineMrSiteContextErrorCode
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.online_mr.web_control_service import OnlineMrWebControlService
@@ -21,12 +19,10 @@ class OnlineMrApiFacade:
         paths: PathResolver,
         query_service: OnlineMrQueryService,
         local_control: OnlineMrWebControlService,
-        agent_control: OnlineMrAgentWebControlService,
     ) -> None:
         self.paths = paths
         self.query_service = query_service
         self.local_control = local_control
-        self.agent_control = agent_control
 
     def current_site_id(self) -> str:
         try:
@@ -159,28 +155,5 @@ class OnlineMrApiFacade:
 
     def recover_local(self):
         return self.local_control.recover(self.current_site_id())
-
-    def agent_capabilities(self):
-        return self.agent_control.capabilities(self.current_site_id())
-
-    def agent_profiles(self):
-        return self.agent_control.profiles()
-
-    def agent_readiness(self, profile_id: str):
-        return self.agent_control.readiness(profile_id)
-
-    def agent_status(self):
-        return self.agent_control.status(self.current_site_id())
-
-    def agent_operation(self, operation_id: str):
-        return self.agent_control.get_operation(operation_id)
-
-    def start_agent(self, payload: OnlineMrAgentWebStartRequestDTO):
-        site_id = self.current_site_id()
-        return self.agent_control.start(payload, current_site_id=site_id)
-
-    def stop_agent(self, operation_id: str):
-        return self.agent_control.stop(operation_id)
-
 
 __all__ = ["OnlineMrApiFacade"]

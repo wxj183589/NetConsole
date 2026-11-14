@@ -8,10 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from netconsole.core.paths import PathResolver
-from netconsole.models.api.agent import AgentDTO
 from netconsole.models.api.train_communication import TrainCommunicationRowDTO, TrainCommunicationSummaryDTO
 from netconsole.models.api.wireless_dashboard import (
-    WirelessDashboardAgentsDTO,
     WirelessDashboardAlertsDTO,
     WirelessDashboardAlertDTO,
     WirelessDashboardAnalysisDTO,
@@ -25,7 +23,6 @@ from netconsole.models.api.wireless_dashboard import (
 )
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.query_service import AcManagementQueryService
-from netconsole.services.agent.controller import AgentControllerService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.online_mr.query_service import OnlineMrQueryService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
@@ -53,7 +50,6 @@ class WirelessDashboardQueryService:
         online_mr_query: OnlineMrQueryService | None = None,
         job_query: JobCenterQueryService | None = None,
         mesh_analysis_query: MeshAnalysisQueryService | None = None,
-        agent_service: AgentControllerService | None = None,
         cache_ttl_seconds: float = 2.0,
     ) -> None:
         self.paths = paths
@@ -79,7 +75,6 @@ class WirelessDashboardQueryService:
             base_query=self.base_query,
             online_mr_query=self.online_mr_query,
         )
-        self.agent_service = agent_service
         self.cache_ttl_seconds = max(0.0, float(cache_ttl_seconds))
         self._cache: dict[tuple[str, str], _CacheEntry] = {}
         self._latest_key: dict[str, tuple[str, str]] = {}
@@ -113,7 +108,6 @@ class WirelessDashboardQueryService:
         sessions = self.online_mr_query.list_sessions(site_id, limit=20)
         analysis_summary = self.mesh_analysis_query.get_summary(site_id)
         analysis_sessions = self.mesh_analysis_query.list_analysis_sessions(site_id, page=1, page_size=8)
-        agents = self._agents()
 
         infrastructure = WirelessDashboardInfrastructureDTO(
             ac=ac,
@@ -124,10 +118,9 @@ class WirelessDashboardQueryService:
         train_section = WirelessDashboardTrainsDTO(summary=train_summary, items=trains.items, total=trains.total)
         recent = WirelessDashboardRecentOperationsDTO(tasks=tasks, sessions=sessions)
         analysis = WirelessDashboardAnalysisDTO(summary=analysis_summary, sessions=analysis_sessions.items)
-        agent_section = self._agent_section(agents)
-        alerts = self._alerts(base, infrastructure, train_section, recent, analysis, agent_section)
-        freshness = self._freshness(base, ac, mesh, train_summary, tasks, sessions, analysis_summary, agents)
-        data_version = self._data_version(base, ac, mesh, train_summary, tasks, sessions, analysis_summary, agents)
+        alerts = self._alerts(base, infrastructure, train_section, recent, analysis)
+        freshness = self._freshness(base, ac, mesh, train_summary, tasks, sessions, analysis_summary)
+        data_version = self._data_version(base, ac, mesh, train_summary, tasks, sessions, analysis_summary)
         updated_at = max((item.updated_at for item in freshness.items if item.updated_at), default="")
         summary = WirelessDashboardSummaryDTO(
             site_id=site_id,
@@ -145,8 +138,6 @@ class WirelessDashboardQueryService:
             offline_mrs=mesh.offline_mrs,
             stale_mrs=mesh.stale_mrs,
             active_online_mr_sessions=train_summary.active_online_mr_sessions,
-            agent_total=agent_section.total,
-            online_agents=agent_section.online,
             running_tasks=task_summary.active,
             mesh_analysis_sessions=analysis_summary.session_count,
             alert_total=alerts.total,
@@ -163,7 +154,6 @@ class WirelessDashboardQueryService:
             freshness=freshness,
             recent_operations=recent,
             analysis=analysis,
-            agents=agent_section,
         )
         key = (site_id, data_version)
         with self._lock:
@@ -214,11 +204,6 @@ class WirelessDashboardQueryService:
         self._update_section(site_id, "analysis", section)
         return section
 
-    def get_agents_section(self, site_id: str) -> WirelessDashboardAgentsDTO:
-        section = self._agent_section(self._agents())
-        self._update_section(site_id, "agents", section)
-        return section
-
     def get_alerts_section(self, site_id: str) -> WirelessDashboardAlertsDTO:
         dashboard = self._current(site_id)
         base = self._base_summaries[site_id]
@@ -228,7 +213,6 @@ class WirelessDashboardQueryService:
             dashboard.trains,
             dashboard.recent_operations,
             dashboard.analysis,
-            dashboard.agents,
         )
         self._update_section(site_id, "alerts", section)
         return section
@@ -259,7 +243,6 @@ class WirelessDashboardQueryService:
         mesh = dashboard.infrastructure.mesh_link
         trains = dashboard.trains.summary
         analysis = dashboard.analysis.summary
-        agents = dashboard.agents
         active_states = {"PENDING", "STARTING", "RUNNING", "STOPPING"}
         summary.ap_total = ac.ap_total
         summary.online_aps = ac.online_aps
@@ -273,8 +256,6 @@ class WirelessDashboardQueryService:
         summary.offline_mrs = mesh.offline_mrs
         summary.stale_mrs = mesh.stale_mrs
         summary.active_online_mr_sessions = trains.active_online_mr_sessions
-        summary.agent_total = agents.total
-        summary.online_agents = agents.online
         summary.running_tasks = sum(task.status.upper() in active_states for task in dashboard.recent_operations.tasks)
         summary.mesh_analysis_sessions = analysis.session_count
         summary.alert_total = dashboard.alerts.total
@@ -294,7 +275,6 @@ class WirelessDashboardQueryService:
         analysis = dashboard.analysis.summary
         tasks = dashboard.recent_operations.tasks
         sessions = dashboard.recent_operations.sessions
-        agents = dashboard.agents.items
         rows["ac_management"].status = "available" if ac.updated_at else "no_data"
         rows["ac_management"].updated_at = ac.updated_at
         rows["ac_mesh_link"].status = mesh.data_status
@@ -308,8 +288,6 @@ class WirelessDashboardQueryService:
         rows["job_center"].status = "available" if rows["job_center"].updated_at else "no_data"
         rows["mesh_analysis"].updated_at = analysis.latest_analysis_time or ""
         rows["mesh_analysis"].status = "available" if rows["mesh_analysis"].updated_at else "no_data"
-        rows["agents"].updated_at = max((item.last_checked_at for item in agents), default="")
-        rows["agents"].status = "available" if agents else "no_data"
 
     @staticmethod
     def _dashboard_version(dashboard: WirelessDashboardDTO) -> str:
@@ -320,7 +298,6 @@ class WirelessDashboardQueryService:
             "tasks": [[item.id, item.status, item.updated_time] for item in dashboard.recent_operations.tasks],
             "sessions": [[item.session_id, item.status] for item in dashboard.recent_operations.sessions],
             "analysis": [dashboard.analysis.summary.latest_analysis_time, dashboard.analysis.summary.session_count],
-            "agents": [[item.agent_id, WirelessDashboardQueryService._text(item.status), item.last_checked_at] for item in dashboard.agents.items],
         }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()[:16]
@@ -332,11 +309,6 @@ class WirelessDashboardQueryService:
         if entry is None or time.monotonic() - entry.created_at > self.cache_ttl_seconds:
             return None
         return entry.value
-
-    def _agents(self) -> list[AgentDTO]:
-        if self.agent_service is None:
-            return []
-        return [AgentDTO.model_validate(item) for item in self.agent_service.list_agents()]
 
     @staticmethod
     def _train_summary(site_id: str, rows: list[TrainCommunicationRowDTO]) -> TrainCommunicationSummaryDTO:
@@ -355,27 +327,11 @@ class WirelessDashboardQueryService:
             unknown_trains=counts["unknown"],
             current_mesh_links=sum(row.current_mesh_links for row in rows),
             active_online_mr_sessions=sum(row.active_sessions for row in rows),
-            agent_imported_sessions=sum(
-                str(mr.executor or "").upper() == "AGENT" and bool(mr.session_id)
-                for row in rows
-                for mr in row.mrs
-            ),
             latest_updated_at=max((row.last_updated_at or "" for row in rows), default="") or None,
         )
 
-    @staticmethod
-    def _agent_section(items: list[AgentDTO]) -> WirelessDashboardAgentsDTO:
-        statuses = [WirelessDashboardQueryService._text(item.status).casefold() for item in items]
-        return WirelessDashboardAgentsDTO(
-            items=items,
-            total=len(items),
-            online=sum(value == "online" for value in statuses),
-            offline=sum(value == "offline" for value in statuses),
-            unknown=sum(value not in {"online", "offline"} for value in statuses),
-        )
-
     @classmethod
-    def _alerts(cls, base, infrastructure, trains, recent, analysis, agents) -> WirelessDashboardAlertsDTO:
+    def _alerts(cls, base, infrastructure, trains, recent, analysis) -> WirelessDashboardAlertsDTO:
         items: list[WirelessDashboardAlertDTO] = []
 
         def add(alert_id: str, severity: str, category: str, title: str, message: str, path: str, *, entity_id: str = "", updated_at: str = "") -> None:
@@ -405,18 +361,13 @@ class WirelessDashboardQueryService:
             add("base-data-quality", "warning", "base_data", "基础资料存在待治理项", f"现有校验结果共 {base.issue_count} 条。", "/rail-transit/base-data", updated_at=base.updated_at)
         if analysis.summary.warning_session_count:
             add("mesh-analysis-warning", "warning", "analysis", "Mesh 分析会话存在告警", f"现有分析结果中 {analysis.summary.warning_session_count} 个会话带告警。", "/rail-transit/mesh-analysis", updated_at=analysis.summary.latest_analysis_time or "")
-        for agent in agents.items:
-            status = cls._text(agent.status).casefold()
-            if agent.enabled and status in {"offline", "error"}:
-                add(f"agent-{agent.agent_id}", "warning", "agent", f"Agent：{agent.name}", agent.last_error_message or f"当前状态：{status}", f"/agents?agent={agent.agent_id}", entity_id=agent.agent_id, updated_at=agent.last_checked_at)
         items.sort(key=lambda item: (item.severity != "critical", item.updated_at), reverse=False)
         return WirelessDashboardAlertsDTO(items=items[:100], total=len(items), critical=sum(item.severity == "critical" for item in items), warning=sum(item.severity == "warning" for item in items))
 
     @staticmethod
-    def _freshness(base, ac, mesh, trains, tasks, sessions, analysis, agents) -> WirelessDashboardFreshnessDTO:
+    def _freshness(base, ac, mesh, trains, tasks, sessions, analysis) -> WirelessDashboardFreshnessDTO:
         latest_task = max((item.updated_time for item in tasks), default="")
         latest_session = max(((item.stopped_at or item.started_at or item.created_at or "") for item in sessions), default="")
-        latest_agent = max((item.last_checked_at for item in agents), default="")
         items = [
             WirelessDashboardFreshnessItemDTO(source="base_data", label="轨道交通基础资料", status="available" if base.updated_at else "no_data", updated_at=base.updated_at, message=base.message),
             WirelessDashboardFreshnessItemDTO(source="ac_management", label="FIT-AP / 光衰", status="available" if ac.updated_at else "no_data", updated_at=ac.updated_at, message=ac.message),
@@ -425,12 +376,11 @@ class WirelessDashboardQueryService:
             WirelessDashboardFreshnessItemDTO(source="online_mr", label="Online MR 会话", status="available" if latest_session else "no_data", updated_at=latest_session),
             WirelessDashboardFreshnessItemDTO(source="job_center", label="任务中心", status="available" if latest_task else "no_data", updated_at=latest_task),
             WirelessDashboardFreshnessItemDTO(source="mesh_analysis", label="Mesh 离线分析", status="available" if analysis.latest_analysis_time else "no_data", updated_at=analysis.latest_analysis_time or ""),
-            WirelessDashboardFreshnessItemDTO(source="agents", label="Agent Controller 缓存", status="available" if agents else "no_data", updated_at=latest_agent, message="仅展示 Controller 已缓存状态，不主动探测 Agent。"),
         ]
         return WirelessDashboardFreshnessDTO(items=items)
 
     @staticmethod
-    def _data_version(base, ac, mesh, trains, tasks, sessions, analysis, agents) -> str:
+    def _data_version(base, ac, mesh, trains, tasks, sessions, analysis) -> str:
         payload: dict[str, Any] = {
             "base": [base.updated_at, base.ap_count, base.mr_count, base.issue_count],
             "ac": [ac.updated_at, ac.ap_total, ac.optical_anomalies],
@@ -439,7 +389,6 @@ class WirelessDashboardQueryService:
             "task": [tasks[0].updated_time, tasks[0].id] if tasks else [],
             "session": [sessions[0].session_id, sessions[0].status] if sessions else [],
             "analysis": [analysis.latest_analysis_time, analysis.session_count, analysis.link_record_count],
-            "agents": [[item.agent_id, WirelessDashboardQueryService._text(item.status), item.last_checked_at] for item in agents],
         }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()[:16]

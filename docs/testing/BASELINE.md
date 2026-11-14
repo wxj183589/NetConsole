@@ -134,7 +134,7 @@ pnpm run build:main
 
 ## Agent
 
-修改 `apps/agent` 时运行受影响包的 Go tests；API、fping/iPerf、MR sidecar、配置/targets、任务事件和采集包按 `netconsole-agent-skill` 选择定向验证。真实远端 Agent、长时流量和多 Controller 不进入默认 PR。
+独立 Agent 已退役；当前 fping/iPerf、Online MR 和 Traffic 修改按本机 Backend/Renderer 测试选择定向验证。真实设备、长时流量和现场采集不进入默认 PR，需单独标记现场验收状态。
 
 ## 主线 Smoke
 

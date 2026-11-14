@@ -15,15 +15,12 @@ const running = computed(() => latest.value && ['PENDING', 'STARTING', 'RUNNING'
 
 onMounted(async () => {
   await Promise.all([store.refreshTargets(), store.refreshRuns()])
-  const first = store.targets.find((target) => target.available && (target.kind === 'LOCAL' || target.capabilities.tcp_ping_probe))
-  if (first) form.targetKind = first.kind === 'LOCAL' ? 'LOCAL' : `AGENT:${first.agent_id}`
+  const first = store.targets.find((target) => target.available && target.kind === 'LOCAL')
+  if (first) form.targetKind = 'LOCAL'
 })
 
 function executionTarget(): TrafficExecutionTargetRequest {
-  if (!form.targetKind || form.targetKind === 'LOCAL') return { kind: 'LOCAL' }
-  const agentId = form.targetKind.replace(/^AGENT:/, '')
-  const target = store.targets.find((item) => item.agent_id === agentId)
-  return { kind: 'AGENT', agent_id: agentId, display_name: target?.display_name || agentId }
+  return { kind: 'LOCAL' }
 }
 
 async function start(): Promise<void> {
@@ -53,7 +50,7 @@ async function select(run: TrafficRun): Promise<void> {
 
 <template>
   <el-card v-loading="store.loading" shadow="never">
-    <template #header><div class="header"><div><h2>TCP 端口测试</h2><p>复用本地 Job 或 Agent ping_probe，结果关联任务中心</p></div><el-button :loading="store.loading" @click="store.refreshRuns">刷新</el-button></div></template>
+    <template #header><div class="header"><div><h2>TCP 端口测试</h2><p>使用本地探测任务，结果关联任务中心</p></div><el-button :loading="store.loading" @click="store.refreshRuns">刷新</el-button></div></template>
     <el-alert v-if="store.error" :title="store.error" type="error" show-icon :closable="false" />
     <el-form label-position="top">
       <el-form-item label="执行端"><ExecutionTargetSelect v-model="form.targetKind" :targets="store.targets" test-type="TCP_PORT_TEST" /></el-form-item>
@@ -72,7 +69,7 @@ async function select(run: TrafficRun): Promise<void> {
     <template v-else-if="latest">
       <el-descriptions :column="2" border>
         <el-descriptions-item label="状态">{{ latest.status }}</el-descriptions-item>
-        <el-descriptions-item label="执行端">{{ latest.executor_kind === 'LOCAL' ? '本机' : latest.agent_id }}</el-descriptions-item>
+        <el-descriptions-item label="执行端">本机</el-descriptions-item>
         <el-descriptions-item label="目标">{{ latest.normalized_config.target }}:{{ latest.normalized_config.port }}</el-descriptions-item>
         <el-descriptions-item label="结果">{{ latest.status === 'COMPLETED' ? (latest.summary.last_status || '已完成') : (running ? '执行中' : latest.error_message || '—') }}</el-descriptions-item>
       </el-descriptions>

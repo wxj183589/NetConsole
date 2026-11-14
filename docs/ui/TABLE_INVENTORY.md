@@ -20,10 +20,6 @@
 | `/ac-management` | `apps/desktop_renderer/src/views/ac-management/AcManagementView.vue:540` | `ac-fit-ap-radios` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/ac-management` | `apps/desktop_renderer/src/views/ac-management/AcManagementView.vue:573` | `ac-fit-ap-history` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/ac-management/parity` | `apps/desktop_renderer/src/views/ac-management/AcWebParityView.vue:263` | `ac-extension-records` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
-| `/agents` | `apps/desktop_renderer/src/views/agents/AgentListView.vue:355` | `agent-list` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
-| `/agents` | `apps/desktop_renderer/src/views/agents/AgentListView.vue:423` | `agent-tool-status` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
-| `/agents` | `apps/desktop_renderer/src/views/agents/AgentListView.vue:430` | `agent-remote-tasks` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
-| `/agents` | `apps/desktop_renderer/src/views/agents/AgentListView.vue:439` | `agent-remote-packages` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/command-reference` | `apps/desktop_renderer/src/views/command-reference/CommandReferenceView.vue:313` | `command-reference-list` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/config-collection` | `apps/desktop_renderer/src/views/config-collection/ConfigCollectionView.vue:585` | `config-devices` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |
 | `/config-collection` | `apps/desktop_renderer/src/views/config-collection/ConfigCollectionView.vue:611` | `config-snapshots` | `NcDataTable` | 是 | 是 | 是 | 公共推导 | COMPLIANT |

@@ -28,7 +28,6 @@
 
 - [构建与发布](./release/BUILD_AND_RELEASE.md)：Python Backend、Electron、NSIS、Agent 和制品验证。
 - [发布专题](./release/README.md)：版本、Full/Customer、第三方依赖和正式包状态。
-- [独立 Agent](./agent/README.md)：Windows Go Agent、Controller 和 Traffic API。
 
 ## Core Domains
 

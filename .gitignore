@@ -53,15 +53,6 @@ apps/desktop_electron/*.tsbuildinfo
 # Agent build/runtime output
 .local/agent/
 dist/agent/
-apps/agent/bin/
-apps/agent/data/
-apps/agent/logs/
-apps/agent/packages/
-apps/agent/dist/
-apps/agent/mr_collector_py/build/
-apps/agent/mr_collector_py/dist/
-apps/agent/tmp/
-apps/agent/tools/
 
 # Generated archives and packages.
 *.zip

@@ -1,6 +1,6 @@
 # iPerf3 Windows dynamic-auth 对应源码说明
 
-本目录的运行文件来自用户提供并经 SHA-256 固定的 `iperf-3.21-win64-dynamic-auth.zip`。NetConsole 正式构建和 Agent 构建只校验并复制仓库中的本地文件，不下载、升级或替换任何业务运行工具。
+本目录的运行文件来自用户提供并经 SHA-256 固定的 `iperf-3.21-win64-dynamic-auth.zip`。NetConsole 正式桌面构建只校验并复制仓库中的本地文件，不下载、升级或替换任何业务运行工具。
 
 固定发行与源码事实：
 

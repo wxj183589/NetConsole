@@ -57,14 +57,10 @@ class _Local:
         return None
 
 
-class _Agent:
-    pass
-
-
 def _facade(paths: PathResolver) -> tuple[OnlineMrApiFacade, _Query, _Local]:
     query = _Query()
     local = _Local()
-    return OnlineMrApiFacade(paths, query, local, _Agent()), query, local  # type: ignore[arg-type]
+    return OnlineMrApiFacade(paths, query, local), query, local
 
 
 def _write_current_site(paths: PathResolver, site_id: object) -> None:
@@ -190,7 +186,7 @@ def test_start_site_mismatch_fails_before_database_or_config_writes(tmp_path: Pa
         object(),  # type: ignore[arg-type]
         enabled=True,
     )
-    facade = OnlineMrApiFacade(paths, _Query(), local, _Agent())  # type: ignore[arg-type]
+    facade = OnlineMrApiFacade(paths, _Query(), local)
     before = _tree(tmp_path)
 
     with pytest.raises(OnlineMrWebControlError) as error:
@@ -224,11 +220,7 @@ def test_start_captures_one_site_snapshot_and_operation_calls_do_not_rebind(tmp_
 
 def test_online_mr_routers_only_depend_on_the_injected_facade() -> None:
     root = Path(__file__).resolve().parents[1]
-    for name in (
-        "online_mr_router.py",
-        "online_mr_control_router.py",
-        "online_mr_agent_control_router.py",
-    ):
+    for name in ("online_mr_router.py", "online_mr_control_router.py"):
         source = (root / "src" / "netconsole" / "backend" / "api" / name).read_text(encoding="utf-8")
         assert "online_mr_api_facade" in source
         for forbidden in (
@@ -238,6 +230,5 @@ def test_online_mr_routers_only_depend_on_the_injected_facade() -> None:
             "Repository",
             "OnlineMrQueryService",
             "OnlineMrWebControlService",
-            "OnlineMrAgentWebControlService",
         ):
             assert forbidden not in source

@@ -8,7 +8,6 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.wireless_dashboard import (
-    WirelessDashboardAgentsDTO,
     WirelessDashboardAlertsDTO,
     WirelessDashboardAnalysisDTO,
     WirelessDashboardDTO,
@@ -87,11 +86,6 @@ def recent_operations(request: Request, site_id: str = Query(default="", max_len
 @router.get("/analysis", response_model=WirelessDashboardAnalysisDTO)
 def analysis(request: Request, site_id: str = Query(default="", max_length=100)) -> WirelessDashboardAnalysisDTO:
     return _query(lambda: _service(request).get_analysis_section(_site_id(request, site_id)))
-
-
-@router.get("/agents", response_model=WirelessDashboardAgentsDTO)
-def agents(request: Request, site_id: str = Query(default="", max_length=100)) -> WirelessDashboardAgentsDTO:
-    return _query(lambda: _service(request).get_agents_section(_site_id(request, site_id)))
 
 
 __all__ = ["router"]

@@ -763,16 +763,13 @@ def test_job_center_routes_wave2_cancel_to_real_owner(
     assert calls == expected_calls
 
 
-@pytest.mark.parametrize(
-    "task_type", ["traffic_local_fping", "traffic_agent_iperf_client"]
-)
+@pytest.mark.parametrize("task_type", ["traffic_local_fping"])
 def test_job_center_routes_traffic_controller_cancel_to_real_service(
     tmp_path: Path,
     task_type: str,
 ) -> None:
     app, db_path = _app_with_tasks(tmp_path)
     task_id = f"{task_type}-running"
-    source = "agent" if task_type.startswith("traffic_agent_") else "local"
     TaskRepository(db_path).save(
         TaskSnapshot(
             task_id=task_id,
@@ -782,7 +779,7 @@ def test_job_center_routes_traffic_controller_cancel_to_real_service(
             created_time="2026-07-17T09:00:00Z",
             updated_time="2026-07-17T09:00:01Z",
             owner="controller",
-            source=source,
+            source="local",
             site_name="demo",
         )
     )

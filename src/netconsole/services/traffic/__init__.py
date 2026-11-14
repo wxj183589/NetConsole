@@ -1,1 +1,1 @@
-"""Unified traffic-test infrastructure shared by local and Agent adapters."""
+"""Unified local traffic-test infrastructure."""

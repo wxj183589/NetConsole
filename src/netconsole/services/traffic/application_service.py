@@ -24,20 +24,19 @@ from netconsole.models.traffic_test import (
 )
 from netconsole.repositories.traffic_run_repository import TrafficRunRepository
 from netconsole.services.job_center.task_application_service import TaskApplicationService
-from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfResultStore, IperfServerConfig
+from netconsole.services.network_tools.iperf_runner import IperfClientConfig, IperfServerConfig
 from netconsole.services.traffic.errors import TrafficErrorCode, TrafficTestError
 from netconsole.services.traffic.event_store import TrafficEventStore
 
 
 TRAFFIC_CONTROLLER_TASK_TYPES = frozenset(
-    f"traffic_{target}_{suffix}"
-    for target in ("local", "agent")
+    f"traffic_local_{suffix}"
     for suffix in ("iperf_server", "iperf_client", "fping", "tcp_port_test")
 )
 
 
 class TrafficTestApplicationService:
-    """本地和 Agent 流量测试共享的纯 Python 应用层。"""
+    """本地流量测试的纯 Python 应用层。"""
 
     def __init__(
         self,
@@ -48,9 +47,6 @@ class TrafficTestApplicationService:
         repository: TrafficRunRepository | None = None,
         event_hub: Any | None = None,
         local_adapter: Any | None = None,
-        agent_adapter: Any | None = None,
-        supervisor: Any | None = None,
-        agent_controller: Any | None = None,
         reconcile_on_start: bool = True,
     ) -> None:
         self.paths = paths or PathResolver()
@@ -73,24 +69,7 @@ class TrafficTestApplicationService:
                 repository=self.repository,
                 event_hub=self.events,
             )
-        if agent_adapter is None and agent_controller is not None:
-            from netconsole.services.traffic.agent_adapter import AgentTrafficAdapter
-
-            agent_adapter = AgentTrafficAdapter(
-                agent_controller,
-                self.repository,
-                self.task_service,
-                paths=self.paths,
-                site_name=self.site_name,
-                event_hub=self.events,
-            )
-        if supervisor is None and agent_adapter is not None:
-            from netconsole.services.traffic.agent_supervisor import AgentTrafficSupervisor
-
-            supervisor = AgentTrafficSupervisor(agent_adapter, self.repository)
         self.local_adapter = local_adapter
-        self.agent_adapter = agent_adapter
-        self.supervisor = supervisor
         if reconcile_on_start:
             self.reconcile_local_runs()
 
@@ -105,25 +84,13 @@ class TrafficTestApplicationService:
             self.local_adapter.event_store = TrafficEventStore(
                 self.paths, self.repository, self.site_name
             )
-        if self.agent_adapter is not None:
-            self.agent_adapter.site_name = self.site_name
-            self.agent_adapter.repository = self.repository
-            self.agent_adapter.iperf_store = IperfResultStore(
-                self.paths.iperf_db_path(self.site_name)
-            )
-        if self.supervisor is not None:
-            self.supervisor.repository = self.repository
-
     def reconcile_local_runs(self) -> None:
         self._reconcile_local_runs()
 
     async def start(self) -> None:
-        if self.supervisor is not None:
-            await _maybe_await(self.supervisor.start())
+        return None
 
     async def stop(self) -> None:
-        if self.supervisor is not None:
-            await _maybe_await(self.supervisor.stop())
         shutdown = getattr(self.local_adapter, "shutdown", None)
         if shutdown is not None:
             await asyncio.to_thread(shutdown)
@@ -231,69 +198,21 @@ class TrafficTestApplicationService:
             await _maybe_await(self.local_adapter.cancel(controller_task_id))
             return self.repository.get(run.traffic_run_id) or run
 
-        stopping = replace(run, status=TaskState.STOPPING, updated_at=utc_now_iso())
-        self.repository.save(stopping)
-        mapping = self.repository.get_agent_mapping(run.traffic_run_id)
-        if mapping is None:
-            failed = replace(
-                stopping,
-                status=TaskState.FAILED,
-                finished_at=utc_now_iso(),
-                error_code=TrafficErrorCode.REMOTE_TASK_NOT_FOUND.value,
-                error_message="未找到 Agent 任务映射",
-                sync_state=TrafficSyncState.ERROR,
-                updated_at=utc_now_iso(),
-            )
-            self.repository.save(failed)
-            try:
-                self._record_start_failure_event(failed)
-            except Exception:
-                app_logger.log_error("TRAFFIC_START_EVENT_PERSIST_FAILED", f"run_id={failed.traffic_run_id}")
-            self._record_agent_terminal(failed, "error")
-            return failed
-        if self.agent_adapter is None:
-            raise TrafficTestError(TrafficErrorCode.EXECUTION_TARGET_INVALID, "Agent 执行适配器未配置")
-        self.task_service.record_external_event(
-            controller_task_id,
-            "state",
-            {"state": TaskState.STOPPING.value, "message": "正在停止 Agent 流量任务"},
-            source="traffic",
-            site_name=self.site_name,
+        raise TrafficTestError(
+            TrafficErrorCode.EXECUTION_TARGET_INVALID,
+            "历史 Agent 流量任务已退役，不能继续执行停止操作",
         )
-        try:
-            await _maybe_await(self.agent_adapter.stop(mapping))
-        except TrafficTestError as exc:
-            now = utc_now_iso()
-            self.repository.save(
-                replace(
-                    stopping,
-                    sync_state=TrafficSyncState.ERROR,
-                    error_code=exc.code,
-                    error_message=exc.message,
-                    updated_at=now,
-                )
-            )
-            marker = getattr(self.agent_adapter, "mark_sync_state", None)
-            if marker is not None:
-                await _maybe_await(
-                    marker(
-                        mapping,
-                        TrafficSyncState.ERROR,
-                        error_code=exc.code,
-                        error_message=exc.message,
-                    )
-                )
-            raise
-        if self.supervisor is not None:
-            self.supervisor.attach(run.traffic_run_id)
-        return self.repository.get(run.traffic_run_id) or stopping
 
     async def retry(self, controller_task_id: str) -> TrafficRun:
         previous = self._require_run_by_task(controller_task_id)
+        if previous.executor_kind is not ExecutionTargetKind.LOCAL:
+            raise TrafficTestError(
+                TrafficErrorCode.EXECUTION_TARGET_INVALID,
+                "历史 Agent 流量任务已退役，不能重试",
+            )
         target = ExecutionTargetDTO(
-            kind=previous.executor_kind,
-            agent_id=previous.agent_id,
-            display_name=previous.agent_id,
+            kind=ExecutionTargetKind.LOCAL,
+            display_name="本机",
         )
         common = {
             "parent_task_id": previous.parent_task_id,
@@ -413,13 +332,6 @@ class TrafficTestApplicationService:
         retry_of_traffic_run_id: str,
     ) -> TrafficRun:
         self._validate_execution_target(execution_target)
-        if execution_target.kind is ExecutionTargetKind.AGENT:
-            if self.agent_adapter is None:
-                raise TrafficTestError(TrafficErrorCode.EXECUTION_TARGET_INVALID, "Agent 执行适配器未配置")
-            validator = getattr(self.agent_adapter, "validate_target", None)
-            if validator is not None:
-                await _maybe_await(validator(execution_target.agent_id, test_type))
-
         now = utc_now_iso()
         run = TrafficRun(
             traffic_run_id=uuid.uuid4().hex,
@@ -438,43 +350,21 @@ class TrafficTestApplicationService:
             sync_state=TrafficSyncState.ACTIVE,
         )
         self.repository.create(run)
-        external_created = False
         try:
-            if execution_target.kind is ExecutionTargetKind.LOCAL:
-                if self.local_adapter is None:
-                    raise TrafficTestError(TrafficErrorCode.EXECUTION_TARGET_INVALID, "本地执行适配器未配置")
-                await _maybe_await(self._start_local(run, config))
-            else:
-                self.task_service.create_external_task(
-                    task_id=run.controller_task_id,
-                    task_type=_controller_task_type(run, remote=True),
-                    task_name=_task_name(run),
-                    source="agent",
-                    owner="controller",
-                    agent=execution_target.agent_id,
-                    site_name=self.site_name,
-                )
-                external_created = True
-                await _maybe_await(self._start_agent(run, config))
-                if self.supervisor is not None:
-                    self.supervisor.attach(run.traffic_run_id)
+            if self.local_adapter is None:
+                raise TrafficTestError(TrafficErrorCode.EXECUTION_TARGET_INVALID, "本地执行适配器未配置")
+            await _maybe_await(self._start_local(run, config))
         except Exception as exc:
             error = exc if isinstance(exc, TrafficTestError) else TrafficTestError(
-                TrafficErrorCode.PROCESS_START_FAILED if execution_target.kind is ExecutionTargetKind.LOCAL else TrafficErrorCode.REMOTE_SYNC_FAILED,
+                TrafficErrorCode.PROCESS_START_FAILED,
                 str(exc) or "流量任务启动失败",
             )
-            leftover_mapping = (
-                self.repository.get_agent_mapping(run.traffic_run_id)
-                if execution_target.kind is ExecutionTargetKind.AGENT
-                else None
-            )
-            cleanup_pending = leftover_mapping is not None
             now = utc_now_iso()
             latest_run = self.repository.get(run.traffic_run_id) or run
             failed = replace(
                 latest_run,
-                status=TaskState.STOPPING if cleanup_pending else TaskState.FAILED,
-                finished_at="" if cleanup_pending else now,
+                status=TaskState.FAILED,
+                finished_at=now,
                 error_code=error.code,
                 error_message=error.message,
                 sync_state=TrafficSyncState.ERROR,
@@ -485,10 +375,6 @@ class TrafficTestApplicationService:
                 self._record_start_failure_event(failed)
             except Exception:
                 app_logger.log_error("TRAFFIC_START_EVENT_PERSIST_FAILED", f"run_id={failed.traffic_run_id}")
-            if cleanup_pending and self.supervisor is not None:
-                self.supervisor.attach(run.traffic_run_id)
-            if external_created:
-                self._record_agent_terminal(failed, "error")
             if error is exc:
                 raise error
             raise error from exc
@@ -503,43 +389,21 @@ class TrafficTestApplicationService:
             return self.local_adapter.start_tcp_port_test(run, config)
         return self.local_adapter.start_high_frequency_ping(run, config)
 
-    def _start_agent(self, run: TrafficRun, config: object) -> object:
-        if run.test_type is TrafficTestType.IPERF_SERVER:
-            return self.agent_adapter.start_iperf_server(run, config)
-        if run.test_type is TrafficTestType.IPERF_CLIENT:
-            return self.agent_adapter.start_iperf_client(run, config)
-        if run.test_type is TrafficTestType.TCP_PORT_TEST:
-            return self.agent_adapter.start_tcp_port_test(run, config)
-        return self.agent_adapter.start_high_frequency_ping(run, config)
-
     @staticmethod
     def _validate_execution_target(target: ExecutionTargetDTO) -> None:
-        if target.kind is ExecutionTargetKind.LOCAL and target.agent_id:
+        if target.kind is not ExecutionTargetKind.LOCAL:
+            raise TrafficTestError(
+                TrafficErrorCode.EXECUTION_TARGET_INVALID,
+                "Agent 流量执行已退役，仅支持本机执行",
+            )
+        if target.agent_id:
             raise TrafficTestError(TrafficErrorCode.EXECUTION_TARGET_INVALID, "本地执行端不能包含 agent_id")
-        if target.kind is ExecutionTargetKind.AGENT and not target.agent_id:
-            raise TrafficTestError(TrafficErrorCode.EXECUTION_TARGET_INVALID, "Agent 执行端缺少 agent_id")
 
     def _require_run_by_task(self, controller_task_id: str) -> TrafficRun:
         run = self.repository.get_by_controller_task(controller_task_id)
         if run is None:
             raise TrafficTestError(TrafficErrorCode.RESULT_NOT_FOUND, "流量任务不存在")
         return run
-
-    def _record_agent_terminal(self, run: TrafficRun, event_type: str) -> None:
-        try:
-            self.task_service.record_external_event(
-                run.controller_task_id,
-                event_type,
-                {
-                    "message": run.error_message or "Agent 流量任务失败",
-                    "error": run.error_message,
-                    "error_code": run.error_code,
-                },
-                source="traffic",
-                site_name=self.site_name,
-            )
-        except KeyError:
-            return
 
     def _record_start_failure_event(self, run: TrafficRun) -> None:
         from netconsole.services.traffic.event_store import TrafficEventStore
@@ -677,8 +541,8 @@ def _tcp_port_config_from_dict(value: dict[str, Any]) -> TcpPortTestConfig:
     )
 
 
-def _controller_task_type(run: TrafficRun, *, remote: bool) -> str:
-    prefix = "traffic_agent" if remote else "traffic_local"
+def _controller_task_type(run: TrafficRun) -> str:
+    prefix = "traffic_local"
     suffix = {
         TrafficTestType.IPERF_SERVER: "iperf_server",
         TrafficTestType.IPERF_CLIENT: "iperf_client",

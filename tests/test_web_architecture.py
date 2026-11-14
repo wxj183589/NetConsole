@@ -20,7 +20,6 @@ from netconsole.infrastructure.desktop import (
     UnavailableDesktopAdapter,
 )
 from netconsole.models.api import (
-    AgentStatusDTO,
     ApiResponse,
     ErrorDetail,
     ErrorResponse,
@@ -100,12 +99,6 @@ def test_runtime_mode_and_api_dtos_are_stable() -> None:
     assert event.payload["state"] == "STARTING"
     assert ApiResponse(data={"ok": True}).ok is True
     assert ErrorResponse(error=ErrorDetail(message="失败")).ok is False
-    assert (
-        AgentStatusDTO(
-            agent_id="agent-1", name="测试 Agent", status="online"
-        ).current_tasks
-        == 0
-    )
 
 
 def test_fastapi_app_exposes_registered_web_modules() -> None:
@@ -166,7 +159,6 @@ def test_fastapi_app_exposes_registered_web_modules() -> None:
         "/api/tasks",
         "/ws/tasks",
         "/api/ac-management/summary",
-        "/api/agents",
         "/api/online-mr/sessions/current",
         "/api/rail-transit/base-data/summary",
         "/api/traffic/runs",
@@ -233,7 +225,7 @@ def test_deferred_runtime_failure_is_visible_and_blocks_service_writes(tmp_path:
         # has run so this verifies the write gate rather than stale setup.
         app.state.runtime_services_status = "degraded"
         app.state.runtime_services_ready = False
-        app.state.runtime_services_error = "AgentControllerService"
+        app.state.runtime_services_error = "TrafficService"
         app.state.history_status = "degraded"
         app.state.history_pending = 18200
         app.state.history_error = "shard_write_failed"
@@ -243,7 +235,7 @@ def test_deferred_runtime_failure_is_visible_and_blocks_service_writes(tmp_path:
     assert health.status_code == 200
     assert health.json()["runtime_services_status"] == "degraded"
     assert health.json()["runtime_services_ready"] is False
-    assert health.json()["runtime_services_error"] == "AgentControllerService"
+    assert health.json()["runtime_services_error"] == "TrafficService"
     assert health.json()["history_status"] == "degraded"
     assert health.json()["history_pending"] == 18200
     assert health.json()["history_error"] == "shard_write_failed"
@@ -334,20 +326,12 @@ def test_api_runtime_composes_single_shared_services(
         is app.state.traffic_service
     )
     assert (
-        app.state.traffic_web_application_service.agent_service
-        is app.state.agent_service
-    )
-    assert (
         app.state.online_mr_api_facade.query_service
         is app.state.online_mr_query_service
     )
     assert (
         app.state.online_mr_api_facade.local_control
         is app.state.online_mr_web_control_service
-    )
-    assert (
-        app.state.online_mr_api_facade.agent_control
-        is app.state.online_mr_agent_web_control_service
     )
     assert (
         app.state.rail_transit_import_preview_service.import_service
@@ -433,7 +417,6 @@ def test_web_lifespan_stops_local_adapters_in_parallel(
         RuntimeMode.SERVER,
         paths=paths,
         task_service=tasks,
-        agent_service=PassiveService(),  # type: ignore[arg-type]
         traffic_service=AsyncService(),  # type: ignore[arg-type]
         ac_mesh_link_refresh_service=PassiveService(),  # type: ignore[arg-type]
         frontend_dist=tmp_path / "missing",
@@ -478,7 +461,6 @@ def test_web_lifespan_stops_file_queue_before_shared_process_adapter(
         RuntimeMode.SERVER,
         paths=paths,
         task_service=TaskApplicationService(paths=paths),
-        agent_service=PassiveService(),  # type: ignore[arg-type]
         traffic_service=PassiveService(),  # type: ignore[arg-type]
         ac_mesh_link_refresh_service=PassiveService(),  # type: ignore[arg-type]
         frontend_dist=tmp_path / "missing",
@@ -499,7 +481,7 @@ def test_web_lifespan_stops_file_queue_before_shared_process_adapter(
 
 
 def test_web_lifespan_rolls_back_when_traffic_start_fails(tmp_path: Path) -> None:
-    class AgentService:
+    class LifecycleService:
         stopped = False
 
         async def start(self) -> None:
@@ -508,14 +490,13 @@ def test_web_lifespan_rolls_back_when_traffic_start_fails(tmp_path: Path) -> Non
         async def stop(self) -> None:
             self.stopped = True
 
-    class TrafficService(AgentService):
+    class TrafficService(LifecycleService):
         async def start(self) -> None:
             raise RuntimeError("traffic start failed")
 
-    class AcService(AgentService):
+    class AcService(LifecycleService):
         pass
 
-    agent = AgentService()
     traffic = TrafficService()
     ac = AcService()
     paths = PathResolver(tmp_path)
@@ -524,7 +505,6 @@ def test_web_lifespan_rolls_back_when_traffic_start_fails(tmp_path: Path) -> Non
         RuntimeMode.SERVER,
         paths=paths,
         task_service=TaskApplicationService(paths=paths),
-        agent_service=agent,  # type: ignore[arg-type]
         traffic_service=traffic,  # type: ignore[arg-type]
         ac_mesh_link_refresh_service=ac,  # type: ignore[arg-type]
         frontend_dist=tmp_path / "missing",
@@ -533,13 +513,12 @@ def test_web_lifespan_rolls_back_when_traffic_start_fails(tmp_path: Path) -> Non
     with pytest.raises(RuntimeError, match="traffic start failed"), TestClient(app):
         pass
 
-    assert agent.stopped is True
     assert traffic.stopped is True
     assert ac.stopped is True
 
 
-def test_web_lifespan_cleanup_failure_does_not_skip_agent_stop(tmp_path: Path) -> None:
-    class AgentService:
+def test_web_lifespan_cleanup_failure_does_not_skip_traffic_stop(tmp_path: Path) -> None:
+    class LifecycleService:
         stopped = False
 
         async def start(self) -> None:
@@ -548,12 +527,11 @@ def test_web_lifespan_cleanup_failure_does_not_skip_agent_stop(tmp_path: Path) -
         async def stop(self) -> None:
             self.stopped = True
 
-    class FailingTrafficService(AgentService):
+    class FailingTrafficService(LifecycleService):
         async def stop(self) -> None:
             self.stopped = True
             raise RuntimeError("traffic stop failed")
 
-    agent = AgentService()
     traffic = FailingTrafficService()
     paths = PathResolver(tmp_path)
     Database(paths.site_db_path("demo")).initialize()
@@ -561,9 +539,8 @@ def test_web_lifespan_cleanup_failure_does_not_skip_agent_stop(tmp_path: Path) -
         RuntimeMode.SERVER,
         paths=paths,
         task_service=TaskApplicationService(paths=paths),
-        agent_service=agent,  # type: ignore[arg-type]
         traffic_service=traffic,  # type: ignore[arg-type]
-        ac_mesh_link_refresh_service=AgentService(),  # type: ignore[arg-type]
+        ac_mesh_link_refresh_service=LifecycleService(),  # type: ignore[arg-type]
         frontend_dist=tmp_path / "missing",
     )
 
@@ -571,7 +548,6 @@ def test_web_lifespan_cleanup_failure_does_not_skip_agent_stop(tmp_path: Path) -
         pass
 
     assert traffic.stopped is True
-    assert agent.stopped is True
 
 
 def test_task_runtime_tracks_states_and_reuses_worker_protocol(tmp_path: Path) -> None:

@@ -634,7 +634,6 @@ Function NetConsoleDataRootCheckBusinessData
   IfFileExists "$NetConsoleDataRoot\config\." NetConsoleDataRootBusinessDataFound
   IfFileExists "$NetConsoleDataRoot\sites\." NetConsoleDataRootBusinessDataFound
   IfFileExists "$NetConsoleDataRoot\runtime\." NetConsoleDataRootBusinessDataFound
-  IfFileExists "$NetConsoleDataRoot\agents\." NetConsoleDataRootBusinessDataFound
   IfFileExists "$NetConsoleDataRoot\migrations\." NetConsoleDataRootBusinessDataFound
   IfFileExists "$NetConsoleDataRoot\staging\." NetConsoleDataRootBusinessDataFound
   IfFileExists "$NetConsoleDataRoot\backups\." NetConsoleDataRootBusinessDataFound
@@ -1222,7 +1221,7 @@ Function NetConsoleDataRootPageLeave
   Call NetConsoleRunDataRootProbe
   ${If} $NetConsoleDataRootProbeResult != "ok"
     DetailPrint "DataRoot probe failed: step=$NetConsoleDataRootProbeResult error_source=$NetConsoleDataRootProbeErrorSource error_code=$NetConsoleDataRootProbeErrorCode"
-    MessageBox MB_ICONSTOP "数据目录校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\n错误来源：$NetConsoleDataRootProbeErrorSource$\r$\n错误码：$NetConsoleDataRootProbeErrorCode$\r$\n$\r$\n请关闭 NetConsole、Agent 和 Backend 后重试，并检查目录权限或文件系统。不要删除已有数据。"
+    MessageBox MB_ICONSTOP "数据目录校验失败。$\r$\n失败步骤：$NetConsoleDataRootProbeResult$\r$\n错误来源：$NetConsoleDataRootProbeErrorSource$\r$\n错误码：$NetConsoleDataRootProbeErrorCode$\r$\n$\r$\n请关闭 NetConsole 和 Backend 后重试，并检查目录权限或文件系统。不要删除已有数据。"
     Abort
   ${EndIf}
   ; Validate the existing root with the old installed Backend before NSIS

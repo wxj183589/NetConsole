@@ -173,7 +173,6 @@ class TrainCommunicationSummaryDTO(ApiModel):
     unknown_trains: int = 0
     current_mesh_links: int = 0
     active_online_mr_sessions: int = 0
-    agent_imported_sessions: int = 0
     latest_updated_at: str | None = None
 
 

@@ -4,8 +4,6 @@ from fastapi import APIRouter, Depends
 
 from netconsole.backend.api.ac_mesh_link_router import router as ac_mesh_link_router
 from netconsole.backend.api.ac_management_router import router as ac_management_router
-from netconsole.backend.api.agent_router import router as agent_router
-from netconsole.backend.api.agent_router import ws_router as agent_ws_router
 from netconsole.backend.api.config_collection_router import router as config_collection_router
 from netconsole.backend.api.command_reference_router import router as command_reference_router
 from netconsole.backend.api.device_compatibility_router import router as device_compatibility_router
@@ -20,7 +18,6 @@ from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_
 from netconsole.backend.api.network_tools_router import router as network_tools_router
 from netconsole.backend.api.online_mr_router import router as online_mr_router
 from netconsole.backend.api.online_mr_control_router import router as online_mr_control_router
-from netconsole.backend.api.online_mr_agent_control_router import router as online_mr_agent_control_router
 from netconsole.backend.api.rail_transit_base_data_router import router as rail_transit_base_data_router
 from netconsole.backend.api.task_router import router as task_router
 from netconsole.backend.api.task_router import ws_router as task_ws_router
@@ -72,10 +69,6 @@ api_router.include_router(
 )
 api_router.include_router(task_router)
 api_router.include_router(
-    agent_router,
-    dependencies=[Depends(require_feature("module.agent"))],
-)
-api_router.include_router(
     traffic_router,
     dependencies=[Depends(require_feature("network_tools.traffic"))],
 )
@@ -100,7 +93,6 @@ api_router.include_router(
     dependencies=[Depends(require_feature("module.online_mr"))],
 )
 api_router.include_router(online_mr_control_router)
-api_router.include_router(online_mr_agent_control_router)
 api_router.include_router(
     rail_transit_base_data_router,
     dependencies=[Depends(require_feature("module.rail_base_data"))],
@@ -133,10 +125,6 @@ api_router.include_router(
 )
 ws_router = APIRouter()
 ws_router.include_router(task_ws_router)
-ws_router.include_router(
-    agent_ws_router,
-    dependencies=[Depends(require_feature("module.agent"))],
-)
 ws_router.include_router(
     traffic_ws_router,
     dependencies=[Depends(require_feature("network_tools.traffic"))],

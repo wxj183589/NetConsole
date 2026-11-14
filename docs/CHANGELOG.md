@@ -1,6 +1,17 @@
 # NetConsole 更新日志
 
-## v1.5.13 - 2026-11-10（本地集成记录，未发布）
+## v1.5.13 - 2026-11-10（Agent 退役与本地执行收口）
+
+### Agent 体系退役
+
+- 删除独立 Windows Go Agent、Agent 管理页、Agent REST/WebSocket、远程 Online MR/Traffic 执行、包同步/导入、Job Center Agent handler 及对应构建/发布入口。
+- Online MR 与 Traffic 当前只创建本机执行记录；旧 `executor=AGENT` 字段和历史任务仅保留数据库兼容读取，不再恢复、轮询或生成新的远端任务。
+- 旧 AC 光衰 `switch_interface_assets` 候选当前 main 不存在，本轮不恢复、不移植，也不生成没有采集事实的光衰数据。
+
+### 正式业务保护
+
+- 保持轨旁 AP、AC/FIT-AP 关联、LLDP/交换机接口匹配、Rx/Tx 实际光衰、在线状态、历史快照、异常记录、筛选和 Excel 导出能力不变。
+- 保持本地 Online MR、Traffic、Ground/Device 等正式业务链路；历史数据和旧业务数据库继续按兼容边界只读读取。
 
 ### 1080p 界面与 Full-only 交付
 

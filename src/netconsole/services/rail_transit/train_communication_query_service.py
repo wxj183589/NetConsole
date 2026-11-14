@@ -109,7 +109,6 @@ class TrainCommunicationQueryService:
             unknown_trains=counts["unknown"],
             current_mesh_links=sum(row.current_mesh_links for row in rows),
             active_online_mr_sessions=sum(self._is_active(item.status) for item in sessions),
-            agent_imported_sessions=sum(str(item.executor_kind or "").upper() == "AGENT" for item in sessions),
             latest_updated_at=self._latest_text(*(row.last_updated_at for row in rows)),
         )
 
@@ -129,7 +128,6 @@ class TrainCommunicationQueryService:
         has_warning: bool | None = None,
         query: str = "",
         active_only: bool = False,
-        agent_only: bool = False,
         optical_anomaly_only: bool = False,
         page: int = 1,
         page_size: int = 50,
@@ -161,8 +159,6 @@ class TrainCommunicationQueryService:
             rows = [row for row in rows if (row.warning_count > 0) is has_warning]
         if active_only:
             rows = [row for row in rows if row.current_mesh_links > 0 and row.communication_status not in {"stale", "unknown"}]
-        if agent_only:
-            rows = [row for row in rows if any(str(item.executor or "").upper() == "AGENT" for item in row.mrs)]
         if optical_anomaly_only:
             rows = [row for row in rows if any(item.optical_status in {"warning", "critical"} for item in row.mrs)]
         if query:
@@ -661,7 +657,7 @@ class TrainCommunicationQueryService:
                 package_reference=str(item.package_reference or ""),
                 executor=str(item.executor_kind or ""),
                 agent_id=item.agent_id,
-                import_status="imported" if str(item.executor_kind or "").upper() == "AGENT" else "not_applicable",
+                import_status="not_applicable",
                 data_integrity=self._integrity(item),
                 collected_at=item.stopped_at or item.started_at,
             )

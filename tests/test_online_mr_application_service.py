@@ -241,7 +241,7 @@ def test_recovery_restores_local_operation_site_binding_after_restart(
         query_service=object(),
         enabled=True,
     )
-    facade = OnlineMrApiFacade(paths, object(), local_control, object())
+    facade = OnlineMrApiFacade(paths, object(), local_control)
 
     assert second_service._operation_sites == {}
     assert second_service._session_sites == {}
@@ -476,76 +476,6 @@ def test_application_start_failure_closes_mapping(tmp_path: Path, failure: str, 
     assert mapping.phase == OnlineMrPhase.TERMINAL
     assert mapping.session_id is None
     assert mapping.error_code == code
-
-
-def test_agent_executor_is_disabled_by_default(tmp_path: Path) -> None:
-    service, _task_service, adapter = _service(tmp_path)
-    with pytest.raises(OnlineMrApplicationError) as error:
-        service.start_collection(_request(executor=OnlineMrExecutorKind.AGENT))
-    assert error.value.code == OnlineMrApplicationErrorCode.AGENT_EXECUTOR_DISABLED
-    assert adapter.jobs == []
-    assert service.repository("site-a").list() == []
-    assert not service.paths.site_tasks_db_path("demo").exists()
-
-
-def test_application_service_dispatches_agent_without_local_worker(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    task_service = TaskApplicationService(paths, site_name="site-a")
-    adapter = FakeProcessAdapter(task_service)
-    calls: list[OnlineMrStartRequest] = []
-
-    class FakeAgentExecutor:
-        def start(self, request: OnlineMrStartRequest) -> OnlineMrTaskSessionMapping:
-            calls.append(request)
-            mapping = _mapping("agent-controller-task", executor=OnlineMrExecutorKind.AGENT)
-            return replace(
-                mapping,
-                agent_id="agent-a",
-                agent_profile_id=request.agent_id,
-                agent_task_id="agent-task-1",
-                phase=OnlineMrPhase.COLLECTING,
-                mapping_state=OnlineMrMappingState.LINKED,
-            )
-
-        def close(self) -> None:
-            pass
-
-    service = OnlineMrApplicationService(
-        paths,
-        site_name="site-a",
-        task_service=task_service,
-        process_adapter=adapter,
-        device_validator=lambda _site, _device: True,
-        agent_executor=FakeAgentExecutor(),  # type: ignore[arg-type]
-    )
-    operation = service.start_collection(_request(executor=OnlineMrExecutorKind.AGENT))
-
-    assert calls and operation.executor_kind is OnlineMrExecutorKind.AGENT
-    assert operation.agent_profile_id == "profile-1"
-    assert operation.agent_task_id == "agent-task-1"
-    assert adapter.jobs == []
-    service.close()
-
-
-def test_agent_mapping_does_not_use_local_stop_events_or_recovery(tmp_path: Path) -> None:
-    service, _task_service, adapter = _service(tmp_path)
-    mapping = _mapping("agent-task-1", executor=OnlineMrExecutorKind.AGENT)
-    service.repository("site-a").create(mapping)
-
-    with pytest.raises(OnlineMrApplicationError) as error:
-        service.stop_operation("agent-task-1", site_id="site-a")
-    assert error.value.code == OnlineMrApplicationErrorCode.AGENT_EXECUTOR_DISABLED
-    with pytest.raises(OnlineMrApplicationError) as error:
-        service.force_stop_operation("agent-task-1", site_id="site-a")
-    assert error.value.code == OnlineMrApplicationErrorCode.EXECUTOR_UNSUPPORTED
-
-    service.reconcile_task_event(_event("agent-task-1", "error", error="local event must be ignored"))
-
-    assert service.recover_mappings(site_id="site-a") == []
-    assert service.repository("site-a").get_by_task("agent-task-1") == mapping
-    assert service.get_operation("agent-task-1", site_id="site-a").executor_kind is OnlineMrExecutorKind.AGENT
-    assert adapter.cancelled_jobs == []
-    assert adapter.forced_jobs == []
 
 
 def test_structured_session_and_started_events_are_idempotent(tmp_path: Path) -> None:

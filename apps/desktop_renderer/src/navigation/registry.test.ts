@@ -21,7 +21,6 @@ describe('Web navigation registry', () => {
       '设备文件下载',
       '工具集',
       '任务中心',
-      'Agent 管理',
       '日志中心',
       '存储管理',
       '系统设置',

@@ -4,7 +4,6 @@ from pydantic import Field
 
 from netconsole.models.api.ac_management import AcApDTO, AcManagementSummaryDTO
 from netconsole.models.api.ac_mesh_link import AcMeshLinkRecordDTO, AcMeshLinkSummaryDTO
-from netconsole.models.api.agent import AgentDTO
 from netconsole.models.api.common import ApiModel
 from netconsole.models.api.job_center import JobCenterTaskDTO
 from netconsole.models.api.mesh_analysis import MeshAnalysisSessionDTO, MeshAnalysisSummaryDTO
@@ -48,8 +47,6 @@ class WirelessDashboardSummaryDTO(ApiModel):
     offline_mrs: int = 0
     stale_mrs: int = 0
     active_online_mr_sessions: int = 0
-    agent_total: int = 0
-    online_agents: int = 0
     running_tasks: int = 0
     mesh_analysis_sessions: int = 0
     alert_total: int = 0
@@ -94,14 +91,6 @@ class WirelessDashboardAnalysisDTO(ApiModel):
     sessions: list[MeshAnalysisSessionDTO] = Field(default_factory=list)
 
 
-class WirelessDashboardAgentsDTO(ApiModel):
-    items: list[AgentDTO] = Field(default_factory=list)
-    total: int = 0
-    online: int = 0
-    offline: int = 0
-    unknown: int = 0
-
-
 class WirelessDashboardDTO(ApiModel):
     summary: WirelessDashboardSummaryDTO
     infrastructure: WirelessDashboardInfrastructureDTO
@@ -110,7 +99,6 @@ class WirelessDashboardDTO(ApiModel):
     freshness: WirelessDashboardFreshnessDTO
     recent_operations: WirelessDashboardRecentOperationsDTO
     analysis: WirelessDashboardAnalysisDTO
-    agents: WirelessDashboardAgentsDTO
 
 
 __all__ = [name for name in globals() if name.startswith("WirelessDashboard")]

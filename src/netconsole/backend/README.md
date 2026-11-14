@@ -15,7 +15,7 @@
 
 ## 依赖关系
 
-Backend 组装 Application/Query Service、Repository、Job/Export、Agent Controller 和 PathResolver；Web/Electron 只能通过 API/Bridge 使用。
+Backend 组装 Application/Query Service、Repository、Job/Export 和 PathResolver；Web/Electron 只能通过 API/Bridge 使用。独立 Agent 已退役，当前不存在 Agent Controller 组装入口。
 
 ## 数据与状态
 

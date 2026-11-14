@@ -104,7 +104,6 @@ const requiredProductionFeatureIds = [
   'module.system_settings',
   'network_tools.traffic',
   'online_mr.advanced_ping',
-  'online_mr.agent_packages',
   'online_mr.analysis_fping_1s',
   'online_mr.analysis_link_details',
   'online_mr.collection_notes',

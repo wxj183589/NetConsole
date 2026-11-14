@@ -29,7 +29,6 @@ NetConsole/
 ├─ .agents/                 # 项目 Skills 和规则，版本化
 ├─ .codex/                  # 本地 Codex 状态，允许存在但不提交
 ├─ apps/
-│  ├─ agent/                # Windows Go Agent 及其 sidecar/静态页面
 │  ├─ desktop_electron/     # Electron main/preload/shared 安全外壳
 │  └─ desktop_renderer/     # Vue/TypeScript/Vite Desktop Renderer
 ├─ src/
@@ -95,7 +94,7 @@ NetConsole/
 
 ## 4. 应用边界
 
-- `apps/agent` 只放独立 Windows Go Agent、Python MR sidecar、Agent Web 静态文件、示例配置和 Agent 构建脚本；Agent 的开发与交付运行数据统一写入 `D:\NetConsoleData\agents\local`，测试使用显式测试根的 `agents/` 子树。
+- 独立 Windows Go Agent 已退役，不再保留 `apps/agent` 应用边界；公共工具和采集能力归属 Python Backend、`resources/tools` 及现有业务模块。
 - Qt 桌面源码与历史 Web Shell 已回收，`apps/desktop/` 和 `src/netconsole/ui/` 不得重新创建；历史事实通过 Git 与迁移归档查询。
 - `apps/desktop_electron` 只放 Electron main、单文件 preload 构建源、共享 IPC DTO、安全测试、应用级开发脚本和受控 Windows 原生 helper 源码；`native/elevated-launcher` 仅负责固定 JSON 请求到 `ShellExecuteExW(runas)` 的转换，不得扩展为通用执行器。不得复制 Python Core、业务 Service 或 Vue 页面。
 - `apps/desktop_renderer` 只放 Vue/TypeScript/Vite 源码、前端配置和锁文件；`node_modules`、前端 `dist` 和 TypeScript 缓存不得提交。
@@ -104,31 +103,13 @@ NetConsole/
 
 目标架构中的 Domain、Application 和 Infrastructure 当前是逻辑分层，不要求立即建立同名空目录。未经独立迁移和引用审计，不机械移动 `src/netconsole/services`、`repositories`、`parsers`、`adapters` 或 `core`，也不在 `apps/desktop_electron` 内新建第二套 Renderer、Node 业务后端或 Python Core。
 
-### Agent 二级目录
-
-`apps/agent/` 只保留源码和可审查模板：
-
-```text
-apps/agent/
-├─ cmd/                         # Go 入口
-├─ internal/                    # Agent 内部包
-├─ mr_collector_py/             # Python MR sidecar 源码
-├─ web/                         # 内嵌 Web 静态文件
-├─ scripts/                     # Agent 构建、启动和运行维护脚本
-├─ resources/config/            # config.example.json、targets.example.json
-├─ go.mod、go.sum、README.md
-└─ testdata/                    # 需要时放脱敏测试样本，不放运行数据
-```
-
-`bin/`、`data/`、`dist/`、`logs/`、`packages/`、`tmp/`、`apps/agent/tools/` 不得作为 Agent 源码子目录保留。Agent 运行数据使用 `<data_root>/agents/local/{data,logs,packages}`；构建产物统一写入 `dist/agent/`。运行时第三方工具的唯一源码来源是根 `resources/tools/`，Agent 交付包内才生成 `tools/windows-x64/{fping,iperf3}`，不在 `apps/agent/resources/tools/` 或 `apps/agent/tools/` 复制第二份。
-
 ## 5. 配置和资源规则
 
 - `config` 放可审查、可版本化的配置模板和 feature profiles，不放真实账号、密码、Token、community、私钥或生产局点数据。
 - `resources` 放随代码发布的只读资源、规则、命令参考和已审计工具依赖；不得把运行数据或报告写回此目录。
 - 所有文档中的源码文件路径使用 `src/netconsole/...`；Python import、模块或包名仍使用 `netconsole.*`，不得把 import 写成 `src.netconsole.*`。
 - `resources/tools/` 是 fping/iPerf 运行工具的唯一源码来源；`tools/` 只用于开发、诊断、维护和协议分析。`tools/windows-x64/ipop/` 只保存 IPOP 外部工具说明，`IPOP.EXE` 不提交、不打包。
-- `apps/agent/resources/config/` 只放 `config.example.json`、`targets.example.json` 等模板；真实 `config.json`、`targets.json` 位于 `<data_root>/agents/local/`。Agent 启动脚本可在首次运行时从模板初始化缺失文件，但不得覆盖已有真实配置。
+- 已退役 Agent 的历史配置仅由明确的迁移工具按兼容规则读取，不进入当前应用构建或运行路径。
 - `src/netconsole/assets`、`src/netconsole/resources` 是包内资源，必须通过资源 helper 定位并在打包配置中显式处理。
 - 真实敏感配置只能由用户在本机应用数据目录配置，提交前必须脱敏。
 
@@ -167,7 +148,7 @@ apps/agent/
 
 ## 9. 构建产物规则
 
-`build/`、`dist/`、旧 `release/`、PyInstaller/Nuitka 临时目录、`*.spec`、安装包、ZIP、前端构建产物、Python/Go 缓存和本地 Agent 运行目录均不得提交。`resources/tools/windows-x64/{fping,iperf3}` 中已记录来源与许可证的运行依赖是已审计例外；构建后才复制为交付包内的 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 只用于开发、诊断、维护和协议分析，`apps/agent/tools/` 禁止作为运行时工具来源；IPOP 始终不进入发布包。
+`build/`、`dist/`、旧 `release/`、PyInstaller/Nuitka 临时目录、`*.spec`、安装包、ZIP、前端构建产物、Python 缓存和历史 Agent 运行目录均不得提交。`resources/tools/windows-x64/{fping,iperf3}` 中已记录来源与许可证的运行依赖是已审计例外；构建后才复制为交付包内的 `tools/windows-x64/{fping,iperf3}`。根 `tools/` 只用于开发、诊断、维护和协议分析；IPOP 始终不进入发布包。
 
 ## 10. 新增文件检查表
 
@@ -199,7 +180,6 @@ apps/agent/
 
 | 迁移前 | 迁移后 | 说明 |
 | --- | --- | --- |
-| `agent/` | `apps/agent/` | 独立 Go Agent |
 | `desktop/` | Git 历史 | Qt Web Shell 已回收；不得重新创建该目录 |
 | 新增 Electron 外壳 | `apps/desktop_electron/` | 仅 main/preload/shared；唯一 Renderer 仍为 `apps/desktop_renderer/` |
 | `frontend/` | `apps/desktop_renderer/` | Vue Desktop Renderer |

@@ -75,7 +75,7 @@ interface FallbackFingerprintState {
   lastSummaryAt: number
 }
 
-const SENSITIVE_VALUE_RE = /((?:session[_-]?token|api[_-]?token|agent[_-]?token|authorization|password|passphrase|private[_-]?key|ssh[_-]?key|community|secret)\s*["']?\s*[:=]\s*["']?)(?:Bearer\s+)?[^\s,"'};]+/gi
+const SENSITIVE_VALUE_RE = /((?:session[_-]?token|api[_-]?token|authorization|password|passphrase|private[_-]?key|ssh[_-]?key|community|secret)\s*["']?\s*[:=]\s*["']?)(?:Bearer\s+)?[^\s,"'};]+/gi
 const ROTATED_LOG_RE = /^electron-(\d{8})-\d{6}-(\d{4})\.log$/
 const FALLBACK_SUMMARY_INTERVAL_MS = 60_000
 

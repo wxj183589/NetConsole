@@ -165,7 +165,7 @@ try {
         "iperf3/licenses/OPENSSL_APACHE-2.0.txt" = "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
         "iperf3/licenses/README.md" = "31d120a478c8d5f245b31fba5e74f9cc5960dc801907b9dee370da4157820909"
         "iperf3/licenses/ZLIB_LICENSE.txt" = "e32ff4e00d9d94930537635291da39e7e612703334bf6fde8c7f1686fe8a45a2"
-        "iperf3/CORRESPONDING_SOURCE.md" = "faea146cd105ffb781c188e6b9576691cf7f4a37ba033226007b37410669e468"
+        "iperf3/CORRESPONDING_SOURCE.md" = "4cddb3ccfd370b42d62ca69f741a46b0b9f828c93b8fe9a7b99e9e686e3248c7"
     }
     $fpingHashes = [ordered]@{
         "fping/fping.exe" = "9c9ab2f26d3d32818b53ed7b664ec53546fc5cd59f4d953e06f9d3e28673f9d9"

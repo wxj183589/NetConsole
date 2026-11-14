@@ -22,12 +22,6 @@
       "required_paths": [
         "src/netconsole/backend/api/main.py"
       ]
-    },
-    {
-      "id": "windows-agent",
-      "required_paths": [
-        "apps/agent/cmd/netconsole-agent/main.go"
-      ]
     }
   ],
   "authoritative_sources": {

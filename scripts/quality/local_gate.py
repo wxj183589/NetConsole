@@ -419,8 +419,6 @@ def required_suites(context: GateContext) -> tuple[str, ...]:
         ordered.extend(sorted(selected - set(CONSUMER_SUITE_ORDER)))
         return tuple((*FAST_SUITES, *ordered))
     suites = list(FULL_SUITES)
-    if any(path.startswith("apps/agent/") for path in context.changed_paths):
-        suites.append("agent-go")
     if any(path.startswith(PACKAGING_PREFIXES) for path in context.changed_paths):
         suites.append("package-smoke")
     return tuple(suites)

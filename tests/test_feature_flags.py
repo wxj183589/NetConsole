@@ -95,7 +95,6 @@ def test_feature_registry_lists_expected_features() -> None:
     assert "rail.online_mr_collection" in feature_ids
     assert FEATURE_BY_ID["network_tools.traffic"].parent_id == "module.network_tools"
     assert "online_mr.collect_config_once" not in feature_ids
-    assert FEATURE_BY_ID["online_mr.agent_packages"].parent_id == "rail.online_mr_collection"
     assert FEATURE_BY_ID["module.online_mr"].parent_id == "rail.online_mr_collection"
     assert FEATURE_BY_ID["module.task_center"].item_type == "module"
     assert FEATURE_BY_ID["module.devices"].parent_id is None
@@ -591,7 +590,7 @@ def test_disabled_dependency_makes_dependent_feature_unavailable(tmp_path: Path)
                 "client_package": True,
                 "internal_only": False,
             },
-            "module.agent": {
+            "module.devices": {
                 "visible": True,
                 "enabled": True,
                 "client_package": True,
@@ -602,8 +601,8 @@ def test_disabled_dependency_makes_dependent_feature_unavailable(tmp_path: Path)
 
     gate = FeatureGate(tmp_path)
 
-    assert not gate.is_enabled("module.agent")
-    assert not gate.is_visible("module.agent")
+    assert not gate.is_enabled("capability.devices.collect")
+    assert not gate.is_visible("capability.devices.collect")
 
 
 def test_customer_zip_keeps_allowlist_and_hidden_feature_config(tmp_path: Path) -> None:

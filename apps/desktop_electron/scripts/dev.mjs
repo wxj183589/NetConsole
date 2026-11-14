@@ -198,8 +198,7 @@ async function waitForCodexBackend(electronProcess, timeoutMs = 30_000) {
         if (
           status.runtime_mode === 'electron-development'
           && status.backend_ready === true
-          && status.agent_controller_ready === true
-          && status.traffic_supervisor_ready === true
+          && status.traffic_service_ready === true
           && status.data_root === '<redacted>'
         ) return status
       }

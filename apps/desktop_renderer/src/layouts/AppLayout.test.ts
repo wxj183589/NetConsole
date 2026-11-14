@@ -93,7 +93,6 @@ describe('App layout foundation', () => {
     expect(styles).toContain('.app-main .el-table { width: 100%; }')
     expect(styles).toContain('.app-main.el-main { display: flex; width: 100%;')
     expect(styles).toContain('.task-center { max-width: var(--nc-content-max-width); margin-inline: 0; }')
-    expect(styles).toContain('.agent-center { max-width: var(--nc-content-max-width); margin-inline: 0; }')
     expect(styles).toContain('@media (max-width: 850px)')
     expect(ncLayoutSource).toContain("maxWidth: 'var(--nc-content-max-width)'")
     expect(ncLayoutSource).not.toContain("maxWidth: '1680px'")

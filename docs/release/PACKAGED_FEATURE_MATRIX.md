@@ -55,7 +55,7 @@
 | --- | --- | --- | --- |
 | `module.feature_switch`、`system.feature_flags`、`internal.feature_switch` | `internal_only` | 不显示、不启用、配置 API 受控拒绝 | FeatureGate pytest、设置 API pytest |
 | `capability.ac.online_overview`、`capability.ac.extensions*`、`capability.ac.config_snapshots` | `DEVELOPMENT` | 不显示、不启用 | FeatureGate pytest、构建 Gate |
-| `capability.online_mr.local_control`、`capability.online_mr.agent_control` | `DEVELOPMENT`，未接入生产调用 | 不显示、不启用 | FeatureGate pytest |
+| `capability.online_mr.local_control` | `DEVELOPMENT`，未接入生产调用 | 不显示、不启用 | FeatureGate pytest |
 | `module.train_communication` | 隐藏兼容、`DEVELOPMENT` | 不注册正式入口 | FeatureGate/导航测试 |
 
 ## 干净安装与跨电脑验收

@@ -244,7 +244,6 @@ def test_health_and_backend_log_report_the_actual_stale_renderer_commit(
         ("module.train_online", "/api/rail-transit/train-online/trains"),
         ("module.ground_unattended", "/api/rail-transit/ground-unattended/status"),
         ("module.task_center", "/api/job-center/summary"),
-        ("module.agent", "/api/agents"),
         ("network_tools.traffic", "/api/traffic/runs"),
         ("module.rail_base_data", "/api/rail-transit/base-data/summary"),
         (
@@ -299,7 +298,6 @@ def test_disabled_network_toolbox_cannot_start_tcp_port_test(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("feature_id", "path"),
     [
-        ("module.agent", "/ws/agents"),
         ("network_tools.traffic", "/ws/traffic/missing-run"),
     ],
 )

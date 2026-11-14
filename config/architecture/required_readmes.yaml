@@ -1,5 +1,4 @@
 [
-  "apps/agent/README.md",
   "apps/desktop_electron/README.md",
   "apps/desktop_renderer/README.md",
   "apps/desktop_renderer/src/layouts/README.md",

@@ -124,7 +124,7 @@ def prepare_irreversible_storage_migration(
     backup_root = paths.migrations_dir / "backups" / f"{safe_id}-{uuid.uuid4().hex}"
     backup_root.mkdir(parents=True, exist_ok=False)
     try:
-        for source in (paths.config_dir, paths.sites_dir, paths.agents_dir):
+        for source in (paths.config_dir, paths.sites_dir):
             if source.exists():
                 shutil.copytree(source, backup_root / source.name, copy_function=shutil.copy2)
         _atomic_json(

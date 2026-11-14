@@ -41,7 +41,7 @@ export interface TrainCommunicationPage { items: TrainCommunicationRow[]; total:
 export interface TrainCommunicationSummary {
   site_id: string; registered_trains: number; registered_mrs: number; normal_trains: number
   warning_trains: number; critical_trains: number; stale_trains: number; unknown_trains: number
-  current_mesh_links: number; active_online_mr_sessions: number; agent_imported_sessions: number
+  current_mesh_links: number; active_online_mr_sessions: number
   latest_updated_at: string | null
 }
 export type TopologyStatus = 'normal' | 'abnormal' | 'not_detected' | 'not_configured' | 'checking' | 'stale'
@@ -64,6 +64,6 @@ export interface TrainCommunicationTopology {
 export interface TrainCommunicationFilters {
   train?: string; mr_role?: string; communication_status?: string; mesh_link_status?: string
   station?: string; section?: string; line_side?: string; executor?: string; data_source?: string
-  has_warning?: boolean; active_only?: boolean; agent_only?: boolean; optical_anomaly_only?: boolean
+  has_warning?: boolean; active_only?: boolean; optical_anomaly_only?: boolean
   query?: string; page: number; page_size: number; sort_by?: string; sort_order?: 'asc' | 'desc'
 }

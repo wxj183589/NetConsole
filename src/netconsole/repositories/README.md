@@ -1,17 +1,17 @@
 # Repository 持久化层
 
-本目录封装 SQLite 表、查询、写入和数据边界，按设备、任务、Agent、Traffic、Mesh 等域拆分。Repository 不应被 Vue、Router 或 Electron 直接调用，也不持有跨线程连接。
+本目录封装 SQLite 表、查询、写入和数据边界，按设备、任务、Traffic、Mesh 等域拆分。历史 Agent 表/字段仅为旧库兼容读取；Repository 不应被 Vue、Router 或 Electron 直接调用，也不持有跨线程连接。
 
 主要入口为各域 `*_repository.py`；数据库路径由 PathResolver/站点上下文提供。修改 schema、索引、事务或锁处理时运行数据库、迁移和对应 Service 测试。
 
 
 ## 用途与边界
 
-本目录是 SQLite 持久化边界，按设备、任务、Agent、Traffic、Mesh、Online MR 和基础资料拆分；Repository 不被 Vue、Router 或 Electron 直接调用。
+本目录是 SQLite 持久化边界，按设备、任务、Traffic、Mesh、Online MR 和基础资料拆分；旧 Agent 结构仅用于兼容读取，Repository 不被 Vue、Router 或 Electron 直接调用。
 
 ## 主要入口
 
-各域 `*_repository.py` 提供查询/写入接口，`device_repository.py`、`device_fact_repository.py`、`device_detail_repository.py`、`task_repository.py`、`traffic_run_repository.py` 和 Mesh/Agent 仓储是主要入口。
+各域 `*_repository.py` 提供查询/写入接口，`device_repository.py`、`device_fact_repository.py`、`device_detail_repository.py`、`task_repository.py`、`traffic_run_repository.py` 和 Mesh 仓储是主要入口。
 
 ### 设备详情快照
 

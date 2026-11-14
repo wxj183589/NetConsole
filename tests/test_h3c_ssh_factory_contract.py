@@ -48,14 +48,3 @@ def test_direct_paramiko_clients_are_limited_to_non_cli_boundaries() -> None:
         "src/netconsole/services/site_ssh_relay.py",
         "src/netconsole/services/ssh_tunnel.py",
     ]
-
-
-def test_mr_sidecar_has_the_same_normal_then_legacy_ssh_rsa_contract() -> None:
-    source = (
-        ROOT / "apps" / "agent" / "mr_collector_py" / "collector_cli.py"
-    ).read_text(encoding="utf-8")
-
-    assert "def ssh_connection_factory(" in source
-    assert 'record("normal", 1, "starting")' in source
-    assert 'record("legacy_ssh_rsa", 2, "success")' in source
-    assert "_legacy_ssh_rsa_params" in source

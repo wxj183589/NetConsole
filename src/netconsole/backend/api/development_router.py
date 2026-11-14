@@ -37,8 +37,7 @@ def runtime_status(request: Request) -> DevelopmentRuntimeStatusResponse:
         persistent=persistent_storage(),
         frontend_mode=str(request.app.state.development_frontend_mode),
         active_tasks=active_tasks,
-        agent_controller_ready=runtime_services_ready and request.app.state.agent_service is not None,
-        traffic_supervisor_ready=runtime_services_ready and request.app.state.traffic_service is not None,
+        traffic_service_ready=runtime_services_ready and request.app.state.traffic_service is not None,
         version=APP_VERSION,
     )
 

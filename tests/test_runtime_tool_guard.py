@@ -84,8 +84,6 @@ def test_runtime_tool_guard_rejects_extra_or_missing_files(
         (tool_root / "fping" / "README.txt").unlink()
 
     _assert_guard_rejects(tool_root)
-
-
 @pytest.mark.parametrize(
     "relative_path",
     [
@@ -123,8 +121,6 @@ def test_runtime_tool_guard_rejects_inexact_provenance_sets(
 
     _rewrite_json(provenance, mutate)
     _assert_guard_rejects(tool_root)
-
-
 def test_runtime_tool_guard_rejects_fixed_source_identity_tampering(
     tmp_path: Path,
 ) -> None:
@@ -181,38 +177,3 @@ def test_runtime_tool_guard_rejects_inexact_provenance_properties(
 
     _rewrite_json(provenance, mutate)
     _assert_guard_rejects(tool_root)
-
-
-def test_agent_windows_build_runs_the_same_guard_before_and_after_copy() -> None:
-    text = (ROOT / "apps" / "agent" / "scripts" / "build_windows.bat").read_text(
-        encoding="utf-8"
-    )
-    invocation = (
-        'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%TOOL_GUARD%" '
-        "-ToolRoot "
-    )
-
-    assert text.count(invocation) == 2
-    precheck = text.index(invocation + '"%TOOL_SOURCE%"')
-    delivery_cleanup = text.index('if exist "%DELIVERY%" rmdir')
-    copy_tools = text.index('xcopy /e /i /y "%TOOL_SOURCE%\\%%T"')
-    postcheck = text.index(invocation + '"%DELIVERY%\\tools\\windows-x64"')
-    collector_copy = text.index(
-        'copy /y "%BUILD_ROOT%\\mr_collector\\dist\\netconsole-mr-collector.exe"'
-    )
-
-    assert precheck < delivery_cleanup < copy_tools < postcheck < collector_copy
-    assert "[WARN] MR Collector build failed" not in text
-    assert 'if not exist "%BUILD_ROOT%\\mr_collector\\dist\\netconsole-mr-collector.exe"' in text
-    assert "Agent delivery cannot be completed" in text
-
-
-def test_agent_mr_collector_prefers_project_venv_pyinstaller() -> None:
-    text = (
-        ROOT / "apps" / "agent" / "mr_collector_py" / "build_windows.bat"
-    ).read_text(encoding="utf-8")
-
-    assert 'set "PYTHON_EXE=%REPO_ROOT%\\.venv\\Scripts\\python.exe"' in text
-    assert '"%PYTHON_EXE%" -m PyInstaller --version' in text
-    assert '"%PYTHON_EXE%" -m PyInstaller --clean --onefile' in text
-    assert text.index('if exist "%PYTHON_EXE%"') < text.index("where pyinstaller")

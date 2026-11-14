@@ -1,6 +1,6 @@
 # NetConsole 开发工具目录
 
-`tools/` 只用于开发、诊断、维护和协议分析工具，不是第三方运行时依赖来源。随包版本化的 fping/iPerf 唯一来源是 `resources/tools/`；禁止在 `tools/` 或 `apps/agent/tools/` 再放一份。
+`tools/` 只用于开发、诊断、维护和协议分析工具，不是第三方运行时依赖来源。随包版本化的 fping/iPerf 唯一来源是 `resources/tools/`；不得在这里复制运行时工具。
 
 ```text
 tools/

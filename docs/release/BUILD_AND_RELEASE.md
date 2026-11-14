@@ -136,19 +136,13 @@ Package smoke 还会在最终冻结的 `resources/backend/NetConsoleBackend.exe`
 
 ## 外部工具与许可证阻塞
 
-`resources/tools/windows-x64/fping/` 的版本化材料包含实际 Cygwin ICMP 兼容补丁、构建配方、GPLv3/LGPLv3/链接例外、精确对应源码说明和来源清单。fping 与其 Cygwin 3.6.9 runtime 在 Notice/SBOM 中作为独立组件登记，并以版本化二进制、补丁、配方和许可证文件哈希作为事实校验。iPerf3 固定为用户提供并经哈希核验的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`：构建会核对发行 ZIP 身份、四个文件 SHA-256、Cygwin 3.6.7-1 精确对应源码说明及完整 GPLv3/LGPLv3/链接例外，并分别登记 iPerf3、Cygwin、OpenSSL、zlib 与内嵌 cJSON。发行 ZIP 不进入构建输入，桌面端和 Agent 打包只从仓库内 `resources/tools/windows-x64/{fping,iperf3}` 白名单复制本地文件；不得在发布过程中联网下载或自动替换业务工具。任何同名替换、额外文件或材料缺失均停止发布。
+`resources/tools/windows-x64/fping/` 的版本化材料包含实际 Cygwin ICMP 兼容补丁、构建配方、GPLv3/LGPLv3/链接例外、精确对应源码说明和来源清单。fping 与其 Cygwin 3.6.9 runtime 在 Notice/SBOM 中作为独立组件登记，并以版本化二进制、补丁、配方和许可证文件哈希作为事实校验。iPerf3 固定为用户提供并经哈希核验的 `ar51an/iperf3-win-builds` 3.21 `win64-dynamic-auth`：构建会核对发行 ZIP 身份、四个文件 SHA-256、Cygwin 3.6.7-1 精确对应源码说明及完整 GPLv3/LGPLv3/链接例外，并分别登记 iPerf3、Cygwin、OpenSSL、zlib 与内嵌 cJSON。发行 ZIP 不进入构建输入，桌面端只从仓库内 `resources/tools/windows-x64/{fping,iperf3}` 白名单复制本地文件；不得在发布过程中联网下载或自动替换业务工具。任何同名替换、额外文件或材料缺失均停止发布。
 
 IPOP v4.1 没有可核验的再分发许可，仅允许用户通过配置选择本机程序；任何 `IPOP.EXE` 或 `tools/windows-x64/ipop` 进入 Backend/Electron 输出都必须失败。
 
-## Windows Go Agent
+## 已退役的独立 Agent
 
-独立 Agent 不进入 Python Backend 或 Electron 安装包，仍使用自己的 Windows 构建入口：
-
-```powershell
-apps\agent\scripts\build_windows.bat
-```
-
-该脚本要求 Windows x64 与 Go 1.26.5，复制前先通过本地 PowerShell Guard 校验 `resources/tools/windows-x64/{fping,iperf3}`，再构建可用的 Python MR sidecar、执行 `go mod tidy`、`go test ./...` 并生成 console/托盘版本；复制后对交付目录再次执行同一 Guard。输出位于 `dist/agent/windows-x64/`，临时目录位于 `dist/agent/.build-windows-x64/`；两者都不得提交。Agent 构建、配置和运行细节见 [Agent README](../../apps/agent/README.md) 与 [独立 Agent](../agent/README.md)。正式工具打包全程只使用仓库本地文件，不下载业务工具。
+独立 Windows Go Agent、其 EXE/ZIP 构建、配置、托盘、内嵌 Web、远程执行和发布入口已从 v1.5.13 产品体系删除。当前安装版与 Portable 只包含 Electron、Renderer、Python Backend 及仍被正式业务使用的公共工具；不会生成 `netconsole-agent.exe`、Agent 示例数据或 Agent 安装入口。
 
 ## 不得进入仓库的产物
 

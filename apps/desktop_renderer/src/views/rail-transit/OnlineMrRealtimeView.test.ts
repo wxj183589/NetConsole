@@ -34,7 +34,7 @@ describe('Online MR realtime collection view', () => {
     expect(source).toContain('车载 MR 实时收集')
     expect(source).toContain('listTrainCommunications')
     expect(source).toContain('<OnlineMrLocalControl')
-    expect(source).toContain('<OnlineMrAgentControlPanel')
+    expect(source).not.toContain('<OnlineMrAgentControlPanel')
     expect(source).toContain('实时核心状态')
     expect(source).toContain('当前采集状态')
     expect(source).toContain('原始日志动态查看')

@@ -8,6 +8,5 @@ def wire_online_mr_api_facade(app, paths):
         paths,
         app.state.online_mr_query_service,
         app.state.online_mr_web_control_service,
-        app.state.online_mr_agent_web_control_service,
     )
     return app

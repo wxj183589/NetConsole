@@ -1,8 +1,8 @@
 import type { TaskStatus } from './task'
 
-export type ExecutionTargetKind = 'LOCAL' | 'AGENT'
+export type ExecutionTargetKind = 'LOCAL'
 export type TrafficTestType = 'IPERF_SERVER' | 'IPERF_CLIENT' | 'HIGH_FREQUENCY_PING' | 'TCP_PORT_TEST'
-export type TrafficSyncState = 'ACTIVE' | 'STALE' | 'CREDENTIAL_REQUIRED' | 'AGENT_OFFLINE' | 'COMPLETED' | 'ERROR'
+export type TrafficSyncState = 'ACTIVE' | 'STALE' | 'COMPLETED' | 'ERROR'
 
 export interface TrafficExecutionTarget {
   kind: ExecutionTargetKind
@@ -10,7 +10,8 @@ export interface TrafficExecutionTarget {
   display_name: string
   available: boolean
   unavailable_reason: string
-  agent_id: string
+  /** Historical field retained for decoding old runs; new runs are local-only. */
+  agent_id?: string
   status: string
   platform: string
   architecture: string
@@ -20,7 +21,6 @@ export interface TrafficExecutionTarget {
 
 export interface TrafficExecutionTargetRequest {
   kind: ExecutionTargetKind
-  agent_id?: string
   display_name?: string
 }
 
@@ -31,7 +31,8 @@ export interface TrafficRun {
   test_type: TrafficTestType
   role: string
   executor_kind: ExecutionTargetKind
-  agent_id: string
+  /** Historical field retained for decoding old runs; new runs are local-only. */
+  agent_id?: string
   normalized_config: Record<string, unknown>
   status: TaskStatus
   created_at: string

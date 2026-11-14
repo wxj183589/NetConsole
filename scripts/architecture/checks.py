@@ -600,7 +600,6 @@ def storage_registry_findings(
             ROOT / "src" / "netconsole",
             ROOT / "scripts" / "maintenance",
             ROOT / "scripts" / "build",
-            ROOT / "apps" / "agent",
             ROOT / "apps" / "desktop_electron" / "src",
             ROOT / "apps" / "desktop_renderer" / "src",
         )
@@ -893,23 +892,7 @@ def router_boundary_messages(path: Path) -> set[str]:
                 isinstance(node.func, ast.Call) and _qualified_name(node.func.func, aliases) == "getattr"
             ):
                 findings.add("dynamic import or constructor lookup")
-    if path.name == "online_mr_agent_control_router.py" and any(
-        isinstance(node, ast.ImportFrom)
-        and (node.module or "").endswith("online_mr_control_router")
-        and any(item.name == "_site_id" for item in node.names)
-        for node in ast.walk(tree)
-    ):
-        findings.add("private router site helper")
-    elif path.name == "traffic_router.py":
-        if any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "list_agents"
-            and isinstance(node.func.value, ast.Call)
-            and _qualified_name(node.func.value.func, aliases).endswith("agent_service")
-            for node in ast.walk(tree)
-        ):
-            findings.add("agent execution-target orchestration")
+    if path.name == "traffic_router.py":
         if any(
             isinstance(node, ast.Compare)
             and isinstance(node.left, ast.Attribute)
@@ -1620,7 +1603,7 @@ def product_architecture_findings() -> list[Finding]:
     if payload.get("authoritative_sources") != expected_sources:
         findings.append(Finding("PRODUCT_ARCHITECTURE_SOURCES", relative_path(path), 0, "version, feature, or DataRoot source is not authoritative"))
     components = payload.get("components")
-    expected_components = {"electron-host", "desktop-renderer", "python-backend", "windows-agent"}
+    expected_components = {"electron-host", "desktop-renderer", "python-backend"}
     if not isinstance(components, list) or {item.get("id") for item in components if isinstance(item, dict)} != expected_components:
         findings.append(Finding("PRODUCT_ARCHITECTURE_COMPONENTS", relative_path(path), 0, "runtime component set is incomplete"))
     else:

@@ -68,12 +68,12 @@ describe('API client errors', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 502,
-      json: async () => ({ ok: false, error: { code: 'AGENT_TIMEOUT', message: '连接 Agent 超时' } }),
+      json: async () => ({ ok: false, error: { code: 'UPSTREAM_TIMEOUT', message: '上游连接超时' } }),
     }))
-    await expect(apiRequest('/api/agents/probe')).rejects.toMatchObject({
-      message: '连接 Agent 超时',
+    await expect(apiRequest('/api/health')).rejects.toMatchObject({
+      message: '上游连接超时',
       status: 502,
-      code: 'AGENT_TIMEOUT',
+      code: 'UPSTREAM_TIMEOUT',
     })
   })
 

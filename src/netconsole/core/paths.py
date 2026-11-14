@@ -116,10 +116,6 @@ class PathResolver:
         return self.data_root / ".trash"
 
     @property
-    def agents_dir(self) -> Path:
-        return self.data_root / "agents"
-
-    @property
     def electron_dir(self) -> Path:
         return self.runtime_dir / "electron"
 
@@ -168,9 +164,6 @@ class PathResolver:
 
     def site_tasks_db_path(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "db" / "tasks.db"
-
-    def site_agents_db_path(self, site_name: str = "demo") -> Path:
-        return self.site_dir(site_name) / "db" / "agents.db"
 
     def site_files_dir(self, site_name: str = "demo") -> Path:
         return self.site_dir(site_name) / "files"
@@ -468,7 +461,6 @@ class PathResolver:
             self.archive_dir,
             self.migrations_dir,
             self.staging_dir,
-            self.agents_dir,
             self.electron_dir,
             self.locks_dir,
             self.database_upgrade_backups_dir,

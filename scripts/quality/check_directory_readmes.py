@@ -77,7 +77,6 @@ REQUIRED_MAJOR_SECTIONS = (
 MAJOR_DIRECTORIES = frozenset(
     {
         "apps",
-        "apps/agent/internal",
         "apps/desktop_electron",
         "apps/desktop_renderer",
         "apps/desktop_renderer/src",

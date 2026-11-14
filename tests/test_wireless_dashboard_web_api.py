@@ -24,7 +24,7 @@ def test_wireless_dashboard_api_is_get_only_and_preserves_sources(tmp_path: Path
     for index, path in enumerate(protected):
         path.write_bytes(f"protected-{index}".encode("utf-8"))
     before = [(path.stat().st_mtime_ns, _sha256(path)) for path in protected]
-    suffixes = ("", "/summary", "/infrastructure", "/trains", "/alerts", "/freshness", "/recent-operations", "/analysis", "/agents")
+    suffixes = ("", "/summary", "/infrastructure", "/trains", "/alerts", "/freshness", "/recent-operations", "/analysis")
 
     with TestClient(app) as client:
         responses = [client.get(f"/api/rail-transit/wireless-dashboard{suffix}") for suffix in suffixes]

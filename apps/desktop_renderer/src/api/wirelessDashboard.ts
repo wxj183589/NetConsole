@@ -1,7 +1,6 @@
 import { apiRequest } from './client'
 import type {
   WirelessDashboard,
-  WirelessDashboardAgents,
   WirelessDashboardAlerts,
   WirelessDashboardAnalysis,
   WirelessDashboardFreshness,
@@ -21,4 +20,3 @@ export const getWirelessDashboardAlerts = (): Promise<WirelessDashboardAlerts> =
 export const getWirelessDashboardFreshness = (): Promise<WirelessDashboardFreshness> => apiRequest(`${root}/freshness`)
 export const getWirelessDashboardRecentOperations = (): Promise<WirelessDashboardRecentOperations> => apiRequest(`${root}/recent-operations`)
 export const getWirelessDashboardAnalysis = (): Promise<WirelessDashboardAnalysis> => apiRequest(`${root}/analysis`)
-export const getWirelessDashboardAgents = (): Promise<WirelessDashboardAgents> => apiRequest(`${root}/agents`)

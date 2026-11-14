@@ -372,7 +372,6 @@ def test_core_docs_do_not_use_known_old_paths() -> None:
         ROOT / "docs/ARCHITECTURE.md",
         ROOT / "docs/README.md",
         ROOT / "docs/DEVELOPMENT_RULES.md",
-        ROOT / "apps/agent/README.md",
     ]
     forbidden = (
         r"cd frontend",
@@ -386,9 +385,6 @@ def test_core_docs_do_not_use_known_old_paths() -> None:
         if re.search(needle, document.read_text(encoding="utf-8"))
     ]
     assert not violations, "stale project paths:\n" + "\n".join(violations)
-    assert "](../docs/AGENT_TRAFFIC_API.md)" not in (
-        ROOT / "apps/agent/README.md"
-    ).read_text(encoding="utf-8")
 
 
 def test_active_readmes_do_not_describe_qt_as_current_architecture() -> None:

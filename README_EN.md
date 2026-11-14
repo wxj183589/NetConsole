@@ -69,7 +69,7 @@ Discovery tells NetConsole what an object is technically; engineering metadata t
 - Configuration collection, snapshot/text comparison, and controlled SFTP downloads
 - Background jobs, cancellation, progress, logs, and XLSX/CSV/PDF export workflows
 
-General SSH, SNMP, device management, configuration collection, Ping, throughput testing, file management, and the Windows Go Agent support the wireless-diagnostics workflow and can also serve broader field network-engineering work.
+General SSH, SNMP, device management, configuration collection, Ping, throughput testing, and file management support the wireless-diagnostics workflow and can also serve broader field network-engineering work.
 
 ## Architecture
 
@@ -85,16 +85,16 @@ flowchart TB
     A --> I["Infrastructure / Device Adapters"]
     P --> S["SQLite / Controlled Files"]
     J --> S
-    I --> X["SSH / SNMP / Agent / SFTP / Tools"]
+    I --> X["SSH / SNMP / SFTP / Tools"]
 ```
 
 - Electron is the formal Windows desktop shell and Vue is the single main renderer.
 - The FastAPI/Python runtime Router handles DTOs, authentication, and Service calls; Application Services orchestrate use cases.
 - Domain Services / Parsers own device and business rules, while Repositories own SQLite, controlled files, and transactions.
 - Network, disk, parsing, and export work runs in background jobs or dedicated export processes; Infrastructure accesses devices and tools through controlled adapters.
-- The Windows Go Agent is an optional independent collection process. CentOS offline deployment, active registration, and multi-controller operation are outside the current delivery scope.
+- The independent Windows Go Agent was retired from the v1.5.13 product line. Online MR and Traffic retain local execution only; historical Agent fields remain read-only compatibility data.
 
-See [Current architecture](./docs/ARCHITECTURE.md), [Electron Desktop](./docs/architecture/DESKTOP.md), [Agent](./docs/agent/README.md), and the [repository layout](./docs/development/repository-layout.md).
+See [Current architecture](./docs/ARCHITECTURE.md), [Electron Desktop](./docs/architecture/DESKTOP.md), and the [repository layout](./docs/development/repository-layout.md).
 
 ## Project Status
 
@@ -117,7 +117,7 @@ Long term  automated quality evaluation → anomaly recognition → dynamic line
            → before/after optimization comparison → data-driven optimization
 ```
 
-The Infrastructure & Network Tooling track will continue to add vendor coverage, switch and link diagnostics, configuration analysis, Agent capabilities, file management, and data import/export. These extensions remain in service of a richer wireless-diagnostics context.
+The Infrastructure & Network Tooling track will continue to add vendor coverage, switch and link diagnostics, configuration analysis, file management, and data import/export. These extensions remain in service of a richer wireless-diagnostics context.
 
 ## Using NetConsole
 
@@ -162,7 +162,6 @@ See the [development rules](./docs/DEVELOPMENT_RULES.md), [test baseline](./docs
 - [AC/FIT-AP management](./docs/rail-transit/AC_MANAGEMENT.md)
 - [Configuration collection and snapshots](./docs/device-management/CONFIG_COLLECTION.md)
 - [Site and data storage](./docs/storage/README.md)
-- [Windows Go Agent](./docs/agent/README.md)
 
 ## Contributing and Security
 

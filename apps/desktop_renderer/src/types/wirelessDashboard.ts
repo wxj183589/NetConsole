@@ -1,6 +1,5 @@
 import type { AcAp, AcManagementSummary } from './acManagement'
 import type { AcMeshLinkRecord, AcMeshLinkSummary } from './acMeshLink'
-import type { AgentItem } from './agent'
 import type { MeshAnalysisSession, MeshAnalysisSummary } from './meshAnalysis'
 import type { OnlineMrSessionSummary } from './onlineMr'
 import type { TrainCommunicationRow, TrainCommunicationSummary } from './trainCommunication'
@@ -20,7 +19,7 @@ export interface WirelessDashboardSummary {
   site_id: string; site_name: string; line_name: string
   ap_total: number; online_aps: number; offline_aps: number; unauthenticated_aps: number; unauthenticated_status?: string; optical_anomalies: number
   registered_trains: number; registered_mrs: number; online_mrs: number; offline_mrs: number; stale_mrs: number
-  active_online_mr_sessions: number; agent_total: number; online_agents: number; running_tasks: number
+  active_online_mr_sessions: number; running_tasks: number
   mesh_analysis_sessions: number; alert_total: number; critical_alerts: number; warning_alerts: number
   updated_at: string; data_version: string; cached: boolean
 }
@@ -32,9 +31,8 @@ export interface WirelessDashboardAlerts { items: WirelessDashboardAlert[]; tota
 export interface WirelessDashboardFreshness { items: WirelessDashboardFreshnessItem[] }
 export interface WirelessDashboardRecentOperations { tasks: WirelessDashboardTask[]; sessions: OnlineMrSessionSummary[] }
 export interface WirelessDashboardAnalysis { summary: MeshAnalysisSummary; sessions: MeshAnalysisSession[] }
-export interface WirelessDashboardAgents { items: AgentItem[]; total: number; online: number; offline: number; unknown: number }
 export interface WirelessDashboard {
   summary: WirelessDashboardSummary; infrastructure: WirelessDashboardInfrastructure; trains: WirelessDashboardTrains
   alerts: WirelessDashboardAlerts; freshness: WirelessDashboardFreshness
-  recent_operations: WirelessDashboardRecentOperations; analysis: WirelessDashboardAnalysis; agents: WirelessDashboardAgents
+  recent_operations: WirelessDashboardRecentOperations; analysis: WirelessDashboardAnalysis
 }

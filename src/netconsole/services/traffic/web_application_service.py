@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from netconsole.models.agent import AgentStatus
 from netconsole.models.api.traffic import TrafficExecutionTargetDTO
 from netconsole.models.task_state import TaskState, TERMINAL_TASK_STATES
 from netconsole.models.traffic_test import (
@@ -31,9 +30,8 @@ _LOCAL_CAPABILITIES = {
 class TrafficWebApplicationService:
     """Traffic REST/WebSocket 使用的最小应用 Facade。"""
 
-    def __init__(self, traffic_service: TrafficTestApplicationService, agent_service: Any | None = None) -> None:
+    def __init__(self, traffic_service: TrafficTestApplicationService) -> None:
         self.traffic_service = traffic_service
-        self.agent_service = agent_service
         self._cancel_lock = asyncio.Lock()
 
     @property
@@ -73,27 +71,6 @@ class TrafficWebApplicationService:
                 capabilities=dict(_LOCAL_CAPABILITIES),
             )
         ]
-        if self.agent_service is None:
-            return targets
-        for agent in self.agent_service.list_agents():
-            capabilities = dict(agent.get("capabilities") or {})
-            available, reason = _agent_availability(agent, capabilities)
-            agent_id = str(agent.get("agent_id") or "")
-            targets.append(
-                TrafficExecutionTargetDTO(
-                    kind=ExecutionTargetKind.AGENT,
-                    id=agent_id,
-                    agent_id=agent_id,
-                    display_name=str(agent.get("name") or agent_id or "Agent"),
-                    available=available,
-                    unavailable_reason=reason,
-                    status=str(agent.get("status") or ""),
-                    platform=str(agent.get("platform") or ""),
-                    architecture=str(agent.get("architecture") or ""),
-                    version=str(agent.get("version") or ""),
-                    capabilities=capabilities,
-                )
-            )
         return targets
 
     def list_runs(
@@ -182,19 +159,6 @@ def _page_args(offset: int, limit: int) -> tuple[int, int]:
     except (TypeError, ValueError) as exc:
         raise TrafficTestError(TrafficErrorCode.INVALID_CONFIG, "流量任务分页参数无效") from exc
     return selected_offset, selected_limit
-
-
-def _agent_availability(agent: dict[str, object], capabilities: dict[str, object]) -> tuple[bool, str]:
-    if not bool(agent.get("enabled")):
-        return False, "Agent 已禁用"
-    status = str(agent.get("status") or AgentStatus.UNKNOWN.value).upper()
-    if status == AgentStatus.UNAUTHORIZED.value:
-        return False, "Agent 认证失败或 Token 未加载"
-    if status != AgentStatus.ONLINE.value:
-        return False, "Agent 当前不在线"
-    if not any(bool(capabilities.get(key)) for key in _LOCAL_CAPABILITIES):
-        return False, "Agent 未报告流量测试能力"
-    return True, ""
 
 
 __all__ = ["TrafficRunPage", "TrafficWebApplicationService"]
