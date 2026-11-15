@@ -659,42 +659,75 @@ class GroundUnattendedApplicationService:
         }
         syslog_audits = self.repository.latest_syslog_config_audits(endpoints)
         arp_repository = getattr(self.supervisor, "arp_repository", None)
+        arp_projection: dict[str, Any] = {
+            "relations_by_mr": {}, "observations_by_ip": {},
+            "latest_successful_collection": None,
+        }
+        if arp_repository is not None:
+            try:
+                arp_ips = [
+                    ip
+                    for endpoint in endpoints.values()
+                    for ip in (
+                        str(endpoint.get("management_ip") or ""),
+                        str(endpoint.get("backup_management_ip") or ""),
+                    )
+                    if ip
+                ]
+                arp_projection = arp_repository.build_identity_observation_projection(
+                    mr_uuids=endpoints.keys(), ip_addresses=arp_ips,
+                )
+            except (AttributeError, OSError, RuntimeError):
+                # Keep the heartbeat page available if an older injected
+                # repository does not yet expose the batch projection API.
+                arp_projection = {
+                    "relations_by_mr": {}, "observations_by_ip": {},
+                    "latest_successful_collection": None,
+                }
 
         def apply_arp_projection(payload: dict[str, Any], mr_uuid: str) -> dict[str, Any]:
             if arp_repository is None:
                 return payload
-            relations = arp_repository.find_identity_relations(mr_uuid=mr_uuid, confirmed_only=True)
-            observations = arp_repository.list_observations()
-            successful = next(
-                (row for row in arp_repository.list_collections(limit=100)
-                 if str(row.get("status") or "") == "SUCCESS"
-                 and str(row.get("completeness") or "") == "COMPLETE"),
-                None,
-            )
+            relations = [
+                row for row in arp_projection.get("relations_by_mr", {}).get(mr_uuid, [])
+                if str(row.get("confirmation_status") or "").upper() == "CONFIRMED"
+            ]
+            observations_by_ip = arp_projection.get("observations_by_ip", {})
+            successful = arp_projection.get("latest_successful_collection") or {}
             mr_ips = {
                 str(payload.get("management_ip") or ""),
                 str(payload.get("backup_management_ip") or ""),
             }
             mr_ips.discard("")
             related = [
-                row for row in observations
-                if str(row.get("ip_address") or "") in mr_ips
-                and (successful is None
-                     or (str(row.get("source_device_uuid") or "") == str(successful.get("source_device_uuid") or "")
-                         and str(row.get("query_scope") or "") == str(successful.get("query_scope") or "")))
+                row for ip in mr_ips for row in observations_by_ip.get(ip, [])
             ]
-            current = next((row for row in related if bool(row.get("observed_in_last_success"))), None)
+            current = next(
+                (
+                    row for row in related
+                    if bool(row.get("observed_in_last_success"))
+                    and str(row.get("source_device_uuid") or "") == str(successful.get("source_device_uuid") or "")
+                    and str(row.get("query_scope") or "") == str(successful.get("query_scope") or "")
+                ),
+                None,
+            ) if successful else None
+            latest_observation = max(
+                related,
+                key=lambda row: str(row.get("last_observed_at") or ""),
+                default={},
+            )
             stable = next((row for row in relations if row.get("alias_type") == "BASE"), None) or (relations[0] if relations else None)
             payload.update(
                 identity_mac=str(stable.get("identity_mac") or "") if stable else "",
                 identity_first_discovered_at=str(stable.get("first_discovered_at") or "") if stable else "",
                 identity_last_verified_at=str(stable.get("last_verified_at") or "") if stable else "",
-                arp_last_seen_at=str(current or (related[0] if related else {}).get("last_observed_at") or ""),
+                arp_last_seen_at=str((current or latest_observation).get("last_observed_at") or ""),
+                arp_last_successful_collection_at=str(successful.get("completed_at") or ""),
                 arp_current_observed=bool(current),
                 arp_observation_status="CURRENT" if current else ("NOT_OBSERVED" if related else "NO_DATA"),
-                arp_source_device=str((current or (related[0] if related else {})).get("source_device_name") or ""),
-                arp_ip=str((current or (related[0] if related else {})).get("ip_address") or ""),
-                arp_mac=str((current or (related[0] if related else {})).get("mac_address") or ""),
+                arp_source_device=str((current or latest_observation).get("source_device_name") or ""),
+                arp_ip=str((current or latest_observation).get("ip_address") or ""),
+                arp_mac=str((current or latest_observation).get("mac_address") or ""),
             )
             return payload
 
@@ -1241,12 +1274,6 @@ class GroundUnattendedApplicationService:
                 run_id=str(active["run_id"]),
                 message="当前无人值守运行已存在，无需重复启动",
             )
-        window = schedule_window(
-            datetime.now().astimezone(),
-            profile.schedule_start_time,
-            profile.schedule_end_time,
-            profile.timezone,
-        )
         self.supervisor.request("start")
         return GroundActionResponseDTO(state="STARTING", message="立即开始请求已提交")
 

@@ -397,27 +397,161 @@ class GroundArpRepository:
         path = Path(db_path)
         if not path.is_file() or not identity_mac:
             return []
-        uri = f"{path.resolve().as_uri()}?mode=ro"
         try:
-            with sqlite3.connect(uri, uri=True) as conn:
-                conn.row_factory = sqlite3.Row
-                table = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                    ("ground_mr_identity_relations",),
-                ).fetchone()
-                if table is None:
-                    return []
-                rows = conn.execute(
-                    """
-                    SELECT * FROM ground_mr_identity_relations
-                    WHERE site_id=? AND identity_mac=? AND confirmation_status='CONFIRMED'
-                    ORDER BY last_verified_at DESC
-                    """,
-                    (str(site_id), str(identity_mac)),
-                ).fetchall()
+            conn = Database(path).connect_readonly()
         except sqlite3.Error:
             return []
+        try:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                ("ground_mr_identity_relations",),
+            ).fetchone()
+            if table is None:
+                return []
+            rows = conn.execute(
+                """
+                SELECT * FROM ground_mr_identity_relations
+                WHERE site_id=? AND identity_mac=? AND confirmation_status='CONFIRMED'
+                ORDER BY last_verified_at DESC
+                """,
+                (str(site_id), str(identity_mac)),
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def find_identity_index_by_mac_readonly(
+        db_path: Path, *, site_id: str, identity_macs: Iterable[str]
+    ) -> dict[str, dict[str, list[dict[str, Any]]]]:
+        """Load confirmed identities and open conflicts in one read-only query.
+
+        Mesh-Link is a read path and must not initialise the Ground database.
+        This batch form also makes the query cost independent of the number of
+        links in a snapshot.  Open conflicts are returned separately so a
+        stale confirmed relation can never win over newer blocking evidence.
+        """
+        macs = tuple(dict.fromkeys(str(value or "").strip() for value in identity_macs if str(value or "").strip()))
+        result: dict[str, dict[str, list[dict[str, Any]]]] = {
+            "confirmed": {}, "conflicts": {},
+        }
+        if not Path(db_path).is_file() or not macs:
+            return result
+        try:
+            conn = Database(Path(db_path)).connect_readonly()
+        except sqlite3.Error:
+            return {"confirmed": {}, "conflicts": {}}
+        try:
+            tables = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?)",
+                    ("ground_mr_identity_relations", "ground_mr_identity_conflicts"),
+                ).fetchall()
+            }
+            placeholders = ",".join("?" for _ in macs)
+            params = [str(site_id), *macs]
+            if "ground_mr_identity_relations" in tables:
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM ground_mr_identity_relations
+                    WHERE site_id=? AND identity_mac IN ({placeholders})
+                      AND confirmation_status='CONFIRMED'
+                    ORDER BY last_verified_at DESC
+                    """,
+                    params,
+                ).fetchall()
+                for row in rows:
+                    item = dict(row)
+                    result["confirmed"].setdefault(str(item.get("identity_mac") or ""), []).append(item)
+            if "ground_mr_identity_conflicts" in tables:
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM ground_mr_identity_conflicts
+                    WHERE site_id=? AND status='OPEN' AND mac_address IN ({placeholders})
+                    ORDER BY last_seen_at DESC
+                    """,
+                    params,
+                ).fetchall()
+                for row in rows:
+                    item = dict(row)
+                    result["conflicts"].setdefault(str(item.get("mac_address") or ""), []).append(item)
+        except sqlite3.Error:
+            return {"confirmed": {}, "conflicts": {}}
+        finally:
+            conn.close()
+        return result
+
+    def build_identity_observation_projection(
+        self, *, mr_uuids: Iterable[str], ip_addresses: Iterable[str]
+    ) -> dict[str, Any]:
+        """Read all ARP projection inputs for a heartbeat page in one connection."""
+        mr_ids = tuple(dict.fromkeys(str(value or "").strip() for value in mr_uuids if str(value or "").strip()))
+        ips = tuple(dict.fromkeys(str(value or "").strip() for value in ip_addresses if str(value or "").strip()))
+        result: dict[str, Any] = {
+            "relations_by_mr": {}, "observations_by_ip": {}, "latest_successful_collection": None,
+        }
+        if not self.db_path.is_file():
+            return result
+        try:
+            conn = Database(self.db_path).connect_readonly()
+        except sqlite3.Error:
+            return result
+        try:
+            if mr_ids:
+                placeholders = ",".join("?" for _ in mr_ids)
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM ground_mr_identity_relations
+                    WHERE site_id=? AND mr_uuid IN ({placeholders})
+                    ORDER BY last_verified_at DESC
+                    """,
+                    [self.site_id, *mr_ids],
+                ).fetchall()
+                for row in rows:
+                    item = dict(row)
+                    result["relations_by_mr"].setdefault(str(item.get("mr_uuid") or ""), []).append(item)
+            if ips:
+                placeholders = ",".join("?" for _ in ips)
+                rows = conn.execute(
+                    f"""
+                    SELECT * FROM ground_arp_observations
+                    WHERE site_id=? AND ip_address IN ({placeholders})
+                    ORDER BY last_observed_at DESC
+                    """,
+                    [self.site_id, *ips],
+                ).fetchall()
+                for row in rows:
+                    item = dict(row)
+                    result["observations_by_ip"].setdefault(str(item.get("ip_address") or ""), []).append(item)
+            row = conn.execute(
+                """
+                SELECT * FROM ground_arp_collections
+                WHERE site_id=? AND status='SUCCESS' AND completeness='COMPLETE'
+                ORDER BY completed_at DESC, created_at DESC LIMIT 1
+                """,
+                (self.site_id,),
+            ).fetchone()
+            result["latest_successful_collection"] = dict(row) if row else None
+        except sqlite3.Error:
+            return result
+        finally:
+            conn.close()
+        return result
+
+    def resolve_conflict(self, conflict_id: str, *, status: str = "RESOLVED") -> bool:
+        """Close a reviewed conflict without changing historical evidence."""
+        normalized = str(status or "").strip().upper()
+        if normalized not in {"RESOLVED", "IGNORED"}:
+            raise ValueError("conflict status must be RESOLVED or IGNORED")
+        with self._transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE ground_mr_identity_conflicts SET status=? WHERE site_id=? AND conflict_id=?",
+                (normalized, self.site_id, str(conflict_id)),
+            )
+        return cursor.rowcount > 0
 
     def save_conflict(
         self, *, conflict_type: str, conflict_key: str, details: Mapping[str, Any],

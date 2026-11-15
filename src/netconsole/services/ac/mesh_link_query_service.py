@@ -691,6 +691,7 @@ class AcMeshLinkQueryService:
                 "SELECT * FROM vehicle_mr_online_links WHERE snapshot_id = ? ORDER BY id",
                 (snapshot.id,),
             ).fetchall()
+        raw_rows = [dict(row) for row in rows]
         devices = self._mr_devices(site_id)
         ap_indexes = self._ap_indexes(site_id)
         identity_query = ApIdentityQueryService(
@@ -698,23 +699,30 @@ class AcMeshLinkQueryService:
         )
         controller_id = snapshot.controller_id
         controller_name = snapshot.controller_name
+        peer_macs = {
+            _normalize_vehicle_mac(row.get("peer_mac"))
+            for row in raw_rows
+            if _normalize_vehicle_mac(row.get("peer_mac"))
+        }
+        arp_identity_index = GroundArpRepository.find_identity_index_by_mac_readonly(
+            self.paths.ground_unattended_db_path(site_id),
+            site_id=site_id,
+            identity_macs=peer_macs,
+        )
         result: list[AcMeshLinkRecordDTO] = []
-        for row in rows:
-            raw = dict(row)
+        for raw in raw_rows:
             identity = _parse_train_identity(str(raw.get("peer_name") or ""))
             device = self._match_mr_device(raw, devices, identity)
+            arp_identity_warning = ""
             if device is None:
                 peer_mac = _normalize_vehicle_mac(raw.get("peer_mac"))
-                relation = next(
-                    iter(
-                        GroundArpRepository.find_confirmed_by_mac_readonly(
-                            self.paths.ground_unattended_db_path(site_id),
-                            site_id=site_id,
-                            identity_mac=peer_mac,
-                        )
-                    ),
-                    None,
-                ) if peer_mac else None
+                conflicts = arp_identity_index.get("conflicts", {}).get(peer_mac, []) if peer_mac else []
+                confirmed = arp_identity_index.get("confirmed", {}).get(peer_mac, []) if peer_mac else []
+                relation_ids = sorted({str(item.get("mr_uuid") or "") for item in confirmed if item.get("mr_uuid")})
+                relation = confirmed[0] if len(relation_ids) == 1 else None
+                if conflicts or len(relation_ids) > 1:
+                    arp_identity_warning = "ARP 身份存在未解决冲突，未自动匹配 MR"
+                    relation = None
                 relation_uuid = str(relation.get("mr_uuid") or "") if relation else ""
                 if relation_uuid:
                     device = next((item for item in devices if item.uuid == relation_uuid), None)
@@ -748,6 +756,9 @@ class AcMeshLinkQueryService:
             ap_line_side = ap.direction if ap else ""
             mr_id = device.uuid if device else _normalize_vehicle_mac(raw.get("peer_mac")) or self._normalize_name(raw.get("peer_name")) or f"link-{raw['id']}"
             link_status = str(raw.get("status") or "")
+            if arp_identity_warning:
+                warning = "；".join(filter(None, (warning, arp_identity_warning)))
+                method = "arp_identity_conflict"
             result.append(
                 AcMeshLinkRecordDTO(
                     id=int(raw["id"]),

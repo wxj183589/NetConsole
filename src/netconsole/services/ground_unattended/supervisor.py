@@ -216,7 +216,9 @@ class GroundUnattendedSupervisor:
         self._arp_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ground-arp")
         self._arp_future: Future | None = None
         self._arp_next_poll_monotonic = 0.0
-        self._arp_startup_requested = False
+        # Startup ARP is scoped to a persisted run session, not to the
+        # Supervisor process.  Backend initialization must not consume it.
+        self._arp_startup_session_id = ""
         self._arp_last_error = ""
         self._manual_config_checks: dict[str, tuple[bool, bool]] = {}
         self._manual_config_task_ids: dict[str, str] = {}
@@ -899,6 +901,17 @@ class GroundUnattendedSupervisor:
                 )
                 return
             self._active_profile = profile
+            session = self.repository.latest_open_run_session(str(run["run_id"]))
+            if session is None:
+                self._run_session_id = f"session_recovered_{uuid.uuid4().hex}"
+                self.repository.create_run_session(
+                    session_id=self._run_session_id,
+                    run_id=str(run["run_id"]),
+                    run_date=str(run["run_date"]),
+                    started_at=now.isoformat(timespec="milliseconds"),
+                )
+            else:
+                self._run_session_id = str(session.get("session_id") or "")
             self._restore_processed_snapshot_ids(run)
             self.inventory_sync.synchronize()
             recovered_ping_targets = self._restore_fleet_ping_targets(
@@ -1213,9 +1226,9 @@ class GroundUnattendedSupervisor:
         self._handle_archive_deletes()
         self._handle_commands()
         profile = self.repository.get_profile()
-        self._schedule_arp_poll(profile)
         now = self._now()
         run = self.repository.get_active_run()
+        self._schedule_arp_poll(profile, run)
 
         # An explicit per-AC start is allowed to run without a ground run;
         # ordinary default AC collectors are materialized only when a run is
@@ -1572,9 +1585,26 @@ class GroundUnattendedSupervisor:
             run, profile, now, scheduling_paused=scheduling_paused
         )
 
-    def _schedule_arp_poll(self, profile: GroundUnattendedProfileDTO) -> None:
+    def _schedule_arp_poll(
+        self,
+        profile: GroundUnattendedProfileDTO,
+        run: dict[str, Any] | None,
+    ) -> None:
+        # Automatic and startup collection belong to a running unattended
+        # session.  Manual refresh remains independent through
+        # request_arp_refresh().
+        if run is None or str(run.get("state") or "").upper() != "RUNNING":
+            return
         source_uuid = str(profile.arp_collection_device_uuid or "").strip()
         if not source_uuid:
+            return
+        session_id = str(self._run_session_id or "").strip()
+        if not session_id:
+            session = self.repository.latest_open_run_session(str(run.get("run_id") or ""))
+            session_id = str((session or {}).get("session_id") or "").strip()
+            if session_id:
+                self._run_session_id = session_id
+        if not session_id:
             return
         current = time.monotonic()
         future = self._arp_future
@@ -1599,11 +1629,13 @@ class GroundUnattendedSupervisor:
                     self._arp_next_poll_monotonic = current + min(
                         max(30, int(profile.arp_auto_refresh_interval_seconds)) * 2, 1800
                     )
-        startup_due = bool(profile.arp_startup_collection_enabled) and not self._arp_startup_requested
+        new_session = self._arp_startup_session_id != session_id
+        if new_session:
+            self._arp_startup_session_id = session_id
+        startup_due = new_session and bool(profile.arp_startup_collection_enabled)
         auto_due = bool(profile.arp_auto_refresh_enabled) and current >= self._arp_next_poll_monotonic
         if not startup_due and not auto_due:
             return
-        self._arp_startup_requested = True
         self.request_arp_refresh(reason="startup" if startup_due else "auto")
 
     def _schedule_ac_basic_poll(self, profile: GroundUnattendedProfileDTO) -> None:
@@ -3112,6 +3144,7 @@ class GroundUnattendedSupervisor:
         self._active_profile = None
         self._manual_start = False
         self._run_session_id = ""
+        self._arp_startup_session_id = ""
         self._last_valid_ping_targets = {}
         self._last_processed_snapshot_id_by_controller = {}
         self._syslog_recovery_pending = False

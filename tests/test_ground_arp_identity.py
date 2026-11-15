@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from netconsole.parsers.h3c.arp_parser import ArpParseResult, ArpRecord, parse_h3c_arp
 from netconsole.repositories.ground_arp_repository import GroundArpRepository
@@ -8,6 +9,7 @@ from netconsole.models.device import Device
 from netconsole.core.paths import PathResolver
 from netconsole.services.ground_unattended.arp_collection import GroundArpCollector
 from netconsole.services.ground_unattended.arp_identity import GroundMrIdentityService
+from netconsole.services.ground_unattended.supervisor import GroundUnattendedSupervisor
 
 
 def _mr(number: int, ip: str, mac: str = "") -> dict[str, str]:
@@ -136,6 +138,92 @@ def test_identity_survives_repository_restart_and_peer_resolution(tmp_path: Path
     resolved = restarted.resolve_peer("00:00:00:00:00:01", [mr])
     assert resolved.status == "CONFIRMED"
     assert resolved.mr_uuid == "mr-1"
+
+
+def test_open_conflict_blocks_old_confirmed_peer_until_reviewed(tmp_path: Path) -> None:
+    repo = GroundArpRepository(tmp_path / "ground.sqlite", site_id="site-a")
+    identity = GroundMrIdentityService(repo)
+    mr_a = _mr(1, "10.0.0.1")
+    mr_b = _mr(2, "10.0.0.2")
+    shared_mac = "00:00:00:00:00:aa"
+    _success(repo, identity, [_record("10.0.0.1", shared_mac)], [mr_a])
+    result = _success(repo, identity, [_record("10.0.0.2", shared_mac)], [mr_a, mr_b])
+    assert result["conflict_count"] == 1
+    blocked = identity.resolve_peer(shared_mac, [mr_a, mr_b])
+    assert blocked.status == "CONFLICT"
+    assert blocked.mr_uuid == ""
+    conflict = repo.list_conflicts()[0]
+    assert repo.resolve_conflict(conflict["conflict_id"])
+    resolved = identity.resolve_peer(shared_mac, [mr_a, mr_b])
+    assert resolved.status == "CONFIRMED"
+    assert resolved.mr_uuid == "mr-1"
+
+
+def test_mesh_identity_batch_read_is_site_scoped_and_does_not_initialize_missing_db(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-ground.sqlite"
+    assert GroundArpRepository.find_identity_index_by_mac_readonly(
+        missing, site_id="site-a", identity_macs=["00:00:00:00:00:01"]
+    ) == {"confirmed": {}, "conflicts": {}}
+    assert not missing.exists()
+
+    repo = GroundArpRepository(tmp_path / "ground.sqlite", site_id="site-a")
+    identity = GroundMrIdentityService(repo)
+    mr = _mr(1, "10.0.0.1")
+    _success(repo, identity, [_record("10.0.0.1", "00:00:00:00:00:01")], [mr])
+    other_site = GroundArpRepository(tmp_path / "other.sqlite", site_id="site-b")
+    other_identity = GroundMrIdentityService(other_site)
+    _success(other_site, other_identity, [_record("10.0.0.1", "00:00:00:00:00:02")], [mr])
+
+    index = GroundArpRepository.find_identity_index_by_mac_readonly(
+        repo.db_path,
+        site_id="site-a",
+        identity_macs=["00:00:00:00:00:01", "00:00:00:00:00:02"],
+    )
+    assert {row["mr_uuid"] for row in index["confirmed"]["00:00:00:00:00:01"]} == {"mr-1"}
+    assert "00:00:00:00:00:02" not in index["confirmed"]
+
+
+def test_h3c_derived_peer_conflict_is_not_auto_selected(tmp_path: Path) -> None:
+    repo = GroundArpRepository(tmp_path / "ground.sqlite", site_id="site-a")
+    identity = GroundMrIdentityService(repo)
+    mr = _mr(1, "10.0.0.1", "00:11:22:33:44:50")
+    identity.register_mr_registry([mr])
+    derived = next(row["identity_mac"] for row in repo.find_identity_relations(mr_uuid="mr-1") if row["alias_type"] == "DERIVED_R1")
+    repo.save_conflict(
+        conflict_type="MAC_MULTIPLE_MR", conflict_key=f"MAC_MULTIPLE_MR:{derived}",
+        mac_address=derived, details={"mr_uuids": ["mr-1", "mr-2"]},
+    )
+    resolved = identity.resolve_peer(derived, [mr])
+    assert resolved.status == "CONFLICT"
+    assert resolved.mr_uuid == ""
+
+
+def test_startup_arp_is_scoped_to_running_session() -> None:
+    supervisor = object.__new__(GroundUnattendedSupervisor)
+    supervisor._run_session_id = "session-1"
+    supervisor._arp_startup_session_id = ""
+    supervisor._arp_future = None
+    supervisor._arp_next_poll_monotonic = 0.0
+    supervisor._arp_last_error = ""
+    calls: list[str] = []
+    supervisor.request_arp_refresh = lambda *, reason: calls.append(reason)  # type: ignore[method-assign]
+    profile = SimpleNamespace(
+        arp_collection_device_uuid="switch-1",
+        arp_management_vlans=[],
+        arp_startup_collection_enabled=True,
+        arp_auto_refresh_enabled=False,
+        arp_auto_refresh_interval_seconds=300,
+    )
+
+    supervisor._schedule_arp_poll(profile, None)
+    assert calls == []
+    assert supervisor._arp_startup_session_id == ""
+    supervisor._schedule_arp_poll(profile, {"run_id": "run-1", "state": "RUNNING"})
+    supervisor._schedule_arp_poll(profile, {"run_id": "run-1", "state": "RUNNING"})
+    assert calls == ["startup"]
+    supervisor._run_session_id = "session-2"
+    supervisor._schedule_arp_poll(profile, {"run_id": "run-1", "state": "RUNNING"})
+    assert calls == ["startup", "startup"]
 
 
 def test_collector_uses_full_table_for_blank_vlan_and_one_command_per_vlan(tmp_path: Path) -> None:

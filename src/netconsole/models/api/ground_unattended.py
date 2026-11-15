@@ -1801,6 +1801,7 @@ class GroundHeartbeatMrDTO(ApiModel):
     identity_first_discovered_at: str = ""
     identity_last_verified_at: str = ""
     arp_last_seen_at: str = ""
+    arp_last_successful_collection_at: str = ""
     arp_current_observed: bool = False
     arp_observation_status: str = "NOT_OBSERVED"
     arp_source_device: str = ""

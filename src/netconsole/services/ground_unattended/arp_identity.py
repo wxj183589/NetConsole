@@ -189,7 +189,22 @@ class GroundMrIdentityService:
         mac = _mac(peer_mac)
         if not mac:
             return IdentityResolution(warning="Peer MAC 为空或格式无效")
-        rows = self.repository.find_identity_relations(identity_mac=mac, confirmed_only=True)
+        # A previously confirmed row is not sufficient evidence when a newer
+        # observation has an unresolved conflict for the same MAC.  Check the
+        # conflict ledger first so resolution never depends on row order.
+        identity_index = GroundArpRepository.find_identity_index_by_mac_readonly(
+            self.repository.db_path,
+            site_id=self.repository.site_id,
+            identity_macs=(mac,),
+        )
+        if identity_index.get("conflicts", {}).get(mac):
+            return IdentityResolution(
+                status="CONFLICT",
+                matched_by="ARP_CONFLICT",
+                identity_mac=mac,
+                warning="MAC 存在未解决的 ARP 身份冲突",
+            )
+        rows = identity_index.get("confirmed", {}).get(mac, [])
         mr_ids = sorted({str(row.get("mr_uuid") or "") for row in rows if row.get("mr_uuid")})
         if len(mr_ids) == 1:
             return IdentityResolution(mr_uuid=mr_ids[0], status="CONFIRMED", matched_by="CONFIRMED_MAC", identity_mac=mac)

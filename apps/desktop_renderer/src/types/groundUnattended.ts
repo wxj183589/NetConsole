@@ -447,7 +447,7 @@ export interface GroundHeartbeatMr {
   ip_states: GroundHeartbeatIp[]; associated_aps?: GroundHeartbeatAp[]; associated_stations?: string[]
   loss_events?: Array<Record<string, unknown>>
   identity_mac?: string; identity_first_discovered_at?: string; identity_last_verified_at?: string
-  arp_last_seen_at?: string; arp_current_observed?: boolean; arp_observation_status?: string
+  arp_last_seen_at?: string; arp_last_successful_collection_at?: string; arp_current_observed?: boolean; arp_observation_status?: string
   arp_source_device?: string; arp_ip?: string; arp_mac?: string
 }
 export interface GroundHeartbeatTrain {

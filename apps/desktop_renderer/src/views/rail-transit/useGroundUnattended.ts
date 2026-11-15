@@ -16,6 +16,7 @@ import { apiErrorDetail } from '../../api/client'
 import { getOnlineMrSession } from '../../api/onlineMr'
 import { getOnlineMrControlPresets } from '../../api/onlineMrControl'
 import { listVehicleMrControllers } from '../../api/vehicleMrOnline'
+import { listDevices } from '../../api/deviceManagement'
 import { getAcMeshLinkSummary, getAcMeshRawTail, listAcMeshLinks, listAcMeshMrs, listAcMeshSnapshots, refreshAcMeshLinks } from '../../api/acMeshLink'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
@@ -35,6 +36,7 @@ import type {
 } from '../../types/groundUnattended'
 import type { OnlineMrPingPreset } from '../../types/onlineMrControl'
 import type { VehicleMrController } from '../../types/vehicleMrOnline'
+import type { DeviceListItem } from '../../types/deviceManagement'
 import type { AcMeshLinkRecord, AcMeshLinkSummary, AcMeshMrStatus, AcMeshRawTail, AcMeshSnapshot } from '../../types/acMeshLink'
 import {
   groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel,
@@ -135,6 +137,8 @@ const acControllersLoading = ref(false)
 const acControllersError = ref(false)
 
 const acBasicCollection = ref<GroundAcBasicCollection[]>([])
+
+const arpSourceSwitches = ref<DeviceListItem[]>([])
 
 const selectedAcController = computed(() => acControllers.value.find((item) => item.controller_id === selectedAcControllerId.value) ?? null)
 
@@ -710,6 +714,10 @@ const loadStatus = (silent = true) => {
 
 const loadProfile = (silent = true) => latestRequest('profile', '无人值守配置', (signal) => getGroundProfile({ signal }), (value) => { profile.value = value }, silent)
 
+const loadArpSourceSwitches = (silent = true) => latestRequest('arp-source-switches', 'ARP 源交换机', () => listDevices({ page: 1, page_size: 200, work_scope_status: 'all' }), (value) => {
+  arpSourceSwitches.value = value.items.filter((item) => ['sw', 'switch', '交换机'].includes(String(item.device_type || '').trim().toLocaleLowerCase()))
+}, silent)
+
 const loadAcBasicCollection = (silent = true) => latestRequest('ac-basic-collection', 'AC 基础采集', (signal) => listGroundAcBasicCollection({ signal }), (value) => { acBasicCollection.value = value.items }, silent)
 
 const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signal) => listGroundRuns({ signal }), (value) => {
@@ -917,7 +925,7 @@ async function loadActiveTab(silent = true): Promise<void> {
   else if (activeTab.value === 'syslog') await loadSyslog(silent)
   else if (activeTab.value === 'health') await loadHealth(silent)
   else if (activeTab.value === 'archives') await loadArchives(silent)
-  else if (activeTab.value === 'settings') await Promise.all([loadProfile(silent), loadTrains(silent), loadAcBasicCollection(silent)])
+  else if (activeTab.value === 'settings') await Promise.all([loadProfile(silent), loadTrains(silent), loadAcBasicCollection(silent), loadArpSourceSwitches(silent)])
   else if (activeTab.value === 'ac-mesh-link') await Promise.all([loadAcMesh(silent), loadAcControllers(silent)])
 }
 
@@ -1870,6 +1878,7 @@ function resetPageStateForSiteContext(): void {
   acMeshRawTail.value = null
   acControllers.value = []
   acBasicCollection.value = []
+  arpSourceSwitches.value = []
   selectedAcControllerId.value = ''
   Object.assign(acMeshQuery, { query: '', station: '', section: '', carEnd: '', dataStatus: '', matchStatus: '', multiplePeers: false, abnormalOnly: false, page: 1, pageSize: 50, mrPage: 1, snapshotPage: 1 })
   Object.assign(acMeshTotals, { links: 0, mrs: 0, snapshots: 0 })
@@ -2294,6 +2303,7 @@ acMeshQuery,
 acMeshTotals,
 acControllers,
 acBasicCollection,
+arpSourceSwitches,
 selectedAcControllerId,
 acControllersLoading,
 acControllersError,
@@ -2430,6 +2440,7 @@ latestRequest,
 removeSelectedArchives,
 loadStatus,
 loadProfile,
+loadArpSourceSwitches,
 loadAcBasicCollection,
 loadRuns,
 loadTrains,
