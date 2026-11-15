@@ -10,6 +10,8 @@ STATE_DISPLAY = {
     "DC": "DataCheck",
     "R": "Run",
     "M": "Run",
+    "KU": "KeyUpdate",
+    "KC": "KeyCfm",
     "R/M": "\u8fd0\u884c(\u4e3b)",
     "R/B": "\u8fd0\u884c(\u5907)",
 }

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { basename, join, resolve, sep } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 const repositoryRoot = resolve(import.meta.dirname, '..', '..', '..')
 const repositoryParent = resolve(repositoryRoot, '..')
@@ -10,6 +10,21 @@ const workspaceRoot = basename(repositoryParent).toLowerCase() === 'worktrees'
   ? resolve(repositoryParent, '..')
   : repositoryParent
 const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')
+const FORBIDDEN_PERSISTENT_ROOTS = [
+  'D:\\NetConsoleData',
+  'D:\\NetConsoleData-dev',
+  'G:\\NetConsoleData',
+]
+
+export function resolveDevelopmentIsolation({
+  codex = false,
+  smoke = false,
+  taskCenterSmoke = false,
+  workspaceTraySmoke = false,
+  explicitRoot = '',
+} = {}) {
+  return Boolean(codex || smoke || taskCenterSmoke || workspaceTraySmoke || explicitRoot)
+}
 
 export function discoverProjectPython({ projectRoot, commonRoot, environment = process.env, platform = process.platform, probe = true, log = () => undefined }) {
   log('ELECTRON_PYTHON_DISCOVERY_START')
@@ -60,8 +75,40 @@ export function cleanupIsolatedRuntime(root, testDataRoot = WINDOWS_TEST_DATA_RO
 
 function validateIsolatedRoot(value, base) {
   const target = resolve(value)
-  if (target === base || !target.startsWith(`${base}${sep}`) || !basename(target)) {
+  if (!isPathWithin(target, base)) {
     throw new Error('Refusing to use an unexpected isolated runtime directory')
   }
+  const realBase = safeRealPath(base)
+  const realTarget = safeRealPath(target)
+  if (!isPathWithin(realTarget, realBase) || isForbiddenPersistentRoot(realTarget)) {
+    throw new Error('Refusing to use an isolated runtime redirected outside the test-data root')
+  }
+  if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+    throw new Error('Refusing to use a symbolic-link isolated runtime directory')
+  }
   return target
+}
+
+function safeRealPath(value) {
+  let cursor = resolve(value)
+  const missing = []
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor)
+    if (parent === cursor) return resolve(value)
+    missing.unshift(basename(cursor))
+    cursor = parent
+  }
+  return resolve(realpathSync.native(cursor), ...missing)
+}
+
+function isPathWithin(candidate, parent) {
+  const child = relative(parent, candidate)
+  return child !== '' && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
+}
+
+function isForbiddenPersistentRoot(value) {
+  return FORBIDDEN_PERSISTENT_ROOTS.some((root) => {
+    const normalized = resolve(root)
+    return value === normalized || isPathWithin(value, normalized)
+  })
 }

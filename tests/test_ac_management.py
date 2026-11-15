@@ -2093,6 +2093,20 @@ AP name                        APID  State Model           Serial ID
     assert rows[0]["serial_number"] == "H3C_4C-6F-D6-08-04-00"
 
 
+def test_wlan_ap_parser_skips_v5_master_backup_legend_without_dropping_m_named_ap():
+    rows = parse_wlan_ap_list(
+        """
+State : I = Idle, J = Join, R = Run, M = Master, B = Backup
+M = Master, B = Backup
+M-REAL-AP 9 R/M WA6624X SN-M-0009 default-group 1:00:00
+"""
+    )
+
+    assert [row["ap_name"] for row in rows] == ["M-REAL-AP"]
+    assert rows[0]["state"] == "R/M"
+    assert rows[0]["model"] == "WA6624X"
+
+
 def test_wlan_ap_summary_counts_only_running_master_and_backup_as_online():
     summary = parse_wlan_ap_summary(
         """

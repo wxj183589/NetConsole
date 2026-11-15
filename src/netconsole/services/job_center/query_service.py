@@ -455,32 +455,18 @@ class JobCenterQueryService:
     def _db_path(self, site_id: str, task_id: str = "") -> Path:
         selected = self._validated_site_id(site_id)
         selected_path = self.paths.site_tasks_db_path(selected)
-        if not task_id or self._task_exists(selected_path, task_id):
+        if not task_id:
             return selected_path
+        # The authority index is the cross-site routing boundary.  The old
+        # path first opened the selected tasks.db and issued a point lookup for
+        # every detail/log request, then consulted this index only on a miss.
+        # That made normal Job Center reads pay an avoidable second SQLite
+        # connection and schema probe.  A missing index entry still means the
+        # caller's selected site is authoritative, preserving legacy fixtures.
         mapped_site = self._task_authority_index.resolve(task_id)
         if mapped_site and mapped_site != selected:
-            mapped_path = self.paths.site_tasks_db_path(
-                self._validated_site_id(mapped_site)
-            )
-            if self._task_exists(mapped_path, task_id):
-                return mapped_path
+            return self.paths.site_tasks_db_path(self._validated_site_id(mapped_site))
         return selected_path
-
-    @staticmethod
-    def _task_exists(db_path: Path, task_id: str) -> bool:
-        if not db_path.is_file():
-            return False
-        try:
-            with closing(JobCenterQueryService._connect(db_path)) as conn:
-                return bool(
-                    JobCenterQueryService._table_exists(conn, "task_snapshots")
-                    and conn.execute(
-                        "SELECT 1 FROM task_snapshots WHERE task_id=? LIMIT 1",
-                        (str(task_id),),
-                    ).fetchone()
-                )
-        except (OSError, sqlite3.DatabaseError):
-            return False
 
     def _validated_site_id(self, site_id: str) -> str:
         return SiteManager(self.paths).validate_site_name(str(site_id or "demo"))
