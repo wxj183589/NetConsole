@@ -39,6 +39,20 @@ describe('QuickPingPage', () => {
     wrapper.unmount()
   })
 
+  it('keeps loss events collapsed until the operator opens the native details', async () => {
+    const wrapper = shallowMount(QuickPingPage, { props: { trains: [], active: false } })
+    ;(wrapper.vm as unknown as { selected: unknown }).selected = {
+      ...run,
+      loss_events: [{ train_id: 'train:41', mr_role: 'CT', state: 'RECOVERED', loss_count: 3 }],
+    }
+    await flushPromises()
+    const events = wrapper.find('details.loss-events')
+    expect(events.exists()).toBe(true)
+    expect((events.element as HTMLDetailsElement).open).toBe(false)
+    expect(events.find('summary').text()).toContain('丢包事件 (1)')
+    wrapper.unmount()
+  })
+
   it('does not start a task without the Quick Ping capability', async () => {
     resetRendererFeaturesForTest()
     const wrapper = shallowMount(QuickPingPage, { props: { trains: trains as never, active: false } })
