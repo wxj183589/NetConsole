@@ -125,7 +125,7 @@ async function applyManagement(): Promise<void> {
 }
 function closeMenu(): void { menu.value = null }
 function onKey(event: KeyboardEvent): void { if (event.key === 'Escape') closeMenu() }
-function openMenu(event: MouseEvent, mr: GroundHeartbeatMr): void { event.preventDefault(); event.stopPropagation(); menu.value = { mr, x: Math.max(0, Math.min(event.clientX, window.innerWidth - 205)), y: Math.max(0, Math.min(event.clientY, window.innerHeight - 270)) } }
+function openMenu(event: MouseEvent, mr: GroundHeartbeatMr): void { event.preventDefault(); event.stopPropagation(); menu.value = { mr, x: Math.max(0, Math.min(event.clientX, window.innerWidth - 205)), y: Math.max(0, Math.min(event.clientY, window.innerHeight - 345)) } }
 function openMonitor(mr: GroundHeartbeatMr, section = 'all'): void { selectedMr.value = mr; selectedSection.value = section; closeMenu() }
 function openTrainDetail(train: GroundHeartbeatTrain): void {
   const inventoryTrain = props.trains.find((item) => item.train_id === train.train_id)
@@ -153,14 +153,22 @@ function toggleFilteredSyslogMrs(checked: boolean): void {
     ? Array.from(new Set([...selectedSyslogMrs.value, ...visible]))
     : selectedSyslogMrs.value.filter((id) => !visible.includes(id))
 }
-async function controlSyslog(mode: 'JOIN' | 'EXIT'): Promise<void> {
-  const eligible = selectableSyslogRows.value.filter((mr) => selectedSyslogMrs.value.includes(mr.mr_uuid) && (mode === 'JOIN' ? mr.status === 'ONLINE' : true))
-  if (!eligible.length) return
+function canQuickSyslog(mr: GroundHeartbeatMr, mode: 'JOIN' | 'EXIT'): boolean {
+  if (!mr.management_ip?.trim() || syslogBusy.value) return false
+  if (mode === 'JOIN') return dataState.value === 'RUNNING' && mr.status === 'ONLINE'
+  return ['CONFIGURED', 'FAILED', 'UNKNOWN'].includes(mr.syslog_status || '')
+}
+async function controlSyslog(mode: 'JOIN' | 'EXIT', quickMr?: GroundHeartbeatMr): Promise<void> {
+  const eligible = quickMr
+    ? (canQuickSyslog(quickMr, mode) ? [quickMr] : [])
+    : selectableSyslogRows.value.filter((mr) => selectedSyslogMrs.value.includes(mr.mr_uuid) && (mode === 'JOIN' ? mr.status === 'ONLINE' : true))
+  if (!eligible.length || syslogBusy.value) return
+  if (quickMr) closeMenu()
   syslogBusy.value = true
   try {
     const result = await requestGroundSyslogControl(eligible.map((mr) => mr.mr_uuid), mode)
     ElMessage.success(result.message || (mode === 'JOIN' ? '已提交加入请求' : '已提交退出请求'))
-    selectedSyslogMrs.value = []
+    if (!quickMr) selectedSyslogMrs.value = []
     restart()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error))
@@ -217,7 +225,7 @@ const metrics = computed(() => {
       <template v-if="managementPreview"><p>{{ t('ground.monitor.site', '当前 Site') }}: {{ managementPreview.site_id }}</p><p v-if="managementPreview.action === 'SYNC'">{{ t('ground.monitor.preview_counts', '新增 / 更新 / 停用 / 冲突') }}: {{ managementPreview.added_count }} / {{ managementPreview.updated_count }} / {{ managementPreview.disabled_count }} / {{ managementPreview.conflict_count }}</p><p v-else>{{ t('ground.monitor.affected', '涉及车辆 / 监测设备 / 心跳记录') }}: {{ managementPreview.train_count }} / {{ managementPreview.device_count }} / {{ managementPreview.affected_history_count }}</p><p>{{ t('ground.monitor.retained', '保留历史记录') }}: {{ managementPreview.retained_history_count }}</p><p v-if="managementPreview.action === 'CLEAR_DEVICES'">{{ t('ground.monitor.clear_devices_scope', '仅停用心跳监测对象，不删除设备管理资产；可重新同步。') }}</p><p v-if="managementPreview.action === 'CLEAR_DATA'">{{ t('ground.monitor.clear_data_scope', '清理心跳状态和心跳事件，历史采样在心跳视图中按清理时间隔离；共享 Ping 汇总、原始文件及其他业务数据保留。') }}</p><el-alert v-if="managementPreview.conflict_count" type="error" :closable="false" :title="t('ground.monitor.conflicts', '设备身份或端别冲突，请先修复设备资料')" /><ul v-if="managementPreview.conflicts.length"><li v-for="conflict in managementPreview.conflicts" :key="conflict">{{ conflict }}</li></ul></template>
       <template #footer><el-button @click="managementPreview = null">{{ t('common.cancel', '取消') }}</el-button><el-button type="primary" :loading="managementBusy" :disabled="!!managementPreview?.conflict_count" @click="applyManagement">{{ t('common.confirm', '确认') }}</el-button></template>
     </el-dialog>
-    <teleport to="body"><div v-if="menu" class="mr-context-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" @click.stop><button role="menuitem" :disabled="!terminalEnabled" @click="openTerminal(menu.mr)">{{ t('ground.monitor.terminal', '外部终端') }}</button><button role="menuitem" @click="openMonitor(menu.mr)">{{ t('ground.monitor.all', '综合监测') }}</button><button role="menuitem" @click="openMonitor(menu.mr, 'ping')">Ping</button><button role="menuitem" @click="openMonitor(menu.mr, 'ap')">{{ t('ground.monitor.ap_history', '连接 AP 历史') }}</button><button role="menuitem" @click="openMonitor(menu.mr, 'mesh')">{{ t('ground.monitor.mesh_syslog', 'Mesh 切换日志') }}</button><button role="menuitem" @click="openMonitor(menu.mr, 'timeline')">{{ t('ground.monitor.timeline', '事件时间轴') }}</button><button v-if="quickPingVisible" role="menuitem" :disabled="!quickPingEnabled" @click="emit('quick-ping', menu.mr.mr_uuid); closeMenu()">{{ t('ground.quick_ping', '快速 Ping') }}</button></div></teleport>
+    <teleport to="body"><div v-if="menu" class="mr-context-menu" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" role="menu" @click.stop><button role="menuitem" :disabled="!terminalEnabled" @click="openTerminal(menu.mr)">{{ t('ground.monitor.terminal', '外部终端') }}</button><button role="menuitem" @click="openMonitor(menu.mr)">{{ t('ground.monitor.all', '综合监测') }}</button><button role="menuitem" @click="openMonitor(menu.mr, 'ping')">Ping</button><button role="menuitem" @click="openMonitor(menu.mr, 'ap')">{{ t('ground.monitor.ap_history', '连接 AP 历史') }}</button><button role="menuitem" @click="openMonitor(menu.mr, 'mesh')">{{ t('ground.monitor.mesh_syslog', 'Mesh 切换日志') }}</button><button role="menuitem" @click="openMonitor(menu.mr, 'timeline')">{{ t('ground.monitor.timeline', '事件时间轴') }}</button><button role="menuitem" :disabled="!canQuickSyslog(menu.mr, 'JOIN')" @click="controlSyslog('JOIN', menu.mr)">加入 Syslog 上报</button><button role="menuitem" :disabled="!canQuickSyslog(menu.mr, 'EXIT')" @click="controlSyslog('EXIT', menu.mr)">停止 Syslog 上报</button><button v-if="quickPingVisible" role="menuitem" :disabled="!quickPingEnabled" @click="emit('quick-ping', menu.mr.mr_uuid); closeMenu()">{{ t('ground.quick_ping', '快速 Ping') }}</button></div></teleport>
     <MrMonitoringDrawer v-if="selectedMr" :mr="selectedMr" :run-id="heartbeat?.run_id || selectedRunId" :active="active" :section="selectedSection" :monitor-state="dataState" :terminal-enabled="terminalEnabled" :quick-enabled="quickPingVisible && quickPingEnabled" @close="selectedMr = null" @terminal="openTerminal(selectedMr!)" @quick-ping="emit('quick-ping', selectedMr!.mr_uuid)" />
   </section>
 </template>
