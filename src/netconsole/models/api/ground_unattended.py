@@ -118,7 +118,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     )
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
     ac_poll_interval_seconds: int = Field(default=60, ge=3, le=300)
-    ac_mesh_link_poll_interval_seconds: int = Field(default=300, ge=30, le=3600)
+    ac_mesh_link_poll_interval_seconds: int = Field(default=300, ge=3, le=3600)
     stationary_exclusion_minutes: int = Field(default=10, ge=1, le=180)
     ac_stale_grace_seconds: int = Field(default=120, ge=0, le=3600)
     ac_ping_correlation_tolerance_seconds: int = Field(default=15, ge=1, le=300)
@@ -670,6 +670,29 @@ class GroundAcPollerHealthDTO(ApiModel):
     last_query_failure_at: str = ""
     snapshot_processing_duration_ms: float | None = None
     snapshot_change_count: int = 0
+
+
+class GroundAcBasicCollectionDTO(ApiModel):
+    device_uuid: str
+    device_name: str = ""
+    enabled: bool = True
+    state: str = "STOPPED"
+    last_success_at: str = ""
+    last_failure_at: str = ""
+    last_error: str = ""
+    poll_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    updated_at: str = ""
+
+
+class GroundAcBasicCollectionPageDTO(ApiModel):
+    items: list[GroundAcBasicCollectionDTO] = Field(default_factory=list)
+    total: int = 0
+
+
+class GroundAcBasicCollectionControlRequestDTO(ApiModel):
+    enabled: bool
 
 
 class GroundHealthDTO(ApiModel):

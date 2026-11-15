@@ -13,6 +13,7 @@ import type {
   GroundQuickPingPage, GroundQuickPingRun, GroundQuickPingTarget, GroundQuickPingSamplePage,
   GroundHeartbeatPage, GroundMrMonitoring, GroundHeartbeatInventoryAction, GroundHeartbeatInventoryPreview,
   GroundHistoryFilters, GroundHistoryPage,
+  GroundAcBasicCollection, GroundAcBasicCollectionPage,
 } from '../types/groundUnattended'
 
 const root = '/api/rail-transit/ground-unattended'
@@ -74,6 +75,8 @@ export const probeGroundSyslogTransportState = probeGroundRawQueryTransportState
 
 export const getGroundStatus = (options: RequestInit = {}): Promise<GroundStatus> => apiRequest(`${root}/status`, options)
 export const getGroundProfile = (options: RequestInit = {}): Promise<GroundProfile> => apiRequest(`${root}/profile`, options)
+export const listGroundAcBasicCollection = (options: RequestInit = {}): Promise<GroundAcBasicCollectionPage> => apiRequest(`${root}/ac/basic-collection`, options)
+export const setGroundAcBasicCollection = (deviceUuid: string, enabled: boolean): Promise<GroundAcBasicCollection> => apiRequest(`${root}/ac/basic-collection/${encodeURIComponent(deviceUuid)}`, { method: 'PUT', body: JSON.stringify({ enabled }) })
 export const saveGroundProfile = (value: GroundProfile & { external_syslog_address_confirmation?: boolean }): Promise<GroundProfile> => apiRequest(`${root}/profile`, { method: 'PUT', body: JSON.stringify(value) })
 export const startGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/start`, { method: 'POST' })
 export const pauseGroundRun = (): Promise<GroundActionResponse> => apiRequest(`${root}/pause`, { method: 'POST' })

@@ -54,12 +54,16 @@ class GroundUnattendedArchiveService:
         archive_dir = self.paths.ground_unattended_archives_dir(self.site_id)
         archive_dir.mkdir(parents=True, exist_ok=True)
         archive_id = f"archive_{run_id}"
-        final_path = archive_dir / f"{run_date}_ground_unattended.zip"
+        # New archives are run-scoped.  The legacy date-only path remains
+        # readable through the persisted archive row, but must never be
+        # reused by a later same-day run.
+        safe_run_id = _safe_component(run_id)
+        final_path = archive_dir / f"{run_date}_{safe_run_id}_ground_unattended.zip"
         temp_path = final_path.with_name(f".{final_path.name}.{archive_id}.tmp")
         existing = self.repository.get_archive_by_run(run_id)
-        # A daily archive may be updated after a later session on the same
-        # run date.  Keep the fast idempotent path when no new activity/raw
-        # files appeared, and rebuild the same ZIP when the day gained data.
+        # A run may contain multiple persisted sessions for legacy callers. The
+        # archive remains idempotent for that run, while a new run_id always
+        # receives a new archive path and record.
         if (
             existing
             and existing.get("archive_status") == "READY"
@@ -382,9 +386,8 @@ class GroundUnattendedArchiveService:
     def restore_daily_archive(self, run_id: str, run_date: str) -> bool:
         """Restore a prior same-day ZIP into the managed active directory.
 
-        A later start on the same run date reuses the daily run identity.  The
-        restore lets the next archive rebuild include both sessions after the
-        previous stop has already cleaned its active directory.
+        Legacy callers may restore an archive belonging to the same run. New
+        same-day starts have a new run_id and therefore do not merge archives.
         """
         row = self.repository.get_archive_by_run(run_id)
         if not row or str(row.get("archive_status") or "") != "READY":
@@ -775,6 +778,15 @@ def _is_junction(path: Path) -> bool:
         return bool(checker()) if callable(checker) else False
     except OSError:
         return True
+
+
+def _safe_component(value: object) -> str:
+    text = str(value or "").strip()
+    safe = "".join(
+        character if character.isalnum() or character in {"-", "_", "."} else "_"
+        for character in text
+    ).strip("._")
+    return safe[:120] or "run"
 
 
 def _sha256(path: Path) -> str:

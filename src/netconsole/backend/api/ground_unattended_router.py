@@ -25,6 +25,9 @@ from netconsole.models.api.ground_unattended import (
     GroundDeepCollectionPageDTO,
     GroundDeepCollectionRecordPageDTO,
     GroundHealthDTO,
+    GroundAcBasicCollectionControlRequestDTO,
+    GroundAcBasicCollectionDTO,
+    GroundAcBasicCollectionPageDTO,
     GroundHeartbeatPageDTO,
     HeartbeatConfigDTO,
     HeartbeatRuntimeDTO,
@@ -147,6 +150,24 @@ def get_status(request: Request) -> GroundUnattendedStatusDTO:
 @router.get("/profile", response_model=GroundUnattendedProfileDTO)
 def get_profile(request: Request) -> GroundUnattendedProfileDTO:
     return _call(lambda: _service(request).get_profile(_site_id(request)))
+
+
+@router.get("/ac/basic-collection", response_model=GroundAcBasicCollectionPageDTO)
+def get_ac_basic_collection(request: Request) -> GroundAcBasicCollectionPageDTO:
+    return _call(lambda: _service(request).ac_basic_collection(_site_id(request)))
+
+
+@router.put("/ac/basic-collection/{device_uuid}", response_model=GroundAcBasicCollectionDTO)
+def set_ac_basic_collection(
+    request: Request,
+    device_uuid: str,
+    payload: GroundAcBasicCollectionControlRequestDTO,
+) -> GroundAcBasicCollectionDTO:
+    return _call(
+        lambda: _service(request).set_ac_basic_collection(
+            _site_id(request), device_uuid, payload
+        )
+    )
 
 
 @router.get("/heartbeat", response_model=GroundHeartbeatPageDTO)

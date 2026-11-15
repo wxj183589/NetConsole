@@ -26,6 +26,12 @@ export interface GroundProfile {
   start_jitter_seconds: number; start_batch_size: number; detail_retention_days: number; summary_retention_days: number
   storage_warning_free_gb: number; storage_critical_free_gb: number; created_at: string; updated_at: string
 }
+export interface GroundAcBasicCollection {
+  device_uuid: string; device_name: string; enabled: boolean; state: string
+  last_success_at: string; last_failure_at: string; last_error: string
+  poll_count: number; success_count: number; failure_count: number; updated_at: string
+}
+export interface GroundAcBasicCollectionPage { items: GroundAcBasicCollection[]; total: number }
 export interface GroundStatus {
   site_id: string; enabled: boolean; state: GroundRunState; service_state: GroundRunState; paused: boolean; run_id: string; run_date: string
   actual_started_at: string; actual_ended_at: string; schedule_start_time: string; schedule_end_time: string; timezone: string

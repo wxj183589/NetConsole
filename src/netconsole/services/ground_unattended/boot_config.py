@@ -292,6 +292,7 @@ class MrSyslogConfigService:
         boot_tolerance_seconds: int,
         repair_enabled: bool = True,
         allow_target_port_change: bool = False,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> MrConfigCheckResult:
         target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
         target_port = int(target_port)
@@ -342,8 +343,13 @@ class MrSyslogConfigService:
         created = False
         evidence_path = ""
         status = "CONFIG_FAILED"
+        def report(stage: str, message: str) -> None:
+            if progress_callback is not None:
+                progress_callback(stage, message)
         try:
+            report("CONNECTING", "正在连接 MR")
             connection = self.connection_factory(config)
+            report("AUTHENTICATING", "MR 连接已建立，正在确认认证会话")
             screen_output = str(connection.send_command(READ_COMMANDS[0], config.command_timeout) or "")
             if _command_failed(screen_output):
                 raise RuntimeError("screen-length disable 执行失败")
@@ -433,6 +439,7 @@ class MrSyslogConfigService:
                 time_quality=time_quality,
             )
 
+            report("CHECKING", "正在读取 MR Syslog 运行态和配置")
             info_before = str(connection.send_command(READ_COMMANDS[4], config.command_timeout) or "")
             if _command_failed(info_before):
                 raise RuntimeError("display info-center 执行失败")
@@ -468,6 +475,7 @@ class MrSyslogConfigService:
             elif not repair_enabled:
                 status = "AUTO_REPAIR_DISABLED"
             else:
+                report("CONFIGURING", "正在写入已授权的 NetConsole Syslog 配置")
                 applied = build_syslog_config_commands(before.repair_commands)
                 evidence["applied_commands"] = list(applied)
                 if applied:
@@ -496,6 +504,7 @@ class MrSyslogConfigService:
                         evidence["command_results"].append(command_result)
                         if command_result["failed"]:
                             raise RuntimeError(f"Syslog 配置命令执行失败：{command}")
+                report("VERIFYING", "正在重新读取并校验 MR Syslog 配置")
                 info_after = str(connection.send_command(READ_COMMANDS[4], config.command_timeout) or "")
                 if _command_failed(info_after):
                     raise RuntimeError("display info-center 复查失败")
@@ -659,6 +668,7 @@ class MrSyslogConfigService:
                 applied_commands=applied,
             )
         except Exception as exc:
+            report("FAILED", f"{exc.__class__.__name__}: {exc}")
             evidence["error_code"] = exc.__class__.__name__
             evidence["error_message"] = str(exc)
             try:
@@ -725,6 +735,7 @@ class MrSyslogConfigService:
         device_uuid: str,
         target_ip: str,
         target_port: int,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> dict[str, Any]:
         """Remove only a target previously recorded as managed by NetConsole."""
         target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
@@ -766,12 +777,18 @@ class MrSyslogConfigService:
         }
         connection: MrCommandConnection | None = None
         status = "EXIT_FAILED"
+        def report(stage: str, message: str) -> None:
+            if progress_callback is not None:
+                progress_callback(stage, message)
         boot = self.repository.latest_boot_session(device_uuid) or {}
         try:
+            report("CONNECTING", "正在连接 MR")
             connection = self.connection_factory(config)
+            report("AUTHENTICATING", "MR 连接已建立，正在确认认证会话")
             screen_output = str(connection.send_command(READ_COMMANDS[0], config.command_timeout) or "")
             if _command_failed(screen_output):
                 raise RuntimeError("screen-length disable 执行失败")
+            report("CHECKING", "正在确认当前 NetConsole 所有权和 Syslog 目标")
             info_before = str(connection.send_command("display info-center", config.command_timeout) or "")
             if _command_failed(info_before):
                 raise RuntimeError("display info-center 执行失败")
@@ -789,6 +806,7 @@ class MrSyslogConfigService:
                 info_after = info_before
                 configuration_after = configuration_before
             else:
+                report("CONFIGURING", "正在撤销由 NetConsole 明确拥有的 Syslog 目标")
                 applied = build_syslog_exit_commands(target_ip, target_port)
                 _validate_syslog_exit_commands(applied, target_ip=target_ip, target_port=target_port)
                 evidence["applied_commands"] = list(applied)
@@ -801,6 +819,7 @@ class MrSyslogConfigService:
                 info_after = str(connection.send_command("display info-center", config.command_timeout) or "")
                 if _command_failed(info_after):
                     raise RuntimeError("退出后 display info-center 复查失败")
+                report("VERIFYING", "正在重新读取并校验撤销结果")
                 runtime_after = parse_info_center_runtime(info_after)
                 after_hosts = {(host.ip, host.port) for host in runtime_after.log_hosts}
                 configuration_after, after_command, after_fallback = self._read_configuration(
@@ -860,6 +879,7 @@ class MrSyslogConfigService:
             )
             return {"device_uuid": device_uuid, "status": status, "audit_id": audit_id}
         except Exception as exc:
+            report("FAILED", f"{exc.__class__.__name__}: {exc}")
             evidence["error_code"] = exc.__class__.__name__
             evidence["error_message"] = str(exc)
             try:

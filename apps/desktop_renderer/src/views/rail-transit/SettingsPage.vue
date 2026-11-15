@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import HeartbeatSettings from './HeartbeatSettings.vue'
 import { useGroundContext } from './useGroundUnattended'
-const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecommendation, udpPortCheck, networkLoading, showAllAddresses, profileLoadError, visibleIpv4Addresses, returnAddressIsLocal, listenAddressIsLocal, loadAll, saveProfile, loadLocalAddresses, recommendSourceAddress, applyRecommendedAddress, checkUdpPort, togglePriority, applyDeepPingPreset, markDeepPingCustom, restoreDeepPingDefault } = useGroundContext()
+const { Refresh, t, loading, saving, profile, pingPresets, trains, acBasicCollection, sourceRecommendation, udpPortCheck, networkLoading, showAllAddresses, profileLoadError, visibleIpv4Addresses, returnAddressIsLocal, listenAddressIsLocal, loadAll, saveProfile, setAcBasicCollection, loadLocalAddresses, recommendSourceAddress, applyRecommendedAddress, checkUdpPort, togglePriority, applyDeepPingPreset, markDeepPingCustom, restoreDeepPingDefault } = useGroundContext()
 </script>
 
 <template>
@@ -21,8 +21,8 @@ const { Refresh, t, loading, saving, profile, pingPresets, trains, sourceRecomme
                 <el-option :label="t('ground.v2.settings_timezone_utc', '协调世界时（UTC）')" value="UTC" />
               </el-select>
             </el-form-item>
-            <el-form-item :label="t('ground.ac_poll', 'AC 轮询间隔（秒）')"><el-input-number v-model="profile.ac_poll_interval_seconds" :min="3" :max="300" /><small>新建配置默认 60 秒，已保存的周期保持不变。</small></el-form-item>
-            <el-form-item label="AC-Mesh-Link 采集间隔（秒）"><el-input-number v-model="profile.ac_mesh_link_poll_interval_seconds" :min="30" :max="3600" /><small>与 AC 基础轮询周期分开设置。</small></el-form-item>
+            <el-form-item label="AC 基础 / Mesh-Link 采集间隔（秒）"><el-input-number v-model="profile.ac_mesh_link_poll_interval_seconds" :min="30" :max="3600" /><small>统一使用该周期；旧版 ac_poll_interval_seconds 仅作为兼容字段保留，不再重复展示。</small></el-form-item>
+            <el-form-item label="AC 基础采集控制"><div class="ac-basic-controls" v-if="(acBasicCollection || []).length"><div v-for="item in (acBasicCollection || [])" :key="item.device_uuid" class="ac-basic-control-row"><span><b>{{ item.device_name || item.device_uuid }}</b><small>{{ item.state }} · 成功 {{ item.success_count }} · 失败 {{ item.failure_count }}<template v-if="item.last_error"> · {{ item.last_error }}</template></small></span><el-button size="small" :type="item.enabled ? 'warning' : 'success'" @click="setAcBasicCollection(item.device_uuid, !item.enabled)">{{ item.enabled ? '停止' : '启动' }}</el-button></div></div><span v-else class="muted">暂无已发现的 AC</span></el-form-item>
             <el-form-item :label="t('ground.stationary', '同 AP 静止阈值（分钟）')"><el-input-number v-model="profile.stationary_exclusion_minutes" :min="1" :max="180" /></el-form-item>
             <el-form-item :label="t('ground.ac_grace', 'AC 异常 Ping 宽限（秒）')"><el-input-number v-model="profile.ac_stale_grace_seconds" :min="0" :max="3600" /></el-form-item>
             <el-form-item :label="t('ground.correlation_tolerance', 'AC/Ping 关联偏差（秒）')"><el-input-number v-model="profile.ac_ping_correlation_tolerance_seconds" :min="1" :max="300" /></el-form-item>

@@ -1748,10 +1748,10 @@ def test_start_is_idempotent_for_active_run_and_rejects_archived_day(tmp_path) -
             "updated_at": datetime.now().astimezone().isoformat(),
         }
     )
-    with pytest.raises(GroundUnattendedError) as archived_error:
-        service.start_now("site-a")
-    assert archived_error.value.code == "DAILY_RUN_ARCHIVED"
-    assert supervisor.requests == []
+    restart_response = service.start_now("site-a")
+    assert restart_response.state == "STARTING"
+    assert restart_response.message == "立即开始请求已提交"
+    assert supervisor.requests == [("start", False)]
 
 
 def test_deep_collection_page_reuses_persisted_daily_queue_order(tmp_path) -> None:

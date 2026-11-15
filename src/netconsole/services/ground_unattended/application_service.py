@@ -48,6 +48,9 @@ from netconsole.models.api.ground_unattended import (
     GroundRunPageDTO,
     GroundRunDeleteRequestDTO,
     GroundAcPollerHealthDTO,
+    GroundAcBasicCollectionControlRequestDTO,
+    GroundAcBasicCollectionDTO,
+    GroundAcBasicCollectionPageDTO,
     GroundHealthDTO,
     GroundHeartbeatMrDTO,
     GroundSyslogControlRequestDTO,
@@ -490,6 +493,30 @@ class GroundUnattendedApplicationService:
         self._require_site(site_id)
         return self.repository.get_profile()
 
+    def ac_basic_collection(self, site_id: str) -> GroundAcBasicCollectionPageDTO:
+        self._require_site(site_id)
+        items = [GroundAcBasicCollectionDTO.model_validate(row) for row in self.supervisor.list_ac_basic_controls()]
+        return GroundAcBasicCollectionPageDTO(items=items, total=len(items))
+
+    def set_ac_basic_collection(
+        self,
+        site_id: str,
+        device_uuid: str,
+        payload: GroundAcBasicCollectionControlRequestDTO,
+    ) -> GroundAcBasicCollectionDTO:
+        self._require_site(site_id)
+        key = str(device_uuid or "").strip()
+        row = next(
+            (item for item in self.supervisor.list_ac_basic_controls() if str(item.get("device_uuid") or "") == key),
+            None,
+        )
+        if row is None:
+            raise GroundUnattendedError("AC_NOT_FOUND", "无线控制器 AC 不存在", status_code=404)
+        device_name = str(row.get("device_name") or "")
+        self.supervisor.request_ac_basic_control(key, enabled=payload.enabled)
+        row = {**(self.repository.get_ac_basic_control(key) or row), "device_name": device_name}
+        return GroundAcBasicCollectionDTO.model_validate(row)
+
     def update_profile(
         self,
         site_id: str,
@@ -511,6 +538,18 @@ class GroundUnattendedApplicationService:
                 status_code=409,
             )
         previous = self.repository.get_profile()
+        # Compatibility bridge for old clients that still submit only the
+        # retired field.  New UI/API callers use the canonical Mesh-Link
+        # interval; this branch avoids silently changing an existing cadence.
+        if (
+            profile.ac_mesh_link_poll_interval_seconds == 300
+            and profile.ac_poll_interval_seconds != previous.ac_poll_interval_seconds
+        ):
+            profile = profile.model_copy(
+                update={
+                    "ac_mesh_link_poll_interval_seconds": profile.ac_poll_interval_seconds
+                }
+            )
         saved = self.repository.save_profile(
             GroundUnattendedProfileDTO.model_validate(profile.model_dump(mode="json"))
         )
@@ -1113,15 +1152,6 @@ class GroundUnattendedApplicationService:
             profile.schedule_end_time,
             profile.timezone,
         )
-        latest = self.repository.latest_run()
-        if latest and str(latest.get("run_date") or "") == window.run_date:
-            archive = self.repository.get_archive_by_run(str(latest["run_id"]))
-            if archive and archive.get("archive_status") == "READY":
-                raise GroundUnattendedError(
-                    "DAILY_RUN_ARCHIVED",
-                    "当前运行日已完成正式归档，不能再次启动并覆盖当日归档",
-                    status_code=409,
-                )
         self.supervisor.request("start")
         return GroundActionResponseDTO(state="STARTING", message="立即开始请求已提交")
 
@@ -1567,11 +1597,11 @@ class GroundUnattendedApplicationService:
                 task_id,
                 "state",
                 {
-                    "state": "RUNNING",
+                    "state": "QUEUED",
                     "current": 0,
                     "total": len(selected),
-                    "stage": f"SYSLOG_{payload.mode}",
-                    "message": "Syslog 批次任务已开始",
+                    "stage": "QUEUED",
+                    "message": "Syslog 批次任务已排队，等待逐台串行执行",
                 },
                 site_name=site_id,
                 source="ground_unattended",

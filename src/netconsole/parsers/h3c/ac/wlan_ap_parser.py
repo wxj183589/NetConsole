@@ -9,8 +9,14 @@ from netconsole.parsers.h3c.ac.state_mapper import (
 
 
 def parse_wlan_ap_summary(output: str) -> dict[str, object | None]:
-    total_aps = _int_after(output, r"Total\s+number\s+of\s+APs\s*:\s*(\d+)")
-    online_aps = _int_after(output, r"Total\s+number\s+of\s+connected\s+APs\s*:\s*(\d+)")
+    total_aps = _int_after(
+        output,
+        r"Total\s+number\s+of\s+(?:configured\s+)?APs(?:\s+configured)?\s*:\s*(\d+)",
+    )
+    online_aps = _int_after(
+        output,
+        r"Total\s+number\s+of\s+(?:configured\s+)?(?:connected\s+APs|APs\s+connected)\s*:\s*(\d+)",
+    )
     total_licenses = _int_after(output, r"Total\s+AP\s+licenses\s*:\s*(\d+)")
     local_licenses = _int_after(output, r"Local\s+AP\s+licenses\s*:\s*(\d+)")
     remaining_licenses = _int_after(output, r"Remaining\s+local\s+AP\s+licenses\s*:\s*(\d+)")

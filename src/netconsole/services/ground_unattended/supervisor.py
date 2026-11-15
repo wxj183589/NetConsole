@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import logging
 import shutil
 import sqlite3
@@ -193,12 +194,11 @@ class GroundUnattendedSupervisor:
         self._config_futures: dict[str, Future] = {}
         self._config_future_meta: dict[str, dict[str, str]] = {}
         self._ac_basic_executor = ThreadPoolExecutor(
-            max_workers=1,
+            max_workers=4,
             thread_name_prefix="ground-ac-basic",
         )
-        self._ac_basic_future: Future | None = None
-        self._ac_basic_next_poll_monotonic = 0.0
-        self._ac_basic_failure_count = 0
+        self._ac_basic_futures: dict[str, Future] = {}
+        self._ac_basic_next_poll_monotonic: dict[str, float] = {}
         self._manual_config_checks: dict[str, tuple[bool, bool]] = {}
         self._manual_config_task_ids: dict[str, str] = {}
         self._manual_syslog_exits: set[str] = set()
@@ -329,6 +329,65 @@ class GroundUnattendedSupervisor:
             })
         self._wake_event.set()
 
+    def request_ac_basic_control(self, device_uuid: str, *, enabled: bool) -> None:
+        """Idempotently start/stop one AC basic collector.
+
+        The control is persisted before the scheduler is woken.  A failed AC
+        therefore cannot stop or hide another AC's collector.
+        """
+
+        key = str(device_uuid or "").strip()
+        if not key:
+            raise ValueError("AC device_uuid is required")
+        future = None
+        with self._lock:
+            if not enabled:
+                future = self._ac_basic_futures.pop(key, None)
+                self._ac_basic_next_poll_monotonic.pop(key, None)
+        if future is not None:
+            future.cancel()
+        self.repository.save_ac_basic_control(
+            key,
+            enabled=enabled,
+            state="QUEUED" if enabled else "STOPPED",
+            last_error="" if enabled else None,
+        )
+        self._wake_event.set()
+
+    def list_ac_basic_controls(self) -> list[dict[str, Any]]:
+        from netconsole.repositories.device_repository import DeviceRepository
+
+        devices = DeviceRepository(Database(self.paths.site_db_path(self.site_id))).list(
+            device_type="AC"
+        )
+        controls = {
+            str(row.get("device_uuid") or ""): row
+            for row in self.repository.list_ac_basic_controls()
+        }
+        result: list[dict[str, Any]] = []
+        for device in devices:
+            key = str(device.device_uuid or "")
+            if not key:
+                continue
+            row = controls.get(key) or {
+                "device_uuid": key,
+                "enabled": True,
+                "state": "STOPPED",
+                "last_success_at": "",
+                "last_failure_at": "",
+                "last_error": "",
+                "poll_count": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "updated_at": "",
+            }
+            result.append({
+                **row,
+                "device_uuid": key,
+                "device_name": str(device.name or ""),
+            })
+        return result
+
     def cancel_syslog_task(self, task_id: str) -> bool:
         task_id = str(task_id or "").strip()
         finish_now = False
@@ -424,14 +483,20 @@ class GroundUnattendedSupervisor:
             "success_count": progress["success"],
             "failed_count": progress["failed"],
             "business_status": "CANCELLED" if cancelled else (
-                "PARTIAL_SUCCESS" if progress["failed"] else "SUCCESS"
+                "FAILED" if progress["failed"] and not progress["success"]
+                else "PARTIAL_SUCCESS" if progress["failed"] else "SUCCESS"
             ),
         }
         if progress["results"]:
             result_payload["devices"] = list(progress["results"])
         self._record_syslog_task_event(task_id, "finished", {
-            "terminal_state": "CANCELLED" if cancelled else "COMPLETED",
-            "message": "Syslog 批次任务已取消" if cancelled else "Syslog 批次任务完成",
+            "terminal_state": "CANCELLED" if cancelled else (
+                "FAILED" if progress["failed"] and not progress["success"] else "COMPLETED"
+            ),
+            "message": "Syslog 批次任务已取消" if cancelled else (
+                "Syslog 批次任务失败" if progress["failed"] and not progress["success"]
+                else "Syslog 批次任务完成"
+            ),
             "result": result_payload,
         })
 
@@ -1080,6 +1145,15 @@ class GroundUnattendedSupervisor:
         now = self._now()
         run = self.repository.get_active_run()
 
+        # An explicit per-AC start is allowed to run without a ground run;
+        # ordinary default AC collectors are materialized only when a run is
+        # active, preserving the existing unattended-run boundary.
+        if run is None and any(
+            bool(row.get("enabled", False))
+            for row in self.repository.list_ac_basic_controls()
+        ):
+            self._schedule_ac_basic_poll(profile)
+
         if run is not None and run["state"] in {
             "FINALIZING",
             "ARCHIVING",
@@ -1126,7 +1200,6 @@ class GroundUnattendedSupervisor:
                 latest
                 and latest.get("run_date") == window.run_date
                 and latest.get("state") == "COMPLETED"
-                and latest.get("requested_action") in {"stop", "stop_and_archive"}
             ):
                 return
 
@@ -1145,21 +1218,6 @@ class GroundUnattendedSupervisor:
                     self._last_profile_network_error = error.code
                 return
             self._last_profile_network_error = ""
-            latest = self.repository.latest_run()
-            if latest and str(latest.get("run_date") or "") == window.run_date:
-                archive = self.repository.get_archive_by_run(str(latest["run_id"]))
-                if archive and archive.get("archive_status") == "READY" and not self._manual_start:
-                    manual_start = self._manual_start
-                    self._manual_start = False
-                    if manual_start:
-                        self.repository.add_event(
-                            run_id=str(latest["run_id"]),
-                            event_type="start_rejected",
-                            severity="warning",
-                            title="立即开始被拒绝",
-                            message="当前运行日已完成正式归档，不能再次启动并写入当日数据。",
-                        )
-                    return
             run = self._start_run(profile, now, window)
         elif (
             run is not None
@@ -1445,53 +1503,97 @@ class GroundUnattendedSupervisor:
     def _schedule_ac_basic_poll(self, profile: GroundUnattendedProfileDTO) -> None:
         if self.ac_basic_service is None:
             return
-        current = time.monotonic()
-        future = self._ac_basic_future
-        if future is not None:
-            if not future.done():
-                return
-            self._ac_basic_future = None
-            try:
-                future.result()
-            except Exception as exc:
-                self._ac_basic_failure_count = min(self._ac_basic_failure_count + 1, 6)
-                backoff = min(
-                    max(60.0, float(profile.ac_poll_interval_seconds))
-                    * (2 ** (self._ac_basic_failure_count - 1)),
-                    1800.0,
-                )
-                self._ac_basic_next_poll_monotonic = current + backoff
-                LOGGER.warning("Ground AC 基础轮询失败，将在 %.0f 秒后重试: %s", backoff, exc)
-        if current < self._ac_basic_next_poll_monotonic:
-            return
-        interval = max(3, int(profile.ac_poll_interval_seconds))
-        self._ac_basic_next_poll_monotonic = current + interval
-        self._ac_basic_future = self._ac_basic_executor.submit(
-            self._refresh_ac_basic_information
-        )
+        from netconsole.repositories.device_repository import DeviceRepository
 
-    def _refresh_ac_basic_information(self) -> None:
+        current = time.monotonic()
+        devices = DeviceRepository(Database(self.paths.site_db_path(self.site_id))).list(
+            device_type="AC"
+        )
+        interval = max(3, int(profile.ac_mesh_link_poll_interval_seconds))
+        active_ids = {str(device.device_uuid or "") for device in devices}
+        for device_uuid in tuple(self._ac_basic_futures):
+            if device_uuid not in active_ids:
+                self._ac_basic_futures.pop(device_uuid, None)
+                self._ac_basic_next_poll_monotonic.pop(device_uuid, None)
+        for device in devices:
+            device_uuid = str(device.device_uuid or "")
+            if not device_uuid:
+                continue
+            control = self.repository.get_ac_basic_control(device_uuid)
+            if control is None:
+                control = self.repository.save_ac_basic_control(device_uuid)
+            if not bool(control.get("enabled", True)):
+                if device_uuid in self._ac_basic_futures:
+                    future = self._ac_basic_futures.pop(device_uuid)
+                    future.cancel()
+                self.repository.save_ac_basic_control(device_uuid, state="STOPPED")
+                continue
+            future = self._ac_basic_futures.get(device_uuid)
+            if future is not None:
+                if not future.done():
+                    continue
+                self._ac_basic_futures.pop(device_uuid, None)
+                try:
+                    future.result()
+                except Exception as exc:
+                    backoff = min(interval * 2, 1800.0)
+                    self._ac_basic_next_poll_monotonic[device_uuid] = current + backoff
+                    self.repository.save_ac_basic_control(
+                        device_uuid,
+                        state="FAILED",
+                        last_failure_at=self._now().isoformat(timespec="milliseconds"),
+                        last_error=f"{exc.__class__.__name__}: {exc}",
+                        failure_count=int(control.get("failure_count") or 0) + 1,
+                    )
+                    LOGGER.warning("Ground AC 基础轮询失败: device=%s error=%s", device_uuid, exc)
+                else:
+                    self._ac_basic_next_poll_monotonic[device_uuid] = current + interval
+                    self.repository.save_ac_basic_control(
+                        device_uuid,
+                        state="HEALTHY",
+                        last_success_at=self._now().isoformat(timespec="milliseconds"),
+                        last_error="",
+                        success_count=int(control.get("success_count") or 0) + 1,
+                    )
+            if device_uuid in self._ac_basic_futures:
+                continue
+            if current < self._ac_basic_next_poll_monotonic.get(device_uuid, 0.0):
+                continue
+            self.repository.save_ac_basic_control(
+                device_uuid,
+                state="RUNNING",
+                poll_count=int(control.get("poll_count") or 0) + 1,
+            )
+            self._ac_basic_futures[device_uuid] = self._ac_basic_executor.submit(
+                self._refresh_ac_basic_information, device_uuid
+            )
+
+    def _refresh_ac_basic_information(self, device_uuid: str) -> None:
         from netconsole.core.database import Database
         from netconsole.repositories.device_repository import DeviceRepository
 
         database = Database(self.paths.site_db_path(self.site_id))
-        devices = DeviceRepository(database).list(device_type="AC")
-        failures: list[str] = []
-        for device in devices:
-            if self._stop_event.is_set():
-                return
-            result = self.ac_basic_service.refresh_ac_info(
-                AcResourceRefreshRequest(
-                    device_uuid=str(device.device_uuid or ""),
-                    site_name=self.site_id,
-                    source="auto",
-                )
+        if self._stop_event.is_set():
+            return
+        device = next(
+            (
+                item
+                for item in DeviceRepository(database).list(device_type="AC")
+                if str(item.device_uuid or "") == device_uuid
+            ),
+            None,
+        )
+        if device is None:
+            raise RuntimeError(f"AC 不存在或已移除: {device_uuid}")
+        result = self.ac_basic_service.refresh_ac_info(
+            AcResourceRefreshRequest(
+                device_uuid=device_uuid,
+                site_name=self.site_id,
+                source="auto",
             )
-            if not result.success or result.error_message:
-                failures.append(str(device.device_uuid or device.name or "AC"))
-        if failures:
-            raise RuntimeError("AC 基础信息采集失败: " + ", ".join(failures))
-        self._ac_basic_failure_count = 0
+        )
+        if not result.success or result.error_message:
+            raise RuntimeError(str(result.error_message or "AC 基础信息采集失败"))
 
     def _poll_ac_and_classify(
         self, run, profile, now, *, scheduling_paused: bool
@@ -3142,7 +3244,12 @@ class GroundUnattendedSupervisor:
                             "repair_enabled": bool(item.get("repair_enabled", True)),
                             "allow_target_port_change": bool(item.get("allow_target_port_change", False)),
                         }
-                    self._config_futures[device_uuid] = self._config_executor.submit(function, **kwargs)
+                    self._config_futures[device_uuid] = self._config_executor.submit(
+                        function,
+                        **self._config_kwargs_with_progress(
+                            function, kwargs, str(item.get("task_id") or ""), device_uuid, op
+                        ),
+                    )
                     self._config_future_meta[device_uuid] = {
                         "task_id": str(item.get("task_id") or ""),
                         "operation": op,
@@ -3189,15 +3296,15 @@ class GroundUnattendedSupervisor:
                     < profile.config_check_cooldown_seconds
                 ):
                     continue
-            self._config_futures[device_uuid] = self._config_executor.submit(
-                self.config_service.check,
-                run_id=str(run["run_id"]),
-                run_date=str(run["run_date"]),
-                device_uuid=device_uuid,
-                target_ip=target_ip,
-                target_port=profile.syslog_server_port,
-                boot_tolerance_seconds=profile.boot_time_tolerance_seconds,
-                repair_enabled=(
+            check_function = self.config_service.check
+            check_kwargs = {
+                "run_id": str(run["run_id"]),
+                "run_date": str(run["run_date"]),
+                "device_uuid": device_uuid,
+                "target_ip": target_ip,
+                "target_port": profile.syslog_server_port,
+                "boot_tolerance_seconds": profile.boot_time_tolerance_seconds,
+                "repair_enabled": (
                     bool(manual[device_uuid][1])
                     if device_uuid in manual
                     else bool(
@@ -3205,10 +3312,20 @@ class GroundUnattendedSupervisor:
                         and profile.syslog_auto_repair_enabled
                     )
                 ),
-                allow_target_port_change=(
+                "allow_target_port_change": (
                     bool(manual[device_uuid][0])
                     if device_uuid in manual
                     else False
+                ),
+            }
+            self._config_futures[device_uuid] = self._config_executor.submit(
+                check_function,
+                **self._config_kwargs_with_progress(
+                    check_function,
+                    check_kwargs,
+                    manual_task_ids.get(device_uuid) or manual_task_ids.get("*") or "",
+                    device_uuid,
+                    "JOIN",
                 ),
             )
             task_id = manual_task_ids.get(device_uuid) or manual_task_ids.get("*")
@@ -3233,19 +3350,75 @@ class GroundUnattendedSupervisor:
                 if device_uuid in self._config_futures or device_uuid not in endpoints:
                     continue
                 target = endpoints[device_uuid]
+                exit_function = self.config_service.exit
+                exit_kwargs = {
+                    "run_id": str(run["run_id"]),
+                    "run_date": str(run["run_date"]),
+                    "device_uuid": device_uuid,
+                    "target_ip": target_ip,
+                    "target_port": profile.syslog_server_port,
+                }
                 self._config_futures[device_uuid] = self._config_executor.submit(
-                    self.config_service.exit,
-                    run_id=str(run["run_id"]),
-                    run_date=str(run["run_date"]),
-                    device_uuid=device_uuid,
-                    target_ip=target_ip,
-                    target_port=profile.syslog_server_port,
+                    exit_function,
+                    **self._config_kwargs_with_progress(
+                        exit_function,
+                        exit_kwargs,
+                        exit_task_ids.get(device_uuid) or exit_task_ids.get("*") or "",
+                        device_uuid,
+                        "EXIT",
+                    ),
                 )
                 task_id = exit_task_ids.get(device_uuid) or exit_task_ids.get("*")
                 if task_id:
                     self._config_future_meta[device_uuid] = {"task_id": task_id}
                 with getattr(self, "_lock", threading.RLock()):
                     getattr(self, "_manual_syslog_exits", set()).discard(device_uuid)
+
+    def _config_kwargs_with_progress(
+        self,
+        function: Callable[..., Any],
+        kwargs: dict[str, Any],
+        task_id: str,
+        device_uuid: str,
+        operation: str,
+    ) -> dict[str, Any]:
+        if not task_id:
+            return kwargs
+        try:
+            supports_progress = "progress_callback" in inspect.signature(function).parameters
+        except (TypeError, ValueError):
+            supports_progress = False
+        if not supports_progress:
+            return kwargs
+        result = dict(kwargs)
+        result["progress_callback"] = lambda stage, message: self._record_syslog_stage(
+            task_id, device_uuid, operation, str(stage), str(message)
+        )
+        return result
+
+    def _record_syslog_stage(
+        self,
+        task_id: str,
+        device_uuid: str,
+        operation: str,
+        stage: str,
+        message: str,
+    ) -> None:
+        progress = self._syslog_task_progress.get(task_id)
+        if progress is not None:
+            progress.setdefault("stages", {})[device_uuid] = stage
+        self._record_syslog_task_event(
+            task_id,
+            "progress",
+            {
+                "event": "DEVICE_STAGE",
+                "device_uuid": device_uuid,
+                "operation": operation,
+                "stage": stage,
+                "status": stage,
+                "message": message,
+            },
+        )
 
     def _collect_config_checks(self) -> None:
         for device_uuid, future in tuple(self._config_futures.items()):
@@ -3285,10 +3458,15 @@ class GroundUnattendedSupervisor:
                 }.get(raw_status, "FAILED" if not succeeded else "CONFIGURED")
             audit_id = str(getattr(result, "audit_id", "") or (result.get("audit_id", "") if isinstance(result, dict) else ""))
             self._append_syslog_task_result(task_id, progress, device_uuid, status, audit_id)
+            if progress["results"]:
+                progress["results"][-1].update({
+                    "error_code": raw_status if status == "FAILED" else "",
+                    "error_message": error_message if not future.cancelled() else "",
+                })
             self._record_syslog_task_event(task_id, "progress", {
                 "current": progress["current"],
                 "total": progress["total"],
-                "stage": "SYSLOG_CONTROL",
+                "stage": "FAILED" if status == "FAILED" else "COMPLETED",
                 "message": status,
                 "device_result": {
                     "device_uuid": device_uuid,

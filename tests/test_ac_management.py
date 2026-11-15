@@ -2142,6 +2142,44 @@ def test_wlan_ap_address_and_radio_parsers():
     assert radios["4c6f-d608-0400"]["rid2_tx_power"] == "17"
 
 
+def test_v5_address_ledger_keeps_na_records_and_unions_offline_aps():
+    address = """
+Total number of APs configured : 494
+Total number of configured APs connected : 491
+AP name                          IP address                  MAC address
+AP-ONLINE                       10.0.0.1                    4c6f-d608-0400
+AP-OFFLINE-01                   -NA-                        -NA-
+AP-OFFLINE-02                   -NA-                        1234-5678-9abc
+"""
+    parsed = parse_wlan_ap_addresses(address)
+    assert len(parsed) == 3
+    assert parsed["AP-OFFLINE-01"]["ap_ip"] is None
+    assert parsed["AP-OFFLINE-01"]["ap_mac"] is None
+    assert parse_wlan_ap_summary(address)["offline_aps"] == 3
+
+    _summary, resources = h3c_ac_collect_service.parse_ac_resource_outputs(
+        {
+            "display wlan ap all": """
+AP name              APID State Model Serial ID Group name Online time
+AP-ONLINE            1    R/M   WA     SN-1      default    1:00:00:00
+""",
+            "display wlan ap all address": address,
+            "display wlan ap all radio": """
+AP name                  RID State Channel BW Usage TxPower Clients
+AP-ONLINE               1   Up    149     40  27    17      0
+""",
+        },
+        "ac-v5",
+        "run-v5",
+        "files/rail_transit/trackside_ap/raw/ac/run-v5/ac.log",
+    )
+    by_name = {str(row["ap_name"]): row for row in resources}
+    assert set(by_name) == {"AP-ONLINE", "AP-OFFLINE-01", "AP-OFFLINE-02"}
+    assert by_name["AP-OFFLINE-01"]["ap_ip"] is None
+    assert by_name["AP-OFFLINE-02"]["ap_mac"] == "1234-5678-9abc"
+    assert by_name["AP-ONLINE"]["rid1_channel"] == "149"
+
+
 def test_address_radio_merge_by_ap_name_with_chinese_names():
     _summary, resources = h3c_ac_collect_service.parse_ac_resource_outputs(
         {

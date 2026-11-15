@@ -90,6 +90,19 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ground_unattended_ac_basic_controls (
+    device_uuid TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    state TEXT NOT NULL DEFAULT 'STOPPED',
+    last_success_at TEXT NOT NULL DEFAULT '',
+    last_failure_at TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    poll_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ground_unattended_priority_trains (
     site_id TEXT NOT NULL,
     train_id TEXT NOT NULL,
@@ -116,8 +129,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_runs (
     error_code TEXT NOT NULL DEFAULT '',
     error_message TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (site_id, run_date)
+    updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ground_runs_site_state
 ON ground_unattended_runs(site_id, state, updated_at DESC);
@@ -1124,7 +1136,17 @@ class GroundUnattendedRepository:
     def initialize(self) -> None:
         with self._connection() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_multiple_same_day_runs(conn)
             self._ensure_columns(conn, "ground_unattended_profiles", _PROFILE_MIGRATION_COLUMNS)
+            # Older profiles only had the basic AC interval.  Preserve that
+            # effective cadence once when the canonical Mesh-Link interval is
+            # still its new default; subsequent edits use one visible field.
+            conn.execute(
+                "UPDATE ground_unattended_profiles "
+                "SET ac_mesh_link_poll_interval_seconds=ac_poll_interval_seconds "
+                "WHERE ac_mesh_link_poll_interval_seconds=300 "
+                "AND ac_poll_interval_seconds<>60"
+            )
             self._ensure_columns(
                 conn,
                 "ground_unattended_ping_summaries",
@@ -1228,6 +1250,75 @@ class GroundUnattendedRepository:
         for name, declaration in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+    @staticmethod
+    def _migrate_multiple_same_day_runs(conn: sqlite3.Connection) -> None:
+        """Remove the legacy day-wide uniqueness without losing run facts.
+
+        v1.5.14 used an inline UNIQUE(site_id, run_date) constraint.  SQLite
+        cannot drop that constraint in place, so rebuild only this table in the
+        same startup transaction.  The run_id primary key and every historical
+        row remain unchanged; the marker makes the migration idempotent.
+        """
+
+        marker = "multiple_same_day_runs_v1"
+        if conn.execute(
+            "SELECT 1 FROM ground_unattended_schema WHERE key=?", (marker,)
+        ).fetchone():
+            return
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='ground_unattended_runs'"
+        ).fetchone()
+        sql_text = str(table_sql[0] or "") if table_sql else ""
+        has_legacy_unique = "site_id,run_date" in "".join(sql_text.split())
+        if has_legacy_unique:
+            conn.execute(
+                """
+                CREATE TABLE ground_unattended_runs_v17 (
+                    run_id TEXT PRIMARY KEY,
+                    site_id TEXT NOT NULL,
+                    run_date TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    paused INTEGER NOT NULL DEFAULT 0,
+                    requested_action TEXT NOT NULL DEFAULT '',
+                    scheduled_start_at TEXT NOT NULL DEFAULT '',
+                    scheduled_end_at TEXT NOT NULL DEFAULT '',
+                    actual_started_at TEXT NOT NULL DEFAULT '',
+                    actual_ended_at TEXT NOT NULL DEFAULT '',
+                    ac_last_updated_at TEXT NOT NULL DEFAULT '',
+                    ac_freshness_status TEXT NOT NULL DEFAULT 'NO_DATA',
+                    ping_sample_count INTEGER NOT NULL DEFAULT 0,
+                    summary_json TEXT NOT NULL DEFAULT '{}',
+                    error_code TEXT NOT NULL DEFAULT '',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO ground_unattended_runs_v17 "
+                "SELECT run_id, site_id, run_date, state, paused, requested_action, "
+                "scheduled_start_at, scheduled_end_at, actual_started_at, actual_ended_at, "
+                "ac_last_updated_at, ac_freshness_status, ping_sample_count, summary_json, "
+                "error_code, error_message, created_at, updated_at "
+                "FROM ground_unattended_runs"
+            )
+            conn.execute("DROP TABLE ground_unattended_runs")
+            conn.execute(
+                "ALTER TABLE ground_unattended_runs_v17 RENAME TO ground_unattended_runs"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ground_runs_site_state "
+                "ON ground_unattended_runs(site_id, state, updated_at DESC)"
+            )
+        conn.execute(
+            "INSERT INTO ground_unattended_schema(key, value, updated_at) "
+            "VALUES(?, '1', ?)"
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (marker, _now()),
+        )
 
     @staticmethod
     def _migrate_train_run_location_decisions(
@@ -1362,6 +1453,83 @@ class GroundUnattendedRepository:
             except json.JSONDecodeError:
                 projected["deep_fping"] = {}
         return GroundUnattendedProfileDTO.model_validate(projected)
+
+    def list_ac_basic_controls(self) -> list[dict[str, Any]]:
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_ac_basic_controls "
+                "ORDER BY device_uuid"
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def get_ac_basic_control(self, device_uuid: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_ac_basic_controls WHERE device_uuid=?",
+                (str(device_uuid),),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def save_ac_basic_control(
+        self,
+        device_uuid: str,
+        *,
+        enabled: bool | None = None,
+        state: str | None = None,
+        last_success_at: str | None = None,
+        last_failure_at: str | None = None,
+        last_error: str | None = None,
+        poll_count: int | None = None,
+        success_count: int | None = None,
+        failure_count: int | None = None,
+    ) -> dict[str, Any]:
+        key = str(device_uuid or "").strip()
+        if not key:
+            raise ValueError("AC device_uuid is required")
+        current = self.get_ac_basic_control(key) or {
+            "device_uuid": key,
+            "enabled": True,
+            "state": "STOPPED",
+            "last_success_at": "",
+            "last_failure_at": "",
+            "last_error": "",
+            "poll_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+        }
+        values = {
+            "device_uuid": key,
+            "enabled": bool(current.get("enabled", True)) if enabled is None else bool(enabled),
+            "state": str(current.get("state") or "STOPPED") if state is None else str(state),
+            "last_success_at": str(current.get("last_success_at") or "") if last_success_at is None else str(last_success_at),
+            "last_failure_at": str(current.get("last_failure_at") or "") if last_failure_at is None else str(last_failure_at),
+            "last_error": str(current.get("last_error") or "") if last_error is None else str(last_error),
+            "poll_count": int(current.get("poll_count") or 0) if poll_count is None else int(poll_count),
+            "success_count": int(current.get("success_count") or 0) if success_count is None else int(success_count),
+            "failure_count": int(current.get("failure_count") or 0) if failure_count is None else int(failure_count),
+            "updated_at": _now(),
+        }
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO ground_unattended_ac_basic_controls(
+                    device_uuid, enabled, state, last_success_at, last_failure_at,
+                    last_error, poll_count, success_count, failure_count, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_uuid) DO UPDATE SET
+                    enabled=excluded.enabled,
+                    state=excluded.state,
+                    last_success_at=excluded.last_success_at,
+                    last_failure_at=excluded.last_failure_at,
+                    last_error=excluded.last_error,
+                    poll_count=excluded.poll_count,
+                    success_count=excluded.success_count,
+                    failure_count=excluded.failure_count,
+                    updated_at=excluded.updated_at
+                """,
+                tuple(values.values()),
+            )
+        return self.get_ac_basic_control(key) or values
 
     def save_profile(
         self, profile: GroundUnattendedProfileDTO
@@ -1852,7 +2020,7 @@ class GroundUnattendedRepository:
                     run_id, site_id, run_date, state, scheduled_start_at, scheduled_end_at,
                     actual_started_at, created_at, updated_at
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(site_id, run_date) DO NOTHING
+                ON CONFLICT(run_id) DO NOTHING
                 """,
                 (
                     run_id,
@@ -1867,8 +2035,8 @@ class GroundUnattendedRepository:
                 ),
             )
             row = conn.execute(
-                "SELECT * FROM ground_unattended_runs WHERE site_id=? AND run_date=?",
-                (self.site_id, run_date),
+                "SELECT * FROM ground_unattended_runs WHERE site_id=? AND run_id=?",
+                (self.site_id, run_id),
             ).fetchone()
         if row is None:
             raise RuntimeError("ground unattended run was not created")

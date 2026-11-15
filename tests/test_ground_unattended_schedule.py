@@ -716,9 +716,13 @@ def test_supervisor_allows_explicit_same_day_restart_after_ready_archive(tmp_pat
 
     supervisor.request("start")
     supervisor._tick()
-    assert repo.get_active_run() is not None
+    restarted = repo.get_active_run()
+    assert restarted is not None
+    assert restarted["run_id"] != run["run_id"]
+    assert restarted["run_date"] == run["run_date"]
     supervisor.close()
-    assert len(repo.list_run_sessions(run["run_id"])) == 1
+    assert len(repo.list_run_sessions(run["run_id"])) == 0
+    assert len(repo.list_run_sessions(restarted["run_id"])) == 1
 
 
 def test_supervisor_reconciles_incomplete_operations_without_active_run(
