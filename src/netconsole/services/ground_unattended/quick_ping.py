@@ -619,7 +619,7 @@ class QuickPingService:
                         if target_ip and value.get("target_ip") != target_ip:
                             continue
                         try:
-                            stamp = _query_timestamp(str(value.get("received_at") or ""))
+                            stamp = _sample_timestamp(str(value.get("received_at") or ""))
                         except QuickPingError as exc:
                             raise QuickPingError("QUICK_PING_RAW_CORRUPT", "快速 Ping 原始记录时间无效", status_code=503) from exc
                         if (start is None or stamp >= start) and (end is None or stamp <= end):
@@ -1028,10 +1028,10 @@ class QuickPingService:
             run.stats.add(sample)
             run.target_stats[target.target_ip].add(sample)
             try:
-                sample_at = datetime.fromisoformat(str(sample.ts).replace("Z", "+00:00"))
-            except (TypeError, ValueError):
-                # Preserve the raw sample even when a legacy/mock producer emits
-                # a non-ISO timestamp; event ordering falls back to receive time.
+                sample_at = _sample_timestamp(str(sample.ts))
+            except QuickPingError:
+                # Preserve raw samples from broken/legacy producers; events fall back
+                # to receive time when the sample timestamp cannot be parsed.
                 sample_at = datetime.now(timezone.utc)
             run._loss_trackers.setdefault(
                 target.target_ip,
@@ -1467,6 +1467,17 @@ def _now() -> str:
 
 def _append_error(existing: str, addition: str) -> str:
     return f"{existing}; {addition}" if existing else addition
+
+
+def _sample_timestamp(value: str) -> datetime:
+    """Read historical fping timestamps, including legacy local naive values."""
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        # Legacy runners wrote local wall-clock time without an offset. Python's
+        # local-time conversion preserves that historical meaning before UTC compare.
+        return stamp.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise QuickPingError("QUICK_PING_TIME_INVALID", "快速 Ping 原始记录时间格式无效") from exc
 
 
 __all__ = [

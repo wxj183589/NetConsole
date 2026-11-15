@@ -1507,6 +1507,16 @@ class GroundUnattendedApplicationService:
             raise GroundUnattendedError("MR_REQUIRED", "至少选择一台 MR", status_code=422)
         inventory = {str(row.get("device_uuid") or ""): row for row in self.repository.list_inventory() for row in row.get("endpoints", [])}
         selected: list[str] = []
+        live_mrs: dict[str, Any] = {}
+        if payload.mode == "JOIN":
+            heartbeat_page = self.heartbeat(site_id, page_size=200)
+            if heartbeat_page.data_state != "RUNNING":
+                raise GroundUnattendedError(
+                    "MR_HEARTBEAT_NOT_RUNNING",
+                    f"心跳数据不可用或已过期，不能加入 Syslog: {heartbeat_page.data_state}",
+                    status_code=409,
+                )
+            live_mrs = {mr.mr_uuid: mr for mr in heartbeat_page.mrs}
         address_owners: dict[str, str] = {}
         for endpoint in inventory.values():
             owner = str(endpoint.get("device_uuid") or "")
@@ -1526,8 +1536,8 @@ class GroundUnattendedApplicationService:
             if endpoint is None:
                 raise GroundUnattendedError("MR_NOT_FOUND", f"MR 不在当前无人值守清单中: {device_uuid}", status_code=404)
             if payload.mode == "JOIN":
-                live = next((row for row in self.supervisor.fleet_ping.target_summaries() if str(row.get("mr_id") or "") == device_uuid), None)
-                if not live or str(live.get("status") or "").upper() != "ONLINE":
+                live = live_mrs.get(device_uuid)
+                if live is None or live.status != "ONLINE":
                     raise GroundUnattendedError("MR_NOT_ONLINE", f"MR 当前不在线，不能加入 Syslog: {device_uuid}", status_code=409)
                 if not str(endpoint.get("management_ip") or "").strip():
                     raise GroundUnattendedError("MR_MANAGEMENT_IP_MISSING", f"MR 没有有效管理地址: {device_uuid}", status_code=409)

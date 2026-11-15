@@ -158,7 +158,7 @@ def run_fping_v5_json(
         for line in process.stdout:
             if stop_event.is_set():
                 break
-            received_ts = datetime.now().isoformat(timespec="milliseconds")
+            received_ts = datetime.now().astimezone().isoformat(timespec="milliseconds")
             if raw_file is not None:
                 raw_file.write(f"{received_ts} {line}")
                 raw_file.flush()
