@@ -27,6 +27,7 @@ from netconsole.models.task_state import TaskState
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
+from netconsole.repositories.ground_arp_repository import GroundArpRepository
 from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
 from netconsole.services.ac.mesh_link_refresh_service import (
     AcMeshLinkRefreshApplicationService,
@@ -64,6 +65,8 @@ from netconsole.services.ground_unattended.schedule import (
     schedule_window,
 )
 from netconsole.services.ground_unattended.boot_config import MrSyslogConfigService
+from netconsole.services.ground_unattended.arp_collection import GroundArpCollector
+from netconsole.services.ground_unattended.arp_identity import GroundMrIdentityService
 from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
 from netconsole.services.ground_unattended.syslog_runtime import (
     SyslogUdpReceiver,
@@ -187,6 +190,17 @@ class GroundUnattendedSupervisor:
             site_id=site_id,
             repository=repository,
         )
+        self.arp_repository = GroundArpRepository(
+            paths.ground_unattended_db_path(site_id), site_id=site_id
+        )
+        self.arp_identity_service = GroundMrIdentityService(self.arp_repository)
+        self.arp_collector = GroundArpCollector(
+            paths,
+            site_id=site_id,
+            repository=self.arp_repository,
+            identity_service=self.arp_identity_service,
+            mr_provider=self._current_mrs,
+        )
         self._config_executor = ThreadPoolExecutor(
             max_workers=2,
             thread_name_prefix="ground-syslog-config",
@@ -199,6 +213,11 @@ class GroundUnattendedSupervisor:
         )
         self._ac_basic_futures: dict[str, Future] = {}
         self._ac_basic_next_poll_monotonic: dict[str, float] = {}
+        self._arp_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ground-arp")
+        self._arp_future: Future | None = None
+        self._arp_next_poll_monotonic = 0.0
+        self._arp_startup_requested = False
+        self._arp_last_error = ""
         self._manual_config_checks: dict[str, tuple[bool, bool]] = {}
         self._manual_config_task_ids: dict[str, str] = {}
         self._manual_syslog_exits: set[str] = set()
@@ -264,6 +283,7 @@ class GroundUnattendedSupervisor:
             self.deep_scheduler.close()
         self._config_executor.shutdown(wait=True, cancel_futures=True)
         self._ac_basic_executor.shutdown(wait=True, cancel_futures=True)
+        self._arp_executor.shutdown(wait=True, cancel_futures=True)
 
     def request(
         self,
@@ -282,6 +302,57 @@ class GroundUnattendedSupervisor:
 
     def profile_updated(self) -> None:
         self._wake_event.set()
+
+    def request_arp_refresh(self, *, reason: str = "manual") -> bool:
+        """Queue one ARP collection; a running collection is never overlapped."""
+
+        profile = self.repository.get_profile()
+        source_uuid = str(profile.arp_collection_device_uuid or "").strip()
+        if not source_uuid:
+            return False
+        with self._lock:
+            if self._arp_future is not None and not self._arp_future.done():
+                return False
+            self._arp_future = self._arp_executor.submit(
+                self._refresh_arp, source_uuid, list(profile.arp_management_vlans), reason
+            )
+        self._wake_event.set()
+        return True
+
+    def arp_status(self) -> dict[str, Any]:
+        latest = self.arp_repository.list_collections(limit=1)
+        observations = self.arp_repository.list_observations()
+        identities = self.arp_repository.find_identity_relations(confirmed_only=True)
+        conflicts = self.arp_repository.list_conflicts()
+        future = self._arp_future
+        state = "RUNNING" if future is not None and not future.done() else "IDLE"
+        if self._arp_last_error:
+            state = "FAILED"
+        return {
+            "state": state,
+            "last_collection": latest[0] if latest else None,
+            "latest_observations": observations,
+            "identities": identities,
+            "conflicts": conflicts,
+            "message": self._arp_last_error,
+        }
+
+    def _current_mrs(self) -> list[object]:
+        try:
+            return list(self.base_query.list_mrs(self.site_id, page=1, page_size=1000).items)
+        except Exception as exc:
+            LOGGER.warning("Ground ARP MR 清单读取失败: site=%s error=%s", self.site_id, exc)
+            return []
+
+    def _refresh_arp(self, source_uuid: str, vlans: list[int], reason: str) -> dict[str, object]:
+        try:
+            result = self.arp_collector.collect(source_device_uuid=source_uuid, vlans=vlans)
+            self._arp_last_error = str(result.get("error_message") or "")
+            return result
+        except Exception as exc:
+            self._arp_last_error = f"{exc.__class__.__name__}: {exc}"
+            LOGGER.warning("Ground ARP 采集失败: site=%s reason=%s error=%s", self.site_id, reason, exc)
+            return {"status": "FAILED", "error_message": self._arp_last_error}
 
     def request_archive_delete(self, archive_id: str) -> None:
         with self._lock:
@@ -1142,6 +1213,7 @@ class GroundUnattendedSupervisor:
         self._handle_archive_deletes()
         self._handle_commands()
         profile = self.repository.get_profile()
+        self._schedule_arp_poll(profile)
         now = self._now()
         run = self.repository.get_active_run()
 
@@ -1499,6 +1571,40 @@ class GroundUnattendedSupervisor:
         self._poll_ac_and_classify(
             run, profile, now, scheduling_paused=scheduling_paused
         )
+
+    def _schedule_arp_poll(self, profile: GroundUnattendedProfileDTO) -> None:
+        source_uuid = str(profile.arp_collection_device_uuid or "").strip()
+        if not source_uuid:
+            return
+        current = time.monotonic()
+        future = self._arp_future
+        if future is not None:
+            if not future.done():
+                return
+            self._arp_future = None
+            try:
+                result = future.result()
+            except Exception as exc:
+                self._arp_last_error = f"{exc.__class__.__name__}: {exc}"
+                self._arp_next_poll_monotonic = current + min(
+                    max(30, int(profile.arp_auto_refresh_interval_seconds)) * 2, 1800
+                )
+            else:
+                if str(result.get("status") or "") in {"SUCCESS", "PARTIAL", "TRUNCATED"}:
+                    self._arp_last_error = str(result.get("error_message") or "")
+                    self._arp_next_poll_monotonic = current + max(
+                        30, int(profile.arp_auto_refresh_interval_seconds)
+                    )
+                else:
+                    self._arp_next_poll_monotonic = current + min(
+                        max(30, int(profile.arp_auto_refresh_interval_seconds)) * 2, 1800
+                    )
+        startup_due = bool(profile.arp_startup_collection_enabled) and not self._arp_startup_requested
+        auto_due = bool(profile.arp_auto_refresh_enabled) and current >= self._arp_next_poll_monotonic
+        if not startup_due and not auto_due:
+            return
+        self._arp_startup_requested = True
+        self.request_arp_refresh(reason="startup" if startup_due else "auto")
 
     def _schedule_ac_basic_poll(self, profile: GroundUnattendedProfileDTO) -> None:
         if self.ac_basic_service is None:

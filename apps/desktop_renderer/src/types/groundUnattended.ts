@@ -4,7 +4,7 @@ export type GroundDataAvailability = 'ACTIVE_RAW' | 'ARCHIVED_RAW' | 'MIXED' | '
 
 export interface GroundProfile {
   site_id: string; enabled: boolean; schedule_start_time: string; schedule_end_time: string; timezone: string
-  ac_poll_interval_seconds: number; ac_mesh_link_poll_interval_seconds: number; stationary_exclusion_minutes: number; ac_stale_grace_seconds: number
+  ac_poll_interval_seconds: number; ac_mesh_link_poll_interval_seconds: number; arp_collection_device_uuid?: string; arp_management_vlans?: number[]; arp_startup_collection_enabled?: boolean; arp_auto_refresh_enabled?: boolean; arp_auto_refresh_interval_seconds?: number; stationary_exclusion_minutes: number; ac_stale_grace_seconds: number
   ac_ping_correlation_tolerance_seconds: number; ap_switch_before_seconds: number; ap_switch_after_seconds: number
   max_active_trains: number; max_active_mrs: number; max_starting_mrs: number; max_finalizing_mrs: number
   deep_collection_master_enabled: boolean
@@ -32,6 +32,11 @@ export interface GroundAcBasicCollection {
   poll_count: number; success_count: number; failure_count: number; updated_at: string
 }
 export interface GroundAcBasicCollectionPage { items: GroundAcBasicCollection[]; total: number }
+export interface GroundArpStatus {
+  state: string; last_collection?: Record<string, unknown> | null
+  latest_observations: Array<Record<string, unknown>>; identities: Array<Record<string, unknown>>
+  conflicts: Array<Record<string, unknown>>; message: string
+}
 export interface GroundStatus {
   site_id: string; enabled: boolean; state: GroundRunState; service_state: GroundRunState; paused: boolean; run_id: string; run_date: string
   actual_started_at: string; actual_ended_at: string; schedule_start_time: string; schedule_end_time: string; timezone: string
@@ -441,6 +446,9 @@ export interface GroundHeartbeatMr {
   last_recovery_at: string; consecutive_recovery_successes: number; updated_at: string
   ip_states: GroundHeartbeatIp[]; associated_aps?: GroundHeartbeatAp[]; associated_stations?: string[]
   loss_events?: Array<Record<string, unknown>>
+  identity_mac?: string; identity_first_discovered_at?: string; identity_last_verified_at?: string
+  arp_last_seen_at?: string; arp_current_observed?: boolean; arp_observation_status?: string
+  arp_source_device?: string; arp_ip?: string; arp_mac?: string
 }
 export interface GroundHeartbeatTrain {
   train_id: string; train_no: string; status: string; both_unreachable_since: string
@@ -500,4 +508,5 @@ export interface GroundPeerInterval {
 export interface GroundMrMonitoring {
   mr: GroundHeartbeatMr; series: GroundPingSeries; mesh_events: GroundMeshMonitorEvent[]; peer_intervals: GroundPeerInterval[]
   run_sent_count: number; run_lost_count: number; queried_start: string; queried_end: string; events_truncated: boolean; loss_events?: Array<Record<string, unknown>>
+  identity_relations?: Array<Record<string, unknown>>; arp_observations?: Array<Record<string, unknown>>; identity_conflicts?: Array<Record<string, unknown>>
 }

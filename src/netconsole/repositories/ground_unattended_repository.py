@@ -925,6 +925,11 @@ ON ground_unattended_quick_ping_events(site_id, run_id, ts DESC, id DESC);
 _PROFILE_MIGRATION_COLUMNS = {
     "ac_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 60",
     "ac_mesh_link_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 300",
+    "arp_collection_device_uuid": "TEXT NOT NULL DEFAULT ''",
+    "arp_management_vlans": "TEXT NOT NULL DEFAULT '[]'",
+    "arp_startup_collection_enabled": "INTEGER NOT NULL DEFAULT 1",
+    "arp_auto_refresh_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "arp_auto_refresh_interval_seconds": "INTEGER NOT NULL DEFAULT 300",
     "deep_collection_master_enabled": "INTEGER NOT NULL DEFAULT 1",
     "deep_fping_required": "INTEGER NOT NULL DEFAULT 1",
     "deep_fping": "TEXT NOT NULL DEFAULT '{}'",
@@ -1427,6 +1432,9 @@ class GroundUnattendedRepository:
             payload["deep_fping"] = json.dumps(
                 payload.get("deep_fping") or {}, ensure_ascii=False
             )
+            payload["arp_management_vlans"] = json.dumps(
+                payload.get("arp_management_vlans") or [], ensure_ascii=False
+            )
             fields = tuple(payload)
             values = [
                 int(value) if isinstance(value, bool) else value
@@ -1452,6 +1460,12 @@ class GroundUnattendedRepository:
                 projected["deep_fping"] = json.loads(deep_fping or "{}")
             except json.JSONDecodeError:
                 projected["deep_fping"] = {}
+        arp_vlans = projected.get("arp_management_vlans")
+        if isinstance(arp_vlans, str):
+            try:
+                projected["arp_management_vlans"] = json.loads(arp_vlans or "[]")
+            except json.JSONDecodeError:
+                projected["arp_management_vlans"] = []
         return GroundUnattendedProfileDTO.model_validate(projected)
 
     def list_ac_basic_controls(self) -> list[dict[str, Any]]:
@@ -1543,6 +1557,9 @@ class GroundUnattendedRepository:
         payload["deep_fping"] = json.dumps(
             payload.get("deep_fping") or {}, ensure_ascii=False
         )
+        payload["arp_management_vlans"] = json.dumps(
+            payload.get("arp_management_vlans") or [], ensure_ascii=False
+        )
         fields = tuple(payload)
         values = [
             int(value) if isinstance(value, bool) else value
@@ -1561,6 +1578,7 @@ class GroundUnattendedRepository:
                 values,
             )
         payload["deep_fping"] = json.loads(str(payload["deep_fping"]))
+        payload["arp_management_vlans"] = json.loads(str(payload["arp_management_vlans"]))
         return GroundUnattendedProfileDTO.model_validate(payload)
 
     def list_priority_train_ids(self) -> set[str]:

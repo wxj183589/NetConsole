@@ -30,6 +30,7 @@ from netconsole.models.api.ac_mesh_link import (
 )
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.ap_identity import ApIdentityQueryService
+from netconsole.repositories.ground_arp_repository import GroundArpRepository
 from netconsole.services.ap_identity.normalizers import format_mac, normalize_mac_key
 from netconsole.models.ap_identity_index import ApIdentityMatch
 
@@ -702,6 +703,23 @@ class AcMeshLinkQueryService:
             raw = dict(row)
             identity = _parse_train_identity(str(raw.get("peer_name") or ""))
             device = self._match_mr_device(raw, devices, identity)
+            if device is None:
+                peer_mac = _normalize_vehicle_mac(raw.get("peer_mac"))
+                relation = next(
+                    iter(
+                        GroundArpRepository.find_confirmed_by_mac_readonly(
+                            self.paths.ground_unattended_db_path(site_id),
+                            site_id=site_id,
+                            identity_mac=peer_mac,
+                        )
+                    ),
+                    None,
+                ) if peer_mac else None
+                relation_uuid = str(relation.get("mr_uuid") or "") if relation else ""
+                if relation_uuid:
+                    device = next((item for item in devices if item.uuid == relation_uuid), None)
+                    if device is None:
+                        device = self._mr_device_from_registry_relation(site_id, relation_uuid)
             candidate, identity_match, method, warning = self._match_ap(
                 raw,
                 ap_indexes,
@@ -976,6 +994,24 @@ class AcMeshLinkQueryService:
                 )
             )
         return result
+
+    def _mr_device_from_registry_relation(self, site_id: str, relation_uuid: str) -> _MrDevice | None:
+        for row in self._device_rows(site_id):
+            if str(row.get("device_uuid") or "") != relation_uuid:
+                continue
+            identity = _parse_train_identity(str(row.get("name") or "")) or _parse_train_identity(str(row.get("system_name") or ""))
+            if identity is None:
+                return None
+            return _MrDevice(
+                id=int(row.get("id") or 0), uuid=relation_uuid,
+                name=str(row.get("name") or row.get("system_name") or ""),
+                system_name=str(row.get("system_name") or ""),
+                mac_address=_normalize_vehicle_mac(row.get("mac_address")),
+                management_ip=str(row.get("primary_address") or ""),
+                train_no=identity.train_no, car_end=identity.car_end,
+                backup_address=str(row.get("backup_address") or ""),
+            )
+        return None
 
     def _device_rows(self, site_id: str) -> list[dict[str, object]]:
         db_path = self.paths.site_db_path(site_id)

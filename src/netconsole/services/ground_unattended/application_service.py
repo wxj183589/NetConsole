@@ -51,6 +51,11 @@ from netconsole.models.api.ground_unattended import (
     GroundAcBasicCollectionControlRequestDTO,
     GroundAcBasicCollectionDTO,
     GroundAcBasicCollectionPageDTO,
+    GroundArpCollectionDTO,
+    GroundArpObservationDTO,
+    GroundArpRefreshRequestDTO,
+    GroundArpStatusDTO,
+    GroundMrIdentityDTO,
     GroundHealthDTO,
     GroundHeartbeatMrDTO,
     GroundSyslogControlRequestDTO,
@@ -493,6 +498,36 @@ class GroundUnattendedApplicationService:
         self._require_site(site_id)
         return self.repository.get_profile()
 
+    def arp_status(self, site_id: str) -> GroundArpStatusDTO:
+        self._require_site(site_id)
+        payload = self.supervisor.arp_status()
+        last = payload.get("last_collection")
+        if isinstance(last, dict):
+            requested = last.get("requested_vlans") or last.get("requested_vlans_json")
+            if isinstance(requested, str):
+                try:
+                    last = {**last, "requested_vlans": json.loads(requested or "[]")}
+                except json.JSONDecodeError:
+                    last = {**last, "requested_vlans": []}
+            last = GroundArpCollectionDTO.model_validate(last)
+        observations = [GroundArpObservationDTO.model_validate(row) for row in payload.get("latest_observations", [])]
+        identities = [GroundMrIdentityDTO.model_validate(row) for row in payload.get("identities", [])]
+        return GroundArpStatusDTO(
+            state=str(payload.get("state") or "IDLE"), last_collection=last,
+            latest_observations=observations, identities=identities,
+            conflicts=list(payload.get("conflicts") or []), message=str(payload.get("message") or ""),
+        )
+
+    def request_arp_refresh(
+        self, site_id: str, payload: GroundArpRefreshRequestDTO | None = None
+    ) -> GroundArpStatusDTO:
+        self._require_site(site_id)
+        accepted = self.supervisor.request_arp_refresh(reason=(payload.reason if payload else "manual"))
+        status = self.arp_status(site_id)
+        if not accepted and not status.message:
+            status.message = "ARP 采集未启动：源交换机未配置或已有采集正在运行"
+        return status
+
     def ac_basic_collection(self, site_id: str) -> GroundAcBasicCollectionPageDTO:
         self._require_site(site_id)
         items = [GroundAcBasicCollectionDTO.model_validate(row) for row in self.supervisor.list_ac_basic_controls()]
@@ -623,6 +658,45 @@ class GroundUnattendedApplicationService:
             for row in inventory for endpoint in row.get("endpoints", [])
         }
         syslog_audits = self.repository.latest_syslog_config_audits(endpoints)
+        arp_repository = getattr(self.supervisor, "arp_repository", None)
+
+        def apply_arp_projection(payload: dict[str, Any], mr_uuid: str) -> dict[str, Any]:
+            if arp_repository is None:
+                return payload
+            relations = arp_repository.find_identity_relations(mr_uuid=mr_uuid, confirmed_only=True)
+            observations = arp_repository.list_observations()
+            successful = next(
+                (row for row in arp_repository.list_collections(limit=100)
+                 if str(row.get("status") or "") == "SUCCESS"
+                 and str(row.get("completeness") or "") == "COMPLETE"),
+                None,
+            )
+            mr_ips = {
+                str(payload.get("management_ip") or ""),
+                str(payload.get("backup_management_ip") or ""),
+            }
+            mr_ips.discard("")
+            related = [
+                row for row in observations
+                if str(row.get("ip_address") or "") in mr_ips
+                and (successful is None
+                     or (str(row.get("source_device_uuid") or "") == str(successful.get("source_device_uuid") or "")
+                         and str(row.get("query_scope") or "") == str(successful.get("query_scope") or "")))
+            ]
+            current = next((row for row in related if bool(row.get("observed_in_last_success"))), None)
+            stable = next((row for row in relations if row.get("alias_type") == "BASE"), None) or (relations[0] if relations else None)
+            payload.update(
+                identity_mac=str(stable.get("identity_mac") or "") if stable else "",
+                identity_first_discovered_at=str(stable.get("first_discovered_at") or "") if stable else "",
+                identity_last_verified_at=str(stable.get("last_verified_at") or "") if stable else "",
+                arp_last_seen_at=str(current or (related[0] if related else {}).get("last_observed_at") or ""),
+                arp_current_observed=bool(current),
+                arp_observation_status="CURRENT" if current else ("NOT_OBSERVED" if related else "NO_DATA"),
+                arp_source_device=str((current or (related[0] if related else {})).get("source_device_name") or ""),
+                arp_ip=str((current or (related[0] if related else {})).get("ip_address") or ""),
+                arp_mac=str((current or (related[0] if related else {})).get("mac_address") or ""),
+            )
+            return payload
 
         def apply_syslog_projection(payload: dict[str, Any], endpoint: dict[str, Any]) -> dict[str, Any]:
             audit = syslog_audits.get(str(payload.get("mr_uuid") or ""), {})
@@ -702,6 +776,7 @@ class GroundUnattendedApplicationService:
                                    associated_aps=associated_aps,
                                    associated_stations=associated_stations)
                 payload["current_rtt_ms"] = recent_rtts.get(str(payload.get("mr_uuid") or ""))
+                apply_arp_projection(payload, str(payload.get("mr_uuid") or ""))
                 mrs.append(GroundHeartbeatMrDTO.model_validate(
                     project_row_for_model(payload, GroundHeartbeatMrDTO)
                 ))
@@ -721,6 +796,7 @@ class GroundUnattendedApplicationService:
                 if endpoint.get("backup_monitoring_strategy") == "MONITOR" and (not is_current or heartbeat_config.backup_policy == "MONITOR"):
                     ips.append(str(endpoint.get("backup_management_ip") or ""))
                 projected = apply_syslog_projection({"mr_uuid": mr_id}, endpoint)
+                apply_arp_projection(projected, mr_id)
                 mrs.append(GroundHeartbeatMrDTO(
                     mr_uuid=mr_id, train_id=str(endpoint.get("train_id") or ""),
                     train_no=str(train.get("train_no") or ""),
@@ -881,13 +957,29 @@ class GroundUnattendedApplicationService:
             raise GroundUnattendedError("GROUND_MONITOR_RANGE_INVALID", str(exc)) from exc
         heartbeat = self.heartbeat(site_id, run_id=run_id, mr_uuid=mr_uuid)
         mr = next((row for row in heartbeat.mrs if row.mr_uuid == mr_uuid), None)
-        if mr is None:
+        arp_repository = getattr(self.supervisor, "arp_repository", None)
+        identity_relations = arp_repository.find_identity_relations(mr_uuid=mr_uuid) if arp_repository else []
+        arp_observations = arp_repository.list_observations() if arp_repository else []
+        arp_observations = [
+            row for row in arp_observations
+            if str(row.get("ip_address") or "") in {
+                str(mr.management_ip or "") if mr else "",
+                str(mr.backup_management_ip or "") if mr else "",
+            }
+        ]
+        conflicts = arp_repository.list_conflicts() if arp_repository else []
+        if mr is None and not identity_relations:
             raise GroundUnattendedError("GROUND_MR_NOT_FOUND", "当前运行中没有该 MR 的心跳快照")
+        if mr is None:
+            mr = GroundHeartbeatMrDTO(mr_uuid=mr_uuid)
         cleared_at = self.repository.heartbeat_inventory_state()["data_cleared_at"]
         if cleared_at:
             start = max(start, datetime.fromisoformat(cleared_at))
         if not heartbeat.run_id or start >= end:
             return GroundMrMonitoringDTO(mr=mr, series=GroundPingSeriesDTO(),
+                                         identity_relations=[GroundMrIdentityDTO.model_validate(row) for row in identity_relations],
+                                         arp_observations=[GroundArpObservationDTO.model_validate(row) for row in arp_observations],
+                                         identity_conflicts=conflicts,
                                          queried_start=start.isoformat(), queried_end=end.isoformat())
         series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
                                   start_time=start.isoformat(), end_time=end.isoformat(), max_points=2400)
@@ -900,6 +992,9 @@ class GroundUnattendedApplicationService:
         intervals.extend(ac_peer_intervals(ac_rows, intervals))
         intervals.sort(key=lambda row: row["start"])
         return GroundMrMonitoringDTO(mr=mr, series=series, mesh_events=events, peer_intervals=intervals,
+                                     identity_relations=[GroundMrIdentityDTO.model_validate(row) for row in identity_relations],
+                                     arp_observations=[GroundArpObservationDTO.model_validate(row) for row in arp_observations],
+                                     identity_conflicts=conflicts,
                                      run_sent_count=sum(ip.sent_count for ip in mr.ip_states),
                                      run_lost_count=sum(ip.lost_count for ip in mr.ip_states),
                                      loss_events=self.repository.list_ping_loss_intervals(

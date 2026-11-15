@@ -260,6 +260,13 @@ POST /api/rail-transit/base-data/import-operations/{operation_id}/rollback
 - 预览不写 `devices.db`、`tasks.db` 或正式资料目录，不创建 Task，不生成正式资产。合并计划以 `preview_id` 保存到 `.local/runtime/base_data_import_previews/`，只包含安全字段、文件 basename/SHA-256、数据库 SHA-256、问题和 15 分钟有效期，不保存上传原文件或绝对路径；过期预览会被受控清理。
 - 预览逐行返回 `CREATE / UPDATE / UNCHANGED / CONFLICT / INVALID`，并展示字段级现值、候选值、来源、动作和警告。`importable_count` 只汇总 CREATE、UPDATE 和 UNCHANGED；WARNING 不改变行的基础分类。
 - `ap_switch_port_point_table`（AP 交换机端口点表）识别 `轨旁AP业务` 中的 `AP_MAC`、`AP编号`、`AP名称编号`、`归属站点`、`区间`、`室内交换机` 和 `接口名称`。带数字前缀的站点以安全来源元数据保留原值并规范为正式站名，区间末尾提取上下行；缺少里程允许导入且不会清除已有里程或备注，点位编号和有效 MAC 都缺失的占位行进入 `INVALID`。文件中的 `AP名称` 不进入点位编号字段，轨旁 AP 页面显示 AC 当前真实 AP 名称并单独显示点位编号。
+
+H3C AC/AP 基础资料台账生成器 `build_ap_ledger` 复用 `display wlan ap all`、`display wlan ap all address`
+和交换机 LLDP 解析器，先按完整 MAC 精确匹配，再允许 AP 名称完全相等的辅助匹配；不使用站名
+前缀、模糊名称或跨站猜测。导出的 `ap_switch_port_point_table` 工作表可直接进入本节已有的
+导入预览/确认/保存/回滚链路，`unmatched`、`conflicts` 和 `stats` 工作表只保存证据和统计。
+LLDP 导出的 `uplink_port` 固定使用交换机本地接口，不使用邻居侧端口；重复或矛盾证据保留为冲突，
+不会覆盖正式基础资料。
 - 同一 MAC 与同一点位的完全重复行只保留首条，后续计为 UNCHANGED；同一 MAC 对应不同点位、同一点位对应不同 MAC，或相同身份对应不同文件内容时，仅相关行进入 CONFLICT。已存在记录的空字段可补充为 UPDATE；非空非身份字段不同则保留正式值并产生 warning，不要求人工确认。
 - 数据质量按实体分组。同一 AP 或 MR 的多个问题只占一个实体组；阻断项、警告项和仅提示项分开统计，页面不得把字段问题数误称为设备数。
 - 正式库中的重复 MAC、重复静态 IP、MR 角色冲突和身份冲突仍属于数据质量阻断项。导入文件中的 AP 身份冲突和无效格式只阻断对应行，不阻断同批其他有效行；缺少 AP 正式名称、缺少 MAC或里程缺失可进入补录队列。
