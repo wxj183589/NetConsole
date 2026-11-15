@@ -208,6 +208,26 @@ describe('Quick Ping IP selection and individual control', () => {
     wrapper.unmount()
   })
 
+  it('restarts only a cancelled IP as a separate run with prior history intact', async () => {
+    const target = { target_ip: '192.0.2.1', mr_id: 'm1', mr_role: 'CT', address_role: 'PRIMARY', train_id: 't1', train_no: '001', mr_name: 'MR1' }
+    const previous = {
+      ...run, targets: [target], config: { interval_ms: 200, timeout_ms: 1000, packet_size: 64, max_in_flight: 32, duration_seconds: null },
+      target_runtime: { '192.0.2.1': { state: 'CANCELLED', started_at: '', ended_at: '', error: '' } },
+    }
+    const restarted = { ...previous, run_id: 'run-2', state: 'RUNNING' }
+    api.start.mockResolvedValue(restarted)
+    api.get.mockResolvedValue(restarted)
+    api.list.mockResolvedValue({ items: [restarted, previous], total: 2, active_ips: { '192.0.2.1': 'run-2' } })
+    const wrapper = shallowMount(QuickPingPage, { props: { trains: [], active: false } })
+    const vm = wrapper.vm as unknown as { selected: unknown; restartTarget: (target: unknown) => Promise<void> }
+    vm.selected = previous
+    await vm.restartTarget(target)
+    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ targets: [target], interval_ms: 200, duration_seconds: null }))
+    expect((vm.selected as { run_id: string }).run_id).toBe('run-2')
+    expect(previous.target_runtime['192.0.2.1'].state).toBe('CANCELLED')
+    wrapper.unmount()
+  })
+
   it('stops only the requested IP and leaves the batch running', async () => {
     const live = { ...run, targets: [{ target_ip: '192.0.2.1' }, { target_ip: '192.0.2.2' }], target_runtime: { '192.0.2.1': { state: 'RUNNING' }, '192.0.2.2': { state: 'RUNNING' } } }
     api.stopTarget.mockResolvedValue(live); api.get.mockResolvedValue(live); api.list.mockResolvedValue({ items: [live], total: 1 })
