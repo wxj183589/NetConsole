@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from netconsole.core.database import Database
 from netconsole.core.model_projection import project_row_for_model
 from netconsole.core.paths import PathResolver
+from netconsole.models.task_state import TaskState
 from netconsole.services.site_manager import SiteManager
 from netconsole.services.ground_unattended.heartbeat_supervisor import HEARTBEAT_STREAM_ID
 from netconsole.models.api.ground_unattended import (
@@ -482,7 +483,15 @@ class GroundUnattendedApplicationService:
 
     @staticmethod
     def _quick_ping_run_dto(value: dict[str, Any]) -> GroundQuickPingRunDTO:
-        return GroundQuickPingRunDTO.model_validate(value)
+        # Repository projections retain internal accumulator state so a
+        # restarted Quick Ping worker can rebuild its rolling statistics. It
+        # is not part of the public HTTP DTO and must not make a durable run
+        # fail response validation (the historical list route returned 500
+        # as soon as one persisted run contained this internal field).
+        fields = GroundQuickPingRunDTO.model_fields
+        return GroundQuickPingRunDTO.model_validate(
+            {key: item for key, item in value.items() if key in fields}
+        )
 
     def current_site_id(self) -> str:
         """返回组合根创建本服务时绑定且已校验的局点。"""
@@ -1719,7 +1728,12 @@ class GroundUnattendedApplicationService:
                 task_id,
                 "state",
                 {
-                    "state": "QUEUED",
+                    # The ground-unattended scheduler uses QUEUED for its
+                    # device-level queue, while the shared Job Center state
+                    # machine starts external tasks at PENDING.  Persist the
+                    # latter here so the public route cannot fail before the
+                    # supervisor has a chance to process the queue.
+                    "state": TaskState.PENDING.value,
                     "current": 0,
                     "total": len(selected),
                     "stage": "QUEUED",

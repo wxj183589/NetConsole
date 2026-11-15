@@ -4,6 +4,10 @@ from pathlib import Path
 
 from netconsole.services.ap_extension_import import ApExtensionImportService
 from netconsole.services.rail_transit.ap_ledger_service import (
+    AC_ONLY_AP,
+    CONFIRMED_AP,
+    CONFIRMED_NON_AP,
+    PENDING_DEVICE_TYPE,
     ApLedgerSource,
     build_ap_ledger,
     build_ap_ledger_from_sources,
@@ -53,7 +57,7 @@ def test_ap_ledger_does_not_use_station_prefix_or_fuzzy_matching() -> None:
     assert len(report.unmatched) == 2
 
 
-def test_multi_source_ledger_filters_non_ap_neighbors_and_preserves_lldp_provenance() -> None:
+def test_multi_source_ledger_retains_unresolved_neighbors_and_preserves_lldp_provenance() -> None:
     report = build_ap_ledger_from_sources(
         ac_ap_all_output="AP-A 1 R WA6320 SN-A\nAP-B 2 R WA6320 SN-B",
         ac_ap_address_output=(
@@ -90,7 +94,10 @@ def test_multi_source_ledger_filters_non_ap_neighbors_and_preserves_lldp_provena
     )
 
     assert report.stats["lldp_ap_rows"] == 2
-    assert report.stats["non_ap_lldp_rows"] == 1
+    assert report.stats["pending_device_type_rows"] == 1
+    assert report.stats["non_ap_lldp_rows"] == 0
+    assert report.pending_device_type[0].status == PENDING_DEVICE_TYPE
+    assert len(report.observations) == 3
     assert {row.station_name for row in report.rows} == {"甲站", "乙站"}
     assert {row.uplink_port for row in report.rows} == {"GigabitEthernet1/0/2", "GigabitEthernet1/0/10"}
     values = report.rows[0].import_values()
@@ -149,3 +156,45 @@ def test_multi_source_ledger_collapses_identical_observations_and_keeps_name_dif
     assert len(report.rows) == 1
     assert report.rows[0].reason.startswith("MAC 精确匹配但名称字段不同")
     assert not report.conflicts
+
+
+def test_lldp_classification_requires_explicit_non_ap_evidence_and_supports_ap_only_evidence() -> None:
+    report = build_ap_ledger_from_sources(
+        ac_ap_all_output="",
+        ac_ap_address_output="",
+        sources=(ApLedgerSource(
+            station_name="甲站",
+            switch_name="SW-A",
+            device_type_by_name={"WIRELESS-NEW": "AP", "UPLINK": "switch"},
+            lldp_output=(
+                "System Name Local Interface Chassis ID Port ID\n"
+                "WIRELESS-NEW GE1/0/1 0011-2233-4401 GE1/0/48\n"
+                "UPLINK GE1/0/2 aaaa-bbbb-cccc xge1/0/1\n"
+            ),
+        ),),
+    )
+
+    assert len(report.rows) == 1
+    assert report.rows[0].status == CONFIRMED_AP
+    assert report.rows[0].match_method == "lldp_device_type"
+    assert len(report.confirmed_non_ap) == 1
+    assert report.confirmed_non_ap[0].status == CONFIRMED_NON_AP
+    assert not report.pending_device_type
+
+
+def test_ac_only_identity_is_audit_evidence_and_does_not_create_fake_uplink() -> None:
+    report = build_ap_ledger_from_sources(
+        ac_ap_all_output="AP-OLD 1 R WA6320 SN-OLD\n",
+        ac_ap_address_output="AP Name IP Address MAC Address\nAP-OLD 10.0.0.1 0011-2233-4401\n",
+        sources=(ApLedgerSource(
+            station_name="甲站",
+            switch_name="SW-A",
+            lldp_output="System Name Local Interface Chassis ID Port ID\nOTHER GE1/0/2 aaaa-bbbb-cccc xge1/0/1\n",
+        ),),
+    )
+
+    assert not report.rows
+    assert len(report.ac_only) == 1
+    assert report.ac_only[0].status == AC_ONLY_AP
+    assert report.ac_only[0].uplink_switch == ""
+    assert report.ac_only[0].uplink_port == ""

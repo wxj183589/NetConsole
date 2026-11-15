@@ -5835,7 +5835,7 @@ class GroundUnattendedRepository:
                 "SELECT * FROM ground_unattended_quick_ping_runs WHERE site_id=? AND run_id=?",
                 (self.site_id, run_id),
             ).fetchone()
-            return self._quick_ping_payload(conn, row) if row is not None else None
+            return self._quick_ping_payloads(conn, [row])[0] if row is not None else None
 
     def list_quick_ping_runs(self, *, limit: int = 100) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 500))
@@ -5849,7 +5849,7 @@ class GroundUnattendedRepository:
                 """,
                 (self.site_id, safe_limit),
             ).fetchall()
-            return [self._quick_ping_payload(conn, row) for row in rows]
+            return self._quick_ping_payloads(conn, rows)
 
     def query_quick_ping_runs(
         self,
@@ -5896,7 +5896,7 @@ class GroundUnattendedRepository:
                 "ORDER BY julianday(started_at) DESC, run_id DESC LIMIT ? OFFSET ?",
                 (*params, max(1, min(int(limit), 500)), max(0, int(offset))),
             ).fetchall()
-            return [self._quick_ping_payload(conn, row) for row in rows], total
+            return self._quick_ping_payloads(conn, rows), total
 
     def list_quick_ping_events(self, run_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
         with self._read_connection() as conn:
@@ -5922,9 +5922,61 @@ class GroundUnattendedRepository:
             for row in rows
         ]
 
+    @classmethod
+    def _quick_ping_payloads(
+        cls,
+        conn: sqlite3.Connection,
+        rows: Iterable[sqlite3.Row],
+    ) -> list[dict[str, Any]]:
+        """Project many runs with one stats query and one runtime query.
+
+        The old implementation called two child queries for every run after
+        loading the page. A 20-run page therefore performed 41+ SQL calls
+        before the HTTP response was encoded. Keep the same DTO projection,
+        but batch the child tables by run_id in the same read snapshot.
+        """
+
+        rows = list(rows)
+        if not rows:
+            return []
+        run_ids = [str(row["run_id"]) for row in rows]
+        placeholders = ",".join("?" for _ in run_ids)
+        params = (cls._site_id_from_row(rows[0]), *run_ids)
+        stat_rows = conn.execute(
+            "SELECT * FROM ground_unattended_quick_ping_stats "
+            f"WHERE site_id=? AND run_id IN ({placeholders})",
+            params,
+        ).fetchall()
+        runtime_rows = conn.execute(
+            "SELECT run_id, target_ip, runtime_json "
+            "FROM ground_unattended_quick_ping_target_runtime "
+            f"WHERE site_id=? AND run_id IN ({placeholders})",
+            params,
+        ).fetchall()
+        stats_by_run: dict[str, list[sqlite3.Row]] = {}
+        for row in stat_rows:
+            stats_by_run.setdefault(str(row["run_id"]), []).append(row)
+        runtime_by_run: dict[str, list[sqlite3.Row]] = {}
+        for row in runtime_rows:
+            runtime_by_run.setdefault(str(row["run_id"]), []).append(row)
+        return [
+            cls._assemble_quick_ping_payload(
+                row,
+                stats_by_run.get(str(row["run_id"]), ()),
+                runtime_by_run.get(str(row["run_id"]), ()),
+            )
+            for row in rows
+        ]
+
     @staticmethod
-    def _quick_ping_payload(
-        conn: sqlite3.Connection, row: sqlite3.Row
+    def _site_id_from_row(row: sqlite3.Row) -> str:
+        return str(row["site_id"] or "")
+
+    @staticmethod
+    def _assemble_quick_ping_payload(
+        row: sqlite3.Row,
+        stat_rows: Iterable[sqlite3.Row],
+        runtime_rows: Iterable[sqlite3.Row],
     ) -> dict[str, Any]:
         payload = {
             "run_id": str(row["run_id"]),
@@ -5939,14 +5991,10 @@ class GroundUnattendedRepository:
             "error": str(row["error"]),
             "recent_samples": [],
         }
-        stat_rows = conn.execute(
-            """
-            SELECT * FROM ground_unattended_quick_ping_stats
-            WHERE site_id=? AND run_id=?
-            """,
-            (payload["site_id"], payload["run_id"]),
-        ).fetchall()
-        payload["target_runtime"] = {str(item["target_ip"]): _json_object(item["runtime_json"]) for item in conn.execute("SELECT target_ip, runtime_json FROM ground_unattended_quick_ping_target_runtime WHERE site_id=? AND run_id=?", (payload["site_id"], payload["run_id"])).fetchall()}
+        payload["target_runtime"] = {
+            str(item["target_ip"]): _json_object(item["runtime_json"])
+            for item in runtime_rows
+        }
         accumulators: dict[str, dict[str, Any]] = {}
         decoded: dict[str, dict[str, Any]] = {}
         for stat in stat_rows:

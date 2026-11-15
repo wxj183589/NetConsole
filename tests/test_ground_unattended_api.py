@@ -340,6 +340,35 @@ def test_ground_quick_ping_history_and_sample_query_parameters(tmp_path) -> None
     assert invalid.status_code == 422
 
 
+def test_persisted_quick_ping_internal_accumulators_do_not_break_http_list(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    timestamp = "2026-11-16T10:00:00+08:00"
+    repository.save_quick_ping_state(
+        {
+            "site_id": "demo",
+            "run_id": "persisted-quick-ping",
+            "run_date": "2026-11-16",
+            "state": "COMPLETED",
+            "targets": [{"target_ip": "192.0.2.10", "mr_id": "mr-1", "train_id": "train-1", "mr_role": "CT"}],
+            "config": {"timeout_ms": 1000},
+            "segment_paths": [],
+            "started_at": timestamp,
+            "ended_at": timestamp,
+        },
+        {"192.0.2.10": {"received": 1, "avg_rtt_ms": 1.0, "min_rtt_ms": 1.0, "max_rtt_ms": 1.0}},
+        {"192.0.2.10": {"rtt_sum_ms": 1.0, "jitter_sum_ms": 0.0, "jitter_count": 1}},
+        event={"event_type": "COMPLETED", "state": "COMPLETED", "ts": timestamp, "details": {}},
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/api/rail-transit/ground-unattended/quick-ping?limit=20")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["run_id"] == "persisted-quick-ping"
+
+
 def test_ground_history_forwards_filters_and_enforces_page_bounds(tmp_path) -> None:
     from netconsole.models.api.ground_unattended import GroundHistoryPageDTO
 
@@ -1689,6 +1718,60 @@ def test_target_port_change_requires_single_mr_confirmation_and_is_audited(
     )
     assert len(events) == 1
     assert events[0]["details"]["risk_level"] == "high"
+
+
+def test_syslog_control_route_persists_job_center_task_without_500(
+    tmp_path, monkeypatch
+) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    repository = app.state.ground_unattended_repository
+    repository.save_profile(
+        repository.get_profile().model_copy(
+            update={
+                "syslog_server_ip": "192.0.2.100",
+                "syslog_server_port": 5514,
+                "allow_external_syslog_address": True,
+                "external_syslog_address_confirmation": True,
+            }
+        )
+    )
+    repository.sync_inventory(
+        trains=[{"train_id": "train-syslog", "train_no": "01"}],
+        endpoints=[
+            {
+                "device_uuid": "mr-syslog",
+                "train_id": "train-syslog",
+                "mr_role": "CT",
+                "management_ip": "192.0.2.10",
+            }
+        ],
+    )
+    repository.create_or_get_run(
+        run_id="run-syslog-route",
+        run_date="2026-11-16",
+        scheduled_start_at="2026-11-16T07:00:00+08:00",
+        scheduled_end_at="2026-11-16T23:00:00+08:00",
+    )
+    repository.update_run("run-syslog-route", state="RUNNING")
+    supervisor = app.state.ground_unattended_supervisor
+    monkeypatch.setattr(supervisor, "start", lambda: None)
+    monkeypatch.setattr(supervisor, "request_syslog_exit", lambda *args, **kwargs: None)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/rail-transit/ground-unattended/syslog-control",
+            json={"device_uuids": ["mr-syslog"], "mode": "EXIT"},
+        )
+        assert created.status_code == 202, created.text
+        task_id = created.json()["task_id"]
+        detail = client.get(f"/api/job-center/tasks/{task_id}")
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["status"] == "PENDING"
+        cancelled = client.post(f"/api/job-center/tasks/{task_id}/cancel")
+
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["status"] == "CANCELLED"
 
 
 def test_start_is_idempotent_for_active_run_and_rejects_archived_day(tmp_path) -> None:
