@@ -24,6 +24,8 @@ const historyPage = ref(1)
 const historyTotal = ref(0)
 const historyPageSize = 50
 const sampleTarget = ref('')
+const ALL_SAMPLE_TARGET = '__all__'
+const MAX_COMPARE_TARGETS = 32
 const sampleRange = ref<number | 'all' | 'custom'>(5)
 const customSampleRange = ref<Date[]>([])
 const sampleRows = ref<Array<Record<string, unknown>>>([])
@@ -122,7 +124,7 @@ async function searchHistory(): Promise<void> { historyPage.value = 1; await ref
 
 async function loadSamples(next = false): Promise<void> {
   const run = selected.value
-  if (!run || !sampleTarget.value) return
+  if (!run || !sampleTarget.value || (next && sampleTarget.value === ALL_SAMPLE_TARGET)) return
   const current = ++sampleGeneration
   sampleController?.abort()
   const request = new AbortController()
@@ -143,13 +145,28 @@ async function loadSamples(next = false): Promise<void> {
   }
   sampleLoading.value = true
   try {
-    const result = await getGroundQuickPingSamples(run.run_id, {
-      target_ip: sampleTarget.value, ...sampleBounds, limit: 1000, cursor: next ? sampleCursor.value : '',
-    }, { signal: request.signal })
+    const compareTargets = sampleTarget.value === ALL_SAMPLE_TARGET ? run.targets.slice(0, MAX_COMPARE_TARGETS) : []
+    const result = compareTargets.length
+      ? await Promise.all(compareTargets.map((target) => getGroundQuickPingSamples(run.run_id, {
+        target_ip: target.target_ip, ...sampleBounds, limit: Math.max(1, Math.floor(1000 / compareTargets.length)), cursor: '',
+      }, { signal: request.signal })))
+      : await getGroundQuickPingSamples(run.run_id, {
+        target_ip: sampleTarget.value, ...sampleBounds, limit: 1000, cursor: next ? sampleCursor.value : '',
+      }, { signal: request.signal })
     if (current !== sampleGeneration || request.signal.aborted) return
-    sampleRows.value = result.items
-    sampleCursor.value = result.next_cursor
-    sampleBudgetExhausted.value = result.scan_budget_exhausted
+    if (Array.isArray(result)) {
+      const merged: Array<Record<string, unknown>> = result.flatMap((page, index) => page.items.map((row) => ({
+        ...(row as Record<string, unknown>),
+        target_ip: compareTargets[index]?.target_ip || '',
+      })))
+      sampleRows.value = merged.sort((left, right) => Date.parse(String(left.received_at || '')) - Date.parse(String(right.received_at || '')))
+      sampleCursor.value = ''
+      sampleBudgetExhausted.value = result.some((page) => page.scan_budget_exhausted) || compareTargets.length < run.targets.length
+    } else {
+      sampleRows.value = result.items
+      sampleCursor.value = result.next_cursor
+      sampleBudgetExhausted.value = result.scan_budget_exhausted
+    }
     if (next) samplePage.value += 1
     sampleError.value = ''
   } catch (reason) {
@@ -198,6 +215,24 @@ async function stopTarget(targetIp: string): Promise<void> {
     await refresh(true)
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason); ElMessage.error(error.value) }
   finally { loading.value = false }
+}
+async function restartTarget(target: GroundQuickPingTarget): Promise<void> {
+  const previous = selected.value
+  if (!previous || previous.target_runtime?.[target.target_ip]?.state !== 'CANCELLED' || activeIps.value[target.target_ip]) return
+  if (!isFeatureEnabled('capability.ground_unattended.quick_ping')) return
+  loading.value = true
+  try {
+    ++generation
+    controller?.abort()
+    const run = await startGroundQuickPing({ targets: [target], ...previous.config })
+    if (disposed) return
+    selected.value = run
+    await refresh(true)
+    ElMessage.success(t('ground.quick.restarted_as_new_run', '已重新启动该目标（新任务），原任务历史保留'))
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason)
+    ElMessage.error(error.value)
+  } finally { loading.value = false }
 }
 async function poll(): Promise<void> {
   if (!props.active) return
@@ -265,9 +300,9 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++pollGeneration; ++sampl
       <div class="status-line"><b>{{ selected.run_id }}</b><el-tag>{{ selected.state }}</el-tag><span>{{ selected.started_at }} - {{ selected.ended_at || t('ground.quick.running', '运行中') }}</span></div>
       <el-alert v-if="selected.error" :title="selected.error" type="error" :closable="false" />
       <div class="metrics"><span>{{ t('ground.quick.counts', '发送 / 接收 / 丢包') }} <b>{{ selected.stats.sent }} / {{ selected.stats.received }} / {{ selected.stats.lost }}</b></span><span>{{ t('ground.quick.loss', '丢包率') }} <b>{{ selected.stats.loss_rate_percent.toFixed(2) }}%</b></span><span>{{ t('ground.quick.rtt', '最小 / 平均 / 最大 RTT') }} <b>{{ selected.stats.min_rtt_ms?.toFixed(2) ?? '—' }} / {{ selected.stats.avg_rtt_ms?.toFixed(2) ?? '—' }} / {{ selected.stats.max_rtt_ms?.toFixed(2) ?? '—' }} ms</b></span><span>{{ t('ground.quick.jitter', '抖动') }} <b>{{ selected.stats.jitter_ms?.toFixed(2) ?? '—' }} ms</b></span><span>{{ t('ground.quick.consecutive_loss', '连续丢包 当前 / 最大') }} <b>{{ selected.stats.current_consecutive_loss }} / {{ selected.stats.max_consecutive_loss }}</b></span></div>
-      <section v-if="selected.loss_events?.length" class="loss-events"><h3>{{ t('ground.quick.loss_events', '丢包事件') }}</h3><el-table :data="selected.loss_events" size="small" stripe><el-table-column prop="train_id" label="列车" /><el-table-column prop="mr_role" label="CT / CW" /><el-table-column prop="started_at" label="开始" /><el-table-column prop="ended_at" label="恢复" /><el-table-column prop="state" label="状态" /><el-table-column prop="loss_count" label="丢包数" /><el-table-column label="AP / 站点"><template #default="scope">{{ scope.row.ap_name || '—' }} / {{ scope.row.station || '—' }} / {{ scope.row.section || '—' }}</template></el-table-column></el-table></section>
+      <details v-if="selected.loss_events?.length" class="loss-events"><summary>{{ t('ground.quick.loss_events_count', `丢包事件 (${selected.loss_events.length})`) }}</summary><el-table :data="selected.loss_events" size="small" stripe><el-table-column prop="train_id" label="列车" /><el-table-column prop="mr_role" label="CT / CW" /><el-table-column prop="target_ip" label="IP" /><el-table-column prop="started_at" label="开始" /><el-table-column prop="ended_at" label="恢复" /><el-table-column prop="state" label="状态" /><el-table-column prop="loss_count" label="丢包数" /><el-table-column label="AP / 站点"><template #default="scope">{{ scope.row.ap_name || '—' }} / {{ scope.row.station || '—' }} / {{ scope.row.section || '—' }}</template></el-table-column></el-table></details>
       <div class="toolbar">
-        <el-select v-model="sampleTarget" :placeholder="t('ground.quick.chart_target', '曲线目标')"><el-option v-for="target in selected.targets" :key="target.target_ip" :value="target.target_ip" :label="`${target.mr_role} ${target.mr_name || target.mr_id} (${target.address_role})`" /></el-select>
+        <el-select v-model="sampleTarget" :placeholder="t('ground.quick.chart_target', '曲线目标')"><el-option v-if="selected.targets.length > 1" :value="ALL_SAMPLE_TARGET" :label="t('ground.quick.compare_targets', `比较目标（最多 ${MAX_COMPARE_TARGETS} 个）`)" /><el-option v-for="target in selected.targets" :key="target.target_ip" :value="target.target_ip" :label="`${target.mr_role} ${target.mr_name || target.mr_id} (${target.address_role})`" /></el-select>
         <el-select v-model="sampleRange"><el-option :value="5" :label="t('ground.quick.last5', '最后 5 分钟')" /><el-option :value="30" :label="t('ground.quick.last30', '最后 30 分钟')" /><el-option :value="60" :label="t('ground.quick.last60', '最后 1 小时')" /><el-option value="all" :label="t('ground.quick.whole_run', '完整任务范围')" /><el-option value="custom" :label="t('ground.quick.custom_range', '自定义时间范围')" /></el-select>
         <el-date-picker v-if="sampleRange === 'custom'" v-model="customSampleRange" type="datetimerange" :start-placeholder="t('ground.quick.chart_start', '曲线开始时间')" :end-placeholder="t('ground.quick.chart_end', '曲线结束时间')" />
         <el-button :loading="sampleLoading" @click="loadSamples()">{{ t('ground.quick.query_chart', '查询曲线') }}</el-button>
@@ -277,8 +312,8 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++pollGeneration; ++sampl
       <el-alert v-if="sampleError" :title="sampleError" type="error" :closable="false" />
       <el-alert v-if="sampleBudgetExhausted" :title="t('ground.quick.budget', '本页达到读取预算，请继续下一页扫描所选时间范围')" type="info" :closable="false" />
       <QuickPingChart :key="`${selected.run_id}:${sampleTarget}:${sampleRange}`" :rows="sampleRows" :interval-ms="selected.config?.interval_ms || 200" :active="active" />
-      <el-table :data="selected.targets" size="small" stripe><el-table-column prop="train_no" :label="t('ground.quick.train', '列车')" /><el-table-column prop="mr_role" label="CT / CW" /><el-table-column prop="mr_name" label="MR" /><el-table-column prop="current_ap_name" label="AC 参考 AP" /><el-table-column prop="station" label="站点" /><el-table-column prop="section" label="区间" /><el-table-column prop="address_role" :label="t('ground.quick.address_role', '地址角色')" /><el-table-column :label="t('ground.quick.state', '状态')" min-width="110"><template #default="scope"><el-tag>{{ targetState(scope.row.target_ip) }}</el-tag></template></el-table-column><el-table-column :label="t('ground.quick.started', '开始时间')" min-width="190"><template #default="scope">{{ selected.target_runtime?.[scope.row.target_ip]?.started_at || '—' }}</template></el-table-column><el-table-column :label="t('ground.quick.counts', '发送 / 接收 / 丢包')"><template #default="scope">{{ selected.target_stats[scope.row.target_ip]?.sent ?? 0 }} / {{ selected.target_stats[scope.row.target_ip]?.received ?? 0 }} / {{ selected.target_stats[scope.row.target_ip]?.lost ?? 0 }}</template></el-table-column><el-table-column :label="t('ground.quick.loss', '丢包率')"><template #default="scope">{{ selected.target_stats[scope.row.target_ip]?.loss_rate_percent?.toFixed(2) ?? '—' }}%</template></el-table-column><el-table-column :label="t('ground.quick.current_rtt', '当前 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.current_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.average_rtt', '平均 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.avg_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.maximum_rtt', '最大 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.max_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.actions', '操作')"><template #default="scope"><el-button text type="danger" :disabled="!targetActive(scope.row.target_ip) || loading" @click="stopTarget(scope.row.target_ip)">{{ t('ground.quick.stop_ip', '停止此目标') }}</el-button></template></el-table-column></el-table>
-      <el-table :data="sampleRows" size="small" max-height="240" stripe><el-table-column prop="received_at" :label="t('ground.quick.time', '时间')" /><el-table-column :label="t('ground.quick.target', '目标')"><template #default="scope">{{ sampleValue(scope.row, 'mr_role') || sampleValue(scope.row, 'mr_name') || '—' }}</template></el-table-column><el-table-column :label="t('ground.quick.result', '结果')"><template #default="scope">{{ sampleValue(scope.row, 'ok') ? t('ground.quick.success', '成功') : t('ground.quick.lost', '丢包') }}</template></el-table-column><el-table-column label="RTT"><template #default="scope">{{ sampleValue(scope.row, 'rtt_ms') ?? '—' }} ms</template></el-table-column></el-table>
+      <el-table :data="selected.targets" size="small" stripe><el-table-column prop="train_no" :label="t('ground.quick.train', '列车')" /><el-table-column prop="mr_role" label="CT / CW" /><el-table-column prop="mr_name" label="MR" /><el-table-column prop="current_ap_name" label="AC 参考 AP" /><el-table-column prop="station" label="站点" /><el-table-column prop="section" label="区间" /><el-table-column prop="address_role" :label="t('ground.quick.address_role', '地址角色')" /><el-table-column :label="t('ground.quick.state', '状态')" min-width="110"><template #default="scope"><el-tag>{{ targetState(scope.row.target_ip) }}</el-tag></template></el-table-column><el-table-column :label="t('ground.quick.started', '开始时间')" min-width="190"><template #default="scope">{{ selected.target_runtime?.[scope.row.target_ip]?.started_at || '—' }}</template></el-table-column><el-table-column :label="t('ground.quick.counts', '发送 / 接收 / 丢包')"><template #default="scope">{{ selected.target_stats[scope.row.target_ip]?.sent ?? 0 }} / {{ selected.target_stats[scope.row.target_ip]?.received ?? 0 }} / {{ selected.target_stats[scope.row.target_ip]?.lost ?? 0 }}</template></el-table-column><el-table-column :label="t('ground.quick.loss', '丢包率')"><template #default="scope">{{ selected.target_stats[scope.row.target_ip]?.loss_rate_percent?.toFixed(2) ?? '—' }}%</template></el-table-column><el-table-column :label="t('ground.quick.current_rtt', '当前 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.current_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.average_rtt', '平均 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.avg_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.maximum_rtt', '最大 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.max_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.actions', '操作')"><template #default="scope"><el-button v-if="targetActive(scope.row.target_ip)" text type="danger" :disabled="loading" @click="stopTarget(scope.row.target_ip)">{{ t('ground.quick.stop_ip', '停止此目标') }}</el-button><el-button v-else-if="selected.target_runtime?.[scope.row.target_ip]?.state === 'CANCELLED'" text type="primary" :disabled="loading || !!activeIps[scope.row.target_ip] || !isFeatureEnabled('capability.ground_unattended.quick_ping')" @click="restartTarget(scope.row)">{{ t('ground.quick.restart_ip', '恢复检测（新任务）') }}</el-button></template></el-table-column></el-table>
+      <el-table :data="sampleRows" size="small" max-height="240" stripe><el-table-column prop="received_at" :label="t('ground.quick.time', '时间')" /><el-table-column :label="t('ground.quick.target', '目标')"><template #default="scope">{{ sampleValue(scope.row, 'mr_role') || sampleValue(scope.row, 'mr_name') || scope.row.target_ip || '—' }}</template></el-table-column><el-table-column :label="t('ground.quick.result', '结果')"><template #default="scope">{{ sampleValue(scope.row, 'ok') ? t('ground.quick.success', '成功') : t('ground.quick.lost', '丢包') }}</template></el-table-column><el-table-column label="RTT"><template #default="scope">{{ sampleValue(scope.row, 'rtt_ms') ?? '—' }} ms</template></el-table-column></el-table>
     </div>
     <section class="history-panel"><h3>{{ t('ground.quick.history', '任务历史') }}</h3>
     <div class="toolbar">
@@ -294,5 +329,5 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++pollGeneration; ++sampl
 </template>
 
 <style scoped>
-.quick-ping-page{display:flex;flex-direction:column;gap:12px;min-width:0}.quick-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.quick-heading h2{margin:0;font-size:20px}.quick-heading p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px}.quick-heading>span{color:var(--el-color-primary);font-size:13px}.quick-setup,.history-panel{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--el-border-color-light);border-radius:6px;background:var(--el-bg-color)}.quick-setup{order:1}.history-panel{order:2}.quick-ping-page>.detail{order:3;padding:16px;border-top:1px solid var(--el-border-color)}.toolbar,.status-line{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.toolbar .el-select{width:145px}.toolbar .target-select{width:min(520px,100%)}.toolbar .duration-select{width:130px}.parameters label{display:flex;gap:5px;align-items:center}.parameters .el-input-number{width:90px}.detail{display:flex;flex-direction:column;gap:10px}.metrics{display:flex;flex-wrap:wrap;gap:16px}.metrics span{display:flex;flex-direction:column;gap:4px;color:var(--el-text-color-secondary)}.metrics b{color:var(--el-text-color-primary)}.chart svg{display:block;width:100%;height:140px;background:var(--el-fill-color-light)}.selected-targets{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.occupied{display:block;color:var(--el-color-warning);line-height:18px}.target-search{width:230px}.quick-ping-page h3{margin:4px 0}.history-panel>.toolbar>.el-input{flex:1 1 220px;max-width:380px}.history-panel>.toolbar>.el-select{width:180px}@media(max-width:800px){.quick-setup,.history-panel{padding:12px}.target-search,.toolbar .target-select{width:100%}.quick-heading{align-items:flex-start}}
+.quick-ping-page{display:flex;flex-direction:column;gap:12px;min-width:0}.quick-heading{display:flex;justify-content:space-between;align-items:center;gap:12px}.quick-heading h2{margin:0;font-size:20px}.quick-heading p{margin:4px 0 0;color:var(--el-text-color-secondary);font-size:12px}.quick-heading>span{color:var(--el-color-primary);font-size:13px}.quick-setup,.history-panel{display:flex;flex-direction:column;gap:12px;padding:16px;border:1px solid var(--el-border-color-light);border-radius:6px;background:var(--el-bg-color)}.quick-setup{order:1}.history-panel{order:2}.quick-ping-page>.detail{order:3;padding:16px;border-top:1px solid var(--el-border-color)}.toolbar,.status-line{display:flex;flex-wrap:wrap;gap:10px;align-items:center}.toolbar .el-select{width:145px}.toolbar .target-select{width:min(520px,100%)}.toolbar .duration-select{width:130px}.parameters label{display:flex;gap:5px;align-items:center}.parameters .el-input-number{width:90px}.detail{display:flex;flex-direction:column;gap:10px}.metrics{display:flex;flex-wrap:wrap;gap:16px}.metrics span{display:flex;flex-direction:column;gap:4px;color:var(--el-text-color-secondary)}.metrics b{color:var(--el-text-color-primary)}.chart svg{display:block;width:100%;height:140px;background:var(--el-fill-color-light)}.selected-targets{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.occupied{display:block;color:var(--el-color-warning);line-height:18px}.target-search{width:230px}.loss-events summary{cursor:pointer;font-weight:600;padding:8px 0;user-select:none}.loss-events[open] summary{margin-bottom:6px}.quick-ping-page h3{margin:4px 0}.history-panel>.toolbar>.el-input{flex:1 1 220px;max-width:380px}.history-panel>.toolbar>.el-select{width:180px}@media(max-width:800px){.quick-setup,.history-panel{padding:12px}.target-search,.toolbar .target-select{width:100%}.quick-heading{align-items:flex-start}}
 </style>
