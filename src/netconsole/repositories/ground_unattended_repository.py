@@ -1469,7 +1469,7 @@ class GroundUnattendedRepository:
         return GroundUnattendedProfileDTO.model_validate(projected)
 
     def list_ac_basic_controls(self) -> list[dict[str, Any]]:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM ground_unattended_ac_basic_controls "
                 "ORDER BY device_uuid"
@@ -1582,7 +1582,7 @@ class GroundUnattendedRepository:
         return GroundUnattendedProfileDTO.model_validate(payload)
 
     def list_priority_train_ids(self) -> set[str]:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT train_id FROM ground_unattended_priority_trains WHERE site_id=? AND priority=1 "
                 "UNION SELECT train_id FROM ground_unattended_train_policies WHERE site_id=? AND priority=1",
@@ -1798,7 +1798,7 @@ class GroundUnattendedRepository:
 
     def list_inventory(self, *, include_removed: bool = True) -> list[dict[str, Any]]:
         where = "" if include_removed else "AND i.inventory_status='ACTIVE'"
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             trains = conn.execute(
                 f"""
                 SELECT i.*, p.enabled, p.priority, p.scheduling_priority,
@@ -1831,7 +1831,7 @@ class GroundUnattendedRepository:
         return result
 
     def get_heartbeat_config(self) -> HeartbeatConfigDTO:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             row = conn.execute(
                 "SELECT config_json FROM ground_unattended_heartbeat_config WHERE site_id=?",
                 (self.site_id,),
@@ -1872,7 +1872,7 @@ class GroundUnattendedRepository:
 
     def heartbeat_inventory_state(self) -> dict[str, Any]:
         """Heartbeat selection is independent from the shared asset inventory."""
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
                 (self.site_id,),
@@ -3044,7 +3044,7 @@ class GroundUnattendedRepository:
         if entity_type:
             where.append("entity_type=?")
             params.append(str(entity_type).strip().upper())
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM ground_unattended_heartbeat_states WHERE "
                 + " AND ".join(where)
@@ -3170,7 +3170,7 @@ class GroundUnattendedRepository:
             where.append("julianday(started_at) > julianday(?)")
             params.append(started_after)
         params.append(max(1, min(int(limit), 5000)))
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM ground_unattended_ping_loss_intervals WHERE "
                 + " AND ".join(where)
@@ -3195,7 +3195,7 @@ class GroundUnattendedRepository:
         bounded = max(1, min(int(limit_per_mr), 5000))
         boundary = " AND julianday(started_at) > julianday(?)" if started_after else ""
         params = (self.site_id, str(run_id), *ids, *([started_after] if started_after else []), bounded)
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM (
@@ -3727,7 +3727,7 @@ class GroundUnattendedRepository:
         if run_id:
             where += " AND run_id=?"
             params.append(run_id)
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             row = conn.execute(
                 "SELECT COALESCE(SUM(CASE WHEN julianday(start_time)>=julianday(?) "
                 "AND julianday(start_time)<julianday(?) THEN record_count ELSE 0 END),0) AS today_count, "
@@ -3905,7 +3905,7 @@ class GroundUnattendedRepository:
                 "OR julianday(start_time)<=julianday(?))"
             )
             params.append(end_time)
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             order = (
                 "COALESCE(NULLIF(end_time, ''), start_time) DESC, "
                 "start_time DESC, created_at DESC"
@@ -5830,7 +5830,7 @@ class GroundUnattendedRepository:
                 )
 
     def get_quick_ping_run(self, run_id: str) -> dict[str, Any] | None:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM ground_unattended_quick_ping_runs WHERE site_id=? AND run_id=?",
                 (self.site_id, run_id),
@@ -5839,7 +5839,7 @@ class GroundUnattendedRepository:
 
     def list_quick_ping_runs(self, *, limit: int = 100) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 500))
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM ground_unattended_quick_ping_runs
@@ -5887,7 +5887,7 @@ class GroundUnattendedRepository:
         if target_clauses:
             clauses.append("EXISTS (SELECT 1 FROM json_each(targets_json) AS target WHERE " + " AND ".join(target_clauses) + ")")
         where = " AND ".join(clauses)
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             total = int(conn.execute(
                 f"SELECT COUNT(*) FROM ground_unattended_quick_ping_runs WHERE {where}", params,
             ).fetchone()[0])
@@ -5899,7 +5899,7 @@ class GroundUnattendedRepository:
             return [self._quick_ping_payload(conn, row) for row in rows], total
 
     def list_quick_ping_events(self, run_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM ground_unattended_quick_ping_events
@@ -5998,10 +5998,25 @@ class GroundUnattendedRepository:
             foreign_keys=True,
             temp_store_memory=True,
         )
+        # Keep WAL for write paths; read-only endpoints use _read_connection
+        # and must not execute this PRAGMA as a side effect.
         initialize_sqlite_wal(conn)
         try:
             yield conn
             conn.commit()
+        finally:
+            conn.close()
+
+    @contextmanager
+    def _read_connection(self) -> Iterator[sqlite3.Connection]:
+        """Use a true read-only connection for query paths.
+
+        Read endpoints must not initialize a missing database, change journal
+        mode, or commit a transaction merely by projecting current state.
+        """
+        conn = Database(self.db_path).connect_readonly()
+        try:
+            yield conn
         finally:
             conn.close()
 

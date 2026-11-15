@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import re
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -18,10 +19,20 @@ class RequestPerformanceProfile:
     sql_ms: float = 0.0
     repository_ms: float = 0.0
     repository_calls: dict[str, float] = field(default_factory=dict)
+    response_bytes: int = 0
+    slowest_sql: list[tuple[float, str]] = field(default_factory=list)
 
-    def record_sql(self, elapsed_ms: float) -> None:
+    def record_sql(self, elapsed_ms: float, sql: object = "") -> None:
         self.sql_count += 1
-        self.sql_ms += max(0.0, elapsed_ms)
+        duration = max(0.0, elapsed_ms)
+        self.sql_ms += duration
+        normalized = re.sub(r"\s+", " ", str(sql or "")).strip()[:500]
+        self.slowest_sql.append((duration, normalized))
+        self.slowest_sql.sort(key=lambda item: item[0], reverse=True)
+        del self.slowest_sql[5:]
+
+    def record_response_bytes(self, size: int) -> None:
+        self.response_bytes += max(0, int(size or 0))
 
     def record_repository(self, name: str, elapsed_ms: float) -> None:
         duration = max(0.0, elapsed_ms)
@@ -103,7 +114,8 @@ def _profile_sql(operation, *args):  # type: ignore[no-untyped-def]
     try:
         return operation(*args)
     finally:
-        profile.record_sql((perf_counter() - started) * 1000)
+        sql = args[0] if args else ""
+        profile.record_sql((perf_counter() - started) * 1000, sql)
 
 
 __all__ = [

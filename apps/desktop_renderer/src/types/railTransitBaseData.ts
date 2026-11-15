@@ -500,6 +500,13 @@ export interface TracksideAp {
   line_side_derivation_issue_code: string
   line_side_derivation_issue_message: string
   direction: string
+  uplink_switch: string
+  uplink_port: string
+  build_phase: string
+  source_type: string
+  source_device: string
+  source_timestamp: string
+  lldp_neighbor_interface: string
   location_class: TracksideApLocationClass
   participates_in_mainline: boolean
   location_class_source: string

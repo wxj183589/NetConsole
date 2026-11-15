@@ -8,6 +8,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -87,6 +88,28 @@ class _MrDevice:
 class _ApCandidate:
     detail: AcApDetailDTO
     radio: AcRadioDTO | None = None
+
+
+class _StaticApCandidate:
+    """Adapter for a formal static AP row when AC runtime data is absent."""
+
+    radio = None
+
+    def __init__(self, row: dict[str, object]) -> None:
+        mac = _normalize_vehicle_mac(row.get("ap_mac_norm") or row.get("ap_mac_display"))
+        self.detail = SimpleNamespace(
+            ap=SimpleNamespace(
+                id=f"ap:{row.get('id')}",
+                name=str(row.get("ap_name") or ""),
+                mac=format_mac(mac),
+                station=str(row.get("station_name") or ""),
+                section=str(row.get("section_name") or ""),
+                mileage=str(row.get("mileage_text") or ""),
+                direction=str(row.get("line_side") or ""),
+                status="unknown", ip="", ac_id="", model="",
+            ),
+            optical=SimpleNamespace(rx_power="", switch_rx_power=""),
+        )
 
 
 _ApIndexes = dict[str, dict[str, list[_ApCandidate]]]
@@ -560,6 +583,11 @@ class AcMeshLinkQueryService:
         result: list[AcMeshMrStatusDTO] = []
         used_mr_ids: set[str] = set()
         identity_query = ApIdentityQueryService(Database(self.paths.site_db_path(site_id))) if devices else None
+        identity_batch = (
+            identity_query.resolve_ap_macs([device.mac_address for device in devices]).matches
+            if identity_query
+            else {}
+        )
         for device in devices:
             link = links_by_device.get(device.uuid)
             state = states_by_train.get(device.train_no, {})
@@ -573,9 +601,9 @@ class AcMeshLinkQueryService:
             row.device_time = snapshot.device_time if snapshot else ""
             row.received_at = snapshot.received_at if snapshot else ""
             if identity_query and device.mac_address:
-                identity = identity_query.resolve_ap_mac(device.mac_address)
-                row.identity_status = identity.status
-                if identity.matched:
+                identity = identity_batch.get(_normalize_vehicle_mac(device.mac_address))
+                row.identity_status = identity.status if identity else "unresolved"
+                if identity and identity.matched:
                     row.resolved_ap = identity.effective_ap_name
                     row.resolved_ap_station = str(identity.station or "").strip()
                     row.resolved_ap_section = str(identity.section or "").strip()
@@ -697,6 +725,14 @@ class AcMeshLinkQueryService:
         identity_query = ApIdentityQueryService(
             Database(self.paths.site_db_path(site_id))
         )
+        resolver = getattr(type(identity_query), "resolve_peer_mac", None)
+        use_batch_identity = str(getattr(resolver, "__module__", "")).startswith("netconsole.")
+        identity_batch = (
+            identity_query.resolve_peer_macs([row.get("local_mac") for row in raw_rows]).matches
+            if use_batch_identity
+            else {}
+        )
+        static_by_mac = self._static_ap_index(site_id)
         controller_id = snapshot.controller_id
         controller_name = snapshot.controller_name
         peer_macs = {
@@ -732,6 +768,8 @@ class AcMeshLinkQueryService:
                 raw,
                 ap_indexes,
                 identity_query,
+                static_by_mac=static_by_mac,
+                identity_match=identity_batch.get(_normalize_vehicle_mac(raw.get("local_mac"))),
             )
             radio = candidate.radio if candidate else None
             ap = candidate.detail.ap if candidate else None
@@ -860,12 +898,12 @@ class AcMeshLinkQueryService:
         row: dict[str, object],
         indexes: dict[str, dict[str, list[_ApCandidate]]],
         identity_query: ApIdentityQueryService,
+        *,
+        static_by_mac: dict[str, list[dict[str, object]]],
+        identity_match: ApIdentityMatch | None = None,
     ) -> tuple[_ApCandidate | None, ApIdentityMatch | None, str, str]:
         mac = _normalize_vehicle_mac(row.get("local_mac"))
-        identity_match = identity_query.resolve_peer_mac(
-            mac,
-            peer_name=row.get("local_ap_name") or row.get("matched_ap_name"),
-        )
+        identity_match = identity_match or identity_query.resolve_peer_mac(mac)
         if identity_match.matched:
             effective_mac = _normalize_vehicle_mac(
                 identity_match.effective_ap_mac
@@ -882,6 +920,25 @@ class AcMeshLinkQueryService:
                 )
                 if value
             ]
+            if candidate is not None:
+                return (
+                    candidate,
+                    identity_match,
+                    identity_match.match_rule
+                    or identity_match.matched_alias_type,
+                    "；".join(warnings),
+                )
+            static_candidates = static_by_mac.get(effective_mac, [])
+            if len(static_candidates) == 1:
+                static = static_candidates[0]
+                return (
+                    _StaticApCandidate(static),
+                    identity_match,
+                    "static_base_data",
+                    "；".join(warnings),
+                )
+            if len(static_candidates) > 1:
+                warnings.append("正式 AP 静态资料中同一 MAC 存在多个记录，未自动选择。")
             return (
                 candidate,
                 identity_match,
@@ -902,6 +959,33 @@ class AcMeshLinkQueryService:
             "unmatched",
             "统一 AP Identity 索引未找到匹配。",
         )
+
+    def _static_ap_index(self, site_id: str) -> dict[str, list[dict[str, object]]]:
+        path = self.paths.site_db_path(site_id)
+        if not path.is_file():
+            return {}
+        try:
+            with closing(self._connect(path)) as conn:
+                if not self._table_exists(conn, "ap_extension_points"):
+                    return {}
+                rows = conn.execute(
+                    """
+                    SELECT id, ap_name, ap_mac_norm, ap_mac_display, station_name,
+                           section_name, mileage_text, line_side
+                    FROM ap_extension_points
+                    WHERE COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')
+                      AND TRIM(COALESCE(ap_mac_norm, ap_mac_display, '')) <> ''
+                    """
+                ).fetchall()
+        except (OSError, sqlite3.Error):
+            return {}
+        result: dict[str, list[dict[str, object]]] = {}
+        for row in rows:
+            item = dict(row)
+            key = _normalize_vehicle_mac(item.get("ap_mac_norm") or item.get("ap_mac_display"))
+            if key:
+                result.setdefault(key, []).append(item)
+        return result
 
     @staticmethod
     def _unique(candidates: list[_ApCandidate], label: str) -> tuple[_ApCandidate | None, str]:

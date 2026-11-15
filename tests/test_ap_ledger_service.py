@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from netconsole.services.ap_extension_import import ApExtensionImportService
-from netconsole.services.rail_transit.ap_ledger_service import build_ap_ledger
+from netconsole.services.rail_transit.ap_ledger_service import (
+    ApLedgerSource,
+    build_ap_ledger,
+    build_ap_ledger_from_sources,
+)
 
 
 def test_ap_ledger_uses_exact_mac_and_switch_local_port_then_round_trips_to_import_preview(tmp_path: Path) -> None:
@@ -47,3 +51,101 @@ def test_ap_ledger_does_not_use_station_prefix_or_fuzzy_matching() -> None:
     )
     assert not report.rows
     assert len(report.unmatched) == 2
+
+
+def test_multi_source_ledger_filters_non_ap_neighbors_and_preserves_lldp_provenance() -> None:
+    report = build_ap_ledger_from_sources(
+        ac_ap_all_output="AP-A 1 R WA6320 SN-A\nAP-B 2 R WA6320 SN-B",
+        ac_ap_address_output=(
+            "AP Name IP Address MAC Address\n"
+            "AP-A 10.0.0.1 0011-2233-4401\n"
+            "AP-B 10.0.0.2 0011-2233-4402\n"
+        ),
+        sources=(
+            ApLedgerSource(
+                station_name="甲站",
+                switch_name="SW-A",
+                source_file="甲站.txt",
+                source_sheet="甲站",
+                build_phase="一期",
+                source_timestamp="2026-11-15T10:00:00+08:00",
+                lldp_output=(
+                    "System Name Local Interface Chassis ID Port ID\n"
+                    "AP-A GE1/0/2 0011-2233-4401 GE1/0/48\n"
+                    "UPLINK GE1/0/48 aaaa-bbbb-cccc xge1/0/1\n"
+                ),
+            ),
+            ApLedgerSource(
+                station_name="乙站",
+                switch_name="SW-B",
+                source_file="乙站.txt",
+                source_sheet="乙站",
+                build_phase="一期",
+                lldp_output=(
+                    "System Name Local Interface Chassis ID Port ID\n"
+                    "AP-B GE1/0/10 0011-2233-4402 GE1/0/48\n"
+                ),
+            ),
+        ),
+    )
+
+    assert report.stats["lldp_ap_rows"] == 2
+    assert report.stats["non_ap_lldp_rows"] == 1
+    assert {row.station_name for row in report.rows} == {"甲站", "乙站"}
+    assert {row.uplink_port for row in report.rows} == {"GigabitEthernet1/0/2", "GigabitEthernet1/0/10"}
+    values = report.rows[0].import_values()
+    assert values["uplink_port"] != "GigabitEthernet1/0/48"
+    assert '"source_type": "LLDP"' in str(values["raw_payload_json"])
+    assert '"lldp_neighbor_interface": "GigabitEthernet1/0/48"' in str(values["raw_payload_json"])
+
+
+def test_multi_source_ledger_marks_same_mac_or_port_conflicts_without_overwriting() -> None:
+    report = build_ap_ledger_from_sources(
+        ac_ap_all_output="AP-A 1 R WA6320 SN-A\nAP-B 2 R WA6320 SN-B",
+        ac_ap_address_output=(
+            "AP Name IP Address MAC Address\n"
+            "AP-A 10.0.0.1 0011-2233-4401\n"
+            "AP-B 10.0.0.2 0011-2233-4402\n"
+        ),
+        sources=(
+            ApLedgerSource(
+                station_name="甲站", switch_name="SW-A",
+                lldp_output=(
+                    "System Name Local Interface Chassis ID Port ID\n"
+                    "AP-A GE1/0/2 0011-2233-4401 GE1/0/48\n"
+                    "AP-B GE1/0/2 0011-2233-4402 GE1/0/48\n"
+                ),
+            ),
+            ApLedgerSource(
+                station_name="乙站", switch_name="SW-B",
+                lldp_output=(
+                    "System Name Local Interface Chassis ID Port ID\n"
+                    "AP-A GE1/0/9 0011-2233-4401 GE1/0/48\n"
+                ),
+            ),
+        ),
+    )
+
+    assert not report.rows
+    assert report.stats["conflict_rows"] >= 3
+    assert all(row.status == "CONFLICT" for row in report.conflicts)
+
+
+def test_multi_source_ledger_collapses_identical_observations_and_keeps_name_difference() -> None:
+    report = build_ap_ledger_from_sources(
+        ac_ap_all_output="AP-AC 1 R WA6320 SN-AC\n",
+        ac_ap_address_output="AP Name IP Address MAC Address\nAP-AC 10.0.0.1 0011-2233-4401\n",
+        sources=(
+            ApLedgerSource(
+                station_name="甲站", switch_name="SW-A", source_file="a.txt",
+                lldp_output="System Name Local Interface Chassis ID Port ID\nAP-LLDP GE1/0/2 0011-2233-4401 GE1/0/48\n",
+            ),
+            ApLedgerSource(
+                station_name="甲站", switch_name="SW-A", source_file="b.txt",
+                lldp_output="System Name Local Interface Chassis ID Port ID\nAP-LLDP GE1/0/2 0011-2233-4401 GE1/0/48\n",
+            ),
+        ),
+    )
+    assert len(report.rows) == 1
+    assert report.rows[0].reason.startswith("MAC 精确匹配但名称字段不同")
+    assert not report.conflicts

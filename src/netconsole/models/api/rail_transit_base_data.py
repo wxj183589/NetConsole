@@ -608,6 +608,13 @@ class TracksideApDTO(ApiModel):
     line_side_derivation_issue_code: str = ""
     line_side_derivation_issue_message: str = ""
     direction: str = ""
+    uplink_switch: str = ""
+    uplink_port: str = ""
+    build_phase: str = ""
+    source_type: str = ""
+    source_device: str = ""
+    source_timestamp: str = ""
+    lldp_neighbor_interface: str = ""
     location_class: Literal[
         "MAINLINE",
         "DEPOT",
