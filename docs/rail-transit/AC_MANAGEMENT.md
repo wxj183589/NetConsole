@@ -197,6 +197,7 @@ Mesh-Link `refresh` 只接受 `controller_id` 和 `include_switch_history`。请
 screen-length disable
 display clock
 display wlan mesh-link ap
+display wlan mesh-link ap all  # V5 不支持默认命令时的只读兼容回退
 display wlan mesh-link switch-history  # 仅布尔开关启用
 ```
 

@@ -28,6 +28,7 @@ from netconsole.services.device_scope import filter_current_debug_devices
 from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.online_mr_collector import NetmikoShellConnection
 from netconsole.services.vehicle_mr_online import (
+    H3CComwareV5VehicleMrMeshLinkParser,
     H3CComwareV9VehicleMrMeshLinkParser,
     MatchedAp,
     UNKNOWN_STATION,
@@ -49,8 +50,9 @@ MESH_LINK_REFRESH_COMMANDS = (
     "display clock",
     "display wlan mesh-link ap",
 )
+MESH_LINK_V5_COMMAND = "display wlan mesh-link ap all"
 MESH_LINK_SWITCH_HISTORY_COMMANDS = ("display wlan mesh-link switch-history",)
-MESH_LINK_PARSER_VERSION = "H3CComwareV9VehicleMrMeshLinkParser/v1"
+MESH_LINK_PARSER_VERSION = "H3CComwareVehicleMrMeshLinkParser/v2"
 
 _COMMAND_FAILURE_MARKERS = (
     "% unrecognized command",
@@ -345,6 +347,12 @@ class AcMeshLinkRefreshWorkerService:
             )
 
     @staticmethod
+    def _needs_v5_fallback(output: str) -> bool:
+        text = str(output or "")
+        lowered = text.casefold()
+        return not text.strip() or any(marker in lowered for marker in _COMMAND_FAILURE_MARKERS)
+
+    @staticmethod
     def _is_valid_empty(output: str) -> bool:
         text = str(output or "")
         lowered = text.casefold()
@@ -370,7 +378,10 @@ class AcMeshLinkRefreshWorkerService:
     ) -> None:
         raw_dir = staging / "raw"
         raw_dir.mkdir(parents=True, exist_ok=False)
-        mesh_text = "\n\n".join(f"$ {command}\n{outputs.get(command, '')}" for command in MESH_LINK_REFRESH_COMMANDS)
+        commands = [*MESH_LINK_REFRESH_COMMANDS]
+        if MESH_LINK_V5_COMMAND in outputs:
+            commands.append(MESH_LINK_V5_COMMAND)
+        mesh_text = "\n\n".join(f"$ {command}\n{outputs.get(command, '')}" for command in commands)
         self._write_text_atomic(raw_dir / "mesh_link_raw.log", mesh_text.rstrip() + "\n")
         if history_output:
             command = MESH_LINK_SWITCH_HISTORY_COMMANDS[0]
@@ -562,6 +573,22 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
             )
 
             mesh_output = outputs[MESH_LINK_REFRESH_COMMANDS[-1]]
+            parser: H3CComwareV9VehicleMrMeshLinkParser = H3CComwareV9VehicleMrMeshLinkParser()
+            if self._needs_v5_fallback(mesh_output):
+                context.check_cancelled()
+                try:
+                    v5_output = str(
+                        connection.send_command(MESH_LINK_V5_COMMAND, command_timeout) or ""
+                    )
+                except Exception as command_error:
+                    query_timed_out = query_timed_out or _looks_like_timeout(command_error)
+                    raise AcMeshLinkConnectionError(
+                        AcMeshLinkRefreshErrorCode.COMMAND_FAILED,
+                        "Mesh-Link V5 兼容命令执行失败，当前会话需要重连。",
+                    ) from None
+                outputs[MESH_LINK_V5_COMMAND] = v5_output
+                mesh_output = v5_output
+                parser = H3CComwareV5VehicleMrMeshLinkParser()
             clock_output = outputs[MESH_LINK_REFRESH_COMMANDS[1]]
             warnings: list[str] = []
             if not self._has_device_clock(clock_output):
@@ -578,7 +605,7 @@ class AcMeshLinkSnapshotCollector(AcMeshLinkRefreshWorkerService):
                 source_type=source_type,
             )
             self._validate_mesh_output(mesh_output)
-            parse_result = H3CComwareV9VehicleMrMeshLinkParser().parse(
+            parse_result = parser.parse(
                 f"{clock_output}\n{mesh_output}"
             )
             if parse_result.parse_status.casefold() not in {"ok", "success"}:
@@ -845,6 +872,7 @@ __all__ = [
     "AcMeshLinkSnapshotCollector",
     "MESH_LINK_PARSER_VERSION",
     "MESH_LINK_REFRESH_COMMANDS",
+    "MESH_LINK_V5_COMMAND",
     "MESH_LINK_REFRESH_TASK_TYPE",
     "MESH_LINK_SWITCH_HISTORY_COMMANDS",
     "load_mesh_link_controller",

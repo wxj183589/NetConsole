@@ -61,6 +61,10 @@ SAFE_DEVICE_INVENTORY_COLLECT_COMMANDS = frozenset(
 )
 
 SAFE_AC_COMMANDS = SAFE_DEVICE_COMMANDS | {
+    "display clock",
+    "display wlan mesh-link ap",
+    "display wlan mesh-link ap all",
+    "display wlan mesh-link switch-history",
     "display wlan ap all",
     "display wlan ap all address",
     "display wlan ap all radio",

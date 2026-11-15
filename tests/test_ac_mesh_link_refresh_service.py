@@ -138,6 +138,33 @@ AP name: AP-Online
     assert links[0].mr_mac == "1000-0000-0012"
 
 
+def test_refresh_falls_back_to_v5_command_and_keeps_both_raw_responses(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    v5_output = """<AC-TEST>display wlan mesh-link ap all
+Local AP Name : AP-V5-01
+Peer AP Name : 列车12-MR-CT
+Peer AP MAC : 1000-0000-0012
+Local AP MAC : 0000-0001-0001
+Status : Forwarding
+RSSI : 50
+Packets(Rx/Tx) : 10/8
+"""
+    outputs = _outputs()
+    outputs["display wlan mesh-link ap"] = "% Unrecognized command found at '^' position."
+    outputs["display wlan mesh-link ap all"] = v5_output
+    connection = _FakeConnection(outputs)
+    service = AcMeshLinkRefreshWorkerService(paths, connection_factory=lambda _config: connection)
+
+    result = service.execute(_context(paths))
+
+    assert result["records_count"] == 1
+    assert connection.commands[-1] == "display wlan mesh-link ap all"
+    raw_path = paths.ac_mesh_link_snapshot_dir("site-a", str(result["session_id"])) / "raw" / "mesh_link_raw.log"
+    raw = raw_path.read_text(encoding="utf-8")
+    assert "$ display wlan mesh-link ap all" in raw
+    assert "AP-V5-01" in raw
+
+
 def test_valid_empty_response_creates_zero_link_snapshot(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     empty = """<AC-TEST>display wlan mesh-link ap
