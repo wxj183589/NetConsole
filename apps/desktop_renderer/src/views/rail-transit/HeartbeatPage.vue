@@ -63,9 +63,9 @@ function apSummary(mr: GroundHeartbeatMr): string { return associatedAps(mr).map
 const apRows = computed(() => heartbeatMrs.value.slice().sort((a, b) => `${a.train_no}-${a.role}`.localeCompare(`${b.train_no}-${b.role}`, undefined, { numeric: true })))
 const syslogRows = computed(() => apRows.value.filter((mr) => (!onlineOnly.value || mr.status === 'ONLINE') && (!role.value || mr.role === role.value)))
 const selectableSyslogRows = computed(() => syslogRows.value.filter((mr) => !!mr.management_ip?.trim()))
-const joinAllowed = computed(() => selectedSyslogMrs.value.some((id) => selectableSyslogRows.value.some((mr) => mr.mr_uuid === id && mr.status === 'ONLINE')))
-const exitAllowed = computed(() => selectedSyslogMrs.value.some((id) => selectableSyslogRows.value.some((mr) => mr.mr_uuid === id && ['CONFIGURED', 'FAILED', 'UNKNOWN'].includes(mr.syslog_status || ''))))
 const dataState = computed(() => heartbeat.value?.data_state || '')
+const joinAllowed = computed(() => dataState.value === 'RUNNING' && selectedSyslogMrs.value.some((id) => selectableSyslogRows.value.some((mr) => mr.mr_uuid === id && mr.status === 'ONLINE')))
+const exitAllowed = computed(() => selectedSyslogMrs.value.some((id) => selectableSyslogRows.value.some((mr) => mr.mr_uuid === id && ['CONFIGURED', 'FAILED', 'UNKNOWN'].includes(mr.syslog_status || ''))))
 const dataStateMessage = computed(() => heartbeat.value?.data_state_message || '')
 const heartbeatStats = computed(() => heartbeat.value?.heartbeat_statistics)
 async function loadHeartbeat(): Promise<void> {
