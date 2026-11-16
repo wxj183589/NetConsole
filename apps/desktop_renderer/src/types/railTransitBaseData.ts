@@ -650,6 +650,12 @@ export interface MergePlanItem {
   conflict_summary: string
   field_diffs: MergeFieldDiff[]
   source_values: Record<string, unknown>
+  station_source_name?: string
+  station_match_status?: 'resolved' | 'missing' | 'ambiguous'
+  station_match_name?: string
+  station_match_method?: string
+  station_candidate_ids?: string[]
+  station_candidate_names?: string[]
   blocking: boolean
   issues: DataQualityIssue[]
 }

@@ -8,6 +8,7 @@ import sqlite3
 
 from openpyxl import Workbook
 
+from netconsole.core.sources.ap_extension_import import standard_template_headers
 from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
@@ -127,6 +128,38 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
     assert result.merge_plan.items[1].result == "INVALID"
     assert result.merge_plan.items[1].issues[0].code == "ap_mac_placeholder"
     assert _fingerprint(db_path) == before
+
+
+def test_import_preview_uses_standard_data_sheets_only(tmp_path: Path) -> None:
+    paths, _db_path = build_rail_transit_base_data_fixture(tmp_path)
+    service = RailTransitImportPreviewService(RailTransitBaseDataQueryService(paths))
+    workbook = Workbook()
+    data_sheet = workbook.active
+    data_sheet.title = "轨旁AP"
+    headers = list(standard_template_headers())
+    data_sheet.append(headers)
+    row = [""] * len(headers)
+    row[headers.index("车站")] = "车站A"
+    row[headers.index("AP编号")] = "AP-001"
+    row[headers.index("AP MAC")] = "0011-2233-44AA"
+    data_sheet.append(row)
+    description_sheet = workbook.create_sheet("字段说明")
+    description_sheet.append(["字段", "说明"])
+    description_sheet.append(["AP MAC", "字段说明不应被当作数据"])
+    content = BytesIO()
+    workbook.save(content)
+
+    result = service.preview(
+        site_id="demo",
+        file_name="official-template.xlsx",
+        content=content.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    assert result.template_type == "netconsole_standard_template"
+    assert result.total_rows == 1
+    assert result.sheet_names == ["轨旁AP"]
+    assert result.rows[0].values["ap_point_code"] == "AP-001"
 
 
 def test_import_preview_derives_line_side_and_warns_on_explicit_conflict(tmp_path: Path) -> None:
@@ -322,3 +355,131 @@ def test_import_preview_blocks_special_location_that_participates_in_mainline(
         issue.code == "ap_mainline_participation_conflict"
         for issue in result.merge_plan.items[0].issues
     )
+
+
+def _insert_formal_station(
+    db_path: Path,
+    *,
+    station_id: str,
+    name: str,
+    source_station_value: str = "",
+) -> None:
+    metadata = {
+        "node_uid": f"node:{station_id}",
+        "source_station_value": source_station_value,
+        "canonical_station_name": name,
+        "source_kind": "manual",
+    }
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, ap_point_code,
+                source_file, raw_payload_json, created_at, updated_at
+            ) VALUES ('demo', '__base_station__', ?, ?, '-', 'manual-base-data', ?, 'now', 'now')
+            """,
+            (station_id, name, json.dumps(metadata, ensure_ascii=False)),
+        )
+        connection.commit()
+
+
+def test_import_preview_resolves_formal_station_id_and_preserves_switch_port_values(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    _insert_formal_station(
+        db_path,
+        station_id="station:jiubao",
+        name="九堡",
+        source_station_value="11九堡",
+    )
+    service = RailTransitImportPreviewService(RailTransitBaseDataQueryService(paths))
+
+    result = service.preview(
+        site_id="demo",
+        file_name="official.json",
+        content=json.dumps(
+            [
+                {
+                    "station_name": "11九堡",
+                    "ap_name": "AP-IMPORT",
+                    "ap_mac_display": "0011-2233-4499",
+                    "uplink_switch": "S914-WMZ-S7503E-M",
+                    "uplink_port": "GigabitEthernet1/0/10",
+                    "build_phase": "一期",
+                }
+            ],
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        content_type="application/json",
+    )
+
+    assert result.merge_plan is not None
+    item = result.merge_plan.items[0]
+    assert item.station_match_status == "resolved"
+    assert item.station_match_method == "station_name_exact"
+    assert item.station_match_name == "九堡"
+    assert item.station_candidate_ids == ["station:jiubao"]
+    assert item.source_values["station_id"] == "station:jiubao"
+    assert item.source_values["station_name"] == "九堡"
+    assert item.source_values["uplink_switch"] == "S914-WMZ-S7503E-M"
+    assert item.source_values["uplink_port"] == "GigabitEthernet1/0/10"
+    assert json.loads(item.source_values["raw_payload_json"])["build_phase"] == "一期"
+    assert not any(issue.code == "station_missing" for issue in item.issues)
+
+
+def test_import_preview_keeps_missing_and_ambiguous_formal_station_unresolved(
+    tmp_path: Path,
+) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    _insert_formal_station(db_path, station_id="station:ambiguous-a", name="观音塘")
+    _insert_formal_station(
+        db_path,
+        station_id="station:ambiguous-b",
+        name="11-观音塘",
+        source_station_value="11观音塘",
+    )
+    service = RailTransitImportPreviewService(RailTransitBaseDataQueryService(paths))
+
+    result = service.preview(
+        site_id="demo",
+        file_name="station-cases.json",
+        content=json.dumps(
+            [
+                {
+                    "station_name": "观音塘",
+                    "ap_name": "AP-AMBIGUOUS",
+                    "ap_mac_display": "0011-2233-4451",
+                },
+                {
+                    "station_name": "不存在站",
+                    "ap_name": "AP-MISSING",
+                    "ap_mac_display": "0011-2233-4452",
+                },
+                {
+                    "station_name": "3号航站楼",
+                    "ap_name": "AP-ID",
+                    "ap_mac_display": "0011-2233-4453",
+                    "station_id": "station:ambiguous-a",
+                },
+            ],
+            ensure_ascii=False,
+        ).encode("utf-8"),
+        content_type="application/json",
+    )
+
+    assert result.merge_plan is not None
+    ambiguous, missing, explicit_id = result.merge_plan.items
+    assert ambiguous.station_match_status == "ambiguous"
+    assert set(ambiguous.station_candidate_ids) == {
+        "station:ambiguous-a",
+        "station:ambiguous-b",
+    }
+    assert ambiguous.source_values["station_id"] == ""
+    assert any(issue.code == "station_ambiguous" for issue in ambiguous.issues)
+    assert missing.station_match_status == "missing"
+    assert missing.source_values["station_id"] == ""
+    assert any(issue.code == "station_missing" for issue in missing.issues)
+    assert explicit_id.station_match_status == "resolved"
+    assert explicit_id.source_values["station_id"] == "station:ambiguous-a"
+    assert explicit_id.source_values["station_name"] == "观音塘"

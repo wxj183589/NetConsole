@@ -14,7 +14,12 @@ from netconsole.models.api.rail_transit_base_data import (
     ImportPreviewResultDTO,
     ImportPreviewRowDTO,
 )
-from netconsole.services.ap_extension_import import AP_SWITCH_PORT_POINT_TABLE, ApExtensionImportService, normalize_ap_mac
+from netconsole.services.ap_extension_import import (
+    AP_SWITCH_PORT_POINT_TABLE,
+    STANDARD_TEMPLATE_TYPE,
+    ApExtensionImportService,
+    normalize_ap_mac,
+)
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 from netconsole.services.rail_transit.ap_line_side_service import (
@@ -22,6 +27,10 @@ from netconsole.services.rail_transit.ap_line_side_service import (
     line_side_metadata,
 )
 from netconsole.services.rail_transit.source_policy import is_blocking_issue
+from netconsole.services.rail_transit.station_import_match import (
+    StationImportMatch,
+    resolve_station_import_match,
+)
 from netconsole.services.rail_transit.trackside_ap_location import (
     default_participates_in_mainline,
     normalize_location_class,
@@ -74,6 +83,7 @@ _SAFE_FIELDS = (
     "fiber_distribution",
     "uplink_switch",
     "uplink_port",
+    "station_id",
     "build_phase",
     "source_type",
     "source_device",
@@ -131,13 +141,27 @@ class RailTransitImportPreviewService:
                 path = Path(directory) / f"preview{suffix}"
                 path.write_bytes(content)
                 preview = self.ap_importer.preview_file(path)
-                rows = preview.standard_rows
+                data_sheets = [
+                    sheet
+                    for sheet in preview.sheets
+                    if sheet.template_type == STANDARD_TEMPLATE_TYPE
+                ]
+                if data_sheets:
+                    rows = [row for sheet in data_sheets for row in sheet.rows]
+                    parser_issues = [
+                        issue
+                        for sheet in data_sheets
+                        for issue in sheet.issues
+                    ]
+                else:
+                    rows = preview.standard_rows
+                    parser_issues = [issue for sheet in preview.sheets for issue in sheet.issues]
                 template_type = preview.template_type
                 confidence = preview.confidence_score
-                parser_issues = [issue for sheet in preview.sheets for issue in sheet.issues]
         if len(rows) > MAX_IMPORT_PREVIEW_ROWS:
             raise ValueError(f"导入预览最多支持 {MAX_IMPORT_PREVIEW_ROWS} 行")
         known_stations, known_sections = self.query_service.known_locations(site_id)
+        formal_stations = self._formal_stations(site_id)
         formal_sections = self._all_sections(site_id)
         site_metadata = self.query_service.get_summary(site_id).model_dump()
         try:
@@ -184,6 +208,7 @@ class RailTransitImportPreviewService:
                 values["section_name"] = derivation.matched_section.name
                 values["section_start_station"] = derivation.matched_section.start_station
                 values["section_end_station"] = derivation.matched_section.end_station
+            station_match = self._resolve_station(values, formal_stations)
             if derivation.issue_code:
                 row_issues.append(
                     self._issue(
@@ -206,6 +231,7 @@ class RailTransitImportPreviewService:
                     fit_ap_macs=fit_ap_macs,
                 )
             )
+            self._append_station_match_issue(row_issues, row_number, values, station_match)
             row_issues = self._deduplicate_issues(row_issues)
             output.append(ImportPreviewRowDTO(row_number=row_number, values=values, issues=row_issues))
         merge_plan = self.import_service.build_merge_plan(
@@ -361,6 +387,77 @@ class RailTransitImportPreviewService:
             if len(result) >= page_data.total or not page_data.items:
                 return result
             page += 1
+
+    def _formal_stations(self, site_id: str) -> list[Any]:
+        result: list[Any] = []
+        page = 1
+        while True:
+            page_data = self.query_service.list_stations(site_id, page=page, page_size=200)
+            result.extend(
+                station
+                for station in page_data.items
+                if station.source_kind != "legacy_ap_derived"
+            )
+            if len(result) >= page_data.total or not page_data.items:
+                return result
+            page += 1
+
+    @staticmethod
+    def _resolve_station(values: dict[str, Any], formal_stations: list[Any]) -> StationImportMatch:
+        source_name = str(values.get("station_name") or "").strip()
+        match = resolve_station_import_match(values, formal_stations)
+        values["_station_source_name"] = source_name
+        values["_station_match_status"] = match.status
+        values["_station_match_method"] = match.method
+        values["_station_candidate_ids"] = list(match.candidate_ids)
+        values["_station_candidate_names"] = list(match.candidate_names)
+        values["_station_match_name"] = match.station_name
+        if match.status == "resolved":
+            values["station_id"] = match.station_id
+            values["station_name"] = match.station_name
+        else:
+            values["station_id"] = ""
+            values["station_name"] = source_name
+        return match
+
+    @staticmethod
+    def _append_station_match_issue(
+        issues: list[DataQualityIssueDTO],
+        row_number: int,
+        values: dict[str, Any],
+        match: StationImportMatch,
+    ) -> None:
+        source_name = str(values.get("_station_source_name") or "").strip()
+        if not source_name:
+            return
+        if match.status == "missing":
+            issues.append(
+                DataQualityIssueDTO(
+                    severity="warning",
+                    code="station_missing",
+                    entity_type="ap",
+                    row_number=row_number,
+                    field_name="station_name",
+                    original_value=source_name,
+                    message="导入站点未匹配当前局点的正式站点",
+                    suggested_action="先维护正式站点，再重新预览或在草稿中人工关联",
+                    blocking=False,
+                )
+            )
+        elif match.status == "ambiguous":
+            issues.append(
+                DataQualityIssueDTO(
+                    severity="warning",
+                    code="station_ambiguous",
+                    entity_type="ap",
+                    row_number=row_number,
+                    field_name="station_name",
+                    original_value=source_name,
+                    message="导入站点匹配到多个正式站点，未自动选择",
+                    suggested_action="核对候选正式站点后在草稿中人工确认",
+                    blocking=False,
+                )
+            )
 
     @staticmethod
     def _metadata_object(value: object) -> dict[str, Any]:

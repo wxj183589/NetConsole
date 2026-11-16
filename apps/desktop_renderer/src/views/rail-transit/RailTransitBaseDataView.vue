@@ -619,6 +619,9 @@ const mergeColumns: NcTableColumn<MergePlanItem>[] = [
   { key: 'ap_point_code', label: '点位编号', minWidth: 130, displayValue: (row) => display(row.source_values.ap_point_code) },
   { key: 'ap_mac', label: 'AP MAC', valueType: 'mac', minWidth: 150, displayValue: (row) => display(row.source_identity.ap_mac) },
   { key: 'station_name', label: '归属站点', minWidth: 130, displayValue: (row) => display(row.source_values.station_name) },
+  { key: 'station_match_status', label: '站点匹配', width: 110, displayValue: (row) => row.station_match_status === 'resolved' ? '已匹配' : row.station_match_status === 'ambiguous' ? '多候选' : '缺失' },
+  { key: 'station_match_name', label: '正式站点', minWidth: 150, displayValue: (row) => display(row.station_match_name) },
+  { key: 'station_candidate_names', label: '候选正式站点', minWidth: 180, displayValue: (row) => (row.station_candidate_names || []).join('、') || '--' },
   { key: 'section_name', label: '归属区间', minWidth: 210, displayValue: (row) => display(row.source_values.section_name) },
   { key: 'direction', label: '线路方向', width: 100, displayValue: (row) => display(row.source_values.direction) },
   { key: 'location_class_original', label: '原始位置类型', minWidth: 130, displayValue: (row) => display(row.source_values.location_class_original) },
@@ -1885,6 +1888,17 @@ function sectionValues(row: Section): Record<string, unknown> {
   }
 }
 function apValues(row: TracksideAp): Record<string, unknown> {
+  const projectedMetadata = { ...row.base_metadata }
+  for (const field of [
+    'build_phase', 'source_type', 'source_device', 'source_timestamp', 'lldp_neighbor_interface',
+    'system_type', 'network_domain', 'belong_type', 'yard_name', 'area_name', 'distance_to_prev_m',
+    'curve_radius_m', 'curve_start_text', 'curve_end_text', 'install_scene', 'location_desc',
+    'power_station', 'power_distribution', 'fiber_access_station', 'fiber_distribution',
+    'uplink_switch', 'uplink_port', 'optical_port',
+  ]) {
+    const rowValue = (row as unknown as Record<string, unknown>)[field]
+    if (rowValue !== null && rowValue !== undefined && rowValue !== '') projectedMetadata[field] = rowValue
+  }
   return {
     line_name: row.line_name,
     ap_name: row.name,
@@ -1907,10 +1921,10 @@ function apValues(row: TracksideAp): Record<string, unknown> {
     source_file: row.source_file,
     source_sheet: row.source_sheet,
     source_row: row.source_row,
-    base_metadata: row.base_metadata,
+    base_metadata: projectedMetadata,
     ...Object.fromEntries(
       ['system_type', 'network_domain', 'belong_type', 'yard_name', 'area_name', 'distance_to_prev_m', 'curve_radius_m', 'curve_start_text', 'curve_end_text', 'install_scene', 'location_desc', 'power_station', 'power_distribution', 'fiber_access_station', 'fiber_distribution', 'uplink_switch', 'uplink_port', 'optical_port']
-        .map((field) => [field, row.base_metadata[field] ?? '']),
+        .map((field) => [field, projectedMetadata[field] ?? '']),
     ),
   }
 }
@@ -2722,6 +2736,7 @@ async function handleApply(): Promise<void> {
         for (const [field, value] of Object.entries(item.source_values)) {
           if (value !== null && value !== '') applyImportedApValue(row, field, value)
         }
+        applyImportedApStationMatch(row, item, true, true)
         editingDraft.value.aps.push(row)
         markAp(row)
         applied += 1
@@ -2729,16 +2744,21 @@ async function handleApply(): Promise<void> {
       }
       const row = editingDraft.value.aps.find((candidate) => candidate.id === item.matched_entity_id)
       if (!row) continue
+      let stationIdApplied = false
+      let stationNameApplied = false
       for (const diff of item.field_diffs) {
         const selected = decisions.get(decisionKey(item.row_number, diff.field_name))
         if (diff.action === 'manual_review' && selected !== 'use_imported') continue
         if (diff.action === 'keep_existing') continue
         applyImportedApValue(row, diff.field_name, diff.proposed_value)
+        stationIdApplied ||= diff.field_name === 'station_id'
+        stationNameApplied ||= diff.field_name === 'station_name'
       }
       for (const field of ['source_file', 'source_sheet', 'source_row', 'raw_payload_json']) {
         const value = item.source_values[field]
         if (value !== null && value !== '') applyImportedApValue(row, field, value)
       }
+      applyImportedApStationMatch(row, item, stationIdApplied, stationNameApplied)
       markAp(row)
       applied += 1
     }
@@ -2764,7 +2784,16 @@ function applyImportedApValue(row: TracksideAp, field: string, value: unknown): 
   else if (field === 'ap_vendor') row.vendor = text
   else if (field === 'ap_mac_display') row.mac = text
   else if (field === 'ap_mac_norm' && !row.mac) row.mac = text.replace(/[^0-9a-f]/gi, '').replace(/^(.{4})(.{4})(.{4})$/, '$1-$2-$3')
-  else if (field === 'station_name') row.station = text
+  else if (field === 'station_id') {
+    const station = stationRows.value.find((item) => item.id === text)
+    row.station_id = station ? text : ''
+    row.station = station?.name || row.station
+    row.station_relation_status = station ? 'resolved' : 'missing'
+    row.candidate_station_ids = []
+  } else if (field === 'station_name') {
+    row.station = text
+    if (!row.station_id) row.station_relation_status = 'missing'
+  }
   else if (field === 'section_name') row.section = text
   else if (field === 'section_start_station') row.section_start_station = text
   else if (field === 'section_end_station') row.section_end_station = text
@@ -2774,7 +2803,28 @@ function applyImportedApValue(row: TracksideAp, field: string, value: unknown): 
   else if (field === 'participates_in_mainline') row.participates_in_mainline = Boolean(value)
   else if (field === 'location_class_source') row.location_class_source = text || 'DEFAULT_MAINLINE'
   else if (field === 'mileage_text') row.mileage = { ...row.mileage, raw: text, normalized: text }
-  else if (field === 'remark') row.remark = text
+  else if (field === 'uplink_switch') {
+    row.uplink_switch = text
+    row.base_metadata.uplink_switch = text
+  } else if (field === 'uplink_port') {
+    row.uplink_port = text
+    row.base_metadata.uplink_port = text
+  } else if (field === 'build_phase') {
+    row.build_phase = text
+    row.base_metadata.build_phase = text
+  } else if (field === 'source_type') {
+    row.source_type = text
+    row.base_metadata.source_type = text
+  } else if (field === 'source_device') {
+    row.source_device = text
+    row.base_metadata.source_device = text
+  } else if (field === 'source_timestamp') {
+    row.source_timestamp = text
+    row.base_metadata.source_timestamp = text
+  } else if (field === 'lldp_neighbor_interface') {
+    row.lldp_neighbor_interface = text
+    row.base_metadata.lldp_neighbor_interface = text
+  } else if (field === 'remark') row.remark = text
   else if (field === 'source_file') row.source_file = text
   else if (field === 'source_sheet') row.source_sheet = text
   else if (field === 'source_row') row.source_row = Number.isFinite(Number(value)) ? Number(value) : null
@@ -2787,6 +2837,31 @@ function applyImportedApValue(row: TracksideAp, field: string, value: unknown): 
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) row.base_metadata = { ...row.base_metadata, ...parsed }
     } catch { /* 无效来源元数据不影响已校验的正式字段。 */ }
   } else if (!['id', 'mileage_m'].includes(field)) row.base_metadata[field] = value
+}
+
+function applyImportedApStationMatch(
+  row: TracksideAp,
+  item: MergePlanItem,
+  stationIdApplied: boolean,
+  stationNameApplied: boolean,
+): void {
+  if (!stationIdApplied && !stationNameApplied) return
+  const status = item.station_match_status || 'missing'
+  const candidateIds = item.station_candidate_ids || []
+  if (status === 'resolved' && item.source_values.station_id) {
+    const station = stationRows.value.find((candidate) => candidate.id === String(item.source_values.station_id))
+    if (station) {
+      row.station_id = station.id
+      row.station = station.name
+      row.station_relation_status = 'resolved'
+      row.candidate_station_ids = []
+      return
+    }
+  }
+  row.station_id = ''
+  row.station = String(item.source_values.station_name || row.station || '')
+  row.station_relation_status = status === 'ambiguous' ? 'ambiguous' : 'missing'
+  row.candidate_station_ids = status === 'ambiguous' ? [...candidateIds] : []
 }
 
 function setApLocationClass(row: TracksideAp, locationClass: TracksideApLocationClass): void {

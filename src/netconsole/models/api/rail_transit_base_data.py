@@ -819,6 +819,12 @@ class MergePlanItemDTO(ApiModel):
     conflict_summary: str = ""
     field_diffs: list[MergeFieldDiffDTO] = Field(default_factory=list)
     source_values: dict[str, Any] = Field(default_factory=dict)
+    station_source_name: str = ""
+    station_match_status: Literal["resolved", "missing", "ambiguous"] = "missing"
+    station_match_name: str = ""
+    station_match_method: str = ""
+    station_candidate_ids: list[str] = Field(default_factory=list)
+    station_candidate_names: list[str] = Field(default_factory=list)
     blocking: bool = False
     issues: list[DataQualityIssueDTO] = Field(default_factory=list)
 

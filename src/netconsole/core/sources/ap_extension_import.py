@@ -41,6 +41,7 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "参与正线判断",
         "participates_in_mainline",
     ),
+    "station_id": ("站点ID", "站点 ID", "station_id", "station id"),
     "station_name": ("车站", "站点", "归属站点", "站名", "station_name"),
     "section_name": ("归属区间", "轨旁AP归属区间", "区间", "section_name"),
     "section_start_station": ("区间起点站", "起点站", "section_start_station"),
