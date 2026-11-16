@@ -159,9 +159,9 @@ describe('persisted heartbeat UI', () => {
     const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
     await flushPromises()
     const vm = wrapper.vm as unknown as {
-      openMenu: (event: MouseEvent, mr: typeof mr) => void;
-      controlSyslog: (mode: 'JOIN' | 'EXIT', mr?: typeof mr) => Promise<void>;
-      canQuickSyslog: (mr: typeof mr, mode: 'JOIN' | 'EXIT') => boolean;
+      openMenu: (event: MouseEvent, entry: typeof mr) => void;
+      controlSyslog: (mode: 'JOIN' | 'EXIT', entry?: typeof mr) => Promise<void>;
+      canQuickSyslog: (entry: typeof mr, mode: 'JOIN' | 'EXIT') => boolean;
       menu: { mr: typeof mr } | null;
     }
     expect(vm.canQuickSyslog(mr, 'JOIN')).toBe(true)
