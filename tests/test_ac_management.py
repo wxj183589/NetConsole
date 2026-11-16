@@ -2171,6 +2171,12 @@ AP-OFFLINE-02                   -NA-                        1234-5678-9abc
     assert parsed["AP-OFFLINE-01"]["ap_mac"] is None
     assert parse_wlan_ap_summary(address)["offline_aps"] == 3
 
+    token_columns = parse_wlan_ap_addresses(
+        "AP-TOKEN -NA- 0011-2233-4455"
+    )
+    assert token_columns["AP-TOKEN"]["ap_ip"] is None
+    assert token_columns["AP-TOKEN"]["ap_mac"] == "0011-2233-4455"
+
     _summary, resources = h3c_ac_collect_service.parse_ac_resource_outputs(
         {
             "display wlan ap all": """

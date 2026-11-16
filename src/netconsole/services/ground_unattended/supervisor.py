@@ -341,7 +341,18 @@ class GroundUnattendedSupervisor:
 
     def _current_mrs(self) -> list[object]:
         try:
-            return list(self.base_query.list_mrs(self.site_id, page=1, page_size=1000).items)
+            first_page = self.base_query.list_mrs(self.site_id, page=1, page_size=200)
+            rows = list(first_page.items)
+            page = 2
+            while len(rows) < int(first_page.total):
+                next_page = self.base_query.list_mrs(
+                    self.site_id, page=page, page_size=200
+                )
+                if not next_page.items:
+                    break
+                rows.extend(next_page.items)
+                page += 1
+            return rows
         except Exception as exc:
             LOGGER.warning("Ground ARP MR 清单读取失败: site=%s error=%s", self.site_id, exc)
             return []

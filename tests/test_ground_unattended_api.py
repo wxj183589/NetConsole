@@ -56,6 +56,41 @@ def test_ground_profile_reader_ignores_future_additive_columns(tmp_path) -> None
     assert profile.enabled is True
 
 
+def test_ground_arp_status_projects_repository_internal_columns(tmp_path) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    app = create_app(paths=paths)
+    service = app.state.ground_unattended_application_service
+    service.supervisor.arp_status = lambda: {
+        "state": "IDLE",
+        "last_collection": {
+            "collection_id": "collection-1",
+            "requested_vlans_json": "[100]",
+            "status": "SUCCESS",
+            "raw_reference": "internal",
+            "created_at": "internal",
+        },
+        "latest_observations": [{
+            "observation_id": "observation-1",
+            "ip_address": "10.0.0.1",
+            "mac_address": "00:11:22:33:44:55",
+            "created_at": "internal",
+        }],
+        "identities": [{
+            "relation_id": "relation-1",
+            "mr_uuid": "mr-1",
+            "identity_mac": "00:11:22:33:44:55",
+            "created_at": "internal",
+        }],
+    }
+
+    status = service.arp_status("demo")
+
+    assert status.last_collection is not None
+    assert status.last_collection.requested_vlans == [100]
+    assert status.latest_observations[0].observation_id == "observation-1"
+    assert status.identities[0].mr_uuid == "mr-1"
+
+
 def test_ground_profile_reader_still_rejects_invalid_known_field_type(tmp_path) -> None:
     repository = GroundUnattendedRepository(
         tmp_path / "ground-unattended.sqlite", site_id="demo"

@@ -1143,15 +1143,7 @@ class GroundUnattendedRepository:
             conn.executescript(SCHEMA)
             self._migrate_multiple_same_day_runs(conn)
             self._ensure_columns(conn, "ground_unattended_profiles", _PROFILE_MIGRATION_COLUMNS)
-            # Older profiles only had the basic AC interval.  Preserve that
-            # effective cadence once when the canonical Mesh-Link interval is
-            # still its new default; subsequent edits use one visible field.
-            conn.execute(
-                "UPDATE ground_unattended_profiles "
-                "SET ac_mesh_link_poll_interval_seconds=ac_poll_interval_seconds "
-                "WHERE ac_mesh_link_poll_interval_seconds=300 "
-                "AND ac_poll_interval_seconds<>60"
-            )
+            self._migrate_legacy_ac_poll_interval(conn)
             self._ensure_columns(
                 conn,
                 "ground_unattended_ping_summaries",
@@ -1246,6 +1238,28 @@ class GroundUnattendedRepository:
                 """,
                 (_now(),),
             )
+
+    @staticmethod
+    def _migrate_legacy_ac_poll_interval(conn: sqlite3.Connection) -> None:
+        """Copy the legacy AC cadence once, without overwriting later edits."""
+
+        marker = "ac_mesh_link_poll_interval_v1"
+        if conn.execute(
+            "SELECT 1 FROM ground_unattended_schema WHERE key=?", (marker,)
+        ).fetchone():
+            return
+        conn.execute(
+            "UPDATE ground_unattended_profiles "
+            "SET ac_mesh_link_poll_interval_seconds=ac_poll_interval_seconds "
+            "WHERE ac_mesh_link_poll_interval_seconds=300 "
+            "AND ac_poll_interval_seconds<>60"
+        )
+        conn.execute(
+            "INSERT INTO ground_unattended_schema(key, value, updated_at) "
+            "VALUES(?, '1', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (marker, _now()),
+        )
 
     @staticmethod
     def _ensure_columns(

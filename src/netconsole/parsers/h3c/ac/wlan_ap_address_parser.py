@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 
 
 IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -57,14 +58,8 @@ def _parse_token_columns(stripped: str) -> tuple[str, str, str]:
     tokens = stripped.split()
     if len(tokens) < 2:
         return "", "", ""
-    ip_index = next(
-        (index for index, token in enumerate(tokens[1:], start=1) if _is_ip(token) or _is_na(token)),
-        -1,
-    )
-    mac_index = next(
-        (index for index, token in enumerate(tokens[1:], start=1) if _is_mac(token) or _is_na(token)),
-        -1,
-    )
+    ip_index = _first_token_index(tokens, _is_ip)
+    mac_index = _first_token_index(tokens, _is_mac)
     indexes = [index for index in (ip_index, mac_index) if index >= 1]
     if not indexes:
         return "", "", ""
@@ -73,6 +68,19 @@ def _parse_token_columns(stripped: str) -> tuple[str, str, str]:
     ip_value = tokens[ip_index] if ip_index >= 0 else ""
     mac_value = tokens[mac_index] if mac_index >= 0 else ""
     return ap_name, ip_value, mac_value
+
+
+def _first_token_index(tokens: list[str], predicate: Callable[[str], bool]) -> int:
+    valid = next(
+        (index for index, token in enumerate(tokens[1:], start=1) if predicate(token)),
+        -1,
+    )
+    if valid >= 0:
+        return valid
+    return next(
+        (index for index, token in enumerate(tokens[1:], start=1) if _is_na(token)),
+        -1,
+    )
 
 
 def _is_ip(value: str) -> bool:

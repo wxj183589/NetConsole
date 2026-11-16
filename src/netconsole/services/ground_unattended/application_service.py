@@ -518,9 +518,21 @@ class GroundUnattendedApplicationService:
                     last = {**last, "requested_vlans": json.loads(requested or "[]")}
                 except json.JSONDecodeError:
                     last = {**last, "requested_vlans": []}
-            last = GroundArpCollectionDTO.model_validate(last)
-        observations = [GroundArpObservationDTO.model_validate(row) for row in payload.get("latest_observations", [])]
-        identities = [GroundMrIdentityDTO.model_validate(row) for row in payload.get("identities", [])]
+            last = GroundArpCollectionDTO.model_validate(
+                project_row_for_model(last, GroundArpCollectionDTO)
+            )
+        observations = [
+            GroundArpObservationDTO.model_validate(
+                project_row_for_model(row, GroundArpObservationDTO)
+            )
+            for row in payload.get("latest_observations", [])
+        ]
+        identities = [
+            GroundMrIdentityDTO.model_validate(
+                project_row_for_model(row, GroundMrIdentityDTO)
+            )
+            for row in payload.get("identities", [])
+        ]
         return GroundArpStatusDTO(
             state=str(payload.get("state") or "IDLE"), last_collection=last,
             latest_observations=observations, identities=identities,
@@ -1019,8 +1031,18 @@ class GroundUnattendedApplicationService:
             start = max(start, datetime.fromisoformat(cleared_at))
         if not heartbeat.run_id or start >= end:
             return GroundMrMonitoringDTO(mr=mr, series=GroundPingSeriesDTO(),
-                                         identity_relations=[GroundMrIdentityDTO.model_validate(row) for row in identity_relations],
-                                         arp_observations=[GroundArpObservationDTO.model_validate(row) for row in arp_observations],
+                                         identity_relations=[
+                                             GroundMrIdentityDTO.model_validate(
+                                                 project_row_for_model(row, GroundMrIdentityDTO)
+                                             )
+                                             for row in identity_relations
+                                         ],
+                                         arp_observations=[
+                                             GroundArpObservationDTO.model_validate(
+                                                 project_row_for_model(row, GroundArpObservationDTO)
+                                             )
+                                             for row in arp_observations
+                                         ],
                                          identity_conflicts=conflicts,
                                          queried_start=start.isoformat(), queried_end=end.isoformat())
         series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
@@ -1034,8 +1056,18 @@ class GroundUnattendedApplicationService:
         intervals.extend(ac_peer_intervals(ac_rows, intervals))
         intervals.sort(key=lambda row: row["start"])
         return GroundMrMonitoringDTO(mr=mr, series=series, mesh_events=events, peer_intervals=intervals,
-                                     identity_relations=[GroundMrIdentityDTO.model_validate(row) for row in identity_relations],
-                                     arp_observations=[GroundArpObservationDTO.model_validate(row) for row in arp_observations],
+                                     identity_relations=[
+                                         GroundMrIdentityDTO.model_validate(
+                                             project_row_for_model(row, GroundMrIdentityDTO)
+                                         )
+                                         for row in identity_relations
+                                     ],
+                                     arp_observations=[
+                                         GroundArpObservationDTO.model_validate(
+                                             project_row_for_model(row, GroundArpObservationDTO)
+                                         )
+                                         for row in arp_observations
+                                     ],
                                      identity_conflicts=conflicts,
                                      run_sent_count=sum(ip.sent_count for ip in mr.ip_states),
                                      run_lost_count=sum(ip.lost_count for ip in mr.ip_states),
