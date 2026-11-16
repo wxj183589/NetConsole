@@ -166,3 +166,61 @@ def test_seven_column_import_resolves_station_id_before_merge(tmp_path: Path) ->
     assert row.values["uplink_port"] == "GigabitEthernet1/0/10"
     assert result.merge_plan is not None
     assert result.merge_plan.items[0].station_match_status == "resolved"
+
+
+def test_seven_column_export_with_field_notes_round_trips_only_data_rows(tmp_path: Path) -> None:
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, raw_payload_json,
+                created_at, updated_at
+            ) VALUES ('demo', '__base_station__', 'station:guanyintang', '观音塘站', ?,
+                      '2026-11-16', '2026-11-16')
+            """,
+            (json.dumps({"sort_order": 11, "node_type": "station"}, ensure_ascii=False),),
+        )
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, ap_name, ap_mac_norm,
+                ap_mac_display, raw_payload_json, created_at, updated_at
+            ) VALUES ('demo', 'station', 'station:guanyintang', '观音塘站', 'AP-STATIC-001',
+                      '001122334455', '00:11:22:33:44:55', ?, '2026-11-16', '2026-11-16')
+            """,
+            (
+                json.dumps(
+                    {
+                        "sort_order": 11,
+                        "node_type": "station",
+                        "uplink_switch": "SW-01",
+                        "uplink_port": "GigabitEthernet1/0/10",
+                        "build_phase": "一期",
+                        "location_class": "MAINLINE",
+                        "participates_in_mainline": True,
+                    },
+                    ensure_ascii=False,
+                ),
+            ),
+        )
+        connection.commit()
+
+    exported = tmp_path / "trackside-ap-export-with-field-notes.xlsx"
+    export_trackside_ap_base_xlsx_task(
+        exported,
+        {"app_root": str(paths.app_root), "data_root": str(paths.data_root), "site_id": "demo"},
+    )
+    result = RailTransitImportPreviewService(
+        RailTransitBaseDataQueryService(paths), temp_root=tmp_path / "preview-temp"
+    ).preview(
+        site_id="demo",
+        file_name=exported.name,
+        content=exported.read_bytes(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    assert result.template_type == "trackside_ap_base_template"
+    assert result.total_rows == 4  # Three fixture rows plus the exported AP.
+    imported = next(row for row in result.rows if row.values["ap_name"] == "AP-STATIC-001")
+    assert imported.values["station_id"] == "station:guanyintang"

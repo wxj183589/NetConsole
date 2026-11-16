@@ -145,7 +145,7 @@ class RailTransitImportPreviewService:
                 data_sheets = [
                     sheet
                     for sheet in preview.sheets
-                    if sheet.template_type == STANDARD_TEMPLATE_TYPE
+                    if sheet.template_type in {STANDARD_TEMPLATE_TYPE, TRACKSIDE_AP_BASE_TEMPLATE}
                 ]
                 if data_sheets:
                     rows = [row for sheet in data_sheets for row in sheet.rows]
