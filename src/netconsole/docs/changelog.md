@@ -7,6 +7,11 @@ v1.5.15 - 2026-11-16
 - `dev:codex`、Smoke、Installer 与 Portable 构建均使用隔离数据根，持久化数据根不可用时 fail closed。
 - 正式交付范围为 Full Installer 与 Full Portable；本版本为 `FIELD_VALIDATION_CANDIDATE`，真实现场 GUI、设备和长稳验收仍需单独完成。
 
+### 后续回归补充（PR #116，2026-11-16）
+
+- 补齐 Syslog 人工 JOIN/EXIT 在线状态门禁，以及 Quick Ping 丢包事件、取消后重启与历史保留、旧版 fping 时间戳兼容的自动化回归测试。
+- 本次补充仅涉及测试与验证，不改变 v1.5.15 运行功能或数据库 Schema；现场安装、升级和长稳验收仍待完成。
+
 v1.5.14 - 2026-11-14
 ### 正式维护与双包交付
 
