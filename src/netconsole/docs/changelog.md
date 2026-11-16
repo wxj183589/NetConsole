@@ -7,6 +7,13 @@ v1.5.15 - 2026-11-16
 - `dev:codex`、Smoke、Installer 与 Portable 构建均使用隔离数据根，持久化数据根不可用时 fail closed。
 - 正式交付范围为 Full Installer 与 Full Portable；本版本为 `FIELD_VALIDATION_CANDIDATE`，真实现场 GUI、设备和长稳验收仍需单独完成。
 
+### PR #116 分支审计与回归测试补齐（2026-11-16）
+
+- v1.5.15 分支审计后，通过 PR #116 将遗漏的 Ground 回归测试补入 `main`；该补充只修改测试代码，不改变业务运行逻辑、数据库 Schema 或产品版本。
+- 增强 Syslog 人工 JOIN 的 Heartbeat 在线状态门禁，以及 Heartbeat MR 上下文菜单 JOIN/EXIT 状态回归。
+- 补齐 Quick Ping 丢包事件默认折叠、取消目标后以新任务重启并保留历史、旧版无时区 fping 时间戳兼容的测试。
+- 最新代码与重新构建的制品须以实际最终 `main` Commit 为准；此前 `3504bb40` 双包继续保留为历史候选，不得覆盖或误标为最新构建。
+
 v1.5.14 - 2026-11-14
 ### 正式维护与双包交付
 
