@@ -1656,7 +1656,20 @@ class RailTransitBaseDataApplicationService:
                 if change["action"] != "delete":
                     station_id = str(values.get("station_id") or "")
                     section_id = str(values.get("section_id") or "")
-                    if values.get("station_name") and station_id not in projected_station_ids:
+                    location_class = str(values.get("location_class") or "MAINLINE")
+                    participates_in_mainline = bool(
+                        values.get(
+                            "participates_in_mainline",
+                            default_participates_in_mainline(
+                                normalize_location_class(location_class)
+                            ),
+                        )
+                    )
+                    if (
+                        values.get("station_name")
+                        and (location_class == "MAINLINE" or participates_in_mainline)
+                        and station_id not in projected_station_ids
+                    ):
                         issues.append(self._issue(index, "STATION_ID_INVALID", "轨旁 AP 必须关联有效 station_id", "station_id"))
                     if values.get("section_name") and section_id not in projected_section_ids:
                         issues.append(self._issue(index, "SECTION_ID_INVALID", "轨旁 AP 必须关联有效 section_id", "section_id"))

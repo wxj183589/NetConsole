@@ -58,6 +58,56 @@ def test_new_trackside_ap_without_location_defaults_to_mainline() -> None:
     assert values["location_class_source"] == "DEFAULT_MAINLINE"
 
 
+def test_non_mainline_trackside_ap_can_keep_location_name_without_station_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        revision = client.get("/api/rail-transit/base-data/revision").json()["base_revision"]
+        change = {
+            "entity_type": "trackside_ap",
+            "action": "create",
+            "entity_id": "new:depot-ap-001",
+            "values": {
+                "ap_name": "AP-DEPOT-001",
+                "ap_mac_display": "00:11:22:33:44:77",
+                "station_name": "昌达车辆段",
+                "station_id": "",
+                "location_class": "DEPOT",
+                "participates_in_mainline": False,
+                "location_class_source": "IMPORT_EXPLICIT",
+            },
+        }
+        validation = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={"site_id": "demo", "base_revision": revision, "changes": [change]},
+        )
+        saved = client.post(
+            "/api/rail-transit/base-data/changes",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "changes": [change],
+                "explicit_confirmation": True,
+            },
+        )
+
+    assert validation.status_code == 200, validation.text
+    assert validation.json()["valid"] is True, validation.text
+    assert saved.status_code == 200, saved.text
+    with Database(database).connect() as connection:
+        row = connection.execute(
+            """
+            SELECT station_id, station_name, location_class, participates_in_mainline
+            FROM ap_extension_points
+            WHERE ap_name = 'AP-DEPOT-001'
+            """
+        ).fetchone()
+    assert tuple(row) == ("", "昌达车辆段", "DEPOT", 0)
+
+
 def test_device_vehicle_mr_projection_is_visible_through_base_data_api(
     tmp_path: Path,
 ) -> None:
