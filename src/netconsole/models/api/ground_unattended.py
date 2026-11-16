@@ -118,7 +118,12 @@ class GroundUnattendedProfileDTO(ApiModel):
     )
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
     ac_poll_interval_seconds: int = Field(default=60, ge=3, le=300)
-    ac_mesh_link_poll_interval_seconds: int = Field(default=300, ge=30, le=3600)
+    ac_mesh_link_poll_interval_seconds: int = Field(default=300, ge=3, le=3600)
+    arp_collection_device_uuid: str = Field(default="", max_length=100)
+    arp_management_vlans: list[int] = Field(default_factory=list, max_length=64)
+    arp_startup_collection_enabled: bool = True
+    arp_auto_refresh_enabled: bool = False
+    arp_auto_refresh_interval_seconds: int = Field(default=300, ge=30, le=86_400)
     stationary_exclusion_minutes: int = Field(default=10, ge=1, le=180)
     ac_stale_grace_seconds: int = Field(default=120, ge=0, le=3600)
     ac_ping_correlation_tolerance_seconds: int = Field(default=15, ge=1, le=300)
@@ -184,6 +189,27 @@ class GroundUnattendedProfileDTO(ApiModel):
         # 是后端业务不变量，兼容旧配置/API 传 false 时仍强制开启。
         return value.model_copy(update={"enabled": True, "target": ""})
 
+    @field_validator("arp_management_vlans", mode="before")
+    @classmethod
+    def normalize_arp_vlans(cls, value: object) -> list[int]:
+        if value in (None, ""):
+            return []
+        if isinstance(value, str):
+            value = [item.strip() for item in value.split(",") if item.strip()]
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError("ARP VLAN 必须是 VLAN 编号列表")
+        result: list[int] = []
+        for item in value:
+            try:
+                vlan = int(item)
+            except (TypeError, ValueError):
+                raise ValueError("ARP VLAN 必须是整数") from None
+            if not 1 <= vlan <= 4094:
+                raise ValueError("ARP VLAN 必须在 1-4094 范围内")
+            if vlan not in result:
+                result.append(vlan)
+        return result
+
     @model_validator(mode="after")
     def validate_limits(self) -> "GroundUnattendedProfileDTO":
         self.deep_fping_required = True
@@ -227,6 +253,7 @@ class GroundUnattendedProfileDTO(ApiModel):
             raise ValueError("最大最终化 MR 数不能大于最大活动 MR 数")
         if self.storage_critical_free_gb >= self.storage_warning_free_gb:
             raise ValueError("严重空间阈值必须小于空间预警阈值")
+        self.arp_management_vlans = sorted(self.arp_management_vlans)
         if self.summary_retention_days < self.detail_retention_days:
             raise ValueError("汇总保留天数不能小于详细数据保留天数")
         return self
@@ -670,6 +697,29 @@ class GroundAcPollerHealthDTO(ApiModel):
     last_query_failure_at: str = ""
     snapshot_processing_duration_ms: float | None = None
     snapshot_change_count: int = 0
+
+
+class GroundAcBasicCollectionDTO(ApiModel):
+    device_uuid: str
+    device_name: str = ""
+    enabled: bool = True
+    state: str = "STOPPED"
+    last_success_at: str = ""
+    last_failure_at: str = ""
+    last_error: str = ""
+    poll_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    updated_at: str = ""
+
+
+class GroundAcBasicCollectionPageDTO(ApiModel):
+    items: list[GroundAcBasicCollectionDTO] = Field(default_factory=list)
+    total: int = 0
+
+
+class GroundAcBasicCollectionControlRequestDTO(ApiModel):
+    enabled: bool
 
 
 class GroundHealthDTO(ApiModel):
@@ -1610,6 +1660,71 @@ class GroundSyslogDeletePreviewDTO(ApiModel):
     confirmation_hint: str = ""
 
 
+class GroundArpCollectionDTO(ApiModel):
+    collection_id: str
+    site_id: str = ""
+    source_device_uuid: str = ""
+    source_device_name: str = ""
+    query_mode: str = "ALL"
+    query_scope: str = "ALL"
+    requested_vlans: list[int] = Field(default_factory=list)
+    started_at: str = ""
+    completed_at: str = ""
+    status: str = ""
+    completeness: str = ""
+    record_count: int = 0
+    matched_count: int = 0
+    conflict_count: int = 0
+    error_message: str = ""
+
+
+class GroundArpObservationDTO(ApiModel):
+    observation_id: str
+    source_device_uuid: str = ""
+    source_device_name: str = ""
+    query_scope: str = ""
+    vlan: str = ""
+    ip_address: str
+    mac_address: str
+    interface_name: str = ""
+    first_observed_at: str = ""
+    last_observed_at: str = ""
+    last_collection_id: str = ""
+    observed_in_last_success: bool = False
+    last_collection_success: bool = False
+    observation_count: int = 0
+    freshness_status: str = "UNKNOWN"
+
+
+class GroundMrIdentityDTO(ApiModel):
+    relation_id: str
+    mr_uuid: str
+    train_id: str = ""
+    train_no: str = ""
+    mr_role: str = ""
+    management_ip: str = ""
+    identity_mac: str
+    alias_type: str = ""
+    source: str = ""
+    first_discovered_at: str = ""
+    last_verified_at: str = ""
+    confirmation_status: str = "UNCONFIRMED"
+    evidence_count: int = 0
+
+
+class GroundArpRefreshRequestDTO(ApiModel):
+    reason: str = Field(default="manual", max_length=100)
+
+
+class GroundArpStatusDTO(ApiModel):
+    state: str = "IDLE"
+    last_collection: GroundArpCollectionDTO | None = None
+    latest_observations: list[GroundArpObservationDTO] = Field(default_factory=list)
+    identities: list[GroundMrIdentityDTO] = Field(default_factory=list)
+    conflicts: list[dict[str, object]] = Field(default_factory=list)
+    message: str = ""
+
+
 class GroundSyslogDeleteRequestDTO(ApiModel):
     preview_token: str = Field(min_length=20, max_length=200)
     explicit_confirmation: bool
@@ -1682,6 +1797,16 @@ class GroundHeartbeatMrDTO(ApiModel):
     associated_aps: list[GroundHeartbeatApDTO] = Field(default_factory=list)
     associated_stations: list[str] = Field(default_factory=list)
     loss_events: list[dict[str, object]] = Field(default_factory=list)
+    identity_mac: str = ""
+    identity_first_discovered_at: str = ""
+    identity_last_verified_at: str = ""
+    arp_last_seen_at: str = ""
+    arp_last_successful_collection_at: str = ""
+    arp_current_observed: bool = False
+    arp_observation_status: str = "NOT_OBSERVED"
+    arp_source_device: str = ""
+    arp_ip: str = ""
+    arp_mac: str = ""
 
 
 class GroundHeartbeatTrainDTO(ApiModel):
@@ -1758,6 +1883,9 @@ class GroundMrMonitoringDTO(ApiModel):
     queried_end: str = ""
     events_truncated: bool = False
     loss_events: list[dict[str, object]] = Field(default_factory=list)
+    identity_relations: list[GroundMrIdentityDTO] = Field(default_factory=list)
+    arp_observations: list[GroundArpObservationDTO] = Field(default_factory=list)
+    identity_conflicts: list[dict[str, object]] = Field(default_factory=list)
 
 
 class GroundArchiveDeleteRequestDTO(ApiModel):

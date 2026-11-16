@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Box, CopyDocument, Delete, Download, FolderOpened, Refresh, SwitchButton, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import {
   deleteGroundArchive, deleteGroundArchives, deleteGroundRunHistory, getGroundArchiveDetail, getGroundProfile, getGroundStatus, getGroundTrain, groundArchiveSummaryDownloadRequest, groundArchiveZipDownloadRequest, listGroundArchives,
-  getGroundHealth, listGroundDeepCollectionRecords, listGroundDeepCollections, listGroundPingTargets, listGroundTimeline, listGroundTrains, requestGroundConfigCheck,
+  getGroundHealth, listGroundDeepCollectionRecords, listGroundDeepCollections, listGroundPingTargets, listGroundTimeline, listGroundTrains, listGroundAcBasicCollection, setGroundAcBasicCollection, requestGroundConfigCheck,
   openGroundArchiveDirectory, pauseGroundRun, resumeGroundRun, saveGroundProfile, setGroundTrainPriority, startGroundRun,
   stopAndArchiveGroundRun, stopGroundRun, saveGroundTrainPolicy, syncGroundInventory,
   checkGroundUdpPort, listLocalIpv4Addresses, recommendLocalSourceIp,
@@ -16,6 +16,7 @@ import { apiErrorDetail } from '../../api/client'
 import { getOnlineMrSession } from '../../api/onlineMr'
 import { getOnlineMrControlPresets } from '../../api/onlineMrControl'
 import { listVehicleMrControllers } from '../../api/vehicleMrOnline'
+import { listDevices } from '../../api/deviceManagement'
 import { getAcMeshLinkSummary, getAcMeshRawTail, listAcMeshLinks, listAcMeshMrs, listAcMeshSnapshots, refreshAcMeshLinks } from '../../api/acMeshLink'
 import GroundPingChart from '../../components/ground-unattended/GroundPingChart.vue'
 import { NcDataTable, type NcTableColumn } from '../../components/table'
@@ -31,10 +32,11 @@ import type {
   GroundActionResponse, GroundArchive, GroundArchiveDetail, GroundDeepCollection, GroundDeepCollectionRecord, GroundDeepCollector, GroundPingSeries, GroundPingTarget, GroundProfile, GroundStatus,
   GroundHealth, GroundOperation, GroundPingSample, GroundQueryDiagnostics, GroundRun, GroundSyslogRecord,
   GroundSyslogDeleteFilters, GroundSyslogDeletePreview,
-  GroundSyslogTransportStatus, GroundTimelineEvent, GroundTrain, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
+  GroundSyslogTransportStatus, GroundTimelineEvent, GroundTrain, GroundAcBasicCollection, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
 } from '../../types/groundUnattended'
 import type { OnlineMrPingPreset } from '../../types/onlineMrControl'
 import type { VehicleMrController } from '../../types/vehicleMrOnline'
+import type { DeviceListItem } from '../../types/deviceManagement'
 import type { AcMeshLinkRecord, AcMeshLinkSummary, AcMeshMrStatus, AcMeshRawTail, AcMeshSnapshot } from '../../types/acMeshLink'
 import {
   groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel,
@@ -133,6 +135,10 @@ const selectedAcControllerId = ref('')
 const acControllersLoading = ref(false)
 
 const acControllersError = ref(false)
+
+const acBasicCollection = ref<GroundAcBasicCollection[]>([])
+
+const arpSourceSwitches = ref<DeviceListItem[]>([])
 
 const selectedAcController = computed(() => acControllers.value.find((item) => item.controller_id === selectedAcControllerId.value) ?? null)
 
@@ -708,6 +714,12 @@ const loadStatus = (silent = true) => {
 
 const loadProfile = (silent = true) => latestRequest('profile', '无人值守配置', (signal) => getGroundProfile({ signal }), (value) => { profile.value = value }, silent)
 
+const loadArpSourceSwitches = (silent = true) => latestRequest('arp-source-switches', 'ARP 源交换机', () => listDevices({ page: 1, page_size: 200, work_scope_status: 'all' }), (value) => {
+  arpSourceSwitches.value = value.items.filter((item) => ['sw', 'switch', '交换机'].includes(String(item.device_type || '').trim().toLocaleLowerCase()))
+}, silent)
+
+const loadAcBasicCollection = (silent = true) => latestRequest('ac-basic-collection', 'AC 基础采集', (signal) => listGroundAcBasicCollection({ signal }), (value) => { acBasicCollection.value = value.items }, silent)
+
 const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signal) => listGroundRuns({ signal }), (value) => {
   runs.value = value.items
   if (!value.items.some((row) => row.run_id === selectedRunId.value)) {
@@ -821,6 +833,16 @@ async function refreshAcMesh(): Promise<void> {
   }
 }
 
+async function setAcBasicCollection(deviceUuid: string, enabled: boolean): Promise<void> {
+  try {
+    await setGroundAcBasicCollection(deviceUuid, enabled)
+    await loadAcBasicCollection(false)
+    ElMessage.success(enabled ? 'AC 基础采集已启动' : 'AC 基础采集已停止')
+  } catch (cause) {
+    ElMessage.error(errorText(cause, 'AC 基础采集控制失败'))
+  }
+}
+
 const loadSyslogTransport = async (silent = true) => {
   if (!silent) syslogTransportLoading.value = true
   await latestRequest(
@@ -903,7 +925,7 @@ async function loadActiveTab(silent = true): Promise<void> {
   else if (activeTab.value === 'syslog') await loadSyslog(silent)
   else if (activeTab.value === 'health') await loadHealth(silent)
   else if (activeTab.value === 'archives') await loadArchives(silent)
-  else if (activeTab.value === 'settings') await Promise.all([loadProfile(silent), loadTrains(silent)])
+  else if (activeTab.value === 'settings') await Promise.all([loadProfile(silent), loadTrains(silent), loadAcBasicCollection(silent), loadArpSourceSwitches(silent)])
   else if (activeTab.value === 'ac-mesh-link') await Promise.all([loadAcMesh(silent), loadAcControllers(silent)])
 }
 
@@ -1855,6 +1877,8 @@ function resetPageStateForSiteContext(): void {
   acMeshSnapshots.value = []
   acMeshRawTail.value = null
   acControllers.value = []
+  acBasicCollection.value = []
+  arpSourceSwitches.value = []
   selectedAcControllerId.value = ''
   Object.assign(acMeshQuery, { query: '', station: '', section: '', carEnd: '', dataStatus: '', matchStatus: '', multiplePeers: false, abnormalOnly: false, page: 1, pageSize: 50, mrPage: 1, snapshotPage: 1 })
   Object.assign(acMeshTotals, { links: 0, mrs: 0, snapshots: 0 })
@@ -2278,6 +2302,8 @@ acMeshLoading,
 acMeshQuery,
 acMeshTotals,
 acControllers,
+acBasicCollection,
+arpSourceSwitches,
 selectedAcControllerId,
 acControllersLoading,
 acControllersError,
@@ -2414,6 +2440,8 @@ latestRequest,
 removeSelectedArchives,
 loadStatus,
 loadProfile,
+loadArpSourceSwitches,
+loadAcBasicCollection,
 loadRuns,
 loadTrains,
 loadPingTargets,
@@ -2424,6 +2452,7 @@ loadHealth,
 loadAcMesh,
 loadAcControllers,
 refreshAcMesh,
+setAcBasicCollection,
 loadSyslogTransport,
 loadOperation,
 applyOperation,

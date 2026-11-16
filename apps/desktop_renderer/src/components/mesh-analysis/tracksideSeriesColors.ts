@@ -91,6 +91,32 @@ function uniqueFrameSeriesIds(cache: TracksideSeriesCache, timestampMillis: numb
   return [...ids].sort(compareStableText)
 }
 
+function sameSeriesIds(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false
+  }
+  return true
+}
+
+function mergeSortedSeriesIds(left: readonly string[], right: readonly string[]): string[] {
+  const merged: string[] = []
+  let leftIndex = 0
+  let rightIndex = 0
+  while (leftIndex < left.length || rightIndex < right.length) {
+    const leftValue = left[leftIndex]
+    const rightValue = right[rightIndex]
+    const value = rightValue === undefined
+      || (leftValue !== undefined && leftValue < rightValue)
+      ? leftValue
+      : rightValue
+    if (value !== undefined && merged[merged.length - 1] !== value) merged.push(value)
+    if (leftValue === value) leftIndex += 1
+    if (rightValue === value) rightIndex += 1
+  }
+  return merged
+}
+
 function tracksideRunIntervals(cache: TracksideSeriesCache): TracksideRunInterval[] {
   return cache.series.flatMap((series) => {
     const intervals = new Map<string, TracksideRunInterval>()
@@ -192,7 +218,9 @@ export function assignTracksideSeriesColors(
     const currentSeriesIds = uniqueFrameSeriesIds(cache, timestamp)
     addClique(currentSeriesIds)
     if (previousTimestamp !== null && timestamp - previousTimestamp <= adjacencyWindowMs) {
-      addClique([...new Set([...previousSeriesIds, ...currentSeriesIds])].sort(compareStableText))
+      if (!sameSeriesIds(previousSeriesIds, currentSeriesIds)) {
+        addClique(mergeSortedSeriesIds(previousSeriesIds, currentSeriesIds))
+      }
     }
     previousTimestamp = timestamp
     previousSeriesIds = currentSeriesIds

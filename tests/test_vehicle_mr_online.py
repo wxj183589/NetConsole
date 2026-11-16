@@ -19,6 +19,7 @@ from netconsole.services.export.export_handlers import run_generic_export_handle
 from netconsole.services.export.export_task_builders import vehicle_mr_history_xlsx_spec
 from tests.support.legacy_export_task_models import ExportJob
 from netconsole.services.vehicle_mr_online import (
+    H3CComwareV5VehicleMrMeshLinkParser,
     H3CComwareV9VehicleMrMeshLinkParser,
     MatchedAp,
     ONLINE_POLICY_DUAL_ACTIVE,
@@ -106,6 +107,40 @@ AP name: AP-TCC-15
     assert identities["Nbl06-LC12-AP- CT"].train_no == "12"
     assert identities["Nbl06-LC12-AP- CT"].car_end_label == "TC1"
     assert identities["Nbl06-LC14-AP-CW"].car_end_label == "TC2"
+
+
+def test_h3c_v5_parser_parses_field_blocks_and_multiple_links() -> None:
+    sample = """<AC-V5>display clock
+12:34:56 Beijing Tue 06/30/2026
+Local AP Name : AP-V5-01
+Peer AP Name : NBL12-LC06-MR-CT
+Peer AP MAC : 74ad-cb9d-317f
+Local AP MAC : 30f5-277a-844f
+Link State : Forwarding
+RSSI : 41
+Rx Packets : 7995
+Tx Packets : 5412
+Local AP Name : AP-V5-02
+Peer AP Name : NBL12-LC06-MR-CW
+Peer AP MAC : 74ad-cb9d-3321
+Local AP MAC : 30f5-277a-844f
+Status : Active
+RSSI : 58
+Packets(Rx/Tx) : 3202/5050
+"""
+
+    result = H3CComwareV5VehicleMrMeshLinkParser().parse(sample)
+
+    assert result.parse_status == "OK"
+    assert result.ac_time == "2026-06-30 12:34:56"
+    assert len(result.links) == 2
+    assert result.links[0].local_ap_name == "AP-V5-01"
+    assert result.links[0].rx_packets == 7995
+    assert result.links[0].tx_packets == 5412
+    assert result.links[1].status == "Active"
+    assert result.links[1].rssi == 58
+    assert result.links[1].rx_packets == 3202
+    assert result.links[1].tx_packets == 5050
 
 
 def test_vehicle_mr_online_uses_ap_names_and_status_filter() -> None:

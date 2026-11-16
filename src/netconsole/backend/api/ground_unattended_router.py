@@ -25,6 +25,11 @@ from netconsole.models.api.ground_unattended import (
     GroundDeepCollectionPageDTO,
     GroundDeepCollectionRecordPageDTO,
     GroundHealthDTO,
+    GroundAcBasicCollectionControlRequestDTO,
+    GroundAcBasicCollectionDTO,
+    GroundAcBasicCollectionPageDTO,
+    GroundArpRefreshRequestDTO,
+    GroundArpStatusDTO,
     GroundHeartbeatPageDTO,
     HeartbeatConfigDTO,
     HeartbeatRuntimeDTO,
@@ -147,6 +152,34 @@ def get_status(request: Request) -> GroundUnattendedStatusDTO:
 @router.get("/profile", response_model=GroundUnattendedProfileDTO)
 def get_profile(request: Request) -> GroundUnattendedProfileDTO:
     return _call(lambda: _service(request).get_profile(_site_id(request)))
+
+
+@router.get("/ac/basic-collection", response_model=GroundAcBasicCollectionPageDTO)
+def get_ac_basic_collection(request: Request) -> GroundAcBasicCollectionPageDTO:
+    return _call(lambda: _service(request).ac_basic_collection(_site_id(request)))
+
+
+@router.get("/arp/status", response_model=GroundArpStatusDTO)
+def get_arp_status(request: Request) -> GroundArpStatusDTO:
+    return _call(lambda: _service(request).arp_status(_site_id(request)))
+
+
+@router.post("/arp/refresh", response_model=GroundArpStatusDTO, status_code=status.HTTP_202_ACCEPTED)
+def refresh_arp(request: Request, payload: GroundArpRefreshRequestDTO | None = None) -> GroundArpStatusDTO:
+    return _call(lambda: _service(request).request_arp_refresh(_site_id(request), payload))
+
+
+@router.put("/ac/basic-collection/{device_uuid}", response_model=GroundAcBasicCollectionDTO)
+def set_ac_basic_collection(
+    request: Request,
+    device_uuid: str,
+    payload: GroundAcBasicCollectionControlRequestDTO,
+) -> GroundAcBasicCollectionDTO:
+    return _call(
+        lambda: _service(request).set_ac_basic_collection(
+            _site_id(request), device_uuid, payload
+        )
+    )
 
 
 @router.get("/heartbeat", response_model=GroundHeartbeatPageDTO)

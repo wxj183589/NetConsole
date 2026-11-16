@@ -1,3 +1,12 @@
+v1.5.15 - 2026-11-16
+### 现场故障修复与安全收尾
+
+- 收口地面无人值守的 Quick Ping、Heartbeat、Syslog、ARP 身份、Mesh-Link、Job Center 和 H3C V5 AP 兼容链路。
+- AP 静态台账继续保持 LLDP 原始证据、精确身份确认、AC-only、待确认和冲突边界，不覆盖人工确认关系。
+- Job Center 详情与日志读取复用任务权威索引，减少重复存在性查询；保留旧数据兼容回退路径。
+- `dev:codex`、Smoke、Installer 与 Portable 构建均使用隔离数据根，持久化数据根不可用时 fail closed。
+- 正式交付范围为 Full Installer 与 Full Portable；本版本为 `FIELD_VALIDATION_CANDIDATE`，真实现场 GUI、设备和长稳验收仍需单独完成。
+
 v1.5.14 - 2026-11-14
 ### 正式维护与双包交付
 

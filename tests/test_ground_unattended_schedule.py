@@ -36,6 +36,32 @@ def test_default_and_regular_schedule_window() -> None:
     assert active.run_date == "2026-07-25"
 
 
+def test_legacy_ac_interval_migration_runs_once(tmp_path) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "ground.sqlite", site_id="site-a")
+    repository.get_profile()
+    with repository._connection() as connection:
+        connection.execute(
+            "UPDATE ground_unattended_profiles "
+            "SET ac_poll_interval_seconds=90, ac_mesh_link_poll_interval_seconds=300"
+        )
+        connection.execute(
+            "DELETE FROM ground_unattended_schema "
+            "WHERE key='ac_mesh_link_poll_interval_v1'"
+        )
+
+    repository.initialize()
+    assert repository.get_profile().ac_mesh_link_poll_interval_seconds == 90
+
+    with repository._connection() as connection:
+        connection.execute(
+            "UPDATE ground_unattended_profiles "
+            "SET ac_mesh_link_poll_interval_seconds=600"
+        )
+    repository.initialize()
+
+    assert repository.get_profile().ac_mesh_link_poll_interval_seconds == 600
+
+
 def test_profile_rejects_invalid_timezone_before_runtime() -> None:
     with pytest.raises(ValueError, match="IANA"):
         GroundUnattendedProfileDTO(site_id="site-a", timezone="Shanghai/local")
@@ -716,9 +742,13 @@ def test_supervisor_allows_explicit_same_day_restart_after_ready_archive(tmp_pat
 
     supervisor.request("start")
     supervisor._tick()
-    assert repo.get_active_run() is not None
+    restarted = repo.get_active_run()
+    assert restarted is not None
+    assert restarted["run_id"] != run["run_id"]
+    assert restarted["run_date"] == run["run_date"]
     supervisor.close()
-    assert len(repo.list_run_sessions(run["run_id"])) == 1
+    assert len(repo.list_run_sessions(run["run_id"])) == 0
+    assert len(repo.list_run_sessions(restarted["run_id"])) == 1
 
 
 def test_supervisor_reconciles_incomplete_operations_without_active_run(

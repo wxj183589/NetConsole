@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   cleanupIsolatedDesktopRuntime,
   resolveDesktopStorageContext,
+  WINDOWS_TEST_DATA_ROOT,
 } from '../src/main/development-data-root'
 
 describe('Electron desktop storage context', () => {
@@ -79,5 +80,37 @@ describe('Electron desktop storage context', () => {
       NETCONSOLE_RUNTIME_MODE: 'test',
       NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
     }, 'C:\\Temp')).toThrow('data root is missing')
+  })
+
+  it('rejects sibling-prefix paths and redirected isolated roots', () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'netconsole-electron-boundary-'))
+    const root = join(WINDOWS_TEST_DATA_ROOT, 'boundary-test')
+    mkdirSync(root, { recursive: true })
+    try {
+      expect(() => resolveDesktopStorageContext({
+        NETCONSOLE_STORAGE_MODE: 'isolated_test',
+        NETCONSOLE_RUNTIME_MODE: 'test',
+        NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
+        NETCONSOLE_DATA_ROOT: `${WINDOWS_TEST_DATA_ROOT}-sibling`,
+      }, tempRoot)).toThrow('unexpected isolated desktop runtime')
+
+      const outside = join(tempRoot, 'outside')
+      const redirected = join(root, 'redirected')
+      mkdirSync(outside, { recursive: true })
+      try {
+        symlinkSync(outside, redirected, 'junction')
+      } catch {
+        return
+      }
+      expect(() => resolveDesktopStorageContext({
+        NETCONSOLE_STORAGE_MODE: 'isolated_test',
+        NETCONSOLE_RUNTIME_MODE: 'test',
+        NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',
+        NETCONSOLE_DATA_ROOT: redirected,
+      }, tempRoot)).toThrow(/redirected outside|symbolic-link/)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
   })
 })

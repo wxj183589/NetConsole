@@ -2192,6 +2192,7 @@ def parse_ac_resource_outputs(
     ap_rows = parse_wlan_ap_list(ap_all)
     address_rows = parse_wlan_ap_addresses(outputs.get("display wlan ap all address", ""))
     radio_rows = parse_wlan_ap_radios(outputs.get("display wlan ap all radio", ""))
+    ap_ledger = _merge_ap_ledgers(ap_rows, address_rows, radio_rows)
     connection_rows = (
         parse_wlan_ap_connection_records(
             outputs.get("display wlan ap all connection-record", ""),
@@ -2206,15 +2207,13 @@ def parse_ac_resource_outputs(
     bbssid_rows = parse_wlan_ap_radio_verbose_bbssid(outputs.get("display wlan ap all radio verbose filter bbssid", ""))
     lldp_rows = parse_wlan_ap_lldp(outputs.get("display wlan ap all lldp", ""))
     resources: list[dict[str, object | None]] = []
-    for row in ap_rows:
+    for row in ap_ledger:
         ap_name = str(row.get("ap_name") or "")
         connection = _connection_record_for_ap(row, connection_rows)
         resource = {
             "ac_device_uuid": ac_device_uuid,
             "site_key": site_key,
             **row,
-            **address_rows.get(ap_name, {}),
-            **radio_rows.get(ap_name, {}),
         }
         # ``connection-record`` identifies ordinary APs by name and therefore
         # carries ``ap_mac=None``. Do not let that empty observation erase the
@@ -2235,6 +2234,58 @@ def parse_ac_resource_outputs(
         if connection:
             resources[-1]["connection_record_observed"] = True
     return summary, resources
+
+
+def _merge_ap_ledgers(
+    ap_rows: list[dict[str, object | None]],
+    address_rows: dict[str, dict[str, object | None]],
+    radio_rows: dict[str, dict[str, object | None]],
+) -> list[dict[str, object | None]]:
+    """Union AP/all, address and radio evidence without inventing identity.
+
+    The V5 address ledger contains offline APs which are absent from some
+    ``display wlan ap all`` outputs.  Exact AP-name or equal-MAC matches are
+    safe; fuzzy names and cross-station guesses are deliberately rejected.
+    """
+
+    merged: list[dict[str, object | None]] = []
+
+    def merge_one(row: dict[str, object | None]) -> None:
+        name = str(row.get("ap_name") or "").strip()
+        name_key = name.casefold()
+        mac_key = _normalize_mac_text(row.get("ap_mac"))
+        match = next(
+            (
+                item
+                for item in merged
+                if name_key
+                and str(item.get("ap_name") or "").strip().casefold() == name_key
+            ),
+            None,
+        )
+        if match is None and mac_key:
+            match = next(
+                (
+                    item
+                    for item in merged
+                    if mac_key == _normalize_mac_text(item.get("ap_mac"))
+                ),
+                None,
+            )
+        if match is None:
+            merged.append(dict(row))
+            return
+        for key, value in row.items():
+            if value is not None and value != "":
+                match[key] = value
+
+    for row in ap_rows:
+        merge_one(row)
+    for row in address_rows.values():
+        merge_one(row)
+    for row in radio_rows.values():
+        merge_one(row)
+    return merged
 
 
 def _connection_record_for_ap(

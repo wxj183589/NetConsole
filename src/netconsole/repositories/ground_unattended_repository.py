@@ -90,6 +90,19 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ground_unattended_ac_basic_controls (
+    device_uuid TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    state TEXT NOT NULL DEFAULT 'STOPPED',
+    last_success_at TEXT NOT NULL DEFAULT '',
+    last_failure_at TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    poll_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ground_unattended_priority_trains (
     site_id TEXT NOT NULL,
     train_id TEXT NOT NULL,
@@ -116,8 +129,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_runs (
     error_code TEXT NOT NULL DEFAULT '',
     error_message TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (site_id, run_date)
+    updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ground_runs_site_state
 ON ground_unattended_runs(site_id, state, updated_at DESC);
@@ -913,6 +925,11 @@ ON ground_unattended_quick_ping_events(site_id, run_id, ts DESC, id DESC);
 _PROFILE_MIGRATION_COLUMNS = {
     "ac_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 60",
     "ac_mesh_link_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 300",
+    "arp_collection_device_uuid": "TEXT NOT NULL DEFAULT ''",
+    "arp_management_vlans": "TEXT NOT NULL DEFAULT '[]'",
+    "arp_startup_collection_enabled": "INTEGER NOT NULL DEFAULT 1",
+    "arp_auto_refresh_enabled": "INTEGER NOT NULL DEFAULT 0",
+    "arp_auto_refresh_interval_seconds": "INTEGER NOT NULL DEFAULT 300",
     "deep_collection_master_enabled": "INTEGER NOT NULL DEFAULT 1",
     "deep_fping_required": "INTEGER NOT NULL DEFAULT 1",
     "deep_fping": "TEXT NOT NULL DEFAULT '{}'",
@@ -1124,7 +1141,9 @@ class GroundUnattendedRepository:
     def initialize(self) -> None:
         with self._connection() as conn:
             conn.executescript(SCHEMA)
+            self._migrate_multiple_same_day_runs(conn)
             self._ensure_columns(conn, "ground_unattended_profiles", _PROFILE_MIGRATION_COLUMNS)
+            self._migrate_legacy_ac_poll_interval(conn)
             self._ensure_columns(
                 conn,
                 "ground_unattended_ping_summaries",
@@ -1221,6 +1240,28 @@ class GroundUnattendedRepository:
             )
 
     @staticmethod
+    def _migrate_legacy_ac_poll_interval(conn: sqlite3.Connection) -> None:
+        """Copy the legacy AC cadence once, without overwriting later edits."""
+
+        marker = "ac_mesh_link_poll_interval_v1"
+        if conn.execute(
+            "SELECT 1 FROM ground_unattended_schema WHERE key=?", (marker,)
+        ).fetchone():
+            return
+        conn.execute(
+            "UPDATE ground_unattended_profiles "
+            "SET ac_mesh_link_poll_interval_seconds=ac_poll_interval_seconds "
+            "WHERE ac_mesh_link_poll_interval_seconds=300 "
+            "AND ac_poll_interval_seconds<>60"
+        )
+        conn.execute(
+            "INSERT INTO ground_unattended_schema(key, value, updated_at) "
+            "VALUES(?, '1', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (marker, _now()),
+        )
+
+    @staticmethod
     def _ensure_columns(
         conn: sqlite3.Connection, table: str, columns: dict[str, str]
     ) -> None:
@@ -1228,6 +1269,75 @@ class GroundUnattendedRepository:
         for name, declaration in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+    @staticmethod
+    def _migrate_multiple_same_day_runs(conn: sqlite3.Connection) -> None:
+        """Remove the legacy day-wide uniqueness without losing run facts.
+
+        v1.5.14 used an inline UNIQUE(site_id, run_date) constraint.  SQLite
+        cannot drop that constraint in place, so rebuild only this table in the
+        same startup transaction.  The run_id primary key and every historical
+        row remain unchanged; the marker makes the migration idempotent.
+        """
+
+        marker = "multiple_same_day_runs_v1"
+        if conn.execute(
+            "SELECT 1 FROM ground_unattended_schema WHERE key=?", (marker,)
+        ).fetchone():
+            return
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' "
+            "AND name='ground_unattended_runs'"
+        ).fetchone()
+        sql_text = str(table_sql[0] or "") if table_sql else ""
+        has_legacy_unique = "site_id,run_date" in "".join(sql_text.split())
+        if has_legacy_unique:
+            conn.execute(
+                """
+                CREATE TABLE ground_unattended_runs_v17 (
+                    run_id TEXT PRIMARY KEY,
+                    site_id TEXT NOT NULL,
+                    run_date TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    paused INTEGER NOT NULL DEFAULT 0,
+                    requested_action TEXT NOT NULL DEFAULT '',
+                    scheduled_start_at TEXT NOT NULL DEFAULT '',
+                    scheduled_end_at TEXT NOT NULL DEFAULT '',
+                    actual_started_at TEXT NOT NULL DEFAULT '',
+                    actual_ended_at TEXT NOT NULL DEFAULT '',
+                    ac_last_updated_at TEXT NOT NULL DEFAULT '',
+                    ac_freshness_status TEXT NOT NULL DEFAULT 'NO_DATA',
+                    ping_sample_count INTEGER NOT NULL DEFAULT 0,
+                    summary_json TEXT NOT NULL DEFAULT '{}',
+                    error_code TEXT NOT NULL DEFAULT '',
+                    error_message TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO ground_unattended_runs_v17 "
+                "SELECT run_id, site_id, run_date, state, paused, requested_action, "
+                "scheduled_start_at, scheduled_end_at, actual_started_at, actual_ended_at, "
+                "ac_last_updated_at, ac_freshness_status, ping_sample_count, summary_json, "
+                "error_code, error_message, created_at, updated_at "
+                "FROM ground_unattended_runs"
+            )
+            conn.execute("DROP TABLE ground_unattended_runs")
+            conn.execute(
+                "ALTER TABLE ground_unattended_runs_v17 RENAME TO ground_unattended_runs"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ground_runs_site_state "
+                "ON ground_unattended_runs(site_id, state, updated_at DESC)"
+            )
+        conn.execute(
+            "INSERT INTO ground_unattended_schema(key, value, updated_at) "
+            "VALUES(?, '1', ?)"
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (marker, _now()),
+        )
 
     @staticmethod
     def _migrate_train_run_location_decisions(
@@ -1336,6 +1446,9 @@ class GroundUnattendedRepository:
             payload["deep_fping"] = json.dumps(
                 payload.get("deep_fping") or {}, ensure_ascii=False
             )
+            payload["arp_management_vlans"] = json.dumps(
+                payload.get("arp_management_vlans") or [], ensure_ascii=False
+            )
             fields = tuple(payload)
             values = [
                 int(value) if isinstance(value, bool) else value
@@ -1361,7 +1474,90 @@ class GroundUnattendedRepository:
                 projected["deep_fping"] = json.loads(deep_fping or "{}")
             except json.JSONDecodeError:
                 projected["deep_fping"] = {}
+        arp_vlans = projected.get("arp_management_vlans")
+        if isinstance(arp_vlans, str):
+            try:
+                projected["arp_management_vlans"] = json.loads(arp_vlans or "[]")
+            except json.JSONDecodeError:
+                projected["arp_management_vlans"] = []
         return GroundUnattendedProfileDTO.model_validate(projected)
+
+    def list_ac_basic_controls(self) -> list[dict[str, Any]]:
+        with self._read_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM ground_unattended_ac_basic_controls "
+                "ORDER BY device_uuid"
+            ).fetchall()
+        return [_decode_row(row) for row in rows]
+
+    def get_ac_basic_control(self, device_uuid: str) -> dict[str, Any] | None:
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM ground_unattended_ac_basic_controls WHERE device_uuid=?",
+                (str(device_uuid),),
+            ).fetchone()
+        return _decode_row(row) if row else None
+
+    def save_ac_basic_control(
+        self,
+        device_uuid: str,
+        *,
+        enabled: bool | None = None,
+        state: str | None = None,
+        last_success_at: str | None = None,
+        last_failure_at: str | None = None,
+        last_error: str | None = None,
+        poll_count: int | None = None,
+        success_count: int | None = None,
+        failure_count: int | None = None,
+    ) -> dict[str, Any]:
+        key = str(device_uuid or "").strip()
+        if not key:
+            raise ValueError("AC device_uuid is required")
+        current = self.get_ac_basic_control(key) or {
+            "device_uuid": key,
+            "enabled": True,
+            "state": "STOPPED",
+            "last_success_at": "",
+            "last_failure_at": "",
+            "last_error": "",
+            "poll_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+        }
+        values = {
+            "device_uuid": key,
+            "enabled": bool(current.get("enabled", True)) if enabled is None else bool(enabled),
+            "state": str(current.get("state") or "STOPPED") if state is None else str(state),
+            "last_success_at": str(current.get("last_success_at") or "") if last_success_at is None else str(last_success_at),
+            "last_failure_at": str(current.get("last_failure_at") or "") if last_failure_at is None else str(last_failure_at),
+            "last_error": str(current.get("last_error") or "") if last_error is None else str(last_error),
+            "poll_count": int(current.get("poll_count") or 0) if poll_count is None else int(poll_count),
+            "success_count": int(current.get("success_count") or 0) if success_count is None else int(success_count),
+            "failure_count": int(current.get("failure_count") or 0) if failure_count is None else int(failure_count),
+            "updated_at": _now(),
+        }
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO ground_unattended_ac_basic_controls(
+                    device_uuid, enabled, state, last_success_at, last_failure_at,
+                    last_error, poll_count, success_count, failure_count, updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(device_uuid) DO UPDATE SET
+                    enabled=excluded.enabled,
+                    state=excluded.state,
+                    last_success_at=excluded.last_success_at,
+                    last_failure_at=excluded.last_failure_at,
+                    last_error=excluded.last_error,
+                    poll_count=excluded.poll_count,
+                    success_count=excluded.success_count,
+                    failure_count=excluded.failure_count,
+                    updated_at=excluded.updated_at
+                """,
+                tuple(values.values()),
+            )
+        return self.get_ac_basic_control(key) or values
 
     def save_profile(
         self, profile: GroundUnattendedProfileDTO
@@ -1374,6 +1570,9 @@ class GroundUnattendedRepository:
         ).model_dump(mode="json")
         payload["deep_fping"] = json.dumps(
             payload.get("deep_fping") or {}, ensure_ascii=False
+        )
+        payload["arp_management_vlans"] = json.dumps(
+            payload.get("arp_management_vlans") or [], ensure_ascii=False
         )
         fields = tuple(payload)
         values = [
@@ -1393,10 +1592,11 @@ class GroundUnattendedRepository:
                 values,
             )
         payload["deep_fping"] = json.loads(str(payload["deep_fping"]))
+        payload["arp_management_vlans"] = json.loads(str(payload["arp_management_vlans"]))
         return GroundUnattendedProfileDTO.model_validate(payload)
 
     def list_priority_train_ids(self) -> set[str]:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT train_id FROM ground_unattended_priority_trains WHERE site_id=? AND priority=1 "
                 "UNION SELECT train_id FROM ground_unattended_train_policies WHERE site_id=? AND priority=1",
@@ -1612,7 +1812,7 @@ class GroundUnattendedRepository:
 
     def list_inventory(self, *, include_removed: bool = True) -> list[dict[str, Any]]:
         where = "" if include_removed else "AND i.inventory_status='ACTIVE'"
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             trains = conn.execute(
                 f"""
                 SELECT i.*, p.enabled, p.priority, p.scheduling_priority,
@@ -1645,7 +1845,7 @@ class GroundUnattendedRepository:
         return result
 
     def get_heartbeat_config(self) -> HeartbeatConfigDTO:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             row = conn.execute(
                 "SELECT config_json FROM ground_unattended_heartbeat_config WHERE site_id=?",
                 (self.site_id,),
@@ -1686,7 +1886,7 @@ class GroundUnattendedRepository:
 
     def heartbeat_inventory_state(self) -> dict[str, Any]:
         """Heartbeat selection is independent from the shared asset inventory."""
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
                 (self.site_id,),
@@ -1852,7 +2052,7 @@ class GroundUnattendedRepository:
                     run_id, site_id, run_date, state, scheduled_start_at, scheduled_end_at,
                     actual_started_at, created_at, updated_at
                 ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(site_id, run_date) DO NOTHING
+                ON CONFLICT(run_id) DO NOTHING
                 """,
                 (
                     run_id,
@@ -1867,8 +2067,8 @@ class GroundUnattendedRepository:
                 ),
             )
             row = conn.execute(
-                "SELECT * FROM ground_unattended_runs WHERE site_id=? AND run_date=?",
-                (self.site_id, run_date),
+                "SELECT * FROM ground_unattended_runs WHERE site_id=? AND run_id=?",
+                (self.site_id, run_id),
             ).fetchone()
         if row is None:
             raise RuntimeError("ground unattended run was not created")
@@ -2858,7 +3058,7 @@ class GroundUnattendedRepository:
         if entity_type:
             where.append("entity_type=?")
             params.append(str(entity_type).strip().upper())
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM ground_unattended_heartbeat_states WHERE "
                 + " AND ".join(where)
@@ -2984,7 +3184,7 @@ class GroundUnattendedRepository:
             where.append("julianday(started_at) > julianday(?)")
             params.append(started_after)
         params.append(max(1, min(int(limit), 5000)))
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM ground_unattended_ping_loss_intervals WHERE "
                 + " AND ".join(where)
@@ -3009,7 +3209,7 @@ class GroundUnattendedRepository:
         bounded = max(1, min(int(limit_per_mr), 5000))
         boundary = " AND julianday(started_at) > julianday(?)" if started_after else ""
         params = (self.site_id, str(run_id), *ids, *([started_after] if started_after else []), bounded)
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM (
@@ -3541,7 +3741,7 @@ class GroundUnattendedRepository:
         if run_id:
             where += " AND run_id=?"
             params.append(run_id)
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             row = conn.execute(
                 "SELECT COALESCE(SUM(CASE WHEN julianday(start_time)>=julianday(?) "
                 "AND julianday(start_time)<julianday(?) THEN record_count ELSE 0 END),0) AS today_count, "
@@ -3719,7 +3919,7 @@ class GroundUnattendedRepository:
                 "OR julianday(start_time)<=julianday(?))"
             )
             params.append(end_time)
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             order = (
                 "COALESCE(NULLIF(end_time, ''), start_time) DESC, "
                 "start_time DESC, created_at DESC"
@@ -5644,16 +5844,16 @@ class GroundUnattendedRepository:
                 )
 
     def get_quick_ping_run(self, run_id: str) -> dict[str, Any] | None:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM ground_unattended_quick_ping_runs WHERE site_id=? AND run_id=?",
                 (self.site_id, run_id),
             ).fetchone()
-            return self._quick_ping_payload(conn, row) if row is not None else None
+            return self._quick_ping_payloads(conn, [row])[0] if row is not None else None
 
     def list_quick_ping_runs(self, *, limit: int = 100) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 500))
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM ground_unattended_quick_ping_runs
@@ -5663,7 +5863,7 @@ class GroundUnattendedRepository:
                 """,
                 (self.site_id, safe_limit),
             ).fetchall()
-            return [self._quick_ping_payload(conn, row) for row in rows]
+            return self._quick_ping_payloads(conn, rows)
 
     def query_quick_ping_runs(
         self,
@@ -5701,7 +5901,7 @@ class GroundUnattendedRepository:
         if target_clauses:
             clauses.append("EXISTS (SELECT 1 FROM json_each(targets_json) AS target WHERE " + " AND ".join(target_clauses) + ")")
         where = " AND ".join(clauses)
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             total = int(conn.execute(
                 f"SELECT COUNT(*) FROM ground_unattended_quick_ping_runs WHERE {where}", params,
             ).fetchone()[0])
@@ -5710,10 +5910,10 @@ class GroundUnattendedRepository:
                 "ORDER BY julianday(started_at) DESC, run_id DESC LIMIT ? OFFSET ?",
                 (*params, max(1, min(int(limit), 500)), max(0, int(offset))),
             ).fetchall()
-            return [self._quick_ping_payload(conn, row) for row in rows], total
+            return self._quick_ping_payloads(conn, rows), total
 
     def list_quick_ping_events(self, run_id: str, *, limit: int = 500) -> list[dict[str, Any]]:
-        with self._connection() as conn:
+        with self._read_connection() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM ground_unattended_quick_ping_events
@@ -5736,9 +5936,61 @@ class GroundUnattendedRepository:
             for row in rows
         ]
 
+    @classmethod
+    def _quick_ping_payloads(
+        cls,
+        conn: sqlite3.Connection,
+        rows: Iterable[sqlite3.Row],
+    ) -> list[dict[str, Any]]:
+        """Project many runs with one stats query and one runtime query.
+
+        The old implementation called two child queries for every run after
+        loading the page. A 20-run page therefore performed 41+ SQL calls
+        before the HTTP response was encoded. Keep the same DTO projection,
+        but batch the child tables by run_id in the same read snapshot.
+        """
+
+        rows = list(rows)
+        if not rows:
+            return []
+        run_ids = [str(row["run_id"]) for row in rows]
+        placeholders = ",".join("?" for _ in run_ids)
+        params = (cls._site_id_from_row(rows[0]), *run_ids)
+        stat_rows = conn.execute(
+            "SELECT * FROM ground_unattended_quick_ping_stats "
+            f"WHERE site_id=? AND run_id IN ({placeholders})",
+            params,
+        ).fetchall()
+        runtime_rows = conn.execute(
+            "SELECT run_id, target_ip, runtime_json "
+            "FROM ground_unattended_quick_ping_target_runtime "
+            f"WHERE site_id=? AND run_id IN ({placeholders})",
+            params,
+        ).fetchall()
+        stats_by_run: dict[str, list[sqlite3.Row]] = {}
+        for row in stat_rows:
+            stats_by_run.setdefault(str(row["run_id"]), []).append(row)
+        runtime_by_run: dict[str, list[sqlite3.Row]] = {}
+        for row in runtime_rows:
+            runtime_by_run.setdefault(str(row["run_id"]), []).append(row)
+        return [
+            cls._assemble_quick_ping_payload(
+                row,
+                stats_by_run.get(str(row["run_id"]), ()),
+                runtime_by_run.get(str(row["run_id"]), ()),
+            )
+            for row in rows
+        ]
+
     @staticmethod
-    def _quick_ping_payload(
-        conn: sqlite3.Connection, row: sqlite3.Row
+    def _site_id_from_row(row: sqlite3.Row) -> str:
+        return str(row["site_id"] or "")
+
+    @staticmethod
+    def _assemble_quick_ping_payload(
+        row: sqlite3.Row,
+        stat_rows: Iterable[sqlite3.Row],
+        runtime_rows: Iterable[sqlite3.Row],
     ) -> dict[str, Any]:
         payload = {
             "run_id": str(row["run_id"]),
@@ -5753,14 +6005,10 @@ class GroundUnattendedRepository:
             "error": str(row["error"]),
             "recent_samples": [],
         }
-        stat_rows = conn.execute(
-            """
-            SELECT * FROM ground_unattended_quick_ping_stats
-            WHERE site_id=? AND run_id=?
-            """,
-            (payload["site_id"], payload["run_id"]),
-        ).fetchall()
-        payload["target_runtime"] = {str(item["target_ip"]): _json_object(item["runtime_json"]) for item in conn.execute("SELECT target_ip, runtime_json FROM ground_unattended_quick_ping_target_runtime WHERE site_id=? AND run_id=?", (payload["site_id"], payload["run_id"])).fetchall()}
+        payload["target_runtime"] = {
+            str(item["target_ip"]): _json_object(item["runtime_json"])
+            for item in runtime_rows
+        }
         accumulators: dict[str, dict[str, Any]] = {}
         decoded: dict[str, dict[str, Any]] = {}
         for stat in stat_rows:
@@ -5812,10 +6060,25 @@ class GroundUnattendedRepository:
             foreign_keys=True,
             temp_store_memory=True,
         )
+        # Keep WAL for write paths; read-only endpoints use _read_connection
+        # and must not execute this PRAGMA as a side effect.
         initialize_sqlite_wal(conn)
         try:
             yield conn
             conn.commit()
+        finally:
+            conn.close()
+
+    @contextmanager
+    def _read_connection(self) -> Iterator[sqlite3.Connection]:
+        """Use a true read-only connection for query paths.
+
+        Read endpoints must not initialize a missing database, change journal
+        mode, or commit a transaction merely by projecting current state.
+        """
+        conn = Database(self.db_path).connect_readonly()
+        try:
+            yield conn
         finally:
             conn.close()
 

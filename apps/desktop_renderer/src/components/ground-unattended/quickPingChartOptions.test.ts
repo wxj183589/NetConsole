@@ -25,4 +25,18 @@ describe('Quick Ping chart semantics', () => {
     expect(option.yAxis[1]!.max).toBe(100)
     expect(option.tooltip).toMatchObject({ appendToBody: false, confine: true })
   })
+
+  it('keeps multiple target series on the same time axis', () => {
+    const option = quickPingChartOption([
+      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:00Z', sample: { ok: true, rtt_ms: 4 } },
+      { target_ip: '10.0.0.2', received_at: '2026-11-07T00:00:00.100Z', sample: { ok: true, rtt_ms: 8 } },
+    ], 200, readNetConsoleChartTokens()) as { series: Array<{ name: string; data: Array<[number, number | null]> }> }
+
+    expect(option.series).toHaveLength(4)
+    expect(option.series.map((series) => series.name)).toEqual([
+      'RTT · 10.0.0.1', '单包丢包 · 10.0.0.1', 'RTT · 10.0.0.2', '单包丢包 · 10.0.0.2',
+    ])
+    expect(option.series[0]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00Z'))
+    expect(option.series[2]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00.100Z'))
+  })
 })

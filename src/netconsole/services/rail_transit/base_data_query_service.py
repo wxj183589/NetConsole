@@ -454,6 +454,10 @@ class RailTransitBaseDataQueryService:
         station: str = "",
         section: str = "",
         line_side: str = "",
+        uplink_switch: str = "",
+        uplink_port: str = "",
+        build_phase: str = "",
+        source_type: str = "",
         query: str = "",
         has_issue: bool | None = None,
         has_issue_values: list[bool] | None = None,
@@ -473,6 +477,10 @@ class RailTransitBaseDataQueryService:
             station=station,
             section=section,
             line_side=line_side,
+            uplink_switch=uplink_switch,
+            uplink_port=uplink_port,
+            build_phase=build_phase,
+            source_type=source_type,
             query=query,
             has_issue=has_issue,
             has_issue_values=has_issue_values,
@@ -492,6 +500,10 @@ class RailTransitBaseDataQueryService:
         issue_map = self._issue_map(issues, "ap")
         items = [self._with_ap_issues(item, issue_map.get(item.id, [])) for item in items]
         for field, value in (("station", station), ("section", section), ("line_side", line_side)):
+            if value:
+                needle = value.casefold()
+                items = [item for item in items if needle in str(getattr(item, field)).casefold()]
+        for field, value in (("uplink_switch", uplink_switch), ("uplink_port", uplink_port), ("build_phase", build_phase), ("source_type", source_type)):
             if value:
                 needle = value.casefold()
                 items = [item for item in items if needle in str(getattr(item, field)).casefold()]
@@ -536,6 +548,10 @@ class RailTransitBaseDataQueryService:
         station: str,
         section: str,
         line_side: str,
+        uplink_switch: str,
+        uplink_port: str,
+        build_phase: str,
+        source_type: str,
         query: str,
         has_issue: bool | None,
         has_issue_values: list[bool] | None,
@@ -561,6 +577,8 @@ class RailTransitBaseDataQueryService:
             or optical_status
             or has_issue is not None
             or issue_severity
+            or build_phase
+            or source_type
         )
         clauses = [
             "COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')",
@@ -576,6 +594,16 @@ class RailTransitBaseDataQueryService:
             text = str(value or "").strip()
             if text:
                 clauses.append(f"COALESCE({field}, '') LIKE ? COLLATE NOCASE")
+                params.append(f"%{text}%")
+        for field, value in (("uplink_switch", uplink_switch), ("uplink_port", uplink_port)):
+            text = str(value or "").strip()
+            if text:
+                clauses.append(f"COALESCE({field}, '') LIKE ? COLLATE NOCASE")
+                params.append(f"%{text}%")
+        for key, value in (("build_phase", build_phase), ("source_type", source_type)):
+            text = str(value or "").strip()
+            if text:
+                clauses.append("json_extract(COALESCE(raw_payload_json, '{}'), '$." + key + "') LIKE ? COLLATE NOCASE")
                 params.append(f"%{text}%")
         keyword = str(query or "").strip()
         if keyword and not normalize_mac_key(keyword):
@@ -660,7 +688,7 @@ class RailTransitBaseDataQueryService:
             return enriched
 
         filtered_items: list[TracksideApDTO] = []
-        if post_filter:
+        if post_filter or sort_by in {"uplink_switch", "uplink_port", "station_switch_port"}:
             batch_size = 200
             offset = 0
             while offset < total:
@@ -699,10 +727,15 @@ class RailTransitBaseDataQueryService:
                         for item in batch
                         if item.highest_issue_severity == issue_severity
                     ]
+                if build_phase:
+                    batch = [item for item in batch if build_phase.casefold() in item.build_phase.casefold()]
+                if source_type:
+                    batch = [item for item in batch if source_type.casefold() in item.source_type.casefold()]
                 filtered_items.extend(batch)
                 offset += len(rows)
             total = len(filtered_items)
             start = (current_page - 1) * size
+            filtered_items.sort(key=lambda item: self._ap_sort_key(item, sort_by), reverse=sort_order == "desc")
             result_items = filtered_items[start : start + size]
         else:
             page_sql_started = time.perf_counter()
@@ -1344,6 +1377,16 @@ class RailTransitBaseDataQueryService:
                 value = row.get(field_name)
                 if value not in (None, ""):
                     base_metadata[field_name] = value
+            source_metadata = {
+                key: str(base_metadata.get(key) or "")
+                for key in (
+                    "build_phase",
+                    "source_type",
+                    "source_device",
+                    "source_timestamp",
+                    "lldp_neighbor_interface",
+                )
+            }
             base_metadata.update(
                 {
                     "location_class": location_class,
@@ -1417,6 +1460,13 @@ class RailTransitBaseDataQueryService:
                     mileage=parsed,
                     line_side=str(row.get("line_side") or ""),
                     direction=str(row.get("direction") or ""),
+                    uplink_switch=str(row.get("uplink_switch") or ""),
+                    uplink_port=str(row.get("uplink_port") or ""),
+                    build_phase=source_metadata["build_phase"],
+                    source_type=source_metadata["source_type"],
+                    source_device=source_metadata["source_device"],
+                    source_timestamp=source_metadata["source_timestamp"],
+                    lldp_neighbor_interface=source_metadata["lldp_neighbor_interface"],
                     location_class=location_class,
                     participates_in_mainline=participates_in_mainline,
                     location_class_source=location_class_source,
@@ -2467,6 +2517,13 @@ class RailTransitBaseDataQueryService:
             "section": item.section.casefold(),
             "mileage": (item.mileage.meters is None, item.mileage.meters or 0),
             "updated_at": item.updated_at,
+            "uplink_switch": item.uplink_switch.casefold(),
+            "uplink_port": RailTransitBaseDataQueryService._natural_key(item.uplink_port),
+            "station_switch_port": (
+                item.station.casefold(),
+                RailTransitBaseDataQueryService._natural_key(item.uplink_switch),
+                RailTransitBaseDataQueryService._natural_key(item.uplink_port),
+            ),
         }
         return mapping.get(sort_by, mapping["name"])
 

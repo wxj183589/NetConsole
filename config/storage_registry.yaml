@@ -1009,6 +1009,16 @@
           "lifecycle_owner": "UNKNOWN_PROTECT",
           "rebuildable": false,
           "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py"]
+        },
+        {
+          "tables": ["ground_arp_collections", "ground_arp_observations", "ground_mr_identity_relations", "ground_mr_identity_conflicts"],
+          "data_class": "HISTORICAL_RAW_FACT",
+          "authority": "incremental ARP observations and durable MR identity evidence; incomplete snapshots never erase prior evidence",
+          "producer": ["GroundArpRepository", "GroundArpCollector", "GroundMrIdentityService"],
+          "consumers": ["Ground MR identity projection", "Mesh-Link peer resolution", "ARP observation UI", "identity conflict review"],
+          "lifecycle_owner": "GroundArpRepository; retain historical evidence and resolve conflicts explicitly",
+          "rebuildable": false,
+          "source_locations": ["src/netconsole/repositories/ground_arp_repository.py", "src/netconsole/services/ground_unattended/arp_collection.py", "src/netconsole/services/ground_unattended/arp_identity.py"]
         }
       ],
       "source_locations": ["src/netconsole/repositories/ground_unattended_repository.py", "src/netconsole/services/ground_unattended/supervisor.py", "src/netconsole/services/ground_unattended/application_service.py", "src/netconsole/services/ground_unattended/history_query.py", "src/netconsole/services/ground_unattended/monitoring.py", "scripts/maintenance/tasks_db_compaction.py"]

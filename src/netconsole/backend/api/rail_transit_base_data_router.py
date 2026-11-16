@@ -331,6 +331,10 @@ def aps(
     station: str = Query(default="", max_length=100),
     section: str = Query(default="", max_length=100),
     line_side: str = Query(default="", max_length=50),
+    uplink_switch: str = Query(default="", max_length=120),
+    uplink_port: str = Query(default="", max_length=80),
+    build_phase: str = Query(default="", max_length=40),
+    source_type: str = Query(default="", max_length=40),
     query: str = Query(default="", max_length=200),
     has_issue: bool | None = None,
     has_issue_values: list[bool] = Query(default=[], max_length=2),
@@ -339,10 +343,10 @@ def aps(
     optical_status: str = Query(default="", max_length=30),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
-    sort_by: str = Query(default="name", pattern="^(name|station|section|mileage|updated_at)$"),
+    sort_by: str = Query(default="station_switch_port", pattern="^(name|station|section|mileage|updated_at|uplink_switch|uplink_port|station_switch_port)$"),
     sort_order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> TracksideApPageDTO:
-    return _query(lambda: _service(request).list_aps(_site_id(request, site_id), station=station, section=section, line_side=line_side, query=query, has_issue=has_issue, has_issue_values=has_issue_values, issue_severity=issue_severity, fit_ap_status=fit_ap_status, optical_status=optical_status, page=page, page_size=page_size, sort_by=sort_by, sort_order=sort_order))
+    return _query(lambda: _service(request).list_aps(_site_id(request, site_id), station=station, section=section, line_side=line_side, uplink_switch=uplink_switch, uplink_port=uplink_port, build_phase=build_phase, source_type=source_type, query=query, has_issue=has_issue, has_issue_values=has_issue_values, issue_severity=issue_severity, fit_ap_status=fit_ap_status, optical_status=optical_status, page=page, page_size=page_size, sort_by=sort_by, sort_order=sort_order))
 
 
 @router.get("/aps/{ap_id}", response_model=TracksideApDetailDTO)

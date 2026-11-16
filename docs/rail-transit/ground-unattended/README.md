@@ -64,6 +64,25 @@ AC 位置资格只用于位置展示、正线统计和深采，不能再用作�
 `FleetPingSupervisor` 和既有 fping runner；默认每分片 12 个目标，变更目标保留未变化分片。
 没有自动快速扫描、离线停止、低频重新发现或独立恢复扫描任务。
 
+## ARP 观察与 MR 身份索引
+
+ARP 是独立的辅助观察源，不替代 Heartbeat 在线状态。Profile 可指定当前局点已登记的交换机、
+空 VLAN（执行 `display arp` 全表）或 VLAN 列表（逐 VLAN 执行 `display arp vlan <VLAN>`），
+启动采集默认开启，自动刷新默认关闭、周期 300 秒；采集由 Backend Supervisor 单独串行调度，
+不会使用 Renderer 定时器，也不会与上一轮重入。
+
+每轮采集生成唯一 `collection_id`，原始 ARP 行按 Site、源交换机、查询范围、VLAN、IP、MAC
+Upsert 到 `ground_arp_observations`，保存首次/最近观察、批次、次数和当前完整快照的出现标记。
+完整成功快照只在同一源、同一查询范围内把未出现行标记为 `NOT_OBSERVED`，不删除历史观察；
+失败、部分 VLAN 失败、分页或截断只记录 collection 和可用观察证据，不改变上一次成功的缺席状态。
+
+`ground_mr_identity_relations` 保存 MR UUID、管理地址、基础 MAC、确认的 H3C Radio alias、来源、
+首次发现和最近验证时间；`ground_mr_identity_conflicts` 保存同 IP 多 MAC、同 MAC 多 MR 或已确认
+MR MAC 变化。未确认的冲突不会覆盖已确认关系。Peer Name 为 N/A 时保留原始 Mesh-Link，
+优先使用 Peer MAC 的精确确认关系，再复用已有 H3C R1/R2 规则；不使用 MAC 尾号猜测或站点模糊匹配。
+MR 详情同时展示身份 MAC、发现时间、本次 ARP 是否观察到和 Heartbeat 在线状态，并明确
+“ARP 未观察到”不等于“离线”。
+
 同 MR UUID 的有效监测地址按“任一成功”聚合，分别保存每个 IP 的 RTT、发送/成功/丢失计数、
 最近成功和连续无响应。基础资料的 `backup_monitoring_strategy` 明确控制备用地址：
 `MONITOR` 纳入自动心跳，`FAILOVER_ONLY` 与 `DISABLED` 不纳入自动心跳；人工快速 Ping 可以明确选择

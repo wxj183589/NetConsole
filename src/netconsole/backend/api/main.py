@@ -329,6 +329,9 @@ class PerformanceProfilingMiddleware:
                     )
                 )
                 message = {**message, "headers": response_headers}
+            elif message.get("type") == "http.response.body":
+                body = message.get("body") or b""
+                profile.record_response_bytes(len(body))
             await send(message)
 
         try:
@@ -346,6 +349,8 @@ class PerformanceProfilingMiddleware:
                         f"request_id={request_id} method={profile.method} path={profile.path} "
                         f"status={response_status} total_ms={total_ms:.2f} "
                         f"sql_count={profile.sql_count} sql_ms={profile.sql_ms:.2f} "
+                        f"response_bytes={profile.response_bytes} "
+                        f"slowest_sql={(profile.slowest_sql[0][0] if profile.slowest_sql else 0.0):.2f}ms:{profile.slowest_sql[0][1] if profile.slowest_sql else '-'} "
                         f"repository_ms={profile.repository_ms:.2f} "
                         f"repository_stages={repository_stages or '-'}"
                     ),

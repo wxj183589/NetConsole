@@ -198,9 +198,16 @@ class _QuickPingSegmentWriter:
     def _open(self, hour: str) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         self._hour = hour
-        suffix = "" if self._index == 0 else f"_{self._index}"
-        self._path = self.root / f"quick_ping_{hour}{suffix}.ndjson"
-        self._file = self._path.open("a", encoding="utf-8", newline="\n")
+        while True:
+            suffix = "" if self._index == 0 else f"_{self._index}"
+            candidate = self.root / f"quick_ping_{hour}{suffix}.ndjson"
+            try:
+                self._file = candidate.open("x", encoding="utf-8", newline="\n")
+            except FileExistsError:
+                self._index += 1
+                continue
+            self._path = candidate
+            break
         if self._path.as_posix() not in self.paths:
             self.paths.append(self._path.as_posix())
         self._index += 1
@@ -222,6 +229,8 @@ class _QuickPingCompressionWorker:
     def __init__(self, service: QuickPingService, run: QuickPingRun) -> None:
         self.service, self.run = service, run
         self.queue: queue.Queue[Path] = queue.Queue(maxsize=64)
+        self._deferred: list[Path] = []
+        self._deferred_lock = threading.Lock()
         self.stopping = threading.Event()
         self.thread = threading.Thread(target=self._work, name="quick-ping-compressor", daemon=True)
         self.thread.start()
@@ -230,7 +239,15 @@ class _QuickPingCompressionWorker:
         try:
             self.queue.put_nowait(path)
         except queue.Full:
-            self.service._storage_error(self.run.run_id, "QUICK_PING_COMPRESSION_QUEUE_FULL", "压缩队列已满，保留原始文件")
+            with self._deferred_lock:
+                if path not in self._deferred and len(self._deferred) < 64:
+                    self._deferred.append(path)
+                    return
+            self.service._storage_error(
+                self.run.run_id,
+                "QUICK_PING_COMPRESSION_QUEUE_FULL",
+                "压缩队列和有限延期队列已满，保留原始文件",
+            )
 
     def stop(self) -> None:
         self.stopping.set()
@@ -238,17 +255,23 @@ class _QuickPingCompressionWorker:
         self.thread.join()
 
     def _work(self) -> None:
-        while not self.stopping.is_set() or not self.queue.empty():
+        while not self.stopping.is_set() or not self.queue.empty() or self._deferred:
+            from_queue = False
             try:
                 path = self.queue.get(timeout=0.1)
+                from_queue = True
             except queue.Empty:
-                continue
+                with self._deferred_lock:
+                    path = self._deferred.pop(0) if self._deferred else None
+                if path is None:
+                    continue
             try:
                 self.service._compress_segment(self.run.run_id, path)
             except Exception as exc:
                 self.service._storage_error(self.run.run_id, "QUICK_PING_COMPRESSION_FAILED", f"{type(exc).__name__}: {exc}")
             finally:
-                self.queue.task_done()
+                if from_queue:
+                    self.queue.task_done()
 
 
 @dataclass
@@ -339,6 +362,7 @@ class QuickPingService:
         self._lock = threading.RLock()
         self._retention_lock = threading.Lock()
         self._runs: dict[str, QuickPingRun] = {}
+        self._cleanup_stale_parts()
         self._restore_runs()
         self._maintenance_stop = threading.Event()
         self._maintenance_thread: threading.Thread | None = None
@@ -619,7 +643,7 @@ class QuickPingService:
                         if target_ip and value.get("target_ip") != target_ip:
                             continue
                         try:
-                            stamp = _query_timestamp(str(value.get("received_at") or ""))
+                            stamp = _sample_timestamp(str(value.get("received_at") or ""))
                         except QuickPingError as exc:
                             raise QuickPingError("QUICK_PING_RAW_CORRUPT", "快速 Ping 原始记录时间无效", status_code=503) from exc
                         if (start is None or stamp >= start) and (end is None or stamp <= end):
@@ -862,6 +886,24 @@ class QuickPingService:
             except Exception:
                 pass
 
+    def _cleanup_stale_parts(self) -> None:
+        root = self.output_root / "quick_ping"
+        if not root.is_dir():
+            return
+        try:
+            candidates = list(root.glob("**/*.part"))
+        except OSError:
+            return
+        for candidate in candidates:
+            try:
+                self._managed_path(candidate)
+                if candidate.is_file():
+                    candidate.unlink()
+            except (OSError, QuickPingError):
+                self._storage_error(
+                    "", "QUICK_PING_PART_CLEANUP_FAILED", f"无法清理临时分段: {candidate}"
+                )
+
     def _managed_segment(self, path: Path) -> Path:
         resolved = self._managed_path(path)
         if resolved.suffix != ".ndjson":
@@ -888,6 +930,19 @@ class QuickPingService:
         metadata_temp = metadata_path.with_name(metadata_path.name + ".part")
         for candidate in (target, metadata_path, temporary, metadata_temp):
             self._managed_path(candidate)
+        # A killed compressor may leave only temporary files. They are never
+        # readable evidence and are safe to remove before the next bounded
+        # attempt, while the raw NDJSON remains the source of truth.
+        temporary.unlink(missing_ok=True)
+        metadata_temp.unlink(missing_ok=True)
+        if not path.is_file():
+            if target.is_file() and metadata_path.is_file():
+                return
+            raise QuickPingError(
+                "QUICK_PING_RAW_UNREADABLE",
+                "快速 Ping 原始分段不存在，无法压缩",
+                status_code=503,
+            )
         try:
             digest = hashlib.sha256()
             size = 0
@@ -909,8 +964,11 @@ class QuickPingService:
                 raise ValueError("compressed Quick Ping segment failed SHA-256 verification")
             metadata = {"site_id": self.site_id, "run_id": run_id, "size_bytes": size, "sha256": digest.hexdigest(), "gzip_sha256": _file_sha256(temporary)}
             metadata_temp.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
-            temporary.replace(target)
+            # Publish metadata before the compressed payload. A crash between
+            # these replaces leaves raw + metadata, never a falsely complete
+            # payload; readers require both final files.
             metadata_temp.replace(metadata_path)
+            temporary.replace(target)
             path.unlink()
         finally:
             temporary.unlink(missing_ok=True)
@@ -928,6 +986,8 @@ class QuickPingService:
             self._managed_path(metadata_path)
             # Publication retains the raw file until both verified files exist.
             # Logical cursor offsets refer to uncompressed bytes and survive rotation.
+            if not target.is_file() or not metadata_path.is_file():
+                raise QuickPingError("QUICK_PING_RAW_CORRUPT", "快速 Ping 压缩发布不完整", status_code=503)
             if metadata_path.stat().st_size > 65536 or target.stat().st_size > QUICK_PING_SEGMENT_BYTES + 131072:
                 raise QuickPingError("QUICK_PING_RAW_CORRUPT", "快速 Ping 压缩分段超过大小限制", status_code=503)
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -1028,10 +1088,10 @@ class QuickPingService:
             run.stats.add(sample)
             run.target_stats[target.target_ip].add(sample)
             try:
-                sample_at = datetime.fromisoformat(str(sample.ts).replace("Z", "+00:00"))
-            except (TypeError, ValueError):
-                # Preserve the raw sample even when a legacy/mock producer emits
-                # a non-ISO timestamp; event ordering falls back to receive time.
+                sample_at = _sample_timestamp(str(sample.ts))
+            except QuickPingError:
+                # Preserve raw samples from broken/legacy producers; events fall back
+                # to receive time when the sample timestamp cannot be parsed.
                 sample_at = datetime.now(timezone.utc)
             run._loss_trackers.setdefault(
                 target.target_ip,
@@ -1123,6 +1183,7 @@ class QuickPingService:
         manifest = self.output_root / "quick_ping" / run.run_date / "runs" / f"{_safe_segment(run.run_id)}.json"
         manifest.parent.mkdir(parents=True, exist_ok=True)
         temp = manifest.with_suffix(".json.part")
+        temp.unlink(missing_ok=True)
         with run._lock:
             payload = run.as_dict()
             payload["_stats_accumulators"] = {
@@ -1132,8 +1193,11 @@ class QuickPingService:
                     for target_ip, stats in run.target_stats.items()
                 },
             }
-        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        temp.replace(manifest)
+        try:
+            temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temp.replace(manifest)
+        finally:
+            temp.unlink(missing_ok=True)
 
     def _restore_runs(self) -> None:
         reservations = self.repository.quick_ping_reservations() if self.repository is not None else []
@@ -1467,6 +1531,17 @@ def _now() -> str:
 
 def _append_error(existing: str, addition: str) -> str:
     return f"{existing}; {addition}" if existing else addition
+
+
+def _sample_timestamp(value: str) -> datetime:
+    """Read historical fping timestamps, including legacy local naive values."""
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        # Legacy runners wrote local wall-clock time without an offset. Python's
+        # local-time conversion preserves that historical meaning before UTC compare.
+        return stamp.astimezone(timezone.utc)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise QuickPingError("QUICK_PING_TIME_INVALID", "快速 Ping 原始记录时间格式无效") from exc
 
 
 __all__ = [

@@ -9,8 +9,14 @@ from netconsole.parsers.h3c.ac.state_mapper import (
 
 
 def parse_wlan_ap_summary(output: str) -> dict[str, object | None]:
-    total_aps = _int_after(output, r"Total\s+number\s+of\s+APs\s*:\s*(\d+)")
-    online_aps = _int_after(output, r"Total\s+number\s+of\s+connected\s+APs\s*:\s*(\d+)")
+    total_aps = _int_after(
+        output,
+        r"Total\s+number\s+of\s+(?:configured\s+)?APs(?:\s+configured)?\s*:\s*(\d+)",
+    )
+    online_aps = _int_after(
+        output,
+        r"Total\s+number\s+of\s+(?:configured\s+)?(?:connected\s+APs|APs\s+connected)\s*:\s*(\d+)",
+    )
     total_licenses = _int_after(output, r"Total\s+AP\s+licenses\s*:\s*(\d+)")
     local_licenses = _int_after(output, r"Local\s+AP\s+licenses\s*:\s*(\d+)")
     remaining_licenses = _int_after(output, r"Remaining\s+local\s+AP\s+licenses\s*:\s*(\d+)")
@@ -70,10 +76,10 @@ def _percent_after(output: str, pattern: str) -> str | None:
 
 def _looks_like_state(value: str) -> bool:
     text = _state_token(value)
-    if text in {"I", "J", "JA", "IL", "C", "DC", "R", "R/M", "R/B", "RUN", "ONLINE", "OFFLINE", "IDLE"}:
+    if text in {"I", "J", "JA", "IL", "C", "DC", "R", "R/M", "R/B", "KU", "KC", "RUN", "ONLINE", "OFFLINE", "IDLE"}:
         return True
     states = {part for part in re.split(r"[/,]", text) if part}
-    return bool(states) and states <= {"R", "I", "J", "JA", "IL", "C", "DC", "M", "B", "RUN", "ONLINE", "OFFLINE", "IDLE"}
+    return bool(states) and states <= {"R", "I", "J", "JA", "IL", "C", "DC", "M", "B", "KU", "KC", "RUN", "ONLINE", "OFFLINE", "IDLE"}
 
 
 def _looks_like_apid(value: str) -> bool:
@@ -85,10 +91,53 @@ def _is_noise_line(stripped: str) -> bool:
     return (
         not stripped
         or stripped.startswith(("-", "="))
+        or _is_state_legend_line(stripped)
         or lower.startswith(("total ", "maximum ", "remaining ", "server ", "sync ", "state :", "online time :", "ap name", "apname"))
-        or lower.startswith(("c = ", "i = "))
         or stripped.startswith("<")
         or stripped in {"(MHz) (%)   (dBm)"}
+    )
+
+
+_STATE_LEGEND_CODES = {"I", "J", "JA", "IL", "C", "DC", "R", "KU", "KC", "M", "B"}
+_STATE_LEGEND_LABELS = {
+    "IDLE",
+    "JOIN",
+    "JOINACK",
+    "IMAGELOAD",
+    "CONFIG",
+    "DATACHECK",
+    "RUN",
+    "KEYUPDATE",
+    "KEYCFM",
+    "MASTER",
+    "BACKUP",
+}
+_STATE_LEGEND_ENTRY_RE = re.compile(
+    r"(?<![A-Za-z])(?P<code>I|J|JA|IL|C|DC|R|KU|KC|M|B)\s*=\s*(?P<label>[A-Za-z][A-Za-z ]*)"
+    r"(?=\s*(?:,|$))",
+    re.IGNORECASE,
+)
+
+
+def _is_state_legend_line(stripped: str) -> bool:
+    """Recognize a legend by its complete code=value field structure.
+
+    H3C V5 emits ``M = Master, B = Backup`` as a separate line.  The parser
+    must skip that line without blacklisting AP names that merely start with
+    ``M``.  Requiring at least two complete, known state assignments keeps the
+    rule scoped to the legend format.
+    """
+
+    entries = list(_STATE_LEGEND_ENTRY_RE.finditer(stripped))
+    if len(entries) < 2:
+        return False
+    remainder = _STATE_LEGEND_ENTRY_RE.sub("", stripped)
+    if remainder.strip(" ,\t"):
+        return False
+    return all(
+        entry.group("code").upper() in _STATE_LEGEND_CODES
+        and entry.group("label").replace(" ", "").upper() in _STATE_LEGEND_LABELS
+        for entry in entries
     )
 
 

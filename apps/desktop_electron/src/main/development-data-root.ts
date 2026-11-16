@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, rmSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, isAbsolute, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 export type DesktopStorageMode = 'persistent' | 'isolated_test'
 
@@ -32,6 +32,11 @@ const workspaceRoot = basename(repositoryParent).toLowerCase() === 'worktrees'
   ? resolve(repositoryParent, '..')
   : repositoryParent
 export const WINDOWS_TEST_DATA_ROOT = resolve(workspaceRoot, 'test-data', 'NetConsole')
+const FORBIDDEN_PERSISTENT_ROOTS = [
+  'D:\\NetConsoleData',
+  'D:\\NetConsoleData-dev',
+  'G:\\NetConsoleData',
+]
 
 export function resolveDesktopStorageContext(
   environment: NodeJS.ProcessEnv = process.env,
@@ -105,8 +110,16 @@ function buildContext(mode: DesktopStorageMode, dataRoot: string): DesktopStorag
 function validateIsolatedPath(value: string, testDataRoot: string): string {
   const target = resolve(value)
   const root = resolve(testDataRoot)
-  if (target === root || !target.startsWith(`${root}${sep}`) || !basename(target)) {
+  if (!isPathWithin(target, root)) {
     throw new Error('Refusing to use an unexpected isolated desktop runtime')
+  }
+  const realRoot = safeRealPath(root)
+  const realTarget = safeRealPath(target)
+  if (!isPathWithin(realTarget, realRoot) || isForbiddenPersistentRoot(realTarget)) {
+    throw new Error('Refusing to use an isolated desktop runtime redirected outside the test-data root')
+  }
+  if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+    throw new Error('Refusing to use a symbolic-link isolated desktop runtime')
   }
   return target
 }
@@ -121,7 +134,7 @@ function validatePersistentDataRoot(
   if (!value || !isAbsolute(value)) throw new Error('NETCONSOLE_DATA_ROOT must be an absolute path')
   const target = resolve(value)
   const temporary = resolve(systemTempRoot)
-  if (target === temporary || target.startsWith(`${temporary}${sep}`)) {
+  if (isPathWithinOrEqual(target, temporary)) {
     throw new Error('NetConsole data root must not use the system temporary directory')
   }
   if (platform === 'win32') {
@@ -133,7 +146,7 @@ function validatePersistentDataRoot(
       : undefined
     if (
       portableApplicationRoot
-      && (target === portableApplicationRoot || target.startsWith(`${portableApplicationRoot}${sep}`))
+      && isPathWithinOrEqual(target, portableApplicationRoot)
       && target !== portableDefault
     ) {
       throw new Error(`便携版数据根不得位于程序目录：${target}`)
@@ -146,11 +159,38 @@ function validatePersistentDataRoot(
     for (const [label, rawRoot] of forbiddenRoots) {
       if (!rawRoot || !isAbsolute(rawRoot)) continue
       const root = resolve(rawRoot)
-      if (target === root || target.startsWith(`${root}${sep}`)) {
+      if (isPathWithinOrEqual(target, root)) {
         if (target === portableDefault) continue
         throw new Error(`NetConsole 数据根不得位于${label}：${target}`)
       }
     }
   }
   return target
+}
+
+function safeRealPath(value: string): string {
+  let cursor = resolve(value)
+  const missing: string[] = []
+  while (!existsSync(cursor)) {
+    const parent = dirname(cursor)
+    if (parent === cursor) return resolve(value)
+    missing.unshift(basename(cursor))
+    cursor = parent
+  }
+  return resolve(realpathSync.native(cursor), ...missing)
+}
+
+function isPathWithin(candidate: string, parent: string): boolean {
+  const child = relative(parent, candidate)
+  return child !== '' && child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child)
+}
+
+function isPathWithinOrEqual(candidate: string, parent: string): boolean {
+  const normalizedCandidate = resolve(candidate)
+  const normalizedParent = resolve(parent)
+  return normalizedCandidate === normalizedParent || isPathWithin(normalizedCandidate, normalizedParent)
+}
+
+function isForbiddenPersistentRoot(value: string): boolean {
+  return FORBIDDEN_PERSISTENT_ROOTS.some((root) => isPathWithinOrEqual(value, root))
 }

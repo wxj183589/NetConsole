@@ -62,6 +62,33 @@ def test_base_data_queries_relations_and_quality_are_read_only(tmp_path: Path) -
     assert _fingerprint(db_path) == before
 
 
+def test_trackside_ap_ledger_filters_source_metadata_and_natural_uplink_sort(tmp_path: Path) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    with Database(db_path).connect() as connection:
+        connection.execute(
+            "UPDATE ap_extension_points SET uplink_switch='SW-A', uplink_port='GigabitEthernet1/0/10', "
+            "raw_payload_json=? WHERE ap_name='AP-Online'",
+            (json.dumps({"build_phase": "一期", "source_type": "LLDP"}, ensure_ascii=False),),
+        )
+        connection.execute(
+            "UPDATE ap_extension_points SET uplink_switch='SW-A', uplink_port='GigabitEthernet1/0/2', "
+            "raw_payload_json=? WHERE ap_name='AP-Section'",
+            (json.dumps({"build_phase": "一期", "source_type": "LLDP"}, ensure_ascii=False),),
+        )
+        connection.execute(
+            "UPDATE ap_extension_points SET uplink_switch='SW-B', uplink_port='GigabitEthernet1/0/1', "
+            "raw_payload_json=? WHERE ap_name='AP-Duplicate'",
+            (json.dumps({"build_phase": "二期", "source_type": "AC"}, ensure_ascii=False),),
+        )
+        connection.commit()
+    result = RailTransitBaseDataQueryService(paths).list_aps(
+        "demo", page_size=20, build_phase="一期", source_type="LLDP", sort_by="station_switch_port"
+    )
+    assert [item.name for item in result.items] == ["AP-Section", "AP-Online"]
+    assert [item.uplink_port for item in result.items] == ["GigabitEthernet1/0/2", "GigabitEthernet1/0/10"]
+    assert all(item.build_phase == "一期" and item.source_type == "LLDP" for item in result.items)
+
+
 def test_trackside_ap_lldp_station_suggestion_uses_exact_identity_without_write(
     tmp_path: Path,
 ) -> None:

@@ -24,11 +24,11 @@ NetConsole 使用代码内登记的设备兼容性基线描述当前适配范围
 
 ## 当前状态
 
-当前基线登记 H3C Comware V7/V9 的无线控制器、交换机和车载 MR 方向，并增加 ZTE ZXR10 C89E-4 V1.9.0 只读现场验证及 5960X-ES V2 文档样例能力。登记状态不等于所有型号和 Release 已完成现场验证；V5 仅保留未来扩展空间，本次未登记为已适配，也未实现 V5 命令或解析器。
+当前基线登记 H3C Comware V7/V9 的无线控制器、交换机和车载 MR 方向，并增加 H3C V5 Mesh-Link 的只读命令回退与字段块解析能力，以及 ZTE ZXR10 C89E-4 V1.9.0 只读现场验证和 5960X-ES V2 文档样例能力。登记状态不等于所有型号和 Release 已完成现场验证；V5 的现场设备、AP 全量命令输出和跨版本差异仍待真实环境复核。
 
 | 厂商 / 类型 | 当前支持 | 当前边界 |
 | --- | --- | --- |
-| H3C | Comware V7/V9 按 major-family 能力解析，覆盖交换机、无线控制器和车载 MR | HZ10 的 WX3540X / Comware V9 只读 AC、FIT-AP、Device Detail、LLDP、BSSID 和 GUI 已有现场证据；其他型号/Release、MR 和受控写操作仍按能力矩阵限定 |
+| H3C | Comware V5/V7/V9 按已登记能力解析；V5 Mesh-Link 使用只读兼容命令和严格字段映射，V7/V9 保留表格解析 | HZ10 的 WX3540X / Comware V9 只读 AC、FIT-AP、Device Detail、LLDP、BSSID 和 GUI 已有现场证据；V5 只具备自动化解析/回退测试证据，其他型号/Release、MR 和受控写操作仍按能力矩阵限定 |
 | ZTE ZXR10 C89E-4 V1.9.0 / SW | Profile v3 固定七条只读详情命令；普通刷新不逐端口读取光模块 detail；轨旁更新每设备只执行版本和一次 DOM brief；设备事实、接口、VLAN、光模块及 LLDP Brief/Entry 结构化解析 | 固定命令已有分阶段实机证据；已验证声明只覆盖 C89E-4 Release；配置中心、文件管理、CLI Ping、诊断包和写操作未验证 |
 | ZTE ZXR10 5960X-ES V2 / SW | 设备模型、只读 SSH 框架、命令 Profile、接口/DOM 文档样例 Parser、厂商采样 Job 和轨旁 AP 页面入口 | 版本、接口和 DOM 仍为 `DOCUMENT_SAMPLE_ONLY`；共享 LLDP Parser 已实现，但 V2 输出仍待现场复核；不能继承 C89E-4 的已验证状态 |
 | ZTE / AC | 不支持 | 导入和写入返回“当前版本尚未适配 ZTE 无线控制器” |

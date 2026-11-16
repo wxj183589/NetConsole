@@ -2093,6 +2093,20 @@ AP name                        APID  State Model           Serial ID
     assert rows[0]["serial_number"] == "H3C_4C-6F-D6-08-04-00"
 
 
+def test_wlan_ap_parser_skips_v5_master_backup_legend_without_dropping_m_named_ap():
+    rows = parse_wlan_ap_list(
+        """
+State : I = Idle, J = Join, R = Run, M = Master, B = Backup
+M = Master, B = Backup
+M-REAL-AP 9 R/M WA6624X SN-M-0009 default-group 1:00:00
+"""
+    )
+
+    assert [row["ap_name"] for row in rows] == ["M-REAL-AP"]
+    assert rows[0]["state"] == "R/M"
+    assert rows[0]["model"] == "WA6624X"
+
+
 def test_wlan_ap_summary_counts_only_running_master_and_backup_as_online():
     summary = parse_wlan_ap_summary(
         """
@@ -2140,6 +2154,50 @@ def test_wlan_ap_address_and_radio_parsers():
     assert addresses["4c6f-d608-0400"]["ap_mac"] == "4c6f-d608-0400"
     assert radios["4c6f-d608-0400"]["rid1_channel"] == "1"
     assert radios["4c6f-d608-0400"]["rid2_tx_power"] == "17"
+
+
+def test_v5_address_ledger_keeps_na_records_and_unions_offline_aps():
+    address = """
+Total number of APs configured : 494
+Total number of configured APs connected : 491
+AP name                          IP address                  MAC address
+AP-ONLINE                       10.0.0.1                    4c6f-d608-0400
+AP-OFFLINE-01                   -NA-                        -NA-
+AP-OFFLINE-02                   -NA-                        1234-5678-9abc
+"""
+    parsed = parse_wlan_ap_addresses(address)
+    assert len(parsed) == 3
+    assert parsed["AP-OFFLINE-01"]["ap_ip"] is None
+    assert parsed["AP-OFFLINE-01"]["ap_mac"] is None
+    assert parse_wlan_ap_summary(address)["offline_aps"] == 3
+
+    token_columns = parse_wlan_ap_addresses(
+        "AP-TOKEN -NA- 0011-2233-4455"
+    )
+    assert token_columns["AP-TOKEN"]["ap_ip"] is None
+    assert token_columns["AP-TOKEN"]["ap_mac"] == "0011-2233-4455"
+
+    _summary, resources = h3c_ac_collect_service.parse_ac_resource_outputs(
+        {
+            "display wlan ap all": """
+AP name              APID State Model Serial ID Group name Online time
+AP-ONLINE            1    R/M   WA     SN-1      default    1:00:00:00
+""",
+            "display wlan ap all address": address,
+            "display wlan ap all radio": """
+AP name                  RID State Channel BW Usage TxPower Clients
+AP-ONLINE               1   Up    149     40  27    17      0
+""",
+        },
+        "ac-v5",
+        "run-v5",
+        "files/rail_transit/trackside_ap/raw/ac/run-v5/ac.log",
+    )
+    by_name = {str(row["ap_name"]): row for row in resources}
+    assert set(by_name) == {"AP-ONLINE", "AP-OFFLINE-01", "AP-OFFLINE-02"}
+    assert by_name["AP-OFFLINE-01"]["ap_ip"] is None
+    assert by_name["AP-OFFLINE-02"]["ap_mac"] == "1234-5678-9abc"
+    assert by_name["AP-ONLINE"]["rid1_channel"] == "149"
 
 
 def test_address_radio_merge_by_ap_name_with_chinese_names():

@@ -74,6 +74,11 @@ _SAFE_FIELDS = (
     "fiber_distribution",
     "uplink_switch",
     "uplink_port",
+    "build_phase",
+    "source_type",
+    "source_device",
+    "source_timestamp",
+    "lldp_neighbor_interface",
     "optical_port",
     "remark",
     "source_sheet",
@@ -325,6 +330,16 @@ class RailTransitImportPreviewService:
         metadata: dict[str, Any] = {
             "location_class_source": values["location_class_source"]
         }
+        for field_name in (
+            "build_phase",
+            "source_type",
+            "source_device",
+            "source_timestamp",
+            "lldp_neighbor_interface",
+        ):
+            value = str(values.get(field_name) or "").strip()
+            if value:
+                metadata[field_name] = value[:2_000]
         if source_station_name:
             metadata["import_source"] = {"station_name": source_station_name}
         values["raw_payload_json"] = json.dumps(

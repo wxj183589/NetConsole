@@ -308,6 +308,109 @@ class H3CComwareV9VehicleMrMeshLinkParser(VehicleMrMeshLinkParser):
         return VehicleMrMeshParseResult(ac_time=ac_time, links=links, parse_status="OK")
 
 
+class H3CComwareV5VehicleMrMeshLinkParser(H3CComwareV9VehicleMrMeshLinkParser):
+    """兼容 Comware V5 的字段块式 Mesh-Link 回显。
+
+    V5 设备的 `display wlan mesh-link ap all` 在不同小版本上既可能沿用
+    V7/V9 表格，也可能把 Local/Peer/RSSI/包计数拆成字段块。先复用严格
+    的表格解析，再只对明确的字段名进行配对，避免用位置或模糊名称猜测
+    AP/MR 身份。
+    """
+
+    _field_re = re.compile(r"^\s*(?P<key>[^:：]+?)\s*[:：]\s*(?P<value>.*?)\s*$")
+
+    @staticmethod
+    def _field_key(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+
+    @staticmethod
+    def _number(value: str) -> int | None:
+        match = re.search(r"-?\d+", value)
+        return int(match.group(0)) if match else None
+
+    def parse(self, raw_text: str) -> VehicleMrMeshParseResult:
+        table_result = super().parse(raw_text)
+        if table_result.links or table_result.parse_status == "OK" and self._has_table_shape(raw_text):
+            return table_result
+
+        ac_time = table_result.ac_time
+        links: list[VehicleMrMeshLink] = []
+        current: dict[str, object] = {}
+
+        def flush() -> None:
+            peer_mac = normalize_mac(str(current.get("peer_mac") or ""))
+            local_mac = normalize_mac(str(current.get("local_mac") or ""))
+            if not peer_mac or not local_mac:
+                current.clear()
+                return
+            peer_name = str(current.get("peer_name") or "").strip()
+            links.append(
+                VehicleMrMeshLink(
+                    local_ap_name=str(current.get("local_ap") or "").strip(),
+                    peer_name=peer_name,
+                    peer_name_canonical=canonical_peer_name(peer_name),
+                    peer_mac=peer_mac,
+                    local_mac=local_mac,
+                    status=str(current.get("status") or "").strip(),
+                    rssi=current.get("rssi") if isinstance(current.get("rssi"), int) else None,
+                    rx_packets=current.get("rx") if isinstance(current.get("rx"), int) else None,
+                    tx_packets=current.get("tx") if isinstance(current.get("tx"), int) else None,
+                )
+            )
+            current.clear()
+
+        for raw_line in raw_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            clock_match = self._clock_date_re.match(line) or self._clock_re.match(line)
+            if clock_match and not ac_time:
+                ac_time = parse_ac_clock_line(line)
+                continue
+            match = self._field_re.match(line)
+            if not match:
+                continue
+            key = self._field_key(match.group("key"))
+            value = match.group("value").strip()
+            if key in {"ap name", "local ap", "local ap name"}:
+                if current.get("peer_mac") or current.get("local_mac"):
+                    flush()
+                current["local_ap"] = value
+            elif key in {"peer name", "peer ap", "peer ap name"}:
+                if current.get("peer_mac") and current.get("local_mac"):
+                    flush()
+                current["peer_name"] = value
+            elif key in {"peer mac", "peer ap mac", "peer bssid"}:
+                if current.get("peer_mac") and current.get("local_mac"):
+                    flush()
+                current["peer_mac"] = value
+            elif key in {"local mac", "local ap mac", "local bssid", "bssid"}:
+                current["local_mac"] = value
+            elif key in {"status", "link state", "state"}:
+                current["status"] = value
+            elif key in {"rssi", "signal"}:
+                current["rssi"] = self._number(value)
+            elif key in {"rx packets", "receive packets", "packets rx"}:
+                current["rx"] = self._number(value)
+            elif key in {"tx packets", "transmit packets", "packets tx"}:
+                current["tx"] = self._number(value)
+            elif key in {"packets rx tx", "rx tx packets"}:
+                packet_match = re.search(r"(\d+)\s*/\s*(\d+)", value)
+                if packet_match:
+                    current["rx"] = int(packet_match.group(1))
+                    current["tx"] = int(packet_match.group(2))
+        flush()
+        if not ac_time and not links:
+            return VehicleMrMeshParseResult(
+                ac_time="", links=[], parse_status="FAILED", error_message="解析失败/格式未适配：未找到 AC 时间"
+            )
+        return VehicleMrMeshParseResult(ac_time=ac_time, links=links, parse_status="OK")
+
+    @staticmethod
+    def _has_table_shape(raw_text: str) -> bool:
+        return bool(re.search(r"Peer\s+(?:Name|Mac).*Local\s+Mac", raw_text, re.IGNORECASE))
+
+
 def parse_ac_clock_line(line: str, fallback: datetime | None = None) -> str:
     fallback = fallback or datetime.now()
     date_match = re.search(r"(?P<date>\d{1,2}/\d{1,2}/\d{4})", str(line or ""))
