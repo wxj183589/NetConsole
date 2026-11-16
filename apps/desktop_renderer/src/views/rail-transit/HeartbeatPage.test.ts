@@ -6,9 +6,9 @@ import { setRendererFeaturesForTest } from '../../features'
 import HeartbeatPage from './HeartbeatPage.vue'
 import OverviewPage from './OverviewPage.vue'
 
-const api = vi.hoisted(() => ({ heartbeat: vi.fn(), timeline: vi.fn() }))
+const api = vi.hoisted(() => ({ heartbeat: vi.fn(), timeline: vi.fn(), syslog: vi.fn() }))
 const injected = vi.hoisted(() => ({ current: {} as Record<string, unknown> }))
-vi.mock('../../api/groundUnattended', () => ({ getGroundHeartbeat: api.heartbeat, listGroundTimeline: api.timeline }))
+vi.mock('../../api/groundUnattended', () => ({ getGroundHeartbeat: api.heartbeat, listGroundTimeline: api.timeline, requestGroundSyslogControl: api.syslog }))
 vi.mock('./useGroundUnattended', () => ({ useGroundContext: () => injected.current }))
 vi.mock('../../composables/useExternalTerminalLauncher', () => ({ useExternalTerminalLauncher: () => ({}) }))
 
@@ -149,6 +149,29 @@ describe('persisted heartbeat UI', () => {
     expect(api.heartbeat).toHaveBeenCalledTimes(3)
     expect(wrapper.text()).toContain('常驻 Heartbeat')
     expect((wrapper.vm as unknown as { heartbeat: { run_id: string } }).heartbeat.run_id).toBe('run-after-retry')
+    wrapper.unmount()
+  })
+
+  it('offers quick Syslog join and exit from the MR context menu with online gating', async () => {
+    const mr = { ...snapshot.mrs[0], management_ip: '192.0.2.1', syslog_status: 'NOT_CONFIGURED' }
+    api.heartbeat.mockResolvedValue({ ...snapshot, data_state: 'RUNNING', mrs: [mr] })
+    api.syslog.mockResolvedValue({ state: 'RUNNING', run_id: 'run-1', message: '已提交加入请求' })
+    const wrapper = shallowMount(HeartbeatPage, { props: props as never, global })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      openMenu: (event: MouseEvent, mr: typeof mr) => void;
+      controlSyslog: (mode: 'JOIN' | 'EXIT', mr?: typeof mr) => Promise<void>;
+      canQuickSyslog: (mr: typeof mr, mode: 'JOIN' | 'EXIT') => boolean;
+      menu: { mr: typeof mr } | null;
+    }
+    expect(vm.canQuickSyslog(mr, 'JOIN')).toBe(true)
+    expect(vm.canQuickSyslog(mr, 'EXIT')).toBe(false)
+    vm.openMenu(new MouseEvent('contextmenu', { bubbles: true }), mr)
+    await flushPromises()
+    expect(vm.menu?.mr.mr_uuid).toBe('mr-1')
+    await vm.controlSyslog('JOIN', mr)
+    expect(api.syslog).toHaveBeenCalledWith(['mr-1'], 'JOIN')
+    expect(vm.menu).toBeNull()
     wrapper.unmount()
   })
 

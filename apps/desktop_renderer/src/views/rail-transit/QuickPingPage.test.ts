@@ -39,6 +39,20 @@ describe('QuickPingPage', () => {
     wrapper.unmount()
   })
 
+  it('keeps loss events collapsed until the operator opens the native details', async () => {
+    const wrapper = shallowMount(QuickPingPage, { props: { trains: [], active: false } })
+    ;(wrapper.vm as unknown as { selected: unknown }).selected = {
+      ...run,
+      loss_events: [{ train_id: 'train:41', mr_role: 'CT', state: 'RECOVERED', loss_count: 3 }],
+    }
+    await flushPromises()
+    const events = wrapper.find('details.loss-events')
+    expect(events.exists()).toBe(true)
+    expect((events.element as HTMLDetailsElement).open).toBe(false)
+    expect(events.find('summary').text()).toContain('丢包事件 (1)')
+    wrapper.unmount()
+  })
+
   it('does not start a task without the Quick Ping capability', async () => {
     resetRendererFeaturesForTest()
     const wrapper = shallowMount(QuickPingPage, { props: { trains: trains as never, active: false } })
@@ -191,6 +205,26 @@ describe('Quick Ping IP selection and individual control', () => {
     vm.selectedKeys = ['m1:PRIMARY:192.0.2.1', 'm1:BACKUP:192.0.2.2']
     vm.removeTarget(vm.selectedTargets[0])
     expect(vm.selectedKeys).toEqual(['m1:BACKUP:192.0.2.2'])
+    wrapper.unmount()
+  })
+
+  it('restarts only a cancelled IP as a separate run with prior history intact', async () => {
+    const target = { target_ip: '192.0.2.1', mr_id: 'm1', mr_role: 'CT', address_role: 'PRIMARY', train_id: 't1', train_no: '001', mr_name: 'MR1' }
+    const previous = {
+      ...run, targets: [target], config: { interval_ms: 200, timeout_ms: 1000, packet_size: 64, max_in_flight: 32, duration_seconds: null },
+      target_runtime: { '192.0.2.1': { state: 'CANCELLED', started_at: '', ended_at: '', error: '' } },
+    }
+    const restarted = { ...previous, run_id: 'run-2', state: 'RUNNING' }
+    api.start.mockResolvedValue(restarted)
+    api.get.mockResolvedValue(restarted)
+    api.list.mockResolvedValue({ items: [restarted, previous], total: 2, active_ips: { '192.0.2.1': 'run-2' } })
+    const wrapper = shallowMount(QuickPingPage, { props: { trains: [], active: false } })
+    const vm = wrapper.vm as unknown as { selected: unknown; restartTarget: (target: unknown) => Promise<void> }
+    vm.selected = previous
+    await vm.restartTarget(target)
+    expect(api.start).toHaveBeenCalledWith(expect.objectContaining({ targets: [target], interval_ms: 200, duration_seconds: null }))
+    expect((vm.selected as { run_id: string }).run_id).toBe('run-2')
+    expect(previous.target_runtime['192.0.2.1'].state).toBe('CANCELLED')
     wrapper.unmount()
   })
 
