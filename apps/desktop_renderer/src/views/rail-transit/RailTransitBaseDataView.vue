@@ -3637,7 +3637,17 @@ function sectionSourceLabel(row: Section): string {
             <article class="warning"><span>警告</span><strong>{{ store.importPreview.merge_plan?.summary.warning_count || 0 }}</strong></article>
             <article class="danger"><span>冲突</span><strong>{{ store.importPreview.merge_plan?.summary.conflict_count || 0 }}</strong></article>
             <article class="danger"><span>无效</span><strong>{{ store.importPreview.merge_plan?.summary.invalid_count || 0 }}</strong></article>
-            <article class="warning"><span>未匹配 FIT-AP</span><strong>{{ store.importPreview.merge_plan?.summary.unmatched_fit_ap_count || 0 }}</strong></article>
+             <article class="warning"><span>未匹配 FIT-AP</span><strong>{{ store.importPreview.merge_plan?.summary.unmatched_fit_ap_count || 0 }}</strong></article>
+             <article><span>正线</span><strong>{{ store.importPreview.statistics?.mainline_rows || 0 }}</strong></article>
+             <article><span>车辆段</span><strong>{{ store.importPreview.statistics?.depot_rows || 0 }}</strong></article>
+             <article><span>停车场</span><strong>{{ store.importPreview.statistics?.parking_yard_rows || 0 }}</strong></article>
+             <article class="normal"><span>正式站点匹配</span><strong>{{ store.importPreview.statistics?.station_matched_rows || 0 }}</strong></article>
+             <article class="warning"><span>待维护站点</span><strong>{{ store.importPreview.statistics?.station_pending_create_rows || 0 }}</strong></article>
+             <article class="warning"><span>站点未匹配</span><strong>{{ store.importPreview.statistics?.station_unmatched_rows || 0 }}</strong></article>
+             <article class="danger"><span>MAC重复</span><strong>{{ store.importPreview.statistics?.duplicate_mac_rows || 0 }}</strong></article>
+             <article class="danger"><span>名称重复</span><strong>{{ store.importPreview.statistics?.duplicate_name_rows || 0 }}</strong></article>
+             <article class="warning"><span>缺少交换机</span><strong>{{ store.importPreview.statistics?.uplink_switch_missing_rows || 0 }}</strong></article>
+             <article class="warning"><span>缺少端口</span><strong>{{ store.importPreview.statistics?.uplink_port_missing_rows || 0 }}</strong></article>
             <template v-if="store.importPreview.template_type === 'ap_switch_port_point_table'">
               <article><span>带归属区间</span><strong>{{ store.importPreview.statistics?.section_rows || 0 }}</strong></article>
               <article><span>无归属区间</span><strong>{{ store.importPreview.statistics?.without_section_rows || 0 }}</strong></article>

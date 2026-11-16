@@ -5,7 +5,7 @@ import json
 import mimetypes
 import sqlite3
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ from netconsole.models.api.rail_transit_base_data import (
 from netconsole.services.ap_extension_import import (
     AP_SWITCH_PORT_POINT_TABLE,
     STANDARD_TEMPLATE_TYPE,
+    TRACKSIDE_AP_BASE_TEMPLATE,
     ApExtensionImportService,
     normalize_ap_mac,
 )
@@ -231,9 +232,16 @@ class RailTransitImportPreviewService:
                     fit_ap_macs=fit_ap_macs,
                 )
             )
-            self._append_station_match_issue(row_issues, row_number, values, station_match)
+            self._append_station_match_issue(
+                row_issues,
+                row_number,
+                values,
+                station_match,
+                blocking=template_type == TRACKSIDE_AP_BASE_TEMPLATE,
+            )
             row_issues = self._deduplicate_issues(row_issues)
             output.append(ImportPreviewRowDTO(row_number=row_number, values=values, issues=row_issues))
+        self._append_template_identity_issues(output, template_type)
         merge_plan = self.import_service.build_merge_plan(
             site_id=site_id,
             rows=output,
@@ -280,9 +288,121 @@ class RailTransitImportPreviewService:
         )
 
     @staticmethod
+    def _append_template_identity_issues(
+        rows: list[ImportPreviewRowDTO], template_type: str
+    ) -> None:
+        if template_type != TRACKSIDE_AP_BASE_TEMPLATE:
+            return
+
+        def add_duplicate_issue(
+            row: ImportPreviewRowDTO,
+            *,
+            code: str,
+            field_name: str,
+            value: str,
+            message: str,
+        ) -> None:
+            if any(issue.code == code for issue in row.issues):
+                return
+            row.issues.append(
+                DataQualityIssueDTO(
+                    severity="error",
+                    code=code,
+                    entity_type="ap",
+                    entity_id=f"row:{row.row_number}",
+                    entity_name=f"第 {row.row_number} 行",
+                    row_number=row.row_number,
+                    field_name=field_name,
+                    original_value=value,
+                    message=message,
+                    suggested_action="确保 AP 名称和 AP MAC 在文件内各自唯一后重新预览",
+                    blocking=True,
+                )
+            )
+
+        by_mac: dict[str, list[ImportPreviewRowDTO]] = defaultdict(list)
+        by_name: dict[str, list[ImportPreviewRowDTO]] = defaultdict(list)
+        for row in rows:
+            mac = normalize_ap_mac(
+                row.values.get("ap_mac_norm") or row.values.get("ap_mac_display")
+            ).normalized
+            name = str(row.values.get("ap_name") or "").strip().casefold()
+            if mac:
+                by_mac[mac].append(row)
+            if name:
+                by_name[name].append(row)
+        for group in by_mac.values():
+            if len(group) <= 1:
+                continue
+            for row in group:
+                add_duplicate_issue(
+                    row,
+                    code="ap_mac_duplicate",
+                    field_name="ap_mac_display",
+                    value=str(row.values.get("ap_mac_display") or ""),
+                    message="轨旁 AP 基础资料模板内 AP MAC 必须唯一",
+                )
+        for group in by_name.values():
+            if len(group) <= 1:
+                continue
+            for row in group:
+                add_duplicate_issue(
+                    row,
+                    code="ap_name_duplicate",
+                    field_name="ap_name",
+                    value=str(row.values.get("ap_name") or ""),
+                    message="轨旁 AP 基础资料模板内 AP 名称必须唯一",
+                )
+
+    @staticmethod
     def _statistics(rows: list[ImportPreviewRowDTO]) -> dict[str, int]:
+        def duplicate_row_count(values: list[str]) -> int:
+            counts = Counter(value for value in values if value)
+            return sum(count for count in counts.values() if count > 1)
+
+        valid_ap_rows = [
+            row
+            for row in rows
+            if normalize_ap_mac(
+                row.values.get("ap_mac_norm") or row.values.get("ap_mac_display")
+            ).valid
+        ]
+        location_classes = [
+            str(row.values.get("location_class") or "MAINLINE").strip().upper()
+            for row in rows
+        ]
+        station_statuses = [
+            str(row.values.get("_station_match_status") or "missing")
+            for row in rows
+            if str(row.values.get("station_name") or "").strip()
+        ]
         return {
-            "valid_ap_rows": sum(bool(normalize_ap_mac(row.values.get("ap_mac_norm") or row.values.get("ap_mac_display")).valid) for row in rows),
+            "valid_ap_rows": len(valid_ap_rows),
+            "mainline_rows": location_classes.count("MAINLINE"),
+            "depot_rows": location_classes.count("DEPOT"),
+            "parking_yard_rows": location_classes.count("PARKING_YARD"),
+            "station_matched_rows": station_statuses.count("resolved"),
+            "station_pending_create_rows": station_statuses.count("missing"),
+            "station_unmatched_rows": sum(status in {"missing", "ambiguous"} for status in station_statuses),
+            "duplicate_mac_rows": duplicate_row_count(
+                [
+                    normalize_ap_mac(
+                        row.values.get("ap_mac_norm") or row.values.get("ap_mac_display")
+                    ).normalized
+                    for row in rows
+                ]
+            ),
+            "duplicate_name_rows": duplicate_row_count(
+                [str(row.values.get("ap_name") or "").strip().casefold() for row in rows]
+            ),
+            "uplink_switch_missing_rows": sum(
+                not str(row.values.get("uplink_switch") or "").strip()
+                for row in valid_ap_rows
+            ),
+            "uplink_port_missing_rows": sum(
+                not str(row.values.get("uplink_port") or "").strip()
+                for row in valid_ap_rows
+            ),
             "placeholder_rows": sum(any(issue.code == "ap_mac_placeholder" for issue in row.issues) for row in rows),
             "section_rows": sum(bool(str(row.values.get("section_name") or "").strip()) for row in rows),
             "without_section_rows": sum(not str(row.values.get("section_name") or "").strip() for row in rows),
@@ -426,14 +546,17 @@ class RailTransitImportPreviewService:
         row_number: int,
         values: dict[str, Any],
         match: StationImportMatch,
+        *,
+        blocking: bool = False,
     ) -> None:
         source_name = str(values.get("_station_source_name") or "").strip()
         if not source_name:
             return
+        severity = "error" if blocking else "warning"
         if match.status == "missing":
             issues.append(
                 DataQualityIssueDTO(
-                    severity="warning",
+                    severity=severity,
                     code="station_missing",
                     entity_type="ap",
                     row_number=row_number,
@@ -441,13 +564,13 @@ class RailTransitImportPreviewService:
                     original_value=source_name,
                     message="导入站点未匹配当前局点的正式站点",
                     suggested_action="先维护正式站点，再重新预览或在草稿中人工关联",
-                    blocking=False,
+                    blocking=blocking,
                 )
             )
         elif match.status == "ambiguous":
             issues.append(
                 DataQualityIssueDTO(
-                    severity="warning",
+                    severity=severity,
                     code="station_ambiguous",
                     entity_type="ap",
                     row_number=row_number,
@@ -455,7 +578,7 @@ class RailTransitImportPreviewService:
                     original_value=source_name,
                     message="导入站点匹配到多个正式站点，未自动选择",
                     suggested_action="核对候选正式站点后在草稿中人工确认",
-                    blocking=False,
+                    blocking=blocking,
                 )
             )
 
@@ -519,6 +642,71 @@ class RailTransitImportPreviewService:
         name = str(values.get("ap_name") or "").strip()
         point_code = str(values.get("ap_point_code") or "").strip()
         mac = normalize_ap_mac(values.get("ap_mac_norm") or values.get("ap_mac_display"))
+        if template_type == TRACKSIDE_AP_BASE_TEMPLATE:
+            if not name:
+                issues.append(
+                    cls._issue(
+                        "error",
+                        "ap_name_required",
+                        row_number,
+                        "ap_name",
+                        "",
+                        "轨旁 AP 基础资料模板要求填写 AP 名称",
+                        "补充 AP 名称后重新预览",
+                    )
+                )
+            if not mac.raw:
+                issues.append(
+                    cls._issue(
+                        "error",
+                        "ap_mac_required",
+                        row_number,
+                        "ap_mac_display",
+                        "",
+                        "轨旁 AP 基础资料模板要求填写 AP MAC",
+                        "补充有效 AP MAC 后重新预览",
+                    )
+                )
+            if not str(values.get("station_name") or "").strip():
+                issues.append(
+                    cls._issue(
+                        "error",
+                        "station_location_required",
+                        row_number,
+                        "station_name",
+                        "",
+                        "轨旁 AP 基础资料模板要求填写归属位置",
+                        "补充正式车站、车辆段或停车场后重新预览",
+                    )
+                )
+            if not str(values.get("location_class_original") or "").strip():
+                issues.append(
+                    cls._issue(
+                        "error",
+                        "ap_location_class_required",
+                        row_number,
+                        "location_class",
+                        "",
+                        "轨旁 AP 基础资料模板要求填写位置类型",
+                        "填写正线、车辆段或停车场后重新预览",
+                    )
+                )
+            elif str(values.get("location_class") or "").strip().upper() not in {
+                "MAINLINE",
+                "DEPOT",
+                "PARKING_YARD",
+            }:
+                issues.append(
+                    cls._issue(
+                        "error",
+                        "ap_location_class_invalid",
+                        row_number,
+                        "location_class",
+                        str(values.get("location_class_original") or ""),
+                        "新轨旁 AP 基础资料模板的位置类型只支持正线、车辆段或停车场",
+                        "改为正线、车辆段或停车场后重新预览",
+                    )
+                )
         if not name and template_type != AP_SWITCH_PORT_POINT_TABLE:
             issues.append(cls._issue("info", "ap_name_missing", row_number, "ap_name", "", "AP 名称为空，显示时使用点位编号", "后续可由 FIT-AP 运行态补充"))
         placeholder_mac = str(mac.raw or "").strip().casefold() in {"-", "--", "无", "n/a", "na", "none"}

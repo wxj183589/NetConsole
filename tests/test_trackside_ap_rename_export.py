@@ -92,7 +92,7 @@ def test_export_writes_utf8_bom_crlf_and_stable_name(tmp_path: Path) -> None:
     )
 
 
-def test_base_export_separates_runtime_name_from_point_code() -> None:
+def test_base_export_uses_saved_name_instead_of_runtime_name() -> None:
     row = _export_row(
         {
             "name": "旧点表名称",
@@ -103,17 +103,14 @@ def test_base_export_separates_runtime_name_from_point_code() -> None:
         }
     )
 
-    assert row["ap_name"] == "AP0127"
-    assert row["ap_point_code"] == "AP1"
-    assert row["ap_vendor"] == "H3C"
-    assert row["line_side"] == "右线"
+    assert row["ap_name"] == "旧点表名称"
+    assert "ap_point_code" not in row
 
 
-def test_base_export_uses_point_code_as_empty_ap_name_fallback() -> None:
+def test_base_export_keeps_blank_saved_name_blank() -> None:
     row = _export_row({"name": "", "point_code": "AP0127"})
 
-    assert row["ap_name"] == "AP0127"
-    assert row["ap_point_code"] == "AP0127"
+    assert row["ap_name"] == ""
 
 
 def test_import_issue_export_writes_structured_problem_details(tmp_path: Path) -> None:

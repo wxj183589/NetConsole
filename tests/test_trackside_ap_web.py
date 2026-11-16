@@ -3224,7 +3224,9 @@ def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tm
     template_path, _name = service.open_trackside_ap_base_export("demo", template_task.artifact_id)
     workbook = load_workbook(template_path)
     assert workbook.sheetnames[:2] == ["轨旁AP", "字段说明"]
-    assert [cell.value for cell in workbook["轨旁AP"][1]][:6] == ["AP名称", "点位编号", "AP厂商", "AP MAC", "管理 IP", "型号"]
+    assert [cell.value for cell in workbook["轨旁AP"][1]] == [
+        "AP名称", "AP MAC", "归属位置", "上联交换机", "上联端口", "建设阶段", "位置类型"
+    ]
     assert workbook["字段说明"]["A2"].value == "AP名称"
     workbook.close()
 
@@ -3263,8 +3265,9 @@ def test_trackside_ap_base_template_and_draft_export_use_controlled_artifacts(tm
     header = [cell.value for cell in workbook["轨旁AP"][1]]
     values = [cell.value for cell in workbook["轨旁AP"][2]]
     row = dict(zip(header, values, strict=True))
-    assert row["点位编号"] == "AP0127"
-    assert row["AP厂商"] == "H3C"
+    assert row["AP名称"] in (None, "")
+    assert row["AP MAC"] == "1c94-6876-8ee0"
+    assert row["归属位置"] == "高桥西"
     assert row["上联交换机"] == "11-高桥西1"
     assert row["上联端口"] == "GE1/0/1"
     workbook.close()

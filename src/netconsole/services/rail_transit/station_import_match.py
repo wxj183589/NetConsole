@@ -33,11 +33,17 @@ def resolve_station_import_match(
     valid station evidence here.
     """
 
-    stations = [
-        station
-        for station in formal_stations
-        if _text(_value(station, "id")) and _text(_value(station, "source_kind")) != "legacy_ap_derived"
-    ]
+    requested_site_id = _text(values.get("site_id"))
+    stations = []
+    for station in formal_stations:
+        if not _text(_value(station, "id")):
+            continue
+        if _text(_value(station, "source_kind")) == "legacy_ap_derived":
+            continue
+        station_site_id = _text(_value(station, "site_id"))
+        if requested_site_id and station_site_id and station_site_id != requested_site_id:
+            continue
+        stations.append(station)
     by_id = {_text(_value(station, "id")): station for station in stations}
     station_id = _text(values.get("station_id"))
     station_name = _text(values.get("station_name"))
@@ -76,11 +82,20 @@ def _station_aliases(value: Any) -> set[str]:
     if not text:
         return set()
     parsed = parse_station_source_value(text)
-    aliases = {
-        canonical_station_name(text).casefold(),
-        str(parsed.canonical_station_name or "").strip().casefold(),
-    }
-    return {alias for alias in aliases if alias}
+    aliases: set[str] = set()
+    for candidate in (
+        canonical_station_name(text),
+        str(parsed.canonical_station_name or "").strip(),
+    ):
+        alias = candidate.casefold().strip()
+        if not alias:
+            continue
+        aliases.add(alias)
+        if alias.endswith("站") and not alias.endswith("车站"):
+            aliases.add(alias[:-1])
+        elif not alias.endswith(("站", "段", "场")):
+            aliases.add(f"{alias}站")
+    return aliases
 
 
 def _resolved(station: Any, *, method: str) -> StationImportMatch:
