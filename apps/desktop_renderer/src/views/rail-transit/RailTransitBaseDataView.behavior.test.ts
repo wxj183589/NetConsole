@@ -65,6 +65,13 @@ vi.mock('../../api/railTransitBaseData', () => ({
   validateRailTransitBaseDataChanges: mocks.validate,
 }))
 
+vi.mock('../../api/tracksideApBusiness', () => ({
+  getTracksideApPlan: vi.fn(async () => ({ site_id: 'demo', revision: 'a'.repeat(64), items: [], diagnostics: [] })),
+  exportTracksideApBase: vi.fn(),
+  exportTracksideApImportIssues: vi.fn(),
+  exportTracksideApRenameCommands: vi.fn(),
+}))
+
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: mocks.download,
 }))

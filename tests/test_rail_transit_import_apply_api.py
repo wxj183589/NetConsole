@@ -5,12 +5,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from netconsole.core.database import Database
 from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture, mark_base_data_copy
 from netconsole.backend.api.main import create_app
 from netconsole.core.runtime_mode import RuntimeMode
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRepository,
 )
+from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
 
 
 class _NoopAsyncService:
@@ -191,3 +193,101 @@ def test_import_apply_persists_valid_rows_and_reports_skipped_rows(tmp_path: Pat
         imported["ap_point_code"],
         imported["ap_mac_norm"],
     ) == ("", "PARTIAL-NEW", "aa0000000001")
+
+
+def test_import_static_ap_fields_round_trip_to_query_after_new_service(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("RAIL_TRANSIT_BASE_DATA_WRITE_ENABLED", "1")
+    monkeypatch.setenv("NETCONSOLE_ALLOW_BASE_DATA_COPY_WRITE", "1")
+    monkeypatch.delenv("NETCONSOLE_ALLOW_REAL_BASE_DATA_WRITE", raising=False)
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    now = "2026-08-01T00:00:00"
+    with Database(database).connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, ap_point_code,
+                raw_payload_json, source_file, created_at, updated_at
+            ) VALUES ('demo', '__base_station__', 'station:formal', '正式站', '-', ?,
+                      'manual-base-data', ?, ?)
+            """,
+            (json.dumps({"sort_order": 1, "node_type": "station"}, ensure_ascii=False), now, now),
+        )
+        connection.commit()
+    mark_base_data_copy(paths)
+
+    with TestClient(_app(paths, tmp_path)) as client:
+        preview_response = client.post(
+            "/api/rail-transit/base-data/import-preview",
+            files={
+                "file": (
+                    "static-round-trip.json",
+                    json.dumps(
+                        [
+                            {
+                                "ap_name": "AP-ROUND-TRIP",
+                                "ap_point_code": "ROUND-TRIP-001",
+                                "ap_mac_display": "aa00-0000-0099",
+                                "station_id": "station:formal",
+                                "station_name": "正式站",
+                                "uplink_switch": "SW-ROUND-TRIP",
+                                "uplink_port": "GigabitEthernet1/0/12",
+                                "build_phase": "二期",
+                                "location_class": "MAINLINE",
+                                "participates_in_mainline": True,
+                            }
+                        ],
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
+                    "application/json",
+                )
+            },
+        )
+        assert preview_response.status_code == 200, preview_response.text
+        preview = preview_response.json()
+        assert preview["merge_plan"]["items"][0]["station_match_status"] == "resolved"
+
+        applied = client.post(
+            "/api/rail-transit/base-data/import-apply",
+            json={
+                "preview_id": preview["preview_id"],
+                "site_id": "demo",
+                "explicit_confirmation": True,
+                "decisions": [],
+                "expected_database_sha256": preview["database_hash"],
+            },
+        )
+
+    assert applied.status_code == 200, applied.text
+    row = next(
+        item
+        for item in RailTransitBaseDataQueryService(paths).list_aps(
+            "demo", page_size=200
+        ).items
+        if item.name == "AP-ROUND-TRIP"
+    )
+    assert (
+        row.name,
+        row.mac,
+        row.station_id,
+        row.station,
+        row.station_relation_status,
+        row.uplink_switch,
+        row.uplink_port,
+        row.build_phase,
+        row.location_class,
+        row.participates_in_mainline,
+    ) == (
+        "AP-ROUND-TRIP",
+        "aa:00:00:00:00:99",
+        "station:formal",
+        "正式站",
+        "resolved",
+        "SW-ROUND-TRIP",
+        "GigabitEthernet1/0/12",
+        "二期",
+        "MAINLINE",
+        True,
+    )

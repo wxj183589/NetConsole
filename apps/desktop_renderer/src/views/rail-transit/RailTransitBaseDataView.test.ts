@@ -15,7 +15,7 @@ describe('Rail Transit base data maintenance view', () => {
 
   it('lazy-mounts tab content and pages scoped AP and MR drafts', () => {
     expect(source).not.toMatch(/<el-tab-pane(?![^>]*\slazy)[^>]*>/)
-    expect(source).toContain('pageRows(currentPageDraft.value.aps, editApPage.value, editApPageSize.value)')
+    expect(source).toContain('pageRows(sortTracksideAps(currentPageDraft.value.aps, stationRows.value), editApPage.value, editApPageSize.value)')
     expect(source).toContain('pageRows(currentPageDraft.value.mrs, editMrPage.value, editMrPageSize.value)')
     expect(source).toContain(':total="apPageTotal"')
     expect(source).toContain(':total="mrPageTotal"')
@@ -76,7 +76,7 @@ describe('Rail Transit base data maintenance view', () => {
       '导入模板',
       '导出当前',
       '导出重命名命令',
-      "row.runtime.fit_ap_name || row.name || row.point_code || '--'",
+      "row.name || '--'",
       'ap.runtime.fit_ap_ac_id || undefined',
       'ap.runtime.fit_ap_id',
       '递增方向线路侧',

@@ -1,4 +1,4 @@
-import type { Station } from '../../../types/railTransitBaseData'
+import type { Station, TracksideAp } from '../../../types/railTransitBaseData'
 import type { TracksideApPlanRow } from '../../../types/tracksideApBusiness'
 
 export type PlanningStation = Pick<Station, 'id' | 'name'>
@@ -73,6 +73,39 @@ export function compareRailStationDisplayOrder(left: PlanningStation, right: Pla
 
 export function sortRailStations<T extends PlanningStation>(rows: T[]): T[] {
   return [...rows].sort(compareRailStationDisplayOrder)
+}
+
+function naturalTextKey(value: unknown): (number | string)[] {
+  return String(value || '').split(/(\d+)/).map((part) => /^\d+$/.test(part) ? Number(part) : part.toLocaleLowerCase())
+}
+
+export function sortTracksideAps<T extends Pick<TracksideAp, 'id' | 'station_id' | 'station' | 'uplink_switch' | 'uplink_port'>>(
+  rows: T[],
+  stations: PlanningStation[],
+): T[] {
+  const stationById = new Map(stations.map((station) => [station.id, station]))
+  return [...rows].sort((left, right) => {
+    const leftStation = stationById.get(left.station_id) || { id: left.station_id, name: left.station, sort_order: null }
+    const rightStation = stationById.get(right.station_id) || { id: right.station_id, name: right.station, sort_order: null }
+    return compareRailStationDisplayOrder(leftStation, rightStation)
+      || compareNatural(left.uplink_switch, right.uplink_switch)
+      || compareNatural(left.uplink_port, right.uplink_port)
+      || left.id.localeCompare(right.id)
+  })
+}
+
+function compareNatural(left: unknown, right: unknown): number {
+  const leftKey = naturalTextKey(left)
+  const rightKey = naturalTextKey(right)
+  for (let index = 0; index < Math.max(leftKey.length, rightKey.length); index += 1) {
+    const leftPart = leftKey[index]
+    const rightPart = rightKey[index]
+    if (leftPart === undefined) return -1
+    if (rightPart === undefined) return 1
+    if (leftPart < rightPart) return -1
+    if (leftPart > rightPart) return 1
+  }
+  return 0
 }
 
 function positiveInteger(value: unknown): number | null {

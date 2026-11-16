@@ -458,6 +458,7 @@ class RailTransitBaseDataQueryService:
         uplink_port: str = "",
         build_phase: str = "",
         source_type: str = "",
+        location_class: str = "",
         query: str = "",
         has_issue: bool | None = None,
         has_issue_values: list[bool] | None = None,
@@ -481,6 +482,7 @@ class RailTransitBaseDataQueryService:
             uplink_port=uplink_port,
             build_phase=build_phase,
             source_type=source_type,
+            location_class=location_class,
             query=query,
             has_issue=has_issue,
             has_issue_values=has_issue_values,
@@ -503,7 +505,7 @@ class RailTransitBaseDataQueryService:
             if value:
                 needle = value.casefold()
                 items = [item for item in items if needle in str(getattr(item, field)).casefold()]
-        for field, value in (("uplink_switch", uplink_switch), ("uplink_port", uplink_port), ("build_phase", build_phase), ("source_type", source_type)):
+        for field, value in (("uplink_switch", uplink_switch), ("uplink_port", uplink_port), ("build_phase", build_phase), ("source_type", source_type), ("location_class", location_class)):
             if value:
                 needle = value.casefold()
                 items = [item for item in items if needle in str(getattr(item, field)).casefold()]
@@ -537,7 +539,8 @@ class RailTransitBaseDataQueryService:
             items = [item for item in items if (item.issue_count > 0) is has_issue]
         if issue_severity:
             items = [item for item in items if item.highest_issue_severity == issue_severity]
-        items.sort(key=lambda item: self._ap_sort_key(item, sort_by), reverse=sort_order == "desc")
+        station_sort_orders = self._formal_station_sort_orders(site_id) if sort_by == "station_switch_port" else None
+        items.sort(key=lambda item: self._ap_sort_key(item, sort_by, station_sort_orders), reverse=sort_order == "desc")
         selected, current, size = self._page(items, page, page_size)
         return TracksideApPageDTO(items=selected, total=len(items), page=current, page_size=size)
 
@@ -552,6 +555,7 @@ class RailTransitBaseDataQueryService:
         uplink_port: str,
         build_phase: str,
         source_type: str,
+        location_class: str,
         query: str,
         has_issue: bool | None,
         has_issue_values: list[bool] | None,
@@ -579,6 +583,7 @@ class RailTransitBaseDataQueryService:
             or issue_severity
             or build_phase
             or source_type
+            or location_class
         )
         clauses = [
             "COALESCE(belong_type, '') NOT IN ('__base_station__', '__base_section__')",
@@ -731,11 +736,14 @@ class RailTransitBaseDataQueryService:
                     batch = [item for item in batch if build_phase.casefold() in item.build_phase.casefold()]
                 if source_type:
                     batch = [item for item in batch if source_type.casefold() in item.source_type.casefold()]
+                if location_class:
+                    batch = [item for item in batch if item.location_class == location_class]
                 filtered_items.extend(batch)
                 offset += len(rows)
             total = len(filtered_items)
             start = (current_page - 1) * size
-            filtered_items.sort(key=lambda item: self._ap_sort_key(item, sort_by), reverse=sort_order == "desc")
+            station_sort_orders = self._formal_station_sort_orders(site_id) if sort_by == "station_switch_port" else None
+            filtered_items.sort(key=lambda item: self._ap_sort_key(item, sort_by, station_sort_orders), reverse=sort_order == "desc")
             result_items = filtered_items[start : start + size]
         else:
             page_sql_started = time.perf_counter()
@@ -777,7 +785,7 @@ class RailTransitBaseDataQueryService:
     def _points_from_rows(self, site_id: str, rows: list[dict[str, Any]]) -> list[TracksideApDTO]:
         # Reuse the canonical DTO construction and line-side derivation with no
         # runtime readers. This keeps SQL paging separate from identity logic.
-        formal_sections: list[dict[str, Any]] = []
+        formal_rows: list[dict[str, Any]] = []
         path = self.paths.site_db_path(site_id)
         if path.is_file():
             with closing(self._connect(path)) as conn:
@@ -785,13 +793,13 @@ class RailTransitBaseDataQueryService:
                 selected = [field for field in _AP_FIELDS if field in columns]
                 if selected:
                     sql_fields = ", ".join(f'"{field}"' for field in selected)
-                    formal_sections = [
+                    formal_rows = [
                         dict(row)
                         for row in conn.execute(
                             f"""
                             SELECT {sql_fields}
                             FROM ap_extension_points
-                            WHERE belong_type = '__base_section__'
+                            WHERE belong_type IN ('__base_station__', '__base_section__')
                             """
                         )
                     ]
@@ -800,7 +808,7 @@ class RailTransitBaseDataQueryService:
             for item in self._all_points(
                 site_id,
                 include_runtime=False,
-                rows=[*rows, *formal_sections],
+                rows=[*rows, *formal_rows],
             )
             if self._is_ap_record(item)
         ]
@@ -1506,6 +1514,13 @@ class RailTransitBaseDataQueryService:
         derived_result: list[TracksideApDTO] = []
         for item in result:
             station_candidates = station_ids_by_name.get(item.station, [])
+            stored_candidates = item.base_metadata.get("candidate_station_ids")
+            if not station_candidates and isinstance(stored_candidates, list):
+                station_candidates = [
+                    str(candidate)
+                    for candidate in stored_candidates
+                    if str(candidate) in station_by_id
+                ]
             section_candidates = section_ids_by_name.get(item.section, [])
             if item.station_id and item.station_id in station_by_id:
                 station_status = "resolved"
@@ -1514,7 +1529,12 @@ class RailTransitBaseDataQueryService:
                 station_status = "stale"
                 station_name = item.station
             else:
-                station_status = "ambiguous" if len(station_candidates) > 1 else "missing"
+                stored_status = str(item.base_metadata.get("station_relation_status") or "")
+                station_status = (
+                    "ambiguous"
+                    if stored_status == "ambiguous" and station_candidates
+                    else "ambiguous" if len(station_candidates) > 1 else "missing"
+                )
                 station_name = item.station
             if item.section_id and item.section_id in section_by_id:
                 section_status = "resolved"
@@ -2509,8 +2529,27 @@ class RailTransitBaseDataQueryService:
 
         return tuple(int(part) if part.isdigit() else part.casefold() for part in re.split(r"(\d+)", str(value or "")))
 
+    def _formal_station_sort_orders(self, site_id: str) -> dict[str, int]:
+        orders: dict[str, int] = {}
+        for row in self._read_rows(site_id, "ap_extension_points", _AP_FIELDS):
+            if str(row.get("belong_type") or "") != "__base_station__":
+                continue
+            station_id = str(row.get("station_id") or "").strip()
+            if not station_id:
+                continue
+            metadata = self._base_metadata(row.get("raw_payload_json"))
+            raw_order = metadata.get("sort_order")
+            order = self._int_or_none(raw_order) if raw_order not in (None, "") else None
+            if order is not None:
+                orders[station_id] = order
+        return orders
+
     @staticmethod
-    def _ap_sort_key(item: TracksideApDTO, sort_by: str) -> Any:
+    def _ap_sort_key(
+        item: TracksideApDTO,
+        sort_by: str,
+        station_sort_orders: dict[str, int] | None = None,
+    ) -> Any:
         mapping = {
             "name": item.name.casefold(),
             "station": item.station.casefold(),
@@ -2520,9 +2559,12 @@ class RailTransitBaseDataQueryService:
             "uplink_switch": item.uplink_switch.casefold(),
             "uplink_port": RailTransitBaseDataQueryService._natural_key(item.uplink_port),
             "station_switch_port": (
-                item.station.casefold(),
+                item.station_id not in (station_sort_orders or {}),
+                (station_sort_orders or {}).get(item.station_id, 2**31 - 1),
+                RailTransitBaseDataQueryService._natural_key(item.station),
                 RailTransitBaseDataQueryService._natural_key(item.uplink_switch),
                 RailTransitBaseDataQueryService._natural_key(item.uplink_port),
+                item.id,
             ),
         }
         return mapping.get(sort_by, mapping["name"])

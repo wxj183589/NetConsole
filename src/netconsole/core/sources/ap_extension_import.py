@@ -513,6 +513,8 @@ def _convert_row(
         "system_type": source.get("system_type"),
         "network_domain": source.get("network_domain"),
         "belong_type": belong_type,
+        "location_class": source.get("location_class"),
+        "participates_in_mainline": source.get("participates_in_mainline"),
         "station_name": station,
         "section_name": section,
         "section_start_station": source.get("section_start_station"),

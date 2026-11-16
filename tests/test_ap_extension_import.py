@@ -108,6 +108,26 @@ def test_standard_template_import_keeps_explicit_vendor_without_defaulting(
     assert rows[1]["ap_vendor"] == ""
 
 
+def test_standard_template_import_keeps_location_and_mainline_fields(
+    tmp_path: Path,
+) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "轨旁AP"
+    sheet.append(["AP名称", "AP MAC", "位置类型", "是否参与正线判断", "归属站点"])
+    sheet.append(["AP-MAINLINE", "74ad-cb9d-3320", "正线", "是", "车站A"])
+    sheet.append(["AP-DEPOT", "74ad-cb9d-3340", "车辆段", "否", "车辆段"])
+    path = tmp_path / "location.xlsx"
+    workbook.save(path)
+
+    rows = ApExtensionImportService().preview_file(path, "standard_template").standard_rows
+
+    assert rows[0]["location_class"] == "正线"
+    assert rows[0]["participates_in_mainline"] == "是"
+    assert rows[1]["location_class"] == "车辆段"
+    assert rows[1]["participates_in_mainline"] == "否"
+
+
 def test_preview_signal_ab_network_sheet_recognizes_section_and_yard(tmp_path):
     workbook = Workbook()
     sheet = workbook.active

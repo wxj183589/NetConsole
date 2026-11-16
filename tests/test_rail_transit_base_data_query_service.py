@@ -89,6 +89,46 @@ def test_trackside_ap_ledger_filters_source_metadata_and_natural_uplink_sort(tmp
     assert all(item.build_phase == "一期" and item.source_type == "LLDP" for item in result.items)
 
 
+def test_trackside_ap_projection_uses_formal_station_identity_and_line_order(tmp_path: Path) -> None:
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    now = "2026-08-01T00:00:00"
+    with Database(db_path).connect() as connection:
+        connection.executemany(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, ap_point_code,
+                raw_payload_json, source_file, created_at, updated_at
+            ) VALUES ('demo', '__base_station__', ?, ?, '-', ?, 'manual-base-data', ?, ?)
+            """,
+            [
+                ("station:line-1", "2号站", json.dumps({"sort_order": 1, "node_type": "station"}, ensure_ascii=False), now, now),
+                ("station:line-2", "1号站", json.dumps({"sort_order": 2, "node_type": "station"}, ensure_ascii=False), now, now),
+            ],
+        )
+        connection.execute(
+            "UPDATE ap_extension_points SET station_id='station:line-2', station_name='旧展示站名', uplink_switch='SW-A', uplink_port='GigabitEthernet1/0/2' WHERE ap_name='AP-Online'"
+        )
+        connection.execute(
+            "UPDATE ap_extension_points SET station_id='station:line-1', station_name='另一种展示名', uplink_switch='SW-A', uplink_port='GigabitEthernet1/0/10' WHERE ap_name='AP-Section'"
+        )
+        connection.execute(
+            "UPDATE ap_extension_points SET station_id='station:line-1', station_name='另一种展示名', uplink_switch='SW-A', uplink_port='GigabitEthernet1/0/1', location_class='DEPOT', participates_in_mainline=0, location_class_source='MANUAL_EXPLICIT' WHERE ap_name='AP-Duplicate'"
+        )
+        connection.commit()
+
+    service = RailTransitBaseDataQueryService(paths)
+    rows = service.list_aps("demo", page_size=200, sort_by="station_switch_port").items
+    assert [row.name for row in rows] == ["AP-Duplicate", "AP-Section", "AP-Online"]
+    online = next(row for row in rows if row.name == "AP-Online")
+    assert (online.station_id, online.station, online.station_relation_status) == (
+        "station:line-2",
+        "1号站",
+        "resolved",
+    )
+    depot_rows = service.list_aps("demo", page_size=200, location_class="DEPOT").items
+    assert [row.name for row in depot_rows] == ["AP-Duplicate"]
+
+
 def test_trackside_ap_lldp_station_suggestion_uses_exact_identity_without_write(
     tmp_path: Path,
 ) -> None:
