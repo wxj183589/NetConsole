@@ -125,6 +125,37 @@ def test_quick_ping_adjustable_parameters_reach_runner(tmp_path: Path) -> None:
     assert run.config.duration_seconds == 30
 
 
+def test_quick_ping_reads_legacy_naive_local_timestamps_without_losing_events(tmp_path: Path) -> None:
+    """Historical fping JSONL used local timestamps without a UTC offset."""
+    local_time = datetime(2026, 11, 15, 12, 30, 0, 123000)
+    def runner(**_):
+        for index, ok in enumerate((True, False, True)):
+            yield replace(
+                _sample("192.0.2.10", ok=ok, rtt=2.0 if ok else None, seq=index),
+                ts=(local_time + timedelta(seconds=index)).isoformat(timespec="milliseconds"),
+            )
+
+    service = QuickPingService(site_id="demo", output_root=tmp_path, runner=runner)
+    try:
+        run_id = service.start(targets=[_target()])
+        run = _wait_for(service, run_id, {"COMPLETED"})
+        assert (run.stats.sent, run.stats.received, run.stats.lost) == (3, 2, 1)
+        utc = local_time.astimezone(timezone.utc)
+        rows = service.query_samples(
+            run_id,
+            start_time=(utc - timedelta(seconds=1)).isoformat(),
+            end_time=(utc + timedelta(seconds=3)).isoformat(),
+        )["items"]
+        assert len(rows) == 3
+        assert rows[0]["received_at"] == "2026-11-15T12:30:00.123"
+        assert [row["sample"]["ok"] for row in rows] == [True, False, True]
+        with pytest.raises(QuickPingError) as exc:
+            service.query_samples(run_id, start_time="2026-11-15T12:30:00.123")
+        assert exc.value.code == "QUICK_PING_TIME_INVALID"
+    finally:
+        service.close()
+
+
 def test_quick_ping_pages_full_raw_range_across_segments_and_budget(tmp_path: Path) -> None:
     start = datetime(2026, 11, 7, 1, 59, tzinfo=timezone.utc)
     def runner(**_):
