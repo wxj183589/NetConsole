@@ -168,6 +168,79 @@ def test_seven_column_import_resolves_station_id_before_merge(tmp_path: Path) ->
     assert result.merge_plan.items[0].station_match_status == "resolved"
 
 
+def test_seven_column_export_reimport_keeps_yard_rows_importable(tmp_path: Path) -> None:
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "DELETE FROM ap_extension_points WHERE belong_type != '__base_station__'"
+        )
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, ap_name,
+                ap_mac_norm, ap_mac_display, uplink_switch, uplink_port,
+                location_class, participates_in_mainline, raw_payload_json,
+                created_at, updated_at
+            ) VALUES
+                ('demo', 'station', 'station:guanyintang', '观音塘站', 'AP-MAIN',
+                 '001122334401', '00:11:22:33:44:01', 'SW-01', 'GigabitEthernet1/0/1',
+                 'MAINLINE', 1, '{}', '2026-11-16', '2026-11-16'),
+                ('demo', 'depot', '', '昌达车辆段', 'AP-DEPOT',
+                 '001122334402', '00:11:22:33:44:02', 'SW-02', 'GigabitEthernet1/0/2',
+                 'DEPOT', 0, '{}', '2026-11-16', '2026-11-16'),
+                ('demo', 'parking_yard', '', '四堡停车场', 'AP-PARKING',
+                 '001122334403', '00:11:22:33:44:03', 'SW-03', 'GigabitEthernet1/0/3',
+                 'PARKING_YARD', 0, '{}', '2026-11-16', '2026-11-16')
+            """
+        )
+        connection.commit()
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, raw_payload_json,
+                created_at, updated_at
+            ) VALUES ('demo', '__base_station__', 'station:guanyintang', '观音塘站',
+                      ?, '2026-11-16', '2026-11-16')
+            """,
+            (json.dumps({"sort_order": 11, "node_type": "station"}, ensure_ascii=False),),
+        )
+        connection.commit()
+
+    exported = tmp_path / "trackside-ap-yard-round-trip.xlsx"
+    export_trackside_ap_base_xlsx_task(
+        exported,
+        {"app_root": str(paths.app_root), "data_root": str(paths.data_root), "site_id": "demo"},
+    )
+    result = RailTransitImportPreviewService(
+        RailTransitBaseDataQueryService(paths), temp_root=tmp_path / "preview-temp"
+    ).preview(
+        site_id="demo",
+        file_name=exported.name,
+        content=exported.read_bytes(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    assert result.total_rows == 3
+    exported_rows = {
+        row.values["ap_name"]: row
+        for row in result.rows
+        if row.values["ap_name"] in {"AP-MAIN", "AP-DEPOT", "AP-PARKING"}
+    }
+    assert len(exported_rows) == 3
+    assert result.statistics["invalid_rows"] == 0
+    assert result.statistics["importable_rows"] == result.total_rows
+    assert result.merge_plan is not None
+    assert all(item.result == "UNCHANGED" for item in result.merge_plan.items)
+    assert exported_rows["AP-MAIN"].values["station_id"] == "station:guanyintang"
+    assert exported_rows["AP-DEPOT"].values["station_id"] == ""
+    assert exported_rows["AP-PARKING"].values["station_id"] == ""
+    assert not any(
+        issue.blocking
+        for name in ("AP-DEPOT", "AP-PARKING")
+        for issue in exported_rows[name].issues
+    )
+
+
 def test_seven_column_export_with_field_notes_round_trips_only_data_rows(tmp_path: Path) -> None:
     paths, database = build_rail_transit_base_data_fixture(tmp_path)
     with sqlite3.connect(database) as connection:

@@ -237,7 +237,10 @@ class RailTransitImportPreviewService:
                 row_number,
                 values,
                 station_match,
-                blocking=template_type == TRACKSIDE_AP_BASE_TEMPLATE,
+                blocking=(
+                    template_type == TRACKSIDE_AP_BASE_TEMPLATE
+                    and str(values.get("location_class") or "").strip().upper() == "MAINLINE"
+                ),
             )
             row_issues = self._deduplicate_issues(row_issues)
             output.append(ImportPreviewRowDTO(row_number=row_number, values=values, issues=row_issues))
