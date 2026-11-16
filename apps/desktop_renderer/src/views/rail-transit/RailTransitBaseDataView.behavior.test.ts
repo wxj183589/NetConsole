@@ -65,6 +65,13 @@ vi.mock('../../api/railTransitBaseData', () => ({
   validateRailTransitBaseDataChanges: mocks.validate,
 }))
 
+vi.mock('../../api/tracksideApBusiness', () => ({
+  getTracksideApPlan: vi.fn(async () => ({ site_id: 'demo', revision: 'a'.repeat(64), items: [], diagnostics: [] })),
+  exportTracksideApBase: vi.fn(),
+  exportTracksideApImportIssues: vi.fn(),
+  exportTracksideApRenameCommands: vi.fn(),
+}))
+
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: mocks.download,
 }))
@@ -1579,6 +1586,104 @@ describe('轨道交通基础资料编辑闭环', () => {
     expect(wrapper.text()).toContain('仅显示冲突')
     expect(wrapper.text()).toContain('仅显示无效')
     expect(wrapper.text()).not.toContain('我已核对差异、冲突和目标局点')
+    wrapper.unmount()
+  })
+
+  it('轨旁 AP 导入将正式站点、交换机、端口和来源元数据投影到保存 DTO', async () => {
+    const formalStation = { ...sourceStationWuxiang, id: 'station:jiubao', name: '九堡', source_station_value: '11九堡' }
+    mocks.stationsPage.mockResolvedValue({ items: [formalStation], total: 1, page: 1, page_size: 50 })
+    mocks.importPreview.mockResolvedValue({
+      preview_id: 'preview-station-1',
+      file_name: '杭州地铁9号线.xlsx',
+      file_size: 1024,
+      template_type: 'netconsole_standard_template',
+      confidence_score: 100,
+      total_rows: 1,
+      valid_rows: 1,
+      error_count: 0,
+      warning_count: 0,
+      sheet_names: ['轨旁AP'],
+      statistics: {},
+      rows: [],
+      database_hash: 'a'.repeat(64),
+      preview_expires_at: '2026-11-16T12:00:00+00:00',
+      write_enabled: true,
+      message: '',
+      merge_plan: {
+        plan_id: 'plan-station-1',
+        site_id: 'demo',
+        source_file_name: '杭州地铁9号线.xlsx',
+        source_file_sha256: 'b'.repeat(64),
+        source_type: 'official_point_table',
+        database_hash: 'a'.repeat(64),
+        created_at: '2026-11-16T11:00:00+00:00',
+        preview_expires_at: '2026-11-16T12:00:00+00:00',
+        write_enabled: true,
+        items: [{
+          row_number: 2,
+          entity_type: 'ap',
+          source_identity: { ap_point_code: 'AP-001', ap_mac: '0011-2233-4499' },
+          matched_entity_id: '',
+          matched_entity_name: '',
+          match_method: 'no_exact_match',
+          result: 'CREATE',
+          conflict_summary: '',
+          field_diffs: [],
+          source_values: {
+            ap_point_code: 'AP-001',
+            ap_name: 'AP-IMPORT',
+            ap_mac_norm: '001122334499',
+            ap_mac_display: '0011-2233-4499',
+            station_id: 'station:jiubao',
+            station_name: '九堡',
+            uplink_switch: 'S914-WMZ-S7503E-M',
+            uplink_port: 'GigabitEthernet1/0/10',
+            raw_payload_json: JSON.stringify({ build_phase: '一期' }),
+          },
+          station_source_name: '11九堡',
+          station_match_status: 'resolved',
+          station_match_name: '九堡',
+          station_match_method: 'station_name_exact',
+          station_candidate_ids: ['station:jiubao'],
+          station_candidate_names: ['九堡'],
+          blocking: false,
+          issues: [],
+        }],
+        summary: {
+          total_rows: 1, importable_count: 1, create_count: 1, update_count: 0,
+          unchanged_count: 0, skip_count: 0, conflict_count: 0, invalid_count: 0,
+          warning_count: 0, unmatched_fit_ap_count: 0, needs_confirmation_count: 0,
+          blocking_count: 0,
+        },
+      },
+    })
+    const wrapper = await mountView(true, 'trackside-ap')
+    const input = wrapper.find('input[accept=".xlsx,.csv,.json"]')
+    Object.defineProperty(input.element, 'files', {
+      configurable: true,
+      value: [new File(['preview'], '杭州地铁9号线.xlsx')],
+    })
+    await input.trigger('change')
+    await flushPromises()
+
+    await button(wrapper, '导入 1 条有效数据到草稿').trigger('click')
+    await flushPromises()
+    await button(wrapper, '保存').trigger('click')
+    await flushPromises()
+
+    const changes = mocks.validate.mock.calls.at(-1)?.[0]?.changes || []
+    const apChange = changes.find((change: { entity_type: string }) => change.entity_type === 'trackside_ap')
+    expect(apChange.values).toMatchObject({
+      station_id: 'station:jiubao',
+      station_name: '九堡',
+      uplink_switch: 'S914-WMZ-S7503E-M',
+      uplink_port: 'GigabitEthernet1/0/10',
+    })
+    expect(apChange.values.base_metadata).toMatchObject({
+      uplink_switch: 'S914-WMZ-S7503E-M',
+      uplink_port: 'GigabitEthernet1/0/10',
+      build_phase: '一期',
+    })
     wrapper.unmount()
   })
 

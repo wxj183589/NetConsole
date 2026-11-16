@@ -55,6 +55,7 @@ from netconsole.services.rail_transit.source_policy import (
     is_runtime_field,
     match_trackside_ap,
 )
+from netconsole.core.sources.rail_transit.station_source_utils import canonical_station_name
 from netconsole.services.site_manager import SiteManager
 
 PREVIEW_TTL_MINUTES = 15
@@ -726,12 +727,21 @@ class RailTransitBaseDataImportService:
             if proposed is None or proposed == "":
                 continue
             current_value = current.get(field)
-            action = "use_imported" if match.status == "create" else field_action(
-                current_value,
-                proposed,
-                source_type=source_type,
-            )
-            if action == "manual_review":
+            if match.status == "create":
+                action = "use_imported"
+            elif field in {"station_id", "station_name"} and current_value not in (None, ""):
+                action = (
+                    "keep_existing"
+                    if self._same_import_value(field, current_value, proposed)
+                    else "manual_review"
+                )
+            else:
+                action = field_action(
+                    current_value,
+                    proposed,
+                    source_type=source_type,
+                )
+            if action == "manual_review" and field not in {"station_id", "station_name"}:
                 action = "keep_existing"
                 issues.append(
                     DataQualityIssueDTO(
@@ -752,7 +762,7 @@ class RailTransitBaseDataImportService:
                         blocking=False,
                     )
                 )
-            if action == "keep_existing" and str(current_value or "") == str(proposed or ""):
+            if action == "keep_existing" and self._same_import_value(field, current_value, proposed):
                 continue
             diffs.append(
                 MergeFieldDiffDTO(
@@ -815,9 +825,34 @@ class RailTransitBaseDataImportService:
                     "location_class_original", ""
                 ),
             },
+            station_source_name=str(row.values.get("_station_source_name") or values.get("station_name") or ""),
+            station_match_status=str(
+                row.values.get("_station_match_status")
+                or ("resolved" if values.get("station_id") else "missing")
+            ),
+            station_match_name=str(row.values.get("_station_match_name") or ""),
+            station_match_method=str(row.values.get("_station_match_method") or ""),
+            station_candidate_ids=[
+                str(value)
+                for value in row.values.get("_station_candidate_ids") or []
+                if str(value).strip()
+            ],
+            station_candidate_names=[
+                str(value)
+                for value in row.values.get("_station_candidate_names") or []
+                if str(value).strip()
+            ],
             blocking=blocking,
             issues=issues,
         )
+
+    @staticmethod
+    def _same_import_value(field: str, current: Any, proposed: Any) -> bool:
+        if field == "station_name":
+            current_key = canonical_station_name(current).casefold()
+            proposed_key = canonical_station_name(proposed).casefold()
+            return bool(current_key and current_key == proposed_key)
+        return str(current or "").strip() == str(proposed or "").strip()
 
     @staticmethod
     def _operations(plan: MergePlanDTO) -> list[dict[str, Any]]:
