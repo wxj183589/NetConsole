@@ -28,6 +28,9 @@ FIXED_REPORT_PATHS = frozenset(
         "reports/mesh-phase11-2/BILINGUAL_UI_AUDIT.md",
         "reports/mesh-phase11-3/CHINESE_LABEL_AUDIT.md",
         "reports/mesh-phase11-3/UI_NAVIGATION_AUDIT.md",
+        "development/SQL_QUERY_AUDIT_20261117.md",
+        "development/SQL_QUERY_OPTIMIZATION_REPORT_20261117.md",
+        "development/SQL_QUERY_VALIDATION_20261117.md",
     }
 )
 LEGACY_RENDERER_PATH_RE = re.compile(

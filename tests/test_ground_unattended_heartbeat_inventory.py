@@ -458,13 +458,18 @@ def test_failed_sync_does_not_reenable_selection_or_write_inventory(inventory_ap
     calls = 0
 
     def source_changes_after_preview():
+        from dataclasses import replace
+        from netconsole.models.ground_inventory import freeze_inventory, thaw_inventory
+
         nonlocal calls
         calls += 1
         result = original()
         if calls == 3:
             if failure == "conflict":
-                return (*result[:3], ["MR_POSITION_DUPLICATE: train-01/CT"])
-            result[1][0]["management_ip"] = "192.0.2.99"
+                return replace(result, conflicts=("MR_POSITION_DUPLICATE: train-01/CT",))
+            endpoints = thaw_inventory(result.endpoints)
+            endpoints[0]["management_ip"] = "192.0.2.99"
+            result = replace(result, endpoints=freeze_inventory(endpoints))
         return result
 
     monkeypatch.setattr(f.service.inventory_sync, "collect", source_changes_after_preview)

@@ -275,7 +275,7 @@ class GroundUnattendedApplicationService:
             str, tuple[tuple[str, ...], str]
         ] = {}
         self.inventory_sync = (
-            TrainInventorySyncService(
+            getattr(supervisor, "inventory_sync", None) or TrainInventorySyncService(
                 paths,
                 site_id=site_id,
                 repository=repository,
@@ -297,18 +297,15 @@ class GroundUnattendedApplicationService:
                 "当前局点的 MR 基础资料查询服务不可用",
                 status_code=503,
             )
-        base_mrs: dict[str, Any] = {}
-        page = self.base_query.list_mrs(site_id, page=1, page_size=200)
-        base_mrs.update((str(item.id), item) for item in page.items)
-        current_page = 2
-        while len(base_mrs) < page.total:
-            batch = self.base_query.list_mrs(
-                site_id, page=current_page, page_size=200
+        # Dependency replacement must not keep consulting the old provider.
+        inventory_sync = self.inventory_sync
+        if inventory_sync is None or inventory_sync.base_query is not self.base_query:
+            inventory_sync = TrainInventorySyncService(
+                self.paths, site_id=self.site_id, repository=self.repository,
+                base_query=self.base_query,
             )
-            if not batch.items:
-                break
-            base_mrs.update((str(item.id), item) for item in batch.items)
-            current_page += 1
+        mrs = inventory_sync.current_mrs()
+        base_mrs = {str(item.id): item for item in mrs}
         validated_targets: list[QuickPingTarget] = []
         for item in payload.targets:
             mr = base_mrs.get(item.mr_id)
@@ -650,7 +647,8 @@ class GroundUnattendedApplicationService:
     def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "") -> GroundHeartbeatPageDTO:
         """Read durable heartbeat facts without deriving reachability from AC data."""
         self._require_site(site_id)
-        state = self.repository.heartbeat_inventory_state()
+        inventory_snapshot = self.repository.inventory_snapshot()
+        state = inventory_snapshot.state
         source_conflicts: list[str] = []
         resident = getattr(self.supervisor, "heartbeat", None)
         is_current = not run_id or run_id == "heartbeat-resident"
@@ -658,7 +656,7 @@ class GroundUnattendedApplicationService:
         run = None if is_current else self._resolve_run(run_id)
         resolved_id = "heartbeat-resident" if is_current else str((run or {}).get("run_id") or "")
         runtime = resident.status() if resident is not None else HeartbeatRuntimeDTO()
-        inventory = self.repository.list_inventory(include_removed=not is_current)
+        inventory = inventory_snapshot.inventory(include_removed=not is_current)
         snapshot_rows = (
             self.repository.list_heartbeat_snapshots(resolved_id)
             if resolved_id
@@ -672,7 +670,7 @@ class GroundUnattendedApplicationService:
             state["enabled"] and resolved_id and not snapshot_rows
         )
         if inventory_projection:
-            inventory = self.repository.list_inventory(include_removed=False)
+            inventory = inventory_snapshot.inventory()
         trains_by_id = {str(row["train_id"]): row for row in inventory}
         endpoints = {
             str(endpoint.get("device_uuid") or ""): endpoint
@@ -776,7 +774,7 @@ class GroundUnattendedApplicationService:
         # Reuse the AC view's exact physical MR identity contract; its peer AP is
         # deliberately not the MR body identity or location.
         from netconsole.services.ac.mesh_link_query_service import AcMeshLinkQueryService
-        ac_query = AcMeshLinkQueryService(self.paths)
+        ac_query = getattr(self.supervisor, "mesh_query", None) or AcMeshLinkQueryService(self.paths)
         identity_rows: dict[str, Any] = {}
         ac_page = 1
         try:

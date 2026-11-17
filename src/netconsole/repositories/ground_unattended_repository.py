@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
+import threading
+import time
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from datetime import datetime
@@ -12,6 +15,7 @@ from netconsole.core.model_projection import project_row_for_model
 from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO, HeartbeatConfigDTO
 from netconsole.core.database import Database
 from netconsole.core.sqlite_utils import configure_sqlite_connection, initialize_sqlite_wal
+from netconsole.models.ground_inventory import SiteInventorySnapshot, freeze_inventory
 
 
 def _filter_values(value: str | Iterable[str]) -> tuple[str, ...]:
@@ -1096,6 +1100,10 @@ class GroundUnattendedRepository:
     def __init__(self, db_path: Path, *, site_id: str) -> None:
         self.db_path = Path(db_path)
         self.site_id = str(site_id)
+        self._inventory_lock = threading.RLock()
+        self._inventory_snapshot: SiteInventorySnapshot | None = None
+        self._inventory_loaded_at = 0.0
+        self.inventory_snapshot_ttl = 1.0
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
 
@@ -1606,7 +1614,7 @@ class GroundUnattendedRepository:
 
     def set_priority(self, train_id: str, priority: bool) -> None:
         now = _now()
-        with self._transaction() as conn:
+        with self._inventory_transaction() as conn:
             if priority:
                 conn.execute(
                     """
@@ -1644,7 +1652,7 @@ class GroundUnattendedRepository:
         now = _now()
         active_train_ids = {str(row["train_id"]) for row in trains}
         active_device_ids = {str(row["device_uuid"]) for row in endpoints}
-        with self._transaction() as conn:
+        with self._inventory_transaction() as conn:
             if heartbeat_revision is not None:
                 state = conn.execute(
                     "SELECT revision FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
@@ -1811,29 +1819,34 @@ class GroundUnattendedRepository:
         }
 
     def list_inventory(self, *, include_removed: bool = True) -> list[dict[str, Any]]:
-        where = "" if include_removed else "AND i.inventory_status='ACTIVE'"
+        # Keep the legacy API fresh and independently mutable.
         with self._read_connection() as conn:
-            trains = conn.execute(
-                f"""
-                SELECT i.*, p.enabled, p.priority, p.scheduling_priority,
-                       p.deep_collection_enabled, p.monitor_only, p.remark
-                FROM ground_unattended_train_inventory i
-                LEFT JOIN ground_unattended_train_policies p
-                  ON p.site_id=i.site_id AND p.train_id=i.train_id
-                WHERE i.site_id=? {where}
-                ORDER BY COALESCE(p.priority, 0) DESC,
-                         COALESCE(p.scheduling_priority, 0) DESC,
-                         i.train_no, i.train_id
-                """,
-                (self.site_id,),
-            ).fetchall()
-            endpoints = conn.execute(
-                "SELECT * FROM ground_unattended_train_endpoints WHERE site_id=? "
-                + ("AND binding_status='ACTIVE' " if not include_removed else "")
-                +
-                "ORDER BY train_id, mr_role",
-                (self.site_id,),
-            ).fetchall()
+            conn.execute("BEGIN")
+            return self._list_inventory(conn, include_removed=include_removed)
+
+    def _list_inventory(self, conn, *, include_removed: bool) -> list[dict[str, Any]]:
+        where = "" if include_removed else "AND i.inventory_status='ACTIVE'"
+        trains = conn.execute(
+            f"""
+            SELECT i.*, p.enabled, p.priority, p.scheduling_priority,
+                   p.deep_collection_enabled, p.monitor_only, p.remark
+            FROM ground_unattended_train_inventory i
+            LEFT JOIN ground_unattended_train_policies p
+              ON p.site_id=i.site_id AND p.train_id=i.train_id
+            WHERE i.site_id=? {where}
+            ORDER BY COALESCE(p.priority, 0) DESC,
+                     COALESCE(p.scheduling_priority, 0) DESC,
+                     i.train_no, i.train_id
+            """,
+            (self.site_id,),
+        ).fetchall()
+        endpoints = conn.execute(
+            "SELECT * FROM ground_unattended_train_endpoints WHERE site_id=? "
+            + ("AND binding_status='ACTIVE' " if not include_removed else "")
+            +
+            "ORDER BY train_id, mr_role",
+            (self.site_id,),
+        ).fetchall()
         by_train: dict[str, list[dict[str, Any]]] = {}
         for row in endpoints:
             by_train.setdefault(str(row["train_id"]), []).append(_decode_row(row))
@@ -1843,6 +1856,48 @@ class GroundUnattendedRepository:
             item["endpoints"] = by_train.get(str(item["train_id"]), [])
             result.append(item)
         return result
+
+    def inventory_snapshot(self, *, force: bool = False) -> SiteInventorySnapshot:
+        """One immutable Site view; external writers are observed within one second.
+
+        The lock covers only this instance's short static load/publication and
+        inventory commits. Connections remain local to each calling thread.
+        Dynamic heartbeat/syslog facts never enter this cache.
+        """
+        with self._inventory_lock:
+            now = time.monotonic()
+            if (not force and self._inventory_snapshot is not None
+                    and now - self._inventory_loaded_at < self.inventory_snapshot_ttl):
+                return self._inventory_snapshot
+            with self._read_connection() as conn:
+                conn.execute("BEGIN")
+                trains = self._list_inventory(conn, include_removed=True)
+                state = self._heartbeat_inventory_state(conn)
+            active = [
+                {**train, "endpoints": [endpoint for endpoint in train["endpoints"]
+                                       if endpoint["binding_status"] == "ACTIVE"]}
+                for train in trains if train["inventory_status"] == "ACTIVE"
+            ]
+            revision = hashlib.sha256(json.dumps(
+                {"trains": trains, "state": state}, sort_keys=True, ensure_ascii=False,
+            ).encode("utf-8")).hexdigest()
+            snapshot = SiteInventorySnapshot(
+                site_id=self.site_id, trains=freeze_inventory(trains),
+                active_trains=freeze_inventory(active), state=freeze_inventory(state),
+                revision=revision, generated_at=_now(), loaded_at=time.monotonic(),
+            )
+            self._inventory_snapshot = snapshot
+            self._inventory_loaded_at = time.monotonic()
+            return snapshot
+
+    @contextmanager
+    def _inventory_transaction(self):
+        # Invalidate only after a successful commit. Serialize with publication
+        # so an older in-flight load cannot overwrite the new invalidation.
+        with self._inventory_lock:
+            with self._transaction() as conn:
+                yield conn
+            self._inventory_snapshot = None
 
     def get_heartbeat_config(self) -> HeartbeatConfigDTO:
         with self._read_connection() as conn:
@@ -1887,10 +1942,13 @@ class GroundUnattendedRepository:
     def heartbeat_inventory_state(self) -> dict[str, Any]:
         """Heartbeat selection is independent from the shared asset inventory."""
         with self._read_connection() as conn:
-            row = conn.execute(
-                "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
-                (self.site_id,),
-            ).fetchone()
+            return self._heartbeat_inventory_state(conn)
+
+    def _heartbeat_inventory_state(self, conn) -> dict[str, Any]:
+        row = conn.execute(
+            "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
+            (self.site_id,),
+        ).fetchone()
         return dict(row) if row else {
             "site_id": self.site_id, "enabled": True, "revision": 0,
             "data_cleared_at": "", "updated_at": "",
@@ -1922,7 +1980,7 @@ class GroundUnattendedRepository:
         The nonterminal-run check is repeated inside the write transaction so
         a concurrent run start cannot race a destructive operation.
         """
-        with self._transaction() as conn:
+        with self._inventory_transaction() as conn:
             state = conn.execute(
                 "SELECT * FROM ground_unattended_heartbeat_inventory_state WHERE site_id=?",
                 (self.site_id,),
@@ -1996,7 +2054,7 @@ class GroundUnattendedRepository:
         }
         current = self.get_train_policy(train_id) or defaults
         current.update(payload)
-        with self._transaction() as conn:
+        with self._inventory_transaction() as conn:
             conn.execute(
                 """
                 INSERT INTO ground_unattended_train_policies(
@@ -5503,7 +5561,7 @@ class GroundUnattendedRepository:
         hostname: str,
         verified_at: str,
     ) -> None:
-        with self._transaction() as conn:
+        with self._inventory_transaction() as conn:
             conn.execute(
                 "UPDATE ground_unattended_train_endpoints SET last_syslog_source_ip=?, "
                 "syslog_hostname=?, last_syslog_identity_verified_at=?, updated_at=? "

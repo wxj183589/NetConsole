@@ -72,6 +72,7 @@ class DeepMrCollectionScheduler:
         self.application_service = application_service
         self.query_service = query_service
         self.base_query = base_query
+        self.inventory_sync = None
         self.fleet_ping = fleet_ping
         self.policy = OnlineMrConcurrencyPolicy(application_service.task_service)
         self._lock = threading.RLock()
@@ -868,12 +869,18 @@ class DeepMrCollectionScheduler:
         self, endpoint: dict[str, Any], profile
     ) -> OnlineMrStartRequest:
         mr_id = str(endpoint.get("mr_id") or "")
-        detail = self.base_query.get_mr(self.site_id, mr_id)
-        if detail is None or detail.mr.device_id is None:
+        if self.inventory_sync is not None:
+            mr = next((row for row in self.inventory_sync.current_mrs() if row.id == mr_id), None)
+        else:
+            detail = self.base_query.get_mr(self.site_id, mr_id)
+            mr = detail.mr if detail is not None else None
+        if mr is None or mr.device_id is None:
             raise ValueError("MR 基础资料不存在或未绑定设备")
         device = DeviceRepository(Database(self.paths.site_db_path(self.site_id))).get(
-            detail.mr.device_id
+            mr.device_id
         )
+        if str(device.device_uuid) != mr.id:
+            raise ValueError("MR 设备身份已变化")
         if not is_device_eligible_for_automatic_collection(device):
             raise ValueError("MR 当前不参与本次调试，已退出无人值守自动任务")
         if device.ssh_enabled:
@@ -892,18 +899,18 @@ class DeepMrCollectionScheduler:
             raise ValueError("MR 缺少受控连接地址或凭据")
         fping_target = str(
             endpoint.get("management_ip")
-            or detail.mr.management_ip
+            or mr.management_ip
             or device.primary_address
             or ""
         ).strip()
         required_fping = self._required_fping_config(profile, fping_target)
-        safe_name = re.sub(r'[\\/:*?"<>|]+', "_", detail.mr.name).strip(" ._") or "mr"
+        safe_name = re.sub(r'[\\/:*?"<>|]+', "_", mr.name).strip(" ._") or "mr"
         config = OnlineMrConnectionConfig(
             site=self.site_id,
-            mr_id=detail.mr.id,
-            mr_name=detail.mr.name,
-            safe_mr_name=f"{safe_name}__{detail.mr.device_id}",
-            device_id=detail.mr.device_id,
+            mr_id=mr.id,
+            mr_name=mr.name,
+            safe_mr_name=f"{safe_name}__{mr.device_id}",
+            device_id=mr.device_id,
             device_name=device.name,
             host=str(device.primary_address),
             protocol=protocol,
@@ -930,9 +937,9 @@ class DeepMrCollectionScheduler:
         )
         return OnlineMrStartRequest(
             site_id=self.site_id,
-            device_id=detail.mr.device_id,
+            device_id=mr.device_id,
             device_name=device.name,
-            mr_name=detail.mr.name,
+            mr_name=mr.name,
             config=config,
             executor_kind=OnlineMrExecutorKind.LOCAL,
             owner="ground_unattended",

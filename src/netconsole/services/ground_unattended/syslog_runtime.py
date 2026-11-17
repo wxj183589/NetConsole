@@ -945,8 +945,12 @@ class SyslogUdpReceiver:
         self._listen_address = ""
         self._listen_host = ""
         self._listen_port = 0
-        self._endpoint_by_ip: dict[str, list[dict[str, Any]]] = {}
-        self._endpoint_by_hostname: dict[str, list[dict[str, Any]]] = {}
+        self._inventory_identity_indexes: tuple[
+            dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]
+        ] = ({}, {})
+        self._inventory_revision = ""
+        self._inventory_loaded_at = 0.0
+        self._inventory_refresh_lock = threading.Lock()
         self._received_count = 0
         self._unidentified_count = 0
         self._identity_conflict_count = 0
@@ -1326,8 +1330,35 @@ class SyslogUdpReceiver:
         self._disk_spool_handle = self._parser_spool_handle = None
         self._disk_spool_read_handle = self._parser_spool_read_handle = None
 
-    def refresh_inventory(self) -> None:
-        active = self.repository.list_inventory(include_removed=False)
+    @property
+    def _endpoint_by_ip(self):
+        return self._inventory_identity_indexes[0]
+
+    @_endpoint_by_ip.setter
+    def _endpoint_by_ip(self, value):
+        self._inventory_identity_indexes = (value, self._inventory_identity_indexes[1])
+
+    @property
+    def _endpoint_by_hostname(self):
+        return self._inventory_identity_indexes[1]
+
+    @_endpoint_by_hostname.setter
+    def _endpoint_by_hostname(self, value):
+        self._inventory_identity_indexes = (self._inventory_identity_indexes[0], value)
+
+    def refresh_inventory(self, *, snapshot=None) -> None:
+        with self._inventory_refresh_lock:
+            self._refresh_inventory(snapshot or self.repository.inventory_snapshot())
+
+    def _refresh_inventory(self, snapshot) -> None:
+        if snapshot.site_id != self.site_id:
+            raise ValueError("SYSLOG_INVENTORY_SITE_MISMATCH")
+        if snapshot.loaded_at < self._inventory_loaded_at:
+            return
+        self._inventory_loaded_at = snapshot.loaded_at
+        if snapshot.revision == self._inventory_revision:
+            return
+        active = snapshot.inventory()
         by_ip: dict[str, list[dict[str, Any]]] = {}
         by_host: dict[str, list[dict[str, Any]]] = {}
         for train in active:
@@ -1339,6 +1370,7 @@ class SyslogUdpReceiver:
                 value = {**endpoint, "train_id": train["train_id"], "train_no": train.get("train_no", "")}
                 addresses = {
                     str(endpoint.get("management_ip") or "").strip(),
+                    str(endpoint.get("backup_management_ip") or "").strip(),
                     str(endpoint.get("last_syslog_source_ip") or "").strip(),
                 }
                 hostnames = {
@@ -1350,8 +1382,10 @@ class SyslogUdpReceiver:
                     by_ip.setdefault(address, []).append(value)
                 for hostname in hostnames - {""}:
                     by_host.setdefault(hostname, []).append(value)
-        self._endpoint_by_ip = by_ip
-        self._endpoint_by_hostname = by_host
+        # Parser takes one reference, never an IP index from one revision and
+        # a hostname index from another publication.
+        self._inventory_identity_indexes = (by_ip, by_host)
+        self._inventory_revision = snapshot.revision
 
     def refresh_ap_identity(self) -> int:
         return self._ap_resolver.refresh_revision()
@@ -2262,8 +2296,9 @@ class SyslogUdpReceiver:
     def _resolve_identity(
         self, source_ip: str, hostname: str
     ) -> tuple[dict[str, Any] | None, str]:
-        by_ip = self._endpoint_by_ip.get(source_ip, [])
-        by_host = self._endpoint_by_hostname.get(hostname.casefold(), []) if hostname else []
+        ip_index, host_index = self._inventory_identity_indexes
+        by_ip = ip_index.get(source_ip, [])
+        by_host = host_index.get(hostname.casefold(), []) if hostname else []
         ip_by_uuid = {str(item.get("device_uuid") or ""): item for item in by_ip}
         host_by_uuid = {str(item.get("device_uuid") or ""): item for item in by_host}
         if ip_by_uuid and host_by_uuid:
