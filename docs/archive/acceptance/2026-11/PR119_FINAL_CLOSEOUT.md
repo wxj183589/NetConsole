@@ -6,6 +6,7 @@
 - PR：[#119](https://github.com/wxj183589/NetConsole/pull/119)
 - 分支：`codex-A/trackside-ap-main-integration-20261117`
 - 原始 PR HEAD：`e5227f0c`
+- 修复后 PR HEAD：`afe29922`
 - 基线：`github/main=eb160480`
 - 本轮目标：修复 PR #119 的 CI 门禁和代码审查问题，归档验收证据，并安全收口本地分支。
 
@@ -60,4 +61,13 @@ DATABASES_DELETED=0
 
 ## 最终状态
 
-本报告记录的是修复提交进入 PR 前的收口基线。推送后必须以 PR #119 的最新 Required Checks 为最终 CI 结论；若仍有失败，状态应保持 `LOCAL_PARTIAL_CI_FAILED`，不得将本地定向测试替代 CI 通过。
+本报告对应修复提交 `afe29922`。PR #119 的新一轮 workflow `44030468507` 已通过全部 Required Checks（含 blocking gates）；PR 仍保持 OPEN，尚未合并 `main`。
+
+## 分支回收
+
+- 已安全删除本地 `codex-A/trackside-ap-base-ui-simplification-20261116`（`d094d26f`）。
+- 已安全删除本地 `codex-A/trackside-ap-import-station-switch-fix-20261116`（`08da6185`）。
+- 保留当前 PR 分支 `codex-A/trackside-ap-main-integration-20261117`，并保留仍含未合并后续提交的 `codex-A/trackside-ap-template-station-closure-20261116`。
+- 未删除远程分支、未删除其他 Worktree、未强制回收任何引用。
+
+最终状态：`PR119_REQUIRED_CHECKS_PASS_PENDING_MERGE`。
