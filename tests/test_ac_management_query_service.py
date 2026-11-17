@@ -281,6 +281,56 @@ def test_fit_ap_list_loads_detail_projection_for_current_page_only(
     assert page.items[0].software_version == "V7.1"
 
 
+def test_fit_ap_detail_reads_batch_radio_rows_for_page_and_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    calls: list[list[tuple[str, str]]] = []
+    original = AcRepository.list_fit_ap_radio_details_for_keys
+
+    def tracked(self: AcRepository, keys: list[tuple[str, str]]):
+        calls.append(list(keys))
+        return original(self, keys)
+
+    monkeypatch.setattr(AcRepository, "list_fit_ap_radio_details_for_keys", tracked)
+    service = AcManagementQueryService(paths)
+
+    page = service.list_ap_details_for_macs(
+        "demo", ["0000-0000-0001", "0000-0000-0002"]
+    )
+    exported = service.list_ap_details_for_export(
+        "demo", ac_id="ac-1", filters={"statuses": ["online", "offline"]}
+    )
+
+    assert {item.ap.id for item in page} == {"ap-online", "ap-offline"}
+    assert {item.ap.id for item in exported} >= {"ap-online", "ap-offline"}
+    assert len(calls) == 2
+    assert set(calls[0]) == {("ac-1", "ap-online"), ("ac-1", "ap-offline")}
+
+
+def test_fit_ap_batch_read_connection_count_does_not_scale_with_ap_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths, _db_path, _files = build_ac_management_fixture(tmp_path)
+    calls = 0
+    original = AcManagementQueryService._connect
+
+    def tracked(path: Path):
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(AcManagementQueryService, "_connect", staticmethod(tracked))
+    service = AcManagementQueryService(paths)
+    service.list_ap_details_for_macs(
+        "demo", ["0000-0000-0001", "0000-0000-0002", "0000-0000-0003"]
+    )
+
+    assert calls <= 8
+
+
 def test_ac_query_service_coalesces_unmatched_unauthenticated_duplicate_by_serial(
     tmp_path: Path,
 ) -> None:

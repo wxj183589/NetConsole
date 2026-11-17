@@ -2839,6 +2839,39 @@ class AcRepository:
                 ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_fit_ap_radio_details_for_keys(
+        self, keys: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], list[dict[str, object | None]]]:
+        """Read radio details for many AC/AP identities with bounded SQL calls."""
+        normalized = list(dict.fromkeys(
+            (str(ac_uuid or ""), str(ap_uuid or ""))
+            for ac_uuid, ap_uuid in keys
+            if str(ac_uuid or "") and str(ap_uuid or "")
+        ))
+        result: dict[tuple[str, str], list[dict[str, object | None]]] = {}
+        if not normalized:
+            return result
+        # Keep each statement below SQLite's default variable limit while
+        # retaining exact AC/AP identity matching.
+        with self.database.connect() as conn:
+            for offset in range(0, len(normalized), 400):
+                chunk = normalized[offset:offset + 400]
+                where = " OR ".join(
+                    "(ac_device_uuid = ? AND ap_uuid = ?)" for _ in chunk
+                )
+                params = [value for pair in chunk for value in pair]
+                rows = conn.execute(
+                    "SELECT * FROM ac_fit_ap_radio_details WHERE "
+                    + where
+                    + " ORDER BY ac_device_uuid, ap_uuid, radio_id",
+                    params,
+                ).fetchall()
+                for row in rows:
+                    item = dict(row)
+                    key = (str(item.get("ac_device_uuid") or ""), str(item.get("ap_uuid") or ""))
+                    result.setdefault(key, []).append(item)
+        return result
+
     def delete_fit_aps(self, ac_device_uuid: str, ap_uuids: list[str]) -> int:
         if not ap_uuids:
             return 0
