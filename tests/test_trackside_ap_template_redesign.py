@@ -241,6 +241,59 @@ def test_seven_column_export_reimport_keeps_yard_rows_importable(tmp_path: Path)
     )
 
 
+def test_seven_column_export_reimport_preserves_section_only_ap(tmp_path: Path) -> None:
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, section_id, section_name,
+                section_start_station, section_end_station, source_file,
+                created_at, updated_at
+            ) VALUES ('demo', '__base_section__', 'section:ab', 'A-B 区间',
+                      '车站A', '车站B', 'manual-base-data', '2026-11-16', '2026-11-16')
+            """
+        )
+        connection.execute(
+            """
+            UPDATE ap_extension_points
+            SET section_id = 'section:ab'
+            WHERE ap_name = 'AP-Section'
+            """
+        )
+        connection.commit()
+
+    exported = tmp_path / "trackside-ap-section-round-trip.xlsx"
+    export_trackside_ap_base_xlsx_task(
+        exported,
+        {"app_root": str(paths.app_root), "data_root": str(paths.data_root), "site_id": "demo"},
+    )
+    workbook = load_workbook(exported, read_only=True, data_only=True)
+    sheet = workbook["轨旁AP"]
+    exported_rows = {
+        row[0].value: [cell.value for cell in row]
+        for row in sheet.iter_rows(min_row=2)
+    }
+    workbook.close()
+    assert exported_rows["AP-Section"][2] == "A-B 区间"
+
+    result = RailTransitImportPreviewService(
+        RailTransitBaseDataQueryService(paths), temp_root=tmp_path / "preview-temp"
+    ).preview(
+        site_id="demo",
+        file_name=exported.name,
+        content=exported.read_bytes(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    imported = next(row for row in result.rows if row.values["ap_name"] == "AP-Section")
+    assert imported.values["station_name"] == ""
+    assert imported.values["section_id"] == "section:ab"
+    assert imported.values["section_name"] == "A-B 区间"
+    assert not any(issue.code == "station_location_required" for issue in imported.issues)
+    assert not any(issue.blocking for issue in imported.issues)
+
+
 def test_seven_column_export_with_field_notes_round_trips_only_data_rows(tmp_path: Path) -> None:
     paths, database = build_rail_transit_base_data_fixture(tmp_path)
     with sqlite3.connect(database) as connection:

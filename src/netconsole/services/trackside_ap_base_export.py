@@ -40,7 +40,7 @@ TRACKSIDE_AP_IMPORT_ISSUE_COLUMNS = (
 _FIELD_NOTES = (
     ("AP名称", "必填", "保存的轨旁 AP 基础名称；不使用运行态 FIT-AP 名称覆盖。"),
     ("AP MAC", "必填、唯一", "首选唯一匹配键，支持常见 MAC 格式，导入后规范化保存。"),
-    ("归属位置", "必填", "正式车站、车辆段或停车场；站名支持带站序和“站”后缀的受控匹配。"),
+    ("归属位置", "必填", "正式车站、区间、车辆段或停车场；站名支持带站序和“站”后缀的受控匹配。"),
     ("上联交换机", "可选", "保留已有非空值；空白导入默认 KEEP。"),
     ("上联端口", "可选", "保留本端接口完整名称；空白导入默认 KEEP。"),
     ("建设阶段", "可选", "如一期、二期；空白导入默认 KEEP。"),
@@ -138,10 +138,13 @@ def export_trackside_ap_base_xlsx_task(
 def _export_row(raw: Mapping[str, Any]) -> dict[str, object]:
     metadata = raw.get("base_metadata")
     base = dict(metadata) if isinstance(metadata, Mapping) else {}
+    station_name = raw.get("station") or raw.get("station_name") or ""
+    section_name = raw.get("section") or raw.get("section_name") or ""
     return {
         "ap_name": raw.get("name") or raw.get("ap_name") or "",
         "ap_mac": raw.get("mac") or raw.get("ap_mac_display") or raw.get("ap_mac_norm") or "",
-        "station_name": raw.get("station") or raw.get("station_name") or "",
+        # The seven-column contract uses one location field. Preserve section-only APs there.
+        "station_name": station_name or section_name,
         "uplink_switch": raw.get("uplink_switch") or base.get("uplink_switch") or "",
         "uplink_port": raw.get("uplink_port") or base.get("uplink_port") or "",
         "build_phase": raw.get("build_phase") or base.get("build_phase") or "",

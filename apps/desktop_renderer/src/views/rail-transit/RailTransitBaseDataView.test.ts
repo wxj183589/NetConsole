@@ -162,6 +162,23 @@ describe('Rail Transit base data maintenance view', () => {
     ]) expect(source).not.toContain(forbidden)
   })
 
+  it('uses runtime i18n for trackside AP import statistics', () => {
+    expect(source).toContain("import { t } from '../../i18n/runtime'")
+    for (const key of [
+      'mainline_rows',
+      'depot_rows',
+      'parking_yard_rows',
+      'station_matched_rows',
+      'station_pending_create_rows',
+      'station_unmatched_rows',
+      'duplicate_mac_rows',
+      'duplicate_name_rows',
+      'uplink_switch_missing_rows',
+      'uplink_port_missing_rows',
+    ]) expect(source).toContain(`trackside_ap.import.${key}`)
+    expect(source).not.toContain('<span>正线</span>')
+  })
+
   it('does not expose credentials, global lock mode or unguarded persistence', () => {
     const formalSources = `${source}\n${toolbarSource}`
     expect(source).toContain("deleteEntity('trackside_ap', row)")

@@ -182,6 +182,8 @@ class RailTransitImportPreviewService:
             values = self._safe_values(raw, index)
             if template_type == AP_SWITCH_PORT_POINT_TABLE and self._same_mac_text(values.get("ap_name"), values.get("ap_mac_display")):
                 values["ap_name"] = ""
+            if template_type == TRACKSIDE_AP_BASE_TEMPLATE:
+                self._resolve_section_location(values, formal_sections)
             row_number = int(values.get("source_row") or index)
             row_issues = issues_by_row[row_number]
             imported_line_side = bool(str(values.get("line_side") or "").strip())
@@ -289,6 +291,27 @@ class RailTransitImportPreviewService:
             preview_expires_at=merge_plan.preview_expires_at,
             write_enabled=merge_plan.write_enabled,
         )
+
+    @staticmethod
+    def _resolve_section_location(values: dict[str, Any], formal_sections: list[Any]) -> None:
+        """Recover section-only AP identity from the seven-column location field."""
+        if str(values.get("section_name") or "").strip():
+            return
+        location = str(values.get("station_name") or "").strip()
+        if not location:
+            return
+        matches = [
+            section
+            for section in formal_sections
+            if str(getattr(section, "name", "") or "").strip().casefold() == location.casefold()
+        ]
+        if len(matches) != 1:
+            return
+        section = matches[0]
+        values["section_id"] = str(getattr(section, "id", "") or "")
+        values["section_name"] = str(getattr(section, "name", "") or location)
+        values["station_id"] = ""
+        values["station_name"] = ""
 
     @staticmethod
     def _append_template_identity_issues(
@@ -670,7 +693,7 @@ class RailTransitImportPreviewService:
                         "补充有效 AP MAC 后重新预览",
                     )
                 )
-            if not str(values.get("station_name") or "").strip():
+            if not str(values.get("station_name") or values.get("section_name") or "").strip():
                 issues.append(
                     cls._issue(
                         "error",
@@ -679,7 +702,7 @@ class RailTransitImportPreviewService:
                         "station_name",
                         "",
                         "轨旁 AP 基础资料模板要求填写归属位置",
-                        "补充正式车站、车辆段或停车场后重新预览",
+                        "补充正式车站、区间、车辆段或停车场后重新预览",
                     )
                 )
             if not str(values.get("location_class_original") or "").strip():

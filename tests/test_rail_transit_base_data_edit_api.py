@@ -58,8 +58,15 @@ def test_new_trackside_ap_without_location_defaults_to_mainline() -> None:
     assert values["location_class_source"] == "DEFAULT_MAINLINE"
 
 
+@pytest.mark.parametrize(
+    ("location_class", "location_name"),
+    [("DEPOT", "昌达车辆段"), ("PARKING_YARD", "四堡停车场")],
+)
 def test_non_mainline_trackside_ap_can_keep_location_name_without_station_id(
-    tmp_path: Path, monkeypatch
+    location_class: str,
+    location_name: str,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     _enable_copy_write(monkeypatch)
     paths, database = build_rail_transit_base_data_fixture(tmp_path)
@@ -69,13 +76,13 @@ def test_non_mainline_trackside_ap_can_keep_location_name_without_station_id(
         change = {
             "entity_type": "trackside_ap",
             "action": "create",
-            "entity_id": "new:depot-ap-001",
+            "entity_id": f"new:{location_class.casefold()}-ap-001",
             "values": {
-                "ap_name": "AP-DEPOT-001",
+                "ap_name": f"AP-{location_class}-001",
                 "ap_mac_display": "00:11:22:33:44:77",
-                "station_name": "昌达车辆段",
+                "station_name": location_name,
                 "station_id": "",
-                "location_class": "DEPOT",
+                "location_class": location_class,
                 "participates_in_mainline": False,
                 "location_class_source": "IMPORT_EXPLICIT",
             },
@@ -102,10 +109,87 @@ def test_non_mainline_trackside_ap_can_keep_location_name_without_station_id(
             """
             SELECT station_id, station_name, location_class, participates_in_mainline
             FROM ap_extension_points
-            WHERE ap_name = 'AP-DEPOT-001'
-            """
+            WHERE ap_name = ?
+            """,
+            (f"AP-{location_class}-001",),
         ).fetchone()
-    assert tuple(row) == ("", "昌达车辆段", "DEPOT", 0)
+    assert tuple(row) == ("", location_name, location_class, 0)
+
+
+@pytest.mark.parametrize("location_class", ["DEPOT", "PARKING_YARD"])
+def test_non_mainline_trackside_ap_rejects_invalid_station_id(
+    location_class: str, tmp_path: Path, monkeypatch
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        revision = client.get("/api/rail-transit/base-data/revision").json()["base_revision"]
+        change = {
+            "entity_type": "trackside_ap",
+            "action": "create",
+            "entity_id": f"new:{location_class.casefold()}-invalid-station",
+            "values": {
+                "ap_name": f"AP-{location_class}-INVALID-STATION",
+                "ap_mac_display": "00:11:22:33:44:78",
+                "station_name": "非正线位置",
+                "station_id": "station:missing",
+                "location_class": location_class,
+                "participates_in_mainline": False,
+                "location_class_source": "IMPORT_EXPLICIT",
+            },
+        }
+        response = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={"site_id": "demo", "base_revision": revision, "changes": [change]},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["valid"] is False
+    assert any(issue["code"] == "STATION_ID_INVALID" for issue in response.json()["issues"])
+
+
+@pytest.mark.parametrize("location_class", ["DEPOT", "PARKING_YARD"])
+def test_non_mainline_trackside_ap_accepts_valid_station_id(
+    location_class: str, tmp_path: Path, monkeypatch
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, database = build_rail_transit_base_data_fixture(tmp_path)
+    with Database(database).connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO ap_extension_points (
+                site_id, belong_type, station_id, station_name, source_file,
+                created_at, updated_at
+            ) VALUES ('demo', '__base_station__', 'station:yard-anchor', '非正线位置',
+                      'manual-base-data', '2026-11-16', '2026-11-16')
+            """
+        )
+        connection.commit()
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        revision = client.get("/api/rail-transit/base-data/revision").json()["base_revision"]
+        change = {
+            "entity_type": "trackside_ap",
+            "action": "create",
+            "entity_id": f"new:{location_class.casefold()}-valid-station",
+            "values": {
+                "ap_name": f"AP-{location_class}-VALID-STATION",
+                "ap_mac_display": "00:11:22:33:44:79",
+                "station_name": "非正线位置",
+                "station_id": "station:yard-anchor",
+                "location_class": location_class,
+                "participates_in_mainline": False,
+                "location_class_source": "IMPORT_EXPLICIT",
+            },
+        }
+        response = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={"site_id": "demo", "base_revision": revision, "changes": [change]},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["valid"] is True, response.text
 
 
 def test_device_vehicle_mr_projection_is_visible_through_base_data_api(
