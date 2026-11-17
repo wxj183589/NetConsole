@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
 from pathlib import Path
 
 from scripts.dev.sql_read_sharing_profile_20261117 import (
@@ -194,7 +193,9 @@ def _mesh_fixture(root: Path, mr_count: int):
 
 
 def _explain(path: Path, sql: str, params: tuple[object, ...]) -> list[str]:
-    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    from netconsole.core.database import Database
+
+    connection = Database(path).connect_readonly()
     try:
         return [str(row[3]) for row in connection.execute("EXPLAIN QUERY PLAN " + sql, params)]
     finally:

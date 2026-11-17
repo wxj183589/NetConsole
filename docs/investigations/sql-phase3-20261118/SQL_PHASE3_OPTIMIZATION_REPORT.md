@@ -30,4 +30,3 @@ baseline 是复制的旧逐身份读取循环，仅用于量化 N+1；optimized 
 
 新增索引：0。现有 AC/FIT-AP 与 Ground ARP 复合索引命中；Mesh 的 snapshot link 表扫描记录在 Query Plan
 中，作为后续有真实数据证据时再评估的剩余事项。
-

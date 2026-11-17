@@ -1,7 +1,7 @@
 # SQL Phase 3 AC / FIT-AP / Mesh-Link / ARP 审计报告
 
-日期：2026-11-18  
-基线：`173fa46548eff5e0b9a65d75088bc09bf3cb0eda`  
+日期：2026-11-18
+基线：`173fa46548eff5e0b9a65d75088bc09bf3cb0eda`
 分支：`codex-A/sql-phase3-ac-mesh-arp-20261118`
 
 ## 审计矩阵
@@ -25,4 +25,3 @@
 ## 审计状态
 
 `PASS_SQL_PHASE3`
-

@@ -4,6 +4,7 @@ import ipaddress
 import json
 import re
 import sqlite3
+from collections import defaultdict
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import asdict
@@ -203,13 +204,23 @@ class AcManagementQueryService:
         with closing(self._connect(db_path)) as conn:
             ac_rows = self._ac_rows(conn)
             context = self._switch_context(conn)
+        resources_by_ac: dict[str, list[dict[str, object | None]]] = defaultdict(list)
+        for row in repository.list_all_fit_ap_resources_with_metadata():
+            resources_by_ac[str(row.get("ac_device_uuid") or "")].append(row)
+        unauthenticated_by_ac: dict[str, list[dict[str, object | None]]] = defaultdict(list)
+        for row in repository.list_all_fit_ap_unauthenticated():
+            unauthenticated_by_ac[str(row.get("ac_device_uuid") or "")].append(row)
+        summaries = repository.list_fit_ap_unauthenticated_summaries()
+        optical_by_ac: dict[str, list[dict[str, object | None]]] = defaultdict(list)
+        for row in repository.list_all_fit_ap_optical():
+            optical_by_ac[str(row.get("ac_device_uuid") or "")].append(row)
         overviews: list[AcOverviewDTO] = []
         for ac in ac_rows:
             ac_id = str(ac["device_uuid"])
-            resources = repository.list_fit_ap_resources_with_metadata(ac_id)
+            resources = resources_by_ac.get(ac_id, [])
             resources = coalesce_fit_ap_resource_rows(resources)
-            unauthenticated = repository.list_fit_ap_unauthenticated(ac_id)
-            unauthenticated_summary = repository.get_fit_ap_unauthenticated_summary(ac_id) or {}
+            unauthenticated = unauthenticated_by_ac.get(ac_id, [])
+            unauthenticated_summary = summaries.get(ac_id, {})
             unauthenticated_status = str(unauthenticated_summary.get("snapshot_status") or "").strip().upper()
             if unauthenticated_status not in {"SUCCESS_WITH_ROWS", "SUCCESS_EMPTY", "UNKNOWN"}:
                 unauthenticated_status = "UNKNOWN"
@@ -218,7 +229,7 @@ class AcManagementQueryService:
                 if unauthenticated_status in {"SUCCESS_WITH_ROWS", "SUCCESS_EMPTY"}
                 else 0
             )
-            optical_by_ap = self._optical_index(repository.list_fit_ap_optical(ac_id))
+            optical_by_ap = self._optical_index(optical_by_ac.get(ac_id, []))
             summary = dict(ac.get("summary") or {})
             anomalous_ap_ids: set[str] = set()
             for row in resources:
@@ -682,17 +693,12 @@ class AcManagementQueryService:
             items = [item for item in items if item.id in selected]
         by_id = {record[0].id: record for record in records}
         repository = AcRepository(_ReadonlyDatabase(self._db_path(site_id)))  # type: ignore[arg-type]
-        detail_rows = repository.list_fit_ap_details_for_macs([
-            by_id[item.id][0].mac for item in items
-        ])
-        details = {
-            (str(row.get("ac_device_uuid") or ""), str(row.get("ap_uuid") or "")): row
-            for row in detail_rows
-        }
-        radio_details = repository.list_fit_ap_radio_details_for_keys([
+        keys = [
             (str(by_id[item.id][1].get("ac_device_uuid") or ""), item.id)
             for item in items
-        ])
+        ]
+        details = repository.list_fit_ap_details_for_keys(keys)
+        radio_details = repository.list_fit_ap_radio_details_for_keys(keys)
         return [
             AcApDetailDTO(
                 ap=item,
@@ -1041,16 +1047,14 @@ class AcManagementQueryService:
             if ac_id
             else repository.list_all_fit_ap_unauthenticated()
         )
-        unauthenticated_status_by_ac: dict[str, str] = {}
-        for current_id in (
-            [str(ac_id)]
-            if ac_id
-            else sorted({str(row.get("ac_device_uuid") or "") for row in unauthenticated})
-        ):
-            snapshot_status = str(
-                (repository.get_fit_ap_unauthenticated_summary(current_id) or {}).get("snapshot_status") or ""
-            ).strip().upper()
-            unauthenticated_status_by_ac[current_id] = snapshot_status
+        summaries = (
+            {str(ac_id): repository.get_fit_ap_unauthenticated_summary(ac_id) or {}}
+            if ac_id else repository.list_fit_ap_unauthenticated_summaries()
+        )
+        unauthenticated_status_by_ac = {
+            key: str(row.get("snapshot_status") or "").strip().upper()
+            for key, row in summaries.items()
+        }
         resources = [
             row for row in resources
             if str(row.get("ac_device_uuid") or "") in current_ac_ids
