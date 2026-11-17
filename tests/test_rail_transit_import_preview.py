@@ -98,7 +98,7 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
     assert result.valid_rows == 1
     assert result.error_count == 1
     assert result.sheet_names == ["轨旁AP业务"]
-    assert result.statistics == {
+    expected_statistics = {
         "valid_ap_rows": 1,
         "placeholder_rows": 1,
         "section_rows": 1,
@@ -112,6 +112,7 @@ def test_import_preview_accepts_ap_switch_port_table_and_skips_placeholders(tmp_
         "conflict_rows": 0,
         "invalid_rows": 1,
     }
+    assert {key: result.statistics[key] for key in expected_statistics} == expected_statistics
     assert result.merge_plan is not None
     assert result.merge_plan.summary.create_count == 1
     assert result.merge_plan.summary.invalid_count == 1

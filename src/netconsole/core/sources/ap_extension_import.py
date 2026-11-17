@@ -14,6 +14,7 @@ from netconsole.utils.mileage import format_track_mileage, parse_track_mileage
 
 
 STANDARD_TEMPLATE_TYPE = "netconsole_standard_template"
+TRACKSIDE_AP_BASE_TEMPLATE = "trackside_ap_base_template"
 PIS_LAYOUT_TABLE = "pis_layout_table"
 NINGBO_PIS_LAYOUT_LIKE = "ningbo_pis_layout_like"
 AP_NAME_MAC_LIST = "ap_name_mac_list"
@@ -42,7 +43,7 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "participates_in_mainline",
     ),
     "station_id": ("站点ID", "站点 ID", "station_id", "station id"),
-    "station_name": ("车站", "站点", "归属站点", "站名", "station_name"),
+    "station_name": ("车站", "站点", "归属站点", "归属位置", "站名", "station_name"),
     "section_name": ("归属区间", "轨旁AP归属区间", "区间", "section_name"),
     "section_start_station": ("区间起点站", "起点站", "section_start_station"),
     "section_end_station": ("区间终点站", "终点站", "section_end_station"),
@@ -427,6 +428,16 @@ def _detect_template_type(
     if import_mode == "standard_template" or standard_matches >= 10:
         return STANDARD_TEMPLATE_TYPE, min(100, 65 + standard_matches)
     fields = set(mapping)
+    if fields == {
+        "ap_name",
+        "ap_mac_display",
+        "station_name",
+        "uplink_switch",
+        "uplink_port",
+        "build_phase",
+        "location_class",
+    }:
+        return TRACKSIDE_AP_BASE_TEMPLATE, 100
     name = str(sheet_name or "")
     if {"left_mileage", "right_mileage"} & fields and {"ap_point_code", "section_name"} & fields:
         confidence = 86 if "宁波" in name or "PIS" in name.upper() else 78

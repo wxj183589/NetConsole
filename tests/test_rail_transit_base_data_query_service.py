@@ -118,7 +118,7 @@ def test_trackside_ap_projection_uses_formal_station_identity_and_line_order(tmp
 
     service = RailTransitBaseDataQueryService(paths)
     rows = service.list_aps("demo", page_size=200, sort_by="station_switch_port").items
-    assert [row.name for row in rows] == ["AP-Duplicate", "AP-Section", "AP-Online"]
+    assert [row.name for row in rows] == ["AP-Section", "AP-Online", "AP-Duplicate"]
     online = next(row for row in rows if row.name == "AP-Online")
     assert (online.station_id, online.station, online.station_relation_status) == (
         "station:line-2",

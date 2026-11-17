@@ -15,40 +15,12 @@ CancelCallback = Callable[[], bool]
 
 TRACKSIDE_AP_BASE_COLUMNS = (
     ("AP名称", "ap_name"),
-    ("点位编号", "ap_point_code"),
-    ("AP厂商", "ap_vendor"),
     ("AP MAC", "ap_mac"),
-    ("管理 IP", "management_ip"),
-    ("型号", "model"),
-    ("归属类型", "belong_type"),
-    ("位置类型", "location_class"),
-    ("是否参与正线判断", "participates_in_mainline"),
-    ("归属站点", "station_name"),
-    ("归属区间", "section_name"),
-    ("区间起点站", "section_start_station"),
-    ("区间终点站", "section_end_station"),
-    ("场段", "yard_name"),
-    ("区域", "area_name"),
-    ("网络", "network_domain"),
-    ("线别", "line_side"),
-    ("行车方向", "direction"),
-    ("里程", "mileage_text"),
-    ("点位说明", "location_desc"),
+    ("归属位置", "station_name"),
     ("上联交换机", "uplink_switch"),
     ("上联端口", "uplink_port"),
-    ("光模块端口", "optical_port"),
-    ("供电站", "power_station"),
-    ("电源分配", "power_distribution"),
-    ("光缆接入站", "fiber_access_station"),
-    ("光缆分配", "fiber_distribution"),
-    ("备注", "remark"),
-    ("线路名称", "line_name"),
-    ("FIT-AP 关联状态（只读）", "fit_ap_status"),
-    ("当前光衰状态（只读）", "optical_status"),
-    ("来源文件（只读）", "source_file"),
-    ("来源工作表（只读）", "source_sheet"),
-    ("来源行（只读）", "source_row"),
-    ("数据质量问题数（只读）", "issue_count"),
+    ("建设阶段", "build_phase"),
+    ("位置类型", "location_class"),
 )
 
 TRACKSIDE_AP_IMPORT_ISSUE_COLUMNS = (
@@ -66,37 +38,20 @@ TRACKSIDE_AP_IMPORT_ISSUE_COLUMNS = (
 )
 
 _FIELD_NOTES = (
-    ("AP名称", "只读", "AC 当前真实 FIT-AP 名称；未匹配运行态时回退为基础资料中的名称。"),
-    ("点位编号", "条件必填", "项目定义的 AP 点位编号，也是重命名命令的目标名称。"),
-    ("AP厂商", "可选", "仅填写明确厂商；H3C 物理 AP MAC 的 Radio alias 派生依赖该事实，不按名称、型号或 MAC 猜测。"),
-    ("AP MAC", "条件必填", "首选唯一匹配键，支持常见 MAC 格式，导入后规范化为 xxxx-xxxx-xxxx。"),
-    ("管理 IP", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
-    ("型号", "只读", "来自当前 FIT-AP 运行态；重新导入不会覆盖正式基础资料。"),
-    ("归属类型", "可选", "section、station、yard 或 unknown；缺失时按站点/区间推断。"),
-    ("位置类型", "可选", "空值默认正线；可填写正线、车辆段、停车场、存车线、出入段线、试车线或非正线。"),
-    ("是否参与正线判断", "自动/可选", "正线默认为是，特殊位置默认为否；特殊位置不能设置为是。"),
-    ("归属站点", "可选", "空白默认 KEEP，不清除已有站点。"),
-    ("归属区间", "可选", "空白默认 KEEP，不清除已有区间。"),
-    ("区间起点站", "可选", "归属区间的起点站。"),
-    ("区间终点站", "可选", "归属区间的终点站。"),
-    ("场段", "可选", "停车场、车辆段等场段名称。"),
-    ("区域", "可选", "安装区域。"),
-    ("网络", "可选", "信号/PIS 或 A/B 网等现有业务网络语义。"),
-    ("线别", "自动/可选", "优先按正式区间方向和局点映射自动生成；人工或导入确认值不会被静默覆盖。"),
-    ("行车方向", "可选", "例如上行、下行。"),
-    ("里程", "可选", "允许为空；空白默认 KEEP，不清除已有里程。"),
-    ("点位说明", "可选", "安装位置或点位说明。"),
-    ("上联交换机", "可选", "正式扩展资料；空白默认 KEEP。"),
-    ("上联端口", "可选", "正式扩展资料；空白默认 KEEP。"),
-    ("光模块端口", "可选", "光模块或光口标识。"),
-    ("供电站", "可选", "供电来源站点。"),
-    ("电源分配", "可选", "电源分配说明。"),
-    ("光缆接入站", "可选", "光缆接入来源站点。"),
-    ("光缆分配", "可选", "光缆分配说明。"),
-    ("备注", "可选", "空白默认 KEEP；删除只能通过页面明确操作。"),
-    ("线路名称", "可选", "当前局点线路名称。"),
-    ("只读导出列", "只读", "FIT-AP、光衰、来源和问题数仅用于查看，重新导入不会覆盖正式资料。"),
+    ("AP名称", "必填", "保存的轨旁 AP 基础名称；不使用运行态 FIT-AP 名称覆盖。"),
+    ("AP MAC", "必填、唯一", "首选唯一匹配键，支持常见 MAC 格式，导入后规范化保存。"),
+    ("归属位置", "必填", "正式车站、区间、车辆段或停车场；站名支持带站序和“站”后缀的受控匹配。"),
+    ("上联交换机", "可选", "保留已有非空值；空白导入默认 KEEP。"),
+    ("上联端口", "可选", "保留本端接口完整名称；空白导入默认 KEEP。"),
+    ("建设阶段", "可选", "如一期、二期；空白导入默认 KEEP。"),
+    ("位置类型", "必填", "只填写正线、车辆段或停车场；正线参与判断，后两者不参与。"),
 )
+
+_LOCATION_CLASS_LABELS = {
+    "MAINLINE": "正线",
+    "DEPOT": "车辆段",
+    "PARKING_YARD": "停车场",
+}
 
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]+')
 
@@ -183,62 +138,20 @@ def export_trackside_ap_base_xlsx_task(
 def _export_row(raw: Mapping[str, Any]) -> dict[str, object]:
     metadata = raw.get("base_metadata")
     base = dict(metadata) if isinstance(metadata, Mapping) else {}
-    runtime_raw = raw.get("runtime")
-    runtime = dict(runtime_raw) if isinstance(runtime_raw, Mapping) else {}
-    mileage_raw = raw.get("mileage")
-    mileage = dict(mileage_raw) if isinstance(mileage_raw, Mapping) else {}
+    station_name = raw.get("station") or raw.get("station_name") or ""
+    section_name = raw.get("section") or raw.get("section_name") or ""
     return {
-        "ap_name": (
-            runtime.get("fit_ap_name")
-            or raw.get("name")
-            or raw.get("ap_name")
-            or raw.get("point_code")
-            or raw.get("ap_point_code")
-            or ""
-        ),
-        "ap_point_code": raw.get("point_code") or raw.get("ap_point_code") or "",
-        "ap_vendor": raw.get("vendor") or base.get("ap_vendor") or raw.get("ap_vendor") or "",
+        "ap_name": raw.get("name") or raw.get("ap_name") or "",
         "ap_mac": raw.get("mac") or raw.get("ap_mac_display") or raw.get("ap_mac_norm") or "",
-        "management_ip": raw.get("management_ip") or "",
-        "model": raw.get("model") or "",
-        "belong_type": base.get("belong_type") or raw.get("record_kind") or raw.get("belong_type") or "unknown",
-        "location_class": raw.get("location_class") or base.get("location_class") or "MAINLINE",
-        "participates_in_mainline": (
-            "是"
-            if bool(
-                raw.get(
-                    "participates_in_mainline",
-                    base.get("participates_in_mainline", True),
-                )
-            )
-            else "否"
+        # The seven-column contract uses one location field. Preserve section-only APs there.
+        "station_name": station_name or section_name,
+        "uplink_switch": raw.get("uplink_switch") or base.get("uplink_switch") or "",
+        "uplink_port": raw.get("uplink_port") or base.get("uplink_port") or "",
+        "build_phase": raw.get("build_phase") or base.get("build_phase") or "",
+        "location_class": _LOCATION_CLASS_LABELS.get(
+            str(raw.get("location_class") or base.get("location_class") or "MAINLINE").strip().upper(),
+            str(raw.get("location_class") or base.get("location_class") or "MAINLINE"),
         ),
-        "station_name": raw.get("station") or raw.get("station_name") or "",
-        "section_name": raw.get("section") or raw.get("section_name") or "",
-        "section_start_station": raw.get("section_start_station") or "",
-        "section_end_station": raw.get("section_end_station") or "",
-        "yard_name": base.get("yard_name") or raw.get("yard_name") or "",
-        "area_name": base.get("area_name") or raw.get("area_name") or "",
-        "network_domain": base.get("network_domain") or raw.get("network_domain") or "",
-        "line_side": raw.get("line_side") or "",
-        "direction": raw.get("direction") or "",
-        "mileage_text": mileage.get("normalized") or mileage.get("raw") or raw.get("mileage_text") or "",
-        "location_desc": base.get("location_desc") or raw.get("location_desc") or "",
-        "uplink_switch": base.get("uplink_switch") or raw.get("uplink_switch") or "",
-        "uplink_port": base.get("uplink_port") or raw.get("uplink_port") or "",
-        "optical_port": base.get("optical_port") or raw.get("optical_port") or "",
-        "power_station": base.get("power_station") or raw.get("power_station") or "",
-        "power_distribution": base.get("power_distribution") or raw.get("power_distribution") or "",
-        "fiber_access_station": base.get("fiber_access_station") or raw.get("fiber_access_station") or "",
-        "fiber_distribution": base.get("fiber_distribution") or raw.get("fiber_distribution") or "",
-        "remark": raw.get("remark") or "",
-        "line_name": raw.get("line_name") or "",
-        "fit_ap_status": runtime.get("fit_ap_status") or "unknown",
-        "optical_status": runtime.get("optical_status") or "no_data",
-        "source_file": raw.get("source_file") or "",
-        "source_sheet": raw.get("source_sheet") or "",
-        "source_row": raw.get("source_row") or "",
-        "issue_count": raw.get("issue_count") or 0,
     }
 
 

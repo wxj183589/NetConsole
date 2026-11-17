@@ -1082,7 +1082,7 @@ class RailTransitBaseDataQueryService:
         return self._all_aps(site_id, include_runtime=True)
 
     def list_ap_export_items(self, site_id: str) -> list[TracksideApDTO]:
-        """一次返回导出所需的 AP 基础资料、运行态和质量摘要。"""
+        """返回导出资料并复用页面的站序、交换机、端口排序。"""
         items = self._all_aps(site_id, include_runtime=True)
         issues = self._issues(
             site_id,
@@ -1091,7 +1091,10 @@ class RailTransitBaseDataQueryService:
         )
         issues.extend(self._runtime_ap_issues(items))
         issue_map = self._issue_map(issues, "ap")
-        return [self._with_ap_issues(item, issue_map.get(item.id, [])) for item in items]
+        enriched = [self._with_ap_issues(item, issue_map.get(item.id, [])) for item in items]
+        station_sort_orders = self._formal_station_sort_orders(site_id)
+        enriched.sort(key=lambda item: self._ap_sort_key(item, "station_switch_port", station_sort_orders))
+        return enriched
 
     def get_ap(self, site_id: str, ap_id: str) -> TracksideApDetailDTO | None:
         item = next((row for row in self._all_aps(site_id, include_runtime=True) if row.id == ap_id), None)
@@ -2559,6 +2562,11 @@ class RailTransitBaseDataQueryService:
             "uplink_switch": item.uplink_switch.casefold(),
             "uplink_port": RailTransitBaseDataQueryService._natural_key(item.uplink_port),
             "station_switch_port": (
+                {
+                    "MAINLINE": 0,
+                    "DEPOT": 1,
+                    "PARKING_YARD": 2,
+                }.get(item.location_class, 3),
                 item.station_id not in (station_sort_orders or {}),
                 (station_sort_orders or {}).get(item.station_id, 2**31 - 1),
                 RailTransitBaseDataQueryService._natural_key(item.station),
