@@ -141,6 +141,24 @@ def is_device_eligible_for_automatic_collection(device: "Device") -> bool:
     return device.work_scope_status == WorkScopeStatus.INCLUDED.value
 
 
+def has_configured_connection_target(device: "Device") -> bool:
+    """Return whether a device has an address and a configured protocol.
+
+    This deliberately stays in the model layer so repositories can project
+    connection readiness without importing the service that opens sessions.
+    The connection service applies the same address/protocol rules when it
+    builds concrete targets.
+    """
+
+    has_address = bool(str(device.primary_address or "").strip()) or bool(
+        str(device.backup_address or "").strip()
+    )
+    has_protocol = bool(device.ssh_enabled) or bool(device.telnet_enabled) or bool(
+        str(device.protocol or "").strip()
+    )
+    return has_address and has_protocol
+
+
 def normalize_device_vendor(value: object) -> str:
     """Legacy canonical form retained for existing callers."""
 

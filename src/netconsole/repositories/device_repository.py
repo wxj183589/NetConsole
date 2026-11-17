@@ -19,6 +19,8 @@ from netconsole.core.device_credential_store import (
 )
 from netconsole.models.device import (
     Device,
+    has_configured_connection_target,
+    is_device_eligible_for_automatic_collection,
     normalize_project_phase,
     normalize_work_scope_status,
 )
@@ -143,15 +145,14 @@ class DeviceRepository:
                     if inventory_only:
                         # Presence placeholders stay inside this projection. Never
                         # expose a Device that a connection worker could execute.
-                        from netconsole.models.device import is_device_eligible_for_automatic_collection
-                        from netconsole.services.netmiko_connection import connection_targets
-
                         eligible = is_device_eligible_for_automatic_collection(device)
                         value = DeviceInventoryMetadata(
                             backup_address=str(device.backup_address or ""),
                             system_name=str(device.system_name or ""),
                             connection_eligible=eligible,
-                            connection_ready=bool(eligible and connection_targets(device)),
+                            connection_ready=bool(
+                                eligible and has_configured_connection_target(device)
+                            ),
                         )
                     else:
                         value = device
