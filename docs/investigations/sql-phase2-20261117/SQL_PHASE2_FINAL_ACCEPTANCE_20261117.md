@@ -1,10 +1,10 @@
 # NetConsole SQL Phase 2 最终门禁验收
 
-日期：2026-11-17  
-PR：[#120](https://github.com/wxj183589/NetConsole/pull/120)  
-分支：`codex-A/sql-read-model-sharing-20261117`  
-最新 HEAD：`621fad3d857d9c72ed8de656aced49211777c9bf`  
-基线：`dd026f2fffa280bb9fa43d3c6da34f831bad9a16`  
+日期：2026-11-17
+PR：[#120](https://github.com/wxj183589/NetConsole/pull/120)
+分支：`codex-A/sql-read-model-sharing-20261117`
+最新 HEAD：`621fad3d857d9c72ed8de656aced49211777c9bf`
+基线：`dd026f2fffa280bb9fa43d3c6da34f831bad9a16`
 最终状态：`READY_TO_MERGE_SQL_PHASE2`
 
 ## 1. CI Required Checks
