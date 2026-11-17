@@ -30,6 +30,7 @@ PR #119 首次检查运行 `44015127665` 时有两类失败：
 - P1：轨旁 AP 导入预览的十项统计标签统一通过 `t()` 和 Renderer locale 词条提供，英文界面不再显示硬编码中文。
 - P2：七列导出在站点名称为空时保留区间名称；重导入时对当前 Site 做精确区间匹配，区间归属 AP 可以闭环往返。
 - P2：非正线 AP 允许空 `station_id`，但所有非空 `station_id` 仍必须存在于当前 Site 的正式站点集合，避免保存悬空关系。
+- P2（复审跟进）：正线 AP 即使缺少 `station_id` 也必须通过正式站点引用校验；空 ID 仅对非正线位置豁免。
 
 对应回归覆盖了 i18n、区间 AP 七列导出重导入、车辆段/停车场空站点 ID，以及非正线有效和无效 `station_id`。
 
@@ -38,7 +39,7 @@ PR #119 首次检查运行 `44015127665` 时有两类失败：
 - 交接记录中的 Python 扩展定向测试：`56 passed, 2 warnings`。
 - Renderer i18n/source 定向测试：`9 passed`。
 - Renderer 基础资料行为定向测试：`40 passed`。
-- 本轮最终 Python 定向测试：`45 passed, 2 warnings`；另有目录 README 测试 `1 passed`。
+- 本轮最终 Python 定向测试：`46 passed, 2 warnings`；另有目录 README 测试 `1 passed`。
 - Ruff：通过；修改 Python 文件 `py_compile`：通过。
 - Renderer locale/source：`9 passed`；基础资料行为：`40 passed`；Renderer build：通过。
 - 仓库根目录布局和文件白名单：通过；`git diff --check`：通过。
@@ -61,7 +62,7 @@ DATABASES_DELETED=0
 
 ## 最终状态
 
-本报告对应修复提交 `afe29922`。PR #119 的新一轮 workflow `44030468507` 已通过全部 Required Checks（含 blocking gates）；PR 仍保持 OPEN，尚未合并 `main`。
+本报告对应 `afe29922` 之后的 PR #119 收口链路。首次修复 workflow `44030468507` 和文档收口 workflow `44034525590` 均已通过全部 Required Checks（含 blocking gates）；P2 复审跟进已补入当前代码，当前 HEAD 的最新 CI/复审结果以 GitHub PR 页面为准。PR 仍保持 OPEN，尚未合并 `main`。
 
 ## 分支回收
 

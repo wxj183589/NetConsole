@@ -192,6 +192,42 @@ def test_non_mainline_trackside_ap_accepts_valid_station_id(
     assert response.json()["valid"] is True, response.text
 
 
+def test_mainline_trackside_ap_requires_station_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _enable_copy_write(monkeypatch)
+    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    mark_base_data_copy(paths)
+    with TestClient(_app(paths, tmp_path)) as client:
+        revision = client.get("/api/rail-transit/base-data/revision").json()["base_revision"]
+        response = client.post(
+            "/api/rail-transit/base-data/validate",
+            json={
+                "site_id": "demo",
+                "base_revision": revision,
+                "changes": [
+                    {
+                        "entity_type": "trackside_ap",
+                        "action": "create",
+                        "entity_id": "new:mainline-missing-station",
+                        "values": {
+                            "ap_name": "AP-MAINLINE-MISSING-STATION",
+                            "ap_mac_display": "00:11:22:33:44:80",
+                            "station_name": "不存在的正线站点",
+                            "station_id": "",
+                            "location_class": "MAINLINE",
+                            "participates_in_mainline": True,
+                        },
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["valid"] is False
+    assert any(issue["code"] == "STATION_ID_INVALID" for issue in response.json()["issues"])
+
+
 def test_device_vehicle_mr_projection_is_visible_through_base_data_api(
     tmp_path: Path,
 ) -> None:
