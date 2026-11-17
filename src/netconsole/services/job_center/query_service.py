@@ -71,8 +71,9 @@ from netconsole.models.task_history_policy import (
     TERMINAL_TASK_STATE_VALUES,
 )
 from netconsole.repositories.task_result_blob_repository import (
+    TaskResultBlob,
     TaskResultBlobError,
-    read_blob,
+    decode_blob,
 )
 
 AC_WEB_OWNER = "web_ac"
@@ -635,6 +636,7 @@ class JobCenterQueryService:
         *,
         include_result: bool,
     ) -> None:
+        references: dict[str, dict[str, object]] = {}
         for row in rows:
             if include_result and not str(row.get("result_reference_id") or ""):
                 if "legacy_result_json" in row:
@@ -646,32 +648,72 @@ class JobCenterQueryService:
             if not include_result and not str(row.get("authority_result_id") or ""):
                 raise sqlite3.DatabaseError("task result read-through reference is missing")
             if include_result:
-                with closing(cls._connect(db_path)) as conn:
-                    has_content_sha = cls._column_exists(conn, "task_results", "content_sha256")
-                    has_blob_ready = cls._column_exists(conn, "task_results", "blob_ready")
-                    content_column = "content_sha256" if has_content_sha else "''"
-                    ready_column = "blob_ready" if has_blob_ready else "0"
-                    authority = conn.execute(
-                        f"SELECT canonical_json, {content_column} AS content_sha256, "
-                        f"{ready_column} AS blob_ready, byte_size "
-                        "FROM task_results WHERE result_id=?",
-                        (reference_id,),
-                    ).fetchone()
-                    if authority is None:
-                        raise sqlite3.DatabaseError(
-                            "task result authority row is missing"
+                references[reference_id] = row
+
+        if not include_result or not references:
+            return
+
+        # Result bodies are immutable and addressed by result_id.  Hydrate all
+        # references in one read-only connection/query so list_task_results()
+        # does not become one connection plus one SELECT per task.
+        with closing(cls._connect(db_path)) as conn:
+            if not cls._table_exists(conn, "task_results"):
+                raise sqlite3.DatabaseError("task result authority table is missing")
+            has_content_sha = cls._column_exists(conn, "task_results", "content_sha256")
+            has_blob_ready = cls._column_exists(conn, "task_results", "blob_ready")
+            has_blobs = cls._table_exists(conn, "task_result_blobs")
+            content_column = "result.content_sha256" if has_content_sha else "''"
+            ready_column = "result.blob_ready" if has_blob_ready else "0"
+            blob_relation = has_blobs and has_content_sha
+            blob_columns = (
+                ", blob.content_sha256 AS blob_content_sha256, blob.codec AS blob_codec, "
+                "blob.compressed_blob AS compressed_blob, blob.uncompressed_bytes AS blob_uncompressed_bytes, "
+                "blob.compressed_bytes AS blob_compressed_bytes"
+                if blob_relation
+                else ", '' AS blob_content_sha256, '' AS blob_codec, NULL AS compressed_blob, "
+                     "0 AS blob_uncompressed_bytes, 0 AS blob_compressed_bytes"
+            )
+            blob_join = (
+                " LEFT JOIN task_result_blobs blob ON blob.content_sha256 = result.content_sha256"
+                if blob_relation
+                else ""
+            )
+            placeholders = ",".join("?" for _ in references)
+            authority_rows = conn.execute(
+                f"SELECT result.result_id, result.canonical_json, {content_column} AS content_sha256, "
+                f"{ready_column} AS blob_ready, result.byte_size{blob_columns} "
+                "FROM task_results result"
+                f"{blob_join} WHERE result.result_id IN ({placeholders})",
+                list(references),
+            ).fetchall()
+            authorities = {str(item["result_id"]): item for item in authority_rows}
+            for reference_id, row in references.items():
+                authority = authorities.get(reference_id)
+                if authority is None:
+                    raise sqlite3.DatabaseError("task result authority row is missing")
+                if int(authority["blob_ready"] or 0):
+                    try:
+                        compressed = authority["compressed_blob"]
+                        if compressed is None:
+                            raise TaskResultBlobError("task result blob is missing")
+                        blob = TaskResultBlob(
+                            content_sha256=str(authority["blob_content_sha256"] or authority["content_sha256"] or ""),
+                            codec=str(authority["blob_codec"] or ""),
+                            compressed_blob=bytes(compressed),
+                            uncompressed_bytes=int(authority["blob_uncompressed_bytes"] or 0),
+                            compressed_bytes=int(authority["blob_compressed_bytes"] or 0),
+                            created_time="",
+                            verified_at="",
                         )
-                    if int(authority["blob_ready"] or 0):
-                        try:
-                            canonical = read_blob(
-                                conn,
-                                content_sha256=str(authority["content_sha256"] or ""),
-                                expected_bytes=int(authority["byte_size"] or -1),
-                            )
-                        except TaskResultBlobError as exc:
-                            raise sqlite3.DatabaseError(str(exc)) from exc
-                    else:
-                        canonical = str(authority["canonical_json"] or "")
+                        canonical = decode_blob(
+                            blob,
+                            expected_sha256=str(authority["content_sha256"] or ""),
+                            expected_bytes=int(authority["byte_size"] or -1),
+                        )
+                    except (TaskResultBlobError, TypeError, ValueError) as exc:
+                        raise sqlite3.DatabaseError(str(exc)) from exc
+                else:
+                    canonical = str(authority["canonical_json"] or "")
                 row["authority_result_json"] = canonical
                 row["result_json"] = canonical
 

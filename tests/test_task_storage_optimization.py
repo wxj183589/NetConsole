@@ -232,6 +232,34 @@ def test_task_center_list_does_not_select_full_result_body(tmp_path: Path) -> No
     )[0][0] == {"status": "SUCCESS", "rows": 2}
 
 
+def test_task_center_result_list_hydrates_many_bodies_with_bounded_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
+    repository = TaskRepository(paths.site_tasks_db_path("demo"))
+    for index in range(24):
+        snapshot, event = _terminal(
+            f"batch-result-{index:03d}",
+            result={"status": "SUCCESS", "index": index, "rows": [index, index + 1]},
+        )
+        assert repository.record(snapshot, event)
+
+    query = JobCenterQueryService(paths)
+    original_connect = JobCenterQueryService._connect
+    connections: list[Path] = []
+
+    def tracked_connect(db_path: Path) -> sqlite3.Connection:
+        connections.append(Path(db_path))
+        return original_connect(db_path)
+
+    monkeypatch.setattr(JobCenterQueryService, "_connect", staticmethod(tracked_connect))
+    results = query.list_task_results("demo", task_type="storage_test", limit=100)
+
+    assert len(results) == 24
+    assert {item[0]["index"] for item in results} == set(range(24))
+    assert len(connections) <= 2
+
+
 def test_task_cleanup_protects_active_references_and_deletes_only_explicit_safe_rows(
     tmp_path: Path,
 ) -> None:
