@@ -4,17 +4,19 @@ from datetime import datetime
 import hashlib
 import json
 import sqlite3
+import threading
+import time
 from typing import Any
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ground_unattended import GroundInventorySummaryDTO
-from netconsole.models.device import is_device_eligible_for_automatic_collection
+from netconsole.models.api.rail_transit_base_data import VehicleMrDTO
+from netconsole.models.ground_inventory import InventoryCollection, freeze_inventory, thaw_inventory
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
-from netconsole.services.netmiko_connection import connection_targets
 from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
@@ -36,13 +38,57 @@ class TrainInventorySyncService:
         self.site_id = site_id
         self.repository = repository
         self.base_query = base_query
+        self._collection_lock = threading.RLock()
+        self._collection: InventoryCollection | None = None
+        self._collection_loaded_at = 0.0
+        self.collection_ttl = 1.0
 
-    def collect(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]], GroundInventorySummaryDTO, list[str]]:
+    def _source_revision(self) -> str:
+        # Injected/legacy readers may change without a database revision. They
+        # get only explicit operation-level reuse, never cross-call caching.
+        if type(self.base_query) is RailTransitBaseDataQueryService:
+            return self.base_query.repository.base_data_revision(self.site_id)
+        return ""
+
+    def collect(self) -> InventoryCollection:
+        with self._collection_lock:
+            for _ in range(3):
+                revision = self._source_revision()
+                if (revision and self._collection is not None
+                        and self._collection.source_revision == revision
+                        and time.monotonic() - self._collection_loaded_at < self.collection_ttl):
+                    return self._collection
+                collection = self._collect(source_revision=revision)
+                if not revision or revision == self._source_revision():
+                    self._collection = collection
+                    self._collection_loaded_at = time.monotonic()
+                    return collection
+            raise ValueError("HEARTBEAT_INVENTORY_SOURCE_UNSTABLE")
+
+    def current_mrs(self) -> list[VehicleMrDTO]:
+        return [VehicleMrDTO.model_validate(thaw_inventory(row)) for row in self.collect().mrs]
+
+    def _validated_collection(self, collection: InventoryCollection | None) -> InventoryCollection:
+        if collection is None:
+            return self.collect()
+        if collection.site_id != self.site_id:
+            raise ValueError("HEARTBEAT_INVENTORY_SITE_MISMATCH")
+        revision = self._source_revision()
+        if revision and (revision != collection.source_revision
+                         or time.monotonic() - self._collection_loaded_at >= self.collection_ttl):
+            return self.collect()
+        return collection
+
+    def _collect(self, *, source_revision: str) -> InventoryCollection:
         """Read the Site device projection without persisting or probing."""
         mrs = self._all_mrs()
         conflicts: list[str] = []
         seen_uuids: set[str] = set()
         device_repository = DeviceRepository(Database(self.paths.site_db_path(self.site_id)))
+        try:
+            devices = device_repository.inventory_metadata_by_uuids(str(mr.id) for mr in mrs)
+        except (OSError, sqlite3.Error):
+            devices = {}
         grouped: dict[str, dict[str, Any]] = {}
         missing_ip = 0
         missing_credentials = 0
@@ -71,17 +117,14 @@ class TrainInventorySyncService:
             if role in group["endpoints"]:
                 conflicts.append(f"MR_POSITION_DUPLICATE: {train_id}/{role}")
                 continue
-            try:
-                device = device_repository.get_by_uuid(str(mr.id))
-            except (OSError, sqlite3.Error):
-                device = None
+            device = devices.get(str(mr.id))
             # Heartbeat eligibility belongs to the rail-transit inventory, not
             # SSH credentials. Missing device connection data may block deep
             # collection, but it must not remove an otherwise valid MR target.
             connection_eligible = bool(
-                device and is_device_eligible_for_automatic_collection(device)
+                device and device.connection_eligible
             )
-            connectable = bool(connection_eligible and connection_targets(device))
+            connectable = bool(device and device.connection_ready)
             if not str(mr.management_ip or "").strip():
                 missing_ip += 1
             if not connection_eligible:
@@ -107,6 +150,7 @@ class TrainInventorySyncService:
                 # Syslog hostname 以设备 sysname 为准，不能用本地化资产显示名替代。
                 "source_hostname": str((device.system_name if device else "") or mr.name or ""),
                 "connection_ready": connectable,
+                "connection_eligible": connection_eligible,
             }
 
         trains = [
@@ -136,11 +180,23 @@ class TrainInventorySyncService:
             synchronized_at=datetime.now().astimezone().isoformat(timespec="milliseconds"),
         )
 
-        return trains, endpoints, summary, sorted(set(conflicts))
+        conflicts = sorted(set(conflicts))
+        signature = {"site_id": self.site_id, "trains": trains,
+                     "endpoints": endpoints, "conflicts": conflicts}
+        return InventoryCollection(
+            site_id=self.site_id, trains=freeze_inventory(trains),
+            endpoints=freeze_inventory(endpoints), summary=freeze_inventory(summary.model_dump()),
+            conflicts=tuple(conflicts), generated_at=summary.synchronized_at,
+            revision=hashlib.sha256(json.dumps(signature, sort_keys=True,
+                                               ensure_ascii=False).encode("utf-8")).hexdigest(),
+            mrs=freeze_inventory([mr.model_dump(mode="json") for mr in mrs]),
+            source_revision=source_revision,
+        )
 
     def synchronize(self, *, heartbeat_revision: int | None = None,
-                    preview_revision: str = "") -> GroundInventorySummaryDTO:
-        trains, endpoints, summary, conflicts = self.collect()
+                    preview_revision: str = "",
+                    collection: InventoryCollection | None = None) -> GroundInventorySummaryDTO:
+        trains, endpoints, summary, conflicts = self._validated_collection(collection)
         if conflicts:
             raise ValueError("HEARTBEAT_INVENTORY_CONFLICT: " + "; ".join(conflicts))
         if preview_revision:
@@ -153,13 +209,14 @@ class TrainInventorySyncService:
         )
         return summary.model_copy(update=changes)
 
-    def preview(self) -> dict[str, Any]:
-        trains, endpoints, _, conflicts = self.collect()
+    def preview(self, *, collection: InventoryCollection | None = None) -> dict[str, Any]:
+        trains, endpoints, _, conflicts = self._validated_collection(collection)
         return self._preview(trains, endpoints, conflicts)
 
     def _preview(self, trains: list[dict[str, Any]], endpoints: list[dict[str, Any]],
                  conflicts: list[str]) -> dict[str, Any]:
-        previous_trains = self.repository.list_inventory(include_removed=False)
+        snapshot = self.repository.inventory_snapshot(force=True)
+        previous_trains = snapshot.inventory()
         previous = {
             str(endpoint["device_uuid"]): endpoint
             for train in previous_trains
@@ -176,7 +233,7 @@ class TrainInventorySyncService:
         }
         fields = ("train_id", "mr_role", "management_ip", "backup_management_ip",
                   "backup_monitoring_strategy", "device_name", "protocol", "port", "source_hostname")
-        state = self.repository.heartbeat_inventory_state()
+        state = thaw_inventory(snapshot.state)
         signature = {
             "site_id": self.site_id, "trains": sorted(trains, key=lambda row: row["train_id"]),
             "endpoints": sorted(endpoints, key=lambda row: row["device_uuid"]),

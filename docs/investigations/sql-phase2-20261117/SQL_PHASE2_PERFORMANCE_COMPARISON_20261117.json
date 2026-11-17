@@ -1,0 +1,37 @@
+{
+  "status": "PARTIAL_SQL_PHASE2",
+  "branch": "codex-A/sql-read-model-sharing-20261117",
+  "base_commit": "dd026f2fffa280bb9fa43d3c6da34f831bad9a16",
+  "product_commit_under_test": "53172bb33caee7202ef16cceb3f22f933eaf7ef6",
+  "harness": "scripts/dev/job_center_sql_profile_20261116.py",
+  "iterations": 30,
+  "scenarios": {
+    "job_center_list_task_results": {
+      "note": "include_result=true result authority hydration; optimized path versus copied pre-phase-2 path",
+      "tasks": {
+        "1": {
+          "optimized": {"select_p50": 17, "connections_p50": 2, "fetched_rows_p50": 104, "sql_ms_p50": 0.6465, "sql_ms_p95": 0.8154, "sql_ms_p99": 0.8572, "wall_ms_p50": 1.6586, "wall_ms_p95": 2.0313, "wall_ms_p99": 2.2027},
+          "legacy_n_plus_one": {"select_p50": 16, "connections_p50": 2, "fetched_rows_p50": 103, "sql_ms_p50": 0.7048, "sql_ms_p95": 0.9515, "sql_ms_p99": 1.1849, "wall_ms_p50": 1.7601, "wall_ms_p95": 2.2898, "wall_ms_p99": 2.4369}
+        },
+        "20": {
+          "optimized": {"select_p50": 17, "connections_p50": 2, "fetched_rows_p50": 142, "sql_ms_p50": 0.6525, "sql_ms_p95": 0.8187, "sql_ms_p99": 1.0736, "wall_ms_p50": 1.8759, "wall_ms_p95": 2.1902, "wall_ms_p99": 2.7034},
+          "legacy_n_plus_one": {"select_p50": 130, "connections_p50": 21, "fetched_rows_p50": 578, "sql_ms_p50": 5.6146, "sql_ms_p95": 6.7632, "sql_ms_p99": 6.8390, "wall_ms_p50": 13.9264, "wall_ms_p95": 15.8133, "wall_ms_p99": 15.9312}
+        },
+        "120": {
+          "optimized": {"select_p50": 17, "connections_p50": 2, "fetched_rows_p50": 342, "sql_ms_p50": 0.7269, "sql_ms_p95": 1.1348, "sql_ms_p99": 1.2221, "wall_ms_p50": 3.1864, "wall_ms_p95": 4.0132, "wall_ms_p99": 4.1070},
+          "legacy_n_plus_one": {"select_p50": 730, "connections_p50": 121, "fetched_rows_p50": 3078, "sql_ms_p50": 31.6509, "sql_ms_p95": 33.5095, "sql_ms_p99": 34.1284, "wall_ms_p50": 79.2936, "wall_ms_p95": 83.5017, "wall_ms_p99": 83.8498}
+        }
+      }
+    },
+    "job_center_list_summary_detail_logs": {
+      "status": "MEASURED_NO_NEW_N_PLUS_ONE",
+      "prior_single_entry_baseline": {"list_select": 5, "summary_select": 5, "detail_select": 7, "logs_select": 4, "connections_each": 1}
+    },
+    "ac_fit_ap_mesh_link": {"status": "NOT_MEASURED"},
+    "ground_arp_identity_projection": {"status": "NOT_MEASURED"},
+    "heartbeat_api_dynamic_facts": {"status": "NOT_MEASURED_IN_PHASE2", "first_phase_no_fact_path_exists": true},
+    "history_archive_pagination": {"status": "NOT_MEASURED"}
+  },
+  "schema_or_index_changes": false,
+  "production_data_modified": 0
+}

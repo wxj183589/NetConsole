@@ -1,0 +1,30 @@
+{
+  "status": "PASS_FOR_MEASURED_JOB_CENTER_PATHS",
+  "source": "reports/diagnostic/sql-query-optimization-20261117/phase2-job-120-final2/metrics.json",
+  "tasks": 120,
+  "plans": {
+    "task_list": [
+      "SEARCH task_snapshots USING INDEX idx_task_snapshots_visible_updated (dismissed_at=?)",
+      "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+    ],
+    "task_detail": [
+      "SEARCH task_snapshots USING INDEX sqlite_autoindex_task_snapshots_1 (task_id=?)"
+    ],
+    "task_logs": [
+      "SEARCH task_events USING INDEX idx_task_events_task_sequence (task_id=?)"
+    ],
+    "result_batch_hydrate": {
+      "sql_shape": "SELECT task_results authority LEFT JOIN task_result_blobs WHERE result_id IN (?, ...)",
+      "index_expectation": "task_results PRIMARY KEY(result_id), task_result_blobs PRIMARY KEY(content_sha256)",
+      "plan_status": "MEASURED_SQL_EXECUTION; EXPLAIN shape retained in profiler trace"
+    }
+  },
+  "unmeasured_modules": {
+    "ac_fit_ap_mesh_link": "NOT_MEASURED",
+    "ground_arp_identity_projection": "NOT_MEASURED",
+    "heartbeat_api_dynamic_facts": "NOT_MEASURED_IN_PHASE2",
+    "history_archive_pagination": "NOT_MEASURED"
+  },
+  "index_added": false,
+  "schema_changed": false
+}

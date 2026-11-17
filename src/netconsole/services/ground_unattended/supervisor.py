@@ -67,7 +67,6 @@ from netconsole.services.ground_unattended.schedule import (
 from netconsole.services.ground_unattended.boot_config import MrSyslogConfigService
 from netconsole.services.ground_unattended.arp_collection import GroundArpCollector
 from netconsole.services.ground_unattended.arp_identity import GroundMrIdentityService
-from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
 from netconsole.services.ground_unattended.syslog_runtime import (
     SyslogUdpReceiver,
     recover_raw_files,
@@ -163,12 +162,9 @@ class GroundUnattendedSupervisor:
             site_id=site_id,
             repository=repository,
         )
-        self.inventory_sync = TrainInventorySyncService(
-            paths,
-            site_id=site_id,
-            repository=repository,
-            base_query=base_query,
-        )
+        self.inventory_sync = self.heartbeat.inventory_sync
+        if self.deep_scheduler is not None:
+            self.deep_scheduler.inventory_sync = self.inventory_sync
         self.ap_identity_query_service = (
             ap_identity_query_service
             or ApIdentityQueryService(Database(paths.site_db_path(site_id)))
@@ -341,18 +337,7 @@ class GroundUnattendedSupervisor:
 
     def _current_mrs(self) -> list[object]:
         try:
-            first_page = self.base_query.list_mrs(self.site_id, page=1, page_size=200)
-            rows = list(first_page.items)
-            page = 2
-            while len(rows) < int(first_page.total):
-                next_page = self.base_query.list_mrs(
-                    self.site_id, page=page, page_size=200
-                )
-                if not next_page.items:
-                    break
-                rows.extend(next_page.items)
-                page += 1
-            return rows
+            return self.inventory_sync.current_mrs()
         except Exception as exc:
             LOGGER.warning("Ground ARP MR 清单读取失败: site=%s error=%s", self.site_id, exc)
             return []
@@ -1859,9 +1844,10 @@ class GroundUnattendedSupervisor:
             self._append_ac_snapshot_file(
                 str(run["run_date"]), new_persisted_rows, now
             )
+        inventory_snapshot = self.repository.inventory_snapshot()
         policies = {
             str(row["train_id"]): row
-            for row in self.repository.list_inventory(include_removed=False)
+            for row in inventory_snapshot.inventory()
         }
         priorities = {
             train_id for train_id, policy in policies.items() if policy.get("priority")
@@ -2016,12 +2002,12 @@ class GroundUnattendedSupervisor:
                     )
             elif address not in valid_ping_targets:
                 self._last_valid_ping_targets.pop(address, None)
-        inventory_targets = self.heartbeat._heartbeat_fleet_targets()
+        inventory_targets = self.heartbeat._heartbeat_fleet_targets(snapshot=inventory_snapshot)
         valid_ping_targets = _merge_heartbeat_targets(inventory_targets, valid_ping_targets)
         self.heartbeat.enrich_targets(list(valid_ping_targets.values()))
-        self.syslog_receiver.refresh_inventory()
+        self.syslog_receiver.refresh_inventory(snapshot=inventory_snapshot)
         self.syslog_receiver.refresh_ap_identity()
-        self._schedule_config_checks(run, profile, config_check_targets)
+        self._schedule_config_checks(run, profile, config_check_targets, inventory_snapshot=inventory_snapshot)
         current_trains = self.repository.list_train_runs(str(run["run_id"]))
         disk_free = shutil.disk_usage(
             self.paths.ground_unattended_root(self.site_id).parent
@@ -3309,6 +3295,7 @@ class GroundUnattendedSupervisor:
         run: dict[str, Any],
         profile: GroundUnattendedProfileDTO,
         targets: dict[str, FleetPingTarget],
+        *, inventory_snapshot=None,
     ) -> None:
         target_ip = str(profile.syslog_server_ip or "").strip()
         if not target_ip:
@@ -3335,9 +3322,10 @@ class GroundUnattendedSupervisor:
                 if str(item.get("op") or "") == "EXIT":
                     getattr(self, "_manual_syslog_exits", set()).discard(key)
                     getattr(self, "_manual_syslog_exit_task_ids", {}).pop(key, None)
+        inventory_snapshot = inventory_snapshot or self.repository.inventory_snapshot()
         policies = {
             str(row["train_id"]): row
-            for row in self.repository.list_inventory(include_removed=False)
+            for row in inventory_snapshot.inventory()
         }
         endpoints = {
             target.mr_id: target for target in targets.values() if target.mr_id
@@ -3349,7 +3337,7 @@ class GroundUnattendedSupervisor:
             # Explicit operator checks may run before an AC snapshot exists.
             # Use the persisted heartbeat inventory as the identity source while
             # keeping automatic checks bounded by AC eligibility below.
-            inventory_targets = self.heartbeat._heartbeat_fleet_targets()
+            inventory_targets = self.heartbeat._heartbeat_fleet_targets(snapshot=inventory_snapshot)
             for target in inventory_targets.values():
                 if target.mr_id in manual:
                     endpoints.setdefault(target.mr_id, target)
@@ -3717,16 +3705,7 @@ class GroundUnattendedSupervisor:
         return rows
 
     def _all_base_mrs(self):
-        first = self.base_query.list_mrs(self.site_id, page=1, page_size=200)
-        rows = list(first.items)
-        page = 2
-        while len(rows) < first.total:
-            current = self.base_query.list_mrs(self.site_id, page=page, page_size=200)
-            if not current.items:
-                break
-            rows.extend(current.items)
-            page += 1
-        return rows
+        return self.inventory_sync.current_mrs()
 
     def _all_stations(self):
         first = self.base_query.list_stations(self.site_id, page=1, page_size=200)

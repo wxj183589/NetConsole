@@ -14,6 +14,11 @@
 - [本地验证与 Gate](./SELF_HOSTED_CI.md)：GitHub Actions 退役后的本地主机/副机验证边界。
 - [Codex Skills](./CODEX_SKILLS.md)：项目 Skill 路由和维护规则。
 
+## SQL 读取优化记录
+
+- 第一阶段：[SQL 查询审计](./SQL_QUERY_AUDIT_20261117.md)、[共享读取优化报告](./SQL_QUERY_OPTIMIZATION_REPORT_20261117.md)、[定向验证](./SQL_QUERY_VALIDATION_20261117.md)。
+- 第二阶段：[专项审计](../investigations/sql-phase2-20261117/SQL_PHASE2_AUDIT_20261117.md)、[优化报告](../investigations/sql-phase2-20261117/SQL_PHASE2_OPTIMIZATION_REPORT_20261117.md)、[定向验证](../investigations/sql-phase2-20261117/SQL_PHASE2_VALIDATION_20261117.md)、[性能对比](../investigations/sql-phase2-20261117/SQL_PHASE2_PERFORMANCE_COMPARISON_20261117.json)、[查询计划](../investigations/sql-phase2-20261117/SQL_PHASE2_QUERY_PLAN_20261117.json)、[剩余问题](../investigations/sql-phase2-20261117/SQL_PHASE2_REMAINING_ISSUES_20261117.md)。
+
 ## 依赖关系
 
 工程规则由代码、测试、构建脚本、机器可读 Registry 和项目 Skills 消费；文档不得创建与 Guard 冲突的例外。

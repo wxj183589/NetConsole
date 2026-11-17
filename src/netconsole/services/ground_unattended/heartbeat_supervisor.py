@@ -78,6 +78,8 @@ class HeartbeatSupervisor:
         self._heartbeat_persist_after_mr = ""
         self._heartbeat_persist_after_train = ""
         self._heartbeat_target_signature: tuple[tuple[Any, ...], ...] = ()
+        self._inventory_target_key = None
+        self._inventory_targets: tuple[HeartbeatTarget, ...] = ()
         self._heartbeat_force_persist = False
         self._heartbeat_pending_events: deque[dict[str, Any]] = deque()
         self._heartbeat_pending_loss_events: deque[dict[str, Any]] = deque()
@@ -205,11 +207,12 @@ class HeartbeatSupervisor:
             self._inventory_refresh_at = time.monotonic() + 5.0
             # Explicit CLEAR_DEVICES suppresses automatic regeneration.
             if self.repository.heartbeat_inventory_state()["enabled"]:
-                preview = self.inventory_sync.preview()
+                collection = self.inventory_sync.collect()
+                preview = self.inventory_sync.preview(collection=collection)
                 if preview["conflicts"]:
                     raise ValueError(f"Heartbeat inventory conflict: {preview['conflicts']}")
                 if any(preview[key] for key in ("added_count", "updated_count", "disabled_count")):
-                    self.inventory_sync.synchronize()
+                    self.inventory_sync.synchronize(collection=collection)
 
     def _tick(self):
         if not self._config_initialized:
@@ -239,7 +242,8 @@ class HeartbeatSupervisor:
             return
         if not self._restored:
             self.repository.migrate_resident_heartbeat(HEARTBEAT_STREAM_ID)
-        self._configure_heartbeat_targets(HEARTBEAT_STREAM_ID)
+        inventory_snapshot = self.repository.inventory_snapshot()
+        self._configure_heartbeat_targets(HEARTBEAT_STREAM_ID, snapshot=inventory_snapshot)
         if not self._restored:
             rows = self.repository.list_heartbeat_snapshots(HEARTBEAT_STREAM_ID, entity_type="MR")
             self._heartbeat_engine.restore_snapshots(rows)
@@ -262,7 +266,9 @@ class HeartbeatSupervisor:
             )
             self._fleet_started = True
             self._applied_config = self._config.model_copy(deep=True)
-        desired = self._refresh_inventory_heartbeat({"run_id": HEARTBEAT_STREAM_ID}, now)
+        desired = self._refresh_inventory_heartbeat(
+            {"run_id": HEARTBEAT_STREAM_ID}, now, snapshot=inventory_snapshot,
+        )
         with self._heartbeat_lock:
             enrichment = dict(self._enrichment)
         targets = []
@@ -277,23 +283,31 @@ class HeartbeatSupervisor:
         self.fleet_ping.flush_summaries()
         self._runtime_state = "HEARTBEAT_DEGRADED" if self.fleet_ping.last_error else "RUNNING"
 
-    def _configure_heartbeat_targets(self, run_id: str) -> list[HeartbeatTarget]:
+    def _configure_heartbeat_targets(self, run_id: str, *, snapshot=None) -> list[HeartbeatTarget]:
         """Build heartbeat identities from the persisted rail inventory.
 
         This path intentionally does not inspect AC rows or credentials.  The
         inventory is the monitoring authority; AC and SSH are supplemental
         capabilities used by the other workers.
         """
+        snapshot = snapshot or self.repository.inventory_snapshot()
+        if snapshot.site_id != self.site_id:
+            raise ValueError("HEARTBEAT_INVENTORY_SITE_MISMATCH")
+        target_key = (self.repository, snapshot.revision, self._config.backup_policy, str(run_id))
+        with self._heartbeat_lock:
+            if target_key == self._inventory_target_key:
+                self._heartbeat_engine.set_engine_state("RUNNING", at=self._now())
+                return list(self._inventory_targets)
         grouped: dict[str, dict[str, Any]] = {}
-        inventory_state = self.repository.heartbeat_inventory_state()
-        inventory = (self.repository.list_inventory(include_removed=False)
+        inventory_state = snapshot.state
+        inventory = (snapshot.inventory()
                      if inventory_state["enabled"] else [])
         for train in inventory:
             train_id = str(train.get("train_id") or "").strip()
             if not train_id:
                 continue
             for endpoint in train.get("endpoints") or []:
-                if not isinstance(endpoint, dict):
+                if not isinstance(endpoint, Mapping):
                     continue
                 mr_id = str(endpoint.get("device_uuid") or "").strip()
                 role = str(endpoint.get("mr_role") or "").strip().upper()
@@ -349,8 +363,6 @@ class HeartbeatSupervisor:
                 self._heartbeat_loss_trackers.clear()
             self._heartbeat_cleared_at = cleared_at
             self._heartbeat_run_id = normalized_run_id
-            self._heartbeat_engine.configure_targets(targets)
-            self._restore_heartbeat_loss_trackers(normalized_run_id, targets)
             signature = tuple(
                 sorted(
                     (
@@ -363,6 +375,8 @@ class HeartbeatSupervisor:
                 )
             )
             if signature != self._heartbeat_target_signature:
+                self._heartbeat_engine.configure_targets(targets)
+                self._restore_heartbeat_loss_trackers(normalized_run_id, targets)
                 self._train_connectivity.reconcile_targets(targets)
                 if self._heartbeat_engine.ip_conflicts:
                     self.repository.add_health_event(
@@ -385,6 +399,12 @@ class HeartbeatSupervisor:
                         self._heartbeat_dirty_mrs.add(target.mr_uuid)
                         self._heartbeat_dirty_trains.add(target.train_id)
                 self._heartbeat_target_signature = signature
+            elif self._inventory_target_key is not None and self._inventory_target_key[0] is not self.repository:
+                # A reopened repository needs durable loss episodes restored,
+                # even when its inventory still describes identical targets.
+                self._restore_heartbeat_loss_trackers(normalized_run_id, targets)
+            self._inventory_target_key = target_key
+            self._inventory_targets = tuple(targets)
             self._heartbeat_engine.set_engine_state("RUNNING", at=self._now())
         return targets
 
@@ -472,16 +492,19 @@ class HeartbeatSupervisor:
             raise
 
 
-    def _heartbeat_fleet_targets(self) -> dict[str, FleetPingTarget]:
+    def _heartbeat_fleet_targets(self, *, snapshot=None) -> dict[str, FleetPingTarget]:
         result: dict[str, FleetPingTarget] = {}
         conflicts: set[str] = set()
-        if not self.repository.heartbeat_inventory_state()["enabled"]:
+        snapshot = snapshot or self.repository.inventory_snapshot()
+        if snapshot.site_id != self.site_id:
+            raise ValueError("HEARTBEAT_INVENTORY_SITE_MISMATCH")
+        if not snapshot.state["enabled"]:
             return result
-        for train in self.repository.list_inventory(include_removed=False):
+        for train in snapshot.inventory():
             train_id = str(train.get("train_id") or "").strip()
             train_no = str(train.get("train_no") or train_id).strip()
             for endpoint in train.get("endpoints") or []:
-                if not isinstance(endpoint, dict):
+                if not isinstance(endpoint, Mapping):
                     continue
                 mr_id = str(endpoint.get("device_uuid") or "").strip()
                 role = str(endpoint.get("mr_role") or "").strip().upper()
@@ -513,9 +536,10 @@ class HeartbeatSupervisor:
         return result
 
 
-    def _refresh_inventory_heartbeat(self, run: dict[str, Any], now: datetime) -> dict[str, FleetPingTarget]:
-        self._configure_heartbeat_targets(str(run["run_id"]))
-        desired = self._heartbeat_fleet_targets()
+    def _refresh_inventory_heartbeat(self, run: dict[str, Any], now: datetime, *, snapshot=None) -> dict[str, FleetPingTarget]:
+        snapshot = snapshot or self.repository.inventory_snapshot()
+        self._configure_heartbeat_targets(str(run["run_id"]), snapshot=snapshot)
+        desired = self._heartbeat_fleet_targets(snapshot=snapshot)
         with self._heartbeat_lock:
             transitions = self._heartbeat_engine.evaluate(at=now)
             self._mark_heartbeat_transitions_dirty(transitions)

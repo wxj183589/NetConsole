@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,8 @@ from netconsole.core.device_credential_store import (
 )
 from netconsole.models.device import (
     Device,
+    has_configured_connection_target,
+    is_device_eligible_for_automatic_collection,
     normalize_project_phase,
     normalize_work_scope_status,
 )
@@ -25,6 +28,7 @@ from netconsole.models.device_address import (
     DevicePrimaryAddressConflictError,
     normalize_ip_address,
 )
+from netconsole.models.ground_inventory import DeviceInventoryMetadata
 from netconsole.utils.natural_sort import natural_text_key
 
 
@@ -92,7 +96,7 @@ class DeviceRepository:
     def get(self, device_id: int) -> Device:
         with self.database.connect() as conn:
             row = conn.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
-            states = read_device_credential_states(conn)
+            states = read_device_credential_states(conn, [str(row["device_uuid"])]) if row else {}
         if row is None:
             raise KeyError(f"Device not found: {device_id}")
         return self._device_from_row(row, states)
@@ -102,6 +106,58 @@ class DeviceRepository:
             row = conn.execute("SELECT * FROM devices WHERE device_uuid = ?", (device_uuid,)).fetchone()
             states = read_device_credential_states(conn, [device_uuid])
         return self._device_from_row(row, states) if row is not None else None
+
+    def get_by_uuids(self, device_uuids: Iterable[str]) -> dict[str, Device]:
+        """Fresh Device values, with credential semantics identical to get_by_uuid."""
+        return self._get_uuid_batch(device_uuids, inventory_only=False)
+
+    def inventory_metadata_by_uuids(
+        self, device_uuids: Iterable[str],
+    ) -> dict[str, DeviceInventoryMetadata]:
+        """Read credential presence in SQL; never return secrets or usable Devices."""
+        return self._get_uuid_batch(device_uuids, inventory_only=True)
+
+    def _get_uuid_batch(self, device_uuids: Iterable[str], *, inventory_only: bool):
+        keys = list(dict.fromkeys(str(key) for key in device_uuids if str(key)))
+        if not keys:
+            return {}
+        result = {}
+        with closing(self.database.connect_readonly()) as conn:
+            conn.execute("BEGIN")
+            selected = "*"
+            if inventory_only:
+                columns = [str(row[1]) for row in conn.execute("PRAGMA table_info(devices)")]
+                selected = ", ".join(
+                    f"CASE WHEN \"{column}\" IS NOT NULL AND \"{column}\" != '' "
+                    f"THEN 'present' ELSE NULL END AS \"{column}\""
+                    if column in DEVICE_SECRET_STORAGE_FIELDS else f'"{column}"'
+                    for column in columns
+                )
+            for offset in range(0, len(keys), 900):
+                batch = keys[offset:offset + 900]
+                rows = conn.execute(
+                    f"SELECT {selected} FROM devices WHERE device_uuid IN "
+                    f"({', '.join('?' for _ in batch)})", batch,
+                ).fetchall()
+                states = read_device_credential_states(conn, batch)
+                for row in rows:
+                    device = self._device_from_row(row, states)
+                    if inventory_only:
+                        # Presence placeholders stay inside this projection. Never
+                        # expose a Device that a connection worker could execute.
+                        eligible = is_device_eligible_for_automatic_collection(device)
+                        value = DeviceInventoryMetadata(
+                            backup_address=str(device.backup_address or ""),
+                            system_name=str(device.system_name or ""),
+                            connection_eligible=eligible,
+                            connection_ready=bool(
+                                eligible and has_configured_connection_target(device)
+                            ),
+                        )
+                    else:
+                        value = device
+                    result[str(device.device_uuid)] = value
+        return result
 
     def update(self, device: Device) -> Device:
         if device.id is None:
