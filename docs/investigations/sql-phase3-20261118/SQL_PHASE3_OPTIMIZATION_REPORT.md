@@ -17,14 +17,14 @@
 | AC/FIT-AP 100 AP            |              309 |                22 |                      103 |                         5 |
 | AC/FIT-AP 500 AP            |             1509 |                23 |                      503 |                         5 |
 | AC/FIT-AP 1000 AP           |             3009 |                24 |                     1003 |                         5 |
-| Mesh-Link 50 MR / 100 Link  |              294 |                27 |                       98 |                         6 |
-| Mesh-Link 100 MR / 200 Link |              594 |                27 |                      198 |                         6 |
-| Mesh-Link 200 MR / 400 Link |             1194 |                27 |                      398 |                         6 |
+| Mesh-Link 50 MR / 100 Link  |              884 |                27 |                      197 |                         6 |
+| Mesh-Link 100 MR / 200 Link |             1784 |                27 |                      397 |                         6 |
+| Mesh-Link 200 MR / 400 Link |             3584 |                27 |                      797 |                         6 |
 | ARP 50 MR / 100 IP          |             1200 |                 6 |                      150 |                         1 |
 | ARP 100 MR / 200 IP         |             2400 |                 6 |                      300 |                         1 |
 | ARP 200 MR / 400 IP         |             4800 |                 6 |                      600 |                         1 |
 
-baseline 是复制的旧逐身份读取循环，仅用于量化 N+1；optimized 是连续读取结果，不代表磁盘冷启动。
+baseline 与 optimized 使用相同的请求入口和 DTO 响应；baseline 仅关闭 identity batch 以复现修复前的逐 Link identity 回退。optimized 是连续读取结果，不代表磁盘冷启动。
 
 ## Schema / 索引
 

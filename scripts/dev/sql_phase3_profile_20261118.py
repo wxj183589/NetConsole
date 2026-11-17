@@ -10,6 +10,8 @@ import argparse
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from scripts.dev.sql_read_sharing_profile_20261117 import (
     _audit_connections,
@@ -176,18 +178,16 @@ def _mesh_fixture(root: Path, mr_count: int):
         return service.list_current_links("demo", page_size=1000)
 
     def baseline():
-        with service._connect(mesh_db) as conn:
-            ids = [int(row[0]) for row in conn.execute(
-                "SELECT id FROM vehicle_mr_online_links WHERE snapshot_id=? ORDER BY id",
-                (1,),
-            )]
-        rows = []
-        for link_id in ids:
-            with service._connect(mesh_db) as conn:
-                rows.extend(conn.execute(
-                    "SELECT * FROM vehicle_mr_online_links WHERE id=?", (link_id,)
-                ).fetchall())
-        return rows
+        # Reproduce the pre-fix identity fallback through the same public
+        # request entry and DTO serialization as the optimized path.
+        from netconsole.services.ap_identity import ApIdentityQueryService
+
+        with patch.object(
+            ApIdentityQueryService,
+            "resolve_peer_macs",
+            return_value=SimpleNamespace(matches={}),
+        ):
+            return service.list_current_links("demo", page_size=1000)
 
     return mesh_db, optimized, baseline
 
@@ -226,7 +226,7 @@ def main() -> int:
         "notes": [
             "Continuous reads are measured over repeated isolated-fixture calls.",
             "The first sample is reported separately as application cold read; this is not a disk cold start.",
-            "Baseline is a copied legacy per-identity read loop used only for comparison.",
+            "Baseline uses the same request entry and DTO response with the pre-fix per-link identity fallback.",
         ],
     }
     with _audit_connections():
