@@ -270,8 +270,14 @@ def test_manual_config_check_uses_inventory_when_ac_targets_are_missing() -> Non
     submitted: list[dict[str, object]] = []
 
     class _Repository:
-        def list_inventory(self, *, include_removed: bool):
-            return [{"train_id": "train-1", "priority": False, "scheduling_priority": 0}]
+        def inventory_snapshot(self):
+            return SimpleNamespace(
+                inventory=lambda: [{
+                    "train_id": "train-1",
+                    "priority": False,
+                    "scheduling_priority": 0,
+                }]
+            )
 
         def latest_syslog_config_audit(self, _device_uuid):
             return None
@@ -291,7 +297,9 @@ def test_manual_config_check_uses_inventory_when_ac_targets_are_missing() -> Non
 
     supervisor.repository = _Repository()
     supervisor.fleet_ping = _FleetPing()
-    supervisor.heartbeat = SimpleNamespace(_heartbeat_fleet_targets=lambda: {target.target_ip: target})
+    supervisor.heartbeat = SimpleNamespace(
+        _heartbeat_fleet_targets=lambda *, snapshot: {target.target_ip: target}
+    )
     supervisor._manual_config_checks = {"mr-1": (False, True)}
     supervisor._config_futures = {}
     supervisor._config_executor = _Executor()

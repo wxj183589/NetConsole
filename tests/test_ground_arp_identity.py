@@ -53,24 +53,21 @@ def test_arp_parser_recognizes_comware_rows_and_flags_pagination() -> None:
 def test_supervisor_reads_all_mrs_when_base_data_is_paginated() -> None:
     rows = [_mr(index, f"10.0.0.{index}") for index in range(1, 251)]
 
-    class PagedBaseQuery:
-        calls: list[tuple[int, int]] = []
+    class InventorySync:
+        calls = 0
 
-        def list_mrs(self, _site_id: str, *, page: int, page_size: int):
-            self.calls.append((page, page_size))
-            start = (page - 1) * page_size
-            return SimpleNamespace(
-                items=rows[start : start + page_size], total=len(rows)
-            )
+        def current_mrs(self):
+            self.calls += 1
+            return rows
 
     supervisor = object.__new__(GroundUnattendedSupervisor)
     supervisor.site_id = "site-a"
-    supervisor.base_query = PagedBaseQuery()
+    supervisor.inventory_sync = InventorySync()
 
     discovered = supervisor._current_mrs()
 
     assert len(discovered) == 250
-    assert supervisor.base_query.calls == [(1, 200), (2, 200)]
+    assert supervisor.inventory_sync.calls == 1
 
 
 def test_incremental_arp_keeps_history_marks_absence_and_recovers(tmp_path: Path) -> None:
