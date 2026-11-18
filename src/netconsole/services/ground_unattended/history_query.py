@@ -56,6 +56,18 @@ _SOURCES = (
     _Source("timeline", "events", "CAST(s.id AS TEXT)", "s.ts", train="s.train_id", mr="s.mr_id", role="COALESCE(NULLIF(json_extract(s.details_json,'$.mr_role'),''),json_extract(s.details_json,'$.mr_position_code'),'')", status="s.severity", summary="s.title || ' ' || s.message", event="s.event_type"),
 )
 
+_SOURCE_TABLES = frozenset("ground_unattended_" + source.table for source in _SOURCES)
+
+
+def _group_rows_by_source(rows: list[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:
+    grouped: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        source_table = str(row["source_table"])
+        if source_table not in _SOURCE_TABLES:
+            raise GroundHistoryQueryError("GROUND_HISTORY_SOURCE_INVALID", "历史来源表无效", status_code=500)
+        grouped.setdefault(source_table, []).append(row)
+    return grouped
+
 
 class GroundHistoryQueryService:
     def __init__(self, db_path: Path, *, site_id: str) -> None:
@@ -192,7 +204,36 @@ class GroundHistoryQueryService:
 
     def _item(self, conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         # Table names originate exclusively from the source whitelist above.
-        raw = conn.execute(f"SELECT * FROM {row['source_table']} WHERE rowid=? AND site_id=?", (row["source_rowid"], self.site_id)).fetchone()
+        raw = conn.execute(
+            f"SELECT * FROM {row['source_table']} WHERE rowid=? AND site_id=?",
+            (row["source_rowid"], self.site_id),
+        ).fetchone()
+        return self._project_item(row, raw)
+
+    def _items(self, conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+        """Load page details per source table instead of once per result row."""
+        raw_by_source: dict[str, dict[int, sqlite3.Row]] = {}
+        for source_table, source_rows in _group_rows_by_source(rows).items():
+            row_ids = sorted({int(row["source_rowid"]) for row in source_rows})
+            if not row_ids:
+                continue
+            placeholders = ", ".join("?" for _ in row_ids)
+            raw_rows = conn.execute(
+                f"SELECT rowid AS _source_rowid, * FROM {source_table} WHERE site_id=? AND rowid IN ({placeholders})",
+                (self.site_id, *row_ids),
+            ).fetchall()
+            raw_by_source[source_table] = {
+                int(raw["_source_rowid"]): raw for raw in raw_rows
+            }
+        return [
+            self._project_item(
+                row,
+                raw_by_source.get(str(row["source_table"]), {}).get(int(row["source_rowid"])),
+            )
+            for row in rows
+        ]
+
+    def _project_item(self, row: sqlite3.Row, raw: sqlite3.Row | None) -> dict[str, Any]:
         details: dict[str, Any] = {}
         for key, value in dict(raw or {}).items():
             if key.endswith("_json"):
@@ -222,10 +263,23 @@ class GroundHistoryQueryService:
             if conn is None:
                 return result
             sql, params, counts, result["sources"] = self._plan(conn, filters)
-            result["total"] = sum(int(conn.execute(query, values).fetchone()[0]) for query, values in counts)
+            if counts:
+                count_parts = [
+                    query.replace("SELECT COUNT(*)", "SELECT COUNT(*) AS item_count", 1)
+                    for query, _values in counts
+                ]
+                count_params = tuple(
+                    value for _query, values in counts for value in values
+                )
+                result["total"] = int(conn.execute(
+                    "SELECT COALESCE(SUM(item_count), 0) FROM ("
+                    + " UNION ALL ".join(count_parts)
+                    + ")",
+                    count_params,
+                ).fetchone()[0])
             if sql:
                 rows = conn.execute("SELECT * FROM (" + sql + f") ORDER BY julianday(ts) {sort_order.upper()}, data_type, source_table, source_identity LIMIT ? OFFSET ?", (*params, page_size, (page - 1) * page_size)).fetchall()
-                result["items"] = [self._item(conn, row) for row in rows]
+                result["items"] = self._items(conn, rows)
         return result
 
     def iter_export_rows(
@@ -244,5 +298,4 @@ class GroundHistoryQueryService:
                 return
             cursor = conn.execute("SELECT * FROM (" + sql + f") ORDER BY julianday(ts) {sort_order.upper()}, data_type, source_table, source_identity", params)
             while rows := cursor.fetchmany(500):
-                for row in rows:
-                    yield self._item(conn, row)
+                yield from self._items(conn, rows)

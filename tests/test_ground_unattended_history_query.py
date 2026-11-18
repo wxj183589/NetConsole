@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,56 @@ def test_pagination_timezone_and_export_consistent_snapshot(indexed):
         insert(conn, "events", site_id="demo", run_id="run-1", ts=STAMP, event_type="late")
     assert len([first, *rows]) == 621
     assert service.query(**filters)["total"] == 622
+
+
+def test_history_page_batches_detail_reads_and_keeps_site_filter(indexed):
+    path, service = indexed
+    with sqlite3.connect(path) as conn:
+        for number in range(8):
+            insert(
+                conn,
+                "events",
+                site_id="demo",
+                run_id="run-1",
+                ts=STAMP,
+                event_type=f"batch-{number}",
+                details_json=json.dumps({"number": number}),
+            )
+        insert(
+            conn,
+            "events",
+            site_id="other",
+            run_id="other",
+            ts=STAMP,
+            event_type="other-site",
+        )
+
+    traces: list[str] = []
+
+    @contextmanager
+    def traced_snapshot():
+        connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.set_trace_callback(traces.append)
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("BEGIN")
+            yield connection
+        finally:
+            connection.rollback()
+            connection.close()
+
+    service._read_snapshot = traced_snapshot  # type: ignore[method-assign]
+    page = service.query(data_type="timeline", page_size=20)
+
+    assert page["total"] == 9
+    assert len(page["items"]) == 9
+    detail_queries = [trace for trace in traces if "SELECT rowid AS _source_rowid" in trace]
+    assert len(detail_queries) == 1
+    assert "rowid IN (" in detail_queries[0]
+    assert not any("WHERE rowid=?" in trace for trace in traces)
+    assert sum("COUNT(*) AS item_count" in trace for trace in traces) == 1
+    assert all(item["details"].get("site_id") == "demo" for item in page["items"])
 
 
 def test_missing_index_has_no_write_side_effects(tmp_path):
