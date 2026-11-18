@@ -41,22 +41,23 @@ REAL_DEVICE_CONNECTED=0
 ## CI / PR 门禁
 
 - 原始失败 CI Run：`44142115842`（历史证据，Python Required Check FAIL）。
-- 最终检查时间：`2026-11-18 02:45:07 UTC`；最终 CI Run：`44221274938`。
-- PR：`#121`，最新 HEAD：`fc1d7df9d5814739ac2b1b34d8de47264334722f`，状态 `OPEN`，目标分支 `main`，`MERGEABLE` / `CLEAN`。
+- 历史验收 CI Run：`44221274938`，对应 HEAD `fc1d7df9d5814739ac2b1b34d8de47264334722f`，结果为 Required Checks 全部 PASS。
+- 最新检查时间：`2026-11-18 03:17:17 UTC`；最新 CI Run：`44225859118`。
+- PR：`#121`，最新 HEAD：`55253c1263d856965a147921ac48d468f8e36460`，状态 `OPEN`，目标分支 `main`，`MERGEABLE` / `CLEAN`。
 - Required Checks：Architecture contract PASS；Baseline debt audit and new failure detection PASS；Docs, path, and diff guards PASS；Electron tests, typecheck, and main build PASS；Main contract smoke PASS；Renderer tests, typecheck, and build PASS；Python regression without baseline debt PASS；Engineering hardening blocking gates PASS。
-- Python Job：`134523451223`，`02:10:23Z` 开始，`02:45:01Z` 完成，用时 `34m38s`；无失败步骤、无运行中 Step、无超时结论。
+- Python Job：`134538736518`，`02:47:58Z` 开始，`03:17:12Z` 完成，用时约 `29m14s`；无失败步骤、无运行中 Step、无超时结论。
 - Python 结果：PASS。原 11 个 Windows 文件锁失败节点已由定向修复与回归测试覆盖；未发现新的 SQL 业务回归。
-- Codex Review：已对应最新 HEAD `fc1d7df9d5814739ac2b1b34d8de47264334722f`，无发现、无未解决 Review Thread。
-- 阻断项：无；本轮未取消或重启 CI，不自动合并 PR。
+- Codex Review：已对应最新 HEAD `55253c1263d856965a147921ac48d468f8e36460`，无重大问题、无未解决 Review Thread。
+- 阻断项：无；PR 尚未合并，等待本轮正常 Squash Merge。
 
 ## CI 稳定性专项修复
 
 - 针对原 Run 的 11 个失败节点已完成逐项调查，详见 `WINDOWS_CI_FAILURE_INVESTIGATION.md`。
 - 修复范围限定为测试清理、Windows 原子文件替换、Demo 测试数据发布移动和回归测试辅助读取；未修改 SQL 业务代码。
 - 本地验证：原 11 个失败节点 `11 passed`；Resident Polling `8 passed`；iPerf 失败节点连续 20 次通过；生命周期/API 相关套件 `136 passed, 2 warnings`；修复后组合回归 `59 passed`；Ruff PASS。
-- 新 CI Run：`44216699242`（中间验证）和最终 Run `44221274938`；最终 Run 对应 HEAD `fc1d7df9d5814739ac2b1b34d8de47264334722f`，Required Checks 全部 PASS，Python regression `PASS`（`34m38s`）。
+- 新 CI Run：`44216699242`（中间验证）、`44221274938`（历史最终验收）和 `44225859118`（最新最终验收）；最新 Run 对应 HEAD `55253c1263d856965a147921ac48d468f8e36460`，Required Checks 全部 PASS，Python regression `PASS`（`29m14s`）。
 - 修复提交：`006c6894d696c72968db1e57fd6252935873810a`；Codex P2 修复提交：`db894e70`（将 Demo 同卷移动改为无复制回退的 `os.rename()` 重试）；最终报告提交：`fc1d7df9`。
-- 最新 Codex Review：对应 `fc1d7df9d5`，无发现、无未解决 Review Thread。
+- 最新 Codex Review：对应 `55253c1263`，无发现、无未解决 Review Thread。
 - PR #121：`OPEN`、`MERGEABLE`、`CLEAN`；本轮不自动合并。
 - 当前状态：`PASS_SQL_PHASE3_CI_STABILITY`。
 
