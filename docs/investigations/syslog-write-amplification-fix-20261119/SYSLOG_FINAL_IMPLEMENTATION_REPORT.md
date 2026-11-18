@@ -10,6 +10,8 @@ Failure and rollback behavior: pending registration blocks the checkpoint before
 
 Codex Review on initial PR HEAD `99c26d0797514eb8f050c99a0707dc00e28fc039` found a permanent-block risk after metadata error-map overflow. The follow-up adds read-only Site/Run/file-status reconciliation before clearing the overflow fence, with OPEN/CLOSED recovery tests. Review and CI for the follow-up HEAD are pending.
 
+CI on intermediate HEAD `35efac968080bd94bfa68109c0591e3468c64820` found one new Python regression: internal receiver metrics were passed to the strict public `GroundHealthDTO`. The application service now filters to declared DTO fields before construction; the API model is unchanged. The original failing test and a new contract test pass locally. CI and Review must be rerun for this follow-up HEAD.
+
 ```text
 PRODUCTION_DATA_MODIFIED=0
 DEV_REAL_DATA_MODIFIED=0

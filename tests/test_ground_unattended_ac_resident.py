@@ -1489,3 +1489,20 @@ def test_ac_health_marks_backoff_degraded_and_keeps_failed_poller(
     # health itself remains independent of the overall runtime lifecycle.
     assert health.status == "CRITICAL"
     assert health.ac_pollers[1].last_error == "凭据不可用"
+
+
+def test_ground_health_keeps_syslog_internal_metrics_out_of_public_dto(tmp_path: Path) -> None:
+    supervisor, repository, _mesh = _supervisor(tmp_path)
+    supervisor.syslog_receiver._projection_failed_count = 2
+    assert supervisor.syslog_receiver.health_snapshot()["projection_failed_count"] == 2
+    service = GroundUnattendedApplicationService(
+        supervisor.paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=supervisor,
+    )
+
+    health = service.health("site-a")
+
+    assert health.site_id == "site-a"
+    assert "projection_failed_count" not in health.model_dump()
