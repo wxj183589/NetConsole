@@ -52,13 +52,14 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[index]
 
 
-def _run_load(root: Path, mr_count: int, trace: dict[str, Any]) -> dict[str, Any]:
+def _run_load(root: Path, mr_count: int, trace: dict[str, Any], *, observe_transactions: bool = False) -> dict[str, Any]:
     trace_start = {
         "sql_statements": int(trace.get("sql_statements", 0)),
         "sql_writes": int(trace.get("sql_writes", 0)),
         "sql_by_prefix": dict(trace.get("sql_by_prefix", {})),
     }
     repository = GroundUnattendedRepository(root / "ground" / "index.sqlite", site_id=SITE_ID)
+    repository.set_transaction_observability(observe_transactions)
     trains = [
         {"train_id": f"train-{index:03d}", "train_no": f"T{index + 1:03d}", "train_name": f"Synthetic train {index + 1:03d}"}
         for index in range(max(1, (mr_count + 1) // 2))
@@ -166,11 +167,18 @@ def _run_load(root: Path, mr_count: int, trace: dict[str, Any]) -> dict[str, Any
         if receiver.running:
             receiver.stop(timeout_seconds=30)
 
-    raw_files = repository.list_raw_files(data_type="syslog")
-    events = repository.list_wmesh_events(run_id=run_id)
     with sqlite3.connect(repository.db_path) as connection:
         journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
         wal_bytes = repository.db_path.with_name(repository.db_path.name + "-wal").stat().st_size if repository.db_path.with_name(repository.db_path.name + "-wal").exists() else 0
+        raw_file_count, raw_record_count = connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(record_count), 0) "
+            "FROM ground_unattended_raw_files WHERE site_id=? AND run_id=? AND data_type='syslog'",
+            (SITE_ID, run_id),
+        ).fetchone()
+        event_count = connection.execute(
+            "SELECT COUNT(*) FROM ground_unattended_wmesh_events WHERE site_id=? AND run_id=?",
+            (SITE_ID, run_id),
+        ).fetchone()[0]
     current_prefix = dict(trace.get("sql_by_prefix", {}))
     trace_delta = {
         "sql_statements": int(trace.get("sql_statements", 0)) - trace_start["sql_statements"],
@@ -181,6 +189,8 @@ def _run_load(root: Path, mr_count: int, trace: dict[str, Any]) -> dict[str, Any
             if int(value) - int(trace_start["sql_by_prefix"].get(key, 0))
         },
     }
+    transaction_metrics = repository.transaction_metrics_snapshot() if observe_transactions else {}
+    durations = list(transaction_metrics.pop("transaction_duration_ms", ()))
     return {
         "mr_count": mr_count,
         "ip_count": mr_count * 2,
@@ -194,6 +204,13 @@ def _run_load(root: Path, mr_count: int, trace: dict[str, Any]) -> dict[str, Any
                 "udp_queue_length", "parser_queue_size", "disk_queue_count",
                 "raw_writer_queue_length", "oldest_unprocessed_log_wait_seconds",
                 "udp_receive_rate_per_second", "parser_rate_per_second",
+                "queue_max_depth", "queue_wait_p50_ms", "queue_wait_p95_ms",
+                "raw_file_register_p95_ms", "raw_file_register_retry_count",
+                "raw_file_pending_count", "projection_checkpoint_blocked_count",
+                "projection_failed_count", "projection_completed_count",
+                "projection_failure_types",
+                "projection_started_count", "projection_p95_ms",
+                "projection_checkpoint_advanced_count", "raw_file_missing_count",
             )
         },
         "health": {
@@ -210,9 +227,9 @@ def _run_load(root: Path, mr_count: int, trace: dict[str, Any]) -> dict[str, Any
             )
         },
         "stop": stop,
-        "raw_file_count": len(raw_files),
-        "raw_record_count": sum(int(row.get("record_count") or 0) for row in raw_files),
-        "event_count": len(events),
+        "raw_file_count": raw_file_count,
+        "raw_record_count": raw_record_count,
+        "event_count": event_count,
         "journal_mode": journal_mode,
         "wal_bytes_after_close": wal_bytes,
         "commit_batch_count": len(started_batches),
@@ -224,6 +241,12 @@ def _run_load(root: Path, mr_count: int, trace: dict[str, Any]) -> dict[str, Any
         },
         "lock_errors": len(lock_errors),
         "trace": trace_delta,
+        "transaction_metrics": {
+            **transaction_metrics,
+            "duration_p50_ms": _percentile(durations, 50),
+            "duration_p95_ms": _percentile(durations, 95),
+            "duration_p99_ms": _percentile(durations, 99),
+        } if observe_transactions else None,
     }
 
 
@@ -231,6 +254,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--loads", default="20,50,100")
+    parser.add_argument("--observe-transactions", action="store_true")
     args = parser.parse_args()
     loads = [int(value) for value in args.loads.split(",") if value.strip()]
     if not loads or any(value < 1 for value in loads):
@@ -255,19 +279,26 @@ def main() -> int:
         connection.set_trace_callback(callback)
         return connection
 
-    database_module.connect_sqlite = traced_connect  # type: ignore[assignment]
+    if not args.observe_transactions:
+        database_module.connect_sqlite = traced_connect  # type: ignore[assignment]
     try:
         results = []
         for mr_count in loads:
             load_root = args.output / f"load-{mr_count:03d}"
             load_root.mkdir(parents=True, exist_ok=False)
-            results.append(_run_load(load_root, mr_count, trace))
+            results.append(_run_load(
+                load_root, mr_count, trace,
+                observe_transactions=args.observe_transactions,
+            ))
     finally:
-        database_module.connect_sqlite = original_connect
+        if not args.observe_transactions:
+            database_module.connect_sqlite = original_connect
     output = {
         "harness": "synthetic_real_udp_loopback",
         "loads": results,
         "trace": trace,
+        "transaction_observability": args.observe_transactions,
+        "trace_source": "repository" if args.observe_transactions else "sqlite_connect_callback",
         "note": "No production or real development data opened; 100 MR load carries 200 synthetic IP addresses, each burst includes an exact duplicate; no packet drop is accepted.",
     }
     (args.output / "metrics.json").write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")

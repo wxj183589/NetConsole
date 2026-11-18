@@ -468,10 +468,20 @@ class RawStreamWriter:
         self._metadata_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=256)
         self._metadata_thread: threading.Thread | None = None
         self._metadata_errors: dict[str, str] = {}
+        self._metadata_error_overflow = False
         self._metadata_lock = threading.Lock()
+        self._metadata_ready = threading.Condition(self._metadata_lock)
+        self._metadata_pending: dict[str, int] = {}
+        self.metadata_registered_count = 0
+        self.metadata_failed_count = 0
+        self.metadata_wait_count = 0
+        self.metadata_wait_ms = 0.0
+        self.metadata_retry_count = 0
+        self._metadata_latency_samples: deque[float] = deque(maxlen=5000)
         self._generation = uuid.uuid4().hex[:8]
         self._file_sequence = 0
         self._files: dict[tuple[str, str, str, str], _OpenRawFile] = {}
+        self._files_lock = threading.RLock()
         self.records_written = 0
         self.bytes_written = 0
         self.last_write_duration_ms = 0.0
@@ -485,20 +495,27 @@ class RawStreamWriter:
 
     @property
     def open_file_count(self) -> int:
-        return len(self._files)
+        with self._files_lock:
+            return len(self._files)
 
     @property
     def file_checkpoints(self) -> dict[str, int]:
-        return {
-            current.file_id: current.record_count for current in self._files.values()
-        }
+        with self._files_lock:
+            return {
+                current.file_id: current.record_count for current in self._files.values()
+            }
 
     @property
     def current_file(self) -> str:
-        current = next(reversed(self._files.values()), None)
-        return current.relative_path if current is not None else ""
+        with self._files_lock:
+            current = next(reversed(self._files.values()), None)
+            return current.relative_path if current is not None else ""
 
     def write(self, record: dict[str, Any], received_at: datetime) -> tuple[str, int]:
+        with self._files_lock:
+            return self._write_locked(record, received_at)
+
+    def _write_locked(self, record: dict[str, Any], received_at: datetime) -> tuple[str, int]:
         started = time.perf_counter()
         train_id = _safe_component(str(record.get("train_id") or "_unidentified"))
         role = _safe_component(str(record.get("mr_role") or record.get("source_ip") or "unknown"))
@@ -555,6 +572,10 @@ class RawStreamWriter:
     def flush_through(self, checkpoints: Mapping[str, int]) -> None:
         """Make checkpointed raw lines visible before derived SQLite commits."""
 
+        with self._files_lock:
+            self._flush_through_locked(checkpoints)
+
+    def _flush_through_locked(self, checkpoints: Mapping[str, int]) -> None:
         required = {
             str(file_id): max(0, int(line_number))
             for file_id, line_number in checkpoints.items()
@@ -575,6 +596,10 @@ class RawStreamWriter:
             current.last_flush_at = time.monotonic()
 
     def close(self) -> int:
+        with self._files_lock:
+            return self._close_locked()
+
+    def _close_locked(self) -> int:
         closed = len(self._files)
         ended_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
         for key in tuple(self._files):
@@ -689,7 +714,18 @@ class RawStreamWriter:
             return
         # Backpressure stays on the raw writer; the UDP receiver has its own
         # bounded queue and durable spool. One ordered worker preserves OPEN/CLOSED.
-        self._metadata_queue.put(dict(values))
+        file_id = str(values.get("file_id") or "")
+        with self._metadata_ready:
+            self._metadata_pending[file_id] = self._metadata_pending.get(file_id, 0) + 1
+        try:
+            self._metadata_queue.put(dict(values))
+        except BaseException:
+            with self._metadata_ready:
+                self._metadata_pending[file_id] -= 1
+                if not self._metadata_pending[file_id]:
+                    self._metadata_pending.pop(file_id)
+                self._metadata_ready.notify_all()
+            raise
         with self._metadata_lock:
             if self._metadata_thread is None:
                 self._metadata_thread = threading.Thread(
@@ -708,12 +744,19 @@ class RawStreamWriter:
             try:
                 self._upsert_registry_safely(values)
             finally:
+                file_id = str(values.get("file_id") or "")
+                with self._metadata_ready:
+                    self._metadata_pending[file_id] -= 1
+                    if not self._metadata_pending[file_id]:
+                        self._metadata_pending.pop(file_id)
+                    self._metadata_ready.notify_all()
                 self._metadata_queue.task_done()
 
     def _upsert_registry_safely(
         self, values: dict[str, Any],
     ) -> None:
         file_id = str(values.get("file_id") or "")
+        started = time.perf_counter()
         try:
             for attempt in range(3):
                 try:
@@ -722,16 +765,61 @@ class RawStreamWriter:
                 except Exception as exc:
                     if attempt == 2 or not any(word in str(exc).lower() for word in ("locked", "busy")):
                         raise
+                    with self._metadata_lock:
+                        self.metadata_retry_count += 1
                     time.sleep(0.05 * (attempt + 1))
         except Exception as exc:
             with self._metadata_lock:
+                self.metadata_failed_count += 1
                 if len(self._metadata_errors) >= 256:
                     self._metadata_errors.pop(next(iter(self._metadata_errors)))
+                    self._metadata_error_overflow = True
                 self._metadata_errors[file_id] = f"{exc.__class__.__name__}: {exc}"
         else:
             with self._metadata_lock:
+                self.metadata_registered_count += 1
+                self._metadata_latency_samples.append((time.perf_counter() - started) * 1000)
                 self._metadata_errors.pop(file_id, None)
             self._notify_file_closed(values)
+
+    def wait_registered(self, file_ids: Iterable[str], timeout: float = 1.0) -> bool:
+        """Wait for committed metadata for this projection's raw files only."""
+        required = set(file_ids)
+        if not required:
+            return True
+        started = time.perf_counter()
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._metadata_ready:
+            self.metadata_wait_count += 1
+            while any(self._metadata_pending.get(file_id, 0) for file_id in required):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.metadata_wait_ms += (time.perf_counter() - started) * 1000
+                    return False
+                self._metadata_ready.wait(remaining)
+            self.metadata_wait_ms += (time.perf_counter() - started) * 1000
+            return not self._metadata_error_overflow and not any(
+                file_id in self._metadata_errors for file_id in required
+            )
+
+    @property
+    def metadata_pending_count(self) -> int:
+        with self._metadata_lock:
+            return sum(self._metadata_pending.values())
+
+    def metadata_error_for(self, file_ids: Iterable[str]) -> str:
+        with self._metadata_lock:
+            if self._metadata_error_overflow:
+                return "raw file registry has unresolved failed entries"
+            return next(
+                (self._metadata_errors[file_id] for file_id in file_ids if file_id in self._metadata_errors),
+                "",
+            )
+
+    @property
+    def metadata_latency_p95_ms(self) -> float | None:
+        with self._metadata_lock:
+            return _percentile(tuple(self._metadata_latency_samples), 95)
 
     def _notify_file_closed(self, values: dict[str, Any]) -> None:
         if str(values.get("status") or "") != "CLOSED":
@@ -747,7 +835,7 @@ class RawStreamWriter:
         if thread is not None:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
         with self._metadata_lock:
-            has_errors = bool(self._metadata_errors)
+            has_errors = self._metadata_error_overflow or bool(self._metadata_errors)
         return (thread is None or not thread.is_alive()) and not self._metadata_queue.unfinished_tasks and not has_errors
 
     @property
@@ -973,6 +1061,17 @@ class SyslogUdpReceiver:
         self._global_receive_sequence = 0
         self._source_receive_sequences: dict[tuple[str, int], int] = {}
         self._batch_duration_ms = 0.0
+        self._queue_wait_samples: deque[float] = deque(maxlen=5000)
+        self._queue_max_depth = 0
+        self._projection_wait_raw_count = 0
+        self._projection_started_count = 0
+        self._projection_checkpoint_blocked_count = 0
+        self._projection_checkpoint_advanced_count = 0
+        self._projection_failed_count = 0
+        self._raw_file_missing_count = 0
+        self._projection_failure_types: dict[str, int] = {}
+        self._projection_completed_count = 0
+        self._projection_duration_samples: deque[float] = deque(maxlen=5000)
         self._reported_dropped_count = 0
         self._reported_pressure = False
         self._reported_parser_pressure = False
@@ -1401,6 +1500,8 @@ class SyslogUdpReceiver:
         receive_to_raw = tuple(self._stage_receive_to_raw_samples)
         raw_to_parse = tuple(self._stage_raw_to_parse_samples)
         parse_to_commit = tuple(self._stage_parse_to_commit_samples)
+        queue_wait = tuple(self._queue_wait_samples)
+        projection_duration = tuple(self._projection_duration_samples)
         return {
             "udp_running": self.running,
             "udp_listen_address": self._listen_address,
@@ -1420,10 +1521,29 @@ class SyslogUdpReceiver:
             "raw_last_write_duration_ms": writer.last_write_duration_ms if writer else 0.0,
             "database_pending_count": len(self._event_batch),
             "database_last_batch_duration_ms": self._batch_duration_ms,
+            "projection_wait_raw_count": self._projection_wait_raw_count,
+            "projection_started_count": self._projection_started_count,
+            "projection_checkpoint_blocked_count": self._projection_checkpoint_blocked_count,
+            "projection_checkpoint_advanced_count": self._projection_checkpoint_advanced_count,
+            "projection_failed_count": self._projection_failed_count,
+            "projection_failure_types": dict(self._projection_failure_types),
+            "projection_completed_count": self._projection_completed_count,
+            "projection_p95_ms": _percentile(projection_duration, 95),
+            "raw_file_missing_count": self._raw_file_missing_count,
+            "raw_file_registered_count": writer.metadata_registered_count if writer else 0,
+            "raw_file_register_failed_count": writer.metadata_failed_count if writer else 0,
+            "raw_file_pending_count": writer.metadata_pending_count if writer else 0,
+            "raw_file_register_wait_ms": writer.metadata_wait_ms if writer else 0.0,
+            "raw_file_register_retry_count": writer.metadata_retry_count if writer else 0,
+            "raw_file_register_p95_ms": writer.metadata_latency_p95_ms if writer else None,
+            "queue_max_depth": self._queue_max_depth,
+            "queue_wait_p50_ms": _percentile(queue_wait, 50),
+            "queue_wait_p95_ms": _percentile(queue_wait, 95),
             "open_file_count": writer.open_file_count if writer else 0,
             "last_error": self._projection_error or self._last_error,
             "raw_file": writer.current_file if writer else "",
             "received": self._received_count,
+            "queue_accepted_count": self._received_count - self._dropped_count,
             "written": self._written_count,
             "parsed": self._parsed_count,
             "parse_success_count": self._parse_success_count,
@@ -1654,6 +1774,7 @@ class SyslogUdpReceiver:
             self._track_pending(envelope)
             try:
                 self._queue.put_nowait(envelope)
+                self._queue_max_depth = max(self._queue_max_depth, self._queue.qsize())
             except queue.Full:
                 self._spool_envelope(envelope)
 
@@ -1739,6 +1860,12 @@ class SyslogUdpReceiver:
             if envelope is None:
                 continue
             try:
+                queue_wait_ms = _stage_duration_ms(
+                    envelope.receive_time,
+                    datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                )
+                if queue_wait_ms is not None:
+                    self._queue_wait_samples.append(queue_wait_ms)
                 record, receive_time = self._build_raw_record(envelope)
                 if self._writer is None:
                     self._forget_pending(envelope)
@@ -2469,6 +2596,7 @@ class SyslogUdpReceiver:
             for device_uuid, state in self._position_batch.items()
         }
         checkpoints = dict(self._raw_checkpoints)
+        self._projection_started_count += 1
         position_commit_time = datetime.now().astimezone().isoformat(timespec="milliseconds")
         pending_position_latencies: list[float] = []
         pending_receive_to_raw: list[float] = []
@@ -2547,6 +2675,15 @@ class SyslogUdpReceiver:
         try:
             if self._writer is not None and self._writer.open_file_count:
                 self._writer.flush_through(checkpoints)
+            if self._writer is not None and checkpoints:
+                self._projection_wait_raw_count += 1
+                if not self._writer.wait_registered(checkpoints, timeout=1.0):
+                    self._projection_checkpoint_blocked_count += 1
+                    self._projection_error = (
+                        self._writer.metadata_error_for(checkpoints)
+                        or "raw file registration pending"
+                    )
+                    return False
             self.repository.commit_wmesh_projection_batch(
                 events,
                 timeline,
@@ -2555,8 +2692,15 @@ class SyslogUdpReceiver:
                 complete_closed_files=True,
             )
         except Exception as exc:
+            self._projection_failed_count += 1
+            name = exc.__class__.__name__
+            self._projection_failure_types[name] = self._projection_failure_types.get(name, 0) + 1
+            if isinstance(exc, ValueError) and str(exc) == "ground unattended raw file not found":
+                self._raw_file_missing_count += 1
             self._projection_error = f"{exc.__class__.__name__}: {exc}"
             return False
+        self._projection_completed_count += 1
+        self._projection_checkpoint_advanced_count += len(checkpoints)
         self._projection_error = ""
         del self._event_batch[: len(events)]
         del self._timeline_batch[: len(timeline)]
@@ -2571,6 +2715,7 @@ class SyslogUdpReceiver:
             if self._raw_checkpoints.get(file_id, 0) <= line_number:
                 self._raw_checkpoints.pop(file_id, None)
         self._batch_duration_ms = (time.perf_counter() - started) * 1000
+        self._projection_duration_samples.append(self._batch_duration_ms)
         self._last_batch_at = time.monotonic()
         self._position_latency_samples.extend(pending_position_latencies)
         self._stage_receive_to_raw_samples.extend(pending_receive_to_raw)

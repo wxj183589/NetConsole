@@ -120,6 +120,171 @@ def test_projection_error_recovers_after_deferred_raw_registration(tmp_path: Pat
     assert receiver.health_snapshot()["last_error"] == ""
 
 
+def test_projection_waits_for_committed_raw_registration(tmp_path: Path, monkeypatch) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    repository.set_transaction_observability(True)
+    receiver = SyslogUdpReceiver(repository=repository, site_id="site-a")
+    writer = RawStreamWriter(
+        root=tmp_path / "raw", repository=repository, site_id="site-a",
+        run_id="delayed", run_date="2026-11-19", data_type="syslog",
+        defer_registry=True,
+    )
+    receiver._writer = writer
+    entered, release = threading.Event(), threading.Event()
+    original = repository.upsert_raw_file
+
+    def delayed(values):
+        if values["status"] == "OPEN":
+            entered.set()
+            assert release.wait(5)
+        original(values)
+
+    monkeypatch.setattr(repository, "upsert_raw_file", delayed)
+    file_id, line = writer.write({"raw_text": "sample"}, datetime.now(timezone.utc))
+    receiver._raw_checkpoints = {file_id: line}
+    assert entered.wait(5)
+    try:
+        assert not receiver._flush_events()
+        assert repository.transaction_metrics_snapshot().get("transaction_rollback", 0) == 0
+        assert receiver._raw_checkpoints == {file_id: line}
+        assert receiver.health_snapshot()["projection_checkpoint_blocked_count"] == 1
+    finally:
+        release.set()
+    assert writer.flush_metadata(5)
+    assert receiver._flush_events()
+    assert repository.get_raw_file(file_id)["parse_status"] == "STREAMING@1"
+    assert repository.transaction_metrics_snapshot().get("transaction_rollback", 0) == 0
+    writer.close()
+    assert writer.flush_metadata(5)
+
+
+def test_registration_failure_blocks_checkpoint_without_rollback(tmp_path: Path, monkeypatch) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    repository.set_transaction_observability(True)
+    receiver = SyslogUdpReceiver(repository=repository, site_id="site-a")
+    writer = RawStreamWriter(
+        root=tmp_path / "raw", repository=repository, site_id="site-a",
+        run_id="failed", run_date="2026-11-19", data_type="syslog",
+        defer_registry=True,
+    )
+    receiver._writer = writer
+    original = repository.upsert_raw_file
+
+    def failed(values):
+        if values["status"] == "OPEN":
+            raise sqlite3.OperationalError("registry unavailable")
+        original(values)
+
+    monkeypatch.setattr(repository, "upsert_raw_file", failed)
+    file_id, line = writer.write({"raw_text": "sample"}, datetime.now(timezone.utc))
+    receiver._raw_checkpoints = {file_id: line}
+    assert not writer.flush_metadata(5)
+    assert not receiver._flush_events()
+    assert receiver._raw_checkpoints == {file_id: line}
+    assert repository.get_raw_file(file_id) is None
+    assert repository.transaction_metrics_snapshot().get("transaction_rollback", 0) == 0
+    assert "registry unavailable" in receiver.health_snapshot()["last_error"]
+    monkeypatch.setattr(repository, "upsert_raw_file", original)
+    writer.close()
+    assert writer.flush_metadata(5)
+    assert receiver._flush_events()
+    assert repository.get_raw_file(file_id)["parse_status"] == "PARSED"
+
+
+def test_repeated_checkpoint_skips_unchanged_update(tmp_path: Path) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    repository.upsert_raw_file({
+        "file_id": "raw-1", "run_id": "run-1", "data_type": "syslog",
+        "relative_path": "raw.ndjson", "status": "OPEN", "record_count": 1,
+        "parse_status": "STREAMING",
+    })
+    repository.set_transaction_observability(True)
+    repository.commit_wmesh_projection_batch([], [], raw_checkpoints={"raw-1": 1})
+    first = repository.transaction_metrics_snapshot()
+    repository.commit_wmesh_projection_batch([], [], raw_checkpoints={"raw-1": 1})
+    second = repository.transaction_metrics_snapshot()
+    assert second["update_count"] == first["update_count"]
+    assert second["no_op_update_count"] == 1
+    assert repository.get_raw_file("raw-1")["parse_status"] == "STREAMING@1"
+
+
+def test_transaction_observability_records_rollback_and_recovery(tmp_path: Path) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    repository.set_transaction_observability(True)
+    with pytest.raises(ValueError, match="raw file not found"):
+        repository.commit_wmesh_projection_batch([], [], raw_checkpoints={"raw-1": 1})
+    failed = repository.transaction_metrics_snapshot()
+    assert failed["transaction_begin"] == 1
+    assert failed["transaction_rollback"] == 1
+    assert failed["transaction_failure"] == 1
+    assert failed["transaction_commit"] == 0
+    repository.upsert_raw_file({
+        "file_id": "raw-1", "run_id": "run-1", "data_type": "syslog",
+        "relative_path": "raw.ndjson", "status": "OPEN", "record_count": 1,
+    })
+    repository.commit_wmesh_projection_batch([], [], raw_checkpoints={"raw-1": 1})
+    recovered = repository.transaction_metrics_snapshot()
+    assert recovered["transaction_commit"] == 2
+    assert recovered["transaction_rollback"] == 1
+    assert recovered["connection_count"] == 3
+
+
+def test_registry_failure_overflow_blocks_old_checkpoint(tmp_path: Path, monkeypatch) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    writer = RawStreamWriter(
+        root=tmp_path / "raw", repository=repository, site_id="site-a",
+        run_id="overflow", run_date="2026-11-19", data_type="syslog",
+        defer_registry=True,
+    )
+
+    def failed(_values):
+        raise sqlite3.OperationalError("registry unavailable")
+
+    monkeypatch.setattr(repository, "upsert_raw_file", failed)
+    for index in range(257):
+        writer._upsert_registry_safely({"file_id": f"file-{index}"})
+    assert not writer.wait_registered(["file-0"], timeout=0)
+    assert "unresolved failed entries" in writer.metadata_error_for(["file-0"])
+    assert not writer.flush_metadata(timeout=0)
+
+
+def test_raw_flush_serializes_with_file_rotation(tmp_path: Path, monkeypatch) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    writer = RawStreamWriter(
+        root=tmp_path / "raw", repository=repository, site_id="site-a",
+        run_id="rotation", run_date="2026-11-19", data_type="syslog",
+        defer_registry=True,
+    )
+    now = datetime.now(timezone.utc)
+    file_id, line = writer.write({"train_id": "first", "raw_text": "one"}, now)
+    entered, release, rotated = threading.Event(), threading.Event(), threading.Event()
+    original = writer._flush_one
+
+    def delayed(current):
+        entered.set()
+        assert release.wait(5)
+        original(current)
+
+    monkeypatch.setattr(writer, "_flush_one", delayed)
+    flush = threading.Thread(target=writer.flush_through, args=({file_id: line},))
+    rotate = threading.Thread(target=lambda: (
+        writer.write({"train_id": "second", "raw_text": "two"}, now), rotated.set()
+    ))
+    try:
+        flush.start()
+        assert entered.wait(5)
+        rotate.start()
+        assert not rotated.wait(0.05)
+    finally:
+        release.set()
+        flush.join(5)
+        rotate.join(5)
+    assert not flush.is_alive() and not rotate.is_alive()
+    assert rotated.is_set()
+    writer.close()
+    assert writer.flush_metadata(5)
+
+
 def test_failed_raw_fsync_retains_open_owner_for_retry(tmp_path: Path, monkeypatch) -> None:
     repository = GroundUnattendedRepository(tmp_path / "ground" / "index.sqlite", site_id="site-a")
     writer = RawStreamWriter(root=tmp_path / "ground" / "raw", repository=repository, site_id="site-a", run_id="disk", run_date="2026-11-07", data_type="syslog")
