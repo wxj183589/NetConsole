@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -176,3 +178,132 @@ def test_history_sort_is_global_before_pagination_and_matches_export(indexed):
         actual = [service.query(data_type="timeline", sort_order=direction, page=page, page_size=1)["items"][0] for page in range(1, 5)]
         assert [row["record_id"] for row in actual] == [row["record_id"] for row in expected]
         assert actual[0]["event_type"] == ("sort-0" if direction == "asc" else "sort-1")
+
+
+@pytest.mark.parametrize("sort_order", ["asc", "desc"])
+def test_cursor_pagination_matches_global_export_for_mixed_sources(indexed, sort_order):
+    _path, service = indexed
+    expected = list(service.iter_export_rows(sort_order=sort_order))
+    actual = []
+    cursor = ""
+    while True:
+        page = service.query(sort_order=sort_order, page_size=2, cursor=cursor)
+        actual.extend(page["items"])
+        if not page["has_more"]:
+            break
+        assert page["next_cursor"]
+        cursor = page["next_cursor"]
+    assert [row["record_id"] for row in actual] == [row["record_id"] for row in expected]
+    assert len(actual) == len({row["record_id"] for row in actual})
+
+
+def test_cursor_is_bound_to_site_and_filters(indexed):
+    path, service = indexed
+    first = service.query(page_size=1)
+    cursor = first["next_cursor"]
+    assert cursor
+
+    with pytest.raises(GroundHistoryQueryError) as wrong_filter:
+        service.query(data_type="run", page_size=1, cursor=cursor)
+    assert wrong_filter.value.code == "GROUND_HISTORY_CURSOR_INVALID"
+
+    other_site = GroundHistoryQueryService(path, site_id="other")
+    with pytest.raises(GroundHistoryQueryError) as wrong_site:
+        other_site.query(data_type="timeline", page_size=1, cursor=cursor)
+    assert wrong_site.value.code == "GROUND_HISTORY_CURSOR_INVALID"
+
+    with pytest.raises(GroundHistoryQueryError) as malformed:
+        service.query(page_size=1, cursor="not-a-cursor")
+    assert malformed.value.code == "GROUND_HISTORY_CURSOR_INVALID"
+
+
+def test_cursor_anchor_survives_delete_and_excludes_newer_insert(indexed):
+    path, service = indexed
+    with sqlite3.connect(path) as conn:
+        insert(conn, "events", site_id="demo", run_id="run-1", ts="2026-11-07T11:00:00+08:00", event_type="anchor-newer")
+        insert(conn, "events", site_id="demo", run_id="run-1", ts="2026-11-07T09:00:00+08:00", event_type="anchor-older")
+    first = service.query(data_type="timeline", page_size=1, sort_order="desc")
+    cursor = first["next_cursor"]
+    anchor_id = first["items"][0]["record_id"]
+    anchor_rowid = int(anchor_id.rsplit(":", 1)[-1])
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM ground_unattended_events WHERE rowid=?", (anchor_rowid,))
+        insert(conn, "events", site_id="demo", run_id="run-1", ts="2026-11-07T12:00:00+08:00", event_type="newer")
+        insert(conn, "events", site_id="demo", run_id="run-1", ts="2026-11-07T09:00:00+08:00", event_type="older")
+    pages = []
+    while True:
+        page = service.query(data_type="timeline", page_size=1, sort_order="desc", cursor=cursor)
+        pages.extend(page["items"])
+        if not page["has_more"]:
+            break
+        cursor = page["next_cursor"]
+    ids = [row["record_id"] for row in pages]
+    assert anchor_id not in ids
+    assert any(row["details"].get("event_type") == "older" for row in pages)
+    assert all(row["details"].get("event_type") != "newer" for row in pages)
+
+
+@pytest.mark.parametrize("direction", ["asc", "desc"])
+def test_cursor_empty_timestamp_matches_export_without_duplicates(indexed, direction):
+    path, service = indexed
+    with sqlite3.connect(path) as conn:
+        for number in range(2):
+            insert(
+                conn, "raw_files", site_id="demo", run_id="run-1",
+                file_id=f"raw-empty-{number}", data_type="syslog",
+                relative_path=f"syslog/empty-{number}.ndjson", start_time="",
+            )
+        insert(
+            conn, "events", site_id="demo", run_id="run-1",
+            ts="2026-11-07T09:00:00+08:00", event_type="earlier-event",
+        )
+        insert(
+            conn, "events", site_id="other", run_id="other",
+            ts="", event_type="other-site-empty",
+        )
+
+    expected = list(service.iter_export_rows(sort_order=direction))
+    expected_ids = [row["record_id"] for row in expected]
+    assert len(expected_ids) == 13
+    assert len({row["ts"] for row in expected}) >= 3
+    empty_ids = {f"ground_unattended_raw_files:raw-empty-{number}" for number in range(2)}
+    assert empty_ids.issubset(expected_ids)
+
+    actual_ids: list[str] = []
+    cursor = ""
+    last_page = None
+    for _ in range(len(expected_ids) + 1):
+        page = service.query(sort_order=direction, page_size=1, cursor=cursor)
+        assert len(page["items"]) == 1
+        actual_ids.append(page["items"][0]["record_id"])
+        last_page = page
+        if not page["has_more"]:
+            break
+        assert page["next_cursor"] and page["next_cursor"] != cursor
+        cursor = page["next_cursor"]
+
+    assert last_page is not None and last_page["has_more"] is False
+    assert last_page["next_cursor"] == ""
+    assert len(actual_ids) == len(expected_ids)
+    assert len(set(actual_ids)) == len(actual_ids)
+    assert actual_ids == expected_ids
+    assert empty_ids.issubset(actual_ids)
+
+
+def test_previous_cursor_version_is_rejected(indexed):
+    _path, service = indexed
+    current = service.query(page_size=1)["next_cursor"]
+    _version, encoded, _digest = current.split(".")
+    payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    payload["v"] = 1
+    payload["anchor"].pop("ts_is_null", None)
+    old_raw = json.dumps(
+        payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+    ).encode("utf-8")
+    old_cursor = (
+        "v1." + base64.urlsafe_b64encode(old_raw).decode("ascii").rstrip("=")
+        + "." + hashlib.sha256(old_raw).hexdigest()[:16]
+    )
+    with pytest.raises(GroundHistoryQueryError) as rejected:
+        service.query(page_size=1, cursor=old_cursor)
+    assert rejected.value.code == "GROUND_HISTORY_CURSOR_INVALID"

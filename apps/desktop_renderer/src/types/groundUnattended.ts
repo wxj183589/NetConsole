@@ -243,12 +243,12 @@ export interface GroundHistoryRecord {
   mr_role: string; status: string; summary: string; event_type: string; details: Record<string, unknown>
 }
 export interface GroundHistoryPage {
-  items: GroundHistoryRecord[]; total: number; page: number; page_size: number; sources: Record<string, string>
+  items: GroundHistoryRecord[]; total: number; page: number; page_size: number; sources: Record<string, string>; has_more: boolean; next_cursor: string
 }
 export interface GroundHistoryFilters {
   sort_order?: 'asc' | 'desc'
   data_type?: string; run_id?: string; train_id?: string; mr_id?: string; mr_role?: string
-  event_type?: string; start_at?: string; end_at?: string
+  event_type?: string; start_at?: string; end_at?: string; cursor?: string
 }
 export interface GroundOperation {
   operation_id: string; site_id: string; run_id: string; operation_type: 'STOP' | 'STOP_AND_ARCHIVE'

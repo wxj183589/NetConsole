@@ -418,7 +418,7 @@ def test_ground_history_forwards_filters_and_enforces_page_bounds(tmp_path) -> N
     query = {
         "data_type": "timeline", "run_id": "run-1", "train_id": "train-1", "mr_id": "mr-1", "mr_role": "CT",
         "event_type": "AP_OFFLINE", "start_at": "2026-11-01T00:00:00+08:00", "end_at": "2026-11-07T00:00:00Z",
-        "page": 6, "page_size": 100,
+        "page": 6, "page_size": 100, "cursor": "cursor-token",
     }
     with TestClient(app) as client:
         response = client.get("/api/rail-transit/ground-unattended/history", params=query)

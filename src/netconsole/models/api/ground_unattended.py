@@ -1304,6 +1304,8 @@ class GroundHistoryPageDTO(ApiModel):
     page: int = 1
     page_size: int = 100
     sources: dict[str, str] = Field(default_factory=dict)
+    has_more: bool = False
+    next_cursor: str = ""
 
 
 class GroundOperationDTO(ApiModel):
