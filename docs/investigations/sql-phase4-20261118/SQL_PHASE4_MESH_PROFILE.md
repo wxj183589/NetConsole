@@ -11,3 +11,5 @@ Synthetic profile (`sql_phase3_profile_20261118.py`, 30 iterations) against isol
 The current public Mesh path already removes the primary peer identity N+1. The detail path was inspected for a further safe change, but its separate history/current/event reads are bounded request components and changing them would duplicate existing Phase 3 preload logic without a demonstrated contract benefit. No Mesh production code was changed in Phase 4.
 
 Validation: `tests/test_ac_mesh_link_query_service.py` passed as part of the 145-test consumer suite. Site isolation, freshness, exact identity matching and pagination remain covered.
+
+Final gate refresh: PR #122 HEAD `8c1aed0184` was reviewed by Codex with no major findings. No Mesh production code was added after this profile.

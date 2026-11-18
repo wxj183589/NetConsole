@@ -22,3 +22,5 @@ On 620 synthetic timeline rows, page size 100:
 - repeated warm wall samples: 1.93–2.82 ms after the first read (5.72 ms cold).
 
 The regression test uses `sqlite3.Connection.set_trace_callback`, asserts the batch shape and checks that only the requested site is returned.
+
+Final gate refresh: the batch implementation is included in PR #122 HEAD `8c1aed0184`; no schema or API change was introduced.

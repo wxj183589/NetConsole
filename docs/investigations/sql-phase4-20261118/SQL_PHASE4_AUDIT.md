@@ -28,3 +28,10 @@
 - Baseline synthetic profile: `temp/analysis/sql-phase4-profile-20261118-a.json` (kept outside Git).
 - Heartbeat synthetic profile: `temp/analysis/sql-phase4-heartbeat-profile-20261118-a.json` (kept outside Git).
 - Post-change trace regression is in `tests/test_ground_unattended_history_query.py`.
+
+## Final gate refresh (2026-11-18)
+
+- PR #122 latest HEAD: `8c1aed0184981b2f65763af1f057c835306bb38f`.
+- CI Run `44255040507`: six checks PASS; Python Required Check remained IN_PROGRESS at this inspection.
+- Latest Codex Review covered `8c1aed0184` and reported no major issues.
+- Current gate status: `PARTIAL_SQL_PHASE4` pending Python completion.

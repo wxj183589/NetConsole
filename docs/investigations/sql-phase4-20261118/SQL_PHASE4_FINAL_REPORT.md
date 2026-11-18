@@ -30,7 +30,11 @@ Phase 4 completed the evidence-based history archive read optimization. Mesh-Lin
 
 ## Review boundary
 
-- Latest HEAD: `e80fb3ce2d88d0b29b59975eb1f4cb853b6ca8c3` (history optimization commit: `05d2b1ddb1db303a093c8b58455362169ac11df4`).
+- Latest code and PR HEAD at this refresh: `8c1aed0184981b2f65763af1f057c835306bb38f3` (report refresh commit follows this evidence update).
+- History optimization commit: `05d2b1ddb1db303a093c8b58455362169ac11df4`.
 - PR: `#122` (`https://github.com/wxj183589/NetConsole/pull/122`), target `main`, state `OPEN`.
-- At report update time, Required Checks and Codex Review were `IN_PROGRESS`; mergeability is therefore not yet a gate result.
+- CI Run: `44255040507`; six Required Checks were successful and Python Regression was `IN_PROGRESS` at the inspection time.
+- Codex Review covered `8c1aed0184` and reported no major findings.
+- The one local warning is a third-party `StarletteDeprecationWarning`; no resource leak was found.
+- The report refresh itself creates a new documentation commit; that commit must receive its own CI and latest HEAD review before merge readiness can be claimed.
 - Main was not modified and the PR was not merged.

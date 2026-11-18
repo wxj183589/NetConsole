@@ -13,3 +13,5 @@ SQL remains approximately constant while inventory rows grow. Heartbeat target/s
 No cache was introduced: an indefinite cache would risk stale dynamic inventory, freshness and site isolation. No Heartbeat production code was changed in Phase 4.
 
 Validation: Heartbeat state, resident lifecycle, inventory and Ground API tests passed in the 145-test consumer suite.
+
+Final gate refresh: PR #122 HEAD `8c1aed0184` retains the same bounded read design. No Heartbeat production code was added after this profile.
