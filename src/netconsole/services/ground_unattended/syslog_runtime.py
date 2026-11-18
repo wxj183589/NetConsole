@@ -798,9 +798,68 @@ class RawStreamWriter:
                     return False
                 self._metadata_ready.wait(remaining)
             self.metadata_wait_ms += (time.perf_counter() - started) * 1000
-            return not self._metadata_error_overflow and not any(
-                file_id in self._metadata_errors for file_id in required
-            )
+            if any(file_id in self._metadata_errors for file_id in required):
+                return False
+            overflow = self._metadata_error_overflow
+        return not overflow or self._reconcile_metadata_overflow()
+
+    def _reconcile_metadata_overflow(self) -> bool:
+        """Read-only, exceptional check before lifting a bounded error-map overflow."""
+        with self._files_lock:
+            with self._metadata_lock:
+                if self._metadata_pending or self._metadata_errors:
+                    return False
+                if not self._metadata_error_overflow:
+                    return True
+            raw_root = self.root / self.directory_name
+            checked = 0
+            open_file_ids = {current.file_id for current in self._files.values()}
+            if raw_root.exists():
+                try:
+                    root_attrs = getattr(raw_root.lstat(), "st_file_attributes", 0)
+                    if raw_root.is_symlink() or root_attrs & 0x400:
+                        return False
+                    for base, dirs, files in os.walk(raw_root, followlinks=False):
+                        for name in tuple(dirs):
+                            child = Path(base) / name
+                            attrs = getattr(child.lstat(), "st_file_attributes", 0)
+                            if child.is_symlink() or attrs & 0x400:
+                                return False
+                            if name == "_spool":
+                                dirs.remove(name)
+                        for name in files:
+                            if not name.endswith(".ndjson"):
+                                continue
+                            path = Path(base) / name
+                            parts = path.stem.split("_", 2)
+                            if len(parts) < 2 or parts[1] != self._generation:
+                                continue
+                            attrs = getattr(path.lstat(), "st_file_attributes", 0)
+                            if path.is_symlink() or attrs & 0x400:
+                                return False
+                            relative = path.relative_to(self.repository.db_path.parent).as_posix()
+                            file_id = f"raw_{hashlib.sha256(relative.encode('utf-8')).hexdigest()[:32]}"
+                            row = self.repository.get_raw_file(file_id)
+                            if (
+                                row is None
+                                or str(row.get("relative_path") or "") != relative
+                                or str(row.get("run_id") or "") != self.run_id
+                                or (
+                                    file_id not in open_file_ids
+                                    and str(row.get("status") or "").upper() == "OPEN"
+                                )
+                            ):
+                                return False
+                            checked += 1
+                except (OSError, ValueError):
+                    return False
+            if checked < self._file_sequence:
+                return False
+            with self._metadata_lock:
+                if self._metadata_pending or self._metadata_errors:
+                    return False
+                self._metadata_error_overflow = False
+            return True
 
     @property
     def metadata_pending_count(self) -> int:
@@ -834,9 +893,13 @@ class RawStreamWriter:
             thread = self._metadata_thread
         if thread is not None:
             thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if (thread is not None and thread.is_alive()) or self._metadata_queue.unfinished_tasks:
+            return False
         with self._metadata_lock:
-            has_errors = self._metadata_error_overflow or bool(self._metadata_errors)
-        return (thread is None or not thread.is_alive()) and not self._metadata_queue.unfinished_tasks and not has_errors
+            if self._metadata_errors:
+                return False
+            overflow = self._metadata_error_overflow
+        return not overflow or self._reconcile_metadata_overflow()
 
     @property
     def metadata_error(self) -> str:

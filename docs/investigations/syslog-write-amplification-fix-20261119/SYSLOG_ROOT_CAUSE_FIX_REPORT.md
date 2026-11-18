@@ -10,4 +10,6 @@ The writer now tracks pending metadata operations per file. A projection flush f
 
 The delayed-registration and failed-registration tests assert that no rollback occurs and the checkpoint remains pending. The forced missing-file test asserts one real rollback and successful retry after registration. The concurrent rotation test asserts that a checkpoint flush cannot race file-table mutation. Full isolated load results are in `SYSLOG_BENCHMARK_COMPARISON.md`.
 
+Review follow-up: after more than 256 distinct registration failures, the bounded error map can evict old entries. The overflow fence now lifts only after the queue and known errors clear and an exceptional read-only scan confirms every file from this writer generation is indexed to the same Site/Run/path; a physically closed file must no longer be marked OPEN. This avoids both repeated missing-file rollbacks and permanent blockage after all registrations recover. The normal per-batch path does not add one query per raw record.
+
 No schema, index, API, raw format or site-binding change was made.

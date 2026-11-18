@@ -4,7 +4,7 @@ Branch: `codex-A/syslog-write-amplification-fix-20261119`, based on `github/main
 
 | Gate | Result |
 | --- | --- |
-| Eight Ground Raw/Syslog test modules | 103 passed, 1 third-party StarletteDeprecationWarning |
+| Eight Ground Raw/Syslog test modules | 104 passed, 1 third-party StarletteDeprecationWarning |
 | Added delayed/failed metadata, concurrent rotation and no-op checkpoint tests | PASS |
 | 50/100/200/400 MR loopback, five repeats each | PASS; metrics in benchmark report |
 | Direct SQL architecture audit | PASS, 0 findings, 0 waived |

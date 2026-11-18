@@ -237,15 +237,62 @@ def test_registry_failure_overflow_blocks_old_checkpoint(tmp_path: Path, monkeyp
         defer_registry=True,
     )
 
+    original = repository.upsert_raw_file
+
     def failed(_values):
         raise sqlite3.OperationalError("registry unavailable")
 
     monkeypatch.setattr(repository, "upsert_raw_file", failed)
-    for index in range(257):
-        writer._upsert_registry_safely({"file_id": f"file-{index}"})
-    assert not writer.wait_registered(["file-0"], timeout=0)
-    assert "unresolved failed entries" in writer.metadata_error_for(["file-0"])
+    file_id, _ = writer.write({"raw_text": "preserve"}, datetime.now(timezone.utc))
+    assert not writer.flush_metadata(5)
+    for index in range(256):
+        writer._upsert_registry_safely({"file_id": f"dummy-{index}"})
+    assert not writer.wait_registered([file_id], timeout=0)
+    assert "unresolved failed entries" in writer.metadata_error_for([file_id])
     assert not writer.flush_metadata(timeout=0)
+    monkeypatch.setattr(repository, "upsert_raw_file", original)
+    for index in range(256):
+        writer._upsert_registry_safely({
+            "file_id": f"dummy-{index}", "run_id": "overflow", "data_type": "syslog",
+            "relative_path": f"dummy-{index}.ndjson", "status": "OPEN",
+        })
+    assert not writer.wait_registered([file_id], timeout=0)
+    writer.close()
+    assert writer.flush_metadata(5)
+    assert writer.wait_registered([file_id], timeout=0)
+    assert repository.get_raw_file(file_id) is not None
+
+
+def test_registry_overflow_requires_closed_file_status(tmp_path: Path, monkeypatch) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
+    writer = RawStreamWriter(
+        root=tmp_path / "raw", repository=repository, site_id="site-a",
+        run_id="overflow", run_date="2026-11-19", data_type="syslog",
+        defer_registry=True,
+    )
+    file_id, _ = writer.write({"raw_text": "preserve"}, datetime.now(timezone.utc))
+    assert writer.flush_metadata(5)
+    original = repository.upsert_raw_file
+
+    def failed(_values):
+        raise sqlite3.OperationalError("registry unavailable")
+
+    monkeypatch.setattr(repository, "upsert_raw_file", failed)
+    writer.close()
+    assert not writer.flush_metadata(5)
+    for index in range(256):
+        writer._upsert_registry_safely({"file_id": f"dummy-{index}"})
+    monkeypatch.setattr(repository, "upsert_raw_file", original)
+    for index in range(256):
+        writer._upsert_registry_safely({
+            "file_id": f"dummy-{index}", "run_id": "overflow", "data_type": "syslog",
+            "relative_path": f"dummy-{index}.ndjson", "status": "OPEN",
+        })
+    assert repository.get_raw_file(file_id)["status"] == "OPEN"
+    assert not writer.wait_registered([file_id], timeout=0)
+    original({**repository.get_raw_file(file_id), "status": "CLOSED"})
+    assert writer.flush_metadata(5)
+    assert writer.wait_registered([file_id], timeout=0)
 
 
 def test_raw_flush_serializes_with_file_rotation(tmp_path: Path, monkeypatch) -> None:
