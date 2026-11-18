@@ -176,3 +176,66 @@ def test_history_sort_is_global_before_pagination_and_matches_export(indexed):
         actual = [service.query(data_type="timeline", sort_order=direction, page=page, page_size=1)["items"][0] for page in range(1, 5)]
         assert [row["record_id"] for row in actual] == [row["record_id"] for row in expected]
         assert actual[0]["event_type"] == ("sort-0" if direction == "asc" else "sort-1")
+
+
+@pytest.mark.parametrize("sort_order", ["asc", "desc"])
+def test_cursor_pagination_matches_global_export_for_mixed_sources(indexed, sort_order):
+    _path, service = indexed
+    expected = list(service.iter_export_rows(sort_order=sort_order))
+    actual = []
+    cursor = ""
+    while True:
+        page = service.query(sort_order=sort_order, page_size=2, cursor=cursor)
+        actual.extend(page["items"])
+        if not page["has_more"]:
+            break
+        assert page["next_cursor"]
+        cursor = page["next_cursor"]
+    assert [row["record_id"] for row in actual] == [row["record_id"] for row in expected]
+    assert len(actual) == len({row["record_id"] for row in actual})
+
+
+def test_cursor_is_bound_to_site_and_filters(indexed):
+    path, service = indexed
+    first = service.query(page_size=1)
+    cursor = first["next_cursor"]
+    assert cursor
+
+    with pytest.raises(GroundHistoryQueryError) as wrong_filter:
+        service.query(data_type="run", page_size=1, cursor=cursor)
+    assert wrong_filter.value.code == "GROUND_HISTORY_CURSOR_INVALID"
+
+    other_site = GroundHistoryQueryService(path, site_id="other")
+    with pytest.raises(GroundHistoryQueryError) as wrong_site:
+        other_site.query(data_type="timeline", page_size=1, cursor=cursor)
+    assert wrong_site.value.code == "GROUND_HISTORY_CURSOR_INVALID"
+
+    with pytest.raises(GroundHistoryQueryError) as malformed:
+        service.query(page_size=1, cursor="not-a-cursor")
+    assert malformed.value.code == "GROUND_HISTORY_CURSOR_INVALID"
+
+
+def test_cursor_anchor_survives_delete_and_excludes_newer_insert(indexed):
+    path, service = indexed
+    with sqlite3.connect(path) as conn:
+        insert(conn, "events", site_id="demo", run_id="run-1", ts="2026-11-07T11:00:00+08:00", event_type="anchor-newer")
+        insert(conn, "events", site_id="demo", run_id="run-1", ts="2026-11-07T09:00:00+08:00", event_type="anchor-older")
+    first = service.query(data_type="timeline", page_size=1, sort_order="desc")
+    cursor = first["next_cursor"]
+    anchor_id = first["items"][0]["record_id"]
+    anchor_rowid = int(anchor_id.rsplit(":", 1)[-1])
+    with sqlite3.connect(path) as conn:
+        conn.execute("DELETE FROM ground_unattended_events WHERE rowid=?", (anchor_rowid,))
+        insert(conn, "events", site_id="demo", run_id="run-1", ts="2026-11-07T12:00:00+08:00", event_type="newer")
+        insert(conn, "events", site_id="demo", run_id="run-1", ts="2026-11-07T09:00:00+08:00", event_type="older")
+    pages = []
+    while True:
+        page = service.query(data_type="timeline", page_size=1, sort_order="desc", cursor=cursor)
+        pages.extend(page["items"])
+        if not page["has_more"]:
+            break
+        cursor = page["next_cursor"]
+    ids = [row["record_id"] for row in pages]
+    assert anchor_id not in ids
+    assert any(row["details"].get("event_type") == "older" for row in pages)
+    assert all(row["details"].get("event_type") != "newer" for row in pages)

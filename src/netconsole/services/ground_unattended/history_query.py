@@ -7,6 +7,8 @@ the existing raw-query service owns record-level access.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
@@ -57,6 +59,11 @@ _SOURCES = (
 )
 
 _SOURCE_TABLES = frozenset("ground_unattended_" + source.table for source in _SOURCES)
+
+_CURSOR_FILTER_KEYS = (
+    "data_type", "run_id", "train_id", "mr_id", "mr_role", "event_type",
+    "start_at", "end_at", "sort_order",
+)
 
 
 def _group_rows_by_source(rows: list[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:
@@ -249,16 +256,131 @@ class GroundHistoryQueryService:
             "details": details,
         }
 
+    @staticmethod
+    def _order_clause(sort_order: str) -> str:
+        """Keep the legacy global order and add a deterministic final tie-breaker."""
+        direction = sort_order.upper()
+        null_rank = "1" if sort_order == "desc" else "0"
+        non_null_rank = "0" if sort_order == "desc" else "1"
+        return (
+            f"CASE WHEN julianday(ts) IS NULL THEN {null_rank} ELSE {non_null_rank} END ASC, "
+            f"julianday(ts) {direction}, data_type ASC, source_table ASC, "
+            "source_identity ASC, source_rowid ASC"
+        )
+
+    @staticmethod
+    def _cursor_error() -> GroundHistoryQueryError:
+        return GroundHistoryQueryError(
+            "GROUND_HISTORY_CURSOR_INVALID",
+            "历史游标无效或与当前筛选条件不匹配",
+        )
+
+    def _encode_cursor(
+        self, *, filters: dict[str, Any], page_size: int, row: sqlite3.Row,
+    ) -> str:
+        payload = {
+            "v": 1,
+            "site_id": self.site_id,
+            "filters": {key: filters[key] for key in _CURSOR_FILTER_KEYS},
+            "page_size": page_size,
+            "anchor": {
+                "ts": row["ts"],
+                "data_type": row["data_type"],
+                "source_table": row["source_table"],
+                "source_identity": row["source_identity"],
+                "source_rowid": int(row["source_rowid"]),
+            },
+        }
+        raw = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
+        ).encode("utf-8")
+        encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        digest = hashlib.sha256(raw).hexdigest()[:16]
+        return f"v1.{encoded}.{digest}"
+
+    def _decode_cursor(
+        self, cursor: str, *, filters: dict[str, Any], page_size: int,
+    ) -> dict[str, Any]:
+        try:
+            version, encoded, digest = cursor.split(".", 2)
+            if version != "v1" or not encoded or len(cursor) > 4096:
+                raise ValueError
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            if hashlib.sha256(raw).hexdigest()[:16] != digest:
+                raise ValueError
+            payload = json.loads(raw)
+            expected_filters = {key: filters[key] for key in _CURSOR_FILTER_KEYS}
+            if (
+                not isinstance(payload, dict)
+                or payload.get("v") != 1
+                or payload.get("site_id") != self.site_id
+                or payload.get("page_size") != page_size
+                or payload.get("filters") != expected_filters
+            ):
+                raise ValueError
+            anchor = payload.get("anchor")
+            if (
+                not isinstance(anchor, dict)
+                or not {"ts", "data_type", "source_table", "source_identity", "source_rowid"}.issubset(anchor)
+                or int(anchor["source_rowid"]) <= 0
+            ):
+                raise ValueError
+            return anchor
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeDecodeError):
+            raise self._cursor_error()
+
+    @staticmethod
+    def _cursor_predicate(
+        *, sort_order: str, anchor: dict[str, Any],
+    ) -> tuple[str, list[Any]]:
+        """Build the lexicographic continuation predicate for the mixed order."""
+        anchor_is_null = anchor["ts"] is None
+        null_rank = 1 if sort_order == "desc" else 0
+        non_null_rank = 0 if sort_order == "desc" else 1
+        anchor_rank = null_rank if anchor_is_null else non_null_rank
+        rank_expr = "CASE WHEN julianday(ts) IS NULL THEN ? ELSE ? END"
+        rank_params = [null_rank, non_null_rank]
+        timestamp_after = "<" if sort_order == "desc" else ">"
+        tie = [
+            ("data_type", anchor["data_type"]),
+            ("source_table", anchor["source_table"]),
+            ("source_identity", anchor["source_identity"]),
+            ("source_rowid", anchor["source_rowid"]),
+        ]
+        tie_parts: list[str] = []
+        tie_params: list[Any] = []
+        for index, (column, value) in enumerate(tie):
+            prefix = " AND ".join(f"{name}=?" for name, _ in tie[:index])
+            tie_parts.append(f"({prefix + ' AND ' if prefix else ''}{column} > ?)")
+            tie_params.extend(item for _name, item in tie[:index])
+            tie_params.append(value)
+        tie_sql = " OR ".join(tie_parts)
+        if anchor_is_null:
+            predicate = f"({rank_expr} > ? AND 1=1) OR ({rank_expr} = ? AND ({tie_sql}))"
+            params = [*rank_params, anchor_rank, *rank_params, anchor_rank, *tie_params]
+            return predicate, params
+        predicate = (
+            f"({rank_expr} > ? AND julianday(ts) IS NULL) OR "
+            f"({rank_expr} = ? AND (julianday(ts) {timestamp_after} julianday(?) OR "
+            f"(julianday(ts)=julianday(?) AND ({tie_sql}))))"
+        )
+        params = [
+            *rank_params, anchor_rank, *rank_params, anchor_rank,
+            anchor["ts"], anchor["ts"], *tie_params,
+        ]
+        return predicate, params
+
     def query(
         self, *, data_type: str = "", run_id: str = "", train_id: str = "", mr_id: str = "",
         mr_role: str = "", event_type: str = "", start_at: str = "", end_at: str = "",
         sort_order: str = "desc",
-        page: int = 1, page_size: int = 100,
+        page: int = 1, page_size: int = 100, cursor: str = "",
     ) -> dict[str, Any]:
-        filters = {name: value for name, value in locals().items() if name not in {"self", "page", "page_size"}}
+        filters = {name: value for name, value in locals().items() if name not in {"self", "page", "page_size", "cursor"}}
         self._validate(filters)
         page, page_size = max(1, int(page)), max(1, min(500, int(page_size)))
-        result: dict[str, Any] = {"items": [], "total": 0, "page": page, "page_size": page_size, "sources": {name: "UNAVAILABLE" for name in HISTORY_DATA_TYPES}}
+        anchor = self._decode_cursor(cursor, filters=filters, page_size=page_size) if cursor else None
+        result: dict[str, Any] = {"items": [], "total": 0, "page": page, "page_size": page_size, "sources": {name: "UNAVAILABLE" for name in HISTORY_DATA_TYPES}, "has_more": False, "next_cursor": ""}
         with self._read_snapshot() as conn:
             if conn is None:
                 return result
@@ -278,8 +400,31 @@ class GroundHistoryQueryService:
                     count_params,
                 ).fetchone()[0])
             if sql:
-                rows = conn.execute("SELECT * FROM (" + sql + f") ORDER BY julianday(ts) {sort_order.upper()}, data_type, source_table, source_identity LIMIT ? OFFSET ?", (*params, page_size, (page - 1) * page_size)).fetchall()
+                query_sql = "SELECT * FROM (" + sql + ")"
+                query_params: list[Any] = list(params)
+                if cursor:
+                    assert anchor is not None
+                    predicate, cursor_params = self._cursor_predicate(sort_order=sort_order, anchor=anchor)
+                    query_sql += " WHERE " + predicate
+                    query_params.extend(cursor_params)
+                    rows = conn.execute(
+                        query_sql + " ORDER BY " + self._order_clause(sort_order) + " LIMIT ?",
+                        (*query_params, page_size + 1),
+                    ).fetchall()
+                    has_more = len(rows) > page_size
+                    rows = rows[:page_size]
+                else:
+                    rows = conn.execute(
+                        query_sql + " ORDER BY " + self._order_clause(sort_order) + " LIMIT ? OFFSET ?",
+                        (*query_params, page_size, (page - 1) * page_size),
+                    ).fetchall()
+                    has_more = page * page_size < int(result["total"])
+                result["has_more"] = has_more
                 result["items"] = self._items(conn, rows)
+                if rows and has_more:
+                    result["next_cursor"] = self._encode_cursor(
+                        filters=filters, page_size=page_size, row=rows[-1],
+                    )
         return result
 
     def iter_export_rows(
@@ -296,6 +441,9 @@ class GroundHistoryQueryService:
             sql, params, _counts, _sources = self._plan(conn, filters)
             if not sql:
                 return
-            cursor = conn.execute("SELECT * FROM (" + sql + f") ORDER BY julianday(ts) {sort_order.upper()}, data_type, source_table, source_identity", params)
+            cursor = conn.execute(
+                "SELECT * FROM (" + sql + ") ORDER BY " + self._order_clause(sort_order),
+                params,
+            )
             while rows := cursor.fetchmany(500):
                 yield from self._items(conn, rows)
