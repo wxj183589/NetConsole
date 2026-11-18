@@ -4,7 +4,7 @@
 
 | Check | Result |
 | --- | --- |
-| History query/service/API tests | 57 passed, 1 existing warning |
+| History query/service/API/export tests | 59 passed, 1 existing warning |
 | Cursor multi-source order | PASS |
 | Same timestamp and duplicate/omission check | PASS |
 | Site isolation and filter binding | PASS |
