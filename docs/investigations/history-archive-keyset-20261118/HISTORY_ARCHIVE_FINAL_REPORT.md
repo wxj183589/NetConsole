@@ -35,7 +35,7 @@ At 1,000,000 synthetic rows and equivalent page 5,000, OFFSET measured 11,364.97
 ```text
 CURRENT_MAIN=52447b70d9061756c128f36670280cd8f20bd309
 BRANCH=codex-A/history-archive-keyset-20261118
-PR=NOT_CREATED_PENDING_USER_REVIEW
+PR=https://github.com/wxj183589/NetConsole/pull/123
 DATASET_SIZE=100k/500k/1m synthetic rows
 OFFSET_P50=11,364.972 ms at 1m/page-5000
 OFFSET_P95=11,421.435 ms at 1m/page-5000
