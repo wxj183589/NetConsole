@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 import uuid
 import atexit
 from pathlib import Path
@@ -21,6 +22,7 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _TEST_BASE_ROOT = test_data_root_base(repository_root=_REPOSITORY_ROOT)
 _TEST_RUN_ROOT = _TEST_BASE_ROOT / f"pytest-{uuid.uuid4().hex}"
 _TEST_BASETEMP_ROOT: Path | None = None
+_CLEANUP_DONE = False
 _TEST_RUN_ROOT.mkdir(parents=True, exist_ok=False)
 (_TEST_RUN_ROOT / "temp").mkdir()
 tempfile.tempdir = str(_TEST_RUN_ROOT / "temp")
@@ -30,6 +32,9 @@ os.environ["NETCONSOLE_DATA_ROOT"] = str(_TEST_RUN_ROOT / "session")
 
 
 def _cleanup_test_run_root() -> None:
+    global _CLEANUP_DONE
+    if _CLEANUP_DONE:
+        return
     # Tests may retain a short-lived SQLite connection through a local object
     # after the test body returns. Collect those objects before fail-closed
     # cleanup so a Windows file lock is not mistaken for an owned-path escape.
@@ -37,6 +42,7 @@ def _cleanup_test_run_root() -> None:
     if os.environ.get("NETCONSOLE_PRESERVE_TEST_BASETEMP") != "1":
         _cleanup_owned_test_path(_TEST_BASETEMP_ROOT)
     _cleanup_owned_test_path(_TEST_RUN_ROOT)
+    _CLEANUP_DONE = True
 
 
 def _cleanup_owned_test_path(target: Path | None) -> None:
@@ -60,7 +66,26 @@ def _cleanup_owned_test_path(target: Path | None) -> None:
         os.chmod(path, stat.S_IWRITE)
         function(path)
 
-    shutil.rmtree(target, onexc=clear_readonly_and_retry)
+    last_error: PermissionError | None = None
+    # Windows can briefly retain a handle after a test closes its SQLite or
+    # background-worker resource. Retry only owned paths, then fail loudly.
+    delays = (0.0, 0.02, 0.05, 0.1, 0.2, 0.5)
+    for index, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            shutil.rmtree(target, onexc=clear_readonly_and_retry)
+            last_error = None
+            break
+        except PermissionError as exc:
+            last_error = exc
+            gc.collect()
+            if index == len(delays) - 1:
+                raise RuntimeError(
+                    f"pytest cleanup remained locked after {len(delays)} attempts: {target}"
+                ) from exc
+    if last_error is not None:
+        raise last_error
     if target.exists():
         raise RuntimeError(f"pytest cleanup did not remove its owned path: {target}")
 

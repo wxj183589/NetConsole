@@ -418,6 +418,13 @@ class AcMeshLinkQueryService:
         # Unresolved names never merge distinct observations or grant an AP identity.
         return link.peer_ap_id or link.peer_ap_mac or link.bssid or f"observation:{link.id}"
 
+    @staticmethod
+    def _batch_identity_match(batch: dict[str, ApIdentityMatch], value: object) -> ApIdentityMatch | None:
+        """Resolve both canonical and vehicle-MAC key forms from one batch."""
+        canonical = normalize_mac_key(value)
+        vehicle = _normalize_vehicle_mac(value)
+        return batch.get(canonical) or batch.get(vehicle)
+
     def list_peer_aps(self, site_id: str, *, query: str = "", station: str = "", section: str = "",
                       page: int = 1, page_size: int = 50) -> AcMeshApPageDTO:
         groups: dict[str, AcMeshApDTO] = {}
@@ -447,10 +454,11 @@ class AcMeshLinkQueryService:
         db_path = self._snapshot_db_path(site_id)
         if not db_path.is_file():
             return [], 0
+        devices = self._mr_devices(site_id)
         with closing(self._connect(db_path)) as conn:
             if not self._table_exists(conn, "vehicle_mr_online_links"):
                 return [], 0
-            device = next((item for item in self._mr_devices(site_id) if item.uuid == mr.mr_id), None)
+            device = next((item for item in devices if item.uuid == mr.mr_id), None)
             # Exact persisted names/MAC only; final filtering uses the same MR resolver as current rows.
             clauses = ["(peer_name = ? OR peer_name = ? OR peer_mac = ?)"]
             params: list[object] = [mr.mr_name, device.system_name if device else mr.mr_name,
@@ -470,14 +478,68 @@ class AcMeshLinkQueryService:
                                 "ORDER BY COALESCE(NULLIF(ac_time, ''), created_at) DESC, id DESC LIMIT ? OFFSET ?",
                                 [*params, size, (current-1)*size]).fetchall()
         ids = {int(row["id"]) for row in rows}
-        snapshots = {int(row["snapshot_id"]) for row in rows}
+        snapshot_ids = sorted({int(row["snapshot_id"]) for row in rows})
+        if not ids or not snapshot_ids:
+            return [], total
+        snapshot_placeholders = ", ".join("?" for _ in snapshot_ids)
+        id_placeholders = ", ".join("?" for _ in ids)
+        with closing(self._connect(db_path)) as conn:
+            snapshot_rows = conn.execute(
+                """
+                SELECT snapshot.*, session.ac_device_id, session.ac_name
+                FROM vehicle_mr_online_snapshots snapshot
+                LEFT JOIN vehicle_mr_online_sessions session ON session.session_id = snapshot.session_id
+                WHERE snapshot.id IN (""" + snapshot_placeholders + ")",
+                snapshot_ids,
+            ).fetchall()
+            selected_rows = conn.execute(
+                "SELECT * FROM vehicle_mr_online_links WHERE id IN (" + id_placeholders + ") ORDER BY id",
+                sorted(ids),
+            ).fetchall()
+        raw_by_snapshot: dict[int, list[dict[str, object]]] = {}
+        for row in selected_rows:
+            raw = dict(row)
+            raw_by_snapshot.setdefault(int(raw["snapshot_id"]), []).append(raw)
+        device_rows = self._device_rows(site_id)
+        ap_indexes = self._ap_indexes(site_id)
+        identity_query = ApIdentityQueryService(Database(self.paths.site_db_path(site_id)))
+        resolver = getattr(type(identity_query), "resolve_peer_mac", None)
+        selected_dicts = [dict(row) for row in selected_rows]
+        identity_batch = (
+            identity_query.resolve_peer_macs([row.get("local_mac") for row in selected_dicts]).matches
+            if str(getattr(resolver, "__module__", "")).startswith("netconsole.")
+            else {}
+        )
+        static_by_mac = self._static_ap_index(site_id)
+        peer_macs = {
+            _normalize_vehicle_mac(row.get("peer_mac"))
+            for row in selected_dicts
+            if _normalize_vehicle_mac(row["peer_mac"])
+        }
+        arp_identity_index = GroundArpRepository.find_identity_index_by_mac_readonly(
+            self.paths.ground_unattended_db_path(site_id),
+            site_id=site_id,
+            identity_macs=peer_macs,
+        )
+        preloaded = (
+            devices,
+            ap_indexes,
+            identity_query,
+            identity_batch,
+            static_by_mac,
+            arp_identity_index,
+        )
         result = []
-        for snapshot_id in snapshots:
-            snapshot = self._snapshot(site_id, snapshot_id)
-            if snapshot:
-                result.extend(item.model_copy(update={"relation_status": "historical"})
-                              for item in self._link_rows(site_id, snapshot=snapshot)
-                              if item.id in ids and item.mr_id == mr.mr_id)
+        for snapshot_row in snapshot_rows:
+            snapshot = self._snapshot_dto(site_id, dict(snapshot_row), device_rows)
+            for item in self._link_rows(
+                site_id,
+                snapshot=snapshot,
+                raw_rows=raw_by_snapshot.get(snapshot.id, []),
+                preloaded=preloaded,
+            ):
+                if item.id in ids and item.mr_id == mr.mr_id:
+                    result.append(item.model_copy(update={"relation_status": "historical"}))
         result.sort(key=lambda item: (item.device_time, item.id), reverse=True)
         return result, total
 
@@ -601,7 +663,7 @@ class AcMeshLinkQueryService:
             row.device_time = snapshot.device_time if snapshot else ""
             row.received_at = snapshot.received_at if snapshot else ""
             if identity_query and device.mac_address:
-                identity = identity_batch.get(_normalize_vehicle_mac(device.mac_address))
+                identity = self._batch_identity_match(identity_batch, device.mac_address)
                 row.identity_status = identity.status if identity else "unresolved"
                 if identity and identity.matched:
                     row.resolved_ap = identity.effective_ap_name
@@ -707,44 +769,57 @@ class AcMeshLinkQueryService:
         site_id: str,
         *,
         snapshot: AcMeshSnapshotDTO | None = None,
+        raw_rows: list[dict[str, object]] | None = None,
+        preloaded: tuple | None = None,
     ) -> list[AcMeshLinkRecordDTO]:
         snapshot = snapshot or self._latest_snapshot(site_id)
         if snapshot is None:
             return []
-        db_path = self._snapshot_db_path(site_id)
-        with closing(self._connect(db_path)) as conn:
-            if not self._table_exists(conn, "vehicle_mr_online_links"):
-                return []
-            rows = conn.execute(
-                "SELECT * FROM vehicle_mr_online_links WHERE snapshot_id = ? ORDER BY id",
-                (snapshot.id,),
-            ).fetchall()
-        raw_rows = [dict(row) for row in rows]
-        devices = self._mr_devices(site_id)
-        ap_indexes = self._ap_indexes(site_id)
-        identity_query = ApIdentityQueryService(
-            Database(self.paths.site_db_path(site_id))
-        )
-        resolver = getattr(type(identity_query), "resolve_peer_mac", None)
-        use_batch_identity = str(getattr(resolver, "__module__", "")).startswith("netconsole.")
-        identity_batch = (
-            identity_query.resolve_peer_macs([row.get("local_mac") for row in raw_rows]).matches
-            if use_batch_identity
-            else {}
-        )
-        static_by_mac = self._static_ap_index(site_id)
+        if raw_rows is None:
+            db_path = self._snapshot_db_path(site_id)
+            with closing(self._connect(db_path)) as conn:
+                if not self._table_exists(conn, "vehicle_mr_online_links"):
+                    return []
+                rows = conn.execute(
+                    "SELECT * FROM vehicle_mr_online_links WHERE snapshot_id = ? ORDER BY id",
+                    (snapshot.id,),
+                ).fetchall()
+            raw_rows = [dict(row) for row in rows]
+        if preloaded is None:
+            devices = self._mr_devices(site_id)
+            ap_indexes = self._ap_indexes(site_id)
+            identity_query = ApIdentityQueryService(
+                Database(self.paths.site_db_path(site_id))
+            )
+            resolver = getattr(type(identity_query), "resolve_peer_mac", None)
+            use_batch_identity = str(getattr(resolver, "__module__", "")).startswith("netconsole.")
+            identity_batch = (
+                identity_query.resolve_peer_macs([row.get("local_mac") for row in raw_rows]).matches
+                if use_batch_identity
+                else {}
+            )
+            static_by_mac = self._static_ap_index(site_id)
+            peer_macs = {
+                _normalize_vehicle_mac(row.get("peer_mac"))
+                for row in raw_rows
+                if _normalize_vehicle_mac(row.get("peer_mac"))
+            }
+            arp_identity_index = GroundArpRepository.find_identity_index_by_mac_readonly(
+                self.paths.ground_unattended_db_path(site_id),
+                site_id=site_id,
+                identity_macs=peer_macs,
+            )
+        else:
+            (
+                devices,
+                ap_indexes,
+                identity_query,
+                identity_batch,
+                static_by_mac,
+                arp_identity_index,
+            ) = preloaded
         controller_id = snapshot.controller_id
         controller_name = snapshot.controller_name
-        peer_macs = {
-            _normalize_vehicle_mac(row.get("peer_mac"))
-            for row in raw_rows
-            if _normalize_vehicle_mac(row.get("peer_mac"))
-        }
-        arp_identity_index = GroundArpRepository.find_identity_index_by_mac_readonly(
-            self.paths.ground_unattended_db_path(site_id),
-            site_id=site_id,
-            identity_macs=peer_macs,
-        )
         result: list[AcMeshLinkRecordDTO] = []
         for raw in raw_rows:
             identity = _parse_train_identity(str(raw.get("peer_name") or ""))
@@ -769,7 +844,7 @@ class AcMeshLinkQueryService:
                 ap_indexes,
                 identity_query,
                 static_by_mac=static_by_mac,
-                identity_match=identity_batch.get(_normalize_vehicle_mac(raw.get("local_mac"))),
+                identity_match=self._batch_identity_match(identity_batch, raw.get("local_mac")),
             )
             radio = candidate.radio if candidate else None
             ap = candidate.detail.ap if candidate else None

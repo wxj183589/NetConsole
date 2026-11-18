@@ -11,12 +11,37 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.site_manager import SiteManager
 from netconsole.core.runtime_environment import write_data_environment
 from netconsole.core.runtime_mode import DataEnvironmentInfo, DataEnvironmentMode
+from netconsole.services import site_lifecycle as site_lifecycle_module
 from netconsole.services.site_lifecycle import DEMO_MAX_BYTES, DEMO_SEED_VERSION, DemoSiteSeedService, SiteAuditService, SiteCleanupApplicationService
 from netconsole.services.site_storage import SiteApplicationService, SiteRecord, SiteRegistryRepository, SiteStorageError
 
 
 def _paths(tmp_path: Path) -> PathResolver:
     return PathResolver(app_root=tmp_path / "app", data_root=tmp_path / "data-root")
+
+
+def test_demo_move_retries_a_transient_windows_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    (source / "devices.db").write_bytes(b"fixture")
+    real_move = site_lifecycle_module.os.rename
+    calls = 0
+
+    def flaky_move(source_path, target_path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError(32, "The process cannot access the file")
+        return real_move(source_path, target_path)
+
+    monkeypatch.setattr(site_lifecycle_module.os, "rename", flaky_move)
+    site_lifecycle_module._move_with_windows_lock_retry(source, target)
+
+    assert calls == 2
+    assert (target / "devices.db").read_bytes() == b"fixture"
 
 
 def test_demo_seed_is_managed_small_and_idempotent(tmp_path: Path) -> None:

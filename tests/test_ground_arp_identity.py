@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from netconsole.parsers.h3c.arp_parser import ArpParseResult, ArpRecord, parse_h3c_arp
 from netconsole.repositories.ground_arp_repository import GroundArpRepository
+from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.core.paths import PathResolver
 from netconsole.services.ground_unattended.arp_collection import GroundArpCollector
@@ -201,6 +202,36 @@ def test_mesh_identity_batch_read_is_site_scoped_and_does_not_initialize_missing
     )
     assert {row["mr_uuid"] for row in index["confirmed"]["00:00:00:00:00:01"]} == {"mr-1"}
     assert "00:00:00:00:00:02" not in index["confirmed"]
+
+
+def test_identity_observation_projection_uses_one_read_connection_for_many_keys(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "ground.sqlite"
+    repo = GroundArpRepository(path, site_id="site-a")
+    identity = GroundMrIdentityService(repo)
+    mrs = [_mr(index, f"10.0.0.{index}") for index in range(1, 51)]
+    records = [_record(mr["management_ip"], f"00:00:00:00:01:{index:02x}") for index, mr in enumerate(mrs, 1)]
+    _success(repo, identity, records, mrs)
+
+    calls = 0
+    original = Database.connect_readonly
+
+    def tracked(database: Database):
+        nonlocal calls
+        calls += 1
+        return original(database)
+
+    monkeypatch.setattr(Database, "connect_readonly", tracked)
+    projection = repo.build_identity_observation_projection(
+        mr_uuids=[mr["id"] for mr in mrs],
+        ip_addresses=[record.ip_address for record in records],
+    )
+
+    assert calls == 1
+    assert len(projection["relations_by_mr"]) == len(mrs)
+    assert len(projection["observations_by_ip"]) == len(records)
 
 
 def test_h3c_derived_peer_conflict_is_not_auto_selected(tmp_path: Path) -> None:

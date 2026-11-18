@@ -1,0 +1,16 @@
+{
+  "ac_fit_ap_100": [
+    "SEARCH ac_fit_ap_radio_details USING INDEX idx_ac_fit_ap_radio_details_ap (ac_device_uuid=? AND ap_uuid=?)"
+  ],
+  "arp_50_100": [
+    "SEARCH ground_mr_identity_relations USING INDEX idx_ground_mr_identity_mr (site_id=? AND mr_uuid=?)"
+  ],
+  "mesh_50": [
+    "SCAN vehicle_mr_online_links"
+  ],
+  "notes": [
+    "AC/FIT-AP uses idx_ac_fit_ap_radio_details_ap for exact AC/AP reads.",
+    "Ground ARP uses idx_ground_mr_identity_mr for MR identity scope.",
+    "Mesh-Link snapshot link read currently scans vehicle_mr_online_links; no schema/index change was made because the measured bottleneck was identity N+1 and the query remains read-only."
+  ]
+}
