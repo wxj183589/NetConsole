@@ -54,10 +54,12 @@ REAL_DEVICE_CONNECTED=0
 - 针对原 Run 的 11 个失败节点已完成逐项调查，详见 `WINDOWS_CI_FAILURE_INVESTIGATION.md`。
 - 修复范围限定为测试清理、Windows 原子文件替换、Demo 测试数据发布移动和回归测试辅助读取；未修改 SQL 业务代码。
 - 本地验证：原 11 个失败节点 `11 passed`；Resident Polling `8 passed`；iPerf 失败节点连续 20 次通过；生命周期/API 相关套件 `136 passed, 2 warnings`；修复后组合回归 `59 passed`；Ruff PASS。
-- 新 CI：尚未启动（待本轮提交推送后由 PR 自动触发），因此 Required Checks 尚未重新验证。
-- 修复提交：`006c6894d696c72968db1e57fd6252935873810a`；Codex P2 修复提交：`db894e70`（将 Demo 同卷移动改为无复制回退的 `os.rename()` 重试）。上述提交已推送，等待新的 CI Run。
-- 当前状态：`BLOCKED_SQL_PHASE3_CI_STABILITY`。
+- 新 CI Run：`44216699242`，对应最终验收前 HEAD `de6263bbcb755a7e37b2530ac20e607483b27b9e`；Required Checks 全部 PASS，Python regression `PASS`（`30m18s`）。
+- 修复提交：`006c6894d696c72968db1e57fd6252935873810a`；Codex P2 修复提交：`db894e70`（将 Demo 同卷移动改为无复制回退的 `os.rename()` 重试）；最终报告提交：`de6263bb`。
+- 最新 Codex Review：对应 `de6263bbcb`，无发现、无未解决 Review Thread。
+- PR #121：`OPEN`、`MERGEABLE`、`CLEAN`；本轮不自动合并。
+- 当前状态：`PASS_SQL_PHASE3_CI_STABILITY`。
 
 ## 最终状态
 
-`BLOCKED_SQL_PHASE3_CI_STABILITY`
+`PASS_SQL_PHASE3_CI_STABILITY`
