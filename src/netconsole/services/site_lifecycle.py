@@ -249,13 +249,15 @@ def _finalize_sqlite_files(root: Path) -> None:
 
 
 def _move_with_windows_lock_retry(source: Path, target: Path) -> None:
-    """Move an owned test/demo tree across a short Windows handle window."""
+    """Rename an owned tree without copy fallback across a Windows lock window."""
     delays = (0.0, 0.02, 0.05, 0.1, 0.2, 0.5)
     for attempt, delay in enumerate(delays, start=1):
         if delay:
             time.sleep(delay)
         try:
-            shutil.move(str(source), str(target))
+            # These paths are within one data root; rename avoids shutil.move's
+            # copytree fallback, which can leave a partial source on retry.
+            os.rename(source, target)
             return
         except OSError as exc:
             is_lock = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}

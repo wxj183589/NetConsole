@@ -42,7 +42,7 @@ The failing iPerf assertion is independent of the Phase 3 SQL diff. The same nod
 - `tests/conftest.py`: bounded owned-root cleanup retry and idempotent teardown.
 - `src/netconsole/services/ac/mesh_link_resident_polling_service.py`: bounded status read/atomic-write retries and unique temporary files.
 - `tests/test_ac_mesh_link_resident_polling.py`: status-read regression helper tolerant of the documented replace window.
-- `src/netconsole/services/site_lifecycle.py`: bounded retry for owned Demo publication and rollback moves.
+- `src/netconsole/services/site_lifecycle.py`: bounded `os.rename()` retry for owned Demo publication and rollback moves; avoids `shutil.move()` copy fallback and partial trees.
 - `tests/test_site_lifecycle.py`: transient Windows move-lock regression test.
 - `docs/investigations/sql-phase3-20261118/SQL_PHASE3_VALIDATION_REPORT.md`: CI failure and current stability status.
 
