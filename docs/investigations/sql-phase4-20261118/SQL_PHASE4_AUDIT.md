@@ -32,6 +32,6 @@
 ## Final gate refresh (2026-11-18)
 
 - PR #122 latest HEAD: `8c1aed0184981b2f65763af1f057c835306bb38f`.
-- CI Run `44255040507`: six checks PASS; Python Required Check remained IN_PROGRESS at this inspection.
+- Previous CI Run `44255040507` was superseded by current Run `44258007522` after the report commit; six current checks PASS and Python Required Check remains IN_PROGRESS.
 - Latest Codex Review covered `8c1aed0184` and reported no major issues.
 - Current gate status: `PARTIAL_SQL_PHASE4` pending Python completion.
