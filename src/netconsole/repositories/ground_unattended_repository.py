@@ -4045,6 +4045,23 @@ class GroundUnattendedRepository:
             ).fetchall()
         return [_decode_row(row) for row in rows]
 
+    def raw_registration_states_for_run(self, run_id: str) -> dict[str, tuple[str, str, str]]:
+        """Read-only registration index used by exceptional Raw writer recovery."""
+        with self._read_connection() as conn:
+            rows = conn.execute(
+                "SELECT file_id, relative_path, data_type, status "
+                "FROM ground_unattended_raw_files WHERE site_id=? AND run_id=?",
+                (self.site_id, run_id),
+            ).fetchall()
+        return {
+            str(row["file_id"]): (
+                str(row["relative_path"] or ""),
+                str(row["data_type"] or ""),
+                str(row["status"] or ""),
+            )
+            for row in rows
+        }
+
     def get_ping_summary(
         self,
         run_id: str,

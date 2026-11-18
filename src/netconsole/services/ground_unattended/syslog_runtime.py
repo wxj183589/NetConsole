@@ -9,6 +9,7 @@ import queue
 import re
 import shutil
 import socket
+import sqlite3
 import threading
 import time
 import uuid
@@ -814,6 +815,10 @@ class RawStreamWriter:
             raw_root = self.root / self.directory_name
             checked = 0
             open_file_ids = {current.file_id for current in self._files.values()}
+            try:
+                registrations = self.repository.raw_registration_states_for_run(self.run_id)
+            except (OSError, sqlite3.Error):
+                return False
             if raw_root.exists():
                 try:
                     root_attrs = getattr(raw_root.lstat(), "st_file_attributes", 0)
@@ -839,14 +844,14 @@ class RawStreamWriter:
                                 return False
                             relative = path.relative_to(self.repository.db_path.parent).as_posix()
                             file_id = f"raw_{hashlib.sha256(relative.encode('utf-8')).hexdigest()[:32]}"
-                            row = self.repository.get_raw_file(file_id)
+                            row = registrations.get(file_id)
                             if (
                                 row is None
-                                or str(row.get("relative_path") or "") != relative
-                                or str(row.get("run_id") or "") != self.run_id
+                                or row[0] != relative
+                                or row[1] != self.data_type
                                 or (
                                     file_id not in open_file_ids
-                                    and str(row.get("status") or "").upper() == "OPEN"
+                                    and row[2].upper() == "OPEN"
                                 )
                             ):
                                 return False
