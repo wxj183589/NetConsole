@@ -30,4 +30,7 @@ Phase 4 completed the evidence-based history archive read optimization. Mesh-Lin
 
 ## Review boundary
 
-No PR or merge was created in this task. Codex review and CI are pending after the feature branch commit/push. Main was not modified.
+- Commit: `05d2b1ddb1db303a093c8b58455362169ac11df4`.
+- PR: `#122` (`https://github.com/wxj183589/NetConsole/pull/122`), target `main`, state `OPEN`.
+- At report update time, Required Checks and Codex Review were `IN_PROGRESS`; mergeability is therefore not yet a gate result.
+- Main was not modified and the PR was not merged.
