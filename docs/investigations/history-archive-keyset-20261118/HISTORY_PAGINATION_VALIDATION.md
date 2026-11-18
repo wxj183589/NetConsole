@@ -4,7 +4,9 @@
 
 | Check | Result |
 | --- | --- |
-| History query/service/API/export tests | 59 passed, 1 existing warning |
+| History query/service/API/export tests | 62 passed, 1 existing warning |
+| Empty `raw_files.start_time` in ASC and DESC page-size-one traversal | PASS; 13 records, no duplicates or omissions |
+| Old v1 cursor rejection | PASS |
 | Cursor multi-source order | PASS |
 | Same timestamp and duplicate/omission check | PASS |
 | Site isolation and filter binding | PASS |

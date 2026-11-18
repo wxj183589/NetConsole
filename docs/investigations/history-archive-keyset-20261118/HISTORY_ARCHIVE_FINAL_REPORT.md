@@ -3,8 +3,7 @@
 Date: 2026-11-18
 Branch: `codex-A/history-archive-keyset-20261118`
 Base: `52447b70d9061756c128f36670280cd8f20bd309` (`v1.5.15`)
-HEAD: `085a7ed1d5cb762bbb7a0701b3afdeb0f08f83a9`
-PR: [#123](https://github.com/wxj183589/NetConsole/pull/123), OPEN and MERGEABLE; GitHub checks had not started at report time.
+PR: [#123](https://github.com/wxj183589/NetConsole/pull/123). Check CI and review against the latest PR HEAD.
 
 ## Outcome
 
@@ -32,6 +31,10 @@ The product keeps the existing OFFSET API and adds an optional cursor continuati
 
 At 1,000,000 synthetic rows and equivalent page 5,000, OFFSET measured 11,364.972 ms P50 / 11,421.435 ms P95; cursor measured 524.274 ms P50 / 619.276 ms P95. The plan still reports a union-level TEMP B-TREE, so the result is a bounded additive optimization rather than a claim of complete sort elimination.
 
+## Empty timestamp correction
+
+PR review found that a raw file's valid empty `start_time` sorts with `NULL` under SQLite's `julianday(ts) IS NULL`, while the first cursor implementation tested only Python `None`. The page query now projects SQLite's null-time flag into a v2 cursor. Old v1 cursors fail with `GROUND_HISTORY_CURSOR_INVALID` and callers can restart from the first page. ASC and DESC page-size-one traversal over empty-time and multi-source records matches full export without duplicates or omissions. The preceding benchmark is evidence from the original cursor implementation; this narrow correction was not separately re-benchmarked.
+
 ## Required delivery fields
 
 ```text
@@ -55,7 +58,7 @@ PAGINATION_CONSISTENCY=PASS
 EXPORT_COMPATIBILITY=PASS
 SCHEMA_CHANGED=0
 INDEX_ADDED=0
-TARGETED_TESTS=59 passed, 1 warning; Ruff, py_compile, vue-tsc, layout and diff checks PASS
+TARGETED_TESTS=62 passed, 1 warning; Ruff, py_compile, layout and diff checks PASS; earlier vue-tsc PASS
 FULL_TESTS=NOT_RUN
 PRODUCTION_DATA_MODIFIED=0
 DEV_REAL_DATA_MODIFIED=0

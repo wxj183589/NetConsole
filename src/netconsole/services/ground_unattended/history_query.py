@@ -279,12 +279,13 @@ class GroundHistoryQueryService:
         self, *, filters: dict[str, Any], page_size: int, row: sqlite3.Row,
     ) -> str:
         payload = {
-            "v": 1,
+            "v": 2,
             "site_id": self.site_id,
             "filters": {key: filters[key] for key in _CURSOR_FILTER_KEYS},
             "page_size": page_size,
             "anchor": {
                 "ts": row["ts"],
+                "ts_is_null": bool(row["cursor_ts_is_null"]),
                 "data_type": row["data_type"],
                 "source_table": row["source_table"],
                 "source_identity": row["source_identity"],
@@ -296,14 +297,14 @@ class GroundHistoryQueryService:
         ).encode("utf-8")
         encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
         digest = hashlib.sha256(raw).hexdigest()[:16]
-        return f"v1.{encoded}.{digest}"
+        return f"v2.{encoded}.{digest}"
 
     def _decode_cursor(
         self, cursor: str, *, filters: dict[str, Any], page_size: int,
     ) -> dict[str, Any]:
         try:
             version, encoded, digest = cursor.split(".", 2)
-            if version != "v1" or not encoded or len(cursor) > 4096:
+            if version != "v2" or not encoded or len(cursor) > 4096:
                 raise ValueError
             raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
             if hashlib.sha256(raw).hexdigest()[:16] != digest:
@@ -312,7 +313,7 @@ class GroundHistoryQueryService:
             expected_filters = {key: filters[key] for key in _CURSOR_FILTER_KEYS}
             if (
                 not isinstance(payload, dict)
-                or payload.get("v") != 1
+                or payload.get("v") != 2
                 or payload.get("site_id") != self.site_id
                 or payload.get("page_size") != page_size
                 or payload.get("filters") != expected_filters
@@ -321,7 +322,8 @@ class GroundHistoryQueryService:
             anchor = payload.get("anchor")
             if (
                 not isinstance(anchor, dict)
-                or not {"ts", "data_type", "source_table", "source_identity", "source_rowid"}.issubset(anchor)
+                or not {"ts", "ts_is_null", "data_type", "source_table", "source_identity", "source_rowid"}.issubset(anchor)
+                or not isinstance(anchor["ts_is_null"], bool)
                 or int(anchor["source_rowid"]) <= 0
             ):
                 raise ValueError
@@ -334,7 +336,7 @@ class GroundHistoryQueryService:
         *, sort_order: str, anchor: dict[str, Any],
     ) -> tuple[str, list[Any]]:
         """Build the lexicographic continuation predicate for the mixed order."""
-        anchor_is_null = anchor["ts"] is None
+        anchor_is_null = anchor["ts_is_null"]
         null_rank = 1 if sort_order == "desc" else 0
         non_null_rank = 0 if sort_order == "desc" else 1
         anchor_rank = null_rank if anchor_is_null else non_null_rank
@@ -400,7 +402,7 @@ class GroundHistoryQueryService:
                     count_params,
                 ).fetchone()[0])
             if sql:
-                query_sql = "SELECT * FROM (" + sql + ")"
+                query_sql = "SELECT *, julianday(ts) IS NULL AS cursor_ts_is_null FROM (" + sql + ")"
                 query_params: list[Any] = list(params)
                 if cursor:
                     assert anchor is not None
