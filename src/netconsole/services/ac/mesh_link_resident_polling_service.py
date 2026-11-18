@@ -460,28 +460,46 @@ class AcMeshLinkResidentPollingApplicationService:
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, object]:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
-            return {}
-        return dict(payload) if isinstance(payload, dict) else {}
+        for attempt, delay in enumerate((0.0, 0.01, 0.03, 0.08), start=1):
+            if delay:
+                time.sleep(delay)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except OSError as exc:
+                is_lock = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+                if not is_lock or attempt == 4:
+                    return {}
+                continue
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return {}
+            return dict(payload) if isinstance(payload, dict) else {}
+        return {}
 
     @staticmethod
     def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        for attempt in range(6):
-            try:
-                os.replace(temporary, path)
-                return
-            except PermissionError:
-                if attempt >= 5:
-                    raise
-                time.sleep(0.01)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            for attempt, delay in enumerate((0.0, 0.01, 0.03, 0.08, 0.15, 0.3), start=1):
+                if delay:
+                    time.sleep(delay)
+                try:
+                    os.replace(temporary, path)
+                    return
+                except OSError as exc:
+                    is_lock = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+                    if not is_lock or attempt == 6:
+                        raise
+        finally:
+            if temporary.exists():
+                try:
+                    temporary.unlink()
+                except OSError:
+                    pass
 
     @staticmethod
     def _now_iso() -> str:

@@ -224,13 +224,28 @@ def _run_until(
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         try:
-            status = json.loads(status_path.read_text(encoding="utf-8"))
+            status = _read_status(status_path)
         except (OSError, json.JSONDecodeError):
             status = {}
         if predicate(status):
             return thread, result, errors
         time.sleep(0.02)
     raise AssertionError(f"resident poller did not reach expected state: {status}")
+
+
+def _read_status(path: Path) -> dict[str, object]:
+    """Read a status snapshot across a Windows atomic-replace window."""
+    for attempt, delay in enumerate((0.0, 0.01, 0.03, 0.08), start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (PermissionError, OSError, json.JSONDecodeError):
+            if attempt == 4:
+                raise
+            continue
+        return dict(value) if isinstance(value, dict) else {}
+    return {}
 
 
 def _request_stop(control_path: Path) -> None:
@@ -419,7 +434,7 @@ def test_interval_update_and_immediate_refresh_do_not_reconnect(
     )
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        row = json.loads(status.read_text(encoding="utf-8"))
+        row = _read_status(status)
         if (
             int(row.get("success_count") or 0) >= 2
             and row.get("completed_request_id") == "request-now"

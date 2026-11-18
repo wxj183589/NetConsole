@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
+import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -245,6 +246,22 @@ def _finalize_sqlite_files(root: Path) -> None:
         finally:
             connection.close()
     gc.collect()
+
+
+def _move_with_windows_lock_retry(source: Path, target: Path) -> None:
+    """Move an owned test/demo tree across a short Windows handle window."""
+    delays = (0.0, 0.02, 0.05, 0.1, 0.2, 0.5)
+    for attempt, delay in enumerate(delays, start=1):
+        if delay:
+            time.sleep(delay)
+        try:
+            shutil.move(str(source), str(target))
+            return
+        except OSError as exc:
+            is_lock = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+            if not is_lock or attempt == len(delays):
+                raise
+            gc.collect()
 
 
 def _registry_records(paths: PathResolver) -> list[SiteRecord]:
@@ -1203,10 +1220,10 @@ class DemoSiteSeedService:
                             audit_path = self.paths.data_root / str(audit["manifest_path"])
                             if audit_path.is_file():
                                 shutil.copy2(audit_path, backup_root / "audit-manifest.json")
-                        shutil.move(str(existing), str(backup_site))
+                        _move_with_windows_lock_retry(existing, backup_site)
                         _atomic_json(transaction_path, {"schema_version": 1, "stage": "old_moved", "updated_at": _now()})
                     final.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(staged_demo), str(final))
+                    _move_with_windows_lock_retry(staged_demo, final)
                     published = True
                     if backup_root:
                         _atomic_json(backup_root / "transaction.json", {"schema_version": 1, "stage": "new_published", "updated_at": _now()})
@@ -1226,9 +1243,9 @@ class DemoSiteSeedService:
                     if published and final.exists():
                         failed_target = (backup_root / "failed-new-site") if backup_root else staging_paths.site_dir("failed-demo")
                         failed_target.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.move(str(final), str(failed_target))
+                        _move_with_windows_lock_retry(final, failed_target)
                     if backup_site and backup_site.exists() and not final.exists():
-                        shutil.move(str(backup_site), str(final))
+                        _move_with_windows_lock_retry(backup_site, final)
                     if registry_existed and (transaction_backup / "registry.json").is_file():
                         registry.path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(transaction_backup / "registry.json", registry.path)
@@ -1273,9 +1290,9 @@ class DemoSiteSeedService:
                     if final.exists() and backup_site.is_dir():
                         failed_target = backup_root / "failed-new-site"
                         if not failed_target.exists():
-                            shutil.move(str(final), str(failed_target))
+                            _move_with_windows_lock_retry(final, failed_target)
                     if backup_site.is_dir() and not final.exists():
-                        shutil.move(str(backup_site), str(final))
+                        _move_with_windows_lock_retry(backup_site, final)
                     registry_backup = backup_root / "registry.json"
                     app_backup = backup_root / "app.json"
                     registry = SiteRegistryRepository(self.paths)
