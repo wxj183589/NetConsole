@@ -5,6 +5,7 @@ import hashlib
 import sqlite3
 import threading
 import time
+from collections import Counter, deque
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from datetime import datetime
@@ -1104,8 +1105,42 @@ class GroundUnattendedRepository:
         self._inventory_snapshot: SiteInventorySnapshot | None = None
         self._inventory_loaded_at = 0.0
         self.inventory_snapshot_ttl = 1.0
+        self._observe_transactions = False
+        self._transaction_metrics: Counter[str] = Counter()
+        self._transaction_durations_ms: deque[float] = deque(maxlen=5000)
+        self._transaction_metrics_lock = threading.Lock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize()
+
+    def set_transaction_observability(self, enabled: bool) -> None:
+        """Enable bounded, in-memory SQL and transaction counters for profiling."""
+        self._observe_transactions = enabled
+
+    def transaction_metrics_snapshot(self) -> dict[str, Any]:
+        with self._transaction_metrics_lock:
+            return {
+                **{
+                    key: self._transaction_metrics[key]
+                    for key in (
+                        "connection_count", "sql_total", "select_count", "insert_count",
+                        "update_count", "delete_count", "upsert_count", "commit_count",
+                        "rollback_count", "transaction_begin", "transaction_commit",
+                        "transaction_rollback", "transaction_failure", "transaction_retry",
+                        "transaction_rows_affected", "no_op_update_count",
+                    )
+                },
+                "transaction_duration_ms": tuple(self._transaction_durations_ms),
+            }
+
+    def _trace_transaction_sql(self, statement: str) -> None:
+        keyword = statement.lstrip().split(None, 1)[0].upper() if statement.strip() else ""
+        if keyword not in {"SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "COMMIT", "ROLLBACK"}:
+            return
+        with self._transaction_metrics_lock:
+            self._transaction_metrics["sql_total"] += 1
+            self._transaction_metrics[f"{keyword.lower()}_count"] += 1
+            if keyword == "INSERT" and "ON CONFLICT" in statement.upper():
+                self._transaction_metrics["upsert_count"] += 1
 
     @staticmethod
     def find_task_references_readonly(db_path: Path, task_id: str) -> list[str]:
@@ -4010,6 +4045,23 @@ class GroundUnattendedRepository:
             ).fetchall()
         return [_decode_row(row) for row in rows]
 
+    def raw_registration_states_for_run(self, run_id: str) -> dict[str, tuple[str, str, str]]:
+        """Read-only registration index used by exceptional Raw writer recovery."""
+        with self._read_connection() as conn:
+            rows = conn.execute(
+                "SELECT file_id, relative_path, data_type, status "
+                "FROM ground_unattended_raw_files WHERE site_id=? AND run_id=?",
+                (self.site_id, run_id),
+            ).fetchall()
+        return {
+            str(row["file_id"]): (
+                str(row["relative_path"] or ""),
+                str(row["data_type"] or ""),
+                str(row["status"] or ""),
+            )
+            for row in rows
+        }
+
     def get_ping_summary(
         self,
         run_id: str,
@@ -4374,7 +4426,7 @@ class GroundUnattendedRepository:
             now = _now()
             for file_id, line_number in checkpoints.items():
                 row = conn.execute(
-                    "SELECT status, record_count FROM ground_unattended_raw_files "
+                    "SELECT status, record_count, parse_status FROM ground_unattended_raw_files "
                     "WHERE site_id=? AND file_id=?",
                     (self.site_id, file_id),
                 ).fetchone()
@@ -4393,11 +4445,15 @@ class GroundUnattendedRepository:
                     if str(row["status"] or "").upper() == "OPEN"
                     else f"PENDING_RECOVERY@{line_number}"
                 )
-                conn.execute(
-                    "UPDATE ground_unattended_raw_files "
-                    "SET parse_status=?, updated_at=? WHERE site_id=? AND file_id=?",
-                    (parse_status, now, self.site_id, file_id),
-                )
+                if str(row["parse_status"] or "") != parse_status:
+                    conn.execute(
+                        "UPDATE ground_unattended_raw_files "
+                        "SET parse_status=?, updated_at=? WHERE site_id=? AND file_id=?",
+                        (parse_status, now, self.site_id, file_id),
+                    )
+                elif self._observe_transactions:
+                    with self._transaction_metrics_lock:
+                        self._transaction_metrics["no_op_update_count"] += 1
         return inserted
 
     def _upsert_syslog_position_states(
@@ -6112,6 +6168,10 @@ class GroundUnattendedRepository:
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         conn = Database(self.db_path).connect()
+        if self._observe_transactions:
+            with self._transaction_metrics_lock:
+                self._transaction_metrics["connection_count"] += 1
+            conn.set_trace_callback(self._trace_transaction_sql)
         configure_sqlite_connection(
             conn,
             busy_timeout_ms=10_000,
@@ -6142,13 +6202,38 @@ class GroundUnattendedRepository:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        with self._connection() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                yield conn
-            except Exception:
-                conn.rollback()
-                raise
+        observed = self._observe_transactions
+        started = time.perf_counter() if observed else 0.0
+        changed = 0
+        rolled_back = False
+        try:
+            with self._connection() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                changed_before = conn.total_changes
+                if observed:
+                    with self._transaction_metrics_lock:
+                        self._transaction_metrics["transaction_begin"] += 1
+                try:
+                    yield conn
+                except Exception:
+                    conn.rollback()
+                    rolled_back = True
+                    raise
+                changed = conn.total_changes - changed_before
+        except Exception:
+            if observed:
+                with self._transaction_metrics_lock:
+                    if rolled_back:
+                        self._transaction_metrics["transaction_rollback"] += 1
+                    self._transaction_metrics["transaction_failure"] += 1
+                    self._transaction_durations_ms.append((time.perf_counter() - started) * 1000)
+            raise
+        else:
+            if observed:
+                with self._transaction_metrics_lock:
+                    self._transaction_metrics["transaction_commit"] += 1
+                    self._transaction_metrics["transaction_rows_affected"] += changed
+                    self._transaction_durations_ms.append((time.perf_counter() - started) * 1000)
 
 
 def _now() -> str:

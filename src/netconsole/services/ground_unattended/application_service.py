@@ -1925,10 +1925,14 @@ class GroundUnattendedApplicationService:
             "CRITICAL" if critical else "DEGRADED" if degraded
             else "HEALTHY" if observed else "UNKNOWN"
         )
+        health_values = {
+            key: value for key, value in values.items()
+            if key in GroundHealthDTO.model_fields
+        }
         return GroundHealthDTO(
             site_id=site_id,
             status=status,
-            **values,
+            **health_values,
             supervisor_running=supervisor_running,
             run_state=run_state,
             run_elapsed_seconds=run_age,
