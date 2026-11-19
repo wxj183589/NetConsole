@@ -1,3 +1,20 @@
+v1.5.16 - 2026-11-19
+### SQL 读取与历史归档
+
+- 共享设备库存快照，减少 Heartbeat、Syslog、Quick Ping 等业务的重复读取；Job Center 批量读取任务结果，减少 N+1 查询。
+- 优化 AC、FIT-AP、Mesh-Link、ARP 和历史归档的查询；历史归档支持可选 Cursor 深分页，保留原 OFFSET 接口、Site 隔离和导出顺序。
+- 修复 Cursor 在 NULL 与空字符串时间戳处的排序分组差异，避免分页遗漏或重复。
+
+### Syslog 写入可靠性
+
+- 修复 Raw File 异步登记与 Projection Checkpoint 的时序竞态，失败时保留待处理批次并支持幂等恢复。
+- 增加默认关闭的事务和队列观测，避免无变化的 Checkpoint 状态 UPDATE；隔离压力测试中消除了登记延迟触发的重复回滚。
+- 400 MR 隔离五轮测试共接收并保留 4,000 条 Raw/投影事件，未发现丢弃、缺失、投影错误或 SQLite 锁错误；真实 UDP 丢包、进程强杀和现场长稳仍未验证。
+
+### 交付边界
+
+- 保留现有数据库 Schema、数据根策略和 Full Installer / Full Portable 交付方式。此版本为现场验证候选，不代表完成真实 Windows 安装、升级、卸载或现场设备验收。
+
 v1.5.15 - 2026-11-16
 ### 现场故障修复与安全收尾
 
