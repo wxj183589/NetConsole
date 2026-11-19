@@ -1,10 +1,25 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from netconsole.core.update_policy import should_offer_update
 from scripts.build.build_metadata import BuildMetadataError, collect_build_metadata
 from netconsole.core.version import APP_VERSION
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_release_version_matches_desktop_metadata() -> None:
+    package = json.loads((ROOT / "apps/desktop_electron/package.json").read_text(encoding="utf-8"))
+    renderer = (ROOT / "apps/desktop_renderer/index.html").read_text(encoding="utf-8")
+
+    assert APP_VERSION == "v1.5.16"
+    assert package["version"] == APP_VERSION.removeprefix("v")
+    assert package["build"]["productName"] == f"NetConsole {APP_VERSION} by wxj"
+    assert f"<title>NetConsole {APP_VERSION} by wxj</title>" in renderer
 
 
 def test_update_policy_ignores_build_and_hash_changes() -> None:
