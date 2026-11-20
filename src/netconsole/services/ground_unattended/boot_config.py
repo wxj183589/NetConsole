@@ -48,12 +48,7 @@ CONFIG_FAILURE_MARKERS = (
     "error:",
     "permission denied",
 )
-SOURCE_RULE_COMMANDS = (
-    "info-center source default loghost deny",
-    "info-center source wmesh loghost level notification",
-    "info-center source ifnet loghost level notification",
-    "info-center source cfgman loghost level notification",
-)
+SOURCE_RULE_COMMANDS: tuple[str, ...] = ()
 MANAGED_PROFILE_VERSION = 2
 RUNTIME_REQUIREMENTS = (
     "information_center_enabled",
@@ -985,20 +980,19 @@ class MrSyslogConfigService:
 
 
 def analyze_syslog_config(output: str, *, target_ip: str, target_port: int) -> SyslogConfigDiff:
-    """Inspect only source rules whose authority is current-configuration.
+    """Validate the target without inventing source-rule policy.
 
-    Information Center enablement and the effective loghost target are runtime facts
-    reported by ``display info-center``. Comware may omit their default command forms
-    from current-configuration, so they must not participate in this diff.
+    NetConsole owns only ``info-center enable`` and its exact loghost endpoint.
+    Existing source filters are customer/device policy and are strictly read-only.
     """
 
-    lines = {_normalize(line) for line in str(output or "").splitlines() if line.strip()}
+    del output
     _ = str(ipaddress.ip_address(str(target_ip).strip()))
     port = int(target_port)
     if not 1 <= port <= 65_535:
         raise ValueError("Syslog 目标端口必须在 1～65535 之间")
-    present = tuple(command for command in SOURCE_RULE_COMMANDS if command in lines)
-    missing = tuple(command for command in SOURCE_RULE_COMMANDS if command not in lines)
+    present: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
     return SyslogConfigDiff(
         complete=not missing,
         source_rule_missing=missing,
@@ -1014,7 +1008,7 @@ def verify_syslog_profile(
     target_port: int,
     allow_target_port_change: bool = False,
 ) -> SyslogProfileVerification:
-    """Require both runtime delivery state and the fixed source rules."""
+    """Require the runtime delivery state; source rules remain read-only."""
 
     target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
     target_port = int(target_port)
@@ -1051,14 +1045,13 @@ def verify_syslog_profile(
     runtime_missing = tuple(missing_runtime)
     repair_commands: list[str] = []
     port_conflict_blocked = same_ip_other_port and not allow_target_port_change
-    if not port_conflict_blocked:
-        if "information_center_enabled" in runtime_missing:
-            repair_commands.append("info-center enable")
-        if {"loghost_enabled", "loghost_target"}.intersection(runtime_missing):
-            repair_commands.append(
-                f"info-center loghost {target_ip} port {target_port}"
-            )
-        repair_commands.extend(config.source_rule_missing)
+    if runtime_missing and not port_conflict_blocked:
+        # JOIN has one auditable, device-safe command profile.  Do not derive
+        # source filters from display output and do not emit partial variants.
+        repair_commands.extend((
+            "info-center enable",
+            f"info-center loghost {target_ip} port {target_port}",
+        ))
     return SyslogProfileVerification(
         complete=config.complete and not runtime_missing,
         config=config,
@@ -1134,7 +1127,7 @@ def _int_or_none(value: Any) -> int | None:
 def build_syslog_config_commands(repair_commands: tuple[str, ...]) -> tuple[str, ...]:
     if not repair_commands:
         return ()
-    return ("system-view", *repair_commands, "return")
+    return ("system-view", *repair_commands, "return", "quit")
 
 
 def build_syslog_exit_commands(target_ip: str, target_port: int) -> tuple[str, ...]:
@@ -1142,7 +1135,12 @@ def build_syslog_exit_commands(target_ip: str, target_port: int) -> tuple[str, .
     port = int(target_port)
     if not 1 <= port <= 65_535:
         raise ValueError("Syslog 目标端口必须在 1～65535 之间")
-    return ("system-view", f"undo info-center loghost {normalized_ip} port {port}", "return")
+    return (
+        "system-view",
+        f"undo info-center loghost {normalized_ip} port {port}",
+        "return",
+        "quit",
+    )
 
 
 def _validate_syslog_exit_commands(
@@ -1159,14 +1157,15 @@ def _validate_syslog_write_commands(
     allowed = {
         "system-view",
         "return",
+        "quit",
         "info-center enable",
         f"info-center loghost {target_ip} port {target_port}",
-        "info-center source default loghost deny",
-        "info-center source wmesh loghost level notification",
-        "info-center source ifnet loghost level notification",
-        "info-center source cfgman loghost level notification",
     }
-    if not commands or commands[0] != "system-view" or commands[-1] != "return":
+    if (
+        not commands
+        or commands[0] != "system-view"
+        or commands[-2:] != ("return", "quit")
+    ):
         raise ValueError("Syslog 写入 Profile 缺少受控视图边界")
     if any(_normalize(command) not in allowed for command in commands):
         raise ValueError("Syslog 写入命令不在固定 Profile 白名单中")

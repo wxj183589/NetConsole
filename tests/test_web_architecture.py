@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from threading import Event
 
@@ -603,6 +604,25 @@ def test_task_runtime_shutdown_closes_admission_and_reports_active_counts(tmp_pa
 
     service.complete(launch.job.job_id, 1)
     assert service.active_task_snapshot()["active_tasks"] == 0
+
+
+def test_task_shutdown_tolerates_imported_database_without_snapshot_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = TaskApplicationService(paths=PathResolver(tmp_path), reconcile_on_start=False)
+    repository = service.repository(service.site_name)
+    monkeypatch.setattr(
+        repository,
+        "list",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("no such table: task_snapshots")
+        ),
+    )
+
+    result = service.begin_shutdown()
+
+    assert result["active_tasks"] == 0
+    assert service.accepting_work() is False
 
 
 def test_task_runtime_package_has_no_qt_dependency() -> None:

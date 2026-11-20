@@ -42,6 +42,7 @@ from netconsole.models.api.ground_unattended import (
     GroundPingTargetDTO,
     GroundQuickPingPageDTO,
     GroundQuickPingRunDTO,
+    GroundQuickPingTargetRuntimeDTO,
     GroundQuickPingSamplePageDTO,
     GroundHistoryPageDTO,
     GroundQuickPingStartRequestDTO,
@@ -486,8 +487,19 @@ class GroundUnattendedApplicationService:
         # fail response validation (the historical list route returned 500
         # as soon as one persisted run contained this internal field).
         fields = GroundQuickPingRunDTO.model_fields
+        public = {key: item for key, item in value.items() if key in fields}
+        runtime_fields = GroundQuickPingTargetRuntimeDTO.model_fields
+        public["target_runtime"] = {
+            str(target_ip): {
+                key: item
+                for key, item in runtime.items()
+                if key in runtime_fields
+            }
+            for target_ip, runtime in dict(value.get("target_runtime") or {}).items()
+            if isinstance(runtime, Mapping)
+        }
         return GroundQuickPingRunDTO.model_validate(
-            {key: item for key, item in value.items() if key in fields}
+            public
         )
 
     def current_site_id(self) -> str:
@@ -636,6 +648,21 @@ class GroundUnattendedApplicationService:
 
     def update_heartbeat_config(self, site_id: str, config: HeartbeatConfigDTO) -> HeartbeatConfigDTO:
         self._require_site(site_id)
+        if config.enabled:
+            excluded = set(config.excluded_train_ids)
+            has_selected_target = any(
+                str(train.get("train_id") or "").strip() not in excluded
+                and any(
+                    str(endpoint.get("device_uuid") or "").strip()
+                    and str(endpoint.get("management_ip") or "").strip()
+                    for endpoint in (train.get("endpoints") or [])
+                    if isinstance(endpoint, Mapping)
+                )
+                for train in self.repository.inventory_snapshot().inventory()
+                if str(train.get("train_id") or "").strip()
+            )
+            if not has_selected_target:
+                raise ValueError("HEARTBEAT_NO_SELECTED_TRAIN")
         result = self.repository.save_heartbeat_config(config)
         self.supervisor.heartbeat.config_updated()
         return result
@@ -1642,13 +1669,19 @@ class GroundUnattendedApplicationService:
         site_id: str,
         *,
         device_uuid: str = "",
-        mode: str = "AUTO_REPAIR",
+        mode: str = "VERIFY_ONLY",
         allow_target_port_change: bool = False,
         explicit_confirmation: bool = False,
     ) -> GroundActionResponseDTO:
         run = self._active(site_id)
         profile = self.repository.get_profile()
         self._validate_network_profile(profile, require_syslog=True)
+        if mode != "VERIFY_ONLY":
+            raise GroundUnattendedError(
+                "CONFIG_CHECK_READ_ONLY",
+                "检查 MR 配置是只读操作；请使用独立的加入 Syslog 上报入口修改设备",
+                status_code=409,
+            )
         if device_uuid and self.repository.get_inventory_endpoint(device_uuid) is None:
             raise GroundUnattendedError(
                 "MR_NOT_FOUND", "MR 不在当前无人值守清单中", status_code=404
@@ -1673,10 +1706,7 @@ class GroundUnattendedApplicationService:
             )
         self.supervisor.request_config_check(
             device_uuid,
-            # This endpoint is an explicit operator action.  The profile flag
-            # gates only unattended boot checks; a manual repair request keeps
-            # its existing meaning and is still recorded by the audit service.
-            repair_enabled=mode == "AUTO_REPAIR",
+            repair_enabled=False,
             allow_target_port_change=allow_target_port_change,
         )
         return GroundActionResponseDTO(
@@ -1992,14 +2022,11 @@ class GroundUnattendedApplicationService:
                 if not valid_return
                 else "LOCAL_ADDRESS"
                 if return_is_local
-                else "EXTERNAL_CONFIRMED"
-                if profile.allow_external_syslog_address
                 else "NOT_LOCAL"
             )
 
-        listen_is_local = (
-            profile.udp_listen_host == "0.0.0.0"
-            or self.network_service.is_local_ipv4(profile.udp_listen_host)
+        listen_is_local = self.network_service.is_local_ipv4(
+            profile.syslog_server_ip
         )
         receiver_running = bool(health.get("udp_running"))
         actual_listen = str(health.get("udp_listen_address") or "")
@@ -2018,16 +2045,16 @@ class GroundUnattendedApplicationService:
             port_message = "本机监听地址已不属于当前计算机"
         elif receiver_running and _listen_address_matches(
             actual_listen,
-            profile.udp_listen_host,
-            profile.udp_listen_port,
+            profile.syslog_server_ip,
+            profile.syslog_server_port,
         ):
             port_state = "NETCONSOLE_LISTENING"
             port_message = "NetConsole 正在占用并监听该 UDP 端口"
         else:
             try:
                 inspected = self.network_service.inspect_udp_port(
-                    profile.udp_listen_host,
-                    profile.udp_listen_port,
+                    profile.syslog_server_ip,
+                    profile.syslog_server_port,
                 )
                 port_state = (
                     "AVAILABLE"
@@ -2081,17 +2108,12 @@ class GroundUnattendedApplicationService:
         except (SystemNetworkError, OSError, RuntimeError):
             pass
 
-        ports_match: bool | None = (
-            profile.syslog_server_port == profile.udp_listen_port
-            if return_is_local
-            else None
-        )
+        ports_match: bool | None = True if return_is_local else None
         target_port_message = (
             "目标端口与本地监听一致"
             if ports_match is True
             else (
-                f"目标端口 {profile.syslog_server_port} / "
-                f"本地监听 {profile.udp_listen_port}，两者不一致"
+                f"目标端口 {profile.syslog_server_port} / 本地监听端口不一致"
             )
             if ports_match is False
             else "目标为外部/NAT 地址，本机监听端口状态不适用"
@@ -2103,9 +2125,9 @@ class GroundUnattendedApplicationService:
             configured_return_port=profile.syslog_server_port,
             return_address_status=return_status,  # type: ignore[arg-type]
             return_address_is_local=return_is_local,
-            allow_external_address=profile.allow_external_syslog_address,
-            listen_host=profile.udp_listen_host,
-            listen_port=profile.udp_listen_port,
+            allow_external_address=False,
+            listen_host=profile.syslog_server_ip,
+            listen_port=profile.syslog_server_port,
             receiver_running=receiver_running,
             receiver_state=receiver_state,  # type: ignore[arg-type]
             actual_listen_address=actual_listen,
@@ -4017,11 +4039,21 @@ class GroundUnattendedApplicationService:
                 udp_listen_host=profile.udp_listen_host,
                 syslog_server_ip=profile.syslog_server_ip,
                 require_syslog=require_syslog,
-                allow_external=profile.allow_external_syslog_address,
+                allow_external=False,
             )
         except SystemNetworkError as exc:
+            code = (
+                "SYSLOG_TARGET_NOT_LOCAL"
+                if exc.code == "UDP_LISTEN_HOST_NOT_LOCAL"
+                else exc.code
+            )
+            message = (
+                "Syslog IP 不属于当前计算机，无法作为本地 UDP 监听地址"
+                if exc.code == "UDP_LISTEN_HOST_NOT_LOCAL"
+                else exc.message
+            )
             raise GroundUnattendedError(
-                exc.code, exc.message, status_code=exc.status_code
+                code, message, status_code=exc.status_code
             ) from exc
 
     def _inventory_train_candidates(self) -> list[GroundUnattendedTrainDTO]:

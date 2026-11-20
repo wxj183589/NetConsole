@@ -22,3 +22,15 @@ def test_storage_audit_service_reads_existing_reports_without_scanning(tmp_path:
     assert snapshot["directories"][0]["path"] == "files"
     assert snapshot["databases"][0]["database"].endswith("tasks.db")
     assert snapshot["read_only"] is True
+    assert snapshot["status"] == "REPORT_INCOMPLETE"
+    assert snapshot["missing_report_files"] == ["LARGE_FILES_REPORT.json"]
+
+
+def test_storage_audit_service_distinguishes_missing_reports_from_zero_usage(
+    tmp_path: Path,
+) -> None:
+    snapshot = StorageAuditService(tmp_path).snapshot()
+    assert snapshot["status"] == "REPORT_NOT_GENERATED"
+    assert snapshot["total_size_bytes"] == 0
+    assert snapshot["missing_report_files"]
+    assert "不会用 0" in snapshot["message"]

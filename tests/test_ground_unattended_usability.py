@@ -10,7 +10,11 @@ import pytest
 from netconsole.core.paths import PathResolver
 from netconsole.core.ping.fping_v5_models import BACKEND, FpingV5Sample
 from netconsole.core.storage_io import StorageIOProfile
-from netconsole.models.api.ground_unattended import GroundUnattendedProfileDTO
+from netconsole.models.api.ground_unattended import (
+    GroundAcBasicCollectionDTO,
+    GroundUnattendedProfileDTO,
+    HeartbeatRuntimeDTO,
+)
 from netconsole.repositories.ground_unattended_repository import (
     GroundUnattendedRepository,
 )
@@ -53,6 +57,22 @@ def test_profile_migrates_legacy_timezone_and_persists_lightweight_mode(
     assert migrated.timezone == "Asia/Shanghai"
     assert migrated.deep_collection_master_enabled is False
     assert migrated.fleet_ping_warmup_seconds == 17
+
+
+def test_new_site_uses_safe_disabled_collection_defaults(tmp_path) -> None:
+    repository = GroundUnattendedRepository(
+        tmp_path / "ground" / "index.sqlite", site_id="site-safe-defaults"
+    )
+
+    profile = repository.get_profile()
+    heartbeat = repository.get_heartbeat_config()
+    ac_control = repository.save_ac_basic_control("ac-new")
+
+    assert profile.deep_collection_master_enabled is False
+    assert heartbeat.enabled is False
+    assert ac_control["enabled"] is False
+    assert HeartbeatRuntimeDTO().enabled is False
+    assert GroundAcBasicCollectionDTO(device_uuid="ac-dto").enabled is False
 
 
 def test_fleet_ping_warmup_is_per_target_persisted_and_restarts_after_readd(

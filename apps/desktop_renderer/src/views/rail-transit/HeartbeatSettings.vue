@@ -5,13 +5,32 @@ import type { HeartbeatConfig, HeartbeatRuntime } from '../../types/groundUnatte
 import { useGroundContext } from './useGroundUnattended'
 import { isFeatureEnabled } from '../../features'
 
-const { t, activeTab, pageVisible, pageActivated } = useGroundContext()
+const { t, activeTab, pageVisible, pageActivated, trains } = useGroundContext()
 const config = ref<HeartbeatConfig>()
 const runtime = ref<HeartbeatRuntime>()
 const error = ref('')
 const saving = ref(false)
 const mounted = ref(false)
 const active = computed(() => mounted.value && pageVisible.value && pageActivated.value && activeTab.value === 'settings')
+const trainSelectionOpen = ref<string[]>([])
+const availableTrains = computed(() => trains?.value || [])
+const selectedTrainIds = computed(() => {
+  const excluded = new Set(config.value?.excluded_train_ids || [])
+  return availableTrains.value.map((row) => row.train_id).filter((trainId) => !excluded.has(trainId))
+})
+function setTrainSelected(trainId: string, selected: boolean): void {
+  if (!config.value) return
+  const excluded = new Set(config.value.excluded_train_ids || [])
+  if (selected) excluded.delete(trainId)
+  else excluded.add(trainId)
+  config.value.excluded_train_ids = [...excluded]
+}
+function selectAllTrains(): void {
+  if (config.value) config.value.excluded_train_ids = []
+}
+function clearAllTrains(): void {
+  if (config.value) config.value.excluded_train_ids = availableTrains.value.map((row) => row.train_id)
+}
 let controller: AbortController | undefined
 let timer: ReturnType<typeof setTimeout> | undefined
 function stopPolling(): void {
@@ -72,6 +91,25 @@ onBeforeUnmount(stopPolling)
         <el-form-item :label="t('ground.v2.settings_warmup', '启动预热忽略时间（秒）')"><el-input-number v-model="config.warmup_seconds" :min="0" :max="300" /></el-form-item>
         <el-form-item :label="t('ground.resident.backup', '主备 IP 策略')"><el-select v-model="config.backup_policy"><el-option value="MONITOR" :label="t('ground.resident.both', '按设备策略监测主备 IP')" /><el-option value="PRIMARY_ONLY" :label="t('ground.resident.primary', '仅监测主用 IP')" /></el-select></el-form-item>
       </div>
+      <el-collapse v-model="trainSelectionOpen" class="train-selection">
+        <el-collapse-item name="train-selection">
+          <template #title>
+            <span>{{ t('ground.resident.train_selection', '启动列车') }} · {{ selectedTrainIds.length }}/{{ availableTrains.length }}</span>
+          </template>
+          <div class="selection-actions">
+            <el-button size="small" @click="selectAllTrains">{{ t('common.select_all', '全选') }}</el-button>
+            <el-button size="small" @click="clearAllTrains">{{ t('common.clear_all', '全不选') }}</el-button>
+          </div>
+          <el-checkbox
+            v-for="row in availableTrains"
+            :key="row.train_id"
+            :model-value="selectedTrainIds.includes(row.train_id)"
+            @change="setTrainSelected(row.train_id, Boolean($event))"
+          >{{ row.train_no || row.train_name || row.train_id }}</el-checkbox>
+          <el-empty v-if="!availableTrains.length" :description="t('ground.resident.no_trains', '暂无有效列车，不能启动 Heartbeat')" />
+          <p class="selection-note">{{ t('ground.resident.new_train_selected', '新发现列车默认选中；已取消的列车会跨刷新和重启保留。') }}</p>
+        </el-collapse-item>
+      </el-collapse>
       <el-button type="primary" :loading="saving" :disabled="!isFeatureEnabled('capability.ground_unattended.heartbeat_inventory_manage')" @click="save">{{ t('ground.resident.save', '保存心跳配置') }}</el-button>
     </el-form>
     <el-descriptions v-if="runtime" :column="2" border>
@@ -88,4 +126,8 @@ onBeforeUnmount(stopPolling)
 .heartbeat-settings { padding: 16px 0; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .el-descriptions { margin-top: 16px; }
+.train-selection { margin: 8px 0 16px; }
+.selection-actions { display: flex; gap: 8px; margin-bottom: 10px; }
+.train-selection .el-checkbox { margin-right: 18px; }
+.selection-note { color: var(--el-text-color-secondary); font-size: 12px; }
 </style>

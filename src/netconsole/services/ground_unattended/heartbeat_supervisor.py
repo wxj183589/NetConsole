@@ -293,7 +293,14 @@ class HeartbeatSupervisor:
         snapshot = snapshot or self.repository.inventory_snapshot()
         if snapshot.site_id != self.site_id:
             raise ValueError("HEARTBEAT_INVENTORY_SITE_MISMATCH")
-        target_key = (self.repository, snapshot.revision, self._config.backup_policy, str(run_id))
+        excluded_train_ids = frozenset(self._config.excluded_train_ids)
+        target_key = (
+            self.repository,
+            snapshot.revision,
+            self._config.backup_policy,
+            excluded_train_ids,
+            str(run_id),
+        )
         with self._heartbeat_lock:
             if target_key == self._inventory_target_key:
                 self._heartbeat_engine.set_engine_state("RUNNING", at=self._now())
@@ -304,7 +311,7 @@ class HeartbeatSupervisor:
                      if inventory_state["enabled"] else [])
         for train in inventory:
             train_id = str(train.get("train_id") or "").strip()
-            if not train_id:
+            if not train_id or train_id in excluded_train_ids:
                 continue
             for endpoint in train.get("endpoints") or []:
                 if not isinstance(endpoint, Mapping):
@@ -500,8 +507,11 @@ class HeartbeatSupervisor:
             raise ValueError("HEARTBEAT_INVENTORY_SITE_MISMATCH")
         if not snapshot.state["enabled"]:
             return result
+        excluded_train_ids = frozenset(self._config.excluded_train_ids)
         for train in snapshot.inventory():
             train_id = str(train.get("train_id") or "").strip()
+            if train_id in excluded_train_ids:
+                continue
             train_no = str(train.get("train_no") or train_id).strip()
             for endpoint in train.get("endpoints") or []:
                 if not isinstance(endpoint, Mapping):

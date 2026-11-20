@@ -92,7 +92,7 @@ def resident(tmp_path):
                                 base_query=SimpleNamespace(), tick_seconds=0.05)
     owner._inventory_refresh_at = float("inf")
     install_runner(owner)
-    repo.save_heartbeat_config(HeartbeatConfigDTO(warmup_seconds=0))
+    repo.save_heartbeat_config(HeartbeatConfigDTO(enabled=True, warmup_seconds=0))
     try:
         yield owner
     finally:
@@ -109,7 +109,7 @@ def test_backend_lifespan_probes_without_run_or_renderer_and_restarts(tmp_path):
     owner.tick_seconds = 0.05
     active, overlaps = install_runner(owner, emit=True)
     ground.fleet_ping = owner.fleet_ping
-    owner.repository.save_heartbeat_config(HeartbeatConfigDTO(warmup_seconds=0))
+    owner.repository.save_heartbeat_config(HeartbeatConfigDTO(enabled=True, warmup_seconds=0))
     for _ in range(2):
         with TestClient(app):
             wait_for(lambda: owner.fleet_ping.sample_count >= 4)
@@ -153,6 +153,27 @@ def test_config_is_independent_persistent_and_hot_updates_without_worker_overlap
     wait_for(lambda: owner.status().state == "RUNNING")
     assert owner._thread is thread
     assert not overlaps
+
+
+def test_default_config_is_disabled_and_train_exclusions_are_stable(resident):
+    owner = resident
+    seed(owner.repository, count=3)
+    owner.repository.save_heartbeat_config(
+        HeartbeatConfigDTO(
+            enabled=True,
+            warmup_seconds=0,
+            excluded_train_ids=["train-1", "train-1", ""],
+        )
+    )
+    owner._config = owner.repository.get_heartbeat_config()
+    config = owner.repository.get_heartbeat_config()
+
+    targets = owner._heartbeat_fleet_targets()
+
+    assert {target.train_id for target in targets.values()} == {"train-0", "train-2"}
+    assert owner.repository.get_heartbeat_config().excluded_train_ids == ["train-1"]
+    assert HeartbeatConfigDTO().enabled is False
+    assert HeartbeatConfigDTO().excluded_train_ids == []
     assert owner.repository.get_heartbeat_config() == config
 
 
