@@ -9,7 +9,7 @@ const context = vi.hoisted(() => ({ current: {} as Record<string, unknown> }))
 vi.mock('../../api/groundUnattended', () => ({ getHeartbeatConfig: api.config, getHeartbeatRuntime: api.runtime, updateHeartbeatConfig: api.save }))
 vi.mock('./useGroundUnattended', () => ({ useGroundContext: () => context.current }))
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
-const config = { enabled: true, interval_ms: 1000, timeout_ms: 4000, packet_size: 64, shard_size: 12, warmup_seconds: 10, backup_policy: 'MONITOR' }
+const config = { enabled: true, interval_ms: 1000, timeout_ms: 4000, packet_size: 64, shard_size: 12, warmup_seconds: 10, backup_policy: 'MONITOR', excluded_train_ids: [] }
 const runtime = { state: 'RUNNING', enabled: true, target_count: 400, process_count: 34, last_sample_at: 'probe-time', last_success_at: 'success-time', last_error: '' }
 const global = {
   renderStubDefaultSlot: true,
@@ -21,7 +21,7 @@ const global = {
 }
 beforeEach(() => {
   vi.useFakeTimers()
-  context.current = { t: (_key: string, fallback: string) => fallback, activeTab: ref('settings'), pageVisible: ref(true), pageActivated: ref(true) }
+  context.current = { t: (_key: string, fallback: string) => fallback, activeTab: ref('settings'), pageVisible: ref(true), pageActivated: ref(true), trains: ref([]) }
   api.config.mockResolvedValue({ ...config })
   api.runtime.mockResolvedValue({ ...runtime })
   api.save.mockResolvedValue({ ...config, enabled: false })
@@ -34,7 +34,7 @@ it('loads independent configuration, shows runtime and saves without a Ground Ru
   expect(api.config).toHaveBeenCalledTimes(1)
   expect(wrapper.text()).toContain('400 / 34')
   expect(wrapper.text()).toContain('success-time')
-  await wrapper.find('button').trigger('click')
+  await wrapper.findAll('button').find((button) => button.text() === '保存心跳配置')!.trigger('click')
   await flushPromises()
   expect(api.save).toHaveBeenCalledWith(config, expect.objectContaining({ signal: expect.any(AbortSignal) }))
   expect(wrapper.findComponent({ name: 'ElSwitch' }).attributes('modelvalue')).toBe('false')

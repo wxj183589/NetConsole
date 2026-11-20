@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     schedule_start_time TEXT NOT NULL DEFAULT '07:00',
     schedule_end_time TEXT NOT NULL DEFAULT '23:00',
     timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
-    ac_poll_interval_seconds INTEGER NOT NULL DEFAULT 60,
+    ac_poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
     ac_mesh_link_poll_interval_seconds INTEGER NOT NULL DEFAULT 300,
     stationary_exclusion_minutes INTEGER NOT NULL DEFAULT 10,
     ac_stale_grace_seconds INTEGER NOT NULL DEFAULT 120,
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     max_active_mrs INTEGER NOT NULL DEFAULT 4,
     max_starting_mrs INTEGER NOT NULL DEFAULT 2,
     max_finalizing_mrs INTEGER NOT NULL DEFAULT 2,
-    deep_collection_master_enabled INTEGER NOT NULL DEFAULT 1,
+    deep_collection_master_enabled INTEGER NOT NULL DEFAULT 0,
     deep_fping_required INTEGER NOT NULL DEFAULT 1,
     deep_fping TEXT NOT NULL DEFAULT '{}',
     fleet_ping_interval_ms INTEGER NOT NULL DEFAULT 1000,
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
 
 CREATE TABLE IF NOT EXISTS ground_unattended_ac_basic_controls (
     device_uuid TEXT PRIMARY KEY,
-    enabled INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL DEFAULT 'STOPPED',
     last_success_at TEXT NOT NULL DEFAULT '',
     last_failure_at TEXT NOT NULL DEFAULT '',
@@ -928,14 +928,14 @@ ON ground_unattended_quick_ping_events(site_id, run_id, ts DESC, id DESC);
 
 
 _PROFILE_MIGRATION_COLUMNS = {
-    "ac_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 60",
+    "ac_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 300",
     "ac_mesh_link_poll_interval_seconds": "INTEGER NOT NULL DEFAULT 300",
     "arp_collection_device_uuid": "TEXT NOT NULL DEFAULT ''",
     "arp_management_vlans": "TEXT NOT NULL DEFAULT '[]'",
     "arp_startup_collection_enabled": "INTEGER NOT NULL DEFAULT 1",
     "arp_auto_refresh_enabled": "INTEGER NOT NULL DEFAULT 0",
     "arp_auto_refresh_interval_seconds": "INTEGER NOT NULL DEFAULT 300",
-    "deep_collection_master_enabled": "INTEGER NOT NULL DEFAULT 1",
+    "deep_collection_master_enabled": "INTEGER NOT NULL DEFAULT 0",
     "deep_fping_required": "INTEGER NOT NULL DEFAULT 1",
     "deep_fping": "TEXT NOT NULL DEFAULT '{}'",
     "fleet_ping_warmup_seconds": "INTEGER NOT NULL DEFAULT 10",
@@ -1295,7 +1295,7 @@ class GroundUnattendedRepository:
             "UPDATE ground_unattended_profiles "
             "SET ac_mesh_link_poll_interval_seconds=ac_poll_interval_seconds "
             "WHERE ac_mesh_link_poll_interval_seconds=300 "
-            "AND ac_poll_interval_seconds<>60"
+            "AND ac_poll_interval_seconds BETWEEN 3 AND 3600"
         )
         conn.execute(
             "INSERT INTO ground_unattended_schema(key, value, updated_at) "
@@ -1559,7 +1559,7 @@ class GroundUnattendedRepository:
             raise ValueError("AC device_uuid is required")
         current = self.get_ac_basic_control(key) or {
             "device_uuid": key,
-            "enabled": True,
+            "enabled": False,
             "state": "STOPPED",
             "last_success_at": "",
             "last_failure_at": "",
@@ -1570,7 +1570,7 @@ class GroundUnattendedRepository:
         }
         values = {
             "device_uuid": key,
-            "enabled": bool(current.get("enabled", True)) if enabled is None else bool(enabled),
+            "enabled": bool(current.get("enabled", False)) if enabled is None else bool(enabled),
             "state": str(current.get("state") or "STOPPED") if state is None else str(state),
             "last_success_at": str(current.get("last_success_at") or "") if last_success_at is None else str(last_success_at),
             "last_failure_at": str(current.get("last_failure_at") or "") if last_failure_at is None else str(last_failure_at),
@@ -1605,6 +1605,9 @@ class GroundUnattendedRepository:
     def save_profile(
         self, profile: GroundUnattendedProfileDTO
     ) -> GroundUnattendedProfileDTO:
+        profile = GroundUnattendedProfileDTO.model_validate(
+            profile.model_dump(mode="python")
+        )
         if profile.site_id != self.site_id:
             raise ValueError("profile site_id mismatch")
         now = _now()

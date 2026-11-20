@@ -1,6 +1,11 @@
 import { apiRequest } from './client'
 
 export interface StorageAuditSnapshot {
+  status: 'READY' | 'READY_WITH_ERRORS' | 'REPORT_NOT_GENERATED' | 'REPORT_INCOMPLETE' | 'DATA_ROOT_UNAVAILABLE'
+  message: string
+  required_report_files: string[]
+  missing_report_files: string[]
+  invalid_report_files: string[]
   report_directory: string
   root_path: string
   generated_at: string

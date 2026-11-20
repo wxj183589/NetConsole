@@ -49,12 +49,36 @@ class StorageAuditService:
         return value if isinstance(value, dict) else {}
 
     def snapshot(self) -> dict[str, Any]:
+        present = [name for name in REPORT_FILES if (self.report_directory / name).is_file()]
+        missing = [name for name in REPORT_FILES if name not in present]
         reports = {name: self._read_json(self.report_directory / name) for name in REPORT_FILES}
         inventory = reports["SITE_STORAGE_INVENTORY.json"]
         analysis = reports["SITE_STORAGE_ANALYSIS.json"]
         sites = reports["SITES_SUMMARY.json"]
         databases = reports["ALL_SQLITE_DATABASES.json"]
+        errors = self._errors(reports)
+        invalid = [name for name in present if not reports[name]]
+        if not self.data_root.exists():
+            status = "DATA_ROOT_UNAVAILABLE"
+            message = "当前数据根目录不存在或不可访问。"
+        elif not present:
+            status = "REPORT_NOT_GENERATED"
+            message = "尚未生成存储审计报告；页面不会用 0 伪装为真实扫描结果。"
+        elif missing or invalid:
+            status = "REPORT_INCOMPLETE"
+            message = "存储审计报告不完整或格式无效，请重新生成报告。"
+        elif errors:
+            status = "READY_WITH_ERRORS"
+            message = "报告可读，但扫描时记录了异常。"
+        else:
+            status = "READY"
+            message = "已加载现有只读存储审计报告。"
         return {
+            "status": status,
+            "message": message,
+            "required_report_files": list(REPORT_FILES),
+            "missing_report_files": missing,
+            "invalid_report_files": invalid,
             "report_directory": str(self.report_directory),
             "root_path": inventory.get("root_path", str(self.data_root)),
             "generated_at": inventory.get("generated_at", ""),
@@ -67,7 +91,7 @@ class StorageAuditService:
             ),
             "largest_files": self._sorted(inventory.get("largest_files", []), "size_bytes"),
             "databases": self._sorted(databases.get("databases", []), "size_bytes"),
-            "errors": self._errors(reports),
+            "errors": errors,
             "read_only": True,
         }
 

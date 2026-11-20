@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { t } from '../../i18n/runtime'
 import { isFeatureEnabled, isFeatureVisible } from '../../features'
 import { applyGroundHeartbeatInventory, getGroundHeartbeat, previewGroundHeartbeatInventory, requestGroundSyslogControl } from '../../api/groundUnattended'
@@ -23,7 +23,7 @@ const emit = defineEmits<{
   (event: 'refresh'): void; (event: 'show-train', row: GroundTrain): void; (event: 'toggle-priority', row: GroundTrain): void
   (event: 'toggle-enabled', row: GroundTrain): void; (event: 'show-ping-series', row: GroundPingTarget): void; (event: 'quick-ping', mrUuid: string): void
 }>()
-const { activeTab, pageVisible, pageActivated, selectedRunId, quickContextRevision } = useGroundContext()
+const { activeTab, pageVisible, pageActivated, selectedRunId, quickContextRevision, profile } = useGroundContext()
 const heartbeat = ref<GroundHeartbeatPage | null>(null), heartbeatError = ref(''), loading = ref(false)
 const search = ref(props.trainFilter), statusFilter = ref(''), station = ref(''), role = ref(''), abnormalOnly = ref(false), page = ref(1), pageSize = ref(50)
 const onlineOnly = ref(true), selectedSyslogMrs = ref<string[]>([]), syslogBusy = ref(false)
@@ -164,6 +164,19 @@ async function controlSyslog(mode: 'JOIN' | 'EXIT', quickMr?: GroundHeartbeatMr)
     : selectableSyslogRows.value.filter((mr) => selectedSyslogMrs.value.includes(mr.mr_uuid) && (mode === 'JOIN' ? mr.status === 'ONLINE' : true))
   if (!eligible.length) return
   if (quickMr) closeMenu()
+  const target = mode === 'JOIN'
+    ? `${profile.value?.syslog_server_ip || '未配置'}:${profile.value?.syslog_server_port || 514}`
+    : '各 MR 最近一次由 NetConsole 成功加入的历史目标'
+  const commands = mode === 'JOIN'
+    ? `system-view\ninfo-center enable\ninfo-center loghost ${target.replace(':', ' port ')}\nreturn\nquit`
+    : 'system-view\nundo info-center loghost <历史 IP> port <历史端口>\nreturn\nquit'
+  try {
+    await ElMessageBox.confirm(
+      `设备：${eligible.map(endpointName).join('、')}\n目标：${target}\n命令：\n${commands}`,
+      mode === 'JOIN' ? '确认加入 Syslog 上报' : '确认退出 Syslog 上报',
+      { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
   syslogBusy.value = true
   try {
     const result = await requestGroundSyslogControl(eligible.map((mr) => mr.mr_uuid), mode)
@@ -198,7 +211,7 @@ const metrics = computed(() => {
     <template v-if="heartbeat">
       <div class="state-banner" :class="`state-${dataState.toLowerCase()}`"><strong>{{ statusText(dataState) }}</strong><span>{{ dataStateMessage }}</span><small v-if="heartbeat.data_state === 'STALE'">{{ heartbeatStats?.latest_sample_at || '—' }}</small></div>
       <div class="metrics"><div v-for="item in metrics" :key="item.label"><span>{{ item.label }}</span><b>{{ item.value }}</b></div></div>
-      <div class="heartbeat-stats"><span>{{ t('ground.monitor.ping_total', '累计 Ping') }} <b>{{ heartbeatStats?.sent_count ?? '—' }}</b></span><span>{{ t('ground.monitor.ping_success', '成功次数') }} <b>{{ heartbeatStats?.success_count ?? '—' }}</b></span><span>{{ t('ground.monitor.ping_lost', '丢包次数') }} <b>{{ heartbeatStats?.lost_count ?? '—' }}</b></span><span>{{ t('ground.monitor.average_rtt', '平均 RTT') }} <b>{{ formatRtt(heartbeatStats?.average_rtt_ms) }}</b></span><span>{{ t('ground.monitor.current_loss', '当前丢包率') }} <b>{{ heartbeatStats?.loss_rate_percent == null ? '—' : `${heartbeatStats.loss_rate_percent.toFixed(2)}%` }}</b></span><span>{{ t('ground.monitor.updated_at', '最近更新时间') }} <b>{{ heartbeatStats?.latest_sample_at || '—' }}</b></span></div>
+      <div class="heartbeat-stats"><span>{{ t('ground.monitor.ping_total', '累计 Ping') }} <b>{{ heartbeatStats?.sent_count ?? '—' }}</b></span><span>{{ t('ground.monitor.ping_success', '成功次数') }} <b>{{ heartbeatStats?.success_count ?? '—' }}</b></span><span>{{ t('ground.monitor.ping_lost', '丢包次数') }} <b>{{ heartbeatStats?.lost_count ?? '—' }}</b></span><span>{{ t('ground.monitor.average_rtt', '平均 RTT') }} <b>{{ formatRtt(heartbeatStats?.average_rtt_ms) }}</b></span><span>{{ t('ground.monitor.updated_at', '最近更新时间') }} <b>{{ heartbeatStats?.latest_sample_at || '—' }}</b></span></div>
       <div class="view-tabs"><el-button :type="viewMode === 'vehicles' ? 'primary' : 'default'" @click="viewMode = 'vehicles'">{{ t('ground.monitor.vehicle_view', '车辆视图') }}</el-button><el-button :type="viewMode === 'aps' ? 'primary' : 'default'" @click="viewMode = 'aps'">{{ t('ground.monitor.ap_view', 'AP 列表') }}</el-button></div>
       <div class="filters"><el-input v-model="search" clearable :placeholder="t('ground.monitor.search', '搜索列车 / 接入区间 AP / UUID')" /><el-select v-model="role" clearable :placeholder="t('ground.monitor.role', '端别')"><el-option label="CT" value="CT" /><el-option label="CW" value="CW" /></el-select><el-select v-model="statusFilter" clearable :placeholder="t('ground.monitor.train_state', '全部状态')"><el-option v-for="value in ['BOTH_ONLINE','CT_ONLY','CW_ONLY','TRAIN_OFFLINE','BOTH_UNREACHABLE_PENDING','SINGLE_ONLINE','SINGLE_OFFLINE','UNKNOWN']" :key="value" :value="value" :label="stateLabel(value)" /></el-select><el-select v-model="station" clearable :placeholder="t('ground.station', '全部站点')"><el-option v-for="item in heartbeat.stations || []" :key="item" :value="item" :label="item" /></el-select><el-checkbox v-model="abnormalOnly">{{ t('ground.monitor.abnormal', '仅异常') }}</el-checkbox></div>
       <section class="syslog-control" aria-label="Syslog 人工控制">
@@ -214,7 +227,7 @@ const metrics = computed(() => {
         <div class="mr-card-heading"><strong>{{ role }}</strong><el-tag size="small" :type="stateType(displayMrStatus(mrFor(train.train_id, role)!))">{{ stateLabel(displayMrStatus(mrFor(train.train_id, role)!)) }}</el-tag><span class="rtt">{{ mrFor(train.train_id, role)!.current_rtt_ms == null ? 'RTT —' : `RTT ${mrFor(train.train_id, role)!.current_rtt_ms} ms` }}</span><button class="more" :aria-label="t('ground.monitor.actions', '操作菜单')" @click.stop="openMenu($event, mrFor(train.train_id, role)!)">⋮</button></div>
         <div class="mr-name"><strong>{{ endpointName(mrFor(train.train_id, role)!) }}</strong><span>{{ mrFor(train.train_id, role)!.station || mrFor(train.train_id, role)!.section || '—' }}</span></div>
         <div class="connection-context"><div class="context-label">{{ t('ground.monitor.section_ap', '接入区间 AP') }}</div><div v-if="visibleAps(mrFor(train.train_id, role)!).length" class="tag-list"><el-tag v-for="ap in visibleAps(mrFor(train.train_id, role)!)" :key="`${ap.name}-${ap.bssid}-${ap.mac}`" size="small" effect="plain">{{ ap.name || ap.bssid || ap.mac }}</el-tag><el-tag v-if="hiddenApCount(mrFor(train.train_id, role)!)" size="small" effect="plain" class="more-tag">+{{ hiddenApCount(mrFor(train.train_id, role)!) }}</el-tag></div><span v-else class="muted-value">{{ t('ground.monitor.no_ap', '暂无关联 AP') }}</span></div>
-        <div class="connection-context"><div class="context-label">{{ t('ground.monitor.access_station', '接入站点') }}</div><div v-if="stationNames(mrFor(train.train_id, role)!).length" class="tag-list"><el-tag v-for="name in stationNames(mrFor(train.train_id, role)!)" :key="name" size="small" effect="plain">{{ name }}</el-tag></div><span v-else class="muted-value">{{ t('ground.monitor.no_station', '未关联站点') }}</span></div>
+        <div class="connection-context"><div class="context-label">{{ t('ground.monitor.access_station', '接入站点') }}</div><div v-if="stationNames(mrFor(train.train_id, role)!).length" class="tag-list"><el-tag v-for="name in stationNames(mrFor(train.train_id, role)!)" :key="name" size="small" effect="plain">{{ name }}</el-tag></div><span v-else class="muted-value">{{ t('ground.monitor.no_station', '未关联站点') }}</span><small>{{ mrFor(train.train_id, role)!.ac_data_status || 'NO_DATA' }} · {{ mrFor(train.train_id, role)!.associated_aps?.[0]?.last_seen_at || '—' }}</small></div>
         <div class="mr-meta"><span>{{ t('ground.monitor.last_success', '最近成功') }} {{ mrFor(train.train_id, role)!.last_success_at || '—' }}</span><span>{{ t('ground.monitor.loss', '丢包率') }} {{ formatLoss(mrFor(train.train_id, role)!) }}</span></div>
       </div><div v-else class="mr-card absent"><strong>{{ role }}</strong><span>{{ t('ground.monitor.no_endpoint', '无端点快照') }}</span></div></template>
       <div class="train-summary"><span class="context-label">{{ t('ground.monitor.vehicle_status', '整车状态') }}</span><el-tag size="small" :type="stateType(displayTrainStatus(train))">{{ stateLabel(displayTrainStatus(train)) }}</el-tag><button @click.stop="openTrainDetail(train)">{{ t('ground.monitor.detail', '整车详情') }}</button></div>

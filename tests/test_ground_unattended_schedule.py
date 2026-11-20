@@ -23,7 +23,7 @@ def test_default_and_regular_schedule_window() -> None:
     profile = GroundUnattendedProfileDTO(site_id="site-a")
     assert profile.schedule_start_time == "07:00"
     assert profile.schedule_end_time == "23:00"
-    assert profile.ac_poll_interval_seconds == 60
+    assert profile.ac_poll_interval_seconds == 300
     assert profile.ac_mesh_link_poll_interval_seconds == 300
     assert profile.syslog_receiver_auto_start_enabled is False
     assert profile.boot_check_auto_start_enabled is False
@@ -60,6 +60,26 @@ def test_legacy_ac_interval_migration_runs_once(tmp_path) -> None:
     repository.initialize()
 
     assert repository.get_profile().ac_mesh_link_poll_interval_seconds == 600
+
+
+def test_legacy_default_ac_interval_is_preserved_during_migration(tmp_path) -> None:
+    repository = GroundUnattendedRepository(tmp_path / "ground.sqlite", site_id="site-a")
+    repository.get_profile()
+    with repository._connection() as connection:
+        connection.execute(
+            "UPDATE ground_unattended_profiles "
+            "SET ac_poll_interval_seconds=60, ac_mesh_link_poll_interval_seconds=300"
+        )
+        connection.execute(
+            "DELETE FROM ground_unattended_schema "
+            "WHERE key='ac_mesh_link_poll_interval_v1'"
+        )
+
+    repository.initialize()
+
+    profile = repository.get_profile()
+    assert profile.ac_poll_interval_seconds == 60
+    assert profile.ac_mesh_link_poll_interval_seconds == 60
 
 
 def test_profile_rejects_invalid_timezone_before_runtime() -> None:
@@ -249,13 +269,13 @@ def test_running_profile_hot_updates_ac_and_background_switches() -> None:
 
     effective = supervisor._runtime_profile(latest)
 
-    assert effective.ac_poll_interval_seconds == 90
+    assert effective.ac_poll_interval_seconds == 600
     assert effective.ac_mesh_link_poll_interval_seconds == 600
-    assert effective.syslog_receiver_auto_start_enabled is True
+    assert effective.syslog_receiver_auto_start_enabled is False
     assert effective.boot_check_auto_start_enabled is True
-    assert effective.syslog_auto_repair_enabled is True
+    assert effective.syslog_auto_repair_enabled is False
     assert effective.ac_mesh_link_auto_collection_enabled is True
-    assert supervisor._active_profile.ac_poll_interval_seconds == 60
+    assert supervisor._active_profile.ac_poll_interval_seconds == 300
 
 
 def test_manual_config_check_uses_inventory_when_ac_targets_are_missing() -> None:
@@ -573,8 +593,10 @@ def test_supervisor_auto_starts_and_finishes_at_window_boundary(tmp_path) -> Non
         base_query=_BaseQuery(),  # type: ignore[arg-type]
         mesh_query=_MeshQuery(),  # type: ignore[arg-type]
         vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
+        network_service=_network_service(),  # type: ignore[arg-type]
         now_provider=lambda: clock[0],
     )
+    supervisor._start_syslog = lambda *_args: None  # type: ignore[method-assign]
     supervisor._tick()
     assert repo.get_active_run()["state"] == "RUNNING"  # type: ignore[index]
     clock[0] = datetime.fromisoformat("2026-07-25T23:00:00+08:00")
@@ -614,6 +636,7 @@ def test_running_run_uses_frozen_end_when_profile_changes_at_midday(tmp_path) ->
         base_query=_BaseQuery(),  # type: ignore[arg-type]
         mesh_query=_MeshQuery(),  # type: ignore[arg-type]
         vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
+        network_service=_network_service(),  # type: ignore[arg-type]
         now_provider=lambda: clock[0],
     )
     supervisor._start_fleet_ping = lambda *_args: None  # type: ignore[method-assign]
@@ -659,8 +682,10 @@ def test_manual_stop_does_not_auto_restart_inside_the_same_window(tmp_path) -> N
         base_query=_BaseQuery(),  # type: ignore[arg-type]
         mesh_query=_MeshQuery(),  # type: ignore[arg-type]
         vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
+        network_service=_network_service(),  # type: ignore[arg-type]
         now_provider=lambda: clock[0],
     )
+    supervisor._start_syslog = lambda *_args: None  # type: ignore[method-assign]
 
     supervisor._tick()
     run_id = repo.get_active_run()["run_id"]  # type: ignore[index]
@@ -740,8 +765,10 @@ def test_supervisor_allows_explicit_same_day_restart_after_ready_archive(tmp_pat
         base_query=_BaseQuery(),  # type: ignore[arg-type]
         mesh_query=_MeshQuery(),  # type: ignore[arg-type]
         vehicle_query=_VehicleQuery(),  # type: ignore[arg-type]
+        network_service=_network_service(),  # type: ignore[arg-type]
         now_provider=lambda: clock[0],
     )
+    supervisor._start_syslog = lambda *_args: None  # type: ignore[method-assign]
 
     supervisor._tick()
     assert repo.get_active_run() is None
@@ -859,6 +886,10 @@ def _available_udp_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return int(probe.getsockname()[1])
+
+
+def _network_service() -> SimpleNamespace:
+    return SimpleNamespace(validate_profile_addresses=lambda **_kwargs: None)
 
 
 class _BaseQuery:

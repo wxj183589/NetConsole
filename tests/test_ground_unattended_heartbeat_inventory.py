@@ -183,7 +183,7 @@ def test_default_page_retains_stopped_samples_and_current_inventory(inventory_ap
     }, entity_type="MR", entity_id=cw.id)
     f.repository.migrate_resident_heartbeat("heartbeat-resident")
     page = _page(f, site)
-    assert page.run_id == "heartbeat-resident" and page.data_state == "STOPPED"
+    assert page.run_id == "heartbeat-resident" and page.data_state == "DISABLED"
     assert (page.total, page.total_mrs) == (1, 2)
     assert (page.heartbeat_statistics.sent_count, page.heartbeat_statistics.success_count,
             page.heartbeat_statistics.lost_count) == (7, 6, 1)

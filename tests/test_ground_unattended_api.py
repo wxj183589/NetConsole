@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import inspect
 import json
 from contextlib import contextmanager
@@ -34,6 +35,18 @@ from netconsole.services.ground_unattended.application_service import (
     GroundUnattendedError,
 )
 from netconsole.services.ground_unattended.schedule import schedule_window
+
+
+def _local_syslog_ip(app) -> str:
+    rows = (
+        app.state.ground_unattended_application_service.network_service.provider
+        .list_ipv4_addresses()
+    )
+    return next(
+        row.ipv4
+        for row in rows
+        if not ipaddress.ip_address(row.ipv4).is_loopback
+    )
 
 
 def test_ground_profile_reader_ignores_future_additive_columns(tmp_path) -> None:
@@ -180,7 +193,9 @@ def test_ground_unattended_default_profile_does_not_overwrite_concurrent_save(
 
 def test_ground_unattended_profile_status_and_actions_are_site_scoped(tmp_path) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
-    with TestClient(create_app(paths=paths)) as client:
+    app = create_app(paths=paths)
+    local_syslog_ip = _local_syslog_ip(app)
+    with TestClient(app) as client:
         profile = client.get("/api/rail-transit/ground-unattended/profile")
         assert profile.status_code == 200
         assert profile.json()["schedule_start_time"] == "07:00"
@@ -190,9 +205,9 @@ def test_ground_unattended_profile_status_and_actions_are_site_scoped(tmp_path) 
                 "enabled": True,
                 "schedule_start_time": "08:00",
                 "schedule_end_time": "22:30",
-                "syslog_server_ip": "192.0.2.100",
-                "allow_external_syslog_address": True,
-                "external_syslog_address_confirmation": True,
+                "syslog_server_ip": local_syslog_ip,
+                "allow_external_syslog_address": False,
+                "external_syslog_address_confirmation": False,
             }
         )
         saved = client.put("/api/rail-transit/ground-unattended/profile", json=payload)
@@ -388,6 +403,12 @@ def test_persisted_quick_ping_internal_accumulators_do_not_break_http_list(tmp_p
             "state": "COMPLETED",
             "targets": [{"target_ip": "192.0.2.10", "mr_id": "mr-1", "train_id": "train-1", "mr_role": "CT"}],
             "config": {"timeout_ms": 1000},
+            "target_runtime": {
+                "192.0.2.10": {
+                    "state": "COMPLETED",
+                    "_close_confirmed": True,
+                }
+            },
             "segment_paths": [],
             "started_at": timestamp,
             "ended_at": timestamp,
@@ -402,6 +423,7 @@ def test_persisted_quick_ping_internal_accumulators_do_not_break_http_list(tmp_p
 
     assert response.status_code == 200
     assert response.json()["items"][0]["run_id"] == "persisted-quick-ping"
+    assert "_close_confirmed" not in response.json()["items"][0]["target_runtime"]["192.0.2.10"]
 
 
 def test_ground_history_forwards_filters_and_enforces_page_bounds(tmp_path) -> None:
@@ -891,7 +913,7 @@ def test_timeline_api_returns_exact_server_page_and_search_total(
     assert "AP01" in payload["items"][0]["title"]
 
 
-def test_ground_profile_requires_local_address_or_confirmed_external_nat(
+def test_ground_profile_requires_bindable_local_syslog_address(
     tmp_path,
 ) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
@@ -933,12 +955,9 @@ def test_ground_profile_requires_local_address_or_confirmed_external_nat(
             json={**external, "allow_external_syslog_address": True},
         )
         assert needs_confirmation.status_code == 409
-        assert (
-            needs_confirmation.json()["detail"]["code"]
-            == "EXTERNAL_SYSLOG_CONFIRMATION_REQUIRED"
-        )
+        assert needs_confirmation.json()["detail"]["code"] == "SYSLOG_TARGET_NOT_LOCAL"
 
-        saved = client.put(
+        confirmed = client.put(
             "/api/rail-transit/ground-unattended/profile",
             json={
                 **external,
@@ -946,11 +965,11 @@ def test_ground_profile_requires_local_address_or_confirmed_external_nat(
                 "external_syslog_address_confirmation": True,
             },
         )
-        assert saved.status_code == 200
-        assert saved.json()["syslog_server_ip"] == "192.0.2.100"
+        assert confirmed.status_code == 409
+        assert confirmed.json()["detail"]["code"] == "SYSLOG_TARGET_NOT_LOCAL"
 
 
-def test_syslog_transport_status_keeps_return_and_listen_state_separate(
+def test_syslog_transport_status_uses_one_return_and_listen_target(
     tmp_path,
 ) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
@@ -992,12 +1011,12 @@ def test_syslog_transport_status_keeps_return_and_listen_state_separate(
     payload = response.json()
     assert payload["configured_return_ip"] == "10.8.0.3"
     assert payload["return_address_status"] == "NOT_LOCAL"
-    assert payload["listen_host"] == "0.0.0.0"
-    assert payload["port_state"] == "AVAILABLE"
+    assert payload["listen_host"] == "10.8.0.3"
+    assert payload["port_state"] == "ADDRESS_NOT_LOCAL"
     assert payload["ports_match"] is None
     assert payload["recommended_local_ip"] == "10.0.0.24"
     assert payload["recommended_adapter_name"] == "板载"
-    assert inspected == [("0.0.0.0", 514)]
+    assert inspected == []
 
 
 def test_syslog_transport_status_distinguishes_receiver_from_other_process(
@@ -1018,7 +1037,7 @@ def test_syslog_transport_status_distinguishes_receiver_from_other_process(
     )
     health = {
         "udp_running": True,
-        "udp_listen_address": "0.0.0.0:514",
+        "udp_listen_address": "10.0.0.24:514",
         "udp_received_count": 8,
         "udp_unidentified_count": 2,
         "udp_identity_conflict_count": 1,
@@ -1065,7 +1084,7 @@ def test_syslog_transport_status_distinguishes_receiver_from_other_process(
     other = service.syslog_transport_status("site-a")
     assert other.receiver_state == "STOPPED"
     assert other.port_state == "OCCUPIED_BY_OTHER"
-    assert inspected == [("0.0.0.0", 514)]
+    assert inspected == [("10.0.0.24", 514)]
 
 
 def test_ground_unattended_empty_pages_are_stable(tmp_path) -> None:
@@ -1719,6 +1738,9 @@ def test_target_port_change_requires_single_mr_confirmation_and_is_audited(
         site_id="site-a",
         repository=repository,
         supervisor=supervisor,  # type: ignore[arg-type]
+        network_service=SimpleNamespace(
+            validate_profile_addresses=lambda **_kwargs: None
+        ),  # type: ignore[arg-type]
     )
 
     with pytest.raises(GroundUnattendedError) as fleet_error:
@@ -1746,7 +1768,15 @@ def test_target_port_change_requires_single_mr_confirmation_and_is_audited(
         explicit_confirmation=True,
     )
 
-    assert supervisor.config_checks == [("mr-ct", True, True)]
+    assert supervisor.config_checks == [("mr-ct", False, True)]
+    with pytest.raises(GroundUnattendedError) as repair_error:
+        service.request_config_check(
+            "site-a",
+            device_uuid="mr-ct",
+            mode="AUTO_REPAIR",
+        )
+    assert repair_error.value.code == "CONFIG_CHECK_READ_ONLY"
+    assert supervisor.config_checks == [("mr-ct", False, True)]
     events = repository.list_events(
         "run-port-change",
         event_type="mr_loghost_port_change_authorized",
@@ -1764,10 +1794,10 @@ def test_syslog_control_route_persists_job_center_task_without_500(
     repository.save_profile(
         repository.get_profile().model_copy(
             update={
-                "syslog_server_ip": "192.0.2.100",
+                "syslog_server_ip": _local_syslog_ip(app),
                 "syslog_server_port": 5514,
-                "allow_external_syslog_address": True,
-                "external_syslog_address_confirmation": True,
+                "allow_external_syslog_address": False,
+                "external_syslog_address_confirmation": False,
             }
         )
     )
@@ -1819,6 +1849,7 @@ def test_start_is_idempotent_for_active_run_and_rejects_archived_day(tmp_path) -
             "enabled": True,
             "syslog_server_ip": "192.0.2.100",
             "allow_external_syslog_address": True,
+            "external_syslog_address_confirmation": True,
         }
     )
     repository.save_profile(profile)
@@ -1828,6 +1859,9 @@ def test_start_is_idempotent_for_active_run_and_rejects_archived_day(tmp_path) -
         site_id="site-a",
         repository=repository,
         supervisor=supervisor,  # type: ignore[arg-type]
+        network_service=SimpleNamespace(
+            validate_profile_addresses=lambda **_kwargs: None
+        ),  # type: ignore[arg-type]
     )
     window = schedule_window(
         datetime.now().astimezone(),

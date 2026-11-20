@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import uuid
 import threading
 from collections.abc import Callable, Collection
@@ -389,8 +390,12 @@ class TaskApplicationService:
                 len(repository.list(statuses=_ACTIVE_TASK_STATES, limit=2_000))
                 for repository in (self.repository(site) for site in sites)
             )
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, sqlite3.DatabaseError) as exc:
             # During final persistence teardown, runtime counts remain authoritative.
+            app_logger.log_warning(
+                "TASK_SHUTDOWN_SNAPSHOT_UNAVAILABLE",
+                f"error_type={exc.__class__.__name__}; message={exc}",
+            )
             snapshot["active_tasks"] = int(snapshot.get("active_tasks", 0))
         snapshot["active_workers"] = int(snapshot.get("active_workers", 0))
         return snapshot

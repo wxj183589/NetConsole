@@ -426,14 +426,12 @@ const localIpv4Values = computed(() => new Set(localIpv4Addresses.value.map((row
 
 const returnAddressIsLocal = computed(() => Boolean(profile.value?.syslog_server_ip && localIpv4Values.value.has(profile.value.syslog_server_ip)))
 
-const listenAddressIsLocal = computed(() => Boolean(profile.value && (profile.value.udp_listen_host === '0.0.0.0' || localIpv4Values.value.has(profile.value.udp_listen_host))))
-
 const startBlockedReason = computed(() => {
   const transport = syslogTransport.value
   if (!profile.value?.enabled) return ''
   if (!transport) return '正在检查 MR 日志回传地址，请稍候。'
   if (transport.return_address_status === 'NOT_LOCAL') {
-    return `MR 日志回传地址 ${transport.configured_return_ip}:${transport.configured_return_port} 当前不属于本机。请前往设置选择本机地址，或确认使用外部/NAT 地址。`
+    return `MR 日志回传地址 ${transport.configured_return_ip}:${transport.configured_return_port} 当前不属于本机，无法启动本地 Syslog 监听。请前往设置选择本机地址。`
   }
   if (transport.return_address_status === 'EMPTY') return '尚未配置 MR 日志回传地址，请前往设置。'
   if (transport.return_address_status === 'INVALID') return 'MR 日志回传地址无效，请前往设置。'
@@ -1014,21 +1012,15 @@ async function saveProfile(message = t('ground.profile_saved', '无人值守配�
   saving.value = true
   try {
     if (profile.value.enabled && !profile.value.syslog_server_ip.trim()) throw new Error('启用无人值守前必须选择具体的 MR 日志回传地址')
-    if (!listenAddressIsLocal.value) throw new Error('本机监听地址已失效，请刷新地址列表后重新选择')
-    const external = Boolean(profile.value.syslog_server_ip && !returnAddressIsLocal.value)
-    if (external && !profile.value.allow_external_syslog_address) throw new Error('MR 日志回传地址不属于本机；如确为外部 NAT 地址，请启用高级选项')
-    let confirmation = false
-    if (external) {
-      await ElMessageBox.confirm(
-        '该地址不属于本机。仅在现场已配置外部 NAT/映射时使用；保存不会自动下发到 MR。确认继续？',
-        '确认外部日志回传地址',
-        { type: 'warning', confirmButtonText: '确认使用', cancelButtonText: '取消' },
-      )
-      confirmation = true
-    }
+    if (profile.value.syslog_server_ip && !returnAddressIsLocal.value) throw new Error('Syslog IP 不属于本机，无法作为本地 UDP 监听地址')
     profile.value = await saveGroundProfile({
       ...profile.value,
-      external_syslog_address_confirmation: confirmation,
+      udp_listen_host: profile.value.syslog_server_ip,
+      udp_listen_port: profile.value.syslog_server_port,
+      allow_external_syslog_address: false,
+      external_syslog_address_confirmation: false,
+      syslog_receiver_auto_start_enabled: profile.value.enabled,
+      syslog_auto_repair_enabled: false,
     })
     ElMessage.success(message)
     await loadAll(true)
@@ -1069,7 +1061,7 @@ async function checkUdpPort(): Promise<void> {
   if (!profile.value) return
   networkLoading.value = true
   try {
-    udpPortCheck.value = await checkGroundUdpPort(profile.value.udp_listen_host, profile.value.udp_listen_port)
+    udpPortCheck.value = await checkGroundUdpPort(profile.value.syslog_server_ip, profile.value.syslog_server_port)
   } catch (reason) {
     ElMessage.error(errorText(reason, 'UDP 端口检查失败'))
   } finally {
@@ -2424,7 +2416,6 @@ archiveTableMaxHeight,
 visibleIpv4Addresses,
 localIpv4Values,
 returnAddressIsLocal,
-listenAddressIsLocal,
 startBlockedReason,
 pingAvailability,
 pingEmptyDescription,

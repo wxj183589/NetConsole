@@ -131,6 +131,7 @@ export const requestGroundConfigCheck = (deviceUuid = '', allowTargetPortChange 
   method: 'POST',
   body: JSON.stringify({
     device_uuid: deviceUuid,
+    mode: 'VERIFY_ONLY',
     allow_target_port_change: allowTargetPortChange,
     explicit_confirmation: allowTargetPortChange,
   }),

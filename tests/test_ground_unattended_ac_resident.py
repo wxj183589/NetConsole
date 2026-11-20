@@ -128,6 +128,9 @@ def _supervisor(
 
 def _heartbeat_fixture(tmp_path: Path):
     supervisor, repository, mesh = _supervisor(tmp_path)
+    repository.save_heartbeat_config(
+        repository.get_heartbeat_config().model_copy(update={"enabled": True})
+    )
     repository.sync_inventory(
         trains=[{"train_id": "heartbeat-train", "train_no": "001"}],
         endpoints=[{

@@ -5,13 +5,61 @@ import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeC
 
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
 
-export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string, end: string, theme: NetConsoleChartTokens, selectedTime = ''): Record<string, unknown> {
+export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string, end: string, theme: NetConsoleChartTokens, selectedTime = '', mode: 'all' | 'ping' | 'peer' = 'all'): Record<string, unknown> {
   const begin = Date.parse(start), finish = Date.parse(end)
   const points = data.series.points.filter((point) => !point.warmup_ignored && Date.parse(point.ts) >= begin && Date.parse(point.ts) <= finish)
   const ips = [...new Set(points.map((point) => point.target_ip))]
   const intervals = data.peer_intervals.filter((row) => Date.parse(row.end) >= begin && Date.parse(row.start) <= finish)
   const peers = [...new Set(intervals.map((row) => row.peer_name || row.bssid || 'UNKNOWN'))]
   const meshEvents = (data.mesh_events || []).filter((row) => Date.parse(row.event_time || row.receive_time) >= begin && Date.parse(row.event_time || row.receive_time) <= finish)
+  if (mode === 'peer') {
+    const peerData = intervals.map((row, index) => {
+      const rssi = Number.isFinite(row.rssi) ? Number(row.rssi) : null
+      return [Math.max(begin, Date.parse(row.start)), Math.min(finish, Date.parse(row.end)), rssi == null ? 0 : Math.max(0, Math.min(80, rssi + 100)), index]
+    })
+    return {
+      ...createMultiSeriesTimeChartBaseOption(theme, { unit: 'RSSI', pointCount: intervals.length, showLegend: false }),
+      toolbox: { show: false },
+      grid: { left: 65, right: 36, top: 28, bottom: 64, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
+      xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
+      yAxis: { type: 'value', name: 'RSSI 强度', min: 0, max: 80 },
+      dataZoom: [{ type: 'inside', xAxisIndex: 0, filterMode: 'weakFilter' }, { type: 'slider', xAxisIndex: 0, bottom: 8, filterMode: 'weakFilter' }],
+      tooltip: {
+        trigger: 'item', confine: true, appendToBody: false,
+        formatter: (params: { data?: [number, number, number, number] }) => {
+          const row = intervals[Number(params.data?.[3])]
+          if (!row) return 'Peer AP：无数据'
+          const duration = Math.max(0, Date.parse(row.end) - Date.parse(row.start)) / 1000
+          return [
+            `Peer AP：${escape(row.peer_name || row.bssid || 'UNKNOWN')}`,
+            `MAC：${escape(row.bssid || 'UNKNOWN')}`,
+            `RSSI：${escape(Number.isFinite(row.rssi) ? `${row.rssi} dBm` : '无数据')}`,
+            `切入：${escape(new Date(row.start).toLocaleString())}`,
+            `切出：${escape(new Date(row.end).toLocaleString())}`,
+            `持续：${escape(`${duration.toFixed(1)} 秒`)}`,
+          ].join('<br>')
+        },
+      },
+      series: [{
+        id: 'peer-rssi-intervals', name: 'Peer AP 主用区间', type: 'custom', data: peerData,
+        encode: { x: [0, 1], y: 2 },
+        renderItem: (_params: unknown, api: { value: (index: number) => number; coord: (values: number[]) => number[]; style: (value?: object) => object }) => {
+          const startPoint = api.coord([api.value(0), 0])
+          const endPoint = api.coord([api.value(1), api.value(2)])
+          const hasRssi = Number.isFinite(intervals[api.value(3)]?.rssi)
+          return {
+            type: 'rect',
+            shape: {
+              x: startPoint[0], y: hasRssi ? endPoint[1] : startPoint[1]! - 3,
+              width: Math.max(1, endPoint[0]! - startPoint[0]!),
+              height: hasRssi ? Math.max(2, startPoint[1]! - endPoint[1]!) : 6,
+            },
+            style: api.style(hasRssi ? undefined : { opacity: 0.35 }),
+          }
+        },
+      }],
+    }
+  }
   const series: Array<Record<string, unknown>> = []
   for (const ip of ips) {
     const rows = points.filter((point) => point.target_ip === ip).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
@@ -28,6 +76,20 @@ export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string,
     series.push({ id: `rtt:${ip}`, name: `${ip} RTT`, type: 'line', data: rtt, connectNulls: false, showSymbol: false,
       markLine: selectedTime ? { silent: true, symbol: 'none', data: [{ xAxis: Date.parse(selectedTime), label: { formatter: 'Mesh' } }] } : { data: [] } })
     series.push({ id: `loss:${ip}`, name: `${ip} ${t('ground.monitor.packet_loss', '单包丢包')}`, type: 'line', yAxisIndex: 1, data: loss, connectNulls: false, showSymbol: false, lineStyle: { opacity: 0.5 }, step: 'end' })
+  }
+  if (mode === 'ping') {
+    return {
+      ...createMultiSeriesTimeChartBaseOption(theme, { unit: 'ms', pointCount: points.length, showLegend: true }),
+      toolbox: { show: false },
+      legend: { top: 4, type: 'scroll' },
+      grid: { left: 65, right: 50, top: 48, bottom: 64, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
+      axisPointer: { link: [{ xAxisIndex: 'all' }] },
+      xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
+      yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }],
+      dataZoom: [{ type: 'inside', xAxisIndex: 0, filterMode: 'weakFilter' }, { type: 'slider', xAxisIndex: 0, bottom: 8, filterMode: 'weakFilter' }],
+      tooltip: { trigger: 'axis', confine: true, appendToBody: false },
+      series,
+    }
   }
   series.push({ id: 'peer-intervals', name: 'Peer AP', type: 'custom', xAxisIndex: 1, yAxisIndex: 2,
     data: intervals.map((row) => [peers.indexOf(row.peer_name || row.bssid || 'UNKNOWN'), Math.max(begin, Date.parse(row.start)), Math.min(finish, Date.parse(row.end))]),

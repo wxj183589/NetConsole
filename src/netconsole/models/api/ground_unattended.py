@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator, model_validator
@@ -117,7 +117,7 @@ class GroundUnattendedProfileDTO(ApiModel):
         default="23:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
     )
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
-    ac_poll_interval_seconds: int = Field(default=60, ge=3, le=300)
+    ac_poll_interval_seconds: int = Field(default=300, ge=3, le=3600)
     ac_mesh_link_poll_interval_seconds: int = Field(default=300, ge=3, le=3600)
     arp_collection_device_uuid: str = Field(default="", max_length=100)
     arp_management_vlans: list[int] = Field(default_factory=list, max_length=64)
@@ -133,7 +133,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     max_active_mrs: int = Field(default=4, ge=1, le=16)
     max_starting_mrs: int = Field(default=2, ge=1, le=8)
     max_finalizing_mrs: int = Field(default=2, ge=1, le=8)
-    deep_collection_master_enabled: bool = True
+    deep_collection_master_enabled: bool = False
     deep_fping_required: bool = True
     deep_fping: OnlineMrWebFpingDTO = Field(default_factory=OnlineMrWebFpingDTO)
     fleet_ping_interval_ms: int = Field(default=1000, ge=100, le=60_000)
@@ -172,6 +172,32 @@ class GroundUnattendedProfileDTO(ApiModel):
     storage_io_profile: str = Field(default="AUTO", pattern=r"^(AUTO|FAST|CONSERVATIVE)$")
     created_at: str = ""
     updated_at: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_runtime_fields(cls, value: object) -> object:
+        """Collapse legacy duplicate controls without rewriting explicit intent."""
+        if not isinstance(value, Mapping):
+            return value
+        normalized = dict(value)
+        if "ac_mesh_link_poll_interval_seconds" not in normalized:
+            legacy_interval = normalized.get("ac_poll_interval_seconds")
+            if legacy_interval not in (None, ""):
+                normalized["ac_mesh_link_poll_interval_seconds"] = legacy_interval
+        canonical_interval = normalized.get("ac_mesh_link_poll_interval_seconds", 300)
+        normalized["ac_poll_interval_seconds"] = canonical_interval
+
+        # The receiver is part of the unattended runtime.  Keep old fields in
+        # the wire/storage contract, but never allow them to create a second
+        # lifecycle or a second address authority.
+        enabled = bool(normalized.get("enabled", False))
+        normalized["syslog_receiver_auto_start_enabled"] = enabled
+        normalized["syslog_auto_repair_enabled"] = False
+        server_ip = str(normalized.get("syslog_server_ip") or "").strip()
+        if server_ip:
+            normalized["udp_listen_host"] = server_ip
+            normalized["udp_listen_port"] = normalized.get("syslog_server_port", 514)
+        return normalized
 
     @field_validator("timezone", mode="before")
     @classmethod
@@ -213,6 +239,12 @@ class GroundUnattendedProfileDTO(ApiModel):
     @model_validator(mode="after")
     def validate_limits(self) -> "GroundUnattendedProfileDTO":
         self.deep_fping_required = True
+        self.ac_poll_interval_seconds = self.ac_mesh_link_poll_interval_seconds
+        self.syslog_receiver_auto_start_enabled = self.enabled
+        self.syslog_auto_repair_enabled = False
+        if self.syslog_server_ip:
+            self.udp_listen_host = self.syslog_server_ip
+            self.udp_listen_port = self.syslog_server_port
         try:
             if ipaddress.ip_address(self.udp_listen_host).version != 4:
                 raise ValueError
@@ -578,7 +610,7 @@ class GroundTrainPolicyUpdateDTO(ApiModel):
 
 class GroundConfigCheckRequestDTO(ApiModel):
     device_uuid: str = Field(default="", max_length=100)
-    mode: Literal["VERIFY_ONLY", "AUTO_REPAIR"] = "AUTO_REPAIR"
+    mode: Literal["VERIFY_ONLY", "AUTO_REPAIR"] = "VERIFY_ONLY"
     allow_target_port_change: bool = False
     explicit_confirmation: bool = False
 
@@ -702,7 +734,7 @@ class GroundAcPollerHealthDTO(ApiModel):
 class GroundAcBasicCollectionDTO(ApiModel):
     device_uuid: str
     device_name: str = ""
-    enabled: bool = True
+    enabled: bool = False
     state: str = "STOPPED"
     last_success_at: str = ""
     last_failure_at: str = ""
@@ -1830,18 +1862,33 @@ class GroundHeartbeatStatisticsDTO(ApiModel):
 
 
 class HeartbeatConfigDTO(ApiModel):
-    enabled: bool = True
+    enabled: bool = False
     interval_ms: int = Field(default=1000, ge=100, le=60000)
     timeout_ms: int = Field(default=4000, ge=100, le=60000)
     packet_size: int = Field(default=64, ge=1, le=65507)
     shard_size: int = Field(default=12, ge=2, le=32)
     warmup_seconds: int = Field(default=10, ge=0, le=300)
     backup_policy: Literal["MONITOR", "PRIMARY_ONLY"] = "MONITOR"
+    excluded_train_ids: list[str] = Field(default_factory=list, max_length=10_000)
+
+    @field_validator("excluded_train_ids", mode="before")
+    @classmethod
+    def normalize_excluded_train_ids(cls, value: object) -> list[str]:
+        if value in (None, ""):
+            return []
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError("Heartbeat 排除列车必须是列车编号列表")
+        result: list[str] = []
+        for item in value:
+            train_id = str(item or "").strip()
+            if train_id and train_id not in result:
+                result.append(train_id)
+        return result
 
 
 class HeartbeatRuntimeDTO(ApiModel):
     state: str = "STOPPED"
-    enabled: bool = True
+    enabled: bool = False
     target_count: int = 0
     process_count: int = 0
     last_sample_at: str = ""

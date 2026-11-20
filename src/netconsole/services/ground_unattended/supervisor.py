@@ -361,7 +361,7 @@ class GroundUnattendedSupervisor:
         self,
         device_uuid: str = "",
         *,
-        repair_enabled: bool = True,
+        repair_enabled: bool = False,
         allow_target_port_change: bool = False,
         task_id: str = "",
     ) -> None:
@@ -1338,14 +1338,16 @@ class GroundUnattendedSupervisor:
     def _runtime_profile(
         self, latest: GroundUnattendedProfileDTO
     ) -> GroundUnattendedProfileDTO:
-        active = self._active_profile or latest
+        latest = GroundUnattendedProfileDTO.model_validate(
+            latest.model_dump(mode="python")
+        )
+        active = GroundUnattendedProfileDTO.model_validate(
+            (self._active_profile or latest).model_dump(mode="python")
+        )
         hot_fields = (
             "ping_depot_trains_enabled",
-            "ac_poll_interval_seconds",
             "ac_mesh_link_poll_interval_seconds",
-            "syslog_receiver_auto_start_enabled",
             "boot_check_auto_start_enabled",
-            "syslog_auto_repair_enabled",
             "ac_mesh_link_auto_collection_enabled",
         )
         updates = {
@@ -1355,7 +1357,9 @@ class GroundUnattendedSupervisor:
         }
         if not updates:
             return active
-        return active.model_copy(update=updates)
+        return GroundUnattendedProfileDTO.model_validate(
+            active.model_copy(update=updates).model_dump(mode="python")
+        )
 
     def _network_profile_error(
         self, profile: GroundUnattendedProfileDTO
@@ -1545,7 +1549,7 @@ class GroundUnattendedSupervisor:
     def _poll_if_due(self, run, profile, now, *, scheduling_paused: bool) -> None:
         import time
 
-        receiver_enabled = bool(profile.syslog_receiver_auto_start_enabled)
+        receiver_enabled = bool(profile.enabled)
         if receiver_enabled != self._syslog_auto_start_state:
             self._start_syslog(run, profile)
         if self._syslog_recovery_pending:
@@ -1656,7 +1660,7 @@ class GroundUnattendedSupervisor:
             control = self.repository.get_ac_basic_control(device_uuid)
             if control is None:
                 control = self.repository.save_ac_basic_control(device_uuid)
-            if not bool(control.get("enabled", True)):
+            if not bool(control.get("enabled", False)):
                 if device_uuid in self._ac_basic_futures:
                     future = self._ac_basic_futures.pop(device_uuid)
                     future.cancel()
@@ -3226,7 +3230,7 @@ class GroundUnattendedSupervisor:
     def _start_syslog(
         self, run: dict[str, Any], profile: GroundUnattendedProfileDTO
     ) -> None:
-        if not profile.syslog_receiver_auto_start_enabled:
+        if not profile.enabled:
             if self.syslog_receiver.running:
                 self.syslog_receiver.stop()
             self._syslog_auto_start_state = False
@@ -3242,8 +3246,8 @@ class GroundUnattendedSupervisor:
                 active_dir=self.paths.ground_unattended_active_dir(
                     self.site_id, str(run["run_date"])
                 ),
-                listen_host=profile.udp_listen_host,
-                listen_port=profile.udp_listen_port,
+                listen_host=profile.syslog_server_ip,
+                listen_port=profile.syslog_server_port,
                 queue_capacity=profile.udp_queue_capacity,
                 flush_records=profile.raw_flush_record_count,
                 flush_interval_seconds=profile.raw_flush_interval_seconds,
@@ -3284,8 +3288,8 @@ class GroundUnattendedSupervisor:
                 code="UDP_LISTEN_START_FAILED",
                 message=f"{exc.__class__.__name__}: {exc}",
                 details={
-                    "listen_host": profile.udp_listen_host,
-                    "listen_port": profile.udp_listen_port,
+                    "listen_host": profile.syslog_server_ip,
+                    "listen_port": profile.syslog_server_port,
                 },
             )
             raise

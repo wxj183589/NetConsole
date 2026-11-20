@@ -467,6 +467,7 @@ export interface HeartbeatConfig {
   shard_size: number
   warmup_seconds: number
   backup_policy: 'MONITOR' | 'PRIMARY_ONLY'
+  excluded_train_ids: string[]
 }
 
 export interface HeartbeatRuntime {

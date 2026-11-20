@@ -171,6 +171,7 @@ def test_same_ip_different_port_is_blocked_instead_of_treated_as_missing() -> No
         allow_target_port_change=True,
     )
     assert authorized.repair_commands == (
+        "info-center enable",
         f"info-center loghost {TARGET_IP} port 514",
     )
 
@@ -188,11 +189,12 @@ def test_missing_ip_can_be_added_without_removing_other_targets() -> None:
         "OTHER_TARGETS_PRESENT",
     )
     assert missing.repair_commands == (
+        "info-center enable",
         "info-center loghost 192.0.2.101 port 514",
     )
 
 
-def test_runtime_target_and_source_rules_are_both_required() -> None:
+def test_runtime_target_is_required_and_source_rules_are_read_only() -> None:
     incomplete_config = "\n".join(
         (
             "info-center enable",
@@ -207,18 +209,10 @@ def test_runtime_target_and_source_rules_are_both_required() -> None:
         target_port=514,
     )
 
-    assert verification.complete is False
+    assert verification.complete is True
     assert verification.runtime_missing == ()
-    assert verification.source_rule_missing == (
-        "info-center source wmesh loghost level notification",
-        "info-center source ifnet loghost level notification",
-        "info-center source cfgman loghost level notification",
-    )
-    assert verification.repair_commands == (
-        "info-center source wmesh loghost level notification",
-        "info-center source ifnet loghost level notification",
-        "info-center source cfgman loghost level notification",
-    )
+    assert verification.source_rule_missing == ()
+    assert verification.repair_commands == ()
 
 
 def test_runtime_disabled_repairs_enable_and_missing_target() -> None:
@@ -241,7 +235,7 @@ def test_runtime_disabled_repairs_enable_and_missing_target() -> None:
     )
 
 
-def test_runtime_without_target_repairs_only_loghost() -> None:
+def test_runtime_without_target_uses_exact_join_profile() -> None:
     verification = verify_syslog_profile(
         "Information Center: Enabled\nLog host: Enabled\n",
         SOURCE_RULES_CONFIG,
@@ -251,6 +245,7 @@ def test_runtime_without_target_repairs_only_loghost() -> None:
 
     assert verification.runtime_missing == ("loghost_target",)
     assert verification.repair_commands == (
+        "info-center enable",
         f"info-center loghost {TARGET_IP} port 514",
     )
 
@@ -280,7 +275,7 @@ def test_runtime_without_target_repairs_only_loghost() -> None:
         ),
     ),
 )
-def test_runtime_correct_repairs_only_missing_source_rule(
+def test_runtime_correct_never_repairs_source_rules(
     configuration: str,
     expected_command: str,
 ) -> None:
@@ -292,8 +287,9 @@ def test_runtime_correct_repairs_only_missing_source_rule(
     )
 
     assert verification.runtime_missing == ()
-    assert verification.source_rule_missing == (expected_command,)
-    assert verification.repair_commands == (expected_command,)
+    assert expected_command not in verification.repair_commands
+    assert verification.source_rule_missing == ()
+    assert verification.repair_commands == ()
 
 
 def test_syslog_evidence_redacts_sensitive_configuration_lines() -> None:
@@ -339,7 +335,7 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
     assert connection.commands.count("display current-configuration | include info-center") == 2
     assert all(
         word not in " ".join(connection.commands).casefold()
-        for word in ("save", "undo", "quit", "reboot", "reset", "delete")
+        for word in ("save", "undo", "reboot", "reset", "delete")
     )
     audit = repository.latest_syslog_config_audit(device_uuid)
     assert audit is not None and audit["status"] == "CONFIG_SENT"
@@ -365,26 +361,18 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
             "loghost_enabled",
             "loghost_target",
         ],
-        "source_rules": [
-            "info-center source default loghost deny",
-            "info-center source wmesh loghost level notification",
-            "info-center source ifnet loghost level notification",
-            "info-center source cfgman loghost level notification",
-        ],
+        "source_rules": [],
         "target_statuses": ["TARGET_MISSING"],
     }
     assert evidence["repair_commands"] == [
         "info-center enable",
         f"info-center loghost {TARGET_IP} port 514",
-        "info-center source default loghost deny",
-        "info-center source wmesh loghost level notification",
-        "info-center source ifnet loghost level notification",
-        "info-center source cfgman loghost level notification",
     ]
     assert evidence["applied_commands"] == [
         "system-view",
         *evidence["repair_commands"],
         "return",
+        "quit",
     ]
     assert evidence["missing_after"] == {
         "runtime": [],
@@ -407,7 +395,7 @@ def test_auto_repair_disabled_keeps_incomplete_profile_read_only(
     connection = _ConfigConnection(
         config_before="info-center source default loghost deny",
         config_after=FULL_CONFIG_514,
-        info_before=FULL_RUNTIME_514,
+        info_before="Information Center: Disabled\nLog host: Disabled\n",
         info_after=FULL_RUNTIME_514,
     )
 
@@ -528,7 +516,7 @@ def test_config_check_repairs_partial_and_uses_full_config_fallback(tmp_path: Pa
     connection = _ConfigConnection(
         config_before=partial,
         config_after=FULL_CONFIG_514,
-        info_before=FULL_RUNTIME_514,
+        info_before="Information Center: Disabled\nLog host: Disabled\n",
         info_after=FULL_RUNTIME_514,
         filter_fails=True,
     )
@@ -542,10 +530,10 @@ def test_config_check_repairs_partial_and_uses_full_config_fallback(tmp_path: Pa
         boot_tolerance_seconds=120,
     )
 
-    assert result.config_status == "CONFIG_REPAIRED"
+    assert result.config_status == "CONFIG_SENT"
     assert connection.commands.count("display current-configuration") == 2
     assert "system-view" in connection.commands
-    assert "info-center loghost 192.0.2.100 port 514" not in connection.commands
+    assert "info-center loghost 192.0.2.100 port 514" in connection.commands
 
 
 def test_config_write_failure_and_post_read_failure_never_report_success(tmp_path: Path) -> None:
@@ -578,7 +566,7 @@ def test_config_write_failure_and_post_read_failure_never_report_success(tmp_pat
     assert repository.latest_boot_session(device_uuid)["config_status"] == "CONFIG_VERIFY_FAILED"
 
 
-def test_source_rule_verification_failure_never_reports_success(tmp_path: Path) -> None:
+def test_source_rules_are_never_written_or_used_as_success_gate(tmp_path: Path) -> None:
     paths, repository, device_uuid = _context(tmp_path)
     connection = _ConfigConnection(
         config_before="info-center source default loghost deny",
@@ -596,25 +584,22 @@ def test_source_rule_verification_failure_never_reports_success(tmp_path: Path) 
         boot_tolerance_seconds=120,
     )
 
-    assert result.config_status == "CONFIG_VERIFY_FAILED"
+    assert result.config_status == "CONFIG_PRESENT"
+    assert result.applied_commands == ()
     audit = repository.latest_syslog_config_audit(device_uuid)
     evidence = json.loads(
         (repository.db_path.parent / audit["evidence_path"]).read_text(encoding="utf-8")
     )
     assert evidence["missing_after"] == {
         "runtime": [],
-        "source_rules": [
-            "info-center source wmesh loghost level notification",
-            "info-center source ifnet loghost level notification",
-            "info-center source cfgman loghost level notification",
-        ],
+        "source_rules": [],
         "target_statuses": ["TARGET_PRESENT"],
     }
     repository.touch_boot_syslog(
         device_uuid, datetime.now().astimezone().isoformat(timespec="milliseconds"),
         source_ip="192.0.2.10", hostname="TEST-MR-CT", identity_verified=True,
     )
-    assert repository.latest_boot_session(device_uuid)["config_status"] == "CONFIG_VERIFY_FAILED"
+    assert repository.latest_boot_session(device_uuid)["config_status"] == "LOG_ACTIVE"
 
 
 def test_complete_config_skips_write_and_verified_log_becomes_active(tmp_path: Path) -> None:

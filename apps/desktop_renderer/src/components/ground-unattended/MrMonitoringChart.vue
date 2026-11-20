@@ -5,13 +5,13 @@ import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { createTimeChartInitOptions } from '../charts/multiSeriesTimeChart'
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { mrMonitoringChartOption } from './mrMonitoringChartOptions'
-const props = defineProps<{ data: GroundMrMonitoring; start: string; end: string; active: boolean; selectedTime: string }>()
+const props = withDefaults(defineProps<{ data: GroundMrMonitoring; start: string; end: string; active: boolean; selectedTime: string; mode?: 'all' | 'ping' | 'peer' }>(), { mode: 'all' })
 const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | undefined, observer: ResizeObserver | undefined, unsubscribe: (() => void) | undefined
 let disposed = false, initialized = false
 function render(): void {
   if (!chart || !props.active) return
-  const option = mrMonitoringChartOption(props.data, props.start, props.end, readNetConsoleChartTokens(), props.selectedTime)
+  const option = mrMonitoringChartOption(props.data, props.start, props.end, readNetConsoleChartTokens(), props.selectedTime, props.mode)
   option.series = (option.series as Array<Record<string, unknown>>).map((series) => series.type === 'line' ? { ...series, connectNulls: false } : series)
   if (initialized) delete option.dataZoom
   chart.setOption(option, { replaceMerge: ['series', 'xAxis', 'yAxis'], lazyUpdate: true }); initialized = true
@@ -25,9 +25,9 @@ onMounted(async () => {
   observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(resize); observer?.observe(container.value)
   window.addEventListener('resize', resize); unsubscribe = subscribeNetConsoleChartTheme(render); render()
 })
-watch(() => [props.data, props.start, props.end, props.selectedTime], render)
+watch(() => [props.data, props.start, props.end, props.selectedTime, props.mode], render)
 watch(() => props.active, async (active) => { if (active) { await nextTick(); resize(); render() } else chart?.dispatchAction({ type: 'hideTip' }) })
 onBeforeUnmount(() => { disposed = true; observer?.disconnect(); unsubscribe?.(); window.removeEventListener('resize', resize); chart?.dispose(); chart = undefined })
 </script>
-<template><div ref="container" class="mr-monitor-chart" role="img" aria-label="RTT 毫秒、丢包百分比和 Peer AP 连接证据共享时间轴" /></template>
-<style scoped>.mr-monitor-chart{height:460px;width:100%;min-width:0}</style>
+<template><div ref="container" class="mr-monitor-chart" :class="`mode-${mode}`" role="img" aria-label="RTT 毫秒、丢包百分比和 Peer AP 连接证据共享时间轴" /></template>
+<style scoped>.mr-monitor-chart{height:460px;width:100%;min-width:0}.mr-monitor-chart.mode-ping{height:320px}.mr-monitor-chart.mode-peer{height:300px}</style>

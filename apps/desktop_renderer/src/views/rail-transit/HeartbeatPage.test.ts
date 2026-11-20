@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { flushPromises, shallowMount } from '@vue/test-utils'
 import { ref } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setRendererFeaturesForTest } from '../../features'
 import HeartbeatPage from './HeartbeatPage.vue'
@@ -34,17 +35,18 @@ const global = {
 }
 
 beforeEach(() => {
+  vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(undefined as never)
   setRendererFeaturesForTest({ 'ground_unattended.quick_ping': { visible: true, enabled: true }, 'capability.ground_unattended.quick_ping': { visible: true, enabled: true } })
   injected.current = {
     activeTab: ref('heartbeat'), pageVisible: ref(true), pageActivated: ref(true), selectedRunId: ref('run-1'), quickContextRevision: ref(0),
-    status: ref(null), profile: ref(null), health: ref(null), syslogTransport: ref(null), syslogTransportLoading: ref(false),
+    status: ref(null), profile: ref({ syslog_server_ip: '192.0.2.200', syslog_server_port: 514 }), health: ref(null), syslogTransport: ref(null), syslogTransportLoading: ref(false),
     t: (_key: string, fallback: string) => fallback, statusType: () => 'info', bytes: String,
     groundStatusLabel: String, groundRunModeLabel: String,
   }
   api.heartbeat.mockResolvedValue(snapshot)
   api.timeline.mockResolvedValue({ items: [{ event_id: 1, severity: 'error', event_type: 'deep_scheduler_failed', title: '深采失败', message: 'mock', ts: '2026-01-01' }], total: 1 })
 })
-afterEach(() => { vi.clearAllMocks(); vi.useRealTimers() })
+afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); vi.useRealTimers() })
 
 describe('persisted heartbeat UI', () => {
   it('shows loading without an empty total and offers refresh after the first request fails', async () => {

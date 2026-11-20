@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import HeartbeatSettings from './HeartbeatSettings.vue'
 import { refreshGroundArp } from '../../api/groundUnattended'
 import { useGroundContext } from './useGroundUnattended'
-const { Refresh, t, loading, saving, profile, pingPresets, trains, acBasicCollection, arpSourceSwitches, sourceRecommendation, udpPortCheck, networkLoading, showAllAddresses, profileLoadError, visibleIpv4Addresses, returnAddressIsLocal, listenAddressIsLocal, loadAll, saveProfile, setAcBasicCollection, loadLocalAddresses, recommendSourceAddress, applyRecommendedAddress, checkUdpPort, togglePriority, applyDeepPingPreset, markDeepPingCustom, restoreDeepPingDefault } = useGroundContext()
+const { Refresh, t, loading, saving, profile, pingPresets, trains, acBasicCollection, arpSourceSwitches, sourceRecommendation, udpPortCheck, networkLoading, showAllAddresses, profileLoadError, visibleIpv4Addresses, returnAddressIsLocal, loadAll, saveProfile, setAcBasicCollection, loadLocalAddresses, recommendSourceAddress, applyRecommendedAddress, checkUdpPort, togglePriority, applyDeepPingPreset, markDeepPingCustom, restoreDeepPingDefault } = useGroundContext()
 const arpRefreshLoading = ref(false)
 const arpRefreshMessage = ref('')
 const selectedArpSourceMissing = computed(() => Boolean(profile.value?.arp_collection_device_uuid && !arpSourceSwitches.value.some((item) => item.device_uuid === profile.value?.arp_collection_device_uuid)))
@@ -54,7 +54,7 @@ async function requestArpRefresh() {
             <el-form-item :label="t('ground.correlation_tolerance', 'AC/Ping 关联偏差（秒）')"><el-input-number v-model="profile.ac_ping_correlation_tolerance_seconds" :min="1" :max="300" /></el-form-item>
             <el-form-item :label="t('ground.switch_window', 'AP 切换前 / 后窗口（秒）')"><div class="inline-numbers"><el-input-number v-model="profile.ap_switch_before_seconds" :min="0" :max="60" /><el-input-number v-model="profile.ap_switch_after_seconds" :min="0" :max="60" /></div></el-form-item>
           </div></section>
-          <section><h2>{{ t('ground.deep_budget', '深度采集预算') }}</h2>
+          <section><el-collapse><el-collapse-item name="deep-budget"><template #title><h2>{{ t('ground.deep_budget', '深度采集预算') }}</h2></template>
             <div class="mode-switch">
               <el-switch v-model="profile.deep_collection_master_enabled" :active-text="t('ground.v2.settings_enable_deep', '启用深度采集')" />
               <span>{{ profile.deep_collection_master_enabled ? t('ground.v2.standard_mode_note', '标准模式：运行 AC 轮询、心跳检测、Syslog 和深度 MR 采集。') : t('ground.v2.lightweight_mode_note', '轻量模式：仅运行 AC 轮询、心跳检测、Syslog 和位置关联，不启动 SSH 深度 MR 采集。') }}</span>
@@ -81,7 +81,8 @@ async function requestArpRefresh() {
               <el-form-item :label="t('ground.v2.settings_latency_threshold', '延迟告警阈值（ms）')"><el-input-number v-model="profile.deep_fping.latency_warn_ms" :disabled="!profile.deep_collection_master_enabled" :min="1" :max="60000" @change="markDeepPingCustom" /></el-form-item>
             </div>
             <div class="form-actions"><el-button :disabled="!pingPresets.length" @click="restoreDeepPingDefault">{{ t('ground.v2.settings_restore_default', '恢复共享默认') }}</el-button></div>
-          </section>
+            <el-collapse><el-collapse-item name="priority-trains"><template #title><strong>{{ t('ground.priority_trains', '置顶列车') }}</strong></template><div class="priority-grid"><el-checkbox v-for="row in trains" :key="row.train_id" :model-value="row.priority" :disabled="!profile.deep_collection_master_enabled" @change="togglePriority(row)">{{ row.train_no || row.train_name }}</el-checkbox><span v-if="!trains.length" class="muted">{{ t('ground.no_priority_candidates', '暂无列车基础资料或 AC 在线状态') }}</span></div><small>置顶状态仅影响深度采集调度，与 Heartbeat 启动列车选择相互独立；默认没有置顶列车。</small></el-collapse-item></el-collapse>
+          </el-collapse-item></el-collapse></section>
           <section><h2>{{ t('ground.ping_and_storage', '心跳检测与存储') }}</h2><div class="form-grid">
             <el-form-item :label="t('ground.detail_retention', '详细数据保留天数')"><el-select v-model="profile.detail_retention_days"><el-option v-for="day in [7,15,30,60,90,180]" :key="day" :label="`${day} ${t('ground.v2.settings_days', '天')}`" :value="day" /></el-select></el-form-item>
             <el-form-item :label="t('ground.summary_retention', '汇总保留天数')"><el-input-number v-model="profile.summary_retention_days" :min="profile.detail_retention_days" :max="3650" /></el-form-item>
@@ -89,7 +90,7 @@ async function requestArpRefresh() {
             <el-form-item :label="t('ground.critical_space', '严重空间阈值（GB）')"><el-input-number v-model="profile.storage_critical_free_gb" :min="0.1" :max="1024" /></el-form-item>
           </div><p class="muted">{{ t('ground.storage_path', '存储路径：当前局点 / files / rail_transit / ground_unattended。深度会话 ZIP 仍保存在既有 Online MR 目录，每日归档只保存引用。') }}</p></section>
           <section><h2>{{ t('ground.v2.settings_udp_boot', 'UDP Syslog 与上电检查') }}</h2>
-            <el-alert :title="t('ground.v2.settings_udp_note', '本机监听地址只控制 NetConsole 在哪些网卡接收 UDP；MR 日志回传地址会用于 info-center loghost。监听 0.0.0.0 时仍必须明确选择一个具体回传地址。')" type="info" :closable="false" show-icon />
+            <el-alert :title="t('ground.v2.settings_udp_note', 'Syslog Receiver 严格跟随无人值守主开关启停，并使用 MR 日志回传 IP 与端口监听；这里没有第二套监听生命周期或地址。')" type="info" :closable="false" show-icon />
             <div class="network-actions">
               <el-button :icon="Refresh" :loading="networkLoading" @click="loadLocalAddresses">{{ t('ground.v2.settings_refresh_addresses', '刷新本机地址') }}</el-button>
               <el-button :loading="networkLoading" @click="recommendSourceAddress">{{ t('ground.v2.settings_recommend_address', '检测到 MR 网络的推荐地址') }}</el-button>
@@ -97,17 +98,8 @@ async function requestArpRefresh() {
               <el-checkbox v-model="showAllAddresses">{{ t('ground.v2.settings_show_virtual', '显示虚拟与其他地址') }}</el-checkbox>
             </div>
             <div class="form-grid">
-            <el-form-item label="UDP Syslog Receiver 自动启动"><el-switch v-model="profile.syslog_receiver_auto_start_enabled" /><small>关闭后仅手动启用待启停控件，目前由无人值守运行配置统一持有运行生命周期。</small></el-form-item>
             <el-form-item label="MR 上电检查自动启动"><el-switch v-model="profile.boot_check_auto_start_enabled" /></el-form-item>
             <el-form-item label="AC-Mesh-Link 自动采集"><el-switch v-model="profile.ac_mesh_link_auto_collection_enabled" /><small>关闭后不自动启动 Mesh-Link 常驻 Worker，心跳仍由 Backend 独立运行。</small></el-form-item>
-            <el-form-item :label="t('ground.v2.settings_listen_address', '本机监听地址')">
-              <el-select v-model="profile.udp_listen_host" filterable allow-create>
-                <el-option :label="t('ground.v2.settings_all_adapters', '0.0.0.0 · 监听全部本机网卡')" value="0.0.0.0" />
-                <el-option v-for="row in visibleIpv4Addresses" :key="`listen:${row.adapter_id}:${row.ipv4}`" :value="row.ipv4" :label="`${row.ipv4} · ${row.adapter_name} · /${row.prefix_length}`" />
-              </el-select>
-              <span :class="listenAddressIsLocal ? 'network-ok' : 'network-error'">{{ listenAddressIsLocal ? t('ground.v2.settings_listen_valid', '监听地址有效') : t('ground.v2.settings_listen_invalid', '监听地址已不属于本机') }}</span>
-            </el-form-item>
-            <el-form-item :label="t('ground.v2.settings_listen_port', 'UDP 监听端口')"><el-input-number v-model="profile.udp_listen_port" :min="1" :max="65535" /></el-form-item>
             <el-form-item :label="t('ground.v2.settings_return_address', 'MR 日志回传地址')">
               <el-select v-model="profile.syslog_server_ip" filterable allow-create clearable :placeholder="t('ground.v2.settings_ipv4_placeholder', '选择或输入具体 IPv4')">
                 <el-option v-for="row in visibleIpv4Addresses" :key="`${row.adapter_id}:${row.ipv4}`" :value="row.ipv4" :label="`${row.ipv4} · ${row.adapter_name} · /${row.prefix_length}${row.recommended ? ` · ${t('ground.v2.settings_recommended', '推荐')}` : ''}`" />
@@ -119,10 +111,6 @@ async function requestArpRefresh() {
             <el-form-item :label="t('ground.v2.settings_batch_size', '批量事件数')"><el-input-number v-model="profile.event_batch_size" :min="1" :max="5000" /></el-form-item>
             <el-form-item :label="t('ground.v2.settings_check_cooldown', '配置检查冷却（秒）')"><el-input-number v-model="profile.config_check_cooldown_seconds" :min="30" :max="86400" /></el-form-item>
             <el-form-item :label="t('ground.v2.settings_boot_tolerance', '上电时间误差（秒）')"><el-input-number v-model="profile.boot_time_tolerance_seconds" :min="10" :max="900" /></el-form-item>
-            <el-form-item :label="t('ground.v2.settings_auto_repair', '自动补齐 MR Syslog 临时配置')">
-              <el-switch v-model="profile.syslog_auto_repair_enabled" />
-              <small>{{ t('ground.v2.settings_repair_note', '仅在上电检查自动启动和 Syslog 自动修复均启用时补齐临时配置；人工检查入口仍可用。') }}</small>
-            </el-form-item>
           </div>
           <div v-if="sourceRecommendation" class="network-status">
             <span>{{ t('ground.v2.settings_route_recommendation', '系统路由推荐：') }}<b>{{ sourceRecommendation.recommended_ip || t('ground.v2.settings_no_recommendation', '无可靠推荐') }}</b></span>
@@ -130,9 +118,7 @@ async function requestArpRefresh() {
             <el-button v-if="sourceRecommendation.recommended_ip" size="small" @click="applyRecommendedAddress">{{ t('ground.v2.settings_apply_recommendation', '采用推荐') }}</el-button>
           </div>
           <div v-if="udpPortCheck" class="network-status"><el-tag :type="udpPortCheck.available ? 'success' : 'danger'">{{ udpPortCheck.message }}</el-tag><span>{{ udpPortCheck.listen_host }}:{{ udpPortCheck.listen_port }}</span></div>
-          <el-checkbox v-model="profile.allow_external_syslog_address">{{ t('ground.v2.settings_allow_external', '高级：使用外部 NAT 日志回传地址（保存时需再次确认）') }}</el-checkbox>
-          <p class="muted">{{ t('ground.v2.settings_save_note', '保存 Profile 不会在当前请求中直接连接 MR；后台检查只补齐安全缺项。同 IP 端口冲突始终保持只读，必须在单台 MR 详情中再次确认后才允许修改；不会执行 save、undo、reboot、reset 或 delete。') }}</p></section>
-          <section><h2>{{ t('ground.priority_trains', '置顶列车') }}</h2><div class="priority-grid"><el-checkbox v-for="row in trains" :key="row.train_id" :model-value="row.priority" @change="togglePriority(row)">{{ row.train_no || row.train_name }}</el-checkbox><span v-if="!trains.length" class="muted">{{ t('ground.no_priority_candidates', '暂无列车基础资料或 AC 在线状态') }}</span></div></section>
+          <p class="muted">{{ t('ground.v2.settings_save_note', '保存设置不会连接或修改 MR；检查 MR 配置严格只读。只有独立的加入或退出 Syslog 操作在预览并确认后才会执行受控命令。') }}</p></section>
           <div class="form-actions"><el-button type="primary" :loading="saving" @click="saveProfile()">{{ t('common.save', '保存设置') }}</el-button><span class="muted">{{ t('ground.profile_effective', '运行中修改默认从下一次调度周期生效') }}</span></div>
         </el-form>
 

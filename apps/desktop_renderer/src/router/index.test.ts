@@ -36,8 +36,9 @@ describe('Web route ownership', () => {
     const trainOnlineRedirect = routes.find((route) => route.path === 'rail-transit/train-online')?.redirect
     expect(typeof trainOnlineRedirect).toBe('function')
     expect((trainOnlineRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: { query: '01' }, hash: '#details' })).toEqual({ name: 'ground-unattended', query: { query: '01' }, hash: '#details' })
-    expect(routes.find((route) => route.path === 'rail-transit/car-network-diagnostic')?.redirect).toEqual({ name: 'train-communication' })
-    expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.title).toBe('轨道交通 / 车内通信检测')
+    expect(typeof routes.find((route) => route.path === 'rail-transit/car-network-diagnostic')?.redirect).toBe('function')
+    expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.hiddenRoute).toBe(true)
+    expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.title).toBe('轨道交通 / 地面无人值守')
     expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'tools-connectivity' })
     const trafficRedirect = routes.find((route) => route.path === 'network-tools/traffic')?.redirect
     const toolboxRedirect = routes.find((route) => route.path === 'network-tools/toolbox')?.redirect
