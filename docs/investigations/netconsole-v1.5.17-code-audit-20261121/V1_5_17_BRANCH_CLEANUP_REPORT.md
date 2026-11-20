@@ -8,6 +8,8 @@
 
 ## 结果
 
-本轮没有删除分支。当前 v1.5.17 分支包含本地未 Push 的有效提交，必须保留；`main`、其他未合并/dirty/活动 Worktree 分支和无法确认安全的历史分支均保留。原因是 PR squash 历史、独立 DevStatus worktree 和其他维护任务仍需要可恢复证据。
+盘点时本地分支 `4` 个、产品 Worktree `6` 个；`github/main` 已合并列表只有 `main`，其余三个均为未合并显示。尝试 `git branch -d` 删除 v1.5.16 post-merge 与 original-maintenance 分支均因仍被活动 Worktree 使用而拒绝，未使用 `-D`。
+
+本轮没有删除分支。当前 v1.5.17 分支包含本地未 Push 的有效提交，必须保留；`main`、其他未合并/dirty/活动 Worktree 分支和无法确认安全的历史分支均保留。PR squash 后的三个 v1.5.16 报告 blob 已与 `github/main` 逐项相同，但分支仍保留远端备份和活动 Worktree，避免未经单独授权回收。
 
 临时短路径构建 worktree `D:\study\NetConsole-Workspace\w1517` 仅用于本次本地打包，待确认没有进程占用和需要保留的输出后再由 Git `worktree remove` 回收；它不是产品分支，也不涉及远端删除。
