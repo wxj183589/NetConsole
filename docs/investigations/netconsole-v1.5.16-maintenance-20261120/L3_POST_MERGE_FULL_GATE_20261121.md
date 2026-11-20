@@ -1,6 +1,6 @@
 # NetConsole v1.5.16 L3 合并后 Full Gate
 
-日期：2026-11-21（Asia/Shanghai）  
+日期：2026-11-21（Asia/Shanghai）
 状态：`PASS`
 
 ## 固定主线
