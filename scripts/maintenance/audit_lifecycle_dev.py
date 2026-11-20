@@ -18,7 +18,6 @@ from typing import Any, Iterable
 
 
 EXPECTED_MAX = 10
-DEFAULT_ROOT = Path(r"D:\NetConsoleData-dev")
 DEFAULT_OUTPUT = Path(r"D:\study\NetConsole-Workspace\diagnostic")
 REPORT_NAMES = (
     "TASK_DB_USAGE_REPORT.json",
@@ -502,12 +501,14 @@ def _markdown(root: Path, generated: str, tasks: dict[str, Any], lldp: dict[str,
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-root", type=Path, default=DEFAULT_ROOT)
+    # Never inspect the real development authority implicitly.  An explicit
+    # path makes the operator acknowledge the data boundary before a read.
+    parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
     root = args.data_root.resolve()
-    if root != DEFAULT_ROOT.resolve():
-        raise RuntimeError(f"this audit is restricted to the development data root: {DEFAULT_ROOT}")
+    if root.name.lower() != "netconsoledata-dev":
+        raise RuntimeError("this audit requires an explicitly selected NetConsoleData-dev root")
     marker = _read_marker(root)
     generated = _utc_now()
     print(json.dumps({"data_root": str(root), "runtime_mode": marker["mode"], "generated_time": generated}, ensure_ascii=False))
