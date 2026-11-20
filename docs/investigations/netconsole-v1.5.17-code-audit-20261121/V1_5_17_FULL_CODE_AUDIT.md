@@ -31,4 +31,4 @@ Get-ChildItem apps/desktop_electron/src -Recurse -File -Include *.ts,*.mjs,*.cjs
 
 ## 结论
 
-除已修复的维护脚本数据边界问题外，本轮未确认新的 P0/P1 业务缺陷。发布仍属于本地候选交付：真实设备、真实 GUI、Win10 20H2 和 8 小时长稳验收未完成；本地安装包/Portable/ZIP 的结果必须以后续实际构建和包级冒烟证据为准。
+除已修复的维护脚本数据边界问题外，本轮未确认新的 P0/P1 业务缺陷。Installer、Portable 和 Distribution ZIP 已完成本地构建、哈希、重解压和包级冒烟；发布仍属于本地候选交付，真实设备、真实 GUI、Win10 20H2 和 8 小时长稳验收未完成。

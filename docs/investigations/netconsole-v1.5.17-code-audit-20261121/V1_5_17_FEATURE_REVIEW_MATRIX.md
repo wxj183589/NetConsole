@@ -24,6 +24,6 @@
 | 报表/归档 | `ArchivePage.vue`, report components | relevant domain routers | export/report services | project report dirs | PASS（静态） |
 | 系统设置/网络 | `SystemSettingsView.vue`, `SystemMaintenanceView.vue` | settings/maintenance routers | lifecycle/network/settings services | config files | PASS（契约） |
 | Electron 生命周期 | Electron main/preload | IPC whitelist | `backend-manager.ts`, window/runtime services | isolated runtime root | PASS（静态/102 tests） |
-| Installer/Portable | package scripts | N/A | PyInstaller + electron-builder | release/<version> | 待构建验证 |
+| Installer/Portable | package scripts | N/A | PyInstaller + electron-builder | release/<version> | PASS（本地候选；真实安装 PENDING） |
 
 `PASS` 表示源码/契约证据，不等于真实设备、GUI、Win10 或长稳验收通过。
