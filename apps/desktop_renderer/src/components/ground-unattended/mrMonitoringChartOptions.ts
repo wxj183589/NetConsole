@@ -8,7 +8,8 @@ export const PEER_RAINBOW_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', 
 type PeerIntervalLike = GroundMrMonitoring['peer_intervals'][number]
 
 function peerIntervalIdentity(row: PeerIntervalLike): string {
-  return [row.bssid, row.peer_mac, row.peer_name, row.source].map((value) => String(value || '').trim().toLowerCase()).join('|')
+  const normalizeMac = (value: unknown): string => String(value || '').trim().toLowerCase().replace(/[^0-9a-f]/g, '')
+  return [normalizeMac(row.bssid), normalizeMac(row.peer_mac), String(row.peer_name || '').trim().toLowerCase(), String(row.source || '').trim().toLowerCase()].join('|')
 }
 
 /**
