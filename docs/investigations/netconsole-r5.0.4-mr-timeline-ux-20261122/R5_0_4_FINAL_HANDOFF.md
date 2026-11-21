@@ -3,7 +3,7 @@
 ```text
 BASELINE_PROTECTED=PASS (R5.0.3 history and protected untracked SQL audit preserved)
 PRODUCT_BASE=84a8bc4e
-PRODUCT_COMMIT=a11a8ebf (Ping color/status fix; prior sync commits 03803337, 84ff1f82, 8685e0b3)
+PRODUCT_COMMIT=847dd35c (Ping code a11a8ebf plus color/branch reports; prior sync commits 03803337, 84ff1f82, 8685e0b3)
 DEVSTATUS_BASE=ff66c2d
 MAIN_RTT_COLLAPSIBLE=PASS
 BACKUP_RTT_COLLAPSIBLE=PASS
