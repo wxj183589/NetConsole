@@ -404,10 +404,16 @@ def reconcile_syslog_ac(
         )
     if now_time is not None:
         too_old = []
+        future = []
         for label, value in (("SYSLOG", syslog_time), ("AC", ac_time)):
-            if value is not None and (now_time - value).total_seconds() > stale_after_seconds:
+            if value is None:
+                continue
+            age = (now_time - value).total_seconds()
+            if age < 0:
+                future.append(label)
+            elif age >= stale_after_seconds:
                 too_old.append(label)
-        if too_old:
+        if too_old or future:
             return PositionReconciliation(
                 mr_id,
                 RECONCILIATION_STALE,
@@ -417,7 +423,8 @@ def reconcile_syslog_ac(
                 syslog_receive_time,
                 ac_event_time,
                 ac_received_at,
-                "EVIDENCE_OLDER_THAN_STALE_THRESHOLD:" + ",".join(too_old),
+                ("EVIDENCE_AFTER_REFERENCE_TIME:" + ",".join(future))
+                if future else "EVIDENCE_OLDER_THAN_STALE_THRESHOLD:" + ",".join(too_old),
             )
     if syslog_identity == ac_identity:
         state = RECONCILIATION_CONSISTENT

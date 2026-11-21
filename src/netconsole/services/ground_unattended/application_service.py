@@ -187,18 +187,19 @@ def _syslog_position_projection(
                 received_dt = received_dt.replace(tzinfo=now.tzinfo)
         except ValueError:
             received_dt = None
-    age_seconds = (
-        max(0.0, (now - received_dt.astimezone(now.tzinfo)).total_seconds())
+    age_delta = (
+        (now - received_dt.astimezone(now.tzinfo)).total_seconds()
         if received_dt is not None
         else None
     )
+    age_seconds = max(0.0, age_delta) if age_delta is not None else None
     status = str(position.get("position_status") or "UNKNOWN")
     quality = str(position.get("position_quality") or "UNKNOWN")
     freshness = (
         "NO_DATA"
-        if received_dt is None
+        if received_dt is None or (age_delta is not None and age_delta < 0)
         else "STALE"
-        if age_seconds is None or age_seconds > stale_after_seconds
+        if age_seconds is None or age_seconds >= stale_after_seconds
         else "DISCONNECTED"
         if status == "DISCONNECTED"
         else "FRESH"
@@ -470,6 +471,39 @@ class GroundUnattendedApplicationService:
         stations = sorted({ap.station for ap in projected if ap.station})
         return projected, stations
 
+    @staticmethod
+    def _heartbeat_association_projection(
+        identity: Any,
+        position: Mapping[str, Any] | None,
+        *,
+        now: datetime,
+    ) -> tuple[list[GroundHeartbeatApDTO], list[str], str, str, str]:
+        """Use fresh exact Syslog position before AC Mesh-Link evidence."""
+        position = position or {}
+        syslog = _syslog_position_projection(position, now=now, stale_after_seconds=120.0)
+        status = str(position.get("position_status") or "UNKNOWN").upper()
+        quality = str(position.get("position_quality") or "UNKNOWN").upper()
+        name = str(position.get("current_ap_name") or "").strip()
+        mac = str(position.get("current_ap_mac") or "").strip()
+        if syslog["position_freshness"] == "FRESH" and status == "VALID" and quality == "EXACT_IDENTITY" and (name or mac):
+            station = str(position.get("station") or "").strip()
+            section = str(position.get("section") or "").strip()
+            ap = GroundHeartbeatApDTO(
+                name=name, bssid=mac, mac=mac, rssi=position.get("rssi"),
+                connection_status="ONLINE", last_seen_at=str(position.get("last_receive_time") or ""),
+                station=station, section=section,
+            )
+            return [ap], ([station] if station else []), "SYSLOG", ap.last_seen_at, ""
+        ac_aps, ac_stations = GroundUnattendedApplicationService._heartbeat_ap_projection(identity)
+        reason = (
+            "Syslog 超过 120 秒未更新"
+            if syslog["position_freshness"] == "STALE"
+            else "Syslog 无有效精确接入状态"
+            if position else "无有效 Syslog 记录"
+        )
+        last_seen = max((ap.last_seen_at for ap in ac_aps if ap.last_seen_at), default="")
+        return ac_aps, ac_stations, "AC_MESH_LINK" if ac_aps else "NO_DATA", last_seen, reason
+
     def _quick_ping_dto(self, run_id: str) -> GroundQuickPingRunDTO:
         run = self.quick_ping.status(run_id)
         if run is None:
@@ -676,7 +710,7 @@ class GroundUnattendedApplicationService:
         self._require_site(site_id)
         return self.supervisor.heartbeat.status()
 
-    def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "") -> GroundHeartbeatPageDTO:
+    def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "", reference_time: datetime | None = None) -> GroundHeartbeatPageDTO:
         """Read durable heartbeat facts without deriving reachability from AC data."""
         self._require_site(site_id)
         inventory_snapshot = self.repository.inventory_snapshot()
@@ -708,6 +742,17 @@ class GroundUnattendedApplicationService:
             str(endpoint.get("device_uuid") or ""): endpoint
             for row in inventory for endpoint in row.get("endpoints", [])
         }
+        list_position_states = getattr(self.repository, "list_syslog_position_states", None)
+        try:
+            raw_position_states = list_position_states(endpoints.keys()) if callable(list_position_states) else []
+        except (AttributeError, OSError, RuntimeError):
+            raw_position_states = []
+        position_states = {
+            str(row.get("device_uuid") or ""): row
+            for row in raw_position_states
+            if str(row.get("device_uuid") or "")
+        }
+        association_now = reference_time or datetime.now().astimezone()
         syslog_audits = self.repository.latest_syslog_config_audits(endpoints)
         arp_repository = getattr(self.supervisor, "arp_repository", None)
         arp_projection: dict[str, Any] = {
@@ -852,13 +897,28 @@ class GroundUnattendedApplicationService:
                 payload["mr_name"] = str(endpoint.get("device_name") or "")
                 apply_syslog_projection(payload, endpoint)
                 identity = identity_rows.get(str(payload.get("mr_uuid") or ""))
+                associated_aps, associated_stations, association_source, association_updated_at, association_stale_reason = self._heartbeat_association_projection(
+                    identity, position_states.get(str(payload.get("mr_uuid") or "")), now=association_now
+                )
                 if identity is not None:
-                    associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
+                    association_station = associated_aps[0].station if association_source == "SYSLOG" and associated_aps else identity.resolved_ap_station
+                    association_section = associated_aps[0].section if association_source == "SYSLOG" and associated_aps else identity.resolved_ap_section
                     payload.update(resolved_ap_name=identity.resolved_ap, identity_status=identity.identity_status,
-                                   ac_data_status=identity.data_status, station=identity.resolved_ap_station,
-                                   section=identity.resolved_ap_section,
+                                   ac_data_status=identity.data_status, station=association_station,
+                                   section=association_section,
                                    associated_aps=associated_aps,
-                                   associated_stations=associated_stations)
+                                   associated_stations=associated_stations,
+                                   association_source=association_source,
+                                   association_last_updated_at=association_updated_at,
+                                   association_stale_reason=association_stale_reason)
+                else:
+                    payload.update(
+                        associated_aps=associated_aps,
+                        associated_stations=associated_stations,
+                        association_source=association_source,
+                        association_last_updated_at=association_updated_at,
+                        association_stale_reason=association_stale_reason,
+                    )
                 payload["current_rtt_ms"] = recent_rtts.get(str(payload.get("mr_uuid") or ""))
                 apply_arp_projection(payload, str(payload.get("mr_uuid") or ""))
                 mrs.append(GroundHeartbeatMrDTO.model_validate(
@@ -875,12 +935,16 @@ class GroundUnattendedApplicationService:
                     continue
                 train = trains_by_id.get(str(endpoint.get("train_id") or ""), {})
                 identity = identity_rows.get(mr_id)
-                associated_aps, associated_stations = self._heartbeat_ap_projection(identity)
+                associated_aps, associated_stations, association_source, association_updated_at, association_stale_reason = self._heartbeat_association_projection(
+                    identity, position_states.get(mr_id), now=association_now
+                )
                 ips = [str(endpoint.get("management_ip") or "")]
                 if endpoint.get("backup_monitoring_strategy") == "MONITOR" and (not is_current or heartbeat_config.backup_policy == "MONITOR"):
                     ips.append(str(endpoint.get("backup_management_ip") or ""))
                 projected = apply_syslog_projection({"mr_uuid": mr_id}, endpoint)
                 apply_arp_projection(projected, mr_id)
+                association_station = associated_aps[0].station if association_source == "SYSLOG" and associated_aps else (identity.resolved_ap_station if identity else "")
+                association_section = associated_aps[0].section if association_source == "SYSLOG" and associated_aps else (identity.resolved_ap_section if identity else "")
                 mrs.append(GroundHeartbeatMrDTO(
                     mr_uuid=mr_id, train_id=str(endpoint.get("train_id") or ""),
                     train_no=str(train.get("train_no") or ""),
@@ -891,10 +955,13 @@ class GroundUnattendedApplicationService:
                     syslog_status=str(projected.get("syslog_status") or "NOT_CONFIGURED"),  # type: ignore[arg-type]
                     syslog_last_error=str(projected.get("syslog_last_error") or ""),
                     resolved_ap_name=identity.resolved_ap if identity else "",
-                    station=identity.resolved_ap_station if identity else "",
-                    section=identity.resolved_ap_section if identity else "",
+                    station=association_station,
+                    section=association_section,
                     associated_aps=associated_aps,
                     associated_stations=associated_stations,
+                    association_source=association_source,
+                    association_last_updated_at=association_updated_at,
+                    association_stale_reason=association_stale_reason,
                     ip_states=[GroundHeartbeatIpDTO(ip=ip) for ip in dict.fromkeys(ips) if ip],
                 ))
         if is_current or inventory_projection:
@@ -1040,7 +1107,7 @@ class GroundUnattendedApplicationService:
             start, end = monitoring_range(start_time, end_time)
         except ValueError as exc:
             raise GroundUnattendedError("GROUND_MONITOR_RANGE_INVALID", str(exc)) from exc
-        heartbeat = self.heartbeat(site_id, run_id=run_id, mr_uuid=mr_uuid)
+        heartbeat = self.heartbeat(site_id, run_id=run_id, mr_uuid=mr_uuid, reference_time=end)
         mr = next((row for row in heartbeat.mrs if row.mr_uuid == mr_uuid), None)
         arp_repository = getattr(self.supervisor, "arp_repository", None)
         identity_relations = arp_repository.find_identity_relations(mr_uuid=mr_uuid) if arp_repository else []

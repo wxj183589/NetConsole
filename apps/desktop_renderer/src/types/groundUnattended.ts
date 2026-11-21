@@ -445,6 +445,7 @@ export interface GroundHeartbeatMr {
   status: string; engine_state: string; unreachable_since: string; last_success_at: string
   last_recovery_at: string; consecutive_recovery_successes: number; updated_at: string
   ip_states: GroundHeartbeatIp[]; associated_aps?: GroundHeartbeatAp[]; associated_stations?: string[]
+  association_source?: string; association_last_updated_at?: string; association_stale_reason?: string
   loss_events?: Array<Record<string, unknown>>
   identity_mac?: string; identity_first_discovered_at?: string; identity_last_verified_at?: string
   arp_last_seen_at?: string; arp_last_successful_collection_at?: string; arp_current_observed?: boolean; arp_observation_status?: string
@@ -504,7 +505,7 @@ export interface GroundMeshMonitorEvent {
   raw_file_id: string; raw_line_number: number | null; identity_status: string; event_time_source: string; data_quality: string
 }
 export interface GroundPeerInterval {
-  start: string; end: string; peer_name: string; bssid: string; rssi: number | null; raw_rssi: number | null; rssi_semantics: string; source: string; device_time: string; receive_time: string
+  start: string; end: string; peer_name: string; bssid: string; peer_mac?: string; rssi: number | null; raw_rssi: number | null; rssi_semantics: string; source: string; device_time: string; receive_time: string; station?: string; section?: string
 }
 export interface GroundMrMonitoring {
   mr: GroundHeartbeatMr; series: GroundPingSeries; mesh_events: GroundMeshMonitorEvent[]; peer_intervals: GroundPeerInterval[]

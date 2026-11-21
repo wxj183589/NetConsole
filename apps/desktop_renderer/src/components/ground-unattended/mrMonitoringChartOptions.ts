@@ -1,9 +1,17 @@
 import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { t } from '../../i18n/runtime'
 import type { NetConsoleChartTokens } from '../../theme/echarts'
-import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeChart'
+import { createMultiSeriesTimeChartBaseOption, stableTimeChartSeriesColor } from '../charts/multiSeriesTimeChart'
 
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
+export const PEER_RAINBOW_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6'] as const
+export function normalizedPeerIdentity(row: { bssid?: string; peer_mac?: string; peer_name?: string }): string {
+  const mac = String(row.bssid || row.peer_mac || '').trim().toLowerCase().replace(/[^0-9a-f]/g, '')
+  return mac || String(row.peer_name || 'UNKNOWN').trim().toLowerCase() || 'unknown'
+}
+export function peerColorFor(row: { bssid?: string; peer_mac?: string; peer_name?: string }): string {
+  return stableTimeChartSeriesColor(normalizedPeerIdentity(row), PEER_RAINBOW_COLORS) || PEER_RAINBOW_COLORS[0]
+}
 
 export function mrMonitoringChartOption(
   data: GroundMrMonitoring,
@@ -47,8 +55,9 @@ export function mrMonitoringChartOption(
     const peerMin = Math.min(-100, ...(observed.length ? observed : [-100]))
     const peerMax = Math.max(-30, ...(observed.length ? observed : [-30]))
     return {
-      ...createMultiSeriesTimeChartBaseOption(theme, { unit: 'RSSI', pointCount: intervals.length, showLegend: false }),
+      ...createMultiSeriesTimeChartBaseOption(theme, { unit: 'RSSI', pointCount: intervals.length, showLegend: true }),
       toolbox: { show: false },
+      legend: { top: 4, type: 'scroll', data: peers },
       grid: { left: 65, right: 36, top: 28, bottom: 64, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
       xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
       yAxis: { type: 'value', name: 'RSSI (dBm)', min: peerMin, max: peerMax },
@@ -61,13 +70,16 @@ export function mrMonitoringChartOption(
           const duration = Math.max(0, Date.parse(row.end) - Date.parse(row.start)) / 1000
           return [
             `Peer AP：${escape(row.peer_name || row.bssid || 'UNKNOWN')}`,
-            `MAC：${escape(row.bssid || 'UNKNOWN')}`,
+            `MAC：${escape(row.bssid || row.peer_mac || 'UNKNOWN')}`,
+            `车站：${escape(row.station || '未知车站')}`,
+            `区间：${escape(row.section || '无数据')}`,
             `设备原始 RSSI：${escape(Number.isFinite(row.raw_rssi) ? row.raw_rssi : '无数据')}`,
             `归一化 RSSI：${escape(Number.isFinite(row.rssi) ? `${row.rssi} dBm` : '无数据')}`,
             `语义：${escape(row.rssi_semantics || 'UNKNOWN')}`,
             `切入：${escape(new Date(row.start).toLocaleString())}`,
             `切出：${escape(new Date(row.end).toLocaleString())}`,
             `持续：${escape(`${duration.toFixed(1)} 秒`)}`,
+            `数据来源：${escape(row.source || 'UNKNOWN')}`,
           ].join('<br>')
         },
       },
@@ -86,7 +98,7 @@ export function mrMonitoringChartOption(
               width: Math.max(1, endPoint[0]! - startPoint[0]!),
               height: hasRssi ? Math.max(2, startPoint[1]! - endPoint[1]!) : 6,
             },
-            style: api.style(hasRssi ? undefined : { opacity: 0.35 }),
+            style: api.style({ fill: peerColorFor(intervals[api.value(3)] || {}), opacity: hasRssi ? 1 : 0.35 }),
           }
         },
       }],
@@ -124,12 +136,12 @@ export function mrMonitoringChartOption(
     }
   }
   series.push({ id: 'peer-intervals', name: 'Peer AP', type: 'custom', xAxisIndex: 1, yAxisIndex: 2,
-    data: intervals.map((row) => [peers.indexOf(row.peer_name || row.bssid || 'UNKNOWN'), Math.max(begin, Date.parse(row.start)), Math.min(finish, Date.parse(row.end))]),
+    data: intervals.map((row, index) => [peers.indexOf(row.peer_name || row.bssid || 'UNKNOWN'), Math.max(begin, Date.parse(row.start)), Math.min(finish, Date.parse(row.end)), index]),
     encode: { x: [1, 2], y: 0 },
-    renderItem: (_params: unknown, api: { value: (index: number) => number; coord: (values: number[]) => number[]; size: (values: number[]) => number[]; style: () => object }) => {
+    renderItem: (_params: unknown, api: { value: (index: number) => number; coord: (values: number[]) => number[]; size: (values: number[]) => number[]; style: (value?: object) => object }) => {
       const a = api.coord([api.value(1), api.value(0)]), b = api.coord([api.value(2), api.value(0)])
       const height = Math.min(24, api.size([0, 1])[1]! * 0.7)
-      return { type: 'rect', shape: { x: a[0], y: a[1]! - height / 2, width: Math.max(0, b[0]! - a[0]!), height }, style: api.style() }
+      return { type: 'rect', shape: { x: a[0], y: a[1]! - height / 2, width: Math.max(0, b[0]! - a[0]!), height }, style: api.style({ fill: peerColorFor(intervals[api.value(3)] || {}) }) }
     }, tooltip: { show: false } })
   series.push({ id: 'mesh-events', name: 'Mesh / Syslog', type: 'custom', xAxisIndex: 2, yAxisIndex: 3,
     data: meshEvents.map((row) => [Date.parse(row.event_time || row.receive_time), 0, row.event_type]),
@@ -158,7 +170,7 @@ export function mrMonitoringChartOption(
         const evidence = intervals.find((row) => Date.parse(row.start) <= time && time < Date.parse(row.end))
         const values = params.filter((row) => row.data && row.data[0] === time && row.data[1] !== null).map((row) => `${escape(row.seriesName)}: ${escape(row.data![1])}${row.seriesName.includes('RTT') ? ' ms' : '%'}`)
         return [Number.isFinite(time) ? escape(new Date(time).toLocaleString()) : '', ...values,
-          evidence ? `Peer: ${escape(evidence.peer_name || evidence.bssid)}<br>BSSID: ${escape(evidence.bssid || 'UNKNOWN')} / RSSI: ${escape(evidence.rssi ?? 'UNKNOWN')}<br>${escape(evidence.source)}<br>device: ${escape(evidence.device_time || 'UNKNOWN')}<br>receive: ${escape(evidence.receive_time || 'UNKNOWN')}` : 'Peer: UNKNOWN'].join('<br>')
+          evidence ? `Peer: ${escape(evidence.peer_name || evidence.bssid)}<br>BSSID: ${escape(evidence.bssid || evidence.peer_mac || 'UNKNOWN')} / RSSI: ${escape(evidence.rssi ?? 'UNKNOWN')}<br>车站: ${escape(evidence.station || '未知车站')}<br>区间: ${escape(evidence.section || '无数据')}<br>${escape(evidence.source)}<br>device: ${escape(evidence.device_time || 'UNKNOWN')}<br>receive: ${escape(evidence.receive_time || 'UNKNOWN')}` : 'Peer: UNKNOWN'].join('<br>')
       } },
     series,
   }

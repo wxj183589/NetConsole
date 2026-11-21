@@ -5,6 +5,7 @@ import type { NetConsoleChartTokens } from '../../theme/echarts'
 export function quickPingChartOption(
   rows: Array<Record<string, unknown>>, intervalMs: number, theme: NetConsoleChartTokens,
   gapPolicy: { connectNulls: false } = { connectNulls: false },
+  viewport?: { start: string; end: string }, selectedTime = '',
 ): Record<string, unknown> {
   const points = rows.flatMap((row) => {
     const sample = row.sample as Record<string, unknown> | undefined
@@ -27,11 +28,15 @@ export function quickPingChartOption(
     return { rtt, loss }
   }
   const metric = timelineMetricDefinition('ping_rtt')!
+  const dataZoom = viewport ? [{ type: 'inside', filterMode: 'none', startValue: Date.parse(viewport.start), endValue: Date.parse(viewport.end), minValueSpan: 1000 }] : undefined
+  const baseOption = createMultiSeriesTimeChartBaseOption(theme, { unit: metric.axisUnit, pointCount: points.length, showLegend: true })
   return {
-    ...createMultiSeriesTimeChartBaseOption(theme, { unit: metric.axisUnit, pointCount: points.length, showLegend: true }),
+    ...baseOption,
     // ECharts 6 modular builds use outer bounds to keep axis labels inside the grid.
     grid: { left: 58, right: 24, top: 32, bottom: 72, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
     toolbox: { show: false },
+    ...(dataZoom ? { dataZoom } : {}),
+    xAxis: { type: 'time', axisPointer: { show: true, snap: false } },
     tooltip: {
       trigger: 'axis', appendToBody: false, confine: true,
       extraCssText: 'pointer-events:none;max-width:360px;max-height:220px;overflow:hidden',
@@ -45,7 +50,7 @@ export function quickPingChartOption(
       const data = buildSeriesData(target)
       const suffix = targetKeys.length > 1 ? ` · ${target}` : ''
       return [
-        { id: `ping_rtt:${target}`, name: `RTT${suffix}`, type: 'line', showSymbol: false, ...gapPolicy, data: data.rtt, tooltip: { valueFormatter: (value: number | null) => formatTimelineMetricValue('ping_rtt', value) } },
+        { id: `ping_rtt:${target}`, name: `RTT${suffix}`, type: 'line', showSymbol: false, ...gapPolicy, data: data.rtt, markLine: selectedTime ? { silent: true, symbol: 'none', data: [{ xAxis: Date.parse(selectedTime) }] } : { data: [] }, tooltip: { valueFormatter: (value: number | null) => formatTimelineMetricValue('ping_rtt', value) } },
         { id: `ping_loss:${target}`, name: `单包丢包${suffix}`, type: 'line', yAxisIndex: 1, showSymbol: false, ...gapPolicy, step: 'end', data: data.loss, tooltip: { valueFormatter: (value: number | null) => formatTimelineMetricValue('ping_loss', value) } },
       ]
     }),

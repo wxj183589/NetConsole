@@ -2,9 +2,14 @@
 import { describe, expect, it } from 'vitest'
 import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { readNetConsoleChartTokens } from '../../theme/echarts'
-import { mrMonitoringChartOption } from './mrMonitoringChartOptions'
+import { mrMonitoringChartOption, peerColorFor } from './mrMonitoringChartOptions'
 
 describe('MR monitoring evidence chart', () => {
+  it('assigns stable rainbow colors by peer identity', () => {
+    const row = { bssid: '00:11:22:33:44:55', peer_name: 'AP-A' }
+    expect(peerColorFor(row)).toBe(peerColorFor({ ...row, peer_name: 'renamed' }))
+    expect(peerColorFor({ peer_name: 'AP-A' })).toBe(peerColorFor({ peer_name: 'AP-A' }))
+  })
   it('keeps RTT milliseconds, loss percent, true timestamps and unknown gaps distinct', () => {
     const data = { series: { points: [
       { ts: '2026-11-07T11:00:00Z', target_ip: '192.0.2.1', ok: true, rtt_ms: 3 },

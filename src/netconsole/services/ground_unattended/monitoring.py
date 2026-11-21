@@ -58,6 +58,8 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
         if raw_rssi is None:
             raw_rssi = details.get("new_rssi")
         normalized_rssi, rssi_semantics = normalize_rssi(raw_rssi)
+        station = str(details.get("station") or row.get("station") or "")
+        section = str(details.get("section") or row.get("section") or "")
         evidence.append({
             "id": row.get("id", ""), "event_time": event_time.isoformat(),
             "device_time": device_time, "receive_time": receive_time,
@@ -73,6 +75,7 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
             "event_time_source": str(row.get("event_time_source") or ""),
             "data_quality": str(row.get("data_quality") or ""),
             "identity_status": str(details.get("identity_status") or row.get("identity_status") or "unknown"),
+            "station": station, "section": section,
         })
     evidence.sort(key=lambda item: item["event_time"])
     intervals = []
@@ -88,6 +91,7 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
                 "rssi": current["rssi"], "raw_rssi": current["raw_rssi"],
                 "rssi_semantics": current["rssi_semantics"], "source": "SYSLOG",
                 "device_time": current["device_time"], "receive_time": current["receive_time"],
+                "station": current.get("station", ""), "section": current.get("section", ""),
             })
     events = [item for item in evidence if start <= _time(item["event_time"]) <= end]
     return events, intervals
@@ -156,7 +160,8 @@ def ac_peer_intervals(rows: list[dict[str, Any]], syslog_intervals: list[dict[st
                        "bssid": "", "peer_mac": str(row.get("peer_ap_mac") or ""), "rssi": normalized_rssi,
                        "raw_rssi": row.get("rssi"), "rssi_semantics": rssi_semantics, "source": "AC",
                        "device_time": str(row.get("device_time") or ""), "receive_time": str(row.get("received_at") or ""),
-                       "data_status": str(row.get("freshness_status") or ""), "sampled_interval": True})
+                       "data_status": str(row.get("freshness_status") or ""), "sampled_interval": True,
+                       "station": str(row.get("station") or ""), "section": str(row.get("section") or "")})
     return result
 
 

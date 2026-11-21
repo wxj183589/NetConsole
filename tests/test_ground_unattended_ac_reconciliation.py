@@ -147,6 +147,20 @@ def test_reconciliation_distinguishes_consistent_ac_newer_and_stale() -> None:
     ).state == RECONCILIATION_STALE
 
 
+def test_reconciliation_marks_evidence_stale_at_exact_threshold() -> None:
+    syslog = {"device_uuid": "mr-1", "current_ap_name": "AP-A", "last_event_time": "2026-11-10T10:00:00+08:00"}
+    ac = {"mr_id": "mr-1", "peer_ap_name": "AP-A", "device_time": "2026-11-10T10:00:00+08:00"}
+    assert reconcile_syslog_ac(syslog, ac, now="2026-11-10T10:02:00+08:00", stale_after_seconds=120).state == RECONCILIATION_STALE
+
+
+def test_reconciliation_rejects_evidence_after_reference_time() -> None:
+    syslog = {"device_uuid": "mr-1", "current_ap_name": "AP-A", "last_event_time": "2026-11-10T10:03:01+08:00"}
+    ac = {"mr_id": "mr-1", "peer_ap_name": "AP-A", "device_time": "2026-11-10T10:03:01+08:00"}
+    result = reconcile_syslog_ac(syslog, ac, now="2026-11-10T10:03:00+08:00", stale_after_seconds=120)
+    assert result.state == RECONCILIATION_STALE
+    assert result.reason == "EVIDENCE_AFTER_REFERENCE_TIME:SYSLOG,AC"
+
+
 def test_delta_and_reconciliation_evidence_is_persisted_additively(tmp_path: Path) -> None:
     repository = GroundUnattendedRepository(tmp_path / "ground" / "index.sqlite", site_id="site-a")
     current = _snapshot(

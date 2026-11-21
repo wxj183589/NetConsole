@@ -1830,6 +1830,9 @@ class GroundHeartbeatMrDTO(ApiModel):
     ip_states: list[GroundHeartbeatIpDTO] = Field(default_factory=list)
     associated_aps: list[GroundHeartbeatApDTO] = Field(default_factory=list)
     associated_stations: list[str] = Field(default_factory=list)
+    association_source: str = "NO_DATA"
+    association_last_updated_at: str = ""
+    association_stale_reason: str = ""
     loss_events: list[dict[str, object]] = Field(default_factory=list)
     identity_mac: str = ""
     identity_first_discovered_at: str = ""

@@ -47,3 +47,24 @@ def test_fresh_disconnected_syslog_position_is_not_an_active_peer() -> None:
     assert projection["position_freshness"] == "DISCONNECTED"
     assert projection["current_active_peer"] == ""
     assert projection["last_link_switch_at"] == "2026-11-10T10:04:00+08:00"
+
+
+def test_syslog_is_stale_at_exactly_the_120_second_boundary() -> None:
+    now = datetime.fromisoformat("2026-11-10T10:05:00+08:00")
+    projection = _syslog_position_projection(
+        {"current_ap_name": "SYSLOG-AP-A", "position_status": "VALID", "position_quality": "EXACT_IDENTITY",
+         "last_receive_time": "2026-11-10T10:03:00+08:00"},
+        now=now, stale_after_seconds=120,
+    )
+    assert projection["position_freshness"] == "STALE"
+
+
+def test_future_syslog_event_is_not_valid_for_reference_time() -> None:
+    now = datetime.fromisoformat("2026-11-10T10:05:00+08:00")
+    projection = _syslog_position_projection(
+        {"current_ap_name": "SYSLOG-AP-A", "position_status": "VALID", "position_quality": "EXACT_IDENTITY",
+         "last_receive_time": "2026-11-10T10:05:01+08:00"},
+        now=now, stale_after_seconds=120,
+    )
+    assert projection["position_freshness"] == "NO_DATA"
+    assert projection["current_active_peer"] == ""
