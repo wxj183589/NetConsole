@@ -49,6 +49,7 @@ dry-run 不写 parsed DB、raw 或 catalog，并兼容缺少后续可选身份�
 ## 测试
 
 - `diagnose_server_hdd.py`：只读采集 Windows Server/HDD 主机、卷容量、Backend PID、devices.db/WAL/SHM 和启动阶段；旧系统性能计数器不可用时返回 `unknown`。
+- `audit_lifecycle_dev.py`：只读审计 development 数据根；必须显式传入 `--data-root`，不会隐式读取 `D:\NetConsoleData-dev`，并将输出写入项目 Workspace 诊断目录。
 
 Task 结果布局 benchmark 只向项目 Workspace 的按需诊断目录写报告：
 
