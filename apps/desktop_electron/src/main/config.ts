@@ -70,7 +70,9 @@ export function loadDesktopConfig(input: DesktopConfigInput): DesktopConfig {
   return {
     projectRoot,
     dataRoot,
-    ...(normalizeActiveSiteId(input.bootstrapActiveSiteId) ? { activeSiteId: normalizeActiveSiteId(input.bootstrapActiveSiteId) } : {}),
+    ...(normalizeActiveSiteId(input.bootstrapActiveSiteId || env.NETCONSOLE_ACTIVE_SITE_ID)
+      ? { activeSiteId: normalizeActiveSiteId(input.bootstrapActiveSiteId || env.NETCONSOLE_ACTIVE_SITE_ID) }
+      : {}),
     storageMode: input.storageMode ?? 'persistent',
     runtimeMode: input.isPackaged ? 'desktop-packaged' : 'desktop-development',
     backendExecutable,

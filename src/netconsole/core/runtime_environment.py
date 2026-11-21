@@ -647,6 +647,22 @@ def validate_runtime_write_path(path: Path) -> Path:
     return resolved
 
 
+def validate_runtime_root(runtime_root: Path, data_root: Path) -> Path:
+    """Validate an optional runtime root kept outside the business data tree."""
+
+    candidate = Path(runtime_root).expanduser().resolve()
+    business_root = Path(data_root).expanduser().resolve()
+    if candidate == business_root or candidate.is_relative_to(business_root):
+        raise RuntimeError(
+            f"NETCONSOLE_RUNTIME_ROOT must be outside NETCONSOLE_DATA_ROOT: {candidate}"
+        )
+    _reject_source_tree_data_root(candidate)
+    _reject_temporary_data_root(candidate)
+    if candidate.exists() and candidate.is_symlink():
+        raise RuntimeError(f"NETCONSOLE_RUNTIME_ROOT must not be a symbolic link: {candidate}")
+    return validate_runtime_write_path(candidate)
+
+
 def ensure_runtime_dir(path: Path) -> Path:
     resolved = validate_runtime_write_path(path)
     resolved.mkdir(parents=True, exist_ok=True)

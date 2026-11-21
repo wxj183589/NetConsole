@@ -153,6 +153,25 @@ describe('desktop config', () => {
     expect(config.activeSiteId).toBeUndefined()
   })
 
+  it('accepts the explicit DEV site bootstrap from the isolated real-data entry', () => {
+    const config = loadDesktopConfig({
+      isPackaged: false,
+      appPath: 'D:\\repo\\apps\\desktop_electron',
+      resourcesPath: 'D:\\resources',
+      platform: 'win32',
+      storageMode: 'persistent',
+      env: {
+        NETCONSOLE_PROJECT_ROOT: 'D:\\repo',
+        NETCONSOLE_PYTHON: 'D:\\repo\\.venv\\Scripts\\python.exe',
+        NETCONSOLE_DATA_ROOT: 'D:\\NetConsoleData-dev',
+        NETCONSOLE_ACTIVE_SITE_ID: 'hzdt-09',
+      },
+      fileExists: () => true,
+    })
+    expect(config.activeSiteId).toBe('hzdt-09')
+    expect(config.runtimeMode).toBe('desktop-development')
+  })
+
   it('requires an installer-selected or explicit persistent data root', () => {
     expect(() => loadDesktopConfig({
       isPackaged: true,

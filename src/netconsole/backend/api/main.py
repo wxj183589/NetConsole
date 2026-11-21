@@ -392,6 +392,10 @@ def create_app(
             if runtime_mode is RuntimeMode.TEST
             else data_environment(getattr(paths, "data_root"))
         )
+    collection_disabled = (
+        os.environ.get("NETCONSOLE_COLLECTION_MODE", "").strip().casefold()
+        == "disabled"
+    )
     app_logger.log_warning(
         "DATA_ROOT_CONTEXT" if environment.is_production else "DATA_ROOT_CONTEXT",
         f"data_root={getattr(paths, 'data_root', '<test>')} environment={environment.label}",
@@ -652,6 +656,18 @@ def create_app(
                     "component=ground_unattended error=unavailable",
                 )
                 return False
+            if collection_disabled:
+                # Keep the repository/service available for historical
+                # playback, but do not start heartbeat, syslog, ARP, or AC
+                # workers against the real development site.
+                app.state.heartbeat_supervisor = ground_unattended_supervisor.heartbeat
+                app.state.unattended_ready = True
+                app.state.unattended_status = "playback_only"
+                app_logger.log_info(
+                    "GROUND_COLLECTION_DISABLED",
+                    f"site={site_name} mode=playback_only",
+                )
+                return True
             try:
                 app.state.heartbeat_supervisor = ground_unattended_supervisor.heartbeat
                 await asyncio.to_thread(ground_unattended_supervisor.heartbeat.start)
@@ -716,7 +732,8 @@ def create_app(
                 await asyncio.sleep(_DESKTOP_DEFERRED_RUNTIME_DELAY_SECONDS)
                 if not app.state.accepting_work:
                     return
-                await start_site_ssh_relay()
+                if not collection_disabled:
+                    await start_site_ssh_relay()
                 reconcile_tasks = getattr(task_service, "reconcile_orphaned_local_tasks", None)
                 if callable(reconcile_tasks):
                     await asyncio.to_thread(reconcile_tasks)
@@ -799,11 +816,12 @@ def create_app(
                 runtime_mode is RuntimeMode.DESKTOP
                 and desktop_session_token
                 and capability_policy.low_priority_work_enabled
+                and not collection_disabled
             )
             else None
         )
 
-        collect_run_recovery_task = asyncio.create_task(
+        collect_run_recovery_task = None if collection_disabled else asyncio.create_task(
             _schedule_collect_run_recovery(
                 paths,
                 site_name,
@@ -825,7 +843,8 @@ def create_app(
                         app.state.runtime_services_error = app.state.unattended_error or "unavailable"
                 deferred_start_task = asyncio.create_task(start_deferred_runtime_services())
             else:
-                await start_site_ssh_relay()
+                if not collection_disabled:
+                    await start_site_ssh_relay()
                 unattended_started = await start_unattended_services()
                 await traffic_service.start()
                 file_management_service.start()
@@ -849,8 +868,9 @@ def create_app(
             if auto_cleanup_task is not None:
                 auto_cleanup_task.cancel()
                 await asyncio.gather(auto_cleanup_task, return_exceptions=True)
-            collect_run_recovery_task.cancel()
-            await asyncio.gather(collect_run_recovery_task, return_exceptions=True)
+            if collect_run_recovery_task is not None:
+                collect_run_recovery_task.cancel()
+                await asyncio.gather(collect_run_recovery_task, return_exceptions=True)
             if ground_unattended_supervisor is not None:
                 try:
                     await asyncio.to_thread(ground_unattended_supervisor.heartbeat.close)
@@ -969,7 +989,11 @@ def create_app(
     app.state.host_environment_profile = host_profile
     app.state.performance_mode = performance_mode.value
     app.state.capability_policy = capability_policy
-    app.state.unattended_status = "starting" if ground_unattended_feature_enabled else "disabled"
+    app.state.unattended_status = (
+        "playback_only"
+        if collection_disabled and ground_unattended_feature_enabled
+        else "starting" if ground_unattended_feature_enabled else "disabled"
+    )
     app.state.unattended_ready = False
     app.state.unattended_error = ""
     if host_profile is None:
@@ -1197,8 +1221,11 @@ def create_app(
             app.state, "ground_unattended_application_service", None
         )
         old_ground_started = bool(
-            getattr(app.state, "unattended_ready", False)
-            or (old_ground_supervisor is not None and old_ground_supervisor.running)
+            not collection_disabled
+            and (
+                getattr(app.state, "unattended_ready", False)
+                or (old_ground_supervisor is not None and old_ground_supervisor.running)
+            )
         )
         old_unattended_status = str(getattr(app.state, "unattended_status", "starting"))
         rebind = getattr(task_service, "rebind_site", None)
@@ -1256,13 +1283,20 @@ def create_app(
             app.state.ground_unattended_startup_error = ""
             app.state.unattended_error = ""
             app.state.unattended_ready = old_ground_started
-            app.state.unattended_status = "ready" if old_ground_started else old_unattended_status
+            app.state.unattended_status = (
+                "ready"
+                if old_ground_started
+                else "playback_only"
+                if collection_disabled
+                else old_unattended_status
+            )
         site_name = target
         app_logger.log_info("SITE_RUNTIME_REBOUND", f"site_name={target}")
         try:
             close_site_jump_sessions(paths=paths)
-            relay_site_id = site_application_service.active_site_id()
-            site_ssh_relay_service.auto_start_if_enabled(relay_site_id)
+            if not collection_disabled:
+                relay_site_id = site_application_service.active_site_id()
+                site_ssh_relay_service.auto_start_if_enabled(relay_site_id)
         except Exception as exc:
             app_logger.log_error(
                 "SSH_RELAY_AUTO_START_FAILED",

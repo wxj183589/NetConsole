@@ -342,6 +342,23 @@ def test_shared_task_api_stays_available_when_job_center_page_is_disabled(
     assert snapshot["type"] == "snapshot"
 
 
+def test_real_dev_playback_runtime_does_not_start_unattended_collectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NETCONSOLE_COLLECTION_MODE", "disabled")
+    app = create_app(
+        RuntimeMode.DESKTOP,
+        paths=PathResolver(tmp_path / "app", tmp_path / "data"),
+        desktop_session_token="t" * 40,
+        frontend_dist=tmp_path / "missing",
+    )
+
+    with TestClient(app):
+        assert app.state.unattended_status == "playback_only"
+        assert app.state.ground_unattended_supervisor.running is False
+        assert app.state.ground_unattended_supervisor.heartbeat.running is False
+
+
 def test_wave2_features_are_released_while_unimplemented_features_stay_hidden(
     tmp_path: Path,
 ) -> None:
