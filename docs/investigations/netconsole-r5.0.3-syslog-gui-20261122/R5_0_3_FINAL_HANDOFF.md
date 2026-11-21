@@ -4,8 +4,8 @@
 
 ```text
 BASELINE_PROTECTED=PASS (d58fdcf6; protected unrelated untracked investigation)
-PRODUCT_COMMIT=d58fdcf6 plus local R5.0.3 changes (not yet committed)
-DEVSTATUS_COMMIT=99f278b (pre-existing; R5.0.3 update pending)
+PRODUCT_COMMIT=2e539bf6 (parent d58fdcf6)
+DEVSTATUS_COMMIT=ff66c2d (parent 99f278b)
 HARNESS_FAILURE_1=HARNESS_BUG closed
 HARNESS_FAILURE_2=HARNESS_BUG closed
 HARNESS_FAILURE_3=HARNESS_BUG closed
