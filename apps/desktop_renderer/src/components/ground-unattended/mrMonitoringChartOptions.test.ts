@@ -41,7 +41,9 @@ describe('MR monitoring evidence chart', () => {
     expect(series[0]?.connectNulls).toBe(false)
     expect(series[0]?.data).toContainEqual([Date.parse('2026-11-07T11:00:01Z') + 1, null])
     expect(series[1]?.yAxisIndex).toBe(1)
-    expect(series[1]?.data).toContainEqual([Date.parse('2026-11-07T11:00:01Z'), 100])
+    expect(series[2]?.data).toContainEqual([Date.parse('2026-11-07T11:00:01Z'), 100])
+    const pingColors = mrMonitoringChartOption(data, '2026-11-07T11:00:00Z', '2026-11-07T12:00:00Z', readNetConsoleChartTokens(), '', 'ping').color as string[]
+    expect(pingColors.slice(0, 4)).toEqual(['#3B82F6', '#22C55E', '#EF4444', '#909399'])
     const tooltip = option.tooltip as { formatter: (params: unknown[]) => string }
     expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:00Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:00Z'), 3] }])).toContain('&lt;peer&gt;')
     expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:21Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:20Z'), 4] }])).toContain('Peer: UNKNOWN')
@@ -58,7 +60,7 @@ describe('MR monitoring evidence chart', () => {
     }] } as GroundMrMonitoring
     const theme = readNetConsoleChartTokens()
     const ping = mrMonitoringChartOption(data, '2026-11-07T11:00:00Z', '2026-11-07T12:00:00Z', theme, '', 'ping')
-    expect((ping.series as Array<{ id: string }>).map((row) => row.id)).toEqual(['rtt:192.0.2.1', 'loss:192.0.2.1'])
+    expect((ping.series as Array<{ id: string }>).map((row) => row.id)).toEqual(['rtt:192.0.2.1', 'success:192.0.2.1', 'loss:192.0.2.1', 'unknown:192.0.2.1'])
 
     const peer = mrMonitoringChartOption(data, '2026-11-07T11:00:00Z', '2026-11-07T12:00:00Z', theme, '', 'peer')
     const peerSeries = (peer.series as Array<{ id: string; data: number[][] }>)[0]!

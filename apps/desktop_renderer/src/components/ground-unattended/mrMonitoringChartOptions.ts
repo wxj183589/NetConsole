@@ -2,6 +2,7 @@ import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { t } from '../../i18n/runtime'
 import type { NetConsoleChartTokens } from '../../theme/echarts'
 import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeChart'
+import { PING_CHART_COLORS, pingPointValues, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
 
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
 export const PEER_RAINBOW_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6'] as const
@@ -138,34 +139,42 @@ export function mrMonitoringChartOption(
     }
   }
   const series: Array<Record<string, unknown>> = []
+  const pingPoints: PingChartPoint[] = []
   for (const ip of ips) {
     const rows = points.filter((point) => point.target_ip === ip).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
-    const rtt: Array<[number, number | null]> = [], loss: Array<[number, number | null]> = []
+    const rtt: Array<[number, number | null]> = [], success: Array<[number, number | null]> = [], failure: Array<[number, number | null]> = [], unknown: Array<[number, string]> = []
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index]!, time = Date.parse(row.ts), previous = rows[index - 1]
+      const values = pingPointValues(row as unknown as Record<string, unknown>)
+      pingPoints.push({ target: ip, time, ...values })
       // Preserve gaps instead of drawing through absent telemetry. The fleet period is 1s.
       if (previous && time - Date.parse(previous.ts) > 3000) {
-        rtt.push([Date.parse(previous.ts) + 1, null]); loss.push([Date.parse(previous.ts) + 1, null])
+        rtt.push([Date.parse(previous.ts) + 1, null]); success.push([Date.parse(previous.ts) + 1, null]); failure.push([Date.parse(previous.ts) + 1, null])
       }
-      rtt.push([time, row.ok && Number.isFinite(row.rtt_ms) ? row.rtt_ms : null])
-      loss.push([time, row.ok ? 0 : 100])
+      rtt.push([time, values.rtt])
+      success.push([time, values.status === 'SUCCESS' ? 0 : null])
+      failure.push([time, values.status === 'TIMEOUT' || values.status === 'PACKET_LOSS' ? values.loss : null])
+      if (values.status === 'UNKNOWN') unknown.push([time, 'UNKNOWN'])
     }
-    series.push({ id: `rtt:${ip}`, name: `${ip} RTT`, type: 'line', data: rtt, connectNulls: false, showSymbol: false,
+    const suffix = ips.length > 1 ? ` · ${ip}` : ''
+    series.push({ id: `rtt:${ip}`, name: `RTT（ms）${suffix}`, type: 'line', data: rtt, connectNulls: false, showSymbol: false, lineStyle: { color: PING_CHART_COLORS.rtt }, itemStyle: { color: PING_CHART_COLORS.rtt },
       markLine: selectedTime ? { silent: true, symbol: 'none', data: [{ xAxis: Date.parse(selectedTime), label: { formatter: 'Mesh' } }] } : { data: [] } })
-    series.push({ id: `loss:${ip}`, name: `${ip} ${t('ground.monitor.packet_loss', '单包丢包')}`, type: 'line', yAxisIndex: 1, data: loss, connectNulls: false, showSymbol: false, lineStyle: { opacity: 0.5 }, step: 'end' })
+    series.push({ id: `success:${ip}`, name: `连通${suffix}`, type: 'line', yAxisIndex: 1, data: success, connectNulls: false, showSymbol: true, symbolSize: 6, lineStyle: { color: PING_CHART_COLORS.success, width: 2 }, itemStyle: { color: PING_CHART_COLORS.success } })
+    series.push({ id: `loss:${ip}`, name: `丢包/超时${suffix}`, type: 'line', yAxisIndex: 1, data: failure, connectNulls: false, showSymbol: true, symbolSize: 7, lineStyle: { color: PING_CHART_COLORS.failure, width: 2 }, itemStyle: { color: PING_CHART_COLORS.failure } })
+    series.push({ id: `unknown:${ip}`, name: `未知${suffix}`, type: 'scatter', yAxisIndex: mode === 'all' ? 4 : 2, symbol: 'diamond', symbolSize: 8, data: unknown, itemStyle: { color: PING_CHART_COLORS.unknown } })
   }
   if (mode === 'ping') {
     return {
       ...createMultiSeriesTimeChartBaseOption(theme, { unit: 'ms', pointCount: points.length, showLegend: true }),
-      color: [theme.primary, theme.series[1] || '#22c55e'],
+      color: [PING_CHART_COLORS.rtt, PING_CHART_COLORS.success, PING_CHART_COLORS.failure, PING_CHART_COLORS.unknown],
       toolbox: { show: false },
       legend: { top: 4, type: 'scroll' },
       grid: { left: 65, right: 50, top: 48, bottom: 64, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
       axisPointer: { link: [{ xAxisIndex: 'all' }] },
       xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
-      yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }],
+      yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }, { type: 'category', data: ['UNKNOWN'], show: false }],
       dataZoom: dataZoom(),
-      tooltip: { trigger: 'axis', confine: true, appendToBody: false },
+      tooltip: { trigger: 'axis', confine: true, appendToBody: false, formatter: (params: unknown) => pingTooltipFormatter(pingPoints, params) },
       series,
     }
   }
@@ -196,7 +205,7 @@ export function mrMonitoringChartOption(
     grid: [{ left: 65, right: 50, top: 48, height: '38%', outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' }, { left: 95, right: 50, top: '56%', height: '18%', outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' }, { left: 95, right: 50, top: '79%', bottom: 72, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' }],
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     xAxis: [0, 1, 2].map((gridIndex) => ({ type: 'time', gridIndex, min: begin, max: finish, axisPointer: { show: true, snap: false } })),
-    yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }, { type: 'category', gridIndex: 1, data: peers.length ? peers : ['UNKNOWN'], axisLabel: { width: 85, overflow: 'truncate' } }, { type: 'category', gridIndex: 2, data: ['Mesh / Syslog'], axisLabel: { width: 85, overflow: 'truncate' } }],
+    yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }, { type: 'category', gridIndex: 1, data: peers.length ? peers : ['UNKNOWN'], axisLabel: { width: 85, overflow: 'truncate' } }, { type: 'category', gridIndex: 2, data: ['Mesh / Syslog'], axisLabel: { width: 85, overflow: 'truncate' } }, { type: 'category', data: ['UNKNOWN'], show: false }],
     dataZoom: dataZoom([0, 1, 2]),
     tooltip: { trigger: 'axis', confine: true, appendToBody: false, extraCssText: 'max-width:420px;max-height:260px;overflow:hidden',
       formatter: (params: Array<{ axisValue?: number; data?: [number, number | null]; seriesName: string; seriesIndex: number }>) => {

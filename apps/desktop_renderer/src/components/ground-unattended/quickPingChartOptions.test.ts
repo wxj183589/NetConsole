@@ -32,12 +32,13 @@ describe('Quick Ping chart semantics', () => {
       { target_ip: '10.0.0.2', received_at: '2026-11-07T00:00:00.100Z', sample: { ok: true, rtt_ms: 8 } },
     ], 200, readNetConsoleChartTokens()) as { series: Array<{ name: string; data: Array<[number, number | null]> }> }
 
-    expect(option.series).toHaveLength(4)
+    expect(option.series).toHaveLength(8)
     expect(option.series.map((series) => series.name)).toEqual([
-      'RTT · 10.0.0.1', '单包丢包 · 10.0.0.1', 'RTT · 10.0.0.2', '单包丢包 · 10.0.0.2',
+      'RTT（ms） · 10.0.0.1', '连通 · 10.0.0.1', '丢包/超时 · 10.0.0.1', '未知 · 10.0.0.1',
+      'RTT（ms） · 10.0.0.2', '连通 · 10.0.0.2', '丢包/超时 · 10.0.0.2', '未知 · 10.0.0.2',
     ])
     expect(option.series[0]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00Z'))
-    expect(option.series[2]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00.100Z'))
+    expect(option.series[4]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00.100Z'))
   })
 
   it('pins the chart domain to the playback run while zooming the shared viewport', () => {
