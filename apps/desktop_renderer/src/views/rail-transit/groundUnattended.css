@@ -29,3 +29,4 @@
 .ground-page--log-view .ground-subpage{display:flex;flex:1;flex-direction:column;height:100%;overflow:hidden}
 .timeline-filter-grid{grid-template-columns:repeat(4,minmax(150px,1fr))}.timeline-filter-grid .el-date-editor{grid-column:span 2}
 @media(max-width:900px){.timeline-filter-grid{grid-template-columns:repeat(2,minmax(130px,1fr))}}
+.workspace-switch{display:flex;justify-content:center;margin:-4px 0 12px}

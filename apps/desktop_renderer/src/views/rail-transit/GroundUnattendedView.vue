@@ -14,11 +14,13 @@ import SyslogPage from './SyslogPage.vue'
 import SystemHealthPage from './SystemHealthPage.vue'
 import ArchivePage from './ArchivePage.vue'
 import SettingsPage from './SettingsPage.vue'
+import GroundHistoryPlayback from '../../components/ground-unattended/GroundHistoryPlayback.vue'
 import { provideGroundContext } from './useGroundUnattended'
 const groundContext = provideGroundContext()
 defineExpose(groundContext)
 const { Box, CopyDocument, Delete, Refresh, SwitchButton, VideoPause, VideoPlay, pauseGroundRun, resumeGroundRun, startGroundRun, GroundPingChart, NcFloatingWindow, t, groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel, groundStopTriggerLabel, groundSourceLabel, groundStatusLabel, groundTransitionContextLabel, activeTab, pageVisible, pageActivated, quickContextRevision, loading, action, status, profile, trains, positionRendererTiming, pingTargets, selectedDeepCollector, deepRecords, deepWindowOpen, deepRecordsLoading, deepCategory, deepKeyword, deepPaused, deepAutoRefresh, acMeshSummary, acMeshLinks, acMeshMrs, acMeshSnapshots, acMeshRawTail, acMeshLoading, acControllers, selectedAcControllerId, acControllersLoading, acControllersError, runs, selectedRunId, runHistoryDeleteLoading, pingSeries, selectedPingTarget, pingWindowOpen, pingSeriesLoading, pingIncrementalLoading, includeWarmup, pingRange, pingCustomRange, pingAutoRefresh, pingPaused, pingFollowLatest, pingInitialLoadSucceeded, pingBackendState, pingRequestId, pingErrorCode, selectedSyslogRecord, syslogDetailDrawer, selectedArchive, archiveDetailTab, selectedTrain, archiveDialog, trainDialog, openingSessionId, trainFilter, pingFilter, generalLoadIssues, pingIssue, loadIssueDescription, running, operationActive, visibleOperation, selectedRun, historicalRun, runHistoryDeleteBlocked, selectedPingHistorical, runScopedTab, archiveRecordCount, selectedTrainCollection, trainTableMaxHeight, pingTableMaxHeight, startBlockedReason, pingAvailability, pingEmptyDescription, pingLiveStats, locationStats, trainColumns, pingColumns, refreshAcMesh, dismissOperation, loadAll, runAction, submitStop, showPingSeries, openPingBackendLogs, togglePriority, syncInventory, updatePolicy, checkConfigs, confirmTargetPortChange, showTrain, showTrainPing, showTrainTimeline, openDeepSession, deleteSelectedRunHistory, downloadArchiveSummary, downloadArchiveZip, verifyArchive, endpoint, groundControlSourceLabel, endpointRadioTooltip, duration, metric, bytes, statusType, useFullPingRange, togglePingPaused, returnPingToLive, copyPingDiagnostics, handlePingDialogClosed, loadDeepRecords, toggleDeepPaused, handleDeepWindowClosed, copyDeepRecords } = groundContext
 const quickPingMrId = ref('')
+const workspace = ref<'collection' | 'playback'>('collection')
 async function copySyslogRaw() {
   try {
     await navigator.clipboard.writeText(selectedSyslogRecord.value?.raw_text || '')
@@ -41,13 +43,13 @@ function openQuickPing(mrId: string) {
 </script>
 
 <template>
-  <main v-loading="loading" :class="['ground-page', { 'ground-page--log-view': ['timeline', 'syslog'].includes(activeTab) }]">
+  <main v-loading="workspace === 'collection' && loading" :class="['ground-page', { 'ground-page--log-view': workspace === 'collection' && ['timeline', 'syslog'].includes(activeTab) }]">
     <header class="page-heading">
       <div>
         <p class="eyebrow">{{ t('ground.section', '轨道交通') }}</p>
         <h1>{{ t('ground.title', '地面无人值守') }}</h1>
       </div>
-      <div class="heading-actions">
+      <div v-if="workspace === 'collection'" class="heading-actions">
         <el-button :icon="Refresh" circle :title="t('common.refresh', '刷新')" @click="loadAll()" />
         <el-button :icon="Refresh" :loading="action === 'sync'" @click="runAction('sync', syncInventory)">同步设备</el-button>
         <el-button :loading="action === 'config'" :disabled="!running || !profile?.syslog_server_ip" @click="runAction('config', () => checkConfigs())">检查 MR 配置</el-button>
@@ -67,7 +69,14 @@ function openQuickPing(mrId: string) {
       </div>
     </header>
 
-    <section v-if="visibleOperation" class="operation-band" :class="`operation-${visibleOperation.operation_state.toLocaleLowerCase()}`">
+    <div class="workspace-switch" role="tablist" aria-label="地面无人值守工作区">
+      <el-radio-group v-model="workspace">
+        <el-radio-button value="collection">实时采集</el-radio-button>
+        <el-radio-button value="playback">历史回放</el-radio-button>
+      </el-radio-group>
+    </div>
+
+    <section v-if="workspace === 'collection' && visibleOperation" class="operation-band" :class="`operation-${visibleOperation.operation_state.toLocaleLowerCase()}`">
       <div class="operation-heading">
         <div>
           <b>{{ visibleOperation.operation_type === 'STOP_AND_ARCHIVE' ? '停止并归档' : '运行停止' }}</b>
@@ -86,7 +95,7 @@ function openQuickPing(mrId: string) {
       <small>操作编号 {{ visibleOperation.operation_id }}<template v-if="visibleOperation.request_id"> · 请求编号 {{ visibleOperation.request_id }}</template> · 最后更新 {{ visibleOperation.updated_at }}</small>
     </section>
 
-    <section v-if="generalLoadIssues.length" class="load-warning">
+    <section v-if="workspace === 'collection' && generalLoadIssues.length" class="load-warning">
       <el-alert
         title="地面无人值守部分数据未加载"
         :description="loadIssueDescription"
@@ -97,7 +106,7 @@ function openQuickPing(mrId: string) {
       <el-button :icon="Refresh" :loading="loading" @click="loadAll()">重新加载</el-button>
     </section>
 
-    <section v-if="runScopedTab" class="run-context-bar">
+    <section v-if="workspace === 'collection' && runScopedTab" class="run-context-bar">
       <div>
         <b>数据运行上下文</b>
         <span>深度采集、时间轴与 Syslog 使用所选运行；心跳检测始终展示常驻监测状态。</span>
@@ -122,7 +131,7 @@ function openQuickPing(mrId: string) {
       <span class="muted">{{ selectedRun?.actual_started_at || selectedRun?.scheduled_start_at || '—' }} 至 {{ selectedRun?.actual_ended_at || '进行中' }}</span>
     </section>
 
-    <el-tabs v-model="activeTab" class="ground-tabs">
+    <el-tabs v-if="workspace === 'collection'" v-model="activeTab" class="ground-tabs">
       <el-tab-pane v-if="tabVisible('overview')" :disabled="!tabEnabled('overview')" :label="t('ground.overview', '运行概览')" name="overview">
         <OverviewPage />
       </el-tab-pane>
@@ -199,6 +208,14 @@ function openQuickPing(mrId: string) {
         <SettingsPage />
       </el-tab-pane>
     </el-tabs>
+
+    <GroundHistoryPlayback
+      v-else
+      :site-id="profile?.site_id || ''"
+      :runs="runs"
+      :trains="trains"
+      :active="pageVisible && pageActivated && workspace === 'playback'"
+    />
 
     <NcFloatingWindow
       v-model="pingWindowOpen"

@@ -206,9 +206,18 @@ def heartbeat_inventory_apply(request: Request, payload: GroundHeartbeatInventor
 
 
 @router.get("/mr/{mr_uuid}/monitoring", response_model=GroundMrMonitoringDTO)
-def get_mr_monitoring(request: Request, mr_uuid: str, run_id: str = "", start_time: str = "", end_time: str = "") -> GroundMrMonitoringDTO:
+def get_mr_monitoring(
+    request: Request,
+    mr_uuid: str,
+    run_id: str = "",
+    start_time: str = "",
+    end_time: str = "",
+    loss_limit: int = Query(default=3, ge=1, le=100),
+    loss_offset: int = Query(default=0, ge=0),
+) -> GroundMrMonitoringDTO:
     return _call(lambda: _service(request).mr_monitoring(_site_id(request), mr_uuid=mr_uuid, run_id=run_id,
-                                                        start_time=start_time, end_time=end_time))
+                                                        start_time=start_time, end_time=end_time,
+                                                        loss_limit=loss_limit, loss_offset=loss_offset))
 
 
 @router.put("/profile", response_model=GroundUnattendedProfileDTO)

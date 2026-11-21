@@ -1932,6 +1932,9 @@ class GroundMrMonitoringDTO(ApiModel):
     queried_end: str = ""
     events_truncated: bool = False
     loss_events: list[dict[str, object]] = Field(default_factory=list)
+    loss_event_total: int = 0
+    loss_event_limit: int = 3
+    loss_event_offset: int = 0
     identity_relations: list[GroundMrIdentityDTO] = Field(default_factory=list)
     arp_observations: list[GroundArpObservationDTO] = Field(default_factory=list)
     identity_conflicts: list[dict[str, object]] = Field(default_factory=list)

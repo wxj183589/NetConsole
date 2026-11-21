@@ -31,7 +31,7 @@ describe('MR monitoring evidence chart', () => {
       { ts: '2026-11-07T11:00:00Z', target_ip: '192.0.2.1', ok: true, rtt_ms: 3 },
     ] }, peer_intervals: [{
       start: '2026-11-07T11:00:00Z', end: '2026-11-07T11:00:30Z',
-      peer_name: 'AP 一', bssid: '00:11:22:33:44:55', rssi: -55,
+      peer_name: 'AP 一', bssid: '00:11:22:33:44:55', rssi: -55, raw_rssi: 55, rssi_semantics: 'ABSOLUTE_MAGNITUDE',
       source: 'SYSLOG', device_time: '', receive_time: '',
     }] } as GroundMrMonitoring
     const theme = readNetConsoleChartTokens()
@@ -42,10 +42,24 @@ describe('MR monitoring evidence chart', () => {
     const peerSeries = (peer.series as Array<{ id: string; data: number[][] }>)[0]!
     expect(peerSeries.id).toBe('peer-rssi-intervals')
     expect(peerSeries.data[0]).toEqual([
-      Date.parse('2026-11-07T11:00:00Z'), Date.parse('2026-11-07T11:00:30Z'), 45, 0,
+      Date.parse('2026-11-07T11:00:00Z'), Date.parse('2026-11-07T11:00:30Z'), -55, 0,
     ])
     const tooltip = peer.tooltip as { formatter: (params: { data: number[] }) => string }
-    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('RSSI：-55 dBm')
+    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('设备原始 RSSI：55')
+    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('归一化 RSSI：-55 dBm')
     expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('持续：30.0 秒')
+  })
+
+  it('uses one externally-owned visible window without per-track sliders', () => {
+    const data = { series: { points: [] }, peer_intervals: [] } as unknown as GroundMrMonitoring
+    const theme = readNetConsoleChartTokens()
+    const args = [data, '2026-11-07T11:00:00Z', '2026-11-07T12:00:00Z', theme, '', 'ping', '2026-11-07T11:10:00Z', '2026-11-07T11:20:00Z'] as const
+    const ping = mrMonitoringChartOption(...args)
+    expect(ping.dataZoom).toHaveLength(1)
+    expect((ping.dataZoom as Array<Record<string, unknown>>)[0]).toMatchObject({
+      startValue: Date.parse('2026-11-07T11:10:00Z'), endValue: Date.parse('2026-11-07T11:20:00Z'),
+    })
+    const navigator = mrMonitoringChartOption(data, args[1], args[2], theme, '', 'navigator', args[6], args[7])
+    expect(navigator.dataZoom).toHaveLength(2)
   })
 })

@@ -17,7 +17,8 @@ function formatLocalDateTime(value: string | undefined): string {
 const result = ref<GroundMrMonitoring | null>(null), error = ref(''), loading = ref(false)
 const range = ref<number | string>(60), interval = ref(5), paused = ref(false), fullScreen = ref(false)
 const lossEventsOpen = ref<string[]>([])
-const customStart = ref(''), customEnd = ref(''), chartStart = ref(''), chartEnd = ref(''), selectedTime = ref('')
+const customStart = ref(''), customEnd = ref(''), chartStart = ref(''), chartEnd = ref(''), visibleStart = ref(''), visibleEnd = ref(''), selectedTime = ref('')
+const backupExpanded = ref(typeof window === 'undefined' || window.localStorage.getItem('ground-playback-backup-collapsed') !== '1')
 const selectedEvent = ref<GroundMeshMonitorEvent | null>(null), rawText = ref(''), rawError = ref(''), rawLoading = ref(false)
 let controller: AbortController | null = null, rawController: AbortController | null = null, timer: ReturnType<typeof setInterval> | undefined, generation = 0
 const enabled = computed(() => props.active && Boolean(props.mr.mr_uuid))
@@ -28,6 +29,7 @@ const displayStatus = computed(() => displayStatusCode.value === 'PAUSED' ? '已
 const tabs = ['all', 'ping', 'ap', 'mesh', 'timeline']
 const selectedSection = ref(props.section || 'all')
 watch(() => props.section, (value) => { selectedSection.value = value || 'all' })
+watch(backupExpanded, (value) => window.localStorage.setItem('ground-playback-backup-collapsed', value ? '0' : '1'))
 function stop(): void { generation++; controller?.abort(); controller = null; rawController?.abort(); rawController = null; if (timer) clearInterval(timer); timer = undefined; loading.value = false; rawLoading.value = false }
 function bounds(): [string, string] {
   const end = range.value === 'custom' ? new Date(customEnd.value) : new Date()
@@ -42,7 +44,7 @@ async function load(): Promise<void> {
     const [start, end] = bounds()
     const data = await getGroundMrMonitoring(props.mr.mr_uuid, { run_id: props.runId, start_time: start, end_time: end }, { signal: request.signal })
     if (current !== generation || !enabled.value) return
-    result.value = data; chartStart.value = start; chartEnd.value = end; error.value = ''
+    result.value = data; chartStart.value = start; chartEnd.value = end; visibleStart.value = start; visibleEnd.value = end; error.value = ''
   } catch (reason) { if (current === generation && !request.signal.aborted) error.value = reason instanceof Error ? reason.message : String(reason) }
   finally { if (current === generation) { controller = null; loading.value = false } }
 }
@@ -85,6 +87,8 @@ function monitoringDataFor(targetIp: string): GroundMrMonitoring | null {
 const primaryData = computed(() => monitoringDataFor(mr.value.management_ip || ''))
 const backupData = computed(() => monitoringDataFor(mr.value.backup_management_ip || ''))
 const recentLossEvents = computed(() => (result.value?.loss_events || [])
+  .filter((event) => Date.parse(String(event.started_at || '')) <= Date.parse(visibleEnd.value || chartEnd.value)
+    && (!event.ended_at || Date.parse(String(event.ended_at)) >= Date.parse(visibleStart.value || chartStart.value)))
   .slice()
   .sort((left, right) => Date.parse(String(right.started_at || '')) - Date.parse(String(left.started_at || '')))
   .slice(0, 3))
@@ -93,12 +97,15 @@ function lossStateLabel(value: unknown): string {
 }
 const recentSwitchEvents = computed(() => (result.value?.mesh_events || [])
   .filter((event) => event.event_type.toUpperCase() === 'MESH_ACTIVELINK_SWITCH')
+  .filter((event) => Date.parse(event.event_time || event.receive_time) >= Date.parse(visibleStart.value || chartStart.value)
+    && Date.parse(event.event_time || event.receive_time) <= Date.parse(visibleEnd.value || chartEnd.value))
   .slice()
   .sort((left, right) => Date.parse(right.event_time || right.receive_time) - Date.parse(left.event_time || left.receive_time))
   .slice(0, 3))
 function eventLabel(eventType: string): string {
   return eventType.toUpperCase() === 'MESH_ACTIVELINK_SWITCH' ? 'Mesh 主链路切换' : eventType
 }
+function changeViewport(value: { start: string; end: string }): void { visibleStart.value = value.start; visibleEnd.value = value.end }
 onBeforeUnmount(stop)
 </script>
 
@@ -115,21 +122,23 @@ onBeforeUnmount(stop)
       <div class="section-tabs"><el-button v-for="sectionName in tabs" :key="sectionName" :type="selectedSection === sectionName ? 'primary' : 'default'" size="small" @click="selectedSection = sectionName">{{ ({ all: t('ground.monitor.all', '综合监控'), ping: 'Ping 详情', ap: t('ground.monitor.ap_history', '连接 AP 历史'), mesh: t('ground.monitor.mesh_syslog', 'Mesh 切换日志 (Syslog)'), timeline: t('ground.monitor.timeline', '事件时间轴') } as Record<string,string>)[sectionName] }}</el-button></div>
       <template v-if="result">
         <el-alert v-if="result.series.diagnostics.truncated || result.events_truncated" :title="t('ground.monitor.truncated', '查询达到有界预算，当前统计和事件可能不完整，请缩小范围。')" type="warning" :closable="false" />
-        <p class="evidence-note">{{ t('ground.monitor.evidence_note', '丢包率只统计实际有效探测，空白不代表丢包。Peer 优先采用相邻一致的 Syslog 切换；AC 仅闭合不超过 30 秒的相同 Peer 实际采样区间。末次证据后与缺失段为 UNKNOWN。') }}</p>
+        <p class="evidence-note">{{ t('ground.monitor.evidence_note', '丢包率只统计实际有效探测，空白不代表丢包。Peer 主用区间只由相邻且身份连续的 MESH_ACTIVELINK_SWITCH 证明；末次证据后与缺失段保持无数据。') }}</p>
         <div v-if="selectedSection !== 'mesh' && selectedSection !== 'timeline'" class="ping-chart-stack">
-          <section v-if="primaryData"><h4>主用管理 IP · {{ mr.management_ip }}</h4><MrMonitoringChart mode="ping" :data="primaryData" :start="chartStart" :end="chartEnd" :active="active" :selected-time="selectedTime" /></section>
-          <section v-if="backupData"><h4>备用管理 IP · {{ mr.backup_management_ip }}</h4><MrMonitoringChart mode="ping" :data="backupData" :start="chartStart" :end="chartEnd" :active="active" :selected-time="selectedTime" /></section>
+          <section v-if="primaryData"><h4>主用管理 IP · {{ mr.management_ip }}</h4><MrMonitoringChart mode="ping" :data="primaryData" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
+          <section v-if="backupData"><button class="backup-toggle" @click="backupExpanded = !backupExpanded"><b>备用管理 IP · {{ mr.backup_management_ip }}</b><span>{{ backupExpanded ? '收起' : '展开' }}</span></button><MrMonitoringChart v-if="backupExpanded" mode="ping" :data="backupData" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
         </div>
-        <section v-if="selectedSection !== 'ping' && result.peer_intervals?.length" class="peer-chart"><h4>Peer AP 主用链路时间区间 · 柱宽为持续时间，柱高为 RSSI 强度</h4><MrMonitoringChart mode="peer" :data="result" :start="chartStart" :end="chartEnd" :active="active" :selected-time="selectedTime" /></section>
+        <section v-if="selectedSection !== 'ping' && result.peer_intervals?.length" class="peer-chart"><h4>Peer AP 主用链路时间区间 · 柱宽为持续时间，柱高为 RSSI (dBm)</h4><MrMonitoringChart mode="peer" :data="result" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
         <p v-if="!result.series.points.length">{{ t('ground.monitor.no_samples', '选定范围没有 Ping 样本') }}</p>
         <section v-if="['all', 'mesh', 'timeline'].includes(selectedSection)" class="mesh-events"><h4>{{ selectedSection === 'timeline' ? t('ground.monitor.timeline', '事件时间轴') : t('ground.monitor.mesh_events', '最近 3 次 Mesh 主链路切换') }}</h4><p v-if="!recentSwitchEvents.length">{{ t('ground.monitor.no_mesh', '没有 Mesh 主链路切换证据，连接状态 UNKNOWN') }}</p><button v-for="event in recentSwitchEvents" :key="event.id" class="mesh-event" :class="{ selected: selectedEvent?.id === event.id }" @click="selectEvent(event)"><strong>{{ eventLabel(event.event_type) }}</strong><span>{{ event.old_ap_name || event.old_bssid || 'UNKNOWN' }} → {{ event.new_ap_name || event.bssid || 'UNKNOWN' }}</span><span>BSSID {{ event.bssid || 'UNKNOWN' }} · RSSI {{ event.rssi ?? 'UNKNOWN' }}</span><small>事件时间 {{ formatLocalDateTime(event.event_time || event.receive_time) }} · 接收时间 {{ formatLocalDateTime(event.receive_time) }} · {{ event.data_quality }}</small></button></section>
         <el-collapse v-if="recentLossEvents.length" v-model="lossEventsOpen" class="loss-events"><el-collapse-item name="loss-events"><template #title><h4>{{ t('ground.monitor.loss_events', '丢包事件') }} · 最近 {{ recentLossEvents.length }} 条</h4></template><el-table :data="recentLossEvents" size="small" stripe><el-table-column label="开始"><template #default="scope">{{ formatLocalDateTime(String(scope.row.started_at || '')) || '—' }}</template></el-table-column><el-table-column label="恢复"><template #default="scope">{{ formatLocalDateTime(String(scope.row.ended_at || '')) || '—' }}</template></el-table-column><el-table-column label="状态"><template #default="scope">{{ lossStateLabel(scope.row.state) }}</template></el-table-column><el-table-column prop="loss_count" label="丢包数" /><el-table-column label="AP / 站点"><template #default="scope">{{ scope.row.ap_name || '—' }} / {{ scope.row.station || '—' }} / {{ scope.row.section || '—' }}</template></el-table-column></el-table><el-button link type="primary" @click="range = 'custom'">选择时间范围查看更多历史</el-button></el-collapse-item></el-collapse>
         <section v-if="selectedEvent" class="raw-detail"><p>{{ selectedEvent.raw_file_id }} : {{ selectedEvent.raw_line_number }} · {{ selectedEvent.event_time }}</p><p v-if="rawLoading">{{ t('common.loading', '加载中') }}</p><el-alert v-if="rawError" :title="rawError" type="warning" :closable="false" /><pre>{{ rawText || t('ground.monitor.raw_unavailable', '原始日志尚未加载或不可用') }}</pre></section>
+        <section class="global-navigator"><h4>全局时间窗口</h4><MrMonitoringChart mode="navigator" :data="result" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
       </template>
     </div>
   </el-drawer>
 </template>
 <style scoped>
+.backup-toggle{display:flex;width:100%;justify-content:space-between;border:0;background:transparent;color:inherit;padding:0;cursor:pointer}.global-navigator{border-top:1px solid var(--el-border-color-light);padding-top:8px}
 .drawer-title{display:flex;justify-content:space-between;align-items:center;gap:12px;min-width:0}.mr-monitor-content{display:flex;flex-direction:column;gap:14px;min-width:0}.identity{display:flex;flex-direction:column;gap:8px;overflow-wrap:anywhere}.identity-title{display:flex;align-items:center;gap:8px}.identity-title strong{font-size:18px}.identity>span{font-size:12px;color:var(--el-text-color-secondary)}.identity-group{display:flex;flex-direction:column;gap:5px}.identity-group>strong{font-size:12px;color:var(--el-text-color-secondary)}.ap-detail-list{display:flex;gap:6px;flex-wrap:wrap}.muted-value{font-size:12px;color:var(--el-text-color-secondary)}.actions,.range-controls,.section-tabs{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}.metrics>span{background:var(--el-fill-color-light);border:1px solid var(--el-border-color-lighter);padding:10px;display:flex;flex-direction:column;gap:6px;min-width:100px}.metrics b{font-size:14px;overflow-wrap:anywhere}.evidence-note{color:var(--el-text-color-secondary);font-size:12px}.mesh-events{max-height:340px;overflow:auto}.mesh-event{display:flex;flex-direction:column;text-align:left;gap:5px;width:100%;padding:9px;margin:4px 0;background:var(--el-fill-color-blank);color:var(--el-text-color-primary);border:1px solid var(--el-border-color-light);cursor:pointer;overflow-wrap:anywhere}.mesh-event.selected{border-color:var(--el-color-primary)}.raw-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;background:var(--el-fill-color-light);padding:12px}.range-controls input{max-width:220px;background:var(--el-fill-color-blank);color:var(--el-text-color-primary);border:1px solid var(--el-border-color);padding:6px}@media(max-width:900px){.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:520px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .ping-chart-stack{display:flex;flex-direction:column;gap:16px}.ping-chart-stack>section{border:1px solid var(--el-border-color-lighter);padding:10px}.ping-chart-stack h4{margin:0 0 6px}
 </style>
