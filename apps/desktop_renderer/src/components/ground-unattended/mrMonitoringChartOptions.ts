@@ -58,8 +58,8 @@ export function mrMonitoringChartOption(
   const begin = Date.parse(start), finish = Date.parse(end)
   const visibleBegin = Date.parse(viewportStart), visibleFinish = Date.parse(viewportEnd)
   const dataZoom = (xAxisIndex: number | number[] = 0, slider = false): Array<Record<string, unknown>> => [
-    { type: 'inside', xAxisIndex, filterMode: 'none', startValue: visibleBegin, endValue: visibleFinish, minValueSpan: 1000 },
-    ...(slider ? [{ type: 'slider', xAxisIndex, bottom: 8, filterMode: 'none', startValue: visibleBegin, endValue: visibleFinish, minValueSpan: 1000 }] : []),
+    { type: 'inside', xAxisIndex, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true, startValue: visibleBegin, endValue: visibleFinish, minValueSpan: 1000 },
+    ...(slider ? [{ type: 'slider', xAxisIndex, bottom: 8, filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true, startValue: visibleBegin, endValue: visibleFinish, minValueSpan: 1000 }] : []),
   ]
   const points = data.series.points.filter((point) => !point.warmup_ignored && Date.parse(point.ts) >= begin && Date.parse(point.ts) <= finish)
   const ips = [...new Set(points.map((point) => point.target_ip))]

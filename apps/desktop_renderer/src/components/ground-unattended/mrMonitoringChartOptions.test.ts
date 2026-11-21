@@ -80,6 +80,7 @@ describe('MR monitoring evidence chart', () => {
     expect(ping.dataZoom).toHaveLength(1)
     expect((ping.dataZoom as Array<Record<string, unknown>>)[0]).toMatchObject({
       startValue: Date.parse('2026-11-07T11:10:00Z'), endValue: Date.parse('2026-11-07T11:20:00Z'),
+      zoomOnMouseWheel: true, moveOnMouseMove: true,
     })
     const navigator = mrMonitoringChartOption(data, args[1], args[2], theme, '', 'navigator', args[6], args[7])
     expect(navigator.dataZoom).toHaveLength(2)
