@@ -5,6 +5,7 @@ import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeC
 import { PING_CHART_COLORS, pingPointValues, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
 
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
+const sourceLabel = (value: unknown): string => ({ SYSLOG: 'Syslog', AC: 'AC Mesh-Link' } as Record<string, string>)[String(value || '').toUpperCase()] || '无数据'
 export const PEER_RAINBOW_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6'] as const
 type PeerIntervalLike = GroundMrMonitoring['peer_intervals'][number]
 
@@ -52,7 +53,7 @@ export function mrMonitoringChartOption(
   end: string,
   theme: NetConsoleChartTokens,
   selectedTime = '',
-  mode: 'all' | 'ping' | 'peer' | 'navigator' = 'all',
+  mode: 'all' | 'ping' | 'peer' | 'navigator' | 'heartbeat' = 'all',
   viewportStart = start,
   viewportEnd = end,
 ): Record<string, unknown> {
@@ -80,6 +81,42 @@ export function mrMonitoringChartOption(
         markLine: selectedTime ? { silent: true, symbol: 'none', data: [{ xAxis: Date.parse(selectedTime), label: { show: false } }] } : { data: [] } }],
     }
   }
+  if (mode === 'heartbeat') {
+    const statusRows = ips.flatMap((ip) => points
+      .filter((point) => point.target_ip === ip)
+      .sort((left, right) => Date.parse(left.ts) - Date.parse(right.ts)))
+    const statusSeries = ips.flatMap((ip) => {
+      const rows = statusRows.filter((point) => point.target_ip === ip)
+      const suffix = ips.length > 1 ? ` · ${ip}` : ''
+      const online: Array<[number, number | null]> = [], offline: Array<[number, number | null]> = [], unknown: Array<[number, number | null]> = []
+      rows.forEach((row) => {
+        const status = pingPointValues(row as unknown as Record<string, unknown>).status
+        online.push([Date.parse(row.ts), status === 'SUCCESS' ? 1 : null])
+        offline.push([Date.parse(row.ts), status === 'TIMEOUT' || status === 'PACKET_LOSS' ? 0 : null])
+        unknown.push([Date.parse(row.ts), status === 'UNKNOWN' ? 0.5 : null])
+      })
+      return [
+        { id: `heartbeat-online:${ip}`, name: `正常连通${suffix}`, type: 'line', data: online, connectNulls: false, showSymbol: true, symbolSize: 7, lineStyle: { color: PING_CHART_COLORS.success, width: 2 }, itemStyle: { color: PING_CHART_COLORS.success } },
+        { id: `heartbeat-offline:${ip}`, name: `不通/超时${suffix}`, type: 'line', data: offline, connectNulls: false, showSymbol: true, symbolSize: 7, lineStyle: { color: PING_CHART_COLORS.failure, width: 2 }, itemStyle: { color: PING_CHART_COLORS.failure } },
+        { id: `heartbeat-unknown:${ip}`, name: `未知${suffix}`, type: 'scatter', data: unknown, symbol: 'diamond', symbolSize: 8, itemStyle: { color: PING_CHART_COLORS.unknown } },
+      ]
+    })
+    return {
+      ...createMultiSeriesTimeChartBaseOption(theme, { unit: '', pointCount: statusRows.length, showLegend: true }),
+      color: [PING_CHART_COLORS.success, PING_CHART_COLORS.failure, PING_CHART_COLORS.unknown], toolbox: { show: false },
+      legend: { top: 4, type: 'scroll' }, grid: { left: 65, right: 50, top: 44, bottom: 64, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
+      xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
+      yAxis: { type: 'value', min: 0, max: 1, interval: 1, name: '通断', axisLabel: { formatter: (value: number) => value === 1 ? '连通' : '不通' }, splitLine: { show: false } },
+      dataZoom: dataZoom(),
+      tooltip: { trigger: 'axis', confine: true, appendToBody: false, formatter: (params: unknown) => {
+        const rows = Array.isArray(params) ? params as Array<{ axisValue?: number | string; seriesName?: string; data?: [number, number | null] }> : []
+        const time = Number(rows[0]?.axisValue)
+        const status = rows.some((row) => row.data?.[1] === 1) ? '正常连通' : rows.some((row) => row.data?.[1] === 0) ? '不通/超时' : '未知'
+        return `${Number.isFinite(time) ? escape(new Date(time).toLocaleString()) : ''}<br>状态：${status}`
+      } },
+      series: statusSeries,
+    }
+  }
   if (mode === 'peer') {
     const peerData = intervals.map((row, index) => {
       const rssi = Number.isFinite(row.rssi) ? Number(row.rssi) : null
@@ -94,7 +131,7 @@ export function mrMonitoringChartOption(
       legend: { top: 4, type: 'scroll', data: peers },
       grid: { left: 65, right: 36, top: 28, bottom: 64, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
       xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
-      yAxis: { type: 'value', name: 'RSSI (dBm)', min: peerMin, max: peerMax },
+      yAxis: { type: 'value', name: 'RSSI', min: peerMin, max: peerMax },
       dataZoom: dataZoom(),
       tooltip: {
         trigger: 'item', confine: true, appendToBody: false,
@@ -105,15 +142,14 @@ export function mrMonitoringChartOption(
           return [
             `Peer AP：${escape(row.peer_name || row.bssid || 'UNKNOWN')}`,
             `MAC：${escape(row.bssid || row.peer_mac || 'UNKNOWN')}`,
-            `车站：${escape(row.station || '未知车站')}`,
-            `区间：${escape(row.section || '无数据')}`,
-            `设备原始 RSSI：${escape(Number.isFinite(row.raw_rssi) ? row.raw_rssi : '无数据')}`,
-            `归一化 RSSI：${escape(Number.isFinite(row.rssi) ? `${row.rssi} dBm` : '无数据')}`,
-            `语义：${escape(row.rssi_semantics || 'UNKNOWN')}`,
-            `切入：${escape(new Date(row.start).toLocaleString())}`,
-            `切出：${escape(new Date(row.end).toLocaleString())}`,
-            `持续：${escape(`${duration.toFixed(1)} 秒`)}`,
-            `数据来源：${escape(row.source || 'UNKNOWN')}`,
+            `接入站点：${escape(row.station || '无记录')}`,
+            `接入区间：${escape(row.section || '无记录')}`,
+            `切入时间：${escape(new Date(row.start).toLocaleString())}`,
+            `切出时间：${escape(new Date(row.end).toLocaleString())}`,
+            `持续时间：${escape(`${duration.toFixed(1)} 秒`)}`,
+            `切入 RSSI：${escape(row.entry_rssi ?? row.raw_rssi ?? '无记录')}`,
+            `切出 RSSI：${escape(row.exit_rssi ?? '无记录')}`,
+            `数据来源：${escape(sourceLabel(row.source))}`,
           ].join('<br>')
         },
       },
@@ -213,7 +249,7 @@ export function mrMonitoringChartOption(
         const evidence = intervals.find((row) => Date.parse(row.start) <= time && time < Date.parse(row.end))
         const values = params.filter((row) => row.data && row.data[0] === time && row.data[1] !== null).map((row) => `${escape(row.seriesName)}: ${escape(row.data![1])}${row.seriesName.includes('RTT') ? ' ms' : '%'}`)
         return [Number.isFinite(time) ? escape(new Date(time).toLocaleString()) : '', ...values,
-          evidence ? `Peer: ${escape(evidence.peer_name || evidence.bssid)}<br>BSSID: ${escape(evidence.bssid || evidence.peer_mac || 'UNKNOWN')} / RSSI: ${escape(evidence.rssi ?? 'UNKNOWN')}<br>车站: ${escape(evidence.station || '未知车站')}<br>区间: ${escape(evidence.section || '无数据')}<br>${escape(evidence.source)}<br>device: ${escape(evidence.device_time || 'UNKNOWN')}<br>receive: ${escape(evidence.receive_time || 'UNKNOWN')}` : 'Peer: UNKNOWN'].join('<br>')
+          evidence ? `Peer AP：${escape(evidence.peer_name || evidence.bssid || '无记录')}<br>MAC：${escape(evidence.bssid || evidence.peer_mac || '无记录')}<br>切入 RSSI：${escape(evidence.entry_rssi ?? evidence.raw_rssi ?? '无记录')}<br>切出 RSSI：${escape(evidence.exit_rssi ?? '无记录')}<br>接入站点：${escape(evidence.station || '无记录')}<br>接入区间：${escape(evidence.section || '无记录')}<br>数据来源：${escape(sourceLabel(evidence.source))}` : 'Peer AP：无记录'].join('<br>')
       } },
     series,
   }

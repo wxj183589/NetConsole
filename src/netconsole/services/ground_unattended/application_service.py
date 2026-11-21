@@ -710,9 +710,19 @@ class GroundUnattendedApplicationService:
         self._require_site(site_id)
         return self.supervisor.heartbeat.status()
 
-    def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "", reference_time: datetime | None = None) -> GroundHeartbeatPageDTO:
+    def heartbeat(self, site_id: str, *, run_id: str = "", data_mode: str | None = None, query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "", reference_time: datetime | None = None) -> GroundHeartbeatPageDTO:
         """Read durable heartbeat facts without deriving reachability from AC data."""
         self._require_site(site_id)
+        # Keep direct service callers that predate explicit mode selection
+        # compatible; the HTTP boundary always supplies a concrete mode.
+        if data_mode is None:
+            data_mode = "HISTORICAL_PLAYBACK" if run_id else "LIVE_COLLECTION"
+        if data_mode not in {"LIVE_COLLECTION", "HISTORICAL_PLAYBACK"}:
+            raise GroundUnattendedError("GROUND_DATA_MODE_INVALID", "数据模式无效", status_code=422)
+        if data_mode == "LIVE_COLLECTION" and run_id not in {"", "heartbeat-resident"}:
+            raise GroundUnattendedError("GROUND_DATA_MODE_MISMATCH", "实时采集模式不能读取历史运行", status_code=409)
+        if data_mode == "HISTORICAL_PLAYBACK" and not run_id:
+            raise GroundUnattendedError("GROUND_RUN_REQUIRED", "历史回放必须指定归档运行", status_code=422)
         inventory_snapshot = self.repository.inventory_snapshot()
         state = inventory_snapshot.state
         source_conflicts: list[str] = []
@@ -1100,14 +1110,20 @@ class GroundUnattendedApplicationService:
             ),
         )
 
-    def mr_monitoring(self, site_id: str, *, mr_uuid: str, run_id: str = "", start_time: str = "", end_time: str = "",
+    def mr_monitoring(self, site_id: str, *, mr_uuid: str, run_id: str = "", data_mode: str | None = None, start_time: str = "", end_time: str = "",
                       loss_limit: int = 3, loss_offset: int = 0) -> GroundMrMonitoringDTO:
         from netconsole.services.ground_unattended.monitoring import monitoring_range, mesh_evidence, indexed_evidence
         try:
             start, end = monitoring_range(start_time, end_time)
         except ValueError as exc:
             raise GroundUnattendedError("GROUND_MONITOR_RANGE_INVALID", str(exc)) from exc
-        heartbeat = self.heartbeat(site_id, run_id=run_id, mr_uuid=mr_uuid, reference_time=end)
+        if data_mode is None:
+            data_mode = "HISTORICAL_PLAYBACK" if run_id else "LIVE_COLLECTION"
+        if data_mode not in {"LIVE_COLLECTION", "HISTORICAL_PLAYBACK"}:
+            raise GroundUnattendedError("GROUND_DATA_MODE_INVALID", "数据模式无效", status_code=422)
+        if data_mode == "HISTORICAL_PLAYBACK" and not run_id:
+            raise GroundUnattendedError("GROUND_RUN_REQUIRED", "历史回放必须指定归档运行", status_code=422)
+        heartbeat = self.heartbeat(site_id, run_id=run_id, data_mode=data_mode, mr_uuid=mr_uuid, reference_time=end)
         mr = next((row for row in heartbeat.mrs if row.mr_uuid == mr_uuid), None)
         arp_repository = getattr(self.supervisor, "arp_repository", None)
         identity_relations = arp_repository.find_identity_relations(mr_uuid=mr_uuid) if arp_repository else []
@@ -1149,8 +1165,12 @@ class GroundUnattendedApplicationService:
         series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
                                   start_time=series_start.isoformat(), end_time=end.isoformat(), max_points=2400)
         try:
+            evidence_run_id = heartbeat.run_id
+            if data_mode == "LIVE_COLLECTION" and heartbeat.run_id == HEARTBEAT_STREAM_ID:
+                active_run = self.repository.get_active_run()
+                evidence_run_id = str((active_run or {}).get("run_id") or "__live_collection__")
             rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id,
-                                               run_id=None if heartbeat.run_id == HEARTBEAT_STREAM_ID else heartbeat.run_id,
+                                               run_id=evidence_run_id,
                                                mr_uuid=mr_uuid, start=start, end=end)
         except RuntimeError as exc:
             raise GroundUnattendedError("GROUND_PLAYBACK_QUERY_FAILED", str(exc), status_code=409) from exc

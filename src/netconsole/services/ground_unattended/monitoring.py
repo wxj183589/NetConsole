@@ -57,6 +57,9 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
         raw_rssi = details.get("rssi")
         if raw_rssi is None:
             raw_rssi = details.get("new_rssi")
+        exit_rssi = details.get("old_rssi", row.get("previous_rssi"))
+        if exit_rssi is None:
+            exit_rssi = details.get("previous_rssi")
         normalized_rssi, rssi_semantics = normalize_rssi(raw_rssi)
         station = str(details.get("station") or row.get("station") or "")
         section = str(details.get("section") or row.get("section") or "")
@@ -69,6 +72,8 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
             "old_bssid": str(details.get("previous_peer_radio_mac") or details.get("old_peer_radio_mac") or row.get("previous_peer_mac") or ""),
             "bssid": str(details.get("peer_radio_mac") or details.get("new_peer_radio_mac") or row.get("peer_mac") or ""),
             "rssi": normalized_rssi, "raw_rssi": raw_rssi,
+            "previous_rssi": exit_rssi,
+            "entry_rssi": raw_rssi, "exit_rssi": exit_rssi,
             "rssi_semantics": rssi_semantics,
             "raw_text": str(row.get("raw_text") or ""),
             "raw_file_id": str(row.get("raw_file_id") or ""), "raw_line_number": row.get("raw_line_number"),
@@ -89,6 +94,10 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
                 "end": min(end, _time(following["event_time"])).isoformat(),
                 "peer_name": current["new_ap_name"], "bssid": current["bssid"],
                 "rssi": current["rssi"], "raw_rssi": current["raw_rssi"],
+                "entry_rssi": current.get("entry_rssi"),
+                # The next switch describes the AP being left. Do not copy
+                # the entry RSSI when the source has no exit value.
+                "exit_rssi": following.get("exit_rssi"),
                 "rssi_semantics": current["rssi_semantics"], "source": "SYSLOG",
                 "device_time": current["device_time"], "receive_time": current["receive_time"],
                 "station": current.get("station", ""), "section": current.get("section", ""),

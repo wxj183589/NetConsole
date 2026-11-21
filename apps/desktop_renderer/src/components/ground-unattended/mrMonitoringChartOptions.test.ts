@@ -46,7 +46,7 @@ describe('MR monitoring evidence chart', () => {
     expect(pingColors.slice(0, 4)).toEqual(['#3B82F6', '#22C55E', '#EF4444', '#909399'])
     const tooltip = option.tooltip as { formatter: (params: unknown[]) => string }
     expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:00Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:00Z'), 3] }])).toContain('&lt;peer&gt;')
-    expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:21Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:20Z'), 4] }])).toContain('Peer: UNKNOWN')
+    expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:21Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:20Z'), 4] }])).toContain('Peer AP：无记录')
     expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:21Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:20Z'), 4] }])).not.toContain('4 ms')
   })
 
@@ -69,9 +69,9 @@ describe('MR monitoring evidence chart', () => {
       Date.parse('2026-11-07T11:00:00Z'), Date.parse('2026-11-07T11:00:30Z'), -55, 0,
     ])
     const tooltip = peer.tooltip as { formatter: (params: { data: number[] }) => string }
-    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('设备原始 RSSI：55')
-    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('归一化 RSSI：-55 dBm')
-    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('持续：30.0 秒')
+    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('切入 RSSI：55')
+    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('切出 RSSI：无记录')
+    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('持续时间：30.0 秒')
   })
 
   it('uses one externally-owned visible window without per-track sliders', () => {
