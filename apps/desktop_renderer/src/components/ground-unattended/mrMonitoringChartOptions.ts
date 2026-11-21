@@ -157,6 +157,7 @@ export function mrMonitoringChartOption(
   if (mode === 'ping') {
     return {
       ...createMultiSeriesTimeChartBaseOption(theme, { unit: 'ms', pointCount: points.length, showLegend: true }),
+      color: [theme.primary, theme.series[1] || '#22c55e'],
       toolbox: { show: false },
       legend: { top: 4, type: 'scroll' },
       grid: { left: 65, right: 50, top: 48, bottom: 64, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },

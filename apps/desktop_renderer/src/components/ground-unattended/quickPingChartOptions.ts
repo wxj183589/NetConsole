@@ -5,7 +5,7 @@ import type { NetConsoleChartTokens } from '../../theme/echarts'
 export function quickPingChartOption(
   rows: Array<Record<string, unknown>>, intervalMs: number, theme: NetConsoleChartTokens,
   gapPolicy: { connectNulls: false } = { connectNulls: false },
-  viewport?: { start: string; end: string }, selectedTime = '',
+  viewport?: { start: string; end: string }, selectedTime = '', fullDomain?: { start: string; end: string },
 ): Record<string, unknown> {
   const points = rows.flatMap((row) => {
     const sample = row.sample as Record<string, unknown> | undefined
@@ -28,7 +28,13 @@ export function quickPingChartOption(
     return { rtt, loss }
   }
   const metric = timelineMetricDefinition('ping_rtt')!
-  const dataZoom = viewport ? [{ type: 'inside', filterMode: 'none', startValue: Date.parse(viewport.start), endValue: Date.parse(viewport.end), minValueSpan: 1000 }] : undefined
+  const axisStart = Date.parse(fullDomain?.start || '')
+  const axisEnd = Date.parse(fullDomain?.end || '')
+  const fallbackStart = points[0]?.time
+  const fallbackEnd = points[points.length - 1]?.time
+  const fullStart = Number.isFinite(axisStart) ? axisStart : fallbackStart
+  const fullEnd = Number.isFinite(axisEnd) ? axisEnd : fallbackEnd
+  const dataZoom = viewport ? [{ type: 'inside', filterMode: 'none', zoomOnMouseWheel: true, moveOnMouseMove: true, startValue: Date.parse(viewport.start), endValue: Date.parse(viewport.end), minValueSpan: 1000 }] : undefined
   const baseOption = createMultiSeriesTimeChartBaseOption(theme, { unit: metric.axisUnit, pointCount: points.length, showLegend: true })
   return {
     ...baseOption,
@@ -36,7 +42,8 @@ export function quickPingChartOption(
     grid: { left: 58, right: 24, top: 32, bottom: 72, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
     toolbox: { show: false },
     ...(dataZoom ? { dataZoom } : {}),
-    xAxis: { type: 'time', axisPointer: { show: true, snap: false } },
+    color: [theme.primary, theme.series[1] || '#22c55e'],
+    xAxis: { type: 'time', min: fullStart, max: fullEnd, axisPointer: { show: true, snap: false } },
     tooltip: {
       trigger: 'axis', appendToBody: false, confine: true,
       extraCssText: 'pointer-events:none;max-width:360px;max-height:220px;overflow:hidden',

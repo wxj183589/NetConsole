@@ -36,8 +36,16 @@ describe('Ground history playback isolation', () => {
       global: { stubs: {
         ElSelect: true, ElOption: true, ElDatePicker: true, ElButton: true, ElAlert: true, ElPagination: true,
         ElTag: true, ElTooltip: true,
-        MrMonitoringChart: { props: ['visibleStart', 'visibleEnd'], template: '<div class="chart-stub">{{ visibleStart }}|{{ visibleEnd }}</div>' },
-        QuickPingChart: { props: ['visibleStart', 'visibleEnd'], template: '<div class="chart-stub">{{ visibleStart }}|{{ visibleEnd }}</div>' },
+        MrMonitoringChart: {
+          props: ['visibleStart', 'visibleEnd', 'selectedTime'],
+          emits: ['viewport-change', 'cursor-change'],
+          template: '<div class="chart-stub">{{ visibleStart }}|{{ visibleEnd }}|{{ selectedTime }}<button class="viewport-emitter" @click="$emit(\'viewport-change\', { start: \'2026-11-07T00:10:00.000Z\', end: \'2026-11-07T00:20:00.000Z\' })" /><button class="cursor-emitter" @click="$emit(\'cursor-change\', \'2026-11-07T00:15:00.000Z\')" /></div>',
+        },
+        QuickPingChart: {
+          props: ['visibleStart', 'visibleEnd', 'selectedTime'],
+          emits: ['viewport-change', 'cursor-change'],
+          template: '<div class="chart-stub">{{ visibleStart }}|{{ visibleEnd }}|{{ selectedTime }}<button class="viewport-emitter" @click="$emit(\'viewport-change\', { start: \'2026-11-07T00:10:00.000Z\', end: \'2026-11-07T00:20:00.000Z\' })" /><button class="cursor-emitter" @click="$emit(\'cursor-change\', \'2026-11-07T00:15:00.000Z\')" /></div>',
+        },
       } },
     })
     await (wrapper.vm as unknown as { query: () => Promise<void> }).query()
@@ -63,6 +71,12 @@ describe('Ground history playback isolation', () => {
     ;(wrapper.vm as unknown as { changeViewport: (value: { start: string; end: string }) => void }).changeViewport({ start: nextStart, end: nextEnd })
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.navigator-range').text()).toContain('2026')
+    await wrapper.find('.viewport-emitter').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.chart-stub').every((chart) => chart.text().includes(`${nextStart}|${nextEnd}`))).toBe(true)
+    await wrapper.find('.cursor-emitter').trigger('click')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.chart-stub').every((chart) => chart.text().includes('|2026-11-07T00:15:00.000Z'))).toBe(true)
     wrapper.unmount()
   })
 })

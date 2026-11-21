@@ -39,4 +39,27 @@ describe('Quick Ping chart semantics', () => {
     expect(option.series[0]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00Z'))
     expect(option.series[2]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00.100Z'))
   })
+
+  it('pins the chart domain to the playback run while zooming the shared viewport', () => {
+    const option = quickPingChartOption([
+      { received_at: '2026-11-07T00:10:00Z', sample: { ok: true, rtt_ms: 4 } },
+    ], 1000, readNetConsoleChartTokens(), { connectNulls: false }, {
+      start: '2026-11-07T00:05:00Z', end: '2026-11-07T00:15:00Z',
+    }, '', {
+      start: '2026-11-07T00:00:00Z', end: '2026-11-07T01:00:00Z',
+    }) as {
+      xAxis: { min: number; max: number }
+      dataZoom: Array<{ startValue: number; endValue: number; zoomOnMouseWheel: boolean; moveOnMouseMove: boolean }>
+    }
+    expect(option.xAxis).toMatchObject({
+      min: Date.parse('2026-11-07T00:00:00Z'),
+      max: Date.parse('2026-11-07T01:00:00Z'),
+    })
+    expect(option.dataZoom[0]).toMatchObject({
+      startValue: Date.parse('2026-11-07T00:05:00Z'),
+      endValue: Date.parse('2026-11-07T00:15:00Z'),
+      zoomOnMouseWheel: true,
+      moveOnMouseMove: true,
+    })
+  })
 })

@@ -23,7 +23,7 @@ function render(): void {
     props.visibleStart || props.start, props.visibleEnd || props.end,
   )
   option.series = (option.series as Array<Record<string, unknown>>).map((series) => series.type === 'line' ? { ...series, connectNulls: false } : series)
-  chart.setOption(option, { replaceMerge: ['series', 'xAxis', 'yAxis', 'dataZoom'], lazyUpdate: true })
+  chart.setOption(option, { replaceMerge: ['series', 'xAxis', 'yAxis', 'dataZoom'], lazyUpdate: true, silent: true })
 }
 function emitViewport(payload: unknown): void {
   const event = payload as { batch?: Array<{ start?: number; end?: number; startValue?: number; endValue?: number }>; start?: number; end?: number; startValue?: number; endValue?: number }
