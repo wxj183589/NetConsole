@@ -1,16 +1,47 @@
 import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { t } from '../../i18n/runtime'
 import type { NetConsoleChartTokens } from '../../theme/echarts'
-import { createMultiSeriesTimeChartBaseOption, stableTimeChartSeriesColor } from '../charts/multiSeriesTimeChart'
+import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeChart'
 
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
 export const PEER_RAINBOW_COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6'] as const
-export function normalizedPeerIdentity(row: { bssid?: string; peer_mac?: string; peer_name?: string }): string {
-  const mac = String(row.bssid || row.peer_mac || '').trim().toLowerCase().replace(/[^0-9a-f]/g, '')
-  return mac || String(row.peer_name || 'UNKNOWN').trim().toLowerCase() || 'unknown'
+type PeerIntervalLike = GroundMrMonitoring['peer_intervals'][number]
+
+function peerIntervalIdentity(row: PeerIntervalLike): string {
+  return [row.bssid, row.peer_mac, row.peer_name, row.source].map((value) => String(value || '').trim().toLowerCase()).join('|')
 }
-export function peerColorFor(row: { bssid?: string; peer_mac?: string; peer_name?: string }): string {
-  return stableTimeChartSeriesColor(normalizedPeerIdentity(row), PEER_RAINBOW_COLORS) || PEER_RAINBOW_COLORS[0]
+
+/**
+ * Build the color order from the complete queried run, before any viewport filter.
+ * This makes colors represent interval chronology rather than AP identity or page order.
+ */
+export function chronologicalPeerIntervals(rows: PeerIntervalLike[]): PeerIntervalLike[] {
+  const unique = new Map<string, { row: PeerIntervalLike; index: number }>()
+  rows.forEach((row, index) => {
+    const key = [row.start, row.end, peerIntervalIdentity(row)].join('|')
+    if (!unique.has(key)) unique.set(key, { row, index })
+  })
+  return [...unique.values()]
+    .sort((left, right) => {
+      const start = Date.parse(left.row.start) - Date.parse(right.row.start)
+      if (Number.isFinite(start) && start !== 0) return start
+      const end = Date.parse(left.row.end) - Date.parse(right.row.end)
+      if (Number.isFinite(end) && end !== 0) return end
+      const identity = peerIntervalIdentity(left.row).localeCompare(peerIntervalIdentity(right.row))
+      return identity || left.index - right.index
+    })
+    .map(({ row }) => row)
+}
+
+export function peerIntervalColorMap(rows: PeerIntervalLike[]): Map<string, string> {
+  return new Map(chronologicalPeerIntervals(rows).map((row, index) => [
+    [row.start, row.end, peerIntervalIdentity(row)].join('|'),
+    PEER_RAINBOW_COLORS[index % PEER_RAINBOW_COLORS.length]!,
+  ]))
+}
+
+function peerIntervalColor(row: PeerIntervalLike, colors: Map<string, string>): string {
+  return colors.get([row.start, row.end, peerIntervalIdentity(row)].join('|')) || PEER_RAINBOW_COLORS[0]
 }
 
 export function mrMonitoringChartOption(
@@ -31,7 +62,8 @@ export function mrMonitoringChartOption(
   ]
   const points = data.series.points.filter((point) => !point.warmup_ignored && Date.parse(point.ts) >= begin && Date.parse(point.ts) <= finish)
   const ips = [...new Set(points.map((point) => point.target_ip))]
-  const intervals = data.peer_intervals.filter((row) => Date.parse(row.end) >= begin && Date.parse(row.start) <= finish)
+  const intervalColors = peerIntervalColorMap(data.peer_intervals)
+  const intervals = chronologicalPeerIntervals(data.peer_intervals).filter((row) => Date.parse(row.end) >= begin && Date.parse(row.start) <= finish)
   const peers = [...new Set(intervals.map((row) => row.peer_name || row.bssid || 'UNKNOWN'))]
   const meshEvents = (data.mesh_events || []).filter((row) => Date.parse(row.event_time || row.receive_time) >= begin && Date.parse(row.event_time || row.receive_time) <= finish)
   if (mode === 'navigator') {
@@ -98,7 +130,7 @@ export function mrMonitoringChartOption(
               width: Math.max(1, endPoint[0]! - startPoint[0]!),
               height: hasRssi ? Math.max(2, startPoint[1]! - endPoint[1]!) : 6,
             },
-            style: api.style({ fill: peerColorFor(intervals[api.value(3)] || {}), opacity: hasRssi ? 1 : 0.35 }),
+            style: api.style({ fill: peerIntervalColor(intervals[api.value(3)]!, intervalColors), opacity: hasRssi ? 1 : 0.35 }),
           }
         },
       }],
@@ -141,7 +173,7 @@ export function mrMonitoringChartOption(
     renderItem: (_params: unknown, api: { value: (index: number) => number; coord: (values: number[]) => number[]; size: (values: number[]) => number[]; style: (value?: object) => object }) => {
       const a = api.coord([api.value(1), api.value(0)]), b = api.coord([api.value(2), api.value(0)])
       const height = Math.min(24, api.size([0, 1])[1]! * 0.7)
-      return { type: 'rect', shape: { x: a[0], y: a[1]! - height / 2, width: Math.max(0, b[0]! - a[0]!), height }, style: api.style({ fill: peerColorFor(intervals[api.value(3)] || {}) }) }
+      return { type: 'rect', shape: { x: a[0], y: a[1]! - height / 2, width: Math.max(0, b[0]! - a[0]!), height }, style: api.style({ fill: peerIntervalColor(intervals[api.value(3)]!, intervalColors) }) }
     }, tooltip: { show: false } })
   series.push({ id: 'mesh-events', name: 'Mesh / Syslog', type: 'custom', xAxisIndex: 2, yAxisIndex: 3,
     data: meshEvents.map((row) => [Date.parse(row.event_time || row.receive_time), 0, row.event_type]),

@@ -2,13 +2,30 @@
 import { describe, expect, it } from 'vitest'
 import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { readNetConsoleChartTokens } from '../../theme/echarts'
-import { mrMonitoringChartOption, peerColorFor } from './mrMonitoringChartOptions'
+import { chronologicalPeerIntervals, mrMonitoringChartOption, peerIntervalColorMap, PEER_RAINBOW_COLORS } from './mrMonitoringChartOptions'
 
 describe('MR monitoring evidence chart', () => {
-  it('assigns stable rainbow colors by peer identity', () => {
-    const row = { bssid: '00:11:22:33:44:55', peer_name: 'AP-A' }
-    expect(peerColorFor(row)).toBe(peerColorFor({ ...row, peer_name: 'renamed' }))
-    expect(peerColorFor({ peer_name: 'AP-A' })).toBe(peerColorFor({ peer_name: 'AP-A' }))
+  it('assigns rainbow colors by chronological interval, including repeated AP identities', () => {
+    const rows = [
+      { start: '2026-11-07T11:00:03Z', end: '2026-11-07T11:00:04Z', bssid: 'aa', peer_name: 'AP-A', source: 'MESH' },
+      { start: '2026-11-07T11:00:01Z', end: '2026-11-07T11:00:02Z', bssid: 'bb', peer_name: 'AP-B', source: 'MESH' },
+      { start: '2026-11-07T11:00:05Z', end: '2026-11-07T11:00:06Z', bssid: 'aa', peer_name: 'AP-A', source: 'MESH' },
+    ] as GroundMrMonitoring['peer_intervals']
+    const ordered = chronologicalPeerIntervals(rows)
+    const colors = peerIntervalColorMap(rows)
+    expect(ordered.map((row) => row.start)).toEqual([
+      '2026-11-07T11:00:01Z', '2026-11-07T11:00:03Z', '2026-11-07T11:00:05Z',
+    ])
+    expect([...colors.values()]).toEqual([
+      PEER_RAINBOW_COLORS[0], PEER_RAINBOW_COLORS[1], PEER_RAINBOW_COLORS[2],
+    ])
+  })
+  it('restarts the seven-color cycle on the eighth chronological interval', () => {
+    const rows = Array.from({ length: 8 }, (_, index) => ({
+      start: `2026-11-07T11:00:${String(index).padStart(2, '0')}Z`, end: `2026-11-07T11:00:${String(index + 1).padStart(2, '0')}Z`,
+      bssid: `ap-${index}`, peer_name: `AP-${index}`, source: 'MESH',
+    })) as GroundMrMonitoring['peer_intervals']
+    expect([...peerIntervalColorMap(rows).values()]).toEqual([...PEER_RAINBOW_COLORS, PEER_RAINBOW_COLORS[0]])
   })
   it('keeps RTT milliseconds, loss percent, true timestamps and unknown gaps distinct', () => {
     const data = { series: { points: [

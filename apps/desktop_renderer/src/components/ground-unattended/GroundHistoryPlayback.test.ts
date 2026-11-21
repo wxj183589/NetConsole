@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { shallowMount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
+import type { GroundMrMonitoring, GroundRun, GroundTrain } from '../../types/groundUnattended'
 import GroundHistoryPlayback from './GroundHistoryPlayback.vue'
 
 const api = vi.hoisted(() => ({ monitor: vi.fn() }))
@@ -15,6 +16,53 @@ describe('Ground history playback isolation', () => {
     await wrapper.vm.$nextTick()
     expect(api.monitor).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('不启动采集')
+    wrapper.unmount()
+  })
+
+  it('puts one navigator before five independently collapsible chart regions', async () => {
+    const run = { run_id: 'run-1', actual_started_at: '2026-11-07T00:00:00Z', actual_ended_at: '2026-11-07T01:00:00Z' } as unknown as GroundRun
+    const train = { train_id: 'train-1', train_no: '001', endpoints: [{ mr_id: 'mr-1', endpoint: 'CT', mr_name: 'MR-1' }] } as unknown as GroundTrain
+    const mr = { mr_uuid: 'mr-1', train_id: 'train-1', train_no: '001', role: 'CT', management_ip: '192.0.2.1', backup_management_ip: '192.0.2.2' }
+    api.monitor.mockResolvedValue({
+      mr, queried_start: run.actual_started_at, queried_end: run.actual_ended_at,
+      series: { points: [
+        { ts: run.actual_started_at, target_ip: '192.0.2.1', ok: true, rtt_ms: 3 },
+        { ts: run.actual_started_at, target_ip: '192.0.2.2', ok: true, rtt_ms: 4 },
+      ], diagnostics: { truncated: false } }, mesh_events: [], peer_intervals: [], loss_events: [], loss_event_total: 0,
+      loss_event_limit: 3, loss_event_offset: 0, events_truncated: false, run_sent_count: 2, run_lost_count: 0,
+    } as unknown as GroundMrMonitoring)
+    const wrapper = shallowMount(GroundHistoryPlayback, {
+      props: { siteId: 'hzdt-09', runs: [run], trains: [train], active: true },
+      global: { stubs: {
+        ElSelect: true, ElOption: true, ElDatePicker: true, ElButton: true, ElAlert: true, ElPagination: true,
+        ElTag: true, ElTooltip: true,
+        MrMonitoringChart: { props: ['visibleStart', 'visibleEnd'], template: '<div class="chart-stub">{{ visibleStart }}|{{ visibleEnd }}</div>' },
+        QuickPingChart: { props: ['visibleStart', 'visibleEnd'], template: '<div class="chart-stub">{{ visibleStart }}|{{ visibleEnd }}</div>' },
+      } },
+    })
+    await (wrapper.vm as unknown as { query: () => Promise<void> }).query()
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.navigator')).toHaveLength(1)
+    expect(wrapper.findAll('.track')).toHaveLength(5)
+    expect(wrapper.find('.navigator').element.compareDocumentPosition(wrapper.find('.track').element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(wrapper.findAll('.chart-stub')).toHaveLength(6)
+
+    const toggle = (label: string) => wrapper.findAll('button.track-toggle').find((button) => button.text().includes(label))!
+    await toggle('主用管理 IP').trigger('click')
+    expect(wrapper.findAll('.chart-stub')).toHaveLength(5)
+    await toggle('备用管理 IP').trigger('click')
+    expect(wrapper.findAll('.chart-stub')).toHaveLength(4)
+    await toggle('主地址 Quick Ping').trigger('click')
+    expect(wrapper.findAll('.chart-stub')).toHaveLength(3)
+    await toggle('备用地址 Quick Ping').trigger('click')
+    expect(wrapper.findAll('.chart-stub')).toHaveLength(2)
+    await toggle('Peer AP').trigger('click')
+    expect(wrapper.findAll('.chart-stub')).toHaveLength(1)
+
+    const nextStart = '2026-11-07T00:10:00.000Z', nextEnd = '2026-11-07T00:20:00.000Z'
+    ;(wrapper.vm as unknown as { changeViewport: (value: { start: string; end: string }) => void }).changeViewport({ start: nextStart, end: nextEnd })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.navigator-range').text()).toContain('2026')
     wrapper.unmount()
   })
 })
