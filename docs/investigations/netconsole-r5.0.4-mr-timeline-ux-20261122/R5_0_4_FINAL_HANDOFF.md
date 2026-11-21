@@ -3,7 +3,7 @@
 ```text
 BASELINE_PROTECTED=PASS (R5.0.3 history and protected untracked SQL audit preserved)
 PRODUCT_BASE=84a8bc4e
-PRODUCT_COMMIT=8685e0b3 (handoff update; prior sync commits 03803337, 84ff1f82; layout/identity 7f7277f8, 5c92d1e1)
+PRODUCT_COMMIT=a11a8ebf (Ping color/status fix; prior sync commits 03803337, 84ff1f82, 8685e0b3)
 DEVSTATUS_BASE=ff66c2d
 MAIN_RTT_COLLAPSIBLE=PASS
 BACKUP_RTT_COLLAPSIBLE=PASS
@@ -31,12 +31,32 @@ PEER_AP_STATION_MAPPING=PASS (existing evidence fields)
 QUICK_PING_SIMULATION_PRESERVED=PASS
 SYSLOG_PRIORITY_PRESERVED=PASS (backend unchanged)
 HEARTBEAT_PRESERVED=PASS (backend unchanged)
-GUI_1920X1080=NOT_VERIFIED
+PING_SUCCESS_GREEN=PASS
+PING_TIMEOUT_RED=PASS
+PING_PACKET_LOSS_RED=PASS
+PING_UNKNOWN_GRAY=PASS
+RTT_BLUE=PASS
+LOSS_ZERO_MAPPING=PASS
+LOSS_PERCENT_MAPPING=PASS
+TOOLTIP_DATA_CONSISTENCY=PASS
+LEGEND_CONSISTENCY=PASS
+PRIMARY_HEARTBEAT=PASS (DEV GUI 1920x1080)
+BACKUP_HEARTBEAT=PASS (DEV GUI 1920x1080)
+PRIMARY_QUICKPING=PASS (DEV GUI 1920x1080)
+BACKUP_QUICKPING=PASS (DEV GUI 1920x1080)
+PRIMARY_BACKUP_ISOLATION=PASS
+GUI_1920X1080=PASS
 GUI_2560X1440=NOT_VERIFIED
-TARGETED_TESTS=PASS (70 prior Renderer + 20 ground-unattended regression + 44 Python)
+TARGETED_TESTS=PASS (26 ground-unattended Renderer + 95 Python)
 RENDERER_BUILD=PASS
 ELECTRON_TYPECHECK=PASS
 WORKSPACE_LAYOUT_CHECK=FAIL (pre-existing unmanaged worktree directories; no cleanup performed)
+LOCAL_BRANCHES_AUDITED=PASS
+LOCAL_BRANCHES_RECOVERED=0
+UNMERGED_BRANCHES_PRESERVED=PASS
+ACTIVE_WORKTREES_PRESERVED=PASS
+MAIN_PRESERVED=PASS
+CURRENT_BRANCH_PRESERVED=PASS
 DEV_DATA_ROOT=D:\NetConsoleData-dev
 DEV_SITE=hzdt-09
 DEV_DATA_CHANGES_AUDITED=PASS (no DEV business write performed)
@@ -50,4 +70,4 @@ RELEASE=NOT_REQUESTED
 OVERALL_STATUS=PARTIAL
 ```
 
-The partial status is limited to missing native Electron click-through at both requested resolutions. Automated layout, collapse, shared-window, chronological-color, build, and regression gates pass.
+The partial status is limited to missing 2560x1440 display evidence and native wheel/drag timeline re-certification in this run. The 1920x1080 DEV GUI was observed against `D:\NetConsoleData-dev`, Site `hzdt-09`; automated layout, collapse, shared-window, chronological-color, Ping color, build, branch-audit, and regression gates pass.
