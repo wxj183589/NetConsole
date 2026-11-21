@@ -19,6 +19,26 @@ describe('Electron desktop storage context', () => {
       .toMatchObject({ mode: 'persistent', persistent: true, dataRoot: 'D:\\NetConsoleData' })
   })
 
+  it('keeps the real DEV runtime outside the business data root', () => {
+    expect(resolveDesktopStorageContext({
+      NETCONSOLE_STORAGE_MODE: 'persistent',
+      NETCONSOLE_DATA_ROOT: 'D:\\NetConsoleData-dev',
+      NETCONSOLE_RUNTIME_ROOT: 'D:\\NetConsoleRuntime-dev\\R5.0.1',
+    }, 'C:\\Temp', 'win32')).toMatchObject({
+      dataRoot: 'D:\\NetConsoleData-dev',
+      runtimeRoot: 'D:\\NetConsoleRuntime-dev\\R5.0.1',
+      userDataRoot: 'D:\\NetConsoleRuntime-dev\\R5.0.1\\electron\\user-data',
+    })
+  })
+
+  it('rejects a runtime root nested below business data', () => {
+    expect(() => resolveDesktopStorageContext({
+      NETCONSOLE_STORAGE_MODE: 'persistent',
+      NETCONSOLE_DATA_ROOT: 'D:\\NetConsoleData-dev',
+      NETCONSOLE_RUNTIME_ROOT: 'D:\\NetConsoleData-dev\\runtime',
+    }, 'C:\\Temp', 'win32')).toThrow('outside NETCONSOLE_DATA_ROOT')
+  })
+
   it('rejects a persistent root located in a program installation tree', () => {
     expect(() => resolveDesktopStorageContext({
       NETCONSOLE_STORAGE_MODE: 'persistent',

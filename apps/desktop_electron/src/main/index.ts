@@ -295,6 +295,7 @@ async function startDesktop(): Promise<void> {
   })
   logger = managedLogger
   logger('ELECTRON_STORAGE_MODE', `mode=${desktopStorageContext.mode}`)
+  logger('ELECTRON_RUNTIME_CONTRACT', `data_root=${desktopStorageContext.dataRoot} runtime_root=${desktopStorageContext.runtimeRoot}`)
   logger('NETCONSOLE_STORAGE_ROOT_SELECTED', `data_root=${config.dataRoot} source=${desktopDataRootResolution.source} fallback_used=false`)
   if (bootstrapResult.rejectedEphemeralRoot) logger('ELECTRON_BOOTSTRAP_EPHEMERAL_ROOT_REJECTED')
   startupTimeline = new StartupTimeline(logger, startupStartedAt)

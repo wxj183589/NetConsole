@@ -19,7 +19,7 @@ def monitoring_range(start: str, end: str) -> tuple[datetime, datetime]:
 
 
 def normalize_rssi(raw_value: object) -> tuple[float | None, str]:
-    """Normalize the H3C switch-message RSSI magnitude without inventing values."""
+    """Normalize a Syslog RSSI value whose source contract allows magnitude."""
     if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
         return None, "MISSING"
     value = float(raw_value)
@@ -28,6 +28,17 @@ def normalize_rssi(raw_value: object) -> tuple[float | None, str]:
     if 0 < value <= 120:
         return -value, "ABSOLUTE_MAGNITUDE"
     return value, "OUT_OF_RANGE"
+
+
+def normalize_ac_rssi(raw_value: object) -> tuple[float | None, str]:
+    """AC snapshots have no verified magnitude contract; never guess positives."""
+
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        return None, "MISSING"
+    value = float(raw_value)
+    if -120 <= value <= 0:
+        return value, "NATIVE_DBM"
+    return None, "OUT_OF_RANGE"
 
 
 def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -84,12 +95,9 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
 
 def indexed_evidence(db_path: Path, *, site_id: str, run_id: str | None, mr_uuid: str, start: datetime, end: datetime) -> tuple[list[dict[str, Any]], bool]:
     """Read bounded indexed facts in one read-only snapshot, respecting UTC offsets."""
-    wal_path = Path(f"{db_path}-wal")
-    if wal_path.exists() and wal_path.stat().st_size:
-        raise RuntimeError("历史索引仍有未归并 WAL，不能以 immutable 模式安全回放")
-    # immutable=1 prevents SQLite from creating/updating WAL/SHM sidecars during
-    # playback. This path is for completed historical evidence, not live writers.
-    with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro&immutable=1", uri=True)) as connection:
+    # DEV playback is business-read-only, but it may read a live WAL snapshot.
+    # Ordinary mode=ro lets SQLite resolve WAL state; query_only prevents writes.
+    with closing(sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only=ON")
         connection.execute("BEGIN")
@@ -111,6 +119,9 @@ def indexed_evidence(db_path: Path, *, site_id: str, run_id: str | None, mr_uuid
             "ORDER BY julianday(COALESCE(NULLIF(event_time,''),NULLIF(device_time,''),receive_time)) DESC,id DESC LIMIT 1",
             prelude_params,
         ).fetchall()
+    # Return only records in the requested window plus the preceding record
+    # needed to close an interval that starts before the window. A following
+    # record outside the window is intentionally not exposed as playback data.
     mesh = [dict(row) for row in (*prelude, *mesh_rows[:500])]
     for row in mesh:
         row["details"] = json.loads(row.get("details_json") or "{}")
@@ -140,8 +151,10 @@ def ac_peer_intervals(rows: list[dict[str, Any]], syslog_intervals: list[dict[st
         # Syslog wins the entire overlap; do not fabricate a finer boundary.
         if any(start < _time(item["end"]) and end > _time(item["start"]) for item in syslog_intervals):
             continue
+        normalized_rssi, rssi_semantics = normalize_ac_rssi(row.get("rssi"))
         result.append({"start": start.isoformat(), "end": end.isoformat(), "peer_name": str(row.get("peer_ap_name") or ""),
-                       "bssid": "", "peer_mac": str(row.get("peer_ap_mac") or ""), "rssi": row.get("rssi"), "source": "AC",
+                       "bssid": "", "peer_mac": str(row.get("peer_ap_mac") or ""), "rssi": normalized_rssi,
+                       "raw_rssi": row.get("rssi"), "rssi_semantics": rssi_semantics, "source": "AC",
                        "device_time": str(row.get("device_time") or ""), "receive_time": str(row.get("received_at") or ""),
                        "data_status": str(row.get("freshness_status") or ""), "sampled_interval": True})
     return result

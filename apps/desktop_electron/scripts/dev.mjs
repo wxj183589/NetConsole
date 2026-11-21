@@ -1,7 +1,8 @@
 import { spawn, execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { dirname, resolve } from 'node:path'
+import { existsSync, lstatSync, mkdirSync } from 'node:fs'
+import { dirname, relative, resolve, sep } from 'node:path'
 import { createServer } from 'node:net'
 import { fileURLToPath } from 'node:url'
 
@@ -23,6 +24,14 @@ const smoke = process.argv.includes('--smoke') || process.env.NETCONSOLE_ELECTRO
 const taskCenterSmoke = process.argv.includes('--task-center') || process.argv.includes('--task-window')
 const workspaceTraySmoke = process.argv.includes('--workspace-tray')
 const codex = process.argv.includes('--codex')
+const realDev = process.argv.includes('--real-dev')
+if (realDev && (codex || smoke || taskCenterSmoke || workspaceTraySmoke)) {
+  throw new Error('--real-dev cannot be combined with isolated smoke modes')
+}
+const realDevDataRoot = realDev ? resolve(process.env.NETCONSOLE_DEV_REAL_DATA_ROOT || 'D:\\NetConsoleData-dev') : ''
+const realDevSite = realDev ? resolve(realDevDataRoot, 'sites', 'hzdt-09') : ''
+const realDevRuntimeRoot = realDev ? resolve(process.env.NETCONSOLE_DEV_RUNTIME_ROOT || 'D:\\NetConsoleRuntime-dev\\R5.0.1') : ''
+if (realDev) validateRealDevPaths(realDevDataRoot, realDevSite, realDevRuntimeRoot)
 const isolatedDataArgument = process.argv.indexOf('--isolated-test-data')
 const explicitIsolatedDataRoot = isolatedDataArgument >= 0
   ? process.argv[isolatedDataArgument + 1]
@@ -43,6 +52,28 @@ const codexSessionToken = codex
   ? resolveCodexSessionToken(process.env.NETCONSOLE_DEV_SESSION_TOKEN)
   : ''
 let isolatedRuntime
+
+function validateRealDevPaths(dataRoot, siteRoot, runtimeRoot) {
+  const productionRoot = resolve('D:\\NetConsoleData')
+  if (dataRoot.toLowerCase() === productionRoot.toLowerCase() || isWithin(dataRoot, productionRoot)) {
+    throw new Error('R5.0.1 DEV entry refuses the production data root')
+  }
+  if (!existsSync(dataRoot) || !existsSync(siteRoot)) {
+    throw new Error(`R5.0.1 DEV data/site is missing: ${dataRoot}`)
+  }
+  if (runtimeRoot.toLowerCase() === dataRoot.toLowerCase() || isWithin(runtimeRoot, dataRoot)) {
+    throw new Error('R5.0.1 RuntimeRoot must be outside the DEV DataRoot')
+  }
+  if (existsSync(runtimeRoot) && lstatSync(runtimeRoot).isSymbolicLink()) {
+    throw new Error('R5.0.1 RuntimeRoot must not be a symbolic link')
+  }
+  mkdirSync(runtimeRoot, { recursive: true })
+}
+
+function isWithin(candidate, parent) {
+  const child = relative(parent, candidate)
+  return child !== '' && child !== '..' && !child.startsWith(`..${sep}`)
+}
 
 function resolveCodexBackendPort(value) {
   if (value == null || value.trim() === '') return 8000
@@ -298,7 +329,7 @@ try {
       ? 'Isolated test runtime - explicit data root will be preserved\n'
       : 'Isolated temporary test runtime - all data will be deleted\n'
     : 'Persistent development runtime\n')
-  process.stdout.write(`Runtime Mode: ${isolated ? 'test' : 'desktop-development'}\n`)
+  process.stdout.write(`Runtime Mode: ${realDev ? 'DEVELOPMENT' : isolated ? 'test' : 'desktop-development'}\n`)
   process.stdout.write(`Storage Mode: ${isolated ? 'isolated_test' : 'persistent'}\n`)
   if (isolatedRuntime) {
     process.stdout.write(`Site Data Root: ${isolatedRuntime.dataRoot}\n`)
@@ -306,6 +337,16 @@ try {
     process.stdout.write(`Backend Database Root: ${resolve(isolatedRuntime.dataRoot, 'sites')}\n`)
     process.stdout.write(`Log Root: ${resolve(isolatedRuntime.dataRoot, 'runtime', 'logs')}\n`)
     process.stdout.write(`Temporary Root: ${resolve(isolatedRuntime.dataRoot, 'runtime', 'temp')}\n`)
+  } else if (realDev) {
+    process.stdout.write('DataRoot: D:\\NetConsoleData-dev\n')
+    process.stdout.write('Site: hzdt-09\n')
+    process.stdout.write(`RuntimeRoot: ${realDevRuntimeRoot}\n`)
+    process.stdout.write('SiteDataMode: READ_ONLY (business playback)\n')
+    process.stdout.write('CollectionMode: DISABLED\n')
+    process.stdout.write('PlaybackMode: ENABLED\n')
+    process.stdout.write(`Electron UserData Root: ${resolve(realDevRuntimeRoot, 'electron', 'user-data')}\n`)
+    process.stdout.write(`Log Root: ${resolve(realDevRuntimeRoot, 'logs')}\n`)
+    process.stdout.write(`Temporary Root: ${resolve(realDevRuntimeRoot, 'temp')}\n`)
   } else {
     process.stdout.write('Site Data Root: resolved by Electron persistent configuration\n')
     process.stdout.write('Electron UserData Root: resolved by Electron persistent configuration\n')
@@ -355,6 +396,16 @@ try {
       NETCONSOLE_PYTHON: pythonExecutable,
       NETCONSOLE_STORAGE_MODE: isolated ? 'isolated_test' : 'persistent',
       NETCONSOLE_RUNTIME_MODE: isolated ? 'test' : 'desktop-development',
+      ...(realDev ? {
+        NETCONSOLE_DATA_ROOT: realDevDataRoot,
+        NETCONSOLE_RUNTIME_ROOT: realDevRuntimeRoot,
+        NETCONSOLE_ACTIVE_SITE_ID: 'hzdt-09',
+        NETCONSOLE_ACTIVE_SITE_MODE: 'bootstrap',
+        NETCONSOLE_COLLECTION_MODE: 'disabled',
+        NETCONSOLE_PLAYBACK_MODE: 'enabled',
+        NETCONSOLE_SITE_DATA_MODE: 'read_only',
+        NETCONSOLE_DEV_REAL_DATA: '1',
+      } : {}),
       ...(isolated ? {
         NETCONSOLE_DATA_ROOT: isolatedRuntime.dataRoot,
         NETCONSOLE_DEV_TEMP_DATA_ROOT: '1',

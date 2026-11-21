@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from netconsole.core.runtime_environment import ensure_runtime_dir
 from netconsole.core.runtime_environment import data_environment
 from netconsole.core.runtime_environment import validate_data_root
 from netconsole.core.runtime_environment import validate_runtime_write_path
+from netconsole.core.runtime_environment import validate_runtime_root
 from netconsole.core.runtime_mode import DataEnvironmentInfo
 
 
@@ -23,6 +25,7 @@ def _default_app_root() -> Path:
 class PathResolver:
     app_root: Path | None = None
     data_root: Path | None = None
+    runtime_root: Path | None = None
 
     def __post_init__(self) -> None:
         configured_app_root = self.app_root
@@ -34,6 +37,16 @@ class PathResolver:
         else:
             resolved_data_root = default_data_root()
         object.__setattr__(self, "data_root", resolved_data_root)
+        configured_runtime_root = self.runtime_root
+        if configured_runtime_root is None:
+            raw_runtime_root = str(os.environ.get("NETCONSOLE_RUNTIME_ROOT") or "").strip()
+            configured_runtime_root = Path(raw_runtime_root) if raw_runtime_root else None
+        resolved_runtime_root = (
+            validate_runtime_root(configured_runtime_root, resolved_data_root)
+            if configured_runtime_root is not None
+            else resolved_data_root / "runtime"
+        )
+        object.__setattr__(self, "runtime_root", resolved_runtime_root)
 
     @property
     def data_dir(self) -> Path:
@@ -51,7 +64,7 @@ class PathResolver:
 
     @property
     def runtime_dir(self) -> Path:
-        return self.data_root / "runtime"
+        return self.runtime_root
 
     @property
     def runtime_cache_dir(self) -> Path:

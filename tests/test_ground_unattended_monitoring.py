@@ -93,17 +93,20 @@ def test_indexed_evidence_is_site_run_mr_scoped_and_read_only(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM ground_unattended_wmesh_events").fetchone()[0] == 2
 
 
-def test_indexed_evidence_refuses_nonzero_wal_in_immutable_playback(tmp_path):
+def test_indexed_evidence_reads_nonzero_wal_without_writing_business_records(tmp_path):
     path = tmp_path / "ground.sqlite"
     GroundUnattendedRepository(path, site_id="demo")
     connection = sqlite3.connect(path)
     try:
         connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("INSERT INTO ground_unattended_schema(key,value,updated_at) VALUES('wal-test','1','2026-11-07T11:00:00Z')")
+        connection.execute(
+            "INSERT INTO ground_unattended_wmesh_events(site_id,run_id,device_uuid,event_type,event_family,receive_time,created_at) "
+            "VALUES('demo','run-1','mr-1','MESH_ACTIVELINK_SWITCH','WMESH','2026-11-07T11:10:00Z','2026-11-07T11:10:00Z')"
+        )
         connection.commit()
         start, end = monitoring_range("2026-11-07T11:00:00Z", "2026-11-07T12:00:00Z")
-        with pytest.raises(RuntimeError, match="WAL"):
-            indexed_evidence(path, site_id="demo", run_id=None, mr_uuid="mr-1", start=start, end=end)
+        rows, truncated = indexed_evidence(path, site_id="demo", run_id=None, mr_uuid="mr-1", start=start, end=end)
+        assert len(rows) == 1 and not truncated
     finally:
         connection.close()
 

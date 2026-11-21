@@ -8,6 +8,7 @@ export interface DesktopStorageContext {
   mode: DesktopStorageMode
   persistent: boolean
   dataRoot: string
+  runtimeRoot: string
   userDataRoot: string
   sessionDataRoot: string
   cacheRoot: string
@@ -60,7 +61,10 @@ export function resolveDesktopStorageContext(
       platform,
       options,
     )
-    return buildContext('persistent', dataRoot)
+    const runtimeRoot = environment.NETCONSOLE_RUNTIME_ROOT?.trim()
+      ? validateRuntimeRoot(environment.NETCONSOLE_RUNTIME_ROOT, dataRoot, systemTempRoot, platform)
+      : undefined
+    return buildContext('persistent', dataRoot, runtimeRoot)
   }
   if (
     requestedMode !== 'isolated_test'
@@ -91,13 +95,14 @@ export function cleanupIsolatedDesktopRuntime(value: string, testDataRoot = WIND
   rmSync(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }
 
-function buildContext(mode: DesktopStorageMode, dataRoot: string): DesktopStorageContext {
-  const runtimeRoot = resolve(dataRoot, 'runtime')
+function buildContext(mode: DesktopStorageMode, dataRoot: string, configuredRuntimeRoot?: string): DesktopStorageContext {
+  const runtimeRoot = configuredRuntimeRoot || resolve(dataRoot, 'runtime')
   const electronRoot = resolve(runtimeRoot, 'electron')
   return {
     mode,
     persistent: mode === 'persistent',
     dataRoot,
+    runtimeRoot,
     userDataRoot: resolve(electronRoot, 'user-data'),
     sessionDataRoot: resolve(electronRoot, 'session-data'),
     cacheRoot: resolve(electronRoot, 'cache'),
@@ -105,6 +110,29 @@ function buildContext(mode: DesktopStorageMode, dataRoot: string): DesktopStorag
     crashDumpsRoot: resolve(electronRoot, 'crash-dumps'),
     tempRoot: resolve(runtimeRoot, 'temp'),
   }
+}
+
+function validateRuntimeRoot(
+  value: string,
+  dataRoot: string,
+  systemTempRoot: string,
+  platform: NodeJS.Platform,
+): string {
+  if (!isAbsolute(value)) throw new Error('NETCONSOLE_RUNTIME_ROOT must be an absolute path')
+  const target = resolve(value)
+  if (isPathWithinOrEqual(target, dataRoot)) {
+    throw new Error('NETCONSOLE_RUNTIME_ROOT must be outside NETCONSOLE_DATA_ROOT')
+  }
+  if (isPathWithinOrEqual(target, systemTempRoot)) {
+    throw new Error('NETCONSOLE_RUNTIME_ROOT must not use the system temporary directory')
+  }
+  if (platform === 'win32' && target.toLowerCase().startsWith('d:\\netconsoledata')) {
+    throw new Error('NETCONSOLE_RUNTIME_ROOT must not overlap a NetConsole data root')
+  }
+  if (existsSync(target) && lstatSync(target).isSymbolicLink()) {
+    throw new Error('NETCONSOLE_RUNTIME_ROOT must not be a symbolic link')
+  }
+  return target
 }
 
 function validateIsolatedPath(value: string, testDataRoot: string): string {

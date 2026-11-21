@@ -4,6 +4,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import os
 import re
 import shutil
 import uuid
@@ -292,6 +293,7 @@ class GroundUnattendedApplicationService:
         payload: GroundQuickPingStartRequestDTO,
     ) -> GroundQuickPingRunDTO:
         self._require_site(site_id)
+        self._require_collection_enabled()
         if self.base_query is None:
             raise GroundUnattendedError(
                 "QUICK_PING_INVENTORY_UNAVAILABLE",
@@ -552,6 +554,7 @@ class GroundUnattendedApplicationService:
         self, site_id: str, payload: GroundArpRefreshRequestDTO | None = None
     ) -> GroundArpStatusDTO:
         self._require_site(site_id)
+        self._require_collection_enabled()
         accepted = self.supervisor.request_arp_refresh(reason=(payload.reason if payload else "manual"))
         status = self.arp_status(site_id)
         if not accepted and not status.message:
@@ -570,6 +573,8 @@ class GroundUnattendedApplicationService:
         payload: GroundAcBasicCollectionControlRequestDTO,
     ) -> GroundAcBasicCollectionDTO:
         self._require_site(site_id)
+        if payload.enabled:
+            self._require_collection_enabled()
         key = str(device_uuid or "").strip()
         row = next(
             (item for item in self.supervisor.list_ac_basic_controls() if str(item.get("device_uuid") or "") == key),
@@ -1081,7 +1086,7 @@ class GroundUnattendedApplicationService:
                                                run_id=None if heartbeat.run_id == HEARTBEAT_STREAM_ID else heartbeat.run_id,
                                                mr_uuid=mr_uuid, start=start, end=end)
         except RuntimeError as exc:
-            raise GroundUnattendedError("GROUND_PLAYBACK_WAL_UNSTABLE", str(exc), status_code=409) from exc
+            raise GroundUnattendedError("GROUND_PLAYBACK_QUERY_FAILED", str(exc), status_code=409) from exc
         resolver = self._ap_display_resolver()
         resolver.preload_parsed(rows)
         events, intervals = mesh_evidence([resolver.enrich_parsed(row) for row in rows], start, end)
@@ -1342,6 +1347,7 @@ class GroundUnattendedApplicationService:
 
     def start_now(self, site_id: str) -> GroundActionResponseDTO:
         self._require_site(site_id)
+        self._require_collection_enabled()
         profile = self.repository.get_profile()
         if not profile.enabled:
             raise GroundUnattendedError(
@@ -1376,6 +1382,7 @@ class GroundUnattendedApplicationService:
         )
 
     def resume(self, site_id: str) -> GroundActionResponseDTO:
+        self._require_collection_enabled()
         run = self._active(site_id)
         if str(run.get("state") or "").upper() != "PAUSED":
             raise GroundUnattendedError(
@@ -1690,6 +1697,7 @@ class GroundUnattendedApplicationService:
         allow_target_port_change: bool = False,
         explicit_confirmation: bool = False,
     ) -> GroundActionResponseDTO:
+        self._require_collection_enabled()
         run = self._active(site_id)
         profile = self.repository.get_profile()
         self._validate_network_profile(profile, require_syslog=True)
@@ -1737,6 +1745,7 @@ class GroundUnattendedApplicationService:
         site_id: str,
         payload: GroundSyslogControlRequestDTO,
     ) -> GroundActionResponseDTO:
+        self._require_collection_enabled()
         run = self._active(site_id)
         profile = self.repository.get_profile()
         self._validate_network_profile(profile, require_syslog=True)
@@ -4869,6 +4878,15 @@ class GroundUnattendedApplicationService:
         if site_id != self.site_id:
             raise GroundUnattendedError(
                 "SITE_MISMATCH", "请求局点必须与当前局点一致", status_code=409
+            )
+
+    @staticmethod
+    def _require_collection_enabled() -> None:
+        if os.environ.get("NETCONSOLE_COLLECTION_MODE", "").strip().casefold() == "disabled":
+            raise GroundUnattendedError(
+                "GROUND_COLLECTION_DISABLED",
+                "当前 DEV 回放运行时已禁用现场采集",
+                status_code=409,
             )
 
 
