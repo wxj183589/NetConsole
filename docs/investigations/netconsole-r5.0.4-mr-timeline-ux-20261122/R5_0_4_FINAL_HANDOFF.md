@@ -3,7 +3,7 @@
 ```text
 BASELINE_PROTECTED=PASS (R5.0.3 history and protected untracked SQL audit preserved)
 PRODUCT_BASE=84a8bc4e
-PRODUCT_COMMIT=5c92d1e1 (layout commit 7f7277f8)
+PRODUCT_COMMIT=84ff1f82 (sync fix; prior layout/identity commits 7f7277f8, 5c92d1e1)
 DEVSTATUS_BASE=ff66c2d
 MAIN_RTT_COLLAPSIBLE=PASS
 BACKUP_RTT_COLLAPSIBLE=PASS
