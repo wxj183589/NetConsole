@@ -9,7 +9,7 @@ import pytest
 
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
 from netconsole.services.ground_unattended.fleet_ping import FleetPingSupervisor, FleetPingTarget
-from netconsole.services.ground_unattended.monitoring import ac_peer_intervals, indexed_evidence, mesh_evidence, monitoring_range
+from netconsole.services.ground_unattended.monitoring import ac_peer_intervals, indexed_evidence, mesh_evidence, monitoring_range, normalize_rssi
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ac_mesh_link import AcMeshMrPageDTO, AcMeshMrStatusDTO
@@ -28,9 +28,10 @@ def test_monitoring_range_requires_zone_and_caps_duration():
 
 def test_mesh_intervals_close_only_on_matching_adjacent_switches():
     start, end = monitoring_range("2026-11-07T11:00:00Z", "2026-11-07T12:00:00Z")
+    assert start.isoformat() == "2026-11-07T11:00:00+00:00"
     base = {"event_type": "MESH_ACTIVELINK_SWITCH", "event_time_source": "DEVICE_TIME", "data_quality": "COMPLETE"}
     rows = [
-        {**base, "id": 1, "device_time": "2026-11-07T11:10:00Z", "receive_time": "2026-11-07T11:10:01Z", "peer_mac": "00-11-22-33-44-55", "peer_name": "A", "rssi": -50},
+        {**base, "id": 1, "device_time": "2026-11-07T11:10:00Z", "receive_time": "2026-11-07T11:10:01Z", "peer_mac": "00-11-22-33-44-55", "peer_name": "A", "details": {"new_rssi": 50}},
         {**base, "id": 2, "device_time": "2026-11-07T11:10:20Z", "receive_time": "2026-11-07T11:10:21Z", "previous_peer_mac": "00:11:22:33:44:55", "peer_mac": "00:11:22:33:44:66", "peer_name": "B"},
         {**base, "id": 3, "device_time": "2026-11-07T11:11:00Z", "receive_time": "2026-11-07T11:11:01Z", "previous_peer_mac": "00:11:22:33:44:99", "peer_mac": "00:11:22:33:44:77"},
     ]
@@ -38,6 +39,23 @@ def test_mesh_intervals_close_only_on_matching_adjacent_switches():
     assert len(events) == 3
     assert len(intervals) == 1
     assert intervals[0]["end"] == "2026-11-07T11:10:20+00:00"
+    assert intervals[0]["raw_rssi"] == 50
+    assert intervals[0]["rssi"] == -50
+    assert intervals[0]["rssi_semantics"] == "ABSOLUTE_MAGNITUDE"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (-44, (-44.0, "NATIVE_DBM")), (-55, (-55.0, "NATIVE_DBM")),
+        (-65, (-65.0, "NATIVE_DBM")), (-75, (-75.0, "NATIVE_DBM")),
+        (-85, (-85.0, "NATIVE_DBM")), (44, (-44.0, "ABSOLUTE_MAGNITUDE")),
+        (None, (None, "MISSING")), ("invalid", (None, "MISSING")),
+        (140, (140.0, "OUT_OF_RANGE")),
+    ],
+)
+def test_rssi_normalization_preserves_missing_native_and_out_of_range_values(raw, expected):
+    assert normalize_rssi(raw) == expected
 
 
 def test_ac_peer_intervals_are_sampled_bounded_and_yield_to_syslog():
@@ -63,18 +81,31 @@ def test_indexed_evidence_is_site_run_mr_scoped_and_read_only(tmp_path):
                      ("ac-1", "demo", "run-1", "mr-1", "2026-11-07T11:10:00Z", "00:11:22:33:44:55", "fresh"))
         conn.commit()
     start, end = monitoring_range("2026-11-07T11:00:00Z", "2026-11-07T12:00:00Z")
-    mesh, ac, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
-    assert len(mesh) == len(ac) == 1 and not truncated
+    mesh, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
+    assert len(mesh) == 1 and not truncated
     with closing(sqlite3.connect(path)) as conn:
         conn.execute("INSERT INTO ground_unattended_ac_snapshots(snapshot_id,site_id,run_id,mr_id,received_at,peer_ap_mac,freshness_status) VALUES(?,?,?,?,?,?,?)",
                      ("ac-2", "demo", "run-2", "mr-1", "2026-11-07T11:11:00Z", "00:11:22:33:44:66", "fresh"))
         conn.commit()
-    _, resident_ac, _ = indexed_evidence(path, site_id="demo", run_id=None, mr_uuid="mr-1", start=start, end=end)
-    assert {row["snapshot_id"] for row in resident_ac} == {"ac-1", "ac-2"}
-    _, old_ac, _ = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
-    assert [row["snapshot_id"] for row in old_ac] == ["ac-1"]
+    resident_mesh, _ = indexed_evidence(path, site_id="demo", run_id=None, mr_uuid="mr-1", start=start, end=end)
+    assert len(resident_mesh) == 1
     with closing(sqlite3.connect(path)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM ground_unattended_wmesh_events").fetchone()[0] == 2
+
+
+def test_indexed_evidence_refuses_nonzero_wal_in_immutable_playback(tmp_path):
+    path = tmp_path / "ground.sqlite"
+    GroundUnattendedRepository(path, site_id="demo")
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("INSERT INTO ground_unattended_schema(key,value,updated_at) VALUES('wal-test','1','2026-11-07T11:00:00Z')")
+        connection.commit()
+        start, end = monitoring_range("2026-11-07T11:00:00Z", "2026-11-07T12:00:00Z")
+        with pytest.raises(RuntimeError, match="WAL"):
+            indexed_evidence(path, site_id="demo", run_id=None, mr_uuid="mr-1", start=start, end=end)
+    finally:
+        connection.close()
 
 
 def test_evidence_filters_offsets_and_time_window_before_limiting(tmp_path):
@@ -89,13 +120,35 @@ def test_evidence_filters_offsets_and_time_window_before_limiting(tmp_path):
                          (f"ac-{index}", "demo", "run-1", "mr-1", stamp, "00:11:22:33:44:55", "fresh"))
         conn.commit()
     start, end = monitoring_range("2026-11-07T11:00:00Z", "2026-11-07T12:00:00Z")
-    mesh, ac, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
-    assert len(mesh) == len(ac) == 1
-    assert ac[0]["snapshot_id"] == "ac-0"
+    mesh, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
+    assert len(mesh) == 1
     assert not truncated
     start, end = monitoring_range("2026-11-07T12:00:00Z", "2026-11-07T14:00:00Z")
-    mesh, ac, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
-    assert len(mesh) == len(ac) == 500 and truncated
+    mesh, truncated = indexed_evidence(path, site_id="demo", run_id="run-1", mr_uuid="mr-1", start=start, end=end)
+    assert len(mesh) == 501 and truncated
+
+
+def test_loss_events_filter_intersections_and_page_stably(tmp_path):
+    path = tmp_path / "ground.sqlite"
+    repository = GroundUnattendedRepository(path, site_id="demo")
+    rows = [
+        ("a", "RECOVERED", "2026-11-07T10:00:00Z", "2026-11-07T11:05:00Z"),
+        ("b", "RECOVERED", "2026-11-07T11:10:00Z", "2026-11-07T11:11:00Z"),
+        ("c", "OPEN", "2026-11-07T11:20:00Z", ""),
+        ("d", "OPEN", "2026-11-07T12:01:00Z", ""),
+    ]
+    with closing(sqlite3.connect(path)) as conn:
+        conn.executemany(
+            "INSERT INTO ground_unattended_ping_loss_intervals(site_id,run_id,target_ip,mr_id,event_key,state,started_at,ended_at,created_at) VALUES('demo','heartbeat-resident','192.0.2.1','mr-1',?,?,?,?,?)",
+            [(key, state, started, ended, started) for key, state, started, ended in rows],
+        )
+        conn.commit()
+    query = dict(mr_id="mr-1", window_start="2026-11-07T11:00:00Z", window_end="2026-11-07T12:00:00Z")
+    first = repository.list_ping_loss_intervals("heartbeat-resident", limit=2, offset=0, **query)
+    second = repository.list_ping_loss_intervals("heartbeat-resident", limit=2, offset=2, **query)
+    assert [row["event_key"] for row in first] == ["c", "b"]
+    assert [row["event_key"] for row in second] == ["a"]
+    assert repository.count_ping_loss_intervals("heartbeat-resident", **query) == 3
 
 
 def test_latest_rtt_is_fresh_and_current_run_only():

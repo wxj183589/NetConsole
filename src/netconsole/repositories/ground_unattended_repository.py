@@ -3263,7 +3263,10 @@ class GroundUnattendedRepository:
         mr_id: str = "",
         state: str = "",
         limit: int = 500,
+        offset: int = 0,
         started_after: str = "",
+        window_start: str = "",
+        window_end: str = "",
     ) -> list[dict[str, Any]]:
         where = ["site_id=?", "run_id=?"]
         params: list[Any] = [self.site_id, str(run_id)]
@@ -3279,15 +3282,54 @@ class GroundUnattendedRepository:
         if started_after:
             where.append("julianday(started_at) > julianday(?)")
             params.append(started_after)
-        params.append(max(1, min(int(limit), 5000)))
+        if window_start:
+            where.append("(ended_at='' OR julianday(ended_at)>=julianday(?))")
+            params.append(window_start)
+        if window_end:
+            where.append("julianday(started_at)<=julianday(?)")
+            params.append(window_end)
+        bounded_limit = max(1, min(int(limit), 5000))
+        bounded_offset = max(0, int(offset))
+        params.extend((bounded_limit, bounded_offset))
         with self._read_connection() as conn:
             rows = conn.execute(
                 "SELECT * FROM ground_unattended_ping_loss_intervals WHERE "
                 + " AND ".join(where)
-                + " ORDER BY started_at DESC, id DESC LIMIT ?",
+                + " ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?",
                 params,
             ).fetchall()
         return [_decode_row(row) for row in rows]
+
+    def count_ping_loss_intervals(
+        self,
+        run_id: str,
+        *,
+        mr_id: str = "",
+        started_after: str = "",
+        window_start: str = "",
+        window_end: str = "",
+    ) -> int:
+        where = ["site_id=?", "run_id=?"]
+        params: list[Any] = [self.site_id, str(run_id)]
+        if mr_id:
+            where.append("mr_id=?")
+            params.append(str(mr_id))
+        if started_after:
+            where.append("julianday(started_at) > julianday(?)")
+            params.append(started_after)
+        if window_start:
+            where.append("(ended_at='' OR julianday(ended_at)>=julianday(?))")
+            params.append(window_start)
+        if window_end:
+            where.append("julianday(started_at)<=julianday(?)")
+            params.append(window_end)
+        with self._read_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM ground_unattended_ping_loss_intervals WHERE "
+                + " AND ".join(where),
+                params,
+            ).fetchone()
+        return int(row[0] if row else 0)
 
     def list_ping_loss_intervals_by_mr(
         self,

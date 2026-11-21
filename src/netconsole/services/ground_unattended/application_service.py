@@ -1028,8 +1028,9 @@ class GroundUnattendedApplicationService:
             ),
         )
 
-    def mr_monitoring(self, site_id: str, *, mr_uuid: str, run_id: str = "", start_time: str = "", end_time: str = "") -> GroundMrMonitoringDTO:
-        from netconsole.services.ground_unattended.monitoring import monitoring_range, mesh_evidence, indexed_evidence, ac_peer_intervals
+    def mr_monitoring(self, site_id: str, *, mr_uuid: str, run_id: str = "", start_time: str = "", end_time: str = "",
+                      loss_limit: int = 3, loss_offset: int = 0) -> GroundMrMonitoringDTO:
+        from netconsole.services.ground_unattended.monitoring import monitoring_range, mesh_evidence, indexed_evidence
         try:
             start, end = monitoring_range(start_time, end_time)
         except ValueError as exc:
@@ -1070,16 +1071,27 @@ class GroundUnattendedApplicationService:
                                          ],
                                          identity_conflicts=conflicts,
                                          queried_start=start.isoformat(), queried_end=end.isoformat())
+        # Keep the requested playback boundary exact for events and charts while
+        # retaining enough preceding Ping samples for the 60-minute statistics.
+        series_start = min(start, end - timedelta(hours=1))
         series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
-                                  start_time=start.isoformat(), end_time=end.isoformat(), max_points=2400)
-        rows, ac_rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id,
-                                                   run_id=None if heartbeat.run_id == HEARTBEAT_STREAM_ID else heartbeat.run_id,
-                                                   mr_uuid=mr_uuid, start=start, end=end)
+                                  start_time=series_start.isoformat(), end_time=end.isoformat(), max_points=2400)
+        try:
+            rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id,
+                                               run_id=None if heartbeat.run_id == HEARTBEAT_STREAM_ID else heartbeat.run_id,
+                                               mr_uuid=mr_uuid, start=start, end=end)
+        except RuntimeError as exc:
+            raise GroundUnattendedError("GROUND_PLAYBACK_WAL_UNSTABLE", str(exc), status_code=409) from exc
         resolver = self._ap_display_resolver()
         resolver.preload_parsed(rows)
         events, intervals = mesh_evidence([resolver.enrich_parsed(row) for row in rows], start, end)
-        intervals.extend(ac_peer_intervals(ac_rows, intervals))
         intervals.sort(key=lambda row: row["start"])
+        loss_query = dict(
+            mr_id=mr_uuid,
+            started_after=str(cleared_at),
+            window_start=start.isoformat() if start_time or end_time else "",
+            window_end=end.isoformat() if start_time or end_time else "",
+        )
         return GroundMrMonitoringDTO(mr=mr, series=series, mesh_events=events, peer_intervals=intervals,
                                      identity_relations=[
                                          GroundMrIdentityDTO.model_validate(
@@ -1097,9 +1109,14 @@ class GroundUnattendedApplicationService:
                                      run_sent_count=sum(ip.sent_count for ip in mr.ip_states),
                                      run_lost_count=sum(ip.lost_count for ip in mr.ip_states),
                                      loss_events=self.repository.list_ping_loss_intervals(
-                                         heartbeat.run_id, mr_id=mr_uuid, limit=500,
-                                         started_after=str(cleared_at),
+                                         heartbeat.run_id, limit=loss_limit,
+                                         offset=loss_offset, **loss_query,
                                      ),
+                                     loss_event_total=self.repository.count_ping_loss_intervals(
+                                         heartbeat.run_id, **loss_query,
+                                     ),
+                                     loss_event_limit=max(1, min(int(loss_limit), 100)),
+                                     loss_event_offset=max(0, int(loss_offset)),
                                      queried_start=start.isoformat(), queried_end=end.isoformat(), events_truncated=truncated)
 
     def status(self, site_id: str) -> GroundUnattendedStatusDTO:

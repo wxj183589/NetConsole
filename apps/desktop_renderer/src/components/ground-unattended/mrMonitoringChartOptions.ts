@@ -5,25 +5,54 @@ import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeC
 
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
 
-export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string, end: string, theme: NetConsoleChartTokens, selectedTime = '', mode: 'all' | 'ping' | 'peer' = 'all'): Record<string, unknown> {
+export function mrMonitoringChartOption(
+  data: GroundMrMonitoring,
+  start: string,
+  end: string,
+  theme: NetConsoleChartTokens,
+  selectedTime = '',
+  mode: 'all' | 'ping' | 'peer' | 'navigator' = 'all',
+  viewportStart = start,
+  viewportEnd = end,
+): Record<string, unknown> {
   const begin = Date.parse(start), finish = Date.parse(end)
+  const visibleBegin = Date.parse(viewportStart), visibleFinish = Date.parse(viewportEnd)
+  const dataZoom = (xAxisIndex: number | number[] = 0, slider = false): Array<Record<string, unknown>> => [
+    { type: 'inside', xAxisIndex, filterMode: 'none', startValue: visibleBegin, endValue: visibleFinish, minValueSpan: 1000 },
+    ...(slider ? [{ type: 'slider', xAxisIndex, bottom: 8, filterMode: 'none', startValue: visibleBegin, endValue: visibleFinish, minValueSpan: 1000 }] : []),
+  ]
   const points = data.series.points.filter((point) => !point.warmup_ignored && Date.parse(point.ts) >= begin && Date.parse(point.ts) <= finish)
   const ips = [...new Set(points.map((point) => point.target_ip))]
   const intervals = data.peer_intervals.filter((row) => Date.parse(row.end) >= begin && Date.parse(row.start) <= finish)
   const peers = [...new Set(intervals.map((row) => row.peer_name || row.bssid || 'UNKNOWN'))]
   const meshEvents = (data.mesh_events || []).filter((row) => Date.parse(row.event_time || row.receive_time) >= begin && Date.parse(row.event_time || row.receive_time) <= finish)
+  if (mode === 'navigator') {
+    return {
+      ...createMultiSeriesTimeChartBaseOption(theme, { unit: '', pointCount: 2, showLegend: false, reserveLegendSpace: false }),
+      toolbox: { show: false }, tooltip: { show: false },
+      grid: { left: 65, right: 50, top: 4, bottom: 42 },
+      xAxis: { type: 'time', min: begin, max: finish, axisLabel: { show: false }, axisTick: { show: false } },
+      yAxis: { type: 'value', min: 0, max: 1, show: false },
+      dataZoom: dataZoom(0, true),
+      series: [{ id: 'global-window', type: 'line', data: [[begin, 0], [finish, 0]], symbol: 'none', lineStyle: { opacity: 0 }, silent: true,
+        markLine: selectedTime ? { silent: true, symbol: 'none', data: [{ xAxis: Date.parse(selectedTime), label: { show: false } }] } : { data: [] } }],
+    }
+  }
   if (mode === 'peer') {
     const peerData = intervals.map((row, index) => {
       const rssi = Number.isFinite(row.rssi) ? Number(row.rssi) : null
-      return [Math.max(begin, Date.parse(row.start)), Math.min(finish, Date.parse(row.end)), rssi == null ? 0 : Math.max(0, Math.min(80, rssi + 100)), index]
+      return [Math.max(begin, Date.parse(row.start)), Math.min(finish, Date.parse(row.end)), rssi, index]
     })
+    const observed = intervals.map((row) => row.rssi).filter((value): value is number => Number.isFinite(value))
+    const peerMin = Math.min(-100, ...(observed.length ? observed : [-100]))
+    const peerMax = Math.max(-30, ...(observed.length ? observed : [-30]))
     return {
       ...createMultiSeriesTimeChartBaseOption(theme, { unit: 'RSSI', pointCount: intervals.length, showLegend: false }),
       toolbox: { show: false },
       grid: { left: 65, right: 36, top: 28, bottom: 64, outerBoundsMode: 'same', outerBoundsContain: 'axisLabel' },
       xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
-      yAxis: { type: 'value', name: 'RSSI 强度', min: 0, max: 80 },
-      dataZoom: [{ type: 'inside', xAxisIndex: 0, filterMode: 'weakFilter' }, { type: 'slider', xAxisIndex: 0, bottom: 8, filterMode: 'weakFilter' }],
+      yAxis: { type: 'value', name: 'RSSI (dBm)', min: peerMin, max: peerMax },
+      dataZoom: dataZoom(),
       tooltip: {
         trigger: 'item', confine: true, appendToBody: false,
         formatter: (params: { data?: [number, number, number, number] }) => {
@@ -33,7 +62,9 @@ export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string,
           return [
             `Peer AP：${escape(row.peer_name || row.bssid || 'UNKNOWN')}`,
             `MAC：${escape(row.bssid || 'UNKNOWN')}`,
-            `RSSI：${escape(Number.isFinite(row.rssi) ? `${row.rssi} dBm` : '无数据')}`,
+            `设备原始 RSSI：${escape(Number.isFinite(row.raw_rssi) ? row.raw_rssi : '无数据')}`,
+            `归一化 RSSI：${escape(Number.isFinite(row.rssi) ? `${row.rssi} dBm` : '无数据')}`,
+            `语义：${escape(row.rssi_semantics || 'UNKNOWN')}`,
             `切入：${escape(new Date(row.start).toLocaleString())}`,
             `切出：${escape(new Date(row.end).toLocaleString())}`,
             `持续：${escape(`${duration.toFixed(1)} 秒`)}`,
@@ -43,9 +74,10 @@ export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string,
       series: [{
         id: 'peer-rssi-intervals', name: 'Peer AP 主用区间', type: 'custom', data: peerData,
         encode: { x: [0, 1], y: 2 },
+        markLine: selectedTime ? { silent: true, symbol: 'none', data: [{ xAxis: Date.parse(selectedTime), label: { show: false } }] } : { data: [] },
         renderItem: (_params: unknown, api: { value: (index: number) => number; coord: (values: number[]) => number[]; style: (value?: object) => object }) => {
-          const startPoint = api.coord([api.value(0), 0])
-          const endPoint = api.coord([api.value(1), api.value(2)])
+          const startPoint = api.coord([api.value(0), peerMin])
+          const endPoint = api.coord([api.value(1), Number.isFinite(api.value(2)) ? api.value(2) : peerMin])
           const hasRssi = Number.isFinite(intervals[api.value(3)]?.rssi)
           return {
             type: 'rect',
@@ -86,7 +118,7 @@ export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string,
       axisPointer: { link: [{ xAxisIndex: 'all' }] },
       xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
       yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }],
-      dataZoom: [{ type: 'inside', xAxisIndex: 0, filterMode: 'weakFilter' }, { type: 'slider', xAxisIndex: 0, bottom: 8, filterMode: 'weakFilter' }],
+      dataZoom: dataZoom(),
       tooltip: { trigger: 'axis', confine: true, appendToBody: false },
       series,
     }
@@ -119,7 +151,7 @@ export function mrMonitoringChartOption(data: GroundMrMonitoring, start: string,
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     xAxis: [0, 1, 2].map((gridIndex) => ({ type: 'time', gridIndex, min: begin, max: finish, axisPointer: { show: true, snap: false } })),
     yAxis: [{ type: 'value', name: 'RTT (ms)', min: 0 }, { type: 'value', name: `${t('ground.monitor.loss', '丢包')} (%)`, min: 0, max: 100, splitLine: { show: false } }, { type: 'category', gridIndex: 1, data: peers.length ? peers : ['UNKNOWN'], axisLabel: { width: 85, overflow: 'truncate' } }, { type: 'category', gridIndex: 2, data: ['Mesh / Syslog'], axisLabel: { width: 85, overflow: 'truncate' } }],
-    dataZoom: [{ type: 'inside', xAxisIndex: [0, 1, 2], filterMode: 'weakFilter' }, { type: 'slider', xAxisIndex: [0, 1, 2], bottom: 8, filterMode: 'weakFilter' }],
+    dataZoom: dataZoom([0, 1, 2]),
     tooltip: { trigger: 'axis', confine: true, appendToBody: false, extraCssText: 'max-width:420px;max-height:260px;overflow:hidden',
       formatter: (params: Array<{ axisValue?: number; data?: [number, number | null]; seriesName: string; seriesIndex: number }>) => {
         const time = Number(params[0]?.axisValue)

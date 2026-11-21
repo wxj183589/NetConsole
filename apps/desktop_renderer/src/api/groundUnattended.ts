@@ -35,7 +35,7 @@ export const previewGroundHeartbeatInventory = (action: GroundHeartbeatInventory
   apiRequest(`${root}/heartbeat/inventory/preview`, { method: 'POST', body: JSON.stringify({ action }) })
 export const applyGroundHeartbeatInventory = (action: GroundHeartbeatInventoryAction, revision: string): Promise<GroundHeartbeatInventoryPreview> =>
   apiRequest(`${root}/heartbeat/inventory/apply`, { method: 'POST', body: JSON.stringify({ action, revision, confirm: true }) })
-export const getGroundMrMonitoring = (mrUuid: string, params: { run_id?: string; start_time?: string; end_time?: string } = {}, options: RequestInit = {}): Promise<GroundMrMonitoring> =>
+export const getGroundMrMonitoring = (mrUuid: string, params: { run_id?: string; start_time?: string; end_time?: string; loss_limit?: string; loss_offset?: string } = {}, options: RequestInit = {}): Promise<GroundMrMonitoring> =>
   apiRequest(`${root}/mr/${encodeURIComponent(mrUuid)}/monitoring?${new URLSearchParams(params)}`, options)
 
 export interface GroundRawQueryTransportState {
