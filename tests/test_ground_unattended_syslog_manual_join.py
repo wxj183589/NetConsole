@@ -39,6 +39,10 @@ class _JoinHarness:
     def _active(self, site_id: str):
         return {"run_id": "ground-test", "state": "RUNNING"}
 
+    def _require_collection_enabled(self):
+        """Mirror the service admission hook without opening a device session."""
+        return None
+
     def _validate_network_profile(self, profile, *, require_syslog: bool):
         assert require_syslog
 
