@@ -82,7 +82,7 @@ async function loadHistoricalMrs(runId: string): Promise<void> {
   if (!runId) return
   const request = new AbortController(); historyController = request
   try {
-    const page = await getGroundHeartbeat('', { signal: request.signal }, { run_id: runId, data_mode: 'HISTORICAL_PLAYBACK', page: 1, page_size: 200 })
+    const page = await getGroundHeartbeat(runId, { signal: request.signal }, { data_mode: 'HISTORICAL_PLAYBACK', page: 1, page_size: 200 })
     if (!request.signal.aborted && selectedRunId.value === runId) {
       historyMrs.value = page.mrs || []
       selectedMrId.value = mrOptions.value[0]?.id || ''

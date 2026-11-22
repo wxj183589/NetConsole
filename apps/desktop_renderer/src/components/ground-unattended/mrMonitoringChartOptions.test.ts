@@ -79,7 +79,7 @@ describe('MR monitoring evidence chart', () => {
     const data = { series: { points: [
       { ts: sampleTime, target_ip: '10.82.24.235', ok: true, rtt_ms: 3 },
       { ts: '2026-11-07T11:00:01Z', target_ip: '10.82.24.235', ok: false, rtt_ms: null },
-    ] }, peer_intervals: [] } as GroundMrMonitoring
+    ] }, peer_intervals: [] } as unknown as GroundMrMonitoring
     const option = mrMonitoringChartOption(data, sampleTime, '2026-11-07T12:00:00Z', readNetConsoleChartTokens(), '', 'heartbeat')
     const tooltip = option.tooltip as { formatter: (params: unknown[]) => string }
     const text = tooltip.formatter([{ axisValue: Date.parse(sampleTime), data: [Date.parse(sampleTime), 1] }])
