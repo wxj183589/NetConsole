@@ -1,5 +1,17 @@
 # NetConsole 更新日志
 
+## R5.0.5.2 - 2026-11-22（RSSI 与主线整合收口）
+
+### MESH 主链路 RSSI
+
+- 修正 `MESH_ACTIVELINK_SWITCH` 的切出/切入 RSSI 语义：`from` 保存切出 RSSI，`to` 保存切入 RSSI；Peer AP 主用区间按相邻、MAC 连续的真实事件构建。
+- 表格和 Tooltip 分列展示切出 RSSI、切入 RSSI；缺失后续证据或缺失字段时保持无记录，不补造区间和数值。
+
+### 分支与验收
+
+- 七个指定主题分支的有效提交均已在 `main`，原始提交历史和可恢复 Bundle 保留；已安全回收本地已完成主题分支及对应 Worktree。
+- R5.0.5.2 定向 Python/Renderer 测试、Renderer build、Electron typecheck 和 diff-check 通过；真实 Electron 深层 GUI 验收仍保持 `NOT_VERIFIED`。
+
 ## v1.5.17 - 2026-11-21（代码复审候选）
 
 ### 全代码复审与交付

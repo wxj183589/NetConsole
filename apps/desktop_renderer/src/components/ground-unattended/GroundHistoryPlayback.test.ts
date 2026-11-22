@@ -28,7 +28,11 @@ describe('Ground history playback isolation', () => {
       global: { stubs: { ElSelect: true, ElOption: true, ElDatePicker: true, ElButton: true, ElAlert: true, ElPagination: true, MrMonitoringChart: true } },
     })
     await flushPromises()
-    expect(api.heartbeat).toHaveBeenCalledWith('', expect.objectContaining({ signal: expect.any(AbortSignal) }), expect.objectContaining({ run_id: 'run-archive', data_mode: 'HISTORICAL_PLAYBACK' }))
+    expect(api.heartbeat).toHaveBeenCalledWith(
+      'run-archive',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      expect.objectContaining({ data_mode: 'HISTORICAL_PLAYBACK' }),
+    )
     expect((wrapper.vm as unknown as { mrOptions: Array<{ id: string }> }).mrOptions).toEqual([{ id: 'mr-archive', role: 'CT', name: 'MR archive', trainId: 'train-archive', trainNo: '009' }])
     wrapper.unmount()
   })
