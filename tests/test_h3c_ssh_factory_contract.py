@@ -35,7 +35,7 @@ def test_car_network_cli_compatibility_wrapper_delegates_to_shared_factory() -> 
     assert "paramiko.SSHClient(" not in source
 
 
-def test_direct_paramiko_clients_are_limited_to_non_cli_boundaries() -> None:
+def test_direct_paramiko_clients_are_limited_to_infrastructure_and_interactive_terminal() -> None:
     direct_clients = sorted(
         path.relative_to(ROOT).as_posix()
         for path in ROOT.joinpath("src", "netconsole").rglob("*.py")
@@ -47,4 +47,13 @@ def test_direct_paramiko_clients_are_limited_to_non_cli_boundaries() -> None:
         "src/netconsole/services/file_transfer_service.py",
         "src/netconsole/services/site_ssh_relay.py",
         "src/netconsole/services/ssh_tunnel.py",
+        "src/netconsole/services/terminal_transports.py",
     ]
+
+    terminal_source = (
+        ROOT / "src" / "netconsole" / "services" / "terminal_transports.py"
+    ).read_text(encoding="utf-8")
+    assert "paramiko.SSHClient()" in terminal_source
+    assert ".invoke_shell(" in terminal_source
+    assert "send_command" not in terminal_source
+    assert "RESTRICTED_READONLY" not in terminal_source

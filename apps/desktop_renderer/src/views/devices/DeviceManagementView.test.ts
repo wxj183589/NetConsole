@@ -116,6 +116,8 @@ describe('Device Management Web view', () => {
     expect(source).toContain("key: 'duplicate'")
     expect(source).toContain("key: 'copy-current-cell'")
     expect(source).toContain("key: 'copy-device-info'")
+    expect(source).toContain("key: 'internal-console'")
+    expect(source).toContain("router.push({ name: 'device-console', query: { device_uuid: deviceUuid } })")
     expect(source).toContain("key: 'external-terminal'")
     expect(source).toContain("key: 'delete'")
     expect(source).not.toContain('class="device-context-menu"')

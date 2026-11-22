@@ -1,0 +1,2042 @@
+{
+  "schema_version": 1,
+  "source_file": "20261123_011457.xlsx",
+  "sheet_name": "关键词高亮列表",
+  "actual_rule_count": 226,
+  "rules": [
+    {
+      "id": "danger-001",
+      "pattern": "scheduler reboot",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 2
+    },
+    {
+      "id": "danger-002",
+      "pattern": "undo provision [ subslot subslot-number ] model",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 3
+    },
+    {
+      "id": "danger-003",
+      "pattern": "undo mld-snooping",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 4
+    },
+    {
+      "id": "danger-004",
+      "pattern": "scheduler reboot delay",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 5
+    },
+    {
+      "id": "danger-005",
+      "pattern": "ipv6 dhcp server forbidden-address",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 6
+    },
+    {
+      "id": "danger-006",
+      "pattern": "shutdown",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 7
+    },
+    {
+      "id": "danger-007",
+      "pattern": "port-type flexe",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 8
+    },
+    {
+      "id": "danger-008",
+      "pattern": "interface range",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 9
+    },
+    {
+      "id": "danger-009",
+      "pattern": "undo snmp-agent",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 10
+    },
+    {
+      "id": "danger-010",
+      "pattern": "delete",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 11
+    },
+    {
+      "id": "danger-011",
+      "pattern": "undo ripng [ process-id ]",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 12
+    },
+    {
+      "id": "danger-012",
+      "pattern": "monitor thread",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 13
+    },
+    {
+      "id": "danger-013",
+      "pattern": "undo location",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 14
+    },
+    {
+      "id": "danger-014",
+      "pattern": "portal authorization strict-checking",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 15
+    },
+    {
+      "id": "danger-015",
+      "pattern": "undo wlan enable",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 16
+    },
+    {
+      "id": "danger-016",
+      "pattern": "undo domain isp-name",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 17
+    },
+    {
+      "id": "danger-017",
+      "pattern": "undo mpls te",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 18
+    },
+    {
+      "id": "danger-018",
+      "pattern": "port-type ethernet",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 19
+    },
+    {
+      "id": "danger-019",
+      "pattern": "allocate interface",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 20
+    },
+    {
+      "id": "danger-020",
+      "pattern": "port-type ethernet",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 21
+    },
+    {
+      "id": "danger-021",
+      "pattern": "reset ospf process",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 22
+    },
+    {
+      "id": "danger-022",
+      "pattern": "undo port group interface",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 23
+    },
+    {
+      "id": "danger-023",
+      "pattern": "network-entity",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 24
+    },
+    {
+      "id": "danger-024",
+      "pattern": "oap reboot",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 25
+    },
+    {
+      "id": "danger-025",
+      "pattern": "vrrp ipv6 vrid shutdown",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 26
+    },
+    {
+      "id": "danger-026",
+      "pattern": "undo startup saved-configuration",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 27
+    },
+    {
+      "id": "danger-027",
+      "pattern": "auto-execute command",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 28
+    },
+    {
+      "id": "danger-028",
+      "pattern": "shutdown process",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 29
+    },
+    {
+      "id": "danger-029",
+      "pattern": "undo igmp",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 30
+    },
+    {
+      "id": "danger-030",
+      "pattern": "disable",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 31
+    },
+    {
+      "id": "danger-031",
+      "pattern": "reset recycle-bin",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 32
+    },
+    {
+      "id": "danger-032",
+      "pattern": "undo service enable",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 33
+    },
+    {
+      "id": "danger-033",
+      "pattern": "reset ripng process",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 34
+    },
+    {
+      "id": "danger-034",
+      "pattern": "undo dhcp enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 35
+    },
+    {
+      "id": "danger-035",
+      "pattern": "pex-capability enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 36
+    },
+    {
+      "id": "danger-036",
+      "pattern": "default",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 37
+    },
+    {
+      "id": "danger-037",
+      "pattern": "irf slot member",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 38
+    },
+    {
+      "id": "danger-038",
+      "pattern": "poe force-power",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 39
+    },
+    {
+      "id": "danger-039",
+      "pattern": "delete static-routes all",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 40
+    },
+    {
+      "id": "danger-040",
+      "pattern": "vlan policy deny",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 41
+    },
+    {
+      "id": "danger-041",
+      "pattern": "undo power-source",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 42
+    },
+    {
+      "id": "danger-042",
+      "pattern": "reboot",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 43
+    },
+    {
+      "id": "danger-043",
+      "pattern": "undo msdp",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 44
+    },
+    {
+      "id": "danger-044",
+      "pattern": "portal user-dhcp-only",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 45
+    },
+    {
+      "id": "danger-045",
+      "pattern": "interface policy deny",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 46
+    },
+    {
+      "id": "danger-046",
+      "pattern": "undo pim",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 47
+    },
+    {
+      "id": "danger-047",
+      "pattern": "undo mac-address mac-learning enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 48
+    },
+    {
+      "id": "danger-048",
+      "pattern": "undo port group interface",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 49
+    },
+    {
+      "id": "danger-049",
+      "pattern": "undo security-policy",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 50
+    },
+    {
+      "id": "danger-050",
+      "pattern": "ipsec no-nat-process enable",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 51
+    },
+    {
+      "id": "danger-051",
+      "pattern": "undo wlan detect-anomaly enable",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 52
+    },
+    {
+      "id": "danger-052",
+      "pattern": "reset igmp group",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 53
+    },
+    {
+      "id": "danger-053",
+      "pattern": "undo igmp-snooping",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 54
+    },
+    {
+      "id": "danger-054",
+      "pattern": "authentication-mode",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 55
+    },
+    {
+      "id": "danger-055",
+      "pattern": "monitor kernel deadloop time",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 56
+    },
+    {
+      "id": "danger-056",
+      "pattern": "undo rib",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 57
+    },
+    {
+      "id": "danger-057",
+      "pattern": "oap client close",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 58
+    },
+    {
+      "id": "danger-058",
+      "pattern": "undo rip [ process-id ]",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 59
+    },
+    {
+      "id": "danger-059",
+      "pattern": "apply-label",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 60
+    },
+    {
+      "id": "danger-060",
+      "pattern": "irf member renumber",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 61
+    },
+    {
+      "id": "danger-061",
+      "pattern": "portal authorization strict-checking",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 62
+    },
+    {
+      "id": "danger-062",
+      "pattern": "scheduler reboot at",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 63
+    },
+    {
+      "id": "danger-063",
+      "pattern": "domain restart",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 64
+    },
+    {
+      "id": "danger-064",
+      "pattern": "undo mld",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 65
+    },
+    {
+      "id": "danger-065",
+      "pattern": "fips self-test",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 66
+    },
+    {
+      "id": "danger-066",
+      "pattern": "mirror-to cpu",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 67
+    },
+    {
+      "id": "danger-067",
+      "pattern": "delete static-routes all",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 68
+    },
+    {
+      "id": "danger-068",
+      "pattern": "reset transceiver interface",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 69
+    },
+    {
+      "id": "danger-069",
+      "pattern": "link-aggregation lacp isolate",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 70
+    },
+    {
+      "id": "danger-070",
+      "pattern": "delete [ /unreserved ] file",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 71
+    },
+    {
+      "id": "danger-071",
+      "pattern": "irf isolate member",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 72
+    },
+    {
+      "id": "danger-072",
+      "pattern": "reset arp",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 73
+    },
+    {
+      "id": "danger-073",
+      "pattern": "dhcp snooping deny",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 74
+    },
+    {
+      "id": "danger-074",
+      "pattern": "configuration replace file",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 75
+    },
+    {
+      "id": "danger-075",
+      "pattern": "issu commit",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 76
+    },
+    {
+      "id": "danger-076",
+      "pattern": "delete",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 77
+    },
+    {
+      "id": "danger-077",
+      "pattern": "peer ignore",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 78
+    },
+    {
+      "id": "danger-078",
+      "pattern": "ip urpf",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 79
+    },
+    {
+      "id": "danger-079",
+      "pattern": "reboot",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 80
+    },
+    {
+      "id": "danger-080",
+      "pattern": "undo isis [ process-id ]",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 81
+    },
+    {
+      "id": "danger-081",
+      "pattern": "^debugging .*",
+      "match_type": "REGEX",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 82
+    },
+    {
+      "id": "danger-082",
+      "pattern": "reset mld group",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 83
+    },
+    {
+      "id": "danger-083",
+      "pattern": "format",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 84
+    },
+    {
+      "id": "danger-084",
+      "pattern": "monitor cpu-usage threshold",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 85
+    },
+    {
+      "id": "danger-085",
+      "pattern": "pex system-working-mode",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 86
+    },
+    {
+      "id": "danger-086",
+      "pattern": "fixdisk",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 87
+    },
+    {
+      "id": "danger-087",
+      "pattern": "dhcp server forbidden-ip",
+      "match_type": "REGEX",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 88
+    },
+    {
+      "id": "danger-088",
+      "pattern": "dhcp snooping deny",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 89
+    },
+    {
+      "id": "danger-089",
+      "pattern": "undo version auto-update enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 90
+    },
+    {
+      "id": "danger-090",
+      "pattern": "reset isis all",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 91
+    },
+    {
+      "id": "danger-091",
+      "pattern": "bash",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 92
+    },
+    {
+      "id": "danger-092",
+      "pattern": "switch-fabric removal-signal-suppression",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 93
+    },
+    {
+      "id": "danger-093",
+      "pattern": "mirroring-group reflector-port",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 94
+    },
+    {
+      "id": "danger-094",
+      "pattern": "port-type fc",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 95
+    },
+    {
+      "id": "danger-095",
+      "pattern": "redirect disconnect",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 96
+    },
+    {
+      "id": "danger-096",
+      "pattern": "undo router id",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 97
+    },
+    {
+      "id": "danger-097",
+      "pattern": "minishell",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 98
+    },
+    {
+      "id": "danger-098",
+      "pattern": "ipv6 dhcp snooping deny",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 99
+    },
+    {
+      "id": "danger-099",
+      "pattern": "port link-mode",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 100
+    },
+    {
+      "id": "danger-100",
+      "pattern": "clock datetime",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 101
+    },
+    {
+      "id": "danger-101",
+      "pattern": "mount filesystem",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 102
+    },
+    {
+      "id": "danger-102",
+      "pattern": "undo irf member stack enable",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 103
+    },
+    {
+      "id": "danger-103",
+      "pattern": "irf domain",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 104
+    },
+    {
+      "id": "danger-104",
+      "pattern": "m-lag system-priority",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 105
+    },
+    {
+      "id": "danger-105",
+      "pattern": "undo ipv6 dhcp enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 106
+    },
+    {
+      "id": "danger-106",
+      "pattern": "rmdir",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 107
+    },
+    {
+      "id": "danger-107",
+      "pattern": "fips mode enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 108
+    },
+    {
+      "id": "danger-108",
+      "pattern": "move",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 109
+    },
+    {
+      "id": "danger-109",
+      "pattern": "storm-constrain",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 110
+    },
+    {
+      "id": "danger-110",
+      "pattern": "undo dot1x",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 111
+    },
+    {
+      "id": "danger-111",
+      "pattern": "save",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 112
+    },
+    {
+      "id": "danger-112",
+      "pattern": "ssh server port",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 113
+    },
+    {
+      "id": "danger-113",
+      "pattern": "oap client reboot",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 114
+    },
+    {
+      "id": "danger-114",
+      "pattern": "reset install rollback oldest",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 115
+    },
+    {
+      "id": "danger-115",
+      "pattern": "arp pnp",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 116
+    },
+    {
+      "id": "danger-116",
+      "pattern": "restore factory-default",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 117
+    },
+    {
+      "id": "danger-117",
+      "pattern": "interface policy deny",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 118
+    },
+    {
+      "id": "danger-118",
+      "pattern": "power-supply off",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 119
+    },
+    {
+      "id": "danger-119",
+      "pattern": "igmp attack-defense",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 120
+    },
+    {
+      "id": "danger-120",
+      "pattern": "delete ipv6 static-routes all",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 121
+    },
+    {
+      "id": "danger-121",
+      "pattern": "undo rsvp",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 122
+    },
+    {
+      "id": "danger-122",
+      "pattern": "shutdown all-physical-interface",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 123
+    },
+    {
+      "id": "danger-123",
+      "pattern": "rmdir",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 124
+    },
+    {
+      "id": "danger-124",
+      "pattern": "redirect cpu",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 125
+    },
+    {
+      "id": "danger-125",
+      "pattern": "monitor kernel starvation time",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 126
+    },
+    {
+      "id": "danger-126",
+      "pattern": "arp scan",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 127
+    },
+    {
+      "id": "danger-127",
+      "pattern": "delete ipv6 static-routes all",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 128
+    },
+    {
+      "id": "danger-128",
+      "pattern": "undo acl",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 129
+    },
+    {
+      "id": "danger-129",
+      "pattern": "smartmc upgrade startup-configuration",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 130
+    },
+    {
+      "id": "danger-130",
+      "pattern": "reset ospfv3 process",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 131
+    },
+    {
+      "id": "danger-131",
+      "pattern": "inspect bypass",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 132
+    },
+    {
+      "id": "danger-132",
+      "pattern": "placement reoptimize",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 133
+    },
+    {
+      "id": "danger-133",
+      "pattern": "label-allocation-mode",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 134
+    },
+    {
+      "id": "danger-134",
+      "pattern": "smartmc upgrade boot-loader",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 135
+    },
+    {
+      "id": "danger-135",
+      "pattern": "memory-threshold",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 136
+    },
+    {
+      "id": "danger-136",
+      "pattern": "kdb",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 137
+    },
+    {
+      "id": "danger-137",
+      "pattern": "vlan policy deny",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 138
+    },
+    {
+      "id": "danger-138",
+      "pattern": "portal user-dhcp-only",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 139
+    },
+    {
+      "id": "danger-139",
+      "pattern": "ip local policy-based-route",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 140
+    },
+    {
+      "id": "danger-140",
+      "pattern": "arp fixup",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 141
+    },
+    {
+      "id": "danger-141",
+      "pattern": "auto-execute command",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 142
+    },
+    {
+      "id": "danger-142",
+      "pattern": "ip binding vpn-instance",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 143
+    },
+    {
+      "id": "danger-143",
+      "pattern": "undo mdc mdc-name",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 144
+    },
+    {
+      "id": "danger-144",
+      "pattern": "authentication-mode",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 145
+    },
+    {
+      "id": "danger-145",
+      "pattern": "arp scan",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 146
+    },
+    {
+      "id": "danger-146",
+      "pattern": "dot1x eapol untag",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 147
+    },
+    {
+      "id": "danger-147",
+      "pattern": "reset rip process",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 148
+    },
+    {
+      "id": "danger-148",
+      "pattern": "debugging",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 149
+    },
+    {
+      "id": "danger-149",
+      "pattern": "reset bgp all",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 150
+    },
+    {
+      "id": "danger-150",
+      "pattern": "version check ignore",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 151
+    },
+    {
+      "id": "danger-151",
+      "pattern": "mld version",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 152
+    },
+    {
+      "id": "danger-152",
+      "pattern": "undo ospf [ process-id ]",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 153
+    },
+    {
+      "id": "danger-153",
+      "pattern": "irf mac-address",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 154
+    },
+    {
+      "id": "danger-154",
+      "pattern": "reset arp",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 155
+    },
+    {
+      "id": "danger-155",
+      "pattern": "switch-fabric isolate",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 156
+    },
+    {
+      "id": "danger-156",
+      "pattern": "reset bgp",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 157
+    },
+    {
+      "id": "danger-157",
+      "pattern": "undo irf-port member-id/irf-port-number",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 158
+    },
+    {
+      "id": "danger-158",
+      "pattern": "undo ipv6 pim",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 159
+    },
+    {
+      "id": "danger-159",
+      "pattern": "bfd init-fail-timer",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 160
+    },
+    {
+      "id": "danger-160",
+      "pattern": "igmp version",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 161
+    },
+    {
+      "id": "danger-161",
+      "pattern": "reboot",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 162
+    },
+    {
+      "id": "danger-162",
+      "pattern": "reset cp configuration",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 163
+    },
+    {
+      "id": "danger-163",
+      "pattern": "monitor cpu-usage threshold",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 164
+    },
+    {
+      "id": "danger-164",
+      "pattern": "restore factory-default",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 165
+    },
+    {
+      "id": "danger-165",
+      "pattern": "monitor kernel deadloop action",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 166
+    },
+    {
+      "id": "danger-166",
+      "pattern": "packet-filter default deny",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 167
+    },
+    {
+      "id": "danger-167",
+      "pattern": "ipv6 dhcp snooping deny",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 168
+    },
+    {
+      "id": "danger-168",
+      "pattern": "undo modem enable",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 169
+    },
+    {
+      "id": "danger-169",
+      "pattern": "ipv6 local policy-based-route",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 170
+    },
+    {
+      "id": "danger-170",
+      "pattern": "undo mdc start",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 171
+    },
+    {
+      "id": "danger-171",
+      "pattern": "loopback internal",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 172
+    },
+    {
+      "id": "danger-172",
+      "pattern": "undo mac-authentication",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 173
+    },
+    {
+      "id": "danger-173",
+      "pattern": "undo vlan { vlan-id-list | all }",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 174
+    },
+    {
+      "id": "danger-174",
+      "pattern": "configuration replace file",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 175
+    },
+    {
+      "id": "danger-175",
+      "pattern": "security-policy",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 176
+    },
+    {
+      "id": "danger-176",
+      "pattern": "gir system-mode maintenance",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 177
+    },
+    {
+      "id": "danger-177",
+      "pattern": "undo accelerate",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 178
+    },
+    {
+      "id": "danger-178",
+      "pattern": "ssh server port",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 179
+    },
+    {
+      "id": "danger-179",
+      "pattern": "restart standby",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 180
+    },
+    {
+      "id": "danger-180",
+      "pattern": "system switchover",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 181
+    },
+    {
+      "id": "danger-181",
+      "pattern": "ignore all-peers",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 182
+    },
+    {
+      "id": "danger-182",
+      "pattern": "undo wlan detect-anomaly enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 183
+    },
+    {
+      "id": "danger-183",
+      "pattern": "reset saved-configuration",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 184
+    },
+    {
+      "id": "danger-184",
+      "pattern": "inspect activate",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 185
+    },
+    {
+      "id": "danger-185",
+      "pattern": "vrrp vrid shutdown",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 186
+    },
+    {
+      "id": "danger-186",
+      "pattern": "ip reassemble local enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 187
+    },
+    {
+      "id": "danger-187",
+      "pattern": "port service-loopback group",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 188
+    },
+    {
+      "id": "danger-188",
+      "pattern": "switch-fabric isolate slot x",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 189
+    },
+    {
+      "id": "danger-189",
+      "pattern": "m-lag system-mac",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 190
+    },
+    {
+      "id": "danger-190",
+      "pattern": "irf mac-address persistent",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 191
+    },
+    {
+      "id": "danger-191",
+      "pattern": "rename",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 192
+    },
+    {
+      "id": "danger-192",
+      "pattern": "port-type switch pos",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 193
+    },
+    {
+      "id": "danger-193",
+      "pattern": "port link-mode",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 194
+    },
+    {
+      "id": "danger-194",
+      "pattern": "clock datetime",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 195
+    },
+    {
+      "id": "danger-195",
+      "pattern": "shutdown",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 196
+    },
+    {
+      "id": "danger-196",
+      "pattern": "bridge-forwarding enable",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 197
+    },
+    {
+      "id": "danger-197",
+      "pattern": "undo l2vpn enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 198
+    },
+    {
+      "id": "danger-198",
+      "pattern": "undo ospfv3 [ process-id ]",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 199
+    },
+    {
+      "id": "danger-199",
+      "pattern": "port-type switch gigabitethernet",
+      "match_type": "TEXT",
+      "device_type": "路由器",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 200
+    },
+    {
+      "id": "danger-200",
+      "pattern": "format",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 201
+    },
+    {
+      "id": "danger-201",
+      "pattern": "shutdown all-physical-interfaces",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 202
+    },
+    {
+      "id": "danger-202",
+      "pattern": "umount",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 203
+    },
+    {
+      "id": "danger-203",
+      "pattern": "ipv6 urpf",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 204
+    },
+    {
+      "id": "danger-204",
+      "pattern": "reset ipv6 neighbors",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 205
+    },
+    {
+      "id": "danger-205",
+      "pattern": "default",
+      "match_type": "TEXT",
+      "device_type": "无线",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 206
+    },
+    {
+      "id": "danger-206",
+      "pattern": "undo chassis convert mode",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 207
+    },
+    {
+      "id": "danger-207",
+      "pattern": "undo multicast routing",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 208
+    },
+    {
+      "id": "danger-208",
+      "pattern": "probe",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 209
+    },
+    {
+      "id": "danger-209",
+      "pattern": "m-lag system-number",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 210
+    },
+    {
+      "id": "danger-210",
+      "pattern": "irf member renumber",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 211
+    },
+    {
+      "id": "danger-211",
+      "pattern": "reset recycle-bin",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 212
+    },
+    {
+      "id": "danger-212",
+      "pattern": "save",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 213
+    },
+    {
+      "id": "danger-213",
+      "pattern": "fdisk",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 214
+    },
+    {
+      "id": "danger-214",
+      "pattern": "monitor process",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 215
+    },
+    {
+      "id": "danger-215",
+      "pattern": "delete [ /unreserved ] file",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 216
+    },
+    {
+      "id": "danger-216",
+      "pattern": "reset bgp rpki server",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 217
+    },
+    {
+      "id": "danger-217",
+      "pattern": "vpn-instance policy deny",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 218
+    },
+    {
+      "id": "danger-218",
+      "pattern": "repeat",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 219
+    },
+    {
+      "id": "danger-219",
+      "pattern": "undo mpls ldp",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 220
+    },
+    {
+      "id": "danger-220",
+      "pattern": "silent-interface all",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 221
+    },
+    {
+      "id": "danger-221",
+      "pattern": "security-policy disable",
+      "match_type": "TEXT",
+      "device_type": "安全",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 222
+    },
+    {
+      "id": "danger-222",
+      "pattern": "irf mac-address persistent",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 223
+    },
+    {
+      "id": "danger-223",
+      "pattern": "undo bgp [ as-number [ instance instance-name ] ]",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 224
+    },
+    {
+      "id": "danger-224",
+      "pattern": "undo ipv6 multicast routing",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 225
+    },
+    {
+      "id": "danger-225",
+      "pattern": "undo wlan enable",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 226
+    },
+    {
+      "id": "danger-226",
+      "pattern": "reset saved-configuration",
+      "match_type": "TEXT",
+      "device_type": "交换机",
+      "vendor": "通用",
+      "enabled": true,
+      "source_row": 227
+    }
+  ]
+}

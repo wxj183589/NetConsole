@@ -11,6 +11,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "module.console": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "module.ac": {
       "visible": true,
       "enabled": true,

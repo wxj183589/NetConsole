@@ -57,6 +57,16 @@ describe('Web route ownership', () => {
     expect(routes.find((route) => route.path === 'device-files/diagnostics')?.meta?.navigationId).toBe('files.device-diagnostics')
   })
 
+  it('owns the console route as an independent workspace', () => {
+    const route = routes.find((item) => item.name === 'device-console')
+    expect(route?.meta).toMatchObject({
+      navigationId: 'device-console',
+      featureId: 'module.console',
+      moduleId: 'console',
+      workspace: { identity: 'singleton', cache: true, allowDuplicate: false },
+    })
+  })
+
   it('registers the standalone device detail route with list navigation context', () => {
     const route = routes.find((item) => item.name === 'device-detail')
     expect(route?.path).toBe('devices/:deviceId')

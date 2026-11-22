@@ -4,6 +4,7 @@ from contextlib import nullcontext
 import re
 import socket
 import stat
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -109,6 +110,7 @@ class RemoteDeviceFile:
     category: str
     is_dir: bool = False
     file_type: str = "file"
+    permissions: str = ""
 
 
 @dataclass(frozen=True)
@@ -137,10 +139,12 @@ class FileTransferService:
         relay_service: SiteSSHRelayService | None = None,
         relay_site_id: str | None = None,
         route_source: str = "interactive",
+        allow_device_writes: bool = False,
     ) -> None:
         self.site_name = site_name
         self.relay_site_id = str(relay_site_id or site_name).strip() or str(site_name)
         self.route_source = str(route_source or "interactive").strip() or "interactive"
+        self.allow_device_writes = bool(allow_device_writes)
         self.paths = paths or PathResolver()
         # Kept as a compatibility constructor argument. All product paths
         # use the managed AUTO_REPLACE policy now; no consumer may silently
@@ -898,6 +902,7 @@ class FileTransferService:
                     category="dir" if is_dir else file_category(name, child_path),
                     is_dir=is_dir,
                     file_type="directory" if is_dir else file_extension_type(name),
+                    permissions=stat.filemode(int(getattr(attr, "st_mode", 0) or 0)),
                 )
             )
         self._current_path = path
@@ -971,6 +976,169 @@ class FileTransferService:
         app_logger.log_info("SFTP_DIRECTORY_CREATED", f"path={target}")
         return target
 
+    def upload(
+        self,
+        local_path: Path,
+        remote_path: str,
+        *,
+        progress_callback=None,
+        cancel_token=None,
+        overwrite: bool = False,
+        chunk_size: int = 1024 * 1024,
+    ) -> str:
+        self._ensure_device_write_allowed()
+        source = Path(local_path).resolve(strict=True)
+        if not source.is_file():
+            raise FileNotFoundError("本地上传文件不存在")
+        sftp = self._require_sftp()
+        target = normalize_remote_path(
+            remote_path,
+            current_path=self._current_path,
+            root_path=self._root_path,
+        )
+        if not overwrite:
+            try:
+                sftp.stat(target)
+            except (FileNotFoundError, OSError):
+                pass
+            else:
+                raise FileExistsError("远程文件已存在")
+        total = source.stat().st_size
+        transferred = 0
+        temporary = f"{target}.netconsole-upload-{uuid.uuid4().hex}.part"
+        try:
+            with source.open("rb") as local_file, sftp.open(temporary, "wb") as remote_file:
+                while True:
+                    if is_cancelled(cancel_token):
+                        raise TransferCancelled("Transfer cancelled.")
+                    chunk = local_file.read(chunk_size)
+                    if not chunk:
+                        break
+                    remote_file.write(chunk)
+                    transferred += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(transferred, total)
+            uploaded_size = int(getattr(sftp.stat(temporary), "st_size", -1))
+            if uploaded_size != total:
+                raise TransferVerificationFailed("远程上传文件大小校验失败")
+            if overwrite:
+                try:
+                    sftp.remove(target)
+                except (FileNotFoundError, OSError):
+                    pass
+            sftp.rename(temporary, target)
+            app_logger.log_info("SFTP_FILE_UPLOADED", f"path={target} size={total}")
+            return target
+        except BaseException:
+            try:
+                sftp.remove(temporary)
+            except Exception:
+                pass
+            raise
+
+    def rename(self, source_path: str, target_path: str, *, overwrite: bool = False) -> str:
+        self._ensure_device_write_allowed()
+        sftp = self._require_sftp()
+        source = normalize_remote_path(
+            source_path,
+            current_path=self._current_path,
+            root_path=self._root_path,
+        )
+        target = normalize_remote_path(
+            target_path,
+            current_path=self._current_path,
+            root_path=self._root_path,
+        )
+        if not overwrite:
+            try:
+                sftp.stat(target)
+            except (FileNotFoundError, OSError):
+                pass
+            else:
+                raise FileExistsError("目标路径已存在")
+        sftp.rename(source, target)
+        app_logger.log_info("SFTP_REMOTE_RENAMED", f"source={source} target={target}")
+        return target
+
+    def copy(
+        self,
+        source_path: str,
+        target_path: str,
+        *,
+        overwrite: bool = False,
+        progress_callback=None,
+        cancel_token=None,
+        chunk_size: int = 1024 * 1024,
+    ) -> str:
+        self._ensure_device_write_allowed()
+        sftp = self._require_sftp()
+        source = normalize_remote_path(
+            source_path,
+            current_path=self._current_path,
+            root_path=self._root_path,
+        )
+        target = normalize_remote_path(
+            target_path,
+            current_path=self._current_path,
+            root_path=self._root_path,
+        )
+        source_size = int(getattr(sftp.stat(source), "st_size", 0) or 0)
+        if not overwrite:
+            try:
+                sftp.stat(target)
+            except (FileNotFoundError, OSError):
+                pass
+            else:
+                raise FileExistsError("目标路径已存在")
+        temporary = f"{target}.netconsole-copy-{uuid.uuid4().hex}.part"
+        transferred = 0
+        try:
+            with sftp.open(source, "rb") as source_file, sftp.open(temporary, "wb") as target_file:
+                while True:
+                    if is_cancelled(cancel_token):
+                        raise TransferCancelled("Transfer cancelled.")
+                    chunk = source_file.read(chunk_size)
+                    if not chunk:
+                        break
+                    target_file.write(chunk)
+                    transferred += len(chunk)
+                    if progress_callback is not None:
+                        progress_callback(transferred, source_size)
+            copied_size = int(getattr(sftp.stat(temporary), "st_size", -1))
+            if copied_size != source_size:
+                raise TransferVerificationFailed("远程复制文件大小校验失败")
+            if overwrite:
+                try:
+                    sftp.remove(target)
+                except (FileNotFoundError, OSError):
+                    pass
+            sftp.rename(temporary, target)
+            app_logger.log_info("SFTP_REMOTE_COPIED", f"source={source} target={target}")
+            return target
+        except BaseException:
+            try:
+                sftp.remove(temporary)
+            except Exception:
+                pass
+            raise
+
+    def delete_path(self, remote_path: str, *, recursive: bool = False) -> None:
+        self._ensure_device_write_allowed()
+        sftp = self._require_sftp()
+        target = normalize_remote_path(
+            remote_path,
+            current_path=self._current_path,
+            root_path=self._root_path,
+        )
+        attrs = sftp.stat(target)
+        if not stat.S_ISDIR(int(getattr(attrs, "st_mode", 0) or 0)):
+            sftp.remove(target)
+        elif recursive:
+            self._delete_directory_tree(sftp, target)
+        else:
+            sftp.rmdir(target)
+        app_logger.log_info("SFTP_REMOTE_DELETED", f"path={target} recursive={recursive}")
+
     def delete(self, remote_file: RemoteDeviceFile) -> None:
         self._ensure_device_write_allowed()
         sftp = self._require_sftp()
@@ -982,8 +1150,17 @@ class FileTransferService:
         app_logger.log_info("SFTP_REMOTE_DELETED", f"path={target} is_dir={remote_file.is_dir}")
 
     def _ensure_device_write_allowed(self) -> None:
-        if DEVICE_FILE_MANAGER_READ_ONLY:
+        if DEVICE_FILE_MANAGER_READ_ONLY and not self.allow_device_writes:
             raise PermissionError(DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE)
+
+    def _delete_directory_tree(self, sftp, path: str) -> None:
+        for attr in sftp.listdir_attr(path):
+            child = join_remote_path(path, str(attr.filename), self._root_path)
+            if stat.S_ISDIR(int(getattr(attr, "st_mode", 0) or 0)):
+                self._delete_directory_tree(sftp, child)
+            else:
+                sftp.remove(child)
+        sftp.rmdir(path)
 
     def _require_sftp(self):
         if self._sftp is None:

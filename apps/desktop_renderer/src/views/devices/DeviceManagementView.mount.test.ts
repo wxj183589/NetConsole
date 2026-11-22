@@ -624,10 +624,12 @@ describe('DeviceManagementView mounted interactions', () => {
       '复制站点',
       '复制整行',
       '复制设备信息',
+      '内置控制台',
       '外部终端',
       '删除',
     ])
     expect(items.find((item) => item.key === 'edit')?.disabled).toBe(false)
+    expect(items.find((item) => item.key === 'internal-console')?.disabled).toBe(false)
     expect(items.find((item) => item.key === 'external-terminal')?.disabled).toBe(false)
     expect(items.find((item) => item.key === 'delete')?.danger).toBe(true)
 

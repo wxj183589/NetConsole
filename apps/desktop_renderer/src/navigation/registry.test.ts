@@ -16,6 +16,7 @@ describe('Web navigation registry', () => {
     expect(navigationRegistry.map((item) => item.title)).toEqual([
       'Dashboard',
       '设备管理',
+      '设备控制台',
       'AC 管理',
       '轨道交通',
       '设备文件下载',
@@ -91,6 +92,13 @@ describe('Web navigation registry', () => {
     ])
     if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
     else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
+  })
+
+  it('keeps the device console on an independent feature gate', () => {
+    const entry = navigationRegistry.find((item) => item.navigation_id === 'device-console')
+    expect(entry).toMatchObject({ route_path: '/console', feature_id: 'module.console' })
+    expect(visibleNavigation((id) => id !== 'module.console').some((item) => item.navigation_id === entry?.navigation_id)).toBe(false)
+    expect(visibleNavigation(() => true).some((item) => item.navigation_id === entry?.navigation_id)).toBe(true)
   })
 
   it('hides a group when none of its children are visible', () => {

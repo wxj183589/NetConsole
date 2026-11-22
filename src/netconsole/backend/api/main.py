@@ -86,6 +86,7 @@ from netconsole.services.device_compatibility.service import DeviceCompatibility
 from netconsole.services.device_detail_query_service import DeviceDetailQueryService
 from netconsole.services.device_operation_service import DeviceOperationService
 from netconsole.services.file_management_service import FileManagementApplicationService
+from netconsole.services.terminal_sftp import TerminalSftpManager
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.query_service import JobCenterQueryService
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
@@ -147,6 +148,7 @@ from netconsole.services.site_storage import (
 )
 from netconsole.core.sqlite_utils import SqliteIntegrityError, check_sqlite_integrity
 from netconsole.services.storage_audit import StorageAuditService
+from netconsole.services.terminal_workspace import TerminalSessionManager
 
 
 _ABSOLUTE_PATH_RE = re.compile(r"(?i)(?:file://[^\s\"']+|[a-z]:[\\/][^\s\"']+|\\\\[^\\/\s]+[\\/][^\s\"']+)")
@@ -534,6 +536,8 @@ def create_app(
         artifact_store=web_artifact_store,
         device_operation_service=device_operation_service,
     )
+    terminal_session_manager = TerminalSessionManager(paths)
+    terminal_sftp_manager = TerminalSftpManager(paths)
     config_collection_service = ConfigCollectionApplicationService(
         paths,
         task_service,
@@ -906,6 +910,8 @@ def create_app(
                     f"component=file_management error={exc.__class__.__name__}: {exc}",
                 )
             cleanup = await asyncio.gather(
+                asyncio.to_thread(terminal_session_manager.close),
+                asyncio.to_thread(terminal_sftp_manager.close),
                 device_management_service.stop_exports(),
                 asyncio.to_thread(web_export_adapter.shutdown),
                 asyncio.to_thread(web_process_adapter.shutdown),
@@ -920,6 +926,8 @@ def create_app(
             )
             for component, result in zip(
                 (
+                    "terminal_sessions",
+                    "terminal_sftp",
                     "device_exports",
                     "web_exports",
                     "local_process",
@@ -1051,6 +1059,8 @@ def create_app(
     app.state.network_tools_service = NetworkToolsApplicationService(traffic_service)
     app.state.device_compatibility_service = device_compatibility_service
     app.state.device_management_service = device_management_service
+    app.state.terminal_session_manager = terminal_session_manager
+    app.state.terminal_sftp_manager = terminal_sftp_manager
     app.state.device_detail_application_service = device_detail_application_service
     app.state.config_collection_service = config_collection_service
     app.state.command_reference_application_service = CommandReferenceApplicationService(

@@ -33,6 +33,7 @@ class FeatureItem:
 
 FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("module.devices", "nav.devices", None, "module"),
+    FeatureItem("module.console", "设备控制台", None, "module"),
     FeatureItem("module.ac", "nav.ac", None, "module"),
     FeatureItem("module.rail_transit", "nav.rail_transit", None, "module"),
     FeatureItem("module.config_collection", "nav.config_collection", None, "module"),
@@ -406,6 +407,7 @@ FEATURE_GROUP_TITLE_BY_ID = dict(FEATURE_GROUPS)
 
 PAGE_FEATURE_BY_PAGE_ID = {
     "devices": "module.devices",
+    "console": "module.console",
     "ac": "module.ac",
     "rail_transit": "module.rail_transit",
     "config_collection": "module.config_collection",
@@ -507,7 +509,9 @@ def group_id_of(feature_id: str) -> str:
         value.startswith("ac.") for value in lineage
     ):
         return "ac"
-    if "module.devices" in lineage or any(value.startswith("devices.") for value in lineage):
+    if lineage & {"module.devices", "module.console"} or any(
+        value.startswith("devices.") for value in lineage
+    ):
         return "devices"
     if lineage & {"module.config_collection", "module.file_management"} or any(
         value.startswith("file.") for value in lineage

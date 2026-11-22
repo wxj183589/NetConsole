@@ -1020,6 +1020,12 @@ const deviceContextMenuItems = computed<NcDataTableContextMenuItem<DeviceListIte
   { key: 'copy-row', label: '复制整行', action: ({ row }) => copyRow(row) },
   { key: 'copy-device-info', label: '复制设备信息', action: ({ row }) => copyDeviceInfo(row) },
   {
+    key: 'internal-console',
+    label: '内置控制台',
+    action: ({ row }) => openInternalConsole(row.device_uuid),
+    disabled: !isFeatureEnabled('module.console'),
+  },
+  {
     key: 'external-terminal',
     label: '外部终端',
     action: ({ row }) => requestTerminal(row.device_uuid),
@@ -1037,6 +1043,11 @@ const deviceContextMenuItems = computed<NcDataTableContextMenuItem<DeviceListIte
 async function editSelected(): Promise<void> {
   const row = pageData.value.items.find((item) => item.device_uuid === selectedUuids.value[0])
   if (row) await editRow(row)
+}
+
+function openInternalConsole(deviceUuid = selectedUuids.value[0] || ''): void {
+  if (!deviceUuid) return
+  void router.push({ name: 'device-console', query: { device_uuid: deviceUuid } })
 }
 
 function openCreate(): void {
@@ -1983,6 +1994,7 @@ function deviceListErrorMessage(cause: unknown): string {
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item :disabled="!desktopHost || !isFeatureEnabled('capability.devices.desktop_actions')" @click="openTerminalSettings">外部终端配置</el-dropdown-item>
+            <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('module.console')" @click="openInternalConsole()">内置控制台</el-dropdown-item>
             <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="duplicateSelected">复制设备</el-dropdown-item>
             <el-dropdown-item :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('capability.devices.desktop_actions')" @click="requestTerminal()">外部终端</el-dropdown-item>
             <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="groupAssignVisible = true">设置分组</el-dropdown-item>

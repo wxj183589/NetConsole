@@ -21,6 +21,8 @@ from netconsole.backend.api.online_mr_control_router import router as online_mr_
 from netconsole.backend.api.rail_transit_base_data_router import router as rail_transit_base_data_router
 from netconsole.backend.api.task_router import router as task_router
 from netconsole.backend.api.task_router import ws_router as task_ws_router
+from netconsole.backend.api.terminal_router import router as terminal_router
+from netconsole.backend.api.terminal_router import ws_router as terminal_ws_router
 from netconsole.backend.api.system_maintenance_router import router as system_maintenance_router
 from netconsole.backend.api.train_communication_router import router as train_communication_router
 from netconsole.backend.api.trackside_ap_business_router import router as trackside_ap_business_router
@@ -77,6 +79,10 @@ api_router.include_router(
     dependencies=[Depends(require_feature("module.devices"))],
 )
 api_router.include_router(
+    terminal_router,
+    dependencies=[Depends(require_feature("module.console"))],
+)
+api_router.include_router(
     network_tools_router,
     dependencies=[Depends(require_feature("capability.network_tools.toolbox"))],
 )
@@ -125,6 +131,10 @@ api_router.include_router(
 )
 ws_router = APIRouter()
 ws_router.include_router(task_ws_router)
+ws_router.include_router(
+    terminal_ws_router,
+    dependencies=[Depends(require_feature("module.console"))],
+)
 ws_router.include_router(
     traffic_ws_router,
     dependencies=[Depends(require_feature("network_tools.traffic"))],

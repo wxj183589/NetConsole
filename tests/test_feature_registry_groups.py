@@ -9,6 +9,7 @@ from netconsole.core.feature_registry import group_id_of
     ("feature_id", "expected_group"),
     [
         ("module.devices", "devices"),
+        ("module.console", "devices"),
         ("module.ac", "ac"),
         ("module.config_collection", "configuration"),
         ("module.rail_base_data", "rail_base"),

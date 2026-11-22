@@ -54,6 +54,7 @@ const EXTERNAL_TOOL_SHELL_TOKEN_RE = /(?:&&|\|\||[|<>])/
 const WORKSPACE_ALLOWED_PATHS = new Set([
   '/',
   '/network/devices',
+  '/console',
   '/tools',
   '/ac-management/fit-aps',
   '/ac-management/extensions',
