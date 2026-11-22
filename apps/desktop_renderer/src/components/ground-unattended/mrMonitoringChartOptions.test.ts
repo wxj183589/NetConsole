@@ -74,6 +74,21 @@ describe('MR monitoring evidence chart', () => {
     expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('持续时间：30.0 秒')
   })
 
+  it('shows Heartbeat source, address, and state in reachability tooltips', () => {
+    const sampleTime = '2026-11-07T11:00:00Z'
+    const data = { series: { points: [
+      { ts: sampleTime, target_ip: '10.82.24.235', ok: true, rtt_ms: 3 },
+      { ts: '2026-11-07T11:00:01Z', target_ip: '10.82.24.235', ok: false, rtt_ms: null },
+    ] }, peer_intervals: [] } as GroundMrMonitoring
+    const option = mrMonitoringChartOption(data, sampleTime, '2026-11-07T12:00:00Z', readNetConsoleChartTokens(), '', 'heartbeat')
+    const tooltip = option.tooltip as { formatter: (params: unknown[]) => string }
+    const text = tooltip.formatter([{ axisValue: Date.parse(sampleTime), data: [Date.parse(sampleTime), 1] }])
+    expect(text).toContain('采样时间：')
+    expect(text).toContain('管理地址：10.82.24.235')
+    expect(text).toContain('状态：正常连通')
+    expect(text).toContain('采样来源：Heartbeat')
+  })
+
   it('uses one externally-owned visible window without per-track sliders', () => {
     const data = { series: { points: [] }, peer_intervals: [] } as unknown as GroundMrMonitoring
     const theme = readNetConsoleChartTokens()

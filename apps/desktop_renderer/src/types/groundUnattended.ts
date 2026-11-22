@@ -289,6 +289,7 @@ export interface GroundQueryDiagnostics {
   malformed_record_count: number; duplicate_record_count: number; truncated: boolean; optimized_latest_page?: boolean; legacy_archive: boolean; no_data_reason: string
   resolved_train_ids: string[]; resolved_mr_ids: string[]; raw_file_registry_hit_count: number; matched_count: number
   segment_count?: number; active_segment?: string; last_persisted_sample_at?: string; last_query_sample_at?: string
+  source_run_id?: string; source_reason?: string
 }
 export interface GroundPingSeries {
   window_statistics?: Record<string, { sent_count: number; lost_count: number; loss_rate_percent: number | null }>

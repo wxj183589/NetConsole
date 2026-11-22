@@ -109,10 +109,17 @@ export function mrMonitoringChartOption(
       yAxis: { type: 'value', min: 0, max: 1, interval: 1, name: '通断', axisLabel: { formatter: (value: number) => value === 1 ? '连通' : '不通' }, splitLine: { show: false } },
       dataZoom: dataZoom(),
       tooltip: { trigger: 'axis', confine: true, appendToBody: false, formatter: (params: unknown) => {
-        const rows = Array.isArray(params) ? params as Array<{ axisValue?: number | string; seriesName?: string; data?: [number, number | null] }> : []
+        const rows = Array.isArray(params) ? params as Array<{ axisValue?: number | string; data?: [number, number | null] }> : []
         const time = Number(rows[0]?.axisValue)
-        const status = rows.some((row) => row.data?.[1] === 1) ? '正常连通' : rows.some((row) => row.data?.[1] === 0) ? '不通/超时' : '未知'
-        return `${Number.isFinite(time) ? escape(new Date(time).toLocaleString()) : ''}<br>状态：${status}`
+        const samples = statusRows.filter((point) => Date.parse(point.ts) === time)
+        const details = samples.length
+          ? samples.map((point) => {
+            const status = pingPointValues(point as unknown as Record<string, unknown>).status
+            const label = status === 'SUCCESS' ? '正常连通' : status === 'UNKNOWN' ? '未知' : '超时/不通'
+            return `管理地址：${escape(point.target_ip)}<br>状态：${label}<br>采样来源：Heartbeat`
+          }).join('<br>')
+          : '管理地址：无数据<br>状态：未知<br>采样来源：Heartbeat'
+        return `采样时间：${Number.isFinite(time) ? escape(new Date(time).toLocaleString()) : '无数据'}<br>${details}`
       } },
       series: statusSeries,
     }
