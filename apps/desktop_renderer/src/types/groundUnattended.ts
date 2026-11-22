@@ -212,6 +212,7 @@ export interface GroundArchiveDetail {
 }
 export interface GroundActionResponse { accepted: boolean; state: GroundRunState; run_id: string; operation_id: string; task_id?: string; message: string }
 export type GroundQuickPingState = 'RUNNING' | 'STOPPING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'TIME_LIMIT' | 'INTERRUPTED'
+export type GroundDataMode = 'LIVE_COLLECTION' | 'HISTORICAL_PLAYBACK'
 export interface GroundQuickPingTarget {
   target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string; mr_role: string; address_role: 'PRIMARY' | 'BACKUP'
   current_ap_name?: string; station?: string; section?: string
@@ -288,6 +289,7 @@ export interface GroundQueryDiagnostics {
   malformed_record_count: number; duplicate_record_count: number; truncated: boolean; optimized_latest_page?: boolean; legacy_archive: boolean; no_data_reason: string
   resolved_train_ids: string[]; resolved_mr_ids: string[]; raw_file_registry_hit_count: number; matched_count: number
   segment_count?: number; active_segment?: string; last_persisted_sample_at?: string; last_query_sample_at?: string
+  source_run_id?: string; source_reason?: string
 }
 export interface GroundPingSeries {
   window_statistics?: Record<string, { sent_count: number; lost_count: number; loss_rate_percent: number | null }>
@@ -501,11 +503,11 @@ export interface GroundHeartbeatInventoryPreview {
 }
 export interface GroundMeshMonitorEvent {
   id: number | string; event_time: string; device_time: string; receive_time: string; event_type: string; source: string
-  old_ap_name: string; new_ap_name: string; old_bssid: string; bssid: string; rssi: number | null; raw_rssi: number | null; rssi_semantics: string; raw_text: string
+  old_ap_name: string; new_ap_name: string; old_bssid: string; bssid: string; rssi: number | null; raw_rssi: number | null; previous_rssi?: number | string | null; rssi_semantics: string; raw_text: string
   raw_file_id: string; raw_line_number: number | null; identity_status: string; event_time_source: string; data_quality: string
 }
 export interface GroundPeerInterval {
-  start: string; end: string; peer_name: string; bssid: string; peer_mac?: string; rssi: number | null; raw_rssi: number | null; rssi_semantics: string; source: string; device_time: string; receive_time: string; station?: string; section?: string
+  start: string; end: string; peer_name: string; bssid: string; peer_mac?: string; rssi: number | null; raw_rssi: number | null; entry_rssi?: number | string | null; exit_rssi?: number | string | null; rssi_semantics: string; source: string; device_time: string; receive_time: string; station?: string; section?: string
 }
 export interface GroundMrMonitoring {
   mr: GroundHeartbeatMr; series: GroundPingSeries; mesh_events: GroundMeshMonitorEvent[]; peer_intervals: GroundPeerInterval[]

@@ -32,11 +32,35 @@ describe('Quick Ping chart semantics', () => {
       { target_ip: '10.0.0.2', received_at: '2026-11-07T00:00:00.100Z', sample: { ok: true, rtt_ms: 8 } },
     ], 200, readNetConsoleChartTokens()) as { series: Array<{ name: string; data: Array<[number, number | null]> }> }
 
-    expect(option.series).toHaveLength(4)
+    expect(option.series).toHaveLength(10)
     expect(option.series.map((series) => series.name)).toEqual([
-      'RTT · 10.0.0.1', '单包丢包 · 10.0.0.1', 'RTT · 10.0.0.2', '单包丢包 · 10.0.0.2',
+      'RTT（ms） · 10.0.0.1', '连通 · 10.0.0.1', '丢包/超时 · 10.0.0.1', '自然秒丢包率 · 10.0.0.1', '未知 · 10.0.0.1',
+      'RTT（ms） · 10.0.0.2', '连通 · 10.0.0.2', '丢包/超时 · 10.0.0.2', '自然秒丢包率 · 10.0.0.2', '未知 · 10.0.0.2',
     ])
     expect(option.series[0]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00Z'))
-    expect(option.series[2]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00.100Z'))
+    expect(option.series[5]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00.100Z'))
+  })
+
+  it('pins the chart domain to the playback run while zooming the shared viewport', () => {
+    const option = quickPingChartOption([
+      { received_at: '2026-11-07T00:10:00Z', sample: { ok: true, rtt_ms: 4 } },
+    ], 1000, readNetConsoleChartTokens(), { connectNulls: false }, {
+      start: '2026-11-07T00:05:00Z', end: '2026-11-07T00:15:00Z',
+    }, '', {
+      start: '2026-11-07T00:00:00Z', end: '2026-11-07T01:00:00Z',
+    }) as {
+      xAxis: { min: number; max: number }
+      dataZoom: Array<{ startValue: number; endValue: number; zoomOnMouseWheel: boolean; moveOnMouseMove: boolean }>
+    }
+    expect(option.xAxis).toMatchObject({
+      min: Date.parse('2026-11-07T00:00:00Z'),
+      max: Date.parse('2026-11-07T01:00:00Z'),
+    })
+    expect(option.dataZoom[0]).toMatchObject({
+      startValue: Date.parse('2026-11-07T00:05:00Z'),
+      endValue: Date.parse('2026-11-07T00:15:00Z'),
+      zoomOnMouseWheel: true,
+      moveOnMouseMove: true,
+    })
   })
 })

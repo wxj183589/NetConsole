@@ -5,7 +5,7 @@ import { createTimeChartInitOptions } from '../charts/multiSeriesTimeChart'
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { quickPingChartOption } from './quickPingChartOptions'
 
-const props = withDefaults(defineProps<{ rows: Array<Record<string, unknown>>; intervalMs: number; active: boolean; visibleStart?: string; visibleEnd?: string; selectedTime?: string }>(), { visibleStart: '', visibleEnd: '', selectedTime: '' })
+const props = withDefaults(defineProps<{ rows: Array<Record<string, unknown>>; intervalMs: number; active: boolean; start?: string; end?: string; visibleStart?: string; visibleEnd?: string; selectedTime?: string }>(), { start: '', end: '', visibleStart: '', visibleEnd: '', selectedTime: '' })
 const emit = defineEmits<{ (event: 'viewport-change', value: { start: string; end: string }): void; (event: 'cursor-change', value: string): void }>()
 const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | undefined
@@ -14,8 +14,8 @@ let unsubscribe: (() => void) | undefined
 let disposed = false
 function render(): void {
   if (!chart || !props.active) return
-  const option = quickPingChartOption(props.rows, props.intervalMs, readNetConsoleChartTokens(), { connectNulls: false }, props.visibleStart && props.visibleEnd ? { start: props.visibleStart, end: props.visibleEnd } : undefined, props.selectedTime)
-  chart.setOption(option, { replaceMerge: ['series', 'yAxis'], lazyUpdate: true })
+  const option = quickPingChartOption(props.rows, props.intervalMs, readNetConsoleChartTokens(), { connectNulls: false }, props.visibleStart && props.visibleEnd ? { start: props.visibleStart, end: props.visibleEnd } : undefined, props.selectedTime, props.start && props.end ? { start: props.start, end: props.end } : undefined)
+  chart.setOption(option, { replaceMerge: ['series', 'xAxis', 'yAxis', 'dataZoom'], lazyUpdate: true, silent: true })
 }
 function resize(): void { if (props.active) chart?.resize() }
 onMounted(async () => {
@@ -26,9 +26,13 @@ onMounted(async () => {
   core.use([charts.LineChart, components.GridComponent, components.TooltipComponent, components.LegendComponent, components.DataZoomComponent, components.TitleComponent, components.ToolboxComponent, renderers.CanvasRenderer])
   chart = core.init(container.value, undefined, createTimeChartInitOptions(props.rows.length, { useDirtyRect: false }))
   chart.on('datazoom', (payload) => {
-    const event = payload as { batch?: Array<{ startValue?: number; endValue?: number }> }
+    const event = payload as { batch?: Array<{ start?: number; end?: number; startValue?: number; endValue?: number }>; start?: number; end?: number; startValue?: number; endValue?: number }
     const value = (event.batch?.[0] || event) as { startValue?: number; endValue?: number }
-    if (Number.isFinite(value.startValue) && Number.isFinite(value.endValue)) emit('viewport-change', { start: new Date(Number(value.startValue)).toISOString(), end: new Date(Number(value.endValue)).toISOString() })
+    const fullStart = Date.parse(props.start || props.rows.map((row) => String(row.received_at || '')).sort()[0] || '')
+    const fullEnd = Date.parse(props.end || props.rows.map((row) => String(row.received_at || '')).sort().at(-1) || '')
+    const startValue = Number.isFinite(value.startValue) ? Number(value.startValue) : fullStart + (fullEnd - fullStart) * Number((event.batch?.[0] || event).start ?? 0) / 100
+    const endValue = Number.isFinite(value.endValue) ? Number(value.endValue) : fullStart + (fullEnd - fullStart) * Number((event.batch?.[0] || event).end ?? 100) / 100
+    if (Number.isFinite(startValue) && Number.isFinite(endValue) && startValue < endValue) emit('viewport-change', { start: new Date(startValue).toISOString(), end: new Date(endValue).toISOString() })
   })
   chart.on('updateaxispointer', (payload) => {
     const value = Number((payload as { axesInfo?: Array<{ value?: number }> }).axesInfo?.[0]?.value)
@@ -40,7 +44,7 @@ onMounted(async () => {
   unsubscribe = subscribeNetConsoleChartTheme(render)
   render()
 })
-watch(() => props.rows, render)
+watch(() => [props.rows, props.start, props.end, props.visibleStart, props.visibleEnd, props.selectedTime], render)
 watch(() => props.active, async (active) => {
   if (active) { await nextTick(); resize(); render() }
   else chart?.dispatchAction({ type: 'hideTip' })

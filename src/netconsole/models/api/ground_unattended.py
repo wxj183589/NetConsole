@@ -1431,6 +1431,11 @@ class GroundQueryDiagnosticsDTO(ApiModel):
     active_segment: str = ""
     last_persisted_sample_at: str = ""
     last_query_sample_at: str = ""
+    # Historical playback may use the durable resident Heartbeat stream when
+    # an older archive has no per-run Heartbeat raw files. Keep both identities
+    # visible so the result remains auditable instead of silently relabeling it.
+    source_run_id: str = ""
+    source_reason: str = ""
 
 
 class GroundPingSamplePageDTO(ApiModel):

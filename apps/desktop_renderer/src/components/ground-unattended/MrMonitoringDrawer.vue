@@ -4,6 +4,7 @@ import { t } from '../../i18n/runtime'
 import { getGroundMrMonitoring, listGroundSyslogRecords } from '../../api/groundUnattended'
 import type { GroundHeartbeatMr, GroundMeshMonitorEvent, GroundMrMonitoring } from '../../types/groundUnattended'
 import MrMonitoringChart from './MrMonitoringChart.vue'
+import { pingPointValues, pingStatusLabel } from './pingChartStatus'
 const props = defineProps<{ mr: GroundHeartbeatMr; runId: string; active: boolean; section: string; terminalEnabled: boolean; quickEnabled: boolean; monitorState?: string }>()
 const emit = defineEmits<{ (event: 'close'): void; (event: 'terminal'): void; (event: 'quick-ping'): void }>()
 function formatLocalDateTime(value: string | undefined): string {
@@ -25,7 +26,8 @@ const enabled = computed(() => props.active && Boolean(props.mr.mr_uuid))
 const size = computed(() => fullScreen.value ? '100%' : '48%')
 const mr = computed(() => result.value?.mr || props.mr)
 const displayStatusCode = computed(() => props.monitorState === 'PAUSED' ? 'PAUSED' : ['DISABLED', 'STOPPED'].includes(props.monitorState || '') ? 'STOPPED' : mr.value.status)
-const displayStatus = computed(() => displayStatusCode.value === 'PAUSED' ? '已暂停' : displayStatusCode.value === 'STOPPED' ? '已停止' : displayStatusCode.value === 'UNKNOWN' ? t('ground.monitor.waiting', '待检测') : mr.value.status)
+const stateLabels: Record<string, string> = { ONLINE: '在线', OFFLINE: '离线', OFFLINE_PENDING: '待确认', RECOVERING: '恢复中', UNKNOWN: '待检测', PAUSED: '已暂停', STOPPED: '已停止' }
+const displayStatus = computed(() => stateLabels[displayStatusCode.value] || '待检测')
 const tabs = ['all', 'ping', 'ap', 'mesh', 'timeline']
 const selectedSection = ref(props.section || 'all')
 watch(() => props.section, (value) => { selectedSection.value = value || 'all' })
@@ -42,7 +44,7 @@ async function load(): Promise<void> {
   const current = generation, request = new AbortController(); controller = request; loading.value = true
   try {
     const [start, end] = bounds()
-    const data = await getGroundMrMonitoring(props.mr.mr_uuid, { run_id: props.runId, start_time: start, end_time: end }, { signal: request.signal })
+    const data = await getGroundMrMonitoring(props.mr.mr_uuid, { run_id: props.runId, data_mode: 'LIVE_COLLECTION', start_time: start, end_time: end }, { signal: request.signal })
     if (current !== generation || !enabled.value) return
     result.value = data; chartStart.value = start; chartEnd.value = end; visibleStart.value = start; visibleEnd.value = end; error.value = ''
   } catch (reason) { if (current === generation && !request.signal.aborted) error.value = reason instanceof Error ? reason.message : String(reason) }
@@ -71,9 +73,11 @@ async function selectEvent(event: GroundMeshMonitorEvent): Promise<void> {
   } catch (reason) { if (current === generation && !request.signal.aborted) rawError.value = reason instanceof Error ? reason.message : String(reason) }
   finally { if (current === generation && rawController === request) { rawController = null; rawLoading.value = false } }
 }
-function rate(sent: number, lost: number): string { return sent ? `${(lost / sent * 100).toFixed(2)}%` : 'UNKNOWN' }
-const lastActualPoint = computed(() => result.value?.series.points.filter((row) => !row.warmup_ignored && Date.parse(row.ts) >= Date.parse(chartStart.value) && Date.parse(row.ts) <= Date.parse(chartEnd.value)).slice().sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0])
-const rtt = computed(() => lastActualPoint.value?.ok && lastActualPoint.value.rtt_ms != null ? `${lastActualPoint.value.rtt_ms.toFixed(2)} ms` : 'UNKNOWN')
+function latestReachability(targetIp: string): string {
+  if (!result.value || !targetIp) return '未知'
+  const point = result.value.series.points.filter((row) => row.target_ip === targetIp && !row.warmup_ignored).slice().sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0]
+  return point ? pingStatusLabel(pingPointValues(point as unknown as Record<string, unknown>).status) : '未知'
+}
 function monitoringDataFor(targetIp: string): GroundMrMonitoring | null {
   if (!result.value || !targetIp) return null
   return {
@@ -88,6 +92,7 @@ const primaryData = computed(() => monitoringDataFor(mr.value.management_ip || '
 const backupData = computed(() => monitoringDataFor(mr.value.backup_management_ip || ''))
 const recentLossEvents = computed(() => (result.value?.loss_events || [])
   .filter((event) => Date.parse(String(event.started_at || '')) <= Date.parse(visibleEnd.value || chartEnd.value)
+    && Date.parse(String(event.started_at || '')) <= eventCutoff.value
     && (!event.ended_at || Date.parse(String(event.ended_at)) >= Date.parse(visibleStart.value || chartStart.value)))
   .slice()
   .sort((left, right) => Date.parse(String(right.started_at || '')) - Date.parse(String(left.started_at || '')))
@@ -98,10 +103,16 @@ function lossStateLabel(value: unknown): string {
 const recentSwitchEvents = computed(() => (result.value?.mesh_events || [])
   .filter((event) => event.event_type.toUpperCase() === 'MESH_ACTIVELINK_SWITCH')
   .filter((event) => Date.parse(event.event_time || event.receive_time) >= Date.parse(visibleStart.value || chartStart.value)
-    && Date.parse(event.event_time || event.receive_time) <= Date.parse(visibleEnd.value || chartEnd.value))
+    && Date.parse(event.event_time || event.receive_time) <= eventCutoff.value)
   .slice()
   .sort((left, right) => Date.parse(right.event_time || right.receive_time) - Date.parse(left.event_time || left.receive_time))
-  .slice(0, 3))
+  .slice(0, 3).reverse())
+const eventCutoff = computed(() => {
+  const cursor = Date.parse(selectedTime.value)
+  if (Number.isFinite(cursor)) return cursor
+  const end = Date.parse(visibleEnd.value || chartEnd.value)
+  return Number.isFinite(end) ? end : Number.POSITIVE_INFINITY
+})
 function eventLabel(eventType: string): string {
   return eventType.toUpperCase() === 'MESH_ACTIVELINK_SWITCH' ? 'Mesh 主链路切换' : eventType
 }
@@ -118,18 +129,18 @@ onBeforeUnmount(stop)
       <div class="range-controls"><el-select v-model="range" style="width:150px"><el-option v-for="minutes in [10, 30, 60, 360, 1440]" :key="minutes" :value="minutes" :label="minutes >= 60 ? `${minutes / 60} h` : `${minutes} min`" /><el-option value="custom" :label="t('ground.monitor.custom', '历史自定义')" /></el-select><el-select v-model="interval" style="width:110px"><el-option v-for="seconds in [5, 10, 30, 60]" :key="seconds" :value="seconds" :label="`${seconds} s`" /></el-select><el-checkbox v-model="paused">{{ paused ? t('ground.monitor.resume_refresh', '恢复刷新') : t('ground.monitor.auto_refresh', '实时刷新') }}</el-checkbox></div>
       <div v-if="range === 'custom'" class="range-controls"><input v-model="customStart" type="datetime-local" :aria-label="t('ground.monitor.start', '开始时间')"><input v-model="customEnd" type="datetime-local" :aria-label="t('ground.monitor.end', '结束时间')"><el-button @click="restart(true)">{{ t('ground.monitor.query_history', '查询历史') }}</el-button></div>
       <el-alert v-if="error" :title="error" type="error" :closable="false" />
-      <div class="metrics"><span>{{ t('ground.monitor.average_rtt', '平均 RTT') }} <b>{{ result?.series.average_rtt_ms == null ? rtt : `${result.series.average_rtt_ms.toFixed(2)} ms` }}</b></span><span>{{ t('ground.monitor.recent_probe', '最近有效探测') }} <b>{{ lastActualPoint?.ts || 'UNKNOWN' }}</b></span><span>{{ t('ground.monitor.loss_1m', '丢包率(1m)') }} <b>{{ result?.series.window_statistics?.['1']?.loss_rate_percent == null ? 'UNKNOWN' : `${result.series.window_statistics['1']!.loss_rate_percent!.toFixed(2)}%` }}</b></span><span>{{ t('ground.monitor.loss_10m', '丢包率(10m)') }} <b>{{ result?.series.window_statistics?.['10']?.loss_rate_percent == null ? 'UNKNOWN' : `${result.series.window_statistics['10']!.loss_rate_percent!.toFixed(2)}%` }}</b></span><span>{{ t('ground.monitor.loss_30m', '丢包率(30m)') }} <b>{{ result?.series.window_statistics?.['30']?.loss_rate_percent == null ? 'UNKNOWN' : `${result.series.window_statistics['30']!.loss_rate_percent!.toFixed(2)}%` }}</b></span><span>{{ t('ground.monitor.loss_run', '本次运行丢包') }} <b>{{ result ? rate(result.run_sent_count, result.run_lost_count) : 'UNKNOWN' }}</b></span></div>
-      <div class="section-tabs"><el-button v-for="sectionName in tabs" :key="sectionName" :type="selectedSection === sectionName ? 'primary' : 'default'" size="small" @click="selectedSection = sectionName">{{ ({ all: t('ground.monitor.all', '综合监控'), ping: 'Ping 详情', ap: t('ground.monitor.ap_history', '连接 AP 历史'), mesh: t('ground.monitor.mesh_syslog', 'Mesh 切换日志 (Syslog)'), timeline: t('ground.monitor.timeline', '事件时间轴') } as Record<string,string>)[sectionName] }}</el-button></div>
+      <div class="metrics reachability-summary"><span>主用管理地址 · 通断 <b>{{ latestReachability(mr.management_ip || '') }}</b></span><span v-if="mr.backup_management_ip">备用管理地址 · 通断 <b>{{ latestReachability(mr.backup_management_ip) }}</b></span></div>
+      <div class="section-tabs"><el-button v-for="sectionName in tabs" :key="sectionName" :type="selectedSection === sectionName ? 'primary' : 'default'" size="small" @click="selectedSection = sectionName">{{ ({ all: t('ground.monitor.all', '综合监控'), ping: '通断状态', ap: t('ground.monitor.ap_history', '连接 AP 历史'), mesh: t('ground.monitor.mesh_syslog', 'Mesh 切换日志 (Syslog)'), timeline: t('ground.monitor.timeline', '事件时间轴') } as Record<string,string>)[sectionName] }}</el-button></div>
       <template v-if="result">
         <el-alert v-if="result.series.diagnostics.truncated || result.events_truncated" :title="t('ground.monitor.truncated', '查询达到有界预算，当前统计和事件可能不完整，请缩小范围。')" type="warning" :closable="false" />
         <p class="evidence-note">{{ t('ground.monitor.evidence_note', '丢包率只统计实际有效探测，空白不代表丢包。Peer 主用区间只由相邻且身份连续的 MESH_ACTIVELINK_SWITCH 证明；末次证据后与缺失段保持无数据。') }}</p>
         <div v-if="selectedSection !== 'mesh' && selectedSection !== 'timeline'" class="ping-chart-stack">
-          <section v-if="primaryData"><h4>主用管理 IP · {{ mr.management_ip }}</h4><MrMonitoringChart mode="ping" :data="primaryData" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
-          <section v-if="backupData"><button class="backup-toggle" @click="backupExpanded = !backupExpanded"><b>备用管理 IP · {{ mr.backup_management_ip }}</b><span>{{ backupExpanded ? '收起' : '展开' }}</span></button><MrMonitoringChart v-if="backupExpanded" mode="ping" :data="backupData" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
+          <section v-if="primaryData"><h4>主用管理 IP · 通断状态</h4><MrMonitoringChart mode="heartbeat" :data="primaryData" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
+          <section v-if="backupData"><button class="backup-toggle" @click="backupExpanded = !backupExpanded"><b>备用管理 IP · 通断状态</b><span>{{ backupExpanded ? '收起' : '展开' }}</span></button><MrMonitoringChart v-if="backupExpanded" mode="heartbeat" :data="backupData" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
         </div>
-        <section v-if="selectedSection !== 'ping' && result.peer_intervals?.length" class="peer-chart"><h4>Peer AP 主用链路时间区间 · 柱宽为持续时间，柱高为 RSSI (dBm)</h4><MrMonitoringChart mode="peer" :data="result" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
+        <section v-if="selectedSection !== 'ping' && result.peer_intervals?.length" class="peer-chart"><h4>Peer AP 主用链路时间区间 · 原始 RSSI</h4><MrMonitoringChart mode="peer" :data="result" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>
         <p v-if="!result.series.points.length">{{ t('ground.monitor.no_samples', '选定范围没有 Ping 样本') }}</p>
-        <section v-if="['all', 'mesh', 'timeline'].includes(selectedSection)" class="mesh-events"><h4>{{ selectedSection === 'timeline' ? t('ground.monitor.timeline', '事件时间轴') : t('ground.monitor.mesh_events', '最近 3 次 Mesh 主链路切换') }}</h4><p v-if="!recentSwitchEvents.length">{{ t('ground.monitor.no_mesh', '没有 Mesh 主链路切换证据，连接状态 UNKNOWN') }}</p><button v-for="event in recentSwitchEvents" :key="event.id" class="mesh-event" :class="{ selected: selectedEvent?.id === event.id }" @click="selectEvent(event)"><strong>{{ eventLabel(event.event_type) }}</strong><span>{{ event.old_ap_name || event.old_bssid || 'UNKNOWN' }} → {{ event.new_ap_name || event.bssid || 'UNKNOWN' }}</span><span>BSSID {{ event.bssid || 'UNKNOWN' }} · RSSI {{ event.rssi ?? 'UNKNOWN' }}</span><small>事件时间 {{ formatLocalDateTime(event.event_time || event.receive_time) }} · 接收时间 {{ formatLocalDateTime(event.receive_time) }} · {{ event.data_quality }}</small></button></section>
+        <section v-if="['all', 'mesh', 'timeline'].includes(selectedSection)" class="mesh-events"><h4>{{ selectedSection === 'timeline' ? t('ground.monitor.timeline', '事件时间轴') : t('ground.monitor.mesh_events', '最近 3 次 Mesh 主链路切换') }}</h4><p v-if="!recentSwitchEvents.length">{{ t('ground.monitor.no_mesh', '没有 Mesh 主链路切换证据，连接状态未知') }}</p><button v-for="event in recentSwitchEvents" :key="event.id" class="mesh-event" :class="{ selected: selectedEvent?.id === event.id }" @click="selectEvent(event)"><strong>{{ eventLabel(event.event_type) }}</strong><span>{{ event.old_ap_name || event.old_bssid || '无数据' }} → {{ event.new_ap_name || event.bssid || '无数据' }}</span><span>BSSID {{ event.bssid || '无 MAC' }} · 切入 RSSI {{ event.raw_rssi ?? '无记录' }} · 切出 RSSI {{ event.previous_rssi ?? '无记录' }}</span><small>事件时间 {{ formatLocalDateTime(event.event_time || event.receive_time) }} · 接收时间 {{ formatLocalDateTime(event.receive_time) }} · {{ event.data_quality || '无数据' }}</small></button></section>
         <el-collapse v-if="recentLossEvents.length" v-model="lossEventsOpen" class="loss-events"><el-collapse-item name="loss-events"><template #title><h4>{{ t('ground.monitor.loss_events', '丢包事件') }} · 最近 {{ recentLossEvents.length }} 条</h4></template><el-table :data="recentLossEvents" size="small" stripe><el-table-column label="开始"><template #default="scope">{{ formatLocalDateTime(String(scope.row.started_at || '')) || '—' }}</template></el-table-column><el-table-column label="恢复"><template #default="scope">{{ formatLocalDateTime(String(scope.row.ended_at || '')) || '—' }}</template></el-table-column><el-table-column label="状态"><template #default="scope">{{ lossStateLabel(scope.row.state) }}</template></el-table-column><el-table-column prop="loss_count" label="丢包数" /><el-table-column label="AP / 站点"><template #default="scope">{{ scope.row.ap_name || '—' }} / {{ scope.row.station || '—' }} / {{ scope.row.section || '—' }}</template></el-table-column></el-table><el-button link type="primary" @click="range = 'custom'">选择时间范围查看更多历史</el-button></el-collapse-item></el-collapse>
         <section v-if="selectedEvent" class="raw-detail"><p>{{ selectedEvent.raw_file_id }} : {{ selectedEvent.raw_line_number }} · {{ selectedEvent.event_time }}</p><p v-if="rawLoading">{{ t('common.loading', '加载中') }}</p><el-alert v-if="rawError" :title="rawError" type="warning" :closable="false" /><pre>{{ rawText || t('ground.monitor.raw_unavailable', '原始日志尚未加载或不可用') }}</pre></section>
         <section class="global-navigator"><h4>全局时间窗口</h4><MrMonitoringChart mode="navigator" :data="result" :start="chartStart" :end="chartEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="selectedTime" @viewport-change="changeViewport" @cursor-change="selectedTime = $event" /></section>

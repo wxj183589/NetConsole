@@ -7,7 +7,7 @@ import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../
 import { mrMonitoringChartOption } from './mrMonitoringChartOptions'
 const props = withDefaults(defineProps<{
   data: GroundMrMonitoring; start: string; end: string; active: boolean; selectedTime: string
-  visibleStart?: string; visibleEnd?: string; mode?: 'all' | 'ping' | 'peer' | 'navigator'
+  visibleStart?: string; visibleEnd?: string; mode?: 'all' | 'ping' | 'peer' | 'navigator' | 'heartbeat'
 }>(), { mode: 'all', visibleStart: '', visibleEnd: '' })
 const emit = defineEmits<{
   (event: 'viewport-change', value: { start: string; end: string }): void
@@ -23,7 +23,7 @@ function render(): void {
     props.visibleStart || props.start, props.visibleEnd || props.end,
   )
   option.series = (option.series as Array<Record<string, unknown>>).map((series) => series.type === 'line' ? { ...series, connectNulls: false } : series)
-  chart.setOption(option, { replaceMerge: ['series', 'xAxis', 'yAxis', 'dataZoom'], lazyUpdate: true })
+  chart.setOption(option, { replaceMerge: ['series', 'xAxis', 'yAxis', 'dataZoom'], lazyUpdate: true, silent: true })
 }
 function emitViewport(payload: unknown): void {
   const event = payload as { batch?: Array<{ start?: number; end?: number; startValue?: number; endValue?: number }>; start?: number; end?: number; startValue?: number; endValue?: number }
@@ -53,5 +53,5 @@ watch(() => [props.data, props.start, props.end, props.visibleStart, props.visib
 watch(() => props.active, async (active) => { if (active) { await nextTick(); resize(); render() } else chart?.dispatchAction({ type: 'hideTip' }) })
 onBeforeUnmount(() => { disposed = true; observer?.disconnect(); unsubscribe?.(); window.removeEventListener('resize', resize); chart?.dispose(); chart = undefined })
 </script>
-<template><div ref="container" class="mr-monitor-chart" :class="`mode-${mode}`" role="img" aria-label="RTT 毫秒、丢包百分比和 Peer AP 连接证据共享时间轴" /></template>
-<style scoped>.mr-monitor-chart{height:460px;width:100%;min-width:0}.mr-monitor-chart.mode-ping{height:320px}.mr-monitor-chart.mode-peer{height:300px}.mr-monitor-chart.mode-navigator{height:84px}</style>
+<template><div ref="container" class="mr-monitor-chart" :class="`mode-${mode}`" role="img" :aria-label="mode === 'heartbeat' ? '管理地址通断状态时间曲线' : 'RTT 毫秒、丢包百分比和 Peer AP 连接证据共享时间轴'" /></template>
+<style scoped>.mr-monitor-chart{height:460px;width:100%;min-width:0}.mr-monitor-chart.mode-ping,.mr-monitor-chart.mode-heartbeat{height:320px}.mr-monitor-chart.mode-peer{height:300px}.mr-monitor-chart.mode-navigator{height:84px}</style>

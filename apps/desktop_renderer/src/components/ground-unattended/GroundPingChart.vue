@@ -5,6 +5,7 @@ import type { EChartsType } from 'echarts/core'
 import type { GroundApTransition, GroundPingSample, GroundPingSeries } from '../../types/groundUnattended'
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { groundStatusLabel, groundTransitionContextLabel } from '../../views/rail-transit/groundUnattendedLabels'
+import { PING_CHART_COLORS, classifyPingStatus, pingStatusLabel } from './pingChartStatus'
 
 const props = withDefaults(defineProps<{
   series: GroundPingSeries | null
@@ -155,8 +156,8 @@ function render(): void {
       {
         name: 'RTT', type: 'line', showSymbol: false, connectNulls: false,
         data: successes.map((point) => ({ value: [point.ts, point.rtt_ms], sample: point })),
-        lineStyle: { color: theme.primary, width: 1.5 },
-        itemStyle: { color: theme.primary },
+        lineStyle: { color: PING_CHART_COLORS.rtt, width: 1.5 },
+        itemStyle: { color: PING_CHART_COLORS.rtt },
         markLine: {
           symbol: 'none',
           label: {
@@ -176,14 +177,14 @@ function render(): void {
         markArea: {
           silent: true,
           label: { show: true, color: theme.textSecondary, fontSize: 10 },
-          itemStyle: { color: theme.primary, opacity: 0.05 },
+          itemStyle: { color: PING_CHART_COLORS.rtt, opacity: 0.05 },
           data: markAreas,
         },
       },
       {
         name: '丢包', type: 'scatter', symbol: 'diamond', symbolSize: 10,
         data: losses.map((point) => ({ value: [point.ts, 0], sample: point })),
-        itemStyle: { color: theme.danger },
+        itemStyle: { color: PING_CHART_COLORS.failure },
       },
     ],
   }, { replaceMerge: ['series'], lazyUpdate: true })
@@ -195,8 +196,8 @@ function render(): void {
       axisLabel: { color: theme.textSecondary }, splitLine: { show: true, lineStyle: { color: theme.border } },
     },
     series: [
-      packetSeries('成功', successes, 3, theme.series[1]),
-      packetSeries('丢包', losses, 2, theme.danger),
+      packetSeries('成功', successes, 3, PING_CHART_COLORS.success),
+      packetSeries('丢包/超时', losses, 2, PING_CHART_COLORS.failure),
       packetSeries('预热忽略', warmup, 1, theme.textSecondary),
       packetSeries('位置未知', points.filter((point) => point.position_quality === 'UNKNOWN'), 0, theme.warning),
     ],
@@ -240,7 +241,7 @@ function tooltip(raw: unknown): string {
     `列车：${escapeHtml(point.train_no || point.train_id || '未知')}`,
     `MR：${escapeHtml(point.mr_name || point.mr_position_code || '未知')}`,
     `管理 IP：${escapeHtml(point.target_ip)}`,
-    `结果：${point.warmup_ignored ? '预热忽略' : point.ok ? '成功' : '丢包'}`,
+    `结果：${point.warmup_ignored ? '预热忽略' : pingStatusLabel(classifyPingStatus(point as unknown as Record<string, unknown>))}`,
     `RTT：${escapeHtml(point.rtt_ms == null ? '无' : `${point.rtt_ms} ms`)}`,
     `AC 参考 AP：${escapeHtml(point.current_ap_name || '未知')}`,
     `AP MAC：${escapeHtml(point.current_ap_mac || '未知')}`,

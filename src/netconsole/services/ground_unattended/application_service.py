@@ -710,9 +710,19 @@ class GroundUnattendedApplicationService:
         self._require_site(site_id)
         return self.supervisor.heartbeat.status()
 
-    def heartbeat(self, site_id: str, *, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "", reference_time: datetime | None = None) -> GroundHeartbeatPageDTO:
+    def heartbeat(self, site_id: str, *, run_id: str = "", data_mode: str | None = None, query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, page: int = 1, page_size: int = 50, mr_uuid: str = "", role: str = "", reference_time: datetime | None = None) -> GroundHeartbeatPageDTO:
         """Read durable heartbeat facts without deriving reachability from AC data."""
         self._require_site(site_id)
+        # Keep direct service callers that predate explicit mode selection
+        # compatible; the HTTP boundary always supplies a concrete mode.
+        if data_mode is None:
+            data_mode = "HISTORICAL_PLAYBACK" if run_id else "LIVE_COLLECTION"
+        if data_mode not in {"LIVE_COLLECTION", "HISTORICAL_PLAYBACK"}:
+            raise GroundUnattendedError("GROUND_DATA_MODE_INVALID", "数据模式无效", status_code=422)
+        if data_mode == "LIVE_COLLECTION" and run_id not in {"", "heartbeat-resident"}:
+            raise GroundUnattendedError("GROUND_DATA_MODE_MISMATCH", "实时采集模式不能读取历史运行", status_code=409)
+        if data_mode == "HISTORICAL_PLAYBACK" and not run_id:
+            raise GroundUnattendedError("GROUND_RUN_REQUIRED", "历史回放必须指定归档运行", status_code=422)
         inventory_snapshot = self.repository.inventory_snapshot()
         state = inventory_snapshot.state
         source_conflicts: list[str] = []
@@ -1100,14 +1110,20 @@ class GroundUnattendedApplicationService:
             ),
         )
 
-    def mr_monitoring(self, site_id: str, *, mr_uuid: str, run_id: str = "", start_time: str = "", end_time: str = "",
+    def mr_monitoring(self, site_id: str, *, mr_uuid: str, run_id: str = "", data_mode: str | None = None, start_time: str = "", end_time: str = "",
                       loss_limit: int = 3, loss_offset: int = 0) -> GroundMrMonitoringDTO:
         from netconsole.services.ground_unattended.monitoring import monitoring_range, mesh_evidence, indexed_evidence
         try:
             start, end = monitoring_range(start_time, end_time)
         except ValueError as exc:
             raise GroundUnattendedError("GROUND_MONITOR_RANGE_INVALID", str(exc)) from exc
-        heartbeat = self.heartbeat(site_id, run_id=run_id, mr_uuid=mr_uuid, reference_time=end)
+        if data_mode is None:
+            data_mode = "HISTORICAL_PLAYBACK" if run_id else "LIVE_COLLECTION"
+        if data_mode not in {"LIVE_COLLECTION", "HISTORICAL_PLAYBACK"}:
+            raise GroundUnattendedError("GROUND_DATA_MODE_INVALID", "数据模式无效", status_code=422)
+        if data_mode == "HISTORICAL_PLAYBACK" and not run_id:
+            raise GroundUnattendedError("GROUND_RUN_REQUIRED", "历史回放必须指定归档运行", status_code=422)
+        heartbeat = self.heartbeat(site_id, run_id=run_id, data_mode=data_mode, mr_uuid=mr_uuid, reference_time=end)
         mr = next((row for row in heartbeat.mrs if row.mr_uuid == mr_uuid), None)
         arp_repository = getattr(self.supervisor, "arp_repository", None)
         identity_relations = arp_repository.find_identity_relations(mr_uuid=mr_uuid) if arp_repository else []
@@ -1146,11 +1162,37 @@ class GroundUnattendedApplicationService:
         # Keep the requested playback boundary exact for events and charts while
         # retaining enough preceding Ping samples for the 60-minute statistics.
         series_start = min(start, end - timedelta(hours=1))
-        series = self.ping_series(site_id, run_id=heartbeat.run_id, mr_id=mr_uuid,
+        # Heartbeat samples are persisted in the resident stream. Older
+        # unattended archives only contain the run context and Syslog/MESH
+        # records, so querying that archive run directly incorrectly returns
+        # an empty series even when real samples exist in the requested window.
+        # Keep the selected archive as playback context and explicitly expose
+        # the resident source identity in diagnostics.
+        source_run_id = self._heartbeat_history_source_run_id(
+            run_id=heartbeat.run_id,
+            mr_uuid=mr_uuid,
+            start=series_start,
+            end=end,
+        )
+        series = self.ping_series(site_id, run_id=source_run_id, mr_id=mr_uuid,
                                   start_time=series_start.isoformat(), end_time=end.isoformat(), max_points=2400)
+        if source_run_id != heartbeat.run_id:
+            series = series.model_copy(update={
+                "active": False,
+                "target_state": str(heartbeat.run_state or "COMPLETED"),
+                "diagnostics": series.diagnostics.model_copy(update={
+                    "requested_run_id": heartbeat.run_id,
+                    "source_run_id": source_run_id,
+                    "source_reason": "HISTORICAL_HEARTBEAT_RESIDENT_STREAM",
+                }),
+            })
         try:
+            evidence_run_id = heartbeat.run_id
+            if data_mode == "LIVE_COLLECTION" and heartbeat.run_id == HEARTBEAT_STREAM_ID:
+                active_run = self.repository.get_active_run()
+                evidence_run_id = str((active_run or {}).get("run_id") or "__live_collection__")
             rows, truncated = indexed_evidence(self.repository.db_path, site_id=site_id,
-                                               run_id=None if heartbeat.run_id == HEARTBEAT_STREAM_ID else heartbeat.run_id,
+                                               run_id=evidence_run_id,
                                                mr_uuid=mr_uuid, start=start, end=end)
         except RuntimeError as exc:
             raise GroundUnattendedError("GROUND_PLAYBACK_QUERY_FAILED", str(exc), status_code=409) from exc
@@ -1158,6 +1200,7 @@ class GroundUnattendedApplicationService:
         resolver.preload_parsed(rows)
         events, intervals = mesh_evidence([resolver.enrich_parsed(row) for row in rows], start, end)
         intervals.sort(key=lambda row: row["start"])
+        loss_run_id = source_run_id if source_run_id != heartbeat.run_id else heartbeat.run_id
         loss_query = dict(
             mr_id=mr_uuid,
             started_after=str(cleared_at),
@@ -1181,15 +1224,55 @@ class GroundUnattendedApplicationService:
                                      run_sent_count=sum(ip.sent_count for ip in mr.ip_states),
                                      run_lost_count=sum(ip.lost_count for ip in mr.ip_states),
                                      loss_events=self.repository.list_ping_loss_intervals(
-                                         heartbeat.run_id, limit=loss_limit,
+                                         loss_run_id, limit=loss_limit,
                                          offset=loss_offset, **loss_query,
                                      ),
                                      loss_event_total=self.repository.count_ping_loss_intervals(
-                                         heartbeat.run_id, **loss_query,
+                                         loss_run_id, **loss_query,
                                      ),
                                      loss_event_limit=max(1, min(int(loss_limit), 100)),
                                      loss_event_offset=max(0, int(loss_offset)),
                                      queried_start=start.isoformat(), queried_end=end.isoformat(), events_truncated=truncated)
+
+    def _heartbeat_history_source_run_id(
+        self,
+        *,
+        run_id: str,
+        mr_uuid: str,
+        start: datetime,
+        end: datetime,
+    ) -> str:
+        """Resolve the durable Heartbeat stream for a playback window.
+
+        A historical run remains the authoritative context for archive/MESH
+        evidence. Heartbeat was intentionally moved to a resident stream in
+        R5.0.5, however, and older runs therefore have no per-run Ping files.
+        Only fall back when the selected run has no matching raw Heartbeat
+        files and the resident stream has files overlapping the exact window.
+        """
+        selected = str(run_id or "")
+        if not selected or selected == HEARTBEAT_STREAM_ID:
+            return HEARTBEAT_STREAM_ID if selected else selected
+        start_text, end_text = start.isoformat(), end.isoformat()
+        # A run that owns any Ping raw files keeps its own archive semantics,
+        # even when the requested sub-window happens to be empty.
+        selected_files = [
+            row
+            for row in self.repository.list_raw_files_for_run(selected)
+            if str(row.get("data_type") or "") == "ping"
+            and str(row.get("device_uuid") or "") == mr_uuid
+        ]
+        if selected_files:
+            return selected
+        resident_files = self.repository.list_raw_files_for_query(
+            data_type="ping",
+            start_time=start_text,
+            end_time=end_text,
+            run_id=HEARTBEAT_STREAM_ID,
+            device_uuid=mr_uuid,
+            limit=1,
+        )
+        return HEARTBEAT_STREAM_ID if resident_files else selected
 
     def status(self, site_id: str) -> GroundUnattendedStatusDTO:
         self._require_site(site_id)

@@ -183,10 +183,10 @@ def set_ac_basic_collection(
 
 
 @router.get("/heartbeat", response_model=GroundHeartbeatPageDTO)
-def get_heartbeat(request: Request, run_id: str = "", query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, role: str = "",
+def get_heartbeat(request: Request, run_id: str = "", data_mode: Literal["LIVE_COLLECTION", "HISTORICAL_PLAYBACK"] | None = None, query: str = "", status: str = "", station: str = "", abnormal_only: bool = False, role: str = "",
                   page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)) -> GroundHeartbeatPageDTO:
     return _call(lambda: _service(request).heartbeat(_site_id(request), run_id=run_id, query=query, status=status,
-                                                    station=station, abnormal_only=abnormal_only, page=page, page_size=page_size, role=role))
+                                                    station=station, abnormal_only=abnormal_only, page=page, page_size=page_size, role=role, data_mode=data_mode))
 
 
 @router.post(
@@ -210,12 +210,13 @@ def get_mr_monitoring(
     request: Request,
     mr_uuid: str,
     run_id: str = "",
+    data_mode: Literal["LIVE_COLLECTION", "HISTORICAL_PLAYBACK"] | None = None,
     start_time: str = "",
     end_time: str = "",
     loss_limit: int = Query(default=3, ge=1, le=100),
     loss_offset: int = Query(default=0, ge=0),
 ) -> GroundMrMonitoringDTO:
-    return _call(lambda: _service(request).mr_monitoring(_site_id(request), mr_uuid=mr_uuid, run_id=run_id,
+    return _call(lambda: _service(request).mr_monitoring(_site_id(request), mr_uuid=mr_uuid, run_id=run_id, data_mode=data_mode,
                                                         start_time=start_time, end_time=end_time,
                                                         loss_limit=loss_limit, loss_offset=loss_offset))
 

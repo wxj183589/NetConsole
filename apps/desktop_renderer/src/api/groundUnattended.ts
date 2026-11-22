@@ -11,7 +11,7 @@ import type {
   GroundMrRuntimeStatus,
   GroundSyslogTransportStatus, LocalIpv4Address, SourceIpRecommendation, UdpPortCheck,
   GroundQuickPingPage, GroundQuickPingRun, GroundQuickPingTarget, GroundQuickPingSamplePage,
-  GroundHeartbeatPage, GroundMrMonitoring, GroundHeartbeatInventoryAction, GroundHeartbeatInventoryPreview,
+  GroundHeartbeatPage, GroundMrMonitoring, GroundHeartbeatInventoryAction, GroundHeartbeatInventoryPreview, GroundDataMode,
   GroundHistoryFilters, GroundHistoryPage,
   GroundAcBasicCollection, GroundAcBasicCollectionPage,
   GroundArpStatus,
@@ -26,8 +26,8 @@ export const updateHeartbeatConfig = (config: HeartbeatConfig, options: RequestI
 export const getHeartbeatRuntime = (options: RequestInit = {}): Promise<HeartbeatRuntime> =>
   apiRequest(`${root}/heartbeat/runtime`, options)
 
-export const getGroundHeartbeat = (runId = '', options: RequestInit = {}, filters: { query?: string; status?: string; station?: string; role?: string; abnormal_only?: boolean; page?: number; page_size?: number } = {}): Promise<GroundHeartbeatPage> => {
-  const query = new URLSearchParams({ run_id: runId })
+export const getGroundHeartbeat = (runId = '', options: RequestInit = {}, filters: { query?: string; status?: string; station?: string; role?: string; abnormal_only?: boolean; page?: number; page_size?: number; data_mode?: GroundDataMode } = {}): Promise<GroundHeartbeatPage> => {
+  const query = new URLSearchParams({ run_id: runId, data_mode: filters.data_mode || 'LIVE_COLLECTION' })
   Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
   return apiRequest(`${root}/heartbeat?${query}`, options)
 }
@@ -35,7 +35,7 @@ export const previewGroundHeartbeatInventory = (action: GroundHeartbeatInventory
   apiRequest(`${root}/heartbeat/inventory/preview`, { method: 'POST', body: JSON.stringify({ action }) })
 export const applyGroundHeartbeatInventory = (action: GroundHeartbeatInventoryAction, revision: string): Promise<GroundHeartbeatInventoryPreview> =>
   apiRequest(`${root}/heartbeat/inventory/apply`, { method: 'POST', body: JSON.stringify({ action, revision, confirm: true }) })
-export const getGroundMrMonitoring = (mrUuid: string, params: { run_id?: string; start_time?: string; end_time?: string; loss_limit?: string; loss_offset?: string } = {}, options: RequestInit = {}): Promise<GroundMrMonitoring> =>
+export const getGroundMrMonitoring = (mrUuid: string, params: { run_id?: string; data_mode?: GroundDataMode; start_time?: string; end_time?: string; loss_limit?: string; loss_offset?: string } = {}, options: RequestInit = {}): Promise<GroundMrMonitoring> =>
   apiRequest(`${root}/mr/${encodeURIComponent(mrUuid)}/monitoring?${new URLSearchParams(params)}`, options)
 
 export interface GroundRawQueryTransportState {

@@ -2,13 +2,30 @@
 import { describe, expect, it } from 'vitest'
 import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { readNetConsoleChartTokens } from '../../theme/echarts'
-import { mrMonitoringChartOption, peerColorFor } from './mrMonitoringChartOptions'
+import { chronologicalPeerIntervals, mrMonitoringChartOption, peerIntervalColorMap, PEER_RAINBOW_COLORS } from './mrMonitoringChartOptions'
 
 describe('MR monitoring evidence chart', () => {
-  it('assigns stable rainbow colors by peer identity', () => {
-    const row = { bssid: '00:11:22:33:44:55', peer_name: 'AP-A' }
-    expect(peerColorFor(row)).toBe(peerColorFor({ ...row, peer_name: 'renamed' }))
-    expect(peerColorFor({ peer_name: 'AP-A' })).toBe(peerColorFor({ peer_name: 'AP-A' }))
+  it('assigns rainbow colors by chronological interval, including repeated AP identities', () => {
+    const rows = [
+      { start: '2026-11-07T11:00:03Z', end: '2026-11-07T11:00:04Z', bssid: 'aa', peer_name: 'AP-A', source: 'MESH' },
+      { start: '2026-11-07T11:00:01Z', end: '2026-11-07T11:00:02Z', bssid: 'bb', peer_name: 'AP-B', source: 'MESH' },
+      { start: '2026-11-07T11:00:05Z', end: '2026-11-07T11:00:06Z', bssid: 'aa', peer_name: 'AP-A', source: 'MESH' },
+    ] as GroundMrMonitoring['peer_intervals']
+    const ordered = chronologicalPeerIntervals(rows)
+    const colors = peerIntervalColorMap(rows)
+    expect(ordered.map((row) => row.start)).toEqual([
+      '2026-11-07T11:00:01Z', '2026-11-07T11:00:03Z', '2026-11-07T11:00:05Z',
+    ])
+    expect([...colors.values()]).toEqual([
+      PEER_RAINBOW_COLORS[0], PEER_RAINBOW_COLORS[1], PEER_RAINBOW_COLORS[2],
+    ])
+  })
+  it('restarts the seven-color cycle on the eighth chronological interval', () => {
+    const rows = Array.from({ length: 8 }, (_, index) => ({
+      start: `2026-11-07T11:00:${String(index).padStart(2, '0')}Z`, end: `2026-11-07T11:00:${String(index + 1).padStart(2, '0')}Z`,
+      bssid: `ap-${index}`, peer_name: `AP-${index}`, source: 'MESH',
+    })) as GroundMrMonitoring['peer_intervals']
+    expect([...peerIntervalColorMap(rows).values()]).toEqual([...PEER_RAINBOW_COLORS, PEER_RAINBOW_COLORS[0]])
   })
   it('keeps RTT milliseconds, loss percent, true timestamps and unknown gaps distinct', () => {
     const data = { series: { points: [
@@ -24,10 +41,12 @@ describe('MR monitoring evidence chart', () => {
     expect(series[0]?.connectNulls).toBe(false)
     expect(series[0]?.data).toContainEqual([Date.parse('2026-11-07T11:00:01Z') + 1, null])
     expect(series[1]?.yAxisIndex).toBe(1)
-    expect(series[1]?.data).toContainEqual([Date.parse('2026-11-07T11:00:01Z'), 100])
+    expect(series[2]?.data).toContainEqual([Date.parse('2026-11-07T11:00:01Z'), 100])
+    const pingColors = mrMonitoringChartOption(data, '2026-11-07T11:00:00Z', '2026-11-07T12:00:00Z', readNetConsoleChartTokens(), '', 'ping').color as string[]
+    expect(pingColors.slice(0, 4)).toEqual(['#3B82F6', '#22C55E', '#EF4444', '#909399'])
     const tooltip = option.tooltip as { formatter: (params: unknown[]) => string }
     expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:00Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:00Z'), 3] }])).toContain('&lt;peer&gt;')
-    expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:21Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:20Z'), 4] }])).toContain('Peer: UNKNOWN')
+    expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:21Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:20Z'), 4] }])).toContain('Peer AP：无记录')
     expect(tooltip.formatter([{ axisValue: Date.parse('2026-11-07T11:00:21Z'), seriesName: 'RTT', data: [Date.parse('2026-11-07T11:00:20Z'), 4] }])).not.toContain('4 ms')
   })
 
@@ -41,7 +60,7 @@ describe('MR monitoring evidence chart', () => {
     }] } as GroundMrMonitoring
     const theme = readNetConsoleChartTokens()
     const ping = mrMonitoringChartOption(data, '2026-11-07T11:00:00Z', '2026-11-07T12:00:00Z', theme, '', 'ping')
-    expect((ping.series as Array<{ id: string }>).map((row) => row.id)).toEqual(['rtt:192.0.2.1', 'loss:192.0.2.1'])
+    expect((ping.series as Array<{ id: string }>).map((row) => row.id)).toEqual(['rtt:192.0.2.1', 'success:192.0.2.1', 'loss:192.0.2.1', 'unknown:192.0.2.1'])
 
     const peer = mrMonitoringChartOption(data, '2026-11-07T11:00:00Z', '2026-11-07T12:00:00Z', theme, '', 'peer')
     const peerSeries = (peer.series as Array<{ id: string; data: number[][] }>)[0]!
@@ -50,9 +69,24 @@ describe('MR monitoring evidence chart', () => {
       Date.parse('2026-11-07T11:00:00Z'), Date.parse('2026-11-07T11:00:30Z'), -55, 0,
     ])
     const tooltip = peer.tooltip as { formatter: (params: { data: number[] }) => string }
-    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('设备原始 RSSI：55')
-    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('归一化 RSSI：-55 dBm')
-    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('持续：30.0 秒')
+    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('切入 RSSI：55')
+    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('切出 RSSI：无记录')
+    expect(tooltip.formatter({ data: peerSeries.data[0]! })).toContain('持续时间：30.0 秒')
+  })
+
+  it('shows Heartbeat source, address, and state in reachability tooltips', () => {
+    const sampleTime = '2026-11-07T11:00:00Z'
+    const data = { series: { points: [
+      { ts: sampleTime, target_ip: '10.82.24.235', ok: true, rtt_ms: 3 },
+      { ts: '2026-11-07T11:00:01Z', target_ip: '10.82.24.235', ok: false, rtt_ms: null },
+    ] }, peer_intervals: [] } as GroundMrMonitoring
+    const option = mrMonitoringChartOption(data, sampleTime, '2026-11-07T12:00:00Z', readNetConsoleChartTokens(), '', 'heartbeat')
+    const tooltip = option.tooltip as { formatter: (params: unknown[]) => string }
+    const text = tooltip.formatter([{ axisValue: Date.parse(sampleTime), data: [Date.parse(sampleTime), 1] }])
+    expect(text).toContain('采样时间：')
+    expect(text).toContain('管理地址：10.82.24.235')
+    expect(text).toContain('状态：正常连通')
+    expect(text).toContain('采样来源：Heartbeat')
   })
 
   it('uses one externally-owned visible window without per-track sliders', () => {
@@ -63,6 +97,7 @@ describe('MR monitoring evidence chart', () => {
     expect(ping.dataZoom).toHaveLength(1)
     expect((ping.dataZoom as Array<Record<string, unknown>>)[0]).toMatchObject({
       startValue: Date.parse('2026-11-07T11:10:00Z'), endValue: Date.parse('2026-11-07T11:20:00Z'),
+      zoomOnMouseWheel: true, moveOnMouseMove: true,
     })
     const navigator = mrMonitoringChartOption(data, args[1], args[2], theme, '', 'navigator', args[6], args[7])
     expect(navigator.dataZoom).toHaveLength(2)
