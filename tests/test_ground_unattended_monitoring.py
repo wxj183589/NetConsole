@@ -10,6 +10,7 @@ import pytest
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
 from netconsole.services.ground_unattended.fleet_ping import FleetPingSupervisor, FleetPingTarget
 from netconsole.services.ground_unattended.monitoring import ac_peer_intervals, indexed_evidence, mesh_evidence, monitoring_range, normalize_rssi
+from netconsole.services.ground_unattended.syslog_runtime import WmeshRealtimeParser
 from netconsole.backend.api.main import create_app
 from netconsole.core.paths import PathResolver
 from netconsole.models.api.ac_mesh_link import AcMeshMrPageDTO, AcMeshMrStatusDTO
@@ -42,6 +43,83 @@ def test_mesh_intervals_close_only_on_matching_adjacent_switches():
     assert intervals[0]["raw_rssi"] == 50
     assert intervals[0]["rssi"] == -50
     assert intervals[0]["rssi_semantics"] == "ABSOLUTE_MAGNITUDE"
+
+
+def test_mesh_switch_preserves_from_and_to_rssi_and_builds_real_intervals():
+    parser = WmeshRealtimeParser()
+    samples = [
+        ("15:28:43", 37, 42, "_4ce9-e4f0-e6a0", "_4ce9-e4f0-9e60"),
+        ("15:28:51", 40, 45, "_4ce9-e4f0-9e60", "_4ce9-e4f0-f340"),
+        ("15:28:56", 38, 47, "_4ce9-e4f0-f340", "_4ce9-e4f1-d260"),
+        ("16:01:20", 37, 46, "25.XYL-S-01_900a-759f-636f", "25.XYL-S-04_900a-759f-5fdf"),
+        ("16:01:22", 43, 53, "25.XYL-S-04_900a-759f-5fdf", "25.XYL-S-05_900a-759f-669f"),
+        ("16:01:25", 54, 62, "25.XYL-S-05_900a-759f-669f", "25.XYL-S-06_900a-759f-57cf"),
+    ]
+    rows = []
+    for index, (clock, old_rssi, new_rssi, old_ap, new_ap) in enumerate(samples, 1):
+        raw = (
+            f"<189>Nov 20 {clock} 2026 HZL09-LC35-MR-CT "
+            "%%10WMESH/5/MESH_ACTIVELINK_SWITCH: Switch an active link "
+            f"from {old_ap}({old_rssi}) to {new_ap}({new_rssi}): "
+            "peer quantity = 4, link quantity = 2, switch reason = 4."
+        )
+        parsed = parser.parse(raw, receive_time=datetime(2026, 11, 20, 16, 2, tzinfo=timezone.utc))
+        assert parsed is not None
+        details = parsed["details"]
+        assert (details["old_rssi"], details["new_rssi"]) == (old_rssi, new_rssi)
+        rows.append({
+            "id": index,
+            **parsed,
+            "event_time": f"2026-11-20T{clock}+08:00",
+            "receive_time": f"2026-11-20T{clock}+08:00",
+        })
+
+    start, end = monitoring_range("2026-11-20T15:00:00+08:00", "2026-11-20T16:10:00+08:00")
+    events, intervals = mesh_evidence(rows, start, end)
+    assert [(row["raw_rssi"], row["previous_rssi"]) for row in events] == [
+        (42, 37), (45, 40), (47, 38), (46, 37), (53, 43), (62, 54)
+    ]
+    assert [(row["bssid"], row["entry_rssi"], row["exit_rssi"]) for row in intervals] == [
+        ("4ce9-e4f0-9e60", 42, 40),
+        ("4ce9-e4f0-f340", 45, 38),
+        ("900a-759f-5fdf", 46, 43),
+        ("900a-759f-669f", 53, 54),
+    ]
+
+
+def test_mesh_monitoring_prefers_canonical_ap_mac_over_radio_mac():
+    start, end = monitoring_range("2026-11-07T11:00:00Z", "2026-11-07T12:00:00Z")
+    base = {"event_type": "MESH_ACTIVELINK_SWITCH", "event_time_source": "DEVICE_TIME"}
+    rows = [
+        {
+            **base,
+            "event_time": "2026-11-07T11:10:00Z",
+            "peer_mac": "radio-new",
+            "details": {
+                "new_peer_mac": "00-11-22-33-44-55",
+                "peer_ap_mac": "00:11:22:33:44:55",
+                "new_peer_radio_mac": "aa:bb:cc:dd:ee:01",
+                "new_rssi": 42,
+            },
+        },
+        {
+            **base,
+            "event_time": "2026-11-07T11:10:20Z",
+            "peer_mac": "00:11:22:33:44:66",
+            "previous_peer_mac": "00:11:22:33:44:55",
+            "details": {
+                "previous_peer_ap_mac": "00:11:22:33:44:55",
+                "peer_ap_mac": "00:11:22:33:44:66",
+                "previous_peer_radio_mac": "aa:bb:cc:dd:ee:01",
+                "new_peer_radio_mac": "aa:bb:cc:dd:ee:02",
+                "old_rssi": 40,
+                "new_rssi": 45,
+            },
+        },
+    ]
+    _, intervals = mesh_evidence(rows, start, end)
+    assert len(intervals) == 1
+    assert intervals[0]["bssid"] == "00:11:22:33:44:55"
 
 
 @pytest.mark.parametrize(

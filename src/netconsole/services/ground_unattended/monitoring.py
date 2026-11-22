@@ -63,14 +63,32 @@ def mesh_evidence(rows: list[dict[str, Any]], start: datetime, end: datetime) ->
         normalized_rssi, rssi_semantics = normalize_rssi(raw_rssi)
         station = str(details.get("station") or row.get("station") or "")
         section = str(details.get("section") or row.get("section") or "")
+        # AP identity is the canonical/raw peer MAC.  The radio MAC is only a
+        # fallback for legacy rows that predate the AP identity projection.
+        old_ap_mac = (
+            details.get("previous_peer_ap_mac")
+            or details.get("old_peer_mac")
+            or row.get("previous_peer_mac")
+            or details.get("previous_peer_radio_mac")
+            or details.get("old_peer_radio_mac")
+            or ""
+        )
+        new_ap_mac = (
+            details.get("peer_ap_mac")
+            or details.get("new_peer_mac")
+            or row.get("peer_mac")
+            or details.get("peer_radio_mac")
+            or details.get("new_peer_radio_mac")
+            or ""
+        )
         evidence.append({
             "id": row.get("id", ""), "event_time": event_time.isoformat(),
             "device_time": device_time, "receive_time": receive_time,
             "event_type": str(row.get("event_type") or ""), "source": "SYSLOG",
-            "old_ap_name": str(row.get("previous_peer_name") or ""),
-            "new_ap_name": str(row.get("peer_name") or ""),
-            "old_bssid": str(details.get("previous_peer_radio_mac") or details.get("old_peer_radio_mac") or row.get("previous_peer_mac") or ""),
-            "bssid": str(details.get("peer_radio_mac") or details.get("new_peer_radio_mac") or row.get("peer_mac") or ""),
+            "old_ap_name": str(row.get("previous_peer_name") or details.get("previous_peer_ap_name") or ""),
+            "new_ap_name": str(row.get("peer_name") or details.get("peer_ap_name") or ""),
+            "old_bssid": str(old_ap_mac),
+            "bssid": str(new_ap_mac),
             "rssi": normalized_rssi, "raw_rssi": raw_rssi,
             "previous_rssi": exit_rssi,
             "entry_rssi": raw_rssi, "exit_rssi": exit_rssi,
