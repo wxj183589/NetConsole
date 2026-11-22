@@ -2,7 +2,7 @@ import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { t } from '../../i18n/runtime'
 import type { NetConsoleChartTokens } from '../../theme/echarts'
 import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeChart'
-import { PING_CHART_COLORS, pingPointValues, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
+import { PING_CHART_COLORS, heartbeatPointValues, pingPointValues, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
 
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
 const sourceLabel = (value: unknown): string => ({ SYSLOG: 'Syslog', AC: 'AC Mesh-Link' } as Record<string, string>)[String(value || '').toUpperCase()] || '无数据'
@@ -90,7 +90,7 @@ export function mrMonitoringChartOption(
       const suffix = ips.length > 1 ? ` · ${ip}` : ''
       const online: Array<[number, number | null]> = [], offline: Array<[number, number | null]> = [], unknown: Array<[number, number | null]> = []
       rows.forEach((row) => {
-        const status = pingPointValues(row as unknown as Record<string, unknown>).status
+        const status = heartbeatPointValues(row as unknown as Record<string, unknown>).status
         online.push([Date.parse(row.ts), status === 'SUCCESS' ? 1 : null])
         offline.push([Date.parse(row.ts), status === 'TIMEOUT' || status === 'PACKET_LOSS' ? 0 : null])
         unknown.push([Date.parse(row.ts), status === 'UNKNOWN' ? 0.5 : null])
@@ -114,9 +114,10 @@ export function mrMonitoringChartOption(
         const samples = statusRows.filter((point) => Date.parse(point.ts) === time)
         const details = samples.length
           ? samples.map((point) => {
-            const status = pingPointValues(point as unknown as Record<string, unknown>).status
+            const status = heartbeatPointValues(point as unknown as Record<string, unknown>).status
             const label = status === 'SUCCESS' ? '正常连通' : status === 'UNKNOWN' ? '未知' : '超时/不通'
-            return `管理地址：${escape(point.target_ip)}<br>状态：${label}<br>采样来源：Heartbeat`
+            const rawResult = typeof point.ok === 'boolean' ? (point.ok ? '成功响应' : '失败/超时') : '状态缺失'
+            return `管理地址：${escape(point.target_ip)}<br>状态：${label}<br>原始采集结果：${rawResult}<br>采样来源：Heartbeat`
           }).join('<br>')
           : '管理地址：无数据<br>状态：未知<br>采样来源：Heartbeat'
         return `采样时间：${Number.isFinite(time) ? escape(new Date(time).toLocaleString()) : '无数据'}<br>${details}`

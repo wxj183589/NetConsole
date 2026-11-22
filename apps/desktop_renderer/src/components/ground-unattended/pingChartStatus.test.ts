@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest'
-import { classifyPingStatus, pingPointValues, pingStatusColor, pingTooltipFormatter } from './pingChartStatus'
+import { classifyPingStatus, heartbeatPointValues, heartbeatStatusStatistics, pingPointValues, pingStatusColor, pingTooltipFormatter } from './pingChartStatus'
 
 describe('Ping chart state mapping', () => {
   it.each([
@@ -27,5 +27,14 @@ describe('Ping chart state mapping', () => {
     ]
     expect(pingTooltipFormatter(points, [{ axisValue: Date.parse('2026-11-07T00:00:00Z'), seriesName: 'RTT（ms）' }])).toContain('状态：正常连通')
     expect(pingTooltipFormatter(points, [{ axisValue: Date.parse('2026-11-07T00:00:01Z'), seriesName: '丢包/超时' }])).toContain('丢包：100%')
+  })
+
+  it('uses the persisted Heartbeat result independently of RTT', () => {
+    expect(heartbeatPointValues({ ok: true, rtt_ms: null })).toMatchObject({ status: 'SUCCESS', loss: 0 })
+    expect(heartbeatPointValues({ ok: false, rtt_ms: 0 })).toMatchObject({ status: 'PACKET_LOSS', loss: 100 })
+    expect(heartbeatPointValues({ status: 'TIMEOUT', ok: true, rtt_ms: 3 }).status).toBe('TIMEOUT')
+    expect(heartbeatStatusStatistics([
+      { ok: true, rtt_ms: null }, { ok: false, rtt_ms: null }, { status: 'UNKNOWN' },
+    ])).toEqual({ success: 1, failure: 1, unknown: 1, valid: 2, connectivityRate: 50 })
   })
 })

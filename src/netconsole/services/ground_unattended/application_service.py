@@ -1174,8 +1174,11 @@ class GroundUnattendedApplicationService:
             start=series_start,
             end=end,
         )
+        # Heartbeat playback must retain every real sample in the bounded
+        # 24-hour window. The generic Ping query prioritizes loss points when
+        # downsampling, which can make a mixed-success window look falsely red.
         series = self.ping_series(site_id, run_id=source_run_id, mr_id=mr_uuid,
-                                  start_time=series_start.isoformat(), end_time=end.isoformat(), max_points=2400)
+                                  start_time=series_start.isoformat(), end_time=end.isoformat(), max_points=10000)
         if source_run_id != heartbeat.run_id:
             series = series.model_copy(update={
                 "active": False,

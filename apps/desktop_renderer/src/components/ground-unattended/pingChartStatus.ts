@@ -15,6 +15,14 @@ export interface PingChartPoint {
   status: PingChartStatus
 }
 
+export interface HeartbeatStatusStatistics {
+  success: number
+  failure: number
+  unknown: number
+  valid: number
+  connectivityRate: number | null
+}
+
 const STATUS_ALIASES: Record<string, PingChartStatus> = {
   SUCCESS: 'SUCCESS',
   OK: 'SUCCESS',
@@ -70,6 +78,28 @@ export function pingPointValues(sample: Record<string, unknown>): { status: Ping
   const rawLoss = numeric(sample.loss_percent ?? sample.loss_rate_percent ?? sample.packet_loss_percent)
   const loss = rawLoss === null ? (status === 'SUCCESS' ? 0 : status === 'TIMEOUT' || status === 'PACKET_LOSS' ? 100 : null) : Math.max(0, Math.min(100, rawLoss))
   return { status, rtt, loss }
+}
+
+/** Heartbeat reachability is based on the persisted probe result, not RTT. */
+export function heartbeatPointValues(sample: Record<string, unknown>): { status: PingChartStatus; rtt: number | null; loss: number | null } {
+  const explicit = normalizedStatus(sample.status ?? sample.state ?? sample.result ?? sample.outcome)
+  const status = explicit || (typeof sample.ok === 'boolean'
+    ? (sample.ok ? 'SUCCESS' : (sample.timeout === true || sample.timed_out === true ? 'TIMEOUT' : 'PACKET_LOSS'))
+      : 'UNKNOWN')
+  const rtt = numeric(sample.rtt_ms)
+  return { status, rtt, loss: status === 'SUCCESS' ? 0 : status === 'TIMEOUT' || status === 'PACKET_LOSS' ? 100 : null }
+}
+
+export function heartbeatStatusStatistics(samples: Array<Record<string, unknown>>): HeartbeatStatusStatistics {
+  let success = 0, failure = 0, unknown = 0
+  samples.filter((sample) => !sample.warmup_ignored).forEach((sample) => {
+    const status = heartbeatPointValues(sample).status
+    if (status === 'SUCCESS') success++
+    else if (status === 'TIMEOUT' || status === 'PACKET_LOSS') failure++
+    else unknown++
+  })
+  const valid = success + failure
+  return { success, failure, unknown, valid, connectivityRate: valid ? success / valid * 100 : null }
 }
 
 function escape(value: unknown): string {

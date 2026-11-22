@@ -4,7 +4,7 @@ import { t } from '../../i18n/runtime'
 import { getGroundMrMonitoring, listGroundSyslogRecords } from '../../api/groundUnattended'
 import type { GroundHeartbeatMr, GroundMeshMonitorEvent, GroundMrMonitoring } from '../../types/groundUnattended'
 import MrMonitoringChart from './MrMonitoringChart.vue'
-import { pingPointValues, pingStatusLabel } from './pingChartStatus'
+import { heartbeatPointValues, pingStatusLabel } from './pingChartStatus'
 const props = defineProps<{ mr: GroundHeartbeatMr; runId: string; active: boolean; section: string; terminalEnabled: boolean; quickEnabled: boolean; monitorState?: string }>()
 const emit = defineEmits<{ (event: 'close'): void; (event: 'terminal'): void; (event: 'quick-ping'): void }>()
 function formatLocalDateTime(value: string | undefined): string {
@@ -76,7 +76,7 @@ async function selectEvent(event: GroundMeshMonitorEvent): Promise<void> {
 function latestReachability(targetIp: string): string {
   if (!result.value || !targetIp) return '未知'
   const point = result.value.series.points.filter((row) => row.target_ip === targetIp && !row.warmup_ignored).slice().sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0]
-  return point ? pingStatusLabel(pingPointValues(point as unknown as Record<string, unknown>).status) : '未知'
+  return point ? pingStatusLabel(heartbeatPointValues(point as unknown as Record<string, unknown>).status) : '未知'
 }
 function monitoringDataFor(targetIp: string): GroundMrMonitoring | null {
   if (!result.value || !targetIp) return null

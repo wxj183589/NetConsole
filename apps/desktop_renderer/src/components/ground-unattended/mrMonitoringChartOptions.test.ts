@@ -86,6 +86,7 @@ describe('MR monitoring evidence chart', () => {
     expect(text).toContain('采样时间：')
     expect(text).toContain('管理地址：10.82.24.235')
     expect(text).toContain('状态：正常连通')
+    expect(text).toContain('原始采集结果：成功响应')
     expect(text).toContain('采样来源：Heartbeat')
   })
 

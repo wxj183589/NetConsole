@@ -111,6 +111,70 @@ def test_historical_playback_uses_resident_heartbeat_stream_for_both_addresses(t
     assert series["diagnostics"]["resolved_mr_ids"] == [MR_UUID]
 
 
+def test_historical_playback_keeps_full_resident_heartbeat_series_budget(tmp_path: Path, monkeypatch) -> None:
+    paths = PathResolver(tmp_path / "app", tmp_path / "data")
+    repository = GroundUnattendedRepository(paths.ground_unattended_db_path("site-a"), site_id="site-a")
+    repository.create_or_get_run(
+        run_id="archive-run",
+        run_date="2026-11-20",
+        scheduled_start_at=START,
+        scheduled_end_at=END,
+    )
+    repository.update_run("archive-run", state="COMPLETED", actual_started_at=START, actual_ended_at=END)
+    repository.upsert_heartbeat_snapshot(
+        "archive-run",
+        {
+            "mr_uuid": MR_UUID,
+            "train_id": "train:35",
+            "train_no": "35",
+            "role": "CT",
+            "status": "ONLINE",
+            "management_ip": "10.82.24.235",
+            "backup_management_ip": "192.168.35.249",
+            "ip_states": [],
+        },
+        entity_type="MR",
+        entity_id=MR_UUID,
+    )
+    resident = paths.ground_unattended_active_dir("site-a", "2026-11-20") / "heartbeat" / "ct.ndjson"
+    _register_ping_file(
+        repository,
+        resident,
+        run_id="heartbeat-resident",
+        rows=[
+            _sample("2026-11-20T15:11:01+08:00", "10.82.24.235", ok=True),
+            _sample("2026-11-20T15:11:02+08:00", "192.168.35.249", ok=False),
+            _sample("2026-11-20T16:08:23+08:00", "10.82.24.235", ok=False),
+        ],
+    )
+    service = GroundUnattendedApplicationService(
+        paths,
+        site_id="site-a",
+        repository=repository,
+        supervisor=SimpleNamespace(),
+    )
+    captured: dict[str, object] = {}
+    original_ping_series = service.ping_series
+
+    def capture_ping_series(site_id: str, **filters: object):
+        captured.update(filters)
+        return original_ping_series(site_id, **filters)
+
+    monkeypatch.setattr(service, "ping_series", capture_ping_series)
+    result = service.mr_monitoring(
+        "site-a",
+        mr_uuid=MR_UUID,
+        run_id="archive-run",
+        start_time=START,
+        end_time=END,
+    )
+
+    assert captured["max_points"] == 10_000
+    assert result.series.raw_sample_count == 3
+    assert result.series.success_count == 1
+    assert result.series.loss_count == 2
+
+
 def test_historical_playback_does_not_use_resident_samples_outside_window(tmp_path: Path) -> None:
     paths = PathResolver(tmp_path / "app", tmp_path / "data")
     repository = GroundUnattendedRepository(paths.ground_unattended_db_path("site-a"), site_id="site-a")
