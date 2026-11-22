@@ -1,7 +1,7 @@
 # R5.0.5.2 RSSI 语义修复报告
 
-日期：2026-11-22  
-产品 HEAD：`425d5b42`  
+日期：2026-11-22
+产品 HEAD：`425d5b42`
 数据 Authority：`D:\NetConsoleData-dev`（本轮未写入）
 
 ## 解析结论
