@@ -1,6 +1,6 @@
 # NetConsole v1.5.18 发布收口审查
 
-日期：2026-11-23（Asia/Shanghai）。RELEASE_STATUS=PARTIAL。当前为发布候选，尚未合并、推送 main 或生成正式制品。候选 Commit `9226b2c0865c25b430b9b22dea8f5c76535b490f` 已提交并推送到 `github/codex-A/release-v1.5.18-20261123`。
+日期：2026-11-23（Asia/Shanghai）。RELEASE_STATUS=PARTIAL。当前为发布候选，尚未合并、推送 main 或生成正式制品。候选功能 Commit `9226b2c0865c25b430b9b22dea8f5c76535b490f` 已提交；发布说明补充 Commit `eb7c78c0f57350766b43377b23642f7abeb51974`，均已推送到 `github/codex-A/release-v1.5.18-20261123`。
 
 ## 范围与保护
 
