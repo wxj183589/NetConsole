@@ -1,12 +1,12 @@
 # NetConsole v1.5.18 Gate 专项治理报告
 
-日期：2026-11-23（Asia/Shanghai）  
-候选工作树：`D:\study\NetConsole-Workspace\worktrees\release-v1.5.18-20261123`  
+日期：2026-11-23（Asia/Shanghai）
+候选工作树：`D:\study\NetConsole-Workspace\worktrees\release-v1.5.18-20261123`
 分支：`codex-A/release-v1.5.18-20261123`
 
 ## 1. 结论
 
-`GOVERNANCE_STATUS=PARTIAL`  
+`GOVERNANCE_STATUS=PARTIAL`
 `RELEASE_STATUS=PARTIAL`
 
 本轮完成了三个历史 Gate 的根因审计，并安全修正了 Workspace Layout 检查器的两个真实治理缺陷：
@@ -90,9 +90,16 @@
 | `python scripts/architecture/check_ui_business_logic.py` | `FAIL`：3 项真实业务逻辑债务 |
 | `python -m pytest tests/quality/test_workspace_layout.py tests/quality/test_repository_root_layout.py -q` | `22 passed` |
 | `python -m pytest tests/quality/test_workspace_layout.py tests/quality/test_repository_root_layout.py tests/architecture/test_architecture_guards.py -q` | `35 passed, 2 failed`；失败为上述 Architecture Guard 汇总断言和 run-all 断言 |
-| `git diff --check` | `PASS` |
+| `PYTHONPATH=<candidate> .venv\Scripts\python.exe -m pytest tests/test_version_build_identity.py tests/test_changelog_sync.py -q` | `8 passed`；Python、Electron、HTML 和 CHANGELOG 均为 `1.5.18` Authority |
+| `python scripts/build/sync_runtime_changelog.py --check` | `PASS` |
+| `local_gate --mode full` | `FAIL`：Root Layout；Python `5709 passed, 2 skipped, 3 failed`（均为 Architecture Guard）；Architecture Guard；首次 `git-diff-check` 仅因本报告 3 行行尾空格失败 |
+| Full Gate Renderer | `219 files / 1583 tests passed`；`vue-tsc` 和生产构建 `PASS` |
+| Full Gate Electron | `41 files / 324 tests passed`；`tsc --noEmit` 和 Main/Preload 构建 `PASS` |
+| Full Gate 主线契约 Smoke | `12 passed` |
+| Full Gate Ruff / 文档路径 | `PASS`；文档路径 `22 passed` |
+| `git diff --check 9e463778..HEAD`（清理报告行尾空格后） | `PASS` |
 | 真实 Electron / SSH / SFTP | 沿用候选报告中已记录的真实回环证据；本轮未重新执行 GUI 现场验收 |
-| 全量 Python、Renderer、Electron、Installer/Portable | `NOT RUN`；正式 Gate 仍被 Root Layout 和 Architecture Guard 阻断 |
+| Installer/Portable | `NOT RUN`；按任务约束未构建正式制品 |
 
 ## 6. 数据与工作区影响
 
