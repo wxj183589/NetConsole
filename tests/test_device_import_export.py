@@ -139,6 +139,8 @@ def test_template_csv_includes_reference_rows_and_round_trips_as_empty_import(tm
     }
     assert hidden.isdisjoint(TEMPLATE_FIELDS)
     assert all(len(TEMPLATE_FIELDS) == len(row) for row in TEMPLATE_EXAMPLE_ROWS)
+    mr_row = next(row for row in rows[1:] if row[0] == "列车01-MR-CT")
+    assert mr_row[-3:] == ["网络设备", "无线", "MR"]
     assert result.created == 0
     assert devices == []
 
@@ -417,6 +419,72 @@ def test_device_snmp_v1_v2c_fields_round_trip_through_csv(tmp_path):
     assert imported.snmp_ro_community == "readonly-only"
     assert imported.snmp_timeout_ms == 4500
     assert imported.snmp_retries == 3
+
+
+def test_device_classification_columns_round_trip_without_changing_business_roles(tmp_path: Path) -> None:
+    source_repository, _groups, source = make_group_service(tmp_path / "source")
+    for name, address, role in (
+        ("H3C-AC", "192.0.2.71", "AC"),
+        ("H3C-SW", "192.0.2.72", "SW"),
+        ("Vehicle-MR", "192.0.2.73", "MR"),
+    ):
+        source_repository.create(
+            Device(
+                name=name,
+                primary_address=address,
+                device_vendor="H3C",
+                device_type=role,
+            )
+        )
+
+    csv_path = tmp_path / "classified-devices.csv"
+    source.export_csv(csv_path, include_sensitive=False)
+    rows = read_csv(csv_path)
+    by_name = {row[DEVICE_CSV_COLUMNS.index("设备名称")]: row for row in rows[1:]}
+
+    assert by_name["H3C-AC"][DEVICE_CSV_COLUMNS.index("产品大类")] == "网络设备"
+    assert by_name["H3C-AC"][DEVICE_CSV_COLUMNS.index("设备子类")] == "无线"
+    assert by_name["H3C-AC"][DEVICE_CSV_COLUMNS.index("设备角色")] == "AC"
+    assert by_name["H3C-SW"][DEVICE_CSV_COLUMNS.index("设备子类")] == "交换机"
+    assert by_name["Vehicle-MR"][DEVICE_CSV_COLUMNS.index("产品大类")] == "网络设备"
+    assert by_name["Vehicle-MR"][DEVICE_CSV_COLUMNS.index("设备子类")] == "无线"
+    assert by_name["Vehicle-MR"][DEVICE_CSV_COLUMNS.index("设备角色")] == "MR"
+
+    target_repository, target = make_service(tmp_path / "target")
+    preview = target.preview_csv(csv_path)
+    result = target.import_csv_atomic(csv_path)
+
+    assert preview.valid_rows == 3
+    assert result.created == 3
+    assert {device.name: device.device_type for device in target_repository.list()} == {
+        "H3C-AC": "AC",
+        "H3C-SW": "SW",
+        "Vehicle-MR": "MR",
+    }
+
+
+def test_device_import_rejects_classification_that_cannot_round_trip(tmp_path: Path) -> None:
+    repository, service = make_service(tmp_path)
+    csv_path = tmp_path / "unsupported-classification.csv"
+    row = template_row(
+        **{
+            "设备名称": "H3C Server",
+            "主用地址": "192.0.2.74",
+            "厂商": "H3C",
+            "设备类型": "Other",
+            "产品大类": "服务器",
+            "设备子类": "H3C 服务器",
+            "设备角色": "Other",
+        }
+    )
+    write_rows(csv_path, [TEMPLATE_FIELDS, row])
+
+    preview = service.preview_csv(csv_path)
+
+    assert preview.valid_rows == 0
+    assert preview.invalid_rows == 1
+    assert "无法无损写入" in preview.errors[0].message
+    assert repository.list() == []
 
 
 def test_csv_import_supports_current_template_fields(tmp_path):

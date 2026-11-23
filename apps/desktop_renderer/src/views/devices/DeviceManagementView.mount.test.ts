@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   listDevices: vi.fn(),
+  listDeviceGroups: vi.fn(),
+  getDeviceGroupTotals: vi.fn(),
   getDeviceEditProfile: vi.fn(),
   revealDeviceCredential: vi.fn(),
   getDeviceConnectionTest: vi.fn(),
@@ -21,6 +23,9 @@ const mocks = vi.hoisted(() => ({
   startDeviceDiagnosticDownload: vi.fn(),
   startDeviceCsvExport: vi.fn(),
   startDeviceTemplateExport: vi.fn(),
+  startDeviceHealthCheck: vi.fn(),
+  getDeviceHealthCheck: vi.fn(),
+  cancelDeviceHealthCheck: vi.fn(),
   chooseSavePath: vi.fn(),
   downloadBackendResource: vi.fn(),
   openPath: vi.fn(),
@@ -28,9 +33,11 @@ const mocks = vi.hoisted(() => ({
   routerPush: vi.fn(),
   getActiveSite: vi.fn(),
   deviceQueryStore: {
-    activateSite: vi.fn(() => ({
-      search: '', group: '', vendor: '', device_type: '', connection_status: '',
-      project_phase: 'all', work_scope_status: 'included', sort_by: 'default',
+    activateSite: vi.fn((_siteId?: string): DeviceManagementQueryState => ({
+      search: '', group: '', vendor: '', device_type: '', connection_status: '', project_phase: 'all', work_scope_status: 'included',
+      group_values: [], vendor_values: [], device_category_values: [], device_subcategory_values: [],
+      device_type_values: [], connection_status_values: [], project_phase_values: [],
+      work_scope_status_values: ['included'], sort_by: 'default',
       sort_order: 'asc', page: 1, page_size: 50,
     })),
     save: vi.fn(),
@@ -51,6 +58,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../api/deviceManagement')>(),
   listDevices: mocks.listDevices,
+  listDeviceGroups: mocks.listDeviceGroups,
+  getDeviceGroupTotals: mocks.getDeviceGroupTotals,
   getDeviceEditProfile: mocks.getDeviceEditProfile,
   revealDeviceCredential: mocks.revealDeviceCredential,
   getDeviceConnectionTest: mocks.getDeviceConnectionTest,
@@ -66,13 +75,19 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   startDeviceDiagnosticDownload: mocks.startDeviceDiagnosticDownload,
   startDeviceCsvExport: mocks.startDeviceCsvExport,
   startDeviceTemplateExport: mocks.startDeviceTemplateExport,
+  startDeviceHealthCheck: mocks.startDeviceHealthCheck,
+  getDeviceHealthCheck: mocks.getDeviceHealthCheck,
+  cancelDeviceHealthCheck: mocks.cancelDeviceHealthCheck,
 }))
 
 vi.mock('../../features', () => ({ isFeatureEnabled: mocks.featureEnabled }))
 vi.mock('../../api/siteStorage', () => ({ getActiveSite: mocks.getActiveSite }))
 vi.mock('../../stores/deviceManagement', () => ({ useDeviceManagementQueryStore: () => mocks.deviceQueryStore }))
 vi.mock('../../stores/tasks', () => ({ useTaskStore: () => mocks.taskStore }))
-vi.mock('vue-router', () => ({ useRouter: () => ({ push: mocks.routerPush }) }))
+vi.mock('vue-router', () => ({
+  useRoute: () => ({ query: {} }),
+  useRouter: () => ({ push: mocks.routerPush }),
+}))
 vi.mock('../../platform/runtime', () => ({
   downloadBackendResource: mocks.downloadBackendResource,
   getRuntimeConfig: () => ({ hostType: 'electron', apiBaseUrl: '', apiToken: '' }),
@@ -96,10 +111,51 @@ import DeviceManagementView from './DeviceManagementView.vue'
 import { ApiRequestError } from '../../api/client'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
+import type { DeviceManagementQueryState } from '../../types/deviceManagement'
 import {
   resetUserSelectedExportForTests,
   saveReadyArtifact,
 } from '../../composables/useUserSelectedExport'
+
+const classificationCatalog = {
+  version: 'smarthub-device-v1.0.9-r6',
+  vendors: [
+    {
+      code: 'H3C', value: 'H3C', label: '新华三',
+      categories: [
+        {
+          code: 'NETWORK', label: '网络设备',
+          subcategories: [
+            { code: 'SWITCH', label: '交换机', device_roles: ['SW'] },
+            { code: 'WIRELESS', label: '无线', device_roles: ['AC', 'Cloud-AP', 'FAT-AP'] },
+          ],
+        },
+        {
+          code: 'SERVER', label: '服务器',
+          subcategories: [{ code: 'H3C_SERVER', label: 'H3C 服务器', device_roles: [] }],
+        },
+      ],
+    },
+    {
+      code: 'HUAWEI', value: 'Huawei', label: '华为',
+      categories: [{
+        code: 'NETWORK', label: '网络设备',
+        subcategories: [{ code: 'SWITCH', label: '交换机', device_roles: ['SW'] }],
+      }],
+    },
+  ],
+}
+
+const deviceCategories = [
+  {
+    code: 'NETWORK', label: '网络设备', subtypes: ['SW', 'AC', 'Cloud-AP', 'FAT-AP'],
+    subcategories: [{ code: 'SWITCH', label: '交换机' }, { code: 'WIRELESS', label: '无线' }],
+  },
+  {
+    code: 'SERVER', label: '服务器', subtypes: [],
+    subcategories: [{ code: 'H3C_SERVER', label: 'H3C 服务器' }],
+  },
+]
 
 const listItem = {
   id: 1,
@@ -110,7 +166,15 @@ const listItem = {
   group_id: 1,
   group_name: '车载 MR',
   device_vendor: 'H3C',
+  vendor_label: '新华三',
+  device_category: 'NETWORK',
+  device_category_label: '网络设备',
+  device_subcategory: 'WIRELESS',
+  device_subcategory_label: '无线',
+  device_role: 'AC',
   device_type: 'AC',
+  device_model: 'WX5540E',
+  model: 'WX5540E',
   project_phase: 'phase_2',
   work_scope_status: 'included',
   work_scope_reason: '当前二期调试范围',
@@ -171,7 +235,9 @@ const detail = {
 
 const editProfile = {
   device_uuid: 'device-1',
-  name: 'MR2', system_name: 'MR-02', station: '车站 A', location: '', group_id: 1, device_vendor: 'H3C', device_type: 'AC',
+  name: 'MR2', system_name: 'MR-02', station: '车站 A', location: '', group_id: 1,
+  device_vendor: 'H3C', device_type: 'AC', device_role: 'AC',
+  device_category: 'NETWORK', device_subcategory: 'WIRELESS',
   primary_address: '192.0.2.12', backup_address: '',
   ssh_enabled: true, ssh_port: 22, ssh_username: 'admin', telnet_enabled: false, telnet_port: 23, telnet_username: '',
   tunnel_enabled: false, tunnel1_enabled: false, tunnel1_host: '', tunnel1_port: 22, tunnel1_username: '',
@@ -289,6 +355,57 @@ const inputStub = defineComponent({
   },
 })
 
+const selectStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    modelValue: { type: [String, Number], default: '' },
+    disabled: Boolean,
+  },
+  emits: ['update:modelValue', 'change'],
+  setup(props, { attrs, emit, slots }) {
+    return () => h('select', {
+      ...attrs,
+      value: props.modelValue,
+      disabled: props.disabled,
+      onChange: (event: Event) => {
+        const value = (event.target as HTMLSelectElement).value
+        emit('update:modelValue', value)
+        emit('change', value)
+      },
+    }, slots.default?.())
+  },
+})
+
+const optionStub = defineComponent({
+  inheritAttrs: false,
+  props: {
+    label: { type: String, default: '' },
+    value: { type: [String, Number], default: '' },
+    disabled: Boolean,
+  },
+  setup(props, { attrs }) {
+    return () => h('option', {
+      ...attrs,
+      label: props.label,
+      value: props.value,
+      disabled: props.disabled,
+    }, props.label)
+  },
+})
+
+const cascaderStub = defineComponent({
+  name: 'ElCascaderStub',
+  inheritAttrs: false,
+  props: {
+    modelValue: { type: Array, default: () => [] },
+    options: { type: Array, default: () => [] },
+  },
+  emits: ['update:modelValue', 'change'],
+  setup(_props, { attrs }) {
+    return () => h('div', attrs)
+  },
+})
+
 const checkboxStub = defineComponent({
   inheritAttrs: false,
   props: { modelValue: Boolean, disabled: Boolean },
@@ -339,6 +456,7 @@ const elementStubs: Record<string, Component | boolean> = {
   teleport: true,
   ElAlert: passthrough,
   ElButton: buttonStub,
+  ElCascader: cascaderStub,
   ElCheckbox: checkboxStub,
   ElDescriptions: passthrough,
   ElDescriptionsItem: passthrough,
@@ -352,9 +470,9 @@ const elementStubs: Record<string, Component | boolean> = {
   ElFormItem: passthrough,
   ElInput: inputStub,
   ElInputNumber: inputStub,
-  ElOption: passthrough,
+  ElOption: optionStub,
   ElPagination: passthrough,
-  ElSelect: passthrough,
+  ElSelect: selectStub,
   ElTabPane: passthrough,
   ElTabs: passthrough,
   ElTable: tableStub,
@@ -384,11 +502,24 @@ beforeEach(() => {
   document.body.innerHTML = ''
   window.sessionStorage.clear()
   mocks.getActiveSite.mockResolvedValue({ site_id: 'test-site', display_name: '测试局点' })
+  mocks.deviceQueryStore.activateSite.mockImplementation(() => ({
+    search: '', group: '', vendor: '', device_type: '', connection_status: '', project_phase: 'all', work_scope_status: 'included',
+    group_values: [], vendor_values: [], device_type_values: [],
+    device_category_values: [], device_subcategory_values: [], connection_status_values: [],
+    project_phase_values: [], work_scope_status_values: ['included'], sort_by: 'default',
+    sort_order: 'asc', page: 1, page_size: 50,
+  }))
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: mocks.clipboardWrite },
   })
-  mocks.listDevices.mockResolvedValue({ items: [listItem], groups: [{ id: 1, name: '车载 MR' }], site_name: '测试局点', total: 1, page: 1, page_size: 50, total_pages: 1 })
+  mocks.getDeviceGroupTotals.mockResolvedValue({ total: 1, ungrouped: 0 })
+  mocks.listDeviceGroups.mockResolvedValue([{ id: 1, name: '车载 MR', device_count: 1 }])
+  mocks.listDevices.mockResolvedValue({
+    items: [listItem], groups: [{ id: 1, name: '车载 MR' }],
+    categories: deviceCategories, classification_catalog: classificationCatalog,
+    site_name: '测试局点', total: 1, page: 1, page_size: 50, total_pages: 1,
+  })
   mocks.getDeviceEditProfile.mockResolvedValue(editProfile)
   mocks.revealDeviceCredential.mockResolvedValue({ device_uuid: 'device-1', credential_field: 'ssh_password', value: 'stored-ssh-password' })
   mocks.updateDevice.mockResolvedValue({ action: 'updated', device: detail.device })
@@ -475,6 +606,31 @@ beforeEach(() => {
     result_status: 'ok', failure_category: '', message: 'SSH 连接成功', safe_message: 'SSH 连接成功', method: 'primary_direct', host: '192.0.2.12', port: 22, latency_ms: 3, elapsed_ms: 3, tested_at: '2026-07-22T00:00:00Z', system_name: 'MR-02',
     model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '',
   })
+  mocks.startDeviceHealthCheck.mockResolvedValue({
+    task_id: 'health-check-1', task_status: 'RUNNING', terminal: false,
+    stage: 'health_check', current: 0, total: 1, message: '正在检查设备运行状态',
+    connection_timeout_seconds: 10, command_timeout_seconds: 120,
+    summary: { total: 0, success: 0, partial_success: 0, failed: 0, not_supported: 0, cancelled: 0 },
+    items: [],
+  })
+  mocks.getDeviceHealthCheck.mockResolvedValue({
+    task_id: 'health-check-1', task_status: 'COMPLETED', terminal: true,
+    stage: 'health_check', current: 1, total: 1, message: '设备健康检查完成',
+    connection_timeout_seconds: 10, command_timeout_seconds: 120,
+    summary: { total: 1, success: 1, partial_success: 0, failed: 0, not_supported: 0, cancelled: 0 },
+    items: [{
+      device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12',
+      status: 'SUCCESS', health_state: 'OBSERVED', profile_id: 'h3c-comware', message: '',
+      metrics: [{ code: 'uptime', label: '系统运行时间', status: 'OBSERVED', value: '3 days', message: '' }],
+    }],
+  })
+  mocks.cancelDeviceHealthCheck.mockResolvedValue({
+    task_id: 'health-check-1', task_status: 'CANCELLED', terminal: true,
+    stage: 'health_check', current: 0, total: 1, message: '任务已取消',
+    connection_timeout_seconds: 10, command_timeout_seconds: 120,
+    summary: { total: 0, success: 0, partial_success: 0, failed: 0, not_supported: 0, cancelled: 0 },
+    items: [],
+  })
   mocks.getExternalTerminalSettings.mockResolvedValue({
     terminal_type: 'securecrt',
     securecrt_path: 'C:/Tools/SecureCRT.exe',
@@ -511,6 +667,160 @@ afterEach(() => {
 })
 
 describe('DeviceManagementView mounted interactions', () => {
+  it('uses the SmartHub vendor, category and subcategory cascade', async () => {
+    const wrapper = await renderView()
+    await wrapper.findAll('button').find((button) => button.text() === '新建设备')!.trigger('click')
+    await flushPromises()
+
+    const cascade = wrapper.findComponent({ name: 'ElCascaderStub' })
+    const options = cascade.props('options') as Array<{
+      label: string
+      children: Array<{ label: string; children: Array<{ label: string; disabled: boolean }> }>
+    }>
+    expect(options.map((vendor) => vendor.label)).toEqual(['新华三', '华为'])
+    expect(options[0].children.map((category) => category.label)).toEqual(['网络设备', '服务器'])
+    expect(options[0].children[1].children[0]).toEqual(expect.objectContaining({ label: 'H3C 服务器', disabled: true }))
+    expect(cascade.props('modelValue')).toEqual(['H3C', 'NETWORK', 'SWITCH'])
+    expect((wrapper.get('select[data-testid="device-role"]').element as HTMLSelectElement).value).toBe('SW')
+
+    cascade.vm.$emit('update:modelValue', ['Huawei'])
+    await flushPromises()
+    expect(cascade.props('modelValue')).toEqual(['Huawei'])
+    expect((wrapper.get('[data-testid="device-role"] input').element as HTMLInputElement).value).toBe('Other')
+
+    cascade.vm.$emit('update:modelValue', ['H3C', 'NETWORK'])
+    await flushPromises()
+    expect(cascade.props('modelValue')).toEqual(['H3C', 'NETWORK'])
+    expect((wrapper.get('[data-testid="device-role"] input').element as HTMLInputElement).value).toBe('Other')
+
+    cascade.vm.$emit('update:modelValue', ['H3C', 'NETWORK', 'WIRELESS'])
+    await flushPromises()
+    const role = wrapper.get('select[data-testid="device-role"]')
+    expect(role.text()).toContain('AC')
+    expect(role.text()).toContain('Cloud-AP')
+    expect(role.text()).toContain('FAT-AP')
+    wrapper.unmount()
+  })
+
+  it('rehydrates the existing classification when editing a device', async () => {
+    const wrapper = await renderView()
+    await openEdit(wrapper)
+
+    expect(wrapper.findComponent({ name: 'ElCascaderStub' }).props('modelValue')).toEqual(['H3C', 'NETWORK', 'WIRELESS'])
+    expect((wrapper.get('select[data-testid="device-role"]').element as HTMLSelectElement).value).toBe('AC')
+    wrapper.unmount()
+  })
+
+  it('shows server group totals independently of the current page', async () => {
+    mocks.listDeviceGroups.mockResolvedValue([{ id: 1, name: '车载 MR', device_count: 42 }])
+    const wrapper = await renderView()
+    expect(wrapper.get('.device-groups').text()).toContain('车载 MR (42)')
+    expect(mocks.listDeviceGroups).toHaveBeenCalled()
+  })
+
+  it('reloads server totals when the active site changes', async () => {
+    const wrapper = await renderView()
+    expect(wrapper.get('.device-groups').text()).toContain('全部设备 (1)')
+    mocks.getActiveSite.mockResolvedValue({ site_id: 'other-site', display_name: '其他局点' })
+    mocks.getDeviceGroupTotals.mockResolvedValue({ total: 7, ungrouped: 3 })
+    window.dispatchEvent(new CustomEvent('netconsole:current-site-changed'))
+    await flushPromises()
+    expect(wrapper.get('.device-groups').text()).toContain('全部设备 (7)')
+    expect(wrapper.get('.device-groups').text()).toContain('未分组 (3)')
+  })
+
+  it('restores classification filters from the newly active Site only', async () => {
+    mocks.deviceQueryStore.activateSite.mockImplementation((siteId?: string): DeviceManagementQueryState => ({
+      search: '', group: '', vendor: '', device_type: '', connection_status: '', project_phase: 'all', work_scope_status: 'included',
+      group_values: [], vendor_values: [], device_type_values: [],
+      device_category_values: siteId === 'other-site' ? ['NETWORK'] : ['SERVER'],
+      device_subcategory_values: siteId === 'other-site' ? ['SWITCH'] : ['H3C_SERVER'],
+      connection_status_values: [], project_phase_values: [], work_scope_status_values: ['included'],
+      sort_by: 'default', sort_order: 'asc', page: 1, page_size: 50,
+    }))
+    const wrapper = await renderView()
+    expect(mocks.listDevices).toHaveBeenLastCalledWith(expect.objectContaining({
+      device_category_values: ['SERVER'],
+      device_subcategory_values: ['H3C_SERVER'],
+    }))
+
+    mocks.getActiveSite.mockResolvedValue({ site_id: 'other-site', display_name: '其他局点' })
+    window.dispatchEvent(new CustomEvent('netconsole:current-site-changed'))
+    await flushPromises()
+
+    expect(mocks.listDevices).toHaveBeenLastCalledWith(expect.objectContaining({
+      device_category_values: ['NETWORK'],
+      device_subcategory_values: ['SWITCH'],
+    }))
+    wrapper.unmount()
+  })
+
+  it('ignores a stale response after switching group', async () => {
+    const wrapper = await renderView()
+    let resolveOld!: (value: unknown) => void
+    const old = new Promise((resolve) => { resolveOld = resolve })
+    mocks.listDevices.mockImplementationOnce(() => old)
+    const buttons = wrapper.findAll('.device-groups > button')
+    await buttons.find((button) => button.text().startsWith('车载 MR'))!.trigger('click')
+    await buttons.find((button) => button.text().startsWith('全部设备'))!.trigger('click')
+    await flushPromises()
+    resolveOld({ items: [], groups: [], site_name: '旧结果', total: 0, page: 1, page_size: 50, total_pages: 1 })
+    await flushPromises()
+    expect(wrapper.get('.device-groups').text()).toContain('车载 MR')
+    expect(wrapper.find('[data-testid="select-first-device"]').exists()).toBe(true)
+  })
+
+  it('queries the selected group and returns to all devices', async () => {
+    const wrapper = await renderView()
+    const buttons = wrapper.findAll('.device-groups > button')
+    await buttons.find((button) => button.text().startsWith('车载 MR'))!.trigger('click')
+    await flushPromises()
+    expect(mocks.listDevices).toHaveBeenLastCalledWith(expect.objectContaining({ group_values: ['1'], page: 1 }))
+    await buttons.find((button) => button.text().startsWith('全部设备'))!.trigger('click')
+    await flushPromises()
+    expect(mocks.listDevices).toHaveBeenLastCalledWith(expect.objectContaining({ group_values: [], page: 1 }))
+  })
+
+  it('submits a health check, polls to a terminal result and renders observed metrics', async () => {
+    vi.useFakeTimers()
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="select-first-device"]').trigger('click')
+    const healthButton = wrapper.findAll('button').find((button) => button.text() === '健康检查')
+    expect(healthButton).toBeTruthy()
+
+    await healthButton!.trigger('click')
+    await flushPromises()
+    expect(mocks.startDeviceHealthCheck).toHaveBeenCalledWith(['device-1'])
+
+    await vi.advanceTimersByTimeAsync(800)
+    await flushPromises()
+    expect(mocks.getDeviceHealthCheck).toHaveBeenCalledWith('health-check-1')
+    expect(wrapper.text()).toContain('成功 1')
+    expect(wrapper.text()).toContain('系统运行时间')
+    expect(wrapper.text()).toContain('3 days')
+    expect(healthButton!.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('cancels an active health check and clears the submitting state on a terminal response', async () => {
+    const wrapper = await renderView()
+    await wrapper.get('[data-testid="select-first-device"]').trigger('click')
+    const healthButton = wrapper.findAll('button').find((button) => button.text() === '健康检查')
+    await healthButton!.trigger('click')
+    await flushPromises()
+
+    const cancelButton = wrapper.findAll('button').find((button) => button.text() === '取消任务')
+    expect(cancelButton).toBeTruthy()
+    await cancelButton!.trigger('click')
+    await flushPromises()
+
+    expect(mocks.cancelDeviceHealthCheck).toHaveBeenCalledWith('health-check-1')
+    expect(wrapper.text()).toContain('任务已取消')
+    expect(wrapper.findAll('button').find((button) => button.text() === '取消任务')).toBeUndefined()
+    expect(healthButton!.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it('queries and exports the same WPS multi-select group and connection-status filters', async () => {
     const wrapper = await renderView()
     const pick = async (placeholder: string, values: string[]) => {

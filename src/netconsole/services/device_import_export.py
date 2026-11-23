@@ -19,6 +19,12 @@ from netconsole.models.device import (
     validate_device_vendor_type,
 )
 from netconsole.models.device_address import normalize_ip_address
+from netconsole.models.device_classification import (
+    classify_device,
+    normalize_category_code,
+    normalize_subcategory_code,
+    validate_classification_selection,
+)
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.utils.text_encoding import FILE_ENCODING_ERROR, TEXT_ENCODINGS
@@ -71,21 +77,29 @@ OPERATION_STATUS_TEMPLATE_FIELDS = [
     "投运状态",
     "投运状态说明",
 ]
-DEVICE_CSV_COLUMNS = [
+R5_DEVICE_CSV_COLUMNS = [
     *IDENTITY_TEMPLATE_FIELDS,
     "建设阶段",
     "当前工作状态",
     "当前工作状态说明",
 ]
+DEVICE_CSV_COLUMNS = [
+    *R5_DEVICE_CSV_COLUMNS,
+    "产品大类",
+    "设备子类",
+    "设备角色",
+]
 TEMPLATE_FIELDS = DEVICE_CSV_COLUMNS
 
 TEMPLATE_EXAMPLE_ROWS = [
-    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例", "", "", "未指定", "参与当前调试", ""],
-    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例", "", "", "二期", "暂不参与", "示例：设备仍可由用户明确发起手动调试"],
-    ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例", "", "", "未指定", "参与当前调试", ""],
+    ["核心交换机-示例", "192.168.1.1", "", "SSH", "22", "admin", "Admin@123", "H3C", "SW", "COCC", "控制中心", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "SSH设备示例", "", "", "未指定", "参与当前调试", "", "网络设备", "交换机", "SW"],
+    ["无线控制器-示例", "192.168.1.10", "192.168.2.10", "SSH", "22", "admin", "Admin@123", "H3C", "AC", "COCC", "控制中心", "是", "10.0.0.10", "22", "jump", "Jump@123", "", "", "", "", "是", "是", "是", "161", "public", "2000", "1", "主备地址+隧道示例", "", "", "二期", "暂不参与", "示例：设备仍可由用户明确发起手动调试", "网络设备", "无线", "AC"],
+    ["列车01-MR-CT", "10.122.1.249", "10.122.89.101", "SSH", "22", "admin", "Admin@123", "H3C", "MR", "车载-MR", "01车车头", "否", "", "", "", "", "", "", "", "", "是", "否", "是", "161", "public", "2000", "1", "车载 MR 示例", "", "", "未指定", "参与当前调试", "", "网络设备", "无线", "MR"],
 ]
 TEMPLATE_REFERENCE_ROW_KEYS = {
     tuple(str(value).strip() for value in row) for row in TEMPLATE_EXAMPLE_ROWS
+} | {
+    tuple(str(value).strip() for value in row[:-3]) for row in TEMPLATE_EXAMPLE_ROWS
 }
 
 TEMPLATE_FIELD_MAP = {
@@ -132,6 +146,9 @@ TEMPLATE_FIELD_MAP = {
     "当前工作状态说明": "work_scope_reason",
     "投运状态": "operation_status",
     "投运状态说明": "operation_status_reason",
+    "产品大类": "device_category",
+    "设备子类": "device_subcategory",
+    "设备角色": "device_role",
 }
 
 EXPORT_FIELDS = DEVICE_CSV_COLUMNS
@@ -615,6 +632,13 @@ class DeviceImportExportService:
     @staticmethod
     def _export_value(device: Device, field: str, group_names: dict[int, str]) -> object:
         mapped = TEMPLATE_FIELD_MAP[field]
+        classification = classify_device(device.device_vendor, device.device_type)
+        if mapped == "device_category":
+            return classification.category_label
+        if mapped == "device_subcategory":
+            return classification.subcategory_label
+        if mapped == "device_role":
+            return classification.device_role
         if mapped == "group_name":
             return group_names.get(int(device.group_id or 0), "")
         if mapped == "device_id":
@@ -679,6 +703,17 @@ class DeviceImportExportService:
         payload["device_vendor"], payload["device_type"] = validate_device_vendor_type(
             payload["device_vendor"], payload["device_type"]
         )
+        device_role = str(payload.get("device_role") or payload["device_type"]).strip()
+        if device_role != payload["device_type"]:
+            raise ValueError("设备角色与兼容设备类型不一致")
+        category = normalize_category_code(payload.get("device_category"))
+        subcategory = normalize_subcategory_code(payload.get("device_subcategory"))
+        validate_classification_selection(
+            payload["device_vendor"], category, subcategory, device_role
+        )
+        payload.pop("device_role", None)
+        payload.pop("device_category", None)
+        payload.pop("device_subcategory", None)
         payload.setdefault("ssh_enabled", 1)
         payload.setdefault("ssh_port", 22)
         payload.setdefault("telnet_enabled", 0)
@@ -762,6 +797,8 @@ class DeviceImportExportService:
     def _detect_mode(headers: list[str]) -> str:
         if headers == TEMPLATE_FIELDS:
             return "template"
+        if headers == R5_DEVICE_CSV_COLUMNS:
+            return "r5_template"
         if headers == OPERATION_STATUS_TEMPLATE_FIELDS:
             return "operation_status_template"
         if headers == IDENTITY_TEMPLATE_FIELDS:

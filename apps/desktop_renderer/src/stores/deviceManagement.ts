@@ -15,6 +15,8 @@ export const DEVICE_MANAGEMENT_QUERY_DEFAULTS: DeviceManagementQueryState = {
   group_values: [],
   vendor_values: [],
   device_type_values: [],
+  device_category_values: [],
+  device_subcategory_values: [],
   project_phase_values: [],
   work_scope_status_values: ['included'],
   sort_by: 'default',
@@ -30,6 +32,8 @@ function copyState(state: DeviceManagementQueryState): DeviceManagementQueryStat
     connection_status_values: [...state.connection_status_values],
     vendor_values: [...state.vendor_values],
     device_type_values: [...state.device_type_values],
+    device_category_values: [...state.device_category_values],
+    device_subcategory_values: [...state.device_subcategory_values],
     project_phase_values: [...state.project_phase_values],
     work_scope_status_values: [...state.work_scope_status_values],
   }

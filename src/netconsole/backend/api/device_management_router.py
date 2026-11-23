@@ -46,7 +46,10 @@ from netconsole.models.api.device_management import (
     DeviceGroupAssignmentRequestDTO,
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
+    DeviceGroupTotalsDTO,
     DeviceGroupRequestDTO,
+    DeviceHealthCheckRequestDTO,
+    DeviceHealthCheckTaskDTO,
     DeviceClassificationUpdateDTO,
     DeviceClassificationUpdateRequestDTO,
     DeviceImportConfirmRequestDTO,
@@ -129,6 +132,8 @@ def list_devices(
     group_values: list[str] | None = Query(default=None),
     vendor_values: list[str] | None = Query(default=None),
     device_type_values: list[str] | None = Query(default=None),
+    device_category_values: list[str] | None = Query(default=None),
+    device_subcategory_values: list[str] | None = Query(default=None),
     project_phase_values: list[str] | None = Query(default=None),
     work_scope_status_values: list[str] | None = Query(default=None),
     page: int = Query(default=1, ge=1),
@@ -153,6 +158,8 @@ def list_devices(
             group_values=group_values,
             vendor_values=vendor_values,
             device_type_values=device_type_values,
+            device_category_values=device_category_values,
+            device_subcategory_values=device_subcategory_values,
             project_phase_values=project_phase_values,
             work_scope_status_values=work_scope_status_values,
             page=page,
@@ -163,6 +170,11 @@ def list_devices(
         request=request,
         operation="list_devices",
     )
+
+
+@router.get("/groups/totals", response_model=DeviceGroupTotalsDTO)
+def group_totals(request: Request) -> DeviceGroupTotalsDTO:
+    return _query(lambda: _service(request).group_totals())
 
 
 @router.get("/groups", response_model=list[DeviceGroupDTO])
@@ -315,6 +327,50 @@ def batch_connection_tests(
     request: Request, payload: DeviceBatchConnectionRequestDTO
 ) -> DeviceTaskBatchDTO:
     return _query(lambda: _service(request).start_batch_connection_tests(payload))
+
+
+@router.post(
+    "/health-checks",
+    response_model=DeviceHealthCheckTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_feature("capability.devices.collect"))],
+)
+def start_health_check(
+    request: Request, payload: DeviceHealthCheckRequestDTO
+) -> DeviceHealthCheckTaskDTO:
+    service = _service(request)
+    return _not_found(
+        lambda: service.health_check_service.start(
+            payload.device_uuids,
+            concurrency_limit=payload.concurrency_limit,
+            site_name=service.current_site_id(),
+        ),
+        "设备不存在",
+    )
+
+
+@router.get("/health-checks/{task_id}", response_model=DeviceHealthCheckTaskDTO)
+def get_health_check(request: Request, task_id: str) -> DeviceHealthCheckTaskDTO:
+    service = _service(request)
+    return _not_found(
+        lambda: service.health_check_service.get(
+            task_id, site_name=service.current_site_id()
+        ),
+        "健康检查任务不存在",
+    )
+
+
+@router.post(
+    "/health-checks/{task_id}/cancel", response_model=DeviceHealthCheckTaskDTO
+)
+def cancel_health_check(request: Request, task_id: str) -> DeviceHealthCheckTaskDTO:
+    service = _service(request)
+    return _not_found(
+        lambda: service.health_check_service.cancel(
+            task_id, site_name=service.current_site_id()
+        ),
+        "健康检查任务不存在",
+    )
 
 
 @router.post(

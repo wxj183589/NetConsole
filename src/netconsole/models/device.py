@@ -4,6 +4,13 @@ from dataclasses import MISSING, dataclass, fields
 from enum import StrEnum
 from uuid import UUID, uuid4
 
+from netconsole.models.device_classification import (
+    CATEGORY_LABELS as DEVICE_CATEGORY_LABELS,
+    ROLE_TO_SUBCATEGORY,
+    UNCLASSIFIED as DEVICE_CATEGORY_UNCLASSIFIED,
+    classify_device,
+)
+
 
 class DeviceVendor(StrEnum):
     H3C = "H3C"
@@ -41,6 +48,35 @@ _DEVICE_VENDOR_ALIASES = {
     "其他": "other",
 }
 DEVICE_TYPES = ("AC", "SW", "FW", "Route", "Cloud-AP", "FAT-AP", "MR", "Other")
+
+DEVICE_CATEGORY_NETWORK = "NETWORK"
+DEVICE_TYPE_CATEGORY = {
+    role: category for role, (category, _subcategory) in ROLE_TO_SUBCATEGORY.items()
+}
+DEVICE_TYPE_CATEGORY["Other"] = DEVICE_CATEGORY_UNCLASSIFIED
+
+
+def device_category_for_type(device_type: object, vendor: object = "H3C") -> str:
+    """Compatibility helper; new code should use classify_device()."""
+
+    return classify_device(vendor, device_type).category_code
+
+
+def device_types_for_categories(values: object) -> tuple[set[str], bool]:
+    """Legacy role projection retained for older callers."""
+
+    if values is None:
+        return set(), False
+    selected = {str(value).strip().upper() for value in values if str(value).strip()}
+    unknown = selected - set(DEVICE_CATEGORY_LABELS)
+    if unknown:
+        raise ValueError(f"不支持的设备大类：{', '.join(sorted(unknown))}")
+    mapped = {
+        role
+        for role, category in DEVICE_TYPE_CATEGORY.items()
+        if category in selected and role != "Other"
+    }
+    return mapped, DEVICE_CATEGORY_UNCLASSIFIED in selected
 
 
 class ProjectPhase(StrEnum):

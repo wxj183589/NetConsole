@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElButton, ElMessage, ElNotification } from 'element-plus'
-import { useRouter } from 'vue-router'
-import { Connection, Delete, Edit, FolderOpened, Hide, MoreFilled, Plus, Refresh, View } from '@element-plus/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Connection, Delete, Edit, FolderOpened, Grid, Hide, MoreFilled, Plus, Refresh, View } from '@element-plus/icons-vue'
 
 import { ApiRequestError } from '../../api/client'
 import { isFeatureEnabled } from '../../features'
@@ -10,8 +10,11 @@ import {
   getDeviceEditProfile,
   getDeviceConnectionTest,
   getBatchRefresh,
+  getDeviceHealthCheck,
   getExternalTerminalSettings,
   listDevices,
+  listDeviceGroups,
+  getDeviceGroupTotals,
   assignDeviceGroup,
   confirmDeviceImport,
   createDevice,
@@ -25,6 +28,8 @@ import {
   revealDeviceCredential,
   startBatchRefreshDetails,
   startBatchConnectionTests,
+  startDeviceHealthCheck,
+  cancelDeviceHealthCheck,
   startDeviceCsvExport,
   startDeviceFormConnectionTest,
   startDeviceDiagnosticDownload,
@@ -53,10 +58,6 @@ import type {
   NcDataTableContextMenuItem,
 } from '../../components/table/NcDataTableContextMenu'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
-import {
-  DEVICE_VENDOR_OPTIONS,
-  formatDeviceVendor,
-} from '../../types/deviceManagement'
 import type {
   DeviceConnectionProtocol,
   DeviceConnectionStatus,
@@ -71,6 +72,7 @@ import type {
   DeviceImportRowResult,
   DeviceImportWriteMode,
   DeviceListItem,
+  DeviceGroup,
   DeviceListSortField,
   ProjectPhase,
   WorkScopeStatus,
@@ -78,6 +80,8 @@ import type {
   DeviceSecretField,
   DeviceTaskReference,
   DeviceTaskBatch,
+  DeviceHealthCheckItem,
+  DeviceHealthCheckTask,
   DeviceVendor,
   DeviceWriteRequest,
 } from '../../types/deviceManagement'
@@ -109,9 +113,10 @@ interface TableSelectionController<Row> {
   toggleRowSelection(row: Row, selected?: boolean): void
 }
 
-const emptyPage = (): DevicePage => ({ items: [], groups: [], site_name: '', total: 0, page: 1, page_size: 50, total_pages: 1 })
+const emptyPage = (): DevicePage => ({ items: [], groups: [], categories: [], classification_catalog: { version: '', vendors: [] }, site_name: '', total: 0, page: 1, page_size: 50, total_pages: 1 })
 const DEVICE_TYPE_OPTIONS = ['AC', 'SW', 'FW', 'Route', 'Cloud-AP', 'FAT-AP', 'MR', 'Other'] as const
 const router = useRouter()
+const route = useRoute()
 const { confirm } = useConfirm()
 const queryStore = useDeviceManagementQueryStore()
 const taskStore = useTaskStore()
@@ -125,6 +130,10 @@ const {
 const loading = ref(false)
 const error = ref('')
 const pageData = ref<DevicePage>(emptyPage())
+const groupCounts = ref<DeviceGroup[]>([])
+const groupTotals = ref<{ total: number; ungrouped: number } | null>(null)
+const groupsExpanded = ref(true)
+let deviceRequestGeneration = 0
 const detailVisible = ref(false)
 const detailDeviceUuid = ref('')
 const detailDrawerWidthPx = ref(0)
@@ -148,6 +157,9 @@ const batchRefreshSubmitting = ref(false)
 const batchRefreshTargetCount = ref(0)
 const batchRefresh = ref<DeviceTaskBatch | null>(null)
 const batchRefreshDetailsVisible = ref(false)
+const healthCheck = ref<DeviceHealthCheckTask | null>(null)
+const healthCheckVisible = ref(false)
+const healthCheckSubmitting = ref(false)
 const deviceTable = ref<TableSelectionController<DeviceListItem>>()
 const groupVisible = ref(false)
 const groupName = ref('')
@@ -159,6 +171,7 @@ const classificationValue = ref<ProjectPhase | WorkScopeStatus>('unspecified')
 const classificationReason = ref('')
 const classificationTargetUuids = ref<string[]>([])
 const classificationLoading = ref(false)
+const importTaskIds = ref<string[]>([])
 const importVisible = ref(false)
 const importFile = ref<File | null>(null)
 const importFileInput = ref<HTMLInputElement | null>(null)
@@ -181,6 +194,7 @@ let connectionTestRefreshQueued = false
 let batchRefreshPollTimer: ReturnType<typeof setTimeout> | null = null
 let batchRefreshGeneration = 0
 let activeBatchRefreshId = ''
+let healthCheckPollTimer: ReturnType<typeof setTimeout> | null = null
 const csvExportSubmitting = ref(false)
 const templateExportSubmitting = ref(false)
 const csvExportScopeVisible = ref(false)
@@ -209,6 +223,8 @@ const filters = reactive({
   group_values: [] as string[],
   vendor_values: [] as string[],
   device_type_values: [] as string[],
+  device_category_values: [] as string[],
+  device_subcategory_values: [] as string[],
   project_phase_values: [] as string[],
   work_scope_status_values: ['included'] as string[],
   sort_by: 'default' as DeviceListSortField,
@@ -224,32 +240,52 @@ const advancedFilterCount = computed(() => [
   filters.sort_by !== 'default' || filters.sort_order !== 'asc' ? 1 : 0,
 ].filter(Boolean).length)
 const advancedFiltersActive = computed(() => advancedFilterCount.value > 0)
+const categoryRows = computed(() => pageData.value.categories ?? [])
+const categoryLabels = computed(() => Object.fromEntries(categoryRows.value.map((item) => [item.code, item.label])))
+const categoryOptions = computed(() => categoryRows.value.map((item) => item.code))
+const subcategoryLabels = computed(() => Object.fromEntries(
+  categoryRows.value.flatMap((item) => item.subcategories.map((subcategory) => [subcategory.code, subcategory.label])),
+))
+const subtypeOptions = computed(() => {
+  if (!filters.device_category_values.length) return [...new Set(categoryRows.value.flatMap((item) => item.subcategories.map((subcategory) => subcategory.code)))]
+  const selected = new Set(filters.device_category_values)
+  const values = categoryRows.value
+    .filter((item) => selected.has(item.code))
+    .flatMap((item) => item.subcategories.map((subcategory) => subcategory.code))
+  return [...new Set(values)]
+})
+const catalogVendors = computed(() => pageData.value.classification_catalog?.vendors ?? [])
+const vendorFilterOptions = computed(() => catalogVendors.value.map((vendor) => ({ value: vendor.value, label: vendor.label })))
 const activeSiteId = ref('')
 let queryStateReady = false
 let siteContextGeneration = 0
 const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'selection', label: '', type: 'selection', valueType: 'selection', fixed: 'left', hideable: false, stretch: 'none' },
   { key: 'name', label: '名称', valueType: 'name', fixed: 'left', stretch: 'priority', stretchWeight: 4 },
-  { key: 'group_name', label: '分组', valueType: 'text', stretch: 'normal' },
-  { key: 'device_vendor', label: '厂商', valueType: 'text', stretch: 'normal', displayValue: (row) => formatDeviceVendor(row.device_vendor) },
-  { key: 'collection_support', label: '采集支持', valueType: 'status', cellKind: 'tag', stretch: 'none', displayValue: (row) => collectionSupportLabel(row.collection_support) },
-  { key: 'project_phase', label: '建设阶段', valueType: 'status', cellKind: 'tag', stretch: 'none' },
-  { key: 'work_scope_status', label: '当前工作状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
-  { key: 'system_name', label: '系统名', valueType: 'name', stretch: 'normal' },
-  { key: 'station', label: '站点', valueType: 'text', stretch: 'priority' },
-  { key: 'primary_address', label: '主地址', valueType: 'ip', stretch: 'normal' },
-  { key: 'backup_address', label: '备用地址', valueType: 'ip', stretch: 'normal' },
+  { key: 'primary_address', label: 'IP', valueType: 'ip', stretch: 'normal' },
+  { key: 'device_category', label: '设备大类', valueType: 'text', stretch: 'normal', displayValue: (row) => row.device_category_label || '未分类' },
+  { key: 'group_name', label: '分组', valueType: 'text', stretch: 'normal', visible: false },
+  { key: 'device_vendor', label: '厂商', valueType: 'text', stretch: 'normal', displayValue: (row) => row.vendor_label || row.device_vendor || '未分类' },
+  { key: 'device_subcategory', label: '设备子类', valueType: 'text', stretch: 'normal', displayValue: (row) => row.device_subcategory_label || '未分类' },
+  { key: 'device_model', label: '设备型号', valueType: 'text', stretch: 'normal', displayValue: (row) => row.device_model || '—' },
+  { key: 'collection_support', label: '采集支持', valueType: 'status', cellKind: 'tag', stretch: 'none', displayValue: (row) => collectionSupportLabel(row.collection_support), visible: false },
+  { key: 'project_phase', label: '建设阶段', valueType: 'status', cellKind: 'tag', stretch: 'none', visible: false },
+  { key: 'work_scope_status', label: '当前工作状态', valueType: 'status', cellKind: 'tag', stretch: 'none', visible: false },
+  { key: 'system_name', label: '系统名', valueType: 'name', stretch: 'normal', visible: false },
+  { key: 'station', label: '站点', valueType: 'text', stretch: 'priority', visible: false },
+  { key: 'backup_address', label: '备用地址', valueType: 'ip', stretch: 'normal', visible: false },
   {
     key: 'login_protocol',
+    visible: false,
     label: '登录协议',
     valueType: 'text',
     stretch: 'none',
     displayValue: (row) => [row.capabilities.ssh && 'SSH', row.capabilities.telnet && 'Telnet'].filter(Boolean).join('/') || '—',
   },
-  { key: 'metadata_updated_at', label: '资料更新时间', valueType: 'datetime', stretch: 'none' },
-  { key: 'last_collected_at', label: '最后采集时间', valueType: 'datetime', stretch: 'none' },
-  { key: 'last_collect_status', label: '采集状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
-  { key: 'credential_status', label: '凭据状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'metadata_updated_at', label: '资料更新时间', valueType: 'datetime', stretch: 'none', visible: false },
+  { key: 'last_collected_at', label: '最后采集时间', valueType: 'datetime', stretch: 'none', visible: false },
+  { key: 'last_collect_status', label: '采集状态', valueType: 'status', cellKind: 'tag', stretch: 'none', visible: false },
+  { key: 'credential_status', label: '凭据状态', valueType: 'status', cellKind: 'tag', stretch: 'none', visible: false },
   { key: 'connection_status', label: '连接状态', valueType: 'status', cellKind: 'tag', stretch: 'none' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '编辑', '删除'], stretch: 'none' },
 ]
@@ -280,8 +316,59 @@ const batchRefreshColumns: NcTableColumn<DeviceBatchRefreshItem>[] = [
   { key: 'last_collected_at', label: '采集时间', valueType: 'datetime', stretch: 'none' },
   { key: 'error_message', label: '错误信息', valueType: 'text', stretch: 'priority' },
 ]
+const healthCheckColumns: NcTableColumn<DeviceHealthCheckItem>[] = [
+  { key: 'device_name', label: '设备', valueType: 'name', stretch: 'priority' },
+  { key: 'primary_address', label: '地址', valueType: 'ip', stretch: 'normal' },
+  { key: 'status', label: '检查结果', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'health_state', label: '健康判定', valueType: 'status', cellKind: 'tag', stretch: 'none' },
+  { key: 'profile_id', label: '只读 Profile', valueType: 'text', stretch: 'normal' },
+  { key: 'message', label: '说明', valueType: 'text', stretch: 'priority' },
+]
 const DEVICE_CREATE_DEFAULTS = { project_phase: 'phase_1' as const, work_scope_status: 'included' as const }
-const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', ...DEVICE_CREATE_DEFAULTS, work_scope_reason: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
+const writeForm = reactive<DeviceWriteRequest>({ name: '', primary_address: '', device_vendor: 'H3C', device_type: 'SW', device_role: 'SW', device_category: 'NETWORK', device_subcategory: 'SWITCH', ...DEVICE_CREATE_DEFAULTS, work_scope_reason: '', ssh_enabled: true, ssh_port: 22, telnet_enabled: false, telnet_port: 23, snmp_enabled: true, snmp_v2c_enabled: true, snmp_port: 161 })
+const writeVendor = computed(() => catalogVendors.value.find((vendor) => vendor.value === writeForm.device_vendor))
+const writeCategoryOptions = computed(() => writeVendor.value?.categories ?? [])
+const writeCategory = computed(() => writeCategoryOptions.value.find((category) => category.code === writeForm.device_category))
+const writeSubcategoryOptions = computed(() => writeCategory.value?.subcategories ?? [])
+const writeSubcategory = computed(() => writeSubcategoryOptions.value.find((subcategory) => subcategory.code === writeForm.device_subcategory))
+const writeRoleOptions = computed(() => writeSubcategory.value?.device_roles ?? [])
+const writeCascadeOptions = computed(() => catalogVendors.value.map((vendor) => ({
+  value: vendor.value,
+  label: vendor.label,
+  children: vendor.categories.map((category) => ({
+    value: category.code,
+    label: category.label,
+    children: category.subcategories.map((subcategory) => ({
+      value: subcategory.code,
+      label: subcategory.label,
+      disabled: !subcategory.device_roles.length,
+    })),
+  })),
+})))
+const writeClassificationPath = computed<string[]>({
+  get: () => {
+    if (!writeVendor.value) return []
+    const path = [writeVendor.value.value]
+    if (!writeCategory.value) return path
+    path.push(writeCategory.value.code)
+    if (writeSubcategory.value) path.push(writeSubcategory.value.code)
+    return path
+  },
+  set: (value) => {
+    const [vendorValue = 'Other', categoryCode = '', subcategoryCode = ''] = Array.isArray(value) ? value : []
+    const vendor = catalogVendors.value.find((item) => item.value === vendorValue)
+    const category = vendor?.categories.find((item) => item.code === categoryCode)
+    const subcategory = category?.subcategories.find((item) => item.code === subcategoryCode)
+    writeForm.device_vendor = vendor?.value ?? 'Other'
+    writeForm.device_category = category?.code ?? ''
+    writeForm.device_subcategory = subcategory?.code ?? ''
+    const roles = subcategory?.device_roles ?? []
+    const currentRole = String(writeForm.device_role || writeForm.device_type || '')
+    const nextRole = roles.includes(currentRole) ? currentRole : (roles[0] ?? 'Other')
+    writeForm.device_role = nextRole
+    writeForm.device_type = nextRole
+  },
+})
 const filteredImportRows = computed(() => {
   const rows = importPreview.value?.rows || []
   return importActionFilter.value === 'ALL'
@@ -431,6 +518,15 @@ watch(
     void refreshConnectionTestRows()
   },
 )
+watch(
+  () => publicDeviceTasks.value.filter((task) => importTaskIds.value.includes(task.id) && connectionTestTerminalStatuses.has(task.status)).map((task) => task.id).sort().join('|'),
+  (terminalKey) => {
+    if (!terminalKey) return
+    const terminalIds = new Set(terminalKey.split('|'))
+    importTaskIds.value = importTaskIds.value.filter((id) => !terminalIds.has(id))
+    void loadDevices(false, true)
+  },
+)
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 
 watch(
@@ -486,15 +582,23 @@ onMounted(async () => {
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   taskStore.acquirePolling(pollingConsumer)
   await initializeSiteContext()
+  if (route.query.action === 'create') {
+    openCreate()
+    const query = { ...route.query }
+    delete query.action
+    await router.replace({ query })
+  }
 })
 
 onBeforeUnmount(() => {
   componentActive = false
+  deviceRequestGeneration++
   artifactNotificationHandle?.close()
   artifactNotificationHandle = null
   connectionTestRefreshTaskIds.value = []
   connectionTestRefreshQueued = false
   stopBatchRefreshPolling(true)
+  stopHealthCheckPolling()
   clearEditingProfileState()
   savedArtifactCapability.value = ''
   taskStore.releasePolling(pollingConsumer)
@@ -523,6 +627,10 @@ async function initializeSiteContext(): Promise<void> {
 }
 
 function handleSiteContextChanged(): void {
+  deviceRequestGeneration++
+  groupCounts.value = []
+  groupTotals.value = null
+  importTaskIds.value = []
   queryStateReady = false
   selectedUuids.value = []
   void initializeSiteContext()
@@ -530,14 +638,17 @@ function handleSiteContextChanged(): void {
 
 async function loadDevices(resetPage = false, preserveSelection = false): Promise<void> {
   if (resetPage) filters.page = 1
+  const generation = ++deviceRequestGeneration
   const preservedUuids = preserveSelection ? new Set(selectedUuids.value) : new Set<string>()
   loading.value = true
   error.value = ''
   try {
-    pageData.value = await listDevices({
+    const [nextPage, nextGroups, nextTotals] = await Promise.all([listDevices({
       search: filters.search,
       group_values: filters.group_values,
       device_type_values: filters.device_type_values,
+      device_category_values: filters.device_category_values,
+      device_subcategory_values: filters.device_subcategory_values,
       vendor_values: filters.vendor_values,
       connection_status_values: filters.connection_status_values,
       project_phase_values: filters.project_phase_values,
@@ -548,9 +659,14 @@ async function loadDevices(resetPage = false, preserveSelection = false): Promis
       page_size: filters.page_size,
       sort_by: filters.sort_by,
       sort_order: filters.sort_order,
-    })
+    }), listDeviceGroups().catch(() => null), getDeviceGroupTotals().catch(() => null)])
+    if (!componentActive || generation !== deviceRequestGeneration) return
+    pageData.value = nextPage
+    groupCounts.value = nextGroups ?? []
+    groupTotals.value = nextTotals
     filters.page = pageData.value.page
     await nextTick()
+    if (!componentActive || generation !== deviceRequestGeneration) return
     deviceTable.value?.clearSelection()
     if (preserveSelection) {
       const rows = pageData.value.items.filter((item) => preservedUuids.has(item.device_uuid))
@@ -560,10 +676,13 @@ async function loadDevices(resetPage = false, preserveSelection = false): Promis
       selectedUuids.value = []
     }
   } catch (cause) {
+    if (!componentActive || generation !== deviceRequestGeneration) return
     error.value = deviceListErrorMessage(cause)
     pageData.value = emptyPage()
+    groupCounts.value = []
+    groupTotals.value = null
   } finally {
-    loading.value = false
+    if (generation === deviceRequestGeneration) loading.value = false
   }
 }
 
@@ -895,6 +1014,9 @@ function currentDeviceWriteValues(): DeviceWriteRequest | null {
     group_id: profile.group_id,
     device_vendor: profile.device_vendor,
     device_type: profile.device_type,
+    device_role: profile.device_role,
+    device_category: profile.device_category === 'UNCLASSIFIED' ? '' : profile.device_category,
+    device_subcategory: profile.device_subcategory === 'UNCLASSIFIED' ? '' : profile.device_subcategory,
     project_phase: profile.project_phase,
     work_scope_status: profile.work_scope_status,
     work_scope_reason: profile.work_scope_reason,
@@ -929,6 +1051,10 @@ function currentDeviceWriteValues(): DeviceWriteRequest | null {
     https_port: profile.https_port,
     remark: profile.remark,
   }
+}
+
+function onWriteRoleChange(): void {
+  writeForm.device_type = writeForm.device_role
 }
 
 function onSelectionChange(rows: DeviceListItem[]): void {
@@ -1055,7 +1181,7 @@ function openCreate(): void {
   writeMode.value = 'create'
   resetSecretClears()
   Object.assign(writeForm, {
-    name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', ...DEVICE_CREATE_DEFAULTS, work_scope_reason: '', primary_address: '', backup_address: '',
+    name: '', system_name: '', station: '', location: '', group_id: null, device_vendor: 'H3C', device_type: 'SW', device_role: 'SW', device_category: 'NETWORK', device_subcategory: 'SWITCH', ...DEVICE_CREATE_DEFAULTS, work_scope_reason: '', primary_address: '', backup_address: '',
     ssh_enabled: true, ssh_port: 22, ssh_username: '', ssh_password: '', telnet_enabled: false, telnet_port: 23, telnet_username: '', telnet_password: '',
     tunnel_enabled: false, tunnel1_enabled: false, tunnel1_host: '', tunnel1_port: 22, tunnel1_username: '', tunnel1_password: '', tunnel2_enabled: false, tunnel2_host: '', tunnel2_port: 22, tunnel2_username: '', tunnel2_password: '',
     snmp_enabled: true, snmp_v1_enabled: false, snmp_v2c_enabled: true, snmp_port: 161, snmp_ro_community: '', snmp_timeout_ms: 2000, snmp_retries: 1,
@@ -1348,6 +1474,72 @@ async function startSelectedConnectionTests(): Promise<void> {
   }
 }
 
+function stopHealthCheckPolling(): void {
+  if (healthCheckPollTimer !== null) {
+    clearTimeout(healthCheckPollTimer)
+    healthCheckPollTimer = null
+  }
+}
+
+function scheduleHealthCheckPoll(taskId: string): void {
+  stopHealthCheckPolling()
+  healthCheckPollTimer = setTimeout(() => {
+    healthCheckPollTimer = null
+    void pollHealthCheck(taskId)
+  }, 800)
+}
+
+async function pollHealthCheck(taskId: string): Promise<void> {
+  if (!componentActive || healthCheck.value?.task_id !== taskId) return
+  try {
+    const result = await getDeviceHealthCheck(taskId)
+    if (!componentActive || healthCheck.value?.task_id !== taskId) return
+    healthCheck.value = result
+    healthCheckSubmitting.value = !result.terminal
+    if (result.terminal) {
+      stopHealthCheckPolling()
+      await loadDevices(false, true)
+    } else {
+      scheduleHealthCheckPoll(taskId)
+    }
+  } catch (cause) {
+    healthCheckSubmitting.value = false
+    stopHealthCheckPolling()
+    ElMessage.error(errorMessage(cause, '健康检查状态读取失败'))
+  }
+}
+
+async function startSelectedHealthCheck(): Promise<void> {
+  const targets = [...selectedUuids.value]
+  if (!targets.length || healthCheckSubmitting.value) return
+  healthCheckSubmitting.value = true
+  healthCheckVisible.value = true
+  healthCheck.value = null
+  stopHealthCheckPolling()
+  try {
+    const result = await startDeviceHealthCheck(targets)
+    healthCheck.value = result
+    if (result.terminal) healthCheckSubmitting.value = false
+    else scheduleHealthCheckPoll(result.task_id)
+  } catch (cause) {
+    healthCheckSubmitting.value = false
+    ElMessage.error(errorMessage(cause, '健康检查任务提交失败'))
+  }
+}
+
+async function cancelActiveHealthCheck(): Promise<void> {
+  const taskId = healthCheck.value?.task_id
+  if (!taskId || healthCheck.value?.terminal) return
+  try {
+    healthCheck.value = await cancelDeviceHealthCheck(taskId)
+    healthCheckSubmitting.value = !healthCheck.value.terminal
+    if (!healthCheck.value.terminal) scheduleHealthCheckPoll(taskId)
+    else stopHealthCheckPolling()
+  } catch (cause) {
+    ElMessage.error(errorMessage(cause, '健康检查取消失败'))
+  }
+}
+
 async function saveGroup(): Promise<void> {
   if (!groupName.value.trim()) return
   try {
@@ -1451,8 +1643,10 @@ async function runImportPreview(): Promise<void> {
 async function confirmImport(): Promise<void> {
   if (!importPreview.value || importPreview.value.has_hard_errors) return
   try {
+    const task = await confirmDeviceImport(importPreview.value.preview_token, 'reject')
+    importTaskIds.value = [...importTaskIds.value, task.task_id]
     await presentTasks(
-      [await confirmDeviceImport(importPreview.value.preview_token, 'reject')],
+      [task],
       importWriteMode.value === 'UPDATE_ONLY' ? '设备批量更新任务已提交' : 'CSV 导入任务已提交',
     )
     closeImportDialog()
@@ -1510,6 +1704,8 @@ function currentExportFilters(
     group_values: [...filters.group_values],
     vendor_values: [...filters.vendor_values],
     device_type_values: [...filters.device_type_values],
+    device_category_values: [...filters.device_category_values],
+    device_subcategory_values: [...filters.device_subcategory_values],
     project_phase_values: [...filters.project_phase_values],
     work_scope_status_values: [...filters.work_scope_status_values],
     connection_status_values: [...filters.connection_status_values],
@@ -1951,50 +2147,35 @@ function deviceListErrorMessage(cause: unknown): string {
 <template>
   <section class="device-management">
     <div class="page-heading page-heading--compact">
-      <div><h1>设备管理</h1><p>管理当前局点设备、连接参数、采集任务和导入导出。</p></div>
+      <div><h1>设备管理</h1></div>
       <div class="heading-actions"><el-button type="primary" :icon="Plus" :disabled="!isFeatureEnabled('capability.devices.write')" @click="openCreate">新建设备</el-button><el-button :icon="Refresh" :loading="loading" @click="loadDevices()">刷新</el-button></div>
     </div>
 
-    <div class="content-card filters filters--compact">
-      <div class="filter-core-row">
-        <el-input v-model="filters.search" clearable placeholder="搜索名称或地址" @keyup.enter="loadDevices(true)" />
-      <NcMultiValueFilter v-model="filters.group_values" :options="['__ungrouped__', ...pageData.groups.map((group) => String(group.id))]" :labels="{ __ungrouped__: '未分组', ...Object.fromEntries(pageData.groups.map((group) => [String(group.id), group.name])) }" placeholder="全部分组" @change="loadDevices(true)" />
-      <NcMultiValueFilter v-model="filters.device_type_values" :options="DEVICE_TYPE_OPTIONS" placeholder="全部类型" @change="loadDevices(true)" />
-      <NcMultiValueFilter v-model="filters.connection_status_values" :options="['UNKNOWN', 'TESTING', 'REACHABLE', 'UNREACHABLE', 'AUTH_FAILED', 'ERROR']" :labels="{ UNKNOWN: '未测试', TESTING: '测试中', REACHABLE: '可达', UNREACHABLE: '不可达', AUTH_FAILED: '认证失败', ERROR: '任务异常' }" placeholder="全部连接状态" @change="loadDevices(true)" />
-      <el-button type="primary" @click="loadDevices(true)">查询</el-button>
-      <el-button :type="advancedFiltersActive ? 'primary' : undefined" plain @click="advancedFiltersExpanded = !advancedFiltersExpanded">更多筛选<span v-if="advancedFilterCount">（{{ advancedFilterCount }}）</span></el-button>
-      </div>
-      <div v-if="advancedFiltersExpanded" class="advanced-filter-panel">
-        <NcMultiValueFilter v-model="filters.vendor_values" :options="DEVICE_VENDOR_OPTIONS.map((vendor) => vendor.value)" :labels="Object.fromEntries(DEVICE_VENDOR_OPTIONS.map((vendor) => [vendor.value, vendor.label]))" allow-custom placeholder="全部厂商" @change="loadDevices(true)" />
-        <NcMultiValueFilter v-model="filters.project_phase_values" :options="['phase_1', 'phase_2', 'phase_3', 'other', 'unspecified']" :labels="{ phase_1: '一期', phase_2: '二期', phase_3: '三期', other: '其他', unspecified: '未指定' }" placeholder="全部建设阶段" @change="loadDevices(true)" />
-        <NcMultiValueFilter v-model="filters.work_scope_status_values" :options="['included', 'excluded']" :labels="{ included: '参与当前调试', excluded: '暂不参与' }" placeholder="全部工作状态" @change="loadDevices(true)" />
-        <el-select v-model="filters.sort_by" @change="loadDevices(true)">
-          <el-option label="默认排序（分组优先 + 名称自然排序）" value="default" />
-          <el-option label="按名称" value="name" /><el-option label="按地址" value="primary_address" />
-          <el-option label="按站点" value="station" /><el-option label="按资料更新时间" value="metadata_updated_at" />
-          <el-option label="按最后采集时间" value="last_collected_at" />
-          <el-option label="按采集状态" value="last_collect_status" /><el-option label="按连接状态" value="status" />
-        </el-select>
-        <el-select v-model="filters.sort_order" @change="loadDevices(true)">
-          <el-option label="升序" value="asc" /><el-option label="降序" value="desc" />
-        </el-select>
-        <el-button v-if="advancedFiltersActive" link type="primary" @click="clearAdvancedFilters">清除高级筛选</el-button>
-      </div>
-      <div v-if="advancedFiltersActive" class="filter-active-note">高级筛选已生效；默认列表仍按当前筛选范围查询。</div>
-    </div>
-
+    <div class="device-workspace">
+      <aside class="content-card device-groups" aria-label="设备分组">
+        <div class="device-groups-heading"><strong>设备分组</strong><el-button link :aria-expanded="groupsExpanded" @click="groupsExpanded = !groupsExpanded">{{ groupsExpanded ? '折叠' : '展开' }}</el-button><el-button link type="primary" :disabled="!isFeatureEnabled('capability.devices.write')" @click="groupVisible = true">管理</el-button></div>
+        <button type="button" :class="{ active: filters.group_values.length === 0 }" @click="filters.group_values = []; loadDevices(true)"><el-icon><Grid /></el-icon> 全部设备 <span v-if="groupTotals" title="当前局点全部设备，包含暂不参与调试的设备">({{ groupTotals.total }})</span></button>
+        <button v-if="groupsExpanded" type="button" :class="{ active: filters.group_values.length === 1 && filters.group_values[0] === '__ungrouped__' }" @click="filters.group_values = ['__ungrouped__']; loadDevices(true)"><el-icon><FolderOpened /></el-icon> 未分组 <span v-if="groupTotals" title="当前局点全部设备，包含暂不参与调试的设备">({{ groupTotals.ungrouped }})</span></button>
+        <template v-if="groupsExpanded"><button v-for="group in pageData.groups" :key="group.id" type="button" :class="{ active: filters.group_values.length === 1 && filters.group_values[0] === String(group.id) }" @click="filters.group_values = [String(group.id)]; loadDevices(true)"><el-icon><FolderOpened /></el-icon> {{ group.name }} <span v-if="groupCounts.find((item) => item.id === group.id)" title="当前局点全部设备，包含暂不参与调试的设备">({{ groupCounts.find((item) => item.id === group.id)?.device_count }})</span></button></template>
+      </aside>
+      <div class="device-main">
     <div class="content-card action-bar">
-      <span>已选 {{ selectedUuids.length }} 台</span>
+      <el-button type="primary" :icon="Plus" :disabled="!isFeatureEnabled('capability.devices.write')" @click="openCreate">新增</el-button>
+      <el-button :disabled="!isFeatureEnabled('capability.devices.import')" @click="openImportDialog('UPSERT')">导入</el-button>
+      <el-button :disabled="csvExportActive || !isFeatureEnabled('capability.devices.export')" @click="exportCsv(false)">导出</el-button>
       <el-button class="device-action-secondary" type="primary" plain :icon="Connection" :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.connection_test')" @click="startSelectedConnectionTests">测试连接</el-button>
-      <el-button class="device-action-secondary" type="primary" plain data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('capability.devices.collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
       <el-button :icon="Edit" :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="editSelected">编辑</el-button>
+      <el-button :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="groupAssignVisible = true">批量移动</el-button>
       <el-button :icon="Delete" type="danger" plain :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="deleteSelected">批量删除</el-button>
+      <el-button :loading="healthCheckSubmitting" :disabled="!selectedUuids.length || healthCheckSubmitting || !isFeatureEnabled('capability.devices.collect')" @click="startSelectedHealthCheck">健康检查</el-button>
+      <el-button class="device-action-secondary" type="primary" plain data-testid="batch-refresh-details" :icon="Refresh" :loading="batchRefreshSubmitting" :disabled="!selectedUuids.length || batchRefreshSubmitting || !isFeatureEnabled('capability.devices.collect')" @click="refreshSelectedDetails">批量更新详情</el-button>
+      <span>已选 {{ selectedUuids.length }} 台</span>
       <el-dropdown trigger="click">
         <el-button :icon="MoreFilled">更多操作</el-button>
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item :disabled="!desktopHost || !isFeatureEnabled('capability.devices.desktop_actions')" @click="openTerminalSettings">外部终端配置</el-dropdown-item>
             <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('module.console')" @click="openInternalConsole()">内置控制台</el-dropdown-item>
+            <el-dropdown-item :disabled="!desktopHost || !isFeatureEnabled('capability.devices.desktop_actions')" @click="openTerminalSettings">外部终端配置</el-dropdown-item>
             <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="duplicateSelected">复制设备</el-dropdown-item>
             <el-dropdown-item :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('capability.devices.desktop_actions')" @click="requestTerminal()">外部终端</el-dropdown-item>
             <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="groupAssignVisible = true">设置分组</el-dropdown-item>
@@ -2015,6 +2196,35 @@ function deviceListErrorMessage(cause: unknown): string {
       </el-dropdown>
       <span v-if="batchRefreshSubmitting">{{ batchRefreshProgressText || `正在更新 0/${batchRefreshTargetCount} 台设备` }}</span>
     </div>
+    <div class="content-card filters filters--compact">
+      <div class="filter-core-row">
+        <el-input v-model="filters.search" clearable placeholder="搜索名称或地址" @keyup.enter="loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.group_values" :options="['__ungrouped__', ...pageData.groups.map((group) => String(group.id))]" :labels="{ __ungrouped__: '未分组', ...Object.fromEntries(pageData.groups.map((group) => [String(group.id), group.name])) }" placeholder="全部分组" @change="loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.device_category_values" :options="categoryOptions" :labels="categoryLabels" placeholder="全部大类" @change="filters.device_subcategory_values = filters.device_subcategory_values.filter((value) => subtypeOptions.includes(value)); loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.device_subcategory_values" :options="subtypeOptions" :labels="subcategoryLabels" placeholder="全部子类" @change="loadDevices(true)" />
+      <NcMultiValueFilter v-model="filters.connection_status_values" :options="['UNKNOWN', 'TESTING', 'REACHABLE', 'UNREACHABLE', 'AUTH_FAILED', 'ERROR']" :labels="{ UNKNOWN: '未测试', TESTING: '测试中', REACHABLE: '可达', UNREACHABLE: '不可达', AUTH_FAILED: '认证失败', ERROR: '任务异常' }" placeholder="全部连接状态" @change="loadDevices(true)" />
+        <NcMultiValueFilter v-model="filters.vendor_values" :options="vendorFilterOptions.map((vendor) => vendor.value)" :labels="Object.fromEntries(vendorFilterOptions.map((vendor) => [vendor.value, vendor.label]))" allow-custom placeholder="全部厂商" @change="loadDevices(true)" />
+      <el-button type="primary" @click="loadDevices(true)">查询</el-button>
+      <el-button :type="advancedFiltersActive ? 'primary' : undefined" plain @click="advancedFiltersExpanded = !advancedFiltersExpanded">更多筛选<span v-if="advancedFilterCount">（{{ advancedFilterCount }}）</span></el-button>
+      </div>
+      <div v-if="advancedFiltersExpanded" class="advanced-filter-panel">
+        <NcMultiValueFilter v-model="filters.project_phase_values" :options="['phase_1', 'phase_2', 'phase_3', 'other', 'unspecified']" :labels="{ phase_1: '一期', phase_2: '二期', phase_3: '三期', other: '其他', unspecified: '未指定' }" placeholder="全部建设阶段" @change="loadDevices(true)" />
+        <NcMultiValueFilter v-model="filters.work_scope_status_values" :options="['included', 'excluded']" :labels="{ included: '参与当前调试', excluded: '暂不参与' }" placeholder="全部工作状态" @change="loadDevices(true)" />
+        <el-select v-model="filters.sort_by" @change="loadDevices(true)">
+          <el-option label="默认排序（分组优先 + 名称自然排序）" value="default" />
+          <el-option label="按名称" value="name" /><el-option label="按地址" value="primary_address" />
+          <el-option label="按站点" value="station" /><el-option label="按资料更新时间" value="metadata_updated_at" />
+          <el-option label="按最后采集时间" value="last_collected_at" />
+          <el-option label="按采集状态" value="last_collect_status" /><el-option label="按连接状态" value="status" />
+        </el-select>
+        <el-select v-model="filters.sort_order" @change="loadDevices(true)">
+          <el-option label="升序" value="asc" /><el-option label="降序" value="desc" />
+        </el-select>
+        <el-button v-if="advancedFiltersActive" link type="primary" @click="clearAdvancedFilters">清除高级筛选</el-button>
+      </div>
+      <div v-if="advancedFiltersActive" class="filter-active-note">高级筛选已生效；默认列表仍按当前筛选范围查询。</div>
+    </div>
+
     <el-alert
       v-if="!(filters.work_scope_status_values.length === 1 && filters.work_scope_status_values[0] === 'included')"
       title="当前正在查看包含暂不参与当前调试的设备。这些设备默认不参与自动任务，但仍可筛选查看并执行明确的手动操作。"
@@ -2031,6 +2241,7 @@ function deviceListErrorMessage(cause: unknown): string {
         <NcDataTable
           v-else
           ref="deviceTable"
+          :stripe="false"
           table-id="device-list"
           route-key="/devices"
           :data="pageData.items"
@@ -2074,6 +2285,9 @@ function deviceListErrorMessage(cause: unknown): string {
       />
     </div>
 
+      </div>
+    </div>
+
     <el-dialog v-model="batchRefreshDetailsVisible" title="批量更新详情结果" width="min(1080px, 94vw)">
       <p v-if="batchRefresh" class="batch-refresh-summary">{{ batchRefreshProgressText }}</p>
       <NcDataTable
@@ -2088,6 +2302,42 @@ function deviceListErrorMessage(cause: unknown): string {
       >
         <template #cell-status="{ row }"><el-tag :type="collectStatusType(row.status)">{{ collectStatusLabel(row.status) }}</el-tag></template>
       </NcDataTable>
+    </el-dialog>
+
+    <el-dialog v-model="healthCheckVisible" title="设备健康检查" width="min(1120px, 94vw)">
+      <div v-if="healthCheck" class="health-check-summary">
+        <span>进度 {{ healthCheck.current }}/{{ healthCheck.total || healthCheck.summary.total }}</span>
+        <span>成功 {{ healthCheck.summary.success }}</span>
+        <span>部分成功 {{ healthCheck.summary.partial_success }}</span>
+        <span>失败 {{ healthCheck.summary.failed }}</span>
+        <span>不支持 {{ healthCheck.summary.not_supported }}</span>
+        <span v-if="healthCheck.message">{{ healthCheck.message }}</span>
+      </div>
+      <NcDataTable
+        v-if="healthCheck"
+        table-id="device-health-check-results"
+        route-key="/devices/health-check-results"
+        :data="healthCheck.items"
+        :columns="healthCheckColumns"
+        row-key="device_uuid"
+        height="360px"
+        empty-text="检查进行中"
+      >
+        <template #cell-status="{ row }"><el-tag :type="row.status === 'SUCCESS' ? 'success' : row.status === 'FAILED' ? 'danger' : row.status === 'NOT_SUPPORTED' ? 'info' : 'warning'">{{ row.status }}</el-tag></template>
+        <template #cell-health_state="{ row }"><el-tag :type="row.health_state === 'OBSERVED' ? 'success' : 'info'">{{ row.health_state === 'OBSERVED' ? '已观测' : '未知' }}</el-tag></template>
+      </NcDataTable>
+      <div v-if="healthCheck?.items.length" class="health-metrics">
+        <section v-for="item in healthCheck.items" :key="item.device_uuid">
+          <strong>{{ item.device_name }}</strong>
+          <span v-for="metric in item.metrics" :key="metric.code">
+            {{ metric.label }}：{{ metric.value || metric.status }}<small v-if="metric.message">（{{ metric.message }}）</small>
+          </span>
+        </section>
+      </div>
+      <template #footer>
+        <el-button v-if="healthCheck && !healthCheck.terminal" type="danger" plain @click="cancelActiveHealthCheck">取消任务</el-button>
+        <el-button @click="healthCheckVisible = false">关闭</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="csvExportScopeVisible" title="确认设备导出范围" width="min(560px, 94vw)">
@@ -2181,8 +2431,8 @@ function deviceListErrorMessage(cause: unknown): string {
             <el-form-item label="设备名称 *"><el-input v-model="writeForm.name" data-testid="device-name" /></el-form-item>
             <el-form-item label="系统名"><el-input v-model="writeForm.system_name" /></el-form-item>
             <el-form-item label="分组"><el-select v-model="writeForm.group_id" clearable style="width:100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select></el-form-item>
-            <el-form-item label="厂商"><el-select v-model="writeForm.device_vendor" filterable allow-create default-first-option style="width:100%"><el-option v-for="vendor in DEVICE_VENDOR_OPTIONS" :key="vendor.value" :label="vendor.label" :value="vendor.value" /></el-select></el-form-item>
-            <el-form-item label="类型"><el-select v-model="writeForm.device_type" style="width:100%"><el-option v-for="type in DEVICE_TYPE_OPTIONS" :key="type" :label="type" :value="type" /></el-select></el-form-item>
+            <el-form-item label="设备类型"><el-cascader v-model="writeClassificationPath" :options="writeCascadeOptions" :props="{ expandTrigger: 'hover' }" filterable clearable style="width:100%" data-testid="device-classification-cascade" /></el-form-item>
+            <el-form-item label="设备角色"><el-select v-if="writeRoleOptions.length" v-model="writeForm.device_role" style="width:100%" data-testid="device-role" @change="onWriteRoleChange"><el-option v-for="role in writeRoleOptions" :key="role" :label="role" :value="role" /></el-select><el-input v-else :model-value="writeForm.device_role || writeForm.device_type || 'Other'" disabled data-testid="device-role" /></el-form-item>
             <el-form-item label="建设阶段"><el-select v-model="writeForm.project_phase" style="width:100%"><el-option label="一期" value="phase_1" /><el-option label="二期" value="phase_2" /><el-option label="三期" value="phase_3" /><el-option label="其他" value="other" /><el-option label="未指定" value="unspecified" /></el-select></el-form-item>
             <el-form-item label="当前工作状态"><el-select v-model="writeForm.work_scope_status" style="width:100%"><el-option label="参与当前调试" value="included" /><el-option label="暂不参与" value="excluded" /></el-select></el-form-item>
             <el-form-item label="当前工作状态说明"><el-input v-model="writeForm.work_scope_reason" type="textarea" :rows="2" /></el-form-item>
@@ -2343,6 +2593,12 @@ function deviceListErrorMessage(cause: unknown): string {
 
 <style scoped>
 .device-management { display: flex; width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0; flex-direction: column; margin: 0; overflow: hidden; }
+.device-workspace { display: flex; flex: 1; min-height: 0; gap: 12px; }
+.device-groups { flex: 0 0 200px; overflow: auto; padding: 12px; }
+.device-groups-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.device-groups > button { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 4px; text-align: left; background: transparent; color: var(--nc-text-primary); cursor: pointer; }
+.device-groups > button.active { color: var(--el-color-primary); background: var(--el-color-primary-light-9); }
+.device-main { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
 .page-heading, .detail-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .page-heading--compact { margin-bottom: 10px; }
 .heading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -2353,8 +2609,9 @@ function deviceListErrorMessage(cause: unknown): string {
 .filters { display: grid; gap: 10px; padding: 14px; margin-bottom: 14px; }
 .filters--compact { padding: 10px 12px; }
 .filter-core-row, .advanced-filter-panel { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px; }
-.filter-core-row > .el-input { flex: 1 1 260px; min-width: 190px; }
-.filter-core-row > .nc-multi-value-filter, .filter-core-row > .el-button, .advanced-filter-panel > .nc-multi-value-filter, .advanced-filter-panel > .el-select { flex: 0 1 170px; min-width: 140px; }
+.filter-core-row > .el-input { flex: 1 1 180px; min-width: 150px; max-width: 260px; }
+.filter-core-row > .nc-multi-value-filter, .advanced-filter-panel > .nc-multi-value-filter, .advanced-filter-panel > .el-select { flex: 0 1 150px; min-width: 130px; }
+.filter-core-row > .el-button { flex: 0 0 auto; }
 .advanced-filter-panel { padding-top: 8px; border-top: 1px solid var(--nc-divider); }
 .filter-active-note { color: var(--nc-text-secondary); font-size: 12px; }
 .state-alert { margin-bottom: 14px; }
@@ -2365,6 +2622,11 @@ function deviceListErrorMessage(cause: unknown): string {
 .export-scope-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 16px; }
 .export-scope-summary span { display: grid; gap: 4px; color: var(--nc-text-secondary); font-size: 13px; }
 .export-scope-summary strong { color: var(--nc-text-primary); font-size: 15px; }
+.health-check-summary { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; color: var(--nc-text-secondary); }
+.health-metrics { display: grid; gap: 8px; max-height: 180px; margin-top: 12px; overflow: auto; }
+.health-metrics section { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 8px 0; border-top: 1px solid var(--nc-divider); }
+.health-metrics section > strong { flex: 0 0 150px; }
+.health-metrics section > span { color: var(--nc-text-secondary); }
 .export-scope-options { display: grid; gap: 8px; }
 .export-scope-options button { display: grid; gap: 4px; width: 100%; min-height: 62px; padding: 10px 12px; border: 1px solid var(--nc-border); border-radius: 6px; background: var(--nc-surface); color: var(--nc-text-primary); text-align: left; cursor: pointer; }
 .export-scope-options button.active { border-color: var(--el-color-primary); background: var(--el-color-primary-light-9); box-shadow: inset 3px 0 0 var(--el-color-primary); }
@@ -2372,6 +2634,9 @@ function deviceListErrorMessage(cause: unknown): string {
 .table-card { display: flex; min-height: 0; flex: 1; flex-direction: column; padding: 0 0 12px; overflow: hidden; }
 .device-table-host { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .device-table-host > .el-empty { flex: 1; }
+.device-table-host :deep(.el-table__header th.el-table__cell) { height: 56px; }
+.device-table-host :deep(.el-table__body td.el-table__cell) { height: 58px; }
+.device-groups > button .el-icon { color: var(--el-color-primary); vertical-align: middle; }
 .table-card :deep(.el-pagination) { justify-content: flex-end; padding: 14px 16px 0; }
 .table-card strong, .table-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-card small { margin-top: 4px; color: var(--nc-text-tertiary); }
@@ -2403,5 +2668,5 @@ function deviceListErrorMessage(cause: unknown): string {
 @media (max-width: 760px) { .import-options { grid-template-columns: 1fr; } }
 .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1280px) { .filter-core-row > .el-input { flex-basis: 220px; } }
-@media (max-width: 760px) { .device-management { height: auto; min-height: 100%; overflow: visible; } .table-card { min-height: 55dvh; flex: none; } .filters, .form-grid, .form-grid.two-columns, .export-scope-summary { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
+@media (max-width: 760px) { .device-workspace { flex-direction: column; } .device-groups { flex-basis: auto; max-height: 180px; } .device-management { height: auto; min-height: 100%; overflow: visible; } .table-card { min-height: 55dvh; flex: none; } .filters, .form-grid, .form-grid.two-columns, .export-scope-summary { grid-template-columns: 1fr; } .page-heading { align-items: flex-start; } }
 </style>

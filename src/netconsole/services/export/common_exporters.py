@@ -469,6 +469,8 @@ def export_device_csv(path: Path, payload: Mapping[str, Any], progress: Progress
             group_values=filters.get("group_values"),
             vendor_values=filters.get("vendor_values"),
             device_type_values=filters.get("device_type_values"),
+            device_category_values=filters.get("device_category_values"),
+            device_subcategory_values=filters.get("device_subcategory_values"),
             project_phase_values=filters.get("project_phase_values"),
             work_scope_status_values=filters.get("work_scope_status_values"),
         )
@@ -548,6 +550,8 @@ def export_securecrt_sessions_task(path: Path, payload: Mapping[str, Any], progr
         group_values=filters.get("group_values"),
         vendor_values=filters.get("vendor_values"),
         device_type_values=filters.get("device_type_values"),
+        device_category_values=filters.get("device_category_values"),
+        device_subcategory_values=filters.get("device_subcategory_values"),
         project_phase_values=filters.get("project_phase_values"),
         work_scope_status_values=filters.get("work_scope_status_values"),
     )

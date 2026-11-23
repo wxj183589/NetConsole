@@ -66,6 +66,10 @@ from netconsole.services.device_management_web_service import (
     run_device_diagnostic_download,
     run_device_optical_refresh,
 )
+from netconsole.services.device_health_check_application_service import (
+    DEVICE_HEALTH_CHECK_TASK_TYPE,
+    run_device_health_check,
+)
 from netconsole.services.device_command_profile_service import (
     resolve_device_inventory_profile,
 )
@@ -77,12 +81,15 @@ from netconsole.services.device_import_export import (
     TEMPLATE_EXAMPLE_ROWS,
     TEMPLATE_FIELDS,
 )
-from netconsole.services.job_center.job_context import JobContext
+from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.task_application_service import (
     TaskApplicationService,
 )
 from netconsole.services.online_mr.errors import OnlineMrWebControlError
-from netconsole.services.export.common_exporters import export_device_csv
+from netconsole.services.export.common_exporters import (
+    export_device_csv,
+    export_securecrt_sessions_task,
+)
 
 
 class _CapturingProcessAdapter:
@@ -450,10 +457,17 @@ def test_device_connection_multiselect_export_uses_server_status_snapshot(
     monkeypatch.setattr(service, "_start_managed_device_csv_export", capture_export)
     queued = client.post(
         "/api/device-management/exports/csv",
-        json={"export_scope": "filtered_all", "connection_status_values": ["REACHABLE", "ERROR"]},
+        json={
+            "export_scope": "filtered_all",
+            "connection_status_values": ["REACHABLE", "ERROR"],
+            "device_category_values": ["NETWORK"],
+            "device_subcategory_values": ["WIRELESS"],
+        },
     )
     assert queued.status_code == 202, queued.text
     filters = captured[-1]["filters"]
+    assert filters["device_category_values"] == ["NETWORK"]
+    assert filters["device_subcategory_values"] == ["WIRELESS"]
     assert filters["connection_match_uuids"] == [str(mr.device_uuid)]
     assert str(sw.device_uuid) not in filters["connection_match_uuids"]
     output = tmp_path / "status-snapshot.csv"
@@ -468,6 +482,331 @@ def test_device_connection_multiselect_export_uses_server_status_snapshot(
     assert empty.status_code == 202
     assert captured[-1]["filters"]["connection_match_uuids"] == []
     assert export_device_csv(tmp_path / "status-none.csv", captured[-1]) == 0
+
+
+def test_group_totals_count_site_devices_including_excluded_and_update_on_move(tmp_path: Path) -> None:
+    client, _service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
+    excluded = devices.get_by_uuid(str(sw.device_uuid))
+    excluded.work_scope_status = "excluded"
+    devices.update(excluded)
+    cleared = client.post("/api/device-management/groups/assign", json={"device_uuids": [str(mr.device_uuid), str(sw.device_uuid)], "group_id": None})
+    assert cleared.status_code == 200
+    before = client.get("/api/device-management/groups/totals")
+    assert before.status_code == 200
+    assert before.json() == {"total": 2, "ungrouped": 2}
+    group_id = client.post("/api/device-management/groups", json={"name": "统计组"}).json()["id"]
+    assigned = client.post("/api/device-management/groups/assign", json={"device_uuids": [str(mr.device_uuid)], "group_id": group_id})
+    assert assigned.status_code == 200
+    assert client.get("/api/device-management/groups/totals").json() == {"total": 2, "ungrouped": 1}
+
+
+def test_group_count_includes_excluded_and_updates_after_move(tmp_path: Path) -> None:
+    client, _service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
+    excluded = devices.get_by_uuid(str(sw.device_uuid))
+    excluded.work_scope_status = "excluded"
+    devices.update(excluded)
+    group_id = client.post("/api/device-management/groups", json={"name": "计数测试"}).json()["id"]
+    response = client.post("/api/device-management/groups/assign", json={"device_uuids": [str(mr.device_uuid), str(sw.device_uuid)], "group_id": group_id})
+    assert response.status_code == 200
+    groups = client.get("/api/device-management/groups").json()
+    assert next(group for group in groups if group["id"] == group_id)["device_count"] == 2
+    visible = client.get("/api/device-management/devices", params={"group_values": [str(group_id)]}).json()
+    assert visible["total"] == 1
+    moved = client.post("/api/device-management/groups/assign", json={"device_uuids": [str(sw.device_uuid)], "group_id": None})
+    assert moved.status_code == 200
+    groups = client.get("/api/device-management/groups").json()
+    assert next(group for group in groups if group["id"] == group_id)["device_count"] == 1
+
+
+def test_device_list_exposes_model_from_saved_fact_for_both_projection_paths(tmp_path: Path) -> None:
+    client, _service, _adapter, _devices, facts, mr, sw = _fixture(tmp_path)
+    facts.upsert_device_fact({"device_uuid": mr.device_uuid, "model": "WA6320"})
+    for params in ({"page_size": 100}, {"page_size": 100, "sort_by": "last_collected_at"}):
+        response = client.get("/api/device-management/devices", params=params)
+        assert response.status_code == 200
+        rows = {row["device_uuid"]: row for row in response.json()["items"]}
+        assert rows[str(mr.device_uuid)]["model"] == "WA6320"
+        assert rows[str(sw.device_uuid)]["model"] == ""
+
+
+def test_device_category_contract_projects_stable_types_and_filters_server_side(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
+    response = client.get("/api/device-management/devices", params={"page_size": 100})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["classification_catalog"]["version"] == "smarthub-device-v1.0.9-r6"
+    h3c = next(
+        vendor
+        for vendor in payload["classification_catalog"]["vendors"]
+        if vendor["code"] == "H3C"
+    )
+    network = next(
+        category for category in h3c["categories"] if category["code"] == "NETWORK"
+    )
+    assert [item["code"] for item in network["subcategories"]] == [
+        "ROUTER",
+        "SWITCH",
+        "WIRELESS",
+        "SECURITY",
+    ]
+    rows = {row["device_uuid"]: row for row in payload["items"]}
+    assert rows[str(mr.device_uuid)]["device_category"] == "NETWORK"
+    assert rows[str(mr.device_uuid)]["device_subcategory"] == "WIRELESS"
+    assert rows[str(mr.device_uuid)]["device_role"] == "AC"
+    assert rows[str(sw.device_uuid)]["device_category"] == "NETWORK"
+    assert rows[str(sw.device_uuid)]["device_subcategory"] == "SWITCH"
+    assert rows[str(sw.device_uuid)]["device_role"] == "SW"
+
+    other = devices.get_by_uuid(str(sw.device_uuid))
+    assert other is not None
+    other.device_type = "Other"
+    devices.update(other)
+    network = client.get(
+        "/api/device-management/devices",
+        params=[("page_size", "100"), ("device_category_values", "NETWORK")],
+    )
+    unclassified = client.get(
+        "/api/device-management/devices",
+        params=[("page_size", "100"), ("device_category_values", "UNCLASSIFIED")],
+    )
+    assert {row["device_uuid"] for row in network.json()["items"]} == {str(mr.device_uuid)}
+    assert [row["device_uuid"] for row in unclassified.json()["items"]] == [str(sw.device_uuid)]
+    assert unclassified.json()["items"][0]["device_category"] == "UNCLASSIFIED"
+
+    with devices.database.connect() as connection:
+        connection.execute(
+            "UPDATE devices SET device_type = ? WHERE device_uuid = ?",
+            ("Legacy-Unknown", str(sw.device_uuid)),
+        )
+    legacy_unclassified = client.get(
+        "/api/device-management/devices",
+        params=[("page_size", "100"), ("device_category_values", "UNCLASSIFIED")],
+    )
+    assert legacy_unclassified.status_code == 200
+    assert [row["device_uuid"] for row in legacy_unclassified.json()["items"]] == [
+        str(sw.device_uuid)
+    ]
+    assert legacy_unclassified.json()["items"][0]["device_category"] == "UNCLASSIFIED"
+
+    captured: list[dict[str, object]] = []
+
+    def capture_export(**values):
+        captured.append(dict(values["job_payload"]))
+        return DeviceTaskReferenceDTO(
+            task_id="category-export",
+            task_status="PENDING",
+            action="export_csv",
+        )
+
+    monkeypatch.setattr(service, "_start_managed_device_csv_export", capture_export)
+    request = client.post(
+        "/api/device-management/exports/csv",
+        json={
+            "export_scope": "filtered_all",
+            "device_category_values": ["UNCLASSIFIED"],
+            "work_scope_status": "all",
+        },
+    )
+    assert request.status_code == 202, request.text
+    output = tmp_path / "unclassified.csv"
+    assert export_device_csv(output, captured[-1]) == 1
+    with output.open("r", newline="", encoding="utf-8-sig") as stream:
+        rows = list(csv.reader(stream))
+    assert [row[0] for row in rows[1:]] == ["SW10"]
+
+
+def test_device_category_filter_rejects_unknown_values(tmp_path: Path) -> None:
+    client, *_rest = _fixture(tmp_path)
+    response = client.get(
+        "/api/device-management/devices",
+        params=[("device_category_values", "guessed-from-name")],
+    )
+    assert response.status_code == 422
+
+
+def test_securecrt_export_uses_the_same_subcategory_filter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, service, _adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
+    captured: list[dict[str, object]] = []
+
+    def capture_export(
+        _site: str,
+        _export_type: str,
+        _extension: str,
+        job_payload: dict[str, object],
+        _task_type: str,
+    ) -> DeviceTaskReferenceDTO:
+        captured.append(dict(job_payload))
+        return DeviceTaskReferenceDTO(
+            task_id="securecrt-category-filter",
+            task_status="PENDING",
+            action="securecrt_sessions",
+        )
+
+    monkeypatch.setattr(service, "_start_export", capture_export)
+    response = client.post(
+        "/api/device-management/exports/securecrt",
+        json={
+            "export_scope": "filtered_all",
+            "device_category_values": ["NETWORK"],
+            "device_subcategory_values": ["SWITCH"],
+            "work_scope_status": "all",
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    filters = captured[-1]["filters"]
+    assert filters["device_category_values"] == ["NETWORK"]
+    assert filters["device_subcategory_values"] == ["SWITCH"]
+
+    captured[-1]["output_dir"] = str(tmp_path / "securecrt-output")
+    result = export_securecrt_sessions_task(
+        tmp_path / "securecrt.marker",
+        captured[-1],
+    )
+    assert result["row_count"] == 1
+    assert result["skipped"] == 0
+    assert str(sw.device_uuid) != str(mr.device_uuid)
+
+
+def test_health_check_api_submits_one_read_only_batch_and_supports_cancel(tmp_path: Path) -> None:
+    client, _service, adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
+    response = client.post(
+        "/api/device-management/health-checks",
+        json={
+            "device_uuids": [str(mr.device_uuid), str(sw.device_uuid)],
+            "concurrency_limit": 2,
+        },
+    )
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["task_status"] == "STARTING"
+    job = adapter.jobs[-1]
+    assert job.task_type == DEVICE_HEALTH_CHECK_TASK_TYPE
+    assert job.params["concurrency_limit"] == 2
+    assert job.params["connection_timeout_seconds"] == 10
+    assert job.params["command_timeout_seconds"] == 120
+    assert len(job.params["plans"]) == 2
+    assert all(plan["supported"] for plan in job.params["plans"])
+    assert all(plan["profile_id"] for plan in job.params["plans"])
+
+    read = client.get(f"/api/device-management/health-checks/{payload['task_id']}")
+    assert read.status_code == 200
+    cancelled = client.post(
+        f"/api/device-management/health-checks/{payload['task_id']}/cancel"
+    )
+    assert cancelled.status_code == 200
+    assert adapter.cancelled == [payload["task_id"]]
+
+
+def test_health_check_worker_reports_unsupported_without_opening_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, service, adapter, devices, _facts, mr, _sw = _fixture(tmp_path)
+    unknown = devices.get_by_uuid(str(mr.device_uuid))
+    assert unknown is not None
+    unknown.device_vendor = "Unknown Vendor"
+    devices.update(unknown)
+    response = client.post(
+        "/api/device-management/health-checks",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    assert response.status_code == 202
+    job = adapter.jobs[-1]
+    assert job.params["plans"][0]["supported"] is False
+
+    def unexpected_collect(*_args, **_kwargs):
+        raise AssertionError("unsupported device must not open a transport")
+
+    monkeypatch.setattr(
+        "netconsole.services.h3c_collect_service.collect_h3c_device_details",
+        unexpected_collect,
+    )
+    result = run_device_health_check(
+        JobContext.from_job(job, should_cancel=lambda: False)
+    )
+    assert result["summary"] == {
+        "total": 1,
+        "success": 0,
+        "partial_success": 0,
+        "failed": 0,
+        "not_supported": 1,
+        "cancelled": 0,
+    }
+    assert result["items"][0]["status"] == "NOT_SUPPORTED"
+    assert result["items"][0]["health_state"] == "UNKNOWN"
+
+
+def test_health_check_cancel_stops_before_dispatching_later_devices(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _service, adapter, _devices, _facts, mr, sw = _fixture(tmp_path)
+    response = client.post(
+        "/api/device-management/health-checks",
+        json={
+            "device_uuids": [str(mr.device_uuid), str(sw.device_uuid)],
+            "concurrency_limit": 1,
+        },
+    )
+    assert response.status_code == 202
+    job = adapter.jobs[-1]
+    calls: list[str] = []
+
+    def cancelled_collect(device, _site, *, cancel_check=None, **_kwargs):
+        calls.append(str(device.device_uuid))
+        assert cancel_check is not None and cancel_check()
+        raise RuntimeError("cooperative cancellation")
+
+    monkeypatch.setattr(
+        "netconsole.services.h3c_collect_service.collect_h3c_device_details",
+        cancelled_collect,
+    )
+    with pytest.raises(BackgroundTaskCancelled):
+        run_device_health_check(
+            JobContext.from_job(job, should_cancel=lambda: bool(calls))
+        )
+    assert calls == [str(mr.device_uuid)]
+
+
+def test_health_check_failed_attempt_does_not_report_stale_uptime_as_observed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _service, adapter, _devices, facts, mr, _sw = _fixture(tmp_path)
+    facts.upsert_device_fact(
+        {"device_uuid": mr.device_uuid, "uptime": "99 days, 00:00:00"}
+    )
+    response = client.post(
+        "/api/device-management/health-checks",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+    assert response.status_code == 202
+    job = adapter.jobs[-1]
+
+    monkeypatch.setattr(
+        "netconsole.services.h3c_collect_service.collect_h3c_device_details",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            success=False,
+            error_message="timeout",
+            collect_run_uuid="missing-run",
+        ),
+    )
+    result = run_device_health_check(
+        JobContext.from_job(job, should_cancel=lambda: False)
+    )
+
+    assert result["items"][0]["health_state"] == "UNKNOWN"
+    uptime = next(
+        metric
+        for metric in result["items"][0]["metrics"]
+        if metric["code"] == "uptime"
+    )
+    assert uptime["status"] == "NOT_SUPPORTED"
+    assert uptime["value"] == ""
+    assert uptime["message"] == "本次只读采集未取得系统运行时间"
 
 
 def test_default_device_list_loads_facts_for_current_page_only(

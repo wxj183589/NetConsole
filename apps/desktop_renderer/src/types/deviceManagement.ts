@@ -41,6 +41,30 @@ export interface DeviceGroupOption {
   name: string
 }
 
+export interface DeviceClassificationSubcategory {
+  code: string
+  label: string
+  device_roles: string[]
+}
+
+export interface DeviceClassificationCategory {
+  code: string
+  label: string
+  subcategories: DeviceClassificationSubcategory[]
+}
+
+export interface DeviceClassificationVendor {
+  code: string
+  value: string
+  label: string
+  categories: DeviceClassificationCategory[]
+}
+
+export interface DeviceClassificationCatalog {
+  version: string
+  vendors: DeviceClassificationVendor[]
+}
+
 export type ProjectPhase = 'phase_1' | 'phase_2' | 'phase_3' | 'other' | 'unspecified'
 export type WorkScopeStatus = 'included' | 'excluded'
 
@@ -53,6 +77,7 @@ export interface DeviceListItem {
   group_id: number | null
   group_name: string
   device_vendor: string
+  vendor_label: string
   vendor_key: string
   collection_support: {
     supported: boolean
@@ -61,7 +86,14 @@ export interface DeviceListItem {
     reason_code?: string | null
     reason_message?: string | null
   }
+  device_category: string
+  device_category_label: string
+  device_subcategory: string
+  device_subcategory_label: string
+  device_role: string
   device_type: string
+  device_model: string
+  model?: string
   project_phase: ProjectPhase
   work_scope_status: WorkScopeStatus
   work_scope_reason: string
@@ -86,6 +118,8 @@ export interface DeviceListItem {
 export interface DevicePage {
   items: DeviceListItem[]
   groups: DeviceGroupOption[]
+  categories: Array<{ code: string; label: string; subtypes: string[]; subcategories: Array<{ code: string; label: string }> }>
+  classification_catalog: DeviceClassificationCatalog
   site_name: string
   total: number
   page: number
@@ -552,6 +586,9 @@ export interface DeviceWriteRequest {
   group_id?: number | null
   device_vendor?: DeviceVendor
   device_type?: string
+  device_role?: string
+  device_category?: string
+  device_subcategory?: string
   project_phase?: ProjectPhase
   work_scope_status?: WorkScopeStatus
   work_scope_reason?: string
@@ -650,6 +687,8 @@ export interface DeviceListQuery {
   group_values?: string[]
   vendor_values?: string[]
   device_type_values?: string[]
+  device_category_values?: string[]
+  device_subcategory_values?: string[]
   project_phase_values?: string[]
   work_scope_status_values?: string[]
   page?: number
@@ -670,6 +709,8 @@ export interface DeviceManagementQueryState {
   group_values: string[]
   vendor_values: string[]
   device_type_values: string[]
+  device_category_values: string[]
+  device_subcategory_values: string[]
   project_phase_values: string[]
   work_scope_status_values: string[]
   sort_by: DeviceListSortField
@@ -717,6 +758,46 @@ export interface DeviceTaskBatch {
   terminal: boolean
   summary: DeviceBatchRefreshSummary
   items: DeviceBatchRefreshItem[]
+}
+
+export interface DeviceHealthMetric {
+  code: string
+  label: string
+  status: 'PASS' | 'FAIL' | 'OBSERVED' | 'NOT_SUPPORTED'
+  value: string
+  message: string
+}
+
+export interface DeviceHealthCheckItem {
+  device_uuid: string
+  device_name: string
+  primary_address: string
+  status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED' | 'NOT_SUPPORTED' | 'CANCELLED'
+  health_state: 'OBSERVED' | 'UNKNOWN'
+  profile_id: string
+  metrics: DeviceHealthMetric[]
+  message: string
+}
+
+export interface DeviceHealthCheckTask {
+  task_id: string
+  task_status: string
+  terminal: boolean
+  stage: string
+  current: number
+  total: number
+  message: string
+  connection_timeout_seconds: number
+  command_timeout_seconds: number
+  summary: {
+    total: number
+    success: number
+    partial_success: number
+    failed: number
+    not_supported: number
+    cancelled: number
+  }
+  items: DeviceHealthCheckItem[]
 }
 
 export type DeviceBatchRefreshStatus =

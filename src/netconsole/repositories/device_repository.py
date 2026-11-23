@@ -24,6 +24,7 @@ from netconsole.models.device import (
     normalize_project_phase,
     normalize_work_scope_status,
 )
+from netconsole.models.device_classification import matches_classification_filters
 from netconsole.models.device_address import (
     DevicePrimaryAddressConflictError,
     normalize_ip_address,
@@ -351,6 +352,8 @@ class DeviceRepository:
         group_values: list[str] | None = None,
         vendor_values: list[str] | None = None,
         device_type_values: list[str] | None = None,
+        device_category_values: list[str] | None = None,
+        device_subcategory_values: list[str] | None = None,
         project_phase_values: list[str] | None = None,
         work_scope_status_values: list[str] | None = None,
     ) -> list[Device]:
@@ -425,6 +428,17 @@ class DeviceRepository:
                 conn, [str(row["device_uuid"]) for row in rows]
             )
         devices = [self._device_from_row(row, states) for row in rows]
+        if device_category_values or device_subcategory_values:
+            devices = [
+                device
+                for device in devices
+                if matches_classification_filters(
+                    device.device_vendor,
+                    device.device_type,
+                    device_category_values,
+                    device_subcategory_values,
+                )
+            ]
         return sorted(devices, key=_device_natural_sort_key)
 
     @staticmethod

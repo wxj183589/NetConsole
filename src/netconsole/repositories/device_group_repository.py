@@ -113,6 +113,14 @@ class DeviceGroupRepository:
             row = conn.execute("SELECT COUNT(*) AS count FROM devices WHERE group_id = ?", (group_id,)).fetchone()
         return int(row["count"] if row else 0)
 
+    def device_totals(self) -> tuple[int, int]:
+        """Count all devices in the current site database, including excluded devices."""
+        with closing(self.database.connect()) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE group_id IS NULL) AS ungrouped FROM devices"
+            ).fetchone()
+        return int(row["total"]), int(row["ungrouped"])
+
     def counts(self) -> dict[int, int]:
         with closing(self.database.connect()) as conn:
             rows = conn.execute("SELECT group_id, COUNT(*) AS count FROM devices WHERE group_id IS NOT NULL GROUP BY group_id").fetchall()

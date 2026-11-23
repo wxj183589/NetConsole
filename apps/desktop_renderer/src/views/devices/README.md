@@ -127,6 +127,12 @@ LLDP 历史数据按公开 DTO 白名单消费，不进入任意原始对象透�
 - [设备管理文档](../../../../../docs/device-management/VENDOR_IMPORT_AND_COLLECTION.md)
 - [命令参考与版本化 Profile](../../../../../docs/device-management/COMMAND_REFERENCE.md)
 
+## 分组计数和设备型号
+
+设备分组树的组内计数来自 `GET /api/device-management/groups`；全部设备和未分组计数来自 `GET /api/device-management/groups/totals` 的当前局点数据库聚合。这些计数包含暂不参与当前调试的设备，不受设备列表筛选或分页影响。计数请求失败时不显示虚假零值。设备 CRUD、分组移动、导入任务结束和局点切换后重新读取。
+
+列表的 `model` 来源是已保存的设备采集事实快照，可能缺失或过期；没有快照时显示“—”，不从名称或地址推断。通用健康检查复用已登记的 `device.inventory.collect` 只读 Profile，只表达本次可访问性和已取得的受支持事实；连接测试结果、任务成功和已观测事实都不等同于设备整体健康。
+
 ## 连接状态语义
 
 设备连接测试的任务终态与设备探测结果分开表达：

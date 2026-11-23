@@ -13,6 +13,11 @@ from netconsole.models.device import (
     normalize_work_scope_status,
     validate_device_vendor_type,
 )
+from netconsole.models.device_classification import (
+    normalize_category_code,
+    normalize_subcategory_code,
+    validate_classification_selection,
+)
 
 
 DeviceConnectionStatus = Literal[
@@ -67,6 +72,37 @@ class DeviceGroupOptionDTO(ApiModel):
     name: str
 
 
+class DeviceCategoryOptionDTO(ApiModel):
+    code: str
+    label: str
+    subtypes: list[str] = Field(default_factory=list)
+    subcategories: list[dict[str, str]] = Field(default_factory=list)
+
+
+class DeviceClassificationSubcategoryDTO(ApiModel):
+    code: str
+    label: str
+    device_roles: list[str] = Field(default_factory=list)
+
+
+class DeviceClassificationCategoryDTO(ApiModel):
+    code: str
+    label: str
+    subcategories: list[DeviceClassificationSubcategoryDTO] = Field(default_factory=list)
+
+
+class DeviceClassificationVendorDTO(ApiModel):
+    code: str
+    value: str
+    label: str
+    categories: list[DeviceClassificationCategoryDTO] = Field(default_factory=list)
+
+
+class DeviceClassificationCatalogDTO(ApiModel):
+    version: str
+    vendors: list[DeviceClassificationVendorDTO] = Field(default_factory=list)
+
+
 class DeviceListItemDTO(ApiModel):
     id: int
     device_uuid: str
@@ -76,9 +112,17 @@ class DeviceListItemDTO(ApiModel):
     group_id: int | None = None
     group_name: str = "未分组"
     device_vendor: str = ""
+    vendor_label: str = ""
     vendor_key: str = "unknown"
     collection_support: dict[str, object] = Field(default_factory=dict)
+    device_category: str = "UNCLASSIFIED"
+    device_category_label: str = "未分类"
+    device_subcategory: str = "UNCLASSIFIED"
+    device_subcategory_label: str = "未分类"
+    device_role: str = ""
     device_type: str = ""
+    device_model: str = ""
+    model: str = ""
     project_phase: ProjectPhaseValue = "unspecified"
     work_scope_status: WorkScopeStatusValue = "included"
     work_scope_reason: str = ""
@@ -103,6 +147,10 @@ class DeviceListItemDTO(ApiModel):
 class DevicePageDTO(ApiModel):
     items: list[DeviceListItemDTO] = Field(default_factory=list)
     groups: list[DeviceGroupOptionDTO] = Field(default_factory=list)
+    categories: list[DeviceCategoryOptionDTO] = Field(default_factory=list)
+    classification_catalog: DeviceClassificationCatalogDTO = Field(
+        default_factory=lambda: DeviceClassificationCatalogDTO(version="")
+    )
     site_name: str = ""
     total: int = 0
     page: int = 1
@@ -227,6 +275,9 @@ class DeviceWriteRequestDTO(ApiModel):
     group_id: int | None = Field(default=None, ge=1)
     device_vendor: str = Field(default="H3C", max_length=40)
     device_type: str = Field(default="SW", max_length=40)
+    device_role: str = Field(default="", max_length=40)
+    device_category: str = Field(default="", max_length=40)
+    device_subcategory: str = Field(default="", max_length=40)
     project_phase: ProjectPhaseValue = DEFAULT_PROJECT_PHASE
     work_scope_status: WorkScopeStatusValue = DEFAULT_WORK_SCOPE_STATUS
     work_scope_reason: str = Field(default="", max_length=1000)
@@ -281,8 +332,23 @@ class DeviceWriteRequestDTO(ApiModel):
 
     @model_validator(mode="after")
     def validate_supported_vendor_type(self) -> "DeviceWriteRequestDTO":
+        if self.device_role:
+            if "device_type" in self.model_fields_set and self.device_type != self.device_role:
+                raise ValueError("device_type 与 device_role 不一致")
+            self.device_type = self.device_role
         self.device_vendor, self.device_type = validate_device_vendor_type(
             self.device_vendor, self.device_type
+        )
+        self.device_role = self.device_type
+        self.device_category = normalize_category_code(self.device_category)
+        self.device_subcategory = normalize_subcategory_code(
+            self.device_subcategory
+        )
+        validate_classification_selection(
+            self.device_vendor,
+            self.device_category,
+            self.device_subcategory,
+            self.device_role,
         )
         return self
 
@@ -299,6 +365,11 @@ class DeviceWriteDTO(ApiModel):
 
 class DeviceGroupDTO(DeviceGroupOptionDTO):
     device_count: int = 0
+
+
+class DeviceGroupTotalsDTO(ApiModel):
+    total: int = 0
+    ungrouped: int = 0
 
 
 class DeviceGroupRequestDTO(ApiModel):
@@ -436,6 +507,55 @@ class DeviceBatchConnectionRequestDTO(ApiModel):
     device_uuids: list[str] = Field(min_length=1, max_length=200)
 
 
+class DeviceHealthCheckRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=200)
+    concurrency_limit: int = Field(default=4, ge=1, le=8)
+
+
+class DeviceHealthMetricDTO(ApiModel):
+    code: str
+    label: str
+    status: Literal["PASS", "FAIL", "OBSERVED", "NOT_SUPPORTED"]
+    value: str = ""
+    message: str = ""
+
+
+class DeviceHealthCheckItemDTO(ApiModel):
+    device_uuid: str
+    device_name: str = ""
+    primary_address: str = ""
+    status: Literal[
+        "PENDING", "RUNNING", "SUCCESS", "PARTIAL_SUCCESS", "FAILED", "NOT_SUPPORTED", "CANCELLED"
+    ] = "PENDING"
+    health_state: Literal["OBSERVED", "UNKNOWN"] = "UNKNOWN"
+    profile_id: str = ""
+    metrics: list[DeviceHealthMetricDTO] = Field(default_factory=list)
+    message: str = ""
+
+
+class DeviceHealthCheckSummaryDTO(ApiModel):
+    total: int = 0
+    success: int = 0
+    partial_success: int = 0
+    failed: int = 0
+    not_supported: int = 0
+    cancelled: int = 0
+
+
+class DeviceHealthCheckTaskDTO(ApiModel):
+    task_id: str
+    task_status: str
+    terminal: bool = False
+    stage: str = ""
+    current: int = 0
+    total: int = 0
+    message: str = ""
+    connection_timeout_seconds: int = 10
+    command_timeout_seconds: int = 120
+    summary: DeviceHealthCheckSummaryDTO = Field(default_factory=DeviceHealthCheckSummaryDTO)
+    items: list[DeviceHealthCheckItemDTO] = Field(default_factory=list)
+
+
 class DeviceImportPreviewRequestDTO(ApiModel):
     """CSV preview is multipart upload; browser paths are not accepted."""
 
@@ -513,6 +633,8 @@ class DeviceExportRequestDTO(ApiModel):
     group_values: list[str] = Field(default_factory=list, max_length=100)
     vendor_values: list[str] = Field(default_factory=list, max_length=100)
     device_type_values: list[str] = Field(default_factory=list, max_length=100)
+    device_category_values: list[str] = Field(default_factory=list, max_length=100)
+    device_subcategory_values: list[str] = Field(default_factory=list, max_length=100)
     project_phase_values: list[str] = Field(default_factory=list, max_length=100)
     work_scope_status_values: list[str] = Field(default_factory=list, max_length=100)
     connection_status_values: list[str] = Field(default_factory=list, max_length=6)

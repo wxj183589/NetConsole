@@ -32,6 +32,11 @@ from netconsole.core.settings import SettingsStore, normalize_external_terminal_
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.device_management import (
     DeviceCapabilityDTO,
+    DeviceCategoryOptionDTO,
+    DeviceClassificationCatalogDTO,
+    DeviceClassificationCategoryDTO,
+    DeviceClassificationSubcategoryDTO,
+    DeviceClassificationVendorDTO,
     DeviceBatchRefreshItemDTO,
     DeviceBatchConnectionRequestDTO,
     DeviceBatchRefreshSummaryDTO,
@@ -64,6 +69,7 @@ from netconsole.models.api.device_management import (
     DeviceGroupAssignmentRequestDTO,
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
+    DeviceGroupTotalsDTO,
     DeviceGroupRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportErrorDTO,
@@ -90,9 +96,16 @@ from netconsole.models.api.device_detail import (
     DeviceRecentChangeCountDTO,
     DeviceRecentChangeCountsDTO,
 )
-from netconsole.models.device import (
-    Device,
-    validate_device_vendor_type,
+from netconsole.models.device import Device, validate_device_vendor_type
+from netconsole.models.device_classification import (
+    CATALOG_VERSION,
+    CATEGORY_LABELS,
+    PREFERRED_VENDOR_VALUES,
+    SMART_HUB_CATALOG,
+    SUBCATEGORY_LABELS,
+    SUBCATEGORY_TO_ROLES,
+    VENDOR_LABELS,
+    classify_device,
 )
 from netconsole.models.device_detail import DeviceOperationTask
 from netconsole.models.task_snapshot import TaskSnapshot
@@ -112,6 +125,10 @@ from netconsole.services.device_import_export import (
     make_device_template_filename,
 )
 from netconsole.services.device_collection_support import resolve_device_collection_support
+from netconsole.services.device_health_check_application_service import (
+    DEVICE_HEALTH_CHECK_TASK_TYPE,
+    DeviceHealthCheckApplicationService,
+)
 from netconsole.services.device_connection_preflight import (
     DeviceConnectionPreflightError,
     credential_status_message,
@@ -203,6 +220,47 @@ def device_export_display_name(task_type: str, value: object = "") -> str:
     return safe_artifact_display_name(value, suffix, label)
 
 
+def _subcategories_for_category(category: str) -> list[str]:
+    return list(
+        dict.fromkeys(
+            subcategory
+            for vendor_categories in SMART_HUB_CATALOG.values()
+            for subcategory in vendor_categories.get(category, ())
+        )
+    )
+
+
+def _classification_catalog_dto() -> DeviceClassificationCatalogDTO:
+    return DeviceClassificationCatalogDTO(
+        version=CATALOG_VERSION,
+        vendors=[
+            DeviceClassificationVendorDTO(
+                code=vendor_code,
+                value=PREFERRED_VENDOR_VALUES.get(vendor_code, vendor_code),
+                label=VENDOR_LABELS[vendor_code],
+                categories=[
+                    DeviceClassificationCategoryDTO(
+                        code=category_code,
+                        label=CATEGORY_LABELS[category_code],
+                        subcategories=[
+                            DeviceClassificationSubcategoryDTO(
+                                code=subcategory_code,
+                                label=SUBCATEGORY_LABELS[subcategory_code],
+                                device_roles=list(
+                                    SUBCATEGORY_TO_ROLES.get(subcategory_code, ())
+                                ),
+                            )
+                            for subcategory_code in subcategories
+                        ],
+                    )
+                    for category_code, subcategories in categories.items()
+                ],
+            )
+            for vendor_code, categories in SMART_HUB_CATALOG.items()
+        ],
+    )
+
+
 DEVICE_COLLECT_TASK_TYPE = "device_detail_collect"
 DEVICE_OPTICAL_REFRESH_TASK_TYPE = "device_optical_refresh"
 DEVICE_DIAGNOSTIC_TASK_TYPE = "device_diagnostic_download"
@@ -234,6 +292,7 @@ DEVICE_TASK_TYPES = frozenset(
         DEVICE_OPTICAL_REFRESH_TASK_TYPE,
         DEVICE_DIAGNOSTIC_TASK_TYPE,
         DEVICE_IMPORT_TASK_TYPE,
+        DEVICE_HEALTH_CHECK_TASK_TYPE,
         *EXPORT_TASK_TYPES,
     }
 )
@@ -275,6 +334,7 @@ class DeviceManagementWebService:
         export_adapter: WebExportProcessAdapter | None = None,
         artifact_store: WebArtifactStore | None = None,
         device_operation_service: DeviceInventoryOperationService | None = None,
+        health_check_service: DeviceHealthCheckApplicationService | None = None,
     ) -> None:
         self.paths = paths
         self.task_service = task_service
@@ -284,6 +344,12 @@ class DeviceManagementWebService:
         self.export_adapter = export_adapter or WebExportProcessAdapter(task_service)
         self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
         self.device_operation_service = device_operation_service
+        self.health_check_service = health_check_service or DeviceHealthCheckApplicationService(
+            paths,
+            task_service,
+            process_adapter=self.process_adapter,
+            site_provider=self.current_site_id,
+        )
         self._start_lock = RLock()
         self._mutation_lock = RLock()
         self._delete_tokens: dict[str, dict[str, object]] = {}
@@ -405,6 +471,8 @@ class DeviceManagementWebService:
         group_values: list[str] | None = None,
         vendor_values: list[str] | None = None,
         device_type_values: list[str] | None = None,
+        device_category_values: list[str] | None = None,
+        device_subcategory_values: list[str] | None = None,
         project_phase_values: list[str] | None = None,
         work_scope_status_values: list[str] | None = None,
         page: int = 1,
@@ -432,6 +500,8 @@ class DeviceManagementWebService:
                 group_values=group_values,
                 vendor_values=vendor_values,
                 device_type_values=device_type_values,
+                device_category_values=device_category_values,
+                device_subcategory_values=device_subcategory_values,
                 project_phase_values=project_phase_values,
                 work_scope_status_values=work_scope_status_values,
             )
@@ -550,6 +620,23 @@ class DeviceManagementWebService:
                 for group in groups
                 if group.id is not None
             ],
+            categories=[
+                DeviceCategoryOptionDTO(
+                    code=category,
+                    label=label,
+                    subtypes=[
+                        role
+                        for subcategory in SMART_HUB_CATALOG.get("H3C", {}).get(category, ())
+                        for role in SUBCATEGORY_TO_ROLES.get(subcategory, ())
+                    ],
+                    subcategories=[
+                        {"code": code, "label": SUBCATEGORY_LABELS[code]}
+                        for code in _subcategories_for_category(category)
+                    ],
+                )
+                for category, label in CATEGORY_LABELS.items()
+            ],
+            classification_catalog=_classification_catalog_dto(),
             site_name=site,
             total=total,
             page=selected_page,
@@ -784,6 +871,11 @@ class DeviceManagementWebService:
         return DeviceRecentChangeCountsDTO(
             items=[DeviceRecentChangeCountDTO(**row) for row in facts.list_object_history_counts(device_uuid)]
         )
+
+    def group_totals(self) -> DeviceGroupTotalsDTO:
+        _devices, groups, _facts = self._repositories(self.current_site_id())
+        total, ungrouped = groups.device_totals()
+        return DeviceGroupTotalsDTO(total=total, ungrouped=ungrouped)
 
     def list_groups(self) -> list[DeviceGroupDTO]:
         _device_repository, group_repository, _facts = self._repositories(
@@ -2039,6 +2131,12 @@ class DeviceManagementWebService:
         groups: DeviceGroupRepository,
     ) -> Device:
         values = payload.model_dump()
+        for virtual_field in (
+            "device_role",
+            "device_category",
+            "device_subcategory",
+        ):
+            values.pop(virtual_field, None)
         if existing is not None:
             for field in (
                 "project_phase",
@@ -2856,6 +2954,8 @@ class DeviceManagementWebService:
             "group_values": payload.group_values,
             "vendor_values": payload.vendor_values,
             "device_type_values": payload.device_type_values,
+            "device_category_values": payload.device_category_values,
+            "device_subcategory_values": payload.device_subcategory_values,
             "project_phase_values": payload.project_phase_values,
             "work_scope_status_values": payload.work_scope_status_values,
         }
@@ -2872,6 +2972,8 @@ class DeviceManagementWebService:
                 group_values=payload.group_values,
                 vendor_values=payload.vendor_values,
                 device_type_values=payload.device_type_values,
+                device_category_values=payload.device_category_values,
+                device_subcategory_values=payload.device_subcategory_values,
                 project_phase_values=payload.project_phase_values,
                 work_scope_status_values=payload.work_scope_status_values,
                 connection_status_values=sorted(statuses),
@@ -3778,6 +3880,8 @@ class DeviceManagementWebService:
         collection_support = resolve_device_collection_support(
             device, "device.inventory.collect", paths=self.paths
         )
+        classification = classify_device(device.device_vendor, device.device_type)
+        device_model = str((fact or {}).get("model") or "")
         station_id = str(getattr(device, "station_id", "") or "").strip()
         return DeviceListItemDTO(
             id=int(device.id or 0),
@@ -3794,6 +3898,7 @@ class DeviceManagementWebService:
             if device.group_id is not None
             else "未分组",
             device_vendor=str(device.device_vendor or ""),
+            vendor_label=classification.vendor_label,
             vendor_key=device.vendor_key,
             collection_support={
                 "supported": collection_support.supported,
@@ -3802,7 +3907,14 @@ class DeviceManagementWebService:
                 "reason_code": collection_support.reason_code,
                 "reason_message": collection_support.reason_message,
             },
+            device_category=classification.category_code,
+            device_category_label=classification.category_label,
+            device_subcategory=classification.subcategory_code,
+            device_subcategory_label=classification.subcategory_label,
+            device_role=classification.device_role,
             device_type=str(device.device_type or ""),
+            device_model=device_model,
+            model=device_model,
             project_phase=str(device.project_phase or "unspecified"),
             work_scope_status=str(device.work_scope_status or "included"),
             work_scope_reason=str(device.work_scope_reason or ""),

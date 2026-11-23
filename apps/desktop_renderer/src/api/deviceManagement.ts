@@ -30,6 +30,7 @@ import type {
   DeviceClassificationUpdateRequest,
   DevicePage,
   DeviceTaskBatch,
+  DeviceHealthCheckTask,
   DeviceTaskReference,
   DeviceWriteRequest,
   DeviceWriteResponse,
@@ -155,6 +156,10 @@ export function getDeviceConnectionTest(taskId: string): Promise<DeviceConnectio
   return apiRequest<DeviceConnectionTest>(`/api/device-management/connection-tests/${encodeURIComponent(taskId)}`)
 }
 
+export function getDeviceGroupTotals(): Promise<{ total: number; ungrouped: number }> {
+  return apiRequest('/api/device-management/groups/totals')
+}
+
 export function listDeviceGroups(): Promise<DeviceGroup[]> {
   return apiRequest<DeviceGroup[]>('/api/device-management/groups')
 }
@@ -212,6 +217,21 @@ export function getBatchRefresh(batchId: string): Promise<DeviceTaskBatch> {
 
 export function startBatchConnectionTests(deviceUuids: string[]): Promise<DeviceTaskBatch> {
   return apiRequest<DeviceTaskBatch>('/api/device-management/devices/batch-connection-tests', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
+}
+
+export function startDeviceHealthCheck(deviceUuids: string[], concurrencyLimit = 4): Promise<DeviceHealthCheckTask> {
+  return apiRequest<DeviceHealthCheckTask>('/api/device-management/health-checks', {
+    method: 'POST',
+    body: JSON.stringify({ device_uuids: deviceUuids, concurrency_limit: concurrencyLimit }),
+  })
+}
+
+export function getDeviceHealthCheck(taskId: string): Promise<DeviceHealthCheckTask> {
+  return apiRequest<DeviceHealthCheckTask>(`/api/device-management/health-checks/${encodeURIComponent(taskId)}`)
+}
+
+export function cancelDeviceHealthCheck(taskId: string): Promise<DeviceHealthCheckTask> {
+  return apiRequest<DeviceHealthCheckTask>(`/api/device-management/health-checks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
 }
 
 export function startDeviceOpticalRefresh(deviceUuid: string): Promise<DeviceTaskReference> {

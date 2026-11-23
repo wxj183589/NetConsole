@@ -18,6 +18,8 @@ const userSelectedExport = useUserSelectedExport()
 const emptyPage = (): DevicePage => ({
   items: [],
   groups: [],
+  categories: [],
+  classification_catalog: { version: '', vendors: [] },
   site_name: '',
   total: 0,
   page: 1,

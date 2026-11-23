@@ -539,11 +539,12 @@ def test_csv_work_scope_round_trip_and_legacy_template_compatibility(tmp_path):
     assert explicit is not None
     assert explicit.project_phase == "phase_2"
     assert explicit.work_scope_status == "excluded"
-    assert DEVICE_CSV_COLUMNS[-3:] == [
+    assert DEVICE_CSV_COLUMNS[-6:-3] == [
         "建设阶段",
         "当前工作状态",
         "当前工作状态说明",
     ]
+    assert DEVICE_CSV_COLUMNS[-3:] == ["产品大类", "设备子类", "设备角色"]
 
 
 def test_database_rejects_unknown_work_scope_value(tmp_path):

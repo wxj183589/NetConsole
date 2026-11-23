@@ -9,6 +9,7 @@ from netconsole.services.device_management_web_service import (
     run_device_optical_refresh,
 )
 from netconsole.services.device_operation_service import run_device_inventory_refresh, run_device_sftp_enable
+from netconsole.services.device_health_check_application_service import run_device_health_check
 
 device_csv_import = run_device_csv_import
 device_list_page = legacy_handler(legacy_tasks._device_list_page)
@@ -43,4 +44,5 @@ HANDLERS = {
     "device_sftp_enable": run_device_sftp_enable,
     "device_optical_refresh": run_device_optical_refresh,
     "device_diagnostic_download": run_device_diagnostic_download,
+    "device_health_check": run_device_health_check,
 }
