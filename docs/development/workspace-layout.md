@@ -52,6 +52,8 @@ D:\study\NetConsole-Workspace\worktrees\<task-id-or-branch-name>
 
 创建前必须检查分支是否已有 Worktree、目标目录是否同名或等价、Git Common Directory 是否正确，并确认目标属于 `worktrees` 容器。已有对应 Worktree 优先复用。
 
+`worktrees` 是 Workspace 内 Git Worktree 的统一容器。检查器同时核对 NetConsole 主仓库与固定 `NetConsole-DevStatus` 仓库的实际 `git worktree list --porcelain` 注册结果；只有被对应仓库真实注册的目录才视为已管理，普通副本或未知目录仍按违规报告。
+
 任务合并后进入回收候选检查；未合并、dirty、有未跟踪成果、存在活动进程或用途不明的 Worktree 不得自动删除。Git Worktree 只能使用 `git worktree add/remove` 管理，不能用普通目录移动或删除替代。
 
 ## 3. 测试数据、构建和报告

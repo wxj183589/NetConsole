@@ -44,6 +44,9 @@ REPOSITORY_TOP_LEVEL = frozenset(
         ".ruff_cache",
         ".venv",
         "apps",
+        # Retained, versioned engineering evidence from the console refactor.
+        # New reports and build output belong under docs/ or Workspace reports.
+        "artifacts",
         "config",
         "docs",
         "dist",
@@ -56,6 +59,7 @@ REPOSITORY_TOP_LEVEL = frozenset(
 )
 CONTAINER_LINK_CHECKS = ("worktrees", "test-data", "release", "reports", "temp", "archives", "backups")
 INDEPENDENT_REPOSITORIES = {"NetConsole-Next": "https://github.com/wxj183589/NetConsole-Next.git"}
+WORKSPACE_REPOSITORIES = ("NetConsole-DevStatus",)
 CONTAINER_CHILDREN = {
     "reports": frozenset({"build", "diagnostic", "maintenance", "tests", "workspace-cleanup"}),
     # git-pack-quarantine is a retained historical maintenance container; new
@@ -447,6 +451,29 @@ def _registered_independent_worktrees(
     return tuple(paths), violations
 
 
+def _registered_workspace_worktrees(
+    workspace_root: Path,
+) -> tuple[dict[Path, tuple[Path, ...]], list[Violation]]:
+    """Return worktrees owned by fixed repositories in this Workspace."""
+
+    registered: dict[Path, tuple[Path, ...]] = {}
+    violations: list[Violation] = []
+    for name in WORKSPACE_REPOSITORIES:
+        repository = workspace_root / name
+        git_marker = repository / ".git"
+        if (
+            _is_reparse_point(repository)
+            or _is_reparse_point(git_marker)
+            or not repository.is_dir()
+            or not git_marker.is_dir()
+        ):
+            continue
+        worktree_paths, worktree_errors = _git_worktrees(repository)
+        registered[repository] = worktree_paths
+        violations.extend(worktree_errors)
+    return registered, violations
+
+
 def check_worktree_locations(
     repo_root: Path,
     workspace_root: Path | None,
@@ -460,7 +487,10 @@ def check_worktree_locations(
     worktree_root = workspace_root / "worktrees"
     result: list[Violation] = []
     for path in worktree_paths:
-        if _same_path(path, repo_root):
+        # A linked worktree check sees the canonical main checkout as well as
+        # the requested worktree. The main checkout is an approved fixed
+        # Workspace boundary, not an unmanaged task worktree.
+        if _same_path(path, repo_root) or _same_path(path, workspace_root / "NetConsole"):
             continue
         if _is_protected_data_path(path):
             result.append(
@@ -539,12 +569,28 @@ def run_checks(repo_root: Path, workspace_root: Path | None = None) -> list[Viol
     result.extend(git_result)
     if workspace_root is not None:
         independent_worktree_paths: tuple[Path, ...] = ()
+        workspace_repository_worktrees: dict[Path, tuple[Path, ...]] = {}
         if _workspace_root_allows_independent_probe(workspace_root):
             independent_worktree_paths, independent_worktree_errors = _registered_independent_worktrees(workspace_root)
             result.extend(independent_worktree_errors)
-        managed_paths = (*worktree_paths, *independent_worktree_paths)
+            workspace_repository_worktrees, workspace_repository_errors = _registered_workspace_worktrees(workspace_root)
+            result.extend(workspace_repository_errors)
+        workspace_repository_paths = tuple(
+            path
+            for paths in workspace_repository_worktrees.values()
+            for path in paths
+        )
+        managed_paths = (*worktree_paths, *independent_worktree_paths, *workspace_repository_paths)
         result.extend(check_workspace_root(workspace_root, managed_paths))
         result.extend(check_worktree_locations(repo_root, workspace_root, worktree_paths))
+        for repository, repository_worktrees in workspace_repository_worktrees.items():
+            result.extend(
+                check_worktree_locations(
+                    repository,
+                    workspace_root,
+                    repository_worktrees,
+                )
+            )
         result.extend(
             check_worktree_locations(
                 workspace_root / "NetConsole-Next",

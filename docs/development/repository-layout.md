@@ -43,6 +43,7 @@ NetConsole/
 │  └─ maintenance/          # 仓库维护、离线迁移和审计脚本
 ├─ tests/                   # 自动化测试和脱敏 fixtures
 ├─ tools/                   # 独立开发、诊断、维护和协议分析工具
+├─ artifacts/               # 已提交的历史工程证据；禁止新增运行/构建输出
 ├─ main.py                  # PyCharm/源码 Electron 开发入口与 Backend 诊断分派
 ├─ pyproject.toml           # src 包发现和 editable 安装配置
 ├─ pytest.ini               # pytest 入口配置
@@ -59,7 +60,7 @@ NetConsole/
 
 ## 3. 顶层目录白名单
 
-版本化顶层目录为：`.agents`、`apps`、`src`、`config`、`docs`、`resources`、`scripts`、`tests`、`tools`。`.codex`、`.venv`、`.local`、`.idea`、`.vs`、`.pytest_cache`、`.ruff_cache` 允许在本机存在，但必须被 `.gitignore` 忽略；`.git` 属于 Git 管理目录，不是业务目录。
+版本化顶层目录为：`.agents`、`apps`、`src`、`config`、`docs`、`resources`、`scripts`、`tests`、`tools`。`artifacts/` 是历史工程证据保留容器，仅保留已有、已提交的审计资料；新的报告、截图、日志、压缩包和构建输出不得写入该目录，必须进入 `docs/archive/` 或 Workspace 的标准报告/构建容器。`.codex`、`.venv`、`.local`、`.idea`、`.vs`、`.pytest_cache`、`.ruff_cache` 允许在本机存在，但必须被 `.gitignore` 忽略；`.git` 属于 Git 管理目录，不是业务目录。
 
 `.agents/` 是已纳入 Git 的项目级 Skill 和规则目录；`.codex/` 只是本地 Codex 状态目录，不得误认为项目配置或版本化 Skill 来源。
 

@@ -88,6 +88,52 @@ def test_registered_independent_repository_worktrees_are_managed(tmp_path: Path)
     assert not any(item.kind == "UNMANAGED_WORKTREE_DIRECTORY" for item in violations)
 
 
+def test_devstatus_repository_worktrees_are_managed_without_allowing_unknown_directories(
+    tmp_path: Path,
+) -> None:
+    main = tmp_path / "NetConsole"
+    main.mkdir()
+    subprocess.run(("git", "init", "-q", str(main)), check=True)
+    devstatus = tmp_path / "NetConsole-DevStatus"
+    devstatus.mkdir()
+    subprocess.run(("git", "init", "-q", str(devstatus)), check=True)
+    (devstatus / "current-status.md").write_text("fixture\n", encoding="utf-8")
+    subprocess.run(("git", "-C", str(devstatus), "add", "current-status.md"), check=True)
+    subprocess.run(
+        (
+            "git",
+            "-C",
+            str(devstatus),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "fixture",
+        ),
+        check=True,
+    )
+    worktrees = tmp_path / "worktrees"
+    worktrees.mkdir()
+    managed = worktrees / "devstatus-task"
+    unmanaged = worktrees / "ordinary-copy"
+    subprocess.run(
+        ("git", "-C", str(devstatus), "worktree", "add", "--detach", "-q", str(managed)),
+        check=True,
+    )
+    unmanaged.mkdir()
+
+    violations = run_checks(main, tmp_path)
+
+    unmanaged_paths = {
+        Path(item.path).name
+        for item in violations
+        if item.kind == "UNMANAGED_WORKTREE_DIRECTORY"
+    }
+    assert unmanaged_paths == {"ordinary-copy"}
+
+
 def test_invalid_workspace_boundary_skips_independent_repository_probe(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -148,3 +194,27 @@ def test_repository_top_level_reports_new_directory(tmp_path: Path) -> None:
     violations = check_repository_root(tmp_path)
 
     assert any(item.kind == "UNAPPROVED_REPOSITORY_TOP_LEVEL" for item in violations)
+
+
+def test_retained_artifacts_directory_is_allowed_without_allowing_unknown_roots(tmp_path: Path) -> None:
+    (tmp_path / "artifacts").mkdir()
+    assert check_repository_root(tmp_path) == []
+
+    (tmp_path / "new_output").mkdir()
+    assert any(item.kind == "UNAPPROVED_REPOSITORY_TOP_LEVEL" for item in check_repository_root(tmp_path))
+
+
+def test_canonical_main_checkout_is_not_reported_as_worktree_outside_container(tmp_path: Path) -> None:
+    workspace = tmp_path / "NetConsole-Workspace"
+    repo = workspace / "NetConsole"
+    task = workspace / "worktrees" / "task"
+    repo.mkdir(parents=True)
+    task.mkdir(parents=True)
+
+    violations = check_worktree_locations(
+        task,
+        workspace,
+        (repo, task),
+    )
+
+    assert violations == []
