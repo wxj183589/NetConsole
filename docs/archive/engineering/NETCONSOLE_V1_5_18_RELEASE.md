@@ -1,6 +1,6 @@
 # NetConsole v1.5.18 发布收口审查
 
-日期：2026-11-23（Asia/Shanghai）。RELEASE_STATUS=PARTIAL。当前为发布候选，尚未合并、推送 main 或生成正式制品。
+日期：2026-11-23（Asia/Shanghai）。RELEASE_STATUS=PARTIAL。当前为发布候选，尚未合并、推送 main 或生成正式制品。候选 Commit `9226b2c0865c25b430b9b22dea8f5c76535b490f` 已提交并推送到 `github/codex-A/release-v1.5.18-20261123`。
 
 ## 范围与保护
 
@@ -43,7 +43,9 @@
 
 1920×1080 是实际 Electron 窗口截图，物理显示模式为 2560×1440；原生 Save As 完整人工操作、Explorer 最终拖放、H3C/GBK 现场、安装/升级及长时运行仍 NOT VERIFIED。
 
-详细命令日志、源文件范围哈希、Session ID 和最终 Git/制品结果位于 Workspace/reports/build/release-v1.5.18-20261123。最终结果见该目录 RELEASE_REPORT.md；本文件不将尚未执行的发布步骤写成成功。
+详细命令日志、源文件范围哈希、Session ID 和最终 Git/制品结果位于 Workspace/reports/build/release-v1.5.18-20261123。Renderer 全量 219 files / 1583 tests、Electron 41 files / 324 tests、Ruff、依赖和真实控制台回归已通过；Python 全量 5703 passed / 6 failed（失败为既有架构/目录门、版本契约已在候选中修正，未重新执行完整 Gate）。本文件不将尚未执行的发布步骤写成成功。
+
+正式版本号与包产物：版本源已更新为 `1.5.18`；因为 root-layout、workspace-layout 和 architecture guard 未通过，未合并 main、未推送 main、未构建 Installer/Portable、未计算正式包 SHA-256，RELEASE_STATUS 保持 PARTIAL。
 
 PRODUCTION_DATA_MODIFIED=0
 DATABASES_REMOVED=0
