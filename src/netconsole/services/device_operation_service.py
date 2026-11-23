@@ -34,6 +34,7 @@ from netconsole.services.device_command_profile_service import (
     resolve_device_operation_profile,
 )
 from netconsole.services.device_collection_support import resolve_device_collection_support
+from netconsole.services.device_activity import device_write_resource_key
 from netconsole.services.device_scope import require_current_debug_device
 from netconsole.services.interface_discovery_routing import (
     CAPABILITY_PRIMARY_ROUTE,
@@ -274,6 +275,11 @@ class DeviceOperationService:
         )
         repository = self.task_service.repository(site)
         requested_id = self._task_id(site, device_uuid, operation_id, idempotency_key)
+        write_resource_keys = (
+            [device_write_resource_key(site, device_uuid)]
+            if operation_id == DEVICE_SFTP_ENABLE_OPERATION_ID
+            else []
+        )
 
         with self._start_lock:
             if requested_id:
@@ -324,6 +330,12 @@ class DeviceOperationService:
                     "task_name": f"{task_label} · {device.name}",
                     "owner": task_owner,
                     "task_source": "local",
+                    "resource_keys": write_resource_keys,
+                    "resource_conflict_message": (
+                        "该设备已有自动化写任务正在运行，请等待任务结束后重试。"
+                        if write_resource_keys
+                        else ""
+                    ),
                     "app_root": str(self.paths.app_root),
                     "data_root": str(self.paths.data_root),
                     "_cancel_grace_ms": 2000,

@@ -1,6 +1,9 @@
+// @vitest-environment happy-dom
+
 import { describe, expect, it } from 'vitest'
 
 import { flattenNavigation } from '../navigation/registry'
+import { redirectLegacyCommandReference } from './index'
 import { appRoutes } from './routes'
 
 describe('Web route ownership', () => {
@@ -55,6 +58,28 @@ describe('Web route ownership', () => {
     expect(routes.find((route) => route.path === 'config-center')?.meta?.navigationId).toBe('files.config-collection')
     expect(routes.find((route) => route.path === 'device-files')?.meta?.navigationId).toBe('files.downloads')
     expect(routes.find((route) => route.path === 'device-files/diagnostics')?.meta?.navigationId).toBe('files.device-diagnostics')
+  })
+
+  it('redirects the legacy command-reference tab before feature enforcement', () => {
+    expect(redirectLegacyCommandReference({
+      name: 'logs',
+      query: { tab: 'command-reference', source: 'legacy' },
+      hash: '#commands',
+    } as never, {} as never, () => undefined)).toEqual({
+      name: 'command-reference',
+      query: { source: 'legacy' },
+      hash: '#commands',
+      replace: true,
+    })
+    expect(redirectLegacyCommandReference({ name: 'logs', query: {}, hash: '' } as never, {} as never, () => undefined)).toBe(true)
+  })
+
+  it('exposes the command reference directly with its own feature guard', () => {
+    const route = routes.find((item) => item.name === 'command-reference')
+    expect(route?.path).toBe('command-reference')
+    expect(route?.component).toBeDefined()
+    expect(route?.redirect).toBeUndefined()
+    expect(route?.meta).toMatchObject({ navigationId: 'command-reference', featureId: 'module.command_reference', moduleId: 'command-reference' })
   })
 
   it('owns the console route as an independent workspace', () => {

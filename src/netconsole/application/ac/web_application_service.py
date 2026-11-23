@@ -48,6 +48,7 @@ from netconsole.services.device_scope import (
     DeviceOutOfCurrentDebugScopeError,
     require_current_debug_device,
 )
+from netconsole.services.device_activity import device_write_resource_key
 from netconsole.services.ac.fit_ap_resource_export import make_fit_ap_resource_filename
 from netconsole.services.ac.query_service import AcManagementQueryService
 from netconsole.services.background_job import BackgroundJob
@@ -1407,7 +1408,10 @@ class AcWebApplicationService:
                             "source": "cli",
                             "plan_id": str(plan["plan_id"]),
                             "plan_digest": str(plan["digest"]),
-                            "resource_keys": [f"{site_id}:{plan['target_id']}:ac_config_write"],
+                            "resource_keys": [
+                                f"{site_id}:{plan['target_id']}:ac_config_write",
+                                device_write_resource_key(site_id, str(plan["target_id"])),
+                            ],
                             "resource_conflict_message": "当前 AC 已有配置写任务正在运行",
                         },
                     )

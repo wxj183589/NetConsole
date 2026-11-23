@@ -262,7 +262,10 @@ def test_action_plan_persists_revalidates_target_and_starts_real_fixed_command_t
     assert job.task_type == "ac_command_action_execute"
     assert job.params["action"] == "enable_ap_remote_login"
     assert job.params["command_sequence"] == list(executed.command_summary)
-    assert job.params["resource_keys"] == ["demo:ac-1:ac_config_write"]
+    assert job.params["resource_keys"] == [
+        "demo:ac-1:ac_config_write",
+        "device-write:v1:demo:ac-1",
+    ]
     assert snapshot is not None and snapshot.source == "local" and snapshot.owner == "web_ac"
     assert snapshot is not None and snapshot.result["plan_id"] == valid.plan_id
     normal.complete(

@@ -19,11 +19,13 @@ describe('Web navigation registry', () => {
       '设备控制台',
       'AC 管理',
       '轨道交通',
+      '配置采集中心',
       '设备文件下载',
       '工具集',
       '任务中心',
       '日志中心',
       '存储管理',
+      '命令参考',
       '系统设置',
     ])
   })
@@ -55,7 +57,7 @@ describe('Web navigation registry', () => {
     ])
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.train-online')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'files')?.children.map((item) => item.title)).toEqual([
-      '设备文件下载', '配置采集中心', '设备诊断下载',
+      '设备文件下载', '设备诊断下载',
     ])
     expect(flattenNavigation().some((item) => item.navigation_id === 'config')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.car-network-diagnostic')).toBe(false)
@@ -66,7 +68,7 @@ describe('Web navigation registry', () => {
     const visible = flattenNavigation(visibleNavigation(() => true))
     expect(visible.every((item) => item.children.length > 0 || Boolean(item.route_name && item.route_path))).toBe(true)
     expect(visible.some((item) => item.navigation_id === 'tools.wireless-scan')).toBe(true)
-    expect(visible.some((item) => item.navigation_id === 'command-reference')).toBe(false)
+    expect(visible.some((item) => item.navigation_id === 'command-reference')).toBe(true)
   })
 
   it('shows the toolbox group between files and tasks in Electron', () => {
@@ -92,6 +94,14 @@ describe('Web navigation registry', () => {
     ])
     if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
     else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
+  })
+
+  it('exposes configuration collection independently while honoring its feature gate', () => {
+    const entry = navigationRegistry.find((item) => item.navigation_id === 'files.config-collection')
+    expect(entry).toMatchObject({ route_path: '/config-center', feature_id: 'module.config_collection' })
+    expect(entry?.parent_id).toBeUndefined()
+    expect(visibleNavigation((id) => id !== 'module.config_collection').some((item) => item.navigation_id === entry?.navigation_id)).toBe(false)
+    expect(visibleNavigation(() => true).some((item) => item.navigation_id === entry?.navigation_id)).toBe(true)
   })
 
   it('keeps the device console on an independent feature gate', () => {
@@ -148,7 +158,6 @@ describe('Web navigation registry', () => {
     expect(files?.parity_state).toBe('IMPLEMENTED_UNVERIFIED')
     expect(files?.children.map((item) => item.navigation_id)).toEqual([
       'files.downloads',
-      'files.config-collection',
       'files.device-diagnostics',
     ])
   })

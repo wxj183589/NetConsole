@@ -116,6 +116,7 @@ const en: Record<string, string> = {
   'nav.files.downloads': 'Device File Downloads',
   'nav.files.config-collection': 'Configuration Collection',
   'nav.files.device-diagnostics': 'Device Diagnostics Download',
+  'nav.command-reference': 'Command Reference',
   'nav.settings': 'System Settings',
   'nav.tools': 'Tool Collection',
   'nav.tools.external-tools': 'External Tools',

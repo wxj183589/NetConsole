@@ -42,9 +42,11 @@ def test_sftp_operation_starts_provisional_family_task_when_version_is_missing(t
     paths = PathResolver(tmp_path)
     paths.ensure_site_dirs("demo")
     task_service = TaskApplicationService(paths=paths, site_name="demo")
+    started: list[BackgroundJob] = []
 
     class FakeProcessAdapter:
         def start_job(self, job: BackgroundJob) -> str:
+            started.append(job)
             task_service.prepare(job)
             return job.job_id
 
@@ -58,6 +60,12 @@ def test_sftp_operation_starts_provisional_family_task_when_version_is_missing(t
     task = service.start(str(device.device_uuid), "device.sftp.enable", allow_excluded=True)
     assert task.profile_id == "h3c.comware.switch.family.sftp-enable.v1"
     assert task.status in {"PENDING", "STARTING", "RUNNING"}
+    assert started[0].params["resource_keys"] == [
+        f"device-write:v1:demo:{device.device_uuid}"
+    ]
+    assert started[0].params["resource_conflict_message"] == (
+        "该设备已有自动化写任务正在运行，请等待任务结束后重试。"
+    )
 
 
 def test_sftp_operation_skips_non_h3c_without_starting_a_write_task(tmp_path: Path) -> None:
