@@ -23,4 +23,11 @@ Architecture Guard、Python 全量（5716 passed、2 skipped、34 warnings）、
 
 ## Git 交接
 
-提交和 Push 仅允许发生在 `codex-A/release-v1.5.18-20261123`，不得合并或推送 `github/main`，不得构建正式 Installer/Portable。最终 Commit/Push SHA 由提交后补录。
+提交和 Push 仅发生在 `codex-A/release-v1.5.18-20261123`，未合并或推送 `github/main`，未构建正式 Installer/Portable。
+
+```text
+PRODUCT_COMMIT=c1a7cbe58470ed027ac02f7a2beb75a8d2590b03
+PRODUCT_PUSH=PASS
+DEVSTATUS_COMMIT=NOT RUN（按本轮保护要求未修改 DevStatus）
+DEVSTATUS_PUSH=NOT RUN
+```
