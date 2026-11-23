@@ -87,6 +87,11 @@ const OPENABLE_ARTIFACT_SUFFIXES = [
 const DOWNLOAD_SEGMENT = String.raw`(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+`
 const GROUND_ARCHIVE_ID = String.raw`[A-Za-z0-9][A-Za-z0-9_-]{0,159}`
 const DOWNLOAD_ENDPOINTS = [
+  { pattern: /^\/api\/terminal\/quick-buttons\/export$/, query: new Set<string>(), required: new Set<string>() },
+  { pattern: /^\/api\/terminal\/sftp\/transfers\/[a-f0-9]{32}\/file$/, query: new Set<string>(), required: new Set<string>() },
+  { pattern: /^\/api\/terminal\/sftp\/transfer-log$/, query: new Set<string>(), required: new Set<string>() },
+  { pattern: /^\/api\/terminal\/history\/[a-f0-9]{32}\/export\/(?:txt|jsonl|log|zip)$/, query: new Set<string>(), required: new Set<string>() },
+  { pattern: /^\/api\/terminal\/sessions\/[a-f0-9]{32}\/manual-log\/[a-f0-9]{32}\/export$/, query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/device-management/exports/${DOWNLOAD_SEGMENT}/download$`), query: new Set(['artifact_id']), required: new Set(['artifact_id']) },
   { pattern: new RegExp(`^/api/config-collection/artifacts/${DOWNLOAD_SEGMENT}$`), query: new Set<string>(), required: new Set<string>() },
   { pattern: new RegExp(`^/api/file-management/downloads/${DOWNLOAD_SEGMENT}/file$`), query: new Set(['site_id']), required: new Set<string>() },
@@ -321,12 +326,20 @@ function validateWorkspaceId(value: unknown, label: string): string {
 }
 
 export function validateUiPreferenceKey(value: unknown): UiPreferenceKey {
+  if (value === 'console.sftp-download-directory') throw new TypeError('SFTP directory is private to Main')
   if (!UI_PREFERENCE_KEYS.includes(value as UiPreferenceKey)) throw new TypeError('UI preference key is invalid')
   return value as UiPreferenceKey
 }
 
 export function validateUiPreferenceValue(key: UiPreferenceKey, value: unknown): unknown | null {
   if (value === null) return null
+  if (key === 'console.sftp-download-directory') throw new TypeError('SFTP directory is managed by Main')
+  if (key === 'console.layout') {
+    const record = asRecord(value, 'console layout')
+    rejectUnknownKeys(record, ['collapsed', 'sidebarWidth', 'sftpWidth'])
+    if (typeof record.collapsed !== 'boolean' || typeof record.sidebarWidth !== 'number' || record.sidebarWidth < 180 || record.sidebarWidth > 500 || typeof record.sftpWidth !== 'number' || record.sftpWidth < 280 || record.sftpWidth > 900) throw new TypeError('invalid console layout')
+    return record
+  }
   if (key === 'desktop.close-to-tray') {
     if (typeof value !== 'boolean') throw new TypeError('close-to-tray preference must be a boolean')
     return value

@@ -45,7 +45,9 @@ describe('preload bridge', () => {
       'openOnlineMrSessionLocation',
       'openPath',
       'openTaskWindow',
+      'openTerminalWindow',
       'openWorkspaceWindow',
+      'prepareSftpDrag',
       'refreshExternalToolStatuses',
       'refreshSiteContext',
       'renameExternalToolCategory',
@@ -76,7 +78,9 @@ describe('preload bridge', () => {
       'setWorkspaceWindowTitle',
       'showItemInFolder',
       'showTaskNotification',
+      'startSftpDrag',
       'updateExternalTool',
+      'validateDroppedFiles',
       'writeClipboardText',
     ])
     expect('ipcRenderer' in bridge).toBe(false)

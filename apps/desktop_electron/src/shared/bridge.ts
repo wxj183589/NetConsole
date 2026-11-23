@@ -378,6 +378,8 @@ export interface TraySiteSwitchRequest {
 }
 
 export const UI_PREFERENCE_KEYS = Object.freeze([
+  'console.layout',
+  'console.sftp-download-directory',
   'desktop.close-to-tray',
   'mesh-analysis-rssi.layout-mode',
   'mesh-analysis-rssi.compare-split-ratio',
@@ -409,6 +411,10 @@ export const UI_PREFERENCE_KEYS = Object.freeze([
 export type UiPreferenceKey = typeof UI_PREFERENCE_KEYS[number]
 
 export interface NetConsoleDesktopBridge {
+  validateDroppedFiles?(files: File[]): Promise<void>
+  openTerminalWindow?(sessionId: string): Promise<NativeActionResult>
+  prepareSftpDrag?(requests: BackendDownloadRequest[]): Promise<{ dragId: string }>
+  startSftpDrag?(dragId: string): void
   getAppInfo(): Promise<AppInfo>
   getBackendStatus(): Promise<BackendStatus>
   getRuntimeConfig(): Promise<DesktopRuntimeConfig>
@@ -476,6 +482,10 @@ export interface NetConsoleDesktopBridge {
 }
 
 export const DESKTOP_IPC = Object.freeze({
+  validateDroppedFiles: 'netconsole:desktop:validate-dropped-files',
+  openTerminalWindow: 'netconsole:desktop:open-terminal-window',
+  prepareSftpDrag: 'netconsole:desktop:prepare-sftp-drag',
+  startSftpDrag: 'netconsole:desktop:start-sftp-drag',
   getAppInfo: 'netconsole:desktop:get-app-info',
   getBackendStatus: 'netconsole:desktop:get-backend-status',
   getRuntimeConfig: 'netconsole:desktop:get-runtime-config',
@@ -542,6 +552,9 @@ export const DESKTOP_SESSION_HEADER = 'X-NetConsole-Session'
 export const DESKTOP_SESSION_COOKIE = 'netconsole_desktop_session'
 
 export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
+  DESKTOP_IPC.validateDroppedFiles,
+  DESKTOP_IPC.openTerminalWindow,
+  DESKTOP_IPC.prepareSftpDrag,
   DESKTOP_IPC.getAppInfo,
   DESKTOP_IPC.getBackendStatus,
   DESKTOP_IPC.getRuntimeConfig,

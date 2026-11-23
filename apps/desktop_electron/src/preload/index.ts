@@ -1,5 +1,5 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 import { createDesktopBridge } from './bridge'
 
-contextBridge.exposeInMainWorld('netconsoleDesktop', createDesktopBridge(ipcRenderer))
+contextBridge.exposeInMainWorld('netconsoleDesktop', createDesktopBridge(ipcRenderer, file => webUtils.getPathForFile(file)))

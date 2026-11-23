@@ -43,6 +43,8 @@ import {
 } from '../shared/validation'
 import type { BackendRuntimeInfo } from './backend-manager'
 import { BackendDownloadManager } from './backend-download'
+import { SftpDragManager } from './sftp-drag'
+import { validateDroppedFilePaths } from './sftp-drop'
 import type { DesktopLogger } from './logger'
 import { resolveDesktopBackgroundColor } from './config'
 import { GrantedPathRegistry } from './path-access'
@@ -144,6 +146,10 @@ export interface DesktopIpcDependencies {
   uiPreferenceStore?: UiPreferenceStoreLike
   externalToolService?: ExternalToolServiceLike
   artifactLstat?: (path: string) => Promise<FileStatusLike>
+  downloadsDirectory?: () => string
+  sftpDragRoot?: string
+  startNativeDrag?: (event: IpcEventLike, files: string[]) => void
+  openTerminalWindow?: (sessionId: string) => Promise<NativeActionResult>
 }
 
 export interface DesktopIpcRegistration {
@@ -160,7 +166,10 @@ export function registerDesktopIpc(
     window: dependencies.window,
     pathRegistry: registry,
     logger: dependencies.logger,
+    downloadsDirectory: dependencies.downloadsDirectory,
+    uiPreferenceStore: dependencies.uiPreferenceStore,
   })
+  const dragManager = dependencies.sftpDragRoot ? new SftpDragManager(dependencies.sftpDragRoot, downloadManager, registry) : undefined
   for (const channel of DESKTOP_HANDLED_CHANNELS) dependencies.ipcMain.removeHandler(channel)
 
   const trusted = <T>(handler: (value: unknown, event: IpcEventLike) => T | Promise<T>) => (
@@ -170,6 +179,20 @@ export function registerDesktopIpc(
     if (!dependencies.isTrustedSender(event)) throw new Error('拒绝来自未知渲染进程的桌面请求')
     return handler(value, event)
   }
+  dependencies.ipcMain.handle(DESKTOP_IPC.prepareSftpDrag, trusted((value, event) => {
+    if (!dragManager) throw new Error('原生拖出不可用')
+    return dragManager.prepare(value, event.sender)
+  }))
+  dependencies.ipcMain.handle(DESKTOP_IPC.openTerminalWindow, trusted(value => {
+    if (typeof value !== 'string' || !/^[a-f0-9]{32}$/.test(value) || !dependencies.openTerminalWindow) throw new Error('独立终端不可用')
+    return dependencies.openTerminalWindow(value)
+  }))
+  dependencies.ipcMain.handle(DESKTOP_IPC.validateDroppedFiles, trusted(value => validateDroppedFilePaths(value)))
+  dependencies.ipcMain.on(DESKTOP_IPC.startSftpDrag, (event, value) => {
+    if (!dependencies.isTrustedSender(event)) return
+    try { dragManager?.start(value, event.sender, files => dependencies.startNativeDrag?.(event, files)) }
+    catch { dependencies.logger?.('SFTP_NATIVE_DRAG_REJECTED') }
+  })
 
   dependencies.ipcMain.handle(
     DESKTOP_IPC.openTaskWindow,
@@ -710,7 +733,7 @@ export function registerDesktopIpc(
       dependencies.logger?.('ELECTRON_TASK_TRAY_STATUS_REJECTED')
     }
   })
-  return { shutdown: () => downloadManager.shutdown() }
+  return { shutdown: async () => { await downloadManager.shutdown(); await dragManager?.shutdown() } }
 }
 
 function updateWindowTheme(window: unknown, theme: DesktopResolvedTheme): void {

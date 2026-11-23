@@ -5,6 +5,7 @@ import re
 import socket
 import stat
 import uuid
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
@@ -236,6 +237,12 @@ class FileTransferService:
                 try:
                     failure_stage = "open_sftp"
                     self._sftp = client.open_sftp()
+                    transport = getattr(client, "get_transport", lambda: None)()
+                    if transport is not None:
+                        getattr(transport, "set_keepalive", lambda _seconds: None)(30)
+                    channel = getattr(self._sftp, "get_channel", lambda: None)()
+                    if channel is not None:
+                        channel.settimeout(30)
                 except Exception as sftp_exc:
                     transport_active = self._transport_is_active(client)
                     classification_reason = self._sftp_subsystem_unavailable_reason(
@@ -913,6 +920,9 @@ class FileTransferService:
     def stat(self, remote_path: str):
         return self._require_sftp().stat(normalize_remote_path(remote_path, current_path=self._current_path, root_path=self._root_path))
 
+    def lstat(self, remote_path: str):
+        return self._require_sftp().lstat(normalize_remote_path(remote_path, current_path=self._current_path, root_path=self._root_path))
+
     def download(self, remote_path: str, local_path: Path, progress_callback=None, cancel_token=None, chunk_size: int = 1024 * 1024) -> Path:
         started = monotonic()
         sftp = self._require_sftp()
@@ -999,11 +1009,13 @@ class FileTransferService:
         if not overwrite:
             try:
                 sftp.stat(target)
-            except (FileNotFoundError, OSError):
+            except FileNotFoundError:
                 pass
             else:
                 raise FileExistsError("远程文件已存在")
         total = source.stat().st_size
+        source_identity = (total, source.stat().st_mtime_ns)
+        content_hash = hashlib.sha256()
         transferred = 0
         temporary = f"{target}.netconsole-upload-{uuid.uuid4().hex}.part"
         try:
@@ -1015,18 +1027,17 @@ class FileTransferService:
                     if not chunk:
                         break
                     remote_file.write(chunk)
+                    content_hash.update(chunk)
                     transferred += len(chunk)
                     if progress_callback is not None:
                         progress_callback(transferred, total)
             uploaded_size = int(getattr(sftp.stat(temporary), "st_size", -1))
             if uploaded_size != total:
                 raise TransferVerificationFailed("远程上传文件大小校验失败")
-            if overwrite:
-                try:
-                    sftp.remove(target)
-                except (FileNotFoundError, OSError):
-                    pass
-            sftp.rename(temporary, target)
+            if (source.stat().st_size, source.stat().st_mtime_ns) != source_identity:
+                raise TransferVerificationFailed("上传期间本地源文件发生变化")
+            self._verify_remote_hash(sftp, temporary, content_hash.hexdigest(), cancel_token)
+            self._publish_remote(sftp, temporary, target, overwrite=overwrite)
             app_logger.log_info("SFTP_FILE_UPLOADED", f"path={target} size={total}")
             return target
         except BaseException:
@@ -1049,14 +1060,16 @@ class FileTransferService:
             current_path=self._current_path,
             root_path=self._root_path,
         )
+        if source == target:
+            raise ValueError("源路径与目标路径相同")
         if not overwrite:
             try:
                 sftp.stat(target)
-            except (FileNotFoundError, OSError):
+            except FileNotFoundError:
                 pass
             else:
                 raise FileExistsError("目标路径已存在")
-        sftp.rename(source, target)
+        self._publish_remote(sftp, source, target, overwrite=overwrite)
         app_logger.log_info("SFTP_REMOTE_RENAMED", f"source={source} target={target}")
         return target
 
@@ -1083,10 +1096,14 @@ class FileTransferService:
             root_path=self._root_path,
         )
         source_size = int(getattr(sftp.stat(source), "st_size", 0) or 0)
+        source_modified = getattr(sftp.stat(source), "st_mtime", None)
+        content_hash = hashlib.sha256()
+        if source == target:
+            raise ValueError("源路径与目标路径相同")
         if not overwrite:
             try:
                 sftp.stat(target)
-            except (FileNotFoundError, OSError):
+            except FileNotFoundError:
                 pass
             else:
                 raise FileExistsError("目标路径已存在")
@@ -1101,18 +1118,18 @@ class FileTransferService:
                     if not chunk:
                         break
                     target_file.write(chunk)
+                    content_hash.update(chunk)
                     transferred += len(chunk)
                     if progress_callback is not None:
                         progress_callback(transferred, source_size)
             copied_size = int(getattr(sftp.stat(temporary), "st_size", -1))
             if copied_size != source_size:
                 raise TransferVerificationFailed("远程复制文件大小校验失败")
-            if overwrite:
-                try:
-                    sftp.remove(target)
-                except (FileNotFoundError, OSError):
-                    pass
-            sftp.rename(temporary, target)
+            source_after = sftp.stat(source)
+            if (int(source_after.st_size), getattr(source_after, "st_mtime", None)) != (source_size, source_modified):
+                raise TransferVerificationFailed("复制期间源文件发生变化")
+            self._verify_remote_hash(sftp, temporary, content_hash.hexdigest(), cancel_token)
+            self._publish_remote(sftp, temporary, target, overwrite=overwrite)
             app_logger.log_info("SFTP_REMOTE_COPIED", f"source={source} target={target}")
             return target
         except BaseException:
@@ -1130,7 +1147,7 @@ class FileTransferService:
             current_path=self._current_path,
             root_path=self._root_path,
         )
-        attrs = sftp.stat(target)
+        attrs = getattr(sftp, "lstat", sftp.stat)(target)
         if not stat.S_ISDIR(int(getattr(attrs, "st_mode", 0) or 0)):
             sftp.remove(target)
         elif recursive:
@@ -1152,6 +1169,43 @@ class FileTransferService:
     def _ensure_device_write_allowed(self) -> None:
         if DEVICE_FILE_MANAGER_READ_ONLY and not self.allow_device_writes:
             raise PermissionError(DEVICE_FILE_MANAGER_READ_ONLY_MESSAGE)
+
+    @staticmethod
+    def _verify_remote_hash(sftp, path, expected: str, cancel_token=None) -> None:
+        digest = hashlib.sha256()
+        with sftp.open(path, "rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                if is_cancelled(cancel_token):
+                    raise TransferCancelled("Transfer cancelled.")
+                digest.update(chunk)
+        if digest.hexdigest() != expected:
+            raise TransferVerificationFailed("远程文件 SHA-256 校验失败")
+
+    @staticmethod
+    def _publish_remote(sftp, source: str, target: str, *, overwrite: bool) -> None:
+        """Preserve the old destination until verified content can be published."""
+        backup = f"{target}.netconsole-backup-{uuid.uuid4().hex}"
+        saved = False
+        if overwrite:
+            try:
+                attrs = getattr(sftp, "lstat", sftp.stat)(target)
+            except FileNotFoundError:
+                pass
+            else:
+                if stat.S_ISDIR(int(attrs.st_mode)):
+                    raise IsADirectoryError("不能覆盖现有目录")
+                if stat.S_ISLNK(int(attrs.st_mode)):
+                    raise PermissionError("不能覆盖符号链接")
+                sftp.rename(target, backup)
+                saved = True
+        try:
+            sftp.rename(source, target)
+        except BaseException:
+            if saved:
+                sftp.rename(backup, target)
+            raise
+        if saved:
+            sftp.remove(backup)
 
     def _delete_directory_tree(self, sftp, path: str) -> None:
         for attr in sftp.listdir_attr(path):

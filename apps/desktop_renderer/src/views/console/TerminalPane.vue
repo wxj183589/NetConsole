@@ -17,6 +17,7 @@ const props = defineProps<{
   session: TerminalSession
   ticket?: string
   active?: boolean
+  workspaceVisible?: boolean
   settings?: TerminalSettings | null
   highlightRules?: TerminalHighlightRule[]
 }>()
@@ -38,6 +39,7 @@ let disposed = false
 let initialTicket = props.ticket || ''
 let reconnectAttempts = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let lastDimensions = ''
 
 function createTerminal(): void {
   if (!host.value || terminal) return
@@ -73,8 +75,10 @@ function createTerminal(): void {
     socket.send(JSON.stringify({ type: 'input', data }))
   })
   terminal.onResize(({ cols, rows }) => {
-    if (socket?.readyState === WebSocket.OPEN) {
+    const dimensions = `${cols}:${rows}`
+    if (socket?.readyState === WebSocket.OPEN && dimensions !== lastDimensions && props.workspaceVisible !== false) {
       socket.send(JSON.stringify({ type: 'resize', cols, rows }))
+      lastDimensions = dimensions
     }
   })
   resizeObserver = new ResizeObserver(() => fit())
@@ -127,6 +131,7 @@ async function openSocket(): Promise<void> {
 }
 
 function fit(): void {
+  if (props.workspaceVisible === false || props.active === false || !host.value?.getBoundingClientRect().width) return
   nextTick(() => {
     try {
       fitAddon?.fit()
@@ -220,6 +225,7 @@ onMounted(() => {
   createTerminal()
   void openSocket()
 })
+watch(() => props.workspaceVisible, visible => { if (visible) fit() })
 
 onBeforeUnmount(() => {
   disposed = true
@@ -230,15 +236,20 @@ onBeforeUnmount(() => {
   searchAddon = null
 })
 
-defineExpose({ clear, fit, focus, search })
+function inspect() {
+  if (!import.meta.env.DEV || !terminal) return null
+  const buffer = terminal.buffer.active
+  return { lines: Array.from({ length: buffer.length }, (_, index) => buffer.getLine(index)?.translateToString(true) || ''), cursorX: buffer.cursorX, cursorY: buffer.cursorY, viewportY: buffer.viewportY, cols: terminal.cols, rows: terminal.rows, connected: connected.value }
+}
+defineExpose({ clear, fit, focus, search, inspect })
 </script>
 
 <template>
-  <div class="terminal-pane">
+  <div class="terminal-pane" :data-session-id="session.session_id">
     <div ref="host" class="terminal-host" />
     <div v-if="!connected" class="terminal-connection-overlay">
       <span class="terminal-connection-dot" />
-      {{ connectionMessage }}
+      {{ session.error_message || connectionMessage }}
     </div>
   </div>
 </template>

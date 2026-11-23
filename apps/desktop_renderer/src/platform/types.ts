@@ -21,6 +21,8 @@ import type {
 export type HostType = 'browser' | 'electron'
 
 export interface PlatformAdapter {
+  prepareSftpDrag?(requests: BackendDownloadRequest[]): Promise<{ dragId: string }>
+  startSftpDrag?(dragId: string): void
   readonly hostType: HostType
   getAppInfo(): Promise<AppInfo>
   getBackendStatus(): Promise<BackendStatus>

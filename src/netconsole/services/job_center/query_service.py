@@ -254,7 +254,7 @@ class JobCenterQueryService:
             ).fetchall()
         values = [dict(row) for row in rows]
         self._hydrate_result_references(db_path, values, include_result=False)
-        tasks = [self._task_from_row(row) for row in values]
+        tasks = [self._task_from_row(row) for row in values if not (row.get("owner") == "terminal_sftp" and row.get("task_type") == "terminal_sftp_transfer")]
         normalized_statuses = {str(value).upper() for value in statuses or set() if value}
         if normalized_statuses:
             tasks = [task for task in tasks if task.status.upper() in normalized_statuses]
@@ -1024,6 +1024,8 @@ class JobCenterQueryService:
 
     @staticmethod
     def _module(owner: str, task_type: str) -> str:
+        if owner == "terminal_sftp" and task_type == "terminal_sftp_transfer":
+            return "files"
         if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
             return "devices"
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_TASK_TYPES:
@@ -1068,6 +1070,8 @@ class JobCenterQueryService:
             return True, ""
         if source != "local":
             return False, "外部任务 owner 未提供统一停止能力"
+        if owner == "terminal_sftp" and task_type == "terminal_sftp_transfer":
+            return True, ""
         if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
             return True, ""
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_TASK_TYPES:

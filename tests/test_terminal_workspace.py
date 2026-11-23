@@ -56,7 +56,9 @@ class _FakeTransport:
         self.closed = True
 
 
-def _manager_fixture(tmp_path: Path, monkeypatch) -> tuple[TerminalSessionManager, Device, _FakeTransport]:
+def _manager_fixture(
+    tmp_path: Path, monkeypatch
+) -> tuple[TerminalSessionManager, Device, _FakeTransport]:
     paths = PathResolver(
         app_root=tmp_path / "app",
         data_root=tmp_path / "data",
@@ -105,7 +107,9 @@ def test_terminal_ticket_is_single_use() -> None:
 
 def test_terminal_ticket_expires(monkeypatch) -> None:
     now = [1_000_000]
-    monkeypatch.setattr("netconsole.services.terminal_workspace._utc_ms", lambda: now[0])
+    monkeypatch.setattr(
+        "netconsole.services.terminal_workspace._utc_ms", lambda: now[0]
+    )
     store = TerminalTicketStore(ttl_seconds=5)
     ticket = store.issue("session-a")
     now[0] += 5_001
@@ -113,9 +117,13 @@ def test_terminal_ticket_expires(monkeypatch) -> None:
     assert store.consume(ticket.ticket, "session-a") is False
 
 
-def test_terminal_session_passes_interactive_input_and_records_history(tmp_path: Path, monkeypatch) -> None:
+def test_terminal_session_passes_interactive_input_and_records_history(
+    tmp_path: Path, monkeypatch
+) -> None:
     manager, device, transport = _manager_fixture(tmp_path, monkeypatch)
-    snapshot, ticket = manager.create_session(str(device.device_uuid), cols=132, rows=40)
+    snapshot, ticket = manager.create_session(
+        str(device.device_uuid), cols=132, rows=40
+    )
     session_id = str(snapshot["session_id"])
 
     assert manager.tickets.consume(ticket.ticket, session_id) is True
@@ -135,7 +143,9 @@ def test_terminal_session_passes_interactive_input_and_records_history(tmp_path:
     _wait_until(lambda: manager.get_runtime(session_id).snapshot.state == "CLOSED")
 
     detail = manager.session_detail(session_id)
-    assert detail["recording_status"] == "COMPLETE"
+    manager.close()
+    detail = manager.session_detail(session_id)
+    assert detail["recording_status"] == "COMPLETED"
     assert detail["recording_sha256"]
     metadata_text = json.dumps(detail, ensure_ascii=False)
     assert "test-secret" not in metadata_text
@@ -143,7 +153,9 @@ def test_terminal_session_passes_interactive_input_and_records_history(tmp_path:
 
     events = manager.recording_events(session_id, limit=2000)
     assert all("at_ms" in event for event in events)
-    assert "test-secret" not in json.dumps(events, ensure_ascii=False)
+    assert "test-secret" in json.dumps(
+        events, ensure_ascii=False
+    )  # Real device output is retained.
     assert all(event.get("event_type") != "INPUT_REJECTED" for event in events)
     assert any(
         event.get("event_type") == "INPUT" and event.get("data") == "system-view\r"
@@ -155,7 +167,9 @@ def test_terminal_session_passes_interactive_input_and_records_history(tmp_path:
     assert transport.closed is True
 
 
-def test_terminal_session_replays_bounded_display_backlog_on_reattach(tmp_path: Path, monkeypatch) -> None:
+def test_terminal_session_replays_bounded_display_backlog_on_reattach(
+    tmp_path: Path, monkeypatch
+) -> None:
     manager, device, _connection = _manager_fixture(tmp_path, monkeypatch)
     snapshot, _ticket = manager.create_session(str(device.device_uuid))
     session_id = str(snapshot["session_id"])
@@ -167,14 +181,16 @@ def test_terminal_session_replays_bounded_display_backlog_on_reattach(tmp_path: 
 
     assert backlog["type"] == "backlog"
     assert "<LAB-SW>" in backlog["data"]
-    assert "test-secret" not in backlog["data"]
+    assert "test-secret" in backlog["data"]
 
     manager.get_runtime(session_id).unsubscribe(listener)
     manager.close_session(session_id)
     manager.close()
 
 
-def test_terminal_dangerous_command_warning_never_blocks_transport(tmp_path: Path, monkeypatch) -> None:
+def test_terminal_dangerous_command_warning_never_blocks_transport(
+    tmp_path: Path, monkeypatch
+) -> None:
     manager, device, transport = _manager_fixture(tmp_path, monkeypatch)
     snapshot, _ticket = manager.create_session(str(device.device_uuid))
     session_id = str(snapshot["session_id"])
@@ -204,13 +220,17 @@ def test_terminal_dangerous_command_warning_never_blocks_transport(tmp_path: Pat
     )
 
 
-def test_manual_session_log_has_independent_pause_resume_and_file(tmp_path: Path, monkeypatch) -> None:
+def test_manual_session_log_has_independent_pause_resume_and_file(
+    tmp_path: Path, monkeypatch
+) -> None:
     manager, device, transport = _manager_fixture(tmp_path, monkeypatch)
     snapshot, _ticket = manager.create_session(str(device.device_uuid))
     session_id = str(snapshot["session_id"])
     _wait_until(lambda: manager.get_runtime(session_id).snapshot.state == "RUNNING")
 
-    started = manager.start_manual_log(session_id, filename="commissioning", log_format="jsonl")
+    started = manager.start_manual_log(
+        session_id, filename="commissioning", log_format="jsonl"
+    )
     log_id = str(started["manual_log_id"])
     manager.input(session_id, "display version\r")
     _wait_until(lambda: "display version\r" in transport.writes)
@@ -223,7 +243,9 @@ def test_manual_session_log_has_independent_pause_resume_and_file(tmp_path: Path
     stopped = manager.stop_manual_log(session_id)
 
     log_path, filename = manager.manual_log_export_path(session_id, log_id)
-    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    events = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
     recorded_inputs = [item["data"] for item in events if item["event_type"] == "INPUT"]
 
     assert filename == "commissioning.jsonl"
@@ -233,7 +255,9 @@ def test_manual_session_log_has_independent_pause_resume_and_file(tmp_path: Path
     manager.close_session(session_id)
 
 
-def test_terminal_recording_marks_queue_overflow_incomplete(tmp_path: Path, monkeypatch) -> None:
+def test_terminal_recording_marks_queue_overflow_incomplete(
+    tmp_path: Path, monkeypatch
+) -> None:
     release = threading.Event()
     original_run = TerminalRecordingWriter._run
 
@@ -268,7 +292,9 @@ def test_terminal_recording_marks_queue_overflow_incomplete(tmp_path: Path, monk
     assert snapshot.recording_dropped_events >= 1
 
 
-def test_terminal_recording_close_does_not_block_when_queue_is_full(tmp_path: Path, monkeypatch) -> None:
+def test_terminal_recording_close_does_not_block_when_queue_is_full(
+    tmp_path: Path, monkeypatch
+) -> None:
     release = threading.Event()
     original_run = TerminalRecordingWriter._run
 
@@ -305,7 +331,9 @@ def test_terminal_recording_close_does_not_block_when_queue_is_full(tmp_path: Pa
     assert snapshot.recording_status == "INCOMPLETE"
 
 
-def test_terminal_session_can_be_cancelled_before_connect_starts(tmp_path: Path, monkeypatch) -> None:
+def test_terminal_session_can_be_cancelled_before_connect_starts(
+    tmp_path: Path, monkeypatch
+) -> None:
     manager, device, _connection = _manager_fixture(tmp_path, monkeypatch)
     release = threading.Event()
     original_run = manager._run_session
@@ -323,24 +351,57 @@ def test_terminal_session_can_be_cancelled_before_connect_starts(tmp_path: Path,
     _wait_until(lambda: manager.get_runtime(session_id).snapshot.state == "CLOSED")
 
     assert cancelled["state"] == "CANCELLED"
-    assert manager.session_detail(session_id)["recording_status"] == "COMPLETE"
+    manager.close()
+    assert manager.session_detail(session_id)["recording_status"] == "COMPLETED"
 
 
-def test_terminal_manager_limits_two_sessions_per_device(tmp_path: Path, monkeypatch) -> None:
-    manager, device, _connection = _manager_fixture(tmp_path, monkeypatch)
+def test_terminal_manager_allows_three_independent_sessions_per_device(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager, device, _ = _manager_fixture(tmp_path, monkeypatch)
+    transports = []
+
+    def factory(*args, **kwargs):
+        transport = _FakeTransport()
+        transports.append(transport)
+        return transport
+
+    monkeypatch.setattr(
+        "netconsole.services.terminal_workspace.create_terminal_transport", factory
+    )
     first, _ = manager.create_session(str(device.device_uuid))
-    second, _ = manager.create_session(str(device.device_uuid))
-
+    second, _ = manager.clone_session(first["session_id"])
+    third, _ = manager.clone_session(first["session_id"])
+    ids = [item["session_id"] for item in (first, second, third)]
     try:
-        manager.create_session(str(device.device_uuid))
-    except RuntimeError as error:
-        assert "会话已达到上限" in str(error)
-    else:
-        raise AssertionError("third session should have been rejected")
+        assert len(set(ids)) == 3
+        assert [item["session_name"] for item in (first, second, third)] == [
+            "LAB-SW-01",
+            "LAB-SW-02",
+            "LAB-SW-03",
+        ]
+        for index, session_id in enumerate(ids):
+            _wait_until(
+                lambda: manager.get_runtime(session_id).snapshot.state == "RUNNING"
+            )
+            manager.input(session_id, f"display unique-{index}\r")
+        _wait_until(lambda: all(item.writes for item in transports))
+        manager.close_session(ids[0])
+        _wait_until(lambda: transports[0].closed)
+        assert not transports[1].closed and not transports[2].closed
+        manager.input(ids[1], "display alive\r")
     finally:
-        manager.close_session(str(first["session_id"]))
-        manager.close_session(str(second["session_id"]))
         manager.close()
+    names = set()
+    for index, session_id in enumerate(ids):
+        log, _ = manager.export_path(session_id, "log")
+        text = log.read_text(encoding="utf-8")
+        assert f"unique-{index}" in text
+        assert all(
+            f"unique-{other}" not in text for other in range(3) if other != index
+        )
+        names.add(log.name)
+    assert len(names) == 3
 
 
 def test_quick_connect_uses_an_unmanaged_interactive_transport_and_reconnects(

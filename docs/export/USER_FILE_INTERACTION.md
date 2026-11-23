@@ -108,6 +108,9 @@ Browser 开发模式可以返回 `started`，UI 只能提示“浏览器已开�
 1. **OmniPeek 名称表**：保留专用目录和文件预选流程，但仍必须在创建任务前选择最终路径。
 2. **局点包**：保留 `selectSitePackage` / `selectSiteExportDestination`，以及迁移包、脱敏包、现场包、回传包和多局点轻量包的安全提示与文件契约。多局点汇总 ZIP 先由 Electron Main 选择一次最终路径，取消时不提交 Job；Backend 在受控暂存区分别构建局点包、校验汇总 SHA-256，再原子发布，不绕过专用局点包任务流程。
 3. **SFTP 文件管理**：保留受管下载目录、批量队列、重试、归档和自动导入语义，不要求每个远程文件弹 Save As；从受管文件区“导出副本/另存为”时仍须弹窗。
+   控制台 SFTP 为独立传输队列：远程文件先分块校验至任务独占暂存区，状态为 READY（待保存），用户点击保存后走真实 `/api/terminal/sftp/transfers/{id}/file` 固定端点与 Main Save As；大小/SHA 和最终落盘均通过才为 COMPLETED，取消选择保留 READY，失败保留结果供重试。它不伪装成 Export Artifact，也不接受 Renderer 任意本地路径。上传使用用户选择的 File/FileList 和安全相对目录，不做 Base64；权限修改与未验证的上传续传保持不可用。
+   2026-11-23 后续明确例外：仅控制台 SFTP 的 Save As 初始目录使用 Main 的系统 Downloads，随后采用 Main 私有 UI Preference 中最后一次有效选择目录；取消不更新，失效/不可写时回退系统 Downloads。受管后台下载及普通导出默认规则不变。SFTP 原生拖出先下载到 Main 独占暂存并校验，再通过 opaque drag ID 和同一 WebContents 发起 `startDrag`；多文件采用 Electron files，目录为 ZIP。原生拖放交接不等于 Explorer 已落盘，不能因此标 COMPLETED。拖入非空目录只读取用户授权 FileEntry/File 内容，并由 Preload/Main 拒绝符号链接/Junction 路径，不返回本地路径给 Renderer。
+   控制台快捷按钮 JSON 是已有配置文件的手动导出，使用固定 `/api/terminal/quick-buttons/export` 和 Main Save As；导入复用 File，取消不调用 API，提交前与 Python 都校验结构。该配置不走报告 Export Process。
 4. **MESH 本地日志扫描**：这是历史遗留、手工复制和失败导入的补偿机制，只允许用户点击后扫描当前局点受管 MESH raw 目录；不提供路径输入，不访问其他局点，不替代 Browser `File/FileList` 手工导入。目录遍历、哈希和批量补录进入 Job Center，页面进入不得自动全量扫描。
 5. **内部 Artifact、任务日志、缓存和临时文件**：不属于用户最终副本，不弹 Save As。
 
@@ -118,7 +121,7 @@ Browser 开发模式可以返回 `started`，UI 只能提示“浏览器已开�
 - 在页面重新实现导出状态机、私有 `sessionStorage` 绑定或 Artifact 自动保存 watcher。
 - 任务完成后突然弹 Save As，或页面/历史任务恢复时自动保存。
 - 用户取消选择后仍创建任务。
-- 使用 Downloads、Documents、Desktop、业务数据根、`cwd` 或测试目录作为用户最终默认路径。
+- 除上节明确授权的控制台 SFTP Downloads 例外外，使用 Downloads、Documents、Desktop、业务数据根、`cwd` 或测试目录作为用户最终默认路径。
 - Renderer 直接执行 `fs`、`writeFile`、`Workbook.save`、`to_excel` 或 `savefig`。
 - 将 Main 未授权路径传给 Backend，或把用户最终路径写入 Python `ExportJob` / 业务数据库。
 - Electron Bridge 缺失时回退浏览器下载。

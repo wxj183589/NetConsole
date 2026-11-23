@@ -15,6 +15,11 @@ export type TerminalState =
   | 'CANCELLED'
 
 export interface TerminalSession {
+  session_name?: string
+  detached_window?: boolean
+  recording_log_name?: string
+  recording_zip_name?: string
+  recording_error?: string
   session_id: string
   device_uuid: string
   device_name: string
@@ -32,9 +37,10 @@ export interface TerminalSession {
   ended_at_ms: number | null
   disconnect_reason: string
   error_code: string
+  error_message?: string
   command_count: number
   output_bytes: number
-  recording_status: 'RECORDING' | 'COMPLETE' | 'INCOMPLETE'
+  recording_status: 'RECORDING' | 'FINALIZING' | 'COMPRESSING' | 'COMPLETED' | 'COMPLETE' | 'FAILED' | 'INCOMPLETE'
   recording_sha256: string
   recording_dropped_events: number
   manual_log_status: 'STOPPED' | 'RECORDING' | 'PAUSED' | 'COMPLETE' | 'INCOMPLETE'
@@ -147,6 +153,7 @@ export interface TerminalRuleDocument<T> {
 }
 
 export interface TerminalSftpSession {
+  workspace_id?: string
   session_id: string
   device_uuid: string
   device_name: string
@@ -171,12 +178,13 @@ export interface TerminalSftpEntry {
 }
 
 export interface TerminalSftpTransfer {
+  device_uuid?: string
   task_id: string
   session_id: string
   kind: 'UPLOAD' | 'DOWNLOAD' | 'COPY'
   source: string
   target: string
-  status: 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
+  status: 'WAITING' | 'QUEUED' | 'RUNNING' | 'PAUSED' | 'READY' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'SKIPPED'
   transferred_bytes: number
   total_bytes: number
   bytes_per_second: number
@@ -186,6 +194,13 @@ export interface TerminalSftpTransfer {
   error_code: string
   error_message: string
   result_name: string
+  result_size: number
+  result_sha256: string
+  save_status: string
+  remaining_seconds: number | null
+  resumable: boolean
+  files_completed: number
+  files_total: number
 }
 
 export function createTerminalSession(
@@ -286,6 +301,16 @@ export function reconnectTerminalSession(sessionId: string): Promise<TerminalSes
   return apiRequest(`/api/terminal/sessions/${encodeURIComponent(sessionId)}/reconnect`, { method: 'POST' })
 }
 
+export function cloneTerminalSession(sessionId: string): Promise<TerminalSessionConnection> {
+  return apiRequest(`/api/terminal/sessions/${encodeURIComponent(sessionId)}/clone`, { method: 'POST' })
+}
+export function renameTerminalSession(sessionId: string, name: string): Promise<TerminalSession> {
+  return apiRequest(`/api/terminal/sessions/${encodeURIComponent(sessionId)}`, { method: 'PATCH', body: JSON.stringify({ name }) })
+}
+export function deleteTerminalRecording(sessionId: string): Promise<{ deleted: boolean }> {
+  return apiRequest(`/api/terminal/history/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+}
+
 export function issueTerminalTicket(sessionId: string): Promise<{
   ticket: string
   session_id: string
@@ -305,14 +330,14 @@ export function terminalWebSocketUrl(sessionId: string, ticket: string): string 
   return url.toString()
 }
 
-export function terminalExportDownloadRequest(sessionId: string, format: 'txt' | 'jsonl'): {
+export function terminalExportDownloadRequest(sessionId: string, format: 'txt' | 'jsonl' | 'log' | 'zip', name?: string): {
   apiPath: string
   suggestedName: string
 } {
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_-]+/g, '-')
   return {
     apiPath: `/api/terminal/history/${encodeURIComponent(sessionId)}/export/${format}`,
-    suggestedName: `terminal-${safeSessionId}.${format}`,
+    suggestedName: name || `terminal-${safeSessionId}.${format}`,
   }
 }
 
@@ -387,15 +412,19 @@ export function terminalManualLogDownloadRequest(
   }
 }
 
-export function createTerminalSftpSession(deviceUuid: string): Promise<TerminalSftpSession> {
+export function createTerminalSftpSession(deviceUuid: string, workspaceId = ''): Promise<TerminalSftpSession> {
   return apiRequest('/api/terminal/sftp/sessions', {
     method: 'POST',
-    body: JSON.stringify({ device_uuid: deviceUuid }),
+    body: JSON.stringify({ device_uuid: deviceUuid, workspace_id: workspaceId }),
   })
 }
 
 export function closeTerminalSftpSession(sessionId: string): Promise<TerminalSftpSession> {
   return apiRequest(`/api/terminal/sftp/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+}
+
+export function listTerminalSftpSessions(): Promise<{ items: TerminalSftpSession[] }> {
+  return apiRequest('/api/terminal/sftp/sessions', { coalesce: false })
 }
 
 export function listTerminalSftpEntries(
@@ -444,10 +473,14 @@ export function uploadTerminalSftpFile(
   remoteDirectory: string,
   file: File,
   overwrite = false,
+  relativePath = '',
+  conflict = 'error',
 ): Promise<TerminalSftpTransfer> {
   const body = new FormData()
   body.set('remote_directory', remoteDirectory)
   body.set('overwrite', String(overwrite))
+  body.set('relative_path', relativePath)
+  body.set('conflict', conflict)
   body.set('file', file, file.name)
   return apiRequest(`/api/terminal/sftp/sessions/${encodeURIComponent(sessionId)}/upload`, {
     method: 'POST',
@@ -466,16 +499,34 @@ export function cancelTerminalSftpTransfer(taskId: string): Promise<TerminalSftp
   return apiRequest(`/api/terminal/sftp/transfers/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
 }
 
+export function pauseTerminalSftpTransfer(taskId: string): Promise<TerminalSftpTransfer> {
+  return apiRequest(`/api/terminal/sftp/transfers/${encodeURIComponent(taskId)}/pause`, { method: 'POST' })
+}
+
 export function retryTerminalSftpTransfer(taskId: string): Promise<TerminalSftpTransfer> {
   return apiRequest(`/api/terminal/sftp/transfers/${encodeURIComponent(taskId)}/retry`, { method: 'POST' })
 }
 
-export function terminalSftpDownloadRequest(taskId: string, suggestedName: string): {
+export function terminalSftpDownloadRequest(taskId: string, suggestedName: string, expectedSizeBytes?: number, expectedSha256?: string): {
   apiPath: string
   suggestedName: string
+  expectedSizeBytes?: number
+  expectedSha256?: string
 } {
   return {
     apiPath: `/api/terminal/sftp/transfers/${encodeURIComponent(taskId)}/file`,
     suggestedName,
+    expectedSizeBytes,
+    expectedSha256,
   }
+}
+
+export function recordTerminalSftpSave(task: TerminalSftpTransfer, saved: boolean): Promise<TerminalSftpTransfer> {
+  return apiRequest(`/api/terminal/sftp/transfers/${encodeURIComponent(task.task_id)}/save-result`, {
+    method: 'POST', body: JSON.stringify({ saved, size: task.result_size, sha256: task.result_sha256 }),
+  })
+}
+
+export function clearTerminalSftpTransfers(deviceUuid = ''): Promise<{ cleared: number }> {
+  return apiRequest(`/api/terminal/sftp/transfers${deviceUuid ? `?device_uuid=${encodeURIComponent(deviceUuid)}` : ''}`, { method: 'DELETE' })
 }

@@ -23,6 +23,7 @@ import {
 } from './portable-data-root'
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
+import { DetachedTerminalWindowManager } from './terminal-window-manager'
 import { ExternalToolStore } from './external-tool-store'
 import { ExternalToolService } from './external-tool-service'
 import { launchExternalToolElevated } from './elevated-tool-launcher'
@@ -168,6 +169,7 @@ let startupProgressPage: StartupProgressPage | undefined
 let shutdownProgressPage: ShutdownProgressPage | undefined
 let bootstrapStore: DesktopBootstrapStore | undefined
 let uiPreferenceStore: UiPreferenceStore | undefined
+let terminalWindowManager: DetachedTerminalWindowManager<BrowserWindow> | undefined
 let desktopDataRoot = ''
 let desktopRuntimeMode: 'DEV' | 'PRODUCTION' = 'PRODUCTION'
 const windowDisplayGates = new WeakMap<BrowserWindow, RendererThemeDisplayGate>()
@@ -472,7 +474,34 @@ async function startDesktop(): Promise<void> {
     closeToTrayEnabled,
     visibleWindowCount: 1,
   })
+  terminalWindowManager = new DetachedTerminalWindowManager({
+    create: () => {
+      const window = createMainWindow(Boolean(config.devServerUrl), developmentMenu, 'NetConsole 终端')
+      installManagedWindowDiagnostics(window, false)
+      return window
+    },
+    target: id => {
+      const target = new URL('/console', rendererUrl)
+      target.searchParams.set('terminal_session', id)
+      target.searchParams.set('netconsole_host', 'electron')
+      return target.toString()
+    },
+    prepare: (window, target) => { rememberManagedRendererTarget(window, target); armRendererThemeDisplay(window) },
+    verify: async id => {
+      const runtime = requireManagedBackend().getRuntimeInfo()
+      const response = await fetch(`${runtime.baseUrl}/api/terminal/sessions/${id}/window-claim`, { method: 'POST', headers: { [DESKTOP_SESSION_HEADER]: runtime.apiToken } })
+      if (!response.ok) throw new Error('终端已被挂载，请克隆独立会话')
+    },
+    closeSession: async id => {
+      const runtime = requireManagedBackend().getRuntimeInfo()
+      await fetch(`${runtime.baseUrl}/api/terminal/sessions/${id}`, { method: 'DELETE', headers: { [DESKTOP_SESSION_HEADER]: runtime.apiToken } })
+    },
+  })
   desktopIpc = registerDesktopIpc({
+    openTerminalWindow: id => terminalWindowManager!.open(id),
+    downloadsDirectory: () => app.getPath('downloads'),
+    sftpDragRoot: join(desktopStorageContext.tempRoot, 'sftp-drag'),
+    startNativeDrag: (event, files) => (event.sender as Electron.WebContents).startDrag({ file: files[0]!, files, icon: nativeImage.createFromPath(resolveDesktopIconPath({ isPackaged: app.isPackaged, appPath: app.getAppPath(), resourcesPath: process.resourcesPath })).resize({ width: 32, height: 32 }) }),
     ipcMain,
     dialog,
     shell,
@@ -1234,7 +1263,7 @@ async function loadStatusPage(
 
 function handleRendererReady(report: RendererHostReport, sourceWindow: unknown): void {
   const window = resolveManagedDesktopWindow(sourceWindow)
-  workspaceWindowController?.acceptRendererReport(report, window)
+  if (window && !terminalWindowManager?.windows.has(window)) workspaceWindowController?.acceptRendererReport(report, window)
   if ('resolvedTheme' in report) {
     if (window) windowDisplayGates.get(window)?.acceptResolvedTheme()
     return
@@ -1492,6 +1521,7 @@ function startSmokeWatchdog(): void {
 function getAllDesktopWindows(): BrowserWindow[] {
   const windows = [
     ...(workspaceWindowController?.getAllManagedWindows() ?? []),
+    ...(terminalWindowManager?.windows ?? []),
   ] as BrowserWindow[]
   return [...new Set(windows)]
 }
@@ -1638,6 +1668,7 @@ async function shutdown(): Promise<boolean> {
   logger('ELECTRON_SHUTDOWN_STAGE', 'stage=finalizing_windows')
   shutdownProgressPage?.update('finalizing_windows', '正在完成退出')
   workspaceWindowController?.closeAllForQuit()
+  for (const window of terminalWindowManager?.windows ?? []) if (!window.isDestroyed()) window.destroy()
   trayController?.dispose()
   const preCompleteLogFlush = await flushShutdownLogs()
   workspaceWindowController?.dispose()

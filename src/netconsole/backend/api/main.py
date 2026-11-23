@@ -537,6 +537,8 @@ def create_app(
         device_operation_service=device_operation_service,
     )
     terminal_session_manager = TerminalSessionManager(paths)
+    # Interactive file transfers have their own durable queue and notifications.
+    # Background device downloads continue to use the global Task Center.
     terminal_sftp_manager = TerminalSftpManager(paths)
     config_collection_service = ConfigCollectionApplicationService(
         paths,

@@ -68,7 +68,7 @@ from netconsole.services.h3c_only_capability import (
     H3C_ONLY_FILE_DOWNLOAD_MESSAGE,
     require_h3c_device,
 )
-from netconsole.services.host_key_trust_service import HostKeyTrustError, HostKeyTrustService
+from netconsole.services.host_key_trust_service import HostKeyTrustError
 from netconsole.services.external_terminal import find_winscp_exe, launch_winscp
 from netconsole.services.mesh_import_service import MeshImportService
 from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexService
@@ -606,13 +606,12 @@ class FileManagementApplicationService:
     ) -> FileTransferService:
         """创建只读 SFTP Transport；自动配置不属于 Transport 构造契约。"""
 
-        return self._transfer_factory(
+        from netconsole.services.sftp_connection import SftpConnectionService
+
+        return SftpConnectionService(self.paths, self._transfer_factory).create(
             site,
-            self.paths,
-            strict_host_keys=True,
-            host_key_trust=HostKeyTrustService(self.paths),
             relay_site_id=self._canonical_relay_site_id(site, relay_site_id),
-            route_source=source,
+            source=source,
         )
 
     def _canonical_relay_site_id(self, site: str, requested: str = "") -> str:

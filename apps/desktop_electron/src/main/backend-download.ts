@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { open, rename, rm, stat } from 'node:fs/promises'
+import { access, open, rename, rm, stat } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import type { UiPreferenceStoreLike } from './ui-preferences'
 import { basename, dirname, resolve } from 'node:path'
 
 import {
@@ -48,6 +50,8 @@ export interface BackendDownloadManagerOptions {
   createTempId?: () => string
   statImpl?: (path: string) => Promise<{ isFile(): boolean; size: number }>
   logger?: DesktopLogger
+  downloadsDirectory?: () => string
+  uiPreferenceStore?: UiPreferenceStoreLike
 }
 
 export class BackendDownloadManager {
@@ -100,6 +104,9 @@ export class BackendDownloadManager {
       'ARTIFACT_SAVE_TARGET_SELECTED',
       `route=${route} file=${basename(selection.filePath)}`,
     )
+    if (!request.destinationPath && request.apiPath.startsWith('/api/terminal/sftp/') && this.options.uiPreferenceStore) {
+      await this.options.uiPreferenceStore.set('console.sftp-download-directory', dirname(selection.filePath)).catch(() => undefined)
+    }
     if (this.shuttingDown) {
       return failedResult('DESKTOP_SHUTTING_DOWN', '桌面正在退出，无法开始下载。')
     }
@@ -149,8 +156,23 @@ export class BackendDownloadManager {
     const state = windowStateLabel(window)
     this.logger('ARTIFACT_SAVE_DIALOG_PARENT', `route=${route} ${state}`)
     this.logger('ARTIFACT_SAVE_DIALOG_OPENED', `route=${route} file=${request.suggestedName}`)
+    let defaultPath = request.suggestedName
+    if (request.apiPath.startsWith('/api/terminal/sftp/') && this.options.downloadsDirectory) {
+      const remembered = await this.options.uiPreferenceStore?.get('console.sftp-download-directory')
+      let directory = this.options.downloadsDirectory()
+      if (typeof remembered === 'string') {
+        try {
+          const normalized = normalizeAbsolutePath(remembered)
+          if ((await stat(normalized)).isDirectory()) {
+            await access(normalized, constants.W_OK)
+            directory = normalized
+          }
+        } catch { /* Invalid old choices fall back to system Downloads. */ }
+      }
+      defaultPath = resolve(directory, request.suggestedName)
+    }
     return this.options.dialog.showSaveDialog(window, {
-      defaultPath: request.suggestedName,
+      defaultPath,
       ...(request.filters ? { filters: request.filters } : {}),
     })
   }

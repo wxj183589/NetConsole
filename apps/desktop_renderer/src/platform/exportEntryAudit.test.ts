@@ -82,6 +82,7 @@ const IMPORT_ENTRIES = [
 
 const MANAGED_DOWNLOAD_EXCEPTIONS = [
   'views/file-management/FileManagementView.vue',
+  'views/console/TerminalSftpPanel.vue',
 ] as const
 
 const DIRECT_SAVE_PATH_ENTRIES = [
@@ -178,6 +179,7 @@ describe('visible import/export entry audit', () => {
   it('limits managed-directory download exceptions to the reviewed device-file workflow', () => {
     expect(MANAGED_DOWNLOAD_EXCEPTIONS).toEqual([
       'views/file-management/FileManagementView.vue',
+      'views/console/TerminalSftpPanel.vue',
     ])
     const source = readSource(MANAGED_DOWNLOAD_EXCEPTIONS[0])
     expect(source).toContain('startRemoteFileDownload')

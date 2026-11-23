@@ -1,8 +1,10 @@
 <template>
   <div class="app-route-viewport">
+    <ConsoleWorkspaceView v-if="consoleOpened" :key="consoleGeneration" v-show="isConsoleRoute" :workspace-visible="isConsoleRoute" />
     <RouterView v-slot="{ Component, route: viewRoute }">
       <KeepAlive :include="cachedWorkspaceComponentNames" :max="10">
         <component
+          v-if="viewRoute.name !== 'device-console'"
           :is="cachedRouteComponent(Component, workspace.routeCacheKey(viewRoute.fullPath))"
           :key="workspace.routeCacheKey(viewRoute.fullPath)"
         />
@@ -12,12 +14,23 @@
 </template>
 
 <script setup lang="ts">
-import { cloneVNode, computed, defineComponent, watch } from 'vue'
+import { cloneVNode, computed, defineAsyncComponent, defineComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import type { Component, VNode } from 'vue'
 
 import { useWorkspaceStore } from '../stores/workspace'
+import { CURRENT_SITE_CHANGED_EVENT } from '../workspace/site-switch'
 
 const workspace = useWorkspaceStore()
+const ConsoleWorkspaceView = defineAsyncComponent(() => import('../views/console/ConsoleWorkspaceView.vue'))
+const route = useRoute()
+const isConsoleRoute = computed(() => route.name === 'device-console')
+const consoleOpened = ref(isConsoleRoute.value)
+const consoleGeneration = ref(0)
+function clearOldSiteConsole() { consoleGeneration.value++; consoleOpened.value = isConsoleRoute.value }
+onMounted(() => window.addEventListener(CURRENT_SITE_CHANGED_EVENT, clearOldSiteConsole))
+onBeforeUnmount(() => window.removeEventListener(CURRENT_SITE_CHANGED_EVENT, clearOldSiteConsole))
+watch(isConsoleRoute, value => { if (value) consoleOpened.value = true })
 type CachedRouteComponent = {
   sourceType: VNode['type']
   wrapper: Component

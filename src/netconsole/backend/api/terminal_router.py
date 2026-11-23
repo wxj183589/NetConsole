@@ -71,6 +71,87 @@ class TerminalFolderRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
+class TerminalSessionNameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+
+
+class TerminalBatchRequest(BaseModel):
+    session_ids: list[str] = Field(min_length=1)
+    text: str = Field(default="", max_length=65536)
+    mode: Literal["block", "lines", "escaped"] = "block"
+    interval_ms: Literal[0, 200, 500, 1000] = 0
+    scope: Literal["current", "selected", "all", "new"] = "current"
+    group_id: str = ""
+    button_id: str = ""
+
+
+@router.get("/quick-buttons")
+def quick_buttons(request: Request):
+    return _manager(request).dispatcher.buttons.read()
+
+
+@router.put("/quick-buttons")
+def save_quick_buttons(request: Request, payload: dict[str, Any]):
+    try:
+        return _manager(request).dispatcher.buttons.save(payload)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/quick-buttons/export", response_class=FileResponse)
+def export_quick_buttons(request: Request):
+    store = _manager(request).dispatcher.buttons
+    store.save(store.read())
+    return FileResponse(
+        store.path, filename="console-quick-buttons.json", media_type="application/json"
+    )
+
+
+@router.post("/quick-buttons/reset")
+def reset_quick_buttons(request: Request):
+    store = _manager(request).dispatcher.buttons
+    return store.save(store.defaults())
+
+
+@router.post("/batch-sends")
+def batch_send(request: Request, payload: TerminalBatchRequest):
+    try:
+        return _manager(request).dispatcher.submit(
+            payload.session_ids,
+            payload.text,
+            payload.mode,
+            payload.interval_ms,
+            payload.scope,
+            (payload.group_id, payload.button_id) if payload.button_id else None,
+        )
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/batch-sends/{job_id}")
+def batch_status(request: Request, job_id: str):
+    try:
+        return _manager(request).dispatcher.get(job_id)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/batch-sends/{job_id}/cancel")
+def batch_cancel(request: Request, job_id: str):
+    try:
+        return _manager(request).dispatcher.cancel(job_id)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/batch-sends/{job_id}/retry/{session_id}")
+def batch_retry(request: Request, job_id: str, session_id: str):
+    try:
+        return _manager(request).dispatcher.retry(job_id, session_id)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
 class TerminalSettingsUpdateRequest(BaseModel):
     values: dict[str, Any]
 
@@ -85,6 +166,7 @@ class TerminalManualLogStartRequest(BaseModel):
 
 
 class TerminalSftpConnectRequest(BaseModel):
+    workspace_id: str = Field(default="", max_length=32)
     device_uuid: str = Field(min_length=1, max_length=128)
 
 
@@ -96,6 +178,13 @@ class TerminalSftpRenameRequest(BaseModel):
     source: str = Field(min_length=1, max_length=4096)
     target: str = Field(min_length=1, max_length=4096)
     overwrite: bool = False
+    conflict: Literal["error", "skip", "rename", "overwrite"] = "error"
+
+
+class TerminalSftpSaveRequest(BaseModel):
+    saved: bool
+    size: int = Field(default=0, ge=0)
+    sha256: str = Field(default="", max_length=64)
 
 
 class TerminalSftpDeleteRequest(BaseModel):
@@ -318,17 +407,30 @@ def get_history_events(
     limit: int = Query(default=500, ge=1, le=2000),
 ) -> dict[str, Any]:
     try:
-        items = _manager(request).recording_events(session_id, offset=offset, limit=limit)
-        return {"items": items, "offset": offset, "limit": limit, "has_more": len(items) == limit}
+        items = _manager(request).recording_events(
+            session_id, offset=offset, limit=limit
+        )
+        return {
+            "items": items,
+            "offset": offset,
+            "limit": limit,
+            "has_more": len(items) == limit,
+        }
     except BaseException as exc:
         raise _translate_error(exc) from exc
 
 
 @router.get("/history/{session_id}/export/{export_format}", response_class=FileResponse)
-def export_history(session_id: str, export_format: str, request: Request) -> FileResponse:
+def export_history(
+    session_id: str, export_format: str, request: Request
+) -> FileResponse:
     try:
         path, name = _manager(request).export_path(session_id, export_format)
-        media_type = "application/x-ndjson" if name.endswith(".jsonl") else "text/plain; charset=utf-8"
+        media_type = (
+            "application/x-ndjson"
+            if name.endswith(".jsonl")
+            else "text/plain; charset=utf-8"
+        )
         return FileResponse(path, filename=name, media_type=media_type)
     except BaseException as exc:
         raise _translate_error(exc) from exc
@@ -351,7 +453,9 @@ def update_terminal_settings(
 
 
 @router.get("/rules/{kind}")
-def get_terminal_rules(kind: Literal["highlight", "dangerous"], request: Request) -> dict[str, Any]:
+def get_terminal_rules(
+    kind: Literal["highlight", "dangerous"], request: Request
+) -> dict[str, Any]:
     try:
         return _manager(request).settings.rule_document(kind)
     except BaseException as exc:
@@ -392,6 +496,86 @@ def reconnect_session(session_id: str, request: Request) -> dict[str, Any]:
             "ticket": ticket.ticket,
             "ticket_expires_at_ms": ticket.expires_at_ms,
         }
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/sessions/{session_id}/clone")
+def clone_session(session_id: str, request: Request) -> dict[str, Any]:
+    try:
+        session, ticket = _manager(request).clone_session(session_id)
+        return {
+            "session": session,
+            "ticket": ticket.ticket,
+            "ticket_expires_at_ms": ticket.expires_at_ms,
+        }
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/sessions/{session_id}/window-claim")
+def claim_detached_window(session_id: str, request: Request):
+    try:
+        return _manager(request).claim_detached_window(session_id)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.patch("/sessions/{session_id}")
+def rename_session(
+    session_id: str, payload: TerminalSessionNameRequest, request: Request
+):
+    try:
+        return _manager(request).rename_session(session_id, payload.name)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.delete("/history/{session_id}")
+def delete_recording(session_id: str, request: Request):
+    try:
+        return _manager(request).delete_recording(session_id)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/history/{session_id}/transcript")
+def recording_transcript(session_id: str, request: Request):
+    try:
+        manager = _manager(request)
+        metadata = manager.session_detail(session_id)
+        path, _ = manager.export_path(
+            session_id, "log" if metadata.get("recording_log_name") else "txt"
+        )
+        with path.open("r", encoding="utf-8") as stream:
+            value = stream.read(1_000_001)
+        return {"text": value[:1_000_000], "truncated": len(value) > 1_000_000}
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/sessions/{session_id}/save-profile")
+def save_session_profile(session_id: str, request: Request):
+    try:
+        manager = _manager(request)
+        runtime = manager.get_runtime(session_id)
+        device, target = runtime.device, runtime.target
+        return manager.profiles.save_profile(
+            {
+                "name": runtime.snapshot.session_name or runtime.snapshot.device_name,
+                "host": target.host,
+                "port": target.port,
+                "protocol": target.protocol.upper(),
+                "username": target.username,
+                "encoding": runtime.snapshot.encoding,
+                "vendor": str(device.device_vendor or "Other"),
+                "device_type": str(device.device_type or "Other"),
+                "folder_id": "",
+                "favorite": False,
+            },
+            password=target.password,
+            remember_password=True,
+        )
     except BaseException as exc:
         raise _translate_error(exc) from exc
 
@@ -451,18 +635,29 @@ def stop_manual_log(session_id: str, request: Request) -> dict[str, Any]:
 def export_manual_log(session_id: str, log_id: str, request: Request) -> FileResponse:
     try:
         path, name = _manager(request).manual_log_export_path(session_id, log_id)
-        media_type = "application/x-ndjson" if name.endswith(".jsonl") else "text/plain; charset=utf-8"
+        media_type = (
+            "application/x-ndjson"
+            if name.endswith(".jsonl")
+            else "text/plain; charset=utf-8"
+        )
         return FileResponse(path, filename=name, media_type=media_type)
     except BaseException as exc:
         raise _translate_error(exc) from exc
 
 
 @router.post("/sftp/sessions")
-def create_sftp_session(payload: TerminalSftpConnectRequest, request: Request) -> dict[str, Any]:
+def create_sftp_session(
+    payload: TerminalSftpConnectRequest, request: Request
+) -> dict[str, Any]:
     try:
-        return _sftp_manager(request).connect(payload.device_uuid)
+        return _sftp_manager(request).connect(payload.device_uuid, payload.workspace_id)
     except BaseException as exc:
         raise _translate_error(exc) from exc
+
+
+@router.get("/sftp/sessions")
+def list_sftp_sessions(request: Request) -> dict[str, Any]:
+    return {"items": _sftp_manager(request).list_sessions()}
 
 
 @router.delete("/sftp/sessions/{session_id}")
@@ -559,6 +754,7 @@ def copy_sftp_entry(
             payload.source,
             payload.target,
             overwrite=payload.overwrite,
+            conflict=payload.conflict,
         )
     except BaseException as exc:
         raise _translate_error(exc) from exc
@@ -582,23 +778,37 @@ async def upload_sftp_entry(
     request: Request,
     remote_directory: str = Form(..., min_length=1, max_length=4096),
     overwrite: bool = Form(False),
+    conflict: Literal["error", "skip", "rename", "overwrite"] = Form("error"),
+    relative_path: str = Form("", max_length=4096),
     file: UploadFile = File(...),
 ) -> dict[str, Any]:
     manager = _sftp_manager(request)
+    staged = None
     try:
         staged, _size = await asyncio.to_thread(
             manager.stage_upload,
             str(file.filename or "upload.bin"),
             file.file,
         )
-        remote_path = manager.child_path(session_id, remote_directory, staged.name)
+        if relative_path:
+            parts = relative_path.replace("\\", "/").split("/")
+            if any(part in {"", ".", ".."} or ":" in part for part in parts):
+                raise ValueError("上传相对目录无效")
+            remote_path = manager.child_path(session_id, remote_directory, parts[0])
+            for part in parts[1:]:
+                remote_path = manager.child_path(session_id, remote_path, part)
+        else:
+            remote_path = manager.child_path(session_id, remote_directory, staged.name)
         return manager.submit_upload(
             session_id,
             staged,
             remote_path,
             overwrite=overwrite,
+            conflict=conflict,
         )
     except BaseException as exc:
+        if staged is not None:
+            await asyncio.to_thread(manager.discard_unsubmitted_upload, staged)
         raise _translate_error(exc) from exc
 
 
@@ -607,8 +817,11 @@ def list_sftp_transfers(
     request: Request,
     session_id: str = Query(default="", max_length=64),
 ) -> dict[str, Any]:
-    items = _sftp_manager(request).list_tasks(session_id)
-    return {"items": items, "total": len(items)}
+    try:
+        items = _sftp_manager(request).list_tasks(session_id)
+        return {"items": items, "total": len(items)}
+    except Exception as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.get("/sftp/transfers/{task_id}")
@@ -619,11 +832,43 @@ def get_sftp_transfer(task_id: str, request: Request) -> dict[str, Any]:
         raise _translate_error(exc) from exc
 
 
+@router.delete("/sftp/transfers")
+def clear_sftp_transfers(
+    request: Request, device_uuid: str = Query(default="", max_length=128)
+) -> dict[str, int]:
+    return {"cleared": _sftp_manager(request).clear_completed(device_uuid)}
+
+
+@router.get("/sftp/transfer-log", response_class=FileResponse)
+def sftp_transfer_log(request: Request) -> FileResponse:
+    return FileResponse(
+        _sftp_manager(request).export_log(), filename="sftp-transfer-log.jsonl"
+    )
+
+
+@router.post("/sftp/transfers/{task_id}/save-result")
+def record_sftp_save(
+    task_id: str, payload: TerminalSftpSaveRequest, request: Request
+) -> dict[str, Any]:
+    try:
+        return _sftp_manager(request).record_save(task_id, **payload.model_dump())
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.post("/sftp/transfers/{task_id}/cancel")
 def cancel_sftp_transfer(task_id: str, request: Request) -> dict[str, Any]:
     try:
         return _sftp_manager(request).cancel_task(task_id)
     except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/sftp/transfers/{task_id}/pause")
+def pause_sftp_transfer(task_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return _sftp_manager(request).pause_task(task_id)
+    except Exception as exc:
         raise _translate_error(exc) from exc
 
 
@@ -652,7 +897,8 @@ def _origin_allowed(websocket: WebSocket) -> bool:
     parsed = urlparse(origin)
     return (
         parsed.scheme in {"http", "https"}
-        and (parsed.hostname or "").casefold() in {"127.0.0.1", "localhost", "testserver"}
+        and (parsed.hostname or "").casefold()
+        in {"127.0.0.1", "localhost", "testserver"}
         and host in {"127.0.0.1", "localhost", "testserver"}
     )
 
@@ -674,7 +920,13 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
         await websocket.close(code=4404, reason="session not found")
         return
     await websocket.accept()
-    listener = session.subscribe()
+    try:
+        listener = session.subscribe()
+    except RuntimeError:
+        await websocket.close(
+            code=4409, reason="session already has a terminal; clone it"
+        )
+        return
 
     async def send_messages() -> None:
         while True:
@@ -712,9 +964,13 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
                 elif message_type == "ping":
                     await websocket.send_json({"type": "pong"})
                 else:
-                    await websocket.send_json({"type": "error", "code": "UNKNOWN_MESSAGE_TYPE"})
+                    await websocket.send_json(
+                        {"type": "error", "code": "UNKNOWN_MESSAGE_TYPE"}
+                    )
             except (ValueError, RuntimeError, queue.Full):
-                await websocket.send_json({"type": "error", "code": "SESSION_INPUT_REJECTED"})
+                await websocket.send_json(
+                    {"type": "error", "code": "SESSION_INPUT_REJECTED"}
+                )
 
     sender = asyncio.create_task(send_messages())
     receiver = asyncio.create_task(receive_messages())

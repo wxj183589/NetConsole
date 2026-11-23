@@ -18,6 +18,44 @@ afterEach(async () => {
 })
 
 describe('backend download manager', () => {
+  it('uses system Downloads, remembers selected directories, and ignores cancellation or missing directories', async () => {
+    const root = await tempDirectory()
+    let remembered: unknown = null
+    const selected = resolve(root, 'saved.cfg')
+    const dialog = { showSaveDialog: vi.fn(async (_window: unknown, _settings: { defaultPath: string }) => ({ canceled: false, filePath: selected })) }
+    const manager = new BackendDownloadManager({
+      backend: { getRuntimeInfo: () => ({ baseUrl: 'http://127.0.0.1:18199', apiToken: 'a'.repeat(48) }) },
+      dialog, window: {}, pathRegistry: new GrantedPathRegistry(), fetchImpl: vi.fn(async () => new Response('data')),
+      downloadsDirectory: () => root,
+      uiPreferenceStore: { get: async () => remembered, set: async (_key, value) => { remembered = value } },
+    })
+    const request = { apiPath: `/api/terminal/sftp/transfers/${'a'.repeat(32)}/file`, suggestedName: 'saved.cfg' }
+    expect((await manager.download(request)).status).toBe('saved')
+    expect(dialog.showSaveDialog.mock.calls[0]?.[1]).toMatchObject({ defaultPath: selected })
+    expect(remembered).toBe(root)
+    dialog.showSaveDialog.mockResolvedValue({ canceled: true, filePath: '' })
+    await manager.download(request)
+    expect(remembered).toBe(root)
+    remembered = resolve(root, 'missing-folder')
+    await manager.download(request)
+    expect(dialog.showSaveDialog.mock.calls[2]?.[1]).toMatchObject({ defaultPath: selected })
+    await manager.shutdown()
+  })
+  it('saves an actual terminal SFTP endpoint with verified bytes and hash', async () => {
+    const payload = Buffer.alloc(2 * 1024 * 1024 + 17, 0x61)
+    const sha256 = createHash('sha256').update(payload).digest('hex')
+    const server = await loopbackServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': payload.length })
+      response.end(payload)
+    })
+    const directory = await tempDirectory()
+    const target = resolve(directory, '中文配置.cfg')
+    const manager = downloadManager(server.origin, 's'.repeat(48), target, {}, new GrantedPathRegistry())
+    const result = await manager.download({ apiPath: '/api/terminal/sftp/transfers/0123456789abcdef0123456789abcdef/file', suggestedName: '中文配置.cfg', expectedSizeBytes: payload.length, expectedSha256: sha256 })
+    expect(result).toMatchObject({ status: 'saved', sizeBytes: payload.length, sha256 })
+    expect(await readFile(target)).toEqual(payload)
+  })
+
   it('streams from the managed non-8000 backend with the header token', async () => {
     const token = 'download-test-token-abcdefghijklmnopqrstuvwxyz'
     let requestUrl = ''

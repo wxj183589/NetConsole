@@ -19,6 +19,7 @@ export async function loadWorkspace(
   router: Router,
 ): Promise<RestoredWorkspace> {
   clearLegacyWorkspacePersistence()
+  if (/^[a-f0-9]{32}$/.test(String(router.currentRoute.value.query.terminal_session || ''))) return { windowId: 'terminal', snapshot: null }
   if (window.netconsoleDesktop?.getWorkspaceWindowState) {
     try {
       const value = await window.netconsoleDesktop.getWorkspaceWindowState()
@@ -34,6 +35,7 @@ export async function loadWorkspace(
 }
 
 export async function saveWorkspace(snapshot: WorkspaceWindowState): Promise<void> {
+  if (snapshot.windowId === 'terminal') return
   if (window.netconsoleDesktop?.saveWorkspaceWindowState) {
     await window.netconsoleDesktop.saveWorkspaceWindowState(snapshot)
   }

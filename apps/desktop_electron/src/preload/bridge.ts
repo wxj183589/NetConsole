@@ -44,8 +44,15 @@ export interface IpcRendererLike {
   removeListener(channel: string, listener: (event: IpcRendererEvent, value: unknown) => void): void
 }
 
-export function createDesktopBridge(ipcRenderer: IpcRendererLike): NetConsoleDesktopBridge {
+export function createDesktopBridge(ipcRenderer: IpcRendererLike, droppedFilePath?: (file: File) => string): NetConsoleDesktopBridge {
   const bridge: NetConsoleDesktopBridge = {
+    validateDroppedFiles: (files) => {
+      if (!droppedFilePath) throw new Error('拖入文件校验不可用')
+      return ipcRenderer.invoke(DESKTOP_IPC.validateDroppedFiles, files.map(file => droppedFilePath(file))) as Promise<void>
+    },
+    openTerminalWindow: (id) => { if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('终端标识无效'); return ipcRenderer.invoke(DESKTOP_IPC.openTerminalWindow, id) as Promise<import('../shared/bridge').NativeActionResult> },
+    prepareSftpDrag: (requests) => ipcRenderer.invoke(DESKTOP_IPC.prepareSftpDrag, requests.map(validateBackendDownloadRequest)) as Promise<{ dragId: string }>,
+    startSftpDrag: (dragId) => { ipcRenderer.send(DESKTOP_IPC.startSftpDrag, dragId) },
     getAppInfo: () => ipcRenderer.invoke(DESKTOP_IPC.getAppInfo) as ReturnType<NetConsoleDesktopBridge['getAppInfo']>,
     getBackendStatus: () => ipcRenderer.invoke(DESKTOP_IPC.getBackendStatus) as ReturnType<NetConsoleDesktopBridge['getBackendStatus']>,
     getRuntimeConfig: () => ipcRenderer.invoke(DESKTOP_IPC.getRuntimeConfig) as ReturnType<NetConsoleDesktopBridge['getRuntimeConfig']>,

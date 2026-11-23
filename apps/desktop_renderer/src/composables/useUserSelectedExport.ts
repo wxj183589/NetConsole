@@ -33,6 +33,14 @@ export interface UserSelectedExportDestination {
   directoryLabel: string
 }
 
+export interface LocalSaveDestinationOptions {
+  suggestedName: string
+  extensions: string[]
+  filters: Array<{ name: string; extensions: string[] }>
+  directoryPath?: string
+  addActiveSitePrefix?: boolean
+}
+
 export interface PendingUserSelectedExport {
   taskId: string
   action: UserSelectedExportAction
@@ -96,12 +104,24 @@ export async function prepareExportDestination(
   directoryPath?: string,
 ): Promise<UserSelectedExportDestination | null> {
   const definition = exportDefinition(action)
+  return prepareLocalSaveDestination({
+    suggestedName,
+    extensions: definition.artifactExtensions,
+    filters: definition.filters,
+    ...(directoryPath ? { directoryPath } : {}),
+    addActiveSitePrefix: true,
+  })
+}
+
+export async function prepareLocalSaveDestination(
+  options: LocalSaveDestinationOptions,
+): Promise<UserSelectedExportDestination | null> {
   const adapter = getPlatformAdapter()
   const safeSuggestedName = validateSuggestedName(
-    adapter.hostType === 'electron'
-      ? await withActiveSitePrefix(suggestedName, definition.artifactExtensions)
-      : suggestedName,
-    definition.artifactExtensions,
+    adapter.hostType === 'electron' && options.addActiveSitePrefix
+      ? await withActiveSitePrefix(options.suggestedName, options.extensions)
+      : options.suggestedName,
+    options.extensions,
   )
   if (adapter.hostType === 'browser') {
     return {
@@ -113,11 +133,11 @@ export async function prepareExportDestination(
   }
   const result = await adapter.chooseSavePath({
     suggestedName: safeSuggestedName,
-    filters: definition.filters.map((item) => ({
+    filters: options.filters.map((item) => ({
       name: item.name,
       extensions: [...item.extensions],
     })),
-    ...(directoryPath ? { directoryPath } : {}),
+    ...(options.directoryPath ? { directoryPath: options.directoryPath } : {}),
   })
   if (result.cancelled || !result.path) return null
   return {

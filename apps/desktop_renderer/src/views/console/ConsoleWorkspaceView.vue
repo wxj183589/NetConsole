@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Close,
@@ -20,9 +21,61 @@ import TerminalPane from './TerminalPane.vue'
 import TerminalQuickConnectDialog from './TerminalQuickConnectDialog.vue'
 import TerminalSettingsDialog from './TerminalSettingsDialog.vue'
 import TerminalSftpPanel from './TerminalSftpPanel.vue'
+import ConsoleCommandBar from './ConsoleCommandBar.vue'
 import { useConsoleWorkspace } from './useConsoleWorkspace'
+const props = withDefaults(defineProps<{ workspaceVisible?: boolean }>(), { workspaceVisible: true })
+
+const sftpWidth = ref(430)
+const sidebarWidth = ref(270)
+const sidebarCollapsed = ref(false)
+const sftpActivity = ref(0)
+const layoutKey = 'netconsole.console.layout'
+function saveLayout() {
+  const value = { collapsed: sidebarCollapsed.value, sidebarWidth: sidebarWidth.value, sftpWidth: sftpWidth.value }
+  if (window.netconsoleDesktop?.setUiPreference) void window.netconsoleDesktop.setUiPreference('console.layout', value).catch(() => undefined)
+  else localStorage.setItem(layoutKey, JSON.stringify(value))
+}
+onMounted(async () => {
+  try {
+    const value = window.netconsoleDesktop?.getUiPreference ? await window.netconsoleDesktop.getUiPreference('console.layout') : JSON.parse(localStorage.getItem(layoutKey) || 'null')
+    if (value && typeof value === 'object') {
+      const saved = value as { collapsed: boolean; sidebarWidth: number; sftpWidth: number }
+      sidebarCollapsed.value = Boolean(saved.collapsed)
+      sidebarWidth.value = Math.max(180, Math.min(500, Number(saved.sidebarWidth) || 270))
+      sftpWidth.value = Math.max(280, Math.min(900, Number(saved.sftpWidth) || 430))
+    }
+  } catch { /* Invalid UI preference does not affect live transports. */ }
+})
+let stopSftpResize: (() => void) | undefined
+let stopSidebarResize: (() => void) | undefined
+function resizeSftp(event: PointerEvent) {
+  const start = event.clientX
+  const width = sftpWidth.value
+  stopSftpResize?.()
+  const move = (e: PointerEvent) => { sftpWidth.value = Math.max(280, Math.min(window.innerWidth * 0.5, width + e.clientX - start)) }
+  const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); stopSftpResize = undefined; saveLayout() }
+  stopSftpResize = stop
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', stop, { once: true })
+}
+function resizeSidebar(event: PointerEvent) {
+  stopSidebarResize?.()
+  const start = event.clientX, width = sidebarWidth.value
+  const move = (e: PointerEvent) => { sidebarWidth.value = Math.max(180, Math.min(500, width + e.clientX - start)) }
+  const stop = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop); stopSidebarResize = undefined; saveLayout() }
+  stopSidebarResize = stop
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', stop, { once: true })
+}
+onBeforeUnmount(() => { stopSftpResize?.(); stopSidebarResize?.() })
 
 const {
+  sessionStateFilter,
+  cloneSession,
+  renameSession,
+  saveConnectionTemplate,
+  deleteRecording,
+  addTerminalTab,
   devices,
   sessions,
   profiles,
@@ -31,6 +84,7 @@ const {
   tabs,
   selectedDeviceUuid,
   selectedDeviceUuids,
+  selectedSessionIds,
   activeTabId,
   secondaryTabId,
   navigationMode,
@@ -114,11 +168,23 @@ const {
   recordingText,
   replayText,
 } = useConsoleWorkspace()
+const sftpDevice = computed(() => {
+  const id = activeTab.value?.session.device_uuid || selectedDeviceUuid.value
+  return devices.value.find(item => item.device_uuid === id)
+})
+const sftpAvailable = computed(() => activeTab.value ? activeTab.value.session.protocol === 'SSH' && Boolean(sftpDevice.value?.capabilities.ssh) : Boolean(sftpDevice.value?.capabilities.ssh))
+const showSftp = computed(() => sftpVisible.value && sftpAvailable.value)
+const sftpWorkspaces = ref<Array<{ id: string; deviceUuid: string; name: string }>>([])
+const sftpWorkspaceId = computed(() => activeTab.value?.id || sftpDevice.value?.device_uuid || '')
+watch([showSftp, sftpWorkspaceId], () => {
+  if (showSftp.value && sftpDevice.value && !sftpWorkspaces.value.some(item => item.id === sftpWorkspaceId.value)) sftpWorkspaces.value.push({ id: sftpWorkspaceId.value, deviceUuid: sftpDevice.value.device_uuid, name: sftpDevice.value.name })
+}, { immediate: true })
 </script>
 
 <template>
   <section class="console-workspace">
     <header class="console-toolbar">
+      <el-button title="展开或收起左侧列表" aria-label="展开或收起左侧列表" @click="sidebarCollapsed = !sidebarCollapsed; saveLayout()">☰</el-button>
       <div class="console-toolbar__title">
         <Monitor :size="18" />
         <strong>设备控制台</strong>
@@ -165,7 +231,7 @@ const {
           </el-dropdown-menu>
         </template>
       </el-dropdown>
-      <el-button size="small" :disabled="!selectedDeviceUuid" @click="sftpVisible = true"><el-icon><FolderOpened /></el-icon>SFTP</el-button>
+      <el-button v-if="sftpAvailable" size="small" :type="showSftp ? 'primary' : 'default'" @click="sftpVisible = !sftpVisible"><el-icon><FolderOpened /></el-icon>SFTP<span v-if="sftpActivity"> · {{ sftpActivity }}</span></el-button>
       <el-button size="small" @click="showHistory">
         <el-icon><FullScreen /></el-icon>会话记录
       </el-button>
@@ -174,12 +240,14 @@ const {
       <span class="console-toolbar__summary">{{ tabs.length }} 个标签 · {{ sessions.filter((item) => ['CONNECTED', 'RUNNING'].includes(item.state)).length }} 个活动会话</span>
     </header>
 
-    <div class="console-body">
-      <aside class="console-sidebar">
+    <div class="console-body" :class="{ 'with-sftp': showSftp, 'sidebar-collapsed': sidebarCollapsed }" :style="{ '--sftp-width': `${sftpWidth}px`, '--sidebar-width': `${sidebarWidth}px` }">
+      <nav v-show="sidebarCollapsed" class="console-icon-rail"><button title="终端会话" @click="sidebarCollapsed = false; navigationMode = 'sessions'; saveLayout()">▤</button><button v-if="sftpAvailable" title="SFTP" @click="sftpVisible = !sftpVisible">⇅</button><button title="录制历史" @click="showHistory">◷</button></nav>
+      <aside v-show="!sidebarCollapsed" class="console-sidebar" @pointerdown="($event.target as HTMLElement).classList.contains('sidebar-resize') && resizeSidebar($event)">
+        <div class="sidebar-resize" role="separator" aria-label="调整会话列表宽度" />
         <div class="console-sidebar__tabs">
           <button :class="{ active: navigationMode === 'devices' }" @click="navigationMode = 'devices'">设备</button>
-          <button :class="{ active: navigationMode === 'profiles' }" @click="navigationMode = 'profiles'">会话库</button>
-          <button :class="{ active: navigationMode === 'sessions' }" @click="navigationMode = 'sessions'; loadSessions()">会话</button>
+          <button title="常用连接配置，不包含活动状态或历史日志" :class="{ active: navigationMode === 'profiles' }" @click="navigationMode = 'profiles'">已保存连接</button>
+          <button title="独立终端及已关闭会话" :class="{ active: navigationMode === 'sessions' }" @click="navigationMode = 'sessions'; loadSessions()">终端会话</button>
         </div>
         <label class="console-search">
           <Search :size="15" />
@@ -262,6 +330,7 @@ const {
         </div>
 
         <div v-else class="console-tree">
+          <select v-model="sessionStateFilter" aria-label="会话状态筛选"><option value="all">全部会话</option><option value="active">活动会话</option><option value="closed">已关闭</option></select>
           <button
             v-for="session in filteredSessions"
             :key="session.session_id"
@@ -269,9 +338,10 @@ const {
             @click="openSession(session)"
             @contextmenu="showSessionMenu($event, session)"
           >
+            <input type="checkbox" :checked="selectedSessionIds.includes(session.session_id)" @click.stop @change="selectedSessionIds = ($event.target as HTMLInputElement).checked ? [...selectedSessionIds, session.session_id] : selectedSessionIds.filter(id => id !== session.session_id)" aria-label="选择终端会话" />
             <span class="session-row__state" :class="sessionStatusClass(session.state)" />
             <span>
-              <strong>{{ session.device_name }}</strong>
+              <strong>{{ session.session_name || session.device_name }}</strong>
               <small>{{ session.protocol }} · {{ session.state }} · {{ formatTime(session.created_at_ms) }}</small>
             </span>
           </button>
@@ -279,6 +349,15 @@ const {
         </div>
       </aside>
 
+      <aside v-show="showSftp" class="console-sftp">
+        <div v-for="item in sftpWorkspaces" :key="item.id" v-show="item.id === sftpWorkspaceId" class="sftp-instance">
+        <TerminalSftpPanel
+          :device-uuid="item.deviceUuid" :device-name="item.name" :workspace-id="item.id"
+          @activity="item.id === sftpWorkspaceId && (sftpActivity = $event)"
+        />
+        </div>
+      </aside>
+      <div v-show="showSftp" class="sftp-resizer" role="separator" aria-label="调整 SFTP 面板宽度" aria-orientation="vertical" @pointerdown.prevent="resizeSftp" />
       <main class="console-main">
         <div class="terminal-tabs">
           <el-dropdown
@@ -292,12 +371,18 @@ const {
           >
             <button class="terminal-tab" :class="{ active: visibleTabIds.has(tab.id) }" @click="selectTab(tab.id)">
               <span class="terminal-tab__state" :class="sessionStatusClass(tab.session.state)" />
-              <span>{{ tab.session.device_name }}</span>
+              <span>{{ tab.session.session_name || tab.session.device_name }}</span>
               <small>{{ tab.session.protocol }}</small>
               <Close class="terminal-tab__close" :size="13" @click.stop="closeTab(tab.id)" />
             </button>
             <template #dropdown>
               <el-dropdown-menu>
+                <el-dropdown-item @click="cloneSession(tab.session)">新建终端会话</el-dropdown-item>
+                <el-dropdown-item @click="cloneSession(tab.session)">克隆会话</el-dropdown-item>
+                <el-dropdown-item @click="cloneSession(tab.session)">在新标签打开</el-dropdown-item>
+                <el-dropdown-item @click="renameSession(tab.session)">重命名</el-dropdown-item>
+                <el-dropdown-item @click="saveConnectionTemplate(tab.session)">保存为连接模板</el-dropdown-item>
+                <el-dropdown-item @click="terminateSession(tab.session)">结束当前会话</el-dropdown-item>
                 <el-dropdown-item @click="closeTab(tab.id)">关闭标签（保留会话）</el-dropdown-item>
                 <el-dropdown-item @click="closeOtherTabs(tab.id)">关闭其他标签</el-dropdown-item>
                 <el-dropdown-item @click="closeAllTabs">关闭全部标签</el-dropdown-item>
@@ -320,6 +405,7 @@ const {
               :session="tab.session"
               :ticket="tab.ticket"
               :active="visibleTabIds.has(tab.id)"
+              :workspace-visible="props.workspaceVisible"
               :settings="terminalSettings"
               :highlight-rules="highlightRules"
               @session="updateSession(tab.id, $event)"
@@ -333,6 +419,7 @@ const {
           <strong>尚未打开终端会话</strong>
           <span>设备凭据由后端受控引用，终端页面不会接收密码或私钥。</span>
         </div>
+        <ConsoleCommandBar :sessions="sessions" :active="activeTab?.session || null" :selected="selectedSessionIds" :selected-devices="devices.filter(item => selectedDeviceUuids.includes(item.device_uuid))" @opened="addTerminalTab" />
       </main>
     </div>
 
@@ -354,6 +441,13 @@ const {
       @click.stop
     >
       <button @click="showReplay(contextSession); hideContextMenu()">查看会话记录</button>
+      <button @click="cloneSession(contextSession); hideContextMenu()">新建终端会话</button>
+      <button @click="cloneSession(contextSession); hideContextMenu()">克隆会话</button>
+      <button @click="cloneSession(contextSession); hideContextMenu()">在新标签打开</button>
+      <button @click="closeTab(contextSession.session_id); hideContextMenu()">关闭当前标签</button>
+      <button @click="closeOtherTabs(contextSession.session_id); hideContextMenu()">关闭其他标签</button>
+      <button @click="renameSession(contextSession); hideContextMenu()">重命名</button>
+      <button @click="saveConnectionTemplate(contextSession); hideContextMenu()">保存为连接模板</button>
       <button
         v-if="!['CLOSED', 'FAILED', 'CANCELLED'].includes(contextSession.state)"
         @click="openSession(contextSession); hideContextMenu()"
@@ -379,7 +473,7 @@ const {
         <el-table-column label="开始时间" min-width="170"><template #default="scope">{{ formatTime(scope.row.created_at_ms) }}</template></el-table-column>
         <el-table-column prop="state" label="状态" width="110" />
         <el-table-column label="录制" width="110"><template #default="scope">{{ recordingText(scope.row) }}</template></el-table-column>
-        <el-table-column label="操作" width="90"><template #default="scope"><el-button link type="primary" @click="showReplay(scope.row)">查看</el-button></template></el-table-column>
+        <el-table-column label="操作" width="150"><template #default="scope"><el-button link type="primary" @click="showReplay(scope.row)">查看</el-button><el-button link type="danger" :disabled="['RECORDING', 'FINALIZING', 'COMPRESSING'].includes(scope.row.recording_status)" @click="deleteRecording(scope.row)">删除</el-button></template></el-table-column>
       </el-table>
     </el-drawer>
 
@@ -390,18 +484,12 @@ const {
         <span>{{ formatTime(replaySession.created_at_ms) }}</span>
         <span :class="replaySession.recording_status === 'INCOMPLETE' ? 'is-danger' : 'is-success'">{{ recordingText(replaySession) }}</span>
         <span class="console-toolbar__spacer" />
-        <el-button size="small" @click="exportReplay('txt')"><el-icon><Download /></el-icon>TXT</el-button>
+        <el-button size="small" :disabled="!replaySession.recording_log_name" @click="exportReplay('log')"><el-icon><Download /></el-icon>LOG</el-button>
+        <el-button size="small" :disabled="!replaySession.recording_zip_name" @click="exportReplay('zip')"><el-icon><Download /></el-icon>ZIP</el-button>
         <el-button size="small" @click="exportReplay('jsonl')"><el-icon><Download /></el-icon>JSONL</el-button>
       </div>
       <pre v-loading="replayLoading" class="replay-output">{{ replayText || '暂无可回放输出' }}</pre>
     </el-dialog>
-
-    <el-drawer v-model="sftpVisible" title="SFTP 文件管理" size="min(1180px, 92vw)" destroy-on-close>
-      <TerminalSftpPanel
-        :device-uuid="selectedDeviceUuid || activeTab?.session.device_uuid || ''"
-        :device-name="devices.find((item) => item.device_uuid === (selectedDeviceUuid || activeTab?.session.device_uuid))?.name || activeTab?.session.device_name || ''"
-      />
-    </el-drawer>
 
     <TerminalSettingsDialog v-model="settingsVisible" @saved="applyTerminalPreferences" />
     <TerminalQuickConnectDialog
@@ -419,7 +507,7 @@ const {
 .console-workspace {
   --console-border: var(--nc-border);
   display: grid;
-  grid-template-rows: 46px minmax(0, 1fr);
+  grid-template-rows: 46px minmax(0, 1fr) auto;
   height: 100%;
   min-height: 560px;
   overflow: hidden;
@@ -449,7 +537,18 @@ const {
 .console-toolbar > :deep(.el-button), .console-toolbar__title, .console-toolbar__summary { flex: 0 0 auto; }
 .terminal-search { flex: 0 0 150px; min-width: 100px; }
 
-.console-body { display: grid; grid-template-columns: 270px minmax(0, 1fr); min-height: 0; }
+.console-body { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); min-height: 0; }
+.console-body.with-sftp { grid-template-columns: var(--sidebar-width) minmax(280px, var(--sftp-width)) 5px minmax(240px, 1fr); }
+.console-body.sidebar-collapsed { --sidebar-width: 42px !important; }
+.console-icon-rail { display: flex; flex-direction: column; border-right: 1px solid var(--console-border); }
+.console-icon-rail button { height: 40px; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.console-sidebar { position: relative; }
+.sidebar-resize { position: absolute; right: 0; top: 0; bottom: 0; width: 5px; z-index: 3; cursor: col-resize; }
+.console-sftp { min-width: 0; min-height: 0; overflow: hidden; border-right: 1px solid var(--console-border); }
+.sftp-instance { height: 100%; min-height: 0; }
+.sftp-resizer { cursor: col-resize; touch-action: none; background: var(--console-border); }
+#console-sftp-queue { min-width: 0; }
+@media (max-width: 1200px) { .console-body.with-sftp { grid-template-columns: 170px minmax(280px, 34vw) 5px minmax(240px, 1fr); } }
 .console-sidebar { display: grid; grid-template-rows: 39px 44px minmax(0, 1fr); min-height: 0; border-right: 1px solid var(--console-border); background: var(--nc-bg-panel); }
 .console-sidebar__tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 5px 8px 0; border-bottom: 1px solid var(--console-border); }
 .console-sidebar__tabs button { border: 0; border-bottom: 2px solid transparent; color: var(--nc-text-secondary); background: transparent; cursor: pointer; }
@@ -485,7 +584,7 @@ const {
 .session-row__state.is-warning, .terminal-tab__state.is-warning { background: var(--nc-warning); }
 .console-empty { padding: 32px 12px; color: var(--nc-text-secondary); text-align: center; font-size: 12px; }
 
-.console-main { display: grid; grid-template-rows: 36px minmax(0, 1fr); min-width: 0; min-height: 0; background: var(--nc-bg-code); }
+.console-main { display: grid; grid-template-rows: 36px minmax(0, 1fr) auto; min-width: 0; min-height: 0; background: var(--nc-bg-code); }
 .terminal-tabs { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; border-bottom: 1px solid var(--nc-border-code); color: var(--nc-text-code-muted); background: var(--nc-bg-code-header); }
 .terminal-tabs > span { align-self: center; padding: 0 12px; font-size: 12px; }
 .terminal-tab { display: flex; align-items: center; gap: 7px; height: 35px; padding: 0 10px; border: 0; border-right: 1px solid var(--nc-border-code); color: var(--nc-text-code-muted); background: var(--nc-bg-code-header); white-space: nowrap; cursor: pointer; }

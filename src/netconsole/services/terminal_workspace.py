@@ -9,6 +9,9 @@ import secrets
 import threading
 import time
 import uuid
+import shutil
+from datetime import datetime
+from zipfile import ZipFile, ZIP_DEFLATED
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -27,6 +30,7 @@ from netconsole.services.site_ssh_relay import active_site_id
 from netconsole.services.terminal_profiles import TerminalProfileStore
 from netconsole.services.terminal_settings import TerminalSettingsService
 from netconsole.services.terminal_transports import create_terminal_transport
+from netconsole.services.terminal_transcript import render_events
 
 
 TERMINAL_STATES = frozenset(
@@ -108,11 +112,18 @@ class TerminalSessionSnapshot:
     ended_at_ms: int | None = None
     disconnect_reason: str = ""
     error_code: str = ""
+    error_message: str = ""
+    detached_window: bool = False
     command_count: int = 0
     output_bytes: int = 0
     recording_status: str = "RECORDING"
     recording_sha256: str = ""
     recording_dropped_events: int = 0
+    session_name: str = ""
+    recording_log_name: str = ""
+    recording_zip_name: str = ""
+    recording_error: str = ""
+    recording_projection: dict = field(default_factory=dict)
     manual_log_status: str = "STOPPED"
     manual_log_id: str = ""
     manual_log_format: str = ""
@@ -163,7 +174,9 @@ class TerminalTicketStore:
 
     def _purge_locked(self) -> None:
         now = _utc_ms()
-        expired = [key for key, value in self._tickets.items() if value.expires_at_ms <= now]
+        expired = [
+            key for key, value in self._tickets.items() if value.expires_at_ms <= now
+        ]
         for key in expired:
             self._tickets.pop(key, None)
 
@@ -182,7 +195,9 @@ class TerminalRecordingWriter:
         self.session_dir.mkdir(parents=True, exist_ok=False)
         self.events_path = self.session_dir / "events.jsonl"
         self.metadata_path = self.session_dir / "metadata.json"
-        self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=queue_size)
+        self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(
+            maxsize=queue_size
+        )
         self._thread = threading.Thread(
             target=self._run,
             name=f"terminal-recorder-{snapshot.session_id[:8]}",
@@ -190,6 +205,7 @@ class TerminalRecordingWriter:
         )
         self._closed = threading.Event()
         self._dropped = 0
+        self._error = ""
         self._metadata_lock = threading.Lock()
         self._write_metadata(snapshot)
         self._thread.start()
@@ -199,6 +215,8 @@ class TerminalRecordingWriter:
         return self._dropped
 
     def append(self, event_type: str, **detail: Any) -> bool:
+        if self._closed.is_set():
+            return False
         event = {"at_ms": _utc_ms(), "event_type": event_type, **detail}
         try:
             self._queue.put_nowait(event)
@@ -214,7 +232,7 @@ class TerminalRecordingWriter:
     def close(self, snapshot: TerminalSessionSnapshot) -> None:
         if self._closed.is_set():
             return
-        self.append("RECORDING_END", state=snapshot.state)
+        self.append("SESSION_END", state=snapshot.state)
         try:
             self._queue.put_nowait(None)
         except queue.Full:
@@ -230,15 +248,84 @@ class TerminalRecordingWriter:
             snapshot.recording_status = "INCOMPLETE"
         elif self._dropped:
             snapshot.recording_status = "INCOMPLETE"
+        elif self._error:
+            snapshot.recording_status = "FAILED"
+            snapshot.recording_error = self._error
         else:
-            snapshot.recording_status = "COMPLETE"
+            snapshot.recording_status = "FINALIZING"
         if self.events_path.is_file():
-            snapshot.recording_sha256 = hashlib.sha256(self.events_path.read_bytes()).hexdigest()
+            with self.events_path.open("rb") as stream:
+                snapshot.recording_sha256 = hashlib.file_digest(
+                    stream, "sha256"
+                ).hexdigest()
         snapshot.recording_dropped_events = self._dropped
+        incomplete = snapshot.recording_status == "INCOMPLETE" or snapshot.state in {
+            "FAILED",
+            "DISCONNECTED",
+            "CANCELLED",
+        }
+        self._write_metadata(snapshot)
+        try:
+            if self._thread.is_alive() or self._error:
+                raise IOError("录制事件尚未完整写入")
+            stamp = datetime.fromtimestamp(
+                (snapshot.connected_at_ms or snapshot.created_at_ms) / 1000
+            ).strftime("%Y%m%d%H%M%S")
+            stem = re.sub(
+                r'[\\/:*?"<>|\x00-\x1f]',
+                "_",
+                f"{snapshot.device_name}_{snapshot.address}_{snapshot.port}_{stamp}",
+            ).rstrip(". ")[:200]
+            # Session-scoped storage and suffix avoid same-second exported collisions.
+            stem += f"_{snapshot.session_id[:8]}"
+            snapshot.recording_log_name, snapshot.recording_zip_name = (
+                stem + ".log",
+                stem + ".zip",
+            )
+            log_path = self.session_dir / snapshot.recording_log_name
+            temporary = log_path.with_suffix(".log.part")
+            with (
+                self.events_path.open("r", encoding="utf-8") as source,
+                temporary.open("w", encoding="utf-8", newline="\n") as output,
+            ):
+                snapshot.recording_projection = render_events(
+                    (json.loads(line) for line in source), output
+                )
+                output.flush()
+                os.fsync(output.fileno())
+            temporary.replace(log_path)
+            snapshot.recording_status = "COMPRESSING"
+            self._write_metadata(snapshot)
+            archive = self.session_dir / snapshot.recording_zip_name
+            temporary_zip = archive.with_suffix(".zip.part")
+            with ZipFile(temporary_zip, "w", ZIP_DEFLATED) as zipped:
+                zipped.write(log_path, log_path.name)
+            with ZipFile(temporary_zip) as zipped:
+                if zipped.namelist() != [log_path.name] or zipped.testzip() is not None:
+                    raise IOError("ZIP 文件名或 CRC 校验失败")
+                with zipped.open(log_path.name) as stream, log_path.open("rb") as local:
+                    if (
+                        hashlib.file_digest(stream, "sha256").digest()
+                        != hashlib.file_digest(local, "sha256").digest()
+                    ):
+                        raise IOError("ZIP 内容校验失败")
+            temporary_zip.replace(archive)
+            snapshot.recording_status = "INCOMPLETE" if incomplete else "COMPLETED"
+        except Exception as exc:
+            snapshot.recording_status = "INCOMPLETE" if incomplete else "FAILED"
+            snapshot.recording_error = (
+                f"录制整理失败 ({type(exc).__name__})；原始事件及已生成 LOG 已保留"
+            )
         self._write_metadata(snapshot)
         self._closed.set()
 
     def _run(self) -> None:
+        try:
+            self._write_events()
+        except Exception as exc:
+            self._error = type(exc).__name__
+
+    def _write_events(self) -> None:
         with self.events_path.open("a", encoding="utf-8", newline="\n") as stream:
             while True:
                 event = self._queue.get()
@@ -246,7 +333,9 @@ class TerminalRecordingWriter:
                     stream.flush()
                     os.fsync(stream.fileno())
                     return
-                stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+                stream.write(
+                    json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+                )
                 stream.flush()
 
     def _write_metadata(self, snapshot: TerminalSessionSnapshot) -> None:
@@ -274,13 +363,17 @@ class TerminalManualLogWriter:
         self.log_id = uuid.uuid4().hex
         self.log_format = log_format
         suffix = ".jsonl" if log_format == "jsonl" else ".log"
-        safe_stem = re.sub(r"[^\w.-]+", "-", Path(filename).stem, flags=re.UNICODE).strip(".-")
+        safe_stem = re.sub(
+            r"[^\w.-]+", "-", Path(filename).stem, flags=re.UNICODE
+        ).strip(".-")
         self.filename = f"{safe_stem or f'session-{snapshot.session_id[:8]}'}{suffix}"
         self.directory = root / snapshot.session_id / self.log_id
         self.directory.mkdir(parents=True, exist_ok=False)
         self.path = self.directory / self.filename
         self.metadata_path = self.directory / "metadata.json"
-        self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=queue_size)
+        self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue(
+            maxsize=queue_size
+        )
         self._thread = threading.Thread(
             target=self._run,
             args=(snapshot.to_public_dict(),),
@@ -305,7 +398,9 @@ class TerminalManualLogWriter:
         if self._closed.is_set():
             return False
         try:
-            self._queue.put_nowait({"at_ms": _utc_ms(), "event_type": event_type, **detail})
+            self._queue.put_nowait(
+                {"at_ms": _utc_ms(), "event_type": event_type, **detail}
+            )
             return True
         except queue.Full:
             self._dropped += 1
@@ -324,7 +419,9 @@ class TerminalManualLogWriter:
             except (queue.Empty, queue.Full):
                 self._dropped += 1
         self._thread.join(timeout=5)
-        status = "INCOMPLETE" if self._thread.is_alive() or self._dropped else "COMPLETE"
+        status = (
+            "INCOMPLETE" if self._thread.is_alive() or self._dropped else "COMPLETE"
+        )
         self._status = status
         self._write_metadata(snapshot, status)
         self._closed.set()
@@ -345,7 +442,10 @@ class TerminalManualLogWriter:
                     os.fsync(stream.fileno())
                     return
                 if self.log_format == "jsonl":
-                    stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+                    stream.write(
+                        json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                        + "\n"
+                    )
                 else:
                     self._write_text_event(stream, event)
                 stream.flush()
@@ -400,10 +500,13 @@ class _TerminalSession:
     requested_protocol: str
     target: ConnectionTarget
     managed_device: bool
-    input_queue: queue.Queue[tuple[str, Any]] = field(default_factory=lambda: queue.Queue(maxsize=256))
+    input_queue: queue.Queue[tuple[str, Any]] = field(
+        default_factory=lambda: queue.Queue(maxsize=256)
+    )
     listeners: set[queue.Queue[dict[str, Any]]] = field(default_factory=set)
     listener_lock: threading.Lock = field(default_factory=threading.Lock)
     state_lock: threading.RLock = field(default_factory=threading.RLock)
+    dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     close_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     display_backlog: list[str] = field(default_factory=list)
@@ -443,9 +546,13 @@ class _TerminalSession:
     def subscribe(self) -> queue.Queue[dict[str, Any]]:
         listener: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=512)
         with self.listener_lock:
+            if self.listeners:
+                raise RuntimeError("此 Session 已有终端显示，请克隆为独立会话")
             self.listeners.add(listener)
             backlog = "".join(self.display_backlog)
-        listener.put_nowait({"type": "snapshot", "session": self.snapshot.to_public_dict()})
+        listener.put_nowait(
+            {"type": "snapshot", "session": self.snapshot.to_public_dict()}
+        )
         if backlog:
             listener.put_nowait({"type": "backlog", "data": backlog})
         return listener
@@ -456,8 +563,6 @@ class _TerminalSession:
 
 
 class TerminalSessionManager:
-    MAX_SESSIONS = 8
-    MAX_SESSIONS_PER_DEVICE = 2
     MAX_MESSAGE_CHARS = 65536
 
     def __init__(self, paths: PathResolver) -> None:
@@ -473,6 +578,10 @@ class TerminalSessionManager:
         self.tickets = TerminalTicketStore()
         self._sessions: dict[str, _TerminalSession] = {}
         self._lock = threading.RLock()
+        self._recover_recordings()
+        from netconsole.services.terminal_controls import BatchCommandDispatcher
+
+        self.dispatcher = BatchCommandDispatcher(self)
 
     def create_session(
         self,
@@ -537,7 +646,9 @@ class TerminalSessionManager:
             ssh_password=secret if protocol == "SSH" else None,
             telnet_enabled=1 if protocol == "TELNET" else 0,
             telnet_port=int(connection["port"]) if protocol == "TELNET" else 23,
-            telnet_username=str(connection["username"]) if protocol == "TELNET" else None,
+            telnet_username=str(connection["username"])
+            if protocol == "TELNET"
+            else None,
             telnet_password=secret if protocol == "TELNET" else None,
         )
         target = ConnectionTarget(
@@ -547,7 +658,9 @@ class TerminalSessionManager:
             port=int(connection["port"]),
             username=str(connection["username"]),
             password=secret,
-            encoding="mbcs" if connection["encoding"] == "ansi" else str(connection["encoding"]),
+            encoding="mbcs"
+            if connection["encoding"] == "ansi"
+            else str(connection["encoding"]),
             method="terminal_quick_connect",
         )
         return self._create_runtime(
@@ -569,7 +682,9 @@ class TerminalSessionManager:
         rows: int = 32,
     ) -> tuple[dict[str, Any], TerminalTicket]:
         profile, password = self.profiles.resolve(profile_id, password_override)
-        return self.create_quick_session(profile, password=password, cols=cols, rows=rows)
+        return self.create_quick_session(
+            profile, password=password, cols=cols, rows=rows
+        )
 
     def _create_runtime(
         self,
@@ -585,22 +700,19 @@ class TerminalSessionManager:
         site_id = active_site_id(self.paths)
         site_name = SiteManager(self.paths).get_current_site()
         with self._lock:
-            active = [
+            same_device = [
                 item
                 for item in self._sessions.values()
-                if item.snapshot.state in TERMINAL_LIVE_STATES
+                if item.snapshot.device_uuid == device.device_uuid
             ]
-            if len(active) >= self.MAX_SESSIONS:
-                raise RuntimeError("活动终端会话已达到上限")
-            same_device = [item for item in active if item.snapshot.device_uuid == device.device_uuid]
-            if len(same_device) >= self.MAX_SESSIONS_PER_DEVICE:
-                raise RuntimeError("该设备的活动终端会话已达到上限")
             session_id = uuid.uuid4().hex
             now = _utc_ms()
             snapshot = TerminalSessionSnapshot(
                 session_id=session_id,
                 device_uuid=str(device.device_uuid),
-                device_name=str(device.name or device.system_name or device.primary_address),
+                device_name=str(
+                    device.name or device.system_name or device.primary_address
+                ),
                 site_id=site_id,
                 site_name=site_name,
                 protocol=target.protocol.upper(),
@@ -611,6 +723,7 @@ class TerminalSessionManager:
                 port=int(target.port),
                 created_at_ms=now,
                 updated_at_ms=now,
+                session_name=f"{device.name or device.system_name or device.primary_address}-{len(same_device) + 1:02}",
             )
             recording = TerminalRecordingWriter(self.recording_root, snapshot)
             terminal_cols = self._clamp(cols, 20, 400)
@@ -636,6 +749,116 @@ class TerminalSessionManager:
             session.thread.start()
             ticket = self.tickets.issue(session_id)
             return snapshot.to_public_dict(), ticket
+
+    def clone_session(self, session_id: str):
+        previous = self.get_runtime(session_id)
+        if previous.snapshot.site_name != SiteManager(self.paths).get_current_site():
+            raise ValueError("会话不属于当前局点")
+        return self._create_runtime(
+            previous.device,
+            previous.target,
+            requested_protocol=previous.requested_protocol,
+            cols=previous.terminal_cols,
+            rows=previous.terminal_rows,
+            managed_device=previous.managed_device,
+            encoding=previous.snapshot.encoding,
+        )
+
+    def claim_detached_window(self, session_id: str):
+        runtime = self.get_runtime(session_id)
+        with runtime.listener_lock:
+            if runtime.listeners or runtime.snapshot.detached_window:
+                raise ValueError("此 Session 已有终端显示，请先克隆")
+            runtime.snapshot.detached_window = True
+            runtime.recording.update_metadata(runtime.snapshot)
+        return {"claimed": True}
+
+    def rename_session(self, session_id: str, name: str):
+        session = self.get_runtime(session_id)
+        value = str(name).strip()
+        if not value or len(value) > 160:
+            raise ValueError("会话名称无效")
+        session.snapshot.session_name = value
+        session.recording.update_metadata(session.snapshot)
+        return session.snapshot.to_public_dict()
+
+    def _recover_recordings(self):
+        for metadata in self.recording_root.glob("*/metadata.json"):
+            if metadata.parent.name.startswith("."):
+                continue
+            try:
+                value = json.loads(metadata.read_text(encoding="utf-8"))
+                if value.get("recording_status") in {
+                    "RECORDING",
+                    "FINALIZING",
+                    "COMPRESSING",
+                }:
+                    value.update(
+                        recording_status="INCOMPLETE",
+                        recording_error="上次录制异常中断，原始事件已保留",
+                    )
+                    temporary = metadata.with_suffix(".recovery")
+                    temporary.write_text(
+                        json.dumps(value, ensure_ascii=False), encoding="utf-8"
+                    )
+                    temporary.replace(metadata)
+            except (OSError, ValueError):
+                continue
+
+    def delete_recording(self, session_id: str):
+        directory = self._session_directory(session_id)
+        tombstone = self.recording_root / f".deleting-{session_id}"
+        marker = self.recording_root / f".deleting-{session_id}.json"
+        with self._lock:
+            runtime = self._sessions.get(session_id)
+            if runtime is not None and (
+                (runtime.thread and runtime.thread.is_alive())
+                or runtime.snapshot.recording_status
+                in {"RECORDING", "FINALIZING", "COMPRESSING"}
+            ):
+                raise ValueError("活动或正在整理的录制不能删除")
+            if directory.exists():
+                metadata = self.session_detail(session_id)
+                if metadata.get("recording_status") in {
+                    "RECORDING",
+                    "FINALIZING",
+                    "COMPRESSING",
+                }:
+                    raise ValueError("录制仍在使用中")
+                if tombstone.exists():
+                    raise ValueError("删除暂存冲突，请重试")
+                metadata.update(
+                    deletion_pending=True, recording_error="删除未完成，可重试"
+                )
+                temporary = marker.with_suffix(".part")
+                temporary.write_text(
+                    json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
+                )
+                temporary.replace(marker)
+                directory.rename(tombstone)
+            if tombstone.exists():
+                try:
+                    for suffix in (".txt", ".txt.tmp"):
+                        legacy = self.export_root / f"terminal-{session_id}{suffix}"
+                        if legacy.is_file():
+                            legacy.replace(tombstone / f"legacy-export{suffix}")
+                    shutil.rmtree(tombstone)
+                except OSError as exc:
+                    metadata_path = tombstone / "metadata.json"
+                    if metadata_path.exists():
+                        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                        metadata.update(
+                            deletion_pending=True, recording_error="删除未完成，可重试"
+                        )
+                        metadata_path.write_text(
+                            json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
+                        )
+                    raise ValueError(
+                        f"删除未完成 ({type(exc).__name__})，记录已隔离，可重试"
+                    ) from exc
+            marker.unlink(missing_ok=True)
+            self._sessions.pop(session_id, None)
+        return {"deleted": True, "session_id": session_id}
 
     def reconnect(self, session_id: str) -> tuple[dict[str, Any], TerminalTicket]:
         previous = self.get_runtime(session_id)
@@ -687,8 +910,12 @@ class TerminalSessionManager:
         snapshot.automation_write_task_id = ""
         snapshot.automation_write_task_name = ""
         try:
-            resource_key = device_write_resource_key(snapshot.site_id, snapshot.device_uuid)
-            repository = TaskRepository(self.paths.site_tasks_db_path(snapshot.site_name))
+            resource_key = device_write_resource_key(
+                snapshot.site_id, snapshot.device_uuid
+            )
+            repository = TaskRepository(
+                self.paths.site_tasks_db_path(snapshot.site_name)
+            )
             active = repository.list_filtered(
                 statuses={
                     TaskState.PENDING,
@@ -713,17 +940,37 @@ class TerminalSessionManager:
         needle = str(keyword or "").strip().casefold()
         result: list[dict[str, Any]] = []
         for metadata in self.recording_root.glob("*/metadata.json"):
+            if metadata.parent.name.startswith("."):
+                continue
             try:
                 value = json.loads(metadata.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError):
                 continue
             haystack = " ".join(
                 str(value.get(key) or "")
-                for key in ("session_id", "device_name", "device_uuid", "address", "protocol", "state", "site_name")
+                for key in (
+                    "session_id",
+                    "device_name",
+                    "device_uuid",
+                    "address",
+                    "protocol",
+                    "state",
+                    "site_name",
+                )
             ).casefold()
             if needle and needle not in haystack:
                 continue
             result.append(value)
+        for marker in self.recording_root.glob(".deleting-*.json"):
+            try:
+                value = json.loads(marker.read_text(encoding="utf-8"))
+                if (
+                    not needle
+                    or needle in json.dumps(value, ensure_ascii=False).casefold()
+                ):
+                    result.append(value)
+            except (OSError, ValueError):
+                continue
         result.sort(key=lambda item: int(item.get("created_at_ms") or 0), reverse=True)
         return result[: self._clamp(limit, 1, 500)]
 
@@ -736,7 +983,9 @@ class TerminalSessionManager:
     def close_session(self, session_id: str) -> dict[str, Any]:
         session = self.get_runtime(session_id)
         if session.snapshot.state not in TERMINAL_FINAL_STATES:
-            target_state = "CANCELLED" if session.snapshot.state == "CREATED" else "CLOSING"
+            target_state = (
+                "CANCELLED" if session.snapshot.state == "CREATED" else "CLOSING"
+            )
             self._transition(session, target_state, reason="USER_REQUEST")
             session.close_event.set()
             try:
@@ -753,15 +1002,13 @@ class TerminalSessionManager:
         session.terminal_cols, session.terminal_rows = dimensions
         session.input_queue.put_nowait(("resize", dimensions))
 
-    def input(self, session_id: str, data: str) -> None:
+    def input(self, session_id: str, data: str, *, receipt=None) -> None:
         session = self.get_runtime(session_id)
         if session.snapshot.state not in {"CONNECTED", "RUNNING"}:
             raise ValueError("终端会话当前不可输入")
         if len(data) > self.MAX_MESSAGE_CHARS:
             raise ValueError("终端输入消息超过大小限制")
-        safe_data = _sanitize_terminal_data(data, session.device)
         session.snapshot.command_count += data.count("\r") + data.count("\n")
-        self._record(session, "INPUT", data=safe_data)
         for command in self._risk_commands(session, data):
             matches = self.settings.match_dangerous_command(command, session.device)
             if not matches:
@@ -784,9 +1031,28 @@ class TerminalSessionManager:
                         "message": "检测到高危命令，请确认当前设备和操作意图。",
                     }
                 )
-        session.input_queue.put_nowait(("write", data))
+        session.input_queue.put_nowait(
+            ("write", {"data": data, "receipt": receipt} if receipt else data)
+        )
 
-    def recording_events(self, session_id: str, *, offset: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+    def send_confirmed(self, session_id, data, *, scope, cancel_event=None):
+        receipt = {
+            "done": threading.Event(),
+            "error": "",
+            "cancel": cancel_event,
+            "scope": scope,
+        }
+        self.input(session_id, data, receipt=receipt)
+        if not receipt["done"].wait(15):
+            raise TimeoutError("终端写入尚未确认，不能视为执行成功；请核对终端后重试")
+        if receipt["error"]:
+            raise TimeoutError(
+                f"写入结果无法确认（可能已部分发送），请先核对终端：{receipt['error']}"
+            )
+
+    def recording_events(
+        self, session_id: str, *, offset: int = 0, limit: int = 500
+    ) -> list[dict[str, Any]]:
         path = self._session_directory(session_id) / "events.jsonl"
         if not path.is_file():
             return []
@@ -837,7 +1103,10 @@ class TerminalSessionManager:
 
     def pause_manual_log(self, session_id: str) -> dict[str, Any]:
         session = self.get_runtime(session_id)
-        if session.manual_log is None or session.snapshot.manual_log_status != "RECORDING":
+        if (
+            session.manual_log is None
+            or session.snapshot.manual_log_status != "RECORDING"
+        ):
             raise ValueError("当前会话日志未在记录")
         session.snapshot.manual_log_status = "PAUSED"
         self._transition(session, session.snapshot.state)
@@ -883,28 +1152,27 @@ class TerminalSessionManager:
             raise KeyError("终端录制不存在")
         if fmt == "jsonl":
             return events, f"terminal-{session_id}.jsonl"
+        metadata = self.session_detail(session_id)
+        if fmt in {"log", "zip"}:
+            name = str(metadata.get(f"recording_{fmt}_name") or "")
+            result = (session_dir / name).resolve()
+            if result.parent != session_dir or not result.is_file():
+                raise ValueError("录制文件尚未生成或处理失败")
+            return result, name
         if fmt != "txt":
-            raise ValueError("终端历史只支持 TXT 或 JSONL 导出")
-        target = self.export_root / f"terminal-{session_id}.txt"
+            raise ValueError("终端历史支持 LOG、ZIP、TXT 或 JSONL 导出")
+        target = session_dir / "preview.txt"
         temporary = target.with_suffix(".txt.tmp")
-        with events.open("r", encoding="utf-8") as source, temporary.open(
-            "w", encoding="utf-8", newline="\n"
-        ) as destination:
-            for line in source:
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    destination.write("\n[录制记录损坏]\n")
-                    continue
-                event_type = str(event.get("event_type") or "")
-                if event_type == "OUTPUT":
-                    destination.write(str(event.get("data") or ""))
-                elif event_type == "INPUT":
-                    destination.write(f"\n> {event.get('data') or ''}\n")
+        with (
+            events.open("r", encoding="utf-8") as source,
+            temporary.open("w", encoding="utf-8", newline="\n") as destination,
+        ):
+            render_events((json.loads(line) for line in source), destination)
         os.replace(temporary, target)
         return target, target.name
 
     def close(self) -> None:
+        self.dispatcher.close()
         with self._lock:
             sessions = tuple(self._sessions.values())
         for session in sessions:
@@ -926,7 +1194,9 @@ class TerminalSessionManager:
                 self._transition(session, "CONNECTING")
             target = session.target
             encoding = session.snapshot.encoding
-            target = replace(target, encoding="mbcs" if encoding == "ansi" else encoding)
+            target = replace(
+                target, encoding="mbcs" if encoding == "ansi" else encoding
+            )
             transport = create_terminal_transport(
                 self.paths,
                 session.device,
@@ -936,10 +1206,19 @@ class TerminalSessionManager:
                 managed_device=session.managed_device,
             )
             transport.connect(session.terminal_cols, session.terminal_rows)
-            if session.close_event.is_set() or session.snapshot.state in {"CANCELLED", "CLOSING"}:
+            if session.close_event.is_set() or session.snapshot.state in {
+                "CANCELLED",
+                "CLOSING",
+            }:
                 self._transition(session, "CLOSED", reason="USER_REQUEST")
                 return
             session.snapshot.connected_at_ms = _utc_ms()
+            self._record(
+                session,
+                "SESSION_START",
+                address=session.target.host,
+                port=session.target.port,
+            )
             self._transition(session, "CONNECTED")
             self._transition(session, "RUNNING")
             while not session.close_event.is_set():
@@ -948,25 +1227,83 @@ class TerminalSessionManager:
                 except queue.Empty:
                     action, value = "", None
                 if action == "write":
-                    transport.write(str(value))
+                    receipt = value.get("receipt") if isinstance(value, dict) else None
+                    data = value["data"] if isinstance(value, dict) else str(value)
+                    try:
+                        if (
+                            receipt
+                            and receipt.get("cancel")
+                            and receipt["cancel"].is_set()
+                        ):
+                            receipt["error"] = "发送前已取消"
+                            self._record(
+                                session,
+                                "BATCH_SEND",
+                                session_id=session.snapshot.session_id,
+                                data=data,
+                                scope=receipt["scope"],
+                                result="CANCELLED_PENDING",
+                                sent_at_ms=_utc_ms(),
+                            )
+                            receipt["done"].set()
+                            continue
+                        transport.write(data)
+                        self._record(session, "INPUT", data=data)
+                        if receipt:
+                            self._record(
+                                session,
+                                "BATCH_SEND",
+                                session_id=session.snapshot.session_id,
+                                data=data,
+                                scope=receipt["scope"],
+                                result="WRITTEN",
+                                sent_at_ms=_utc_ms(),
+                            )
+                    except Exception as exc:
+                        if receipt:
+                            receipt["error"] = str(exc)
+                            self._record(
+                                session,
+                                "BATCH_SEND",
+                                session_id=session.snapshot.session_id,
+                                data=data,
+                                scope=receipt["scope"],
+                                result="UNCONFIRMED",
+                                sent_at_ms=_utc_ms(),
+                            )
+                        raise
+                    finally:
+                        if receipt:
+                            receipt["done"].set()
                 elif action == "resize":
                     transport.resize(*value)
                 elif action == "close":
                     break
                 output = str(transport.read() or "")
                 if output:
-                    output = _sanitize_terminal_data(output, session.device)
-                    session.snapshot.output_bytes += len(output.encode("utf-8", errors="replace"))
+                    session.snapshot.output_bytes += len(
+                        output.encode("utf-8", errors="replace")
+                    )
                     self._record(session, "OUTPUT", data=output)
                     session.publish({"type": "output", "data": output})
             if session.snapshot.state != "CLOSING":
                 self._transition(session, "CLOSING", reason="TRANSPORT_STOPPED")
-            self._transition(session, "CLOSED", reason=session.snapshot.disconnect_reason or "USER_REQUEST")
+            self._transition(
+                session,
+                "CLOSED",
+                reason=session.snapshot.disconnect_reason or "USER_REQUEST",
+            )
         except BaseException as exc:
-            if session.snapshot.state in {"CANCELLED", "CLOSING"} or session.close_event.is_set():
+            if (
+                session.snapshot.state in {"CANCELLED", "CLOSING"}
+                or session.close_event.is_set()
+            ):
                 self._transition(session, "CLOSED", reason="USER_REQUEST", force=True)
                 return
             error_code = self._safe_error_code(exc)
+            session.snapshot.error_message = _sanitize_terminal_data(
+                str(exc), session.device
+            )[:2000]
             app_logger.log_error(
                 "TERMINAL_SESSION_FAILED",
                 f"session_id={session.snapshot.session_id} device_uuid={session.snapshot.device_uuid} error={error_code}",
@@ -989,7 +1326,13 @@ class TerminalSessionManager:
                     force=True,
                 )
                 message = "终端连接失败"
-            session.publish({"type": "error", "code": error_code, "message": message})
+            session.publish(
+                {
+                    "type": "error",
+                    "code": error_code,
+                    "message": f"{message}：{session.snapshot.error_message}",
+                }
+            )
         finally:
             if transport is not None:
                 try:
@@ -1004,7 +1347,9 @@ class TerminalSessionManager:
                 session.snapshot.manual_log_status = writer.status
                 session.manual_log = None
             session.recording.close(session.snapshot)
-            session.publish({"type": "state", "session": session.snapshot.to_public_dict()})
+            session.publish(
+                {"type": "state", "session": session.snapshot.to_public_dict()}
+            )
 
     def _transition(
         self,
@@ -1019,7 +1364,11 @@ class TerminalSessionManager:
             raise ValueError(f"未知终端状态: {state}")
         with session.state_lock:
             current = session.snapshot.state
-            if not force and state != current and state not in TERMINAL_TRANSITIONS[current]:
+            if (
+                not force
+                and state != current
+                and state not in TERMINAL_TRANSITIONS[current]
+            ):
                 raise RuntimeError(f"非法终端状态迁移: {current} -> {state}")
             session.snapshot.state = state
             session.snapshot.updated_at_ms = _utc_ms()
@@ -1029,17 +1378,31 @@ class TerminalSessionManager:
                 session.snapshot.error_code = error_code
             if state in TERMINAL_FINAL_STATES:
                 session.snapshot.ended_at_ms = _utc_ms()
-            self._record(session, "STATE", previous=current, state=state, reason=reason, error_code=error_code)
+            self._record(
+                session,
+                "STATE",
+                previous=current,
+                state=state,
+                reason=reason,
+                error_code=error_code,
+            )
             session.recording.update_metadata(session.snapshot)
-            session.publish({"type": "state", "session": session.snapshot.to_public_dict()})
+            session.publish(
+                {"type": "state", "session": session.snapshot.to_public_dict()}
+            )
 
     @staticmethod
     def _record(session: _TerminalSession, event_type: str, **detail: Any) -> None:
         if not session.recording.append(event_type, **detail):
             session.snapshot.recording_status = "INCOMPLETE"
-        if session.manual_log is not None and session.snapshot.manual_log_status == "RECORDING":
+        if (
+            session.manual_log is not None
+            and session.snapshot.manual_log_status == "RECORDING"
+        ):
             if not session.manual_log.append(event_type, **detail):
-                session.snapshot.manual_log_dropped_events = session.manual_log.dropped_events
+                session.snapshot.manual_log_dropped_events = (
+                    session.manual_log.dropped_events
+                )
 
     @staticmethod
     def _risk_commands(session: _TerminalSession, data: str) -> list[str]:
@@ -1087,7 +1450,9 @@ class TerminalSessionManager:
         session_value = str(session_id or "").strip().casefold()
         log_value = str(log_id or "").strip().casefold()
         for value, label in ((session_value, "终端会话"), (log_value, "会话日志")):
-            if len(value) != 32 or any(char not in "0123456789abcdef" for char in value):
+            if len(value) != 32 or any(
+                char not in "0123456789abcdef" for char in value
+            ):
                 raise ValueError(f"{label} ID 无效")
         root = self.manual_log_root.resolve()
         candidate = (root / session_value / log_value).resolve()

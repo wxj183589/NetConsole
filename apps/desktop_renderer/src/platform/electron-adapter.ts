@@ -11,6 +11,8 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{32,256}$/
 
 export function createElectronAdapter(bridge: NetConsoleDesktopBridge): PlatformAdapter {
   return {
+    prepareSftpDrag: (requests) => { if (!bridge.prepareSftpDrag) throw new Error('原生拖出不可用'); return bridge.prepareSftpDrag(requests) },
+    startSftpDrag: (id) => { if (!bridge.startSftpDrag) throw new Error('原生拖出不可用'); bridge.startSftpDrag(id) },
     hostType: 'electron',
     getAppInfo: () => bridge.getAppInfo(),
     getBackendStatus: async () => validateBackendStatus(await bridge.getBackendStatus()),

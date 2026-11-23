@@ -1,9 +1,12 @@
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { listDevices } from '../../api/deviceManagement'
 import {
   closeTerminalSession,
+  cloneTerminalSession,
+  renameTerminalSession,
+  deleteTerminalRecording,
   connectTerminalProfile,
   createTerminalProfileFolder,
   createTerminalSession,
@@ -59,11 +62,13 @@ export function useConsoleWorkspace() {
   const tabs = ref<TerminalTab[]>([])
   const selectedDeviceUuid = ref('')
   const selectedDeviceUuids = ref<string[]>([])
+  const selectedSessionIds = ref<string[]>([])
   const activeTabId = ref('')
   const secondaryTabId = ref('')
   const navigationMode = ref<'devices' | 'profiles' | 'sessions'>('devices')
   const deviceSearch = ref('')
   const sessionSearch = ref('')
+  const sessionStateFilter = ref('all')
   const terminalSearch = ref('')
   const loadingDevices = ref(false)
   const openingDeviceUuid = ref('')
@@ -143,8 +148,8 @@ export function useConsoleWorkspace() {
 
   const filteredSessions = computed(() => {
     const needle = sessionSearch.value.trim().toLowerCase()
-    if (!needle) return sessions.value
-    return sessions.value.filter((session) => [
+    return sessions.value.filter(session => sessionStateFilter.value === 'all' || (sessionStateFilter.value === 'active' ? !['CLOSED', 'FAILED', 'CANCELLED', 'DISCONNECTED'].includes(session.state) : ['CLOSED', 'FAILED', 'CANCELLED', 'DISCONNECTED'].includes(session.state))).filter((session) => !needle || [
+      session.session_name,
       session.device_name,
       session.address,
       session.session_id,
@@ -236,6 +241,7 @@ export function useConsoleWorkspace() {
   }
 
   function addTerminalTab(created: { session: TerminalSession; ticket: string }): void {
+    if (!sessions.value.some(item => item.session_id === created.session.session_id)) sessions.value.push(created.session)
     const tab: TerminalTab = {
       id: created.session.session_id,
       session: created.session,
@@ -248,13 +254,6 @@ export function useConsoleWorkspace() {
 
   async function openDevice(device: DeviceListItem): Promise<void> {
     selectedDeviceUuid.value = device.device_uuid
-    const existing = tabs.value.find((tab) => tab.session.device_uuid === device.device_uuid && !['CLOSED', 'FAILED'].includes(tab.session.state))
-    if (existing) {
-      activeTabId.value = existing.id
-      await nextTick()
-      terminalRefs.value[existing.id]?.focus()
-      return
-    }
     openingDeviceUuid.value = device.device_uuid
     try {
       const created = await createTerminalSession(device.device_uuid, 'AUTO')
@@ -411,10 +410,14 @@ export function useConsoleWorkspace() {
 
   async function openSelectedDevices(): Promise<void> {
     const selected = devices.value.filter((device) => selectedDeviceUuids.value.includes(device.device_uuid))
-    for (const device of selected.slice(0, 8)) await openDevice(device)
+    for (const device of selected) await openDevice(device)
   }
 
   async function openSession(session: TerminalSession): Promise<void> {
+    if (session.detached_window && String(router.currentRoute.value.query.terminal_session || '') !== session.session_id) {
+      ElMessage.info('此会话在独立窗口中运行，可克隆为新会话')
+      return
+    }
     const existing = tabs.value.find((tab) => tab.id === session.session_id)
     if (existing) {
       selectTab(existing.id)
@@ -431,6 +434,36 @@ export function useConsoleWorkspace() {
     } catch (error) {
       ElMessage.error(error instanceof Error ? error.message : '活动会话重新打开失败')
     }
+  }
+
+  async function cloneSession(session: TerminalSession): Promise<void> {
+    try { addTerminalTab(await cloneTerminalSession(session.session_id)); await loadSessions() }
+    catch (error) { ElMessage.error(error instanceof Error ? error.message : '克隆会话失败') }
+  }
+
+  async function renameSession(session: TerminalSession) {
+    try {
+      const { value } = await ElMessageBox.prompt('会话名称', '重命名终端会话', { inputValue: session.session_name || session.device_name })
+      updateSession(session.session_id, await renameTerminalSession(session.session_id, value))
+      await loadSessions()
+    } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '重命名失败') }
+  }
+
+  async function saveConnectionTemplate(session: TerminalSession) {
+    try {
+      // Resolve credentials in Python; renderer only requests a template by ID.
+      await import('../../api/client').then(({ apiRequest }) => apiRequest(`/api/terminal/sessions/${session.session_id}/save-profile`, { method: 'POST' }))
+      await loadProfiles()
+    } catch (error) { ElMessage.error(error instanceof Error ? error.message : '保存连接失败') }
+  }
+
+  async function deleteRecording(session: TerminalSession) {
+    try {
+      await ElMessageBox.confirm(`删除 ${session.device_name} 在 ${formatTime(session.created_at_ms)} 的录制？`, '删除录制记录', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+      await deleteTerminalRecording(session.session_id)
+      if (replaySession.value?.session_id === session.session_id) replayVisible.value = false
+      await Promise.all([showHistory(), loadSessions()])
+    } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '删除录制失败，可重试') }
   }
 
   function toggleDeviceSelection(deviceUuid: string, checked: boolean): void {
@@ -458,13 +491,16 @@ export function useConsoleWorkspace() {
   }
 
   function closeOtherTabs(tabId: string): void {
+    if (!tabs.value.some(tab => tab.id === tabId)) return
     tabs.value = tabs.value.filter((tab) => tab.id === tabId)
     activeTabId.value = tabId
     secondaryTabId.value = ''
     splitOrientation.value = 'none'
   }
 
-  function closeAllTabs(): void {
+  async function closeAllTabs(): Promise<void> {
+    try { await ElMessageBox.confirm('关闭所有终端标签？后端终端会话和 SFTP 任务继续运行，可从终端会话重新打开。', '关闭所有标签', { confirmButtonText: '关闭标签', cancelButtonText: '取消' }) }
+    catch { return }
     tabs.value = []
     activeTabId.value = ''
     secondaryTabId.value = ''
@@ -725,7 +761,9 @@ export function useConsoleWorkspace() {
     replayLoading.value = true
     replayEvents.value = []
     try {
-      replayEvents.value = (await getTerminalHistoryEvents(session.session_id, 0, 2000)).items
+      const { apiRequest } = await import('../../api/client')
+      const result = await apiRequest<{ text: string; truncated: boolean }>(`/api/terminal/history/${session.session_id}/transcript`)
+      replayEvents.value = [{ at_ms: 0, event_type: 'OUTPUT', data: result.text + (result.truncated ? '\n[预览已截断，请导出完整 LOG]' : '') }]
     } catch (error) {
       ElMessage.error(error instanceof Error ? error.message : '会话录制读取失败')
     } finally {
@@ -733,11 +771,14 @@ export function useConsoleWorkspace() {
     }
   }
 
-  async function exportReplay(format: 'txt' | 'jsonl'): Promise<void> {
+  async function exportReplay(format: 'txt' | 'jsonl' | 'log' | 'zip'): Promise<void> {
     if (!replaySession.value) return
     try {
-      const result = await downloadBackendResource(terminalExportDownloadRequest(replaySession.value.session_id, format))
-      ElMessage.success(result.status === 'saved' ? '会话记录已保存' : '浏览器已开始下载')
+      const name = format === 'log' ? replaySession.value.recording_log_name : format === 'zip' ? replaySession.value.recording_zip_name : undefined
+      const result = await downloadBackendResource(terminalExportDownloadRequest(replaySession.value.session_id, format, name))
+      if (result.status === 'saved') ElMessage.success('会话记录已保存')
+      else if (result.status === 'started') ElMessage.info('浏览器已开始下载')
+      else if (result.status === 'failed') ElMessage.error(result.error || '保存失败')
     } catch (error) {
       ElMessage.error(error instanceof Error ? error.message : '会话记录导出失败')
     }
@@ -780,9 +821,7 @@ export function useConsoleWorkspace() {
   }
 
   function recordingText(session: TerminalSession): string {
-    if (session.recording_status === 'COMPLETE') return '录制完整'
-    if (session.recording_status === 'INCOMPLETE') return '录制不完整'
-    return '录制中'
+    return ({ RECORDING: '录制中', FINALIZING: '整理中', COMPRESSING: '压缩中', COMPLETED: '录制完成', COMPLETE: '历史录制', FAILED: '录制失败', INCOMPLETE: '录制中断' })[session.recording_status] || session.recording_status
   }
 
   const replayText = computed(() => replayEvents.value
@@ -793,6 +832,14 @@ export function useConsoleWorkspace() {
   onMounted(async () => {
     window.addEventListener('click', hideContextMenu)
     await Promise.all([loadDevices(), loadSessions(), loadProfiles(), loadTerminalPreferences()])
+    const detachedId = String(router.currentRoute.value.query.terminal_session || '')
+    if (/^[a-f0-9]{32}$/.test(detachedId)) {
+      try {
+        const { apiRequest } = await import('../../api/client')
+        const session = await apiRequest<TerminalSession>(`/api/terminal/history/${detachedId}`)
+        await openSession(session)
+      } catch (error) { ElMessage.error(String(error)) }
+    }
     const requestedDeviceUuid = String(router.currentRoute.value.query.device_uuid || '').trim()
     if (requestedDeviceUuid) {
       const { device_uuid: _deviceUuid, ...query } = router.currentRoute.value.query
@@ -808,8 +855,23 @@ export function useConsoleWorkspace() {
     window.removeEventListener('click', hideContextMenu)
     if (activityTimer) clearInterval(activityTimer)
   })
+  watch(() => router.currentRoute.value.query.device_uuid, async value => {
+    if (router.currentRoute.value.name !== 'device-console' || !value) return
+    const id = String(value)
+    const { device_uuid: _id, ...query } = router.currentRoute.value.query
+    await router.replace({ name: 'device-console', query, hash: router.currentRoute.value.hash })
+    const device = devices.value.find(item => item.device_uuid === id)
+    if (device) await openDevice(device)
+  })
 
   return {
+    addTerminalTab,
+    selectedSessionIds,
+    sessionStateFilter,
+    cloneSession,
+    renameSession,
+    saveConnectionTemplate,
+    deleteRecording,
     devices,
     sessions,
     profiles,

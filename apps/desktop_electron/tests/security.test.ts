@@ -52,6 +52,8 @@ describe('Electron security policy', () => {
       ['/api/device-management/exports/task-1/download', { artifact_id: 'artifact-1' }],
       ['/api/config-collection/artifacts/artifact-1', undefined],
       ['/api/file-management/downloads/task-1/file', { site_id: 'demo' }],
+      ['/api/terminal/sftp/transfers/0123456789abcdef0123456789abcdef/file', undefined],
+      ['/api/terminal/sftp/transfer-log', undefined],
       ['/api/ac-management/extensions/artifacts/artifact-1/download', undefined],
       ['/api/ac-management/fit-aps/omnipeek/artifacts/artifact-1/download', undefined],
       ['/api/ac-management/fit-aps/artifacts/artifact-1/download', undefined],
@@ -100,6 +102,9 @@ describe('Electron security policy', () => {
       '/api/rail-transit/ground-unattended/artifacts/archive%2F1/download',
       '/api/rail-transit/ground-unattended/artifacts/archive.1/download',
       '/api/rail-transit/ground-unattended/artifacts/archive-1/download?token=secret',
+      '/api/terminal/sftp/transfers/../file',
+      '/api/terminal/sftp/transfers/%30abc/file',
+      '/api/terminal/sftp/transfers/0123456789abcdef0123456789abcdef/file?path=C:/secret',
     ]) {
       expect(() => validateBackendDownloadRequest({
         apiPath,

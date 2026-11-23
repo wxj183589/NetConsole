@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
@@ -279,6 +281,9 @@ async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
             request.app.state.config_collection_service.cancel_task(task.site_name, task_id)
         elif task.owner == "web_file_management" and task.type == "file_management_download":
             request.app.state.file_management_service.cancel_download(task.site_name, task_id)
+        elif task.owner == "terminal_sftp" and task.type == "terminal_sftp_transfer":
+            await asyncio.to_thread(_task_service(request).cancel_task, task_id, site_name=task.site_name)
+            await asyncio.to_thread(request.app.state.terminal_sftp_manager.cancel_task, task_id)
         elif task.owner == "web_file_management" and task.type == "file_management_mesh_import":
             if not request.app.state.file_management_service.cancel_mesh_import(task.site_name, task_id):
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="MESH 导入任务已结束或不在当前进程")

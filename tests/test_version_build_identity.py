@@ -16,7 +16,7 @@ def test_release_version_matches_desktop_metadata() -> None:
     package = json.loads((ROOT / "apps/desktop_electron/package.json").read_text(encoding="utf-8"))
     renderer = (ROOT / "apps/desktop_renderer/index.html").read_text(encoding="utf-8")
 
-    assert APP_VERSION == "v1.5.17"
+    assert APP_VERSION == "v1.5.18"
     assert package["version"] == APP_VERSION.removeprefix("v")
     assert package["build"]["productName"] == f"NetConsole {APP_VERSION} by wxj"
     assert f"<title>NetConsole {APP_VERSION} by wxj</title>" in renderer
