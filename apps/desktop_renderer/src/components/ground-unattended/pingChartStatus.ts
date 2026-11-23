@@ -23,45 +23,6 @@ export interface HeartbeatStatusStatistics {
   connectivityRate: number | null
 }
 
-const STATUS_ALIASES: Record<string, PingChartStatus> = {
-  SUCCESS: 'SUCCESS',
-  OK: 'SUCCESS',
-  CONNECTED: 'SUCCESS',
-  TIMEOUT: 'TIMEOUT',
-  TIMED_OUT: 'TIMEOUT',
-  PACKET_LOSS: 'PACKET_LOSS',
-  LOSS: 'PACKET_LOSS',
-  LOST: 'PACKET_LOSS',
-  UNKNOWN: 'UNKNOWN',
-}
-
-function normalizedStatus(value: unknown): PingChartStatus | undefined {
-  const key = String(value ?? '').trim().toUpperCase().replace(/[ -]+/g, '_')
-  return STATUS_ALIASES[key]
-}
-
-function numeric(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') return null
-  const parsed = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-/** Keep raw success/failure semantics separate from the plotted percentage. */
-export function classifyPingStatus(sample: Record<string, unknown>): PingChartStatus {
-  const explicit = normalizedStatus(sample.status ?? sample.state ?? sample.result ?? sample.outcome)
-  if (explicit) return explicit
-  if (typeof sample.ok !== 'boolean') return 'UNKNOWN'
-  if (sample.timeout === true || sample.timed_out === true) return 'TIMEOUT'
-  if (!sample.ok) {
-    const reason = String(sample.error_code ?? sample.failure_code ?? sample.reason ?? sample.error ?? '').toUpperCase()
-    return reason.includes('TIMEOUT') || reason.includes('TIMED_OUT') ? 'TIMEOUT' : 'PACKET_LOSS'
-  }
-  const loss = numeric(sample.loss_percent ?? sample.loss_rate_percent ?? sample.packet_loss_percent)
-  if (loss !== null && loss > 0) return 'PACKET_LOSS'
-  if (numeric(sample.rtt_ms) === null) return 'UNKNOWN'
-  return 'SUCCESS'
-}
-
 export function pingStatusLabel(status: PingChartStatus): string {
   return ({ SUCCESS: '正常连通', TIMEOUT: '超时', PACKET_LOSS: '丢包/不通', UNKNOWN: '未知' } as const)[status]
 }
@@ -73,20 +34,13 @@ export function pingStatusColor(status: PingChartStatus): string {
 }
 
 export function pingPointValues(sample: Record<string, unknown>): { status: PingChartStatus; rtt: number | null; loss: number | null } {
-  const status = classifyPingStatus(sample)
-  const rtt = status === 'TIMEOUT' || status === 'UNKNOWN' ? null : numeric(sample.rtt_ms)
-  const rawLoss = numeric(sample.loss_percent ?? sample.loss_rate_percent ?? sample.packet_loss_percent)
-  const loss = rawLoss === null ? (status === 'SUCCESS' ? 0 : status === 'TIMEOUT' || status === 'PACKET_LOSS' ? 100 : null) : Math.max(0, Math.min(100, rawLoss))
-  return { status, rtt, loss }
+  return { status: (sample.status as PingChartStatus) || 'UNKNOWN', rtt: (sample.rtt_display_ms as number | null) ?? null, loss: (sample.loss_percent as number | null) ?? null }
 }
 
 /** Heartbeat reachability is based on the persisted probe result, not RTT. */
 export function heartbeatPointValues(sample: Record<string, unknown>): { status: PingChartStatus; rtt: number | null; loss: number | null } {
-  const explicit = normalizedStatus(sample.status ?? sample.state ?? sample.result ?? sample.outcome)
-  const status = explicit || (typeof sample.ok === 'boolean'
-    ? (sample.ok ? 'SUCCESS' : (sample.timeout === true || sample.timed_out === true ? 'TIMEOUT' : 'PACKET_LOSS'))
-      : 'UNKNOWN')
-  const rtt = numeric(sample.rtt_ms)
+  const status = (sample.heartbeat_status as PingChartStatus) || (sample.status as PingChartStatus) || 'UNKNOWN'
+  const rtt = typeof sample.rtt_ms === 'number' ? sample.rtt_ms : null
   return { status, rtt, loss: status === 'SUCCESS' ? 0 : status === 'TIMEOUT' || status === 'PACKET_LOSS' ? 100 : null }
 }
 

@@ -237,7 +237,7 @@ export interface GroundQuickPingRun {
 export interface GroundQuickPingPage { items: GroundQuickPingRun[]; total: number; offset: number; limit: number; active_ips?: Record<string, string> }
 export interface GroundQuickPingSamplePage {
   run_id: string; items: Array<Record<string, unknown>>; has_more: boolean; next_cursor: string
-  scanned_bytes: number; scan_budget_exhausted: boolean
+  scanned_bytes: number; scan_budget_exhausted: boolean; statistics?: Record<string, number | null>; second_loss_buckets?: Array<Record<string, unknown>>
 }
 export interface GroundHistoryRecord {
   record_id: string; data_type: string; ts: string; run_id: string; train_id: string; mr_id: string
@@ -261,12 +261,13 @@ export interface GroundOperation {
 }
 export interface GroundPingSample {
   sample_id: string; ts: string; target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string
-  mr_position_code: string; seq: number | null; ok: boolean; rtt_ms: number | null; timeout_ms: number | null; packet_size: number | null
+  mr_position_code: string; seq: number | null; ok: boolean; normalized_status?: GroundPingStatus | null; status: GroundPingStatus; heartbeat_status: GroundPingStatus; loss_percent: number | null; rtt_display_ms: number | null; rtt_ms: number | null; timeout_ms: number | null; packet_size: number | null
   current_ap_identity: string; current_ap_name: string; current_ap_mac: string; station: string; section: string; mileage: string
   rssi: number | null; ac_snapshot_id: number | null; ac_received_at: string; position_quality: string
   ap_transition_context: string; warmup_ignored: boolean; target_activation_started_at: string
   archive_entry: string; data_source: 'ACTIVE' | 'ARCHIVE'
 }
+export type GroundPingStatus = 'SUCCESS' | 'TIMEOUT' | 'PACKET_LOSS' | 'UNKNOWN'
 export interface GroundApTransition {
   event_id: string; run_id: string
   ts: string; event_time: string; event_type: string; context: string
@@ -301,6 +302,7 @@ export interface GroundPingSeries {
   diagnostics: GroundQueryDiagnostics
   next_cursor: string; latest_sequence: number | null; latest_timestamp: string; server_time: string
   active: boolean; target_state: string; has_more: boolean; query_identity: string
+  second_loss_buckets?: Array<Record<string, unknown>>
 }
 export interface GroundSyslogRecord {
   receive_time: string; device_time: string; source_ip: string; source_port: number | null; hostname: string; system_name: string

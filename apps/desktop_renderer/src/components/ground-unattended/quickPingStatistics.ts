@@ -1,14 +1,4 @@
-import { pingPointValues, type PingChartStatus } from './pingChartStatus'
-
-export interface QuickPingStatisticBucket {
-  start: string
-  end: string
-  ping_total: number
-  ping_success: number
-  ping_lost: number
-  ping_unknown: number
-  packet_loss_rate: number | null
-}
+import type { PingChartStatus } from './pingChartStatus'
 
 export interface QuickPingStatistics {
   ping_total: number
@@ -49,38 +39,7 @@ function rate(total: number, lost: number): number | null {
   return total ? (lost / total) * 100 : null
 }
 
-/** Aggregate real samples into fixed natural-second buckets without duplicate records. */
-export function naturalSecondLossBuckets(rows: Array<Record<string, unknown>>): QuickPingStatisticBucket[] {
-  const buckets = new Map<number, QuickPingStatisticBucket>()
-  const seen = new Set<string>()
-  for (const row of rows) {
-    const time = timestampOf(row)
-    if (!Number.isFinite(time)) continue
-    const key = sampleKey(row, time)
-    if (seen.has(key)) continue
-    seen.add(key)
-    const startMs = Math.floor(time / 1000) * 1000
-    const current = buckets.get(startMs) || {
-      start: new Date(startMs).toISOString(),
-      end: new Date(startMs + 1000).toISOString(),
-      ping_total: 0,
-      ping_success: 0,
-      ping_lost: 0,
-      ping_unknown: 0,
-      packet_loss_rate: null,
-    }
-    const counts = statusCounts(pingPointValues(sampleOf(row)).status)
-    current.ping_total += 1
-    current.ping_success += counts.ping_success
-    current.ping_lost += counts.ping_lost
-    current.ping_unknown += counts.ping_unknown
-    current.packet_loss_rate = rate(current.ping_total, current.ping_lost)
-    buckets.set(startMs, current)
-  }
-  return [...buckets.entries()].sort(([left], [right]) => left - right).map(([, bucket]) => bucket)
-}
-
-/** Calculate selected-window metrics from the same de-duplicated sample set. */
+/** Read Backend statistics while retaining only de-duplication for mixed pages. */
 export function selectedQuickPingStatistics(rows: Array<Record<string, unknown>>): QuickPingStatistics {
   const seen = new Set<string>()
   let ping_total = 0
@@ -95,13 +54,14 @@ export function selectedQuickPingStatistics(rows: Array<Record<string, unknown>>
     if (seen.has(key)) continue
     seen.add(key)
     const sample = sampleOf(row)
-    const values = pingPointValues(sample)
-    const counts = statusCounts(values.status)
+    const status = (sample.status as PingChartStatus) || 'UNKNOWN'
+    const counts = statusCounts(status)
     ping_total += 1
     ping_success += counts.ping_success
     ping_lost += counts.ping_lost
     ping_unknown += counts.ping_unknown
-    if (values.rtt !== null && values.status === 'SUCCESS') rtts.push(values.rtt)
+    const rtt = typeof sample.rtt_display_ms === 'number' ? sample.rtt_display_ms : null
+    if (rtt !== null && status === 'SUCCESS') rtts.push(rtt)
   }
   return {
     ping_total,

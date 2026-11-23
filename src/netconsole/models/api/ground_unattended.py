@@ -1310,6 +1310,8 @@ class GroundQuickPingPageDTO(ApiModel):
 class GroundQuickPingSamplePageDTO(ApiModel):
     run_id: str
     items: list[dict[str, Any]] = Field(default_factory=list)
+    statistics: dict[str, Any] = Field(default_factory=dict)
+    second_loss_buckets: list[dict[str, Any]] = Field(default_factory=list)
     has_more: bool = False
     next_cursor: str = ""
     scanned_bytes: int = 0
@@ -1385,6 +1387,11 @@ class GroundPingSampleDTO(ApiModel):
     mr_position_code: str = ""
     seq: int | None = None
     ok: bool
+    normalized_status: Literal["SUCCESS", "TIMEOUT", "PACKET_LOSS", "UNKNOWN"] | None = None
+    status: Literal["SUCCESS", "TIMEOUT", "PACKET_LOSS", "UNKNOWN"] = "UNKNOWN"
+    heartbeat_status: Literal["SUCCESS", "TIMEOUT", "PACKET_LOSS", "UNKNOWN"] = "UNKNOWN"
+    loss_percent: float | None = None
+    rtt_display_ms: float | None = None
     rtt_ms: float | None = None
     timeout_ms: int | None = None
     packet_size: int | None = None
@@ -1533,6 +1540,7 @@ class GroundPingSeriesDTO(ApiModel):
     target_state: str = ""
     has_more: bool = False
     query_identity: str = ""
+    second_loss_buckets: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class GroundSyslogRecordDTO(ApiModel):

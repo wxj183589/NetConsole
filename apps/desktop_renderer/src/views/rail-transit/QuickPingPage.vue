@@ -29,6 +29,7 @@ const MAX_COMPARE_TARGETS = 32
 const sampleRange = ref<number | 'all' | 'custom'>(5)
 const customSampleRange = ref<Date[]>([])
 const sampleRows = ref<Array<Record<string, unknown>>>([])
+const sampleSecondLossBuckets = ref<Array<Record<string, unknown>>>([])
 const sampleCursor = ref('')
 const sampleLoading = ref(false)
 const sampleError = ref('')
@@ -83,6 +84,19 @@ const sampleValue = (row: Record<string, unknown>, key: string): unknown => {
   const sample = row.sample
   return sample && typeof sample === 'object' ? (sample as Record<string, unknown>)[key] : undefined
 }
+function mergeSecondLossBuckets(pages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const unique = new Map<string, Record<string, unknown>>()
+  for (const bucket of pages) {
+    const target = String(bucket.target_ip || '')
+    const start = String(bucket.start || '')
+    if (!start) continue
+    unique.set(`${target}|${start}`, bucket)
+  }
+  return [...unique.values()].sort((left, right) => {
+    const targetOrder = String(left.target_ip || '').localeCompare(String(right.target_ip || ''))
+    return targetOrder || Date.parse(String(left.start || '')) - Date.parse(String(right.start || ''))
+  })
+}
 let sampleGeneration = 0
 let sampleController: AbortController | undefined
 let appliedMrId = ''
@@ -133,6 +147,7 @@ async function loadSamples(next = false): Promise<void> {
     samplePage.value = 1
     sampleCursor.value = ''
     sampleRows.value = []
+    sampleSecondLossBuckets.value = []
     const end = new Date(run.ended_at || Date.now())
     sampleBounds = sampleRange.value === 'custom'
       ? { start_time: customSampleRange.value?.[0]?.toISOString(), end_time: customSampleRange.value?.[1]?.toISOString() }
@@ -160,10 +175,12 @@ async function loadSamples(next = false): Promise<void> {
         target_ip: compareTargets[index]?.target_ip || '',
       })))
       sampleRows.value = merged.sort((left, right) => Date.parse(String(left.received_at || '')) - Date.parse(String(right.received_at || '')))
+      sampleSecondLossBuckets.value = mergeSecondLossBuckets(result.flatMap((page, index) => (page.second_loss_buckets || []).map((bucket) => ({ ...bucket, target_ip: compareTargets[index]?.target_ip || '' }))))
       sampleCursor.value = ''
       sampleBudgetExhausted.value = result.some((page) => page.scan_budget_exhausted) || compareTargets.length < run.targets.length
     } else {
       sampleRows.value = result.items
+      sampleSecondLossBuckets.value = mergeSecondLossBuckets(result.second_loss_buckets || [])
       sampleCursor.value = result.next_cursor
       sampleBudgetExhausted.value = result.scan_budget_exhausted
     }
@@ -311,7 +328,7 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++pollGeneration; ++sampl
       </div>
       <el-alert v-if="sampleError" :title="sampleError" type="error" :closable="false" />
       <el-alert v-if="sampleBudgetExhausted" :title="t('ground.quick.budget', '本页达到读取预算，请继续下一页扫描所选时间范围')" type="info" :closable="false" />
-      <QuickPingChart :key="`${selected.run_id}:${sampleTarget}:${sampleRange}`" :rows="sampleRows" :interval-ms="selected.config?.interval_ms || 200" :active="active" />
+      <QuickPingChart :key="`${selected.run_id}:${sampleTarget}:${sampleRange}`" :rows="sampleRows" :second-loss-buckets="sampleSecondLossBuckets" :interval-ms="selected.config?.interval_ms || 200" :active="active" />
       <el-table :data="selected.targets" size="small" stripe><el-table-column prop="train_no" :label="t('ground.quick.train', '列车')" /><el-table-column prop="mr_role" label="CT / CW" /><el-table-column prop="mr_name" label="MR" /><el-table-column prop="current_ap_name" label="AC 参考 AP" /><el-table-column prop="station" label="站点" /><el-table-column prop="section" label="区间" /><el-table-column prop="address_role" :label="t('ground.quick.address_role', '地址角色')" /><el-table-column :label="t('ground.quick.state', '状态')" min-width="110"><template #default="scope"><el-tag>{{ targetState(scope.row.target_ip) }}</el-tag></template></el-table-column><el-table-column :label="t('ground.quick.started', '开始时间')" min-width="190"><template #default="scope">{{ selected.target_runtime?.[scope.row.target_ip]?.started_at || '—' }}</template></el-table-column><el-table-column :label="t('ground.quick.counts', '发送 / 接收 / 丢包')"><template #default="scope">{{ selected.target_stats[scope.row.target_ip]?.sent ?? 0 }} / {{ selected.target_stats[scope.row.target_ip]?.received ?? 0 }} / {{ selected.target_stats[scope.row.target_ip]?.lost ?? 0 }}</template></el-table-column><el-table-column :label="t('ground.quick.loss', '丢包率')"><template #default="scope">{{ selected.target_stats[scope.row.target_ip]?.loss_rate_percent?.toFixed(2) ?? '—' }}%</template></el-table-column><el-table-column :label="t('ground.quick.current_rtt', '当前 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.current_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.average_rtt', '平均 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.avg_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.maximum_rtt', '最大 RTT')"><template #default="scope">{{ rtt(selected.target_stats[scope.row.target_ip]?.max_rtt_ms) }}</template></el-table-column><el-table-column :label="t('ground.quick.actions', '操作')"><template #default="scope"><el-button v-if="targetActive(scope.row.target_ip)" text type="danger" :disabled="loading" @click="stopTarget(scope.row.target_ip)">{{ t('ground.quick.stop_ip', '停止此目标') }}</el-button><el-button v-else-if="selected.target_runtime?.[scope.row.target_ip]?.state === 'CANCELLED'" text type="primary" :disabled="loading || !!activeIps[scope.row.target_ip] || !isFeatureEnabled('capability.ground_unattended.quick_ping')" @click="restartTarget(scope.row)">{{ t('ground.quick.restart_ip', '恢复检测（新任务）') }}</el-button></template></el-table-column></el-table>
       <el-table :data="sampleRows" size="small" max-height="240" stripe><el-table-column prop="received_at" :label="t('ground.quick.time', '时间')" /><el-table-column :label="t('ground.quick.target', '目标')"><template #default="scope">{{ sampleValue(scope.row, 'mr_role') || sampleValue(scope.row, 'mr_name') || scope.row.target_ip || '—' }}</template></el-table-column><el-table-column :label="t('ground.quick.result', '结果')"><template #default="scope">{{ sampleValue(scope.row, 'ok') ? t('ground.quick.success', '成功') : t('ground.quick.lost', '丢包') }}</template></el-table-column><el-table-column label="RTT"><template #default="scope">{{ sampleValue(scope.row, 'rtt_ms') ?? '—' }} ms</template></el-table-column></el-table>
     </div>

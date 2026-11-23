@@ -65,6 +65,10 @@ const series = {
     mr_position_code: 'CT',
     seq: 1,
     ok: true,
+    status: 'SUCCESS',
+    heartbeat_status: 'SUCCESS',
+    loss_percent: 0,
+    rtt_display_ms: 2,
     rtt_ms: 2,
     timeout_ms: 1_000,
     packet_size: 64,
@@ -199,6 +203,20 @@ describe('Ground Ping chart lifecycle', () => {
     expect(incrementalOptions.every((value) => value.dataZoom === undefined)).toBe(true)
     dataZoomHandler()
     expect(wrapper.emitted('user-zoom')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('uses the Backend status projection instead of raw ok for result series', async () => {
+    const wrapper = mount(GroundPingChart, {
+      props: { series: { ...series, points: [{ ...series.points[0], ok: true, status: 'UNKNOWN', rtt_display_ms: null }] } },
+    })
+    await flushPromises()
+
+    const rttOption = mocks.setOption.mock.calls[0]?.[0] as { series?: Array<{ data?: unknown[] }> }
+    const resultOption = mocks.setOption.mock.calls[1]?.[0] as { series?: Array<{ data?: unknown[] }> }
+    expect(rttOption.series?.[0]?.data).toEqual([])
+    expect(resultOption.series?.[0]?.data).toEqual([])
+    expect(resultOption.series?.[1]?.data).toEqual([])
     wrapper.unmount()
   })
 

@@ -6,10 +6,10 @@ import { readNetConsoleChartTokens } from '../../theme/echarts'
 describe('Quick Ping chart semantics', () => {
   it('uses real timestamps and retains loss and collection gap breaks', () => {
     const rows = [
-      { received_at: '2026-11-07T00:00:00Z', sample: { ok: true, rtt_ms: 280 } },
-      { received_at: '2026-11-07T00:00:00.200Z', sample: { ok: false, rtt_ms: null } },
-      { received_at: '2026-11-07T00:00:00.400Z', sample: { ok: true, rtt_ms: 3 } },
-      { received_at: '2026-11-07T00:00:10Z', sample: { ok: true, rtt_ms: 4 } },
+      { received_at: '2026-11-07T00:00:00Z', sample: { status: 'SUCCESS', rtt_display_ms: 280, loss_percent: 0 } },
+      { received_at: '2026-11-07T00:00:00.200Z', sample: { status: 'TIMEOUT', rtt_display_ms: null, loss_percent: 100 } },
+      { received_at: '2026-11-07T00:00:00.400Z', sample: { status: 'SUCCESS', rtt_display_ms: 3, loss_percent: 0 } },
+      { received_at: '2026-11-07T00:00:10Z', sample: { status: 'SUCCESS', rtt_display_ms: 4, loss_percent: 0 } },
     ]
     const option = quickPingChartOption(rows, 200, readNetConsoleChartTokens()) as {
       series: Array<{ data: Array<[number, number | null]>; connectNulls: boolean; tooltip: { valueFormatter: (value: number) => string } }>
@@ -28,8 +28,8 @@ describe('Quick Ping chart semantics', () => {
 
   it('keeps multiple target series on the same time axis', () => {
     const option = quickPingChartOption([
-      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:00Z', sample: { ok: true, rtt_ms: 4 } },
-      { target_ip: '10.0.0.2', received_at: '2026-11-07T00:00:00.100Z', sample: { ok: true, rtt_ms: 8 } },
+      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:00Z', sample: { status: 'SUCCESS', rtt_display_ms: 4, loss_percent: 0 } },
+      { target_ip: '10.0.0.2', received_at: '2026-11-07T00:00:00.100Z', sample: { status: 'SUCCESS', rtt_display_ms: 8, loss_percent: 0 } },
     ], 200, readNetConsoleChartTokens()) as { series: Array<{ name: string; data: Array<[number, number | null]> }> }
 
     expect(option.series).toHaveLength(10)
@@ -39,6 +39,15 @@ describe('Quick Ping chart semantics', () => {
     ])
     expect(option.series[0]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00Z'))
     expect(option.series[5]!.data[0]![0]).toBe(Date.parse('2026-11-07T00:00:00.100Z'))
+  })
+
+  it('renders Backend-provided natural-second buckets without recomputing them', () => {
+    const option = quickPingChartOption([
+      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:00Z', sample: { status: 'SUCCESS', rtt_display_ms: 4, loss_percent: 0 } },
+    ], 1000, readNetConsoleChartTokens(), { connectNulls: false }, undefined, '', undefined, [
+      { target_ip: '10.0.0.1', start: '2026-11-07T00:00:00.000Z', packet_loss_rate: 37.5 },
+    ]) as { series: Array<{ id: string; data: Array<[number, number | null]> }> }
+    expect(option.series.find((series) => series.id === 'ping_loss_second:10.0.0.1')?.data).toEqual([[Date.parse('2026-11-07T00:00:00.000Z'), 37.5]])
   })
 
   it('pins the chart domain to the playback run while zooming the shared viewport', () => {

@@ -1,30 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { naturalSecondLossBuckets, selectedQuickPingStatistics } from './quickPingStatistics'
+import { selectedQuickPingStatistics } from './quickPingStatistics'
 
-const row = (received_at: string, ok: boolean, rtt_ms: number | null, extra: Record<string, unknown> = {}) => ({
+const row = (received_at: string, status: 'SUCCESS' | 'TIMEOUT' | 'PACKET_LOSS' | 'UNKNOWN', rtt_display_ms: number | null, extra: Record<string, unknown> = {}) => ({
   received_at,
   target_ip: '192.0.2.1',
-  sample: { sample_id: `${received_at}-${ok}`, seq: received_at, ok, rtt_ms, ...extra },
+  sample: { sample_id: `${received_at}-${status}`, seq: received_at, status, rtt_display_ms, ...extra },
 })
 
-describe('Quick Ping natural-second statistics', () => {
-  it('uses half-open natural-second buckets and preserves millisecond boundaries', () => {
-    const buckets = naturalSecondLossBuckets([
-      row('2026-11-22T00:00:00.000Z', true, 2.5),
-      row('2026-11-22T00:00:00.999Z', false, null, { timeout: true }),
-      row('2026-11-22T00:00:01.000Z', true, 3.5),
-    ])
-    expect(buckets).toHaveLength(2)
-    expect(buckets[0]).toMatchObject({ ping_total: 2, ping_success: 1, ping_lost: 1, packet_loss_rate: 50 })
-    expect(buckets[1]).toMatchObject({ ping_total: 1, ping_success: 1, ping_lost: 0, packet_loss_rate: 0 })
-  })
-
+describe('Quick Ping Backend statistics consumption', () => {
   it('does not count UNKNOWN as success and does not duplicate a repeated sample', () => {
-    const sample = row('2026-11-22T00:00:00.100Z', true, null)
+    const sample = row('2026-11-22T00:00:00.100Z', 'UNKNOWN', null)
     const stats = selectedQuickPingStatistics([
       sample,
       sample,
-      row('2026-11-22T00:00:00.200Z', false, null, { timeout: true }),
+      row('2026-11-22T00:00:00.200Z', 'TIMEOUT', null),
     ])
     expect(stats).toMatchObject({ ping_total: 2, ping_success: 0, ping_lost: 1, ping_unknown: 1, packet_loss_rate: 50 })
     expect(stats.min_rtt_ms).toBeNull()

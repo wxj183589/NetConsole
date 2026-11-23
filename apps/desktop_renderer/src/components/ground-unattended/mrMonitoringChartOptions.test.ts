@@ -29,9 +29,9 @@ describe('MR monitoring evidence chart', () => {
   })
   it('keeps RTT milliseconds, loss percent, true timestamps and unknown gaps distinct', () => {
     const data = { series: { points: [
-      { ts: '2026-11-07T11:00:00Z', target_ip: '192.0.2.1', ok: true, rtt_ms: 3 },
-      { ts: '2026-11-07T11:00:01Z', target_ip: '192.0.2.1', ok: false, rtt_ms: null },
-      { ts: '2026-11-07T11:00:20Z', target_ip: '192.0.2.1', ok: true, rtt_ms: 4 },
+      { ts: '2026-11-07T11:00:00Z', target_ip: '192.0.2.1', ok: true, rtt_ms: 3, status: 'SUCCESS', heartbeat_status: 'SUCCESS', loss_percent: 0, rtt_display_ms: 3 },
+      { ts: '2026-11-07T11:00:01Z', target_ip: '192.0.2.1', ok: false, rtt_ms: null, status: 'PACKET_LOSS', heartbeat_status: 'PACKET_LOSS', loss_percent: 100, rtt_display_ms: null },
+      { ts: '2026-11-07T11:00:20Z', target_ip: '192.0.2.1', ok: true, rtt_ms: 4, status: 'SUCCESS', heartbeat_status: 'SUCCESS', loss_percent: 0, rtt_display_ms: 4 },
     ] }, peer_intervals: [{ start: '2026-11-07T11:00:00Z', end: '2026-11-07T11:00:02Z', peer_name: '<peer>', bssid: '', source: 'SYSLOG', device_time: '', receive_time: '' }] } as GroundMrMonitoring
     const option = mrMonitoringChartOption(data, '2026-11-07T11:00:00Z', '2026-11-07T12:00:00Z', readNetConsoleChartTokens())
     const axes = option.yAxis as Array<Record<string, unknown>>
@@ -77,8 +77,8 @@ describe('MR monitoring evidence chart', () => {
   it('shows Heartbeat source, address, and state in reachability tooltips', () => {
     const sampleTime = '2026-11-07T11:00:00Z'
     const data = { series: { points: [
-      { ts: sampleTime, target_ip: '10.82.24.235', ok: true, rtt_ms: 3 },
-      { ts: '2026-11-07T11:00:01Z', target_ip: '10.82.24.235', ok: false, rtt_ms: null },
+      { ts: sampleTime, target_ip: '10.82.24.235', ok: true, rtt_ms: 3, status: 'SUCCESS', heartbeat_status: 'SUCCESS', loss_percent: 0, rtt_display_ms: 3 },
+      { ts: '2026-11-07T11:00:01Z', target_ip: '10.82.24.235', ok: false, rtt_ms: null, status: 'PACKET_LOSS', heartbeat_status: 'PACKET_LOSS', loss_percent: 100, rtt_display_ms: null },
     ] }, peer_intervals: [] } as unknown as GroundMrMonitoring
     const option = mrMonitoringChartOption(data, sampleTime, '2026-11-07T12:00:00Z', readNetConsoleChartTokens(), '', 'heartbeat')
     const tooltip = option.tooltip as { formatter: (params: unknown[]) => string }

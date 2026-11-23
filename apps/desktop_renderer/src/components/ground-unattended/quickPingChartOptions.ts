@@ -2,12 +2,12 @@ import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeC
 import { formatTimelineMetricValue, timelineMetricDefinition } from '../rail-timeline/timelineMetricPresentation'
 import type { NetConsoleChartTokens } from '../../theme/echarts'
 import { PING_CHART_COLORS, pingPointValues, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
-import { naturalSecondLossBuckets } from './quickPingStatistics'
 
 export function quickPingChartOption(
   rows: Array<Record<string, unknown>>, intervalMs: number, theme: NetConsoleChartTokens,
   gapPolicy: { connectNulls: false } = { connectNulls: false },
   viewport?: { start: string; end: string }, selectedTime = '', fullDomain?: { start: string; end: string },
+  secondLossBuckets: Array<Record<string, unknown>> = [],
 ): Record<string, unknown> {
   const points: PingChartPoint[] = rows.flatMap((row) => {
     // Archived samples are flat DTOs; live harness rows may wrap the sample.
@@ -19,15 +19,6 @@ export function quickPingChartOption(
     return [{ target, time, ...pingPointValues(sample) }]
   }).sort((a, b) => a.time - b.time)
   const targetKeys = [...new Set(points.map((point) => point.target))]
-  const sourceRowsByTarget = new Map<string, Array<Record<string, unknown>>>()
-  for (const row of rows) {
-    const nested = row.sample
-    const sample = nested && typeof nested === 'object' ? nested as Record<string, unknown> : row
-    const target = String(row.target_ip || sample.target_ip || sample.mr_name || sample.mr_role || '目标')
-    if (Number.isFinite(Date.parse(String(row.received_at || row.ts || sample.received_at || sample.ts || '')))) {
-      sourceRowsByTarget.set(target, [...(sourceRowsByTarget.get(target) || []), row])
-    }
-  }
   const buildSeriesData = (target: string) => {
     const targetPoints = points.filter((point) => point.target === target)
     const rtt: Array<[number, number | null]> = [], success: Array<[number, number | null]> = [], failure: Array<[number, number | null]> = [], unknown: Array<[number, string]> = []
@@ -38,8 +29,10 @@ export function quickPingChartOption(
       }
       rtt.push([point.time, point.rtt]); success.push([point.time, point.status === 'SUCCESS' ? 0 : null]); failure.push([point.time, point.status === 'TIMEOUT' || point.status === 'PACKET_LOSS' ? point.loss : null]); if (point.status === 'UNKNOWN') unknown.push([point.time, 'UNKNOWN'])
     }
-    const secondLoss = naturalSecondLossBuckets(sourceRowsByTarget.get(target) || [])
-      .map((bucket) => [Date.parse(bucket.start), bucket.packet_loss_rate] as [number, number | null])
+    const secondLoss = secondLossBuckets
+      .filter((bucket) => !bucket.target_ip || String(bucket.target_ip) === target)
+      .map((bucket) => [Date.parse(String(bucket.start || '')), typeof bucket.packet_loss_rate === 'number' ? bucket.packet_loss_rate : null] as [number, number | null])
+      .filter(([time]) => Number.isFinite(time))
     return { rtt, success, failure, unknown, secondLoss }
   }
   const metric = timelineMetricDefinition('ping_rtt')!

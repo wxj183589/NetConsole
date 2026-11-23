@@ -114,6 +114,12 @@ from netconsole.services.ground_unattended.raw_query import (
     GroundRawQueryError,
     GroundRawStreamQueryService,
 )
+from netconsole.services.ground_unattended.ping_business import (
+    natural_second_loss_buckets,
+    project_quick_sample,
+    project_sample,
+    selected_statistics,
+)
 from netconsole.services.ground_unattended.raw_deletion import (
     GroundDeletionProcessPort,
     GroundRawDataDeletionApplicationService,
@@ -397,10 +403,15 @@ class GroundUnattendedApplicationService:
     ) -> GroundQuickPingSamplePageDTO:
         self._require_site(site_id)
         try:
-            return GroundQuickPingSamplePageDTO.model_validate(self.quick_ping.query_samples(
+            result = self.quick_ping.query_samples(
                 run_id, target_ip=target_ip, start_time=start_time, end_time=end_time,
                 limit=limit, cursor=cursor,
-            ))
+            )
+            rows = [project_quick_sample(row) for row in list(result.get("items") or [])]
+            result["items"] = rows
+            result["statistics"] = selected_statistics(rows)
+            result["second_loss_buckets"] = natural_second_loss_buckets(rows)
+            return GroundQuickPingSamplePageDTO.model_validate(result)
         except QuickPingError as exc:
             raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
 
@@ -2740,6 +2751,7 @@ class GroundUnattendedApplicationService:
             result["points"] = self._project_ping_samples(
                 list(result.get("points") or [])
             )
+            result["second_loss_buckets"] = natural_second_loss_buckets(result["points"])
             result["ap_transitions"] = self._project_ping_transitions(
                 list(result.get("ap_transitions") or [])
             )
@@ -2766,6 +2778,7 @@ class GroundUnattendedApplicationService:
             result["points"] = self._project_ping_samples(
                 list(result.get("points") or [])
             )
+            result["second_loss_buckets"] = natural_second_loss_buckets(result["points"])
             result["ap_transitions"] = self._project_ping_transitions(
                 list(result.get("ap_transitions") or [])
             )
@@ -2811,7 +2824,7 @@ class GroundUnattendedApplicationService:
         fields = GroundPingSampleDTO.model_fields
         return [
             GroundPingSampleDTO.model_validate(
-                {key: value for key, value in row.items() if key in fields}
+                {key: value for key, value in project_sample(row).items() if key in fields}
             ).model_dump(mode="json")
             for row in rows
         ]

@@ -5,7 +5,7 @@ import { createTimeChartInitOptions } from '../charts/multiSeriesTimeChart'
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { quickPingChartOption } from './quickPingChartOptions'
 
-const props = withDefaults(defineProps<{ rows: Array<Record<string, unknown>>; intervalMs: number; active: boolean; start?: string; end?: string; visibleStart?: string; visibleEnd?: string; selectedTime?: string }>(), { start: '', end: '', visibleStart: '', visibleEnd: '', selectedTime: '' })
+const props = withDefaults(defineProps<{ rows: Array<Record<string, unknown>>; intervalMs: number; active: boolean; start?: string; end?: string; visibleStart?: string; visibleEnd?: string; selectedTime?: string; secondLossBuckets?: Array<Record<string, unknown>> }>(), { start: '', end: '', visibleStart: '', visibleEnd: '', selectedTime: '', secondLossBuckets: () => [] })
 const emit = defineEmits<{ (event: 'viewport-change', value: { start: string; end: string }): void; (event: 'cursor-change', value: string): void }>()
 const container = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | undefined
@@ -14,7 +14,7 @@ let unsubscribe: (() => void) | undefined
 let disposed = false
 function render(): void {
   if (!chart || !props.active) return
-  const option = quickPingChartOption(props.rows, props.intervalMs, readNetConsoleChartTokens(), { connectNulls: false }, props.visibleStart && props.visibleEnd ? { start: props.visibleStart, end: props.visibleEnd } : undefined, props.selectedTime, props.start && props.end ? { start: props.start, end: props.end } : undefined)
+  const option = quickPingChartOption(props.rows, props.intervalMs, readNetConsoleChartTokens(), { connectNulls: false }, props.visibleStart && props.visibleEnd ? { start: props.visibleStart, end: props.visibleEnd } : undefined, props.selectedTime, props.start && props.end ? { start: props.start, end: props.end } : undefined, props.secondLossBuckets)
   chart.setOption(option, { replaceMerge: ['series', 'xAxis', 'yAxis', 'dataZoom'], lazyUpdate: true, silent: true })
 }
 function resize(): void { if (props.active) chart?.resize() }
@@ -44,7 +44,7 @@ onMounted(async () => {
   unsubscribe = subscribeNetConsoleChartTheme(render)
   render()
 })
-watch(() => [props.rows, props.start, props.end, props.visibleStart, props.visibleEnd, props.selectedTime], render)
+watch(() => [props.rows, props.start, props.end, props.visibleStart, props.visibleEnd, props.selectedTime, props.secondLossBuckets], render)
 watch(() => props.active, async (active) => {
   if (active) { await nextTick(); resize(); render() }
   else chart?.dispatchAction({ type: 'hideTip' })

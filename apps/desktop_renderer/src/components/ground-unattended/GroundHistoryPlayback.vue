@@ -13,6 +13,7 @@ const selectedRunId = ref(''), selectedMrId = ref(''), range = ref<Date[]>([])
 const result = ref<GroundMrMonitoring | null>(null), loading = ref(false), error = ref('')
 const historyMrs = ref<GroundHeartbeatMr[]>([]), historyLoading = ref(false), historyError = ref('')
 const quickRows = ref<Record<'primary' | 'backup', Array<Record<string, unknown>>>>({ primary: [], backup: [] })
+const quickBuckets = ref<Record<'primary' | 'backup', Array<Record<string, unknown>>>>({ primary: [], backup: [] })
 const quickLoading = ref(false), quickError = ref('')
 const fullStart = ref(''), fullEnd = ref(''), visibleStart = ref(''), visibleEnd = ref(''), cursorTime = ref('')
 const primaryPingExpanded = ref(true), backupPingExpanded = ref(true), primaryQuickExpanded = ref(true), backupQuickExpanded = ref(true), peerExpanded = ref(true)
@@ -68,6 +69,8 @@ const primaryHeartbeatStats = computed(() => heartbeatStatsFor(primaryData.value
 const backupHeartbeatStats = computed(() => heartbeatStatsFor(backupData.value))
 const primaryQuickRows = computed(() => quickRows.value.primary)
 const backupQuickRows = computed(() => quickRows.value.backup)
+const primaryQuickBuckets = computed(() => quickBuckets.value.primary)
+const backupQuickBuckets = computed(() => quickBuckets.value.backup)
 const primaryQuickStats = computed(() => selectedQuickPingStatistics(primaryQuickRows.value))
 const backupQuickStats = computed(() => selectedQuickPingStatistics(backupQuickRows.value))
 
@@ -121,11 +124,11 @@ function applyRunRange(): void {
 watch(() => props.runs, (rows) => {
   if (!selectedRunId.value && rows.length) { selectedRunId.value = rows[0]!.run_id; applyRunRange() }
 }, { immediate: true })
-watch(selectedRunId, (runId) => { applyRunRange(); result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickError.value = ''; selectedMrId.value = mrOptions.value[0]?.id || ''; void loadHistoricalMrs(runId) }, { immediate: true })
+watch(selectedRunId, (runId) => { applyRunRange(); result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }; quickError.value = ''; selectedMrId.value = mrOptions.value[0]?.id || ''; void loadHistoricalMrs(runId) }, { immediate: true })
 watch(mrOptions, (rows) => { if (historyLoading.value) return; if (!rows.some((row) => row.id === selectedMrId.value)) selectedMrId.value = rows[0]?.id || '' }, { immediate: true })
 
 async function query(): Promise<void> {
-  stopRequests(); const current = generation; error.value = ''; quickError.value = ''; result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }
+  stopRequests(); const current = generation; error.value = ''; quickError.value = ''; result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }
   if (!selectedMrId.value || range.value.length !== 2) { error.value = '请选择 MR 和时间范围'; return }
   const start = range.value[0]!, end = range.value[1]!
   if (!(start < end) || end.getTime() - start.getTime() > 86_400_000) { error.value = '时间范围必须为正且不超过 24 小时'; return }
@@ -155,24 +158,30 @@ async function loadHistoricalQuickPing(start: string, end: string, current: numb
     const page = await listGroundQuickPing(100, { signal }, { start_time: start, end_time: end, mr_id: mrId })
     const completed = page.items.filter((run) => !['RUNNING', 'STOPPING'].includes(run.state))
     const rows: Record<'primary' | 'backup', Array<Record<string, unknown>>> = { primary: [], backup: [] }
+    const buckets: Record<'primary' | 'backup', Array<Record<string, unknown>>> = { primary: [], backup: [] }
     await Promise.all(addresses.map(async ({ key, ip }) => {
       const matchingRuns = completed.filter((run) => run.targets.some((target) => target.mr_id === mrId && target.target_ip === ip))
       const pages = await Promise.all(matchingRuns.map(async (run) => {
         const samplePage = await getGroundQuickPingSamples(run.run_id, {
           target_ip: ip, start_time: start, end_time: end, limit: 2000,
         }, { signal })
-        return samplePage.items.map((sample) => ({
-          ...sample,
-          quick_run_id: run.run_id,
-          received_at: sample.received_at || sample.ts,
-          target_ip: sample.target_ip || ip,
-          source: 'REAL_QUICK_PING',
-        }))
+        return {
+          rows: samplePage.items.map((sample) => ({
+            ...sample,
+            quick_run_id: run.run_id,
+            received_at: sample.received_at || sample.ts,
+            target_ip: sample.target_ip || ip,
+            source: 'REAL_QUICK_PING',
+          })),
+          buckets: (samplePage.second_loss_buckets || []).map((bucket) => ({ ...bucket, target_ip: ip })),
+        }
       }))
-      rows[key] = pages.flat()
+      rows[key] = pages.flatMap((item) => item.rows)
+      buckets[key] = pages.flatMap((item) => item.buckets)
     }))
     if (current === generation && !signal.aborted) {
       quickRows.value = rows
+      quickBuckets.value = buckets
       quickError.value = ''
     }
   } catch (reason) {
@@ -244,8 +253,8 @@ onBeforeUnmount(stopRequests)
       <el-alert v-if="quickLoading" title="正在读取归档 Quick Ping" type="info" :closable="false" />
       <el-alert v-if="quickError" :title="quickError" type="error" :closable="false" />
       <p v-if="!quickLoading && !quickError && !primaryQuickRows.length && !backupQuickRows.length" class="empty">该归档没有 Quick Ping 记录。</p>
-      <section v-if="primaryQuickRows.length" class="track quick-replay-track"><button class="track-toggle track-heading" @click="primaryQuickExpanded = !primaryQuickExpanded"><h3>主地址 Quick Ping <el-tag size="small" type="success">真实归档数据</el-tag></h3><span>{{ primaryQuickExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="primaryQuickExpanded" class="track-body"><QuickPingChart :rows="primaryQuickRows" :interval-ms="1000" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :selected-time="cursorTime" :active="active" @viewport-change="changeViewport" @cursor-change="updateCursor" /><div class="quick-stats"><span>Ping 总数 {{ primaryQuickStats.ping_total }}</span><span>成功 {{ primaryQuickStats.ping_success }}</span><span>丢包 {{ primaryQuickStats.ping_lost }} ({{ primaryQuickStats.packet_loss_rate == null ? '无数据' : `${primaryQuickStats.packet_loss_rate.toFixed(2)}%` }})</span><span>平均 RTT {{ primaryQuickStats.average_rtt_ms == null ? '无数据' : `${primaryQuickStats.average_rtt_ms.toFixed(2)} ms` }}</span><span>最小 / 最大 RTT {{ primaryQuickStats.min_rtt_ms ?? '无数据' }} / {{ primaryQuickStats.max_rtt_ms ?? '无数据' }} ms</span></div></div></Transition></section>
-      <section v-if="backupQuickRows.length" class="track quick-replay-track"><button class="track-toggle track-heading" @click="backupQuickExpanded = !backupQuickExpanded"><h3>备用地址 Quick Ping <el-tag size="small" type="success">真实归档数据</el-tag></h3><span>{{ backupQuickExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="backupQuickExpanded" class="track-body"><QuickPingChart :rows="backupQuickRows" :interval-ms="1000" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :selected-time="cursorTime" :active="active" @viewport-change="changeViewport" @cursor-change="updateCursor" /><div class="quick-stats"><span>Ping 总数 {{ backupQuickStats.ping_total }}</span><span>成功 {{ backupQuickStats.ping_success }}</span><span>丢包 {{ backupQuickStats.ping_lost }} ({{ backupQuickStats.packet_loss_rate == null ? '无数据' : `${backupQuickStats.packet_loss_rate.toFixed(2)}%` }})</span><span>平均 RTT {{ backupQuickStats.average_rtt_ms == null ? '无数据' : `${backupQuickStats.average_rtt_ms.toFixed(2)} ms` }}</span><span>最小 / 最大 RTT {{ backupQuickStats.min_rtt_ms ?? '无数据' }} / {{ backupQuickStats.max_rtt_ms ?? '无数据' }} ms</span></div></div></Transition></section>
+      <section v-if="primaryQuickRows.length" class="track quick-replay-track"><button class="track-toggle track-heading" @click="primaryQuickExpanded = !primaryQuickExpanded"><h3>主地址 Quick Ping <el-tag size="small" type="success">真实归档数据</el-tag></h3><span>{{ primaryQuickExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="primaryQuickExpanded" class="track-body"><QuickPingChart :rows="primaryQuickRows" :second-loss-buckets="primaryQuickBuckets" :interval-ms="1000" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :selected-time="cursorTime" :active="active" @viewport-change="changeViewport" @cursor-change="updateCursor" /><div class="quick-stats"><span>Ping 总数 {{ primaryQuickStats.ping_total }}</span><span>成功 {{ primaryQuickStats.ping_success }}</span><span>丢包 {{ primaryQuickStats.ping_lost }} ({{ primaryQuickStats.packet_loss_rate == null ? '无数据' : `${primaryQuickStats.packet_loss_rate.toFixed(2)}%` }})</span><span>平均 RTT {{ primaryQuickStats.average_rtt_ms == null ? '无数据' : `${primaryQuickStats.average_rtt_ms.toFixed(2)} ms` }}</span><span>最小 / 最大 RTT {{ primaryQuickStats.min_rtt_ms ?? '无数据' }} / {{ primaryQuickStats.max_rtt_ms ?? '无数据' }} ms</span></div></div></Transition></section>
+      <section v-if="backupQuickRows.length" class="track quick-replay-track"><button class="track-toggle track-heading" @click="backupQuickExpanded = !backupQuickExpanded"><h3>备用地址 Quick Ping <el-tag size="small" type="success">真实归档数据</el-tag></h3><span>{{ backupQuickExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="backupQuickExpanded" class="track-body"><QuickPingChart :rows="backupQuickRows" :second-loss-buckets="backupQuickBuckets" :interval-ms="1000" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :selected-time="cursorTime" :active="active" @viewport-change="changeViewport" @cursor-change="updateCursor" /><div class="quick-stats"><span>Ping 总数 {{ backupQuickStats.ping_total }}</span><span>成功 {{ backupQuickStats.ping_success }}</span><span>丢包 {{ backupQuickStats.ping_lost }} ({{ backupQuickStats.packet_loss_rate == null ? '无数据' : `${backupQuickStats.packet_loss_rate.toFixed(2)}%` }})</span><span>平均 RTT {{ backupQuickStats.average_rtt_ms == null ? '无数据' : `${backupQuickStats.average_rtt_ms.toFixed(2)} ms` }}</span><span>最小 / 最大 RTT {{ backupQuickStats.min_rtt_ms ?? '无数据' }} / {{ backupQuickStats.max_rtt_ms ?? '无数据' }} ms</span></div></div></Transition></section>
       <section class="track"><button class="track-toggle" @click="peerExpanded = !peerExpanded"><b>Peer AP 主用区间 · 原始 RSSI</b><span>{{ peerExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="peerExpanded" class="track-body"><MrMonitoringChart mode="peer" :data="result" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="cursorTime" @viewport-change="changeViewport" @cursor-change="updateCursor" /><p v-if="!result.peer_intervals.length" class="empty">当前窗口无可由相邻切换记录证明的 Peer AP 区间。</p></div></Transition></section>
       <div class="event-grid">
         <section><h3>当前可视窗口最近 3 次主链路切换</h3><button v-for="event in recentSwitchEvents" :key="event.id" class="event-row" @click="locate(event.event_time)"><b>{{ event.old_ap_name || event.old_bssid || '无数据' }} → {{ event.new_ap_name || event.bssid || '无数据' }}</b><span>{{ format(event.event_time) }} · {{ event.bssid || '无 MAC' }} · {{ event.data_quality || '无数据' }}</span><span>切入 RSSI {{ event.raw_rssi ?? '无记录' }} · 切出 RSSI {{ event.previous_rssi ?? '无记录' }}</span></button><p v-if="!recentSwitchEvents.length" class="empty">无切换记录</p></section>

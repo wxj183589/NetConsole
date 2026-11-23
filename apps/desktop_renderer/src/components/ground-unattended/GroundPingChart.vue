@@ -5,7 +5,7 @@ import type { EChartsType } from 'echarts/core'
 import type { GroundApTransition, GroundPingSample, GroundPingSeries } from '../../types/groundUnattended'
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { groundStatusLabel, groundTransitionContextLabel } from '../../views/rail-transit/groundUnattendedLabels'
-import { PING_CHART_COLORS, classifyPingStatus, pingStatusLabel } from './pingChartStatus'
+import { PING_CHART_COLORS, pingStatusLabel } from './pingChartStatus'
 
 const props = withDefaults(defineProps<{
   series: GroundPingSeries | null
@@ -121,8 +121,8 @@ function render(): void {
   if (!rttChart || !resultChart) return
   const theme = readNetConsoleChartTokens()
   const points = props.series?.points || []
-  const successes = points.filter((point) => point.ok && !point.warmup_ignored)
-  const losses = points.filter((point) => !point.ok && !point.warmup_ignored)
+  const successes = points.filter((point) => point.status === 'SUCCESS' && !point.warmup_ignored)
+  const losses = points.filter((point) => (point.status === 'TIMEOUT' || point.status === 'PACKET_LOSS') && !point.warmup_ignored)
   const warmup = points.filter((point) => point.warmup_ignored)
   const transitions = props.series?.ap_transitions || []
   const transitionGroups = groupTransitions(transitions)
@@ -241,8 +241,8 @@ function tooltip(raw: unknown): string {
     `列车：${escapeHtml(point.train_no || point.train_id || '未知')}`,
     `MR：${escapeHtml(point.mr_name || point.mr_position_code || '未知')}`,
     `管理 IP：${escapeHtml(point.target_ip)}`,
-    `结果：${point.warmup_ignored ? '预热忽略' : pingStatusLabel(classifyPingStatus(point as unknown as Record<string, unknown>))}`,
-    `RTT：${escapeHtml(point.rtt_ms == null ? '无' : `${point.rtt_ms} ms`)}`,
+    `结果：${point.warmup_ignored ? '预热忽略' : pingStatusLabel(point.status)}`,
+    `RTT：${escapeHtml(point.rtt_display_ms == null ? '无' : `${point.rtt_display_ms} ms`)}`,
     `AC 参考 AP：${escapeHtml(point.current_ap_name || '未知')}`,
     `AP MAC：${escapeHtml(point.current_ap_mac || '未知')}`,
     `站点 / 区间：${escapeHtml(point.station || '未知')} / ${escapeHtml(point.section || '未知')}`,
