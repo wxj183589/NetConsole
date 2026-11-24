@@ -1616,15 +1616,34 @@ class GroundUnattendedApplicationService:
     def list_trains(self, site_id: str) -> GroundUnattendedTrainPageDTO:
         self._require_site(site_id)
         if self.inventory_sync is not None and not self.repository.list_inventory():
-            self.inventory_sync.synchronize()
+            try:
+                self.inventory_sync.synchronize()
+            except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                pass  # Existing runtime rows remain independently readable.
         run = self._latest_run(site_id)
         rows = self.repository.list_train_runs(str(run["run_id"])) if run else []
         items = [self._train_dto(row) for row in rows]
         if not items:
             items = self._inventory_train_candidates()
-        items = self._merge_base_candidate_endpoints(items)
+        engineering_source_failed = False
+        try:
+            items = self._merge_base_candidate_endpoints(items)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error):
+            engineering_source_failed = True
         items = self._merge_inventory_policy(items)
         items = self._enrich_train_endpoints(items, run)
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+        context = EngineeringContextQueryService(self.paths)
+        contexts = context.contexts(site_id, [e.mr_id for item in items for e in item.endpoints if e.mr_id])
+        positions = context.points(site_id, [item.resolved_ap_id for item in items if item.resolved_ap_id])
+        for item in items:
+            for endpoint in item.endpoints:
+                if endpoint.mr_id in contexts:
+                    endpoint.engineering_context = contexts[endpoint.mr_id]
+            statuses = {e.engineering_context.affiliation_status for e in item.endpoints if e.mr_id}
+            item.engineering_context_status = "unavailable" if engineering_source_failed or "unavailable" in statuses else "stale" if "stale" in statuses else "conflict" if "conflict" in statuses else "current" if statuses else "unconfirmed"
+            if item.resolved_ap_id in positions:
+                item.position_engineering_context = positions[item.resolved_ap_id]
         return GroundUnattendedTrainPageDTO(items=items, total=len(items))
 
     def mr_runtime_status(

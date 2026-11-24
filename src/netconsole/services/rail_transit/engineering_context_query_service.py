@@ -177,6 +177,38 @@ class EngineeringContextQueryService:
             # Context must never prevent loading independently owned runtime evidence.
             return defaults
 
+    def points(self, site_id, point_ids):
+        ids = list(dict.fromkeys(v for v in point_ids if v))
+        result = {uid: DeviceEngineeringContextDTO(point_id=uid, reason_code="AP_CONTEXT_UNAVAILABLE") for uid in ids}
+        if not ids:
+            return result
+        try:
+            before = self.base_query.repository.base_data_revision(site_id)
+            points = self.base_query.list_ap_location_items(site_id)
+            infra = self.base_query.infrastructure(site_id)
+            stations = {n.station.id:n for n in infra.nodes if n.station}
+            for uid in ids:
+                matches = [p for p in points if p.id == uid or p.identity_entity_id and p.identity_entity_id == uid]
+                if len(matches) > 1:
+                    result[uid] = DeviceEngineeringContextDTO(point_id=uid, available=True, affiliation_status="conflict", reason_code="AP_POINT_AMBIGUOUS")
+                elif matches:
+                    point = matches[0]
+                    node = stations.get(point.station_id)
+                    result[uid] = DeviceEngineeringContextDTO(point_id=point.id, identity_entity_id=point.identity_entity_id,
+                        device_name=point.name, available=True, affiliation_status="associated", identity_status=point.identity_match_status,
+                        line_id=site_id, line_name=point.line_name, station_id=point.station_id, station_name=point.station,
+                        section_ids=[point.section_id] if point.section_id else [], service_sections=[point.section] if point.section else [],
+                        node_uid=node.uid if node else "", node_name=node.name if node else "", node_type=node.kind if node else "",
+                        project_ids=[p.project_id for p in node.projects] if node else [], project_names=[p.name for p in node.projects] if node else [],
+                        relationship_revision=before, context_updated_at=datetime.now(timezone.utc).isoformat())
+                else:
+                    result[uid] = DeviceEngineeringContextDTO(point_id=uid, available=True, affiliation_status="unconfirmed", reason_code="STABLE_AP_POINT_NOT_FOUND")
+            if self.base_query.repository.base_data_revision(site_id) != before:
+                return {uid:ctx.model_copy(update=dict(available=False, affiliation_status="stale", reason_code="ENGINEERING_REVISION_CONFLICT")) for uid,ctx in result.items()}
+            return result
+        except Exception:
+            return result
+
     def one(self, site_id, device_uuid, **kwargs):
         if not device_uuid:
             return DeviceEngineeringContextDTO(

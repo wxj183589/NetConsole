@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, field_validator, model_validator
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
 from netconsole.models.api.online_mr_control import OnlineMrWebFpingDTO
 
 
@@ -395,6 +396,7 @@ class GroundSyslogHostDTO(ApiModel):
 
 
 class GroundUnattendedEndpointDTO(ApiModel):
+    engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
     endpoint: Literal["CT", "CW"]
     mr_id: str = ""
     mr_name: str = ""
@@ -511,6 +513,8 @@ class GroundApIdentityDiagnosticsDTO(ApiModel):
 
 
 class GroundUnattendedTrainDTO(ApiModel):
+    position_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
+    engineering_context_status: str = "unavailable"
     train_id: str
     train_no: str = ""
     train_name: str = ""

@@ -70,6 +70,8 @@ class DeviceOverviewTaskFactsDTO(ApiModel):
 class DeviceEngineeringContextDTO(ApiModel):
     """Read-only projection from the rail infrastructure authority."""
 
+    point_id: str = ""
+    identity_entity_id: str = ""
     device_uuid: str = ""
     device_name: str = ""
     device_type: str = ""
