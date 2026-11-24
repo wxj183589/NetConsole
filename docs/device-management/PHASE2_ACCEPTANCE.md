@@ -30,17 +30,17 @@
 
 ## Phase 2.5 Final Acceptance
 
-- 产品 HEAD：`ac85ebef69ed4d8c02d03bedef9d4e9fecaf7c12`。
+- 产品 HEAD：`c24e2c8aa9eb2d4db0b9508ee32d03c40af00395`。
 - DevStatus HEAD（执行时）：`62b0badbe0d40569bbc3f3ecd0b79fe61d0fe5ab`。
 - 正式命令：`python -B -m scripts.quality.local_gate --mode full --base-sha 907183a4 --head-sha HEAD`。
-- 执行时间：`2026-11-24 14:31:51` 至 `2026-11-24 15:02:08`（Asia/Shanghai）；退出码 `0`。
+- 执行时间：`2026-11-24 15:12:41` 至 `2026-11-24 15:43:32`（Asia/Shanghai）；退出码 `0`。
 - Renderer：`216 files / 1577 passed`；`vue-tsc -b` 和 Vite build PASS。
 - Python：`5744 passed, 2 skipped, 34 warnings`。
 - Electron：`41 files / 324 passed`；Electron typecheck/build PASS。
 - Architecture：`12/12 passed`；Ruff、main contract smoke `12 passed`、文档路径检查 `22 passed`、diff check PASS。
 - 发布资源：`test_clean_build_runtime_subset_copies_only_imported_modules_and_assets` 单测复跑通过，并随 Python Full Gate 通过。
 - 性能稳定性：独立运行 10 次均通过，P50 `24.605ms`、P95 `26.642ms`、最大 `28.469ms`，阈值 `100ms`，失败 `0`；未放宽阈值或删除断言。
-- 首轮失败处理：文档名 `PHASE2_BRANCH_INTEGRATION_AUDIT.md` 已改为 `PHASE2_BRANCH_INTEGRATION.md` 并提交；发布资源失败未发现产品回归，当前环境复跑通过；性能失败归因于首轮 Full Gate 资源竞争下的计时抖动，独立采样和最终 Gate 均稳定通过。
+- 首轮失败处理：文档名 `PHASE2_BRANCH_INTEGRATION_AUDIT.md` 已改为 `PHASE2_BRANCH_INTEGRATION.md` 并提交；发布资源失败是 Renderer 套件中断后未生成 dist 的连带结果，最终 Gate 已通过；`apps/desktop_renderer/vite.config.ts` 将 Vitest worker 上限固定为 `2`，保留原始性能阈值并消除共享主机资源竞争。
 - 最终报告和原始日志：`docs/device-management/PHASE2_FULL_GATE_REPORT.md`、`D:\study\NetConsole-Workspace\reports\tests\device-management-phase2\full-gate.log`。
 
 ## 尚未完成
