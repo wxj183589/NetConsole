@@ -268,6 +268,7 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'device_vendor', label: '厂商', valueType: 'text', stretch: 'normal', displayValue: (row) => row.vendor_label || row.device_vendor || '未分类' },
   { key: 'device_subcategory', label: '设备子类', valueType: 'text', stretch: 'normal', displayValue: (row) => row.device_subcategory_label || '未分类' },
   { key: 'device_model', label: '设备型号', valueType: 'text', stretch: 'normal', displayValue: (row) => row.device_model || '—' },
+  { key: 'engineering_affiliation', label: '工程归属', valueType: 'text', stretch: 'priority', displayValue: (row) => row.engineering_affiliation || '未关联轨道交通基础设施' },
   { key: 'collection_support', label: '采集支持', valueType: 'status', cellKind: 'tag', stretch: 'none', displayValue: (row) => collectionSupportLabel(row.collection_support), visible: false },
   { key: 'project_phase', label: '建设阶段', valueType: 'status', cellKind: 'tag', stretch: 'none', visible: false },
   { key: 'work_scope_status', label: '当前工作状态', valueType: 'status', cellKind: 'tag', stretch: 'none', visible: false },
@@ -2179,8 +2180,6 @@ function deviceListErrorMessage(cause: unknown): string {
             <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="duplicateSelected">复制设备</el-dropdown-item>
             <el-dropdown-item :disabled="!desktopHost || !selectedUuids.length || !isFeatureEnabled('capability.devices.desktop_actions')" @click="requestTerminal()">外部终端</el-dropdown-item>
             <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="groupAssignVisible = true">设置分组</el-dropdown-item>
-            <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" @click="openClassificationDialog('phase')">设置建设阶段</el-dropdown-item>
-            <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.write')" data-testid="device-set-work-status" @click="openClassificationDialog('status')">设置当前工作状态</el-dropdown-item>
             <el-dropdown-item :disabled="!isFeatureEnabled('capability.devices.write')" @click="groupVisible = true">分组管理</el-dropdown-item>
             <el-dropdown-item :disabled="!selectedUuids.length || !isFeatureEnabled('capability.devices.collect')" @click="downloadDiagnostics">下载诊断</el-dropdown-item>
             <el-dropdown-item :disabled="!isFeatureEnabled('capability.devices.import')" @click="openImportDialog('UPDATE_ONLY')">批量更新设备</el-dropdown-item>
@@ -2433,10 +2432,6 @@ function deviceListErrorMessage(cause: unknown): string {
             <el-form-item label="分组"><el-select v-model="writeForm.group_id" clearable style="width:100%"><el-option v-for="group in pageData.groups" :key="group.id" :label="group.name" :value="group.id" /></el-select></el-form-item>
             <el-form-item label="设备类型"><el-cascader v-model="writeClassificationPath" :options="writeCascadeOptions" :props="{ expandTrigger: 'hover' }" filterable clearable style="width:100%" data-testid="device-classification-cascade" /></el-form-item>
             <el-form-item label="设备角色"><el-select v-if="writeRoleOptions.length" v-model="writeForm.device_role" style="width:100%" data-testid="device-role" @change="onWriteRoleChange"><el-option v-for="role in writeRoleOptions" :key="role" :label="role" :value="role" /></el-select><el-input v-else :model-value="writeForm.device_role || writeForm.device_type || 'Other'" disabled data-testid="device-role" /></el-form-item>
-            <el-form-item label="建设阶段"><el-select v-model="writeForm.project_phase" style="width:100%"><el-option label="一期" value="phase_1" /><el-option label="二期" value="phase_2" /><el-option label="三期" value="phase_3" /><el-option label="其他" value="other" /><el-option label="未指定" value="unspecified" /></el-select></el-form-item>
-            <el-form-item label="当前工作状态"><el-select v-model="writeForm.work_scope_status" style="width:100%"><el-option label="参与当前调试" value="included" /><el-option label="暂不参与" value="excluded" /></el-select></el-form-item>
-            <el-form-item label="当前工作状态说明"><el-input v-model="writeForm.work_scope_reason" type="textarea" :rows="2" /></el-form-item>
-            <el-form-item label="站点"><el-input v-model="writeForm.station" /></el-form-item>
             <el-form-item label="备注"><el-input v-model="writeForm.remark" type="textarea" :rows="3" /></el-form-item>
           </section>
           <section class="form-section"><h3>连接</h3>

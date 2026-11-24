@@ -519,6 +519,7 @@ def create_app(
     )
     ac_management_query_service = AcManagementQueryService(paths)
     online_mr_query_service = OnlineMrQueryService(paths)
+    rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)
     device_compatibility_service = DeviceCompatibilityService(paths)
     device_detail_gateway = DeviceDetailRepository(paths)
     device_operation_service = DeviceOperationService(
@@ -535,6 +536,7 @@ def create_app(
         export_adapter=web_export_adapter,
         artifact_store=web_artifact_store,
         device_operation_service=device_operation_service,
+        rail_context_query=rail_transit_base_data_query_service,
     )
     terminal_session_manager = TerminalSessionManager(paths)
     # Interactive file transfers have their own durable queue and notifications.
@@ -557,6 +559,7 @@ def create_app(
             business_reader=trackside_ap_business_query_service,
             ac_business_reader=ac_management_query_service,
             online_mr_reader=online_mr_query_service,
+            rail_context_query=rail_transit_base_data_query_service,
         ),
         device_operation_service,
     )
@@ -1074,7 +1077,7 @@ def create_app(
     app.state.file_management_service = file_management_service
     app.state.system_maintenance_service = system_maintenance_service
     app.state.online_mr_query_service = online_mr_query_service
-    app.state.rail_transit_base_data_query_service = RailTransitBaseDataQueryService(paths)
+    app.state.rail_transit_base_data_query_service = rail_transit_base_data_query_service
     app.state.online_mr_application_service = online_mr_application_service
     app.state.online_mr_web_control_service = online_mr_web_control_service or OnlineMrWebControlService(
         paths,

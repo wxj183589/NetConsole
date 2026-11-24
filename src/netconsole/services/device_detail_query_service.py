@@ -28,6 +28,7 @@ from netconsole.models.api.device_detail import (
     DeviceLldpPageDTO,
     DeviceMrSessionAssociationFactsDTO,
     DeviceOverviewCountsDTO,
+    DeviceEngineeringContextDTO,
     DeviceOverviewDTO,
     DeviceOverviewTaskFactDTO,
     DeviceOverviewTaskFactsDTO,
@@ -44,6 +45,9 @@ from netconsole.models.device_detail import (
 from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.repositories.device_detail_repository import DeviceDetailDataGateway
+from netconsole.services.rail_transit.base_data_query_service import (
+    RailTransitBaseDataQueryService,
+)
 from netconsole.services.device_operation_service import DeviceOperationService
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
@@ -117,6 +121,7 @@ class DeviceDetailQueryService:
         business_reader: BusinessAssociationReader | None = None,
         ac_business_reader: AcBusinessAssociationReader | None = None,
         online_mr_reader: OnlineMrBusinessAssociationReader | None = None,
+        rail_context_query: RailTransitBaseDataQueryService | None = None,
     ) -> None:
         self.gateway = gateway
         self.task_service = task_service
@@ -125,6 +130,7 @@ class DeviceDetailQueryService:
         self.business_reader = business_reader
         self.ac_business_reader = ac_business_reader
         self.online_mr_reader = online_mr_reader
+        self.rail_context_query = rail_context_query
 
     def overview(self, device_uuid: str) -> DeviceOverviewDTO:
         device = self._device(device_uuid)
@@ -262,6 +268,49 @@ class DeviceDetailQueryService:
                 config_snapshots=config_count,
             ),
             snapshot=self._snapshot_source(fact),
+            engineering_context=self._engineering_context(device_uuid),
+        )
+
+    def _engineering_context(self, device_uuid: str) -> DeviceEngineeringContextDTO:
+        if self.rail_context_query is None:
+            return DeviceEngineeringContextDTO()
+        try:
+            infrastructure = self.rail_context_query.infrastructure(
+                self.rail_context_query.current_site_id()
+            )
+        except Exception:
+            return DeviceEngineeringContextDTO(
+                affiliation_status="unavailable",
+                source="rail_infrastructure_query",
+            )
+        matches = [
+            (node, device)
+            for node in infrastructure.nodes
+            for device in node.devices
+            if device.device_uuid == device_uuid
+        ]
+        if not matches:
+            return DeviceEngineeringContextDTO(
+                available=True,
+                affiliation_status="unassociated",
+                line_name=infrastructure.line_name,
+            )
+        node, device = matches[0]
+        project_names = [
+            f"{project.stage} {project.name}".strip()
+            for project in node.projects
+        ]
+        return DeviceEngineeringContextDTO(
+            available=True,
+            affiliation_status="associated",
+            line_name=infrastructure.line_name,
+            node_uid=node.uid,
+            node_type=node.kind,
+            node_code=node.code,
+            node_name=node.name,
+            role=device.role or device.device_role,
+            project_names=project_names,
+            service_stations=node.ac_service_stations,
         )
 
     def interfaces(

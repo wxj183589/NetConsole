@@ -852,18 +852,13 @@ describe('DeviceManagementView mounted interactions', () => {
     wrapper.unmount()
   })
 
-  it('renders current work scope wording without lifecycle labels', async () => {
+  it('keeps engineering work scope out of the device asset maintenance menu', async () => {
     const wrapper = await renderView()
     await wrapper.get('[data-testid="select-first-device"]').trigger('click')
     const button = wrapper.findAll('button').find(
       (item) => item.text() === '设置当前工作状态' && item.attributes('disabled') === undefined,
     )
-    expect(button).toBeTruthy()
-    await button!.trigger('click')
-
-    expect(wrapper.text()).toContain('当前工作状态')
-    expect(wrapper.find('[label="参与当前调试"]').exists()).toBe(true)
-    expect(wrapper.find('[label="暂不参与"]').exists()).toBe(true)
+    expect(button).toBeUndefined()
     expect(wrapper.text()).not.toContain('投运状态')
     expect(wrapper.text()).not.toContain('暂停使用')
     wrapper.unmount()

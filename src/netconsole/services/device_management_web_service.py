@@ -116,6 +116,9 @@ from netconsole.repositories.device_group_repository import (
     device_group_sort_key,
 )
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.rail_transit.base_data_query_service import (
+    RailTransitBaseDataQueryService,
+)
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.config_lifecycle_service import safe_artifact_display_name
 from netconsole.services.device_group_service import DeviceGroupService
@@ -335,6 +338,7 @@ class DeviceManagementWebService:
         artifact_store: WebArtifactStore | None = None,
         device_operation_service: DeviceInventoryOperationService | None = None,
         health_check_service: DeviceHealthCheckApplicationService | None = None,
+        rail_context_query: RailTransitBaseDataQueryService | None = None,
     ) -> None:
         self.paths = paths
         self.task_service = task_service
@@ -344,6 +348,7 @@ class DeviceManagementWebService:
         self.export_adapter = export_adapter or WebExportProcessAdapter(task_service)
         self.artifact_store = artifact_store or WebArtifactStore(paths, task_service)
         self.device_operation_service = device_operation_service
+        self.rail_context_query = rail_context_query
         self.health_check_service = health_check_service or DeviceHealthCheckApplicationService(
             paths,
             task_service,
@@ -613,6 +618,7 @@ class DeviceManagementWebService:
             ]
         else:
             items = [item for _device, item in page_pairs]
+        items = self._attach_engineering_affiliations(site, items)
         return DevicePageDTO(
             items=items,
             groups=[
@@ -643,6 +649,35 @@ class DeviceManagementWebService:
             page_size=page_size,
             total_pages=total_pages,
         )
+
+    def _attach_engineering_affiliations(
+        self, site: str, items: list[DeviceListItemDTO]
+    ) -> list[DeviceListItemDTO]:
+        if not items or self.rail_context_query is None:
+            return items
+        try:
+            infrastructure = self.rail_context_query.infrastructure(site)
+        except Exception:
+            return items
+        labels: dict[str, str] = {}
+        for node in infrastructure.nodes:
+            for device in node.devices:
+                label = " ".join(
+                    value for value in (node.code, node.name) if str(value).strip()
+                )
+                if device.role or device.device_role:
+                    label = f"{label} · {device.role or device.device_role}"
+                labels[device.device_uuid] = label or "已关联基础设施"
+        return [
+            item.model_copy(
+                update={
+                    "engineering_affiliation": labels.get(
+                        item.device_uuid, "未关联轨道交通基础设施"
+                    )
+                }
+            )
+            for item in items
+        ]
 
     def get_device_detail(self, device_uuid: str) -> DeviceDetailDTO:
         """旧详情兼容路径；新抽屉/详情页不得调用此全量聚合。"""

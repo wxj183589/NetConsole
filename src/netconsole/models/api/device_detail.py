@@ -67,6 +67,22 @@ class DeviceOverviewTaskFactsDTO(ApiModel):
     truncated: bool = False
 
 
+class DeviceEngineeringContextDTO(ApiModel):
+    """Read-only projection from the rail infrastructure authority."""
+
+    available: bool = False
+    affiliation_status: Literal["associated", "unassociated", "unavailable"] = "unavailable"
+    line_name: str = ""
+    node_uid: str = ""
+    node_type: str = ""
+    node_code: str = ""
+    node_name: str = ""
+    role: str = ""
+    project_names: list[str] = Field(default_factory=list)
+    service_stations: list[str] = Field(default_factory=list)
+    source: str = "rail_infrastructure_query"
+
+
 class DeviceOverviewDTO(ApiModel):
     device_uuid: str
     name: str
@@ -109,6 +125,9 @@ class DeviceOverviewDTO(ApiModel):
     task_facts: DeviceOverviewTaskFactsDTO
     counts: DeviceOverviewCountsDTO = Field(default_factory=DeviceOverviewCountsDTO)
     snapshot: DeviceDetailSourceDTO
+    engineering_context: DeviceEngineeringContextDTO = Field(
+        default_factory=DeviceEngineeringContextDTO
+    )
 
 
 class DeviceInterfaceDTO(ApiModel):

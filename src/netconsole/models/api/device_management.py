@@ -142,6 +142,7 @@ class DeviceListItemDTO(ApiModel):
     credential_source: str = "none"
     credential_error_code: str = "CREDENTIAL_MISSING"
     credential_message: str = ""
+    engineering_affiliation: str = "未关联轨道交通基础设施"
 
 
 class DevicePageDTO(ApiModel):

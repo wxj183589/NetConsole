@@ -113,6 +113,7 @@ export interface DeviceListItem {
   credential_source: 'local_database' | 'imported_reference' | 'none'
   credential_error_code: string
   credential_message: string
+  engineering_affiliation: string
 }
 
 export interface DevicePage {
@@ -302,6 +303,21 @@ export interface DeviceOverviewResponse {
   task_facts: DeviceOverviewTaskFacts
   counts: DeviceOverviewCounts
   snapshot: DeviceDetailSource
+  engineering_context?: DeviceEngineeringContext
+}
+
+export interface DeviceEngineeringContext {
+  available: boolean
+  affiliation_status: 'associated' | 'unassociated' | 'unavailable'
+  line_name: string
+  node_uid: string
+  node_type: string
+  node_code: string
+  node_name: string
+  role: string
+  project_names: string[]
+  service_stations: string[]
+  source: string
 }
 
 export interface DeviceInterfaceRecord {

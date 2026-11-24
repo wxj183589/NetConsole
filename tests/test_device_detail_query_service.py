@@ -454,6 +454,66 @@ def test_overview_resolves_role_platform_capability_and_null_snapshot_counts(
     ).items[0].normalized_name == "Ten-GigabitEthernet0/0/1"
 
 
+def test_overview_reads_engineering_context_without_writing_device_assets(
+    tmp_path: Path,
+) -> None:
+    query, _operation, _adapter, h3c, _huawei, _ac = _fixture(tmp_path)
+
+    class _RailContext:
+        def current_site_id(self) -> str:
+            return "demo"
+
+        def infrastructure(self, _site_id: str) -> object:
+            from netconsole.models.api.rail_infrastructure import (
+                InfrastructureDTO,
+                InfrastructureDeviceDTO,
+                InfrastructureNodeDTO,
+                InfrastructureProjectDTO,
+            )
+
+            return InfrastructureDTO(
+                site_id="demo",
+                site_name="测试局点",
+                line_name="测试线",
+                device_count=1,
+                unassociated_device_count=0,
+                unresolved_binding_count=0,
+                nodes=[
+                    InfrastructureNodeDTO(
+                        uid="station-1",
+                        kind="station",
+                        code="0101",
+                        name="大道站",
+                        source="engineering",
+                        projects=[
+                            InfrastructureProjectDTO(
+                                project_id="phase-1", name="初建", stage="一期"
+                            )
+                        ],
+                        devices=[
+                            InfrastructureDeviceDTO(
+                                device_uuid=str(h3c.device_uuid),
+                                name="SW-01",
+                                device_type="switch",
+                                device_role="switch",
+                                role="车站交换机",
+                                source="engineering",
+                            )
+                        ],
+                    )
+                ],
+            )
+
+    query.rail_context_query = _RailContext()
+    overview = query.overview(str(h3c.device_uuid))
+
+    assert overview.engineering_context.affiliation_status == "associated"
+    assert overview.engineering_context.line_name == "测试线"
+    assert overview.engineering_context.node_code == "0101"
+    assert overview.engineering_context.project_names == ["一期 初建"]
+    assert overview.engineering_context.role == "车站交换机"
+
+
 def test_interface_filter_and_multivendor_name_normalization(
     tmp_path: Path,
 ) -> None:
