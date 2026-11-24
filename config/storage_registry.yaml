@@ -690,7 +690,7 @@
       "owner": "DeviceRepository",
       "code_owners": ["data", "device-management", "device-compatibility", "ac", "rail-transit"],
       "data_type": "OPERATIONAL_CURRENT",
-      "authority": "current device, rail base-data, credential reference and bounded Recent10 authority",
+      "authority": "current device, rail base-data, rail infrastructure relationships, credential reference and bounded Recent10 authority",
       "producer": ["DeviceRepository", "RailTransitBaseDataRepository", "device/ac repositories"],
       "consumers": ["Device Management", "AC", "Trackside AP", "Ground", "Site Package"],
       "retention_owner": "TaskCleanupService (explicit operational GC); SiteRetentionService (separate site policy)",
@@ -702,6 +702,16 @@
       "allowed_data_classes": ["OPERATIONAL_CURRENT", "HISTORICAL_RAW_FACT", "CACHE_REBUILDABLE"],
       "forbidden_data_classes": ["ARTIFACT_OR_RAW_FILE", "STAGING_TEMPORARY"],
       "table_rules": [
+        {
+          "tables": ["rail_infra_node", "rail_infra_node_name", "rail_infra_project", "rail_infra_node_project", "rail_infra_device_project", "rail_infra_device_link", "rail_infra_ac_service", "rail_infra_train", "rail_infra_train_mr"],
+          "data_class": "OPERATIONAL_CURRENT",
+          "authority": "authored rail engineering entities, current relationships and retained name and MR relationship intervals",
+          "producer": ["Database.initialize", "RailInfrastructureRepository"],
+          "consumers": ["Rail Infrastructure workbench", "Site Package"],
+          "lifecycle_owner": "RailInfrastructureRepository and SiteRetentionService",
+          "rebuildable": false,
+          "source_locations": ["src/netconsole/core/rail_infrastructure_schema.py", "src/netconsole/core/database.py", "src/netconsole/repositories/rail_infrastructure_repository.py"]
+        },
         {
           "tables": ["ac_ap_summary", "ac_fit_ap_details", "ac_fit_ap_metadata", "ac_fit_ap_optical", "ac_fit_ap_radio_details", "ac_fit_ap_resources", "ac_fit_ap_unauthenticated", "ac_fit_ap_unauthenticated_summary", "ac_station_ap_capacity", "ac_trackside_ap_plan", "ac_trackside_ap_plan_settings", "ap_entities", "ap_extension_points", "ap_identity_conflicts", "ap_identity_entities", "ap_identity_h3c_prefixes", "ap_identity_index_state", "ap_identity_mac_aliases", "ap_identity_radio_evidence", "ap_identity_source_state", "ap_optical_treatment", "ap_optical_treatment_events", "cloud_sync_documents", "cloud_sync_profiles", "device_credential_states", "device_facts", "device_fact_recent", "device_groups", "device_interfaces", "device_lldp_neighbors", "device_optical_modules", "devices", "fit_ap_resource_recent", "fit_ap_unauthenticated_recent", "rail_ap_vlan_allocations", "rail_ap_vlan_assignments", "rail_ap_vlan_group_members", "rail_ap_vlan_groups", "rail_ap_vlan_plans", "schema_metadata", "station_online_summary_current", "station_online_summary_recent"],
           "data_class": "OPERATIONAL_CURRENT",
@@ -745,7 +755,7 @@
           "source_locations": ["src/netconsole/core/database.py", "src/netconsole/services/rail_transit/trackside_ap_business_query_service.py"]
         }
       ],
-      "source_locations": ["src/netconsole/core/database.py", "src/netconsole/core/device_credential_store.py", "src/netconsole/repositories/device_repository.py", "src/netconsole/repositories/rail_transit_base_data_repository.py", "src/netconsole/services/ac/query_service.py", "src/netconsole/services/device_compatibility/service.py", "src/netconsole/services/device_detail_query_service.py", "src/netconsole/services/installation_data_root.py", "src/netconsole/services/job_center/handlers/site_jobs.py", "src/netconsole/services/rail_transit/base_data_query_service.py", "src/netconsole/services/rail_transit/station_source_discovery_service.py", "scripts/maintenance/backfill_trackside_ap_station_identity.py", "scripts/maintenance/test_rail_transit_base_data_apply.py", "scripts/maintenance/test_trackside_ap_plan_endpoint_stability.py", "scripts/maintenance/upgrade_ap_extension_schema.py", "scripts/maintenance/audit_lifecycle_dev.py"]
+      "source_locations": ["src/netconsole/core/database.py", "src/netconsole/core/rail_infrastructure_schema.py", "src/netconsole/repositories/rail_infrastructure_repository.py", "src/netconsole/core/device_credential_store.py", "src/netconsole/repositories/device_repository.py", "src/netconsole/repositories/rail_transit_base_data_repository.py", "src/netconsole/services/ac/query_service.py", "src/netconsole/services/device_compatibility/service.py", "src/netconsole/services/device_detail_query_service.py", "src/netconsole/services/installation_data_root.py", "src/netconsole/services/job_center/handlers/site_jobs.py", "src/netconsole/services/rail_transit/base_data_query_service.py", "src/netconsole/services/rail_transit/station_source_discovery_service.py", "scripts/maintenance/backfill_trackside_ap_station_identity.py", "scripts/maintenance/test_rail_transit_base_data_apply.py", "scripts/maintenance/test_trackside_ap_plan_endpoint_stability.py", "scripts/maintenance/upgrade_ap_extension_schema.py", "scripts/maintenance/audit_lifecycle_dev.py"]
     },
     {
       "id": "site.history.catalog",

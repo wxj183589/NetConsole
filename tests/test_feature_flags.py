@@ -680,11 +680,9 @@ def test_packaged_runtime_does_not_use_client_package_as_runtime_denial(
     )
     payload = json.loads(baseline.read_text(encoding="utf-8"))
     payload["features"]["capability.devices.collect"]["client_package"] = False
-    payload["features"]["capability.online_mr.local_control"].update(
-        visible=True,
-        enabled=True,
-        client_package=True,
-    )
+    payload["features"]["capability.online_mr.local_control"] = {
+        "visible": True, "enabled": True, "client_package": True, "internal_only": False,
+    }
     baseline.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     gate = FeatureGate(tmp_path, packaged_runtime=True)

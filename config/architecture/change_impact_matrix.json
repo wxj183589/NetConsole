@@ -357,6 +357,7 @@
         "src/netconsole/core/data_root_configuration.py",
         "src/netconsole/core/storage_manifest.py",
         "src/netconsole/core/database.py",
+        "src/netconsole/core/rail_infrastructure_schema.py",
         "src/netconsole/services/database_upgrade/**",
         "src/netconsole/services/production_database_maintenance.py",
         "src/netconsole/services/site_storage.py",

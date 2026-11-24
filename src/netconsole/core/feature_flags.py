@@ -90,7 +90,6 @@ PACKAGED_PRODUCTION_FEATURE_IDS = PACKAGED_CORE_FEATURE_IDS | frozenset(
         "capability.train_online.refresh",
         "module.rail_base_data",
         "capability.rail_base_data.write",
-        "module.train_communication",
         "mesh.generate_report",
     }
 )
