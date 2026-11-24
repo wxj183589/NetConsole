@@ -49,7 +49,12 @@ def _query(callback: Callable[[], T]) -> T:
 
 
 @router.get("", response_model=WirelessDashboardDTO)
-def dashboard(request: Request, site_id: str = Query(default="", max_length=100)) -> WirelessDashboardDTO:
+def dashboard(request: Request, site_id: str = Query(default="", max_length=100),
+              station_id: str = Query(default="", max_length=160), section_id: str = Query(default="", max_length=160),
+              project_id: str = Query(default="", max_length=160)) -> WirelessDashboardDTO:
+    if station_id or section_id or project_id:
+        return _query(lambda: _service(request).get_dashboard(_site_id(request, site_id),
+            station_id=station_id, section_id=section_id, project_id=project_id))
     return _dashboard(request, site_id)
 
 

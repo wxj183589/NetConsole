@@ -5,9 +5,11 @@ from typing import Literal
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
 
 
 class AcOverviewDTO(ApiModel):
+    engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
     id: str
     name: str
     management_ip: str = ""

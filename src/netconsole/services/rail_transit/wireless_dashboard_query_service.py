@@ -73,7 +73,6 @@ class WirelessDashboardQueryService:
         self.mesh_analysis_query = mesh_analysis_query or MeshAnalysisQueryService(
             paths,
             base_query=self.base_query,
-            online_mr_query=self.online_mr_query,
         )
         self.cache_ttl_seconds = max(0.0, float(cache_ttl_seconds))
         self._cache: dict[tuple[str, str], _CacheEntry] = {}
@@ -85,7 +84,17 @@ class WirelessDashboardQueryService:
     def current_site_id(self) -> str:
         return self.base_query.current_site_id()
 
-    def get_dashboard(self, site_id: str) -> WirelessDashboardDTO:
+    def get_dashboard(self, site_id: str, *, station_id="", section_id="", project_id="") -> WirelessDashboardDTO:
+        if station_id or section_id or project_id:
+            full = self.get_dashboard(site_id)
+            selected = {uid:c for uid,c in full.engineering_contexts.items()
+                        if c.available and c.affiliation_status not in {"stale","conflict","unavailable"}
+                        and (not station_id or station_id in {c.station_id,c.node_uid})
+                        and (not section_id or section_id in c.section_ids)
+                        and (not project_id or project_id in c.project_ids)}
+            trains = [row for row in full.trains.items if any(m.mr_id in selected for m in row.mrs)]
+            return full.model_copy(update={"engineering_contexts":selected,
+                "trains":full.trains.model_copy(update={"items":trains,"total":len(trains)})})
         cached = self._cached(site_id)
         if cached is not None:
             return cached.model_copy(update={"summary": cached.summary.model_copy(update={"cached": True})})
@@ -146,7 +155,13 @@ class WirelessDashboardQueryService:
             updated_at=updated_at,
             data_version=data_version,
         )
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+        context_ids = [m.mr_id for train in trains.items for m in train.mrs] + [a.id for a in ac.acs]
+        contexts = EngineeringContextQueryService(self.paths, self.base_query).contexts(site_id, context_ids)
+        engineering_revision = self._engineering_revision(site_id)
         result = WirelessDashboardDTO(
+            engineering_contexts=contexts, engineering_revision=engineering_revision,
+            engineering_context_status="unavailable" if any(c.affiliation_status=="unavailable" for c in contexts.values()) else "stale" if any(c.affiliation_status=="stale" for c in contexts.values()) else "current",
             summary=summary,
             infrastructure=infrastructure,
             trains=train_section,
@@ -302,11 +317,20 @@ class WirelessDashboardQueryService:
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()[:16]
 
+    def _engineering_revision(self, site_id):
+        try:
+            return self.base_query.repository.base_data_revision(site_id)
+        except Exception:
+            return ""
+
     def _cached(self, site_id: str) -> WirelessDashboardDTO | None:
         with self._lock:
             key = self._latest_key.get(site_id)
             entry = self._cache.get(key) if key else None
         if entry is None or time.monotonic() - entry.created_at > self.cache_ttl_seconds:
+            return None
+        revision = self._engineering_revision(site_id)
+        if entry.value.engineering_revision != revision:
             return None
         return entry.value
 

@@ -144,3 +144,21 @@ def test_trackside_snapshot_context_uses_stable_ids_and_keeps_runtime_independen
     snapshot=load_trackside_ap_business_snapshot(DeviceRepository(Database(db)),'demo',1)
     assert all('switch_engineering_context' in r and 'point_engineering_context' in r for r in snapshot.rows)
     assert all(r['point_engineering_context']['affiliation_status'] in {'unconfirmed','associated','conflict','stale','unavailable'} for r in snapshot.rows)
+
+
+def test_ac_services_remain_separate_from_current_and_wireless_revision_refreshes(tmp_path):
+    from netconsole.services.ac.query_service import AcManagementQueryService
+    from netconsole.services.rail_transit.wireless_dashboard_query_service import WirelessDashboardQueryService
+    paths,db,relations=_service(tmp_path)
+    _mutate(relations,'ac_service','ac-1','station-1')
+    ac=AcManagementQueryService(paths).get_summary('demo')
+    selected=next(a for a in ac.acs if a.id=='ac-1')
+    assert selected.engineering_context.service_stations == ['车站A']
+    wireless=WirelessDashboardQueryService(paths,cache_ttl_seconds=3600)
+    first=wireless.get_dashboard('demo')
+    _mutate(relations,'node_project','station-1','project-1')
+    second=wireless.get_dashboard('demo')
+    assert first.engineering_revision != second.engineering_revision
+    assert not second.summary.cached
+    assert wireless.get_dashboard('demo',section_id='missing').trains.total == 0
+    assert first.summary.ap_total == second.summary.ap_total

@@ -5,6 +5,7 @@ from pydantic import Field
 from netconsole.models.api.ac_management import AcApDTO, AcManagementSummaryDTO
 from netconsole.models.api.ac_mesh_link import AcMeshLinkRecordDTO, AcMeshLinkSummaryDTO
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
 from netconsole.models.api.job_center import JobCenterTaskDTO
 from netconsole.models.api.mesh_analysis import MeshAnalysisSessionDTO, MeshAnalysisSummaryDTO
 from netconsole.models.api.online_mr import OnlineMrSessionSummaryDTO
@@ -92,6 +93,9 @@ class WirelessDashboardAnalysisDTO(ApiModel):
 
 
 class WirelessDashboardDTO(ApiModel):
+    engineering_contexts: dict[str, DeviceEngineeringContextDTO] = Field(default_factory=dict)
+    engineering_revision: str = ""
+    engineering_context_status: str = "unavailable"
     summary: WirelessDashboardSummaryDTO
     infrastructure: WirelessDashboardInfrastructureDTO
     trains: WirelessDashboardTrainsDTO

@@ -275,6 +275,10 @@ class AcManagementQueryService:
                     updated_at=updated_at,
                 )
             )
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+        contexts = EngineeringContextQueryService(self.paths).contexts(site_id, [item.id for item in overviews])
+        for item in overviews:
+            item.engineering_context = contexts[item.id]
         if not overviews:
             return AcManagementSummaryDTO(site_id=site_id, message="暂无 AC 资源数据，请先在 Qt AC 管理页面完成数据采集。")
         return AcManagementSummaryDTO(
@@ -728,7 +732,9 @@ class AcManagementQueryService:
             return None
         summary = dict(row.get("summary") or {})
         management_ip = str(row.get("primary_address") or "")
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
         return AcOverviewDTO(
+            engineering_context=EngineeringContextQueryService(self.paths).one(site_id, ac_id),
             id=ac_id,
             name=str(row.get("name") or ac_id),
             management_ip=management_ip,
