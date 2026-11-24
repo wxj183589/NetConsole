@@ -37,6 +37,7 @@ from netconsole.core.settings import SettingsStore
 from netconsole.services.site_manager import SiteManager
 from netconsole.infrastructure.desktop import LocalDesktopAdapter
 from netconsole.models.api.device_management import (
+    DeviceConnectionHealthCheckTaskDTO,
     DeviceExportRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceSecureCrtExportRequestDTO,
@@ -4605,6 +4606,89 @@ def test_device_list_defaults_to_included_and_supports_classification_filters(
     reread = devices.get_by_uuid(str(sw.device_uuid))
     assert reread is not None
     assert reread.primary_address == sw.primary_address
+
+
+def test_batch_classification_updates_projection_per_device_and_rejects_invalid_combo(
+    tmp_path: Path,
+) -> None:
+    client, _service, _adapter, devices, _facts, _mr, sw = _fixture(tmp_path)
+    original_group_id = sw.group_id
+    response = client.patch(
+        "/api/device-management/devices/classification",
+        json={
+            "device_uuids": [sw.device_uuid],
+            "device_vendor": "Huawei",
+            "device_category": "NETWORK",
+            "device_subcategory": "SWITCH",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["updated"] == 1
+    assert body["failed"] == 0
+    assert body["results"][0]["success"] is True
+    reread = devices.get_by_uuid(str(sw.device_uuid))
+    assert reread is not None
+    assert reread.device_vendor == "Huawei"
+    assert reread.device_type == "SW"
+    assert reread.group_id == original_group_id
+
+    invalid = client.patch(
+        "/api/device-management/devices/classification",
+        json={
+            "device_uuids": [sw.device_uuid],
+            "device_vendor": "F5",
+            "device_category": "NETWORK",
+            "device_subcategory": "SWITCH",
+        },
+    )
+
+    assert invalid.status_code == 200
+    invalid_body = invalid.json()
+    assert invalid_body["updated"] == 0
+    assert invalid_body["failed"] == 1
+    assert invalid_body["results"][0]["success"] is False
+    assert "分类" in invalid_body["results"][0]["message"] or "SmartHub" in invalid_body["results"][0]["message"]
+    reread_after_rejection = devices.get_by_uuid(str(sw.device_uuid))
+    assert reread_after_rejection is not None
+    assert reread_after_rejection.device_vendor == "Huawei"
+
+
+def test_connection_health_check_is_direct_and_does_not_create_task_center_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    direct_task = DeviceConnectionHealthCheckTaskDTO(
+        task_id="device-page-check-test",
+        task_status="RUNNING",
+        terminal=False,
+        stage="connection",
+        current=0,
+        total=1,
+        items=[
+            {
+                "device_uuid": str(mr.device_uuid),
+                "device_name": mr.name,
+                "primary_address": mr.primary_address,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        service.connection_health_service,
+        "start",
+        lambda _device_uuids, *, concurrency_limit, site_name: direct_task,
+    )
+
+    response = client.post(
+        "/api/device-management/devices/connection-health-checks",
+        json={"device_uuids": [str(mr.device_uuid)]},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["task_id"] == direct_task.task_id
+    assert service.task_service.repository("demo").get(direct_task.task_id) is None
 
 
 def test_device_list_reports_schema_not_ready_with_safe_diagnostics(

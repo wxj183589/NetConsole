@@ -86,6 +86,8 @@ from netconsole.models.api.device_management import (
     DeviceListItemDTO,
     DeviceClassificationUpdateDTO,
     DeviceClassificationUpdateRequestDTO,
+    DeviceClassificationBatchResultDTO,
+    DeviceConnectionHealthCheckTaskDTO,
     DevicePageDTO,
     DeviceTaskSummaryDTO,
 )
@@ -128,6 +130,9 @@ from netconsole.services.device_collection_support import resolve_device_collect
 from netconsole.services.device_health_check_application_service import (
     DEVICE_HEALTH_CHECK_TASK_TYPE,
     DeviceHealthCheckApplicationService,
+)
+from netconsole.services.device_connection_health_application_service import (
+    DeviceConnectionHealthCheckApplicationService,
 )
 from netconsole.services.device_connection_preflight import (
     DeviceConnectionPreflightError,
@@ -335,6 +340,7 @@ class DeviceManagementWebService:
         artifact_store: WebArtifactStore | None = None,
         device_operation_service: DeviceInventoryOperationService | None = None,
         health_check_service: DeviceHealthCheckApplicationService | None = None,
+        connection_health_service: DeviceConnectionHealthCheckApplicationService | None = None,
     ) -> None:
         self.paths = paths
         self.task_service = task_service
@@ -348,6 +354,10 @@ class DeviceManagementWebService:
             paths,
             task_service,
             process_adapter=self.process_adapter,
+            site_provider=self.current_site_id,
+        )
+        self.connection_health_service = connection_health_service or DeviceConnectionHealthCheckApplicationService(
+            paths,
             site_provider=self.current_site_id,
         )
         self._start_lock = RLock()
@@ -1020,6 +1030,26 @@ class DeviceManagementWebService:
         self, payload: DeviceClassificationUpdateRequestDTO
     ) -> DeviceClassificationUpdateDTO:
         devices, _groups, _facts = self._repositories(self.current_site_id())
+        if any(
+            value is not None
+            for value in (
+                payload.device_vendor,
+                payload.device_category,
+                payload.device_subcategory,
+            )
+        ):
+            results = devices.update_device_classification_batch(
+                self._unique_ids(payload.device_uuids),
+                device_vendor=payload.device_vendor,
+                device_category=payload.device_category,
+                device_subcategory=payload.device_subcategory,
+                updated_by="local_user",
+            )
+            return DeviceClassificationUpdateDTO(
+                updated=sum(bool(item.get("success")) for item in results),
+                failed=sum(not bool(item.get("success")) for item in results),
+                results=[DeviceClassificationBatchResultDTO(**item) for item in results],
+            )
         updated = devices.update_classification_many(
             self._unique_ids(payload.device_uuids),
             project_phase=payload.project_phase,
@@ -3655,7 +3685,23 @@ class DeviceManagementWebService:
 
     async def stop(self) -> None:
         await self.stop_exports()
+        self.connection_health_service.stop()
         await asyncio.to_thread(self.process_adapter.shutdown)
+
+    def start_connection_health_check(
+        self, device_uuids: list[str], *, concurrency_limit: int = 4
+    ) -> DeviceConnectionHealthCheckTaskDTO:
+        return self.connection_health_service.start(
+            device_uuids,
+            concurrency_limit=concurrency_limit,
+            site_name=self.current_site_id(),
+        )
+
+    def get_connection_health_check(self, task_id: str) -> DeviceConnectionHealthCheckTaskDTO:
+        return self.connection_health_service.get(task_id, site_name=self.current_site_id())
+
+    def cancel_connection_health_check(self, task_id: str) -> DeviceConnectionHealthCheckTaskDTO:
+        return self.connection_health_service.cancel(task_id, site_name=self.current_site_id())
 
     def _repositories(
         self, site: str

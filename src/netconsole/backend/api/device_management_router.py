@@ -23,6 +23,8 @@ from netconsole.models.api.device_management import (
     DeviceSecretField,
     DeviceConnectionTestRequestDTO,
     DeviceBatchConnectionRequestDTO,
+    DeviceConnectionHealthCheckRequestDTO,
+    DeviceConnectionHealthCheckTaskDTO,
     DeviceBatchRefreshRequestDTO,
     DeviceDeleteDTO,
     DeviceDeleteRequestDTO,
@@ -230,6 +232,7 @@ def assign_group(
 @router.patch(
     "/devices/classification",
     response_model=DeviceClassificationUpdateDTO,
+    response_model_exclude_none=True,
     dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def update_classification(
@@ -327,6 +330,53 @@ def batch_connection_tests(
     request: Request, payload: DeviceBatchConnectionRequestDTO
 ) -> DeviceTaskBatchDTO:
     return _query(lambda: _service(request).start_batch_connection_tests(payload))
+
+
+@router.post(
+    "/devices/connection-health-checks",
+    response_model=DeviceConnectionHealthCheckTaskDTO,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[
+        Depends(require_feature("capability.devices.connection_test")),
+        Depends(require_feature("capability.devices.collect")),
+    ],
+)
+def start_connection_health_check(
+    request: Request, payload: DeviceConnectionHealthCheckRequestDTO
+) -> DeviceConnectionHealthCheckTaskDTO:
+    service = _service(request)
+    return _not_found(
+        lambda: service.start_connection_health_check(
+            payload.device_uuids, concurrency_limit=payload.concurrency_limit
+        ),
+        "设备不存在",
+    )
+
+
+@router.get(
+    "/devices/connection-health-checks/{task_id}",
+    response_model=DeviceConnectionHealthCheckTaskDTO,
+)
+def get_connection_health_check(
+    request: Request, task_id: str
+) -> DeviceConnectionHealthCheckTaskDTO:
+    return _not_found(
+        lambda: _service(request).get_connection_health_check(task_id),
+        "测试连接任务不存在",
+    )
+
+
+@router.post(
+    "/devices/connection-health-checks/{task_id}/cancel",
+    response_model=DeviceConnectionHealthCheckTaskDTO,
+)
+def cancel_connection_health_check(
+    request: Request, task_id: str
+) -> DeviceConnectionHealthCheckTaskDTO:
+    return _not_found(
+        lambda: _service(request).cancel_connection_health_check(task_id),
+        "测试连接任务不存在",
+    )
 
 
 @router.post(

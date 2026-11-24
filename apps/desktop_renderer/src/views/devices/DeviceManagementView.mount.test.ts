@@ -17,15 +17,14 @@ const mocks = vi.hoisted(() => ({
   launchExternalTerminals: vi.fn(),
   updateDevice: vi.fn(),
   startBatchRefreshDetails: vi.fn(),
-  startBatchConnectionTests: vi.fn(),
+  startDeviceConnectionHealthCheck: vi.fn(),
+  getDeviceConnectionHealthCheck: vi.fn(),
+  cancelDeviceConnectionHealthCheck: vi.fn(),
   getBatchRefresh: vi.fn(),
   startDeviceFormConnectionTest: vi.fn(),
   startDeviceDiagnosticDownload: vi.fn(),
   startDeviceCsvExport: vi.fn(),
   startDeviceTemplateExport: vi.fn(),
-  startDeviceHealthCheck: vi.fn(),
-  getDeviceHealthCheck: vi.fn(),
-  cancelDeviceHealthCheck: vi.fn(),
   chooseSavePath: vi.fn(),
   downloadBackendResource: vi.fn(),
   openPath: vi.fn(),
@@ -69,15 +68,14 @@ vi.mock('../../api/deviceManagement', async (importOriginal) => ({
   launchExternalTerminals: mocks.launchExternalTerminals,
   updateDevice: mocks.updateDevice,
   startBatchRefreshDetails: mocks.startBatchRefreshDetails,
-  startBatchConnectionTests: mocks.startBatchConnectionTests,
+  startDeviceConnectionHealthCheck: mocks.startDeviceConnectionHealthCheck,
+  getDeviceConnectionHealthCheck: mocks.getDeviceConnectionHealthCheck,
+  cancelDeviceConnectionHealthCheck: mocks.cancelDeviceConnectionHealthCheck,
   getBatchRefresh: mocks.getBatchRefresh,
   startDeviceFormConnectionTest: mocks.startDeviceFormConnectionTest,
   startDeviceDiagnosticDownload: mocks.startDeviceDiagnosticDownload,
   startDeviceCsvExport: mocks.startDeviceCsvExport,
   startDeviceTemplateExport: mocks.startDeviceTemplateExport,
-  startDeviceHealthCheck: mocks.startDeviceHealthCheck,
-  getDeviceHealthCheck: mocks.getDeviceHealthCheck,
-  cancelDeviceHealthCheck: mocks.cancelDeviceHealthCheck,
 }))
 
 vi.mock('../../features', () => ({ isFeatureEnabled: mocks.featureEnabled }))
@@ -190,6 +188,8 @@ const listItem = {
   connection_status: 'UNKNOWN',
   last_test_task_id: '',
   last_test_time: '',
+  credential_status: 'available',
+  credential_message: '',
 }
 
 const detail = {
@@ -533,24 +533,12 @@ beforeEach(() => {
     summary: { total: 0, accepted: 0, reused: 0, rejected: 0, running: 0, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
     items: [],
   })
-  mocks.startBatchConnectionTests.mockResolvedValue({
-    action: 'batch_connection_test',
-    tasks: [{
-      task_id: 'connection-test-1',
-      task_status: 'PENDING',
-      action: 'connection_test',
-      artifact_id: '',
-      available: false,
-      sha256: '',
-      size_bytes: 0,
-      message: '等待执行',
-    }],
-    batch_id: '',
-    created_at: '',
-    finished_at: '',
-    terminal: false,
-    summary: { total: 1, accepted: 1, reused: 0, rejected: 0, running: 1, completed: 0, partial_success: 0, failed: 0, cancelled: 0 },
-    items: [],
+  mocks.startDeviceConnectionHealthCheck.mockResolvedValue({
+    task_id: 'device-page-check-1', task_status: 'RUNNING', terminal: false,
+    stage: 'connection', current: 0, total: 1, message: '正在测试连接',
+    connection_timeout_seconds: 10, command_timeout_seconds: 120,
+    summary: { total: 1, connection_success: 0, connection_failed: 0, health_success: 0, health_partial_success: 0, health_failed: 0, health_not_supported: 0, cancelled: 0 },
+    items: [{ device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12', connection_status: 'RUNNING', connection: null, health_status: 'PENDING', health_state: 'UNKNOWN', profile_id: '', metrics: [], message: '' }],
   })
   mocks.getBatchRefresh.mockReset()
   mocks.startDeviceFormConnectionTest.mockResolvedValue({
@@ -606,30 +594,24 @@ beforeEach(() => {
     result_status: 'ok', failure_category: '', message: 'SSH 连接成功', safe_message: 'SSH 连接成功', method: 'primary_direct', host: '192.0.2.12', port: 22, latency_ms: 3, elapsed_ms: 3, tested_at: '2026-07-22T00:00:00Z', system_name: 'MR-02',
     model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '',
   })
-  mocks.startDeviceHealthCheck.mockResolvedValue({
-    task_id: 'health-check-1', task_status: 'RUNNING', terminal: false,
-    stage: 'health_check', current: 0, total: 1, message: '正在检查设备运行状态',
+  mocks.getDeviceConnectionHealthCheck.mockResolvedValue({
+    task_id: 'device-page-check-1', task_status: 'COMPLETED', terminal: true,
+    stage: 'completed', current: 1, total: 1, message: '测试连接与健康检查已完成',
     connection_timeout_seconds: 10, command_timeout_seconds: 120,
-    summary: { total: 0, success: 0, partial_success: 0, failed: 0, not_supported: 0, cancelled: 0 },
-    items: [],
-  })
-  mocks.getDeviceHealthCheck.mockResolvedValue({
-    task_id: 'health-check-1', task_status: 'COMPLETED', terminal: true,
-    stage: 'health_check', current: 1, total: 1, message: '设备健康检查完成',
-    connection_timeout_seconds: 10, command_timeout_seconds: 120,
-    summary: { total: 1, success: 1, partial_success: 0, failed: 0, not_supported: 0, cancelled: 0 },
+    summary: { total: 1, connection_success: 1, connection_failed: 0, health_success: 1, health_partial_success: 0, health_failed: 0, health_not_supported: 0, cancelled: 0 },
     items: [{
-      device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12',
-      status: 'SUCCESS', health_state: 'OBSERVED', profile_id: 'h3c-comware', message: '',
+      device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12', connection_status: 'SUCCESS',
+      connection: { task_id: 'device-page-check-1:device-1', task_status: 'SUCCESS', device_uuid: 'device-1', protocol: 'SSH', success: true, result_status: 'ok', failure_category: '', error_code: '', summary: '', retryable: false, suggested_action: '', message: 'SSH 连接成功', safe_message: 'SSH 连接成功', method: 'primary_direct', host: '192.0.2.12', port: 22, latency_ms: 3, elapsed_ms: 3, tested_at: '', system_name: '', model: '', os_family: '', interface_count: null, error_type: '', suggestion: '', created_time: '', updated_time: '' },
+      health_status: 'SUCCESS', health_state: 'OBSERVED', profile_id: 'h3c-comware', message: '',
       metrics: [{ code: 'uptime', label: '系统运行时间', status: 'OBSERVED', value: '3 days', message: '' }],
     }],
   })
-  mocks.cancelDeviceHealthCheck.mockResolvedValue({
-    task_id: 'health-check-1', task_status: 'CANCELLED', terminal: true,
-    stage: 'health_check', current: 0, total: 1, message: '任务已取消',
+  mocks.cancelDeviceConnectionHealthCheck.mockResolvedValue({
+    task_id: 'device-page-check-1', task_status: 'CANCELLED', terminal: true,
+    stage: 'cancelled', current: 0, total: 1, message: '已取消',
     connection_timeout_seconds: 10, command_timeout_seconds: 120,
-    summary: { total: 0, success: 0, partial_success: 0, failed: 0, not_supported: 0, cancelled: 0 },
-    items: [],
+    summary: { total: 1, connection_success: 0, connection_failed: 0, health_success: 0, health_partial_success: 0, health_failed: 0, health_not_supported: 0, cancelled: 1 },
+    items: [{ device_uuid: 'device-1', device_name: 'MR2', primary_address: '192.0.2.12', connection_status: 'CANCELLED', connection: null, health_status: 'CANCELLED', health_state: 'UNKNOWN', profile_id: '', metrics: [], message: '已取消' }],
   })
   mocks.getExternalTerminalSettings.mockResolvedValue({
     terminal_type: 'securecrt',
@@ -781,47 +763,48 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(mocks.listDevices).toHaveBeenLastCalledWith(expect.objectContaining({ group_values: [], page: 1 }))
   })
 
-  it('submits a health check, polls to a terminal result and renders observed metrics', async () => {
+  it('submits the merged connection gate, polls health after connection and renders observed metrics', async () => {
     vi.useFakeTimers()
     const wrapper = await renderView()
     await wrapper.get('[data-testid="select-first-device"]').trigger('click')
-    const healthButton = wrapper.findAll('button').find((button) => button.text() === '健康检查')
-    expect(healthButton).toBeTruthy()
+    const testButton = wrapper.findAll('button').find((button) => button.text() === '测试连接')
+    expect(testButton).toBeTruthy()
 
-    await healthButton!.trigger('click')
+    await testButton!.trigger('click')
     await flushPromises()
-    expect(mocks.startDeviceHealthCheck).toHaveBeenCalledWith(['device-1'])
+    expect(mocks.startDeviceConnectionHealthCheck).toHaveBeenCalledWith(['device-1'])
 
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
-    expect(mocks.getDeviceHealthCheck).toHaveBeenCalledWith('health-check-1')
-    expect(wrapper.text()).toContain('成功 1')
+    expect(mocks.getDeviceConnectionHealthCheck).toHaveBeenCalledWith('device-page-check-1')
+    expect(wrapper.text()).toContain('连接成功 1')
     expect(wrapper.text()).toContain('系统运行时间')
     expect(wrapper.text()).toContain('3 days')
-    expect(healthButton!.attributes('disabled')).toBeUndefined()
+    expect(testButton!.attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 
-  it('cancels an active health check and clears the submitting state on a terminal response', async () => {
+  it('cancels an active merged check and clears the submitting state on a terminal response', async () => {
     const wrapper = await renderView()
     await wrapper.get('[data-testid="select-first-device"]').trigger('click')
-    const healthButton = wrapper.findAll('button').find((button) => button.text() === '健康检查')
-    await healthButton!.trigger('click')
+    const testButton = wrapper.findAll('button').find((button) => button.text() === '测试连接')
+    await testButton!.trigger('click')
     await flushPromises()
 
-    const cancelButton = wrapper.findAll('button').find((button) => button.text() === '取消任务')
+    const cancelButton = wrapper.findAll('button').find((button) => button.text() === '取消')
     expect(cancelButton).toBeTruthy()
     await cancelButton!.trigger('click')
     await flushPromises()
 
-    expect(mocks.cancelDeviceHealthCheck).toHaveBeenCalledWith('health-check-1')
-    expect(wrapper.text()).toContain('任务已取消')
-    expect(wrapper.findAll('button').find((button) => button.text() === '取消任务')).toBeUndefined()
-    expect(healthButton!.attributes('disabled')).toBeUndefined()
+    expect(mocks.cancelDeviceConnectionHealthCheck).toHaveBeenCalledWith('device-page-check-1')
+    expect(wrapper.text()).toContain('已取消')
+    expect(wrapper.findAll('button').find((button) => button.text() === '取消')).toBeUndefined()
+    expect(testButton!.attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 
   it('queries and exports the same WPS multi-select group and connection-status filters', async () => {
+    vi.useFakeTimers()
     const wrapper = await renderView()
     const pick = async (placeholder: string, values: string[]) => {
       const control = wrapper.findAllComponents(NcMultiValueFilter).find((candidate) => candidate.props('placeholder') === placeholder)
@@ -833,6 +816,8 @@ describe('DeviceManagementView mounted interactions', () => {
 
     await pick('全部分组', ['1', '__ungrouped__'])
     await pick('全部连接状态', ['REACHABLE', 'UNREACHABLE'])
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
     expect(mocks.listDevices).toHaveBeenLastCalledWith(expect.objectContaining({
       group_values: ['1', '__ungrouped__'],
       connection_status_values: ['REACHABLE', 'UNREACHABLE'],
@@ -909,7 +894,7 @@ describe('DeviceManagementView mounted interactions', () => {
     wrapper.unmount()
   })
 
-  it('provides all device actions through the shared typed context menu and preserves copied cell text', async () => {
+  it('provides only the supported device actions through the shared typed context menu', async () => {
     const wrapper = await renderView()
     const deviceTable = wrapper.findComponent(NcDataTable) as unknown as VueWrapper
     const items = (deviceTable.vm.$props as unknown as { contextMenuItems: Array<{
@@ -926,14 +911,6 @@ describe('DeviceManagementView mounted interactions', () => {
       '设置当前工作状态',
       '编辑',
       '复制设备',
-      '复制当前单元格',
-      '复制名称',
-      '复制主地址',
-      '复制备用地址',
-      '复制系统名',
-      '复制站点',
-      '复制整行',
-      '复制设备信息',
       '内置控制台',
       '外部终端',
       '删除',
@@ -943,12 +920,7 @@ describe('DeviceManagementView mounted interactions', () => {
     expect(items.find((item) => item.key === 'external-terminal')?.disabled).toBe(false)
     expect(items.find((item) => item.key === 'delete')?.danger).toBe(true)
 
-    const copyCell = items.find((item) => item.key === 'copy-current-cell')!
-    await copyCell.action({ row: listItem, rowIndex: 0, columnKey: 'login_protocol', cellValue: '—' })
-    await copyCell.action({ row: listItem, rowIndex: 0, columnKey: 'connection_status', cellValue: 'UNKNOWN' })
-    expect(mocks.clipboardWrite).toHaveBeenNthCalledWith(1, 'SSH')
-    expect(mocks.clipboardWrite).toHaveBeenNthCalledWith(2, '未测试')
-    expect(mocks.messages.success).toHaveBeenCalledWith('已复制')
+    expect(items.some((item) => item.key.startsWith('copy-'))).toBe(false)
     wrapper.unmount()
   })
 
@@ -1168,7 +1140,7 @@ describe('DeviceManagementView mounted interactions', () => {
     wrapper.unmount()
   })
 
-  it('reloads the current page and preserves selection when a connection test reaches terminal state', async () => {
+  it('opens the merged connection/health result without creating task-center rows', async () => {
     const testableListItem = { ...listItem, credential_status: 'available', credential_message: '' }
     const reachableListItem = {
       ...testableListItem,
@@ -1197,19 +1169,10 @@ describe('DeviceManagementView mounted interactions', () => {
     await testButton!.trigger('click')
     await flushPromises()
 
-    expect(mocks.startBatchConnectionTests).toHaveBeenCalledWith(['device-1'])
+    expect(mocks.startDeviceConnectionHealthCheck).toHaveBeenCalledWith(['device-1'])
+    expect(mocks.taskStore!.tasks).toEqual([])
     expect(mocks.listDevices).toHaveBeenCalledTimes(1)
-
-    mocks.taskStore!.tasks = [task({ id: 'connection-test-1', status: 'RUNNING', updated_time: 'running' })]
-    await flushPromises()
-    expect(mocks.listDevices).toHaveBeenCalledTimes(1)
-
-    mocks.taskStore!.tasks = [task({ id: 'connection-test-1', status: 'COMPLETED', updated_time: 'done' })]
-    await flushPromises()
-
-    expect(mocks.listDevices).toHaveBeenCalledTimes(2)
-    expect(wrapper.findComponent(tableStub).props('data')).toEqual([reachableListItem])
-    expect((testButton!.element as HTMLButtonElement).disabled).toBe(false)
+    expect((testButton!.element as HTMLButtonElement).disabled).toBe(true)
     wrapper.unmount()
   })
 

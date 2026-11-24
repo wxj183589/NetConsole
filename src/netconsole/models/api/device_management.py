@@ -391,6 +391,9 @@ class DeviceClassificationUpdateRequestDTO(ApiModel):
     device_uuids: list[str] = Field(min_length=1, max_length=500)
     project_phase: ProjectPhaseValue | None = None
     work_scope_status: WorkScopeStatusValue | None = None
+    device_vendor: str | None = Field(default=None, max_length=40)
+    device_category: str | None = Field(default=None, max_length=40)
+    device_subcategory: str | None = Field(default=None, max_length=40)
     reason: str = Field(default="", max_length=1000)
 
     @field_validator("project_phase", mode="before")
@@ -403,15 +406,51 @@ class DeviceClassificationUpdateRequestDTO(ApiModel):
     def normalize_status(cls, value: object) -> str | None:
         return None if value is None else normalize_work_scope_status(value)
 
+    @field_validator("device_vendor", mode="before")
+    @classmethod
+    def normalize_vendor(cls, value: object) -> str | None:
+        return None if value is None else normalize_device_vendor_text(value)
+
+    @field_validator("device_category", mode="before")
+    @classmethod
+    def normalize_category(cls, value: object) -> str | None:
+        return None if value is None else normalize_category_code(value)
+
+    @field_validator("device_subcategory", mode="before")
+    @classmethod
+    def normalize_subcategory(cls, value: object) -> str | None:
+        return None if value is None else normalize_subcategory_code(value)
+
     @model_validator(mode="after")
     def validate_change(self) -> "DeviceClassificationUpdateRequestDTO":
-        if self.project_phase is None and self.work_scope_status is None:
-            raise ValueError("至少提供建设阶段或当前工作状态")
+        if all(
+            value is None
+            for value in (
+                self.project_phase,
+                self.work_scope_status,
+                self.device_vendor,
+                self.device_category,
+                self.device_subcategory,
+            )
+        ):
+            raise ValueError("至少提供一个要修改的分类或设备状态字段")
         return self
 
 
+class DeviceClassificationBatchResultDTO(ApiModel):
+    device_uuid: str
+    device_name: str = ""
+    success: bool = False
+    message: str = ""
+    device_vendor: str = ""
+    device_category: str = ""
+    device_subcategory: str = ""
+
+
 class DeviceClassificationUpdateDTO(ApiModel):
-    updated: int
+    updated: int = 0
+    failed: int | None = None
+    results: list[DeviceClassificationBatchResultDTO] | None = None
 
 
 class DeviceGroupDeleteDTO(ApiModel):
@@ -746,6 +785,53 @@ class DeviceConnectionTestDTO(ApiModel):
     suggestion: str = ""
     created_time: str = ""
     updated_time: str = ""
+
+
+class DeviceConnectionHealthCheckRequestDTO(ApiModel):
+    device_uuids: list[str] = Field(min_length=1, max_length=200)
+    concurrency_limit: int = Field(default=4, ge=1, le=8)
+
+
+class DeviceConnectionHealthCheckItemDTO(ApiModel):
+    device_uuid: str
+    device_name: str = ""
+    primary_address: str = ""
+    connection_status: Literal["PENDING", "RUNNING", "SUCCESS", "FAILED", "CANCELLED"] = "PENDING"
+    connection: DeviceConnectionTestDTO | None = None
+    health_status: Literal[
+        "PENDING", "RUNNING", "SUCCESS", "PARTIAL_SUCCESS", "FAILED", "NOT_SUPPORTED", "SKIPPED", "CANCELLED"
+    ] = "PENDING"
+    health_state: Literal["OBSERVED", "UNKNOWN"] = "UNKNOWN"
+    profile_id: str = ""
+    metrics: list[DeviceHealthMetricDTO] = Field(default_factory=list)
+    message: str = ""
+
+
+class DeviceConnectionHealthCheckSummaryDTO(ApiModel):
+    total: int = 0
+    connection_success: int = 0
+    connection_failed: int = 0
+    health_success: int = 0
+    health_partial_success: int = 0
+    health_failed: int = 0
+    health_not_supported: int = 0
+    cancelled: int = 0
+
+
+class DeviceConnectionHealthCheckTaskDTO(ApiModel):
+    task_id: str
+    task_status: str
+    terminal: bool = False
+    stage: str = ""
+    current: int = 0
+    total: int = 0
+    message: str = ""
+    connection_timeout_seconds: int = 10
+    command_timeout_seconds: int = 120
+    summary: DeviceConnectionHealthCheckSummaryDTO = Field(
+        default_factory=DeviceConnectionHealthCheckSummaryDTO
+    )
+    items: list[DeviceConnectionHealthCheckItemDTO] = Field(default_factory=list)
 
 
 __all__ = [name for name in globals() if name.endswith("DTO")]
