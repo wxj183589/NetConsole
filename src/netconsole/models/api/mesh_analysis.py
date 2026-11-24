@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
 from netconsole.models.api.rail_transit_base_data import VehicleMrDTO
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 
@@ -526,6 +527,8 @@ class MeshDesktopLocationDTO(ApiModel):
 
 
 class MeshAnalysisSessionDetailDTO(ApiModel):
+    current_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
+    historical_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
     session: MeshAnalysisSessionDTO
     analysis_params: MeshAnalysisParamsDTO
     available_radios: list[int] = Field(default_factory=list)

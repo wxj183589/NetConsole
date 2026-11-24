@@ -162,3 +162,47 @@ def test_ac_services_remain_separate_from_current_and_wireless_revision_refreshe
     assert not second.summary.cached
     assert wireless.get_dashboard('demo',section_id='missing').trains.total == 0
     assert first.summary.ap_total == second.summary.ap_total
+
+
+def test_online_mr_history_keeps_original_identity_after_replacement_and_context_failure(tmp_path,monkeypatch):
+    import json
+    from tests.test_online_mr_query_service import _session
+    from netconsole.services.online_mr.query_service import OnlineMrQueryService
+    from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+    paths,db,relations=_service(tmp_path)
+    online=OnlineMrQueryService(paths)
+    folder=_session(online,'retained',site='demo',mr='old-MR',started_at='2026-11-01T00:00:00Z')
+    meta=folder/'session_meta.json';data=json.loads(meta.read_text(encoding='utf-8'));data['mr_id']='mr-01-ct';meta.write_text(json.dumps(data),encoding='utf-8')
+    original=meta.read_bytes()
+    first=_mutate(relations,'train_mr','train-1','mr-01-ct',values={'position':'CT'},effective_from='2026-01-01')
+    _mutate(relations,'train_mr','train-1','mr-temp',action='replace',relation_id=first.relationship.relationship_id,values={'position':'CT'},effective_from='2026-11-20')
+    result=online.get_session('demo','retained')
+    assert result.mr_name=='old-MR'
+    assert result.historical_engineering_context.node_uid=='train-1'
+    assert result.historical_engineering_context.affiliation_status=='historical'
+    assert result.current_engineering_context.node_uid!='train-1'
+    monkeypatch.setattr(RailTransitBaseDataQueryService,'infrastructure',lambda *a: (_ for _ in ()).throw(RuntimeError('unavailable')))
+    result=online.get_session('demo','retained')
+    assert result.session_id=='retained' and result.current_engineering_context.affiliation_status=='unavailable'
+    assert meta.read_bytes()==original
+
+
+def test_mesh_history_uses_only_explicit_uuid_and_preserves_evidence(tmp_path):
+    from tests.support.mesh_analysis_test_support import create_mesh_analysis_fixture
+    from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
+    paths, db, relations = _service(tmp_path)
+    paths, session_id, detail, raw, report = create_mesh_analysis_fixture(tmp_path)
+    service = MeshAnalysisQueryService(paths)
+    protected = {p: p.read_bytes() for p in (detail, raw, report)}
+    legacy = service.get_analysis_session('demo', session_id)
+    assert legacy.historical_engineering_context.affiliation_status == 'unconfirmed'
+    with closing(Database(paths.mesh_catalog_path('demo')).connect()) as conn, conn:
+        conn.execute('ALTER TABLE mr_profiles ADD COLUMN linked_device_uuid TEXT')
+        conn.execute("UPDATE mr_profiles SET linked_device_uuid='mr-01-ct'")
+    first = _mutate(relations, 'train_mr', 'train-1', 'mr-01-ct', values={'position':'CT'}, effective_from='2026-01-01')
+    _mutate(relations, 'train_mr', 'train-1', 'mr-temp', action='replace', relation_id=first.relationship.relationship_id, values={'position':'CT'}, effective_from='2026-11-20')
+    result = service.get_analysis_session('demo', session_id)
+    assert result.historical_engineering_context.node_uid == 'train-1'
+    assert result.current_engineering_context.node_uid != 'train-1'
+    assert result.session == legacy.session
+    assert all(p.read_bytes() == content for p, content in protected.items())

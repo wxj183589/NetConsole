@@ -219,7 +219,14 @@ class OnlineMrQueryService:
         database = self.get_database_summary(site_id, session_id)
         raw_count = sum(1 for item in artifacts if item.kind == "raw")
         integrity = self._data_integrity(meta, summary)
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+        from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
+        engineering = EngineeringContextQueryService(self.paths)
+        uid = str(meta.get("device_uuid") or meta.get("mr_id") or "")
+        historical = engineering.one(site_id, uid, at_time=summary.started_at) if uid and summary.started_at else DeviceEngineeringContextDTO(temporal_scope="historical", affiliation_status="unconfirmed", reason_code="HISTORICAL_STABLE_ID_OR_TIME_MISSING")
         return OnlineMrSessionDetailDTO(
+            current_engineering_context=engineering.one(site_id, uid),
+            historical_engineering_context=historical,
             **summary.model_dump(),
             session_path_reference=session_dir.relative_to(self.paths.online_mr_root(site_id)).as_posix(),
             connection_summary={

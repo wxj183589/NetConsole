@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import Field
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
 from netconsole.models.online_mr_application import OnlineMrExecutorKind, OnlineMrMappingState, OnlineMrPhase
 from netconsole.models.task_state import TaskState
 
@@ -125,6 +126,8 @@ class OnlineMrDatabaseSummaryDTO(ApiModel):
 
 
 class OnlineMrSessionDetailDTO(OnlineMrSessionSummaryDTO):
+    current_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
+    historical_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
     session_path_reference: str
     connection_summary: dict[str, Any] = Field(default_factory=dict)
     collection_config: dict[str, Any] = Field(default_factory=dict)

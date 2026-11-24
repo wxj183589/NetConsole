@@ -172,6 +172,7 @@ class _SessionContext:
     detail_db: Path | None
     raw_path: Path | None
     relocated_detail: bool = False
+    linked_device_uuid: str = ""
 
 
 @dataclass(frozen=True)
@@ -644,7 +645,14 @@ class MeshAnalysisQueryService:
                     severity="warning",
                 )
             )
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+        from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
+        engineering = EngineeringContextQueryService(self.paths, self.base_query)
+        event_time = str(context.source.get("first_sample_time") or context.source.get("first_log_timestamp") or "")
+        historical = engineering.one(site_id, context.linked_device_uuid, at_time=event_time) if event_time and context.linked_device_uuid else DeviceEngineeringContextDTO(temporal_scope="historical", affiliation_status="unconfirmed", reason_code="HISTORICAL_STABLE_ID_OR_TIME_MISSING")
         return MeshAnalysisSessionDetailDTO(
+            current_engineering_context=engineering.one(site_id, context.linked_device_uuid),
+            historical_engineering_context=historical,
             session=self._session_dto(context, stats),
             analysis_params=self._effective_analysis_params(context),
             available_radios=self._available_radios(context),
@@ -3369,6 +3377,7 @@ class MeshAnalysisQueryService:
             mr_name=mr_name,
             safe_folder_name=safe_name,
             linked_device_id=profile.get("linked_device_id"),
+            linked_device_uuid=str(profile.get("linked_device_uuid") or ""),
             source_id=int(source["id"]),
             detail_source_id=self._resolve_detail_source_id(detail, source),
             source=source,
