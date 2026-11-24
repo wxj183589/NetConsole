@@ -308,7 +308,25 @@ export interface DeviceOverviewResponse {
 
 export interface DeviceEngineeringContext {
   available: boolean
-  affiliation_status: 'associated' | 'unassociated' | 'unavailable' | 'conflict'
+  affiliation_status: 'associated' | 'unassociated' | 'unavailable' | 'conflict' | 'stale' | 'historical' | 'not_found' | 'unconfirmed'
+  device_uuid?: string
+  device_name?: string
+  device_type?: string
+  point_id?: string
+  identity_entity_id?: string
+  line_id?: string
+  station_id?: string
+  station_name?: string
+  section_ids?: string[]
+  project_ids?: string[]
+  physical_location?: string
+  service_scope?: Record<string, string>[]
+  relationship_revision?: string
+  context_updated_at?: string
+  temporal_scope?: 'current' | 'historical'
+  effective_at?: string
+  identity_status?: string
+  reason_code?: string
   line_name: string
   node_uid: string
   node_type: string

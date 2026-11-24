@@ -460,6 +460,9 @@ def test_overview_reads_engineering_context_without_writing_device_assets(
     query, _operation, _adapter, h3c, _huawei, _ac = _fixture(tmp_path)
 
     class _RailContext:
+        paths = PathResolver(app_root=Path(__file__).parents[1], data_root=tmp_path / 'runtime')
+        repository = SimpleNamespace(base_data_revision=lambda _site_id: 'fixture-revision')
+
         def current_site_id(self) -> str:
             return "demo"
 

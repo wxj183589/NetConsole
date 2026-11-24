@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
 import { ref, watch, watchEffect } from 'vue'
 import { ElMessage } from 'element-plus'
 import { syslogVisibleDetails } from './groundSyslogPresentation'
@@ -566,6 +567,8 @@ function openQuickPing(mrId: string) {
           <el-descriptions-item label="CT 射频 / 控制来源">{{ groundStatusLabel(endpoint(selectedTrain, 'CT')?.radio_overall_state || 'UNKNOWN') }} / {{ groundControlSourceLabel(endpoint(selectedTrain, 'CT')?.cfg_command_source) }}</el-descriptions-item>
           <el-descriptions-item label="CW 射频 / 控制来源">{{ groundStatusLabel(endpoint(selectedTrain, 'CW')?.radio_overall_state || 'UNKNOWN') }} / {{ groundControlSourceLabel(endpoint(selectedTrain, 'CW')?.cfg_command_source) }}</el-descriptions-item>
         </el-descriptions>
+        <EngineeringContextPanel :context="selectedTrain.position_engineering_context" />
+        <EngineeringContextPanel v-for="mrEndpoint in selectedTrain.endpoints" :key="`engineering:${mrEndpoint.mr_id || mrEndpoint.endpoint}`" :context="mrEndpoint.engineering_context" />
         <section v-for="mrEndpoint in selectedTrain.endpoints" :key="`loghost:${mrEndpoint.mr_id || mrEndpoint.endpoint}`" class="loghost-section">
           <div class="network-status">
             <b>{{ mrEndpoint.endpoint }} · 设备现有日志主机</b>

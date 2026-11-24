@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
 import {
   computed,
   markRaw,
@@ -4873,6 +4874,8 @@ function exportTimestamp(now = new Date()): string {
     </section>
 
     <div v-if="selected" class="content-card detail-card">
+      <EngineeringContextPanel :context="selected.historical_engineering_context" historical />
+      <EngineeringContextPanel :context="selected.current_engineering_context" />
 <details class="mesh-maintenance"><summary>数据告警与维护</summary>
       <div class="detail-heading">
         <div class="detail-heading__copy">

@@ -32,6 +32,13 @@ class RailRelationshipApplicationService:
     def list_history(self, site_id: str, **filters):
         return self.repository.list_history(validate_site_name(site_id), **filters)
 
+    def engineering_context(self, site_id: str, device_uuids: list[str], **filters):
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+
+        return EngineeringContextQueryService(self.paths, self.query).contexts(
+            validate_site_name(site_id), device_uuids, **filters
+        )
+
     def catalog(self, site_id: str):
         site_id = validate_site_name(site_id)
         # Canonical IDs are copied from formal base data only, never inferred from names.

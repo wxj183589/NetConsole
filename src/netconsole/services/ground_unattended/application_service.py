@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import uuid
 from collections.abc import Mapping
 from datetime import datetime, timedelta
@@ -1102,6 +1103,16 @@ class GroundUnattendedApplicationService:
         trains = trains[(page - 1) * page_size:page * page_size]
         selected_ids = {row.train_id for row in trains}
         mrs = [row for row in mrs if row.train_id in selected_ids]
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+        from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
+        engineering = EngineeringContextQueryService(self.paths)
+        current_contexts = engineering.contexts(site_id, [mr.mr_uuid for mr in mrs])
+        event_time = str((run or {}).get("actual_started_at") or "")
+        historical_contexts = engineering.contexts(site_id, [mr.mr_uuid for mr in mrs], at_time=event_time) if not is_current and event_time else {}
+        for mr in mrs:
+            mr.engineering_context = current_contexts[mr.mr_uuid]
+            if not is_current:
+                mr.historical_engineering_context = historical_contexts.get(mr.mr_uuid, DeviceEngineeringContextDTO(temporal_scope="historical", affiliation_status="unconfirmed", reason_code="HISTORICAL_EVENT_TIME_MISSING"))
         return GroundHeartbeatPageDTO(
             runtime=runtime, monitoring_enabled=bool(state["enabled"] and (not is_current or runtime.enabled)), source_conflicts=source_conflicts,
             data_cleared_at=str(state["data_cleared_at"]),
@@ -1636,6 +1647,7 @@ class GroundUnattendedApplicationService:
         context = EngineeringContextQueryService(self.paths)
         contexts = context.contexts(site_id, [e.mr_id for item in items for e in item.endpoints if e.mr_id])
         positions = context.points(site_id, [item.resolved_ap_id for item in items if item.resolved_ap_id])
+        from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
         for item in items:
             for endpoint in item.endpoints:
                 if endpoint.mr_id in contexts:
@@ -1644,6 +1656,8 @@ class GroundUnattendedApplicationService:
             item.engineering_context_status = "unavailable" if engineering_source_failed or "unavailable" in statuses else "stale" if "stale" in statuses else "conflict" if "conflict" in statuses else "current" if statuses else "unconfirmed"
             if item.resolved_ap_id in positions:
                 item.position_engineering_context = positions[item.resolved_ap_id]
+            else:
+                item.position_engineering_context = DeviceEngineeringContextDTO(affiliation_status="unconfirmed", reason_code="STABLE_AP_POINT_MISSING")
         return GroundUnattendedTrainPageDTO(items=items, total=len(items))
 
     def mr_runtime_status(

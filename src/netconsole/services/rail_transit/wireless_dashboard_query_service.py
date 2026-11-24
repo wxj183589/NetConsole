@@ -89,7 +89,7 @@ class WirelessDashboardQueryService:
             full = self.get_dashboard(site_id)
             selected = {uid:c for uid,c in full.engineering_contexts.items()
                         if c.available and c.affiliation_status not in {"stale","conflict","unavailable"}
-                        and (not station_id or station_id in {c.station_id,c.node_uid})
+                        and (not station_id or station_id in {c.station_id,c.node_uid} or any(s.get('relationship_type') == 'ac_service' and station_id in {s.get('target_uid'),s.get('target_station_id')} for s in c.service_scope))
                         and (not section_id or section_id in c.section_ids)
                         and (not project_id or project_id in c.project_ids)}
             trains = [row for row in full.trains.items if any(m.mr_id in selected for m in row.mrs)]
@@ -158,10 +158,14 @@ class WirelessDashboardQueryService:
         from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
         context_ids = [m.mr_id for train in trains.items for m in train.mrs] + [a.id for a in ac.acs]
         contexts = EngineeringContextQueryService(self.paths, self.base_query).contexts(site_id, context_ids)
+        point_ids = [link.peer_ap_id for link in links.items if link.peer_ap_id]
+        contexts.update({f"point:{uid}": context for uid, context in EngineeringContextQueryService(self.paths, self.base_query).points(site_id, point_ids).items()})
         engineering_revision = self._engineering_revision(site_id)
+        context_states = {c.affiliation_status for c in contexts.values()}
+        context_status = next((state for state in ("unavailable", "stale", "conflict", "unconfirmed", "not_found") if state in context_states), "current" if contexts else "unconfirmed")
         result = WirelessDashboardDTO(
             engineering_contexts=contexts, engineering_revision=engineering_revision,
-            engineering_context_status="unavailable" if any(c.affiliation_status=="unavailable" for c in contexts.values()) else "stale" if any(c.affiliation_status=="stale" for c in contexts.values()) else "current",
+            engineering_context_status=context_status,
             summary=summary,
             infrastructure=infrastructure,
             trains=train_section,

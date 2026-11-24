@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
 import { computed, h, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import { ApiRequestError } from '../../api/client'
@@ -117,6 +118,7 @@ const currentTaskId = ref('')
 const opticalUpdateTaskId = ref('')
 const wpsSyncTaskId = ref('')
 const selectedRows = ref<TracksideApBusinessRow[]>([])
+const engineeringRow = ref<TracksideApBusinessRow>()
 const selectedStationNames = ref<string[]>([])
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 const pageActive = ref(true)
@@ -196,7 +198,7 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'ap_business_reason', label: t('trackside.ap_business_reason', '双侧业务判定原因'), valueType: 'description', align: 'left', alignmentReason: 'long-text', minWidth: 360, showOverflowTooltip: true },
   { key: 'optical_severity', label: t('trackside.business_overall_status', '业务综合状态'), valueType: 'status', cellKind: 'tag' },
   { key: 'updated_at', label: t('trackside.snapshot.business_time', '业务更新时间'), valueType: 'datetime' },
-  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['更新站点', '更新 AP'] },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: [t('engineering.context', '工程上下文'), '更新站点', '更新 AP'] },
 ]
 
 const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
@@ -1380,11 +1382,15 @@ onBeforeUnmount(() => {
           <template #cell-ap_device_optical_status="{ row }"><el-tag :type="apDeviceOpticalPresentation(row).tagType" :class="apDeviceOpticalPresentation(row).className">{{ apDeviceOpticalPresentation(row).label }}</el-tag></template>
           <template #cell-ap_optical_status="{ row }"><el-tooltip :content="row.ap_business_reason || '无业务判定说明'"><el-tag :type="apBusinessOpticalPresentation(row).tagType" :class="apBusinessOpticalPresentation(row).className">{{ apBusinessOpticalPresentation(row).label }}</el-tag></el-tooltip></template>
           <template #cell-optical_severity="{ row }"><el-tag :type="tracksideBusinessOpticalPresentation(row).tagType" :class="tracksideBusinessOpticalPresentation(row).className">{{ tracksideBusinessOpticalPresentation(row).label }}</el-tag></template>
-          <template #cell-actions="{ row }"><el-button link type="primary" :disabled="updateActionsDisabled || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateActionsDisabled || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button></template>
+          <template #cell-actions="{ row }"><el-button link type="primary" @click="engineeringRow = row">{{ t('engineering.context', '工程上下文') }}</el-button><el-button link type="primary" :disabled="updateActionsDisabled || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button><el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateActionsDisabled || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button></template>
         </NcDataTable>
       </div>
       <div class="pagination"><span>共 {{ page ? page.total : '—' }} 条</span><el-pagination :current-page="page?.page || filters.page" :page-size="filters.page_size" :page-sizes="[20, 50, 100, 200]" layout="sizes, prev, pager, next" :total="page?.total || 0" @current-change="(value: number) => { filters.page = value; loadRows() }" @size-change="(value: number) => { filters.page_size = value; filters.page = 1; loadRows() }" /></div>
     </div>
+    <el-drawer :model-value="Boolean(engineeringRow)" :title="t('engineering.context', '工程上下文')" size="620px" @close="engineeringRow = undefined">
+      <EngineeringContextPanel :context="engineeringRow?.point_engineering_context" />
+      <EngineeringContextPanel :context="engineeringRow?.switch_engineering_context" />
+    </el-drawer>
     <el-dialog
       v-model="onlineStatusVisible"
       title="AP 上线情况概览"

@@ -15,6 +15,17 @@
 
 基础设施维护工程组织与关系；设备管理维护设备资产/连接/采集；运行库与归档继续归业务自身。无新增表、无跨库全局 revision。关系改变推进 Site revision；它只覆盖工程事实，不能代表运行库原子一致。
 
+| 模块 | 当前运行数据来源 | 工程归属来源 | 重复维护情况 | 历史语义 | 改造边界 |
+| --- | --- | --- | --- | --- | --- |
+| Ground | Heartbeat / Syslog / Quick Ping / inventory / PositionEngine | BaseData MR 与 Phase 3 assignment；AP Identity 点位 | inventory 是可刷新的运行投影，旧站点文字保留兼容 | 事件、归档、原位置不迁移 | 当前 MR/AP 上下文批量读取；历史缺时点不猜测 |
+| 轨旁 AP | DeviceFact、LLDP、光模块、AC Current | BaseData 点位/站点/区间及工程关系 | 旧 group、工作范围、端口规则仍控制原有运行统计；不新建主数据 | 冻结导出与历史光衰保留原事实 | 共用快照增加上下文，身份与服务范围分开 |
+| AC/FIT-AP | AcRepository 按 ac_device_uuid 的 Current 和历史 | 工程关系中的设备节点及 ac_service | AC 实际管理关系与工程服务站点独立 | 不改 Current 所属 AC 或历史资源 | 只读附加服务范围、站点跳转 |
+| Wireless | AC、TrainCommunication、MESH、Job、Online MR 聚合 | 统一 Query 的稳定 ID | 运行指标原算法保留，不再另存工程目录 | 不重算或覆盖历史指标 | revision 校验、工程对象与列车筛选 |
+| MESH | Profile、MR 索引、解析库、原始日志与 Excel | 明确 linked_device_uuid + 关系有效区间 | 解析身份与现行注册表不是同一时态 | 原始/解析身份保留；无 UUID 不按数字 ID 或 MAC 猜测 | 详情并列当前与事件时工程上下文 |
+| Online MR | session_meta、parsed/raw/outputs | 既有 device_uuid/mr_id + 关系有效区间 | 原会话名称保留，不回填当前资产名称 | 解除关系不转移、删除或重写旧会话 | 详情独立查询两个时态；稳定 ID 不存在时不选择其他 MR |
+
+源码入口：`repositories/rail_infrastructure_repository.py`、`repositories/rail_transit_base_data_repository.py`、`repositories/rail_relationship_repository.py`、`application/rail_transit/relationship_application_service.py`；消费者分别为 `services/device_detail_query_service.py`、`services/ground_unattended/`、`services/trackside_ap_export_service.py`、`services/ac/`、`services/rail_transit/wireless_dashboard_query_service.py`、`services/rail_transit/mesh_analysis_query_service.py`、`services/online_mr/query_service.py`（均位于 `src/netconsole/`）。
+
 风险 L3（公共只读DTO/消费者和导出快照），无 Schema/删除/运行引擎改造。写入关系仍走既有 Application Service；新增上下文只读。不得从 IP、名称、MAC相似推断稳定绑定。缺失、失败、陈旧、冲突与历史明确区分。现有旧字段保留兼容，不删除历史字段。
 
 验证顺序：上下文 → Ground（含100MR/50列车）→ Trackside快照/导出 → AC/Wireless → MESH/Online MR → Renderer/Electron与跨模块。每阶段独立提交，真实数据/设备/安装包/全量Gate均NOT RUN。本轮不允许因为上下文失败清空运行事实或重建历史位置。

@@ -106,4 +106,31 @@ describe('AppRouteView cache boundary', () => {
     expect(wrapper.get('[data-mesh-page]').text()).toBe('MESH 页面')
     wrapper.unmount()
   })
+
+  it('switches between cached business pages when direct navigation retains the tab cache key', async () => {
+    const Ground = defineComponent({ name: 'Ground', setup: () => () => h('section', { 'data-ground': '' }, 'Ground') })
+    const Online = defineComponent({ name: 'Online', setup: () => () => h('section', { 'data-online': '' }, 'Online MR') })
+    const router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/', name: 'dashboard', component: Ground },
+      { path: '/ground', name: 'ground', component: Ground, meta: { workspace: { cache: true } } },
+      { path: '/online', name: 'online', component: Online, meta: { workspace: { cache: true } } },
+    ] })
+    await router.push('/ground')
+    await router.isReady()
+    const workspace = useWorkspaceStore()
+    await workspace.initialize(router)
+    const wrapper = mount(AppRouteView, { global: { plugins: [router] } })
+    await flushPromises()
+    const key = workspace.activeTab?.cacheKey
+    await router.push('/online')
+    await flushPromises()
+    expect(workspace.activeTab?.cacheKey).toBe(key)
+    expect(wrapper.find('[data-ground]').exists()).toBe(false)
+    expect(wrapper.get('[data-online]').text()).toBe('Online MR')
+    await router.push('/ground')
+    await flushPromises()
+    expect(wrapper.find('[data-online]').exists()).toBe(false)
+    expect(wrapper.get('[data-ground]').text()).toBe('Ground')
+    wrapper.unmount()
+  })
 })

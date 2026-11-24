@@ -285,4 +285,16 @@ describe('Online MR realtime mounted behavior', () => {
     expect(persistedWrapper.get('[data-testid="control-mr-select"]').attributes('data-selected')).toBe('mr-02')
     persistedWrapper.unmount()
   })
+
+  it('does not select a different MR when a stable route ID is missing or unlinked', async () => {
+    configureMrs()
+    onlineMrApi.getCurrentOnlineMrSession.mockResolvedValue(null)
+    routeState.query = { mr_id: 'removed-uuid' }
+    const wrapper = mount(OnlineMrRealtimeView, mountOptions())
+    await flushPromises()
+    expect(wrapper.get('[data-testid="control-mr-select"]').attributes('data-selected')).toBe('')
+    expect(wrapper.find('[data-testid="local-control-mr"]').exists()).toBe(false)
+    expect(wrapper.find('[title="目标 MR 不在当前有效工程库存中，请检查对象或关系状态"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
 })

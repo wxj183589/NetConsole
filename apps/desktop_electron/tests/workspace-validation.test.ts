@@ -32,6 +32,8 @@ describe('workspace validation', () => {
   it('accepts and canonicalizes only known internal routes', () => {
     expect(validateWorkspaceRoute('/devices/device-1?b=2&a=1')).toBe('/devices/device-1?a=1&b=2')
     expect(validateWorkspaceRoute('/console')).toBe('/console')
+    expect(validateWorkspaceRoute('/rail-transit/ground-unattended')).toBe('/rail-transit/ground-unattended')
+    expect(validateWorkspaceRoute('/rail-transit/base-data?node_uid=station-1&tab=overview')).toContain('node_uid=station-1')
     expect(validateWorkspaceRoute('/rail-transit/mesh-analysis?session_id=session-1')).toContain('session_id=session-1')
     for (const value of [
       'https://example.com/',

@@ -79,13 +79,29 @@ def test_refresh_projects_unknown_without_run_and_is_idempotent(inventory_app):
     first = _page(f, site)
     before = f.repository.list_inventory()
     second = _page(f, site)
-    assert first == second
+    # The engineering query timestamp is per request; runtime facts, relation
+    # status and revision must still be identical without any persisted write.
+    volatile = {'mrs': {'__all__': {'engineering_context': {'context_updated_at'}}}}
+    assert first.model_dump(exclude=volatile) == second.model_dump(exclude=volatile)
     assert f.repository.list_inventory() == before
     assert first.run_id == "heartbeat-resident"
     assert [mr.status for mr in first.mrs] == ["UNKNOWN", "UNKNOWN"]
     assert first.trains[0].status == "UNKNOWN"
     assert first.trains[0].mr_states == {"CT": "UNKNOWN", "CW": "UNKNOWN"}
     assert f.service.heartbeat_inventory_preview(site).added_count == 0
+    f.start.assert_not_called()
+
+
+def test_engineering_failure_preserves_heartbeat_facts_without_starting_probes(inventory_app, monkeypatch):
+    from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+    f = inventory_app
+    before = _page(f, f.service.site_id)
+    inventory = f.repository.list_inventory()
+    monkeypatch.setattr(RailTransitBaseDataQueryService, 'infrastructure', lambda *args: (_ for _ in ()).throw(RuntimeError('offline')))
+    after = f.service.heartbeat(f.service.site_id)
+    assert [(mr.mr_uuid,mr.status,mr.management_ip) for mr in before.mrs] == [(mr.mr_uuid,mr.status,mr.management_ip) for mr in after.mrs]
+    assert after.mrs and all(mr.engineering_context.affiliation_status == 'unavailable' for mr in after.mrs)
+    assert f.repository.list_inventory() == inventory
     f.start.assert_not_called()
 
 

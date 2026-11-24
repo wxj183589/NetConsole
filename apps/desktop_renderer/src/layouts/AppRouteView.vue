@@ -5,8 +5,8 @@
       <KeepAlive :include="cachedWorkspaceComponentNames" :max="10">
         <component
           v-if="viewRoute.name !== 'device-console'"
-          :is="cachedRouteComponent(Component, workspace.routeCacheKey(viewRoute.fullPath))"
-          :key="workspace.routeCacheKey(viewRoute.fullPath)"
+          :is="cachedRouteComponent(Component, routeRenderKey(viewRoute.fullPath, viewRoute.name))"
+          :key="routeRenderKey(viewRoute.fullPath, viewRoute.name)"
         />
       </KeepAlive>
     </RouterView>
@@ -38,8 +38,12 @@ type CachedRouteComponent = {
 
 const cachedRouteComponents = new Map<string, CachedRouteComponent>()
 const cachedWorkspaceComponentNames = computed(() => (
-  workspace.cachedTabs.map((tab) => cacheComponentName(tab.cacheKey))
+  workspace.cachedTabs.map((tab) => cacheComponentName(`${String(tab.routeName)}:${tab.cacheKey}`))
 ))
+
+function routeRenderKey(fullPath: string, routeName: string | symbol | null | undefined): string {
+  return `${String(routeName)}:${workspace.routeCacheKey(fullPath)}`
+}
 
 function cacheComponentName(cacheKey: string): string {
   return `WorkspacePage_${cacheKey.replace(/[^A-Za-z0-9_]/g, '_')}`
@@ -57,7 +61,7 @@ function cachedRouteComponent(component: VNode, cacheKey: string): Component {
 }
 
 watch(
-  () => new Set(workspace.tabs.map((tab) => tab.cacheKey)),
+  () => new Set(workspace.tabs.map((tab) => `${String(tab.routeName)}:${tab.cacheKey}`)),
   (activeKeys) => {
     for (const key of cachedRouteComponents.keys()) {
       if (!activeKeys.has(key)) cachedRouteComponents.delete(key)

@@ -32,7 +32,11 @@ export interface WirelessDashboardFreshness { items: WirelessDashboardFreshnessI
 export interface WirelessDashboardRecentOperations { tasks: WirelessDashboardTask[]; sessions: OnlineMrSessionSummary[] }
 export interface WirelessDashboardAnalysis { summary: MeshAnalysisSummary; sessions: MeshAnalysisSession[] }
 export interface WirelessDashboard {
+  engineering_contexts?: Record<string, DeviceEngineeringContext>
+  engineering_revision?: string
+  engineering_context_status?: string
   summary: WirelessDashboardSummary; infrastructure: WirelessDashboardInfrastructure; trains: WirelessDashboardTrains
   alerts: WirelessDashboardAlerts; freshness: WirelessDashboardFreshness
   recent_operations: WirelessDashboardRecentOperations; analysis: WirelessDashboardAnalysis
 }
+import type { DeviceEngineeringContext } from './deviceManagement'

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
+import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
+import { t } from '../../i18n/runtime'
 
 import {
   getWirelessDashboard,
@@ -23,8 +25,41 @@ import type {
 } from '../../types/wirelessDashboard'
 
 const router = useRouter()
+const route = useRoute()
+const lineId = ref('')
+const stationId = ref(String(route.query.station_id || ''))
+const sectionId = ref('')
+const projectId = ref('')
+const contextDevice = ref('')
 const data = ref<WirelessDashboard | null>(null)
 const loading = ref(false)
+const contexts = computed(() => Object.values(data.value?.engineering_contexts || {}))
+const matchingContexts = computed(() => contexts.value.filter(c => c.available && !['conflict', 'stale', 'unavailable'].includes(c.affiliation_status)
+  && (!lineId.value || c.line_id === lineId.value)
+  && (!stationId.value || c.station_id === stationId.value || c.node_uid === stationId.value || c.service_scope?.some(s => s.relationship_type === 'ac_service' && [s.target_uid, s.target_station_id].includes(stationId.value)))
+  && (!sectionId.value || c.section_ids?.includes(sectionId.value))
+  && (!projectId.value || c.project_ids?.includes(projectId.value))))
+const contextOptions = computed(() => {
+  const lines = new Map<string, string>(), stations = new Map<string, string>(), sections = new Map<string, string>(), projects = new Map<string, string>()
+  for (const c of contexts.value.filter(c => c.available)) {
+    if (c.line_id) lines.set(c.line_id, c.line_name || c.line_id)
+    if (c.station_id) stations.set(c.station_id, c.station_name || c.station_id)
+    c.service_scope?.filter(s => s.relationship_type === 'ac_service').forEach(s => {
+      const id = s.target_station_id || s.target_uid
+      if (id) stations.set(id, s.target_name || id)
+    })
+    c.section_ids?.forEach((id, i) => sections.set(id, c.service_sections?.[i] || id))
+    c.project_ids?.forEach((id, i) => projects.set(id, c.project_names[i] || id))
+  }
+  return { lines, stations, sections, projects }
+})
+const visibleTrains = computed(() => {
+  const rows = data.value?.trains.items || []
+  if (!lineId.value && !stationId.value && !sectionId.value && !projectId.value) return rows
+  const ids = new Set(matchingContexts.value.map(c => c.device_uuid))
+  return rows.filter(row => row.mrs.some(mr => ids.has(mr.mr_id)))
+})
+const selectedContext = computed(() => matchingContexts.value.find(c => (c.device_uuid || c.point_id) === contextDevice.value))
 const error = ref('')
 const failureCount = ref(0)
 const lastRefreshAt = ref('')
@@ -134,6 +169,11 @@ async function refreshSections(): Promise<void> {
   const now = Date.now()
   try {
     const requests: Array<{ label: string; request: Promise<void> }> = [
+      { label: t('engineering.context', '工程上下文'), request: getWirelessDashboard().then(value => {
+        data.value!.engineering_contexts = value.engineering_contexts
+        data.value!.engineering_context_status = value.engineering_context_status
+        data.value!.engineering_revision = value.engineering_revision
+      }) },
       { label: '汇总指标', request: getWirelessDashboardSummary().then((value) => { data.value!.summary = value }) },
       { label: '列车通信', request: getWirelessDashboardTrains().then((value) => { data.value!.trains = value }) },
       { label: '最近任务与会话', request: getWirelessDashboardRecentOperations().then((value) => { data.value!.recent_operations = value }) },
@@ -181,6 +221,19 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
       <div class="heading-actions"><el-tag type="info">只读聚合</el-tag><el-button :loading="loading" @click="initialLoad">刷新</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="warning" show-icon :closable="false" />
+    <section class="panel" data-testid="wireless-engineering">
+      <div class="source-strip">
+        <strong>{{ t('engineering.scope', '工程范围') }}</strong>
+        <el-select v-model="lineId" clearable :placeholder="t('engineering.line', '线路')" style="width:190px"><el-option v-for="[id, label] in contextOptions.lines" :key="id" :value="id" :label="label" /></el-select>
+        <el-select v-model="stationId" clearable :placeholder="t('engineering.station', '车站')" style="width:190px"><el-option v-for="[id, label] in contextOptions.stations" :key="id" :value="id" :label="label" /></el-select>
+        <el-select v-model="sectionId" clearable :placeholder="t('engineering.section', '区间')" style="width:190px"><el-option v-for="[id, label] in contextOptions.sections" :key="id" :value="id" :label="label" /></el-select>
+        <el-select v-model="projectId" clearable :placeholder="t('engineering.project', '建设项目')" style="width:190px"><el-option v-for="[id, label] in contextOptions.projects" :key="id" :value="id" :label="label" /></el-select>
+        <el-select v-model="contextDevice" clearable filterable :placeholder="t('engineering.context', '工程上下文')" style="width:240px"><el-option v-for="c in matchingContexts" :key="c.device_uuid || c.point_id" :value="c.device_uuid || c.point_id || ''" :label="c.device_name || c.device_uuid || c.point_id || ''" /></el-select>
+        <span>{{ t('engineering.metrics_scope', '运行指标汇总保持原有局点范围') }}</span>
+      </div>
+      <EngineeringContextPanel v-if="selectedContext" :context="selectedContext" />
+      <el-tag v-else-if="data?.engineering_context_status && data.engineering_context_status !== 'current'" type="warning">{{ t(`engineering.${data.engineering_context_status}`, data.engineering_context_status) }}</el-tag>
+    </section>
     <div class="source-strip"><span>局点：{{ data?.summary.site_name || '无数据' }}</span><span>数据版本：{{ data?.summary.data_version || '无数据' }}</span><span>最近刷新：{{ formatTime(lastRefreshAt) }}</span><span>{{ active ? '活动态 2 秒' : '静态 10 秒' }} · 连续失败 3 次后 30 秒</span></div>
 
     <div class="summary-grid">
@@ -202,7 +255,7 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
 
       <article class="panel">
         <div class="panel-title"><div><h2>在线列车通信</h2><p>CT / TC 独立展示，不合并两端状态</p></div><el-button link type="primary" @click="go('/rail-transit/ground-unattended')">查看全部列车</el-button></div>
-        <NcDataTable table-id="rail-wireless-dashboard-trains" route-key="/rail-transit/wireless-dashboard" :data="data?.trains.items || []" :columns="trainColumns" :show-column-settings="false" :stripe="false" size="small" max-height="355" empty-text="暂无列车资料">
+        <NcDataTable table-id="rail-wireless-dashboard-trains" route-key="/rail-transit/wireless-dashboard" :data="visibleTrains" :columns="trainColumns" :show-column-settings="false" :stripe="false" size="small" max-height="355" empty-text="暂无列车资料">
           <template #cell-mr_ct="{ row }"><template v-if="mrRole(row, 'CT')"><el-tag size="small" :type="statusType(mrRole(row, 'CT')!.communication_status)">{{ mrRole(row, 'CT')!.communication_status }}</el-tag> {{ mrRole(row, 'CT')!.peer_ap_name || '无 Peer AP' }}</template><span v-else>无数据</span></template>
           <template #cell-mr_tc="{ row }"><template v-if="mrRole(row, 'TC')"><el-tag size="small" :type="statusType(mrRole(row, 'TC')!.communication_status)">{{ mrRole(row, 'TC')!.communication_status }}</el-tag> {{ mrRole(row, 'TC')!.peer_ap_name || '无 Peer AP' }}</template><span v-else>无数据</span></template>
           <template #cell-communication_status="{ row }"><el-tag :type="statusType(row.communication_status)">{{ row.communication_status }}</el-tag></template>

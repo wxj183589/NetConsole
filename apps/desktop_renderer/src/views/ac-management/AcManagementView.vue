@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Download, MoreFilled, Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -805,6 +806,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 
 <template>
   <section class="ac-management">
+    <EngineeringContextPanel v-if="store.activeAc" :context="store.activeAc.engineering_context" />
     <div class="page-toolbar page-toolbar--compact">
       <div>
         <h2>{{ store.activeAc?.name || 'AC 管理' }}</h2>

@@ -1,4 +1,6 @@
+import type { DeviceEngineeringContext } from './deviceManagement'
 export interface AcOverview {
+  engineering_context?: DeviceEngineeringContext
   id: string
   name: string
   management_ip: string

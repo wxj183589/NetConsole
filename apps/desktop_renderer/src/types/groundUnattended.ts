@@ -60,6 +60,7 @@ export interface GroundRun {
   message: string; created_at: string; updated_at: string
 }
 export interface GroundEndpoint {
+  engineering_context?: DeviceEngineeringContext
   backup_management_ip: string; backup_management_ip_role: string; backup_monitoring_strategy: 'MONITOR' | 'FAILOVER_ONLY' | 'DISABLED'
   endpoint: 'CT' | 'CW'; mr_id: string; mr_name: string; device_id: number | null; management_ip: string; online_status: string
   ping_target_eligible: boolean; ping_exclusion_reason: string
@@ -113,6 +114,7 @@ export interface GroundSyslogHost {
   source: 'DEVICE_EXISTING' | 'NETCONSOLE_MANAGED'
 }
 export interface GroundTrain {
+  position_engineering_context?: DeviceEngineeringContext
   train_id: string; train_no: string; train_name: string
   location_class: 'MAINLINE' | 'DEPOT' | 'PARKING_YARD' | 'STABLING' | 'DEPOT_CONNECTION' | 'TEST_TRACK' | 'NON_MAINLINE' | 'OFFLINE' | 'UNKNOWN'
   location_class_source: string; participates_in_mainline: boolean
@@ -442,6 +444,8 @@ export interface GroundHeartbeatAp {
   connection_status: string; last_seen_at: string; station: string; section: string
 }
 export interface GroundHeartbeatMr {
+  engineering_context?: DeviceEngineeringContext
+  historical_engineering_context?: DeviceEngineeringContext | null
   resolved_ap_name?: string; identity_status?: string; ac_data_status?: string; station?: string; section?: string; current_rtt_ms?: number | null
   mr_uuid: string; train_id: string; train_no: string; mr_name: string; role: string
   management_ip?: string; backup_management_ip?: string
@@ -517,3 +521,4 @@ export interface GroundMrMonitoring {
   loss_event_total: number; loss_event_limit: number; loss_event_offset: number
   identity_relations?: Array<Record<string, unknown>>; arp_observations?: Array<Record<string, unknown>>; identity_conflicts?: Array<Record<string, unknown>>
 }
+import type { DeviceEngineeringContext } from './deviceManagement'

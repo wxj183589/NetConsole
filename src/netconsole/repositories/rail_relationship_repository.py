@@ -337,7 +337,11 @@ class RailRelationshipRepository:
                 )
             ]
             by_uid = {n["uid"]: n for n in nodes}
-            by_uid.update({n["uid"]: n for n in existing_nodes})
+            for n in existing_nodes:
+                # Keep the canonical station ID projection when overlaying the
+                # stored node facts; the write guard must recognize the same
+                # existing station binding rather than reject it as foreign.
+                by_uid[n["uid"]] = {**by_uid.get(n["uid"], {}), **n}
             return dict(
                 nodes=list(by_uid.values()),
                 sections=sections,

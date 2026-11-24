@@ -1,6 +1,8 @@
 import type { RailTransitTask } from './railTransitWeb'
 
 export interface TracksideApBusinessRow {
+  switch_engineering_context?: DeviceEngineeringContext
+  point_engineering_context?: DeviceEngineeringContext
   row_id?: string
   station_id?: string; site: string; device_name: string; switch_device_uuid?: string; switch_terminal_available?: boolean; switch_terminal_unavailable_reason?: string; switch_vendor: string; interface_name: string; link_status: string; port_type: string
     switch_station_id?: string; ap_station_id?: string; planning_station_id?: string; effective_station_id?: string
@@ -473,3 +475,4 @@ export interface WpsTracksideSyncResult {
     }
   }>
 }
+import type { DeviceEngineeringContext } from './deviceManagement'

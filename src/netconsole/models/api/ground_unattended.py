@@ -1819,6 +1819,8 @@ class GroundHeartbeatApDTO(ApiModel):
 
 
 class GroundHeartbeatMrDTO(ApiModel):
+    engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
+    historical_engineering_context: DeviceEngineeringContextDTO | None = None
     resolved_ap_name: str = ""
     identity_status: str = "unresolved"
     ac_data_status: str = "no_data"

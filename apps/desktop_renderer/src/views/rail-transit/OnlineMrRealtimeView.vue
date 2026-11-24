@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
+import { t } from '../../i18n/runtime'
 import { Refresh } from '@element-plus/icons-vue'
 
 import NcStatusTag from '../../components/NcStatusTag.vue'
@@ -356,6 +357,10 @@ function syncControlMrWithSession(): void {
     store.setSelectedControlMrId(requested, 'route')
     return
   }
+  if (route.query.mr_id || route.query.device_id) {
+    store.setSelectedControlMrId('', 'route')
+    return
+  }
   if (persisted) {
     store.setSelectedControlMrId(persisted, store.selectedControlMrSource || 'manual')
     return
@@ -370,6 +375,8 @@ watch(
     () => store.current?.session_id,
     () => store.current?.device_id,
     () => store.current?.mr_name,
+    () => route.query.mr_id,
+    () => route.query.device_id,
   ],
   syncControlMrWithSession,
   { immediate: true },
@@ -409,6 +416,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <el-alert v-if="controlError" :title="controlError" type="error" :closable="false" show-icon />
+      <el-alert v-if="(route.query.mr_id || route.query.device_id) && !routeMrId() && !controlError" :title="t('engineering.missing_mr', '目标 MR 不在当前有效工程库存中，请检查对象或关系状态')" type="warning" :closable="false" show-icon />
       <div v-if="controlMr && controlSiteId">
         <OnlineMrLocalControl :site-id="controlSiteId" :mr="controlMr" @refresh="store.refreshOverview" />
       </div>

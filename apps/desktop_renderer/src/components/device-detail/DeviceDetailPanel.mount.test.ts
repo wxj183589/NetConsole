@@ -62,6 +62,7 @@ vi.mock('element-plus', async () => {
   })
   return {
     ElAlert: namedStub('ElAlert'),
+    ElTag: namedStub('ElTag'),
     ElButton: namedStub('ElButton'),
     ElCheckbox: namedStub('ElCheckbox'),
     ElDescriptions: namedStub('ElDescriptions'),

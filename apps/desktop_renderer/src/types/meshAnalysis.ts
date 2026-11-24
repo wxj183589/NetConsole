@@ -215,7 +215,7 @@ export interface MeshMaintenanceState {
   identity_saved_revision: number; identity_current_revision: number; identity_status: string
   allowed_actions: Array<'identity_projection_refresh' | 'parser_rebuild'>
 }
-export interface MeshSessionDetail { session: MeshAnalysisSession; analysis_params: MeshAnalysisParams; available_radios?: number[]; warnings: MeshWarning[]; parse_issue_summary: MeshParseIssueSummary; sources: MeshRawSource[]; maintenance_state: MeshMaintenanceState }
+export interface MeshSessionDetail { current_engineering_context?: DeviceEngineeringContext; historical_engineering_context?: DeviceEngineeringContext; session: MeshAnalysisSession; analysis_params: MeshAnalysisParams; available_radios?: number[]; warnings: MeshWarning[]; parse_issue_summary: MeshParseIssueSummary; sources: MeshRawSource[]; maintenance_state: MeshMaintenanceState }
 
 export interface MeshIdentityMetadata {
   identity_status?: 'matched' | 'unresolved' | 'ambiguous'
@@ -419,3 +419,4 @@ export interface MeshCounterDeltaPage { items: MeshCounterDeltaPoint[]; total: n
 export interface MeshAnomaly { anomaly_id: string; severity: string; anomaly_type: string; start_time: string | null; end_time: string | null; train_name: string; mr_name: string; peer_ap_name: string | null; peer_ap_mac: string | null; station: string | null; section: string | null; description: string; evidence_reference: string | null; rule_version: string | null }
 export interface MeshArtifact { artifact_id: string; artifact_type: string; name: string; size_bytes: number; modified_at: string | null; status: string; source: string; downloadable: boolean; deletable?: boolean }
 export interface MeshRawTail { source_action_id: string; source_id?: string; available: boolean; lines: string[]; message: string }
+import type { DeviceEngineeringContext } from './deviceManagement'

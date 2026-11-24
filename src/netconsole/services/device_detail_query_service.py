@@ -275,8 +275,11 @@ class DeviceDetailQueryService:
         if self.rail_context_query is None:
             return DeviceEngineeringContextDTO()
         from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
-        return EngineeringContextQueryService(self.rail_context_query.paths, self.rail_context_query).one(
-            self.rail_context_query.current_site_id(), device_uuid)
+        try:
+            return EngineeringContextQueryService(self.rail_context_query.paths, self.rail_context_query).one(
+                self.rail_context_query.current_site_id(), device_uuid)
+        except Exception:
+            return DeviceEngineeringContextDTO(device_uuid=device_uuid, reason_code="ENGINEERING_CONTEXT_UNAVAILABLE")
 
     def interfaces(
         self,

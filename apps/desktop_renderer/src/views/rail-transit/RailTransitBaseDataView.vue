@@ -3143,6 +3143,7 @@ function sectionSourceLabel(row: Section): string {
             ref="relationshipWorkbench"
             v-if="activeTab === 'overview' && store.summary && !editing"
             :site-id="store.summary.site_id"
+            :initial-node-uid="String(route.query.node_uid || '')"
             :revision-key="store.summary.updated_at"
             @navigate="async (tab) => { if (await beforeTabLeave(tab, activeTab)) activeTab = tab }"
           />

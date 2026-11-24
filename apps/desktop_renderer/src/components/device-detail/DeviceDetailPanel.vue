@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EngineeringContextPanel from '../rail-transit/EngineeringContextPanel.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, Edit, FolderOpened, Refresh, View } from '@element-plus/icons-vue'
@@ -70,19 +71,6 @@ const emit = defineEmits<{
 const router = useRouter()
 const taskStore = useTaskStore()
 const overview = ref<DeviceOverviewResponse | null>(props.overview)
-const engineeringContext = computed(() => overview.value?.engineering_context || {
-  available: false,
-  affiliation_status: 'unavailable' as const,
-  line_name: '',
-  node_uid: '',
-  node_type: '',
-  node_code: '',
-  node_name: '',
-  role: '',
-  project_names: [] as string[],
-  service_stations: [],
-  source: 'rail_infrastructure_query',
-})
 const loading = ref(false)
 const error = ref('')
 const selectedSection = ref<DeviceDetailSection>('overview')
@@ -1199,12 +1187,6 @@ function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
 }
 
-function openInfrastructure(): void {
-  void router.push({
-    name: 'rail-transit-base-data',
-    query: { tab: 'overview', device_uuid: overview.value?.device_uuid || '' },
-  })
-}
 </script>
 
 <template>
@@ -1254,39 +1236,7 @@ function openInfrastructure(): void {
                 </el-descriptions>
 
                 <section class="detail-section engineering-context">
-                  <div class="section-heading">
-                    <h3>轨道交通工程归属</h3>
-                    <el-button
-                      v-if="engineeringContext.affiliation_status === 'associated'"
-                      link
-                      type="primary"
-                      @click="openInfrastructure"
-                    >
-                      在基础设施中查看
-                    </el-button>
-                  </div>
-                  <el-alert
-                    v-if="engineeringContext.affiliation_status === 'unavailable'"
-                    title="基础设施上下文暂时不可用"
-                    type="warning"
-                    :closable="false"
-                  />
-                  <el-alert
-                    v-else-if="engineeringContext.affiliation_status === 'unassociated'"
-                    title="未关联轨道交通基础设施"
-                    type="info"
-                    :closable="false"
-                  />
-                  <el-descriptions v-else :column="2" border>
-                    <el-descriptions-item label="线路">{{ formatValue(engineeringContext.line_name) }}</el-descriptions-item>
-                    <el-descriptions-item label="组织节点">{{ formatValue(engineeringContext.node_name) }}</el-descriptions-item>
-                    <el-descriptions-item label="节点编号">{{ formatValue(engineeringContext.node_code) }}</el-descriptions-item>
-                    <el-descriptions-item label="节点类型">{{ formatValue(engineeringContext.node_type) }}</el-descriptions-item>
-                    <el-descriptions-item label="工程角色">{{ formatValue(engineeringContext.role) }}</el-descriptions-item>
-                    <el-descriptions-item label="建设项目">{{ engineeringContext.project_names.join('、') || '—' }}</el-descriptions-item>
-                    <el-descriptions-item v-if="engineeringContext.service_sections?.length" label="区间服务范围" :span="2">{{ engineeringContext.service_sections.join('、') }}</el-descriptions-item>
-                    <el-descriptions-item v-if="engineeringContext.service_stations.length" label="AC 服务站点" :span="2">{{ engineeringContext.service_stations.join('、') }}</el-descriptions-item>
-                  </el-descriptions>
+                  <EngineeringContextPanel :context="overview.engineering_context" />
                 </section>
 
               <section class="detail-section">

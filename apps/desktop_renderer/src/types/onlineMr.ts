@@ -29,6 +29,8 @@ export interface OnlineMrSessionSummary {
 }
 
 export interface OnlineMrSessionDetail extends OnlineMrSessionSummary {
+  current_engineering_context?: DeviceEngineeringContext
+  historical_engineering_context?: DeviceEngineeringContext
   session_path_reference: string
   connection_summary: Record<string, unknown>
   collection_config: Record<string, unknown>
@@ -463,3 +465,4 @@ export interface OnlineMrTimelineEvent {
   title: string
   payload: Record<string, unknown>
 }
+import type { DeviceEngineeringContext } from './deviceManagement'

@@ -669,9 +669,9 @@ def _load_trackside_ap_business_snapshot_once(
         row["switch_engineering_context"] = switch.model_dump(exclude={"context_updated_at"})
         row["point_engineering_context"] = point.model_dump(exclude={"context_updated_at"})
         row["engineering_line"] = point.line_name or switch.line_name
-        row["engineering_projects"] = "、".join(point.project_names)
-        row["engineering_sections"] = "、".join(point.service_sections)
-        row["engineering_status"] = point.affiliation_status
+        row["engineering_projects"] = "、".join(point.project_names or switch.project_names)
+        row["engineering_sections"] = "、".join(point.service_sections or switch.service_sections)
+        row["engineering_status"] = f"switch={switch.affiliation_status};point={point.affiliation_status}"
     statistics = build_trackside_ap_business_statistics(
         rows,
         planned_ap_total=scope.planned_ap_total,

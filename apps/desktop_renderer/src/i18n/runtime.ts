@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { engineeringContextEn } from './engineeringContext'
 import { railRelationshipsEn } from './railRelationships'
 import { meshBusinessEn } from './meshBusinessLabels'
 import { groundUnattendedEn } from './groundUnattended'
@@ -6,6 +7,7 @@ import type { SystemLanguage } from '../types/systemSettings'
 
 const locale = ref<SystemLanguage>('zh_CN')
 const en: Record<string, string> = {
+  ...engineeringContextEn,
   ...railRelationshipsEn,
   ...groundUnattendedEn,
   ...meshBusinessEn,

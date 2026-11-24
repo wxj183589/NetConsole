@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { ArrowLeft, ArrowRight, Delete, Download, Files, FolderOpened, FullScreen, Hide, Lock, Refresh, Search, Unlock, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
@@ -1793,6 +1794,8 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
     <el-empty v-if="!detail && !loading" description="当前局点暂无 Online MR 会话" />
 
     <template v-if="detail">
+      <EngineeringContextPanel :context="detail.historical_engineering_context" historical />
+      <EngineeringContextPanel :context="detail.current_engineering_context" />
       <div class="summary-grid">
         <article><span>会话状态</span><strong>{{ detail.status || '无数据' }}</strong></article>
         <article><span>MR</span><strong>{{ detail.device_name || detail.mr_name || '无数据' }}</strong></article>
