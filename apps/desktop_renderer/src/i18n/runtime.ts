@@ -45,6 +45,7 @@ const en: Record<string, string> = {
   'infrastructure.querying': 'Loading',
   'infrastructure.query_failed': 'Query failed',
   'infrastructure.count_unconfirmed': 'Count unconfirmed',
+  'infrastructure.section_ap_unconfirmed': 'No AP with a confirmed section point on this page',
   'infrastructure.select_engineering_node': 'Select engineering node',
   'nav.rail.infrastructure': 'Infrastructure',
   'nav.rail.base-data': 'Base data',

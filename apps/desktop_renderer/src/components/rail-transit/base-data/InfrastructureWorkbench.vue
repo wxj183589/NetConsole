@@ -283,12 +283,13 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
           <p v-else class="empty-state">{{ showUnassociated ? '没有未关联设备' : '工程关联待配置' }}</p>
         </section>
         <p v-if="!node && !showUnassociated && !selectedDevice" class="empty-state">选择组织树节点查看工程资料与设备。</p>
-        <section v-if="selectedDevice?.device_role === 'switch'" class="node-section" aria-label="交换机下挂 AP">
-          <h4>{{ t('infrastructure.switch_ap', '交换机关联 AP') }} <span v-if="aps && !aps.partial_data && !aps.unavailable_sources?.length">{{ aps.total }}</span></h4>
+        <section v-if="selectedDevice?.device_role === 'switch' && isFeatureEnabled('module.trackside_ap')" class="node-section" aria-label="交换机下挂 AP">
+          <h4>{{ t('infrastructure.switch_ap', '交换机关联 AP') }} <span v-if="node?.kind !== 'section' && aps && !aps.partial_data && !aps.unavailable_sources?.length">{{ aps.total }}</span></h4>
           <p v-if="apLoading" class="empty-state">正在读取 LLDP 与 AP Identity</p>
           <p v-else-if="apUnavailable" class="empty-state">当前关联数据不可用</p>
           <p v-else-if="aps?.partial_data || aps?.unavailable_sources?.length" class="empty-state">{{ t('infrastructure.ap_partial', '关联查询不完整，数量未确认') }}</p>
           <p v-if="!apLoading && !apUnavailable && !aps?.partial_data && !aps?.unavailable_sources?.length && !aps?.items.length" class="empty-state">暂无经 LLDP 与 AP Identity 确认的接入</p>
+          <p v-if="node?.kind === 'section' && aps?.items.length && !visibleAps?.items.length" class="empty-state">{{ t('infrastructure.section_ap_unconfirmed', '当前页没有已确认区间点位的 AP') }}</p>
           <ul v-if="aps?.items.length" class="ap-links">
             <li v-for="ap in visibleAps?.items" :key="ap.row_id">
               <button type="button" class="device-link" @click="selectAp(ap)">{{ ap.ap_name || t('infrastructure.identity_unconfirmed', '身份未确认') }}</button><span>{{ ap.interface_name || '端口未知' }}</span>
