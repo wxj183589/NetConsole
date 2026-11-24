@@ -13,3 +13,11 @@
 - [轨旁 AP 主数据与关联模型](./TRACKSIDE_AP_DOMAIN_MODEL.md)
 
 - [地面无人值守 V2](./ground-unattended/README.md)
+
+- [Phase 4 消费者审计](./PHASE4_CONSUMER_AUDIT.md)
+- [统一工程上下文契约](./ENGINEERING_CONTEXT_CONTRACT.md)
+- [Ground 接入](./PHASE4_GROUND_INTEGRATION.md)
+- [轨旁 AP 接入](./PHASE4_TRACKSIDE_AP_INTEGRATION.md)
+- [AC / Wireless 接入](./PHASE4_AC_WIRELESS_INTEGRATION.md)
+- [MESH / Online MR 接入](./PHASE4_MESH_MR_INTEGRATION.md)
+- [Phase 4 定向验收](./PHASE4_ACCEPTANCE.md)
