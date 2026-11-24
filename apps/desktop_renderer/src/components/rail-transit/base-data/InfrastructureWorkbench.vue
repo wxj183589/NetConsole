@@ -19,6 +19,7 @@ import {
 const props = defineProps<{ siteId: string; revisionKey?: string; initialNodeUid?: string }>()
 const router = useRouter()
 const { snapshot, loading, error, search, selectedUid, showUnassociated, selectedDevice, retry } = storeToRefs(useRailInfrastructureStore())
+const compactPane = ref<'node' | 'device'>(selectedDevice.value ? 'device' : 'node')
 const relationshipDirty = ref(false)
 const relationshipSaving = ref(false)
 const aps = ref<InfrastructureSwitchAps>()
@@ -36,6 +37,8 @@ const groups: { name: string; kinds: InfrastructureNode['kind'][] }[] = [
 const node = computed(() => snapshot.value?.nodes.find((item) => item.uid === selectedUid.value))
 const depotCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'depot' || item.kind === 'parking_yard').length ?? 0)
 const stationCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'station').length ?? 0)
+const sectionCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'section').length ?? 0)
+const trainCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'train').length ?? 0)
 const filteredGroups = computed(() => {
   const query = search.value.trim().toLocaleLowerCase()
   const matches = (item: InfrastructureNode) => [
@@ -51,6 +54,10 @@ function nodeLabel(item: InfrastructureNode): string {
   return [item.code, item.name].filter(Boolean).join(' ')
 }
 
+function deviceLabel(device: InfrastructureDevice): string {
+  return device.role && device.role !== device.name ? `${device.role} · ${device.name}` : device.name
+}
+
 async function mayLeaveRelationship(): Promise<boolean> {
   if (relationshipSaving.value) return false
   if (!relationshipDirty.value) return true
@@ -61,12 +68,14 @@ async function selectNode(uid = '', unassociated = false): Promise<void> {
   selectedUid.value = uid
   showUnassociated.value = unassociated
   selectedDevice.value = undefined
+  compactPane.value = 'node'
 }
 
 async function selectDevice(device: InfrastructureDevice): Promise<void> {
   if (!await mayLeaveRelationship()) return
   apPage.value = 1
   selectedDevice.value = device
+  compactPane.value = 'device'
 }
 
 watch(() => [props.siteId, props.revisionKey, props.initialNodeUid, retry.value], async (_, __, cleanup) => {
@@ -127,36 +136,48 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
   <section class="infrastructure-workbench" aria-label="基础设施工作台">
     <header class="workbench-header" :aria-busy="loading">
       <div class="site-title">
-        <span>{{ snapshot?.site_name || siteId }}</span>
         <strong>{{ snapshot?.line_name || '线路待配置' }}</strong>
+        <el-tooltip v-if="node || showUnassociated" :content="node ? nodeLabel(node) : '未关联设备'" placement="bottom" :show-after="350">
+          <span class="selected-node">{{ node ? nodeLabel(node) : '未关联设备' }}</span>
+        </el-tooltip>
       </div>
       <dl v-if="snapshot" class="site-counts">
         <div><dt>线路设备</dt><dd>{{ snapshot.device_count }}</dd></div>
         <div><dt>车站</dt><dd>{{ stationCount }}</dd></div>
+        <div><dt>区间</dt><dd>{{ sectionCount }}</dd></div>
         <div><dt>车辆段与停车场</dt><dd>{{ depotCount }}</dd></div>
+        <div><dt>列车</dt><dd>{{ trainCount }}</dd></div>
         <div><dt>关联异常</dt><dd>{{ snapshot.unresolved_binding_count }}</dd></div>
       </dl>
       <label class="workbench-search">
         <span class="visually-hidden">搜索组织树</span>
         <input v-model="search" type="search" placeholder="搜索编号、名称、历史名称或设备">
       </label>
-      <el-button :loading="loading" @click="retry++">刷新</el-button>
+      <el-button :loading="loading" @click="retry++">{{ t('common.refresh', '刷新') }}</el-button>
+      <div class="compact-switch" :aria-label="t('infrastructure.panes', '工作区视图')">
+        <button type="button" :aria-pressed="compactPane === 'node'" @click="compactPane = 'node'">{{ t('infrastructure.node_details', '工程资料') }}</button>
+        <button type="button" :aria-pressed="compactPane === 'device'" :disabled="!selectedDevice" @click="compactPane = 'device'">{{ t('infrastructure.device_details', '设备详情') }}</button>
+      </div>
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
-    <div v-loading="loading" class="workbench-columns">
+    <div v-loading="loading" class="workbench-columns" :data-compact-pane="compactPane">
       <nav class="workbench-column organization" aria-label="基础设施组织树">
-        <button class="tree-root" type="button" :aria-pressed="!node && !showUnassociated" @click="selectNode()">{{ snapshot?.line_name || '线路' }}</button>
+        <button class="tree-root" type="button" :aria-pressed="!node && !showUnassociated" @click="selectNode()">{{ t('infrastructure.line_overview', '线路概览') }}</button>
         <details v-for="group in filteredGroups" :key="group.name" open>
           <summary>{{ group.name }} <span>{{ group.items.length }}</span></summary>
           <div v-for="item in group.items" :key="item.uid">
-            <button class="tree-node" type="button" :aria-pressed="item.uid === selectedUid"
-              @click="selectNode(item.uid)">{{ nodeLabel(item) }}</button>
+            <el-tooltip :content="nodeLabel(item)" placement="right" :show-after="350">
+              <button class="tree-node" type="button" :aria-pressed="item.uid === selectedUid"
+                @click="selectNode(item.uid)"><span class="tree-label">{{ nodeLabel(item) }}</span></button>
+            </el-tooltip>
             <ul v-if="item.uid === selectedUid && item.devices.length" class="tree-devices">
               <li v-for="device in item.devices" :key="device.device_uuid">
-                <button class="tree-node" type="button" :aria-pressed="device.device_uuid === selectedDevice?.device_uuid"
-                  @click="selectDevice(device)">{{ device.role ? device.role + ' · ' : '' }}{{ device.name }}</button>
+                <el-tooltip :content="deviceLabel(device)" placement="right" :show-after="350">
+                  <button class="tree-node" type="button" :aria-pressed="device.device_uuid === selectedDevice?.device_uuid"
+                    @click="selectDevice(device)"><span class="tree-label">{{ deviceLabel(device) }}</span></button>
+                </el-tooltip>
                 <ul v-if="device.device_uuid === selectedDevice?.device_uuid && aps?.items.length" class="tree-aps">
-                  <li v-for="ap in aps.items" :key="ap.row_id">{{ ap.ap_name || ap.ap_uuid }}</li>
+                  <li v-for="ap in aps.items" :key="ap.row_id" :title="ap.ap_name || ap.ap_uuid" class="tree-label">{{ ap.ap_name || ap.ap_uuid }}</li>
                 </ul>
               </li>
             </ul>
@@ -169,15 +190,15 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
 
       <div class="workbench-column node-content">
         <header class="section-heading">
-          <h3>{{ showUnassociated ? '未关联设备' : node ? nodeLabel(node) : '线路概览' }}</h3>
+          <h3>{{ showUnassociated ? '未关联设备' : node ? t('infrastructure.node_details', '工程资料') : t('infrastructure.line_overview', '线路概览') }}</h3>
           <el-button v-if="node?.station && isFeatureEnabled('capability.rail_transit.wireless_dashboard')" link type="primary" @click="router.push({ name: 'rail-transit-wireless-dashboard', query: { station_id: node.station.id } })">{{ t('engineering.wireless', '无线看板') }}</el-button>
         </header>
         <template v-if="node">
           <dl class="node-facts">
-            <div><dt>{{ node.kind === 'train' ? '列车编号' : '编号' }}</dt><dd>{{ node.code || '待配置' }}</dd></div>
+            <div v-if="node.code"><dt>{{ node.kind === 'train' ? '列车编号' : '编号' }}</dt><dd>{{ node.code }}</dd></div>
             <div><dt>正式名称</dt><dd>{{ node.name }}</dd></div>
-            <div v-if="node.kind !== 'train'"><dt>建设项目</dt><dd>{{ node.projects.map((item) => [item.stage, item.name].filter(Boolean).join(' ')).join('、') || '待配置' }}</dd></div>
-            <div v-if="node.kind === 'cocc' || node.kind === 'bocc'"><dt>AC 服务站点</dt><dd>{{ node.ac_service_stations.join('、') || '待配置' }}</dd></div>
+            <div v-if="node.kind !== 'train' && node.projects.length"><dt>建设项目</dt><dd>{{ node.projects.map((item) => [item.stage, item.name].filter(Boolean).join(' ')).join('、') }}</dd></div>
+            <div v-if="(node.kind === 'cocc' || node.kind === 'bocc') && node.ac_service_stations.length"><dt>AC 服务站点</dt><dd>{{ node.ac_service_stations.join('、') }}</dd></div>
             <div v-if="node.kind === 'train'"><dt>资料来源</dt><dd>{{ node.source === 'legacy_train' ? '既有列车资料' : '正式工程资料' }}</dd></div>
           </dl>
           <section v-if="node.aliases.length" class="node-section">
@@ -234,17 +255,25 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
 </template>
 
 <style scoped>
-.infrastructure-workbench { display: grid; gap: 12px; padding: 4px 0 16px; }
-.workbench-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
-.site-title { display: grid; gap: 3px; margin-right: auto; }
+.infrastructure-workbench { container-type: inline-size; display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; gap: 8px; }
+.workbench-header { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.site-title { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 180px; }
+.site-title strong { flex: none; }
+.selected-node { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selected-node::before { content: '/'; margin-right: 12px; color: var(--nc-text-secondary); }
 .site-title span, .site-counts dt, .empty-state, .tree-empty { color: var(--nc-text-secondary); font-size: 12px; }
-.site-title strong { font-size: 18px; }
-.site-counts { display: flex; flex-wrap: wrap; gap: 16px; margin: 0; }
-.site-counts dd { margin: 3px 0 0; font-weight: 650; }
-.workbench-search input { width: min(280px, 100%); min-height: 32px; padding: 0 10px; color: var(--nc-text-primary); background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 6px; }
+.site-title strong { font-size: 16px; }
+.site-counts { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 0; }
+.site-counts > div { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.site-counts dd { margin: 0; font-weight: 650; }
+.workbench-search { flex: 0 1 240px; min-width: 160px; }
+.workbench-search input { width: 100%; min-height: 32px; padding: 0 10px; color: var(--nc-text-primary); background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 6px; }
+.compact-switch { display: none; }
+.compact-switch button { padding: 5px 10px; color: inherit; background: transparent; border: 1px solid var(--nc-border); border-radius: 5px; cursor: pointer; }
+.compact-switch button:disabled { color: var(--nc-text-secondary); cursor: default; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.workbench-columns { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(260px, 2fr) minmax(320px, 2fr); height: clamp(460px, 58vh, 810px); min-width: 0; border: 1px solid var(--nc-border); border-radius: 8px; overflow: hidden; }
-.workbench-column { min-width: 0; min-height: 0; padding: 14px; overflow: auto; }
+.workbench-columns { display: grid; flex: 1; grid-template-columns: clamp(240px, 18cqw, 280px) clamp(340px, 28cqw, 420px) minmax(500px, 1fr); grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; border: 1px solid var(--nc-border); border-radius: 8px; overflow: hidden; }
+.workbench-column { min-width: 0; min-height: 0; padding: 12px; overflow: auto; overscroll-behavior: contain; }
 .workbench-column + .workbench-column { border-left: 1px solid var(--nc-border); }
 .organization details { margin: 6px 0 10px; }
 .organization summary { padding: 6px; cursor: pointer; font-weight: 600; }
@@ -252,6 +281,7 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
 .tree-root, .tree-node, .device-link { display: block; width: 100%; padding: 7px 9px; color: inherit; text-align: left; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
 .tree-root { font-weight: 650; }
 .tree-node { padding-left: 16px; }
+.tree-label { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tree-devices, .tree-aps { list-style: none; padding-left: 17px; margin: 0; }
 .tree-aps { font-size: 12px; color: var(--nc-text-secondary); }
 .tree-empty { padding: 3px 16px; }
@@ -259,18 +289,27 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
 button[aria-pressed="true"] { color: var(--el-color-primary); }
 .section-heading, .device-link, .ap-links li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
 .section-heading h3, .device-content h3 { margin: 0 0 8px; font-size: 16px; overflow-wrap: anywhere; }
-.node-facts { display: grid; gap: 8px; margin: 10px 0 16px; }
-.node-facts div { display: grid; grid-template-columns: 112px 1fr; gap: 8px; }
+.node-facts { display: grid; gap: 6px; margin: 8px 0 12px; }
+.node-facts div { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 8px; }
 .node-facts dt, .device-link span, .ap-links span { color: var(--nc-text-secondary); }
 .node-facts dd { margin: 0; overflow-wrap: anywhere; }
 .node-section { border-top: 1px solid var(--nc-border); padding-top: 10px; margin-top: 12px; }
 .node-section h4 { font-size: 14px; margin: 0 0 8px; }
 .device-links, .ap-links { list-style: none; padding: 0; margin: 0; }
 .ap-links li { padding: 6px 0; }
-.device-content { display: flex; flex-direction: column; }
-.device-content :deep(.device-detail-panel) { min-height: 0; flex: 1; }
-@media (max-width: 1050px) {
-  .workbench-columns { grid-template-columns: minmax(160px, 1fr) minmax(235px, 2fr); height: auto; }
-  .device-content { grid-column: 1 / -1; min-height: 300px; border-top: 1px solid var(--nc-border); }
+.device-content { display: flex; flex-direction: column; overflow: hidden; }
+.device-content :deep(.device-detail-panel) { min-height: 0; flex: 1; height: auto; }
+.device-content > .relationship-editor { flex: 0 1 auto; overflow: auto; }
+@container (max-width: 1100px) {
+  .workbench-columns { grid-template-columns: 240px minmax(0, 1fr); }
+  .compact-switch { display: flex; gap: 6px; }
+  .node-content, .device-content { grid-column: 2; grid-row: 1; }
+  [data-compact-pane="node"] > .device-content, [data-compact-pane="device"] > .node-content { display: none; }
+}
+@container (max-width: 740px) {
+  .workbench-columns { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(140px, .3fr) minmax(0, 1fr); }
+  .organization { grid-column: 1; grid-row: 1; }
+  .node-content, .device-content { grid-column: 1; grid-row: 2; border-left: 0; border-top: 1px solid var(--nc-border); }
+  .site-counts { order: 1; flex-basis: 100%; }
 }
 </style>

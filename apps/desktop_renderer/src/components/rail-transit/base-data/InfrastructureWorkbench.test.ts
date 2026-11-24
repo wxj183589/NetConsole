@@ -46,5 +46,13 @@ describe('Infrastructure workbench', () => {
     expect(wrapper.getComponent(DeviceDetailPanel).props('deviceUuid')).toBe('sw-1')
     expect(api.getInfrastructureSwitchAps).toHaveBeenCalledWith('demo', 'sw-1', 1, expect.any(AbortSignal))
     expect(wrapper.text()).toContain('暂无经 LLDP 与 AP Identity 确认的接入')
+    expect(wrapper.get('.workbench-columns').attributes('data-compact-pane')).toBe('device')
+    await wrapper.findAll('.compact-switch button')[0].trigger('click')
+    expect(wrapper.get('.workbench-columns').attributes('data-compact-pane')).toBe('node')
+    // Narrow-layout switching retains the selected device and its existing panel.
+    expect(wrapper.getComponent(DeviceDetailPanel).props('deviceUuid')).toBe('sw-1')
+    await wrapper.get('.tree-root').trigger('click')
+    expect(wrapper.findComponent(DeviceDetailPanel).exists()).toBe(false)
+    expect(wrapper.get('.compact-switch button:last-child').attributes('disabled')).toBeDefined()
   })
 })
