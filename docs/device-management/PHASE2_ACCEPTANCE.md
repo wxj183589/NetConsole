@@ -31,7 +31,7 @@
 ## Phase 2.5 Final Acceptance
 
 - 产品 HEAD：`c24e2c8aa9eb2d4db0b9508ee32d03c40af00395`。
-- DevStatus HEAD（执行时）：`62b0badbe0d40569bbc3f3ecd0b79fe61d0fe5ab`。
+- DevStatus HEAD：`3218797`（`codex-A/device-management-phase2-status`，已推送）。
 - 正式命令：`python -B -m scripts.quality.local_gate --mode full --base-sha 907183a4 --head-sha HEAD`。
 - 执行时间：`2026-11-24 15:12:41` 至 `2026-11-24 15:43:32`（Asia/Shanghai）；退出码 `0`。
 - Renderer：`216 files / 1577 passed`；`vue-tsc -b` 和 Vite build PASS。
