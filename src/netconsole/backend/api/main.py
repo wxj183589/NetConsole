@@ -106,6 +106,7 @@ from netconsole.services.rail_transit.base_data_query_service import RailTransit
 from netconsole.services.rail_transit.base_data_import_service import RailTransitBaseDataImportService
 from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard, WRITE_FEATURE_ID
 from netconsole.application.rail_transit.base_data_application_service import RailTransitBaseDataApplicationService
+from netconsole.application.rail_transit.relationship_application_service import RailRelationshipApplicationService
 from netconsole.services.rail_transit.import_preview_service import RailTransitImportPreviewService
 from netconsole.services.rail_transit.station_source_discovery_service import StationSourceDiscoveryService
 from netconsole.services.rail_transit.station_template_service import StationTemplateService
@@ -1139,6 +1140,10 @@ def create_app(
     app.state.rail_transit_base_data_application_service = RailTransitBaseDataApplicationService(
         paths,
         app.state.rail_transit_base_data_query_service,
+        rail_base_data_write_guard,
+    )
+    app.state.rail_relationship_application_service = RailRelationshipApplicationService(
+        paths,
         rail_base_data_write_guard,
     )
     app.state.rail_transit_station_source_discovery_service = StationSourceDiscoveryService(

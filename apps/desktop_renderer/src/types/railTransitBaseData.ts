@@ -599,6 +599,35 @@ export interface Relation {
   updated_at: string
 }
 
+export type RailRelationshipType = 'node_project' | 'device_node' | 'device_section' | 'ac_service' | 'train_mr'
+export type RailRelationshipAction = 'create' | 'update' | 'terminate' | 'replace'
+export interface RailRelationshipRecord {
+  relationship_type: string
+  relationship_id: string
+  source_uid: string
+  target_uid: string
+  status: 'active' | 'terminated'
+  values: Record<string, unknown>
+  effective_from: string
+  effective_to: string
+}
+export interface RailRelationshipHistoryRecord {
+  event_id: string
+  relationship_type: string
+  relationship_id: string
+  action: string
+  source_uid: string
+  target_uid: string
+  before: Record<string, unknown>
+  after: Record<string, unknown>
+  effective_from: string
+  effective_to: string
+  reason: string
+  actor: string
+  changed_at: string
+  revision: string
+}
+
 export interface Page<T> { items: T[]; total: number; page: number; page_size: number }
 
 export interface ImportPreviewRow {

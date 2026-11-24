@@ -25,8 +25,11 @@ erDiagram
 | `rail_infra_node_project` | `(node_uid, project_id)`。同一站可加入多个项目。 |
 | `rail_infra_device_project` | `(device_uuid, project_id)`。独立维护调试阶段、工程状态、采集和统计资格。 |
 | `rail_infra_device_link` | `(node_uid, device_uuid)`。描述工程归属、角色及可选区间引用。 |
+| `rail_infra_device_section` | `(device_uuid, section_uid)`。独立表达一个设备服务多个区间，安装位置和工程角色不覆盖物理节点归属。 |
 | `rail_infra_ac_service` | `(ac_device_uuid, node_uid)`。AC 工程资产归属与服务站点各自维护。 |
 | `rail_infra_train` | `train_uid`。线路内列车编号唯一且可更名。 |
 | `rail_infra_train_mr` | `assignment_id`。同一列车端位与同一 MR 各自只有一个生效关联，结束时间保留历史。 |
+| `rail_infra_relation_history` | `event_id`。关系生命周期事件、前后快照、生效时间、原因、操作者和 revision。 |
+| `rail_infra_relation_audit` | `audit_id`。按局点记录 Application Service 请求审计，不删除历史业务证据。 |
 
 端口接入、AP 工程点位和 FIT-AP Current 分别使用既有轨旁 AP、LLDP、AP Identity 和 AC 事实。没有经过确认的交换机归属、端口及 AP 身份时保留未配置或冲突状态。历史 MR 会话继续用写入时的设备和会话身份追溯。

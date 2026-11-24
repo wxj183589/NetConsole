@@ -31,6 +31,10 @@ import type {
   TracksideAp,
   Train,
   VehicleMr,
+  RailRelationshipAction,
+  RailRelationshipHistoryRecord,
+  RailRelationshipRecord,
+  RailRelationshipType,
 } from '../types/railTransitBaseData'
 
 const root = '/api/rail-transit/base-data'
@@ -67,6 +71,22 @@ export const listVehicleMrs = (values: PageQuery = {}): Promise<Page<VehicleMr>>
 export const listDataQualityIssues = (values: PageQuery = {}): Promise<Page<DataQualityIssue>> => apiRequest(`${root}/issues${queryString(values)}`)
 export const listDataQualityIssueGroups = (values: PageQuery = {}): Promise<DataQualityEntityGroupPage> => apiRequest(`${root}/issues/groups${queryString(values)}`)
 export const listRelations = (values: PageQuery = {}): Promise<Page<Relation>> => apiRequest(`${root}/relations${queryString(values)}`)
+export const listEngineeringRelationships = (values: { relationship_type?: RailRelationshipType; entity_uid?: string } = {}): Promise<{ items: RailRelationshipRecord[]; total: number; revision: string }> => apiRequest(`/api/rail-transit/relationships${queryString(values)}`)
+export const listEngineeringRelationshipHistory = (values: { relationship_type?: RailRelationshipType; entity_uid?: string } = {}): Promise<{ items: RailRelationshipHistoryRecord[]; total: number }> => apiRequest(`/api/rail-transit/relationships/history${queryString(values)}`)
+export const mutateEngineeringRelationship = (payload: {
+  relationship_type: RailRelationshipType
+  action: RailRelationshipAction
+  relationship_id?: string
+  source_uid?: string
+  target_uid?: string
+  values?: Record<string, unknown>
+  effective_from?: string
+  effective_to?: string
+  reason?: string
+  actor?: string
+  base_revision: string
+  explicit_confirmation: boolean
+}): Promise<{ relationship: RailRelationshipRecord | null; revision: string; history_event_id: string }> => apiRequest('/api/rail-transit/relationships', { method: 'POST', body: JSON.stringify(payload) })
 
 export function previewRailTransitImport(file: File): Promise<ImportPreviewResult> {
   const form = new FormData()

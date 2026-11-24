@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS rail_infra_device_link (
     section_uid TEXT,
     PRIMARY KEY (node_uid, device_uuid)
 );
+CREATE TABLE IF NOT EXISTS rail_infra_device_section (
+    device_uuid TEXT NOT NULL REFERENCES devices(device_uuid) ON DELETE RESTRICT,
+    section_uid TEXT NOT NULL,
+    engineering_role TEXT NOT NULL DEFAULT '',
+    installation_location TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (device_uuid, section_uid)
+);
+CREATE INDEX IF NOT EXISTS ix_rail_infra_device_section_section
+    ON rail_infra_device_section(section_uid);
 CREATE TABLE IF NOT EXISTS rail_infra_ac_service (
     ac_device_uuid TEXT NOT NULL REFERENCES devices(device_uuid) ON DELETE RESTRICT,
     node_uid TEXT NOT NULL REFERENCES rail_infra_node(node_uid) ON DELETE RESTRICT,
@@ -69,6 +78,84 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_rail_infra_active_train_position
     ON rail_infra_train_mr(train_uid, position) WHERE active_to IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_rail_infra_active_mr
     ON rail_infra_train_mr(device_uuid) WHERE active_to IS NULL;
+CREATE TABLE IF NOT EXISTS rail_infra_relation_history (
+    event_id TEXT PRIMARY KEY NOT NULL,
+    relation_type TEXT NOT NULL,
+    relation_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('create', 'update', 'terminate', 'replace')),
+    source_uid TEXT NOT NULL DEFAULT '',
+    target_uid TEXT NOT NULL DEFAULT '',
+    before_json TEXT NOT NULL DEFAULT '{}',
+    after_json TEXT NOT NULL DEFAULT '{}',
+    effective_from TEXT,
+    effective_to TEXT,
+    reason TEXT NOT NULL DEFAULT '',
+    actor TEXT NOT NULL DEFAULT '',
+    changed_at TEXT NOT NULL,
+    revision TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_rail_infra_relation_history_lookup
+    ON rail_infra_relation_history(relation_type, relation_id, changed_at DESC);
+CREATE TABLE IF NOT EXISTS rail_infra_relation_audit (
+    audit_id TEXT PRIMARY KEY NOT NULL,
+    event_id TEXT NOT NULL REFERENCES rail_infra_relation_history(event_id) ON DELETE RESTRICT,
+    site_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_node_project_insert
+AFTER INSERT ON rail_infra_node_project BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_node_project_delete
+AFTER DELETE ON rail_infra_node_project BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_device_link_insert
+AFTER INSERT ON rail_infra_device_link BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_device_link_update
+AFTER UPDATE ON rail_infra_device_link BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_device_link_delete
+AFTER DELETE ON rail_infra_device_link BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_device_section_insert
+AFTER INSERT ON rail_infra_device_section BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_device_section_update
+AFTER UPDATE ON rail_infra_device_section BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_device_section_delete
+AFTER DELETE ON rail_infra_device_section BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_ac_service_insert
+AFTER INSERT ON rail_infra_ac_service BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_ac_service_delete
+AFTER DELETE ON rail_infra_ac_service BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_train_mr_insert
+AFTER INSERT ON rail_infra_train_mr BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_train_mr_update
+AFTER UPDATE ON rail_infra_train_mr BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
+CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_relation_history_insert
+AFTER INSERT ON rail_infra_relation_history BEGIN
+    UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
+END;
 """
 
 RAIL_INFRASTRUCTURE_TABLES = frozenset(
@@ -79,8 +166,11 @@ RAIL_INFRASTRUCTURE_TABLES = frozenset(
         "rail_infra_node_project",
         "rail_infra_device_project",
         "rail_infra_device_link",
+        "rail_infra_device_section",
         "rail_infra_ac_service",
         "rail_infra_train",
         "rail_infra_train_mr",
+        "rail_infra_relation_history",
+        "rail_infra_relation_audit",
     )
 )
