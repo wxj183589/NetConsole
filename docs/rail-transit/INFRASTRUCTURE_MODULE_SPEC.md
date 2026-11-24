@@ -2,7 +2,7 @@
 
 入口 `/rail-transit/infrastructure`；导航 `rail.infrastructure`；Feature `module.rail_infrastructure`。它是工程组织与工程关系中心，独立于基础资料。
 
-复用 Phase 1–4 的 InfrastructureWorkbench：左侧组织树按控制中心、正线车站、区间、车辆段/停车场和列车分组，中间查看节点正式名称、名称历史、建设项目、相关区间和设备，右侧通过稳定 UUID 查看设备采集事实及工程关系。没有正式关系的层级不补造；Point/Identity/LLDP/运行状态保持原边界。
+复用 Phase 1–4 的 InfrastructureWorkbench：左侧组织树按控制中心、正线车站、车辆段/停车场和列车分组，站间区间位于正线车站下的展示分组并保留两个端点；中间按节点类型精简，名称历史和工程关系按需展开，右侧通过稳定 UUID 查看设备事实。没有正式关系的层级不补造；Point/Identity/LLDP/运行状态保持原边界。详见[工程层级与真实验证](./PHASE5_2_INFRASTRUCTURE_HIERARCHY.md)。
 
 四类关系仍走 `/api/rail-transit/relationships`，保留创建/修改/解除、MR 更换、AC 多站点、项目管理、服务器预览、明确确认、幂等、revision冲突、历史与操作审计。模块查看权限与 `capability.rail_infrastructure.write` 独立校验；BaseDataWriteGuard继续负责环境/副本/桌面会话保护，其实现没有修改。
 

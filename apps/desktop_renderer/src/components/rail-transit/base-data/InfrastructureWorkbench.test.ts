@@ -6,9 +6,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DeviceDetailPanel from '../../device-detail/DeviceDetailPanel.vue'
 import InfrastructureWorkbench from './InfrastructureWorkbench.vue'
 import type { Infrastructure } from '../../../api/railInfrastructure'
+import { setRendererFeaturesForTest } from '../../../features'
 
 const api = vi.hoisted(() => ({ getInfrastructure: vi.fn(), getInfrastructureSwitchAps: vi.fn() }))
 vi.mock('../../../api/railInfrastructure', () => api)
+vi.mock('../../../api/deviceManagement', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../api/deviceManagement')>(),
+  getDeviceOverview: vi.fn(async () => ({ model: '', engineering_context: {} })),
+}))
 
 const snapshot: Infrastructure = {
   site_id: 'demo', site_name: '试验局点', line_name: '试验线', schema_available: true, device_count: 2,
@@ -25,6 +30,7 @@ const snapshot: Infrastructure = {
 describe('Infrastructure workbench', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    setRendererFeaturesForTest({ 'module.trackside_ap': {visible:true,enabled:true}, 'module.devices': {visible:true,enabled:true} })
     api.getInfrastructure.mockResolvedValue(snapshot)
     api.getInfrastructureSwitchAps.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
   })
@@ -54,5 +60,22 @@ describe('Infrastructure workbench', () => {
     await wrapper.get('.tree-root').trigger('click')
     expect(wrapper.findComponent(DeviceDetailPanel).exists()).toBe(false)
     expect(wrapper.get('.compact-switch button:last-child').attributes('disabled')).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it('keeps incomplete AP queries distinct from zero and displays identity conflicts from the authority', async () => {
+    api.getInfrastructureSwitchAps.mockResolvedValue({items:[{row_id:'row',ap_uuid:'ap',ap_name:'AP conflict',interface_name:'GE1',link_status:'unknown',identity_match_status:'conflict',primary_reason_label:'身份冲突'}],total:99,page:1,page_size:50,partial_data:true})
+    const wrapper = mount(InfrastructureWorkbench, {props:{siteId:'demo'},global:{stubs:{DeviceDetailPanel:true,RelationshipEditor:true,ElAlert:true,ElButton:true},directives:{loading:()=>{}}}})
+    await flushPromises()
+    await wrapper.get('.organization .tree-node').trigger('click')
+    await flushPromises()
+    await wrapper.get('.device-link').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('关联查询不完整，数量未确认')
+    expect(wrapper.get('[aria-label="交换机下挂 AP"] h4').text()).not.toContain('99')
+    await wrapper.get('.ap-links button').trigger('click')
+    expect(wrapper.get('.ap-engineering-detail').text()).toContain('身份冲突')
+    expect(wrapper.find('.device-detail-panel').exists()).toBe(false)
+    wrapper.unmount()
   })
 })

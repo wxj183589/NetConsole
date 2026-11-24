@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.models.api.rail_infrastructure import (
     InfrastructureDTO,
-    InfrastructureSwitchApsDTO,
+    InfrastructureSwitchApContextPageDTO,
 )
 
 router = APIRouter(
@@ -33,7 +33,7 @@ def infrastructure(request: Request, site_id: str = Query(default="", max_length
 
 @router.get(
     "/switch-aps",
-    response_model=InfrastructureSwitchApsDTO,
+    response_model=InfrastructureSwitchApContextPageDTO,
     dependencies=[Depends(require_feature("module.trackside_ap"))],
 )
 def switch_aps(

@@ -41,7 +41,7 @@ describe('independent rail modules', () => {
     await flushPromises()
     expect(wrapper.find('.organization').exists()).toBe(true)
     expect(wrapper.find('.selected-node').text()).toContain('Station')
-    expect(wrapper.find('.node-facts').text()).toContain('Station')
+    expect(wrapper.find('.node-facts').text()).toContain('01')
     expect(wrapper.find('.el-tabs').exists()).toBe(false)
     await wrapper.get('input[type=search]').setValue('Station')
     expect(infra.search).toBe('Station'); expect(base.apFilters.query).toBe('base-filter')

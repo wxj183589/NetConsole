@@ -41,10 +41,17 @@ export interface Infrastructure {
 }
 
 export interface InfrastructureSwitchAps {
-  items: Pick<TracksideApBusinessRow, 'row_id' | 'ap_uuid' | 'ap_name' | 'interface_name' | 'link_status'>[]
+  items: (Pick<TracksideApBusinessRow, 'row_id' | 'ap_uuid' | 'ap_name' | 'interface_name' | 'link_status'> & {
+    identity_match_status?: string
+    recognition_status?: string
+    primary_reason_label?: string
+    section_ids?: string[]
+  })[]
   total: number
   page: number
   page_size: number
+  partial_data?: boolean
+  unavailable_sources?: string[]
 }
 
 const root = '/api/rail-transit/infrastructure'

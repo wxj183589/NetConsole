@@ -3,8 +3,8 @@
 from netconsole.core.site_identity import validate_site_name
 from netconsole.models.api.rail_infrastructure import (
     InfrastructureDTO,
-    InfrastructureSwitchApDTO,
-    InfrastructureSwitchApsDTO,
+    InfrastructureSwitchApContextDTO,
+    InfrastructureSwitchApContextPageDTO,
 )
 
 
@@ -21,24 +21,32 @@ class RailInfrastructureApplicationService:
 
     def switch_aps(
         self, site_id: str, device_uuid: str, page: int
-    ) -> InfrastructureSwitchApsDTO:
+    ) -> InfrastructureSwitchApContextPageDTO:
         result = self.trackside_query.list_rows(
             self.site_id(site_id),
             page=page,
             confirmed_switch_uuid=device_uuid,
         )
-        return InfrastructureSwitchApsDTO(
+        return InfrastructureSwitchApContextPageDTO(
             items=[
-                InfrastructureSwitchApDTO(
+                InfrastructureSwitchApContextDTO(
                     row_id=item.row_id,
                     ap_uuid=item.ap_uuid,
                     ap_name=item.ap_name,
                     interface_name=item.interface_name,
                     link_status=item.link_status,
+                    identity_match_status=item.identity_match_status,
+                    recognition_status=item.recognition_status,
+                    primary_reason_label=item.primary_reason_label,
+                    section_ids=item.point_engineering_context.section_ids,
                 )
                 for item in result.items
             ],
             total=result.total,
             page=result.page,
             page_size=result.page_size,
+            partial_data=result.partial_data,
+            unavailable_sources=[
+                item.label or item.source for item in result.unavailable_sources
+            ],
         )

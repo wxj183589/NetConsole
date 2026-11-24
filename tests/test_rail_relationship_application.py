@@ -226,10 +226,13 @@ def test_relationship_read_api_returns_current_revision_without_write_side_effec
         "enabled": True,
         "visible": True,
     }
-    before = db_path.read_bytes()
     from fastapi.testclient import TestClient
 
     with TestClient(app) as client:
+        # Measure GET after lifespan startup, which may commit its own writes.
+        with closing(Database(db_path).connect()) as conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        before = db_path.read_bytes()
         response = client.get(
             "/api/rail-transit/relationships?site_id=demo&relationship_type=node_project"
         )

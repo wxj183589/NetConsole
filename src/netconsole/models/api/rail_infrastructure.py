@@ -74,3 +74,19 @@ class InfrastructureSwitchApsDTO(ApiModel):
     total: int
     page: int
     page_size: int
+
+
+class InfrastructureSwitchApContextDTO(InfrastructureSwitchApDTO):
+    identity_match_status: str = "unresolved"
+    recognition_status: str = "unidentified"
+    primary_reason_label: str = ""
+    section_ids: list[str] = Field(default_factory=list)
+
+
+class InfrastructureSwitchApContextPageDTO(ApiModel):
+    items: list[InfrastructureSwitchApContextDTO] = Field(default_factory=list)
+    total: int
+    page: int
+    page_size: int
+    partial_data: bool = False
+    unavailable_sources: list[str] = Field(default_factory=list)

@@ -28,3 +28,4 @@
 - [原基础资料兼容与安全边界](./BASE_DATA_COMPATIBILITY.md)
 - [Phase 5 定向验收](./PHASE5_ACCEPTANCE.md)
 - [基础设施工作台空间与滚动布局](./PHASE5_1_INFRASTRUCTURE_LAYOUT.md)
+- [工程层级简化与真实开发数据验证](./PHASE5_2_INFRASTRUCTURE_HIERARCHY.md)
