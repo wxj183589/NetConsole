@@ -112,6 +112,8 @@ function desktopRendererBuildMetaPlugin() {
 
 export default defineConfig({
   test: {
+    // Keep wall-clock performance assertions comparable on shared development hosts.
+    maxWorkers: 2,
     exclude: [...configDefaults.exclude, 'tests/visual/e2e/**'],
     server: { deps: { inline: ['element-plus', '@element-plus/icons-vue'] } },
   },
