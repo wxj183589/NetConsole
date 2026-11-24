@@ -33,6 +33,7 @@ export interface Infrastructure {
   site_name: string
   line_name: string
   schema_available: boolean
+  organization_initialized?: boolean
   device_count: number
   unassociated_device_count: number
   unresolved_binding_count: number
@@ -58,6 +59,10 @@ const root = '/api/rail-transit/infrastructure'
 
 export function getInfrastructure(siteId: string, signal: AbortSignal): Promise<Infrastructure> {
   return apiRequest(`${root}?${new URLSearchParams({ site_id: siteId })}`, { signal })
+}
+
+export function initializeInfrastructure(siteId: string, signal: AbortSignal): Promise<Infrastructure> {
+  return apiRequest(`${root}/initialize?${new URLSearchParams({ site_id: siteId })}`, { method: 'POST', signal })
 }
 
 export function getInfrastructureSwitchAps(siteId: string, deviceUuid: string, page: number, signal: AbortSignal): Promise<InfrastructureSwitchAps> {

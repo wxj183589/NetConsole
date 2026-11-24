@@ -1,11 +1,14 @@
 """Read-only infrastructure entry; shared authorities retain their ownership."""
 
+from netconsole.core.database import Database
 from netconsole.core.site_identity import validate_site_name
 from netconsole.models.api.rail_infrastructure import (
     InfrastructureDTO,
     InfrastructureSwitchApContextDTO,
     InfrastructureSwitchApContextPageDTO,
 )
+from netconsole.repositories.rail_infrastructure_repository import RailInfrastructureRepository
+from netconsole.repositories.rail_relationship_repository import RelationshipError
 
 
 class RailInfrastructureApplicationService:
@@ -18,6 +21,26 @@ class RailInfrastructureApplicationService:
 
     def infrastructure(self, site_id: str) -> InfrastructureDTO:
         return self.base_query.infrastructure(self.site_id(site_id))
+
+    def initialize(self, site_id: str) -> InfrastructureDTO:
+        site = self.site_id(site_id)
+        repository = RailInfrastructureRepository(Database(self.base_query.paths.site_db_path(site)))
+        if not repository.database.exists():
+            raise RelationshipError("RELATION_REFERENCE_MISSING", "局点数据库不存在")
+        revision = repository.base_revision()
+        snapshot = self.base_query.infrastructure(site)
+        if snapshot.organization_initialized:
+            return snapshot
+        if not snapshot.schema_available:
+            raise RelationshipError("RELATION_MIGRATION_REQUIRED", "局点数据库需要升级")
+        stations = {
+            key: {"uid": node.uid, "kind": node.kind, "code": node.code, "name": node.name}
+            for node in snapshot.nodes
+            if node.station is not None and node.kind in {"station", "depot", "parking_yard"}
+            for key in (node.station.id, node.uid)
+        }
+        repository.initialize_organization(site, stations, revision)
+        return self.base_query.infrastructure(site)
 
     def switch_aps(
         self, site_id: str, device_uuid: str, page: int

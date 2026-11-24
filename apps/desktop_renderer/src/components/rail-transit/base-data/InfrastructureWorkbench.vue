@@ -9,14 +9,14 @@ import { ElMessageBox } from 'element-plus'
 import DeviceDetailPanel from '../../device-detail/DeviceDetailPanel.vue'
 import RelationshipEditor from './RelationshipEditor.vue'
 import InfrastructureTreeNode from './InfrastructureTreeNode.vue'
-import { hierarchyGroups, nodeFields, sectionLabel, uniqueDevices } from './infrastructurePresentation'
+import { hierarchyGroups, nodeFields, nodeLabel, uniqueDevices } from './infrastructurePresentation'
 import { getDeviceOverview } from '../../../api/deviceManagement'
 import type { DeviceOverviewResponse } from '../../../types/deviceManagement'
 import {
   getInfrastructure,
   getInfrastructureSwitchAps,
+  initializeInfrastructure,
   type InfrastructureDevice,
-  type InfrastructureNode,
   type InfrastructureSwitchAps,
 } from '../../../api/railInfrastructure'
 
@@ -38,24 +38,15 @@ const nodeApFailed = ref(false)
 const nodeApLoading = ref(false)
 const relationshipNodeUid = ref('')
 
-const node = computed(() => snapshot.value?.nodes.find((item) => item.uid === selectedUid.value))
+const node = computed(() => snapshot.value?.nodes.find((item) => item.uid === selectedUid.value && item.kind !== 'section'))
 const depotCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'depot' || item.kind === 'parking_yard').length ?? 0)
 const stationCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'station').length ?? 0)
-const sectionCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'section').length ?? 0)
 const trainCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'train').length ?? 0)
 const filteredGroups = computed(() => hierarchyGroups(snapshot.value, search.value))
-const fields = computed(() => node.value ? nodeFields(node.value, snapshot.value?.nodes ?? []) : [])
+const fields = computed(() => node.value ? nodeFields(node.value) : [])
 const devices = computed(() => uniqueDevices((showUnassociated.value ? snapshot.value?.unassociated_devices : node.value?.devices) ?? []))
 const historyNames = computed(() => node.value?.aliases.filter(alias => alias.name.trim() && alias.name !== node.value?.name && (alias.name_type !== 'engineering' || alias.valid_to)) ?? [])
 const relationshipNode = computed(() => snapshot.value?.nodes.find(item => item.uid === relationshipNodeUid.value) || node.value)
-const visibleAps = computed(() => {
-  if (!aps.value) return undefined
-  return node.value?.kind === 'section' ? { ...aps.value, items: aps.value.items.filter(ap => ap.section_ids?.includes(node.value!.uid)) } : aps.value
-})
-
-function nodeLabel(item: InfrastructureNode): string {
-  return sectionLabel(item, snapshot.value?.nodes ?? [])
-}
 
 async function mayLeaveRelationship(): Promise<boolean> {
   if (relationshipSaving.value) return false
@@ -92,11 +83,15 @@ watch(() => [props.siteId, props.revisionKey, props.initialNodeUid, retry.value]
   error.value = ''
   loading.value = true
   try {
-    const result = await getInfrastructure(props.siteId, controller.signal)
+    const siteId = props.siteId
+    let result = await getInfrastructure(siteId, controller.signal)
+    if (!controller.signal.aborted && result.schema_available && result.organization_initialized === false && isFeatureEnabled('capability.rail_infrastructure.write')) {
+      result = await initializeInfrastructure(siteId, controller.signal)
+    }
     if (controller.signal.aborted) return
     snapshot.value = result
     if (props.initialNodeUid && props.initialNodeUid !== selectedUid.value) {
-      if (result.nodes.some(item => item.uid === props.initialNodeUid)) await selectNode(props.initialNodeUid)
+      if (result.nodes.some(item => item.uid === props.initialNodeUid && item.kind !== 'section')) await selectNode(props.initialNodeUid)
       else {
         await selectNode()
         error.value = t('engineering.missing_node', '工程节点不可用或已不存在')
@@ -108,7 +103,7 @@ watch(() => [props.siteId, props.revisionKey, props.initialNodeUid, retry.value]
       selectedDevice.value = undefined
     }
   } catch {
-    if (!controller.signal.aborted) error.value = '基础设施查询失败'
+    if (!controller.signal.aborted) error.value = '组织结构查询失败'
   } finally {
     if (!controller.signal.aborted) loading.value = false
   }
@@ -137,7 +132,7 @@ watch(() => [props.siteId, node.value?.uid, snapshot.value], async (_, __, clean
   nodeApFailed.value = false
   nodeApLoading.value = false
   const selected = node.value
-  if (!selected || !['station','depot','parking_yard','section'].includes(selected.kind) || !isFeatureEnabled('module.trackside_ap')) return
+  if (!selected || !['station','depot','parking_yard'].includes(selected.kind) || !isFeatureEnabled('module.trackside_ap')) return
   const controller = new AbortController()
   cleanup(() => controller.abort())
   nodeApLoading.value = true
@@ -152,7 +147,6 @@ watch(() => [props.siteId, node.value?.uid, snapshot.value], async (_, __, clean
         if (controller.signal.aborted) return
         complete &&= !page.partial_data && !page.unavailable_sources?.length
         for (const ap of page.items) {
-          if (selected.kind === 'section' && !ap.section_ids?.includes(selected.uid)) continue
           if (!ap.ap_uuid || ap.identity_match_status === 'conflict') complete = false
           else identities.add(ap.ap_uuid)
         }
@@ -192,7 +186,7 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
 </script>
 
 <template>
-  <section class="infrastructure-workbench" aria-label="基础设施工作台">
+  <section class="infrastructure-workbench" aria-label="组织结构工作台">
     <header class="workbench-header" :aria-busy="loading">
       <div class="site-title">
         <strong>{{ snapshot?.line_name || '线路待配置' }}</strong>
@@ -200,7 +194,6 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
       <dl v-if="snapshot" class="site-counts">
         <div><dt>线路设备</dt><dd>{{ snapshot.device_count }}</dd></div>
         <div><dt>车站</dt><dd>{{ stationCount }}</dd></div>
-        <div><dt>区间</dt><dd>{{ sectionCount }}</dd></div>
         <div><dt>车辆段与停车场</dt><dd>{{ depotCount }}</dd></div>
         <div><dt>列车</dt><dd>{{ trainCount }}</dd></div>
         <div><dt>关联异常</dt><dd>{{ snapshot.unresolved_binding_count }}</dd></div>
@@ -217,17 +210,12 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
     </header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <div v-loading="loading" class="workbench-columns" :data-compact-pane="compactPane">
-      <nav class="workbench-column organization" aria-label="基础设施组织树">
+      <nav class="workbench-column organization" aria-label="组织结构树">
         <button class="tree-root" type="button" :aria-pressed="!node && !showUnassociated" @click="selectNode()">{{ t('infrastructure.line_overview', '线路概览') }}</button>
         <details v-for="group in filteredGroups" :key="group.name" open>
           <summary>{{ group.name }} <span>{{ group.items.length }}</span></summary>
-          <InfrastructureTreeNode v-for="item in group.items" :key="item.uid" :node="item" :label="nodeLabel(item)" :selected-uid="selectedUid" :selected-device-id="selectedDevice?.device_uuid" :aps="visibleAps" @node="selectNode" @device="selectDevice" @ap="selectAp" />
-          <details v-if="group.name === '正线车站'" class="section-group" open>
-            <summary>{{ t('infrastructure.sections', '站间区间') }} <span>{{ group.sections.length }}</span></summary>
-            <InfrastructureTreeNode v-for="item in group.sections" :key="item.uid" :node="item" :label="nodeLabel(item)" :selected-uid="selectedUid" :selected-device-id="selectedDevice?.device_uuid" :aps="visibleAps" @node="selectNode" @device="selectDevice" @ap="selectAp" />
-            <p v-if="!group.sections.length" class="tree-empty">{{ search ? '无匹配区间' : '未配置' }}</p>
-          </details>
-          <div v-if="!group.items.length && !group.sections.length" class="tree-empty">{{ search ? '无匹配节点' : '待配置' }}</div>
+          <InfrastructureTreeNode v-for="item in group.items" :key="item.uid" :node="item" :label="nodeLabel(item)" :selected-uid="selectedUid" :selected-device-id="selectedDevice?.device_uuid" :aps="aps" @node="selectNode" @device="selectDevice" @ap="selectAp" />
+          <div v-if="!group.items.length" class="tree-empty">{{ search ? '无匹配节点' : '待配置' }}</div>
         </details>
         <button v-if="snapshot" class="tree-node unassociated" type="button" :aria-pressed="showUnassociated"
           @click="selectNode('', true)">未关联设备 <span v-if="snapshot.unassociated_device_count">{{ snapshot.unassociated_device_count }}</span></button>
@@ -235,7 +223,7 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
 
       <div class="workbench-column node-content">
         <header class="section-heading">
-          <h3 class="selected-node">{{ selectedDevice ? t('infrastructure.device_context', '设备工程上下文') : showUnassociated ? '未关联设备' : node ? node.kind === 'section' ? nodeLabel(node) : node.name : t('infrastructure.line_overview', '线路概览') }}</h3>
+          <h3 class="selected-node">{{ selectedDevice ? t('infrastructure.device_context', '设备工程上下文') : showUnassociated ? '未关联设备' : node?.name ?? t('infrastructure.line_overview', '线路概览') }}</h3>
           <el-button v-if="node?.station && isFeatureEnabled('capability.rail_transit.wireless_dashboard')" link type="primary" @click="router.push({ name: 'rail-transit-wireless-dashboard', query: { station_id: node.station.id } })">{{ t('engineering.wireless', '无线看板') }}</el-button>
         </header>
         <template v-if="node && !selectedDevice">
@@ -247,10 +235,6 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
             <summary>{{ t('infrastructure.name_history', '名称历史') }}</summary>
             <ul><li v-for="(alias, index) in historyNames" :key="index">{{ alias.name }}<span v-if="alias.valid_from || alias.valid_to"> · {{ alias.valid_from || '起始未知' }} 至 {{ alias.valid_to || '当前' }}</span></li></ul>
           </details>
-          <section v-if="node.sections.length && node.kind !== 'section'" class="node-section">
-            <h4>{{ t('infrastructure.related_sections', '关联区间') }}</h4>
-            <button v-for="item in node.sections" :key="item.id" class="tree-node" type="button" @click="selectNode(item.id)">{{ snapshot?.nodes.find(candidate => candidate.uid === item.id) ? nodeLabel(snapshot.nodes.find(candidate => candidate.uid === item.id)!) : item.name }}</button>
-          </section>
           <details class="node-section engineering-relations">
             <summary>{{ t('infrastructure.relationships', '工程关系') }}</summary>
             <RelationshipEditor :key="node.uid" :site-id="siteId" :entity-uid="node.uid" :entity-kind="node.kind" :entity-name="node.name" @busy-change="relationshipSaving=$event" @dirty-change="relationshipDirty=$event" @saved="retry++" />
@@ -260,7 +244,7 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
           <p v-if="deviceQueryFailed" class="empty-state">{{ t('infrastructure.device_query_failed', '设备工程信息查询失败') }}</p>
           <dl class="node-facts">
             <div v-if="deviceOverview?.model"><dt>{{ t('infrastructure.model', '设备型号') }}</dt><dd>{{ deviceOverview.model }}</dd></div>
-            <div v-if="node"><dt>{{ t('infrastructure.owner', '工程节点') }}</dt><dd>{{ node.kind === 'section' ? nodeLabel(node) : node.name }}</dd></div>
+            <div v-if="node"><dt>{{ t('infrastructure.owner', '工程节点') }}</dt><dd>{{ node.name }}</dd></div>
             <div v-if="deviceOverview?.engineering_context?.physical_location"><dt>{{ t('infrastructure.location', '安装位置') }}</dt><dd>{{ deviceOverview.engineering_context.physical_location }}</dd></div>
           </dl>
           <details class="node-section engineering-relations">
@@ -284,14 +268,13 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
         </section>
         <p v-if="!node && !showUnassociated && !selectedDevice" class="empty-state">选择组织树节点查看工程资料与设备。</p>
         <section v-if="selectedDevice?.device_role === 'switch' && isFeatureEnabled('module.trackside_ap')" class="node-section" aria-label="交换机下挂 AP">
-          <h4>{{ t('infrastructure.switch_ap', '交换机关联 AP') }} <span v-if="node?.kind !== 'section' && aps && !aps.partial_data && !aps.unavailable_sources?.length">{{ aps.total }}</span></h4>
+          <h4>{{ t('infrastructure.switch_ap', '交换机关联 AP') }} <span v-if="aps && !aps.partial_data && !aps.unavailable_sources?.length">{{ aps.total }}</span></h4>
           <p v-if="apLoading" class="empty-state">正在读取 LLDP 与 AP Identity</p>
           <p v-else-if="apUnavailable" class="empty-state">当前关联数据不可用</p>
           <p v-else-if="aps?.partial_data || aps?.unavailable_sources?.length" class="empty-state">{{ t('infrastructure.ap_partial', '关联查询不完整，数量未确认') }}</p>
           <p v-if="!apLoading && !apUnavailable && !aps?.partial_data && !aps?.unavailable_sources?.length && !aps?.items.length" class="empty-state">暂无经 LLDP 与 AP Identity 确认的接入</p>
-          <p v-if="node?.kind === 'section' && aps?.items.length && !visibleAps?.items.length" class="empty-state">{{ t('infrastructure.section_ap_unconfirmed', '当前页没有已确认区间点位的 AP') }}</p>
           <ul v-if="aps?.items.length" class="ap-links">
-            <li v-for="ap in visibleAps?.items" :key="ap.row_id">
+            <li v-for="ap in aps?.items" :key="ap.row_id">
               <button type="button" class="device-link" @click="selectAp(ap)">{{ ap.ap_name || t('infrastructure.identity_unconfirmed', '身份未确认') }}</button><span>{{ ap.interface_name || '端口未知' }}</span>
               <span>{{ ap.link_status || '状态未知' }}</span>
             </li>
@@ -341,7 +324,6 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
 .workbench-column { min-width: 0; min-height: 0; padding: 12px; overflow: auto; overscroll-behavior: contain; }
 .workbench-column + .workbench-column { border-left: 1px solid var(--nc-border); }
 .organization details { margin: 6px 0 10px; }
-.section-group { margin-left: 12px !important; }
 .node-section > summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
 .organization summary { padding: 6px; cursor: pointer; font-weight: 600; }
 .organization summary span, .unassociated span { color: var(--nc-text-secondary); font-weight: 400; }

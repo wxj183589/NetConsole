@@ -482,7 +482,7 @@ class RailTransitBaseDataQueryService:
                 **row, source="legacy_station", service_stations=facts.device_service_stations[device_uuid],
                 device_role=normalize_device_role(row["device_type"], vendor=row.get("vendor"), platform=row.get("platform")),
             )
-            uid = station_lookup.get(station_id)
+            uid = None if facts.organization_initialized else station_lookup.get(station_id)
             if uid is None:
                 unassociated.append(device)
                 unresolved += bool(station_id)
@@ -493,6 +493,7 @@ class RailTransitBaseDataQueryService:
             site_id=site_id, site_name=str(meta.get("display_name") or site_id),
             line_name=str(meta.get("line_name") or ""),
             schema_available=facts.schema_available, nodes=list(nodes.values()),
+            organization_initialized=facts.organization_initialized,
             device_count=len(facts.devices), unassociated_device_count=len(unassociated),
             unresolved_binding_count=unresolved, unassociated_devices=unassociated,
         )

@@ -124,3 +124,38 @@ def test_train_unlink_ends_current_mapping_and_preserves_historical_identity(tmp
     assert source.get_mr("demo", "mr-01-cw") is not None
     train = next(node for node in source.infrastructure("demo").nodes if node.uid == "train-01")
     assert train.devices == []
+
+
+def test_organization_initializes_once_and_later_assets_require_link(tmp_path):
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    database = Database(db_path)
+    with closing(database.connect()) as conn, conn:
+        group_id = conn.execute(
+            "INSERT INTO device_groups(site_id, name, created_at, updated_at) "
+            "VALUES ('demo', 'COCC', '2026-11-25', '2026-11-25')"
+        ).lastrowid
+        conn.execute("UPDATE devices SET group_id=? WHERE device_uuid='mr-01-ct'", (group_id,))
+        conn.execute(
+            "INSERT INTO devices(device_uuid, name, device_type, group_id, primary_address, created_at, updated_at) "
+            "VALUES ('first-sw', 'CORE-SW', 'switch', ?, '192.0.2.51', '2026-11-25', '2026-11-25')",
+            (group_id,),
+        )
+    from netconsole.application.rail_transit.infrastructure_application_service import (
+        RailInfrastructureApplicationService,
+    )
+
+    service = RailInfrastructureApplicationService(RailTransitBaseDataQueryService(paths), None)
+    assert not service.infrastructure("demo").organization_initialized
+    first = service.initialize("demo")
+    assert first.organization_initialized
+    center = next(node for node in first.nodes if node.kind == "cocc")
+    assert [device.device_uuid for device in center.devices] == ["first-sw"]
+    with closing(database.connect()) as conn, conn:
+        conn.execute(
+            "INSERT INTO devices(device_uuid, name, device_type, group_id, primary_address, created_at, updated_at) "
+            "VALUES ('new-sw', 'NEW-SW', 'switch', ?, '192.0.2.52', '2026-11-25', '2026-11-25')",
+            (group_id,),
+        )
+    repeated = service.initialize("demo")
+    assert [node.uid for node in repeated.nodes if node.kind == "cocc"] == [center.uid]
+    assert "new-sw" in {device.device_uuid for device in repeated.unassociated_devices}

@@ -54,6 +54,7 @@ class InfrastructureDTO(ApiModel):
     site_name: str
     line_name: str
     schema_available: bool = False
+    organization_initialized: bool = False
     device_count: int
     unassociated_device_count: int
     unresolved_binding_count: int

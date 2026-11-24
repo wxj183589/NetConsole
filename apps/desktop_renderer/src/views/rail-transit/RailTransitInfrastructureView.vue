@@ -26,7 +26,7 @@ onBeforeRouteLeave(() => workbench.value?.confirmRelationshipNavigation() ?? tru
 
 <template>
   <section class="rail-infrastructure" data-testid="infrastructure-page">
-    <header v-if="!siteId"><h2>{{ t('infrastructure.title', '基础设施') }}</h2><el-button @click="loadSite()">{{ t('common.refresh', '刷新') }}</el-button></header>
+    <header v-if="!siteId"><h2>{{ t('infrastructure.title', '组织结构') }}</h2><el-button @click="loadSite()">{{ t('common.refresh', '刷新') }}</el-button></header>
     <el-alert v-if="siteError" :title="siteError" type="error" :closable="false" />
     <InfrastructureWorkbench v-if="siteId" ref="workbench" :site-id="siteId" :initial-node-uid="String(route.query.node_uid || '')" />
     <el-empty v-else :description="siteError || t('infrastructure.no_site', '请选择局点')" />

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hierarchyGroups, nodeFields, sectionLabel, uniqueDevices } from './infrastructurePresentation'
+import { hierarchyGroups, nodeFields, uniqueDevices } from './infrastructurePresentation'
 import type { Infrastructure, InfrastructureDevice, InfrastructureNode } from '../../../api/railInfrastructure'
 import type { Section } from '../../../types/railTransitBaseData'
 
@@ -11,36 +11,33 @@ const between: InfrastructureNode = {...station('section-stable','','旧区间�
 const snapshot: Infrastructure={site_id:'demo',site_name:'Test',line_name:'Line',schema_available:true,unassociated_device_count:0,unresolved_binding_count:0,nodes:[start,end,between],unassociated_devices:[],device_count:1}
 
 describe('infrastructure hierarchy presentation',()=>{
-  it('nests sections only under mainline, retaining both endpoints and stable IDs without mutating facts',()=>{
+  it('omits sections from the organization without mutating facts',()=>{
     const before=JSON.stringify(snapshot)
     const groups=hierarchyGroups(snapshot,'')
     expect(groups.map(group=>group.name)).toEqual(['控制中心','正线车站','车辆段与停车场','车载设备'])
     expect(groups[1].items.map(item=>item.uid)).toEqual(['first','second'])
-    expect(groups[1].sections.map(item=>item.uid)).toEqual(['section-stable'])
-    expect(sectionLabel(between,snapshot.nodes)).toBe('0101—0102区间 · 上行 · 右线')
-    expect(nodeFields(between,snapshot.nodes)).toEqual([{label:'起点车站',value:'正式站'},{label:'终点车站',value:'终点站'},{label:'资料 AP 数量',value:'3'}])
+    expect(groups.flatMap(group => group.items)).not.toContain(between)
     expect(JSON.stringify(snapshot)).toBe(before)
   })
-  it('preserves sections when searching their switch or endpoint code without fuzzy identity matching',()=>{
-    expect(hierarchyGroups(snapshot,'Switch')[1].sections).toEqual([between])
-    expect(hierarchyGroups(snapshot,'0102')[1].sections).toEqual([between])
-    expect(sectionLabel({...between,sections:[{...section,start_node_uid:'missing'}]},snapshot.nodes)).toBe('旧区间展示名')
+  it('finds stations by code while excluding section-only matches',()=>{
+    expect(hierarchyGroups(snapshot,'Switch')[1].items).toEqual([])
+    expect(hierarchyGroups(snapshot,'0102')[1].items).toEqual([end])
   })
   it('keeps multiple projects and active distinct engineering names while hiding null/blank fields',()=>{
     const node={...start,devices:[device,device],projects:[{project_id:'p1',stage:'一期',name:'初建'},{project_id:'p2',stage:'二期',name:'扩建'}],aliases:[
       {name:'工程名',name_type:'engineering',valid_to:null},{name:'正式站',name_type:'engineering',valid_to:null},{name:'过去工程名',name_type:'engineering',valid_to:'2020-01-01'},
     ]} as InfrastructureNode
-    const fields=nodeFields(node,snapshot.nodes)
+    const fields=nodeFields(node)
     expect(fields).toContainEqual({label:'建设项目',value:'一期 初建、二期 扩建'})
     expect(fields).toContainEqual({label:'工程名称',value:'工程名'})
     expect(fields).toContainEqual({label:'下属交换机',value:'1'})
     expect(fields.some(field=>field.value.includes('过去工程名'))).toBe(false)
     expect(uniqueDevices(node.devices)).toHaveLength(1)
-    expect(nodeFields({...start,code:'',projects:[]},snapshot.nodes)).toEqual([{label:'下属交换机',value:'0'}])
+    expect(nodeFields({...start,code:'',projects:[]})).toEqual([{label:'下属交换机',value:'0'}])
   })
   it('does not guess CT/CW assignments from device names or an absent legacy train link',()=>{
     const train={...station('train','01','列车01'),kind:'train',devices:[{...device,device_uuid:'ct',name:'当前MR',role:'MR-CT'},{...device,device_uuid:'decoy',name:'MR-CW',role:''}]} as InfrastructureNode
-    expect(nodeFields(train,[])).toEqual([{label:'列车编号',value:'01'},{label:'MR-CT',value:'当前MR'},{label:'MR-CW',value:'未配置'},{label:'当前关系',value:'已关联'}])
-    expect(nodeFields({...train,devices:[]},[])).toContainEqual({label:'当前关系',value:'未配置'})
+    expect(nodeFields(train)).toEqual([{label:'列车编号',value:'01'},{label:'MR-CT',value:'当前MR'},{label:'MR-CW',value:'未配置'},{label:'当前关系',value:'已关联'}])
+    expect(nodeFields({...train,devices:[]})).toContainEqual({label:'当前关系',value:'未配置'})
   })
 })
