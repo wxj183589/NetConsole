@@ -8,7 +8,7 @@
 
 - 产品分支：`codex-A/device-management-phase2`
 - Full Gate 执行 HEAD：`c24e2c8aa9eb2d4db0b9508ee32d03c40af00395`
-- 产品最终 HEAD（文档收口后）：`8c4514135eca7d662f2a47bfb8ef7bb5e464a176`
+- 产品分支：`codex-A/device-management-phase2`；Full Gate 后的验收文档提交已连续推送，最终 HEAD 以远端分支复核为准。
 - Phase 1 基线：`907183a4`
 - 正式命令：`python -B -m scripts.quality.local_gate --mode full --base-sha 907183a4 --head-sha HEAD`
 - 开始：`2026-11-24 15:12:41`（Asia/Shanghai）
