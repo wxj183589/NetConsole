@@ -2583,16 +2583,17 @@ def test_web_crud_group_assignment_and_token_delete_preserve_secret_boundary(
         "/api/device-management/devices/delete-confirmation",
         json={"device_uuids": [created_uuid]},
     )
-    assert token.status_code == 200
+    assert token.status_code == 409
+    assert token.json()["detail"]["code"] == "ASSET_DELETION_NOT_AUTHORIZED"
     deleted = client.post(
         "/api/device-management/devices/batch-delete",
         json={
             "device_uuids": [created_uuid],
-            "confirmation_token": token.json()["confirmation_token"],
+            "confirmation_token": "obsolete-token-00000000000000000000000000000",
         },
     )
-    assert deleted.status_code == 200
-    assert devices.get_by_uuid(created_uuid) is None
+    assert deleted.status_code == 409
+    assert devices.get_by_uuid(created_uuid) is not None
     assert devices.get_by_uuid(str(mr.device_uuid)).ssh_password == "secret-password"
 
 

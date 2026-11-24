@@ -1,4 +1,5 @@
 import sqlite3
+import pytest
 
 from netconsole.core.database import Database
 from netconsole.models.device import Device
@@ -8,7 +9,7 @@ from netconsole.repositories.device_group_repository import (
     DuplicateGroupName,
     canonical_device_group_name,
 )
-from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.device_repository import DeviceRepository, AssetDeletionBlockedError
 from netconsole.services.device_group_service import group_filter_to_repository_value
 
 
@@ -40,8 +41,9 @@ def test_device_repository_crud_search_and_filters(tmp_path):
     assert repository.get_by_uuid(str(original_uuid)).id == created.id
     assert repository.get_by_uuid(Device.new_uuid()) is None
 
-    repository.delete(created.id)
-    assert repository.list() == []
+    with pytest.raises(AssetDeletionBlockedError):
+        repository.delete(created.id)
+    assert repository.get_by_uuid(str(original_uuid)) is not None
 
 
 def test_device_repository_multiselect_filters_use_or_within_column_and_and_between_columns(tmp_path):
@@ -112,7 +114,7 @@ def test_delete_many_by_uuid_is_all_or_nothing(tmp_path):
 
     try:
         repository.delete_many_by_uuid([str(first.device_uuid), Device.new_uuid()])
-    except KeyError:
+    except AssetDeletionBlockedError:
         pass
     else:
         raise AssertionError("missing UUID should abort the full batch")
@@ -120,10 +122,9 @@ def test_delete_many_by_uuid_is_all_or_nothing(tmp_path):
     assert repository.get_by_uuid(str(first.device_uuid)) is not None
     assert repository.get_by_uuid(str(second.device_uuid)) is not None
 
-    deleted = repository.delete_many_by_uuid([str(first.device_uuid), str(second.device_uuid)])
-
-    assert deleted == [str(first.device_uuid), str(second.device_uuid)]
-    assert repository.list() == []
+    with pytest.raises(AssetDeletionBlockedError):
+        repository.delete_many_by_uuid([str(first.device_uuid), str(second.device_uuid)])
+    assert len(repository.list()) == 2
 
 
 def test_device_repository_list_uses_name_natural_order(tmp_path):

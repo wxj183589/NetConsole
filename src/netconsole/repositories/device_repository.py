@@ -36,6 +36,13 @@ from netconsole.utils.natural_sort import natural_text_key
 SEARCH_COLUMNS = ("d.name", "d.system_name", "d.primary_address", "d.backup_address", "d.station", "d.remark", "d.device_type", "d.device_vendor", "g.name")
 
 
+class AssetDeletionBlockedError(ValueError):
+    code = "ASSET_DELETION_NOT_AUTHORIZED"
+
+    def __init__(self):
+        super().__init__("资产删除未授权：外部历史证据未完整验证，请保留设备并使用停用或解除工程关系")
+
+
 class DeviceRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -251,52 +258,13 @@ class DeviceRepository:
         return self.get(int(device_id))
 
     def delete(self, device_id: int) -> None:
-        with self.database.connect() as conn:
-            row = conn.execute(
-                "SELECT device_uuid FROM devices WHERE id = ?", (device_id,)
-            ).fetchone()
-            if row is not None and self._table_exists(conn, "device_credential_states"):
-                conn.execute(
-                    "DELETE FROM device_credential_states WHERE device_uuid = ?",
-                    (str(row["device_uuid"]),),
-                )
-            conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
-            conn.commit()
+        """Physical deletion requires an independently approved retention policy."""
+        raise AssetDeletionBlockedError()
 
     def delete_many_by_uuid(self, device_uuids: list[str]) -> list[str]:
-        """在一个事务中校验并删除整批设备。"""
-
-        values = list(
-            dict.fromkeys(
-                str(value or "").strip()
-                for value in device_uuids
-                if str(value or "").strip()
-            )
-        )
-        if not values:
+        if not device_uuids:
             return []
-        placeholders = ", ".join("?" for _ in values)
-        with self.database.connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            rows = conn.execute(
-                f"SELECT device_uuid FROM devices WHERE device_uuid IN ({placeholders})",
-                values,
-            ).fetchall()
-            found = {str(row["device_uuid"]) for row in rows}
-            missing = [value for value in values if value not in found]
-            if missing:
-                conn.rollback()
-                raise KeyError(missing[0])
-            conn.execute(
-                f"DELETE FROM devices WHERE device_uuid IN ({placeholders})", values
-            )
-            if self._table_exists(conn, "device_credential_states"):
-                conn.execute(
-                    f"DELETE FROM device_credential_states WHERE device_uuid IN ({placeholders})",
-                    values,
-                )
-            conn.commit()
-        return values
+        raise AssetDeletionBlockedError()
 
     def exists_by_uuid(self, device_uuid: str) -> bool:
         with self.database.connect() as conn:

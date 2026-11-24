@@ -13,6 +13,8 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse
+from netconsole.models.api.asset_deletion import AssetDeletionPreflightRequest
+from netconsole.services.device_management_web_service import AssetDeletionBlockedError
 
 from netconsole.application.device_detail import DeviceDetailApplicationService
 from netconsole.backend.api.error_mapping import map_api_errors
@@ -273,15 +275,18 @@ def duplicate_device(request: Request, device_uuid: str) -> DeviceWriteDTO:
     )
 
 
+@router.post("/devices/deletion-preflight", dependencies=[Depends(require_feature("capability.devices.write"))])
+def deletion_preflight(request: Request, payload: AssetDeletionPreflightRequest):
+    return _query(lambda: _service(request).deletion_preflight(payload))
+
+
 @router.post(
     "/devices/delete-confirmation",
     response_model=DeviceDeletionTokenDTO,
     dependencies=[Depends(require_feature("capability.devices.write"))],
 )
 def issue_delete_token(request: Request, payload: DeviceDeletionTokenRequestDTO):
-    return _not_found(
-        lambda: _service(request).issue_delete_token(payload), "设备不存在"
-    )
+    return _query(lambda: _service(request).issue_delete_token(payload))
 
 
 @router.post(
@@ -1076,6 +1081,8 @@ def _query(
     ):
         try:
             return callback()
+        except AssetDeletionBlockedError as exc:
+            raise HTTPException(status_code=409, detail={"code": exc.code, "message": str(exc)}) from exc
         except DeviceConnectionPreflightError as exc:
             _raise_preflight(exc)
         except FileNotFoundError as exc:

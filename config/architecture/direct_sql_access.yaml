@@ -204,5 +204,6 @@
     "classification": "TEST_ONLY",
     "owner": "rail-transit",
     "reason": "Isolated relationship and migration fixtures; no real data access."
-  }
+  },
+  {"path":"tests/test_asset_deletion_safety.py","classification":"TEST_ONLY","owner":"devices","reason":"Synthetic isolated asset safety fixtures; no real asset deletions or real data roots."}
 ]

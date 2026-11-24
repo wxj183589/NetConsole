@@ -115,7 +115,7 @@ from netconsole.repositories.device_group_repository import (
     DeviceGroupRepository,
     device_group_sort_key,
 )
-from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.device_repository import AssetDeletionBlockedError, DeviceRepository
 from netconsole.services.rail_transit.base_data_query_service import (
     RailTransitBaseDataQueryService,
 )
@@ -177,7 +177,6 @@ ACTIVE_TASK_STATES = {
 }
 DEVICE_IMPORT_PREVIEW_TTL_SECONDS = 15 * 60
 DEVICE_IMPORT_CLAIM_GRACE_SECONDS = 60
-DEVICE_DELETE_TOKEN_TTL_SECONDS = 5 * 60
 DEVICE_TERMINAL_TOKEN_TTL_SECONDS = 5 * 60
 DEVICE_TERMINAL_CONFIRMATION_THRESHOLD = 20
 MAX_DEVICE_IMPORT_BYTES = 16 * 1024 * 1024
@@ -975,39 +974,14 @@ class DeviceManagementWebService:
     def issue_delete_token(
         self, payload: DeviceDeletionTokenRequestDTO
     ) -> DeviceDeletionTokenDTO:
-        site = self.current_site_id()
-        device_repository, _groups, _facts = self._repositories(site)
-        uuids = self._unique_ids(payload.device_uuids)
-        for device_uuid in uuids:
-            self._require_device(device_repository, device_uuid)
-        token = secrets.token_urlsafe(32)
-        expires = datetime.now(UTC) + timedelta(seconds=DEVICE_DELETE_TOKEN_TTL_SECONDS)
-        with self._mutation_lock:
-            self._delete_tokens[token] = {
-                "site": site,
-                "device_uuids": tuple(uuids),
-                "expires": expires.timestamp(),
-            }
-        return DeviceDeletionTokenDTO(
-            confirmation_token=token, device_uuids=uuids, expires_at=expires.isoformat()
-        )
+        raise AssetDeletionBlockedError()
 
     def delete_devices(self, payload: DeviceDeleteRequestDTO) -> DeviceDeleteDTO:
-        site = self.current_site_id()
-        device_repository, _groups, _facts = self._repositories(site)
-        uuids = self._unique_ids(payload.device_uuids)
-        with self._mutation_lock:
-            token = self._delete_tokens.pop(str(payload.confirmation_token), None)
-        if (
-            not token
-            or token.get("site") != site
-            or float(token.get("expires") or 0) < datetime.now(UTC).timestamp()
-        ):
-            raise ValueError("删除确认 token 无效或已过期")
-        if tuple(uuids) != tuple(token.get("device_uuids") or ()):
-            raise ValueError("删除确认 token 与设备范围不匹配")
-        deleted = device_repository.delete_many_by_uuid(uuids)
-        return DeviceDeleteDTO(deleted=len(deleted), device_uuids=deleted)
+        raise AssetDeletionBlockedError()
+
+    def deletion_preflight(self, payload):
+        from netconsole.services.asset_deletion_preflight import AssetDeletionPreflightService
+        return AssetDeletionPreflightService(self.paths).inspect(self.current_site_id(), payload)
 
     def create_group(self, payload: DeviceGroupRequestDTO) -> DeviceGroupDTO:
         site = self.current_site_id()
