@@ -23,6 +23,7 @@ import { isFeatureEnabled } from '../../features'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import InfrastructureWorkbench from '../../components/rail-transit/base-data/InfrastructureWorkbench.vue'
+const relationshipWorkbench = ref<InstanceType<typeof InfrastructureWorkbench>>()
 import SubPageEditToolbar from '../../components/rail-transit/base-data/SubPageEditToolbar.vue'
 import TracksideApPlanningTab from '../../components/rail-transit/base-data/TracksideApPlanningTab.vue'
 import {
@@ -979,6 +980,7 @@ async function executeClearAll(): Promise<void> {
 
 async function beforeTabLeave(next: string, current: string): Promise<boolean> {
   if (next === current) return true
+  if (current === 'overview' && relationshipWorkbench.value?.confirmRelationshipNavigation && !await relationshipWorkbench.value.confirmRelationshipNavigation()) return false
   const currentScope = editScopeForTab(current)
   if (!currentScope) return true
   const context = subPageEditContexts[currentScope]
@@ -3138,6 +3140,7 @@ function sectionSourceLabel(row: Section): string {
       <el-tabs v-model="activeTab" :before-leave="beforeTabLeave">
         <el-tab-pane label="总览" name="overview" lazy>
           <InfrastructureWorkbench
+            ref="relationshipWorkbench"
             v-if="activeTab === 'overview' && store.summary && !editing"
             :site-id="store.summary.site_id"
             :revision-key="store.summary.updated_at"

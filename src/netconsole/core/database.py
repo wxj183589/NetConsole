@@ -2654,14 +2654,24 @@ class Database:
                     )
                     if not maintenance_required:
                         mode = "fast_path"
-                        if startup_policy == "default" and any(
-                            not self._table_exists(conn, table)
-                            for table in RAIL_INFRASTRUCTURE_TABLES
+                        rail_version = conn.execute(
+                            "SELECT value FROM schema_metadata WHERE key='rail_infrastructure_schema_version'"
+                        ).fetchone()
+                        if rail_version and rail_version[0] not in {"1", "2"}:
+                            raise DatabaseMaintenanceRequiredError("Unsupported rail infrastructure schema version")
+                        if startup_policy == "default" and (
+                            not rail_version or rail_version[0] != "2" or any(
+                                not self._table_exists(conn, table) for table in RAIL_INFRASTRUCTURE_TABLES
+                            )
                         ):
                             stage = "rail_infrastructure_schema"
                             with conn:
                                 conn.execute("BEGIN IMMEDIATE")
                                 _execute_sql_script_in_transaction(conn, RAIL_INFRASTRUCTURE_SCHEMA)
+                                if conn.execute("PRAGMA foreign_key_check").fetchone():
+                                    raise sqlite3.IntegrityError("rail infrastructure migration foreign key check failed")
+                                if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                                    raise sqlite3.IntegrityError("rail infrastructure migration integrity check failed")
                             mode = "rail_infrastructure_additive"
                         self._log_startup_maintenance(
                             mode=mode,

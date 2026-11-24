@@ -1145,6 +1145,7 @@ def create_app(
     app.state.rail_relationship_application_service = RailRelationshipApplicationService(
         paths,
         rail_base_data_write_guard,
+        query=app.state.rail_transit_base_data_query_service,
     )
     app.state.rail_transit_station_source_discovery_service = StationSourceDiscoveryService(
         paths,

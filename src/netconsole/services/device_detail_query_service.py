@@ -295,7 +295,11 @@ class DeviceDetailQueryService:
                 affiliation_status="unassociated",
                 line_name=infrastructure.line_name,
             )
-        node, device = matches[0]
+        physical = [(n, d) for n, d in matches if n.kind != "section"]
+        if len(physical) > 1:
+            return DeviceEngineeringContextDTO(available=True, affiliation_status="conflict",
+                source="rail_infrastructure_query")
+        node, device = (physical or matches)[0]
         project_names = [
             f"{project.stage} {project.name}".strip()
             for project in node.projects
@@ -310,7 +314,8 @@ class DeviceDetailQueryService:
             node_name=node.name,
             role=device.role or device.device_role,
             project_names=project_names,
-            service_stations=node.ac_service_stations,
+            service_stations=device.service_stations,
+            service_sections=[n.name for n, _d in matches if n.kind == "section"],
         )
 
     def interfaces(

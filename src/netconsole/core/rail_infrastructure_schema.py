@@ -98,12 +98,23 @@ CREATE INDEX IF NOT EXISTS ix_rail_infra_relation_history_lookup
     ON rail_infra_relation_history(relation_type, relation_id, changed_at DESC);
 CREATE TABLE IF NOT EXISTS rail_infra_relation_audit (
     audit_id TEXT PRIMARY KEY NOT NULL,
-    event_id TEXT NOT NULL REFERENCES rail_infra_relation_history(event_id) ON DELETE RESTRICT,
+    event_id TEXT REFERENCES rail_infra_relation_history(event_id) ON DELETE RESTRICT,
     site_id TEXT NOT NULL,
     operation TEXT NOT NULL,
     payload_json TEXT NOT NULL DEFAULT '{}',
+    response_json TEXT NOT NULL DEFAULT '{}',
+    request_hash TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rail_infra_relation_state (
+    relation_id TEXT PRIMARY KEY NOT NULL,
+    relation_type TEXT NOT NULL,
+    source_uid TEXT NOT NULL,
+    target_uid TEXT NOT NULL,
+    state_json TEXT NOT NULL
+);
+INSERT OR REPLACE INTO schema_metadata(key, value, created_at, updated_at)
+VALUES ('rail_infrastructure_schema_version', '2', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 CREATE TRIGGER IF NOT EXISTS trg_base_revision_rail_infra_node_project_insert
 AFTER INSERT ON rail_infra_node_project BEGIN
     UPDATE schema_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE key = 'base_data_revision';
@@ -172,5 +183,29 @@ RAIL_INFRASTRUCTURE_TABLES = frozenset(
         "rail_infra_train_mr",
         "rail_infra_relation_history",
         "rail_infra_relation_audit",
+        "rail_infra_relation_state",
     )
 )
+
+# Engineering changes invalidate the same revision consumers already observe.
+for _table in ("rail_infra_node", "rail_infra_project", "rail_infra_train"):
+    for _operation in ("INSERT", "UPDATE", "DELETE"):
+        RAIL_INFRASTRUCTURE_SCHEMA += (
+            f"CREATE TRIGGER IF NOT EXISTS trg_base_revision_{_table}_{_operation.lower()} "
+            f"AFTER {_operation} ON {_table} BEGIN "
+            "UPDATE schema_metadata SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT), "
+            "updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE key='base_data_revision'; END;\n"
+        )
+
+for _table, _key in (
+    ("devices", "device_uuid"),
+    ("rail_infra_node", "node_uid"),
+    ("rail_infra_train", "train_uid"),
+    ("rail_infra_project", "project_id"),
+):
+    RAIL_INFRASTRUCTURE_SCHEMA += (
+        f"CREATE TRIGGER IF NOT EXISTS trg_rail_history_protect_{_table} BEFORE DELETE ON {_table} "
+        "WHEN EXISTS(SELECT 1 FROM rail_infra_relation_history "
+        f"WHERE source_uid=OLD.{_key} OR target_uid=OLD.{_key}) "
+        "BEGIN SELECT RAISE(ABORT,'RELATION_HISTORY_PROTECTED'); END;\n"
+    )

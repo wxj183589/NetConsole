@@ -198,5 +198,11 @@
   {"path":"scripts/dev/job_center_sql_profile_20261116.py","classification":"TEST_ONLY","owner":"job-center","reason":"Job Center SQL profiling creates an exclusive synthetic tasks.db fixture under the canonical test-data root and never opens production or real development data; task rows are retained."},
   {"path":"scripts/dev/sql_read_sharing_profile_20261117.py","classification":"TEST_ONLY","owner":"ground","reason":"Shared inventory SQL profiling creates exclusive synthetic Site/Ground/Job fixtures under canonical test-data and explains only those fixtures; no real data roots or device probes are used."},
   {"path":"scripts/dev/syslog_loopback_profile_20261116.py","classification":"TEST_ONLY","owner":"ground","reason":"Ground Syslog real-UDP loopback profiling creates synthetic inventory and SQLite only under the canonical test-data root; no production or real development data or device traffic is used."},
-  {"path":"tests/test_trackside_ap_template_redesign.py","classification":"TEST_ONLY","owner":"rail-transit","reason":"轨旁 AP 模板导入导出回归只在 pytest 临时目录构造 SQLite fixture，不访问真实开发或生产数据。"}
+  {"path":"tests/test_trackside_ap_template_redesign.py","classification":"TEST_ONLY","owner":"rail-transit","reason":"轨旁 AP 模板导入导出回归只在 pytest 临时目录构造 SQLite fixture，不访问真实开发或生产数据。"},
+  {
+    "path": "tests/test_rail_relationship_application.py",
+    "classification": "TEST_ONLY",
+    "owner": "rail-transit",
+    "reason": "Isolated relationship and migration fixtures; no real data access."
+  }
 ]

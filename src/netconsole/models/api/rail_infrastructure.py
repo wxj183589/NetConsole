@@ -11,9 +11,12 @@ from netconsole.models.api.rail_transit_base_data import SectionDTO, StationDTO
 class InfrastructureDeviceDTO(ApiModel):
     device_uuid: str
     name: str
+    vendor: str = ""
+    platform: str = ""
     device_type: str
     device_role: str = ''
     role: str = ""
+    service_stations: list[str] = Field(default_factory=list)
     section_uid: str | None = None
     source: Literal["engineering", "legacy_station"]
 
@@ -34,7 +37,7 @@ class InfrastructureProjectDTO(ApiModel):
 
 class InfrastructureNodeDTO(ApiModel):
     uid: str
-    kind: Literal["station", "depot", "parking_yard", "cocc", "bocc", "train"]
+    kind: Literal["station", "depot", "parking_yard", "cocc", "bocc", "train", "section"]
     code: str = ""
     name: str
     source: Literal["engineering", "legacy_station", "legacy_train"]

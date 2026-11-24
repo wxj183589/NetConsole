@@ -82,7 +82,7 @@ def test_stable_nodes_multiple_projects_and_exact_device_projection(tmp_path):
         assert response.json()["device_count"] == result.device_count
 
 
-def test_train_unlink_only_ends_relationship_and_keeps_legacy_mr_identity(tmp_path):
+def test_train_unlink_ends_current_mapping_and_preserves_historical_identity(tmp_path):
     paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
     database = Database(db_path)
     with closing(database.connect()) as conn, conn:
@@ -116,6 +116,11 @@ def test_train_unlink_only_ends_relationship_and_keeps_legacy_mr_identity(tmp_pa
     with closing(database.connect_readonly()) as conn:
         assert conn.execute("SELECT active_to FROM rail_infra_train_mr").fetchone()[0] == "2026-07-15"
         assert conn.execute("SELECT COUNT(*) FROM devices WHERE device_uuid='mr-01-ct'").fetchone()[0] == 1
-    assert source.get_mr("demo", "mr-01-ct") == before
+    assert source.get_mr("demo", "mr-01-ct") is None
+    from netconsole.repositories.rail_relationship_repository import RailRelationshipRepository
+    historical = RailRelationshipRepository(paths).list_current(
+        "demo", relationship_type="train_mr", at_time="2026-07-14T12:00:00Z")
+    assert historical.items[0].target_uid == "mr-01-ct"
+    assert source.get_mr("demo", "mr-01-cw") is not None
     train = next(node for node in source.infrastructure("demo").nodes if node.uid == "train-01")
     assert train.devices == []

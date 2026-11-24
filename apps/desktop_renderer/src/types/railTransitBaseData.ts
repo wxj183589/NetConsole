@@ -602,6 +602,13 @@ export interface Relation {
 export type RailRelationshipType = 'node_project' | 'device_node' | 'device_section' | 'ac_service' | 'train_mr'
 export type RailRelationshipAction = 'create' | 'update' | 'terminate' | 'replace'
 export interface RailRelationshipRecord {
+  revision?: string
+  actor?: string
+  reason?: string
+  created_at?: string
+  updated_at?: string
+  source_name?: string
+  target_name?: string
   relationship_type: string
   relationship_id: string
   source_uid: string

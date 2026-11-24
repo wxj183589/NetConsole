@@ -71,7 +71,7 @@ class DeviceEngineeringContextDTO(ApiModel):
     """Read-only projection from the rail infrastructure authority."""
 
     available: bool = False
-    affiliation_status: Literal["associated", "unassociated", "unavailable"] = "unavailable"
+    affiliation_status: Literal["associated", "unassociated", "unavailable", "conflict"] = "unavailable"
     line_name: str = ""
     node_uid: str = ""
     node_type: str = ""
@@ -80,6 +80,7 @@ class DeviceEngineeringContextDTO(ApiModel):
     role: str = ""
     project_names: list[str] = Field(default_factory=list)
     service_stations: list[str] = Field(default_factory=list)
+    service_sections: list[str] = Field(default_factory=list)
     source: str = "rail_infrastructure_query"
 
 

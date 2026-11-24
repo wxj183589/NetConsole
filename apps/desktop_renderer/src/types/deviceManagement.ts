@@ -308,7 +308,7 @@ export interface DeviceOverviewResponse {
 
 export interface DeviceEngineeringContext {
   available: boolean
-  affiliation_status: 'associated' | 'unassociated' | 'unavailable'
+  affiliation_status: 'associated' | 'unassociated' | 'unavailable' | 'conflict'
   line_name: string
   node_uid: string
   node_type: string
@@ -317,6 +317,7 @@ export interface DeviceEngineeringContext {
   role: string
   project_names: string[]
   service_stations: string[]
+  service_sections?: string[]
   source: string
 }
 

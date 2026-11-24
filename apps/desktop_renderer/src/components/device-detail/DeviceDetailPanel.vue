@@ -1284,6 +1284,7 @@ function openInfrastructure(): void {
                     <el-descriptions-item label="节点类型">{{ formatValue(engineeringContext.node_type) }}</el-descriptions-item>
                     <el-descriptions-item label="工程角色">{{ formatValue(engineeringContext.role) }}</el-descriptions-item>
                     <el-descriptions-item label="建设项目">{{ engineeringContext.project_names.join('、') || '—' }}</el-descriptions-item>
+                    <el-descriptions-item v-if="engineeringContext.service_sections?.length" label="区间服务范围" :span="2">{{ engineeringContext.service_sections.join('、') }}</el-descriptions-item>
                     <el-descriptions-item v-if="engineeringContext.service_stations.length" label="AC 服务站点" :span="2">{{ engineeringContext.service_stations.join('、') }}</el-descriptions-item>
                   </el-descriptions>
                 </section>

@@ -53,12 +53,13 @@ def _wait_for(service: QuickPingService, run_id: str, states: set[str], timeout:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         run = service.status(run_id)
-        if run is not None and run.state in states and (
-            run.state in {"RUNNING", "STOPPING"} or run.ended_at
-        ):
-            if run.ended_at and run._thread is not None:
+        if run is not None and run.state in states:
+            if run.state not in {"RUNNING", "STOPPING"} and run._thread is not None:
+                # Terminal state precedes compressor drain and final persistence.
+                # Join the owner instead of repeatedly polling its mutable object.
                 run._thread.join(timeout=2)
-                assert not run._thread.is_alive()
+                assert not run._thread.is_alive(), "terminal run did not finish persistence"
+                assert run.ended_at
             return run
         time.sleep(0.01)
     run = service.status(run_id)

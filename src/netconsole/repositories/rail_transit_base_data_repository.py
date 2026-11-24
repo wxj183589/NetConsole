@@ -772,6 +772,7 @@ class RailTransitBaseDataRepository:
         old_name = str(values.get("old_name") or values.get("name") or "").strip()
         name = str(values.get("name") or "").strip()
         if action == "delete":
+            self._ensure_engineering_unreferenced(connection, station_id, str(values.get("node_uid") or ""))
             formal_station = connection.execute(
                 """
                 SELECT 1 FROM ap_extension_points
@@ -1097,6 +1098,7 @@ class RailTransitBaseDataRepository:
         old_end = str(values.get("old_end_station") or values.get("end_station") or "").strip()
         old_side = str(values.get("old_line_side") or values.get("line_side") or "").strip()
         if action == "delete":
+            self._ensure_engineering_unreferenced(connection, section_id)
             self._delete_section_and_unlink_references(
                 connection, old_name, old_start, old_end, old_side, section_id
             )
@@ -1850,6 +1852,30 @@ class RailTransitBaseDataRepository:
         if "belong_type" in raw:
             values["belong_type"] = str(raw.get("belong_type") or "").strip()
         return values
+
+    @staticmethod
+    def _ensure_engineering_unreferenced(connection, entity_id, node_uid=""):
+        if not entity_id and not node_uid:
+            return
+        tables = {r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        ids = {entity_id, node_uid} - {""}
+        if "ap_extension_points" in tables and entity_id:
+            for row in connection.execute(
+                "SELECT raw_payload_json FROM ap_extension_points WHERE station_id=? AND belong_type='__base_station__'", (entity_id,)):
+                try:
+                    ids.add(str(json.loads(row[0] or "{}").get("node_uid") or ""))
+                except (ValueError, TypeError):
+                    pass
+        for uid in ids - {""}:
+            for table, column in (("rail_infra_device_section", "section_uid"),
+                                  ("rail_infra_device_link", "node_uid"),
+                                  ("rail_infra_node_project", "node_uid"),
+                                  ("rail_infra_ac_service", "node_uid")):
+                if table in tables and connection.execute(f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (uid,)).fetchone():
+                    raise RailTransitBaseDataConstraintError("工程对象仍有有效工程关系，不能删除")
+            if "rail_infra_relation_history" in tables and connection.execute(
+                "SELECT 1 FROM rail_infra_relation_history WHERE source_uid=? OR target_uid=? LIMIT 1", (uid, uid)).fetchone():
+                raise RailTransitBaseDataConstraintError("工程对象存在历史工程关系，必须保留")
 
     @staticmethod
     def _station_reference_count(

@@ -33,3 +33,9 @@ erDiagram
 | `rail_infra_relation_audit` | `audit_id`。按局点记录 Application Service 请求审计，不删除历史业务证据。 |
 
 端口接入、AP 工程点位和 FIT-AP Current 分别使用既有轨旁 AP、LLDP、AP Identity 和 AC 事实。没有经过确认的交换机归属、端口及 AP 身份时保留未配置或冲突状态。历史 MR 会话继续用写入时的设备和会话身份追溯。
+
+## Phase 3 Schema 2
+
+新增 `rail_infra_relation_state`，以不透明 relation_id 保存生命周期元数据，不替代正式关系事实。关系事件与请求审计同事务提交；复合 ID 使用 JSON 数组编码，MR 使用 assignment_id。物理安装节点与多区间服务范围独立。工程节点、项目和列车的变更，以及关系事实/历史，推进既有 base_data_revision。
+
+迁移、时间和并发细则见 [写入契约](RELATIONSHIP_WRITE_CONTRACT.md) 与 [历史语义](RELATIONSHIP_HISTORY.md)。

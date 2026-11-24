@@ -14,7 +14,7 @@ from netconsole.models.api.rail_infrastructure import (
     InfrastructureProjectDTO,
 )
 
-_DEVICE_FIELDS = "d.device_uuid AS device_uuid, d.name AS name, COALESCE(d.device_type, '') AS device_type"
+_DEVICE_FIELDS = "d.device_uuid AS device_uuid, d.name AS name, COALESCE(d.device_type, '') AS device_type, COALESCE(d.device_vendor, '') AS vendor"
 
 
 @dataclass
@@ -25,6 +25,8 @@ class InfrastructureFacts:
     links: dict[str, list[InfrastructureDeviceDTO]] = field(default_factory=lambda: defaultdict(list))
     aliases: dict[str, list[InfrastructureNameDTO]] = field(default_factory=lambda: defaultdict(list))
     projects: dict[str, list[InfrastructureProjectDTO]] = field(default_factory=lambda: defaultdict(list))
+    device_service_stations: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
+    section_links: dict[str, list[InfrastructureDeviceDTO]] = field(default_factory=lambda: defaultdict(list))
     service_stations: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
 
 
@@ -48,7 +50,7 @@ class RailInfrastructureRepository:
                     f"SELECT {_DEVICE_FIELDS}, {station_id} FROM devices d ORDER BY d.name, d.device_uuid"
                 )
             ]
-            if not RAIL_INFRASTRUCTURE_TABLES.issubset(tables):
+            if not (RAIL_INFRASTRUCTURE_TABLES - {"rail_infra_device_section", "rail_infra_relation_history", "rail_infra_relation_audit", "rail_infra_relation_state"}).issubset(tables):
                 return facts
             facts.schema_available = True
             facts.nodes = [
@@ -69,7 +71,7 @@ class RailInfrastructureRepository:
                 values = dict(row)
                 uid = values.pop("uid")
                 facts.links[uid].append(InfrastructureDeviceDTO(
-                    **values, source="engineering", device_role=normalize_device_role(values["device_type"]),
+                    **values, source="engineering", device_role=normalize_device_role(values["device_type"], vendor=values.get("vendor"), platform=values.get("platform")),
                 ))
             for row in conn.execute(
                 "SELECT node_uid, name, name_type, source, valid_from, valid_to FROM rail_infra_node_name "
@@ -85,6 +87,20 @@ class RailInfrastructureRepository:
                 values = dict(row)
                 uid = values.pop("node_uid")
                 facts.projects[uid].append(InfrastructureProjectDTO(**values))
+            section_rows = conn.execute(
+                f"SELECT s.section_uid, {_DEVICE_FIELDS}, s.engineering_role AS role "
+                "FROM rail_infra_device_section s JOIN devices d ON d.device_uuid=s.device_uuid"
+            ) if "rail_infra_device_section" in tables else []
+            for row in section_rows:
+                values = dict(row)
+                uid = values.pop("section_uid")
+                facts.section_links[uid].append(InfrastructureDeviceDTO(
+                    **values, source="engineering", device_role=normalize_device_role(values["device_type"], vendor=values.get("vendor"), platform=values.get("platform"))))
+            for row in conn.execute(
+                "SELECT a.ac_device_uuid, station.code, station.official_name FROM rail_infra_ac_service a "
+                "JOIN rail_infra_node station ON station.node_uid=a.node_uid ORDER BY station.code"
+            ):
+                facts.device_service_stations[row["ac_device_uuid"]].append(f"{row['code']} {row['official_name']}".strip())
             for row in conn.execute(
                 "SELECT l.node_uid AS owner_uid, station.code, station.official_name "
                 "FROM rail_infra_device_link l JOIN rail_infra_ac_service a ON a.ac_device_uuid = l.device_uuid "
@@ -105,3 +121,15 @@ class RailInfrastructureRepository:
                 (ended_at, assignment_id, device_uuid),
             )
             return cursor.rowcount == 1
+
+    def mr_assignments(self) -> tuple[list[dict[str, Any]], set[str], set[tuple[str, str]]]:
+        """Current explicit assignments and legacy identities superseded by engineering."""
+        with closing(self.database.connect_readonly()) as conn:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='rail_infra_train_mr'").fetchone():
+                return [], set(), set()
+            rows = [dict(r) for r in conn.execute(
+                "SELECT a.*,t.train_no,t.name AS train_name FROM rail_infra_train_mr a "
+                "JOIN rail_infra_train t ON t.train_uid=a.train_uid"
+            )]
+            return ([r for r in rows if not r['active_to']],
+                    {r['device_uuid'] for r in rows}, {(r['train_no'], r['position']) for r in rows})

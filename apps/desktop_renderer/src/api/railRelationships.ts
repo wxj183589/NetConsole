@@ -1,0 +1,13 @@
+import { apiRequest } from './client'
+import type { RailRelationshipRecord, RailRelationshipHistoryRecord, RailRelationshipType, RailRelationshipAction } from '../types/railTransitBaseData'
+export interface RelationNode { uid: string; kind: string; code: string; name: string }
+export interface RelationCatalog { nodes: RelationNode[]; sections: { id: string; name: string }[]; devices: { device_uuid: string; name: string; device_type: string; group_name: string }[]; projects: { project_id: string; name: string; stage: string }[]; revision: string; can_write: boolean; write_denial_reason: string }
+export interface RelationRequest { site_id: string; relationship_type: RailRelationshipType; action: RailRelationshipAction; relationship_id?: string; source_uid: string; target_uid: string; target_uids?: string[]; values: Record<string, unknown>; effective_from: string; effective_to: string; reason: string; base_revision: string; explicit_confirmation: boolean; idempotency_key: string }
+const root = '/api/rail-transit/relationships'
+export const relationshipCatalog = (siteId: string) => apiRequest<RelationCatalog>(`${root}/catalog?${new URLSearchParams({ site_id: siteId })}`)
+export const currentRelationships = (siteId: string, entityUid = '', atTime = '') => apiRequest<{ items: RailRelationshipRecord[]; revision: string }>(`${root}?${new URLSearchParams({ site_id: siteId, entity_uid: entityUid, at_time: atTime })}`)
+export const relationshipHistory = (siteId: string, entityUid: string, page = 1) => apiRequest<{ items: RailRelationshipHistoryRecord[]; total: number }>(`${root}/history?${new URLSearchParams({ site_id: siteId, entity_uid: entityUid, page: String(page) })}`)
+export const previewRelationship = (payload: RelationRequest) => apiRequest<{ changes: { before?: Partial<RailRelationshipRecord>; after?: Partial<RailRelationshipRecord> }[]; revision: string }>(`${root}/preview`, { method: 'POST', body: JSON.stringify(payload) })
+export const saveRelationship = (payload: RelationRequest) => apiRequest<{ revision: string }>(root, { method: 'POST', body: JSON.stringify(payload) })
+export const saveEngineeringProject = (payload: { site_id: string; project_id: string; name: string; stage: string; reason: string; idempotency_key: string; base_revision: string; explicit_confirmation: boolean }, preview = false) => apiRequest(`${root}/projects?preview=${preview}`, { method: 'POST', body: JSON.stringify(payload) })
+export const acRelationshipResources = (siteId: string, acId: string) => apiRequest<{ total: number; items: Record<string, unknown>[] }>(`${root}/ac-resources?${new URLSearchParams({ site_id: siteId, ac_device_uuid: acId })}`)

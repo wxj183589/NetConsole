@@ -5,6 +5,8 @@ import type { TracksideApBusinessRow } from '../types/tracksideApBusiness'
 export interface InfrastructureDevice {
   device_uuid: string
   name: string
+  vendor?: string
+  platform?: string
   device_type: string
   device_role: string
   role: string
@@ -14,7 +16,7 @@ export interface InfrastructureDevice {
 
 export interface InfrastructureNode {
   uid: string
-  kind: 'station' | 'depot' | 'parking_yard' | 'cocc' | 'bocc' | 'train'
+  kind: 'station' | 'depot' | 'parking_yard' | 'cocc' | 'bocc' | 'train' | 'section'
   code: string
   name: string
   source: 'engineering' | 'legacy_station' | 'legacy_train'

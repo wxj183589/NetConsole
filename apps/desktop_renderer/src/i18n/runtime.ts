@@ -1,10 +1,12 @@
 import { ref } from 'vue'
+import { railRelationshipsEn } from './railRelationships'
 import { meshBusinessEn } from './meshBusinessLabels'
 import { groundUnattendedEn } from './groundUnattended'
 import type { SystemLanguage } from '../types/systemSettings'
 
 const locale = ref<SystemLanguage>('zh_CN')
 const en: Record<string, string> = {
+  ...railRelationshipsEn,
   ...groundUnattendedEn,
   ...meshBusinessEn,
   'trackside_ap.import.mainline_rows': 'Mainline',

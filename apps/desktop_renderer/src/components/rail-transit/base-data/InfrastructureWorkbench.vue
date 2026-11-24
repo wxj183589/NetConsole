@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import DeviceDetailPanel from '../../device-detail/DeviceDetailPanel.vue'
+import RelationshipEditor from './RelationshipEditor.vue'
 import {
   getInfrastructure,
   getInfrastructureSwitchAps,
@@ -20,6 +22,8 @@ const selectedUid = ref('')
 const showUnassociated = ref(false)
 const selectedDevice = ref<InfrastructureDevice>()
 const retry = ref(0)
+const relationshipDirty = ref(false)
+const relationshipSaving = ref(false)
 const aps = ref<InfrastructureSwitchAps>()
 const apPage = ref(1)
 const apLoading = ref(false)
@@ -28,6 +32,7 @@ const apUnavailable = ref(false)
 const groups: { name: string; kinds: InfrastructureNode['kind'][] }[] = [
   { name: '控制中心', kinds: ['cocc', 'bocc'] },
   { name: '正线车站', kinds: ['station'] },
+  { name: '区间', kinds: ['section'] },
   { name: '车辆段与停车场', kinds: ['depot', 'parking_yard'] },
   { name: '车载设备', kinds: ['train'] },
 ]
@@ -49,13 +54,20 @@ function nodeLabel(item: InfrastructureNode): string {
   return [item.code, item.name].filter(Boolean).join(' ')
 }
 
-function selectNode(uid = '', unassociated = false): void {
+async function mayLeaveRelationship(): Promise<boolean> {
+  if (relationshipSaving.value) return false
+  if (!relationshipDirty.value) return true
+  try { await ElMessageBox.confirm('放弃未保存的关系草稿？', '确认', { confirmButtonText: '确认', cancelButtonText: '取消' }); relationshipDirty.value = false; return true } catch { return false }
+}
+async function selectNode(uid = '', unassociated = false): Promise<void> {
+  if (!await mayLeaveRelationship()) return
   selectedUid.value = uid
   showUnassociated.value = unassociated
   selectedDevice.value = undefined
 }
 
-function selectDevice(device: InfrastructureDevice): void {
+async function selectDevice(device: InfrastructureDevice): Promise<void> {
+  if (!await mayLeaveRelationship()) return
   apPage.value = 1
   selectedDevice.value = device
 }
@@ -104,6 +116,7 @@ watch(() => [props.siteId, selectedDevice.value?.device_uuid, apPage.value], asy
     if (!controller.signal.aborted) apLoading.value = false
   }
 })
+defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
 </script>
 
 <template>
@@ -175,10 +188,11 @@ watch(() => [props.siteId, selectedDevice.value?.device_uuid, apPage.value], asy
               </li>
             </ul>
           </section>
-          <section v-if="node.sections.length" class="node-section">
+          <section v-if="node.sections.length && node.kind !== 'section'" class="node-section">
             <h4>相邻区间</h4>
-            <ul><li v-for="item in node.sections" :key="item.id">{{ item.name }}</li></ul>
+            <details v-for="item in node.sections" :key="item.id"><summary>{{ item.name }}</summary><RelationshipEditor :site-id="siteId" :entity-uid="item.id" entity-kind="section" :entity-name="item.name" @busy-change="relationshipSaving=$event" @dirty-change="relationshipDirty=$event" @saved="retry++" /></details>
           </section>
+          <RelationshipEditor :key="node.uid" :site-id="siteId" :entity-uid="node.uid" :entity-kind="node.kind" :entity-name="node.name" @busy-change="relationshipSaving=$event" @dirty-change="relationshipDirty=$event" @saved="retry++" />
         </template>
         <section v-if="node || showUnassociated" class="node-section">
           <h4>{{ showUnassociated ? '设备' : node?.kind === 'train' ? '车载 MR' : '关联设备' }}</h4>
@@ -210,7 +224,8 @@ watch(() => [props.siteId, selectedDevice.value?.device_uuid, apPage.value], asy
       <aside class="workbench-column device-content" aria-label="设备详情">
         <h3 v-if="!selectedDevice">设备详情</h3>
         <DeviceDetailPanel v-if="selectedDevice" :key="selectedDevice.device_uuid" :device-uuid="selectedDevice.device_uuid" mode="page" />
-        <p v-else class="empty-state">选择设备查看接口、光模块和采集记录。</p>
+        <RelationshipEditor v-if="selectedDevice?.device_role === 'wireless_controller'" :site-id="siteId" :entity-uid="selectedDevice.device_uuid" entity-kind="ac" :entity-name="selectedDevice.name" @busy-change="relationshipSaving=$event" @dirty-change="relationshipDirty=$event" @saved="retry++" />
+        <p v-if="!selectedDevice" class="empty-state">选择设备查看接口、光模块和采集记录。</p>
       </aside>
     </div>
   </section>

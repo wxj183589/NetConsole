@@ -448,7 +448,14 @@ class RailTransitBaseDataQueryService:
             )
             if values["kind"] != "train":
                 station_lookup.setdefault(uid, uid)
+        for node in nodes.values():
+            for device in node.devices:
+                device.service_stations = facts.device_service_stations[device.device_uuid]
         for section in self._sections(points):
+            if section.source_kind != "legacy_ap_derived":
+                nodes[section.id] = InfrastructureNodeDTO(
+                    uid=section.id, kind="section", name=section.name, source="engineering",
+                    devices=facts.section_links[section.id], sections=[section])
             for uid in {section.start_node_uid, section.end_node_uid}:
                 if uid in nodes:
                     nodes[uid].sections.append(section)
@@ -473,7 +480,7 @@ class RailTransitBaseDataQueryService:
             station_id = row.pop("station_id")
             device = InfrastructureDeviceDTO(
                 **row, source="legacy_station",
-                device_role=normalize_device_role(row["device_type"]),
+                device_role=normalize_device_role(row["device_type"], vendor=row.get("vendor"), platform=row.get("platform")),
             )
             uid = station_lookup.get(station_id)
             if uid is None:
@@ -1699,9 +1706,11 @@ class RailTransitBaseDataQueryService:
         reconciliation = VehicleMrReconciliationService().reconcile(
             [Device.from_mapping(row) for row in rows], groups
         )
+        explicit_mrs, managed_devices, managed_trains = RailInfrastructureRepository(Database(db_path)).mr_assignments()
         mesh_by_id: dict[str, Any] = {}
         mesh_by_name: dict[str, Any] = {}
         session_by_name: dict[str, Any] = {}
+        session_by_id: dict[str, Any] = {}
         if include_runtime:
             try:
                 for item in self.mesh_query.list_mrs(site_id, page=1, page_size=200).items:
@@ -1713,11 +1722,16 @@ class RailTransitBaseDataQueryService:
             try:
                 for item in self.online_mr_query.list_sessions(site_id, limit=1000):
                     session_by_name.setdefault(item.mr_name.casefold(), item)
+                    device_id = getattr(item, "mr_device_id", "") or getattr(item, "device_uuid", "")
+                    if device_id:
+                        session_by_id.setdefault(device_id, item)
             except (OSError, ValueError, sqlite3.Error):
                 pass
         strategies = self._site_meta(site_id).get("mr_backup_monitoring_strategies") or {}
         result: list[VehicleMrDTO] = []
         for relation in reconciliation.relations:
+            if relation.device_binding_id in managed_devices or (relation.identity.train_no, relation.identity.car_end) in managed_trains:
+                continue
             device = relation.device
             identity = relation.identity
             item_id = relation.device_binding_id
@@ -1752,6 +1766,30 @@ class RailTransitBaseDataQueryService:
                     runtime=runtime,
                 )
             )
+        devices_by_uuid = {str(row.get('device_uuid') or ''): Device.from_mapping(row) for row in rows}
+        for assignment in explicit_mrs:
+            device = devices_by_uuid.get(assignment['device_uuid'])
+            if device is None:
+                continue
+            mesh = mesh_by_id.get(assignment['device_uuid'])
+            session = session_by_id.get(assignment['device_uuid'])
+            runtime = RelatedRuntimeStatusDTO(
+                mesh_status=mesh.online_status if mesh else "unknown",
+                mesh_related_name=mesh.peer_ap_name if mesh else "",
+                latest_session_id=session.session_id if session else "",
+                latest_session_status=session.status if session else "",
+                updated_at=max(mesh.last_seen_at if mesh else "", session.started_at if session else ""),
+            )
+            result.append(VehicleMrDTO(
+                runtime=runtime,
+                id=assignment['device_uuid'], device_id=device.id, name=device.name,
+                train_id=canonical_train_id_for(assignment['train_no']), train_no=assignment['train_no'],
+                role=assignment['position'], mr_position_code=assignment['position'],
+                management_ip=device.primary_address, backup_management_ip=str(device.backup_address or ''),
+                mac=self._display_mac(device.mac_address), protocol=str(device.protocol or ''), port=device.port,
+                station=str(device.station or ''), remark=str(device.remark or ''),
+                backup_monitoring_strategy=strategies.get(assignment['device_uuid'], 'MONITOR'),
+            ))
         return result
 
     def _issues(

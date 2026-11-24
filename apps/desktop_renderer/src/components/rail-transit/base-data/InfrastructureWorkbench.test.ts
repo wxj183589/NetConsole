@@ -30,7 +30,7 @@ describe('Infrastructure workbench', () => {
   it('searches historical names, shows multiple projects, and uses the bound UUID in device details', async () => {
     const wrapper = mount(InfrastructureWorkbench, {
       props: { siteId: 'demo' },
-      global: { stubs: { DeviceDetailPanel: true, ElAlert: true, ElButton: true }, directives: { loading: () => {} } },
+      global: { stubs: { DeviceDetailPanel: true, RelationshipEditor: true, ElAlert: true, ElButton: true }, directives: { loading: () => {} } },
     })
     await flushPromises()
     expect(wrapper.text()).toContain('车辆段与停车场')
