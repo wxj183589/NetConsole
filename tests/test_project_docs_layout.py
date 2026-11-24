@@ -25,6 +25,7 @@ FIXED_REPORT_PATHS = frozenset(
         "rail-transit/PHASE3_RELATIONSHIP_AUDIT.md",
         "rail-transit/PHASE3_6_BASELINE_AUDIT.md",
         "rail-transit/PHASE4_CONSUMER_AUDIT.md",
+        "rail-transit/PHASE5_MODULE_BOUNDARY_AUDIT.md",
         "rail-transit/PHASE3_6_AUDIT.md",
         "rail-transit/EXTERNAL_REFERENCE_AUDIT.md",
         "reports/ground-unattended-r2/R2_2_HEARTBEAT_AUDIT.md",
