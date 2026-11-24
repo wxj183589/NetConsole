@@ -513,6 +513,18 @@ def test_two_writers_cannot_overwrite_the_same_revision(tmp_path):
     assert sorted(results) == ["BASE_DATA_REVISION_CONFLICT", "saved"]
 
 
+def test_nonstation_catalog_keeps_legacy_station_conflict_explicit(tmp_path):
+    from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+    paths, db_path, service = _service(tmp_path)
+    with closing(Database(db_path).connect()) as conn, conn:
+        conn.execute("INSERT INTO rail_infra_node VALUES('center-1','cocc','','控制中心')")
+        conn.execute("UPDATE devices SET station_id='legacy-station' WHERE device_uuid='mr-temp'")
+    service.query = RailTransitBaseDataQueryService(paths)
+    with pytest.raises(RelationshipApplicationError) as error:
+        _mutate(service, 'device_node', 'center-1', 'mr-temp')
+    assert error.value.code == 'RELATION_CONFLICT'
+
+
 def test_relationship_api_permissions_confirmation_and_strict_values(tmp_path):
     paths, _db_path, service = _service(tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing")

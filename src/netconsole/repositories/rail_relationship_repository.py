@@ -599,7 +599,7 @@ class RailRelationshipRepository:
             binding = conn.execute(
                 "SELECT station_id FROM devices WHERE device_uuid=?", (target,)
             ).fetchone()
-            legacy_ids = {source, str(n.get("station", {}).get("id", ""))}
+            legacy_ids = {source, str((n.get("station") or {}).get("id", ""))}
             if binding and binding[0] and binding[0] not in legacy_ids:
                 raise RelationshipError(
                     "RELATION_CONFLICT", "设备已有正式单站点绑定，不能被工程关系覆盖"
