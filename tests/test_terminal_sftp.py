@@ -26,6 +26,7 @@ from netconsole.services.sftp_resume import download_checkpoint
 from netconsole.services.sftp_tree import inventory
 from netconsole.services.site_manager import SiteManager
 from netconsole.services.terminal_sftp import TerminalSftpManager
+from netconsole.services.sftp_text_editor import read_text_revision, save_text_revision
 
 
 class _FakeFileTransferService:
@@ -393,12 +394,105 @@ def test_terminal_sftp_uses_real_independent_paramiko_subsystem(tmp_path: Path) 
             manager.submit_managed_upload(
                 session_id, "/", "error", lambda site: files.open_transfer_source(site, "fl1_" + "0" * 32),
             )
+
+        (local_root / "different.cfg").write_bytes(b"same size a")
+        (remote_root / "different.cfg").write_bytes(b"same size b")
+        def directory(site: str) -> str:
+            return files.transfer_directory(site, page.current_entry_id)
+        preview = manager.synchronize(session_id, "/", directory, "both", "sha256")
+        actions = {row["name"]: row["action"] for row in preview["rows"]}
+        assert actions["different.cfg"] == "conflict"
+        assert actions["config (1).cfg"] == "upload"
+        assert actions["local-copy.cfg"] == "download"
+        assert preview["queued"] == []
+        (local_root / "changed.cfg").write_bytes(b"changed after preview")
+        with pytest.raises(RuntimeError, match="预览后"):
+            manager.synchronize(session_id, "/", directory, "both", "sha256", preview["revision"])
+        (local_root / "changed.cfg").unlink()
+        submission = manager.synchronize(session_id, "/", directory, "both", "sha256", preview["revision"])
+        assert "error" not in submission
+        assert all(_wait_task(manager, task["task_id"])["status"] == "COMPLETED" for task in submission["queued"])
+        assert (remote_root / "config (1).cfg").read_bytes() == b"remote-config"
+        assert (local_root / "local-copy.cfg").read_bytes() == b"local-config"
+        assert (remote_root / "different.cfg").read_bytes() == b"same size b"
+        assert (local_root / "different.cfg").read_bytes() == b"same size a"
     finally:
         manager.close()
         server_thread.join(timeout=3)
 
     assert not server_thread.is_alive()
     assert server_errors == []
+
+
+class _TextHandle(io.BytesIO):
+    def __init__(self, sftp, path: str, mode: str):
+        self.sftp = sftp
+        self.path = path
+        self.mode = mode
+        initial = sftp.files.get(path, b"") if mode.startswith("r") else b""
+        super().__init__(initial)
+
+    def close(self):
+        if not self.closed and not self.mode.startswith("r"):
+            self.sftp.files[self.path] = self.getvalue()
+        super().close()
+
+
+class _TextSftp:
+    def __init__(self, initial: bytes):
+        self.files = {"/device.cfg": initial}
+        self.modes = {"/device.cfg": 0o640}
+        self.posix_replace = True
+
+    def lstat(self, path: str):
+        payload = self.files[path]
+        return SimpleNamespace(st_mode=stat.S_IFREG | self.modes.get(path, 0o640), st_size=len(payload), st_uid=10, st_gid=20)
+
+    def open(self, path: str, mode: str):
+        return _TextHandle(self, path, mode)
+
+    def chmod(self, path: str, mode: int) -> None:
+        self.modes[path] = mode
+
+    def posix_rename(self, source: str, target: str) -> None:
+        if not self.posix_replace:
+            raise OSError("extension unsupported")
+        self.files[target] = self.files.pop(source)
+        self.modes[target] = self.modes.pop(source)
+
+    def remove(self, path: str) -> None:
+        self.files.pop(path, None)
+        self.modes.pop(path, None)
+
+
+def test_remote_text_edit_preserves_encoding_mode_and_rejects_stale_or_non_atomic_save() -> None:
+    sftp = _TextSftp(b"\xef\xbb\xbfline one\r\nline two\r\n")
+    original = read_text_revision(sftp, "/device.cfg")
+    assert original.text == "line one\nline two\n"
+    assert original.bom and original.newline == "\r\n" and original.mode == 0o640
+
+    sftp.files["/device.cfg"] = b"changed by another session\r\n"
+    with pytest.raises(RuntimeError, match="已变化"):
+        save_text_revision(sftp, "/device.cfg", original.digest, "replacement\n", original)
+
+    sftp.files["/device.cfg"] = b"\xef\xbb\xbfline one\r\nline two\r\n"
+    edited = save_text_revision(sftp, "/device.cfg", original.digest, "replacement\n", original)
+    assert edited.text == "replacement\n"
+    assert edited.bom and edited.newline == "\r\n" and edited.mode == 0o640
+    assert sftp.files["/device.cfg"] == b"\xef\xbb\xbfreplacement\r\n"
+
+    sftp.posix_replace = False
+    before = sftp.files["/device.cfg"]
+    with pytest.raises(RuntimeError, match="原子替换"):
+        save_text_revision(sftp, "/device.cfg", edited.digest, "cannot replace\n", edited)
+    assert sftp.files["/device.cfg"] == before
+    assert not any(".netconsole-edit-" in path for path in sftp.files)
+    sftp.files["/binary.cfg"] = b"\x00binary"
+    with pytest.raises(ValueError, match="控制字符"):
+        read_text_revision(sftp, "/binary.cfg")
+    sftp.files["/large.cfg"] = b"x" * (256 * 1024 + 1)
+    with pytest.raises(ValueError, match="256 KiB"):
+        read_text_revision(sftp, "/large.cfg")
 
 
 def test_download_requires_verified_native_save_and_survives_restart(

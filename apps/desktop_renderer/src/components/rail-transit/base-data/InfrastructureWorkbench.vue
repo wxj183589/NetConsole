@@ -9,6 +9,8 @@ import { ElMessageBox } from 'element-plus'
 import DeviceDetailPanel from '../../device-detail/DeviceDetailPanel.vue'
 import RelationshipEditor from './RelationshipEditor.vue'
 import InfrastructureTreeNode from './InfrastructureTreeNode.vue'
+import OrganizationAssetsDialog from './OrganizationAssetsDialog.vue'
+import OrganizationNodeDialog from './OrganizationNodeDialog.vue'
 import { hierarchyGroups, nodeFields, nodeLabel, uniqueDevices } from './infrastructurePresentation'
 import { getDeviceOverview } from '../../../api/deviceManagement'
 import type { DeviceOverviewResponse } from '../../../types/deviceManagement'
@@ -37,6 +39,8 @@ const nodeApCount = ref<number>()
 const nodeApFailed = ref(false)
 const nodeApLoading = ref(false)
 const relationshipNodeUid = ref('')
+const assetDialog = ref<'add' | 'edit'>()
+const nodeDialog = ref<'add' | 'edit'>()
 
 const node = computed(() => snapshot.value?.nodes.find((item) => item.uid === selectedUid.value && item.kind !== 'section'))
 const depotCount = computed(() => snapshot.value?.nodes.filter((item) => item.kind === 'depot' || item.kind === 'parking_yard').length ?? 0)
@@ -85,7 +89,7 @@ watch(() => [props.siteId, props.revisionKey, props.initialNodeUid, retry.value]
   try {
     const siteId = props.siteId
     let result = await getInfrastructure(siteId, controller.signal)
-    if (!controller.signal.aborted && result.schema_available && result.organization_initialized === false && isFeatureEnabled('capability.rail_infrastructure.write')) {
+    if (!controller.signal.aborted && result.organization_writable && result.organization_initialized === false && isFeatureEnabled('capability.rail_infrastructure.write')) {
       result = await initializeInfrastructure(siteId, controller.signal)
     }
     if (controller.signal.aborted) return
@@ -214,7 +218,8 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
         <button class="tree-root" type="button" :aria-pressed="!node && !showUnassociated" @click="selectNode()">{{ t('infrastructure.line_overview', '线路概览') }}</button>
         <details v-for="group in filteredGroups" :key="group.name" open>
           <summary>{{ group.name }} <span>{{ group.items.length }}</span></summary>
-          <InfrastructureTreeNode v-for="item in group.items" :key="item.uid" :node="item" :label="nodeLabel(item)" :selected-uid="selectedUid" :selected-device-id="selectedDevice?.device_uuid" :aps="aps" @node="selectNode" @device="selectDevice" @ap="selectAp" />
+          <InfrastructureTreeNode v-for="item in group.items" :key="item.uid" :node="item" :label="nodeLabel(item)" :selected-uid="selectedUid" :selected-device-id="selectedDevice?.device_uuid" :aps="aps"
+            :style="{ marginInlineStart: `${Math.min(group.depth.get(item.uid) ?? 0, 8) * 12}px` }" @node="selectNode" @device="selectDevice" @ap="selectAp" />
           <div v-if="!group.items.length" class="tree-empty">{{ search ? '无匹配节点' : '待配置' }}</div>
         </details>
         <button v-if="snapshot" class="tree-node unassociated" type="button" :aria-pressed="showUnassociated"
@@ -225,6 +230,14 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
         <header class="section-heading">
           <h3 class="selected-node">{{ selectedDevice ? t('infrastructure.device_context', '设备工程上下文') : showUnassociated ? '未关联设备' : node?.name ?? t('infrastructure.line_overview', '线路概览') }}</h3>
           <el-button v-if="node?.station && isFeatureEnabled('capability.rail_transit.wireless_dashboard')" link type="primary" @click="router.push({ name: 'rail-transit-wireless-dashboard', query: { station_id: node.station.id } })">{{ t('engineering.wireless', '无线看板') }}</el-button>
+          <template v-if="snapshot?.organization_initialized && snapshot.organization_writable && isFeatureEnabled('capability.rail_infrastructure.write')">
+            <div>
+              <el-button size="small" @click="nodeDialog = 'add'">新增组织</el-button>
+              <el-button v-if="node?.source === 'engineering' && node.kind !== 'train'" size="small" @click="nodeDialog = 'edit'">编辑组织</el-button>
+              <el-button size="small" @click="assetDialog = 'add'">添加现有设备</el-button>
+              <el-button size="small" @click="assetDialog = 'edit'">编辑设备</el-button>
+            </div>
+          </template>
         </header>
         <template v-if="node && !selectedDevice">
           <dl class="node-facts">
@@ -299,6 +312,12 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
         <p v-if="!selectedDevice" class="empty-state">选择设备查看接口、光模块和采集记录。</p>
       </aside>
     </div>
+    <OrganizationAssetsDialog v-if="assetDialog && snapshot" :key="siteId" :site-id="siteId" :nodes="snapshot.nodes"
+      :current-uid="node?.uid ?? ''" :add="assetDialog === 'add'" @close="assetDialog = undefined"
+      @saved="assetDialog = undefined; retry++" />
+    <OrganizationNodeDialog v-if="nodeDialog && snapshot" :key="siteId" :site-id="siteId" :nodes="snapshot.nodes"
+      :current="node" :editing="nodeDialog === 'edit'" @close="nodeDialog = undefined"
+      @saved="uid => { nodeDialog = undefined; void selectNode(uid); retry++ }" />
   </section>
 </template>
 

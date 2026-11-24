@@ -5,6 +5,8 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
 
+from netconsole.services.device_task_service import DEVICE_TASK_OWNER, DEVICE_TASK_TYPE
+
 from netconsole.application.web_artifacts import WebArtifactError, WebArtifactStore
 from netconsole.application.system_maintenance import (
     SYSTEM_MAINTENANCE_TASK_TYPES,
@@ -277,6 +279,9 @@ async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
     try:
         if task.owner == WEB_TASK_OWNER and task.type in DEVICE_TASK_TYPES:
             request.app.state.device_management_service.cancel_task(task_id)
+        elif task.owner == DEVICE_TASK_OWNER and task.type == DEVICE_TASK_TYPE:
+            if not request.app.state.site_process_adapter.cancel_job(task_id):
+                raise HTTPException(status_code=409, detail="设备任务已结束或不在当前进程")
         elif task.owner == CONFIG_WEB_OWNER and task.type in CONFIG_WEB_TASK_TYPES:
             request.app.state.config_collection_service.cancel_task(task.site_name, task_id)
         elif task.owner == "web_file_management" and task.type == "file_management_download":

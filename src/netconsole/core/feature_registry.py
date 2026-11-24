@@ -150,6 +150,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("capability.file_management.remote", "设备文件浏览与下载", "module.file_management", "action"),
     FeatureItem("capability.file_management.desktop_actions", "文件桌面联动", "module.file_management", "action"),
     FeatureItem("capability.network_tools.toolbox", "小工具与连通性检测", "module.network_tools", "page"),
+    FeatureItem("capability.network_tools.local_services", "网络服务", "module.network_tools", "page"),
     FeatureItem(
         "capability.network_tools.wireless_scan",
         "无线扫描",
@@ -244,7 +245,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("capability.online_mr.open_location", "打开 Online MR 会话本地位置", "module.online_mr_analysis", "action", requires=("internal.online_mr_analysis",), delivery_requires=("internal.online_mr_analysis",)),
     FeatureItem("capability.online_mr.session_delete", "删除 Online MR 历史会话", "module.online_mr_analysis", "action", requires=("internal.online_mr_analysis",), delivery_requires=("internal.online_mr_analysis",)),
     FeatureItem("module.rail_base_data", "轨道交通基础资料", "module.rail_transit", "module", requires=("internal.rail_base_data",), delivery_requires=("internal.rail_base_data",)),
-    FeatureItem("module.rail_infrastructure", "轨道交通基础设施", "module.rail_transit", "module", requires=("internal.rail_base_data",), delivery_requires=("internal.rail_base_data",)),
+    FeatureItem("module.rail_infrastructure", "轨道交通组织结构", "module.rail_transit", "module", requires=("internal.rail_base_data",), delivery_requires=("internal.rail_base_data",)),
     FeatureItem("capability.rail_infrastructure.write", "轨道交通工程关系受控写入", "module.rail_infrastructure", "action"),
     FeatureItem("module.mesh_analysis", "Mesh 原始日志分析", "module.rail_transit", "module"),
     FeatureItem("capability.mesh.import", "MESH 原始日志导入", "module.mesh_analysis", "action"),

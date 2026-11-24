@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
@@ -9,6 +9,7 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
+import TaskLogsPanel from './TaskLogsPanel.vue'
 import {
   cancelMaintenanceTask,
   getAbout,
@@ -36,7 +37,8 @@ import {
   type RuntimeLogSummary,
 } from '../../api/systemMaintenance'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
-const tabNames = new Set(['logs', 'cleanup', 'changelog', 'open-source', 'about'])
+const CommandReferenceView = defineAsyncComponent(() => import('../command-reference/CommandReferenceView.vue').then((module) => module.default))
+const tabNames = new Set(['logs', 'task-logs', 'command-reference', 'cleanup', 'changelog', 'open-source', 'about'])
 const route = useRoute()
 const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
@@ -382,6 +384,8 @@ function exportTimestamp(now = new Date()): string {
 
 function tabFromQuery(value: unknown): string {
   const tab = typeof value === 'string' ? value : ''
+  if (tab === 'command-reference' && !isFeatureEnabled('module.command_reference')) return 'logs'
+  if (tab === 'task-logs' && !isFeatureEnabled('module.task_center')) return 'logs'
   return tabNames.has(tab) ? tab : 'logs'
 }
 
@@ -425,11 +429,9 @@ onBeforeUnmount(() => {
 <template>
   <section class="maintenance-page">
     <header class="page-heading">
-      <div><p class="eyebrow">SYSTEM / SAFE MAINTENANCE</p><h1>应用日志与安全维护</h1><p>日志、清理、更新记录、开源许可与关于信息均来自现有 Python 事实源。</p></div>
-      <div class="actions"><el-button :loading="loading" @click="loadLogs()">刷新日志</el-button></div>
+      <h1>应用日志与安全维护</h1>
+      <div v-if="activeTab === 'logs'" class="actions"><el-button :loading="loading" @click="loadLogs()">刷新日志</el-button></div>
     </header>
-
-    <el-alert class="maintenance-alert" title="三天自动清理仅处理软件运行日志；缓存和临时文件仅在手工选择确认后清理。业务日志、采集数据、数据库、报告和导入文件不会被删除。" type="info" show-icon :closable="false" />
 
     <section v-if="currentTask" :class="['task-status', taskBusy ? 'task-status--active' : 'task-status--terminal']">
       <div class="task-status__row">
@@ -472,7 +474,16 @@ onBeforeUnmount(() => {
         <p class="hint">右键任意表格单元格可复制该单元格；Web 展示与导出会隐藏秘密、私有地址和本机绝对路径。</p>
       </el-tab-pane>
 
+      <el-tab-pane v-if="isFeatureEnabled('module.task_center')" label="任务日志" name="task-logs" lazy class="maintenance-tab-pane">
+        <TaskLogsPanel v-if="activeTab === 'task-logs'" :initial-task-id="String(route.query.task_id ?? '')" />
+      </el-tab-pane>
+
+      <el-tab-pane v-if="isFeatureEnabled('module.command_reference')" label="命令说明" name="command-reference" lazy class="maintenance-tab-pane maintenance-tab-pane--scroll">
+        <CommandReferenceView v-if="activeTab === 'command-reference'" embedded />
+      </el-tab-pane>
+
       <el-tab-pane label="安全清理" name="cleanup" class="maintenance-tab-pane">
+        <el-alert class="maintenance-alert" title="三天自动清理仅处理软件运行日志；缓存和临时文件仅在手工选择确认后清理。业务日志、采集数据、数据库、报告和导入文件不会被删除。" type="info" show-icon :closable="false" />
         <div class="toolbar"><span>保留最近</span><el-input-number v-model="retentionDays" :min="1" :max="365" controls-position="right" /><span>天</span><el-button :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup')" @click="scanCleanup">扫描白名单</el-button><el-button type="danger" plain :loading="taskBusy" :disabled="!isFeatureEnabled('system.disk_cleanup') || !selectedCleanupItemIds.length" @click="confirmCleanup">清理所选项目</el-button><el-button :disabled="!isFeatureEnabled('capability.desktop_native_integration')" @click="openDirectory('cache')">打开缓存目录</el-button></div>
         <div class="maintenance-table-host">
           <NcDataTable :data="cleanupItems" :columns="cleanupColumns" table-id="system-cleanup-items" route-key="/logs" height="100%" empty-text="请先扫描白名单">
@@ -496,7 +507,7 @@ onBeforeUnmount(() => {
       </el-tab-pane>
 
       <el-tab-pane label="关于" name="about" class="maintenance-tab-pane maintenance-tab-pane--scroll">
-        <el-descriptions v-if="about" :column="1" border><el-descriptions-item label="应用">{{ about.title }}</el-descriptions-item><el-descriptions-item label="版本">{{ about.version }}</el-descriptions-item><el-descriptions-item label="作者">{{ about.author }}</el-descriptions-item><el-descriptions-item label="外部工具说明">{{ about.external_tool_notice }}</el-descriptions-item></el-descriptions>
+        <el-descriptions v-if="about" :column="1" border><el-descriptions-item label="应用">{{ about.title }}</el-descriptions-item><el-descriptions-item label="版本">{{ about.version }}</el-descriptions-item><el-descriptions-item label="作者">{{ about.author }}</el-descriptions-item></el-descriptions>
         <el-card v-for="repository in about?.repositories || []" :key="repository.link_id" shadow="never" class="repository"><span>{{ repository.label }}</span><div><el-button link @click="copyText(repository.label, '仓库地址已复制')">复制</el-button><el-button link @click="openAboutLink(repository.link_id)">浏览器打开</el-button></div></el-card>
       </el-tab-pane>
     </el-tabs>
@@ -507,9 +518,8 @@ onBeforeUnmount(() => {
 .maintenance-page { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; gap: 16px; overflow: hidden; }
 .page-heading, .repository, .pagination { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; }
 .page-heading h1 { margin: 2px 0 6px; }
-.page-heading p, .hint { margin: 0; color: var(--el-text-color-secondary); }
-.eyebrow { color: var(--el-color-primary) !important; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
-.maintenance-alert { flex: none; }
+.hint { margin: 0; color: var(--el-text-color-secondary); }
+.maintenance-alert { flex: none; margin-bottom: 12px; }
 .task-status { flex: none; padding: 10px 12px; overflow: hidden; border: 1px solid var(--el-border-color-light); border-radius: 8px; background: var(--el-bg-color); }
 .task-status--active { max-height: 140px; }
 .task-status--terminal { padding-block: 8px; }

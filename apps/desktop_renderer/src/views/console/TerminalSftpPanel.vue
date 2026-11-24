@@ -479,7 +479,7 @@ onBeforeUnmount(() => {
         <el-button title="刷新" @click="refresh()"><el-icon><Refresh /></el-icon></el-button>
       </div>
       <div class="sftp-actions">
-        <slot name="managed-actions" :session-id="session.session_id" :directory="currentPath" :selected-remote="selected" :refresh-transfers="refreshTransfers" />
+        <slot name="managed-actions" :session-id="session.session_id" :directory="currentPath" :selected-remote="selected" :selected-entries="entries.filter(item => selected.includes(item.remote_path))" :refresh-transfers="refreshTransfers" />
         <el-button @click="uploadInput?.click()"><el-icon><Upload /></el-icon>上传</el-button>
         <input ref="uploadInput" class="sftp-file-input" type="file" multiple @change="uploadFiles" />
         <el-button @click="folderInput?.click()">上传文件夹</el-button>

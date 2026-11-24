@@ -16,9 +16,9 @@ class FakeLocalProcessAdapter:
         self.callbacks = {}
 
     def start_job(self, job: BackgroundJob, *, on_complete=None) -> str:
+        launch = self.tasks.prepare(job)
         self.jobs[job.job_id] = job
         self.callbacks[job.job_id] = on_complete
-        launch = self.tasks.prepare(job)
         self.tasks.mark_running(launch.job.job_id)
         return launch.job.job_id
 

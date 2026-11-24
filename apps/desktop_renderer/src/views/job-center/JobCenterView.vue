@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, View } from '@element-plus/icons-vue'
@@ -13,6 +13,11 @@ import { useTaskStore } from '../../stores/tasks'
 import type { TaskItem } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
 import { formatTaskDateTime } from '../../utils/dateTime'
+import { deviceMaintenanceTask } from '../../api/deviceOperations'
+import { isFeatureEnabled } from '../../features'
+
+const DeviceTaskCreateDialog = defineAsyncComponent(() => import('./DeviceTaskCreateDialog.vue'))
+const DeviceTaskResultDialog = defineAsyncComponent(() => import('./DeviceTaskResultDialog.vue'))
 
 const store = useTaskStore()
 const route = useRoute()
@@ -32,6 +37,9 @@ const keyword = ref('')
 const detailVisible = ref(false)
 const detailTaskId = ref('')
 const taskContextError = ref('')
+const createVisible = ref(false)
+const resultVisible = ref(false)
+const resultTaskId = ref('')
 const pollingConsumer = 'job-center-view'
 let pollingAcquired = false
 
@@ -56,7 +64,7 @@ const columns: NcTableColumn<TaskItem>[] = [
   { key: 'duration_seconds', label: '持续时间', valueType: 'duration', displayValue: (row) => formatDuration(row.duration_seconds) },
   { key: 'session_id', label: 'Session', valueType: 'text' },
   { key: 'error_summary', label: '错误 / 告警', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
-  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情'] },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '执行结果'] },
 ]
 
 onMounted(() => {
@@ -109,6 +117,16 @@ function openTaskDetail(task: TaskItem | string): void {
   taskContextError.value = ''
   detailTaskId.value = typeof task === 'string' ? task : task.id
   detailVisible.value = true
+}
+
+function openDeviceResults(id: string): void {
+  resultTaskId.value = id
+  resultVisible.value = true
+}
+
+async function trackSubmittedTask(id: string): Promise<void> {
+  await store.manualRefresh()
+  openTaskDetail(id)
 }
 
 function handleDetailLoadError(taskId: string): void {
@@ -225,6 +243,7 @@ function residentProgressLabel(task: TaskItem): string {
           <NcMultiValueFilter v-model="selectedStatuses" :options="taskStatusOptions" :labels="taskStatusLabels" placeholder="全部状态" style="width: 155px" />
           <NcMultiValueFilter v-model="selectedModules" :options="taskModuleOptions" :labels="taskModuleLabels" placeholder="全部模块" style="width: 150px" />
           <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新</el-button>
+          <el-button v-if="isFeatureEnabled('module.devices')" type="primary" @click="createVisible = true">创建设备任务</el-button>
         </div>
       </div>
 
@@ -239,7 +258,10 @@ function residentProgressLabel(task: TaskItem): string {
           <span v-if="isResidentTask(row)" class="resident-progress">{{ residentProgressLabel(row) }}</span>
           <el-progress v-else :percentage="row.progress" :stroke-width="7" />
         </template>
-        <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openTaskDetail(row)">详情</el-button></template>
+        <template #cell-actions="{ row }">
+          <el-button link type="primary" :icon="View" @click="openTaskDetail(row)">详情</el-button>
+          <el-button v-if="row.type === deviceMaintenanceTask" link type="primary" @click="openDeviceResults(row.id)">执行结果</el-button>
+        </template>
       </NcDataTable>
     </div>
 
@@ -249,6 +271,8 @@ function residentProgressLabel(task: TaskItem): string {
       source="job-center"
       @load-error="handleDetailLoadError"
     />
+    <DeviceTaskCreateDialog v-if="createVisible" v-model="createVisible" @submitted="trackSubmittedTask" />
+    <DeviceTaskResultDialog v-if="resultVisible" v-model="resultVisible" :task-id="resultTaskId" @submitted="trackSubmittedTask" />
   </section>
 </template>
 

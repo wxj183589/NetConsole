@@ -419,10 +419,7 @@ class SystemMaintenanceApplicationService:
             title=APP_TITLE_DISPLAY,
             version=APP_VERSION_DISPLAY,
             author=APP_AUTHOR,
-            external_tool_notice=(
-                "IPOP v4.1 为第三方可选外部工具，不随 NetConsole 分发。"
-                "NetConsole 仅启动用户自行取得并配置的本地程序，相关权利归其权利人所有。"
-            ),
+            external_tool_notice="",
             repositories=[AboutLinkDTO(link_id=f"repository-{index}", label=url) for index, url in enumerate(REPOSITORY_WEB_URLS, start=1)],
         )
 

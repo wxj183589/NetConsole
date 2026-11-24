@@ -473,6 +473,52 @@ export function startManagedSftpDownload(sessionId: string, path: string, direct
   return terminalSftpPathAction(sessionId, 'download-managed', { path, directory_id: directoryId })
 }
 
+export type SftpSyncDirection = 'upload' | 'download' | 'both'
+export type SftpSyncComparison = 'size' | 'modified' | 'sha256'
+interface SftpSyncEntry { size: number | null; modified: string | null }
+export interface SftpSyncPreview {
+  revision: string
+  rows: Array<{
+    name: string
+    action: 'upload' | 'download' | 'conflict' | 'same' | 'excluded' | 'ignored'
+    local: SftpSyncEntry | null
+    remote: SftpSyncEntry | null
+  }>
+  can_apply: boolean
+  transfer_count: number
+  queued: TerminalSftpTransfer[]
+  error?: string
+}
+
+export function synchronizeSftpDirectory(
+  sessionId: string, path: string, directoryId: string,
+  direction: SftpSyncDirection, comparison: SftpSyncComparison, revision = '',
+): Promise<SftpSyncPreview> {
+  return terminalSftpPathAction(sessionId, 'sync', {
+    path, directory_id: directoryId, direction, comparison, expected_revision: revision,
+  })
+}
+
+export interface SftpTextFile {
+  path: string
+  text: string
+  revision: string
+  original: { text: string; digest: string; mode: number; uid: number; gid: number; newline: '\n' | '\r\n'; bom: boolean }
+}
+
+export function readSftpTextFile(sessionId: string, path: string): Promise<SftpTextFile> {
+  const params = new URLSearchParams({ path })
+  return apiRequest(`/api/terminal/sftp/sessions/${encodeURIComponent(sessionId)}/text?${params}`)
+}
+
+export function writeSftpTextFile(
+  sessionId: string, path: string, revision: string, text: string, original: SftpTextFile['original'],
+): Promise<{ path: string; revision: string }> {
+  return apiRequest(`/api/terminal/sftp/sessions/${encodeURIComponent(sessionId)}/text`, {
+    method: 'PUT', body: JSON.stringify({ path, revision, text, original }),
+  })
+}
+
 export function uploadTerminalSftpFile(
   sessionId: string,
   remoteDirectory: string,

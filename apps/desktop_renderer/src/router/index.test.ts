@@ -3,7 +3,6 @@
 import { describe, expect, it } from 'vitest'
 
 import { flattenNavigation } from '../navigation/registry'
-import { redirectLegacyCommandReference } from './index'
 import { appRoutes } from './routes'
 
 describe('Web route ownership', () => {
@@ -59,26 +58,19 @@ describe('Web route ownership', () => {
     expect(routes.find((route) => route.path === 'device-files/diagnostics')?.meta?.navigationId).toBe('files.device-diagnostics')
   })
 
-  it('redirects the legacy command-reference tab before feature enforcement', () => {
-    expect(redirectLegacyCommandReference({
-      name: 'logs',
-      query: { tab: 'command-reference', source: 'legacy' },
-      hash: '#commands',
-    } as never, {} as never, () => undefined)).toEqual({
-      name: 'command-reference',
-      query: { source: 'legacy' },
-      hash: '#commands',
-      replace: true,
-    })
-    expect(redirectLegacyCommandReference({ name: 'logs', query: {}, hash: '' } as never, {} as never, () => undefined)).toBe(true)
-  })
-
-  it('exposes the command reference directly with its own feature guard', () => {
+  it('redirects the old standalone command reference to the logs workspace', () => {
     const route = routes.find((item) => item.name === 'command-reference')
     expect(route?.path).toBe('command-reference')
-    expect(route?.component).toBeDefined()
-    expect(route?.redirect).toBeUndefined()
-    expect(route?.meta).toMatchObject({ navigationId: 'command-reference', featureId: 'module.command_reference', moduleId: 'command-reference' })
+    expect(route?.component).toBeUndefined()
+    if (typeof route?.redirect !== 'function') throw new Error('Expected command reference redirect')
+    expect(route.redirect({
+      query: { source: 'legacy' },
+      hash: '#commands',
+    } as never, {} as never)).toEqual({
+      name: 'logs',
+      query: { source: 'legacy', tab: 'command-reference' },
+      hash: '#commands',
+    })
   })
 
   it('owns the console route as an independent workspace', () => {
@@ -139,6 +131,6 @@ describe('Web route ownership', () => {
     const paths = routes.map((route) => `/${route.path}`)
     expect(paths.some((path) => /snmp|wifi-survey/.test(path))).toBe(false)
     expect(paths).toContain('/network-tools/wireless-scan')
-    expect(paths).toContain('/command-reference')
+    expect(routes.find((route) => route.path === 'command-reference')?.meta?.hiddenRoute).toBe(true)
   })
 })

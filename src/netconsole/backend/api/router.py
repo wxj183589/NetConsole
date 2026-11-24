@@ -8,12 +8,14 @@ from netconsole.backend.api.config_collection_router import router as config_col
 from netconsole.backend.api.command_reference_router import router as command_reference_router
 from netconsole.backend.api.device_compatibility_router import router as device_compatibility_router
 from netconsole.backend.api.device_management_router import router as device_management_router
+from netconsole.backend.api.device_operations_router import router as device_operations_router
 from netconsole.backend.api.database_upgrade_router import router as database_upgrade_router
 from netconsole.backend.api.file_management_router import router as file_management_router
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.backend.api.feature_router import router as feature_router
 from netconsole.backend.api.health import router as health_router
 from netconsole.backend.api.job_center_router import router as job_center_router
+from netconsole.backend.api.local_network_services_router import router as local_network_services_router
 from netconsole.backend.api.mesh_analysis_router import router as mesh_analysis_router
 from netconsole.backend.api.network_tools_router import router as network_tools_router
 from netconsole.backend.api.online_mr_router import router as online_mr_router
@@ -72,6 +74,14 @@ api_router.include_router(
     dependencies=[Depends(require_feature("module.task_center"))],
 )
 api_router.include_router(task_router)
+api_router.include_router(
+    device_operations_router,
+    dependencies=[Depends(require_feature("module.task_center"))],
+)
+api_router.include_router(
+    local_network_services_router,
+    dependencies=[Depends(require_feature("capability.network_tools.local_services"))],
+)
 api_router.include_router(
     traffic_router,
     dependencies=[Depends(require_feature("network_tools.traffic"))],

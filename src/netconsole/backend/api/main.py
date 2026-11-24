@@ -85,6 +85,7 @@ from netconsole.services.device_management_web_service import DeviceManagementWe
 from netconsole.services.device_compatibility.service import DeviceCompatibilityService
 from netconsole.services.device_detail_query_service import DeviceDetailQueryService
 from netconsole.services.device_operation_service import DeviceOperationService
+from netconsole.services.device_task_service import DeviceTaskApplicationService
 from netconsole.services.file_management_service import FileManagementApplicationService
 from netconsole.services.terminal_sftp import TerminalSftpManager
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -149,6 +150,8 @@ from netconsole.services.site_storage import (
 )
 from netconsole.core.sqlite_utils import SqliteIntegrityError, check_sqlite_integrity
 from netconsole.services.storage_audit import StorageAuditService
+from netconsole.services.local_network_services.manager import LocalNetworkServiceManager
+from netconsole.services.network_tools.iperf_tool_service import find_iperf_tool
 from netconsole.services.terminal_workspace import TerminalSessionManager
 
 
@@ -918,6 +921,7 @@ def create_app(
             cleanup = await asyncio.gather(
                 asyncio.to_thread(terminal_session_manager.close),
                 asyncio.to_thread(terminal_sftp_manager.close),
+                asyncio.to_thread(app.state.local_network_services.close),
                 device_management_service.stop_exports(),
                 asyncio.to_thread(web_export_adapter.shutdown),
                 asyncio.to_thread(web_process_adapter.shutdown),
@@ -934,6 +938,7 @@ def create_app(
                 (
                     "terminal_sessions",
                     "terminal_sftp",
+                    "local_network_services",
                     "device_exports",
                     "web_exports",
                     "local_process",
@@ -1027,6 +1032,9 @@ def create_app(
     )
     app.state.paths = paths
     app.state.storage_audit_service = StorageAuditService(paths.data_root)
+    app.state.local_network_services = LocalNetworkServiceManager(
+        paths.runtime_dir / "local_network_services", iperf_path=find_iperf_tool(paths)
+    )
     app.state.build_metadata = current_build_metadata(paths.app_root)
     app.state.backend_build_id = backend_build_id(paths.app_root)
     app.state.task_service = task_service
@@ -1065,6 +1073,11 @@ def create_app(
     app.state.network_tools_service = NetworkToolsApplicationService(traffic_service)
     app.state.device_compatibility_service = device_compatibility_service
     app.state.device_management_service = device_management_service
+    app.state.device_task_application_service = (
+        DeviceTaskApplicationService(task_service, web_process_adapter)
+        if isinstance(task_service, TaskApplicationService)
+        else None
+    )
     app.state.terminal_session_manager = terminal_session_manager
     app.state.terminal_sftp_manager = terminal_sftp_manager
     app.state.device_detail_application_service = device_detail_application_service
@@ -1142,23 +1155,26 @@ def create_app(
         app.state.rail_transit_base_data_query_service,
         rail_base_data_write_guard,
     )
+    rail_infrastructure_write_guard = BaseDataWriteGuard(
+        paths,
+        feature_enabled=feature_gate.is_enabled("capability.rail_infrastructure.write"),
+        desktop_session_write_enabled=bool(
+            rail_base_data_desktop_write_enabled
+            and runtime_mode is RuntimeMode.DESKTOP
+            and desktop_session_token
+        ),
+    )
     app.state.rail_relationship_application_service = RailRelationshipApplicationService(
         paths,
-        BaseDataWriteGuard(
-            paths,
-            feature_enabled=feature_gate.is_enabled("capability.rail_infrastructure.write"),
-            desktop_session_write_enabled=bool(
-                rail_base_data_desktop_write_enabled
-                and runtime_mode is RuntimeMode.DESKTOP
-                and desktop_session_token
-            ),
-        ),
+        rail_infrastructure_write_guard,
         query=app.state.rail_transit_base_data_query_service,
     )
     from netconsole.application.rail_transit.infrastructure_application_service import RailInfrastructureApplicationService
     app.state.rail_infrastructure_application_service = RailInfrastructureApplicationService(
         app.state.rail_transit_base_data_query_service,
         app.state.trackside_ap_business_query_service,
+        guard=rail_infrastructure_write_guard,
+        resolve_site=site_application_service.registry.resolve_directory_name,
     )
     app.state.rail_transit_station_source_discovery_service = StationSourceDiscoveryService(
         paths,

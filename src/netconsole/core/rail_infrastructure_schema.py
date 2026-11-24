@@ -9,6 +9,15 @@ CREATE TABLE IF NOT EXISTS rail_infra_node (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_rail_infra_station_code
     ON rail_infra_node(code) WHERE node_type = 'station' AND code <> '';
+CREATE TABLE IF NOT EXISTS rail_infra_node_layout (
+    node_uid TEXT PRIMARY KEY NOT NULL REFERENCES rail_infra_node(node_uid) ON DELETE CASCADE,
+    parent_uid TEXT REFERENCES rail_infra_node(node_uid) ON DELETE RESTRICT,
+    display_name TEXT NOT NULL DEFAULT '',
+    display_code TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    custom INTEGER NOT NULL DEFAULT 0 CHECK (custom IN (0, 1)),
+    CHECK (parent_uid IS NULL OR parent_uid <> node_uid)
+);
 CREATE TABLE IF NOT EXISTS rail_infra_node_name (
     name_id TEXT PRIMARY KEY NOT NULL,
     node_uid TEXT NOT NULL REFERENCES rail_infra_node(node_uid) ON DELETE RESTRICT,
@@ -172,6 +181,7 @@ END;
 RAIL_INFRASTRUCTURE_TABLES = frozenset(
     (
         "rail_infra_node",
+        "rail_infra_node_layout",
         "rail_infra_node_name",
         "rail_infra_project",
         "rail_infra_node_project",
@@ -188,7 +198,7 @@ RAIL_INFRASTRUCTURE_TABLES = frozenset(
 )
 
 # Engineering changes invalidate the same revision consumers already observe.
-for _table in ("rail_infra_node", "rail_infra_project", "rail_infra_train"):
+for _table in ("rail_infra_node", "rail_infra_project", "rail_infra_train", "rail_infra_node_layout", "rail_infra_device_project"):
     for _operation in ("INSERT", "UPDATE", "DELETE"):
         RAIL_INFRASTRUCTURE_SCHEMA += (
             f"CREATE TRIGGER IF NOT EXISTS trg_base_revision_{_table}_{_operation.lower()} "

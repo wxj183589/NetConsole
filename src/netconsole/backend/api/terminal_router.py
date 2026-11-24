@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.services.file_management_service import FileReferenceNotFound
+from netconsole.services.sftp_text_editor import MAX_TEXT_BYTES, TextRevision
 from netconsole.services.terminal_workspace import TerminalSessionManager
 from netconsole.services.terminal_sftp import TerminalSftpManager
 
@@ -184,6 +185,29 @@ class TerminalSftpManagedUploadRequest(BaseModel):
 
 class TerminalSftpManagedDownloadRequest(TerminalSftpPathRequest):
     directory_id: str = Field(min_length=1, max_length=80)
+
+
+class TerminalSftpSyncRequest(TerminalSftpManagedDownloadRequest):
+    direction: Literal["upload", "download", "both"]
+    comparison: Literal["size", "modified", "sha256"]
+    expected_revision: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
+
+
+class TerminalSftpTextEditRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    text: str = Field(max_length=MAX_TEXT_BYTES)
+    original: "TerminalSftpTextRevisionRequest"
+
+
+class TerminalSftpTextRevisionRequest(BaseModel):
+    mode: int = Field(ge=0, le=0o777)
+    uid: int = Field(ge=0)
+    gid: int = Field(ge=0)
+    newline: Literal["\n", "\r\n"]
+    bom: bool
+    text: str = Field(max_length=MAX_TEXT_BYTES)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class TerminalSftpRenameRequest(BaseModel):
@@ -860,6 +884,56 @@ def download_managed_sftp_entry(
         )
     except FileReferenceNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/sftp/sessions/{session_id}/sync")
+def synchronize_sftp_directory(
+    session_id: str,
+    payload: TerminalSftpSyncRequest,
+    request: Request,
+) -> dict[str, Any]:
+    require_feature("capability.file_management.remote")(request)
+    if payload.direction != "upload":
+        require_feature("capability.file_management.download")(request)
+    try:
+        files = request.app.state.file_management_service
+        return _sftp_manager(request).synchronize(
+            session_id, payload.path, lambda site: files.transfer_directory(site, payload.directory_id),
+            payload.direction, payload.comparison, payload.expected_revision,
+        )
+    except FileReferenceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/sftp/sessions/{session_id}/text")
+def read_sftp_text_file(session_id: str, request: Request, path: str = Query(min_length=1, max_length=4096)) -> dict[str, Any]:
+    require_feature("capability.file_management.remote")(request)
+    try:
+        return _sftp_manager(request).read_text_file(session_id, path)
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.put("/sftp/sessions/{session_id}/text")
+def write_sftp_text_file(session_id: str, payload: TerminalSftpTextEditRequest, request: Request) -> dict[str, Any]:
+    require_feature("capability.file_management.remote")(request)
+    try:
+        original = TextRevision(
+            payload.original.text,
+            payload.original.digest,
+            payload.original.mode,
+            payload.original.uid,
+            payload.original.gid,
+            payload.original.newline,
+            payload.original.bom,
+        )
+        if original.digest != payload.revision:
+            raise ValueError("文本版本与请求摘要不一致")
+        return _sftp_manager(request).write_text_file(session_id, payload.path, payload.revision, payload.text, original)
     except Exception as exc:
         raise _translate_error(exc) from exc
 

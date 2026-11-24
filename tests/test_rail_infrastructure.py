@@ -7,8 +7,11 @@ from fastapi.testclient import TestClient
 from netconsole.backend.api.main import create_app
 from netconsole.core.database import Database
 from netconsole.core.rail_infrastructure_schema import RAIL_INFRASTRUCTURE_TABLES
+from netconsole.models.api.rail_infrastructure import OrganizationBatchRequest
 from netconsole.repositories.rail_infrastructure_repository import RailInfrastructureRepository
+from netconsole.repositories.rail_relationship_repository import RelationshipError
 from netconsole.services.rail_transit.base_data_query_service import RailTransitBaseDataQueryService
+from netconsole.services.rail_transit.base_data_write_guard import BaseDataWriteGuard
 from tests.support.rail_transit_base_data_fixture import build_rail_transit_base_data_fixture
 
 
@@ -144,7 +147,11 @@ def test_organization_initializes_once_and_later_assets_require_link(tmp_path):
         RailInfrastructureApplicationService,
     )
 
-    service = RailInfrastructureApplicationService(RailTransitBaseDataQueryService(paths), None)
+    service = RailInfrastructureApplicationService(
+        RailTransitBaseDataQueryService(paths), None,
+        guard=BaseDataWriteGuard(paths, feature_enabled=True, write_enabled=True, real_write_enabled=True),
+        resolve_site=lambda site: site,
+    )
     assert not service.infrastructure("demo").organization_initialized
     first = service.initialize("demo")
     assert first.organization_initialized
@@ -159,3 +166,27 @@ def test_organization_initializes_once_and_later_assets_require_link(tmp_path):
     repeated = service.initialize("demo")
     assert [node.uid for node in repeated.nodes if node.kind == "cocc"] == [center.uid]
     assert "new-sw" in {device.device_uuid for device in repeated.unassociated_devices}
+
+    with closing(database.connect()) as conn, conn:
+        conn.execute("INSERT INTO rail_infra_project VALUES ('p1', '一期工程', '一期'), ('p2', '二期工程', '二期')")
+    before = service.organization_catalog("demo")
+    request = OrganizationBatchRequest(
+        revision=before.revision, device_uuids=["new-sw"], node_uid=center.uid,
+        add_projects=["p1", "p2"], collection="excluded",
+    )
+    preview = service.change_organization_assets("demo", request, preview=True)
+    assert preview.changes[0].after.project_ids == ["p1", "p2"]
+    assert service.organization_catalog("demo") == before
+    with pytest.raises(RelationshipError, match="明确确认"):
+        service.change_organization_assets("demo", request, preview=False)
+    result = service.change_organization_assets(
+        "demo", request.model_copy(update={"explicit_confirmation": True}), preview=False
+    )
+    assert result.changes == preview.changes
+    updated = next(device for device in service.organization_catalog("demo").devices if device.device_uuid == "new-sw")
+    assert (updated.project_ids, updated.collection, updated.node_uids) == (["p1", "p2"], "excluded", [center.uid])
+    with pytest.raises(RelationshipError, match="变化"):
+        service.change_organization_assets("demo", request, preview=True)
+    with closing(database.connect_readonly()) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM rail_infra_relation_audit WHERE operation='organization_assets'").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM rail_infra_relation_history WHERE relation_type='device_node'").fetchone()[0] == 1

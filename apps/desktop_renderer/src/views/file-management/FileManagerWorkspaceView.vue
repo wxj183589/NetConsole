@@ -5,11 +5,12 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft, Download, Folder, FolderAdd, Refresh, Upload } from '@element-plus/icons-vue'
 
 import { createLocalDirectory, listLocalFiles, listRemoteDevices } from '../../api/fileManagement'
-import { startManagedSftpDownload, uploadManagedSftpFile } from '../../api/terminal'
+import { readSftpTextFile, startManagedSftpDownload, uploadManagedSftpFile, writeSftpTextFile } from '../../api/terminal'
 import { isFeatureEnabled } from '../../features'
 import { activeSiteContext } from '../../stores/siteContext'
 import type { FileRemoteDevice, LocalFileEntry, LocalFilePage } from '../../types/fileManagement'
 import TerminalSftpPanel from '../console/TerminalSftpPanel.vue'
+import FileManagerSyncDialog from './FileManagerSyncDialog.vue'
 import { createFileManagerTranslator } from './fileManagementI18n'
 
 const t = createFileManagerTranslator()
@@ -25,6 +26,14 @@ const filter = ref('')
 const uploading = ref(false)
 const downloading = ref(false)
 const conflict = ref<'error' | 'skip' | 'rename' | 'overwrite'>('error')
+const editorVisible = ref(false)
+const editorBusy = ref(false)
+const editorPath = ref('')
+const editorText = ref('')
+const editorRevision = ref('')
+const editorOriginal = ref<{ text: string; digest: string; mode: number; uid: number; gid: number; newline: '\n' | '\r\n'; bom: boolean }>()
+const editorDirty = ref(false)
+const editorSessionId = ref('')
 const siteId = computed(() => activeSiteContext.value?.siteId || '')
 const canConnect = computed(() => isFeatureEnabled('capability.file_management.remote'))
 const availableRows = computed(() => page.value?.items.filter(row =>
@@ -90,6 +99,47 @@ function openLocal(row: LocalFileEntry): void {
 
 function selectLocal(rows: LocalFileEntry[]): void {
   selected.value = rows.filter(row => !row.is_dir).map(row => row.entry_id)
+}
+
+const editableExtensions = new Set(['.cfg', '.conf', '.ini', '.json', '.log', '.md', '.properties', '.sh', '.txt', '.yaml', '.yml'])
+async function editRemoteFile(sessionId: string, path: string): Promise<void> {
+  const extension = path.slice(path.lastIndexOf('.')).toLocaleLowerCase()
+  if (!editableExtensions.has(extension)) {
+    ElMessage.warning(t('editUnsupported'))
+    return
+  }
+  editorBusy.value = true
+  try {
+    const file = await readSftpTextFile(sessionId, path)
+    editorSessionId.value = sessionId
+    editorPath.value = file.path
+    editorText.value = file.text
+    editorRevision.value = file.revision
+    editorOriginal.value = { ...file.original, text: file.text, digest: file.revision }
+    editorDirty.value = false
+    editorVisible.value = true
+  } catch (cause) {
+    ElMessage.error(errorText(cause, t('editFailed')))
+  } finally {
+    editorBusy.value = false
+  }
+}
+
+async function saveRemoteFile(): Promise<void> {
+  if (!editorDirty.value || editorBusy.value) return
+  editorBusy.value = true
+  try {
+    if (!editorOriginal.value) return
+    const result = await writeSftpTextFile(editorSessionId.value, editorPath.value, editorRevision.value, editorText.value, editorOriginal.value)
+    editorRevision.value = result.revision
+    editorDirty.value = false
+    editorVisible.value = false
+    ElMessage.success(t('editSaved'))
+  } catch (cause) {
+    ElMessage.error(errorText(cause, t('editFailed')))
+  } finally {
+    editorBusy.value = false
+  }
 }
 
 async function newLocalFolder(): Promise<void> {
@@ -193,17 +243,23 @@ watch(() => route.query.device_uuid, openRequestedDevice)
           <el-tab-pane v-for="tab in tabs" :key="tab.device_id" :name="tab.device_id" :label="tab.name" />
         </el-tabs>
         <TerminalSftpPanel v-if="deviceId || !tabs.length" :key="siteId" workspace-id="file-manager" :device-uuid="deviceId" :device-name="tabs.find(tab => tab.device_id === deviceId)?.name || ''" all-workspace-transfers @managed-download="browse(page?.current_entry_id, page?.page)">
-          <template #managed-actions="{ sessionId, directory, selectedRemote, refreshTransfers }">
+          <template #managed-actions="{ sessionId, directory, selectedRemote, selectedEntries = [], refreshTransfers }">
             <el-button :icon="Upload" :loading="uploading" :disabled="!selected.length" @click="uploadLocal(sessionId, directory, refreshTransfers)">{{ t('uploadSelectedLocal') }}</el-button>
             <el-button v-if="isFeatureEnabled('capability.file_management.download')" :icon="Download" :loading="downloading" :disabled="!page || !selectedRemote.length" @click="downloadToLocal(sessionId, selectedRemote, refreshTransfers)">{{ t('downloadToLocal') }}</el-button>
+            <el-button :disabled="selectedEntries.length !== 1 || selectedEntries[0].is_dir || editorBusy" @click="editRemoteFile(sessionId, selectedEntries[0]?.remote_path || '')">{{ t('editRemote') }}</el-button>
             <el-select v-model="conflict" class="conflict-select" :aria-label="t('conflict')">
               <el-option v-for="action in (['error', 'skip', 'rename', 'overwrite'] as const)" :key="action" :label="t(action)" :value="action" />
             </el-select>
+            <FileManagerSyncDialog v-if="page" :key="`${sessionId}-${page.current_entry_id}-${directory}`" :session-id="sessionId" :remote-directory="directory" :local-directory-id="page.current_entry_id" :local-directory-label="page.current_label" :allow-download="isFeatureEnabled('capability.file_management.download')" @submitted="refreshTransfers" />
           </template>
         </TerminalSftpPanel>
       </section>
     </div>
   </section>
+  <el-dialog v-model="editorVisible" :title="editorPath" width="min(900px, 94vw)" :close-on-click-modal="!editorDirty && !editorBusy" :close-on-press-escape="!editorDirty && !editorBusy">
+    <el-input v-model="editorText" type="textarea" :rows="22" :maxlength="262144" show-word-limit :disabled="editorBusy" @input="editorDirty = true" />
+    <template #footer><el-button :disabled="editorBusy" @click="editorVisible = false">{{ t('cancel') }}</el-button><el-button type="primary" :loading="editorBusy" :disabled="!editorDirty" @click="saveRemoteFile">{{ t('save') }}</el-button></template>
+  </el-dialog>
 </template>
 
 <style scoped>

@@ -130,14 +130,13 @@ describe('Dashboard home page', () => {
     expect(wrapper.text()).toContain('任务中心暂时无法打开')
   })
 
-  it('opens the standalone command reference without adding a CLI input to the dashboard', () => {
+  it('keeps the command reference shortcut through the logs workspace redirect', () => {
     const commandReferenceRoutes = appRoutes
       .flatMap((route) => route.children ?? [])
       .filter((route) => route.name === 'command-reference')
     expect(commandReferenceRoutes).toHaveLength(1)
-    expect(commandReferenceRoutes[0]?.component).toBeDefined()
-    expect(commandReferenceRoutes[0]?.meta?.featureId).toBe('module.command_reference')
-    expect(flattenNavigation().filter((item) => item.navigation_id === 'command-reference')).toHaveLength(1)
+    expect(commandReferenceRoutes[0]?.redirect).toBeTypeOf('function')
+    expect(flattenNavigation().filter((item) => item.navigation_id === 'command-reference')).toHaveLength(0)
     expect(source).not.toContain('命令输入框')
     expect(source).not.toContain('CLI')
   })

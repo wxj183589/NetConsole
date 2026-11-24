@@ -26,6 +26,8 @@ const exportTaskStorageKey = 'netconsole.command-reference.current-export-task-i
 const exportTaskIdPattern = /^command-reference-export-[0-9a-f]{32}$/
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const taskWindowStatuses = new Set<TaskWindowStatus>(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'COMPLETED', 'FAILED', 'CANCELLED'])
+defineProps<{ embedded?: boolean }>()
+
 const t = createCommandReferenceTranslator()
 const route = useRoute()
 const router = useRouter()
@@ -306,7 +308,7 @@ onUnmounted(() => {
 <template>
   <section class="command-reference" :data-state="state">
     <header class="heading">
-      <div><p class="eyebrow">{{ t('referenceOnly') }}</p><h1>{{ t('title') }}</h1><p>{{ t('subtitle') }}</p></div>
+      <div v-if="!embedded"><p class="eyebrow">{{ t('referenceOnly') }}</p><h1>{{ t('title') }}</h1><p>{{ t('subtitle') }}</p></div>
       <div class="actions"><el-button @click="loadReferences">{{ t('refresh') }}</el-button><el-button :disabled="!selected" @click="copyCommand">{{ t('copy') }}</el-button><el-button type="primary" :loading="exporting" @click="startExport">{{ t('exportMarkdown') }}</el-button></div>
     </header>
 

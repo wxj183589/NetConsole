@@ -12,12 +12,32 @@ export function hierarchyGroups(snapshot: Infrastructure | undefined, search: st
   const nodes = snapshot?.nodes ?? []
   const query = search.trim().toLocaleLowerCase()
   const matches = (item: InfrastructureNode) => [nodeLabel(item), ...item.aliases.map(alias => alias.name), ...item.devices.map(device => device.name)].some(value => value.toLocaleLowerCase().includes(query))
-  const select = (kinds: InfrastructureNode['kind'][]) => nodes.filter(item => kinds.includes(item.kind) && matches(item))
+  const select = (kinds: InfrastructureNode['kind'][]) => {
+    const candidates = nodes.filter(item => kinds.includes(item.kind))
+    const byParent = new Map<string, InfrastructureNode[]>()
+    for (const item of candidates) {
+      const parent = item.parent_uid || ''
+      const children = byParent.get(parent) ?? []
+      children.push(item)
+      byParent.set(parent, children)
+    }
+    const result: { node: InfrastructureNode; depth: number }[] = []
+    function append(parent: string, depth: number, ancestors: Set<string>) {
+      for (const item of (byParent.get(parent) ?? []).sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))) {
+        if (ancestors.has(item.uid)) continue
+        result.push({ node: item, depth })
+        append(item.uid, depth + 1, new Set(ancestors).add(item.uid))
+      }
+    }
+    append('', 0, new Set())
+    const visible = result.filter(item => matches(item.node))
+    return { items: visible.map(item => item.node), depth: new Map(visible.map(item => [item.node.uid, query ? 0 : item.depth])) }
+  }
   return [
-    { name: '控制中心', items: select(['cocc', 'bocc']) },
-    { name: '正线车站', items: select(['station']) },
-    { name: '车辆段与停车场', items: select(['depot', 'parking_yard']) },
-    { name: '车载设备', items: select(['train']) },
+    { name: '控制中心', ...select(['cocc', 'bocc']) },
+    { name: '正线车站', ...select(['station']) },
+    { name: '车辆段与停车场', ...select(['depot', 'parking_yard']) },
+    { name: '车载设备', ...select(['train']) },
   ]
 }
 

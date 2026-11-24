@@ -36,6 +36,7 @@ idna==3.18
 iniconfig==2.3.0
 invoke==3.0.3
 isoduration==20.11.0
+Jinja2==3.1.6
 jsonpointer==3.1.1
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
@@ -45,6 +46,7 @@ license-expression==30.4.4
 librt==0.13.0
 lxml==6.1.1
 markdown-it-py==4.2.0
+MarkupSafe==3.0.3
 matplotlib==3.11.0
 mdurl==0.1.2
 mypy==2.1.0
@@ -56,6 +58,9 @@ openpyxl==3.1.5
 packageurl-python==0.17.6
 packaging==26.2
 paramiko==4.0.0
+pyasynchat==1.0.5
+pyasyncore==1.0.5
+pyftpdlib==2.2.0
 pathspec==1.1.1
 pefile==2024.8.26
 pillow==12.3.0

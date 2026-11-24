@@ -49,6 +49,7 @@ from netconsole.services.network_tools.job_handlers import (
     NETWORK_TOOL_OWNER,
 )
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
+from netconsole.services.device_task_service import DEVICE_TASK_OWNER, DEVICE_TASK_TYPE
 from netconsole.services.job_center.task_authority_index import TaskAuthorityIndex
 from netconsole.services.job_center.artifact_reconciliation import (
     ArtifactReconciliationService,
@@ -1024,6 +1025,8 @@ class JobCenterQueryService:
 
     @staticmethod
     def _module(owner: str, task_type: str) -> str:
+        if owner == DEVICE_TASK_OWNER and task_type == DEVICE_TASK_TYPE:
+            return "devices"
         if owner == "terminal_sftp" and task_type == "terminal_sftp_transfer":
             return "files"
         if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
@@ -1074,6 +1077,8 @@ class JobCenterQueryService:
             return True, ""
         if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
             return True, ""
+        if owner == DEVICE_TASK_OWNER and task_type == DEVICE_TASK_TYPE:
+            return status != "STOPPING", "已请求停止" if status == "STOPPING" else ""
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_TASK_TYPES:
             if status == "STOPPING":
                 return False, "已请求停止，等待配置任务 owner 收口"

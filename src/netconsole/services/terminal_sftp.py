@@ -20,15 +20,30 @@ from netconsole.core.paths import PathResolver
 from netconsole.services.file_transfer_service import (
     FileTransferService,
     TransferCancelled,
+    format_mtime,
     is_within_remote_root,
     join_remote_path,
     normalize_remote_path,
+    parent_remote_path,
+)
+from netconsole.services.file_manager_sync import (
+    MAX_HASH_BYTES,
+    MAX_SYNC_BYTES,
+    MAX_SYNC_FILES,
+    Comparison,
+    Direction,
+    local_directory,
+    plan_sync,
+    read_local_entries,
+    read_remote_entries,
+    sync_revision,
 )
 from netconsole.services.site_manager import SiteManager
 from netconsole.services.site_ssh_relay import active_site_id
 from netconsole.services.sftp_connection import SftpConnectionService
 from netconsole.services.sftp_tree import check_cancel, copy_directory, download_directory
 from netconsole.services.sftp_resume import download_checkpoint
+from netconsole.services.sftp_text_editor import TextRevision, read_text_revision, save_text_revision
 
 
 TransferKind = Literal["UPLOAD", "DOWNLOAD", "COPY"]
@@ -185,6 +200,29 @@ class TerminalSftpManager:
             session.snapshot.current_path = session.service.current_path
         return {"session": asdict(session.snapshot), "path": target, "items": items}
 
+    def read_text_file(self, session_id: str, path: str) -> dict[str, Any]:
+        session = self._connected_session(session_id)
+        target = self._remote_path(session, path)
+        with session.operation_lock:
+            self._check_sync_remote_directory(
+                session, parent_remote_path(target, session.snapshot.root_path),
+            )
+            revision = read_text_revision(session.service._require_sftp(), target)
+        return {"path": target, "text": revision.text, "revision": revision.digest}
+
+    def write_text_file(
+        self, session_id: str, path: str, expected_revision: str, text: str,
+        original: TextRevision | None = None,
+    ) -> dict[str, Any]:
+        session = self._connected_session(session_id)
+        target = self._remote_path(session, path)
+        with session.operation_lock:
+            self._check_sync_remote_directory(
+                session, parent_remote_path(target, session.snapshot.root_path),
+            )
+            revision = save_text_revision(session.service._require_sftp(), target, expected_revision, text, original)
+        return {"path": target, "revision": revision.digest}
+
     def mkdir(self, session_id: str, path: str) -> dict[str, Any]:
         session = self._connected_session(session_id)
         target = self._remote_path(session, path)
@@ -257,6 +295,8 @@ class TerminalSftpManager:
         remote_directory: str,
         conflict: str,
         resolve_source: Callable[[str], tuple[Path, str]],
+        *,
+        sync_upload: bool = False,
     ) -> dict[str, Any]:
         session = self._connected_session(session_id)
         source, name = resolve_source(session.snapshot.site_name)
@@ -266,7 +306,7 @@ class TerminalSftpManager:
         try:
             return self.submit_upload(
                 session_id, staged, target,
-                overwrite=conflict == "overwrite", conflict=conflict,
+                overwrite=conflict == "overwrite", conflict=conflict, sync_upload=sync_upload,
             )
         except BaseException:
             self.discard_unsubmitted_upload(staged)
@@ -280,6 +320,7 @@ class TerminalSftpManager:
         *,
         overwrite: bool = False,
         conflict: str = "error",
+        sync_upload: bool = False,
     ) -> dict[str, Any]:
         session = self._connected_session(session_id)
         source = self._staged_upload_path(staged_path)
@@ -289,7 +330,8 @@ class TerminalSftpManager:
             "UPLOAD",
             str(source),
             target,
-            {"source": source, "target": target, "overwrite": overwrite, "conflict": conflict},
+            {"source": source, "target": target, "overwrite": overwrite, "conflict": conflict,
+             "sync_upload": sync_upload},
         )
 
     def discard_unsubmitted_upload(self, staged_path: Path) -> None:
@@ -311,14 +353,124 @@ class TerminalSftpManager:
         directory = resolve_directory(session.snapshot.site_name)
         return self._submit_download(session, remote_path, directory)
 
+    def synchronize(
+        self,
+        session_id: str,
+        remote_path: str,
+        resolve_directory: Callable[[str], str],
+        direction: Direction,
+        comparison: Comparison,
+        expected_revision: str = "",
+    ) -> dict[str, Any]:
+        session = self._connected_session(session_id)
+        relative = resolve_directory(session.snapshot.site_name)
+        directory = local_directory(self.paths.file_downloads_root(session.snapshot.site_name), relative)
+        remote = self._remote_path(session, remote_path)
+        service = session.service
+
+        def hash_pair(name: str) -> tuple[str, str]:
+            path = join_remote_path(remote, name, session.snapshot.root_path)
+            if not stat.S_ISREG(service.lstat(path).st_mode):
+                raise ValueError("远程文件已变化，请重新预览")
+            source = self._checked_sync_source(directory, name)
+            with source.open("rb") as local_file, service._require_sftp().open(path, "rb") as remote_file:
+                return self._sync_hash(local_file), self._sync_hash(remote_file)
+
+        def valid_name(name: str) -> bool:
+            try:
+                return self._safe_filename(name) == name and not name.endswith(".")
+            except ValueError:
+                return False
+
+        with session.operation_lock:
+            self._check_sync_remote_directory(session, remote)
+            local = read_local_entries(directory)
+            remote_entries = read_remote_entries(service, remote)
+            rows = plan_sync(local, remote_entries, direction, comparison, valid_name, hash_pair)
+            revision = sync_revision(
+                [session_id, relative, remote, direction, comparison], local, remote_entries, rows,
+            )
+        actions = [row for row in rows if row.action in {"upload", "download"}]
+        total_size = sum(int((row.local if row.action == "upload" else row.remote).size or 0) for row in actions)
+        allowed = len(actions) <= MAX_SYNC_FILES and total_size <= MAX_SYNC_BYTES
+        result = {"revision": revision, "rows": [asdict(row) for row in rows], "queued": [],
+                  "can_apply": allowed and bool(actions), "transfer_count": len(actions)}
+        if not expected_revision:
+            return result
+        if expected_revision != revision:
+            raise RuntimeError("同步目录在预览后已变化，请重新预览")
+        if not allowed:
+            raise ValueError("每次同步最多提交 25 个文件和 1 GiB")
+        queued = result["queued"]
+        for row in actions:
+            if SiteManager(self.paths).get_current_site() != session.snapshot.site_name:
+                result["error"] = "当前局点已切换，请重新预览"
+                break
+            source = row.local if row.action == "upload" else row.remote
+            try:
+                if row.action == "upload":
+                    task = self.submit_managed_upload(
+                        session_id, remote, "error",
+                        lambda _site: (self._checked_sync_source(directory, source.name, source.size, source.modified), source.name),
+                        sync_upload=True,
+                    )
+                else:
+                    task = self._submit_download(
+                        session, join_remote_path(remote, row.name, session.snapshot.root_path), relative,
+                        sync_identity=(source.size, source.modified),
+                    )
+                queued.append(task)
+            except (OSError, ValueError, RuntimeError, KeyError):
+                result["error"] = f"文件 {row.name} 提交失败，已提交的任务可在队列中查看"
+                break
+        return result
+
+    @staticmethod
+    def _checked_sync_source(directory: Path, name: str, size: int | None = None, modified: str | None = None) -> Path:
+        source = directory / name
+        attrs = source.lstat()
+        if not stat.S_ISREG(attrs.st_mode) or getattr(attrs, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            raise ValueError("本地文件已变化，请重新预览")
+        if size is not None and (attrs.st_size != size or format_mtime(attrs.st_mtime) != modified):
+            raise ValueError("本地文件已变化，请重新预览")
+        return source
+
+    @staticmethod
+    def _check_sync_remote_directory(session: _SftpSession, path: str) -> None:
+        root = session.snapshot.root_path
+        directory = path
+        while True:
+            if not stat.S_ISDIR(session.service.lstat(directory).st_mode):
+                raise ValueError("同步目录不跟随远程符号链接")
+            if directory == root:
+                return
+            parent = parent_remote_path(directory, root)
+            if parent == directory:
+                raise ValueError("远程同步目录超出会话根目录")
+            directory = parent
+
+    @staticmethod
+    def _sync_hash(stream) -> str:
+        digest = hashlib.sha256()
+        remaining = MAX_HASH_BYTES
+        while chunk := stream.read(min(1024 * 1024, remaining + 1)):
+            remaining -= len(chunk)
+            if remaining < 0:
+                raise ValueError("SHA-256 比较累计大小超过 64 MiB")
+            digest.update(chunk)
+        return digest.hexdigest()
+
     def _submit_download(
         self, session: _SftpSession, remote_path: str, directory: str | None = None,
+        *, sync_identity: tuple[int | None, str | None] | None = None,
     ) -> dict[str, Any]:
         source = self._remote_path(session, remote_path)
         name = self._safe_filename(Path(source).name or "download.bin")
         params = {"source": source, "name": name}
         if directory is not None:
             params["managed_directory"] = directory
+        if sync_identity is not None:
+            params["sync_identity"] = sync_identity
         return self._submit(
             session,
             "DOWNLOAD",
@@ -583,6 +735,10 @@ class TerminalSftpManager:
                 task.sampled_at = task.started_monotonic
                 self._publish(task, "state")
                 if task.snapshot.kind != "DOWNLOAD":
+                    if task.params.get("sync_upload"):
+                        self._check_sync_remote_directory(
+                            session, parent_remote_path(str(task.params["target"]), session.snapshot.root_path),
+                        )
                     target = self._conflict_target(session, task)
                     if target is None:
                         task.snapshot.status = "SKIPPED"
@@ -600,7 +756,15 @@ class TerminalSftpManager:
                     )
                 elif task.snapshot.kind == "DOWNLOAD":
                     name = str(task.params["name"])
-                    attrs = session.service.stat(str(task.params["source"]))
+                    source = str(task.params["source"])
+                    if sync_identity := task.params.get("sync_identity"):
+                        self._check_sync_remote_directory(session, parent_remote_path(source, session.snapshot.root_path))
+                        attrs = session.service.lstat(source)
+                        identity = (attrs.st_size, format_mtime(attrs.st_mtime))
+                        if not stat.S_ISREG(attrs.st_mode) or identity != tuple(sync_identity):
+                            raise ValueError("远程同步文件已变化，请重新预览")
+                    else:
+                        attrs = session.service.stat(source)
                     directory = stat.S_ISDIR(int(attrs.st_mode))
                     task.snapshot.resumable = not directory and hasattr(session.service, "_require_sftp")
                     if directory:
@@ -674,11 +838,8 @@ class TerminalSftpManager:
                 self._discard_task_files(task)
 
     def _publish_managed_download(self, task, source: Path, cancel: _TaskCancellation) -> str:
-        root = self.paths.file_downloads_root(task.snapshot.site_name).resolve(strict=True)
-        directory = root / str(task.params["managed_directory"])
-        target = directory.resolve(strict=True)
-        if target != directory or not target.is_relative_to(root) or not target.is_dir():
-            raise ValueError("目标目录超出当前局点的受管下载目录")
+        root = self.paths.file_downloads_root(task.snapshot.site_name)
+        target = local_directory(root, str(task.params["managed_directory"]))
         temporary: Path | None = None
         digest = hashlib.sha256()
         try:
@@ -699,6 +860,8 @@ class TerminalSftpManager:
                 try:
                     os.link(temporary, target / name)
                 except FileExistsError:
+                    if "sync_identity" in task.params:
+                        raise
                     continue
                 return name
             raise FileExistsError("本地同名副本数量已达上限")

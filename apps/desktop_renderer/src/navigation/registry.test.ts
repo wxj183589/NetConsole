@@ -20,12 +20,10 @@ describe('Web navigation registry', () => {
       'AC 管理',
       '轨道交通',
       '配置采集中心',
-      '设备文件下载',
+      '文件管理',
       '工具集',
       '任务中心',
       '日志中心',
-      '存储管理',
-      '命令参考',
       '系统设置',
     ])
   })
@@ -53,22 +51,22 @@ describe('Web navigation registry', () => {
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.mesh-links')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.optical')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'rail')?.children.map((item) => item.title)).toEqual([
-      '基础设施', '基础资料', '轨道交通无线看板', '地面无人值守', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
+      '组织结构', '基础资料', '轨道交通无线看板', '地面无人值守', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
     ])
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.train-online')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'files')?.children.map((item) => item.title)).toEqual([
-      '设备文件下载', '设备诊断下载',
+      '文件管理', '设备文件下载', '设备诊断下载',
     ])
     expect(flattenNavigation().some((item) => item.navigation_id === 'config')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.car-network-diagnostic')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.trackside-ap-plan')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'tools')?.children.map((item) => item.navigation_id)).toEqual([
-      'tools.external-tools', 'tools.traffic', 'tools.connectivity', 'tools.wireless-scan', 'tools.network-components',
+      'tools.external-tools', 'tools.traffic', 'tools.connectivity', 'tools.wireless-scan', 'tools.network-components', 'tools.network-services',
     ])
     const visible = flattenNavigation(visibleNavigation(() => true))
     expect(visible.every((item) => item.children.length > 0 || Boolean(item.route_name && item.route_path))).toBe(true)
     expect(visible.some((item) => item.navigation_id === 'tools.wireless-scan')).toBe(true)
-    expect(visible.some((item) => item.navigation_id === 'command-reference')).toBe(true)
+    expect(visible.some((item) => item.navigation_id === 'command-reference' || item.navigation_id === 'storage-management')).toBe(false)
   })
 
   it('shows the toolbox group between files and tasks in Electron', () => {
@@ -79,7 +77,7 @@ describe('Web navigation registry', () => {
     expect(ids.slice(ids.indexOf('files'), ids.indexOf('tasks') + 1)).toEqual(['files', 'tools', 'tasks'])
     const tools = visible.find((entry) => entry.navigation_id === 'tools')
     expect(tools?.children.map((item) => item.route_path)).toEqual([
-      '/tools', '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components',
+      '/tools', '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components', '/tools/network-services',
     ])
     if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
     else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
@@ -157,6 +155,7 @@ describe('Web navigation registry', () => {
     const files = flattenNavigation().find((item) => item.navigation_id === 'files')
     expect(files?.parity_state).toBe('IMPLEMENTED_UNVERIFIED')
     expect(files?.children.map((item) => item.navigation_id)).toEqual([
+      'files.manager',
       'files.downloads',
       'files.device-diagnostics',
     ])

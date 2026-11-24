@@ -47,6 +47,9 @@ class InfrastructureNodeDTO(ApiModel):
     devices: list[InfrastructureDeviceDTO] = Field(default_factory=list)
     sections: list[SectionDTO] = Field(default_factory=list)
     ac_service_stations: list[str] = Field(default_factory=list)
+    parent_uid: str = ""
+    sort_order: int = 0
+    custom: bool = False
 
 
 class InfrastructureDTO(ApiModel):
@@ -55,11 +58,62 @@ class InfrastructureDTO(ApiModel):
     line_name: str
     schema_available: bool = False
     organization_initialized: bool = False
+    organization_writable: bool = False
     device_count: int
     unassociated_device_count: int
     unresolved_binding_count: int
     nodes: list[InfrastructureNodeDTO] = Field(default_factory=list)
     unassociated_devices: list[InfrastructureDeviceDTO] = Field(default_factory=list)
+
+
+class OrganizationAssetDTO(ApiModel):
+    device_uuid: str
+    name: str
+    address: str = ""
+    mac: str = ""
+    serial: str = ""
+    device_type: str = ""
+    group_name: str = ""
+    node_uids: list[str] = Field(default_factory=list)
+    project_ids: list[str] = Field(default_factory=list)
+    collection: Literal["included", "excluded"]
+
+
+class OrganizationCatalogDTO(ApiModel):
+    revision: str
+    devices: list[OrganizationAssetDTO]
+    projects: list[InfrastructureProjectDTO]
+
+
+class OrganizationBatchRequest(ApiModel):
+    revision: str = Field(min_length=1, max_length=40)
+    device_uuids: list[str] = Field(min_length=1, max_length=500)
+    node_uid: str = Field(default="", max_length=160)
+    collection: Literal["included", "excluded"] | None = None
+    add_projects: list[str] = Field(default_factory=list, max_length=50)
+    remove_projects: list[str] = Field(default_factory=list, max_length=50)
+    explicit_confirmation: bool = False
+
+
+class OrganizationAssetChangeDTO(ApiModel):
+    before: OrganizationAssetDTO
+    after: OrganizationAssetDTO
+
+
+class OrganizationBatchResultDTO(ApiModel):
+    revision: str
+    changes: list[OrganizationAssetChangeDTO]
+
+
+class OrganizationNodeRequest(ApiModel):
+    revision: str = Field(min_length=1, max_length=40)
+    node_uid: str = Field(default="", max_length=160)
+    parent_uid: str = Field(default="", max_length=160)
+    kind: Literal["station", "depot", "parking_yard", "cocc", "bocc"]
+    name: str = Field(min_length=1, max_length=120)
+    code: str = Field(default="", max_length=50)
+    sort_order: int = Field(default=0, ge=-10000, le=10000)
+    explicit_confirmation: bool = False
 
 
 class InfrastructureSwitchApDTO(ApiModel):
