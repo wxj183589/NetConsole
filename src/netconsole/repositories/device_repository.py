@@ -21,10 +21,22 @@ from netconsole.models.device import (
     Device,
     has_configured_connection_target,
     is_device_eligible_for_automatic_collection,
+    normalize_device_vendor_text,
     normalize_project_phase,
     normalize_work_scope_status,
 )
-from netconsole.models.device_classification import matches_classification_filters
+from netconsole.models.device_classification import (
+    PREFERRED_VENDOR_VALUES,
+    SMART_HUB_CATALOG,
+    UNCLASSIFIED,
+    canonical_vendor_code,
+    classify_device,
+    matches_classification_filters,
+    normalize_category_code,
+    normalize_subcategory_code,
+    validate_classification_selection,
+    writable_roles,
+)
 from netconsole.models.device_address import (
     DevicePrimaryAddressConflictError,
     normalize_ip_address,
@@ -479,6 +491,123 @@ class DeviceRepository:
             )
             conn.commit()
         return int(cursor.rowcount or 0)
+
+    def update_device_classification_batch(
+        self,
+        device_uuids: list[str],
+        *,
+        device_vendor: str | None = None,
+        device_category: str | None = None,
+        device_subcategory: str | None = None,
+        updated_by: str | None = None,
+    ) -> list[dict[str, object]]:
+        """Apply catalog classification per device and retain partial results.
+
+        Classification is a projection of the existing vendor/role columns. A
+        savepoint per device prevents one invalid catalog combination from
+        aborting otherwise valid selections while preserving all other device
+        fields and their existing UUIDs.
+        """
+
+        unique_uuids = list(dict.fromkeys(str(value).strip() for value in device_uuids if str(value).strip()))
+        if not unique_uuids:
+            raise ValueError("至少选择一台设备")
+        requested_vendor = (
+            normalize_device_vendor_text(device_vendor)
+            if device_vendor is not None
+            else None
+        )
+        requested_category = (
+            normalize_category_code(device_category)
+            if device_category is not None
+            else None
+        )
+        requested_subcategory = (
+            normalize_subcategory_code(device_subcategory)
+            if device_subcategory is not None
+            else None
+        )
+        now = datetime.now().isoformat(timespec="seconds")
+        results: list[dict[str, object]] = []
+        placeholders = ", ".join("?" for _ in unique_uuids)
+        with self.database.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                f"SELECT device_uuid, name, device_vendor, device_type FROM devices WHERE device_uuid IN ({placeholders})",
+                unique_uuids,
+            ).fetchall()
+            by_uuid = {str(row[0]): row for row in rows}
+            for device_uuid in unique_uuids:
+                row = by_uuid.get(device_uuid)
+                base = {"device_uuid": device_uuid, "device_name": str(row[1] or "") if row else ""}
+                if row is None:
+                    results.append({**base, "success": False, "message": "设备不存在"})
+                    continue
+                current_vendor = str(row[2] or "")
+                current_role = str(row[3] or "")
+                current = classify_device(current_vendor, current_role)
+                target_vendor = requested_vendor or current_vendor
+                target_category = requested_category or current.category_code
+                target_subcategory = requested_subcategory or current.subcategory_code
+                if requested_category is not None and requested_subcategory is None and target_category != UNCLASSIFIED:
+                    available = SMART_HUB_CATALOG.get(canonical_vendor_code(target_vendor), {}).get(target_category, ())
+                    if target_subcategory not in available:
+                        target_subcategory = str(available[0]) if available else target_subcategory
+                elif requested_subcategory is not None and requested_category is None and target_subcategory != UNCLASSIFIED:
+                    if target_subcategory not in SMART_HUB_CATALOG.get(canonical_vendor_code(target_vendor), {}).get(target_category, ()):
+                        target_category = next(
+                            (
+                                category
+                                for category, subcategories in SMART_HUB_CATALOG.get(canonical_vendor_code(target_vendor), {}).items()
+                                if target_subcategory in subcategories
+                            ),
+                            target_category,
+                        )
+                target_role = current_role
+                try:
+                    if target_category == UNCLASSIFIED and target_subcategory == UNCLASSIFIED:
+                        if requested_vendor is not None and current.category_code != UNCLASSIFIED:
+                            raise ValueError("已适配设备不能因只修改厂商而变为未分类")
+                    else:
+                        roles = writable_roles(target_vendor, target_category, target_subcategory)
+                        if not roles:
+                            raise ValueError("该 SmartHub 分类当前无法无损写入 NetConsole 业务角色")
+                        target_role = current_role if current_role in roles else roles[0]
+                    validate_classification_selection(
+                        target_vendor,
+                        target_category,
+                        target_subcategory,
+                        target_role,
+                    )
+                    stored_vendor = PREFERRED_VENDOR_VALUES.get(
+                        canonical_vendor_code(target_vendor), target_vendor
+                    )
+                    conn.execute("SAVEPOINT device_classification")
+                    conn.execute(
+                        "UPDATE devices SET device_vendor = ?, device_type = ?, updated_at = ? WHERE device_uuid = ?",
+                        (stored_vendor, target_role, now, device_uuid),
+                    )
+                    conn.execute("RELEASE SAVEPOINT device_classification")
+                    final = classify_device(stored_vendor, target_role)
+                    results.append(
+                        {
+                            **base,
+                            "success": True,
+                            "message": "分类已更新",
+                            "device_vendor": stored_vendor,
+                            "device_category": final.category_code,
+                            "device_subcategory": final.subcategory_code,
+                        }
+                    )
+                except (ValueError, sqlite3.Error) as exc:
+                    try:
+                        conn.execute("ROLLBACK TO SAVEPOINT device_classification")
+                        conn.execute("RELEASE SAVEPOINT device_classification")
+                    except sqlite3.Error:
+                        pass
+                    results.append({**base, "success": False, "message": str(exc)})
+            conn.commit()
+        return results
 
     def update_group(self, device_id: int, group_id: int | None) -> Device:
         with self.database.connect() as conn:

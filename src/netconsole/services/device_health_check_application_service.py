@@ -67,6 +67,39 @@ class DeviceHealthCheckApplicationService:
         values = list(dict.fromkeys(str(value).strip() for value in device_uuids if str(value).strip()))
         if not values:
             raise ValueError("至少选择一台设备")
+        plans = self.build_plans(values, site_name=site)
+        task_id = f"device-health-{uuid.uuid4().hex}"
+        job = BackgroundJob(
+            job_id=task_id,
+            task_type=DEVICE_HEALTH_CHECK_TASK_TYPE,
+            params={
+                "site_name": site,
+                "plans": plans,
+                "device_uuids": values,
+                "device": values[0],
+                "concurrency_limit": max(1, min(8, int(concurrency_limit))),
+                "connection_timeout_seconds": DEVICE_HEALTH_CONNECTION_TIMEOUT_SECONDS,
+                "command_timeout_seconds": DEVICE_HEALTH_COMMAND_TIMEOUT_SECONDS,
+                "task_name": f"设备健康检查 · {len(values)} 台",
+                "owner": DEVICE_HEALTH_CHECK_OWNER,
+                "task_source": "local",
+                "app_root": str(self.paths.app_root),
+                "data_root": str(self.paths.data_root),
+                "_cancel_grace_ms": 3000,
+            },
+        )
+        self.process_adapter.start_job(job)
+        return self.get(task_id, site_name=site)
+
+    def build_plans(
+        self, device_uuids: list[str], *, site_name: str | None = None
+    ) -> list[dict[str, object]]:
+        """Build the same immutable read-only plans used by scheduled checks."""
+
+        site = str(site_name or (self.site_provider() if self.site_provider else "demo"))
+        values = list(dict.fromkeys(str(value).strip() for value in device_uuids if str(value).strip()))
+        if not values:
+            raise ValueError("至少选择一台设备")
         devices = DeviceRepository(Database(self.paths.site_db_path(site)))
         facts = DeviceFactRepository(Database(self.paths.site_db_path(site)))
         selected = devices.get_by_uuids(values)
@@ -113,28 +146,7 @@ class DeviceHealthCheckApplicationService:
                     profile_version=profile.profile_version,
                 )
             plans.append(plan)
-        task_id = f"device-health-{uuid.uuid4().hex}"
-        job = BackgroundJob(
-            job_id=task_id,
-            task_type=DEVICE_HEALTH_CHECK_TASK_TYPE,
-            params={
-                "site_name": site,
-                "plans": plans,
-                "device_uuids": values,
-                "device": values[0],
-                "concurrency_limit": max(1, min(8, int(concurrency_limit))),
-                "connection_timeout_seconds": DEVICE_HEALTH_CONNECTION_TIMEOUT_SECONDS,
-                "command_timeout_seconds": DEVICE_HEALTH_COMMAND_TIMEOUT_SECONDS,
-                "task_name": f"设备健康检查 · {len(values)} 台",
-                "owner": DEVICE_HEALTH_CHECK_OWNER,
-                "task_source": "local",
-                "app_root": str(self.paths.app_root),
-                "data_root": str(self.paths.data_root),
-                "_cancel_grace_ms": 3000,
-            },
-        )
-        self.process_adapter.start_job(job)
-        return self.get(task_id, site_name=site)
+        return plans
 
     def get(self, task_id: str, *, site_name: str | None = None) -> DeviceHealthCheckTaskDTO:
         site = str(site_name or (self.site_provider() if self.site_provider else "demo"))

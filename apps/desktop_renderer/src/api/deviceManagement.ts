@@ -28,9 +28,11 @@ import type {
   DeviceOverviewResponse,
   DeviceListQuery,
   DeviceClassificationUpdateRequest,
+  DeviceClassificationUpdateResponse,
   DevicePage,
   DeviceTaskBatch,
   DeviceHealthCheckTask,
+  DeviceConnectionHealthCheckTask,
   DeviceTaskReference,
   DeviceWriteRequest,
   DeviceWriteResponse,
@@ -192,8 +194,8 @@ export function assignDeviceGroup(deviceUuids: string[], groupId: number | null)
   return apiRequest<{ success: number; failed: number; group_id: number | null }>('/api/device-management/groups/assign', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, group_id: groupId }) })
 }
 
-export function updateDeviceClassification(payload: DeviceClassificationUpdateRequest): Promise<{ updated: number }> {
-  return apiRequest<{ updated: number }>('/api/device-management/devices/classification', {
+export function updateDeviceClassification(payload: DeviceClassificationUpdateRequest): Promise<DeviceClassificationUpdateResponse> {
+  return apiRequest<DeviceClassificationUpdateResponse>('/api/device-management/devices/classification', {
     method: 'PATCH',
     body: JSON.stringify(payload),
   })
@@ -232,6 +234,21 @@ export function getDeviceHealthCheck(taskId: string): Promise<DeviceHealthCheckT
 
 export function cancelDeviceHealthCheck(taskId: string): Promise<DeviceHealthCheckTask> {
   return apiRequest<DeviceHealthCheckTask>(`/api/device-management/health-checks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
+}
+
+export function startDeviceConnectionHealthCheck(deviceUuids: string[], concurrencyLimit = 4): Promise<DeviceConnectionHealthCheckTask> {
+  return apiRequest<DeviceConnectionHealthCheckTask>('/api/device-management/devices/connection-health-checks', {
+    method: 'POST',
+    body: JSON.stringify({ device_uuids: deviceUuids, concurrency_limit: concurrencyLimit }),
+  })
+}
+
+export function getDeviceConnectionHealthCheck(taskId: string): Promise<DeviceConnectionHealthCheckTask> {
+  return apiRequest<DeviceConnectionHealthCheckTask>(`/api/device-management/devices/connection-health-checks/${encodeURIComponent(taskId)}`)
+}
+
+export function cancelDeviceConnectionHealthCheck(taskId: string): Promise<DeviceConnectionHealthCheckTask> {
+  return apiRequest<DeviceConnectionHealthCheckTask>(`/api/device-management/devices/connection-health-checks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
 }
 
 export function startDeviceOpticalRefresh(deviceUuid: string): Promise<DeviceTaskReference> {

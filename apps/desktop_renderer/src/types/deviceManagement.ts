@@ -758,7 +758,26 @@ export interface DeviceClassificationUpdateRequest {
   device_uuids: string[]
   project_phase?: ProjectPhase
   work_scope_status?: WorkScopeStatus
+  device_vendor?: string
+  device_category?: string
+  device_subcategory?: string
   reason?: string
+}
+
+export interface DeviceClassificationBatchResult {
+  device_uuid: string
+  device_name: string
+  success: boolean
+  message: string
+  device_vendor: string
+  device_category: string
+  device_subcategory: string
+}
+
+export interface DeviceClassificationUpdateResponse {
+  updated: number
+  failed: number
+  results: DeviceClassificationBatchResult[]
 }
 
 export interface DeviceWriteResponse {
@@ -833,6 +852,42 @@ export interface DeviceHealthCheckTask {
     cancelled: number
   }
   items: DeviceHealthCheckItem[]
+}
+
+export interface DeviceConnectionHealthCheckItem {
+  device_uuid: string
+  device_name: string
+  primary_address: string
+  connection_status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED'
+  connection: DeviceConnectionTest | null
+  health_status: 'PENDING' | 'RUNNING' | 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED' | 'NOT_SUPPORTED' | 'SKIPPED' | 'CANCELLED'
+  health_state: 'OBSERVED' | 'UNKNOWN'
+  profile_id: string
+  metrics: DeviceHealthMetric[]
+  message: string
+}
+
+export interface DeviceConnectionHealthCheckTask {
+  task_id: string
+  task_status: string
+  terminal: boolean
+  stage: string
+  current: number
+  total: number
+  message: string
+  connection_timeout_seconds: number
+  command_timeout_seconds: number
+  summary: {
+    total: number
+    connection_success: number
+    connection_failed: number
+    health_success: number
+    health_partial_success: number
+    health_failed: number
+    health_not_supported: number
+    cancelled: number
+  }
+  items: DeviceConnectionHealthCheckItem[]
 }
 
 export type DeviceBatchRefreshStatus =

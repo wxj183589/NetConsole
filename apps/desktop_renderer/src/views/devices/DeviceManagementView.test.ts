@@ -91,12 +91,13 @@ describe('Device Management Web view', () => {
     expect(source).not.toContain("project_phase: 'unspecified'")
   })
 
-  it('submits background connection tests to the public task center', () => {
-    expect(source).toContain('startBatchConnectionTests')
-    expect(source).toContain('任务已提交，但')
-    expect(source).toContain('任务状态刷新失败')
-    expect(source).toContain('任务中心打开失败')
-    expect(source).toContain('openTaskWindow(publicTask || null, task.task_id, false)')
+  it('runs the merged connection gate locally and keeps it out of the public task center', () => {
+    expect(source).toContain('startDeviceConnectionHealthCheck')
+    expect(source).toContain('getDeviceConnectionHealthCheck')
+    expect(source).toContain('cancelDeviceConnectionHealthCheck')
+    expect(source).toContain('测试连接与健康检查')
+    expect(source).not.toContain('startBatchConnectionTests')
+    expect(source).not.toContain('presentTasks(result.tasks')
   })
 
   it('uses a dedicated batch refresh confirmation and loading state', () => {
@@ -122,8 +123,8 @@ describe('Device Management Web view', () => {
     expect(source).toContain(':context-menu-items="deviceContextMenuItems"')
     expect(source).toContain("{ key: 'detail', label: '详情', action: ({ row }) => openDetail(row) }")
     expect(source).toContain("key: 'duplicate'")
-    expect(source).toContain("key: 'copy-current-cell'")
-    expect(source).toContain("key: 'copy-device-info'")
+    expect(source).not.toContain("key: 'copy-current-cell'")
+    expect(source).not.toContain("key: 'copy-device-info'")
     expect(source).toContain("key: 'internal-console'")
     expect(source).toContain("router.push({ name: 'device-console', query: { device_uuid: deviceUuid } })")
     expect(source).toContain("key: 'external-terminal'")
