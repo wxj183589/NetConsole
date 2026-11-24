@@ -26,3 +26,4 @@
 - [基础设施与基础资料模块拆分](./PHASE5_MODULE_SEPARATION.md)
 - [基础设施独立模块规范](./INFRASTRUCTURE_MODULE_SPEC.md)
 - [原基础资料兼容与安全边界](./BASE_DATA_COMPATIBILITY.md)
+- [Phase 5 定向验收](./PHASE5_ACCEPTANCE.md)
