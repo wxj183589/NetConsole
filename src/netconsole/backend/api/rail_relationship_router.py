@@ -56,4 +56,3 @@ def mutate(request: Request, payload: RelationshipMutationRequest) -> Relationsh
     except RelationshipApplicationError as exc:
         code = status.HTTP_409_CONFLICT if exc.code in {"BASE_DATA_REVISION_CONFLICT", "RELATION_ALREADY_EXISTS", "RELATION_CONFLICT", "RELATION_NOT_FOUND"} else status.HTTP_403_FORBIDDEN if exc.code.startswith("BASE_DATA_") else status.HTTP_422_UNPROCESSABLE_ENTITY
         raise HTTPException(status_code=code, detail={"code": exc.code, "message": str(exc)}) from exc
-
