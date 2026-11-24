@@ -851,7 +851,8 @@ describe('轨道交通基础资料编辑闭环', () => {
     await trains.findAll('button').find((item) => item.text().trim() === '解锁当前子页')!.trigger('click')
     await flushPromises()
     expect(mocks.editSnapshot).toHaveBeenCalledWith('vehicles')
-    expect(trains.text()).toContain('新增车载 MR')
+    expect(trains.text()).toContain('当前子页编辑中')
+    expect(trains.text()).not.toContain('新增车载 MR')
     wrapper.unmount()
   })
 

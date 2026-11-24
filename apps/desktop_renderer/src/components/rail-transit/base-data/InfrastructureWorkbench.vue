@@ -208,7 +208,7 @@ watch(() => [props.siteId, selectedDevice.value?.device_uuid, apPage.value], asy
         </section>
       </div>
       <aside class="workbench-column device-content" aria-label="设备详情">
-        <h3>{{ selectedDevice?.name || '设备详情' }}</h3>
+        <h3 v-if="!selectedDevice">设备详情</h3>
         <DeviceDetailPanel v-if="selectedDevice" :key="selectedDevice.device_uuid" :device-uuid="selectedDevice.device_uuid" mode="page" />
         <p v-else class="empty-state">选择设备查看接口、光模块和采集记录。</p>
       </aside>

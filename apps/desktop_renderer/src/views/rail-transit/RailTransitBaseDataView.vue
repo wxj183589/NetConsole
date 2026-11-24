@@ -722,10 +722,6 @@ const sectionEditColumns = computed<NcTableColumn<Section>[]>(() => [
   ...sectionColumns,
   ...(editing.value ? [{ key: 'edit_actions', label: '操作', valueType: 'actions', width: 160, fixed: 'right', hideable: false } as NcTableColumn<Section>] : []),
 ])
-const mrEditColumns = computed<NcTableColumn<VehicleMr>[]>(() => [
-  ...mrColumns,
-  ...(editing.value ? [{ key: 'edit_actions', label: '维护', valueType: 'actions', width: 90, fixed: 'right', hideable: false } as NcTableColumn<VehicleMr>] : []),
-])
 
 watch(stationRows, async (rows) => {
   const valid = new Set(rows.map((row) => row.id))
@@ -1800,12 +1796,6 @@ function addAp(): void {
 function newTracksideAp(): TracksideAp {
   return { id: temporaryId(), site_id: store.editSession?.site_id || '', line_name: store.summary?.line_name || '', name: '', point_code: '', vendor: '', mac: '', management_ip: '', model: '', station_id: '', station: '', section_id: '', section: '', station_relation_status: 'missing', section_relation_status: 'missing', candidate_station_ids: [], candidate_section_ids: [], identity_entity_id: '', identity_match_status: 'unresolved', identity_match_source: '', lldp_suggestion_status: 'none', lldp_suggested_station_id: '', lldp_suggested_station_name: '', lldp_suggestion_switch_device_id: '', lldp_suggestion_switch_name: '', lldp_suggestion_interface: '', lldp_observed_neighbor_mac: '', lldp_observed_at: '', section_start_station: '', section_end_station: '', mileage: { raw: '', normalized: '', meters: null, line_type: '', valid: false, error: '' }, line_side: '', line_side_source: 'unavailable', line_side_derivation_issue_code: '', line_side_derivation_issue_message: '', direction: '', uplink_switch: '', uplink_port: '', build_phase: '', source_type: '', source_device: '', source_timestamp: '', lldp_neighbor_interface: '', location_class: 'MAINLINE', participates_in_mainline: true, location_class_source: 'DEFAULT_MAINLINE', location_class_conflict: false, radios: [], remark: '', source_file: '', source_sheet: '', source_row: null, updated_at: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '', record_kind: 'manual', base_metadata: {} }
 }
-function addMr(): void {
-  if (!editing.value || !editingDraft.value) return
-  const row: VehicleMr = { id: temporaryId(), device_id: null, name: '', train_id: '', train_no: '', role: '', mr_position_code: 'unknown', physical_end: 'unknown', car_number: null, management_ip: '', station: '', mac: '', protocol: 'SSH', port: 22, remark: '', runtime: emptyRuntime(), issue_count: 0, highest_issue_severity: '' }
-  editingDraft.value.mrs.push(row); markMr(row)
-  editMrPage.value = Math.max(1, Math.ceil(editingDraft.value.mrs.length / editMrPageSize.value))
-}
 
 function updateEditState(): void {
   if (editing.value && !saving.value) editState.value = dirty.value ? 'DIRTY' : 'EDITING'
@@ -1922,7 +1912,9 @@ function apValues(row: TracksideAp): Record<string, unknown> {
     ),
   }
 }
-function mrValues(row: VehicleMr): Record<string, unknown> { return { name: row.name, station: row.station, management_ip: row.management_ip, backup_management_ip: row.backup_management_ip || '', backup_monitoring_strategy: row.backup_monitoring_strategy || 'MONITOR', mac: row.mac, protocol: row.protocol, port: row.port, remark: row.remark } }
+function mrValues(row: VehicleMr): Record<string, unknown> {
+  return { backup_monitoring_strategy: row.backup_monitoring_strategy || 'MONITOR' }
+}
 function metadataValues(metadata: BaseDataDraft['metadata']): Record<string, unknown> {
   return {
     line_name: metadata.line_name,
@@ -3592,19 +3584,11 @@ function sectionSourceLabel(row: Section): string {
                 <el-input v-model="store.mrFilters.train" clearable placeholder="列车编号" />
                 <NcMultiValueFilter v-model="store.mrFilters.mr_roles" :options="['CT', 'CW']" placeholder="全部 MR 端位代码" />
                 <el-button type="primary" :disabled="editing" @click="store.applyMrFilters">应用筛选</el-button>
-                <el-button v-if="editing" :disabled="saving" @click="addMr">新增车载 MR</el-button>
               </div>
-              <NcDataTable table-id="rail-base-vehicle-mrs" route-key="/rail-transit/base-data" :data="mrRows" :columns="mrEditColumns" height="calc(100vh - 430px)" empty-text="暂无车载 MR 资料">
-                <template #cell-name="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.name" :class="{ 'field-error': fieldError('vehicle_mr', row.id, 'name') }" @input="markMr(row)" /><span v-else>{{ display(row.name) }}</span></template>
-                <template #cell-management_ip="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.management_ip" :class="{ 'field-error': fieldError('vehicle_mr', row.id, 'management_ip') }" @input="markMr(row)" /><span v-else>{{ display(row.management_ip) }}</span></template>
-                <template #cell-backup_management_ip="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.backup_management_ip" @input="markMr(row)" /><span v-else>{{ display(row.backup_management_ip) }}</span></template>
+              <NcDataTable table-id="rail-base-vehicle-mrs" route-key="/rail-transit/base-data" :data="mrRows" :columns="mrColumns" height="calc(100vh - 430px)" empty-text="暂无车载 MR 资料">
                 <template #cell-backup_monitoring_strategy="{ row }"><el-select v-if="canEditRow('vehicle_mr', row.id)" v-model="row.backup_monitoring_strategy" @change="markMr(row)"><el-option label="持续监测" value="MONITOR" /><el-option label="仅故障切换（不参与心跳）" value="FAILOVER_ONLY" /><el-option label="停用（不参与心跳）" value="DISABLED" /></el-select><span v-else>{{ row.backup_monitoring_strategy === 'FAILOVER_ONLY' ? '仅故障切换' : row.backup_monitoring_strategy === 'DISABLED' ? '停用' : '持续监测' }}</span></template>
-                <template #cell-mac="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.mac" @input="markMr(row)" /><span v-else>{{ display(row.mac) }}</span></template>
-                <template #cell-connection="{ row }"><div v-if="canEditRow('vehicle_mr', row.id)" class="connection-editor"><el-select v-model="row.protocol" @change="markMr(row)"><el-option label="SSH" value="SSH" /><el-option label="Telnet" value="TELNET" /></el-select><el-input-number v-model="row.port" :min="1" :max="65535" controls-position="right" @change="markMr(row)" /></div><span v-else>{{ display(row.protocol) }} / {{ display(row.port) }}</span></template>
-                <template #cell-remark="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.remark" @input="markMr(row)" /><span v-else>{{ display(row.remark) }}</span></template>
                 <template #cell-mesh_status="{ row }"><el-tag :type="stateType(row.runtime.mesh_status)">{{ row.runtime.mesh_status }}</el-tag></template>
                 <template #cell-actions="{ row }"><el-button link type="primary" @click="openMrMesh(row)">Mesh-Link</el-button><el-button link type="primary" @click="openMrSession(row)">Online MR</el-button></template>
-                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">移除</el-button><template v-if="isPendingDelete('vehicle_mr', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('vehicle_mr', row)">撤销</el-button></template></template>
               </NcDataTable>
               <el-pagination background :disabled="saving" layout="total, prev, pager, next, sizes" :total="mrPageTotal" :current-page="mrPageCurrent" :page-size="mrPageSize" :page-sizes="[20, 50, 100, 200]" @current-change="changeMrPage" @size-change="changeMrPageSize" />
             </el-tab-pane>
@@ -4154,12 +4138,10 @@ function sectionSourceLabel(row: Section): string {
 <style scoped>
 .rail-base-data { display: flex; width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0; flex-direction: column; margin: 0; overflow: hidden; }
 .page-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 18px 0; }
-.toolbar-actions, .edit-toolbar, .connection-editor { display: flex; align-items: center; gap: 10px; }
+.toolbar-actions, .edit-toolbar { display: flex; align-items: center; gap: 10px; }
 .toolbar-actions { flex-wrap: wrap; justify-content: flex-end; }
 .edit-toolbar { flex-wrap: wrap; justify-content: flex-end; margin: 8px 0 12px; }
 .selection-count { color: var(--nc-text-secondary); font-size: 12px; white-space: nowrap; }
-.connection-editor .el-select { width: 92px; }
-.connection-editor .el-input-number { width: 120px; }
 .page-toolbar h2 { margin: 0; color: var(--nc-text-primary); }
 .page-toolbar p { margin: 5px 0 0; color: var(--nc-text-secondary); font-size: 12px; }
 .page-error { margin-bottom: 14px; }

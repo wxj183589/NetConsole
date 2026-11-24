@@ -1843,14 +1843,28 @@ def test_zero_count_trackside_plan_saves_null_management_vlan(
 
 
 @pytest.mark.parametrize("strategy", ["MONITOR", "FAILOVER_ONLY", "DISABLED"])
-def test_saved_mr_backup_strategy_flows_to_inventory_and_heartbeat(tmp_path, monkeypatch, strategy) -> None:
+@pytest.mark.parametrize("asset_payload", [True, False])
+def test_saved_mr_backup_strategy_flows_to_inventory_and_heartbeat(tmp_path, monkeypatch, strategy, asset_payload) -> None:
+    from contextlib import closing
+
     from netconsole.core.site_identity import load_site_metadata
     from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
     from netconsole.services.ground_unattended.inventory import TrainInventorySyncService
     from netconsole.services.ground_unattended.heartbeat_supervisor import HeartbeatSupervisor
 
     _enable_copy_write(monkeypatch)
-    paths, _database = build_rail_transit_base_data_fixture(tmp_path)
+    paths, db_path = build_rail_transit_base_data_fixture(tmp_path)
+    values = {"backup_monitoring_strategy": strategy}
+    if asset_payload:
+        values.update(
+            name="列车01-MR-CT", management_ip="10.10.0.1", protocol="SSH", port=22,
+            backup_management_ip="192.0.2.21",
+        )
+    else:
+        with closing(Database(db_path).connect()) as conn, conn:
+            conn.execute(
+                "UPDATE devices SET backup_address='192.0.2.21', updated_at='fixture' WHERE device_uuid='mr-01-ct'"
+            )
     mark_base_data_copy(paths)
     app = _app(paths, tmp_path)
     with TestClient(app) as client:
@@ -1859,8 +1873,7 @@ def test_saved_mr_backup_strategy_flows_to_inventory_and_heartbeat(tmp_path, mon
             "site_id": "demo", "base_revision": session["base_revision"], "scope": "vehicles",
             "explicit_confirmation": True, "changes": [{
                 "entity_type": "vehicle_mr", "action": "update", "entity_id": "mr-01-ct",
-                "values": {"name": "列车01-MR-CT", "management_ip": "10.10.0.1", "protocol": "SSH", "port": 22,
-                           "backup_management_ip": "192.0.2.21", "backup_monitoring_strategy": strategy},
+                "values": values,
             }],
         })
         assert response.status_code == 200, response.text
@@ -1877,3 +1890,8 @@ def test_saved_mr_backup_strategy_flows_to_inventory_and_heartbeat(tmp_path, mon
     targets = supervisor._heartbeat_fleet_targets()
     assert "10.10.0.1" in targets
     assert ("192.0.2.21" in targets) is (strategy == "MONITOR")
+
+    if not asset_payload:
+        with closing(Database(db_path).connect_readonly()) as conn:
+            row = conn.execute("SELECT updated_at FROM devices WHERE device_uuid='mr-01-ct'").fetchone()
+            assert row[0] == "fixture"

@@ -1548,6 +1548,13 @@ class RailTransitBaseDataRepository:
     ) -> str:
         if action not in {"create", "update"}:
             raise RailTransitBaseDataConstraintError("请通过设备管理维护设备资产")
+        if action == "update" and set(values) == {"backup_monitoring_strategy"}:
+            device_uuid = str(entity_id or "")
+            if connection.execute(
+                "SELECT 1 FROM devices WHERE device_uuid = ?", (device_uuid,),
+            ).fetchone() is None:
+                raise RailTransitBaseDataConstraintError("车载 MR 不存在")
+            return device_uuid
         try:
             primary_address = normalize_ip_address(
                 values.get("primary_address"),

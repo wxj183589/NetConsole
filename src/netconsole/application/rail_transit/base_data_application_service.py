@@ -1169,8 +1169,11 @@ class RailTransitBaseDataApplicationService:
 
     @staticmethod
     def _mr_values(raw: Mapping[str, Any], action: str) -> dict[str, Any]:
-        if action == "delete":
-            return {"name": str(raw.get("name") or "").strip()}
+        if action == "update" and set(raw) == {"backup_monitoring_strategy"}:
+            strategy = str(raw["backup_monitoring_strategy"]).upper()
+            if strategy not in {"MONITOR", "FAILOVER_ONLY", "DISABLED"}:
+                raise ValueError("备用地址监测策略无效")
+            return {"backup_monitoring_strategy": strategy}
         name = str(raw.get("name") or "").strip()
         raw_address = str(
             raw.get("management_ip") or raw.get("primary_address") or ""
