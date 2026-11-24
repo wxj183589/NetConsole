@@ -1,6 +1,6 @@
 # Phase 2 验收记录
 
-当前状态：PARTIAL（代码与自动化回归完成；Full Gate 首轮仍有环境/基线项，真实局点和真实设备未验收）。
+当前状态：PASS（Phase 2.5 canonical Full Gate 已通过；真实局点、真实设备和安装包验收仍属于后续现场门禁）。
 
 ## 实施结果
 
@@ -15,7 +15,8 @@
 - Device detail、Phase 1 infrastructure、feature registry：`24 passed`。
 - Device Management/DeviceDetail renderer：`71 passed`。
 - Electron tests：`324 passed`；TypeScript、Ruff、架构 guards、main contract smoke 和 `git diff --check` 通过。
-- Full Gate 首轮：`FAIL`。Renderer 有一个性能阈值抖动（`tracksideSeriesColors.test.ts`，约 `102.7ms`，单测复跑通过）；Python 有两个失败，其中文档文件名已修复，发布资源测试随后单测复跑通过。未把首轮 Full Gate 结果提升为 PASS。
+- 首轮 Full Gate：`FAIL`。Renderer 有一次性能阈值抖动（`102.7486ms` / `100ms`）；Python 有两个失败，分别是已修复的文档文件名和一次发布资源路径检查失败。
+- Phase 2.5 Full Gate：`PASS`。最终结果见下方 `Phase 2.5 Final Acceptance` 和 `PHASE2_FULL_GATE_REPORT.md`。
 
 ## Electron 视觉证据
 
@@ -27,7 +28,21 @@
 
 视觉检查覆盖设备列表、只读“工程归属”列、设备详情抽屉工程上下文和 125% device scale；未发现页面溢出或运行时错误。
 
+## Phase 2.5 Final Acceptance
+
+- 产品 HEAD：`ac85ebef69ed4d8c02d03bedef9d4e9fecaf7c12`。
+- DevStatus HEAD（执行时）：`62b0badbe0d40569bbc3f3ecd0b79fe61d0fe5ab`。
+- 正式命令：`python -B -m scripts.quality.local_gate --mode full --base-sha 907183a4 --head-sha HEAD`。
+- 执行时间：`2026-11-24 14:31:51` 至 `2026-11-24 15:02:08`（Asia/Shanghai）；退出码 `0`。
+- Renderer：`216 files / 1577 passed`；`vue-tsc -b` 和 Vite build PASS。
+- Python：`5744 passed, 2 skipped, 34 warnings`。
+- Electron：`41 files / 324 passed`；Electron typecheck/build PASS。
+- Architecture：`12/12 passed`；Ruff、main contract smoke `12 passed`、文档路径检查 `22 passed`、diff check PASS。
+- 发布资源：`test_clean_build_runtime_subset_copies_only_imported_modules_and_assets` 单测复跑通过，并随 Python Full Gate 通过。
+- 性能稳定性：独立运行 10 次均通过，P50 `24.605ms`、P95 `26.642ms`、最大 `28.469ms`，阈值 `100ms`，失败 `0`；未放宽阈值或删除断言。
+- 首轮失败处理：文档名 `PHASE2_BRANCH_INTEGRATION_AUDIT.md` 已改为 `PHASE2_BRANCH_INTEGRATION.md` 并提交；发布资源失败未发现产品回归，当前环境复跑通过；性能失败归因于首轮 Full Gate 资源竞争下的计时抖动，独立采样和最终 Gate 均稳定通过。
+- 最终报告和原始日志：`docs/device-management/PHASE2_FULL_GATE_REPORT.md`、`D:\study\NetConsole-Workspace\reports\tests\device-management-phase2\full-gate.log`。
+
 ## 尚未完成
 
-- 需要在修复文档文件名后重新执行 canonical Full Gate，确认性能阈值和发布资源测试稳定通过。
-- 真实开发局点、真实设备、安装包和现场长时任务验收仍未执行。
+- 真实开发局点、真实设备、安装包和现场长时任务验收仍未执行；这些不阻断本次自动化 Phase 2 PASS，但不得报告为现场验收通过。
