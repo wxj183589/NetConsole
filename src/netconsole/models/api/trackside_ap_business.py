@@ -5,10 +5,13 @@ from typing import Any, Literal
 from pydantic import AliasChoices, Field
 
 from netconsole.models.api.common import ApiModel
+from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
 from netconsole.models.api.rail_transit_base_data import TracksideApDTO
 
 
 class TracksideApBusinessRowDTO(ApiModel):
+    switch_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
+    point_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
     row_id: str = ""
     station_id: str = ""
     switch_station_id: str = ""

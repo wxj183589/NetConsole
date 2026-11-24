@@ -346,6 +346,8 @@ class TracksideApBusinessQueryService:
             TracksideApBusinessQueryService._fit_ap_terminal_status(row)
         )
         return TracksideApBusinessRowDTO(
+            switch_engineering_context=row.get("switch_engineering_context") or {},
+            point_engineering_context=row.get("point_engineering_context") or {},
             row_id=str(row.get("business_row_id") or ""),
             station_id=effective_station_id,
             switch_station_id=str(row.get("switch_station_id") or ""),

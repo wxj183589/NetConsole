@@ -250,6 +250,10 @@ TRACKSIDE_AP_BUSINESS_EXPORT_COLUMNS = (
     ("trackside_ap.last_collected_at", "updated_at"),
     ("trackside.ap_business_threshold", "ap_business_threshold_dbm"),
     ("trackside.ap_business_reason", "ap_business_reason"),
+    ("trackside.engineering_line", "engineering_line"),
+    ("trackside.engineering_projects", "engineering_projects"),
+    ("trackside.engineering_sections", "engineering_sections"),
+    ("trackside.engineering_status", "engineering_status"),
 )
 
 CURRENT_OPTICAL_ABNORMAL_COLUMNS = (

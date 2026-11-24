@@ -18,6 +18,17 @@ class EngineeringContextQueryService:
         self.paths = paths
         self.base_query = base_query
 
+    @classmethod
+    def from_site_database(cls, database, site_id):
+        # Standalone snapshot tools may use a noncanonical fixture database.
+        # Only the existing canonical Site layout can supply a context root.
+        from pathlib import Path
+        from netconsole.core.paths import PathResolver
+        path = Path(database.path).resolve()
+        if path.parent.name != "db" or path.parent.parent.name != site_id or path.parents[2].name != "sites":
+            return None
+        return cls(PathResolver(data_root=path.parents[3]))
+
     def contexts(self, site_id, device_uuids, *, at_time="", expected_revision=""):
         ids = list(dict.fromkeys(str(v) for v in device_uuids if v))
         stamp = datetime.now(timezone.utc).isoformat()

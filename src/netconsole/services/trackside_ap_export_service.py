@@ -656,6 +656,22 @@ def _load_trackside_ap_business_snapshot_once(
         identity_query_macs=identity_query_macs,
     )
     rows = classify_trackside_ap_port_rows(rows)
+    from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+    from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
+    engineering = EngineeringContextQueryService.from_site_database(repository.database, site_name)
+    device_contexts = engineering.contexts(site_name, [str(r.get("device_uuid") or "") for r in rows]) if engineering else {}
+    point_contexts = engineering.points(site_name, [str(r.get("ap_identity_entity_id") or "") for r in rows]) if engineering else {}
+    for row in rows:
+        switch = device_contexts.get(str(row.get("device_uuid") or ""), DeviceEngineeringContextDTO())
+        point = point_contexts.get(str(row.get("ap_identity_entity_id") or ""), DeviceEngineeringContextDTO(affiliation_status="unconfirmed", reason_code="AP_IDENTITY_NOT_CONFIRMED"))
+        # Query timestamp is represented by outer snapshot_created_at, so the
+        # immutable business content remains deterministic at the same revision.
+        row["switch_engineering_context"] = switch.model_dump(exclude={"context_updated_at"})
+        row["point_engineering_context"] = point.model_dump(exclude={"context_updated_at"})
+        row["engineering_line"] = point.line_name or switch.line_name
+        row["engineering_projects"] = "、".join(point.project_names)
+        row["engineering_sections"] = "、".join(point.service_sections)
+        row["engineering_status"] = point.affiliation_status
     statistics = build_trackside_ap_business_statistics(
         rows,
         planned_ap_total=scope.planned_ap_total,

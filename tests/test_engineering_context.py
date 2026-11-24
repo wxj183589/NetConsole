@@ -128,3 +128,19 @@ def test_ground_context_failure_does_not_erase_runtime_inventory(tmp_path,monkey
     after=ground.list_trains('demo')
     assert [t.train_id for t in before.items]==[t.train_id for t in after.items]
     assert all(t.engineering_context_status=='unavailable' for t in after.items if any(e.mr_id for e in t.endpoints))
+
+
+def test_trackside_snapshot_context_uses_stable_ids_and_keeps_runtime_independent(tmp_path):
+    paths,db,relations=_service(tmp_path)
+    from netconsole.repositories.device_repository import DeviceRepository
+    from netconsole.services.trackside_ap_export_service import load_trackside_ap_business_snapshot
+    from netconsole.services.rail_transit.trackside_ap_business_snapshot import read_trackside_ap_source_revisions
+    context=EngineeringContextQueryService.from_site_database(Database(db),'demo')
+    assert context is not None
+    before=read_trackside_ap_source_revisions(Database(db))
+    _mutate(relations,'device_node','station-1','mr-temp')
+    after=read_trackside_ap_source_revisions(Database(db))
+    assert before['base_data_revision'] != after['base_data_revision']
+    snapshot=load_trackside_ap_business_snapshot(DeviceRepository(Database(db)),'demo',1)
+    assert all('switch_engineering_context' in r and 'point_engineering_context' in r for r in snapshot.rows)
+    assert all(r['point_engineering_context']['affiliation_status'] in {'unconfirmed','associated','conflict','stale','unavailable'} for r in snapshot.rows)
