@@ -294,6 +294,8 @@ class DeviceDetailQueryService:
                 available=True,
                 affiliation_status="unassociated",
                 line_name=infrastructure.line_name,
+                service_stations=next((d.service_stations for d in infrastructure.unassociated_devices
+                    if d.device_uuid == device_uuid), []),
             )
         physical = [(n, d) for n, d in matches if n.kind != "section"]
         if len(physical) > 1:

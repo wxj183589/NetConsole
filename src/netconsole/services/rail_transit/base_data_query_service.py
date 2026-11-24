@@ -469,7 +469,7 @@ class RailTransitBaseDataQueryService:
             )
 
         associated = {
-            device.device_uuid for node in nodes.values() for device in node.devices
+            device.device_uuid for node in nodes.values() if node.kind != "section" for device in node.devices
         }
         unassociated = []
         unresolved = 0
@@ -479,7 +479,7 @@ class RailTransitBaseDataQueryService:
                 continue
             station_id = row.pop("station_id")
             device = InfrastructureDeviceDTO(
-                **row, source="legacy_station",
+                **row, source="legacy_station", service_stations=facts.device_service_stations[device_uuid],
                 device_role=normalize_device_role(row["device_type"], vendor=row.get("vendor"), platform=row.get("platform")),
             )
             uid = station_lookup.get(station_id)

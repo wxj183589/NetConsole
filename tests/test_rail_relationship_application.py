@@ -758,3 +758,66 @@ def test_ac_entry_uses_vendor_aware_canonical_role_and_per_device_services(tmp_p
     ac = next(d for n in facts.nodes for d in n.devices if d.device_uuid == "mr-temp")
     assert ac.device_role == "wireless_controller"
     assert ac.service_stations == ["0102 车站B"]
+
+
+def test_section_service_does_not_hide_legacy_physical_station(tmp_path):
+    paths, db_path, service = _service(tmp_path)
+    from netconsole.services.rail_transit.base_data_query_service import (
+        RailTransitBaseDataQueryService,
+    )
+    from netconsole.repositories.rail_transit_base_data_repository import (
+        RailTransitBaseDataRepository,
+    )
+
+    query = RailTransitBaseDataQueryService(paths)
+    repo = RailTransitBaseDataRepository(paths)
+    with closing(Database(db_path).connect()) as conn, conn:
+        repo._replace_metadata_row(
+            conn,
+            "demo",
+            "station",
+            "",
+            dict(
+                station_id="physical-id",
+                node_uid="physical-node",
+                name="真实安装站",
+                node_type="station",
+                source_kind="manual",
+            ),
+        )
+        repo._replace_metadata_row(
+            conn,
+            "demo",
+            "section",
+            "",
+            dict(
+                section_id="section-1",
+                name="服务区间",
+                source_kind="manual",
+                section_kind="manual",
+            ),
+        )
+        conn.execute(
+            "UPDATE devices SET station_id='physical-id' WHERE device_uuid='mr-temp'"
+        )
+    _mutate(service, "device_section", "mr-temp", "section-1")
+    facts = query.infrastructure("demo")
+    owners = {
+        n.uid for n in facts.nodes if any(d.device_uuid == "mr-temp" for d in n.devices)
+    }
+    assert owners == {"physical-node", "section-1"}
+    assert not any(d.device_uuid == "mr-temp" for d in facts.unassociated_devices)
+
+
+def test_service_only_ac_preserves_service_context_without_installation(tmp_path):
+    paths, db_path, service = _service(tmp_path)
+    from netconsole.services.rail_transit.base_data_query_service import (
+        RailTransitBaseDataQueryService,
+    )
+
+    with closing(Database(db_path).connect()) as conn, conn:
+        conn.execute("UPDATE devices SET device_type='AC' WHERE device_uuid='mr-temp'")
+    _mutate(service, "ac_service", "mr-temp", "station-1")
+    facts = RailTransitBaseDataQueryService(paths).infrastructure("demo")
+    ac = next(d for d in facts.unassociated_devices if d.device_uuid == "mr-temp")
+    assert ac.service_stations == ["0101 车站A"]
