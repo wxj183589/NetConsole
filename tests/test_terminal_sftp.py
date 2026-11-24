@@ -16,6 +16,7 @@ from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.services.file_management_service import FileManagementApplicationService, FileReferenceNotFound
 from netconsole.services.file_transfer_service import RemoteDeviceFile
 from netconsole.services.file_transfer_service import (
     FileTransferService,
@@ -338,7 +339,7 @@ def test_terminal_sftp_uses_real_independent_paramiko_subsystem(tmp_path: Path) 
     )
     manager = TerminalSftpManager(paths)
     try:
-        session = manager.connect(str(device.device_uuid))
+        session = manager.connect(str(device.device_uuid), "file-manager")
         session_id = session["session_id"]
         assert session["root_path"] == "/"
         assert [
@@ -360,6 +361,38 @@ def test_terminal_sftp_uses_real_independent_paramiko_subsystem(tmp_path: Path) 
         assert result.read_bytes() == b"remote-config"
         assert (remote_root / "local.cfg").read_bytes() == b"local-config"
         assert (remote_root / "local-copy.cfg").read_bytes() == b"local-config"
+
+        local_root = paths.file_downloads_root("terminal-sftp-real")
+        local_root.mkdir(parents=True, exist_ok=True)
+        (local_root / "config.cfg").write_bytes(b"keep existing")
+        files = FileManagementApplicationService(paths, site_name="terminal-sftp-real")
+        page = files.list_local_files("terminal-sftp-real")
+        managed = manager.submit_managed_download(
+            session_id, "/config.cfg", lambda site: files.transfer_directory(site, page.current_entry_id),
+        )
+        saved = _wait_task(manager, managed["task_id"])
+        assert saved["status"] == "COMPLETED"
+        assert saved["save_status"] == "MANAGED"
+        assert saved["workspace_id"] == "file-manager"
+        assert saved["result_name"] == "config (1).cfg"
+        assert (local_root / "config.cfg").read_bytes() == b"keep existing"
+        assert (local_root / saved["result_name"]).read_bytes() == b"remote-config"
+        with pytest.raises(ValueError):
+            manager.download_result(saved["task_id"])
+
+        source = local_root / "send.cfg"
+        source.write_bytes(b"from managed directory")
+        entries = files.list_local_files("terminal-sftp-real").items
+        entry_id = next(item.entry_id for item in entries if item.name == source.name)
+        queued = manager.submit_managed_upload(
+            session_id, "/", "error", lambda site: files.open_transfer_source(site, entry_id),
+        )
+        assert _wait_task(manager, queued["task_id"])["status"] == "COMPLETED"
+        assert (remote_root / source.name).read_bytes() == source.read_bytes()
+        with pytest.raises(FileReferenceNotFound):
+            manager.submit_managed_upload(
+                session_id, "/", "error", lambda site: files.open_transfer_source(site, "fl1_" + "0" * 32),
+            )
     finally:
         manager.close()
         server_thread.join(timeout=3)

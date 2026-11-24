@@ -907,6 +907,7 @@ describe('DeviceManagementView mounted interactions', () => {
       '编辑',
       '复制设备',
       '内置控制台',
+      '文件管理',
       '外部终端',
       '删除',
     ])

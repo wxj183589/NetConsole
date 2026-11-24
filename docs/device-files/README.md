@@ -3,6 +3,8 @@
 设备文件下载是只读 SFTP 页面，链路为 `Vue → FastAPI Router → FileManagementApplicationService →
 FileTransferService`，下载任务继续使用现有 Task Center。
 
+需要向设备传输文件或管理远程文件时，可进入独立的[文件管理中心](../file-manager/FINAL_ACCEPTANCE_REPORT.md)。本页继续承接受管下载与 MESH 自动导入。
+
 ## 产品边界
 
 - 设备侧只允许连接、断开、目录浏览、刷新、选择和下载；不提供上传、删除、重命名或覆盖配置。

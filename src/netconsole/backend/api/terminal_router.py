@@ -20,6 +20,8 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from netconsole.backend.api.feature_access import require_feature
+from netconsole.services.file_management_service import FileReferenceNotFound
 from netconsole.services.terminal_workspace import TerminalSessionManager
 from netconsole.services.terminal_sftp import TerminalSftpManager
 
@@ -172,6 +174,16 @@ class TerminalSftpConnectRequest(BaseModel):
 
 class TerminalSftpPathRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
+
+
+class TerminalSftpManagedUploadRequest(BaseModel):
+    entry_id: str = Field(min_length=1, max_length=80)
+    remote_directory: str = Field(min_length=1, max_length=4096)
+    conflict: Literal["error", "skip", "rename", "overwrite"] = "error"
+
+
+class TerminalSftpManagedDownloadRequest(TerminalSftpPathRequest):
+    directory_id: str = Field(min_length=1, max_length=80)
 
 
 class TerminalSftpRenameRequest(BaseModel):
@@ -812,6 +824,46 @@ async def upload_sftp_entry(
         raise _translate_error(exc) from exc
 
 
+@router.post("/sftp/sessions/{session_id}/upload-managed")
+def upload_managed_sftp_entry(
+    session_id: str,
+    payload: TerminalSftpManagedUploadRequest,
+    request: Request,
+) -> dict[str, Any]:
+    for feature in ("module.file_management", "capability.file_management.remote"):
+        require_feature(feature)(request)
+    files = request.app.state.file_management_service
+    try:
+        return _sftp_manager(request).submit_managed_upload(
+            session_id, payload.remote_directory, payload.conflict,
+            lambda site: files.open_transfer_source(site, payload.entry_id),
+        )
+    except FileReferenceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/sftp/sessions/{session_id}/download-managed")
+def download_managed_sftp_entry(
+    session_id: str,
+    payload: TerminalSftpManagedDownloadRequest,
+    request: Request,
+) -> dict[str, Any]:
+    for feature in ("capability.file_management.remote", "capability.file_management.download"):
+        require_feature(feature)(request)
+    files = request.app.state.file_management_service
+    try:
+        return _sftp_manager(request).submit_managed_download(
+            session_id, payload.path,
+            lambda site: files.transfer_directory(site, payload.directory_id),
+        )
+    except FileReferenceNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.get("/sftp/transfers")
 def list_sftp_transfers(
     request: Request,
@@ -834,9 +886,11 @@ def get_sftp_transfer(task_id: str, request: Request) -> dict[str, Any]:
 
 @router.delete("/sftp/transfers")
 def clear_sftp_transfers(
-    request: Request, device_uuid: str = Query(default="", max_length=128)
+    request: Request,
+    device_uuid: str = Query(default="", max_length=128),
+    workspace_id: str = Query(default="", max_length=128),
 ) -> dict[str, int]:
-    return {"cleared": _sftp_manager(request).clear_completed(device_uuid)}
+    return {"cleared": _sftp_manager(request).clear_completed(device_uuid, workspace_id)}
 
 
 @router.get("/sftp/transfer-log", response_class=FileResponse)

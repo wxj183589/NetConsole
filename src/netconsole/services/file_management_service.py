@@ -450,6 +450,20 @@ class FileManagementApplicationService:
             raise FileReferenceNotFound("本地文件不存在或不可打开")
         return entry.path, entry.path.name
 
+    def open_transfer_source(self, site_id: str, entry_id: str) -> tuple[Path, str]:
+        site = self._site_id(site_id)
+        entry = self._local_entry(site, entry_id)
+        if entry.root != self._local_root(site):
+            raise FileReferenceNotFound("上传源文件不属于当前局点的受管下载目录")
+        return self.open_local_file(site, entry_id)
+
+    def transfer_directory(self, site_id: str, entry_id: str) -> str:
+        site = self._site_id(site_id)
+        directory = self._local_entry(site, entry_id)
+        if directory.root != self._local_root(site) or not directory.path.is_dir():
+            raise FileReferenceNotFound("目标目录不属于当前局点的受管下载目录")
+        return directory.path.relative_to(directory.root).as_posix()
+
     def list_remote_devices(self, site_id: str = "") -> list[FileRemoteDeviceDTO]:
         site = self._site_id(site_id)
         database_path = self.paths.site_db_path(site)

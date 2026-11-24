@@ -41,11 +41,16 @@ const props = defineProps<{
   deviceUuid: string
   deviceName: string
   workspaceId?: string
+  allWorkspaceTransfers?: boolean
 }>()
-const emit = defineEmits<{ activity: [count: number] }>()
+const emit = defineEmits<{ activity: [count: number]; managedDownload: [] }>()
 const queueOpen = ref(true)
 const queueMode = ref('active')
-const scopedTransfers = computed(() => transfers.value.filter(task => props.workspaceId ? task.session_id === session.value?.session_id : task.device_uuid === props.deviceUuid || (!task.device_uuid && task.session_id === session.value?.session_id)))
+const scopedTransfers = computed(() => transfers.value.filter(task => {
+  if (props.allWorkspaceTransfers) return task.workspace_id === props.workspaceId
+  if (session.value && task.session_id === session.value.session_id) return true
+  return !props.workspaceId && task.device_uuid === props.deviceUuid
+}))
 const queueTransfers = computed(() => scopedTransfers.value.filter(task => queueMode.value === 'history' ? ['COMPLETED', 'FAILED', 'CANCELLED', 'SKIPPED'].includes(task.status) : !['COMPLETED', 'CANCELLED', 'SKIPPED'].includes(task.status)))
 const dragId = ref('')
 const preparingDrag = ref(false)
@@ -55,6 +60,9 @@ const sessions = new Map<string, TerminalSftpSession>()
 const entries = ref<TerminalSftpEntry[]>([])
 const transfers = ref<TerminalSftpTransfer[]>([])
 watch(scopedTransfers, items => emit('activity', items.filter(task => ['WAITING', 'RUNNING', 'PAUSED', 'READY'].includes(task.status)).length))
+watch(scopedTransfers, (items, previous) => {
+  if (items.some(task => task.save_status === 'MANAGED' && !previous.some(old => old.task_id === task.task_id && old.save_status === 'MANAGED'))) emit('managedDownload')
+})
 const currentPath = ref('')
 const search = ref('')
 const fileType = ref('all')
@@ -413,7 +421,13 @@ async function saveDownload(task: TerminalSftpTransfer): Promise<void> {
   } finally { saving.value.delete(task.task_id); await refreshTransfers() }
 }
 
-async function clearCompleted() { await clearTerminalSftpTransfers(props.deviceUuid); await refreshTransfers() }
+async function clearCompleted() {
+  try {
+    if (props.allWorkspaceTransfers) await clearTerminalSftpTransfers('', props.workspaceId)
+    else await clearTerminalSftpTransfers(props.deviceUuid)
+    await refreshTransfers()
+  } catch (error) { ElMessage.error(message(error, '传输记录清理失败')) }
+}
 async function exportLog() {
   try {
     const result = await downloadBackendResource({ apiPath: '/api/terminal/sftp/transfer-log', suggestedName: 'sftp-transfer-log.jsonl' })
@@ -465,6 +479,7 @@ onBeforeUnmount(() => {
         <el-button title="刷新" @click="refresh()"><el-icon><Refresh /></el-icon></el-button>
       </div>
       <div class="sftp-actions">
+        <slot name="managed-actions" :session-id="session.session_id" :directory="currentPath" :selected-remote="selected" :refresh-transfers="refreshTransfers" />
         <el-button @click="uploadInput?.click()"><el-icon><Upload /></el-icon>上传</el-button>
         <input ref="uploadInput" class="sftp-file-input" type="file" multiple @change="uploadFiles" />
         <el-button @click="folderInput?.click()">上传文件夹</el-button>
@@ -509,7 +524,7 @@ onBeforeUnmount(() => {
           <el-button v-if="['WAITING', 'QUEUED', 'RUNNING', 'READY', 'PAUSED'].includes(task.status)" link title="取消" @click="cancelTransfer(task.task_id)"><el-icon><Close /></el-icon></el-button>
           <el-button v-if="task.status === 'RUNNING' && task.resumable" link title="暂停" @click="pauseTransfer(task.task_id)">暂停</el-button>
           <el-button v-if="['FAILED', 'CANCELLED', 'PAUSED'].includes(task.status) && !task.result_name && !(task.kind === 'UPLOAD' && task.status === 'CANCELLED')" link title="重试" @click="retryTransfer(task.task_id)">{{ task.resumable ? '继续' : '重试' }}</el-button>
-          <el-button v-if="task.kind === 'DOWNLOAD' && task.result_name" :loading="saving.has(task.task_id)" link title="保存" @click="saveDownload(task)">{{ task.status === 'COMPLETED' ? '另存为' : '保存' }}</el-button>
+          <el-button v-if="task.kind === 'DOWNLOAD' && task.result_name && task.save_status !== 'MANAGED'" :loading="saving.has(task.task_id)" link title="保存" @click="saveDownload(task)">{{ task.status === 'COMPLETED' ? '另存为' : '保存' }}</el-button>
         </div>
         <span v-if="!queueTransfers.length" class="transfer-empty">暂无传输任务</span>
         </div>

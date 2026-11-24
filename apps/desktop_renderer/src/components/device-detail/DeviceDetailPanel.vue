@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CopyDocument, Edit, FolderOpened, Refresh, View } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
+import { isFeatureEnabled } from '../../features'
 
 import { configArtifactDownloadRequest, submitSnapshotConfigDiff } from '../../api/configCollection'
 import {
@@ -1200,6 +1201,7 @@ function errorMessage(cause: unknown, fallback: string): string {
             <p>{{ formatValue(overview.device_uuid) }}</p>
           </div>
           <div class="heading-actions">
+            <el-button v-if="isFeatureEnabled('capability.file_management.remote') && (!overview.work_scope_status || overview.work_scope_status === 'included')" :icon="FolderOpened" @click="router.push({ name: 'device-file-manager', query: { device_uuid: overview.device_uuid } })">文件管理</el-button>
             <el-button v-if="mode === 'drawer'" :icon="FolderOpened" @click="emit('terminal', overview.device_uuid)">外部终端</el-button>
             <el-button v-if="mode === 'drawer'" type="primary" :icon="Edit" @click="emit('edit', overview.device_uuid)">编辑</el-button>
             <el-button v-if="mode === 'drawer'" type="primary" plain @click="emit('full-detail')">完整详情</el-button>

@@ -1095,6 +1095,12 @@ const deviceContextMenuItems = computed<NcDataTableContextMenuItem<DeviceListIte
     disabled: !isFeatureEnabled('module.console'),
   },
   {
+    key: 'file-manager',
+    label: '文件管理',
+    action: ({ row }) => openDeviceFileManager(row.device_uuid),
+    visible: ({ row }) => row.capabilities.ssh && row.work_scope_status === 'included' && isFeatureEnabled('capability.file_management.remote'),
+  },
+  {
     key: 'external-terminal',
     label: '外部终端',
     action: ({ row }) => requestTerminal(row.device_uuid),
@@ -1117,6 +1123,10 @@ async function editSelected(): Promise<void> {
 function openInternalConsole(deviceUuid = selectedUuids.value[0] || ''): void {
   if (!deviceUuid) return
   void router.push({ name: 'device-console', query: { device_uuid: deviceUuid } })
+}
+
+function openDeviceFileManager(deviceUuid: string): void {
+  void router.push({ name: 'device-file-manager', query: { device_uuid: deviceUuid } })
 }
 
 function openCreate(): void {

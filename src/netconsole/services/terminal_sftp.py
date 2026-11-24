@@ -9,7 +9,9 @@ import json
 import stat
 import os
 import re
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -73,6 +75,7 @@ class TerminalSftpTransferSnapshot:
     resumable: bool = False
     files_completed: int = 0
     files_total: int = 0
+    workspace_id: str = ""
 
 
 @dataclass(slots=True)
@@ -236,18 +239,38 @@ class TerminalSftpManager:
         target = self.upload_root / staging_id / safe_name
         target.parent.mkdir(parents=True, exist_ok=False)
         total = 0
-        with target.open("wb") as stream:
-            while True:
-                chunk = source.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > self.MAX_UPLOAD_BYTES:
-                    stream.close()
-                    shutil.rmtree(target.parent, ignore_errors=True)
-                    raise ValueError("上传文件超过 64 GiB 限制")
-                stream.write(chunk)
+        try:
+            with target.open("xb") as stream:
+                while chunk := source.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > self.MAX_UPLOAD_BYTES:
+                        raise ValueError("上传文件超过 64 GiB 限制")
+                    stream.write(chunk)
+        except BaseException:
+            shutil.rmtree(target.parent, ignore_errors=True)
+            raise
         return target, total
+
+    def submit_managed_upload(
+        self,
+        session_id: str,
+        remote_directory: str,
+        conflict: str,
+        resolve_source: Callable[[str], tuple[Path, str]],
+    ) -> dict[str, Any]:
+        session = self._connected_session(session_id)
+        source, name = resolve_source(session.snapshot.site_name)
+        target = self.child_path(session_id, remote_directory, name)
+        with source.open("rb") as stream:
+            staged, _ = self.stage_upload(name, stream)
+        try:
+            return self.submit_upload(
+                session_id, staged, target,
+                overwrite=conflict == "overwrite", conflict=conflict,
+            )
+        except BaseException:
+            self.discard_unsubmitted_upload(staged)
+            raise
 
     def submit_upload(
         self,
@@ -279,14 +302,29 @@ class TerminalSftpManager:
 
     def submit_download(self, session_id: str, remote_path: str) -> dict[str, Any]:
         session = self._connected_session(session_id)
+        return self._submit_download(session, remote_path)
+
+    def submit_managed_download(
+        self, session_id: str, remote_path: str, resolve_directory: Callable[[str], str],
+    ) -> dict[str, Any]:
+        session = self._connected_session(session_id)
+        directory = resolve_directory(session.snapshot.site_name)
+        return self._submit_download(session, remote_path, directory)
+
+    def _submit_download(
+        self, session: _SftpSession, remote_path: str, directory: str | None = None,
+    ) -> dict[str, Any]:
         source = self._remote_path(session, remote_path)
         name = self._safe_filename(Path(source).name or "download.bin")
+        params = {"source": source, "name": name}
+        if directory is not None:
+            params["managed_directory"] = directory
         return self._submit(
             session,
             "DOWNLOAD",
             source,
             name,
-            {"source": source, "name": name},
+            params,
         )
 
     def submit_copy(
@@ -380,7 +418,7 @@ class TerminalSftpManager:
             with current.operation_lock:
                 service.disconnect()
                 current.snapshot.state = "CLOSED"
-        snapshot = self.connect(task.snapshot.device_uuid)
+        snapshot = self.connect(task.snapshot.device_uuid, task.snapshot.workspace_id)
         return self._connected_session(snapshot["session_id"])
 
     def pause_task(self, task_id: str) -> dict[str, Any]:
@@ -394,7 +432,7 @@ class TerminalSftpManager:
 
     def download_result(self, task_id: str) -> tuple[Path, str]:
         task = self._task(task_id)
-        if task.snapshot.kind != "DOWNLOAD" or not task.snapshot.result_name:
+        if task.snapshot.kind != "DOWNLOAD" or not task.snapshot.result_name or "managed_directory" in task.params:
             raise ValueError("SFTP 下载尚未完成")
         path = (self.download_root / task.snapshot.task_id / task.snapshot.result_name).resolve()
         if path.parent != (self.download_root / task.snapshot.task_id).resolve() or not path.is_file():
@@ -431,10 +469,16 @@ class TerminalSftpManager:
         self._publish(task, "finished" if saved else "progress")
         return self._public_task(task)
 
-    def clear_completed(self, device_uuid: str = "") -> int:
+    def clear_completed(self, device_uuid: str = "", workspace_id: str = "") -> int:
         with self._lock:
             site = SiteManager(self.paths).get_current_site()
-            ids = [key for key, value in self._tasks.items() if value.snapshot.site_name == site and (not device_uuid or value.snapshot.device_uuid == device_uuid) and value.snapshot.status in {"COMPLETED", "CANCELLED", "SKIPPED"}]
+            ids = [
+                key for key, value in self._tasks.items()
+                if value.snapshot.site_name == site
+                and (not device_uuid or value.snapshot.device_uuid == device_uuid)
+                and (not workspace_id or value.snapshot.workspace_id == workspace_id)
+                and value.snapshot.status in {"COMPLETED", "CANCELLED", "SKIPPED"}
+            ]
             removed = [self._tasks.pop(key) for key in ids]
         for task in removed:
             self._discard_task_files(task)
@@ -483,7 +527,8 @@ class TerminalSftpManager:
             params.setdefault("checkpoint_id", task_id)
         task = _TransferTask(
             TerminalSftpTransferSnapshot(task_id, session.snapshot.session_id, kind, source, target,
-                                         site_name=session.snapshot.site_name, device_uuid=session.snapshot.device_uuid),
+                                         site_name=session.snapshot.site_name, device_uuid=session.snapshot.device_uuid,
+                                         workspace_id=session.snapshot.workspace_id),
             threading.Event(),
             params,
         )
@@ -586,11 +631,15 @@ class TerminalSftpManager:
                     )
                     if not destination.is_file():
                         raise IOError("下载结果未实际落盘")
-                    task.snapshot.result_name = name
-                    task.snapshot.result_size = destination.stat().st_size
                     with destination.open("rb") as stream:
                         task.snapshot.result_sha256 = hashlib.file_digest(stream, "sha256").hexdigest()
-                    task.snapshot.save_status = "PENDING"
+                    task.snapshot.result_size = destination.stat().st_size
+                    if "managed_directory" in task.params:
+                        task.snapshot.result_name = self._publish_managed_download(task, destination, cancel)
+                        task.snapshot.save_status = "MANAGED"
+                    else:
+                        task.snapshot.result_name = name
+                        task.snapshot.save_status = "PENDING"
                 else:
                     source = str(task.params["source"])
                     if stat.S_ISDIR(int(session.service.stat(source).st_mode)):
@@ -603,7 +652,7 @@ class TerminalSftpManager:
                         progress_callback=progress,
                         cancel_token=cancel,
                     )
-            task.snapshot.status = "READY" if task.snapshot.kind == "DOWNLOAD" else "COMPLETED"
+            task.snapshot.status = "READY" if task.snapshot.save_status == "PENDING" else "COMPLETED"
             task.snapshot.resumable = False
         except TransferCancelled:
             task.snapshot.status = "PAUSED" if task.pause_requested else "CANCELLED"
@@ -618,8 +667,44 @@ class TerminalSftpManager:
             self._persist()
             event = {"COMPLETED": "finished", "SKIPPED": "finished", "FAILED": "error", "CANCELLED": "cancelled"}.get(task.snapshot.status, "progress")
             self._publish(task, event)
-            if task.snapshot.status in {"CANCELLED", "SKIPPED"} or (task.snapshot.kind == "UPLOAD" and task.snapshot.status == "COMPLETED"):
+            if task.snapshot.status in {"CANCELLED", "SKIPPED"} or (
+                task.snapshot.status == "COMPLETED"
+                and (task.snapshot.kind == "UPLOAD" or task.snapshot.save_status == "MANAGED")
+            ):
                 self._discard_task_files(task)
+
+    def _publish_managed_download(self, task, source: Path, cancel: _TaskCancellation) -> str:
+        root = self.paths.file_downloads_root(task.snapshot.site_name).resolve(strict=True)
+        directory = root / str(task.params["managed_directory"])
+        target = directory.resolve(strict=True)
+        if target != directory or not target.is_relative_to(root) or not target.is_dir():
+            raise ValueError("目标目录超出当前局点的受管下载目录")
+        temporary: Path | None = None
+        digest = hashlib.sha256()
+        try:
+            with tempfile.NamedTemporaryFile(dir=target, prefix=".sftp-", suffix=".part", delete=False) as output:
+                temporary = Path(output.name)
+                with source.open("rb") as input_file:
+                    while data := input_file.read(1024 * 1024):
+                        check_cancel(cancel)
+                        output.write(data)
+                        digest.update(data)
+                output.flush()
+                os.fsync(output.fileno())
+            if digest.hexdigest() != task.snapshot.result_sha256:
+                raise OSError("受管下载校验失败")
+            check_cancel(cancel)
+            for index in range(1000):
+                name = source.name if not index else f"{source.stem} ({index}){source.suffix}"
+                try:
+                    os.link(temporary, target / name)
+                except FileExistsError:
+                    continue
+                return name
+            raise FileExistsError("本地同名副本数量已达上限")
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _discard_task_files(self, task) -> None:
         """Only remove this manager's exact staging directories, never a live retry."""

@@ -179,6 +179,7 @@ export interface TerminalSftpEntry {
 
 export interface TerminalSftpTransfer {
   device_uuid?: string
+  workspace_id?: string
   task_id: string
   session_id: string
   kind: 'UPLOAD' | 'DOWNLOAD' | 'COPY'
@@ -468,6 +469,10 @@ export function startTerminalSftpDownload(sessionId: string, path: string): Prom
   return terminalSftpPathAction(sessionId, 'download', { path })
 }
 
+export function startManagedSftpDownload(sessionId: string, path: string, directoryId: string): Promise<TerminalSftpTransfer> {
+  return terminalSftpPathAction(sessionId, 'download-managed', { path, directory_id: directoryId })
+}
+
 export function uploadTerminalSftpFile(
   sessionId: string,
   remoteDirectory: string,
@@ -493,6 +498,19 @@ export function listTerminalSftpTransfers(sessionId = ''): Promise<{ items: Term
   if (sessionId) params.set('session_id', sessionId)
   const query = params.toString()
   return apiRequest(`/api/terminal/sftp/transfers${query ? `?${query}` : ''}`, { coalesce: false })
+}
+
+export function uploadManagedSftpFile(
+  sessionId: string,
+  remoteDirectory: string,
+  entryId: string,
+  conflict: 'error' | 'skip' | 'rename' | 'overwrite',
+): Promise<TerminalSftpTransfer> {
+  return terminalSftpPathAction(sessionId, 'upload-managed', {
+    entry_id: entryId,
+    remote_directory: remoteDirectory,
+    conflict,
+  })
 }
 
 export function cancelTerminalSftpTransfer(taskId: string): Promise<TerminalSftpTransfer> {
@@ -527,6 +545,10 @@ export function recordTerminalSftpSave(task: TerminalSftpTransfer, saved: boolea
   })
 }
 
-export function clearTerminalSftpTransfers(deviceUuid = ''): Promise<{ cleared: number }> {
-  return apiRequest(`/api/terminal/sftp/transfers${deviceUuid ? `?device_uuid=${encodeURIComponent(deviceUuid)}` : ''}`, { method: 'DELETE' })
+export function clearTerminalSftpTransfers(deviceUuid = '', workspaceId = ''): Promise<{ cleared: number }> {
+  const params = new URLSearchParams()
+  if (deviceUuid) params.set('device_uuid', deviceUuid)
+  if (workspaceId) params.set('workspace_id', workspaceId)
+  const query = params.toString()
+  return apiRequest(`/api/terminal/sftp/transfers${query ? `?${query}` : ''}`, { method: 'DELETE' })
 }

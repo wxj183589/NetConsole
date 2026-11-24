@@ -23,6 +23,7 @@ import TerminalSettingsDialog from './TerminalSettingsDialog.vue'
 import TerminalSftpPanel from './TerminalSftpPanel.vue'
 import ConsoleCommandBar from './ConsoleCommandBar.vue'
 import { useConsoleWorkspace } from './useConsoleWorkspace'
+import { isFeatureEnabled } from '../../features'
 const props = withDefaults(defineProps<{ workspaceVisible?: boolean }>(), { workspaceVisible: true })
 
 const sftpWidth = ref(430)
@@ -232,6 +233,7 @@ watch([showSftp, sftpWorkspaceId], () => {
         </template>
       </el-dropdown>
       <el-button v-if="sftpAvailable" size="small" :type="showSftp ? 'primary' : 'default'" @click="sftpVisible = !sftpVisible"><el-icon><FolderOpened /></el-icon>SFTP<span v-if="sftpActivity"> · {{ sftpActivity }}</span></el-button>
+      <router-link v-if="sftpAvailable && sftpDevice && isFeatureEnabled('capability.file_management.remote')" :to="{ name: 'device-file-manager', query: { device_uuid: sftpDevice.device_uuid } }"><el-button size="small" :icon="FolderOpened">文件管理</el-button></router-link>
       <el-button size="small" @click="showHistory">
         <el-icon><FullScreen /></el-icon>会话记录
       </el-button>
