@@ -10,7 +10,7 @@
 
 `PARTIAL`
 
-代码、测试和版本同步已完成；正式 Installer/Portable 打包被仓库既有顶层 `build` 安全门禁阻断，真实设备、GUI 视觉和真实 Windows 安装验收未在本轮完成。
+代码、测试、版本同步以及隔离环境下的正式 Installer/Portable 构建已完成；真实设备、GUI 视觉和真实 Windows 安装验收未在本轮完成。
 
 ## 已完成内容
 
@@ -34,13 +34,13 @@
 | Ruff | PASS | changed Python files，All checks passed |
 | `git diff --check` | PASS | 无 diff 空白错误 |
 | 本地质量门禁 | PARTIAL | root-layout/change-impact/ruff/python/renderer/diff PASS；workspace-layout FAIL，原因见下 |
-| Full Installer | BLOCKED | `package_windows.ps1 -Edition full -NoOpenOutput` 在 `package:prepare` 被既有 `D:\study\NetConsole-Workspace\NetConsole\build` 拒绝 |
-| Full Portable | BLOCKED | `pnpm run package:portable` 在同一 `build` 安全门禁停止 |
+| Full Installer | PASS | 隔离 Worktree 执行 `package_windows.ps1 -Edition full -NoOpenOutput`；NSIS、包级 smoke、release metadata 和 SHA-256 复核通过 |
+| Full Portable | PASS | 隔离 Worktree 执行 `pnpm run package:portable`，随后执行 `node scripts/package-smoke.mjs`；构建和包级 smoke 通过 |
 | 真实设备连接/健康检查 | NOT_VERIFIED | 未连接现场设备，未将模拟或本地测试结果当作真实验收 |
 | 1920x1080/2K GUI 视觉与横向溢出 | NOT_VERIFIED | 本轮未执行人工 Electron 截图验收 |
-| Windows 安装/升级/卸载 | NOT_VERIFIED | 未生成安装器 |
+| Windows 安装/升级/卸载 | NOT_VERIFIED | 已生成 Installer，但本轮未执行真实安装、升级和卸载 |
 
-打包链路已实际完成 Renderer、Electron、PyInstaller Backend、fping/iPerf3 资源和 Backend bundle 检查；未生成 Installer、Portable ZIP 或新的 `release\v1.5.19` 正式制品。
+打包链路已实际完成 Renderer、Electron、PyInstaller Backend、fping/iPerf3 资源、Backend bundle、NSIS Installer 和 Portable ZIP 检查。正式制品位于 `D:\study\NetConsole-Workspace\release\v1.5.19\build-ee2aaa43`。
 
 ## 安全与数据影响
 
@@ -59,10 +59,68 @@ DEVSTATUS_UPDATED=0
 
 ## 后续动作
 
-在确认该历史 `build` 目录的归属、用途和回收授权后，先使 `scripts.check_workspace_layout` 通过，再从本分支最新 clean/upstream 对齐提交重新执行：
+后续只剩真实设备连接、人工 GUI 视觉验收以及 Windows 安装/升级/卸载验收；这些不由本次构建 Smoke 代替。本报告不把未执行的现场验收视为已完成。
 
-1. Full Installer：`scripts\build\package_windows.ps1 -Edition full`；
-2. Full Portable：`apps\desktop_electron\pnpm run package:portable`；
-3. 包级 smoke、身份复核和隔离 Windows GUI 安装/升级/卸载验收。
+## v1.5.19 打包治理与正式客户端构建
 
-本报告只记录当前证据，不把上述待执行动作视为已完成。
+日期：2026-11-24
+
+### 状态字段
+
+```text
+BUILD_GATE_ROOT_CAUSE=PASS
+SAFE_BUILD_ENVIRONMENT=PASS
+INSTALLER_BUILD=PASS
+PORTABLE_BUILD=PASS
+INSTALLER_PACKAGE_SMOKE=PASS
+PORTABLE_PACKAGE_SMOKE=PASS
+VERSION_CONTRACT=PASS
+COMMIT_IDENTITY=PASS
+SHA256_VERIFICATION=PASS
+RELEASE_ARTIFACTS=PASS
+TEMP_WORKTREE_CLEANUP=PASS
+REPORT_UPDATE=PASS
+REMOTE_PUSH=PASS
+```
+
+### 根因与安全构建环境
+
+原始仓库的 `D:\study\NetConsole-Workspace\NetConsole\build` 是历史遗留、未跟踪且被 `.gitignore` 忽略的 setuptools 输出，共 683 个文件、13625491 bytes。`scripts/build/build_release.py` 在 package prepare 前会拒绝项目根 `build`，因此原始工作树不能直接打包。该目录未被删除、移动或覆盖。
+
+本轮使用独立 Git Worktree 构建：
+
+- Installer：`D:\study\NetConsole-Workspace\worktrees\v1.5.19-installer`
+- Portable：`D:\study\NetConsole-Workspace\worktrees\v1.5.19-portable`
+- 两个 Worktree 均通过 `python -m scripts.check_workspace_layout`。
+- 构建来源 Commit：`ee2aaa433926dfde57cb50e898d4dcba56aca8af`（短 SHA `ee2aaa43`）；功能实现 Commit 仍为 `f8956b7a9bdd6f672853cd132456d9118b825cc5`。
+
+### 构建与包级验收
+
+- Full Installer：`scripts\build\package_windows.ps1 -Edition full -NoOpenOutput`；Web 219 files/1596 tests、Electron 41 files/324 tests、Renderer、PyInstaller、NSIS 和 Installer packaged smoke 均 PASS。
+- Portable：`pnpm run package:portable`；Renderer、主进程、PyInstaller、Electron unpacked packaging 和独立 `node scripts/package-smoke.mjs` 均 PASS。
+- 初次 Portable 执行仅因隔离 Worktree 尚未安装 Renderer 依赖和 Electron 分发目录停止；按锁定依赖补齐后从原命令重跑成功，未修改源码、原始仓库或真实数据。
+- `VERSION_CONSISTENCY=PASS (1.5.19)`，前后端 Commit、Health build ID、changelog 链均一致。
+
+### 正式制品
+
+输出目录：`D:\study\NetConsole-Workspace\release\v1.5.19\build-ee2aaa43`
+
+| 制品 | 大小（bytes） | SHA-256 |
+| --- | ---: | --- |
+| `NetConsole-Full-1.5.19.0-ee2aaa43-x64-setup.exe` | 158551975 | `731b475894a1289cfa5e49324dc9b3400d6bb6699646ac77885a74b403056fb5` |
+| `NetConsole-1.5.19-portable.zip` | 216038606 | `f661bb240509334adb242424a832bb8ef823c3cec15c5dd9cfe3ca43c167d506` |
+
+同目录包含 Installer `.release.json`、`SHA256SUMS.txt`、`PACKAGE_MANIFEST.json` 和 `BUILD_REPORT.md`。
+
+### 数据与验收边界
+
+```text
+PRODUCTION_DATA_MODIFIED=0
+DEV_REAL_DATA_MODIFIED=0
+DATABASES_REMOVED=0
+DEVSTATUS_UPDATED=0
+REAL_WINDOWS_INSTALL=NOT_VERIFIED
+GUI_ACCEPTANCE=NOT_VERIFIED
+```
+
+原始仓库历史 `build` 复核值保持为 683 files、13625491 bytes，目录 LastWriteTime 为 `2026-11-23T05:19:45.8514674+08:00`。真实 Windows 安装、升级、卸载和人工 GUI 验收仍须另行执行；构建 Smoke 不等同于这些验收。
