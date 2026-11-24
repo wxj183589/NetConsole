@@ -458,6 +458,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "module.rail_infrastructure": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "module.mesh_analysis": {
       "visible": true,
       "enabled": true,
@@ -615,6 +621,12 @@
       "internal_only": false
     },
     "capability.rail_base_data.write": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
+    "capability.rail_infrastructure.write": {
       "visible": true,
       "enabled": true,
       "client_package": true,

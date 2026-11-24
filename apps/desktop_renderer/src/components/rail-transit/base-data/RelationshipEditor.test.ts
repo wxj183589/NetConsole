@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ElementPlus, { ElSelect, ElInput } from 'element-plus'
 import RelationshipEditor from './RelationshipEditor.vue'
+import { setRendererFeaturesForTest } from '../../../features'
 const api = vi.hoisted(() => ({ relationshipCatalog: vi.fn(), currentRelationships: vi.fn(), relationshipHistory: vi.fn(), previewRelationship: vi.fn(), saveRelationship: vi.fn(), saveEngineeringProject: vi.fn(), acRelationshipResources: vi.fn() }))
 vi.mock('../../../api/railRelationships', () => api)
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: vi.fn() }), onBeforeRouteLeave: vi.fn() }))
@@ -14,6 +15,7 @@ function render(kind = 'section', uid = 'section-1') {
 }
 async function click(w: ReturnType<typeof render>, text: string) { const button = w.findAll('button').find(b => b.text() === text); expect(button).toBeDefined(); await button!.trigger('click'); await flushPromises() }
 beforeEach(() => {
+  setRendererFeaturesForTest({ 'capability.rail_infrastructure.write': { visible: true, enabled: true } })
   vi.clearAllMocks()
   api.relationshipCatalog.mockResolvedValue(structuredClone(catalog))
   api.currentRelationships.mockResolvedValue({ items: [], revision: 'r1' })
@@ -24,6 +26,12 @@ beforeEach(() => {
 })
 afterEach(() => { for (const w of mounts.splice(0)) w.unmount() })
 describe('Engineering relationship editing', () => {
+  it('does not expose writes when only base-data write permission is enabled', async () => {
+    setRendererFeaturesForTest({ 'capability.rail_base_data.write': { visible: true, enabled: true } })
+    const w = render(); await flushPromises()
+    expect(w.findAll('button').some(b => b.text() === '关联已有对象')).toBe(false)
+    expect(api.saveRelationship).not.toHaveBeenCalled()
+  })
   it('requires server preview, invalidates it on edits, and saves the exact draft', async () => {
     const w = render(); await flushPromises(); await click(w, '关联已有对象')
     w.findAllComponents(ElSelect)[1].vm.$emit('update:modelValue', 'mr-new'); await flushPromises()

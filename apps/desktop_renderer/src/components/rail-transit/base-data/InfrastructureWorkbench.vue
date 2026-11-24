@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useRailInfrastructureStore } from '../../../stores/railInfrastructure'
 import { t } from '../../../i18n/runtime'
 import { useRouter } from 'vue-router'
 import { isFeatureEnabled } from '../../../features'
@@ -9,23 +11,14 @@ import RelationshipEditor from './RelationshipEditor.vue'
 import {
   getInfrastructure,
   getInfrastructureSwitchAps,
-  type Infrastructure,
   type InfrastructureDevice,
   type InfrastructureNode,
   type InfrastructureSwitchAps,
 } from '../../../api/railInfrastructure'
 
 const props = defineProps<{ siteId: string; revisionKey?: string; initialNodeUid?: string }>()
-const emit = defineEmits<{ navigate: [tab: string] }>()
 const router = useRouter()
-const snapshot = ref<Infrastructure>()
-const loading = ref(false)
-const error = ref('')
-const search = ref('')
-const selectedUid = ref('')
-const showUnassociated = ref(false)
-const selectedDevice = ref<InfrastructureDevice>()
-const retry = ref(0)
+const { snapshot, loading, error, search, selectedUid, showUnassociated, selectedDevice, retry } = storeToRefs(useRailInfrastructureStore())
 const relationshipDirty = ref(false)
 const relationshipSaving = ref(false)
 const aps = ref<InfrastructureSwitchAps>()
@@ -92,7 +85,10 @@ watch(() => [props.siteId, props.revisionKey, props.initialNodeUid, retry.value]
     snapshot.value = result
     if (props.initialNodeUid && props.initialNodeUid !== selectedUid.value) {
       if (result.nodes.some(item => item.uid === props.initialNodeUid)) await selectNode(props.initialNodeUid)
-      else error.value = t('engineering.missing_node', '工程节点不可用或已不存在')
+      else {
+        await selectNode()
+        error.value = t('engineering.missing_node', '工程节点不可用或已不存在')
+      }
     }
     if (selectedUid.value && !node.value) selectNode()
     const candidates = showUnassociated.value ? result.unassociated_devices : node.value?.devices
@@ -175,9 +171,6 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
         <header class="section-heading">
           <h3>{{ showUnassociated ? '未关联设备' : node ? nodeLabel(node) : '线路概览' }}</h3>
           <el-button v-if="node?.station && isFeatureEnabled('capability.rail_transit.wireless_dashboard')" link type="primary" @click="router.push({ name: 'rail-transit-wireless-dashboard', query: { station_id: node.station.id } })">{{ t('engineering.wireless', '无线看板') }}</el-button>
-          <el-button v-if="node && node.kind !== 'train'" link type="primary" @click="emit('navigate', 'stations')">站点与区间</el-button>
-          <el-button v-else-if="node?.kind === 'train'" link type="primary" @click="emit('navigate', 'trains')">列车与车载 MR</el-button>
-          <el-button v-else link type="primary" @click="emit('navigate', 'quality')">数据质量</el-button>
         </header>
         <template v-if="node">
           <dl class="node-facts">

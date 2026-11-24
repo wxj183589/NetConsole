@@ -264,7 +264,7 @@ vi.mock('../components/DesktopRuntimeStatus.vue', () => ({
 vi.mock('../views/rail-transit/RailTransitBaseDataView.vue', () => ({
   default: {
     name: 'RailTransitBaseDataView',
-    template: '<section data-base-data-page>基础设施真实路由</section>',
+    template: '<section data-base-data-page>基础资料真实路由</section>',
   },
 }))
 
@@ -592,7 +592,7 @@ describe('AppLayout workspace tabs with real async routes', () => {
     const heapBefore = process.memoryUsage().heapUsed
 
     for (let index = 0; index < 20; index += 1) {
-      const baseDataMenu = findButtonByText(wrapper, '.el-menu-item', '基础设施')
+      const baseDataMenu = findButtonByText(wrapper, '.el-menu-item', '基础资料')
       await baseDataMenu!.trigger('click')
       await flushPromises()
       expect(wrapper.find('[data-base-data-page]').exists()).toBe(true)
@@ -618,7 +618,7 @@ describe('AppLayout workspace tabs with real async routes', () => {
       heapDelta: heapAfter - heapBefore,
     }))
 
-    const baseDataMenu = findButtonByText(wrapper, '.el-menu-item', '基础设施')
+    const baseDataMenu = findButtonByText(wrapper, '.el-menu-item', '基础资料')
     await baseDataMenu!.trigger('click')
     await flushPromises()
     const meshPageTab = wrapper.get(`[data-workspace-tab="${meshTabId}"]`)

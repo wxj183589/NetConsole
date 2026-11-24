@@ -21,3 +21,8 @@
 - [AC / Wireless 接入](./PHASE4_AC_WIRELESS_INTEGRATION.md)
 - [MESH / Online MR 接入](./PHASE4_MESH_MR_INTEGRATION.md)
 - [Phase 4 定向验收](./PHASE4_ACCEPTANCE.md)
+
+- [Phase 5 历史与模块边界审计](./PHASE5_MODULE_BOUNDARY_AUDIT.md)
+- [基础设施与基础资料模块拆分](./PHASE5_MODULE_SEPARATION.md)
+- [基础设施独立模块规范](./INFRASTRUCTURE_MODULE_SPEC.md)
+- [原基础资料兼容与安全边界](./BASE_DATA_COMPATIBILITY.md)

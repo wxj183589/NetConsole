@@ -222,7 +222,7 @@ def test_relationship_read_api_returns_current_revision_without_write_side_effec
 ):
     paths, db_path, _service_instance = _service(tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing")
-    app.state.feature_gate.features["module.rail_base_data"] = {
+    app.state.feature_gate.features["module.rail_infrastructure"] = {
         "enabled": True,
         "visible": True,
     }
@@ -529,10 +529,10 @@ def test_relationship_api_permissions_confirmation_and_strict_values(tmp_path):
     paths, _db_path, service = _service(tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing")
     app.state.rail_relationship_application_service = service
-    app.state.feature_gate.features["module.rail_base_data"] = dict(
+    app.state.feature_gate.features["module.rail_infrastructure"] = dict(
         enabled=True, visible=True
     )
-    app.state.feature_gate.features["capability.rail_base_data.write"] = dict(
+    app.state.feature_gate.features["capability.rail_infrastructure.write"] = dict(
         enabled=True, visible=True
     )
     req = _request(
@@ -589,7 +589,7 @@ def test_relationship_api_permissions_confirmation_and_strict_values(tmp_path):
             ).status_code
             == 409
         )
-        app.state.feature_gate.features["capability.rail_base_data.write"][
+        app.state.feature_gate.features["capability.rail_infrastructure.write"][
             "enabled"
         ] = False
         assert (

@@ -22,8 +22,6 @@ import { isFeatureEnabled } from '../../features'
 
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
-import InfrastructureWorkbench from '../../components/rail-transit/base-data/InfrastructureWorkbench.vue'
-const relationshipWorkbench = ref<InstanceType<typeof InfrastructureWorkbench>>()
 import SubPageEditToolbar from '../../components/rail-transit/base-data/SubPageEditToolbar.vue'
 import TracksideApPlanningTab from '../../components/rail-transit/base-data/TracksideApPlanningTab.vue'
 import {
@@ -980,7 +978,6 @@ async function executeClearAll(): Promise<void> {
 
 async function beforeTabLeave(next: string, current: string): Promise<boolean> {
   if (next === current) return true
-  if (current === 'overview' && relationshipWorkbench.value?.confirmRelationshipNavigation && !await relationshipWorkbench.value.confirmRelationshipNavigation()) return false
   const currentScope = editScopeForTab(current)
   if (!currentScope) return true
   const context = subPageEditContexts[currentScope]
@@ -3087,7 +3084,8 @@ function sectionSourceLabel(row: Section): string {
   <section class="rail-base-data" v-loading="store.loading">
     <div class="page-toolbar">
       <div>
-        <h2>基础设施</h2>
+        <h2>{{ t('base_data.title', '轨道交通基础资料') }}</h2>
+        <p>{{ store.summary?.site_name || '当前局点' }} · {{ store.summary?.line_name || '线路未填写' }} · {{ store.summary?.project_type || '项目类型未填写' }}</p>
       </div>
     </div>
     <el-alert
@@ -3138,15 +3136,7 @@ function sectionSourceLabel(row: Section): string {
 
     <div class="content-card">
       <el-tabs v-model="activeTab" :before-leave="beforeTabLeave">
-        <el-tab-pane label="总览" name="overview" lazy>
-          <InfrastructureWorkbench
-            ref="relationshipWorkbench"
-            v-if="activeTab === 'overview' && store.summary && !editing"
-            :site-id="store.summary.site_id"
-            :initial-node-uid="String(route.query.node_uid || '')"
-            :revision-key="store.summary.updated_at"
-            @navigate="async (tab) => { if (await beforeTabLeave(tab, activeTab)) activeTab = tab }"
-          />
+        <el-tab-pane label="基础资料总览" name="overview" lazy>
           <SubPageEditToolbar
             :state="subPageEditContexts.overview.state"
             :dirty="pageIsDirty('overview')"
@@ -3583,6 +3573,7 @@ function sectionSourceLabel(row: Section): string {
               </NcDataTable>
             </el-tab-pane>
             <el-tab-pane label="车载 MR" name="mrs" lazy>
+              <el-alert :title="t('base_data.asset_boundary', '设备资产字段及删除由设备管理统一控制，此处保留当前监测策略维护。')" type="info" :closable="false" />
               <div class="filter-bar">
                 <el-input v-model="store.mrFilters.query" clearable placeholder="MR 名称 / IP / MAC / 设备 ID" @keyup.enter="store.applyMrFilters" />
                 <el-input v-model="store.mrFilters.train" clearable placeholder="列车编号" />

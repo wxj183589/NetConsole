@@ -699,6 +699,9 @@ def test_station_template_download_preview_and_export_are_structured_xlsx(tmp_pa
     stream = BytesIO()
     upload.save(stream)
     with TestClient(_app(paths, tmp_path)) as client:
+        # Startup may leave committed WAL pages; exclude its later checkpoint
+        # from the HTTP preview's read-only fingerprint boundary.
+        _checkpoint_startup_writes(db_path)
         before = _fingerprint(db_path)
         preview = client.post(
             "/api/rail-transit/base-data/station-template-preview",

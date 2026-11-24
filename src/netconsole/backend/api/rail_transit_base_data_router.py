@@ -106,7 +106,7 @@ def summary(request: Request, site_id: str = Query(default="", max_length=100)) 
     return _query(lambda: _service(request).get_summary(_site_id(request, site_id)))
 
 
-@router.get("/infrastructure", response_model=InfrastructureDTO)
+@router.get("/infrastructure", response_model=InfrastructureDTO, dependencies=[Depends(require_feature("module.rail_infrastructure"))])
 def infrastructure(request: Request, site_id: str = Query(default="", max_length=100)) -> InfrastructureDTO:
     return _query(lambda: _service(request).infrastructure(_site_id(request, site_id)))
 
@@ -114,7 +114,7 @@ def infrastructure(request: Request, site_id: str = Query(default="", max_length
 @router.get(
     "/infrastructure/switch-aps",
     response_model=InfrastructureSwitchApsDTO,
-    dependencies=[Depends(require_feature("module.trackside_ap"))],
+    dependencies=[Depends(require_feature("module.trackside_ap")), Depends(require_feature("module.rail_infrastructure"))],
 )
 def infrastructure_switch_aps(
     request: Request,
@@ -172,6 +172,7 @@ def clear_preview(
 
 @router.post(
     "/clear-all",
+    dependencies=[Depends(require_feature("capability.rail_base_data.write"))],
     response_model=BaseDataClearResultDTO,
     summary="事务清空当前局点的站点与区间基础资料",
  )
@@ -204,6 +205,7 @@ def validate_changes(request: Request, payload: BaseDataValidateRequestDTO) -> B
 
 @router.post(
     "/changes",
+    dependencies=[Depends(require_feature("capability.rail_base_data.write"))],
     response_model=BaseDataSaveResultDTO,
     summary="事务保存基础资料修改",
     responses={
@@ -488,7 +490,7 @@ def import_policies(
     return _import_service(request).get_import_policy(_site_id(request, site_id))
 
 
-@router.post("/import-apply", response_model=ImportApplyResultDTO)
+@router.post("/import-apply", response_model=ImportApplyResultDTO, dependencies=[Depends(require_feature("capability.rail_base_data.write"))])
 def import_apply(request: Request, payload: ImportApplyRequestDTO) -> ImportApplyResultDTO:
     site_id = _site_id(request, payload.site_id)
     try:
@@ -560,7 +562,7 @@ def import_operation_changes(
     return ImportChangePageDTO(items=items, total=len(items))
 
 
-@router.post("/import-operations/{operation_id}/rollback", response_model=ImportRollbackResultDTO)
+@router.post("/import-operations/{operation_id}/rollback", response_model=ImportRollbackResultDTO, dependencies=[Depends(require_feature("capability.rail_base_data.write"))])
 def import_operation_rollback(
     request: Request,
     operation_id: str,

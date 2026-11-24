@@ -13,7 +13,7 @@ const title = computed(() => props.historical || props.context?.temporal_scope =
 const usable = computed(() => props.context?.available && ['associated', 'historical'].includes(state.value))
 const current = computed(() => usable.value && !props.historical && props.context?.temporal_scope !== 'historical')
 function node(uid: string): void {
-  void router.push({ name: 'rail-transit-base-data', query: { tab: 'overview', node_uid: uid } })
+  void router.push({ name: 'rail-transit-infrastructure', query: { node_uid: uid } })
 }
 </script>
 
@@ -30,7 +30,7 @@ function node(uid: string): void {
     <dl v-if="usable">
       <dt v-if="context?.point_id">{{ t('engineering.identity', 'AP 身份状态') }}</dt><dd v-if="context?.point_id">{{ context.identity_status || t('engineering.unconfirmed', '身份未确认') }}</dd>
       <dt>{{ t('engineering.line', '线路') }}</dt><dd>{{ context?.line_name || '—' }}</dd>
-      <dt>{{ t('engineering.node', '工程节点') }}</dt><dd><el-button v-if="current && context?.node_uid && isFeatureEnabled('module.rail_base_data')" link type="primary" @click="node(context.node_uid)">{{ context.node_name || context.node_uid }}</el-button><span v-else>{{ context?.node_name || '—' }}</span> {{ context?.role }}</dd>
+      <dt>{{ t('engineering.node', '工程节点') }}</dt><dd><el-button v-if="current && context?.node_uid && isFeatureEnabled('module.rail_infrastructure')" link type="primary" @click="node(context.node_uid)">{{ context.node_name || context.node_uid }}</el-button><span v-else>{{ context?.node_name || '—' }}</span> {{ context?.role }}</dd>
       <dt>{{ t('engineering.section', '区间') }}</dt><dd>{{ context?.service_sections?.join(' / ') || '—' }}</dd>
       <dt>{{ t('engineering.project', '建设项目') }}</dt><dd>{{ context?.project_names.join(' / ') || '—' }}</dd>
       <dt>{{ t('engineering.location', '安装位置') }}</dt><dd>{{ context?.physical_location || '—' }}</dd>
@@ -40,7 +40,7 @@ function node(uid: string): void {
       <el-button v-if="context?.device_uuid && isFeatureEnabled('module.devices')" link type="primary" @click="router.push({ name: 'device-detail', params: { deviceId: context.device_uuid } })">{{ t('engineering.asset', '设备资产') }}</el-button>
       <el-button v-if="context?.station_id && isFeatureEnabled('capability.rail_transit.wireless_dashboard')" link type="primary" @click="router.push({ name: 'rail-transit-wireless-dashboard', query: { station_id: context.station_id } })">{{ t('engineering.wireless', '无线看板') }}</el-button>
       <el-button v-if="context?.device_uuid && ['CT', 'CW', 'MR-CT', 'MR-CW'].includes(context.role) && isFeatureEnabled('module.online_mr')" link type="primary" @click="router.push({ name: 'online-mr-realtime', query: { mr_id: context.device_uuid } })">Online MR</el-button>
-      <el-button v-for="scope in (context?.service_scope || []).filter(s => s.relationship_type === 'ac_service')" v-show="isFeatureEnabled('module.rail_base_data')" :key="scope.relationship_id" link type="primary" @click="node(scope.target_uid || '')">{{ scope.target_name || scope.target_uid }}</el-button>
+      <el-button v-for="scope in (context?.service_scope || []).filter(s => s.relationship_type === 'ac_service')" v-show="isFeatureEnabled('module.rail_infrastructure')" :key="scope.relationship_id" link type="primary" @click="node(scope.target_uid || '')">{{ scope.target_name || scope.target_uid }}</el-button>
     </nav>
   </section>
 </template>

@@ -35,7 +35,7 @@
 - [设备文件](./device-files/README.md)：只读 SFTP、主机密钥和下载工作流。
 - [Job Center](./job-center/README.md)：后台任务、Worker、状态和取消。
 - [Traffic](./traffic/README.md)：fping/iPerf、本地与 Agent 执行。
-- [轨道交通](./rail-transit/README.md)：基础设施、AC、轨旁 AP、MESH、Online MR 与 Ground。
+- [轨道交通](./rail-transit/README.md)：独立基础设施、基础资料、AC、轨旁 AP、MESH、Online MR 与 Ground。
 - [MESH 分析规则](./rail-transit/mesh/ANALYSIS_RULES.md)：原始事实、解析、主备链、时间轴、阈值和报告语义。
 - [AP Identity](./AP_IDENTITY.md)：统一身份、消费者、诊断和数据安全边界。
 

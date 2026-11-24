@@ -243,7 +243,9 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("capability.online_mr.parse", "Online MR 会话解析", "module.online_mr_analysis", "action", requires=("internal.online_mr_analysis",), delivery_requires=("internal.online_mr_analysis",)),
     FeatureItem("capability.online_mr.open_location", "打开 Online MR 会话本地位置", "module.online_mr_analysis", "action", requires=("internal.online_mr_analysis",), delivery_requires=("internal.online_mr_analysis",)),
     FeatureItem("capability.online_mr.session_delete", "删除 Online MR 历史会话", "module.online_mr_analysis", "action", requires=("internal.online_mr_analysis",), delivery_requires=("internal.online_mr_analysis",)),
-    FeatureItem("module.rail_base_data", "轨道交通基础设施", "module.rail_transit", "module", requires=("internal.rail_base_data",), delivery_requires=("internal.rail_base_data",)),
+    FeatureItem("module.rail_base_data", "轨道交通基础资料", "module.rail_transit", "module", requires=("internal.rail_base_data",), delivery_requires=("internal.rail_base_data",)),
+    FeatureItem("module.rail_infrastructure", "轨道交通基础设施", "module.rail_transit", "module", requires=("internal.rail_base_data",), delivery_requires=("internal.rail_base_data",)),
+    FeatureItem("capability.rail_infrastructure.write", "轨道交通工程关系受控写入", "module.rail_infrastructure", "action"),
     FeatureItem("module.mesh_analysis", "Mesh 原始日志分析", "module.rail_transit", "module"),
     FeatureItem("capability.mesh.import", "MESH 原始日志导入", "module.mesh_analysis", "action"),
     FeatureItem("capability.mesh.report_export", "MESH 分析报告导出", "module.mesh_analysis", "action"),
@@ -327,7 +329,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     ),
     FeatureItem(
         "capability.rail_base_data.write",
-        "轨道交通基础设施受控写入",
+        "轨道交通基础资料受控写入",
         "module.rail_base_data",
         "action",
     ),
@@ -491,7 +493,7 @@ def group_id_of(feature_id: str) -> str:
         value.startswith("mesh.") for value in lineage
     ):
         return "mesh"
-    if lineage & {"module.rail_base_data"}:
+    if lineage & {"module.rail_base_data", "module.rail_infrastructure"}:
         return "rail_base"
     if "module.rail_transit" in lineage or any(value.startswith("rail.") for value in lineage):
         return "rail_general"

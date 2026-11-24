@@ -34,6 +34,7 @@ describe('workspace validation', () => {
     expect(validateWorkspaceRoute('/console')).toBe('/console')
     expect(validateWorkspaceRoute('/rail-transit/ground-unattended')).toBe('/rail-transit/ground-unattended')
     expect(validateWorkspaceRoute('/rail-transit/base-data?node_uid=station-1&tab=overview')).toContain('node_uid=station-1')
+    expect(validateWorkspaceRoute('/rail-transit/infrastructure?node_uid=station-1')).toBe('/rail-transit/infrastructure?node_uid=station-1')
     expect(validateWorkspaceRoute('/rail-transit/mesh-analysis?session_id=session-1')).toContain('session_id=session-1')
     for (const value of [
       'https://example.com/',

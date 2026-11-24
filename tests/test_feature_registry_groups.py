@@ -13,6 +13,8 @@ from netconsole.core.feature_registry import group_id_of
         ("module.ac", "ac"),
         ("module.config_collection", "configuration"),
         ("module.rail_base_data", "rail_base"),
+        ("module.rail_infrastructure", "rail_base"),
+        ("capability.rail_infrastructure.write", "rail_base"),
         ("module.trackside_ap", "trackside_ap"),
         ("capability.trackside_ap.plan", "trackside_ap"),
         ("module.train_online", "train_online"),

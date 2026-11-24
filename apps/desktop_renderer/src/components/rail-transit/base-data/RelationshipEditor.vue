@@ -3,6 +3,7 @@ import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { t } from '../../../i18n/runtime'
+import { isFeatureEnabled } from '../../../features'
 import { relationshipCatalog, currentRelationships, relationshipHistory, previewRelationship, saveRelationship, saveEngineeringProject, acRelationshipResources, type RelationCatalog, type RelationRequest } from '../../../api/railRelationships'
 import type { RailRelationshipRecord, RailRelationshipHistoryRecord, RailRelationshipType } from '../../../types/railTransitBaseData'
 const props = defineProps<{ siteId: string; entityUid: string; entityKind: string; entityName: string }>()
@@ -11,6 +12,7 @@ const router = useRouter()
 const tr = (text: string) => t(`rail.relationship.${text}`, text)
 const actionLabel = (action: string) => tr(({ create: '关联已有对象', update: '修改', terminate: '解除', replace: '更换 MR' } as Record<string, string>)[action] || action)
 const catalog = ref<RelationCatalog>()
+const canWrite = computed(() => catalog.value?.can_write && isFeatureEnabled('capability.rail_infrastructure.write'))
 const rows = ref<RailRelationshipRecord[]>([]), projectRows = ref<RailRelationshipRecord[]>([])
 const history = ref<RailRelationshipHistoryRecord[]>([])
 const error = ref(''), loading = ref(false), saving = ref(false), open = ref(false), historyOpen = ref(false), projectOpen = ref(false)
@@ -121,13 +123,13 @@ async function saveProject(preview: boolean) {
 </script>
 <template>
   <section class="relationship-editor" v-loading="loading" :aria-label="tr('工程关系维护')">
-    <header><h4>{{ tr('工程关系') }}</h4><el-button size="small" @click="showHistory()">{{ tr('历史') }}</el-button><el-button v-if="catalog?.can_write" size="small" type="primary" @click="edit()">{{ tr('关联已有对象') }}</el-button></header>
+    <header><h4>{{ tr('工程关系') }}</h4><el-button size="small" @click="showHistory()">{{ tr('历史') }}</el-button><el-button v-if="canWrite" size="small" type="primary" @click="edit()">{{ tr('关联已有对象') }}</el-button></header>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <p v-if="catalog && !catalog.can_write" class="muted">{{ catalog.write_denial_reason }}</p>
     <p v-if="resourceCount !== undefined">FIT-AP Current: {{ resourceCount }} · {{ tr('仅当前 AC 观测，工程服务不改变 AP 身份') }}</p>
-    <ul v-if="rows.length" class="relations"><li v-for="row in rows" :key="row.relationship_id"><strong>{{ labels[row.relationship_type] }}</strong><span>{{ label(row.source_uid) }} → {{ label(row.target_uid) }}<template v-if="row.values.position"> · MR-{{ row.values.position }}</template><template v-if="row.values.engineering_role"> · {{ row.values.engineering_role }}</template><template v-if="row.values.installation_location"> · {{ row.values.installation_location }}</template></span><div v-if="catalog?.can_write"><el-button link @click="edit(row,'update')">{{ tr('修改') }}</el-button><el-button v-if="row.relationship_type === 'train_mr'" link type="primary" @click="edit(row,'replace')">{{ tr('更换 MR') }}</el-button><el-button link type="danger" @click="edit(row,'terminate')">{{ tr('解除') }}</el-button></div></li></ul>
+    <ul v-if="rows.length" class="relations"><li v-for="row in rows" :key="row.relationship_id"><strong>{{ labels[row.relationship_type] }}</strong><span>{{ label(row.source_uid) }} → {{ label(row.target_uid) }}<template v-if="row.values.position"> · MR-{{ row.values.position }}</template><template v-if="row.values.engineering_role"> · {{ row.values.engineering_role }}</template><template v-if="row.values.installation_location"> · {{ row.values.installation_location }}</template></span><div v-if="canWrite"><el-button link @click="edit(row,'update')">{{ tr('修改') }}</el-button><el-button v-if="row.relationship_type === 'train_mr'" link type="primary" @click="edit(row,'replace')">{{ tr('更换 MR') }}</el-button><el-button link type="danger" @click="edit(row,'terminate')">{{ tr('解除') }}</el-button></div></li></ul>
     <p v-else class="muted">{{ tr('暂无正式工程关系') }}</p>
-    <el-button v-if="catalog?.can_write && entityKind === 'station'" link @click="openProject">{{ tr('建设项目管理') }}</el-button>
+    <el-button v-if="canWrite && entityKind === 'station'" link @click="openProject">{{ tr('建设项目管理') }}</el-button>
     <el-dialog v-model="open" :title="`${actionLabel(form.action)} · ${entityName}`" width="min(620px, 94vw)" :before-close="closeEditor" :close-on-click-modal="false" :close-on-press-escape="!saving">
       <el-alert v-if="error" :title="error" type="error" :closable="false" />
       <el-alert v-if="form.action === 'terminate' || form.action === 'replace'" :title="tr('只结束工程关联；设备资产、采集记录、原始日志、历史会话和报告均保留。')" type="warning" :closable="false" />

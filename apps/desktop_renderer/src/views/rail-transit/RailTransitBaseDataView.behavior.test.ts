@@ -776,7 +776,7 @@ describe('轨道交通基础资料编辑闭环', () => {
     expect(wrapper.vm.$route.fullPath).toBe('/rail-transit/base-data')
     expect(overview.find('.summary-grid').exists()).toBe(true)
     expect(overview.find('.subpage-edit-toolbar').exists()).toBe(true)
-    expect(overview.find('.infrastructure-workbench').exists()).toBe(true)
+    expect(overview.find('.infrastructure-workbench').exists()).toBe(false)
     expect(overview.get('.subpage-edit-toolbar').findAll('button').map((item) => item.text().trim())).toEqual(['刷新', '解锁当前子页', '保存当前子页'])
     expect(overview.findAll('button').find((item) => item.text().trim() === '保存当前子页')?.attributes('disabled')).toBeDefined()
     expect(overview.find('input[placeholder="请输入线路名称"]').exists()).toBe(false)

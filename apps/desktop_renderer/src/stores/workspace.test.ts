@@ -13,6 +13,7 @@ function createTestRouter(initial = '/') {
       { path: '/', name: 'dashboard', component: {}, meta: { title: 'Dashboard' } },
       { path: '/devices', name: 'devices', component: {}, meta: { title: '设备管理' } },
       { path: '/rail-transit/base-data', name: 'rail-transit-base-data', component: {}, meta: { title: '基础资料' } },
+      { path: '/rail-transit/infrastructure', name: 'rail-transit-infrastructure', component: {}, meta: { title: '基础设施' } },
       { path: '/devices/:deviceId', name: 'device-detail', component: {}, meta: {
         title: '设备详情',
         workspace: { identity: 'resource', resourceParams: ['deviceId'], allowDuplicate: true },
@@ -98,6 +99,22 @@ describe('workspace store', () => {
     expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data')
   })
 
+  it('keeps infrastructure node intent and base-data tabs in separate workspace entries', async () => {
+    const router = await createTestRouter('/rail-transit/base-data?tab=import-audit')
+    const store = useWorkspaceStore()
+    await store.initialize(router)
+    const base = store.activeTab!
+    const infrastructure = await store.openOrActivateRoute('/rail-transit/infrastructure?node_uid=station-1')
+    expect(infrastructure.id).not.toBe(base.id)
+    expect(infrastructure.cacheKey).not.toBe(base.cacheKey)
+    await store.activateTab(base.id)
+    expect(router.currentRoute.value.path).toBe('/rail-transit/base-data')
+    await store.activateTab(infrastructure.id)
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/infrastructure?node_uid=station-1')
+    expect(base.routeName).toBe('rail-transit-base-data')
+    expect(infrastructure.routeName).toBe('rail-transit-infrastructure')
+  })
+
   it('restores a persisted base data edit tab to the overview landing page', async () => {
     Object.defineProperty(window, 'netconsoleDesktop', {
       configurable: true,
@@ -132,6 +149,21 @@ describe('workspace store', () => {
 
     expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data')
     expect(store.activeTab?.routeFullPath).toBe('/rail-transit/base-data')
+  })
+
+  it('honors an explicit base-data bookmark on reload even when a persisted workspace exists', async () => {
+    Object.defineProperty(window, 'netconsoleDesktop', { configurable:true, value:{
+      getWorkspaceWindowState: vi.fn(async()=>({windowId:'main',snapshot:{schemaVersion:1,windowId:'main',activeTabId:'infra',tabs:[{
+        id:'infra',instanceId:'infra',routeFullPath:'/rail-transit/infrastructure?node_uid=station-1',title:'基础设施',identityKey:'ignored',cacheKey:'infra',pinned:false,openedAt:1,lastActivatedAt:1,
+      }]}})), saveWorkspaceWindowState:vi.fn(async()=>undefined),setWorkspaceWindowTitle:vi.fn(),
+    } })
+    const router=await createTestRouter('/rail-transit/base-data?tab=import-audit')
+    const store=useWorkspaceStore(); await store.initialize(router)
+    expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data?tab=import-audit')
+    expect(store.activeTab?.routeName).toBe('rail-transit-base-data')
+    expect(store.tabs).toHaveLength(2)
+    expect(store.tabs.find((tab) => tab.id === 'infra')?.routeFullPath).toBe('/rail-transit/infrastructure?node_uid=station-1')
+    expect(store.activeTab?.cacheKey).not.toBe('infra')
   })
 
   it('opens the overview after a site switch removes the prior base data tab', async () => {

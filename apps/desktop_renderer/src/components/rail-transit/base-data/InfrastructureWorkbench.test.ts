@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DeviceDetailPanel from '../../device-detail/DeviceDetailPanel.vue'
 import InfrastructureWorkbench from './InfrastructureWorkbench.vue'
@@ -23,6 +24,7 @@ const snapshot: Infrastructure = {
 
 describe('Infrastructure workbench', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     api.getInfrastructure.mockResolvedValue(snapshot)
     api.getInfrastructureSwitchAps.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 })
   })

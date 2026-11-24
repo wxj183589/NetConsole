@@ -119,7 +119,7 @@ def ac_resources(request: Request, ac_device_uuid: str, site_id: str = ""):
 
 @router.post(
     "/projects",
-    dependencies=[Depends(require_feature("capability.rail_base_data.write"))],
+    dependencies=[Depends(require_feature("capability.rail_infrastructure.write"))],
 )
 def save_project(
     request: Request, payload: EngineeringProjectRequest, preview: bool = False
@@ -136,7 +136,7 @@ def save_project(
 @router.post(
     "/preview",
     response_model=RelationshipMutationResult,
-    dependencies=[Depends(require_feature("capability.rail_base_data.write"))],
+    dependencies=[Depends(require_feature("capability.rail_infrastructure.write"))],
 )
 def preview(request: Request, payload: RelationshipMutationRequest):
     return _call(
@@ -155,7 +155,7 @@ def preview(request: Request, payload: RelationshipMutationRequest):
 @router.post(
     "",
     response_model=RelationshipMutationResult,
-    dependencies=[Depends(require_feature("capability.rail_base_data.write"))],
+    dependencies=[Depends(require_feature("capability.rail_infrastructure.write"))],
 )
 def mutate(
     request: Request, payload: RelationshipMutationRequest

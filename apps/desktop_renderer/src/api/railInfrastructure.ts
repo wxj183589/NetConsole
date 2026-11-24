@@ -47,7 +47,7 @@ export interface InfrastructureSwitchAps {
   page_size: number
 }
 
-const root = '/api/rail-transit/base-data/infrastructure'
+const root = '/api/rail-transit/infrastructure'
 
 export function getInfrastructure(siteId: string, signal: AbortSignal): Promise<Infrastructure> {
   return apiRequest(`${root}?${new URLSearchParams({ site_id: siteId })}`, { signal })

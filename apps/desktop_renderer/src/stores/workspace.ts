@@ -74,8 +74,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       synchronizeRoute(to.fullPath)
     })
     initialized.value = true
+    const initialRoute = nextRouter.currentRoute.value
+    const explicitBaseDataLink = initialRoute.name === BASE_DATA_ROUTE_NAME && typeof initialRoute.query.tab === 'string'
+    if (explicitBaseDataLink) await openOrActivateRoute(initialRoute.fullPath)
     const restoredTarget = activeTab.value?.routeFullPath || WORKSPACE_DEFAULT_ROUTE
-    const target = restored.snapshot
+    const target = explicitBaseDataLink ? initialRoute.fullPath : restored.snapshot
       ? landingRouteForWorkspaceActivation(restoredTarget)
       : restoredTarget
     if (target !== restoredTarget && activeTab.value) {

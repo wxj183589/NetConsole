@@ -7,6 +7,13 @@ import type { SystemLanguage } from '../types/systemSettings'
 
 const locale = ref<SystemLanguage>('zh_CN')
 const en: Record<string, string> = {
+  'infrastructure.title': 'Infrastructure',
+  'nav.rail.infrastructure': 'Infrastructure',
+  'nav.rail.base-data': 'Base data',
+  'infrastructure.site_error': 'Active site query failed',
+  'infrastructure.no_site': 'Select a site',
+  'base_data.title': 'Rail transit base data',
+  'base_data.asset_boundary': 'Device asset fields and deletion remain controlled by Device Management; current monitoring settings are retained here.',
   ...engineeringContextEn,
   ...railRelationshipsEn,
   ...groundUnattendedEn,

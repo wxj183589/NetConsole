@@ -15,7 +15,7 @@ describe('shared engineering context', () => {
   it('navigates with stable IDs and lets the destination validate the object', async () => {
     const wrapper = render(context)
     await wrapper.findAll('button').find(b => b.text() === 'Same name')!.trigger('click')
-    expect(mocks.push).toHaveBeenCalledWith({ name: 'rail-transit-base-data', query: { tab: 'overview', node_uid: 'node:stable' } })
+    expect(mocks.push).toHaveBeenCalledWith({ name: 'rail-transit-infrastructure', query: { node_uid: 'node:stable' } })
   })
   it('keeps event-time context separate and does not navigate history as current', () => {
     const wrapper = render({ ...context, affiliation_status: 'historical', effective_at: '2026-11-15' }, true)

@@ -30,12 +30,12 @@ vi.mock('../features', () => ({
 }))
 
 const MeshPage = defineComponent({ template: '<div data-test="mesh-page">MESH 页面</div>' })
-const BaseDataPage = defineComponent({ template: '<div data-test="base-data-page">基础设施页面</div>' })
+const BaseDataPage = defineComponent({ template: '<div data-test="base-data-page">基础资料页面</div>' })
 
 describe('AppLayout 轨道交通导航', () => {
   afterEach(() => vi.unstubAllEnvs())
 
-  it('从 MESH 页面真实点击基础设施后同步路由、标题和页面', async () => {
+  it('从 MESH 页面真实点击基础资料后同步路由、标题和页面', async () => {
     vi.stubEnv('DEV', false)
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1920 })
     sessionStorage.clear()
@@ -55,7 +55,7 @@ describe('AppLayout 轨道交通导航', () => {
             path: 'rail-transit/base-data',
             name: 'rail-transit-base-data',
             component: BaseDataPage,
-            meta: { navigationId: 'rail.base-data', title: '轨道交通 / 基础设施' },
+            meta: { navigationId: 'rail.base-data', title: '轨道交通 / 基础资料' },
           },
         ],
       }],
@@ -80,13 +80,13 @@ describe('AppLayout 轨道交通导航', () => {
     expect(wrapper.find('[data-test="mesh-page"]').exists()).toBe(true)
     expect(wrapper.find('.header-status').text()).toContain('v1.4.9+29541dda')
     expect(wrapper.text()).toContain('当前 Desktop Renderer 资源与后端版本不一致')
-    const baseDataMenu = wrapper.findAll('.el-menu-item').find((item) => item.text().trim() === '基础设施')
+    const baseDataMenu = wrapper.findAll('.el-menu-item').find((item) => item.text().trim() === '基础资料')
     expect(baseDataMenu).toBeDefined()
     await baseDataMenu!.trigger('click')
     await flushPromises()
 
     expect(router.currentRoute.value.fullPath).toBe('/rail-transit/base-data')
-    expect(wrapper.find('.header-title').text()).toBe('轨道交通 / 基础设施')
+    expect(wrapper.find('.header-title').text()).toBe('轨道交通 / 基础资料')
     expect(wrapper.find('[data-test="base-data-page"]').exists()).toBe(true)
     wrapper.unmount()
     workspace.dispose()

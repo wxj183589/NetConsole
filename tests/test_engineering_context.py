@@ -59,7 +59,7 @@ def test_context_api_is_readonly_bounded_and_feature_gated(tmp_path):
     paths, db, relations = _service(tmp_path)
     app = create_app(paths=paths, frontend_dist=tmp_path / "missing")
     app.state.rail_relationship_application_service = relations
-    app.state.feature_gate.features["module.rail_base_data"] = dict(
+    app.state.feature_gate.features["module.rail_infrastructure"] = dict(
         enabled=True, visible=True
     )
     client = TestClient(app)
@@ -81,7 +81,7 @@ def test_context_api_is_readonly_bounded_and_feature_gated(tmp_path):
         ).status_code
         == 422
     )
-    app.state.feature_gate.features["module.rail_base_data"] = dict(
+    app.state.feature_gate.features["module.rail_infrastructure"] = dict(
         enabled=False, visible=True
     )
     assert (
@@ -91,7 +91,7 @@ def test_context_api_is_readonly_bounded_and_feature_gated(tmp_path):
         ).status_code
         == 404
     )
-    app.state.feature_gate.features["module.rail_base_data"] = dict(
+    app.state.feature_gate.features["module.rail_infrastructure"] = dict(
         enabled=False, visible=False
     )
     assert (
