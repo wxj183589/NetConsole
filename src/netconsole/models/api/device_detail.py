@@ -70,8 +70,24 @@ class DeviceOverviewTaskFactsDTO(ApiModel):
 class DeviceEngineeringContextDTO(ApiModel):
     """Read-only projection from the rail infrastructure authority."""
 
+    device_uuid: str = ""
+    device_name: str = ""
+    device_type: str = ""
+    line_id: str = ""
+    station_id: str = ""
+    station_name: str = ""
+    section_ids: list[str] = Field(default_factory=list)
+    project_ids: list[str] = Field(default_factory=list)
+    physical_location: str = ""
+    service_scope: list[dict[str, str]] = Field(default_factory=list)
+    relationship_revision: str = ""
+    context_updated_at: str = ""
+    temporal_scope: Literal["current", "historical"] = "current"
+    effective_at: str = ""
+    identity_status: str = "unconfirmed"
+    reason_code: str = ""
     available: bool = False
-    affiliation_status: Literal["associated", "unassociated", "unavailable", "conflict"] = "unavailable"
+    affiliation_status: Literal["associated", "unassociated", "unavailable", "conflict", "stale", "historical", "not_found", "unconfirmed"] = "unavailable"
     line_name: str = ""
     node_uid: str = ""
     node_type: str = ""

@@ -274,51 +274,9 @@ class DeviceDetailQueryService:
     def _engineering_context(self, device_uuid: str) -> DeviceEngineeringContextDTO:
         if self.rail_context_query is None:
             return DeviceEngineeringContextDTO()
-        try:
-            infrastructure = self.rail_context_query.infrastructure(
-                self.rail_context_query.current_site_id()
-            )
-        except Exception:
-            return DeviceEngineeringContextDTO(
-                affiliation_status="unavailable",
-                source="rail_infrastructure_query",
-            )
-        matches = [
-            (node, device)
-            for node in infrastructure.nodes
-            for device in node.devices
-            if device.device_uuid == device_uuid
-        ]
-        if not matches:
-            return DeviceEngineeringContextDTO(
-                available=True,
-                affiliation_status="unassociated",
-                line_name=infrastructure.line_name,
-                service_stations=next((d.service_stations for d in infrastructure.unassociated_devices
-                    if d.device_uuid == device_uuid), []),
-            )
-        physical = [(n, d) for n, d in matches if n.kind != "section"]
-        if len(physical) > 1:
-            return DeviceEngineeringContextDTO(available=True, affiliation_status="conflict",
-                source="rail_infrastructure_query")
-        node, device = (physical or matches)[0]
-        project_names = [
-            f"{project.stage} {project.name}".strip()
-            for project in node.projects
-        ]
-        return DeviceEngineeringContextDTO(
-            available=True,
-            affiliation_status="associated",
-            line_name=infrastructure.line_name,
-            node_uid=node.uid,
-            node_type=node.kind,
-            node_code=node.code,
-            node_name=node.name,
-            role=device.role or device.device_role,
-            project_names=project_names,
-            service_stations=device.service_stations,
-            service_sections=[n.name for n, _d in matches if n.kind == "section"],
-        )
+        from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+        return EngineeringContextQueryService(self.rail_context_query.paths, self.rail_context_query).one(
+            self.rail_context_query.current_site_id(), device_uuid)
 
     def interfaces(
         self,

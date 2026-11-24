@@ -78,6 +78,15 @@ def history(
         ) from exc
 
 
+@router.get("/engineering-context")
+def engineering_context(request: Request, device_uuid: list[str] = Query(default=[], max_length=200),
+                        site_id: str = "", at_time: str = "", expected_revision: str = ""):
+    from netconsole.services.rail_transit.engineering_context_query_service import EngineeringContextQueryService
+    return EngineeringContextQueryService(request.app.state.paths,
+        request.app.state.rail_transit_base_data_query_service).contexts(
+            _site_id(request, site_id), device_uuid, at_time=at_time, expected_revision=expected_revision)
+
+
 @router.get("/catalog")
 def catalog(request: Request, site_id: str = ""):
     return _call(lambda: _service(request).catalog(_site_id(request, site_id)))
