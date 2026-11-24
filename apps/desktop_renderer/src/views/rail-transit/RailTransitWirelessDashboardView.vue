@@ -201,7 +201,7 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
       </article>
 
       <article class="panel">
-        <div class="panel-title"><div><h2>在线列车通信</h2><p>CT / TC 独立展示，不合并两端状态</p></div><el-button link type="primary" @click="go('/rail-transit/train-communication')">查看全部列车</el-button></div>
+        <div class="panel-title"><div><h2>在线列车通信</h2><p>CT / TC 独立展示，不合并两端状态</p></div><el-button link type="primary" @click="go('/rail-transit/ground-unattended')">查看全部列车</el-button></div>
         <NcDataTable table-id="rail-wireless-dashboard-trains" route-key="/rail-transit/wireless-dashboard" :data="data?.trains.items || []" :columns="trainColumns" :show-column-settings="false" :stripe="false" size="small" max-height="355" empty-text="暂无列车资料">
           <template #cell-mr_ct="{ row }"><template v-if="mrRole(row, 'CT')"><el-tag size="small" :type="statusType(mrRole(row, 'CT')!.communication_status)">{{ mrRole(row, 'CT')!.communication_status }}</el-tag> {{ mrRole(row, 'CT')!.peer_ap_name || '无 Peer AP' }}</template><span v-else>无数据</span></template>
           <template #cell-mr_tc="{ row }"><template v-if="mrRole(row, 'TC')"><el-tag size="small" :type="statusType(mrRole(row, 'TC')!.communication_status)">{{ mrRole(row, 'TC')!.communication_status }}</el-tag> {{ mrRole(row, 'TC')!.peer_ap_name || '无 Peer AP' }}</template><span v-else>无数据</span></template>

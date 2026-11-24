@@ -247,8 +247,8 @@ def test_health_and_backend_log_report_the_actual_stale_renderer_commit(
         ("network_tools.traffic", "/api/traffic/runs"),
         ("module.rail_base_data", "/api/rail-transit/base-data/summary"),
         (
-            "module.train_communication",
-            "/api/rail-transit/train-communication/summary",
+            "module.online_mr",
+            "/api/rail-transit/online-mr/inventory/summary",
         ),
         ("module.mesh_analysis", "/api/rail-transit/mesh-analysis/summary"),
         (

@@ -115,6 +115,7 @@ class TracksideApBusinessQueryService:
         page: int = 1,
         page_size: int = 50,
         expected_revision: str = "",
+        confirmed_switch_uuid: str = "",
     ) -> TracksideApBusinessPageDTO:
         database = Database(self.paths.site_db_path(site_id))
         repository = DeviceRepository(database)
@@ -168,6 +169,15 @@ class TracksideApBusinessQueryService:
         if stations:
             station_set = {value.strip() for value in stations if value.strip()}
             rows = [row for row in rows if str(row.get("site") or "") in station_set]
+        if confirmed_switch_uuid:
+            rows = [
+                row for row in rows
+                if row.get("switch_device_uuid") == confirmed_switch_uuid
+                and row.get("lldp_match_status") == "MATCHED"
+                and row.get("ap_match_source") in {"LLDP_MAC", "LLDP_SWITCH_INTERFACE"}
+                and row.get("lldp_history_status") == "current_consistent"
+                and row.get("ap_identity_entity_id")
+            ]
         enriched = [(row, trackside_row_status(row)) for row in rows]
         current_page = max(1, int(page))
         size = max(1, min(int(page_size), 200))

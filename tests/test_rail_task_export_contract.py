@@ -57,7 +57,6 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
 )
 
 RAIL_FEATURE_IDS = (
-    "module.train_communication",
     "capability.online_mr.report_export",
     "capability.online_mr.parse",
     "capability.online_mr.open_location",
@@ -67,10 +66,7 @@ RAIL_FEATURE_IDS = (
     "capability.mesh.import",
     "capability.mesh.report_export",
     "capability.mesh.source_open_location",
-    "capability.train_communication.diagnostic_execute",
     "capability.rail_transit.task_control",
-    "capability.train_communication.point_table_write",
-    "capability.train_communication.point_table_export",
     "module.trackside_ap",
     "capability.trackside_ap.update",
 )
@@ -641,9 +637,6 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
     assert "handle.write" not in upload_source
 
     with TestClient(app) as client:
-        client.app.state.feature_gate.features[
-            "capability.train_communication.diagnostic_execute"
-        ].update(visible=False, enabled=False, client_package=False)
         blocked_car = client.post(
             "/api/rail-transit/train-communication/trains/train-1/diagnostics"
         )
@@ -678,9 +671,6 @@ def test_browser_contract_removes_site_and_relative_path_and_feature_gates_are_i
             visible=False, enabled=False, client_package=False
         )
         blocked_task_recovery = client.post("/api/online-mr/tasks/recover")
-        client.app.state.feature_gate.features[
-            "capability.train_communication.diagnostic_execute"
-        ].update(visible=True, enabled=True, client_package=True)
         blocked_car_without_control = client.post(
             "/api/rail-transit/train-communication/trains/train-1/diagnostics"
         )

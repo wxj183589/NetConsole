@@ -31,8 +31,6 @@ export const userSelectedExportDefinitions = {
   'rail.ground_history': csvDefinition('rail', '地面无人值守历史'),
   'rail.vehicle_history': xlsxDefinition('rail', '列车经过历史'),
   'rail.vehicle_mapping_template': xlsxDefinition('rail', '列车 MR 映射模板'),
-  'rail.car_network_points_csv': csvDefinition('rail', '车内通信点表'),
-  'rail.car_network_points_xlsx': xlsxDefinition('rail', '车内通信点表'),
   'config.diff': textDefinition('config', '配置差异', 'diff'),
   'config.snapshots': zipDefinition('config', '配置快照'),
   'command-reference.markdown': textDefinition('command-reference', '命令说明', 'md'),

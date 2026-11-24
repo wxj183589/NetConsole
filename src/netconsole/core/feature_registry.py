@@ -11,7 +11,18 @@ class FeatureStatus(StrEnum):
     HIDDEN = "HIDDEN"
 
 
-REMOVED_FEATURE_IDS = frozenset({"module.snmp_center", "module.wifi_survey"})
+REMOVED_FEATURE_IDS = frozenset(
+    {
+        "module.snmp_center",
+        "module.wifi_survey",
+        "rail.car_network_diagnostic",
+        "module.train_communication",
+        "capability.train_communication.diagnostic_execute",
+        "capability.train_communication.point_table_write",
+        "capability.train_communication.point_table_export",
+        "capability.online_mr.local_control",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -213,7 +224,6 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("devices.external_terminal", "devices.external_terminal", "module.devices", "button"),
     FeatureItem("devices.securecrt_sessions", "devices.generate_crt_sessions", "module.devices", "button"),
     FeatureItem("rail.train_online", "rail_transit.train_online", "module.rail_transit", "tab"),
-    FeatureItem("rail.car_network_diagnostic", "rail_transit.car_network_diagnostic", "module.rail_transit", "tab"),
     FeatureItem("rail.trackside_ap_business", "rail_transit.trackside_ap_service", "module.rail_transit", "tab"),
     FeatureItem("rail.raw_mesh_log_analysis", "mesh_analysis.title", "module.rail_transit", "tab"),
     FeatureItem("rail.online_mr_collection", "rail_transit.online_mr_collection", "module.rail_transit", "tab"),
@@ -233,22 +243,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("capability.online_mr.parse", "Online MR 会话解析", "module.online_mr_analysis", "action", requires=("internal.online_mr_analysis",), delivery_requires=("internal.online_mr_analysis",)),
     FeatureItem("capability.online_mr.open_location", "打开 Online MR 会话本地位置", "module.online_mr_analysis", "action", requires=("internal.online_mr_analysis",), delivery_requires=("internal.online_mr_analysis",)),
     FeatureItem("capability.online_mr.session_delete", "删除 Online MR 历史会话", "module.online_mr_analysis", "action", requires=("internal.online_mr_analysis",), delivery_requires=("internal.online_mr_analysis",)),
-    FeatureItem("module.rail_base_data", "轨道交通基础资料", "module.rail_transit", "module", requires=("internal.rail_base_data",), delivery_requires=("internal.rail_base_data",)),
-    FeatureItem(
-        "module.train_communication",
-        "车内通信检测",
-        "module.rail_transit",
-        "module",
-        requires=("internal.rail_base_data", "internal.task_center"),
-        delivery_requires=("internal.rail_base_data", "internal.task_center"),
-    ),
-    FeatureItem(
-        "capability.online_mr.local_control",
-        "本地 Online MR 受控启停",
-        "module.train_communication",
-        "action",
-        status=FeatureStatus.DEVELOPMENT,
-    ),
+    FeatureItem("module.rail_base_data", "轨道交通基础设施", "module.rail_transit", "module", requires=("internal.rail_base_data",), delivery_requires=("internal.rail_base_data",)),
     FeatureItem("module.mesh_analysis", "Mesh 原始日志分析", "module.rail_transit", "module"),
     FeatureItem("capability.mesh.import", "MESH 原始日志导入", "module.mesh_analysis", "action"),
     FeatureItem("capability.mesh.report_export", "MESH 分析报告导出", "module.mesh_analysis", "action"),
@@ -298,9 +293,6 @@ FEATURES: tuple[FeatureItem, ...] = (
     FeatureItem("capability.train_online.mapping_write", "列车 MR 映射保存", "module.train_online", "action"),
     FeatureItem("capability.train_online.mapping_import", "列车 MR 映射导入", "module.train_online", "action"),
     FeatureItem("capability.train_online.mapping_export", "列车 MR 映射模板导出", "module.train_online", "action"),
-    FeatureItem("capability.train_communication.diagnostic_execute", "车内通信检测执行", "module.train_communication", "action"),
-    FeatureItem("capability.train_communication.point_table_write", "在线列车车内通信点表维护", "module.train_communication", "action"),
-    FeatureItem("capability.train_communication.point_table_export", "在线列车车内通信点表导出", "module.train_communication", "action"),
     FeatureItem("module.trackside_ap", "轨旁 AP 业务", "module.rail_transit", "module"),
     FeatureItem("capability.trackside_ap.update", "轨旁 AP 光衰更新", "module.trackside_ap", "action"),
     FeatureItem("capability.trackside_ap.export", "轨旁 AP 业务导出", "module.trackside_ap", "action"),
@@ -335,7 +327,7 @@ FEATURES: tuple[FeatureItem, ...] = (
     ),
     FeatureItem(
         "capability.rail_base_data.write",
-        "轨道交通基础资料受控写入",
+        "轨道交通基础设施受控写入",
         "module.rail_base_data",
         "action",
     ),
@@ -393,7 +385,7 @@ FEATURE_GROUPS = (
     ("devices", "设备管理"),
     ("ac", "AC 与 FIT-AP"),
     ("configuration", "配置采集与文件"),
-    ("rail_base", "轨道交通基础资料"),
+    ("rail_base", "轨道交通基础设施"),
     ("trackside_ap", "轨旁 AP"),
     ("train_online", "列车在线与无人值守"),
     ("online_mr", "车载 MR 采集与分析"),
@@ -493,8 +485,6 @@ def group_id_of(feature_id: str) -> str:
         "rail.online_mr_collection",
         "rail.online_mr_analysis",
         "module.online_mr_analysis",
-        "module.train_communication",
-        "rail.car_network_diagnostic",
     } or any(value.startswith("online_mr.") for value in lineage):
         return "online_mr"
     if lineage & {"rail.raw_mesh_log_analysis", "module.mesh_analysis"} or any(

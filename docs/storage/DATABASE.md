@@ -10,6 +10,10 @@ sites/<site_name>/db/devices.db
 
 The schema in code is the current source of truth for a new database.
 
+The rail infrastructure workbench stores its engineering relationships in the
+same per-Site database. See the [infrastructure data model](../rail-transit/INFRASTRUCTURE_DATA_MODEL.md)
+and [initialization and migration](../rail-transit/INFRASTRUCTURE_MIGRATION.md).
+
 The built-in demonstration site is `demo`. If `sites/demo/db/devices.db` does not exist in an explicitly initialized test or demo root, the application creates the latest tables and inserts demo devices plus Device Facts, Interfaces, and LLDP demo data. Persistent production roots never silently create a second empty data tree.
 
 If the database already exists, `Database.initialize()` applies only additive, idempotent schema updates and records `schema_metadata`; it does not backfill demo facts or delete existing rows. The current migration adds the non-secret device credential state table without rewriting existing device credentials. Never delete a user database to apply an upgrade. Development fixtures must use a temporary data root.

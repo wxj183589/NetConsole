@@ -636,10 +636,7 @@ class RailTransitBaseDataRepository:
                     self._apply_ap_change(connection, site_id, action, change.get("entity_id"), values)
                 elif entity_type == "vehicle_mr":
                     mr_id = self._apply_mr_change(connection, action, change.get("entity_id"), values)
-                    if action == "delete":
-                        mr_strategies_changed |= mr_id in mr_strategies
-                        mr_strategies.pop(mr_id, None)
-                    elif "backup_monitoring_strategy" in values:
+                    if "backup_monitoring_strategy" in values:
                         mr_strategies[mr_id] = values["backup_monitoring_strategy"]
                         mr_strategies_changed = True
                 elif entity_type == "trackside_ap_plan":
@@ -1549,14 +1546,8 @@ class RailTransitBaseDataRepository:
         entity_id: Any,
         values: Mapping[str, Any],
     ) -> str:
-        if action == "delete":
-            cursor = connection.execute(
-                "DELETE FROM devices WHERE device_uuid = ?",
-                (str(entity_id or ""),),
-            )
-            if cursor.rowcount != 1:
-                raise RailTransitBaseDataConstraintError("车载 MR 不存在")
-            return str(entity_id or "")
+        if action not in {"create", "update"}:
+            raise RailTransitBaseDataConstraintError("请通过设备管理维护设备资产")
         try:
             primary_address = normalize_ip_address(
                 values.get("primary_address"),

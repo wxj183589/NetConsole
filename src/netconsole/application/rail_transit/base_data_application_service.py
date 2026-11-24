@@ -658,7 +658,7 @@ class RailTransitBaseDataApplicationService:
             "device_station_binding": {"replace"},
             "section": {"create", "update", "delete"},
             "trackside_ap": {"create", "update", "delete"},
-            "vehicle_mr": {"create", "update", "delete"},
+            "vehicle_mr": {"create", "update"},
             "trackside_ap_plan": {"replace"},
         }
         if action not in allowed_actions[entity_type]:

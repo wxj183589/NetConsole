@@ -61,7 +61,6 @@ const WORKSPACE_ALLOWED_PATHS = new Set([
   '/rail-transit/wireless-dashboard',
   '/rail-transit/base-data',
   '/rail-transit/train-online',
-  '/rail-transit/train-communication',
   '/rail-transit/trackside-ap-business',
   '/rail-transit/mesh-analysis',
   '/rail-transit/online-mr',

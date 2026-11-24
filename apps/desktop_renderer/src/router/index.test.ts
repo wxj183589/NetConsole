@@ -40,8 +40,6 @@ describe('Web route ownership', () => {
     expect(typeof trainOnlineRedirect).toBe('function')
     expect((trainOnlineRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: { query: '01' }, hash: '#details' })).toEqual({ name: 'ground-unattended', query: { query: '01' }, hash: '#details' })
     expect(typeof routes.find((route) => route.path === 'rail-transit/car-network-diagnostic')?.redirect).toBe('function')
-    expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.hiddenRoute).toBe(true)
-    expect(routes.find((route) => route.path === 'rail-transit/train-communication')?.meta?.title).toBe('轨道交通 / 地面无人值守')
     expect(routes.find((route) => route.path === 'network-tools/overview')?.redirect).toEqual({ name: 'tools-connectivity' })
     const trafficRedirect = routes.find((route) => route.path === 'network-tools/traffic')?.redirect
     const toolboxRedirect = routes.find((route) => route.path === 'network-tools/toolbox')?.redirect
@@ -52,6 +50,7 @@ describe('Web route ownership', () => {
     expect((trafficRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: { run: '1' }, hash: '#top' })).toEqual({ name: 'tools-traffic', query: { run: '1' }, hash: '#top' })
     expect((toolboxRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: {}, hash: '' })).toEqual({ name: 'tools-connectivity', query: {}, hash: '' })
     expect((wirelessRedirect as (to: { query: Record<string, string>; hash: string }) => object)({ query: {}, hash: '' })).toEqual({ name: 'tools-wireless-scan', query: {}, hash: '' })
+    expect(routes.find((route) => route.path === 'rail-transit/train-communication')).toBeUndefined()
     expect(routes.find((route) => route.path === 'rail-transit/trackside-ap-plan')?.redirect).toEqual({
       name: 'rail-transit-base-data', query: { tab: 'trackside-ap-planning' },
     })

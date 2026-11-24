@@ -34,9 +34,6 @@ const COORDINATED_EXPORTS: CoordinatedExportEntry[] = [
   entry('views/rail-transit/VehicleMrOnlineView.vue',
     ['rail.vehicle_history', 'rail.vehicle_mapping_template'],
     ['exportVehicleMrHistory', 'exportVehicleMrMappingTemplate']),
-  entry('views/rail-transit/CarNetworkPointTableDialog.vue',
-    ['rail.car_network_points_csv', 'rail.car_network_points_xlsx'],
-    ['exportCarNetworkPointTable']),
   entry('views/config-collection/ConfigCollectionView.vue',
     ['config.diff', 'config.snapshots'],
     ['submitConfigDiffExport', 'submitConfigSnapshotsExport']),
@@ -77,7 +74,6 @@ const IMPORT_ENTRIES = [
   ['views/rail-transit/RailTransitBaseDataView.vue', 'handleFile'],
   ['views/rail-transit/RailTransitBaseDataView.vue', 'handleTracksideApFile'],
   ['views/rail-transit/VehicleMrOnlineView.vue', 'chooseMappingImport'],
-  ['views/rail-transit/CarNetworkPointTableDialog.vue', 'chooseImport'],
 ] as const
 
 const MANAGED_DOWNLOAD_EXCEPTIONS = [

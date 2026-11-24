@@ -33,7 +33,7 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 `desktop.native_bridge` 只控制 Vue 中 Electron 本机能力状态区的产品可见性和禁用状态。它不能绕过 Electron main 的发送方校验、参数白名单和同会话路径授权，也不能替代具体业务模块的人工验收。
 
-`module.system_settings` 已作为 Electron Desktop 正式设置页启用并进入客户包；Browser 导航隐藏，Server Mode API 拒绝访问。内部 `internal.feature_switch` 仅在源码开发态可见、启用且不进入客户包，所有打包态强制关闭。`module.command_reference` 与 `module.logs` 已注册真实页面、Application Service 和 API；日志 CSV 与开源许可 TXT/XLSX 已通过统一 Export Process 和公共 Artifact source whitelist 闭环，安全清理仍需 Electron 人工确认/取消/恢复验收。系统设置当前仍为 `PARTIAL`，本机工具和目录动作仍需桌面人工验收。默认隐藏规划页继续包括 `capability.ac.online_overview`、`capability.ac.optical` 和 `capability.ac.config_snapshots`；`module.train_online` 与 `module.online_mr_analysis` 已纳入正式生产基线。轨旁 AP 业务页、光衰更新、导出与基础资料中的轨旁 AP 规划已进入生产基线，不再登记 AC 重复页面 Feature。`capability.ac.extensions`、`module.train_communication（隐藏兼容）` 与网络工具无线扫描仍未通过真实设备验收；无线扫描与已删除的无线勘测不是同一模块。完整当前状态见 Feature/Navigation Registry、生产代码、测试和[正式包功能矩阵](../release/PACKAGED_FEATURE_MATRIX.md)；[冻结迁移矩阵](../archive/migrations/qt-to-electron/MIGRATION_MATRIX.md)只解释已删除路径去向和历史验收维度，不扩展 `FeatureItem` Schema。
+`module.system_settings` 已作为 Electron Desktop 正式设置页启用并进入客户包；Browser 导航隐藏，Server Mode API 拒绝访问。内部 `internal.feature_switch` 仅在源码开发态可见、启用且不进入客户包，所有打包态强制关闭。`module.command_reference` 与 `module.logs` 已注册真实页面、Application Service 和 API；日志 CSV 与开源许可 TXT/XLSX 已通过统一 Export Process 和公共 Artifact source whitelist 闭环，安全清理仍需 Electron 人工确认/取消/恢复验收。系统设置当前仍为 `PARTIAL`，本机工具和目录动作仍需桌面人工验收。默认隐藏规划页继续包括 `capability.ac.online_overview`、`capability.ac.optical` 和 `capability.ac.config_snapshots`；`module.train_online` 与 `module.online_mr_analysis` 已纳入正式生产基线。轨旁 AP 业务页、光衰更新、导出与基础资料中的轨旁 AP 规划已进入生产基线，不再登记 AC 重复页面 Feature。`capability.ac.extensions` 与网络工具无线扫描仍未通过真实设备验收；无线扫描与已删除的无线勘测不是同一模块。完整当前状态见 Feature/Navigation Registry、生产代码、测试和[正式包功能矩阵](../release/PACKAGED_FEATURE_MATRIX.md)；[冻结迁移矩阵](../archive/migrations/qt-to-electron/MIGRATION_MATRIX.md)只解释已删除路径去向和历史验收维度，不扩展 `FeatureItem` Schema。
 
 独立 Agent 已从 Feature Registry、profile、导航、Backend API 和发布体系移除。历史 `executor=AGENT` 或旧任务字段只用于兼容读取，不再有新的执行、管理、健康或采集包入口。
 
@@ -47,7 +47,7 @@ Registry 当前显式登记的主要子功能包括：设备管理页面、连�
 
 ### 车内通信检测
 
-正式页面使用 `module.train_communication`。点表维护、点表导出和检测执行作为该页面的动作能力登记；历史 `module.train_communication` 只保留为隐藏兼容事实记录，不进入正式导航。
+车内通信检测已 RETIRED，导航、路由、功能授权和专用 API 已退出。Online MR 在现有模块权限下保留列车与 MR 只读查询。
 
 1. 在 Registry 中选择稳定 key，声明父模块、默认值、版本/edition 策略和 internal 属性。
 2. 页面、Tab、动作或按钮使用同一个 key；隐藏与禁用语义必须明确。

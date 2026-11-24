@@ -1,0 +1,107 @@
+"""Read and maintain site-specific engineering relationships."""
+
+from collections import defaultdict
+from contextlib import closing
+from dataclasses import dataclass, field
+from typing import Any
+
+from netconsole.core.database import Database
+from netconsole.core.rail_infrastructure_schema import RAIL_INFRASTRUCTURE_TABLES
+from netconsole.models.device_detail import normalize_device_role
+from netconsole.models.api.rail_infrastructure import (
+    InfrastructureDeviceDTO,
+    InfrastructureNameDTO,
+    InfrastructureProjectDTO,
+)
+
+_DEVICE_FIELDS = "d.device_uuid AS device_uuid, d.name AS name, COALESCE(d.device_type, '') AS device_type"
+
+
+@dataclass
+class InfrastructureFacts:
+    schema_available: bool = False
+    nodes: list[dict[str, Any]] = field(default_factory=list)
+    devices: list[dict[str, Any]] = field(default_factory=list)
+    links: dict[str, list[InfrastructureDeviceDTO]] = field(default_factory=lambda: defaultdict(list))
+    aliases: dict[str, list[InfrastructureNameDTO]] = field(default_factory=lambda: defaultdict(list))
+    projects: dict[str, list[InfrastructureProjectDTO]] = field(default_factory=lambda: defaultdict(list))
+    service_stations: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
+
+
+class RailInfrastructureRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    def read(self) -> InfrastructureFacts:
+        facts = InfrastructureFacts()
+        if not self.database.exists():
+            return facts
+        with closing(self.database.connect_readonly()) as conn, conn:
+            conn.execute("BEGIN")
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if "devices" not in tables:
+                return facts
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
+            station_id = "d.station_id" if "station_id" in columns else "'' AS station_id"
+            facts.devices = [
+                dict(row) for row in conn.execute(
+                    f"SELECT {_DEVICE_FIELDS}, {station_id} FROM devices d ORDER BY d.name, d.device_uuid"
+                )
+            ]
+            if not RAIL_INFRASTRUCTURE_TABLES.issubset(tables):
+                return facts
+            facts.schema_available = True
+            facts.nodes = [
+                dict(row) for row in conn.execute(
+                    "SELECT node_uid AS uid, node_type AS kind, code, official_name AS name "
+                    "FROM rail_infra_node UNION ALL "
+                    "SELECT train_uid, 'train', train_no, name FROM rail_infra_train ORDER BY code, uid"
+                )
+            ]
+            for row in conn.execute(
+                f"SELECT l.node_uid AS uid, {_DEVICE_FIELDS}, l.engineering_role AS role, l.section_uid "
+                "FROM rail_infra_device_link l JOIN devices d ON d.device_uuid = l.device_uuid "
+                "UNION ALL "
+                f"SELECT a.train_uid, {_DEVICE_FIELDS}, 'MR-' || a.position, NULL "
+                "FROM rail_infra_train_mr a JOIN devices d ON d.device_uuid = a.device_uuid "
+                "WHERE a.active_to IS NULL ORDER BY role, name, device_uuid"
+            ):
+                values = dict(row)
+                uid = values.pop("uid")
+                facts.links[uid].append(InfrastructureDeviceDTO(
+                    **values, source="engineering", device_role=normalize_device_role(values["device_type"]),
+                ))
+            for row in conn.execute(
+                "SELECT node_uid, name, name_type, source, valid_from, valid_to FROM rail_infra_node_name "
+                "ORDER BY name_type, valid_from DESC, name_id"
+            ):
+                values = dict(row)
+                uid = values.pop("node_uid")
+                facts.aliases[uid].append(InfrastructureNameDTO(**values))
+            for row in conn.execute(
+                "SELECT n.node_uid, p.project_id, p.name, p.stage FROM rail_infra_node_project n "
+                "JOIN rail_infra_project p ON p.project_id = n.project_id ORDER BY p.stage, p.project_id"
+            ):
+                values = dict(row)
+                uid = values.pop("node_uid")
+                facts.projects[uid].append(InfrastructureProjectDTO(**values))
+            for row in conn.execute(
+                "SELECT l.node_uid AS owner_uid, station.code, station.official_name "
+                "FROM rail_infra_device_link l JOIN rail_infra_ac_service a ON a.ac_device_uuid = l.device_uuid "
+                "JOIN rail_infra_node station ON station.node_uid = a.node_uid "
+                "ORDER BY station.code, station.node_uid"
+            ):
+                label = f"{row['code']} {row['official_name']}".strip()
+                if label not in facts.service_stations[row["owner_uid"]]:
+                    facts.service_stations[row["owner_uid"]].append(label)
+        return facts
+
+    def end_train_mr_assignment(self, assignment_id: str, device_uuid: str, ended_at: str) -> bool:
+        """End only the requested active assignment. Keep the device and its history."""
+        with closing(self.database.connect()) as conn, conn:
+            cursor = conn.execute(
+                "UPDATE rail_infra_train_mr SET active_to = ? "
+                "WHERE assignment_id = ? AND device_uuid = ? AND active_to IS NULL",
+                (ended_at, assignment_id, device_uuid),
+            )
+            return cursor.rowcount == 1

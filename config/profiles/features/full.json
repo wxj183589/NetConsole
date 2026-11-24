@@ -380,12 +380,6 @@
       "client_package": true,
       "internal_only": false
     },
-    "rail.car_network_diagnostic": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
     "rail.trackside_ap_business": {
       "visible": true,
       "enabled": true,
@@ -462,18 +456,6 @@
       "visible": true,
       "enabled": true,
       "client_package": true,
-      "internal_only": false
-    },
-    "module.train_communication": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "capability.online_mr.local_control": {
-      "visible": true,
-      "enabled": true,
-      "client_package": false,
       "internal_only": false
     },
     "module.mesh_analysis": {
@@ -567,24 +549,6 @@
       "internal_only": false
     },
     "capability.train_online.mapping_export": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "capability.train_communication.diagnostic_execute": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "capability.train_communication.point_table_write": {
-      "visible": true,
-      "enabled": true,
-      "client_package": true,
-      "internal_only": false
-    },
-    "capability.train_communication.point_table_export": {
       "visible": true,
       "enabled": true,
       "client_package": true,

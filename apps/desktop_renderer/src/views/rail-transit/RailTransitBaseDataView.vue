@@ -22,6 +22,7 @@ import { isFeatureEnabled } from '../../features'
 
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
+import InfrastructureWorkbench from '../../components/rail-transit/base-data/InfrastructureWorkbench.vue'
 import SubPageEditToolbar from '../../components/rail-transit/base-data/SubPageEditToolbar.vue'
 import TracksideApPlanningTab from '../../components/rail-transit/base-data/TracksideApPlanningTab.vue'
 import {
@@ -3092,9 +3093,7 @@ function sectionSourceLabel(row: Section): string {
   <section class="rail-base-data" v-loading="store.loading">
     <div class="page-toolbar">
       <div>
-        <h2>轨道交通基础资料</h2>
-        <p>按子页独立维护站点、区间、轨旁 AP、AP 规划、列车和车载 MR 等基础数据。</p>
-        <p>{{ store.summary?.site_name || '当前局点' }} · {{ store.summary?.line_name || '线路未填写' }} · {{ store.summary?.project_type || '项目类型未填写' }}</p>
+        <h2>基础设施</h2>
       </div>
     </div>
     <el-alert
@@ -3145,7 +3144,13 @@ function sectionSourceLabel(row: Section): string {
 
     <div class="content-card">
       <el-tabs v-model="activeTab" :before-leave="beforeTabLeave">
-        <el-tab-pane label="基础资料总览" name="overview" lazy>
+        <el-tab-pane label="总览" name="overview" lazy>
+          <InfrastructureWorkbench
+            v-if="activeTab === 'overview' && store.summary && !editing"
+            :site-id="store.summary.site_id"
+            :revision-key="store.summary.updated_at"
+            @navigate="async (tab) => { if (await beforeTabLeave(tab, activeTab)) activeTab = tab }"
+          />
           <SubPageEditToolbar
             :state="subPageEditContexts.overview.state"
             :dirty="pageIsDirty('overview')"
@@ -3599,7 +3604,7 @@ function sectionSourceLabel(row: Section): string {
                 <template #cell-remark="{ row }"><el-input v-if="canEditRow('vehicle_mr', row.id)" v-model="row.remark" @input="markMr(row)" /><span v-else>{{ display(row.remark) }}</span></template>
                 <template #cell-mesh_status="{ row }"><el-tag :type="stateType(row.runtime.mesh_status)">{{ row.runtime.mesh_status }}</el-tag></template>
                 <template #cell-actions="{ row }"><el-button link type="primary" @click="openMrMesh(row)">Mesh-Link</el-button><el-button link type="primary" @click="openMrSession(row)">Online MR</el-button></template>
-                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">移除</el-button><template v-if="isPendingDelete('vehicle_mr', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('vehicle_mr', row)">撤销</el-button></template><el-button v-else-if="!row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">删除</el-button></template>
+                <template #cell-edit_actions="{ row }"><el-tag v-if="row.id.startsWith('new:')" type="success">新增</el-tag><el-button v-if="row.id.startsWith('new:')" link type="danger" :disabled="saving" @click="deleteEntity('vehicle_mr', row)">移除</el-button><template v-if="isPendingDelete('vehicle_mr', row.id)"><el-tag type="danger">待删除</el-tag><el-button link type="primary" @click="undoDelete('vehicle_mr', row)">撤销</el-button></template></template>
               </NcDataTable>
               <el-pagination background :disabled="saving" layout="total, prev, pager, next, sizes" :total="mrPageTotal" :current-page="mrPageCurrent" :page-size="mrPageSize" :page-sizes="[20, 50, 100, 200]" @current-change="changeMrPage" @size-change="changeMrPageSize" />
             </el-tab-pane>

@@ -40,7 +40,6 @@ from netconsole.repositories.online_mr_diagnosis_repository import OnlineMrDiagn
 from netconsole.services.rail_transit.online_mr_diagnosis_parser import PARSER_VERSION
 
 RAIL_FEATURE_IDS = (
-    "module.train_communication",
     "capability.online_mr.report_export",
     "capability.online_mr.parse",
     "capability.online_mr.open_location",
@@ -50,10 +49,7 @@ RAIL_FEATURE_IDS = (
     "capability.mesh.import",
     "capability.mesh.report_export",
     "capability.mesh.source_open_location",
-    "capability.train_communication.diagnostic_execute",
     "capability.rail_transit.task_control",
-    "capability.train_communication.point_table_write",
-    "capability.train_communication.point_table_export",
     "module.trackside_ap",
     "capability.trackside_ap.update",
 )

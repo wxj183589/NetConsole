@@ -46,7 +46,6 @@ from netconsole.services.rail_transit.car_network_diagnostic import (
 from netconsole.repositories.ac_repository import AcRepository
 
 RAIL_FEATURE_IDS = (
-    "module.train_communication",
     "capability.online_mr.report_export",
     "capability.online_mr.parse",
     "capability.online_mr.open_location",
@@ -56,10 +55,7 @@ RAIL_FEATURE_IDS = (
     "capability.mesh.import",
     "capability.mesh.report_export",
     "capability.mesh.source_open_location",
-    "capability.train_communication.diagnostic_execute",
     "capability.rail_transit.task_control",
-    "capability.train_communication.point_table_write",
-    "capability.train_communication.point_table_export",
     "module.trackside_ap",
     "capability.trackside_ap.update",
 )
@@ -331,7 +327,7 @@ def test_point_table_generate_task_returns_controlled_preview_nodes_only(tmp_pat
     assert "nodes" not in other_task.result_summary
 
 
-def test_point_table_and_trackside_plan_routes_reach_application_tasks(
+def test_retired_point_table_and_active_trackside_plan_routes(
     tmp_path: Path,
 ) -> None:
     paths = PathResolver(app_root=tmp_path, data_root=tmp_path)
@@ -438,14 +434,9 @@ def test_point_table_and_trackside_plan_routes_reach_application_tasks(
             json={"template": True},
         )
 
-    assert point_table.status_code == 200
-    assert point_save.status_code == 202
-    assert stale_point_save.status_code == 409
-    assert stale_point_save.json()["detail"]["code"] == "TRAIN_COMMUNICATION_REVISION_CONFLICT"
-    assert (
-        normal.jobs[point_save.json()["task_id"]].task_type
-        == "car_network_save_point_table"
-    )
+    assert point_table.status_code == 404
+    assert point_save.status_code == 404
+    assert stale_point_save.status_code == 404
     assert plan.status_code == 200
     assert auto_group_preview.status_code == 200
     assert adjustment_preview.status_code == 200

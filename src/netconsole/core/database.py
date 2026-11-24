@@ -18,6 +18,10 @@ from netconsole.core.device_credential_store import (
     repair_device_credential_states,
 )
 from netconsole.core.fit_ap_serial_identity import fit_ap_serial_identity_key
+from netconsole.core.rail_infrastructure_schema import (
+    RAIL_INFRASTRUCTURE_SCHEMA,
+    RAIL_INFRASTRUCTURE_TABLES,
+)
 from netconsole.core.sqlite_utils import (
     DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
     DEFAULT_SQLITE_TIMEOUT_SECONDS,
@@ -2649,8 +2653,18 @@ class Database:
                         or self._requires_device_credential_state_repair(conn)
                     )
                     if not maintenance_required:
+                        mode = "fast_path"
+                        if startup_policy == "default" and any(
+                            not self._table_exists(conn, table)
+                            for table in RAIL_INFRASTRUCTURE_TABLES
+                        ):
+                            stage = "rail_infrastructure_schema"
+                            with conn:
+                                conn.execute("BEGIN IMMEDIATE")
+                                _execute_sql_script_in_transaction(conn, RAIL_INFRASTRUCTURE_SCHEMA)
+                            mode = "rail_infrastructure_additive"
                         self._log_startup_maintenance(
-                            mode="fast_path",
+                            mode=mode,
                             elapsed_ms=(monotonic() - initialize_started) * 1000,
                             checkpoint=False,
                         )
@@ -5112,6 +5126,7 @@ class Database:
             DEVICES_SCHEMA,
             DEVICE_CREDENTIAL_STATE_SCHEMA,
             DEVICE_GROUPS_SCHEMA,
+            RAIL_INFRASTRUCTURE_SCHEMA,
             COLLECT_RUNS_SCHEMA,
             DEVICE_FACTS_SCHEMA,
             DEVICE_INTERFACES_SCHEMA,

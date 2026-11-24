@@ -3,14 +3,16 @@ from __future__ import annotations
 from io import BytesIO
 from urllib.parse import quote
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 
 from netconsole.backend.api.error_mapping import map_api_errors
+from netconsole.backend.api.feature_access import require_feature
 from netconsole.application.rail_transit.base_data_application_service import (
     RailTransitBaseDataApplicationError,
     RailTransitBaseDataApplicationService,
 )
+from netconsole.models.api.rail_infrastructure import InfrastructureDTO, InfrastructureSwitchApDTO, InfrastructureSwitchApsDTO
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_base_data import (
     DataQualityEntityGroupPageDTO,
@@ -102,6 +104,40 @@ def _site_id(request: Request, supplied: str) -> str:
 @router.get("/summary", response_model=RailTransitSummaryDTO)
 def summary(request: Request, site_id: str = Query(default="", max_length=100)) -> RailTransitSummaryDTO:
     return _query(lambda: _service(request).get_summary(_site_id(request, site_id)))
+
+
+@router.get("/infrastructure", response_model=InfrastructureDTO)
+def infrastructure(request: Request, site_id: str = Query(default="", max_length=100)) -> InfrastructureDTO:
+    return _query(lambda: _service(request).infrastructure(_site_id(request, site_id)))
+
+
+@router.get(
+    "/infrastructure/switch-aps",
+    response_model=InfrastructureSwitchApsDTO,
+    dependencies=[Depends(require_feature("module.trackside_ap"))],
+)
+def infrastructure_switch_aps(
+    request: Request,
+    device_uuid: str = Query(min_length=1, max_length=64),
+    site_id: str = Query(default="", max_length=100),
+    page: int = Query(default=1, ge=1),
+) -> InfrastructureSwitchApsDTO:
+    def query() -> InfrastructureSwitchApsDTO:
+        result = request.app.state.trackside_ap_business_query_service.list_rows(
+            _site_id(request, site_id), page=page, confirmed_switch_uuid=device_uuid,
+        )
+        return InfrastructureSwitchApsDTO(
+            items=[
+                InfrastructureSwitchApDTO(
+                    row_id=item.row_id, ap_uuid=item.ap_uuid, ap_name=item.ap_name,
+                    interface_name=item.interface_name, link_status=item.link_status,
+                )
+                for item in result.items
+            ],
+            total=result.total, page=result.page, page_size=result.page_size,
+        )
+
+    return _query(query)
 
 
 @router.get("/revision", response_model=BaseDataEditSessionDTO, summary="获取基础资料编辑会话")

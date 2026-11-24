@@ -1,93 +1,15 @@
 import { apiRequest } from './client'
 import type {
-  CarNetworkPointPreview, CarNetworkPointRow, CarNetworkPointTable,
-  OnlineMrMetricSeries, OnlineMrParsedDatabaseEnsureResult, OnlineMrTimelineEvent, MeshImportProfile, OnlineTrainPage, RailTransitTask,
+  OnlineMrMetricSeries, OnlineMrParsedDatabaseEnsureResult, OnlineMrTimelineEvent, MeshImportProfile, RailTransitTask,
 } from '../types/railTransitWeb'
 import type { BackendDownloadRequest } from '../../../desktop_electron/src/shared/bridge'
 import type { MeshAnalysisParams } from '../types/meshAnalysis'
 
 const onlineMrRoot = '/api/online-mr'
-const trainRoot = '/api/rail-transit/train-communication'
 
 interface ApiResponse<T> { ok: boolean; data: T }
 
 export type MeshAnalysisParamsOverride = MeshAnalysisParams
-
-export function listOnlineTrains(page = 1, pageSize = 50): Promise<OnlineTrainPage> {
-  return apiRequest<OnlineTrainPage>(`${trainRoot}/online?page=${page}&page_size=${pageSize}`)
-}
-
-export function startCarNetworkDiagnostic(trainId: string): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/trains/${encodeURIComponent(trainId)}/diagnostics`, { method: 'POST' })
-}
-
-export function getCarNetworkDiagnosticTask(taskId: string): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/diagnostics/${encodeURIComponent(taskId)}`)
-}
-
-export function cancelCarNetworkDiagnostic(taskId: string): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/diagnostics/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
-}
-
-export function recoverCarNetworkDiagnostics(): Promise<RailTransitTask[]> {
-  return apiRequest<RailTransitTask[]>(`${trainRoot}/diagnostics/recover`, { method: 'POST' })
-}
-
-export function getCarNetworkPointTable(): Promise<CarNetworkPointTable> {
-  return apiRequest<CarNetworkPointTable>(`${trainRoot}/point-table`)
-}
-
-export function previewCarNetworkPointTable(file: File, duplicateStrategy: 'replace' | 'skip' | 'error'): Promise<CarNetworkPointPreview> {
-  const form = new FormData()
-  form.append('file', file)
-  form.append('duplicate_strategy', duplicateStrategy)
-  return apiRequest<CarNetworkPointPreview>(`${trainRoot}/point-table/import/preview`, { method: 'POST', body: form })
-}
-
-export function transformCarNetworkPointTable(
-  operation: 'apply_mapping' | 'apply_global' | 'apply_global_override' | 'restore_defaults',
-  rows: CarNetworkPointRow[],
-  globalConfig: Record<string, unknown>,
-): Promise<CarNetworkPointTable> {
-  return apiRequest<CarNetworkPointTable>(`${trainRoot}/point-table/transform`, {
-    method: 'POST', body: JSON.stringify({ operation, rows, global_config: globalConfig }),
-  })
-}
-
-export function saveCarNetworkPointTable(
-  rows: CarNetworkPointRow[], globalConfig: Record<string, unknown>, overwriteCustom = false, revision = '',
-): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/point-table/save`, {
-    method: 'POST', body: JSON.stringify({ rows, global_config: globalConfig, overwrite_custom: overwriteCustom, explicit_confirmation: true, audit: { source: 'electron-point-table' }, revision }),
-  })
-}
-
-export function generateCarNetworkPointTable(rows: CarNetworkPointRow[], globalConfig: Record<string, unknown>, targetTrain: Record<string, unknown> = {}): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/point-table/generate`, {
-    method: 'POST', body: JSON.stringify({ rows, global_config: globalConfig, target_train: targetTrain }),
-  })
-}
-
-export function exportCarNetworkPointTable(format: 'xlsx' | 'csv'): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/point-table/export`, { method: 'POST', body: JSON.stringify({ format }) })
-}
-
-export function getCarNetworkPointTableTask(taskId: string): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/point-table/tasks/${encodeURIComponent(taskId)}`)
-}
-
-export function cancelCarNetworkPointTableTask(taskId: string): Promise<RailTransitTask> {
-  return apiRequest<RailTransitTask>(`${trainRoot}/point-table/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' })
-}
-
-export function recoverCarNetworkPointTableTasks(): Promise<RailTransitTask[]> {
-  return apiRequest<RailTransitTask[]>(`${trainRoot}/point-table/tasks/recover`, { method: 'POST' })
-}
-
-export const carNetworkPointTableDownloadRequest = (artifactId: string, format: 'xlsx' | 'csv'): BackendDownloadRequest => ({
-  apiPath: `${trainRoot}/point-table/artifacts/${encodeURIComponent(artifactId)}/download?format=${format}`,
-  suggestedName: `车内通信点表.${format}`,
-})
 
 export function importMeshAnalysis(files: File[], profile: MeshImportProfile): Promise<RailTransitTask> {
   const form = new FormData()

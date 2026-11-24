@@ -52,7 +52,7 @@ describe('Rail Transit base data maintenance view', () => {
 
   it('preserves the guarded base-data maintenance, import and navigation contracts', () => {
     for (const contract of [
-      '基础资料总览',
+      '总览',
       '站点与区间',
       '轨旁 AP',
       '轨旁 AP 导入预览',

@@ -6,16 +6,13 @@ vi.mock('./client', () => ({
   apiRequest: apiRequestMock,
 }))
 
-import { getTrainCommunicationCheck, listOnlineTrainCommunications, startTrainCommunicationCheck } from './trainCommunication'
+import { getTrainCommunicationSummary, listTrainCommunications } from './trainCommunication'
 
-describe('train communication API', () => {
-  it('uses the formal online train and diagnostics endpoints', () => {
-    listOnlineTrainCommunications(1, 200)
-    startTrainCommunicationCheck('train-1')
-    getTrainCommunicationCheck('task-1')
-
-    expect(apiRequestMock).toHaveBeenNthCalledWith(1, '/api/rail-transit/train-communication/online?page=1&page_size=200')
-    expect(apiRequestMock).toHaveBeenNthCalledWith(2, '/api/rail-transit/train-communication/trains/train-1/diagnostics', { method: 'POST' })
-    expect(apiRequestMock).toHaveBeenNthCalledWith(3, '/api/rail-transit/train-communication/diagnostics/task-1')
+describe('Online MR inventory API', () => {
+  it('reads shared train and MR inventory under the Online MR namespace', async () => {
+    await getTrainCommunicationSummary()
+    await listTrainCommunications({ train: '01', page: 2, page_size: 50 })
+    expect(apiRequestMock).toHaveBeenNthCalledWith(1, '/api/rail-transit/online-mr/inventory/summary')
+    expect(apiRequestMock).toHaveBeenNthCalledWith(2, '/api/rail-transit/online-mr/inventory/trains?train=01&page=2&page_size=50')
   })
 })

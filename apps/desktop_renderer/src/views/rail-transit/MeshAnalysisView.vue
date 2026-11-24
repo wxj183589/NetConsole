@@ -4919,7 +4919,6 @@ function exportTimestamp(now = new Date()): string {
           <el-button v-if="canOpenSelectedSourceLocation" :icon="FolderOpened" @click="openSelectedSourceLocation">打开本地目录</el-button>
           <el-button type="danger" plain :icon="Delete" :loading="sourceDeleteSubmitting" @click="prepareSourceDelete([selected.session])">删除当前来源</el-button>
           <el-button @click="openTaskWindow()">打开任务中心</el-button>
-          <el-button @click="router.push({ path: '/rail-transit/train-communication', query: { train: selected?.session.train_name } })">在线列车通信</el-button>
           <el-button @click="router.push('/rail-transit/online-mr')">Online MR</el-button>
           <el-button @click="router.push('/rail-transit/ground-unattended')">地面无人值守</el-button>
         </div>

@@ -41,6 +41,13 @@ from netconsole.models.api.rail_transit_base_data import (
     VehicleMrDetailDTO,
     VehicleMrPageDTO,
 )
+from netconsole.models.api.rail_infrastructure import (
+    InfrastructureDTO,
+    InfrastructureDeviceDTO,
+    InfrastructureNodeDTO,
+)
+from netconsole.models.device_detail import normalize_device_role
+from netconsole.repositories.rail_infrastructure_repository import RailInfrastructureRepository
 from netconsole.repositories.rail_transit_base_data_repository import (
     RailTransitBaseDataRepository,
 )
@@ -409,6 +416,78 @@ class RailTransitBaseDataQueryService:
             unbound_mr_count=codes["mr_train_unbound"],
             issue_count=len(issues),
             message=message,
+        )
+
+    def infrastructure(self, site_id: str) -> InfrastructureDTO:
+        meta = self._site_meta(site_id)
+        points = self._all_points(site_id, include_runtime=False)
+        facts = RailInfrastructureRepository(Database(self.paths.site_db_path(site_id))).read()
+        nodes = {}
+        station_lookup = {}
+        for station in sort_rail_stations(self._stations(points, site_id=site_id)):
+            if station.source_kind == "legacy_ap_derived" or not station.node_uid:
+                continue
+            kinds = {"station": "station", "depot": "depot", "parking_lot": "parking_yard"}
+            kind = kinds.get(station.node_type)
+            if kind is None:
+                continue
+            nodes[station.node_uid] = InfrastructureNodeDTO(
+                uid=station.node_uid, kind=kind, code=station.code, name=station.name,
+                source="legacy_station", station=station,
+            )
+            station_lookup[station.id] = station.node_uid
+            station_lookup[station.node_uid] = station.node_uid
+        for values in facts.nodes:
+            uid = values["uid"]
+            existing = nodes.get(uid)
+            nodes[uid] = InfrastructureNodeDTO(
+                **values, source="engineering",
+                station=existing.station if existing else None,
+                aliases=facts.aliases[uid], projects=facts.projects[uid],
+                devices=facts.links[uid], ac_service_stations=facts.service_stations[uid],
+            )
+            if values["kind"] != "train":
+                station_lookup.setdefault(uid, uid)
+        for section in self._sections(points):
+            for uid in {section.start_node_uid, section.end_node_uid}:
+                if uid in nodes:
+                    nodes[uid].sections.append(section)
+        formal_train_numbers = {node.code for node in nodes.values() if node.kind == "train"}
+        for train in self._trains(self._all_mrs(site_id, include_runtime=False), []):
+            if train.train_no in formal_train_numbers:
+                continue
+            uid = f"legacy:{train.id}"
+            nodes[uid] = InfrastructureNodeDTO(
+                uid=uid, kind="train", code=train.train_no, name=train.name, source="legacy_train",
+            )
+
+        associated = {
+            device.device_uuid for node in nodes.values() for device in node.devices
+        }
+        unassociated = []
+        unresolved = 0
+        for row in facts.devices:
+            device_uuid = row["device_uuid"]
+            if device_uuid in associated:
+                continue
+            station_id = row.pop("station_id")
+            device = InfrastructureDeviceDTO(
+                **row, source="legacy_station",
+                device_role=normalize_device_role(row["device_type"]),
+            )
+            uid = station_lookup.get(station_id)
+            if uid is None:
+                unassociated.append(device)
+                unresolved += bool(station_id)
+            else:
+                nodes[uid].devices.append(device)
+
+        return InfrastructureDTO(
+            site_id=site_id, site_name=str(meta.get("display_name") or site_id),
+            line_name=str(meta.get("line_name") or ""),
+            schema_available=facts.schema_available, nodes=list(nodes.values()),
+            device_count=len(facts.devices), unassociated_device_count=len(unassociated),
+            unresolved_binding_count=unresolved, unassociated_devices=unassociated,
         )
 
     def list_stations(
