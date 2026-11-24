@@ -1,9 +1,9 @@
 # NetConsole 设备管理界面优化与功能整合验收报告
 
-日期：2026-11-24  
-版本：v1.5.19  
-分支：`codex-A/device-management-ui-polish-20261124`  
-产品 Commit：`f8956b7a9bdd6f672853cd132456d9118b825cc5`  
+日期：2026-11-24
+版本：v1.5.19
+分支：`codex-A/device-management-ui-polish-20261124`
+产品 Commit：`f8956b7a9bdd6f672853cd132456d9118b825cc5`
 产品 Push：PASS，已推送至 `github/codex-A/device-management-ui-polish-20261124`
 
 ## 任务状态
