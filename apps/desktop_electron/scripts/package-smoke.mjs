@@ -155,7 +155,6 @@ const requiredProductionFeatureIds = [
   'module.rail_base_data',
   'capability.rail_base_data.write',
   'module.system_settings',
-  'module.train_communication',
   'mesh.generate_report',
 ]
 const expectedPackagedPythonLicenses = {
