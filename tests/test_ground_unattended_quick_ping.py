@@ -390,6 +390,24 @@ def test_quick_ping_collects_stats_and_writes_mr_ndjson(tmp_path: Path) -> None:
     assert manifest.is_file()
 
 
+def test_concurrent_segment_writers_create_unique_first_files(tmp_path: Path) -> None:
+    from netconsole.services.ground_unattended.quick_ping import _QuickPingSegmentWriter
+
+    payload = {"target_ip": "192.0.2.10", "ok": True}
+    timestamp = "2026-11-06T12:00:00+00:00"
+    writers = [_QuickPingSegmentWriter(tmp_path / "quick_ping" / "2026-11-06" / "segments") for _ in range(2)]
+    try:
+        for writer in writers:
+            writer.write(payload, timestamp)
+        paths = [path for writer in writers for path in writer.paths]
+        assert len(paths) == 2
+        assert len(set(paths)) == 2
+        assert all(Path(path).is_file() for path in paths)
+    finally:
+        for writer in writers:
+            writer.close()
+
+
 def test_quick_ping_manual_stop_closes_stream_and_records_cancelled(tmp_path: Path) -> None:
     started = threading.Event()
 

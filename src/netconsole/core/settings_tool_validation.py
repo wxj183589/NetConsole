@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 
-SettingsToolId = Literal["iperf3", "fping", "ipop", "securecrt", "xshell", "putty"]
+SettingsToolId = Literal["iperf3", "fping", "ipop", "securecrt", "xshell", "putty", "openssh"]
 
 TOOL_EXECUTABLE_NAMES: dict[SettingsToolId, tuple[str, ...]] = {
     "iperf3": ("iperf3.exe",),
@@ -13,6 +13,7 @@ TOOL_EXECUTABLE_NAMES: dict[SettingsToolId, tuple[str, ...]] = {
     "securecrt": ("SecureCRT.exe",),
     "xshell": ("Xshell.exe",),
     "putty": ("putty.exe", "putty64.exe"),
+    "openssh": ("ssh.exe",),
 }
 
 TOOL_DISPLAY_NAMES: dict[SettingsToolId, str] = {
@@ -22,6 +23,7 @@ TOOL_DISPLAY_NAMES: dict[SettingsToolId, str] = {
     "securecrt": "SecureCRT",
     "xshell": "Xshell",
     "putty": "PuTTY",
+    "openssh": "OpenSSH",
 }
 
 

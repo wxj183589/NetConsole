@@ -247,7 +247,7 @@ class LocalNetworkServiceManager:
                 "config": config or (ServiceConfig(port=definition.port, tls_enabled=kind == "https") if available else None),
                 "listeners": [
                     {"address": config.address if config else "127.0.0.1", "port": config_port, "transport": "UDP"},
-                    {"address": config.address if config else "127.0.0.1", "port": config_port + 1, "transport": "TCP"},
+                    {"address": config.address if config else "127.0.0.1", "port": config_port, "transport": "TCP"},
                 ] if kind == "syslog" and config_port < 65535 else [],
                 "root": str(self._directory(kind) / "files") if kind in FILE_SHARES else None,
             }

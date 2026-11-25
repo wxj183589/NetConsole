@@ -140,13 +140,50 @@ class SyslogTcpHandler(socketserver.StreamRequestHandler):
     def handle(self):
         peer = self.client_address[0]
         while not self.server.stopping.is_set():
-            line = self.rfile.readline(self.server.max_packet_size + 1)
-            if not line:
+            frame = self._read_frame(peer)
+            if frame is None:
                 return
-            if len(line) > self.server.max_packet_size:
-                self.server.log.warning("Syslog message exceeded size limit from %s", peer)
-                return
-            self.server.log_syslog(line, peer)
+            if frame:
+                self.server.log_syslog(frame, peer)
+
+    def _read_frame(self, peer: str) -> bytes | None:
+        first = self.rfile.read(1)
+        if not first:
+            return None
+        if not first.isdigit():
+            return self._read_line_frame(first, peer)
+
+        prefix = bytearray(first)
+        while len(prefix) <= 10:
+            character = self.rfile.read(1)
+            if not character:
+                return None
+            if character == b" ":
+                length = int(prefix)
+                if not 0 < length <= self.server.max_packet_size:
+                    self.server.log.warning("Syslog octet-counted frame size is invalid from %s", peer)
+                    return None
+                payload = self.rfile.read(length)
+                if len(payload) != length:
+                    self.server.log.warning("Syslog octet-counted frame is truncated from %s", peer)
+                    return None
+                return payload
+            if character.isdigit():
+                prefix.extend(character)
+                continue
+            return self._read_line_frame(bytes(prefix) + character, peer)
+
+        self.server.log.warning("Syslog octet-counted frame length is invalid from %s", peer)
+        return None
+
+    def _read_line_frame(self, prefix: bytes, peer: str) -> bytes | None:
+        remaining = self.server.max_packet_size + 1 - len(prefix)
+        frame = prefix + self.rfile.readline(max(0, remaining))
+        if len(frame) > self.server.max_packet_size:
+            self.server.log.warning("Syslog message exceeded size limit from %s", peer)
+            return None
+        return frame.rstrip(b"\r\n")
+
 
 
 def parse_syslog_record(payload: bytes) -> dict[str, object]:
@@ -414,8 +451,6 @@ def create_server(kind, config, root, log: logging.Logger, stopping, *, ssl_cont
 
 
 def create_syslog_server(config, log, stopping):
-    if config.port == 65535:
-        raise ValueError("syslog_udp_port_has_no_tcp_pair")
 
     pending = Queue(maxsize=4096)
     receivers_stopped = Event()
@@ -454,7 +489,7 @@ def create_syslog_server(config, log, stopping):
     servers = [udp]
     try:
         initialize(udp)
-        tcp = TcpServer((config.address, config.port + 1), SyslogTcpHandler, bind_and_activate=False)
+        tcp = TcpServer((config.address, config.port), SyslogTcpHandler, bind_and_activate=False)
         servers.append(tcp)
         initialize(tcp)
     except OSError:

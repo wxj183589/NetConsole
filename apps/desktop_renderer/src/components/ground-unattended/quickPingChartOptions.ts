@@ -1,7 +1,10 @@
 import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeChart'
 import { formatTimelineMetricValue, timelineMetricDefinition } from '../rail-timeline/timelineMetricPresentation'
 import type { NetConsoleChartTokens } from '../../theme/echarts'
-import { PING_CHART_COLORS, pingPointValues, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
+import { PING_CHART_COLORS, isPingFailureStatus, isPingUncertainStatus, pingPointValues, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
+
+const MAX_RENDERED_PING_SAMPLES = 4_000
+const MAX_SAMPLES_PER_BUCKET = 8
 
 export function quickPingChartOption(
   rows: Array<Record<string, unknown>>, intervalMs: number, theme: NetConsoleChartTokens,
@@ -9,35 +12,49 @@ export function quickPingChartOption(
   viewport?: { start: string; end: string }, selectedTime = '', fullDomain?: { start: string; end: string },
   secondLossBuckets: Array<Record<string, unknown>> = [],
 ): Record<string, unknown> {
+  const axisStart = Date.parse(fullDomain?.start || '')
+  const axisEnd = Date.parse(fullDomain?.end || '')
+  const hasFullDomain = Number.isFinite(axisStart) && Number.isFinite(axisEnd) && axisStart < axisEnd
   const points: PingChartPoint[] = rows.flatMap((row) => {
     // Archived samples are flat DTOs; live harness rows may wrap the sample.
     const nested = row.sample
     const sample = nested && typeof nested === 'object' ? nested as Record<string, unknown> : row
     const time = Date.parse(String(row.received_at || row.ts || sample.received_at || sample.ts || ''))
-    if (!Number.isFinite(time)) return []
+    if (!Number.isFinite(time) || (hasFullDomain && (time < axisStart || time > axisEnd))) return []
     const target = String(row.target_ip || sample.target_ip || sample.mr_name || sample.mr_role || '目标')
     return [{ target, time, ...pingPointValues(sample) }]
-  }).sort((a, b) => a.time - b.time)
+  }).sort((a, b) => a.time - b.time || a.target.localeCompare(b.target))
   const targetKeys = [...new Set(points.map((point) => point.target))]
+  const renderedPoints = boundPointsByTime(points, targetKeys)
   const buildSeriesData = (target: string) => {
-    const targetPoints = points.filter((point) => point.target === target)
+    const targetPoints = renderedPoints.filter((point) => point.target === target)
     const rtt: Array<[number, number | null]> = [], success: Array<[number, number | null]> = [], failure: Array<[number, number | null]> = [], unknown: Array<[number, string]> = []
     for (let index = 0; index < targetPoints.length; index++) {
       const point = targetPoints[index]!, previous = targetPoints[index - 1]
       if (previous && point.time - previous.time > Math.max(1000, intervalMs * 3)) {
         rtt.push([previous.time + 1, null]); success.push([previous.time + 1, null]); failure.push([previous.time + 1, null])
       }
-      rtt.push([point.time, point.rtt]); success.push([point.time, point.status === 'SUCCESS' ? 0 : null]); failure.push([point.time, point.status === 'TIMEOUT' || point.status === 'PACKET_LOSS' ? point.loss : null]); if (point.status === 'UNKNOWN') unknown.push([point.time, 'UNKNOWN'])
+      const failureStatus = isPingFailureStatus(point.status)
+      const uncertainStatus = isPingUncertainStatus(point.status)
+      rtt.push([point.time, point.status === 'SUCCESS' ? point.rtt : null])
+      success.push([point.time, point.status === 'SUCCESS' ? 0 : null])
+      failure.push([point.time, failureStatus ? point.loss ?? 100 : null])
+      if (uncertainStatus) unknown.push([point.time, point.status])
     }
-    const secondLoss = secondLossBuckets
+    const secondLossPoints = secondLossBuckets
       .filter((bucket) => !bucket.target_ip || String(bucket.target_ip) === target)
       .map((bucket) => [Date.parse(String(bucket.start || '')), typeof bucket.packet_loss_rate === 'number' ? bucket.packet_loss_rate : null] as [number, number | null])
       .filter(([time]) => Number.isFinite(time))
+      .sort((left, right) => left[0] - right[0])
+    const secondLoss: Array<[number, number | null]> = []
+    secondLossPoints.forEach((point, index) => {
+      const previous = secondLossPoints[index - 1]
+      if (previous && point[0] - previous[0] > 1_000) secondLoss.push([previous[0] + 1, null])
+      secondLoss.push(point)
+    })
     return { rtt, success, failure, unknown, secondLoss }
   }
   const metric = timelineMetricDefinition('ping_rtt')!
-  const axisStart = Date.parse(fullDomain?.start || '')
-  const axisEnd = Date.parse(fullDomain?.end || '')
   const fallbackStart = points[0]?.time
   const fallbackEnd = points[points.length - 1]?.time
   const fullStart = Number.isFinite(axisStart) ? axisStart : fallbackStart
@@ -74,4 +91,51 @@ export function quickPingChartOption(
       ]
     }),
   }
+}
+
+function boundPointsByTime(points: PingChartPoint[], targets: string[]): PingChartPoint[] {
+  if (points.length <= MAX_RENDERED_PING_SAMPLES || targets.length === 0) return points
+
+  const sampleBudget = Math.max(1, Math.floor(MAX_RENDERED_PING_SAMPLES / targets.length))
+  const pointsByTarget = new Map(targets.map((target) => [target, [] as PingChartPoint[]]))
+  points.forEach((point) => pointsByTarget.get(point.target)?.push(point))
+  const bounded: PingChartPoint[] = []
+
+  for (const target of targets) {
+    const targetPoints = pointsByTarget.get(target) || []
+    if (targetPoints.length <= sampleBudget) {
+      bounded.push(...targetPoints)
+      continue
+    }
+
+    const bucketCount = Math.max(1, Math.floor(sampleBudget / MAX_SAMPLES_PER_BUCKET))
+    for (let bucketIndex = 0; bucketIndex < bucketCount; bucketIndex += 1) {
+      const start = Math.floor(bucketIndex * targetPoints.length / bucketCount)
+      const end = Math.floor((bucketIndex + 1) * targetPoints.length / bucketCount)
+      const bucket = targetPoints.slice(start, end)
+      if (!bucket.length) continue
+
+      const successes = bucket.filter((point) => point.status === 'SUCCESS' && point.rtt !== null)
+      const failures = bucket.filter((point) => isPingFailureStatus(point.status))
+      const uncertain = bucket.filter((point) => isPingUncertainStatus(point.status))
+      const selected = new Set<PingChartPoint>([
+        bucket[0]!,
+        bucket[bucket.length - 1]!,
+        ...edgePoints(successes),
+        ...edgePoints(failures),
+        ...edgePoints(uncertain),
+      ])
+      if (successes.length) {
+        selected.add(successes.reduce((lowest, point) => point.rtt! < lowest.rtt! ? point : lowest))
+        selected.add(successes.reduce((highest, point) => point.rtt! > highest.rtt! ? point : highest))
+      }
+      bounded.push(...[...selected].sort((left, right) => left.time - right.time))
+    }
+  }
+
+  return bounded.sort((left, right) => left.time - right.time || left.target.localeCompare(right.target))
+}
+
+function edgePoints(points: PingChartPoint[]): PingChartPoint[] {
+  return points.length > 1 ? [points[0]!, points[points.length - 1]!] : points
 }

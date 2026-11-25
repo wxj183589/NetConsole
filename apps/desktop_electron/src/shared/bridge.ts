@@ -176,7 +176,7 @@ export interface ExternalToolLaunchResult extends NativeActionResult {
   errorCode?: 'ELEVATION_CANCELLED'
 }
 
-export type SettingsToolId = 'iperf3' | 'fping' | 'securecrt' | 'xshell' | 'putty'
+export type SettingsToolId = 'iperf3' | 'fping' | 'securecrt' | 'xshell' | 'putty' | 'openssh'
 export type SettingsDirectoryId = 'securecrt_sessions_root'
 export type SettingsActionId = 'open_settings_config' | 'open_current_site'
 export type SettingsThemeColor = '#0078D4' | '#2563EB' | '#0891B2' | '#16A34A'
@@ -194,6 +194,7 @@ export const SETTINGS_TOOL_DEFINITIONS: Record<SettingsToolId, SettingsToolDefin
   securecrt: { displayName: 'SecureCRT', fieldLabel: 'SecureCRT.exe', filterName: 'SecureCRT', executableNames: ['SecureCRT.exe'] },
   xshell: { displayName: 'Xshell', fieldLabel: 'Xshell.exe', filterName: 'Xshell', executableNames: ['Xshell.exe'] },
   putty: { displayName: 'PuTTY', fieldLabel: 'PuTTY.exe / PuTTY64.exe', filterName: 'PuTTY', executableNames: ['putty.exe', 'putty64.exe'] },
+  openssh: { displayName: 'OpenSSH', fieldLabel: 'ssh.exe', filterName: 'OpenSSH', executableNames: ['ssh.exe'] },
 }
 
 export function settingsToolNameMatches(toolId: SettingsToolId, path: string): boolean {

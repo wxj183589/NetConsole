@@ -124,6 +124,7 @@ H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY = (
     "h3c_comware_v7_wireless_controller"
 )
 H3C_COMWARE_SUPPORTED_MAJORS = frozenset({"V7", "V9"})
+H3C_COMWARE_WIRELESS_MAJORS = frozenset({"V5", "V7", "V9"})
 
 
 @dataclass(frozen=True)
@@ -414,12 +415,16 @@ def resolve_h3c_capability(
         raise DeviceCommandProfileNotFound(
             "H3C_COMWARE_MAJOR_UNRESOLVED: 未能从软件事实解析 Comware major"
         )
-    if major not in H3C_COMWARE_SUPPORTED_MAJORS:
+    if major not in H3C_COMWARE_WIRELESS_MAJORS:
         raise DeviceCommandProfileNotFound(
-            "H3C 无线/通用 Comware capability 当前仅支持 major=V7 或 V9: "
+            "H3C 无线/通用 Comware capability 当前仅支持 major=V5、V7 或 V9: "
             f"major={major}"
         )
     family_id = f"h3c_comware_v{major.removeprefix('V')}"
+    if major == "V5" and role != "wireless_controller":
+        raise DeviceCommandProfileNotFound(
+            f"Comware V5 仅接入无线控制器只读能力: role={role}"
+        )
     if capability in _H3C_WIRELESS_CAPABILITIES:
         if role != "wireless_controller":
             raise DeviceCommandProfileNotFound(
@@ -431,6 +436,11 @@ def resolve_h3c_capability(
             family_id=(
                 f"h3c_comware_v{major.removeprefix('V')}_wireless_controller"
             ),
+            optional=base.optional,
+        )
+    if major == "V5" and capability != "session_prepare":
+        raise DeviceCommandProfileNotFound(
+            f"Comware V5 未登记此只读能力: capability={capability}"
         )
     if capability in _H3C_COMMON_CAPABILITIES:
         base = _H3C_COMMON_CAPABILITIES[capability]
@@ -1249,6 +1259,7 @@ __all__ = [
     "H3C_COMWARE_V7_FAMILY",
     "H3C_COMWARE_V7_WIRELESS_CONTROLLER_FAMILY",
     "H3C_COMWARE_SUPPORTED_MAJORS",
+    "H3C_COMWARE_WIRELESS_MAJORS",
     "H3cCapability",
     "DeviceCommandProfile",
     "DeviceCommandProfileError",

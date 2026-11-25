@@ -211,6 +211,7 @@ const terminalSettings = reactive<DeviceExternalTerminalSettings>({
   securecrt_path: '',
   xshell_path: '',
   putty_path: '',
+  openssh_path: '',
   pass_password: false,
 })
 const filters = reactive({
@@ -1968,7 +1969,7 @@ async function openTerminalSettings(): Promise<void> {
   }
 }
 
-async function chooseTerminalExecutable(terminalType: 'securecrt' | 'putty' | 'xshell'): Promise<void> {
+async function chooseTerminalExecutable(terminalType: 'securecrt' | 'putty' | 'xshell' | 'openssh'): Promise<void> {
   const result = await getPlatformAdapter().selectFile({
     filters: [{ name: `${terminalType} executable`, extensions: ['exe'] }],
   })
@@ -2021,7 +2022,7 @@ async function requestTerminal(deviceUuid?: string): Promise<void> {
   }
   try {
     Object.assign(terminalSettings, await getExternalTerminalSettings())
-    const configured = (['securecrt', 'xshell', 'putty'] as const).filter((type) => Boolean(terminalSettings[`${type}_path`]))
+    const configured = (['securecrt', 'xshell', 'putty', 'openssh'] as const).filter((type) => Boolean(terminalSettings[`${type}_path`]))
     if (!configured.length) {
       ElMessage.warning('尚未配置外部终端程序路径')
       await openTerminalSettings()
@@ -2412,6 +2413,7 @@ function deviceListErrorMessage(cause: unknown): string {
         <el-radio value="securecrt" :disabled="!terminalSettings.securecrt_path">SecureCRT</el-radio>
         <el-radio value="xshell" :disabled="!terminalSettings.xshell_path">Xshell</el-radio>
         <el-radio value="putty" :disabled="!terminalSettings.putty_path">PuTTY</el-radio>
+        <el-radio value="openssh" :disabled="!terminalSettings.openssh_path">OpenSSH</el-radio>
       </el-radio-group>
       <p>将为 {{ terminalTargetUuids.length }} 台设备启动外部终端。</p>
       <template #footer><el-button @click="terminalLaunchVisible = false">取消</el-button><el-button type="primary" @click="launchTerminalTargets">启动</el-button></template>
@@ -2419,12 +2421,13 @@ function deviceListErrorMessage(cause: unknown): string {
 
     <el-dialog v-model="terminalSettingsVisible" title="外部终端配置" width="min(760px, 94vw)">
       <div v-loading="terminalSettingsLoading">
-        <el-alert title="程序路径只能通过 Electron 原生文件选择器设置；后端仅接受已存在的 SecureCRT.exe、Xshell.exe 或 putty.exe。" type="info" show-icon :closable="false" />
+        <el-alert title="程序路径只能通过 Electron 原生文件选择器设置；后端仅接受已存在的 SecureCRT.exe、Xshell.exe、putty.exe 或 ssh.exe。" type="info" show-icon :closable="false" />
         <el-form label-width="140px" class="terminal-settings-form">
-          <el-form-item label="默认终端"><el-select v-model="terminalSettings.terminal_type" style="width:100%"><el-option label="SecureCRT" value="securecrt" /><el-option label="Xshell" value="xshell" /><el-option label="PuTTY" value="putty" /></el-select></el-form-item>
+          <el-form-item label="默认终端"><el-select v-model="terminalSettings.terminal_type" style="width:100%"><el-option label="SecureCRT" value="securecrt" /><el-option label="Xshell" value="xshell" /><el-option label="PuTTY" value="putty" /><el-option label="OpenSSH" value="openssh" /></el-select></el-form-item>
           <el-form-item label="SecureCRT.exe"><el-input v-model="terminalSettings.securecrt_path" readonly><template #append><el-button @click="chooseTerminalExecutable('securecrt')">选择</el-button><el-button @click="terminalSettings.securecrt_path = ''">清空</el-button></template></el-input></el-form-item>
           <el-form-item label="Xshell.exe"><el-input v-model="terminalSettings.xshell_path" readonly><template #append><el-button @click="chooseTerminalExecutable('xshell')">选择</el-button><el-button @click="terminalSettings.xshell_path = ''">清空</el-button></template></el-input></el-form-item>
           <el-form-item label="putty.exe"><el-input v-model="terminalSettings.putty_path" readonly><template #append><el-button @click="chooseTerminalExecutable('putty')">选择</el-button><el-button @click="terminalSettings.putty_path = ''">清空</el-button></template></el-input></el-form-item>
+          <el-form-item label="ssh.exe"><el-input v-model="terminalSettings.openssh_path" readonly><template #append><el-button @click="chooseTerminalExecutable('openssh')">选择</el-button><el-button @click="terminalSettings.openssh_path = ''">清空</el-button></template></el-input></el-form-item>
           <el-form-item label="传递密码"><el-switch v-model="terminalSettings.pass_password" /><span class="field-warning">默认关闭；启用后密码可能进入外部程序进程参数。</span></el-form-item>
         </el-form>
       </div>

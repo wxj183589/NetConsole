@@ -2865,7 +2865,7 @@ def _command_error_summary(command_results: list[CommandResult]) -> str:
 
 def _optional_wlan_warnings(command_results: list[CommandResult]) -> tuple[str, ...]:
     return tuple(
-        f"H3C Comware V7 AC：{result.command} 能力当前设备不支持，已跳过"
+        f"H3C Comware AC：{result.command} 能力当前设备不支持或不可用，已跳过"
         for result in command_results
         if result.command in FIT_AP_RESOURCE_OPTIONAL_COMMANDS and not result.success
     )

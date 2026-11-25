@@ -1796,6 +1796,9 @@ class DeviceManagementWebService:
             putty_path=str(
                 settings.get_value("external_terminal/putty_path", "") or ""
             ),
+            openssh_path=str(
+                settings.get_value("external_terminal/openssh_path", "") or ""
+            ),
             pass_password=bool(
                 settings.get_value("external_terminal/pass_password", False)
             ),
@@ -1809,6 +1812,7 @@ class DeviceManagementWebService:
             "securecrt": payload.securecrt_path,
             "xshell": payload.xshell_path,
             "putty": payload.putty_path,
+            "openssh": payload.openssh_path,
         }
         validated = {
             terminal_type: self._validated_terminal_executable(terminal_type, value)

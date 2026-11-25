@@ -173,7 +173,7 @@ def test_supervisor_bounds_automatic_recovery(manager):
 def test_syslog_udp_tcp_receivers_and_port_pair_cleanup(manager):
     while True:
         udp_port = free_port(udp=True)
-        tcp_port = udp_port + 1
+        tcp_port = udp_port
         if tcp_port >= 65535:
             continue
         try:
@@ -184,6 +184,7 @@ def test_syslog_udp_tcp_receivers_and_port_pair_cleanup(manager):
             continue
     result = manager.configure("syslog", ServiceConfig(port=udp_port))
     assert [item["transport"] for item in result["listeners"]] == ["UDP", "TCP"]
+    assert [item["port"] for item in result["listeners"]] == [udp_port, udp_port]
     occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     occupied.bind(("127.0.0.1", tcp_port))
     occupied.listen()
@@ -217,14 +218,55 @@ def test_syslog_udp_tcp_receivers_and_port_pair_cleanup(manager):
     with pytest.raises(OSError):
         socket.create_connection(("127.0.0.1", tcp_port), timeout=1)
 
+
+def test_syslog_tcp_supports_rfc6587_octet_counting_and_isolates_clients(manager):
+    port = free_port(udp=True)
+    manager.configure("syslog", ServiceConfig(port=port, max_connections=2, timeout=1))
+    assert manager.action("syslog", "start")["status"] == "running"
+
+    first = b"<14>1 2026-11-25T10:00:00Z host-1 app 1 ID - first line\nsecond line"
+    second = b"<13>Nov 25 10:01:00 host-2 app: second frame"
+    with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
+        client.settimeout(2)
+        framed = str(len(first)).encode() + b" " + first
+        client.sendall(framed[:4])
+        client.sendall(framed[4:] + str(len(second)).encode() + b" " + second)
+        client.sendall(b"<14>Nov 25 10:02:00 host-3 app: newline frame\n")
+
+    oversized = socket.create_connection(("127.0.0.1", port), timeout=2)
+    oversized.settimeout(2)
+    oversized.sendall(b"4097 " + b"x" * 4097)
+    assert oversized.recv(1) == b""
+    oversized.close()
+
+    with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
+        client.sendall(b"<14>Nov 25 10:03:00 host-4 app: other client remains available\n")
+
+    expected = ("first line\\nsecond line", "second frame", "newline frame", "other client remains available")
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        entries = "\n".join(manager.logs("syslog", history=True))
+        if all(marker in entries for marker in expected):
+            break
+        time.sleep(0.02)
+    assert all(marker in entries for marker in expected)
+    assert "4097 x" not in entries
+    assert manager.snapshot("syslog")["status"] == "running"
+    assert manager.action("syslog", "stop")["status"] == "stopped"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", port))
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", port))
+
+
 def test_syslog_burst_does_not_block_http_service(manager):
     http_port = free_port()
     while True:
         syslog_port = free_port(udp=True)
-        if syslog_port < 65534 and syslog_port not in {http_port, http_port - 1, http_port + 1}:
+        if syslog_port not in {http_port, http_port - 1, http_port + 1}:
             try:
                 with socket.socket() as probe:
-                    probe.bind(("127.0.0.1", syslog_port + 1))
+                    probe.bind(("127.0.0.1", syslog_port))
                 break
             except OSError:
                 continue

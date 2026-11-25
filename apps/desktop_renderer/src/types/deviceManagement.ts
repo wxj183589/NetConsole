@@ -1011,14 +1011,14 @@ export interface DeviceDeleteToken {
 export interface DeviceExternalTerminalAction {
   native_action: 'launchTerminal'
   device_uuid: string
-  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  terminal_type: 'securecrt' | 'putty' | 'xshell' | 'openssh'
   success: true
   code: string
   message: string
 }
 
 export interface DeviceExternalTerminalBatch {
-  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  terminal_type: 'securecrt' | 'putty' | 'xshell' | 'openssh'
   success: number
   failed: number
   failures: string[]
@@ -1031,7 +1031,7 @@ export interface DeviceExternalTerminalPreflightItem {
 }
 
 export interface DeviceExternalTerminalPreflight {
-  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  terminal_type: 'securecrt' | 'putty' | 'xshell' | 'openssh'
   launchable_devices: string[]
   skipped_devices: DeviceExternalTerminalPreflightItem[]
 }
@@ -1039,15 +1039,16 @@ export interface DeviceExternalTerminalPreflight {
 export interface DeviceExternalTerminalConfirmation {
   confirmation_token: string
   device_uuids: string[]
-  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  terminal_type: 'securecrt' | 'putty' | 'xshell' | 'openssh'
   expires_at: string
 }
 
 export interface DeviceExternalTerminalSettings {
-  terminal_type: 'securecrt' | 'putty' | 'xshell'
+  terminal_type: 'securecrt' | 'putty' | 'xshell' | 'openssh'
   securecrt_path: string
   xshell_path: string
   putty_path: string
+  openssh_path: string
   pass_password: boolean
 }
 

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest'
-import { heartbeatPointValues, heartbeatStatusStatistics, pingPointValues, pingStatusColor, pingTooltipFormatter } from './pingChartStatus'
+import { heartbeatPointValues, heartbeatStatusStatistics, pingPointValues, pingStatusColor, pingStatusLabel, pingTooltipFormatter } from './pingChartStatus'
 
 describe('Ping chart state mapping', () => {
   it.each([
@@ -36,5 +36,18 @@ describe('Ping chart state mapping', () => {
     expect(heartbeatStatusStatistics([
       { heartbeat_status: 'SUCCESS', rtt_ms: null }, { heartbeat_status: 'PACKET_LOSS', rtt_ms: null }, { heartbeat_status: 'UNKNOWN' },
     ])).toEqual({ success: 1, failure: 1, unknown: 1, valid: 2, connectivityRate: 50 })
+  })
+
+  it('distinguishes a single packet loss, sustained unreachability, probe error, and unscheduled samples', () => {
+    expect(pingStatusLabel('PACKET_LOSS')).toBe('单包丢失')
+    expect(pingStatusLabel('UNREACHABLE')).toBe('持续不可达')
+    expect(pingStatusLabel('ERROR')).toBe('探测错误')
+    expect(pingStatusLabel('NOT_SCHEDULED')).toBe('本周期未调度')
+    expect(heartbeatPointValues({ heartbeat_status: 'UNREACHABLE', rtt_ms: null }).loss).toBe(100)
+    expect(heartbeatPointValues({ heartbeat_status: 'NOT_SCHEDULED', rtt_ms: null }).loss).toBeNull()
+    expect(heartbeatStatusStatistics([
+      { heartbeat_status: 'TIMEOUT' }, { heartbeat_status: 'UNREACHABLE' },
+      { heartbeat_status: 'ERROR' }, { heartbeat_status: 'NOT_SCHEDULED' },
+    ])).toEqual({ success: 0, failure: 2, unknown: 2, valid: 2, connectivityRate: 0 })
   })
 })

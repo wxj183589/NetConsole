@@ -72,4 +72,44 @@ describe('Quick Ping chart semantics', () => {
       moveOnMouseMove: true,
     })
   })
+
+  it('keeps timeout and probe-error timestamps as real gaps in RTT and connectivity lines', () => {
+    const option = quickPingChartOption([
+      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:00Z', sample: { status: 'SUCCESS', rtt_display_ms: 4 } },
+      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:00.200Z', sample: { status: 'TIMEOUT', rtt_display_ms: null } },
+      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:00.400Z', sample: { status: 'SUCCESS', rtt_display_ms: 5 } },
+      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:10Z', sample: { status: 'ERROR', rtt_display_ms: null } },
+      { target_ip: '10.0.0.1', received_at: '2026-11-07T00:00:10.200Z', sample: { status: 'SUCCESS', rtt_display_ms: 6 } },
+    ], 200, readNetConsoleChartTokens()) as { series: Array<{ id: string; data: Array<[number, number | null]> }> }
+
+    expect(option.series.find((series) => series.id === 'ping_rtt:10.0.0.1')?.data.map((point) => point[1]))
+      .toEqual([4, null, 5, null, null, 6])
+    expect(option.series.find((series) => series.id === 'ping_success:10.0.0.1')?.data.map((point) => point[1]))
+      .toEqual([0, null, 0, null, null, 0])
+  })
+
+  it('limits rendered samples, preserves bucket extrema and failures, and clips rows to the logical time window', () => {
+    const start = Date.parse('2026-11-07T00:00:00Z')
+    const rows = Array.from({ length: 50_000 }, (_, index) => ({
+      target_ip: '10.0.0.1',
+      received_at: new Date(start + index * 200).toISOString(),
+      sample: {
+        status: index === 25_000 ? 'TIMEOUT' : 'SUCCESS',
+        rtt_display_ms: index === 25_001 ? 9_999 : index % 10,
+      },
+    }))
+    const option = quickPingChartOption(rows, 200, readNetConsoleChartTokens(), { connectNulls: false }, undefined, '', {
+      start: new Date(start + 10_000).toISOString(),
+      end: new Date(start + 9_990_000).toISOString(),
+    }) as { series: Array<{ id: string; data: Array<[number, number | null]> }>; xAxis: { min: number; max: number } }
+    const totalRenderedPoints = option.series.reduce((total, series) => total + series.data.length, 0)
+    const rttData = option.series.find((series) => series.id === 'ping_rtt:10.0.0.1')?.data || []
+    const times = rttData.map(([time]) => time)
+
+    expect(totalRenderedPoints).toBeLessThanOrEqual(20_000)
+    expect(times.every((time) => time >= start + 10_000 && time <= start + 9_990_000)).toBe(true)
+    expect(rttData.some(([, value]) => value === 9_999)).toBe(true)
+    expect(option.series.find((series) => series.id === 'ping_failure:10.0.0.1')?.data.some(([, value]) => value === 100)).toBe(true)
+    expect(option.xAxis).toMatchObject({ min: start + 10_000, max: start + 9_990_000 })
+  })
 })

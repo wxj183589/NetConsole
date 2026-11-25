@@ -21,7 +21,7 @@ import type {
   AcTerminalType,
 } from '../types/acWebParity'
 
-export type DeviceTerminalType = 'securecrt' | 'putty' | 'xshell'
+export type DeviceTerminalType = 'securecrt' | 'putty' | 'xshell' | 'openssh'
 
 export interface DeviceTerminalPreflightResult {
   terminalType: DeviceTerminalType
@@ -201,7 +201,7 @@ function chooseTerminalType(
   settings: DeviceExternalTerminalSettings,
   preferred?: DeviceTerminalType,
 ): DeviceTerminalType {
-  const configured = (['securecrt', 'xshell', 'putty'] as const).filter(
+  const configured = (['securecrt', 'xshell', 'putty', 'openssh'] as const).filter(
     (type) => Boolean(settings[`${type}_path`]),
   )
   if (!configured.length) throw new Error('尚未配置外部终端程序路径')

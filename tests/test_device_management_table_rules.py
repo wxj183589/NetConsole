@@ -189,6 +189,28 @@ def test_putty_command_passes_password_and_masks_safe_command():
     assert "secret" not in _safe_command(args, device)
 
 
+def test_openssh_command_uses_structured_arguments_without_password_leak():
+    device = Device(
+        name="SW1",
+        ip_address="10.0.0.1",
+        ssh_enabled=1,
+        ssh_username="admin",
+        ssh_password="secret",
+        telnet_enabled=0,
+    )
+    target = choose_connection_target(device)
+    args = build_external_terminal_command(
+        device, target, "openssh", r"C:\\Windows\\System32\\OpenSSH\\ssh.exe", include_password=True
+    )
+    assert args == [
+        r"C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+        "-tt", "-p", "22", "-l", "admin",
+        "-o", "PreferredAuthentications=publickey,password,keyboard-interactive",
+        "10.0.0.1",
+    ]
+    assert "secret" not in _safe_command(args, device)
+
+
 def test_winscp_command_uses_sftp_and_masks_password():
     device = Device(
         name="SW1",

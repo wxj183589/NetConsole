@@ -1,4 +1,4 @@
-export type PingChartStatus = 'SUCCESS' | 'TIMEOUT' | 'PACKET_LOSS' | 'UNKNOWN'
+export type PingChartStatus = 'SUCCESS' | 'TIMEOUT' | 'PACKET_LOSS' | 'UNREACHABLE' | 'ERROR' | 'NOT_SCHEDULED' | 'UNKNOWN'
 
 export const PING_CHART_COLORS = {
   rtt: '#3B82F6',
@@ -24,13 +24,29 @@ export interface HeartbeatStatusStatistics {
 }
 
 export function pingStatusLabel(status: PingChartStatus): string {
-  return ({ SUCCESS: '正常连通', TIMEOUT: '超时', PACKET_LOSS: '丢包/不通', UNKNOWN: '未知' } as const)[status]
+  return ({
+    SUCCESS: '正常连通',
+    TIMEOUT: '单包超时',
+    PACKET_LOSS: '单包丢失',
+    UNREACHABLE: '持续不可达',
+    ERROR: '探测错误',
+    NOT_SCHEDULED: '本周期未调度',
+    UNKNOWN: '未知',
+  } as const)[status]
 }
 
 export function pingStatusColor(status: PingChartStatus): string {
   return status === 'SUCCESS' ? PING_CHART_COLORS.success
-    : status === 'TIMEOUT' || status === 'PACKET_LOSS' ? PING_CHART_COLORS.failure
+    : isPingFailureStatus(status) ? PING_CHART_COLORS.failure
       : PING_CHART_COLORS.unknown
+}
+
+export function isPingFailureStatus(status: PingChartStatus): boolean {
+  return status === 'TIMEOUT' || status === 'PACKET_LOSS' || status === 'UNREACHABLE'
+}
+
+export function isPingUncertainStatus(status: PingChartStatus): boolean {
+  return status === 'ERROR' || status === 'NOT_SCHEDULED' || status === 'UNKNOWN'
 }
 
 export function pingPointValues(sample: Record<string, unknown>): { status: PingChartStatus; rtt: number | null; loss: number | null } {
@@ -41,7 +57,7 @@ export function pingPointValues(sample: Record<string, unknown>): { status: Ping
 export function heartbeatPointValues(sample: Record<string, unknown>): { status: PingChartStatus; rtt: number | null; loss: number | null } {
   const status = (sample.heartbeat_status as PingChartStatus) || (sample.status as PingChartStatus) || 'UNKNOWN'
   const rtt = typeof sample.rtt_ms === 'number' ? sample.rtt_ms : null
-  return { status, rtt, loss: status === 'SUCCESS' ? 0 : status === 'TIMEOUT' || status === 'PACKET_LOSS' ? 100 : null }
+  return { status, rtt, loss: status === 'SUCCESS' ? 0 : isPingFailureStatus(status) ? 100 : null }
 }
 
 export function heartbeatStatusStatistics(samples: Array<Record<string, unknown>>): HeartbeatStatusStatistics {
@@ -49,7 +65,7 @@ export function heartbeatStatusStatistics(samples: Array<Record<string, unknown>
   samples.filter((sample) => !sample.warmup_ignored).forEach((sample) => {
     const status = heartbeatPointValues(sample).status
     if (status === 'SUCCESS') success++
-    else if (status === 'TIMEOUT' || status === 'PACKET_LOSS') failure++
+    else if (isPingFailureStatus(status)) failure++
     else unknown++
   })
   const valid = success + failure

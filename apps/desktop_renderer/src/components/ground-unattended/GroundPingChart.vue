@@ -5,7 +5,7 @@ import type { EChartsType } from 'echarts/core'
 import type { GroundApTransition, GroundPingSample, GroundPingSeries } from '../../types/groundUnattended'
 import { readNetConsoleChartTokens, subscribeNetConsoleChartTheme } from '../../theme/echarts'
 import { groundStatusLabel, groundTransitionContextLabel } from '../../views/rail-transit/groundUnattendedLabels'
-import { PING_CHART_COLORS, pingStatusLabel } from './pingChartStatus'
+import { PING_CHART_COLORS, isPingFailureStatus, isPingUncertainStatus, pingStatusLabel } from './pingChartStatus'
 
 const props = withDefaults(defineProps<{
   series: GroundPingSeries | null
@@ -122,8 +122,9 @@ function render(): void {
   const theme = readNetConsoleChartTokens()
   const points = props.series?.points || []
   const successes = points.filter((point) => point.status === 'SUCCESS' && !point.warmup_ignored)
-  const losses = points.filter((point) => (point.status === 'TIMEOUT' || point.status === 'PACKET_LOSS') && !point.warmup_ignored)
+  const losses = points.filter((point) => isPingFailureStatus(point.status) && !point.warmup_ignored)
   const warmup = points.filter((point) => point.warmup_ignored)
+  const uncertain = points.filter((point) => isPingUncertainStatus(point.status) && !point.warmup_ignored)
   const transitions = props.series?.ap_transitions || []
   const transitionGroups = groupTransitions(transitions)
   const positionSegments = props.series?.position_segments || []
@@ -155,7 +156,7 @@ function render(): void {
     series: [
       {
         name: 'RTT', type: 'line', showSymbol: false, connectNulls: false,
-        data: successes.map((point) => ({ value: [point.ts, point.rtt_ms], sample: point })),
+        data: rttSeriesData(points),
         lineStyle: { color: PING_CHART_COLORS.rtt, width: 1.5 },
         itemStyle: { color: PING_CHART_COLORS.rtt },
         markLine: {
@@ -192,18 +193,38 @@ function render(): void {
     ...common,
     grid: { ...common.grid, top: 22 },
     yAxis: {
-      type: 'category', data: ['位置未知', '预热忽略', '丢包', '成功'],
+      type: 'category', data: ['状态未知', '位置未知', '预热忽略', '丢包', '成功'],
       axisLabel: { color: theme.textSecondary }, splitLine: { show: true, lineStyle: { color: theme.border } },
     },
     series: [
-      packetSeries('成功', successes, 3, PING_CHART_COLORS.success),
-      packetSeries('丢包/超时', losses, 2, PING_CHART_COLORS.failure),
-      packetSeries('预热忽略', warmup, 1, theme.textSecondary),
-      packetSeries('位置未知', points.filter((point) => point.position_quality === 'UNKNOWN'), 0, theme.warning),
+      packetSeries('成功', successes, 4, PING_CHART_COLORS.success),
+      packetSeries('丢包/超时', losses, 3, PING_CHART_COLORS.failure),
+      packetSeries('预热忽略', warmup, 2, theme.textSecondary),
+      packetSeries('位置未知', points.filter((point) => point.position_quality === 'UNKNOWN'), 1, theme.warning),
+      packetSeries('状态未知', uncertain, 0, theme.warning),
     ],
   }, { replaceMerge: ['series'], lazyUpdate: true })
   optionsInitialized = true
   followLatestWindow(points.length)
+}
+
+function rttSeriesData(points: GroundPingSample[]): Array<{ value: [string, number | null]; sample?: GroundPingSample }> {
+  const ordered = [...points].sort((left, right) => Date.parse(left.ts) - Date.parse(right.ts))
+  const data: Array<{ value: [string, number | null]; sample?: GroundPingSample }> = []
+  let previousTime: number | null = null
+
+  for (const point of ordered) {
+    const time = Date.parse(point.ts)
+    if (!Number.isFinite(time)) continue
+    if (previousTime !== null && time - previousTime > 2_000) {
+      data.push({ value: [new Date(previousTime + 1).toISOString(), null] })
+    }
+    const success = point.status === 'SUCCESS' && !point.warmup_ignored
+    data.push({ value: [point.ts, success ? point.rtt_ms : null], sample: point })
+    previousTime = time
+  }
+
+  return data
 }
 
 function packetSeries(name: string, points: GroundPingSample[], y: number, color: string) {

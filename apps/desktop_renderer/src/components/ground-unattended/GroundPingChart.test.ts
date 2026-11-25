@@ -214,9 +214,47 @@ describe('Ground Ping chart lifecycle', () => {
 
     const rttOption = mocks.setOption.mock.calls[0]?.[0] as { series?: Array<{ data?: unknown[] }> }
     const resultOption = mocks.setOption.mock.calls[1]?.[0] as { series?: Array<{ data?: unknown[] }> }
-    expect(rttOption.series?.[0]?.data).toEqual([])
+    expect(rttOption.series?.[0]?.data).toHaveLength(1)
+    expect(rttOption.series?.[0]?.data[0]?.value[1]).toBeNull()
     expect(resultOption.series?.[0]?.data).toEqual([])
     expect(resultOption.series?.[1]?.data).toEqual([])
+    wrapper.unmount()
+  })
+
+  it('breaks RTT lines on failed, unknown, unscheduled, and missing sampling intervals', async () => {
+    const points = [
+      { ...series.points[0], sample_id: 'before', ts: '2026-07-28T08:00:00+08:00', status: 'SUCCESS', rtt_ms: 2, warmup_ignored: false },
+      { ...series.points[0], sample_id: 'loss', ts: '2026-07-28T08:00:01+08:00', status: 'PACKET_LOSS', rtt_ms: null, warmup_ignored: false },
+      { ...series.points[0], sample_id: 'error', ts: '2026-07-28T08:00:02+08:00', status: 'ERROR', rtt_ms: null, warmup_ignored: false },
+      { ...series.points[0], sample_id: 'unscheduled', ts: '2026-07-28T08:00:03+08:00', status: 'NOT_SCHEDULED', rtt_ms: null, warmup_ignored: false },
+      { ...series.points[0], sample_id: 'after-gap', ts: '2026-07-28T08:00:10+08:00', status: 'SUCCESS', rtt_ms: 5, warmup_ignored: false },
+    ]
+    const wrapper = mount(GroundPingChart, {
+      props: { series: { ...series, points } as GroundPingSeries },
+    })
+    await flushPromises()
+
+    const rttOption = mocks.setOption.mock.calls[0]?.[0]
+    const values = rttOption.series[0].data.map((point: { value: [string, number | null] }) => point.value[1])
+    expect(values).toEqual([2, null, null, null, null, 5])
+    wrapper.unmount()
+  })
+
+  it('keeps one packet loss distinct from sustained unreachability markers', async () => {
+    const points = [
+      { ...series.points[0], sample_id: 'loss', status: 'TIMEOUT', rtt_ms: null, warmup_ignored: false },
+      { ...series.points[0], sample_id: 'offline', ts: '2026-07-28T08:00:01+08:00', status: 'UNREACHABLE', rtt_ms: null, warmup_ignored: false },
+    ]
+    const wrapper = mount(GroundPingChart, {
+      props: { series: { ...series, points } as GroundPingSeries },
+    })
+    await flushPromises()
+
+    const resultOption = mocks.setOption.mock.calls[1]?.[0]
+    expect(resultOption.yAxis.data).toContain('状态未知')
+    expect(resultOption.series[1].data).toHaveLength(2)
+    expect(resultOption.series[1].data.map((point: { sample: { status: string } }) => point.sample.status))
+      .toEqual(['TIMEOUT', 'UNREACHABLE'])
     wrapper.unmount()
   })
 

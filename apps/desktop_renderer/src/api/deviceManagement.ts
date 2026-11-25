@@ -321,19 +321,19 @@ export function startDeviceDiagnosticDownload(deviceUuids: string[]): Promise<De
   return apiRequest<DeviceTaskReference>('/api/device-management/diagnostic-download', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids }) })
 }
 
-export function requestExternalTerminal(deviceUuid: string, terminalType: 'securecrt' | 'putty' | 'xshell'): Promise<DeviceExternalTerminalAction> {
+export function requestExternalTerminal(deviceUuid: string, terminalType: 'securecrt' | 'putty' | 'xshell' | 'openssh'): Promise<DeviceExternalTerminalAction> {
   return apiRequest<DeviceExternalTerminalAction>(`/api/device-management/devices/${encodeURIComponent(deviceUuid)}/external-terminal`, { method: 'POST', body: JSON.stringify({ terminal_type: terminalType }) })
 }
 
-export function issueExternalTerminalConfirmation(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell'): Promise<DeviceExternalTerminalConfirmation> {
+export function issueExternalTerminalConfirmation(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell' | 'openssh'): Promise<DeviceExternalTerminalConfirmation> {
   return apiRequest<DeviceExternalTerminalConfirmation>('/api/device-management/external-terminal/confirmation', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, terminal_type: terminalType }) })
 }
 
-export function launchExternalTerminals(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell', confirmationToken = ''): Promise<DeviceExternalTerminalBatch> {
+export function launchExternalTerminals(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell' | 'openssh', confirmationToken = ''): Promise<DeviceExternalTerminalBatch> {
   return apiRequest<DeviceExternalTerminalBatch>('/api/device-management/external-terminal/launch', { method: 'POST', body: JSON.stringify({ device_uuids: deviceUuids, terminal_type: terminalType, confirmation_token: confirmationToken }) })
 }
 
-export function getDeviceTerminalPreflight(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell'): Promise<DeviceExternalTerminalPreflight> {
+export function getDeviceTerminalPreflight(deviceUuids: string[], terminalType: 'securecrt' | 'putty' | 'xshell' | 'openssh'): Promise<DeviceExternalTerminalPreflight> {
   return apiRequest<DeviceExternalTerminalPreflight>('/api/device-management/external-terminal/preflight', {
     method: 'POST',
     body: JSON.stringify({ device_uuids: deviceUuids, terminal_type: terminalType }),

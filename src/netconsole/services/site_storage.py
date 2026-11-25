@@ -1558,6 +1558,7 @@ class DataRootApplicationService:
             raise SiteStorageError("DATA_ROOT_INVALID", "目标数据根与当前路径相同")
         with storage_lock(self.paths, "global-data-migration"):
             operation_id = uuid.uuid4().hex
+            migration_started_at = _now()
             staging = destination.with_name(
                 f"{destination.name}.staging-{operation_id}"
             )
@@ -1588,21 +1589,26 @@ class DataRootApplicationService:
                             source, target_path, check_cancel=check_cancel
                         )
                     else:
+                        if _is_reparse_or_symlink(source):
+                            raise SiteStorageError(
+                                "DATA_ROOT_MIGRATION_REPARSE_POINT",
+                                "数据根包含符号链接或 Reparse Point，无法安全迁移",
+                                details={"path": str(source)},
+                            )
                         target_path.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(source, target_path)
+                        _copy_stable_data_root_file(source, target_path)
                 _write_migration_operation(
                     staging, "verifying", self.paths.data_root, destination
                 )
                 _quick_check_site_tree(payload / "sites")
                 _rewrite_migrated_storage_manifest(payload, destination)
-                manifest = {
-                    "format": "netconsole-data-root-migration",
-                    "version": 2,
-                    "migration_id": operation_id,
-                    "created_at": _now(),
-                    "source": str(self.paths.data_root),
-                    "destination": str(destination),
-                }
+                manifest = _build_data_root_migration_manifest(
+                    payload,
+                    operation_id=operation_id,
+                    source=self.paths.data_root,
+                    destination=destination,
+                    started_at=migration_started_at,
+                )
                 _atomic_json(
                     payload / "migrations" / f"migration-{operation_id}.json", manifest
                 )
@@ -1620,6 +1626,12 @@ class DataRootApplicationService:
                     "data_root": str(destination),
                     "restart_required": True,
                     "old_data_root_retained": True,
+                    "migration_id": operation_id,
+                    "manifest_path": str(
+                        destination / "migrations" / f"migration-{operation_id}.json"
+                    ),
+                    "file_count": manifest["file_count"],
+                    "total_bytes": manifest["total_bytes"],
                 }
             except SiteStorageError:
                 _write_migration_operation(
@@ -3682,25 +3694,23 @@ def _extract_outer_package(package: Path, target: Path) -> None:
 def _copy_tree_snapshot(
     source: Path, destination: Path, *, check_cancel: Callable[[], None] | None = None
 ) -> None:
+    if _is_reparse_or_symlink(source):
+        raise SiteStorageError(
+            "DATA_ROOT_MIGRATION_REPARSE_POINT",
+            "数据根包含符号链接或 Reparse Point，无法安全迁移",
+            details={"path": str(source)},
+        )
     destination.mkdir(parents=True, exist_ok=True)
-    for item in source.rglob("*"):
+    for item in _iter_data_root_snapshot_entries(source):
         if check_cancel:
             check_cancel()
         relative = item.relative_to(source)
-        if any(
-            part.casefold() in {"cache", "locks", "temp"} for part in relative.parts
-        ):
-            continue
-        if (
-            item.name.endswith((".tmp", ".lock", ".part", "-wal", "-shm"))
-            or ".db-" in item.name
-        ):
-            continue
         target = destination / relative
         if item.is_dir():
             target.mkdir(parents=True, exist_ok=True)
-        elif item.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}:
-            target.parent.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if item.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}:
             source_connection = sqlite3.connect(
                 f"{item.resolve().as_uri()}?mode=ro", uri=True, timeout=30
             )
@@ -3711,8 +3721,168 @@ def _copy_tree_snapshot(
                 target_connection.close()
                 source_connection.close()
         else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, target)
+            _copy_stable_data_root_file(item, target)
+
+
+def _copy_stable_data_root_file(source: Path, destination: Path) -> None:
+    source_before = source.stat()
+    shutil.copy2(source, destination)
+    source_after = source.stat()
+    if (
+        source_before.st_size != source_after.st_size
+        or source_before.st_mtime_ns != source_after.st_mtime_ns
+        or source_before.st_ino != source_after.st_ino
+    ):
+        raise SiteStorageError(
+            "DATA_ROOT_MIGRATION_SOURCE_CHANGED",
+            "迁移期间源文件发生变化，请停止写入后重试",
+            details={"path": str(source)},
+        )
+
+
+def _raise_data_root_walk_error(error: OSError) -> None:
+    raise SiteStorageError(
+        "DATA_ROOT_MIGRATION_SOURCE_UNREADABLE",
+        "数据根包含无法读取的目录，迁移已停止",
+        details={"path": str(error.filename or "")},
+    ) from error
+
+
+def _iter_data_root_snapshot_entries(root: Path) -> Iterator[Path]:
+    if _is_reparse_or_symlink(root):
+        raise SiteStorageError(
+            "DATA_ROOT_MIGRATION_REPARSE_POINT",
+            "数据根包含符号链接或 Reparse Point，无法安全迁移",
+            details={"path": str(root)},
+        )
+    for current, directories, filenames in os.walk(
+        root, followlinks=False, onerror=_raise_data_root_walk_error
+    ):
+        current_path = Path(current)
+        directories.sort()
+        filenames.sort()
+        retained_directories: list[str] = []
+        for name in directories:
+            path = current_path / name
+            if _is_reparse_or_symlink(path):
+                raise SiteStorageError(
+                    "DATA_ROOT_MIGRATION_REPARSE_POINT",
+                    "数据根包含符号链接或 Reparse Point，无法安全迁移",
+                    details={"path": str(path)},
+                )
+            if name.casefold() in {"cache", "locks", "temp"}:
+                continue
+            retained_directories.append(name)
+            yield path
+        directories[:] = retained_directories
+        for name in filenames:
+            path = current_path / name
+            if _is_reparse_or_symlink(path):
+                raise SiteStorageError(
+                    "DATA_ROOT_MIGRATION_REPARSE_POINT",
+                    "数据根包含符号链接或 Reparse Point，无法安全迁移",
+                    details={"path": str(path)},
+                )
+            if (
+                name.endswith((".tmp", ".lock", ".part", "-wal", "-shm"))
+                or ".db-" in name
+            ):
+                continue
+            yield path
+
+
+def _build_data_root_migration_manifest(
+    payload: Path,
+    *,
+    operation_id: str,
+    source: Path,
+    destination: Path,
+    started_at: str,
+) -> dict[str, object]:
+    files: dict[str, dict[str, object]] = {}
+    total_bytes = 0
+    database_checks: list[dict[str, object]] = []
+    sites_root = payload / "sites"
+    site_count = sum(1 for item in sites_root.iterdir() if item.is_dir()) if sites_root.is_dir() else 0
+
+    for item in _iter_data_root_snapshot_entries(payload):
+        if not item.is_file():
+            continue
+        relative = item.relative_to(payload).as_posix()
+        size = item.stat().st_size
+        total_bytes += size
+        files[relative] = {"size_bytes": size, "sha256": _sha256(item)}
+        if item.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}:
+            database_checks.append(_inspect_migrated_database(item, relative))
+
+    return {
+        "format": "netconsole-data-root-migration",
+        "version": 3,
+        "migration_id": operation_id,
+        "started_at": started_at,
+        "completed_at": _now(),
+        "source": str(source),
+        "destination": str(destination),
+        "application_version": APP_VERSION.removeprefix("v"),
+        "site_count": site_count,
+        "file_count": len(files),
+        "total_bytes": total_bytes,
+        "files": files,
+        "databases": database_checks,
+        "credential_migration": {
+            "device_database_credentials": "copied_with_database",
+            "dpapi_credentials": "requires_origin_windows_user_context_or_reentry",
+        },
+    }
+
+
+def _inspect_migrated_database(path: Path, relative_path: str) -> dict[str, object]:
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(path, timeout=30)
+        integrity = connection.execute("PRAGMA quick_check").fetchone()
+        if not integrity or str(integrity[0]).casefold() != "ok":
+            raise SiteStorageError(
+                "DATA_ROOT_MIGRATION_DATABASE_INVALID",
+                "迁移后的 SQLite 完整性检查失败",
+                details={"path": relative_path},
+            )
+        tables = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        row_counts: dict[str, int] = {}
+        for table in tables:
+            quoted_table = table.replace('"', '""')
+            row_counts[table] = int(
+                connection.execute(
+                    f'SELECT COUNT(*) FROM "{quoted_table}"'
+                ).fetchone()[0]
+            )
+        schema_version = ""
+        if "schema_metadata" in tables:
+            row = connection.execute(
+                "SELECT value FROM schema_metadata WHERE key='schema_version'"
+            ).fetchone()
+            schema_version = str(row[0]) if row and row[0] is not None else ""
+        return {
+            "path": relative_path,
+            "integrity_check": "ok",
+            "user_version": int(connection.execute("PRAGMA user_version").fetchone()[0]),
+            "schema_version": schema_version,
+            "tables": row_counts,
+        }
+    except sqlite3.DatabaseError as exc:
+        raise SiteStorageError(
+            "DATA_ROOT_MIGRATION_DATABASE_INVALID",
+            "迁移后的 SQLite 无法读取",
+            details={"path": relative_path},
+        ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _sha256(path: Path) -> str:

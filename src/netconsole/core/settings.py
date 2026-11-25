@@ -59,6 +59,7 @@ DEFAULT_SETTINGS = {
     "external_terminal/securecrt_path": "",
     "external_terminal/xshell_path": "",
     "external_terminal/putty_path": "",
+    "external_terminal/openssh_path": "",
     "external_terminal/winscp_path": "",
     "external_terminal/pass_password": False,
     "external_terminal/securecrt_sessions_root": "",
@@ -74,7 +75,7 @@ VALID_THEMES = {"light", "dark", "auto"}
 VALID_LANGUAGES = {"zh_CN", "en_US"}
 VALID_CLOSE_BEHAVIORS = {"ask", "minimize_to_tray", "exit"}
 VALID_STARTUP_MODES = {"preload_all", "fast_start"}
-VALID_EXTERNAL_TERMINAL_TYPES = {"putty", "securecrt", "xshell"}
+VALID_EXTERNAL_TERMINAL_TYPES = {"putty", "securecrt", "xshell", "openssh"}
 _MISSING_VERSION = "missing"
 
 
@@ -123,6 +124,7 @@ def normalize_external_terminal_type(value: object) -> str:
         "securecrt": "securecrt",
         "secure_crt": "securecrt",
         "xshell": "xshell",
+        "openssh": "openssh",
         "windows_terminal": "securecrt",
         "windowsterminal": "securecrt",
         "custom": "securecrt",

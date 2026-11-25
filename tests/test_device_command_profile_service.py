@@ -337,14 +337,24 @@ def test_h3c_capability_without_software_fact_does_not_default_to_v7() -> None:
         )
 
 
-def test_h3c_capability_does_not_treat_comware_v5_as_v7() -> None:
+def test_h3c_comware_v5_resolves_only_wireless_controller_read_only_capabilities() -> None:
     device = Device(name="AC", device_vendor="H3C", device_type="AC")
+    version = "H3C Comware Software, Version 5.2.1, Release R0001P01"
 
-    with pytest.raises(DeviceCommandProfileNotFound, match="V7 或 V9"):
+    required = resolve_h3c_capability(device, "wlan_ap_all", software_version=version)
+    optional = resolve_h3c_capability(device, "wlan_ap_unauthenticated", software_version=version)
+
+    assert required.family_id == "h3c_comware_v5_wireless_controller"
+    assert required.commands == ("display wlan ap all",)
+    assert required.optional is False
+    assert optional.optional is True
+    with pytest.raises(DeviceCommandProfileNotFound, match="Comware V5 未登记"):
+        resolve_h3c_capability(device, "cpu_usage", software_version=version)
+    with pytest.raises(DeviceCommandProfileNotFound, match="仅接入无线控制器"):
         resolve_h3c_capability(
-            device,
+            Device(name="Switch", device_vendor="H3C", device_type="switch"),
             "wlan_ap_all",
-            software_version="H3C Comware Software, Version 5.2.1, Release R0001P01",
+            software_version=version,
         )
 
 

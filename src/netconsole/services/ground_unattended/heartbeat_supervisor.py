@@ -39,6 +39,15 @@ def _fair_persist_batch(items: list[str], *, after: str, limit: int) -> list[str
     return items[start : start + limit]
 
 
+def _next_tick_deadline(deadline: float, finished_at: float, period: float) -> float:
+    """Advance the monotonic schedule past missed slots without catch-up ticks."""
+    next_deadline = deadline + period
+    if next_deadline <= finished_at:
+        missed_periods = int((finished_at - next_deadline) // period) + 1
+        next_deadline += missed_periods * period
+    return next_deadline
+
+
 def _valid_heartbeat_ip(value: object) -> bool:
     try:
         parsed = ipaddress.ip_address(str(value or "").strip())
@@ -56,11 +65,12 @@ def _valid_heartbeat_ip(value: object) -> bool:
 class HeartbeatSupervisor:
     """Site 心跳资源的唯一所有者，由 Backend lifespan 管理。"""
 
-    def __init__(self, paths, *, site_id, repository, base_query, now_provider=None, tick_seconds=1.0):
+    def __init__(self, paths, *, site_id, repository, base_query, now_provider=None, monotonic_provider=None, tick_seconds=1.0):
         self.paths = paths
         self.site_id = site_id
         self.repository = repository
         self.now_provider = now_provider or (lambda: datetime.now().astimezone())
+        self.monotonic_provider = monotonic_provider or time.monotonic
         self.tick_seconds = max(0.05, float(tick_seconds))
         self._heartbeat_engine = HeartbeatStateEngine(
             event_sink=self._on_heartbeat_transition,
@@ -184,8 +194,14 @@ class HeartbeatSupervisor:
             )
 
     def _run(self):
+        next_deadline = self.monotonic_provider()
         while not self._stop_event.is_set():
-            delay = self.tick_seconds
+            delay = max(0.0, next_deadline - self.monotonic_provider())
+            if delay > 0:
+                self._wake_event.wait(delay)
+                self._wake_event.clear()
+                if self._stop_event.is_set():
+                    break
             try:
                 with self._operation_lock:
                     if self._stop_event.is_set():
@@ -198,9 +214,15 @@ class HeartbeatSupervisor:
                 self._runtime_state = "HEARTBEAT_DEGRADED"
                 self._last_error = f"{type(exc).__name__}: {exc}"
                 LOGGER.exception("Heartbeat tick failed: site=%s", self.site_id)
-                delay = min(30.0, 2 ** min(self._failure_count, 5))
-            self._wake_event.wait(delay)
-            self._wake_event.clear()
+                retry_delay = min(30.0, 2 ** min(self._failure_count, 5))
+            else:
+                retry_delay = 0.0
+            finished_at = self.monotonic_provider()
+            next_deadline = _next_tick_deadline(
+                next_deadline, finished_at, self.tick_seconds,
+            )
+            if retry_delay:
+                next_deadline = max(next_deadline, finished_at + retry_delay)
 
     def _refresh_inventory(self):
         if time.monotonic() >= self._inventory_refresh_at:

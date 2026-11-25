@@ -410,7 +410,7 @@ export function validateSelectFileOptions(value: unknown): SelectFileOptions {
 }
 
 export function validateSettingsToolId(value: unknown): SettingsToolId {
-  if (!['iperf3', 'fping', 'securecrt', 'xshell', 'putty'].includes(String(value))) {
+  if (!['iperf3', 'fping', 'securecrt', 'xshell', 'putty', 'openssh'].includes(String(value))) {
     throw new TypeError('settings tool id is invalid')
   }
   return value as SettingsToolId
@@ -599,7 +599,7 @@ function validateExternalToolLaunchMode(value: unknown): ExternalToolLaunchMode 
 }
 
 function validateExternalToolSystemSettingKey(value: unknown): ExternalToolSystemSettingKey {
-  if (!['securecrt', 'xshell', 'putty'].includes(String(value))) {
+  if (!['securecrt', 'xshell', 'putty', 'openssh'].includes(String(value))) {
     throw new TypeError('system setting tool key is invalid')
   }
   return value as ExternalToolSystemSettingKey

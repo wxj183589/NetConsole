@@ -902,6 +902,63 @@ def test_data_root_migration_keeps_old_data_and_verifies_sqlite(tmp_path: Path) 
     assert not list(tmp_path.glob("migrated-root.staging-*"))
 
 
+def test_data_root_migration_records_file_hashes_and_database_inventory(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("site-one", "一号线")
+    report_file = paths.site_files_dir("site-one") / "reports" / "验收 报告.txt"
+    report_file.parent.mkdir(parents=True)
+    report_file.write_text("NetConsole data root migration", encoding="utf-8")
+    target = tmp_path / "migrated-root"
+
+    DataRootApplicationService(paths, sites).migrate(target)
+
+    manifests = list((target / "migrations").glob("migration-*.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["version"] == 3
+    assert manifest["site_count"] == 1
+    assert manifest["file_count"] == len(manifest["files"])
+    assert manifest["total_bytes"] == sum(
+        entry["size_bytes"] for entry in manifest["files"].values()
+    )
+    report_entry = manifest["files"]["sites/site-one/files/reports/验收 报告.txt"]
+    assert report_entry["sha256"] == hashlib.sha256(
+        report_file.read_bytes()
+    ).hexdigest()
+    device_database = next(
+        item
+        for item in manifest["databases"]
+        if item["path"] == "sites/site-one/db/devices.db"
+    )
+    assert device_database["integrity_check"] == "ok"
+    assert device_database["tables"]["devices"] == 0
+    assert manifest["credential_migration"]["dpapi_credentials"] == (
+        "requires_origin_windows_user_context_or_reentry"
+    )
+
+
+def test_data_root_migration_rejects_reparse_point_entries(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    sites = SiteApplicationService(paths)
+    sites.create_site("site-one", "一号线")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = paths.site_files_dir("site-one") / "link.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"当前 Windows 环境不允许创建文件符号链接：{exc}")
+
+    with pytest.raises(SiteStorageError) as failure:
+        DataRootApplicationService(paths, sites).migrate(tmp_path / "migrated-root")
+
+    assert failure.value.code == "DATA_ROOT_MIGRATION_REPARSE_POINT"
+    assert not (tmp_path / "migrated-root").exists()
+
+
 def test_data_root_migration_rebinds_the_storage_manifest_to_the_published_root(
     tmp_path: Path,
 ) -> None:

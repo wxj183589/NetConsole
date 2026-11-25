@@ -686,13 +686,13 @@ class DeviceSecureCrtExportRequestDTO(DeviceExportRequestDTO):
 
 
 class DeviceExternalTerminalRequestDTO(ApiModel):
-    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"] = "securecrt"
 
 
 class DeviceExternalTerminalActionDTO(ApiModel):
     native_action: Literal["launchTerminal"] = "launchTerminal"
     device_uuid: str
-    terminal_type: Literal["securecrt", "putty", "xshell"]
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"]
     success: Literal[True] = True
     code: str
     message: str = ""
@@ -700,24 +700,24 @@ class DeviceExternalTerminalActionDTO(ApiModel):
 
 class DeviceExternalTerminalBatchRequestDTO(ApiModel):
     device_uuids: list[str] = Field(min_length=1, max_length=200)
-    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"] = "securecrt"
     confirmation_token: str = Field(default="", max_length=256)
 
 
 class DeviceExternalTerminalConfirmationRequestDTO(ApiModel):
     device_uuids: list[str] = Field(min_length=21, max_length=200)
-    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"] = "securecrt"
 
 
 class DeviceExternalTerminalConfirmationDTO(ApiModel):
     confirmation_token: str
     device_uuids: list[str]
-    terminal_type: Literal["securecrt", "putty", "xshell"]
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"]
     expires_at: str
 
 
 class DeviceExternalTerminalBatchDTO(ApiModel):
-    terminal_type: Literal["securecrt", "putty", "xshell"]
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"]
     success: int = 0
     failed: int = 0
     failures: list[str] = Field(default_factory=list)
@@ -725,7 +725,7 @@ class DeviceExternalTerminalBatchDTO(ApiModel):
 
 class DeviceExternalTerminalPreflightRequestDTO(ApiModel):
     device_uuids: list[str] = Field(min_length=1, max_length=200)
-    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"] = "securecrt"
 
 
 class DeviceExternalTerminalPreflightItemDTO(ApiModel):
@@ -735,16 +735,17 @@ class DeviceExternalTerminalPreflightItemDTO(ApiModel):
 
 
 class DeviceExternalTerminalPreflightDTO(ApiModel):
-    terminal_type: Literal["securecrt", "putty", "xshell"]
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"]
     launchable_devices: list[str] = Field(default_factory=list)
     skipped_devices: list[DeviceExternalTerminalPreflightItemDTO] = Field(default_factory=list)
 
 
 class DeviceExternalTerminalSettingsDTO(ApiModel):
-    terminal_type: Literal["securecrt", "putty", "xshell"] = "securecrt"
+    terminal_type: Literal["securecrt", "putty", "xshell", "openssh"] = "securecrt"
     securecrt_path: str = ""
     xshell_path: str = ""
     putty_path: str = ""
+    openssh_path: str = ""
     pass_password: bool = False
 
 
@@ -752,6 +753,7 @@ class DeviceExternalTerminalSettingsUpdateDTO(DeviceExternalTerminalSettingsDTO)
     securecrt_path: str = Field(default="", max_length=1024)
     xshell_path: str = Field(default="", max_length=1024)
     putty_path: str = Field(default="", max_length=1024)
+    openssh_path: str = Field(default="", max_length=1024)
 
 
 class DeviceConnectionTestRequestDTO(ApiModel):

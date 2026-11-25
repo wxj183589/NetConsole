@@ -380,3 +380,33 @@ def test_trackside_ap_business_current_lldp_neighbor_mac_never_displays_dash():
 
     assert rows[0]["ap_mac"] == "bc5a-3457-cfe0"
     assert format_trackside_display_value("ap_mac", rows[0]) != "-"
+
+
+def test_v5_wireless_collection_skips_unsupported_optional_commands_with_warnings(monkeypatch, tmp_path):
+    unsupported = {
+        "display wlan ap all radio verbose filter bbssid": RuntimeError("unsupported on V5"),
+        "display wlan ap all connection-record": RuntimeError("unsupported on V5"),
+        "display wlan ap all radio type": RuntimeError("unsupported on V5"),
+        "display wlan ap unauthenticated": RuntimeError("unsupported on V5"),
+        "display wlan ap all lldp": RuntimeError("unsupported on V5"),
+    }
+    connection = FakeAcConnection({
+        **unsupported,
+        "display version": "H3C Comware Software, Version 5.20, Release R1517",
+    })
+    monkeypatch.setattr(h3c_ac_collect_service.netmiko_connection, "ConnectHandler", lambda **_kwargs: connection)
+    repository = make_ac_repository(tmp_path)
+
+    result = collect_h3c_ac_resources(
+        make_ac_device(),
+        "demo",
+        repository=repository,
+        paths=PathResolver(tmp_path),
+        refresh_ac_overview=False,
+    )
+
+    assert result.success is True
+    assert result.fit_ap_resources_updated == 1
+    assert len(result.warnings) == len(unsupported)
+    assert all("H3C Comware AC" in warning and "已跳过" in warning for warning in result.warnings)
+    assert all(command in " ".join(result.warnings) for command in unsupported)

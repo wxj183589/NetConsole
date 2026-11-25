@@ -27,6 +27,7 @@ class ExternalTerminalType:
     SECURECRT = "securecrt"
     XSHELL = "xshell"
     PUTTY = "putty"
+    OPENSSH = "openssh"
     WINSCP = "winscp"
 
 
@@ -34,6 +35,7 @@ TERMINAL_LABELS = {
     ExternalTerminalType.SECURECRT: "SecureCRT",
     ExternalTerminalType.XSHELL: "Xshell",
     ExternalTerminalType.PUTTY: "PuTTY",
+    ExternalTerminalType.OPENSSH: "OpenSSH",
     ExternalTerminalType.WINSCP: "WinSCP",
 }
 
@@ -42,6 +44,7 @@ TERMINAL_SETTING_KEYS = {
     ExternalTerminalType.SECURECRT: "external_terminal/securecrt_path",
     ExternalTerminalType.XSHELL: "external_terminal/xshell_path",
     ExternalTerminalType.PUTTY: "external_terminal/putty_path",
+    ExternalTerminalType.OPENSSH: "external_terminal/openssh_path",
 }
 
 WINSCP_SETTING_KEY = "external_terminal/winscp_path"
@@ -126,6 +129,20 @@ def build_external_terminal_command(
             if include_password and password:
                 args.extend(["-pw", password])
             return args
+        if terminal == ExternalTerminalType.OPENSSH:
+            if not username:
+                raise ValueError("OpenSSH 连接需要用户名")
+            return [
+                exe,
+                "-tt",
+                "-p",
+                port,
+                "-l",
+                username,
+                "-o",
+                "PreferredAuthentications=publickey,password,keyboard-interactive",
+                host,
+            ]
         raise ValueError(f"不支持的外部终端类型: {terminal_type}")
 
     if protocol == "telnet":
