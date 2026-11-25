@@ -11,6 +11,7 @@ import { activeSiteContext } from '../../stores/siteContext'
 import type { FileRemoteDevice, LocalFileEntry, LocalFilePage } from '../../types/fileManagement'
 import TerminalSftpPanel from '../console/TerminalSftpPanel.vue'
 import FileManagerSyncDialog from './FileManagerSyncDialog.vue'
+import FileWorkspacePanel from './FileWorkspacePanel.vue'
 import { createFileManagerTranslator } from './fileManagementI18n'
 
 const t = createFileManagerTranslator()
@@ -23,6 +24,7 @@ const tabs = ref<FileRemoteDevice[]>([])
 const deviceId = ref('')
 const selected = ref<string[]>([])
 const filter = ref('')
+const fileScope = ref('device')
 const uploading = ref(false)
 const downloading = ref(false)
 const conflict = ref<'error' | 'skip' | 'rename' | 'overwrite'>('error')
@@ -207,12 +209,14 @@ watch(() => route.query.device_uuid, openRequestedDevice)
 <template>
   <section class="file-manager-workspace">
     <div class="file-manager-command">
+      <el-radio-group v-model="fileScope"><el-radio-button value="device">{{ t('remoteFiles') }}</el-radio-button><el-radio-button value="service">{{ t('serviceFiles') }}</el-radio-button></el-radio-group>
       <el-select v-if="canConnect" :model-value="deviceId" filterable :placeholder="t('selectDevice')" :aria-label="t('selectDevice')" @change="openDevice">
         <el-option v-for="device in devices" :key="device.device_id" :label="`${device.name} · ${device.address}`" :value="device.device_id" />
       </el-select>
       <router-link :to="{ name: 'device-file-downloads' }">{{ t('managedDownloads') }}</router-link>
     </div>
-    <div class="file-manager-panes">
+    <FileWorkspacePanel v-if="fileScope === 'service'" :key="siteId" />
+    <div v-else class="file-manager-panes">
       <section class="local-pane" :aria-label="t('localFiles')">
         <header class="local-toolbar">
           <strong>{{ t('localFiles') }}</strong>

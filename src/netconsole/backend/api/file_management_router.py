@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
+from typing import Literal
 
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
@@ -36,6 +38,68 @@ from netconsole.services.file_contract import artifact_media_type
 
 
 router = APIRouter(prefix="/file-management", tags=["file-management"])
+
+
+class WorkspaceFileOperation(BaseModel):
+    action: Literal["copy", "move", "rename", "delete", "mkdir", "checksum"]
+    source: str = Field(default="", max_length=64)
+    destination: str = Field(default="", max_length=64)
+    name: str = Field(default="", max_length=240)
+    overwrite: bool = False
+    expected_sha256: str = Field(default="", pattern=r"^(?:[0-9a-f]{64})?$")
+
+
+def _workspace_call(callback):
+    try:
+        return callback()
+    except (ValueError, OSError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/workspace/entries")
+def workspace_entries(
+    request: Request,
+    kind: Literal["downloads", "tftp", "ftp", "http", "https"] = "downloads",
+    directory_id: str = Query(default="", max_length=64),
+):
+    return _workspace_call(lambda: _service(request).workspace_operations.browse(
+        request.app.state.local_network_services, kind, directory_id,
+    ))
+
+
+@router.get("/workspace/files/{entry_id}")
+def workspace_download(entry_id: str, request: Request):
+    path = _workspace_call(lambda: _service(request).workspace_operations.download(
+        request.app.state.local_network_services, entry_id,
+    ))
+    return FileResponse(path, filename=path.name)
+
+
+@router.post("/workspace/operations", dependencies=[Depends(require_feature("capability.file_management.local_write"))])
+def workspace_operation(payload: WorkspaceFileOperation, request: Request):
+    return _workspace_call(lambda: _service(request).workspace_operations.submit(
+        request.app.state.local_network_services, **payload.model_dump(),
+    ))
+
+
+@router.get("/workspace/operations")
+def workspace_operations(request: Request):
+    return {"items": _service(request).workspace_operations.list_tasks()}
+
+
+@router.post("/workspace/upload", dependencies=[Depends(require_feature("capability.file_management.local_write"))])
+def workspace_upload(request: Request, destination: str = Form(..., max_length=64),
+                     overwrite: bool = Form(False), expected_sha256: str = Form("", max_length=64),
+                     file: UploadFile = File(...)):
+    return _workspace_call(lambda: _service(request).workspace_operations.upload(
+        request.app.state.local_network_services, destination, file.filename or "upload.bin",
+        file.file, overwrite, expected_sha256,
+    ))
+
+
+@router.post("/workspace/operations/{task_id}/cancel")
+def cancel_workspace_operation(task_id: str, request: Request):
+    return _workspace_call(lambda: _service(request).workspace_operations.cancel(task_id))
 
 
 def _service(request: Request) -> FileManagementApplicationService:

@@ -86,6 +86,7 @@ from netconsole.services.device_compatibility.service import DeviceCompatibility
 from netconsole.services.device_detail_query_service import DeviceDetailQueryService
 from netconsole.services.device_operation_service import DeviceOperationService
 from netconsole.services.device_task_service import DeviceTaskApplicationService
+from netconsole.services.device_task_export_service import DeviceTaskExportService
 from netconsole.services.file_management_service import FileManagementApplicationService
 from netconsole.services.terminal_sftp import TerminalSftpManager
 from netconsole.services.job_center.task_application_service import TaskApplicationService
@@ -1079,6 +1080,10 @@ def create_app(
         else None
     )
     app.state.terminal_session_manager = terminal_session_manager
+    app.state.device_task_export_service = (
+        DeviceTaskExportService(app.state.device_task_application_service, web_export_adapter, web_artifact_store)
+        if app.state.device_task_application_service is not None else None
+    )
     app.state.terminal_sftp_manager = terminal_sftp_manager
     app.state.device_detail_application_service = device_detail_application_service
     app.state.config_collection_service = config_collection_service

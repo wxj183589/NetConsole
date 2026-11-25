@@ -437,6 +437,10 @@ def _validate_data_root_from_installer(arguments: list[str]) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--local-network-service-worker":
+        from netconsole.services.local_network_services.worker import main as run_network_service
+
+        return run_network_service()
     if "--allow-production-write" in sys.argv[1:]:
         os.environ["NETCONSOLE_ALLOW_PRODUCTION_WRITE"] = "1"
         sys.argv = [item for item in sys.argv if item != "--allow-production-write"]

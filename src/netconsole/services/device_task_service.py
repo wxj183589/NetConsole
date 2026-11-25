@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
+from time import monotonic
 from typing import Literal
 from uuid import uuid4
 
@@ -11,9 +12,11 @@ from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.models.device_detail import identify_device_platform
 from netconsole.models.task_snapshot import utc_now_iso
+from netconsole.models.task_state import TERMINAL_TASK_STATES
 from netconsole.parsers.h3c.version_parser import parse_version
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_repository import DeviceRepository
+from netconsole.repositories.rail_infrastructure_repository import RailInfrastructureRepository
 from netconsole.services.background_job import BackgroundJob
 from netconsole.services.command_template_library import CommandTemplateLibrary, SavedTemplateExecution
 from netconsole.services.device_collection_support import resolve_device_collection_support
@@ -42,7 +45,7 @@ from netconsole.services.site_manager import SiteManager
 
 DEVICE_TASK_TYPE = "device_maintenance_collection"
 DEVICE_TASK_OWNER = "web_device_task_center"
-DeviceTaskKind = Literal["configuration", "backup", "diagnostic", "optical", "lldp", "version", "custom"]
+DeviceTaskKind = Literal["configuration", "backup", "diagnostic", "optical", "lldp", "version", "custom", "wireless", "mesh"]
 DEVICE_TASK_LABELS = {
     "configuration": "配置收集",
     "backup": "配置备份",
@@ -51,6 +54,8 @@ DEVICE_TASK_LABELS = {
     "lldp": "LLDP 收集",
     "version": "版本检查",
     "custom": "自定义命令采集",
+    "wireless": "无线信息收集",
+    "mesh": "MESH 收集",
 }
 _COMMANDS = {
     "diagnostic": ("display version", "display cpu-usage", "display memory", "display interface brief"),
@@ -66,6 +71,9 @@ class DeviceTaskRequest(BaseModel):
     kind: DeviceTaskKind
     device_uuids: list[str] = Field(default_factory=list, max_length=_MAX_TARGETS)
     group_id: int | Literal["all", "ungrouped"] | None = None
+    organization_uid: str | None = Field(default=None, min_length=1, max_length=160)
+    concurrency: int = Field(default=4, ge=1, le=8)
+    command_timeout: int = Field(default=40, ge=5, le=120)
     template: CommandTemplatePreviewRequest | None = None
     saved_template: SavedTemplateExecution | None = None
 
@@ -91,8 +99,25 @@ class DeviceTaskApplicationService:
         site = SiteManager(self.paths).validate_site_name(site)
         repository = DeviceRepository(Database(self.paths.site_db_path(site)))
         ids = list(dict.fromkeys(request.device_uuids))
-        if ids and request.group_id is not None:
-            raise ValueError("请选择设备或分组其中一项")
+        if sum((bool(ids), request.group_id is not None, request.organization_uid is not None)) != 1:
+            raise ValueError("请选择设备、分组或组织其中一项目标范围")
+        if request.organization_uid is not None:
+            organization = RailInfrastructureRepository(repository.database)
+            facts = organization.read()
+            if not facts.organization_initialized:
+                raise ValueError("请先初始化组织结构")
+            nodes = {node["uid"]: node for node in facts.nodes}
+            if request.organization_uid not in nodes:
+                raise ValueError("组织节点不存在")
+            included = {request.organization_uid}
+            for _ in range(len(nodes)):
+                descendants = {uid for uid, node in nodes.items() if node.get("parent_uid") in included}
+                expanded = included | descendants
+                if expanded == included:
+                    break
+                included = expanded
+            catalog = organization.organization_catalog(site)
+            ids = [asset.device_uuid for asset in catalog.devices if included.intersection(asset.node_uids)]
         if request.group_id is not None:
             group = request.group_id
             if isinstance(group, int) and group < 1:
@@ -139,6 +164,11 @@ class DeviceTaskApplicationService:
                 "kind": request.kind,
                 "commands": list(commands),
                 "template": template_info,
+                "concurrency": request.concurrency,
+                "command_timeout": request.command_timeout,
+                "target_scope": {
+                    "group_id": request.group_id, "organization_uid": request.organization_uid,
+                },
             },
             trigger_source="retry" if retry_of_task_id else "ui",
             retry_of_task_id=retry_of_task_id,
@@ -151,8 +181,19 @@ class DeviceTaskApplicationService:
             raise KeyError(task_id)
         return dict(snapshot.result or {})
 
+    def organizations(self, site: str) -> list[dict[str, str]]:
+        facts = RailInfrastructureRepository(Database(self.paths.site_db_path(site))).read()
+        if not facts.organization_initialized:
+            return []
+        return [
+            {"uid": str(node["uid"]), "name": str(node["name"]), "parent_uid": str(node.get("parent_uid") or "")}
+            for node in facts.nodes if node["kind"] != "section"
+        ]
+
     def retry(self, site: str, task_id: str) -> DeviceTaskReference:
         result = self.result(site, task_id)
+        if self.task_service.repository(site).get(task_id).status not in TERMINAL_TASK_STATES:
+            raise ValueError("任务结束后才能重试失败设备")
         kind = result.get("kind")
         ids = [str(item["device_uuid"]) for item in result.get("items", []) if item.get("status") in {"failed", "partial"}]
         if kind not in DEVICE_TASK_LABELS or not ids:
@@ -162,7 +203,11 @@ class DeviceTaskApplicationService:
             raise ValueError("请在任务中心用当前模板版本重新预览后执行")
         template = CommandTemplatePreviewRequest(source="\n".join(commands)) if kind == "custom" else None
         return self.start(
-            site, DeviceTaskRequest(kind=kind, device_uuids=ids, template=template), retry_of_task_id=task_id,
+            site, DeviceTaskRequest(
+                kind=kind, device_uuids=ids, template=template,
+                concurrency=int(result.get("concurrency") or 4),
+                command_timeout=int(result.get("command_timeout") or 40),
+            ), retry_of_task_id=task_id,
         )
 
 
@@ -181,6 +226,7 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
     devices = DeviceRepository(database)
     facts = DeviceFactRepository(database)
     ids = list(dict.fromkeys(context.params["device_uuids"]))
+    concurrency = max(1, min(8, int(context.params.get("concurrency") or 4)))
 
     def collect(device_uuid: str) -> dict[str, object]:
         context.check_cancelled()
@@ -202,30 +248,37 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
             return {**item, "status": "skipped", "message": support.reason_message or "当前任务仅支持 H3C 设备"}
         if kind in {"optical", "lldp"} and platform.role != "switch":
             return {**item, "status": "skipped", "message": "该采集面向交换机"}
+        if kind in {"wireless", "mesh"} and platform.role != "wireless_controller":
+            return {**item, "status": "skipped", "message": "无线与 MESH 采集需要 H3C 无线控制器，FIT-AP 独立采集尚未适配"}
         allowed_roles = context.params.get("template", {}).get("device_roles", [])
         if allowed_roles and platform.role not in allowed_roles:
             return {**item, "status": "skipped", "message": "设备类型不在模板适用范围内"}
+        started = monotonic()
         try:
-            return {**item, **_collect_device(context, site, kind, device, facts, commands)}
+            result = _collect_device(context, site, kind, device, facts, commands)
+            return {**item, **result, "elapsed_ms": round((monotonic() - started) * 1000)}
         except BackgroundTaskCancelled:
             raise
         except Exception as exc:
             context.check_cancelled()
-            return {**item, "status": "failed", "message": redact_web_task_text(sanitize_sensitive_text(str(exc), device))}
+            return {**item, "status": "failed", "message": redact_web_task_text(sanitize_sensitive_text(str(exc), device)),
+                    "elapsed_ms": round((monotonic() - started) * 1000)}
 
     results: dict[str, dict[str, object]] = {}
     context.progress(kind, 0, len(ids), DEVICE_TASK_LABELS[kind])
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
         pending = {executor.submit(collect, device_uuid): device_uuid for device_uuid in ids}
-        for future in as_completed(pending):
+        while pending:
             context.check_cancelled()
-            device_uuid = pending[future]
-            result = {**future.result(), "finished_at": utc_now_iso()}
-            results[device_uuid] = result
-            context.structured_progress(
-                kind, len(results), len(ids), f"{DEVICE_TASK_LABELS[kind]} {len(results)}/{len(ids)}",
-                device_uuid=device_uuid, status=result["status"],
-            )
+            done, _remaining = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                device_uuid = pending.pop(future)
+                result = {**future.result(), "finished_at": utc_now_iso()}
+                results[device_uuid] = result
+                context.structured_progress(
+                    kind, len(results), len(ids), f"{DEVICE_TASK_LABELS[kind]} {len(results)}/{len(ids)}",
+                    device_uuid=device_uuid, status=result["status"],
+                )
     counts = {status: sum(item["status"] == status for item in results.values()) for status in ("success", "failed", "partial", "skipped")}
     if counts["success"] == len(ids):
         business_status = "SUCCESS"
@@ -239,6 +292,9 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
         "task_id": context.job_id, "run_id": context.job_id, "kind": kind,
         "commands": list(commands) if kind == "custom" else [],
         "template": context.params.get("template", {}),
+        "concurrency": concurrency,
+        "command_timeout": int(context.params.get("command_timeout") or 40),
+        "target_scope": context.params.get("target_scope", {}),
         "items": [results[device_uuid] for device_uuid in ids],
         "total": len(ids),
         "success": counts["success"],
@@ -258,6 +314,10 @@ def _collect_device(
     context: JobContext, site: str, kind: str, device: Device,
     facts: DeviceFactRepository, commands: tuple[str, ...],
 ) -> dict[str, object]:
+    if kind in {"wireless", "mesh"}:
+        from netconsole.services.device_task_ac_collection import collect_ac_task
+
+        return collect_ac_task(context, site, kind, device)
     if kind in {"configuration", "backup"}:
         child_context = replace(
             context,
@@ -289,7 +349,8 @@ def _collect_device(
         for command in commands:
             context.check_cancelled()
             response = safe_send_command_with_paging(
-                connection, command, encoding=target.encoding, command_timeout=40,
+                connection, command, encoding=target.encoding,
+                command_timeout=max(5, min(120, int(context.params.get("command_timeout") or 40))),
                 max_pages=32, max_output_bytes=128_000, cancel_check=context.should_cancel,
             ).output
             responses[command] = "" if device_cli_output_is_unsupported(device, response) else response.strip()

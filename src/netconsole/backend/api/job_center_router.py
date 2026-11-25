@@ -282,6 +282,9 @@ async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
         elif task.owner == DEVICE_TASK_OWNER and task.type == DEVICE_TASK_TYPE:
             if not request.app.state.site_process_adapter.cancel_job(task_id):
                 raise HTTPException(status_code=409, detail="设备任务已结束或不在当前进程")
+        elif task.owner == DEVICE_TASK_OWNER and task.type == "web_export_table_xlsx":
+            if not _task_service(request).cancel_task(task_id, site_name=task.site_name):
+                raise HTTPException(status_code=409, detail="导出任务已结束")
         elif task.owner == CONFIG_WEB_OWNER and task.type in CONFIG_WEB_TASK_TYPES:
             request.app.state.config_collection_service.cancel_task(task.site_name, task_id)
         elif task.owner == "web_file_management" and task.type == "file_management_download":

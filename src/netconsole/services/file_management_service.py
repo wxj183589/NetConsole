@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Callable, Iterable
 from uuid import uuid4
 
 from netconsole.services.desktop_actions import DesktopActionResolutionError
+from netconsole.services.file_workspace_operations import FileWorkspaceOperations
 from netconsole.core import app_logger
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -210,6 +211,7 @@ class FileManagementApplicationService:
         self.paths = paths
         self.site_name = str(site_name or "demo")
         self.task_service = task_service
+        self.workspace_operations = FileWorkspaceOperations(paths, task_service)
         self.process_adapter = process_adapter
         self._device_resolver = device_resolver
         self._transfer_factory = transfer_factory or FileTransferService
@@ -275,6 +277,7 @@ class FileManagementApplicationService:
 
     def close(self) -> None:
         """幂等关闭全部 Web 会话；FastAPI lifespan 必须在 shutdown 调用。"""
+        self.workspace_operations.close()
         self._queue_stop.set()
         queue_thread = self._queue_thread
         if queue_thread is threading.current_thread():

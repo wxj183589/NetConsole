@@ -22,6 +22,16 @@ const devSource = readFileSync(
 )
 
 describe('Electron shell product contract', () => {
+  it('keeps renderer loading and reload visibility changes from requesting application exit', () => {
+    const start = source.indexOf('function handleVisibleBusinessWindowCount(')
+    const end = source.indexOf('function getCloseToTrayState(', start)
+    const visibilityHandler = source.slice(start, end)
+    expect(start).toBeGreaterThan(0)
+    expect(visibilityHandler).toContain('visibleWindowCount: count')
+    expect(visibilityHandler).not.toContain('requestExit(')
+    expect(source).toContain("app.on('window-all-closed'")
+  })
+
   it('uses the branded product title, icon, and hides the default menu unless development opts in', () => {
     expect(brandingSource).toContain("NETCONSOLE_WINDOW_TITLE = 'NetConsole'")
     expect(brandingSource).not.toContain('NETCONSOLE_TASK_WINDOW_TITLE')

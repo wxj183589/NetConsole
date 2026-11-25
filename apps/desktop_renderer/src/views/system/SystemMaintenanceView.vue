@@ -10,6 +10,8 @@ import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import TaskLogsPanel from './TaskLogsPanel.vue'
+import ServiceLogsPanel from './ServiceLogsPanel.vue'
+import { serviceLogLabel } from '../../i18n/serviceLogs'
 import {
   cancelMaintenanceTask,
   getAbout,
@@ -38,7 +40,7 @@ import {
 } from '../../api/systemMaintenance'
 const terminalStates = new Set(['COMPLETED', 'FAILED', 'CANCELLED'])
 const CommandReferenceView = defineAsyncComponent(() => import('../command-reference/CommandReferenceView.vue').then((module) => module.default))
-const tabNames = new Set(['logs', 'task-logs', 'command-reference', 'cleanup', 'changelog', 'open-source', 'about'])
+const tabNames = new Set(['logs', 'task-logs', 'service-logs', 'command-reference', 'cleanup', 'changelog', 'open-source', 'about'])
 const route = useRoute()
 const { confirm } = useConfirm()
 const userSelectedExport = useUserSelectedExport()
@@ -386,6 +388,7 @@ function tabFromQuery(value: unknown): string {
   const tab = typeof value === 'string' ? value : ''
   if (tab === 'command-reference' && !isFeatureEnabled('module.command_reference')) return 'logs'
   if (tab === 'task-logs' && !isFeatureEnabled('module.task_center')) return 'logs'
+  if (tab === 'service-logs' && !isFeatureEnabled('capability.network_tools.local_services')) return 'logs'
   return tabNames.has(tab) ? tab : 'logs'
 }
 
@@ -476,6 +479,10 @@ onBeforeUnmount(() => {
 
       <el-tab-pane v-if="isFeatureEnabled('module.task_center')" label="任务日志" name="task-logs" lazy class="maintenance-tab-pane">
         <TaskLogsPanel v-if="activeTab === 'task-logs'" :initial-task-id="String(route.query.task_id ?? '')" />
+      </el-tab-pane>
+
+      <el-tab-pane v-if="isFeatureEnabled('capability.network_tools.local_services')" :label="serviceLogLabel('title')" name="service-logs" lazy class="maintenance-tab-pane">
+        <ServiceLogsPanel v-if="activeTab === 'service-logs'" />
       </el-tab-pane>
 
       <el-tab-pane v-if="isFeatureEnabled('module.command_reference')" label="命令说明" name="command-reference" lazy class="maintenance-tab-pane maintenance-tab-pane--scroll">

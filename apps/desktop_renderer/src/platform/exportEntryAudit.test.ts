@@ -17,6 +17,7 @@ interface CoordinatedExportEntry {
 }
 
 const COORDINATED_EXPORTS: CoordinatedExportEntry[] = [
+  entry('views/job-center/DeviceTaskResultDialog.vue', ['devices.task_results'], ['startDeviceTaskResultExport']),
   entry('views/devices/DeviceManagementView.vue',
     ['devices.csv', 'devices.template', 'devices.securecrt', 'devices.diagnostics'],
     ['startDeviceCsvExport', 'startDeviceTemplateExport', 'startSecureCrtExport', 'startSecureCrtExportWithTemplate', 'startDeviceDiagnosticDownload']),
@@ -67,6 +68,7 @@ const CUSTOM_PRESELECTED_EXPORTS = [
 ] as const
 
 const IMPORT_ENTRIES = [
+  ['views/file-management/FileWorkspacePanel.vue', 'upload'],
   ['views/devices/DeviceManagementView.vue', 'onImportFileChange'],
   ['views/ac-management/AcWebParityView.vue', 'chooseFile'],
   ['views/rail-transit/MeshAnalysisView.vue', 'chooseFiles'],
@@ -101,6 +103,15 @@ const LOCAL_PATH_SELECTION_ENTRIES = [
 ] as const
 
 describe('visible import/export entry audit', () => {
+  it('saves existing service-root files only on explicit user action through the fixed bridge request', () => {
+    const source = readSource('views/file-management/FileWorkspacePanel.vue')
+    const body = functionBody(source, 'download')
+    expect(body).toContain('downloadBackendResource(workspaceFileRequest(entry))')
+    expect(body).not.toContain('destinationPath')
+    expect(source).toContain('download(selected[side]!)')
+    const request = readSource('api/fileWorkspace.ts')
+    expect(request).toContain('files/${encodeURIComponent(entry.id)}')
+  })
   it('requires every registered task export to select and bind a destination before submission', () => {
     const registeredActions = new Set(Object.keys(userSelectedExportDefinitions))
     const auditedActions = new Set<UserSelectedExportAction>()

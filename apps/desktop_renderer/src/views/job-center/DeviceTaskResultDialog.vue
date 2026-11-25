@@ -2,8 +2,9 @@
 import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
-import { getDeviceTaskResult, retryDeviceTask, type DeviceExecution } from '../../api/deviceOperations'
+import { getDeviceTaskResult, retryDeviceTask, startDeviceTaskResultExport, type DeviceExecution } from '../../api/deviceOperations'
 import { isFeatureEnabled } from '../../features'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 
 const open = defineModel<boolean>({ required: true })
 const props = defineProps<{ taskId: string }>()
@@ -13,6 +14,8 @@ const commandLabels: Record<string, string> = { success: '成功', unavailable: 
 const items = ref<DeviceExecution[]>([])
 const error = ref('')
 const busy = ref(false)
+const exporting = ref(false)
+const userSelectedExport = useUserSelectedExport()
 const usesSavedTemplate = ref(false)
 const hasRetry = computed(() => !usesSavedTemplate.value && items.value.some((item) => ['partial', 'failed'].includes(item.status)))
 let loadGeneration = 0
@@ -48,6 +51,21 @@ async function retry(): Promise<void> {
   }
 }
 
+async function exportResults(): Promise<void> {
+  exporting.value = true
+  error.value = ''
+  try {
+    await userSelectedExport.submitExportAfterDestinationSelected({
+      action: 'devices.task_results', suggestedName: '设备任务结果.xlsx',
+      submit: () => startDeviceTaskResultExport(props.taskId), taskId: (task) => task.task_id,
+    })
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : '结果导出失败'
+  } finally {
+    exporting.value = false
+  }
+}
+
 watch([open, () => props.taskId], ([visible, id]) => {
   loadGeneration += 1
   busy.value = false
@@ -73,17 +91,21 @@ watch([open, () => props.taskId], ([visible, id]) => {
             <dt>设备 UUID</dt><dd>{{ item.device_uuid }}</dd>
             <dt>开始时间</dt><dd>{{ item.started_at }}</dd>
             <dt>完成时间</dt><dd>{{ item.finished_at }}</dd>
+            <template v-if="item.elapsed_ms !== undefined"><dt>耗时</dt><dd>{{ (item.elapsed_ms / 1000).toFixed(2) }} 秒</dd></template>
             <template v-if="item.software_version"><dt>软件版本</dt><dd>{{ item.software_version }}</dd></template>
             <template v-if="item.device_model"><dt>设备型号</dt><dd>{{ item.device_model }}</dd></template>
             <template v-if="item.collect_run_uuid"><dt>采集 ID</dt><dd>{{ item.collect_run_uuid }}</dd></template>
             <template v-if="item.snapshot_ids?.length"><dt>配置快照</dt><dd>{{ item.snapshot_ids.join('、') }}</dd></template>
             <template v-if="item.record_count !== undefined"><dt>采集记录</dt><dd>{{ item.record_count }}</dd></template>
+            <template v-if="item.ac_time"><dt>AC 时间</dt><dd>{{ item.ac_time }}</dd></template>
           </dl>
           <template v-for="line in item.command_results" :key="line.command">
             <h4>{{ line.command }} · {{ commandLabels[line.status] || line.status }}</h4>
             <pre v-if="line.output">{{ line.output }}</pre>
           </template>
           <pre v-if="item.records?.length">{{ JSON.stringify(item.records, null, 2) }}</pre>
+          <pre v-if="item.wireless_summary">{{ JSON.stringify(item.wireless_summary, null, 2) }}</pre>
+          <p v-if="item.records_truncated">结果保留前 128 条解析记录，共 {{ item.record_count }} 条。</p>
         </el-collapse-item>
       </el-collapse>
     </div>
@@ -91,6 +113,7 @@ watch([open, () => props.taskId], ([visible, id]) => {
       <div class="actions">
         <RouterLink v-if="isFeatureEnabled('module.logs')" :to="{ name: 'logs', query: { tab: 'task-logs', task_id: taskId } }" @click="open = false">任务日志</RouterLink>
         <el-button @click="load">刷新结果</el-button>
+        <el-button :disabled="!items.length || busy" :loading="exporting" @click="exportResults">导出结果</el-button>
         <el-button v-if="hasRetry && isFeatureEnabled('module.devices')" type="primary" :loading="busy" @click="retry">重试失败设备</el-button>
       </div>
     </template>

@@ -68,7 +68,8 @@ describe('App layout foundation', () => {
     expect(source).toContain('<AppRouteView />')
     expect(source).toContain('<WorkspaceTabBar />')
     expect(routeViewSource).toContain(':include="cachedWorkspaceComponentNames"')
-    expect(routeViewSource).toContain(':key="workspace.routeCacheKey(viewRoute.fullPath)"')
+    expect(routeViewSource).toContain(':key="routeRenderKey(viewRoute.fullPath, viewRoute.name)"')
+    expect(routeViewSource).toContain('`${String(routeName)}:${workspace.routeCacheKey(fullPath)}`')
     expect(routeViewSource).toContain('class="app-route-viewport"')
   })
 

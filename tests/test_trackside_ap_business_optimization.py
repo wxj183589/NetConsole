@@ -96,6 +96,10 @@ def test_trackside_export_columns_keep_fixed_business_order():
         "updated_at",
         "ap_business_threshold_dbm",
         "ap_business_reason",
+        "engineering_line",
+        "engineering_projects",
+        "engineering_sections",
+        "engineering_status",
     ]
 
 

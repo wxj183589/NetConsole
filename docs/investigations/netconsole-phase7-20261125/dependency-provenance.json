@@ -1,0 +1,48 @@
+[
+  {
+    "name": "pyOpenSSL",
+    "version": "26.4.0",
+    "metadata_source": "https://pypi.org/pypi/pyOpenSSL/26.4.0/json",
+    "artifacts": [
+      {
+        "filename": "pyopenssl-26.4.0-py3-none-any.whl",
+        "url": "https://files.pythonhosted.org/packages/51/ad/2cf6d3fa2fae5c79e1ed9960c0d42badd0f94d81dd12b50604cdc839e648/pyopenssl-26.4.0-py3-none-any.whl",
+        "sha256": "f0eb0cb2d581d3ad2b9c489468485e7f2ab6727d08401bcf9d824c3caddf3c1c"
+      },
+      {
+        "filename": "pyopenssl-26.4.0.tar.gz",
+        "url": "https://files.pythonhosted.org/packages/3f/e8/7325d258199b159eb2c03fe32107533e2832e70e63f4fb88a6aa00023201/pyopenssl-26.4.0.tar.gz",
+        "sha256": "28dfcce0162b9211413e26dfbfdf1d24317fbeba18fc93c12400a1856b2a0bc7"
+      }
+    ]
+  },
+  {
+    "name": "cryptography",
+    "version": "49.0.0",
+    "metadata_source": "https://pypi.org/pypi/cryptography/49.0.0/json",
+    "artifacts": [
+      {
+        "filename": "cryptography-49.0.0-cp311-abi3-win_amd64.whl",
+        "url": "https://files.pythonhosted.org/packages/1f/09/f42b1d190c5ba75f72062a387f8030d1d75f6ab035788f1d9c4b01de6525/cryptography-49.0.0-cp311-abi3-win_amd64.whl",
+        "sha256": "e5dfc1e64de5677cec922ffa8da89c546d0415bf6efdf081842e5d44c84e1f0e"
+      },
+      {
+        "filename": "cryptography-49.0.0.tar.gz",
+        "url": "https://files.pythonhosted.org/packages/1f/99/d1c90d6041656cc6ee229dc99cd67fd0cd5aec3c5f7d72fffc27cc750054/cryptography-49.0.0.tar.gz",
+        "sha256": "f89660a348f4f78a92366240a61404e337586ef7f5909a2fef59ca88ef505493"
+      }
+    ]
+  },
+  {
+    "name": "pyftpdlib",
+    "version": "2.2.0",
+    "metadata_source": "https://pypi.org/pypi/pyftpdlib/2.2.0/json",
+    "artifacts": [
+      {
+        "filename": "pyftpdlib-2.2.0.tar.gz",
+        "url": "https://files.pythonhosted.org/packages/f9/42/8751c5f58ae59b09e070da4fa322ae9693a340d2cc456b5a380b2c1ee47a/pyftpdlib-2.2.0.tar.gz",
+        "sha256": "4ba0642078792df63dd3b2e9c8f838f2a3ecf428c7518d5921c0530d53512acf"
+      }
+    ]
+  }
+]

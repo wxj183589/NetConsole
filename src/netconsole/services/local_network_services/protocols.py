@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import ntpath
 import os
 import re
@@ -13,8 +14,11 @@ import tempfile
 import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from threading import BoundedSemaphore, Lock, Thread
+from queue import Empty, Full, Queue
+from threading import BoundedSemaphore, Event, Lock, Thread
 from urllib.parse import unquote, urlsplit
+
+from netconsole.services.system_maintenance_redaction import redact_system_maintenance_text
 
 
 def shared_path(root: Path, name: str) -> Path:
@@ -68,12 +72,20 @@ class TcpServer(_BoundedThreads, socketserver.TCPServer):
     def __init__(self, *args, **kwargs):
         self._clients = set()
         self._clients_lock = Lock()
+        self.ssl_context = None
+        self.request_timeout = 3
         super().__init__(*args, **kwargs)
 
     def server_bind(self):
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+        if self.ssl_context is not None:
+            self.socket = self.ssl_context.wrap_socket(
+                self.socket,
+                server_side=True,
+                do_handshake_on_connect=False,
+            )
 
     def get_request(self):
         client, address = super().get_request()
@@ -81,6 +93,12 @@ class TcpServer(_BoundedThreads, socketserver.TCPServer):
         with self._clients_lock:
             self._clients.add(client)
         return client, address
+
+    def finish_request(self, request, client_address):
+        # Perform TLS negotiation inside a bounded request worker.
+        if self.ssl_context is not None:
+            request.do_handshake()
+        super().finish_request(request, client_address)
 
     def close_request(self, request):
         with self._clients_lock:
@@ -112,6 +130,12 @@ class SyslogUdpHandler(socketserver.BaseRequestHandler):
         self.server.log_syslog(self.request[0][:self.server.max_packet_size], self.client_address[0])
 
 
+class SyslogUdpServer(UdpServer):
+    def process_request(self, request, client_address):
+        # Queue UDP datagrams without a new thread or disk IO per message.
+        self.finish_request(request, client_address)
+
+
 class SyslogTcpHandler(socketserver.StreamRequestHandler):
     def handle(self):
         peer = self.client_address[0]
@@ -125,8 +149,9 @@ class SyslogTcpHandler(socketserver.StreamRequestHandler):
             self.server.log_syslog(line, peer)
 
 
-def parse_syslog(payload: bytes) -> tuple[int, int, str, str]:
+def parse_syslog_record(payload: bytes) -> dict[str, object]:
     data = payload.rstrip(b"\x00\r\n")[:2048]
+    raw = data.decode("utf-8", errors="replace")
     priority = 13
     if data.startswith(b"<"):
         separator = data.find(b">", 1, 5)
@@ -134,24 +159,44 @@ def parse_syslog(payload: bytes) -> tuple[int, int, str, str]:
             priority = min(int(data[1:separator]), 191)
             data = data[separator + 1:]
     message = data.decode("utf-8", errors="replace")
-    rfc5424 = re.match(r"^(\d+)\s+\S+\s+(\S+)\s+\S+\s+\S+\s+\S+\s+(?:-|\[[^\]]*\])(?:\s+(.*))?$", message)
+    format_name, timestamp, app_name = "unstructured", "", ""
+    rfc5424 = re.match(r"^(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+\S+\s+\S+\s+(?:-|\[[^\]]*\])(?:\s+(.*))?$", message)
     if rfc5424:
-        hostname, body = rfc5424.group(2), rfc5424.group(3) or ""
+        format_name = "rfc5424"
+        timestamp, hostname, app_name, body = rfc5424.group(2), rfc5424.group(3), rfc5424.group(4), rfc5424.group(5) or ""
     else:
-        rfc3164 = re.match(r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d\s+(\S+)\s+(.*)$", message)
+        rfc3164 = re.match(r"^([A-Z][a-z]{2}\s+\d{1,2}\s+\d\d:\d\d:\d\d)\s+(\S+)\s+(.*)$", message)
         if rfc3164:
-            hostname, body = rfc3164.groups()
+            format_name = "rfc3164"
+            timestamp, hostname, body = rfc3164.groups()
+            if ":" in body:
+                app_name, body = (part.strip() for part in body.split(":", 1))
         else:
             hostname, _, body = message.partition(" ")
-    return priority // 8, priority % 8, (hostname or "-")[:255], body[:1500]
+    return {
+        "format": format_name,
+        "timestamp": timestamp[:64],
+        "facility": priority // 8,
+        "severity": priority % 8,
+        "hostname": (hostname or "-")[:255],
+        "app_name": app_name[:128],
+        "message": body[:1500],
+        "raw": raw,
+    }
+
+
+def parse_syslog(payload: bytes) -> tuple[int, int, str, str]:
+    record = parse_syslog_record(payload)
+    return int(record["facility"]), int(record["severity"]), str(record["hostname"]), str(record["message"])
 
 
 class SyslogService:
-    def __init__(self, servers, workers, timeout):
+    def __init__(self, servers, workers, timeout, receivers_stopped):
         self.servers = servers
         self.workers = workers
         self.request_timeout = timeout
         self.stopping = servers[0].stopping
+        self.receivers_stopped = receivers_stopped
 
     def serve_forever(self, **kwargs):
         for worker in self.workers:
@@ -163,6 +208,9 @@ class SyslogService:
         self.stopping.set()
         for server in self.servers:
             server.shutdown()
+        for server in self.servers:
+            server.server_close()
+        self.receivers_stopped.set()
         for worker in self.workers:
             if worker.is_alive():
                 worker.join(timeout=self.request_timeout + 1)
@@ -342,12 +390,13 @@ class TftpHandler(socketserver.BaseRequestHandler):
                 temporary.unlink(missing_ok=True)
 
 
-def create_server(kind, config, root, log: logging.Logger, stopping):
+def create_server(kind, config, root, log: logging.Logger, stopping, *, ssl_context=None):
     if kind == "syslog":
         return create_syslog_server(config, log, stopping)
-    handlers = {"http": HttpHandler, "dns": DnsHandler, "ntp": NtpHandler, "tftp": TftpHandler}
-    server_class = TcpServer if kind == "http" else UdpServer
+    handlers = {"http": HttpHandler, "https": HttpHandler, "dns": DnsHandler, "ntp": NtpHandler, "tftp": TftpHandler}
+    server_class = TcpServer if kind in {"http", "https"} else UdpServer
     server = server_class((config.address, config.port), handlers[kind], bind_and_activate=False)
+    server.ssl_context = ssl_context
     server.root = root
     server.slots = BoundedSemaphore(config.max_connections)
     server.request_timeout = config.timeout
@@ -368,17 +417,40 @@ def create_syslog_server(config, log, stopping):
     if config.port == 65535:
         raise ValueError("syslog_udp_port_has_no_tcp_pair")
 
+    pending = Queue(maxsize=4096)
+    receivers_stopped = Event()
+    counts = {"received": 0, "dropped": 0}
+    count_lock = Lock()
+
+    def enqueue(payload, peer):
+        with count_lock:
+            counts["received"] += 1
+            try:
+                pending.put_nowait((payload, peer))
+            except Full:
+                counts["dropped"] += 1
+
+    def write_messages():
+        while not receivers_stopped.is_set() or not pending.empty():
+            try:
+                payload, peer = pending.get(timeout=0.1)
+            except Empty:
+                continue
+            _write_syslog(log, payload, peer)
+        log.info("Syslog receiver stopped received=%d dropped=%d", counts["received"], counts["dropped"])
+
     def initialize(server):
         server.slots = BoundedSemaphore(config.max_connections)
         server.request_timeout = config.timeout
         server.max_packet_size = 4096
         server.log = log
         server.stopping = stopping
-        server.log_syslog = lambda payload, peer: _write_syslog(log, payload, peer)
+        server.log_syslog = enqueue
         server.server_bind()
         server.server_activate()
 
-    udp = UdpServer((config.address, config.port), SyslogUdpHandler, bind_and_activate=False)
+    udp = SyslogUdpServer((config.address, config.port), SyslogUdpHandler, bind_and_activate=False)
+    udp.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1_048_576)
     servers = [udp]
     try:
         initialize(udp)
@@ -393,17 +465,13 @@ def create_syslog_server(config, log, stopping):
     workers = tuple(
         Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
         for server in servers
-    )
-    return SyslogService(servers, workers, config.timeout)
+    ) + (Thread(target=write_messages, daemon=True),)
+    return SyslogService(servers, workers, config.timeout, receivers_stopped)
 
 
 def _write_syslog(log, payload, peer):
-    facility, severity, hostname, message = parse_syslog(payload)
-    log.info(
-        "Syslog source=%s facility=%d severity=%d hostname=%s message=%s",
-        peer,
-        facility,
-        severity,
-        hostname,
-        message,
-    )
+    record = parse_syslog_record(payload)
+    record["message"] = redact_system_maintenance_text(record["message"])
+    record["raw"] = redact_system_maintenance_text(record["raw"])
+    record["source"] = peer
+    log.info("Syslog %s", json.dumps(record, ensure_ascii=False, separators=(",", ":")))

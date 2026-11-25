@@ -61,6 +61,7 @@ paramiko==4.0.0
 pyasynchat==1.0.5
 pyasyncore==1.0.5
 pyftpdlib==2.2.0
+pyOpenSSL==26.4.0
 pathspec==1.1.1
 pefile==2024.8.26
 pillow==12.3.0

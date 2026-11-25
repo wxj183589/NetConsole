@@ -1,6 +1,9 @@
+from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+
+from netconsole.services.local_network_services.log_query import query_service_logs
 
 from netconsole.services.local_network_services.manager import SERVICES, LocalNetworkServiceManager, ServiceConfig, ServiceId
 
@@ -41,5 +44,17 @@ def service_action(kind: ServiceId, action: Literal["initialize", "start", "stop
 
 
 @router.get("/{kind}/logs")
-def service_logs(kind: ServiceId, request: Request) -> dict:
-    return {"lines": _manager(request).logs(kind)}
+def service_logs(
+    kind: ServiceId,
+    request: Request,
+    response: Response,
+    keyword: str = Query("", max_length=500),
+    level: Literal["", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "",
+    since: datetime | None = None,
+    until: datetime | None = None,
+    history: bool = False,
+) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    if since and until and since.astimezone() > until.astimezone():
+        raise HTTPException(422, "invalid_log_time_range")
+    return query_service_logs(_manager(request).logs(kind, history=history), keyword=keyword, level=level, since=since, until=until, history=history)

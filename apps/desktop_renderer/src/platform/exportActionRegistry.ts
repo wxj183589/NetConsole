@@ -13,6 +13,7 @@ const TEXT_MEDIA_TYPES = ['text/plain', 'text/markdown']
 
 export const userSelectedExportDefinitions = {
   'devices.csv': csvDefinition('devices', '设备清单'),
+  'devices.task_results': xlsxDefinition('devices', '设备任务结果'),
   'devices.template': csvDefinition('devices', '设备导入模板'),
   'devices.securecrt': zipDefinition('devices', 'SecureCRT 会话'),
   'devices.diagnostics': zipDefinition('devices', '设备诊断信息'),

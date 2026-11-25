@@ -1532,9 +1532,6 @@ function resolveManagedDesktopWindow(value: unknown): BrowserWindow | undefined 
 
 function handleVisibleBusinessWindowCount(count: number): void {
   trayController?.updateContext({ visibleWindowCount: count })
-  if (count === 0 && (!trayAvailable || !closeToTrayEnabled) && !explicitQuitRequested) {
-    requestExit(0)
-  }
 }
 
 function getCloseToTrayState(): CloseToTrayState {

@@ -1,0 +1,1523 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:0e557763-cb0c-5546-9125-973262d7df31",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "application",
+      "name": "NetConsole Backend",
+      "version": "1.5.19",
+      "bom-ref": "pkg:generic/netconsole-backend@1.5.19"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "annotated-doc",
+      "version": "0.0.4",
+      "bom-ref": "pkg:pypi/annotated-doc@0.0.4",
+      "purl": "pkg:pypi/annotated-doc@0.0.4",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/fastapi/annotated-doc"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "annotated-types",
+      "version": "0.7.0",
+      "bom-ref": "pkg:pypi/annotated-types@0.7.0",
+      "purl": "pkg:pypi/annotated-types@0.7.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/annotated-types/annotated-types"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "anyio",
+      "version": "4.14.2",
+      "bom-ref": "pkg:pypi/anyio@4.14.2",
+      "purl": "pkg:pypi/anyio@4.14.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "bcrypt",
+      "version": "5.0.0",
+      "bom-ref": "pkg:pypi/bcrypt@5.0.0",
+      "purl": "pkg:pypi/bcrypt@5.0.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache Software License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyca/bcrypt/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "certifi",
+      "version": "2026.6.17",
+      "bom-ref": "pkg:pypi/certifi@2026.6.17",
+      "purl": "pkg:pypi/certifi@2026.6.17",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "Mozilla Public License 2.0 (MPL 2.0)"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/certifi/python-certifi"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cffi",
+      "version": "2.1.0",
+      "bom-ref": "pkg:pypi/cffi@2.1.0",
+      "purl": "pkg:pypi/cffi@2.1.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT-0"
+          }
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "Chromium",
+      "version": "150.0.7871.114",
+      "bom-ref": "pkg:generic/chromium@150.0.7871.114",
+      "purl": "pkg:generic/chromium@150.0.7871.114",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.chromium.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cJSON (embedded in iPerf3)",
+      "version": "1.7.15",
+      "bom-ref": "pkg:generic/cjson@1.7.15",
+      "purl": "pkg:generic/cjson@1.7.15",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/DaveGamble/cJSON"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "click",
+      "version": "8.4.2",
+      "bom-ref": "pkg:pypi/click@8.4.2",
+      "purl": "pkg:pypi/click@8.4.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pallets/click/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "colorama",
+      "version": "0.4.6",
+      "bom-ref": "pkg:pypi/colorama@0.4.6",
+      "purl": "pkg:pypi/colorama@0.4.6",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/tartley/colorama"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "contourpy",
+      "version": "1.3.3",
+      "bom-ref": "pkg:pypi/contourpy@1.3.3",
+      "purl": "pkg:pypi/contourpy@1.3.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/contourpy/contourpy"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cryptography",
+      "version": "49.0.0",
+      "bom-ref": "pkg:pypi/cryptography@49.0.0",
+      "purl": "pkg:pypi/cryptography@49.0.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSD-3-Clause"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyca/cryptography"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "cycler",
+      "version": "0.12.1",
+      "bom-ref": "pkg:pypi/cycler@0.12.1",
+      "purl": "pkg:pypi/cycler@0.12.1",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://matplotlib.org/cycler/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "Cygwin Runtime (fping bundle)",
+      "version": "3.6.9",
+      "bom-ref": "pkg:generic/cygwin@3.6.9",
+      "purl": "pkg:generic/cygwin@3.6.9",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "name": "LGPL-3.0-or-later WITH Cygwin-exception-3.0"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d5562774ec1475bd1dab84c5249b273e60cc53e6aa968981414a4d6a3f8e2bfd"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://cygwin.com/licensing.html"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "Cygwin Runtime (iPerf3 bundle)",
+      "version": "3.6.7",
+      "bom-ref": "pkg:generic/cygwin@3.6.7",
+      "purl": "pkg:generic/cygwin@3.6.7",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "name": "LGPL-3.0-or-later WITH Cygwin-exception-3.0"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0ab76b4724499df54b75b7fa701788f1e77425ce65c8bca0a9f2120598bb8a70"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://cygwin.com/licensing.html"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "Electron",
+      "version": "43.1.1",
+      "bom-ref": "pkg:npm/electron@43.1.1",
+      "purl": "pkg:npm/electron@43.1.1",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.electronjs.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "et_xmlfile",
+      "version": "2.0.0",
+      "bom-ref": "pkg:pypi/et-xmlfile@2.0.0",
+      "purl": "pkg:pypi/et-xmlfile@2.0.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://foss.heptapod.net/openpyxl/et_xmlfile"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "fastapi",
+      "version": "0.139.2",
+      "bom-ref": "pkg:pypi/fastapi@0.139.2",
+      "purl": "pkg:pypi/fastapi@0.139.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://fastapi.tiangolo.com/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "fonttools",
+      "version": "4.63.0",
+      "bom-ref": "pkg:pypi/fonttools@4.63.0",
+      "purl": "pkg:pypi/fonttools@4.63.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "http://github.com/fonttools/fonttools"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "fping",
+      "version": "5.5",
+      "bom-ref": "pkg:generic/fping@5.5",
+      "purl": "pkg:generic/fping@5.5",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-like; bundled COPYING"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9c9ab2f26d3d32818b53ed7b664ec53546fc5cd59f4d953e06f9d3e28673f9d9"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/schweikert/fping"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "h11",
+      "version": "0.16.0",
+      "bom-ref": "pkg:pypi/h11@0.16.0",
+      "purl": "pkg:pypi/h11@0.16.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-hyper/h11"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "httpcore",
+      "version": "1.0.9",
+      "bom-ref": "pkg:pypi/httpcore@1.0.9",
+      "purl": "pkg:pypi/httpcore@1.0.9",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.encode.io/httpcore/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "httpx",
+      "version": "0.28.1",
+      "bom-ref": "pkg:pypi/httpx@0.28.1",
+      "purl": "pkg:pypi/httpx@0.28.1",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.python-httpx.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "idna",
+      "version": "3.18",
+      "bom-ref": "pkg:pypi/idna@3.18",
+      "purl": "pkg:pypi/idna@3.18",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/kjd/idna"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "invoke",
+      "version": "3.0.3",
+      "bom-ref": "pkg:pypi/invoke@3.0.3",
+      "purl": "pkg:pypi/invoke@3.0.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyinvoke/invoke"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "iPerf3 Windows x64 Cygwin dynamic-auth",
+      "version": "3.21",
+      "bom-ref": "pkg:generic/iperf3@3.21",
+      "purl": "pkg:generic/iperf3@3.21",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD-3-Clause and bundled permissive notices"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4aae5eee2b90c716d93bdc54c530a854596c92ff996859973b9f44e73799294e"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/ar51an/iperf3-win-builds/releases/tag/3.21"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "Jinja2",
+      "version": "3.1.6",
+      "bom-ref": "pkg:pypi/jinja2@3.1.6",
+      "purl": "pkg:pypi/jinja2@3.1.6",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pallets/jinja/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "kiwisolver",
+      "version": "1.5.0",
+      "bom-ref": "pkg:pypi/kiwisolver@1.5.0",
+      "purl": "pkg:pypi/kiwisolver@1.5.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/nucleic/kiwi"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "markdown-it-py",
+      "version": "4.2.0",
+      "bom-ref": "pkg:pypi/markdown-it-py@4.2.0",
+      "purl": "pkg:pypi/markdown-it-py@4.2.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/executablebooks/markdown-it-py"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "MarkupSafe",
+      "version": "3.0.3",
+      "bom-ref": "pkg:pypi/markupsafe@3.0.3",
+      "purl": "pkg:pypi/markupsafe@3.0.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pallets/markupsafe/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "matplotlib",
+      "version": "3.11.0",
+      "bom-ref": "pkg:pypi/matplotlib@3.11.0",
+      "purl": "pkg:pypi/matplotlib@3.11.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "Matplotlib-1.3-license AND bundled third-party notices"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://matplotlib.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "mdurl",
+      "version": "0.1.2",
+      "bom-ref": "pkg:pypi/mdurl@0.1.2",
+      "purl": "pkg:pypi/mdurl@0.1.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/executablebooks/mdurl"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "netmiko",
+      "version": "4.7.0",
+      "bom-ref": "pkg:pypi/netmiko@4.7.0",
+      "purl": "pkg:pypi/netmiko@4.7.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/ktbyers/netmiko"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "Node.js",
+      "version": "24.18.0",
+      "bom-ref": "pkg:generic/node.js@24.18.0",
+      "purl": "pkg:generic/node.js@24.18.0",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://nodejs.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "ntc_templates",
+      "version": "9.2.0",
+      "bom-ref": "pkg:pypi/ntc-templates@9.2.0",
+      "purl": "pkg:pypi/ntc-templates@9.2.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache Software License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/networktocode/ntc-templates"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "numpy",
+      "version": "2.5.1",
+      "bom-ref": "pkg:pypi/numpy@2.5.1",
+      "purl": "pkg:pypi/numpy@2.5.1",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://numpy.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "openpyxl",
+      "version": "3.1.5",
+      "bom-ref": "pkg:pypi/openpyxl@3.1.5",
+      "purl": "pkg:pypi/openpyxl@3.1.5",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://openpyxl.readthedocs.io/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "OpenSSL Runtime (iPerf3 bundle)",
+      "version": "3.0.19",
+      "bom-ref": "pkg:generic/openssl@3.0.19",
+      "purl": "pkg:generic/openssl@3.0.19",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3cfcab214b827485265c21f5c365af5055ee47ca507cc56a1422661288d51ea6"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://openssl-library.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "packaging",
+      "version": "26.2",
+      "bom-ref": "pkg:pypi/packaging@26.2",
+      "purl": "pkg:pypi/packaging@26.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR BSD-2-Clause"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pypa/packaging"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "paramiko",
+      "version": "4.0.0",
+      "bom-ref": "pkg:pypi/paramiko@4.0.0",
+      "purl": "pkg:pypi/paramiko@4.0.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.1"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.paramiko.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pillow",
+      "version": "12.3.0",
+      "bom-ref": "pkg:pypi/pillow@12.3.0",
+      "purl": "pkg:pypi/pillow@12.3.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT-CMU"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://python-pillow.github.io"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pyasynchat",
+      "version": "1.0.5",
+      "bom-ref": "pkg:pypi/pyasynchat@1.0.5",
+      "purl": "pkg:pypi/pyasynchat@1.0.5",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pypi.org/project/pyasynchat/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pyasyncore",
+      "version": "1.0.5",
+      "bom-ref": "pkg:pypi/pyasyncore@1.0.5",
+      "purl": "pkg:pypi/pyasyncore@1.0.5",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pypi.org/project/pyasyncore/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pycparser",
+      "version": "3.0",
+      "bom-ref": "pkg:pypi/pycparser@3.0",
+      "purl": "pkg:pypi/pycparser@3.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/eliben/pycparser"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pydantic",
+      "version": "2.13.4",
+      "bom-ref": "pkg:pypi/pydantic@2.13.4",
+      "purl": "pkg:pypi/pydantic@2.13.4",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://docs.pydantic.dev/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pydantic_core",
+      "version": "2.46.4",
+      "bom-ref": "pkg:pypi/pydantic-core@2.46.4",
+      "purl": "pkg:pypi/pydantic-core@2.46.4",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pyftpdlib",
+      "version": "2.2.0",
+      "bom-ref": "pkg:pypi/pyftpdlib@2.2.0",
+      "purl": "pkg:pypi/pyftpdlib@2.2.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/giampaolo/pyftpdlib"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "Pygments",
+      "version": "2.20.0",
+      "bom-ref": "pkg:pypi/pygments@2.20.0",
+      "purl": "pkg:pypi/pygments@2.20.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pygments.org"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pyinstaller",
+      "version": "6.21.0",
+      "bom-ref": "pkg:pypi/pyinstaller@6.21.0",
+      "purl": "pkg:pypi/pyinstaller@6.21.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "(GPL-2.0-or-later WITH Bootloader-exception) AND Apache-2.0"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pyinstaller.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pyinstaller-hooks-contrib",
+      "version": "2026.6",
+      "bom-ref": "pkg:pypi/pyinstaller-hooks-contrib@2026.6",
+      "purl": "pkg:pypi/pyinstaller-hooks-contrib@2026.6",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyinstaller/pyinstaller-hooks-contrib"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "PyNaCl",
+      "version": "1.6.2",
+      "bom-ref": "pkg:pypi/pynacl@1.6.2",
+      "purl": "pkg:pypi/pynacl@1.6.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache Software License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyca/pynacl"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pyOpenSSL",
+      "version": "26.4.0",
+      "bom-ref": "pkg:pypi/pyopenssl@26.4.0",
+      "purl": "pkg:pypi/pyopenssl@26.4.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyca/pyopenssl"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pyparsing",
+      "version": "3.3.2",
+      "bom-ref": "pkg:pypi/pyparsing@3.3.2",
+      "purl": "pkg:pypi/pyparsing@3.3.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyparsing/pyparsing/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "pyserial",
+      "version": "3.5",
+      "bom-ref": "pkg:pypi/pyserial@3.5",
+      "purl": "pkg:pypi/pyserial@3.5",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "BSD License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pyserial/pyserial"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "Python",
+      "version": "3.13.9",
+      "bom-ref": "pkg:generic/python@3.13.9",
+      "purl": "pkg:generic/python@3.13.9",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "PSF License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.python.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "python-dateutil",
+      "version": "2.9.0.post0",
+      "bom-ref": "pkg:pypi/python-dateutil@2.9.0.post0",
+      "purl": "pkg:pypi/python-dateutil@2.9.0.post0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache Software License; BSD License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/dateutil/dateutil"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "python-multipart",
+      "version": "0.0.32",
+      "bom-ref": "pkg:pypi/python-multipart@0.0.32",
+      "purl": "pkg:pypi/python-multipart@0.0.32",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/Kludex/python-multipart"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "bom-ref": "pkg:pypi/pyyaml@6.0.3",
+      "purl": "pkg:pypi/pyyaml@6.0.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://pyyaml.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "rich",
+      "version": "15.0.0",
+      "bom-ref": "pkg:pypi/rich@15.0.0",
+      "purl": "pkg:pypi/rich@15.0.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/Textualize/rich"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "ruamel.yaml",
+      "version": "0.19.1",
+      "bom-ref": "pkg:pypi/ruamel-yaml@0.19.1",
+      "purl": "pkg:pypi/ruamel-yaml@0.19.1",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://sourceforge.net/p/ruamel-yaml/code/ci/default/tree/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "scp",
+      "version": "0.16.0",
+      "bom-ref": "pkg:pypi/scp@0.16.0",
+      "purl": "pkg:pypi/scp@0.16.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "GNU Library or Lesser General Public License (LGPL)"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/jbardin/scp.py"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "six",
+      "version": "1.17.0",
+      "bom-ref": "pkg:pypi/six@1.17.0",
+      "purl": "pkg:pypi/six@1.17.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "MIT License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/benjaminp/six"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "starlette",
+      "version": "1.3.1",
+      "bom-ref": "pkg:pypi/starlette@1.3.1",
+      "purl": "pkg:pypi/starlette@1.3.1",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/Kludex/starlette"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "textfsm",
+      "version": "2.1.0",
+      "bom-ref": "pkg:pypi/textfsm@2.1.0",
+      "purl": "pkg:pypi/textfsm@2.1.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "name": "Apache Software License"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/google/textfsm"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "typing_extensions",
+      "version": "4.16.0",
+      "bom-ref": "pkg:pypi/typing-extensions@4.16.0",
+      "purl": "pkg:pypi/typing-extensions@4.16.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python/typing_extensions"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "typing-inspection",
+      "version": "0.4.2",
+      "bom-ref": "pkg:pypi/typing-inspection@0.4.2",
+      "purl": "pkg:pypi/typing-inspection@0.4.2",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pydantic/typing-inspection"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "tzdata",
+      "version": "2026.3",
+      "bom-ref": "pkg:pypi/tzdata@2026.3",
+      "purl": "pkg:pypi/tzdata@2026.3",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python/tzdata"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "uvicorn",
+      "version": "0.51.0",
+      "bom-ref": "pkg:pypi/uvicorn@0.51.0",
+      "purl": "pkg:pypi/uvicorn@0.51.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.uvicorn.org/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "websockets",
+      "version": "16.0",
+      "bom-ref": "pkg:pypi/websockets@16.0",
+      "purl": "pkg:pypi/websockets@16.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/python-websockets/websockets"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "xlsxwriter",
+      "version": "3.2.9",
+      "bom-ref": "pkg:pypi/xlsxwriter@3.2.9",
+      "purl": "pkg:pypi/xlsxwriter@3.2.9",
+      "scope": "required",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-2-Clause"
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://xlsxwriter.readthedocs.io/"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "name": "zlib Runtime (iPerf3 bundle)",
+      "version": "1.3.2",
+      "bom-ref": "pkg:generic/zlib@1.3.2",
+      "purl": "pkg:generic/zlib@1.3.2",
+      "scope": "optional",
+      "licenses": [
+        {
+          "license": {
+            "id": "Zlib"
+          }
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "827576482185c48ed3698454594260ee27ba32180127b8ba28c5ca68a867ce38"
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://www.zlib.net/"
+        }
+      ]
+    }
+  ]
+}

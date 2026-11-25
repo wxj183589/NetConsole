@@ -164,6 +164,10 @@
       "version": "1.6.2"
     },
     {
+      "name": "pyopenssl",
+      "version": "26.4.0"
+    },
+    {
       "name": "pyparsing",
       "version": "3.3.2"
     },

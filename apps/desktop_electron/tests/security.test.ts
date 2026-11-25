@@ -19,6 +19,16 @@ import {
 } from '../src/shared/validation'
 
 describe('Electron security policy', () => {
+  it('allows opaque workspace files and rejects paths or extra query fields', () => {
+    const apiPath = '/api/file-management/workspace/files/0123456789abcdef0123456789abcdef'
+    expect(validateBackendDownloadRequest({ apiPath, suggestedName: 'startup.cfg' })).toMatchObject({ apiPath })
+    for (const suffix of ['../secret', 'short', '0123456789abcdef0123456789abcdef/extra']) {
+      expect(() => validateBackendDownloadRequest({
+        apiPath: `/api/file-management/workspace/files/${suffix}`, suggestedName: 'startup.cfg',
+      })).toThrow()
+    }
+    expect(() => validateBackendDownloadRequest({ apiPath, suggestedName: 'startup.cfg', query: { path: 'C:/secret' } })).toThrow()
+  })
   it('disables DevTools in production while preserving the development workflow', () => {
     const production = secureWebPreferences('preload.cjs', false)
     const development = secureWebPreferences('preload.cjs', true)

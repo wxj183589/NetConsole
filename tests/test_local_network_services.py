@@ -1,10 +1,12 @@
 import socket
-import struct
+import json
+import ssl
 import subprocess
 import time
-from ftplib import FTP, error_perm
+from ftplib import FTP, FTP_TLS, error_perm
 from io import BytesIO
 from pathlib import Path
+from threading import Thread
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -14,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from netconsole.backend.api.local_network_services_router import router
 from netconsole.services.local_network_services.manager import LocalNetworkServiceManager, ServiceConfig
-from netconsole.services.local_network_services.protocols import parse_syslog
+from netconsole.services.local_network_services.protocols import parse_syslog, parse_syslog_record
 
 
 def free_port(udp=False):
@@ -94,38 +96,92 @@ def test_tftp_upload_download_and_no_overwrite(manager):
     assert manager.action("tftp", "stop")["status"] == "stopped"
 
 
-def test_dns_ntp_loopback_and_independent_shutdown(manager):
-    dns_port, ntp_port = free_port(udp=True), free_port(udp=True)
-    while dns_port == ntp_port:
-        ntp_port = free_port(udp=True)
-    manager.configure("dns", ServiceConfig(port=dns_port, dns_records={"Device.test.": "192.0.2.42"}))
-    manager.configure("ntp", ServiceConfig(port=ntp_port))
-    assert manager.action("dns", "start")["status"] == "running"
-    assert manager.action("ntp", "start")["status"] == "running"
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
-        client.settimeout(2)
-        question = b"\x06device\x04test\0\0\x01\0\x01"
-        query = struct.pack("!6H", 10, 0x100, 1, 0, 0, 0) + question
-        client.sendto(query, ("127.0.0.1", dns_port))
-        response = client.recv(512)
-        assert response[:2] == query[:2]
-        assert response[-4:] == socket.inet_aton("192.0.2.42")
-        assert manager.action("dns", "stop")["status"] == "stopped"
-        assert manager.snapshot("ntp")["status"] == "running"
-        request = b"\x23" + bytes(39) + b"testtime"
-        client.sendto(request, ("127.0.0.1", ntp_port))
-        response = client.recv(512)
-        assert response[0] & 7 == 4
-        assert response[24:32] == request[40:48]
-        assert len(response) == 48 and response[40:] != bytes(8)
+def test_dns_and_ntp_remain_deferred(manager):
+    for kind in ("dns", "ntp"):
+        assert manager.snapshot(kind)["status"] == "deferred"
+        assert manager.snapshot(kind)["available"] is False
+        with pytest.raises(ValueError, match="dependency_missing"):
+            manager.action(kind, "start")
+
+
+def test_https_managed_certificate_and_file_download(manager):
+    port = free_port()
+    initial = manager.snapshot("https")
+    assert initial["status"] == "uninitialized"
+    assert initial["config"].tls_enabled is True
+    root = Path(manager.configure("https", ServiceConfig(port=port, tls_enabled=True))["root"])
+    (root / "fixture.bin").write_bytes(b"TLS file transfer")
+    assert manager.action("https", "start")["status"] == "running"
+    snapshot = manager.snapshot("https")
+    assert snapshot["pid"] is not None
+    assert snapshot["process_owner"] == "service"
+    assert snapshot["uptime_seconds"] >= 0
+    assert snapshot["certificate_fingerprint"]
+    context = ssl._create_unverified_context()
+    with urlopen(f"https://127.0.0.1:{port}/fixture.bin", context=context, timeout=2) as response:
+        assert response.read() == b"TLS file transfer"
+    assert manager.action("https", "stop")["status"] == "stopped"
+
+
+def test_ftps_enforces_tls_and_keeps_read_only_share(manager):
+    if not manager._tls_supported("ftp"):
+        pytest.skip("pyOpenSSL is not installed in this environment")
+    port = free_port()
+    root = Path(manager.configure("ftp", ServiceConfig(port=port, tls_enabled=True))["root"])
+    (root / "fixture.bin").write_bytes(b"FTPS transfer")
+    result = manager.action("ftp", "start")
+    assert result["status"] == "running"
+    credential = result["session_credential"]
+    context = ssl._create_unverified_context()
+    with FTP_TLS(context=context) as client:
+        client.connect("127.0.0.1", port, timeout=4)
+        client.auth()
+        client.login(credential["username"], credential["password"])
+        client.prot_p()
+        transfer = BytesIO()
+        client.retrbinary("RETR fixture.bin", transfer.write)
+        assert transfer.getvalue() == b"FTPS transfer"
+        with pytest.raises(error_perm, match="502"):
+            client.sendcmd("PORT 127,0,0,1,30,30")
+    assert manager.snapshot("ftp")["certificate_fingerprint"]
+    assert manager.action("ftp", "stop")["status"] == "stopped"
+
+
+def test_supervisor_bounds_automatic_recovery(manager):
+    manager.configure("http", ServiceConfig(port=free_port(), auto_restart=True))
+    assert manager.action("http", "start")["status"] == "running"
+    for attempt in range(4):
+        process = manager.runtimes["http"].process
+        assert process is not None
+        process.terminate()
+        process.wait(timeout=3)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            snapshot = manager.snapshot("http")
+            if attempt == 3 and snapshot["error_code"] == "auto_restart_limit":
+                break
+            if attempt < 3 and snapshot["restart_attempts"] == attempt + 1 and snapshot["status"] == "running":
+                break
+            time.sleep(0.05)
+        if attempt < 3:
+            assert snapshot["status"] == "running"
+            assert manager.runtimes["http"].process.pid != process.pid
+    assert snapshot["error_code"] == "auto_restart_limit"
+    assert snapshot["restart_attempts"] == 3
 
 
 def test_syslog_udp_tcp_receivers_and_port_pair_cleanup(manager):
-    udp_port = free_port(udp=True)
-    tcp_port = udp_port + 1
-    while tcp_port >= 65535:
+    while True:
         udp_port = free_port(udp=True)
         tcp_port = udp_port + 1
+        if tcp_port >= 65535:
+            continue
+        try:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", tcp_port))
+            break
+        except OSError:
+            continue
     result = manager.configure("syslog", ServiceConfig(port=udp_port))
     assert [item["transport"] for item in result["listeners"]] == ["UDP", "TCP"]
     occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -139,23 +195,61 @@ def test_syslog_udp_tcp_receivers_and_port_pair_cleanup(manager):
     udp_message = b"<34>1 2026-11-25T10:00:00Z sw-1 daemon 1234 ID47 - udp event"
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
         client.sendto(udp_message, ("127.0.0.1", udp_port))
+        client.sendto(b"<13>1 2026-11-25T10:02:00Z host-3 daemon 1 ID - password=hunter2", ("127.0.0.1", udp_port))
     with socket.create_connection(("127.0.0.1", tcp_port), timeout=2) as client:
         client.sendall(b"<13>Nov 25 10:01:00 sw-2 daemon: tcp event\n")
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         entries = "\n".join(manager.logs("syslog"))
-        if "tcp event" in entries and "udp event" in entries:
+        if "tcp event" in entries and "udp event" in entries and "<redacted>" in entries:
             break
         time.sleep(0.02)
-    assert "facility=4 severity=2 hostname=sw-1" in entries
+    assert '"facility":4,"severity":2,"hostname":"sw-1"' in entries
+    assert '"format":"rfc5424","timestamp":"2026-11-25T10:00:00Z"' in entries
+    assert '"format":"rfc3164","timestamp":"Nov 25 10:01:00"' in entries
+    assert '"app_name":"daemon"' in entries
     assert "udp event" in entries and "tcp event" in entries
-    assert "source=127.0.0.1" in entries
+    assert "password=hunter2" not in entries
+    assert '"source":"127.0.0.1"' in entries
     assert parse_syslog(b"legacy host event")[0:3] == (1, 5, "legacy")
+    assert parse_syslog_record(b"<13>1 2026-11-25T10:00:00Z host-1 daemon 1 ID - password=hunter2")["message"] == "password=hunter2"
     assert manager.action("syslog", "stop")["status"] == "stopped"
     with pytest.raises(OSError):
         socket.create_connection(("127.0.0.1", tcp_port), timeout=1)
 
+def test_syslog_burst_does_not_block_http_service(manager):
+    http_port = free_port()
+    while True:
+        syslog_port = free_port(udp=True)
+        if syslog_port < 65534 and syslog_port not in {http_port, http_port - 1, http_port + 1}:
+            try:
+                with socket.socket() as probe:
+                    probe.bind(("127.0.0.1", syslog_port + 1))
+                break
+            except OSError:
+                continue
+    http_root = Path(manager.configure("http", ServiceConfig(port=http_port))["root"])
+    (http_root / "health.txt").write_text("available", encoding="utf-8")
+    manager.configure("syslog", ServiceConfig(port=syslog_port))
+    assert manager.action("http", "start")["status"] == "running"
+    assert manager.action("syslog", "start")["status"] == "running"
 
+    def send_burst():
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+            for index in range(300):
+                payload = f"<14>1 2026-11-25T10:00:00Z switch daemon 1 ID - burst-{index}".encode()
+                sender.sendto(payload, ("127.0.0.1", syslog_port))
+
+    sender = Thread(target=send_burst)
+    sender.start()
+    started = time.monotonic()
+    with urlopen(f"http://127.0.0.1:{http_port}/health.txt", timeout=2) as response:
+        assert response.read() == b"available"
+    assert time.monotonic() - started < 2
+    sender.join(timeout=3)
+    assert not sender.is_alive()
+    assert manager.snapshot("http")["status"] == "running"
+    assert manager.snapshot("syslog")["status"] == "running"
 
 
 def test_ftp_download_credential_and_restart(manager):
@@ -193,11 +287,84 @@ def test_iperf_external_process_exit_and_recovery(tmp_path):
         time.sleep(0.2)  # Allow the server to finish the health-probe connection.
         client = subprocess.run([str(binary), "-c", "127.0.0.1", "-p", str(port), "-t", "1"], capture_output=True, timeout=6)
         assert client.returncode == 0, client.stderr
+        udp = subprocess.run([str(binary), "-c", "127.0.0.1", "-p", str(port), "-u", "-b", "1M", "-t", "1", "-J"], capture_output=True, timeout=8)
+        assert udp.returncode == 0, udp.stderr
+        result = json.loads(udp.stdout)
+        assert "error" not in result
+        received = result["end"]["sum_received"]
+        assert received["bits_per_second"] > 0
+        assert received["jitter_ms"] >= 0
+        assert 0 <= received["lost_percent"] <= 100
         process = test_manager.runtimes["iperf"].process
         assert process is not None
         process.terminate()
         process.wait(timeout=4)
-        assert test_manager.snapshot("iperf")["error_code"] == "service_exited"
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and test_manager.snapshot("iperf")["error_code"] != "service_exited":
+            time.sleep(0.02)
+        exited = test_manager.snapshot("iperf")
+        assert exited["error_code"] == "service_exited"
+        assert exited["health"] == "unhealthy"
         assert test_manager.action("iperf", "restart")["status"] == "running"
     finally:
         test_manager.close()
+
+
+def test_certificate_rotates_for_address_and_mismatched_key(manager):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    manager.configure("https", ServiceConfig(port=free_port(), tls_enabled=True))
+    certificate, key = manager._ensure_certificate("https", "127.0.0.1")
+    initial = certificate.read_bytes()
+    manager._ensure_certificate("https", "127.0.0.1")
+    assert certificate.read_bytes() == initial
+    manager._ensure_certificate("https", "127.0.0.2")
+    assert certificate.read_bytes() != initial
+    changed_address = certificate.read_bytes()
+    wrong_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key.write_bytes(wrong_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    manager._ensure_certificate("https", "127.0.0.2")
+    assert certificate.read_bytes() != changed_address
+
+
+def test_slow_tls_client_does_not_block_another_download(manager):
+    port = free_port()
+    root = Path(manager.configure("https", ServiceConfig(port=port, tls_enabled=True))["root"])
+    (root / "health.txt").write_bytes(b"healthy")
+    assert manager.action("https", "start")["status"] == "running"
+    with socket.create_connection(("127.0.0.1", port), timeout=2):
+        with urlopen(f"https://127.0.0.1:{port}/health.txt", context=ssl._create_unverified_context(), timeout=2) as response:
+            assert response.read() == b"healthy"
+
+
+def test_service_process_isolation_and_close_reaps_children(manager):
+    for kind in ("http", "tftp"):
+        manager.configure(kind, ServiceConfig(port=free_port(udp=kind == "tftp")))
+        assert manager.action(kind, "start")["status"] == "running"
+    http = manager.runtimes["http"].process
+    tftp = manager.runtimes["tftp"].process
+    assert http.pid != tftp.pid
+    http.terminate()
+    http.wait(timeout=3)
+    assert manager.snapshot("tftp")["status"] == "running"
+    manager.close()
+    assert http.poll() is not None
+    assert tftp.poll() is not None
+
+
+def test_ftp_explicit_upload_user_and_existing_file_protection(manager):
+    port = free_port()
+    root = Path(manager.configure("ftp", ServiceConfig(port=port, allow_upload=True, ftp_username="operator"))["root"])
+    result = manager.action("ftp", "start")
+    credential = result["session_credential"]
+    assert credential["username"] == "operator"
+    with FTP() as client:
+        client.connect("127.0.0.1", port, timeout=3)
+        client.login(credential["username"], credential["password"])
+        client.storbinary("STOR upload.bin", BytesIO(b"new payload"))
+        assert (root / "upload.bin").read_bytes() == b"new payload"
+        with pytest.raises(error_perm):
+            client.storbinary("STOR upload.bin", BytesIO(b"overwrite"))
+        assert (root / "upload.bin").read_bytes() == b"new payload"
+    assert credential["password"] not in "\n".join(manager.logs("ftp"))

@@ -14,6 +14,7 @@ from netconsole.services.h3c_command_template import (
     CommandTemplatePreviewRequest,
     preview_command_template,
     validate_command_template,
+    validate_read_only_command_template,
 )
 
 
@@ -72,6 +73,9 @@ class CommandTemplateLibrary:
         if not definition.name.strip() or not definition.category.strip():
             raise ValueError("模板名称和分类不能为空")
         validate_command_template(definition.source, definition.schema_fields)
+        if definition.command_type != "read_only":
+            raise ValueError("仅可保存只读查询模板")
+        validate_read_only_command_template(definition.source)
         record = self.repository.save(
             definition.model_dump(mode="json"), template_id=template_id, expected_version=expected_version,
         )

@@ -32,6 +32,10 @@ describe('workspace validation', () => {
   it('accepts and canonicalizes only known internal routes', () => {
     expect(validateWorkspaceRoute('/devices/device-1?b=2&a=1')).toBe('/devices/device-1?a=1&b=2')
     expect(validateWorkspaceRoute('/console')).toBe('/console')
+    for (const path of ['/file-manager', '/device-files/diagnostics', '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components', '/tools/network-services']) {
+      expect(validateWorkspaceRoute(path)).toBe(path)
+      expect(validateWorkspaceWindowSnapshot(snapshot(path)).tabs[0].routeFullPath).toBe(path)
+    }
     expect(validateWorkspaceRoute('/rail-transit/ground-unattended')).toBe('/rail-transit/ground-unattended')
     expect(validateWorkspaceRoute('/rail-transit/base-data?node_uid=station-1&tab=overview')).toContain('node_uid=station-1')
     expect(validateWorkspaceRoute('/rail-transit/infrastructure?node_uid=station-1')).toBe('/rail-transit/infrastructure?node_uid=station-1')

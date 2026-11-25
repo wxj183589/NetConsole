@@ -242,6 +242,12 @@
       "client_package": true,
       "internal_only": false
     },
+    "capability.network_tools.local_services": {
+      "visible": true,
+      "enabled": true,
+      "client_package": true,
+      "internal_only": false
+    },
     "capability.network_tools.tcp_port_test": {
       "visible": true,
       "enabled": true,

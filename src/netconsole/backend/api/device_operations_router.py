@@ -43,6 +43,12 @@ def _require_task_kind(request: Request, kind: object) -> None:
         require_feature("capability.config_collection.fetch")(request)
 
 
+@router.get("/organizations")
+def target_organizations(request: Request) -> list[dict[str, str]]:
+    require_feature("module.rail_infrastructure")(request)
+    return _service(request).organizations(_site(request))
+
+
 @router.post("/templates/preview", response_model=CommandTemplatePreview)
 def preview_template(payload: CommandTemplatePreviewRequest) -> CommandTemplatePreview:
     try:
@@ -108,6 +114,8 @@ def update_template(
              dependencies=[Depends(require_feature("module.devices"))])
 def start_device_task(request: Request, payload: DeviceTaskRequest) -> DeviceTaskReference:
     _require_task_kind(request, payload.kind)
+    if payload.organization_uid is not None:
+        require_feature("module.rail_infrastructure")(request)
     try:
         return _service(request).start(_site(request), payload)
     except TaskResourceConflictError as exc:
@@ -126,6 +134,16 @@ def device_task_result(request: Request, task_id: str) -> dict[str, object]:
         return _service(request).result(_site(request), task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="设备任务不存在") from exc
+
+
+@router.post("/tasks/{task_id}/exports", status_code=202)
+def export_device_task(request: Request, task_id: str) -> dict[str, str]:
+    try:
+        return request.app.state.device_task_export_service.start(_site(request), task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="设备任务不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/tasks/{task_id}/retry", response_model=DeviceTaskReference, status_code=202,

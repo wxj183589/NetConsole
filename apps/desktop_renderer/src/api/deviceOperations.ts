@@ -6,6 +6,7 @@ const root = '/api/device-operations'
 export const deviceTaskLabels = {
   configuration: '配置收集', backup: '配置备份', diagnostic: '诊断收集',
   optical: '光衰收集', lldp: 'LLDP 收集', version: '版本检查', custom: '自定义命令采集',
+  wireless: '无线信息收集', mesh: 'MESH 收集',
 } as const
 
 export type DeviceTaskKind = keyof typeof deviceTaskLabels
@@ -62,6 +63,7 @@ export interface DeviceExecution {
   status: 'success' | 'failed' | 'partial' | 'skipped'
   started_at: string
   finished_at: string
+  elapsed_ms?: number
   message?: string
   warning_message?: string
   collect_run_uuid?: string
@@ -70,6 +72,9 @@ export interface DeviceExecution {
   snapshot_ids?: number[]
   snapshot_types?: string[]
   record_count?: number
+  records_truncated?: boolean
+  wireless_summary?: Record<string, unknown>
+  ac_time?: string
   records?: Record<string, unknown>[]
   command_results?: { command: string; status: string; output: string }[]
 }
@@ -112,6 +117,9 @@ export function startDeviceTask(payload: {
   kind: DeviceTaskKind
   device_uuids: string[]
   group_id: TargetGroup | null
+  organization_uid?: string | null
+  concurrency?: number
+  command_timeout?: number
   template?: CommandTemplate
   saved_template?: SavedTemplateParameters & { preview_digest: string }
 }): Promise<DeviceTaskReference> {
@@ -124,4 +132,12 @@ export function getDeviceTaskResult(id: string): Promise<DeviceTaskResult> {
 
 export function retryDeviceTask(id: string): Promise<DeviceTaskReference> {
   return post(`/tasks/${encodeURIComponent(id)}/retry`)
+}
+
+export function listTaskOrganizations(): Promise<{ uid: string; name: string; parent_uid: string }[]> {
+  return apiRequest(root + '/organizations')
+}
+
+export function startDeviceTaskResultExport(id: string): Promise<{ task_id: string }> {
+  return post(`/tasks/${encodeURIComponent(id)}/exports`)
 }

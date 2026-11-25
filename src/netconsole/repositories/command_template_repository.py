@@ -7,8 +7,8 @@ from uuid import uuid4
 
 from netconsole.core.atomic_file import atomic_write_bytes, locked_file
 from netconsole.core.paths import PathResolver
+from netconsole.core.site_identity import validate_site_name
 from netconsole.models.task_snapshot import utc_now_iso
-from netconsole.services.site_manager import SiteManager
 
 
 class TemplateRevisionConflict(ValueError):
@@ -17,7 +17,7 @@ class TemplateRevisionConflict(ValueError):
 
 class CommandTemplateRepository:
     def __init__(self, paths: PathResolver, site: str) -> None:
-        site = SiteManager(paths).validate_site_name(site)
+        site = validate_site_name(site)
         site_root = paths.get_site_root(site).resolve()
         candidate = paths.config_center_root(site) / "command-templates.json"
         lock = candidate.with_name(f".{candidate.name}.lock")

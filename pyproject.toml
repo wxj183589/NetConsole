@@ -17,7 +17,9 @@ dependencies = [
     "Jinja2>=3.1.6,<4",
     "netmiko>=4.7.0,<5",
     "paramiko>=4.0.0,<5",
+    "cryptography>=49.0.0,<50",
     "pyftpdlib>=2.2.0,<3",
+    "pyOpenSSL>=26.4.0,<27",
     "openpyxl>=3.1.5",
     "XlsxWriter>=3.2.9",
     "matplotlib>=3.11.0",
@@ -36,4 +38,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-netconsole = ["assets/*", "docs/*", "resources/*", "resources/terminal_rules/*.json"]
+netconsole = ["assets/*", "assets/licenses/*.txt", "docs/*", "resources/*", "resources/terminal_rules/*.json"]

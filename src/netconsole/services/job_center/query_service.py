@@ -1025,7 +1025,7 @@ class JobCenterQueryService:
 
     @staticmethod
     def _module(owner: str, task_type: str) -> str:
-        if owner == DEVICE_TASK_OWNER and task_type == DEVICE_TASK_TYPE:
+        if owner == DEVICE_TASK_OWNER and task_type in {DEVICE_TASK_TYPE, "web_export_table_xlsx"}:
             return "devices"
         if owner == "terminal_sftp" and task_type == "terminal_sftp_transfer":
             return "files"
@@ -1077,7 +1077,7 @@ class JobCenterQueryService:
             return True, ""
         if owner == WEB_TASK_OWNER and task_type in DEVICE_TASK_TYPES:
             return True, ""
-        if owner == DEVICE_TASK_OWNER and task_type == DEVICE_TASK_TYPE:
+        if owner == DEVICE_TASK_OWNER and task_type in {DEVICE_TASK_TYPE, "web_export_table_xlsx"}:
             return status != "STOPPING", "已请求停止" if status == "STOPPING" else ""
         if owner == CONFIG_WEB_OWNER and task_type in CONFIG_WEB_TASK_TYPES:
             if status == "STOPPING":

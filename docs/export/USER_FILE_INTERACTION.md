@@ -75,6 +75,8 @@ async function exportData(): Promise<void> {
 
 页面加载、Tab 恢复和历史任务恢复不得自动弹窗或自动保存。已有文件若需要“导出副本”，仍属于用户最终副本，必须由用户当次选择路径。
 
+文件管理中的服务根目录文件沿用已有文件另存流程。用户点击后通过固定 `/api/file-management/workspace/files/{32位小写十六进制引用}` 请求 Native Bridge，Backend 将引用限定到当前局点和已初始化服务根。Renderer 不传真实路径或最终保存目录，Main 当次弹出 Save As。复制、移动及受管上传使用独立文件操作任务，用户取消选择文件时不提交任务。
+
 ## 五、导入的唯一流程
 
 ### Browser File/FileList

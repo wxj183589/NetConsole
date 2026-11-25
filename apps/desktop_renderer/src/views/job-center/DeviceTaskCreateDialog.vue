@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { listDeviceGroups, listDevices } from '../../api/deviceManagement'
 import {
   deviceTaskLabels, getCommandTemplateVersions, listCommandTemplates, previewCommandTemplate,
-  previewSavedTemplate, saveCommandTemplate, startDeviceTask,
+  previewSavedTemplate, saveCommandTemplate, startDeviceTask, listTaskOrganizations,
   type CommandPreview, type CommandTemplate, type DeviceTaskKind, type SavedTemplate,
   type SavedTemplateDefinition, type SavedTemplatePreview, type TargetGroup,
 } from '../../api/deviceOperations'
@@ -17,8 +17,12 @@ const configCollectionEnabled = computed(() => isFeatureEnabled('capability.conf
 const kinds = computed(() => Object.entries(deviceTaskLabels).filter(
   ([value]) => configCollectionEnabled.value ? value !== 'configuration' : !['configuration', 'backup'].includes(value),
 ))
-const kind = ref<DeviceTaskKind>(configCollectionEnabled.value ? 'configuration' : 'diagnostic')
-const scope = ref<'devices' | 'group'>('devices')
+const kind = ref<DeviceTaskKind>(configCollectionEnabled.value ? 'backup' : 'diagnostic')
+const scope = ref<'devices' | 'group' | 'organization'>('devices')
+const organizations = ref<{ uid: string; name: string; parent_uid: string }[]>([])
+const organizationUid = ref('')
+const concurrency = ref(4)
+const commandTimeout = ref(40)
 const targets = ref<string[]>([])
 const targetGroup = ref<TargetGroup | null>(null)
 const devices = ref<DeviceListItem[]>([])
@@ -57,7 +61,7 @@ const draftChanged = computed(() => {
   }
 })
 const canSubmit = computed(() =>
-  (scope.value === 'devices' ? targets.value.length > 0 : targetGroup.value !== null)
+  (scope.value === 'devices' ? targets.value.length > 0 : scope.value === 'group' ? targetGroup.value !== null : Boolean(organizationUid.value))
   && (kind.value !== 'custom' || commandPreviewReady.value),
 )
 
@@ -174,6 +178,9 @@ async function submit(): Promise<void> {
       kind: kind.value,
       device_uuids: scope.value === 'devices' ? targets.value : [],
       group_id: scope.value === 'group' ? targetGroup.value : null,
+      organization_uid: scope.value === 'organization' ? organizationUid.value : null,
+      concurrency: concurrency.value,
+      command_timeout: commandTimeout.value,
       template: kind.value === 'custom' && !chosen ? template() : undefined,
       saved_template: kind.value === 'custom' && chosen ? {
         template_id: chosen.template_id, version: chosen.version,
@@ -203,6 +210,11 @@ watch(open, (visible) => {
   labels.clear()
   devices.value = []
   groups.value = []
+  organizations.value = []
+  organizationUid.value = ''
+  if (isFeatureEnabled('module.rail_infrastructure')) {
+    void listTaskOrganizations().then((items) => { organizations.value = items }).catch(fail)
+  }
   void searchDevices()
   void listDeviceGroups().then((items) => { groups.value = items }).catch(fail)
   void listCommandTemplates().then((items) => { savedTemplates.value = items }).catch(fail)
@@ -221,6 +233,7 @@ watch(open, (visible) => {
         <el-radio-group v-model="scope">
           <el-radio-button value="devices">选择设备</el-radio-button>
           <el-radio-button value="group">分组或局点</el-radio-button>
+          <el-radio-button v-if="isFeatureEnabled('module.rail_infrastructure')" value="organization">组织及下级</el-radio-button>
         </el-radio-group>
       </el-form-item>
       <el-form-item v-if="scope === 'devices'" label="设备">
@@ -231,13 +244,22 @@ watch(open, (visible) => {
           <el-option v-for="device in devices" :key="device.device_uuid" :value="device.device_uuid" :label="`${device.name} · ${device.primary_address}`" />
         </el-select>
       </el-form-item>
-      <el-form-item v-else label="设备分组">
+      <el-form-item v-else-if="scope === 'group'" label="设备分组">
         <el-select v-model="targetGroup" aria-label="设备分组">
           <el-option label="当前局点全部设备" value="all" />
           <el-option label="未分组" value="ungrouped" />
           <el-option v-for="group in groups" :key="group.id" :value="group.id" :label="`${group.name}（${group.device_count}）`" />
         </el-select>
       </el-form-item>
+      <el-form-item v-else label="组织节点">
+        <el-select v-model="organizationUid" filterable aria-label="组织节点">
+          <el-option v-for="node in organizations" :key="node.uid" :value="node.uid" :label="node.name" />
+        </el-select>
+      </el-form-item>
+      <div class="template-fields">
+        <el-form-item label="并发设备数（1 为串行）"><el-input-number v-model="concurrency" :min="1" :max="8" /></el-form-item>
+        <el-form-item v-if="!['configuration', 'backup', 'optical'].includes(kind)" label="查询命令超时（秒）"><el-input-number v-model="commandTimeout" :min="5" :max="120" /></el-form-item>
+      </div>
       <template v-if="kind === 'custom'">
         <el-form-item label="局点模板">
           <el-select v-model="currentTemplateId" aria-label="局点模板" @change="pickSaved">

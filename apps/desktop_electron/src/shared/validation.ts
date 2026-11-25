@@ -69,6 +69,13 @@ const WORKSPACE_ALLOWED_PATHS = new Set([
   '/rail-transit/online-mr-analysis',
   '/config-center',
   '/device-files',
+  '/device-files/diagnostics',
+  '/file-manager',
+  '/tools/traffic',
+  '/tools/connectivity',
+  '/tools/wireless-scan',
+  '/tools/network-components',
+  '/tools/network-services',
   '/network-tools/traffic',
   '/network-tools/toolbox',
   '/network-tools/wireless-scan',
@@ -88,6 +95,7 @@ const OPENABLE_ARTIFACT_SUFFIXES = [
 const DOWNLOAD_SEGMENT = String.raw`(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+`
 const GROUND_ARCHIVE_ID = String.raw`[A-Za-z0-9][A-Za-z0-9_-]{0,159}`
 const DOWNLOAD_ENDPOINTS = [
+  { pattern: /^\/api\/file-management\/workspace\/files\/[a-f0-9]{32}$/, query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/terminal\/quick-buttons\/export$/, query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/terminal\/sftp\/transfers\/[a-f0-9]{32}\/file$/, query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/terminal\/sftp\/transfer-log$/, query: new Set<string>(), required: new Set<string>() },

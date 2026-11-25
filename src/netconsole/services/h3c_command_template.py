@@ -96,6 +96,56 @@ def validate_command_template(source: str, schema_fields: dict[str, CommandParam
             _validated_values(CommandTemplatePreviewRequest(source=source, schema_fields={name: parameter}))
 
 
+def validate_read_only_command_template(source: str) -> None:
+    """Check every control-flow branch with dynamic output kept in argument positions.
+
+    Dynamic values never establish a command's verb. Actual rendered commands
+    still pass the execution whitelist before any connection is opened.
+    """
+    environment = _CliSandbox(undefined=StrictUndefined, autoescape=False)
+    tree = environment.parse(source)
+    _validate_template_node(tree)
+
+    def variants(statements) -> list[str]:
+        outputs = [""]
+        for statement in statements:
+            if isinstance(statement, nodes.Output):
+                alternatives = ["".join(
+                    item.data if isinstance(item, nodes.TemplateData) else "GigabitEthernet1/0/1"
+                    for item in statement.nodes
+                )]
+            elif isinstance(statement, nodes.If):
+                alternatives = variants(statement.body) + variants(statement.else_)
+                for branch in statement.elif_:
+                    alternatives.extend(variants(branch.body))
+            elif isinstance(statement, nodes.For):
+                # Two iterations expose a missing line separator between commands.
+                body = variants(statement.body)
+                otherwise = variants(statement.else_)
+                if len(otherwise) + len(body) + len(body) ** 2 > 512:
+                    raise TemplatePreviewError("模板分支组合超出只读检查上限")
+                alternatives = otherwise + body + [left + right for left in body for right in body]
+            else:
+                raise TemplatePreviewError("只读模板存在无法静态检查的语法")
+            if len(outputs) * len(alternatives) > 512:
+                raise TemplatePreviewError("模板分支组合超出只读检查上限")
+            outputs = [prefix + suffix for prefix in outputs for suffix in alternatives]
+            if any(len(output) > 32768 for output in outputs):
+                raise TemplatePreviewError("模板静态检查结果超出长度上限")
+        return outputs
+
+    has_command = False
+    for output in variants(tree.body):
+        for command in output.splitlines():
+            if not command.strip():
+                continue
+            has_command = True
+            if not is_read_only_h3c_command(command.strip()):
+                raise TemplatePreviewError("仅可保存只读查询模板，命令名称必须固定，变量只能用于查询参数")
+    if not has_command:
+        raise TemplatePreviewError("只读模板必须包含查询命令")
+
+
 def _compiled_template(source: str):
     environment = _CliSandbox(undefined=StrictUndefined, autoescape=False)
     environment.globals.clear()
