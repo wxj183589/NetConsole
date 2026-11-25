@@ -48,6 +48,16 @@ def test_putty_accepts_32_and_64_bit_executable_names_case_insensitively(tmp_pat
     assert validate_settings_tool_path("putty", executable) == executable.resolve()
 
 
+def test_openssh_accepts_only_ssh_executable(tmp_path: Path) -> None:
+    executable = tmp_path / "SSH.EXE"
+    executable.write_bytes(b"MZ")
+    assert validate_settings_tool_path("openssh", executable) == executable.resolve()
+    other = tmp_path / "plink.exe"
+    other.write_bytes(b"MZ")
+    with pytest.raises(SettingsToolPathError, match="OpenSSH"):
+        validate_settings_tool_path("openssh", other)
+
+
 @pytest.mark.parametrize("name", ["puttygen.exe", "plink.exe", "psftp.exe", "putty.exe.bak", "putty.bat"])
 def test_putty_rejects_other_programs_and_disguised_files(tmp_path: Path, name: str) -> None:
     executable = tmp_path / name
