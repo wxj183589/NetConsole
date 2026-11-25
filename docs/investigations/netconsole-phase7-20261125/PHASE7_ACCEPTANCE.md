@@ -43,6 +43,12 @@
 - 最终 Full NSIS：`D:/study/NetConsole-Workspace/worktrees/organization-task-network-services-phase6/dist/electron/NetConsole-Full-1.5.19.0-a66455b2-x64-setup.exe`，159,505,594 bytes，SHA-256 `048067404813DA700B035558101A361FD96C9B34F5FAB72CDC8D8B21FAC16495`。
 - Full Gate 日志：`D:/study/NetConsole-Workspace/reports/tests/phase7-full-gate-20261125/attempt5-full-gate.log`。截图位于 `D:/study/NetConsole-Workspace/reports/diagnostic/netconsole-phase7-20261125/screenshots`，13 种 UI 状态 × 4 种分辨率，共 52 张真实 Electron 窗口截图。
 
+## Phase 7.1 Windows 安装验收更新
+
+2026-11-26 已独立复算 v1.5.19 正式包 SHA-256，结果仍为 `048067404813DA700B035558101A361FD96C9B34F5FAB72CDC8D8B21FAC16495`。NSIS、PE 版本资源、release manifest、包内 SBOM、第三方声明及离线工具静态核验通过。正式包和 v1.5.18 上一包均未签名。
+
+当前可用隔离 VM 为 Windows 10 1909，Guest 未登录且拒绝匿名 Guest Operations；本轮没有运行安装器。干净安装、安装态 Electron / Worker、升级、卸载、数据保留、进程回收和端口释放均为 `NOT VERIFIED`，升级状态为 `UPGRADE_NOT_VERIFIED`。Full Gate 继续沿用 2026-11-25 的 PASS 证据，没有重跑全量测试。详细证据、VM 配置和阻断项见 [`PHASE7_WINDOWS_VM_ACCEPTANCE.md`](./PHASE7_WINDOWS_VM_ACCEPTANCE.md)。本阶段总状态为 `PARTIAL`，等待真实 Windows 环境最终验收。
+
 ## 数据与执行记录
 
 实验 AC、AC2、SW 仅执行查询或 SFTP 读取。两台 AC 无线任务成功，MESH 实测明确返回未配置 WMESH，结果记 skipped，真实非零链路仍待验收。FIT-AP TCP23 可达，本轮没有配置其远程控制台。

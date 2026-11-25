@@ -57,3 +57,7 @@ DEV_REAL_DATA_MODIFIED=0
 DEVICE_CONFIGURATION_WRITES=0
 DATABASES_REMOVED=0
 ```
+
+## Phase 7.1 安装态补充
+
+2026-11-26 没有完成安装态 Electron 验收。隔离克隆 Guest 未登录，真实安装、Backend 启动、Renderer、frozen Python Worker、文件面板和服务管理均为 `NOT VERIFIED`。已有源码 Electron 交互结果和 package smoke 仍分别保持其原报告状态，不替代安装态证据。环境与阻断记录见 [`PHASE7_WINDOWS_VM_ACCEPTANCE.md`](./PHASE7_WINDOWS_VM_ACCEPTANCE.md)。

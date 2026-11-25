@@ -35,3 +35,7 @@
 | Packaged Electron smoke | PASS，冻结 Worker 中文协议、数据库迁移/list API HTTP 200、无人值守状态 HTTP 200、MESH 幂等、归档重名、NOTICE/SBOM 与正常退出 |
 
 机器可读结果保存在 `D:/study/NetConsole-Workspace/worktrees/organization-task-network-services-phase6/.local-reports/local-gate.json`，完整原始输出保存在 `D:/study/NetConsole-Workspace/reports/tests/phase7-full-gate-20261125/attempt5-full-gate.log`。最终结论为 PASS。第一次 gate 的真实代码/测试失败均已修复。后续几次尝试定位并修复了退役功能 smoke 基线、包级 Python 路径及 pnpm 非交互配置问题，失败尝试的日志仍保留在同一报告目录。
+
+## Phase 7.1 沿用状态
+
+2026-11-26 本阶段没有重跑 Full Gate。上文 PASS 结果仍对应 clean、已推送的源码 checkpoint `a66455b251bf220ca418da01547102c684030246`。当前产品分支位于后续报告提交 `266acbcd5b4561130b26277719ca7780089d7bef`。Windows 安装、升级、卸载和安装态业务验收未完成，不能由 Full Gate 或 package smoke 推导为 PASS。安装包静态复核和 VM 阻断记录见 [`PHASE7_WINDOWS_VM_ACCEPTANCE.md`](./PHASE7_WINDOWS_VM_ACCEPTANCE.md)。

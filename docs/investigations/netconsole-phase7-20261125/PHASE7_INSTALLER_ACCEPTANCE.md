@@ -60,3 +60,9 @@ DATABASES_REMOVED=0
 GLOBAL_SERVICES_MODIFIED=0
 FIREWALL_MODIFIED=0
 ```
+
+## Phase 7.1 制品复核与 Windows VM 验收进展
+
+2026-11-26 对正式 v1.5.19 包进行独立复核。文件存在，长度为 159,505,594 bytes，SHA-256 仍为 `048067404813DA700B035558101A361FD96C9B34F5FAB72CDC8D8B21FAC16495`。PE FileVersion / ProductVersion 为 1.5.19，容器为 `NSIS-3 Unicode`。安装器内构建清单与包内 Renderer 构建元数据均记录 Installer、Backend、Frontend commit 为 `a66455b251bf220ca418da01547102c684030246`，dirty 状态为 false。包内 CycloneDX 1.5 SBOM 含 68 个组件，Full build profile、THIRD_PARTY_COMPONENTS、Python runtime、fping 和 iperf3 可读取，工具哈希与仓库白名单一致。当前包与 v1.5.18 上一正式包均未签名。
+
+已基于现有 Windows 10 1909 VM 创建断网隔离克隆。Guest Operations 与截图均因没有 Guest 登录凭据被 VMware 拒绝。未执行安装器，因此安装、升级、卸载、数据保留及冻结 Worker 均保持 `NOT VERIFIED`。完整环境记录见 [`PHASE7_WINDOWS_VM_ACCEPTANCE.md`](./PHASE7_WINDOWS_VM_ACCEPTANCE.md)。Phase 7 Full Gate 和 package smoke 继续沿用原报告中的 PASS，不在本阶段重复执行。
