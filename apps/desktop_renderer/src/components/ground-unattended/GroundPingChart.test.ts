@@ -212,10 +212,12 @@ describe('Ground Ping chart lifecycle', () => {
     })
     await flushPromises()
 
-    const rttOption = mocks.setOption.mock.calls[0]?.[0] as { series?: Array<{ data?: unknown[] }> }
+    const rttOption = mocks.setOption.mock.calls[0]?.[0] as {
+      series?: Array<{ data?: Array<{ value: [number, number | null] }> }>
+    }
     const resultOption = mocks.setOption.mock.calls[1]?.[0] as { series?: Array<{ data?: unknown[] }> }
     expect(rttOption.series?.[0]?.data).toHaveLength(1)
-    expect(rttOption.series?.[0]?.data[0]?.value[1]).toBeNull()
+    expect(rttOption.series?.[0]?.data?.[0]?.value[1]).toBeNull()
     expect(resultOption.series?.[0]?.data).toEqual([])
     expect(resultOption.series?.[1]?.data).toEqual([])
     wrapper.unmount()

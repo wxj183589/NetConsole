@@ -13,6 +13,10 @@
 
 两次使用 `NETCONSOLE_COLLECTION_MODE=disabled`，各为单次启动读数。复制范围为启动配置、设备及任务数据库、Ground 历史和 Online MR 解析数据库。首次启动拒绝使用记录原位置的存储清单，隔离副本保留原清单并由应用生成新清单后成功启动。现场及压力测试仍见总台账。
 
+两条线均进入设备管理、FIT-AP、轨旁 AP、Online MR 分析、任务中心和 Ground，并操作 Ground 的 Heartbeat、Quick Ping、Syslog、时间轴、AC-Mesh-Link 和归档页。HZL9 设备管理显示 117 台设备，Ground 可选择归档运行。HZL10 的实际回放复现了旧归档失败出现在实时页的问题，修复后重新打开页面显示「暂无运行」。历史失败记录继续保存在原有数据中。
+
+截图和 Ground 导航记录见 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`。首次 Full Gate 日志见 `reports/tests/phase8-integrated-b8b3ca2e/full-gate.log`，其中发现的 Renderer 类型错误已修复并经定向类型检查通过。
+
 ## 历史审计证据
 
 本阶段完成杭州地铁 9 号线和 10 号线真实运行数据的本地隔离解压、压缩包 SHA-256 核对、DataRoot 结构审计、SQLite 只读 Schema/行数审计和对比报告。原始压缩包保持原位，未上传、未修改或删除。

@@ -866,7 +866,15 @@ async function loadOperation(silent = true): Promise<void> {
     if (latestTerminalOperation.value?.operation_id === operationId) {
       return { active: null, terminal: latestTerminalOperation.value }
     }
-    return { active: null, terminal: await getGroundOperation(operationId, { signal }) }
+    const terminal = await getGroundOperation(operationId, { signal })
+    if (terminal.operation_state === 'FAILED' && activeOperation.value?.operation_id !== operationId) {
+      const updated = Date.parse(terminal.completed_at || terminal.updated_at)
+      if (!Number.isFinite(updated) || Date.now() - updated >= 12_000) {
+        dismissedTerminalOperationIds.add(operationId)
+        return { active: null, terminal: null }
+      }
+    }
+    return { active: null, terminal }
   }, applyOperation, silent)
 }
 

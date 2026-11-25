@@ -1521,8 +1521,12 @@ describe('Ground unattended page loading behavior', () => {
     wrapper.unmount()
   })
 
-  it('keeps a failed operation visible until the user closes it', async () => {
+  it.each([
+    ['2026-07-30T08:00:01+08:00', true],
+    ['2026-07-31T08:00:01+08:00', false],
+  ])('displays a failed operation based on its age at page open (%s)', async (now, visible) => {
     vi.useFakeTimers()
+    vi.setSystemTime(new Date(now))
     api.getGroundStatus.mockResolvedValue({
       ...status(),
       latest_operation_id: 'groundop-failed',
@@ -1550,8 +1554,9 @@ describe('Ground unattended page loading behavior', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     await flushPromises()
 
-    expect(wrapper.text()).toContain('groundop-failed')
-    expect(wrapper.text()).toContain('SHA-256 不一致')
+    expect(wrapper.text().includes('groundop-failed')).toBe(visible)
+    expect(wrapper.text().includes('SHA-256 不一致')).toBe(visible)
+    expect(api.getGroundOperation).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 

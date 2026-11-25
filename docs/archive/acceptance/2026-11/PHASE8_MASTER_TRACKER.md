@@ -10,7 +10,7 @@
 | P8-04 | Quick Ping Portable 首次写入 | 已有目录初始化与独占文件创建 | Quick Ping 定向回归 | 冻结程序测试新根、长路径、中文路径和并发轮转 | pytest tests/test_ground_unattended_quick_ping.py | 部分 | 冻结制品待构建 |
 | P8-05 | Quick Ping 大数据分页与曲线 | 有游标和扫描预算，晚时间窗增加无关分区跳过 | Quick Ping 定向回归 | 独立曲线查询与明细，补任意定位及百万级数据压测 | pytest tests/test_ground_unattended_quick_ping.py tests/test_ground_unattended_quick_ping_repository.py | 部分 | 真实 HZL9 查询与百万级采样待完成 |
 | P8-06 | 外部终端自动认证 | 已有客户端相关入口与 OpenSSH 工具支持 | Phase 8、外部工具回归 | 核对各 Provider 能力并实测登录、特殊字符和主机校验 | node node_modules/vitest/vitest.mjs run tests/external-tool-store.test.ts | 部分 | 客户端版本、认证环境待确认 |
-| P8-07 | Ground 实时与历史回放 | 有多个业务页面和运行查询，完整统一回放待实施 | 真实 Electron 启动记录 | 隔离运行会话、订阅和历史查询，再实现统一时间轴、导航及导出 | vitest run GroundUnattendedView.behavior | 部分 | 待继续实施 |
+| P8-07 | Ground 实时与历史回放 | 已隔离陈旧归档失败提示，完整统一回放待实施 | Ground 37 项定向测试及 HZL10 Electron 复测 | 隔离运行会话、订阅和历史查询，再实现统一时间轴、导航及导出 | vitest run GroundUnattendedView.behavior | 部分 | 当前实时空闲态已验，完整回放待实施 |
 | P8-08 | 控制台成熟终端交互 | 现有 xterm.js 与 SSH/Telnet 通道 | Phase 8 | 验证键盘、分页、大输出和会话关闭并修复重现问题 | vitest run src/views/console | 部分 | 实连和视觉矩阵待执行 |
 | P8-09 | 管理按钮与批量命令 | 控制台已有命令栏 | Phase 8 | 验证普通布局、显式批量模式、逐会话状态和取消 | vitest run src/views/console | 部分 | 待继续实施 |
 | P8-10 | 终端规则文件兼容 | 现有规则加载器，旧格式兼容待核对 | Phase 8 | 用历史样本复现校验失败，验证迁移、默认恢复及导入导出 | python -m scripts.quality.local_gate --mode auto | 部分 | 样本及现有行为待核对 |
@@ -32,4 +32,5 @@
 
 - 产品前期证据在 [Phase 8 验收](./PHASE8_ACCEPTANCE.md) 和 [Phase 7 历史报告](../../../investigations/netconsole-phase7-20261125/PHASE7_ACCEPTANCE.md)。
 - 真实数据副本启动日志位于 Workspace 的 `test-data/NetConsole/phase8-replay-hz9/runtime/logs/electron.log` 和 `test-data/NetConsole/phase8-replay-hz10/runtime/logs/electron.log`。应用时间从 Electron 进程启动计时，以日志中的 `STARTUP_PERFORMANCE_SUMMARY` 为准。
+- 业务截图和 Ground 导航记录位于 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`，其中 `hz10-ground-idle-after.png` 记录陈旧失败提示修复后的实时空闲态。
 - 工作树仓库级目录检查通过。主仓目录检查报告历史顶层 `build` 和 `temp/phase6-electron-runtime`，原样保留。
