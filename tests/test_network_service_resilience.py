@@ -193,7 +193,7 @@ def test_worker_warning_survives_supervisor_warning_level(manager):
     port = free_syslog_port()
     manager.configure("syslog", ServiceConfig(port=port, log_level="WARNING"))
     assert manager.action("syslog", "start")["status"] == "running"
-    with socket.create_connection(("127.0.0.1", port + 1), timeout=2) as client:
+    with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
         client.sendall(b"x" * 4097 + b"\n")
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
