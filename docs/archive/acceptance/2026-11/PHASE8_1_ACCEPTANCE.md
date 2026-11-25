@@ -2,6 +2,8 @@
 
 状态：**PARTIAL**
 
+本轮最终 Full Gate 已在提交 `11061806` 上通过。Python `5878 passed / 3 skipped`，Renderer `326 passed`，Electron `326 passed`，架构 `12/12`，文档门禁 `22 passed`，package smoke PASS。该结果覆盖自动化质量门禁，不改变真实设备、Windows 安装态、现场故障注入、外部终端自动认证和长时间性能项目的未验收状态。
+
 [Phase 8 / 8.1 总任务台账](./PHASE8_MASTER_TRACKER.md)涵盖 P8-01 至 P8-23 的原始需求、实施、证据、测试入口及尚未完成的验收。下面保留真实数据专项审计结果，并记录实际产品回放进度。
 
 ## 真实产品回放
@@ -15,7 +17,7 @@
 
 两条线均进入设备管理、FIT-AP、轨旁 AP、Online MR 分析、任务中心和 Ground，并操作 Ground 的 Heartbeat、Quick Ping、Syslog、时间轴、AC-Mesh-Link 和归档页。HZL9 设备管理显示 117 台设备，Ground 可选择归档运行。HZL10 的实际回放复现了旧归档失败出现在实时页的问题，修复后重新打开页面显示「暂无运行」。历史失败记录继续保存在原有数据中。
 
-截图和 Ground 导航记录见 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`。首次 Full Gate 日志见 `reports/tests/phase8-integrated-b8b3ca2e/full-gate.log`，其中发现的 Renderer 类型错误已修复并经定向类型检查通过。
+截图和 Ground 导航记录见 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`。最终 Full Gate 日志见 `reports/tests/phase8-integrated-11061806/full-gate.log`，首次 Gate 发现的 Renderer 类型错误、文档目录缺失和 Syslog 端口回归均已修复。
 
 ## 历史审计证据
 
@@ -32,7 +34,7 @@
 - 结构审计和 SQLite 只读查询：PASS。
 - HZL9 Ground、MESH、Quick Ping、AP/设备和任务历史具备真实记录，结果为 PASS_WITH_EVIDENCE_CAVEATS。
 - HZL10 Ground、MESH、AP/设备和车辆 MR 具备真实记录。当前 Ground 数据无 Quick Ping 记录，标记 NOT AVAILABLE。
-- 本节历史审计未覆盖实际应用。当前源码启动证据见上表，Windows 安装态、完整 GUI 回放、页面性能、内存/CPU、写入式迁移与回滚保持待验收。
+- 本节历史审计未覆盖实际应用。当前源码启动证据见上表，Windows 安装态、完整 GUI 回放、页面性能、内存/CPU、写入式迁移与回滚保持待验收。Full Gate 和冻结制品 smoke 已通过，不能替代这些现场验收。
 
 ## 数据安全
 
