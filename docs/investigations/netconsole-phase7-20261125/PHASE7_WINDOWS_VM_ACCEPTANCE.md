@@ -50,7 +50,7 @@ SHA-256 与包旁 `.exe.release.json` 中的 `artifact_sha256`、文件长度、
 
 ## 按验收矩阵的结论
 
-Windows 10 20H2、Windows 11 和 Windows Server 2016 是后续版本按正式支持矩阵需覆盖的环境。当前唯一可用 Guest 是 Windows 10 1909 且无法登录，因此以下均为 `NOT VERIFIED`：GUI 安装、安装目录、Backend / Renderer 启动、Python frozen runtime、Worker 路径和子进程退出、中文与空格路径、数据库初始化、HTTP / FTP / TFTP / Syslog / iPerf3 服务、文件管理和只读设备任务、端口释放、升级数据迁移、卸载数据保留和重装恢复。
+Canonical Windows 支持矩阵列出 Windows 10、Windows 11 和 Windows Server 2016，没有指定 Windows 10 的最低 build。任务要求的 Windows 10 20H2 探测仍未完成。当前唯一可用 Guest 是 Windows 10 1909 且无法登录，因此以下均为 `NOT VERIFIED`：GUI 安装、安装目录、Backend / Renderer 启动、Python frozen runtime、Worker 路径和子进程退出、中文与空格路径、数据库初始化、HTTP / FTP / TFTP / Syslog / iPerf3 服务、文件管理和只读设备任务、端口释放、升级数据迁移、卸载数据保留和重装恢复。Windows 11 和 Windows Server 2016 的安装态也未验证。
 
 没有对设备执行配置写入，没有执行真实安装器，也没有改动 Production 或 Dev Real Data。
 
