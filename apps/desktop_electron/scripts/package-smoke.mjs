@@ -903,6 +903,7 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
 function validateFrozenDeviceDatabaseMigration(dataRoot) {
   const backend = resolve(unpackedRoot, 'resources', 'backend', 'NetConsoleBackend.exe')
   const python = process.env.NETCONSOLE_BUILD_PYTHON
+    || process.env.NETCONSOLE_PYTHON
     || resolve(projectRoot, '.venv', 'Scripts', 'python.exe')
   const script = resolve(projectRoot, 'scripts', 'build', 'smoke_frozen_device_database.py')
   const result = spawnSync(
@@ -935,6 +936,7 @@ function validateFrozenDeviceDatabaseMigration(dataRoot) {
 function validatePackagedApIdentityStartupSmoke(dataRoot, scenarios) {
   if (scenarios.length === 0) return
   const python = process.env.NETCONSOLE_BUILD_PYTHON
+    || process.env.NETCONSOLE_PYTHON
     || resolve(projectRoot, '.venv', 'Scripts', 'python.exe')
   const helper = resolve(projectRoot, 'scripts', 'build', 'smoke_production_ap_identity_startup.py')
   for (const scenario of scenarios) {
