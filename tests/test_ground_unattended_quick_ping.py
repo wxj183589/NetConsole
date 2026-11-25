@@ -191,6 +191,31 @@ def test_quick_ping_pages_full_raw_range_across_segments_and_budget(tmp_path: Pa
     assert caught.value.code == "QUICK_PING_TIME_RANGE_INVALID"
 
 
+def test_quick_ping_late_window_skips_older_partitions_with_tiny_budget(tmp_path: Path) -> None:
+    def runner(**_):
+        for seq, stamp in enumerate((
+            "2026-11-07T00:00:00+08:00",
+            "2026-11-07T15:00:00-10:00",
+            "2026-11-08T10:00:00+08:00",
+        )):
+            yield replace(_sample("192.0.2.10", ok=seq != 1, rtt=1, seq=seq), ts=stamp)
+
+    service = QuickPingService(site_id="demo", output_root=tmp_path, runner=runner)
+    try:
+        run_id = service.start(targets=[_target()])
+        _wait_for(service, run_id, {"COMPLETED"})
+        page = service.query_samples(
+            run_id, start_time="2026-11-08T01:00:00Z", scan_budget_bytes=1,
+        )
+        assert [(row["sample"]["seq"], row["sample"]["ok"]) for row in page["items"]] == [(1, False)]
+        next_page = service.query_samples(
+            run_id, start_time="2026-11-08T01:00:00Z", cursor=page["next_cursor"],
+        )
+        assert [row["sample"]["seq"] for row in next_page["items"]] == [2]
+    finally:
+        service.close()
+
+
 @pytest.mark.parametrize("page_limit", [1, 1000])
 def test_quick_ping_active_multi_mr_cursor_retains_appends(tmp_path: Path, page_limit: int) -> None:
     barrier = threading.Barrier(3, timeout=5)

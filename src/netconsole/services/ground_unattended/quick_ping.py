@@ -621,6 +621,12 @@ class QuickPingService:
             path = self.output_root / paths[selected]
             if not path.resolve().is_relative_to(root / "quick_ping") or path.suffix != ".ndjson":
                 raise QuickPingError("QUICK_PING_RAW_PATH_INVALID", "快速 Ping 原始文件路径无效", status_code=503)
+            if _segment_outside_query(path, start, end):
+                if selected in checkpoints:
+                    del checkpoints[selected]
+                else:
+                    index, offset = index + 1, 0
+                continue
             try:
                 with self._open_segment(run_id, path) as (handle, size):
                     if position > size:
@@ -1496,6 +1502,25 @@ def _timestamp_hour(value: str) -> str:
         return parsed.strftime("%Y%m%d_%H")
     except (TypeError, ValueError):
         return datetime.now().strftime("%Y%m%d_%H")
+
+
+def _segment_outside_query(path: Path, start: datetime | None, end: datetime | None) -> bool:
+    if start is None and end is None:
+        return False
+    prefix, _, partition = path.stem.partition("quick_ping_")
+    if prefix or not partition:
+        return False
+    try:
+        hour = datetime.strptime(partition[:11], "%Y%m%d_%H")
+    except ValueError:
+        return False
+    # Legacy names use the sample's wall clock, without recording its UTC offset.
+    # Allow any ISO offset strictly within 24 hours and the whole partition hour.
+    partition_hour = hour.toordinal() * 24 + hour.hour
+    return (
+        start is not None and partition_hour + 25 <= start.toordinal() * 24 + start.hour
+        or end is not None and partition_hour - 24 > end.toordinal() * 24 + end.hour
+    )
 
 
 def _coerce_sample(value: Any, timeout_ms: int) -> FpingV5Sample:
