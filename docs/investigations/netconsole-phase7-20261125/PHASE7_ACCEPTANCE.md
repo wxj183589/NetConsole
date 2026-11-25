@@ -1,6 +1,6 @@
 # Phase 7 交付验收
 
-2026-11-25，继续既有产品分支 `codex-A/organization-task-network-services-phase6`。当前实施与源码实测完成，最终 Full Gate 和正式离线包验证正在推进，整体 PARTIAL。
+2026-11-25，继续既有产品分支 `codex-A/organization-task-network-services-phase6`。当前代码、源码实测、Full Gate 和正式离线 Full NSIS 自动验收完成。因真实 Windows 安装/升级/卸载与若干真实场景验收仍缺，整体 PARTIAL。
 
 ## 功能矩阵
 
@@ -24,8 +24,8 @@
 | 轨旁 AP 光衰兼容性 | PARTIAL | 原链未重写，自动回归待最终 Full Gate，真实光衰现场更新待验收 |
 | Electron 验收 | PARTIAL | 源码真实窗口四分辨率52张截图与文件交互通过，安装态待验收 |
 | 离线安装包 | PARTIAL | 依赖/Notice/SBOM与61项构建合同通过，正式包待构建 |
-| Full Gate | FAIL | 首轮失败已修复，最终重跑待完成 |
-| Git Push | 尚待执行 | 本轮 checkpoint 和交付记录待推送 |
+| Full Gate | PASS | 最终 clean checkpoint `a66455b251bf220ca418da01547102c684030246`，5870 Python passed / 2 skipped，Renderer 224 files / 1610 tests，Electron 41 files / 326 tests，Architecture 12/12，package-smoke PASS |
+| Git Push | PASS | 产品源码 checkpoint `a66455b2` 已推送，Phase 7 报告和 DevStatus 使用独立提交 |
 
 ## 证据索引
 
@@ -36,6 +36,12 @@
 - [Electron 验收](./PHASE7_ELECTRON_ACCEPTANCE.md)。
 - [安装包](./PHASE7_INSTALLER_ACCEPTANCE.md)与[Full Gate](./PHASE7_FULL_GATE_REPORT.md)。
 - [第三方声明](./THIRD_PARTY_NOTICES.md)、`sbom.cdx.json` 与 `dependency-provenance.json`。
+
+## 最终分支与制品
+
+- 产品分支 `codex-A/organization-task-network-services-phase6`，产品源码与验证基线 `a66455b251bf220ca418da01547102c684030246`，已推送至 `github` 且构建前工作区 clean。产品报告提交只增加验收证据。最终产品分支 HEAD 与 DevStatus HEAD 以本次独立提交后的 Git 状态为准。
+- 最终 Full NSIS：`D:/study/NetConsole-Workspace/worktrees/organization-task-network-services-phase6/dist/electron/NetConsole-Full-1.5.19.0-a66455b2-x64-setup.exe`，159,505,594 bytes，SHA-256 `048067404813DA700B035558101A361FD96C9B34F5FAB72CDC8D8B21FAC16495`。
+- Full Gate 日志：`D:/study/NetConsole-Workspace/reports/tests/phase7-full-gate-20261125/attempt5-full-gate.log`。截图位于 `D:/study/NetConsole-Workspace/reports/diagnostic/netconsole-phase7-20261125/screenshots`，13 种 UI 状态 × 4 种分辨率，共 52 张真实 Electron 窗口截图。
 
 ## 数据与执行记录
 

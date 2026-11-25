@@ -19,4 +19,19 @@
 
 ## 最终执行
 
-待本轮 clean checkpoint 推送后，重新执行同一 Full Gate 并将 stdout/stderr 保存至 Workspace 报告目录。最终计数、提交和包级结果将在执行完成后补充。本报告当前状态为 PARTIAL。
+最终 Full Gate 在 clean、已推送的 `a66455b251bf220ca418da01547102c684030246` 上执行，结果 PASS。命令为 `python -m scripts.quality.local_gate --mode full`，并向子进程显式传递已安装的项目 Python 3.13.9 及 `pnpm_config_verify_deps_before_run=false`，以避免 pnpm 非交互依赖重验证尝试删除虚拟存储目录。
+
+| 门禁 | 结果 |
+| --- | --- |
+| Repository / Workspace layout | PASS |
+| Renderer 全量 | PASS，224 files / 1610 tests，production build 完成 |
+| Python 全量 | PASS，5870 passed / 2 skipped，35 warnings，1745.59 秒 |
+| Electron 合同、类型和构建 | PASS，41 files / 326 tests |
+| Architecture guards | PASS，12/12 |
+| Main contract smoke | PASS，12 passed |
+| Ruff | PASS |
+| Docs/path guards | PASS，22 passed |
+| Git diff check | PASS |
+| Packaged Electron smoke | PASS，冻结 Worker 中文协议、数据库迁移/list API HTTP 200、无人值守状态 HTTP 200、MESH 幂等、归档重名、NOTICE/SBOM 与正常退出 |
+
+机器可读结果保存在 `D:/study/NetConsole-Workspace/worktrees/organization-task-network-services-phase6/.local-reports/local-gate.json`，完整原始输出保存在 `D:/study/NetConsole-Workspace/reports/tests/phase7-full-gate-20261125/attempt5-full-gate.log`。最终结论为 PASS。第一次 gate 的真实代码/测试失败均已修复。后续几次尝试定位并修复了退役功能 smoke 基线、包级 Python 路径及 pnpm 非交互配置问题，失败尝试的日志仍保留在同一报告目录。

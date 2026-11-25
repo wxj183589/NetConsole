@@ -33,11 +33,23 @@ python -m pytest -q tests/test_installer_build.py tests/test_prepare_electron_ed
 
 ## 正式包构建与隔离 smoke
 
-状态为 NOT RUN，等待主任务提供 clean 且已推送的 checkpoint。构建后补充冻结提交、实际入口、日志、安装包路径/大小/SHA-256、内层身份、package smoke、最终 EXE Gate 和孤儿进程核验。
+在 clean、已推送 HEAD `a66455b251bf220ca418da01547102c684030246` 上，通过仓库正式 `pnpm run package:full` 构建 Full NSIS。Backend、Frontend、Installer 的包内 commit 均与该 HEAD 一致，`PACKAGED_DIRTY=false`，build identity 为 `v1.5.19+a66455b251bf220ca418da01547102c684030246`。
+
+| 验收 | 结果 |
+| --- | --- |
+| Full NSIS 构建 | PASS |
+| Electron packaged smoke | PASS，冻结 Worker 中文协议、设备数据库迁移/list HTTP 200、无人值守 status HTTP 200、MESH 导入上下文幂等、重复 basename 归档、Qt residue、NOTICE/SBOM/artifact inventory、正常关闭 |
+| 独立安装包 verifier | PASS，commit、build identity 与策略哈希匹配 |
+| 实际文件路径 | `D:/study/NetConsole-Workspace/worktrees/organization-task-network-services-phase6/dist/electron/NetConsole-Full-1.5.19.0-a66455b2-x64-setup.exe` |
+| 文件大小 | 159,505,594 bytes |
+| SHA-256 | `048067404813DA700B035558101A361FD96C9B34F5FAB72CDC8D8B21FAC16495` |
+| 构建日志 | `D:/study/NetConsole-Workspace/reports/build/phase7-full-installer-a66455b2/package-full-final.log` |
+
+自动化与包级 smoke 结论为 PASS。运行 `python -m scripts.build.build_installer --verify <exe>` 后，`REAL_WINDOWS_INSTALL_STATUS=PENDING`。
 
 ## Windows GUI 安装与外部验收
 
-真实干净机器或 VM 的 GUI 安装、升级、卸载和跨电脑验收为 NOT RUN。自动化仅使用显式 TEST 数据根，不变更主机全局服务、安装状态、防火墙或数据根指针。
+真实干净机器或 VM 的 GUI 安装、升级、卸载和跨电脑验收为 NOT VERIFIED，本环境没有可用的干净 Windows VM 验收实例。自动化仅使用显式 TEST 数据根，没有变更主机全局服务、安装状态、防火墙或数据根指针。
 
 ## 数据影响
 

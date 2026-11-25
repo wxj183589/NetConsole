@@ -89,4 +89,6 @@ DEVICE_CONFIGURATION_WRITES=0
 
 ## 持续运行验收
 
-Workspace reports 隔离目录同时执行两轮至少十分钟的 HTTP / FTP / Syslog 持续运行、周期传输、进程恢复和资源观测。首轮 `phase7-network-services-soak-20261125` 的 Manager 在真实 PID 修复前加载，其资源事实以独立进程树采样为准。第二轮 `phase7-network-services-soak-fixed-metrics-20261125` 加载真实 PID 修复并逐周期断言真实内存，最终结果待运行完成且打包结束后补录。该验收使用源码 Worker，正式安装态仍为 NOT VERIFIED。
+Workspace reports 隔离目录内的最终 600 秒 soak 记录在 `D:/study/NetConsole-Workspace/reports/tests/phase7-network-services-soak-history-query-20261125/result.json`，PASS，120 周期。HTTP 和 FTP 各完成 120 次下载，Syslog 完成 1,200 条 UDP 与 120 条 TCP 消息。HTTP Worker 异常退出后自动恢复，FTP Worker 在凭据轮换时重启，Syslog Worker 重启后成功重新绑定 UDP/TCP 端口对。HTTP 最大延迟 20.8 ms，FTP 39.3 ms。实际 Worker Working Set 分别稳定在 HTTP 56,807,424–57,143,296 bytes（144 handles）、FTP 56,963,072–57,389,056 bytes（143 handles）、Syslog 57,008,128–57,298,944 bytes（152 handles）。Manager handles 195–198，线程数稳定为 8。测试后 6 个受管进程、12 个输出读取线程及 supervisor 均退出，监听端口全部可重新绑定，Windows 观测到的 13 个进程均消失。
+
+第二轮 `phase7-network-services-soak-fixed-metrics-20261125` 的 TCP marker 已轮转到 `service.log.1`，测试 harness 只查当前日志而误报 FAIL。第三轮使用有界历史日志查询后 PASS。持续运行验收使用源码 Worker，正式安装态协议验证由同一提交的 Full package smoke 覆盖冻结 Worker 中文协议，外部 GUI 安装环境仍为 NOT VERIFIED。
