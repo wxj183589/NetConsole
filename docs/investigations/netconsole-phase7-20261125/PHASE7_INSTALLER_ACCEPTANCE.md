@@ -66,3 +66,5 @@ FIREWALL_MODIFIED=0
 2026-11-26 对正式 v1.5.19 包进行独立复核。文件存在，长度为 159,505,594 bytes，SHA-256 仍为 `048067404813DA700B035558101A361FD96C9B34F5FAB72CDC8D8B21FAC16495`。PE FileVersion / ProductVersion 为 1.5.19，容器为 `NSIS-3 Unicode`。安装器内构建清单与包内 Renderer 构建元数据均记录 Installer、Backend、Frontend commit 为 `a66455b251bf220ca418da01547102c684030246`，dirty 状态为 false。包内 CycloneDX 1.5 SBOM 含 68 个组件，Full build profile、THIRD_PARTY_COMPONENTS、Python runtime、fping 和 iperf3 可读取，工具哈希与仓库白名单一致。当前包与 v1.5.18 上一正式包均未签名。
 
 已基于现有 Windows 10 1909 VM 创建断网隔离克隆。Guest Operations 与截图均因没有 Guest 登录凭据被 VMware 拒绝。未执行安装器，因此安装、升级、卸载、数据保留及冻结 Worker 均保持 `NOT VERIFIED`。完整环境记录见 [`PHASE7_WINDOWS_VM_ACCEPTANCE.md`](./PHASE7_WINDOWS_VM_ACCEPTANCE.md)。Phase 7 Full Gate 和 package smoke 继续沿用原报告中的 PASS，不在本阶段重复执行。
+
+补充静态检查确认，NSIS 正常卸载与升级/修复静默卸载保留业务数据及 DataRoot；明确选择清洁卸载只清除 NetConsole DataRoot 指针，不删除业务数据。统一迁移必须显式选择。本阶段相关源码定向测试为 `44 passed, 1 warning`，覆盖 Installer/NSIS、数据根初始化与回滚、迁移、本地服务和退出管理。源码与测试结果不能替代 Guest 内安装、Worker、卸载和数据保留验证。

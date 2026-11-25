@@ -42,6 +42,12 @@ SHA-256 与包旁 `.exe.release.json` 中的 `artifact_sha256`、文件长度、
 
 虚拟机克隆目录保存原始状态和锁文件，VM 配置日志位于 `reports\build\phase7.1-windows-vm-20261125\vm-clone.log`。Guest 截图、安装日志、升级日志和卸载日志均未生成，因为没有进入 Guest 桌面。VM 配置的网络保持断开。
 
+## NSIS、迁移与生命周期静态检查
+
+只读检查 `apps/desktop_electron/build/installer-data-root.nsh` 和发布规则。正常卸载将状态设为 `NORMAL_UNINSTALL`，保留业务数据和 DataRoot 指针。升级/修复的静默卸载同样走保留路径。只有用户通过显式清洁卸载确认后，才清除 NetConsole 自有 32/64 位 Registry View 的 `DataRoot` 值，源码提示和实现都明确保留数据根、数据库、日志和备份。安装器回滚里的递归删除只针对由当前事务标记的程序安装目录，不对数据根执行目录删除。`MIGRATE_EXISTING_DATA` 要求用户明确选择，单纯修改路径不会隐式迁移。该检查是源码契约审查，不是 Guest 卸载或数据保留的实机证明。
+
+本阶段定向测试日志位于 `D:\study\NetConsole-Workspace\reports\tests\phase7.1-installer-contracts-20261126\pytest.log`，状态文件为同目录 `pytest-status.txt`。从产品工作树执行的命令覆盖安装器构建/NSIS 契约、安装器 Backend 数据根校验和回滚、统一数据根迁移、退出管理与本地网络服务生命周期，结果为 `44 passed, 1 warning`，退出码 `0`。这是源码级定向回归，不代表冻结 Worker 已在安装环境运行。
+
 ## 按验收矩阵的结论
 
 Windows 10 20H2、Windows 11 和 Windows Server 2016 是后续版本按正式支持矩阵需覆盖的环境。当前唯一可用 Guest 是 Windows 10 1909 且无法登录，因此以下均为 `NOT VERIFIED`：GUI 安装、安装目录、Backend / Renderer 启动、Python frozen runtime、Worker 路径和子进程退出、中文与空格路径、数据库初始化、HTTP / FTP / TFTP / Syslog / iPerf3 服务、文件管理和只读设备任务、端口释放、升级数据迁移、卸载数据保留和重装恢复。
