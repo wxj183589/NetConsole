@@ -23,10 +23,10 @@
 | P8-17 | 性能与长时间稳定性 | Ground 混合历史优化并加入复测 | 两线短时真实运行、独立 TCP 负载、CPU / RSS / 句柄 / 队列 | 长时真实多 MR 运行 | PHASE8_REPLAY_PERFORMANCE.md | 部分 | 短时资源证据可复核 |
 | P8-18 | Electron 视觉与交互 | 实际 Electron 运行两套隔离数据及合成 TCP | 保留 1920×1080 与 HZL9 Ground 2560×1440 截图 | 完整矩阵与 Windows 原生 DPI | 隔离数据 Electron 回放 | 部分 | 验收截图已保存 |
 | P8-19 | Windows 安装、升级、卸载 | Full NSIS 候选构建 | VM 清单仅发现 Windows 10 1909 原机和隔离克隆 | 使用可登录且受支持的 Windows Guest | NSIS 安装态矩阵 | 部分 | 支持版本 Guest 与登录环境缺失 |
-| P8-20 | Full Gate | 项目现有 FULL 入口 | 11061806 Full Gate 日志 | 最终代码提交运行 FULL，验证制品及消费者 | python -m scripts.quality.local_gate --mode full | 已有 | PASS，外部现场缺口仍见 P8-01 至 P8-19 |
-| P8-21 | Full NSIS 安装包 | 已有 Full 打包入口 | `NetConsole-Full-1.5.19.0-11061806-x64-setup.exe`，SHA-256 `410a592a3190e05cc45281be53ece605067558f8e793207e9f0e669493195462` | 最终源码构建、离线 smoke、清单和 SHA-256 | scripts/build/package_local.ps1 -Edition full | 已有 | 构建与 smoke PASS，真实安装升级卸载待验收 |
-| P8-22 | Portable ZIP | 已有 Portable 打包入口 | `NetConsole-1.5.19-portable.zip`，SHA-256 `19D4ADA01654DB6EF0FEE7AF1A756362F396CE3AD77C1CE35AAF14FF5715B4D0` | 与 NSIS 使用同一源码，验证冻结 Worker 与迁移 | 按项目 Portable 打包入口 | 已有 | 构建、package smoke、中文空格路径冷启动 PASS，迁移现场矩阵待验收 |
-| P8-23 | 最终代码集成、Git 与交付 | 产品与真实审计基线已在原分支合并 | Full Gate PASS、产品与 DevStatus 远端 SHA 已核对 | 分支推送、更新 DevStatus，最终在同一基线复核 | git merge-base --is-ancestor d1c4b65f HEAD | 部分 | DevStatus 更新后完成本轮交付，真实设备、安装态和长稳仍待验收 |
+| P8-20 | Full Gate | 项目现有 FULL 入口 | 27f7d662 Full Gate 日志 | 最终代码提交运行 FULL，验证制品及消费者 | python -m scripts.quality.local_gate --mode full | 已有 | PASS，外部现场缺口仍见 P8-01 至 P8-19 |
+| P8-21 | Full NSIS 安装包 | 已有 Full 打包入口 | `NetConsole-Full-1.5.19.0-27f7d662-x64-setup.exe`，SHA-256 `4b9e40aff838bd69b0a0ffea5ff5ae8ea79adb71ce55101eedea68dcce1f757f` | 最终源码构建、离线 smoke、清单和 SHA-256 | scripts/build/package_local.ps1 -Edition full | 已有 | 包内提交和 dirty 状态、CycloneDX 1.5 68 components、package smoke PASS，真实安装升级卸载待验收 |
+| P8-22 | Portable ZIP | 已有 Portable 打包入口 | `NetConsole-1.5.19-portable.zip`，SHA-256 `33b63f57056d0106228bf56fd7817394af4b033cfe7c3d6c176c68d00955274f` | 与 NSIS 使用同一源码，验证冻结 Worker 与迁移 | 按项目 Portable 打包入口 | 已有 | 包内提交及 SBOM PASS，中文空格程序目录和外部 DataRoot 冷启动 5.022 秒、冻结 Worker 与端口重绑 PASS，迁移现场矩阵待验收 |
+| P8-23 | 最终代码集成、Git 与交付 | 产品与真实审计基线已在原分支合并 | Full Gate PASS、产品与 DevStatus 远端 SHA 已核对 | 分支推送、更新 DevStatus，最终在同一基线复核 | git merge-base --is-ancestor d1c4b65f HEAD | 部分 | 产品与 DevStatus 更新后完成本轮交付，真实设备、安装态和长稳仍待验收 |
 
 ## 证据路径
 
@@ -34,5 +34,5 @@
 - 真实数据副本启动日志位于 Workspace 的 `test-data/NetConsole/phase8-replay-hz9/runtime/logs/electron.log` 和 `test-data/NetConsole/phase8-replay-hz10/runtime/logs/electron.log`。应用时间从 Electron 进程启动计时，以日志中的 `STARTUP_PERFORMANCE_SUMMARY` 为准。
 - 业务截图和 Ground 导航记录位于 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`，其中 `hz10-ground-idle-after.png` 记录陈旧失败提示修复后的实时空闲态。
 - 工作树仓库级目录检查通过。主仓目录检查报告历史顶层 `build` 和 `temp/phase6-electron-runtime`，原样保留。
-- 最终 Full Gate：`RESULT: PASS`，Python `5878 passed / 3 skipped / 35 warnings`，Renderer `224 files / 1616 tests`，Electron `41 files / 326 tests`，Architecture `12/12`，Main contract `12 passed`，Docs/path `22 passed`，Ruff、diff-check 和 package smoke 均通过。日志见 `reports/tests/phase8-integrated-11061806/full-gate.log`。
-- 最终制品均绑定提交 `11061806` 且 `BUILD_DIRTY=false`。真实 Windows 安装升级卸载、真实设备、外部终端自动认证、Ground TCP、故障注入和长时间性能仍保持 PARTIAL/NOT VERIFIED。
+- 最终 Full Gate：`RESULT: PASS`，Python `5890 passed / 3 skipped / 35 warnings`，Renderer `224 files / 1619 tests`，Electron `41 files / 326 tests`，Architecture `12/12`，Main contract `12 passed`，Docs/path `22 passed`，Ruff、diff-check 和 package smoke 均通过。日志见 `reports/tests/phase8-final-27f7d662-full-gate.log`。
+- Full NSIS 和 Portable ZIP 均绑定提交 `27f7d662a56a9e8439548ce520c0dba3dd76cfde` 且 `BUILD_DIRTY=false`。Portable 隔离冷启动的交互时间为 5.022 秒。真实 Windows 安装升级卸载、Comware V5/V7/V9 实机、SecureCRT/PuTTY/Xshell 实机、主备网络故障注入和长时间现场运行仍为 `NOT VERIFIED`。

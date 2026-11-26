@@ -2,7 +2,7 @@
 
 状态：**PARTIAL**
 
-本轮最终 Full Gate 已在提交 `11061806` 上通过。Python `5878 passed / 3 skipped`，Renderer `224 files / 1616 tests`，Electron `41 files / 326 tests`，架构 `12/12`，文档门禁 `22 passed`，package smoke PASS。该结果覆盖自动化质量门禁，不改变真实设备、Windows 安装态、现场故障注入、外部终端自动认证和长时间性能项目的未验收状态。
+最终 Full Gate 已在提交 `27f7d662a56a9e8439548ce520c0dba3dd76cfde` 通过。Python `5890 passed / 3 skipped / 35 warnings`，Renderer `224 files / 1619 tests`，Electron `41 files / 326 tests`，架构 `12/12`，文档门禁 `22 passed`，package smoke PASS。该结果覆盖自动化质量门禁，不改变真实设备、Windows 安装态、现场故障注入、外部终端自动认证和长时间性能项目的未验收状态。
 
 [Phase 8 / 8.1 总任务台账](./PHASE8_MASTER_TRACKER.md)涵盖 P8-01 至 P8-23 的原始需求、实施、证据、测试入口及尚未完成的验收。下面保留真实数据专项审计结果，并记录实际产品回放进度。
 
@@ -17,7 +17,7 @@
 
 两条线均进入设备管理、FIT-AP、轨旁 AP、Online MR 分析、任务中心和 Ground，并操作 Ground 的 Heartbeat、Quick Ping、Syslog、时间轴、AC-Mesh-Link 和归档页。HZL9 设备管理显示 117 台设备，Ground 可选择归档运行。HZL10 的实际回放复现了旧归档失败出现在实时页的问题，修复后重新打开页面显示「暂无运行」。历史失败记录继续保存在原有数据中。
 
-截图和 Ground 导航记录见 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`。最终 Full Gate 日志见 `reports/tests/phase8-integrated-11061806/full-gate.log`，首次 Gate 发现的 Renderer 类型错误、文档目录缺失和 Syslog 端口回归均已修复。
+截图和 Ground 导航记录见 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`。最终 Full Gate 日志见 `reports/tests/phase8-final-27f7d662-full-gate.log`，首次 Gate 发现的 Renderer 类型错误、文档目录缺失和 Syslog 端口回归均已修复。
 
 ## 2026-11-26 续作验收
 
@@ -30,6 +30,20 @@
 | 安装迁移 | 复现安装器迁移入口的授权错误。修复提升权限和 HKLM 来源核验后调用现有迁移服务。合成已配置根实迁移与目标非空保护通过 | 受支持 Windows Guest 的 GUI 安装、升级、卸载、数据保留和回滚 |
 | Comware | 已授权实验 AC 和 AC2 在 TCP 建连阶段超时。协议/能力矩阵通过脱敏 fixture 验证 | 真实 Comware V5/V7/V9 设备版本识别与只读 WLAN 采集 |
 | Ground 历史性能 | HZL10 同一隔离索引的 25 条混合历史查询，三次测量从 38.74、6.20、6.07 秒降为 1.94、1.00、0.97 秒。先排序标识和时间，再批量投影当前页详情 | 完整业务页面与连续运行性能矩阵 |
+
+最终 Full NSIS `NetConsole-Full-1.5.19.0-27f7d662-x64-setup.exe` SHA-256 为
+`4b9e40aff838bd69b0a0ffea5ff5ae8ea79adb71ce55101eedea68dcce1f757f`。Portable ZIP
+`NetConsole-1.5.19-portable.zip` SHA-256 为
+`33b63f57056d0106228bf56fd7817394af4b033cfe7c3d6c176c68d00955274f`。Backend、
+Frontend 与 installer identity 都绑定 `27f7d662`，`BUILD_DIRTY=false`。两包 SBOM
+均为 CycloneDX 1.5、68 个组件。Portable 新建外部 DataRoot 的启动就绪 5.022 秒，
+冻结 Worker、正常退出和端口重绑通过。候选和报告在
+`temp/build/phase8-final-package/build-27f7d662-20261126-111637/candidates/` 与
+`reports/build/phase8-final-package-build-27f7d662-20261126-111637/`。
+
+Ground 实时 UDP/TCP、逐帧 TCP 和 TCP/UDP 独占监听已通过合成 Electron/Backend；
+独立 600 秒 TCP 负载完整接收、写入和解析 12,000 条，应用丢弃 0，停止后端口释放。
+真实实验设备回传仍待验证。
 
 HZL9 与 HZL10 实际源码 Electron 的 Backend 健康 / 首屏分别为 4.992 / 5.030 秒、
 4.423 / 6.919 秒。HZL9 的 Quick Ping 两页各 25 条且无重复，窗口查询 200 条，五次请求
