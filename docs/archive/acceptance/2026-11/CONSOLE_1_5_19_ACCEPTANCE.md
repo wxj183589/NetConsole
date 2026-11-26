@@ -1,5 +1,11 @@
 # NetConsole v1.5.19 Console 专项验收
 
+## 2026-11-27 Console 专项续作四
+
+终端设置首屏与规则请求解耦，规则表按页签和分页挂载，配置服务复用未变化的文件版本。真实 Electron 记录了首次与重复打开、页签切换及录制搜索，测量条件见[续作四性能报告](./CONSOLE_SETTINGS_REPLAY_20261127.md)。会话回放支持普通文本关键字搜索、匹配计数、循环定位和 ANSI 基础色。真实隔离 SSH 录制的 LOG、ZIP、JSONL 搜索前后 SHA-256 一致。
+
+Full Gate、冻结 Worker、NSIS 和 Portable 本轮未生成。工作树仍有旧的 `node_modules/.vite/vitest` 缓存，Workspace Layout 检查失败。现有 Python 3.13 构建虚拟环境已通过锁定依赖检查。实际 Telnet/COM 并发设置场景待验收。
+
 状态：PARTIAL。产品分支 `codex-A/organization-task-network-services-phase6`，已推送起点 `bd42e924`，当前续作尚未提交。
 
 | 项目 | 状态 | 实际结果 |

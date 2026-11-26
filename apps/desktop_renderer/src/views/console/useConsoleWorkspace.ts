@@ -36,7 +36,6 @@ import {
   type TerminalProfileFolder,
   type TerminalProfileValues,
   type TerminalProfileDocument,
-  type TerminalRecordingEvent,
   type TerminalSession,
   type TerminalSettings,
 } from '../../api/terminal'
@@ -90,7 +89,9 @@ export function useConsoleWorkspace() {
   const replayVisible = ref(false)
   const replayLoading = ref(false)
   const replaySession = ref<TerminalSession | null>(null)
-  const replayEvents = ref<TerminalRecordingEvent[]>([])
+  const replayText = ref('')
+  const replayTruncated = ref(false)
+  let replayRequest: AbortController | undefined
   const contextDevice = ref<DeviceListItem | null>(null)
   const contextMenu = ref({ visible: false, x: 0, y: 0 })
   const contextSession = ref<TerminalSession | null>(null)
@@ -924,13 +925,13 @@ export function useConsoleWorkspace() {
   }
 
   async function loadTerminalPreferences(): Promise<void> {
-    try {
-      const [settings, rules] = await Promise.all([getTerminalSettings(), getTerminalHighlightRules()])
-      terminalSettings.value = settings
-      highlightRules.value = rules.rules
-    } catch (error) {
+    const reportError = (error: unknown) => {
       ElMessage.error(error instanceof Error ? error.message : '终端设置读取失败')
     }
+    await Promise.all([
+      getTerminalSettings().then(settings => { terminalSettings.value = settings }).catch(reportError),
+      getTerminalHighlightRules().then(document => { highlightRules.value = document.rules }).catch(reportError),
+    ])
   }
 
   function applyTerminalPreferences(settings: TerminalSettings, rules: TerminalHighlightRule[]): void {
@@ -951,20 +952,35 @@ export function useConsoleWorkspace() {
   }
 
   async function showReplay(session: TerminalSession): Promise<void> {
+    replayRequest?.abort()
+    const request = new AbortController()
+    replayRequest = request
     replaySession.value = session
     replayVisible.value = true
     replayLoading.value = true
-    replayEvents.value = []
+    replayText.value = ''
+    replayTruncated.value = false
     try {
       const { apiRequest } = await import('../../api/client')
-      const result = await apiRequest<{ text: string; truncated: boolean }>(`/api/terminal/history/${session.session_id}/transcript`)
-      replayEvents.value = [{ at_ms: 0, event_type: 'OUTPUT', data: result.text + (result.truncated ? '\n[预览已截断，请导出完整 LOG]' : '') }]
+      const result = await apiRequest<{ text: string; truncated: boolean }>(`/api/terminal/history/${session.session_id}/transcript?color=true`, { signal: request.signal })
+      if (request.signal.aborted) return
+      replayText.value = result.text
+      replayTruncated.value = result.truncated
     } catch (error) {
-      ElMessage.error(error instanceof Error ? error.message : '会话录制读取失败')
+      if (!request.signal.aborted) ElMessage.error(error instanceof Error ? error.message : '会话录制读取失败')
     } finally {
-      replayLoading.value = false
+      if (replayRequest === request) replayLoading.value = false
     }
   }
+
+  function releaseReplay(): void {
+    replayRequest?.abort()
+    replayRequest = undefined
+    replayText.value = ''
+    replayTruncated.value = false
+  }
+  watch(replayVisible, visible => { if (!visible) releaseReplay() }, { flush: 'sync' })
+  onBeforeUnmount(releaseReplay)
 
   async function exportReplay(format: 'txt' | 'jsonl' | 'log' | 'zip', session = replaySession.value): Promise<void> {
     if (!session) return
@@ -1025,11 +1041,6 @@ export function useConsoleWorkspace() {
   function recordingText(session: TerminalSession): string {
     return ({ RECORDING: '录制中', FINALIZING: '整理中', COMPRESSING: '压缩中', COMPLETED: '录制完成', COMPLETE: '历史录制', FAILED: '录制失败', INCOMPLETE: '录制中断' })[session.recording_status] || session.recording_status
   }
-
-  const replayText = computed(() => replayEvents.value
-    .filter((event) => event.event_type === 'OUTPUT' || event.event_type === 'INPUT')
-    .map((event) => event.event_type === 'INPUT' ? `\n> ${event.data || ''}\n` : String(event.data || ''))
-    .join(''))
 
   onMounted(async () => {
     window.addEventListener('click', hideContextMenu)
@@ -1186,5 +1197,6 @@ export function useConsoleWorkspace() {
     formatTime,
     recordingText,
     replayText,
+    replayTruncated,
   }
 }

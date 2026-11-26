@@ -61,10 +61,26 @@ class TerminalSettingsService:
             kind: self.root / filename for kind, filename in _RESOURCE_FILES.items()
         }
         self._lock = threading.RLock()
+        self._cache: dict[Path, tuple[tuple[int, int, int], dict[str, Any]]] = {}
+
+    def _cached_document(self, path: Path, read) -> dict[str, Any]:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
+        cached = self._cache.get(path)
+        if cached is None or cached[0] != stamp:
+            cached = (stamp, read())
+            self._cache[path] = cached
+        return deepcopy(cached[1])
 
     def settings(self) -> dict[str, Any]:
         with self._lock:
-            loaded = self._read_json(self.settings_path, {})
+            try:
+                loaded = self._cached_document(
+                    self.settings_path, lambda: self._read_json(self.settings_path, {})
+                )
+            except FileNotFoundError:
+                self._cache.pop(self.settings_path, None)
+                loaded = {}
             result = {**_DEFAULT_SETTINGS, **loaded}
             return self._validate_settings(result)
 
@@ -83,12 +99,16 @@ class TerminalSettingsService:
         with self._lock:
             if not path.exists():
                 path = _RESOURCE_ROOT / _RESOURCE_FILES[kind]
-            try:
+
+            def read() -> dict[str, Any]:
                 with path.open("rb") as stream:
                     content = stream.read(MAX_RULE_FILE_BYTES + 1)
+                return self.read_rule_file(kind, content, filename=path.name)
+
+            try:
+                return self._cached_document(path, read)
             except OSError as exc:
                 raise TerminalSettingsError(f"{path.name} 无法读取终端规则文件") from exc
-            return self.read_rule_file(kind, content, filename=path.name)
 
     def read_rule_file(
         self, kind: RuleKind, content: bytes, *, filename: str,
@@ -292,6 +312,7 @@ class TerminalSettingsService:
             encoding="utf-8",
         )
         os.replace(temporary, path)
+        self._cache.pop(path, None)
 
 
 __all__ = ["RuleKind", "TerminalSettingsError", "TerminalSettingsService"]

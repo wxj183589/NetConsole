@@ -30,6 +30,8 @@
 
 ## 证据路径
 
+- Console 续作四在 P8-08/P8-10 下继续追踪。终端设置首屏、规则分页、回放搜索和 ANSI 基础色已实施。实际 Electron 验证大记录搜索，真实隔离 SSH 录制三种导出哈希一致。Full Gate 与新制品受布局检查阻断。[专项报告](./CONSOLE_SETTINGS_REPLAY_20261127.md)
+
 - Console v1.5.19 专项为 PARTIAL。历史真实 AC SSH、FIT-AP Telnet 单次回车、批量发送及 Portable/NSIS 证据仍绑定旧候选。本轮新增 pySerial 3.5 串口会话、中文化和设置性能修复通过定向测试，实际 Electron 设置重开 30 次中位数 30 ms；枚举到的 COM3/COM4 为蓝牙端口，没有执行硬件读写。当前源码的 Full Gate、冻结 Worker、NSIS 与 Portable 尚未构建验收。外部客户端认证及真实 USB 串口仍待完成。[Console 专项验收](./CONSOLE_1_5_19_ACCEPTANCE.md)
 
 - 产品前期证据在 [Phase 8 验收](./PHASE8_ACCEPTANCE.md) 和 [Phase 7 历史报告](../../../investigations/netconsole-phase7-20261125/PHASE7_ACCEPTANCE.md)。

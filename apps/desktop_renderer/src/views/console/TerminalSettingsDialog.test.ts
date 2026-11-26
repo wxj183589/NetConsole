@@ -52,6 +52,9 @@ async function mountDialog(props: { initialSettings?: TerminalSettings | null; i
   })
   wrappers.push(wrapper)
   await wrapper.setProps({ modelValue: true })
+  await vi.waitFor(() => {
+    expect(wrapper.find('.settings-form').exists() || wrapper.text().includes('终端设置未能加载')).toBe(true)
+  })
   return wrapper
 }
 

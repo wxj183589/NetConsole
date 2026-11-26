@@ -7,8 +7,19 @@ from zipfile import ZipFile
 
 import pytest
 
-from netconsole.services.terminal_transcript import InputEditor, render_events
+from netconsole.services.terminal_transcript import InputEditor, render_colored_preview, render_events
 from test_terminal_workspace import _manager_fixture, _wait_until
+
+
+def test_colored_preview_preserves_text_and_leaves_plain_transcript_unchanged():
+    events = [{"event_type": "OUTPUT", "data": "\x1b[31mDisplay\x1b[0m Version\r\n"}]
+    colored, truncated = render_colored_preview(events)
+    assert not truncated
+    assert colored == "\x1b[31;49mDisplay\x1b[39;49m Version\x1b[0m\n"
+    plain = io.StringIO()
+    render_events(events, plain)
+    assert plain.getvalue() == "Display Version\n"
+    assert render_colored_preview(events, limit=8)[1]
 
 
 def transcript(*events):

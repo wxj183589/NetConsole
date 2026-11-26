@@ -460,8 +460,8 @@ export function terminalExportDownloadRequest(sessionId: string, format: 'txt' |
   }
 }
 
-export function getTerminalSettings(): Promise<TerminalSettings> {
-  return apiRequest('/api/terminal/settings')
+export function getTerminalSettings(signal?: AbortSignal): Promise<TerminalSettings> {
+  return apiRequest('/api/terminal/settings', { signal })
 }
 
 export function updateTerminalSettings(values: Partial<TerminalSettings>): Promise<TerminalSettings> {
@@ -471,12 +471,12 @@ export function updateTerminalSettings(values: Partial<TerminalSettings>): Promi
   })
 }
 
-export function getTerminalHighlightRules(): Promise<TerminalRuleDocument<TerminalHighlightRule>> {
-  return apiRequest('/api/terminal/rules/highlight')
+export function getTerminalHighlightRules(signal?: AbortSignal): Promise<TerminalRuleDocument<TerminalHighlightRule>> {
+  return apiRequest('/api/terminal/rules/highlight', { signal })
 }
 
-export function getTerminalDangerousRules(): Promise<TerminalRuleDocument<TerminalDangerousRule>> {
-  return apiRequest('/api/terminal/rules/dangerous')
+export function getTerminalDangerousRules(signal?: AbortSignal): Promise<TerminalRuleDocument<TerminalDangerousRule>> {
+  return apiRequest('/api/terminal/rules/dangerous', { signal })
 }
 
 export function replaceTerminalHighlightRules(

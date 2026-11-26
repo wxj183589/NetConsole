@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from collections import deque
+from io import StringIO
+from itertools import groupby
 
 PROMPT = re.compile(
     r"^(?P<prompt><[^<>\r\n]{1,160}>|\[[^\[\]\r\n]{1,160}\]|[\w.@:/~-]+[#$>])\s*(?P<command>.*)$"
@@ -76,11 +78,14 @@ class InputEditor:
 
 
 class Transcript:
-    def __init__(self, stream):
+    def __init__(self, stream, *, retain_color=False):
         self.stream = stream
         self.editor = InputEditor()
         self.pending = deque()
         self.line = []
+        self.colors = [] if retain_color else None
+        self.foreground = 39
+        self.background = 49
         self.cursor = 0
         self.escape = ""
         self.prompt = ""
@@ -105,6 +110,8 @@ class Transcript:
                     self.prompt = match["prompt"]
                     if not match["command"]:
                         self.line, self.cursor = [], 0
+                        if self.colors is not None:
+                            self.colors.clear()
                 if command.strip() or not reliable:
                     self.pending.append((command, reliable))
                 if self.draft_echo and (command.strip() or not reliable):
@@ -131,12 +138,20 @@ class Transcript:
                     if char == "K":
                         if seq == "2K":
                             self.line = []
+                            if self.colors is not None:
+                                self.colors.clear()
                         elif seq == "1K":
                             self.line[: self.cursor] = [" "] * min(
                                 self.cursor, len(self.line)
                             )
+                            if self.colors is not None:
+                                self.colors[: self.cursor] = [(39, 49)] * min(self.cursor, len(self.line))
                         else:
                             self.line = self.line[: self.cursor]
+                            if self.colors is not None:
+                                del self.colors[self.cursor :]
+                    elif char == "m" and self.colors is not None:
+                        self._color(seq[:-1])
                     elif char == "D":
                         self.cursor = max(0, self.cursor - amount)
                     elif char == "C":
@@ -167,21 +182,53 @@ class Transcript:
     def _put(self, text):
         for char in text:
             if self.cursor >= len(self.line):
+                if self.colors is not None:
+                    self.colors.extend([(39, 49)] * (self.cursor - len(self.line) + 1))
                 self.line.extend([" "] * (self.cursor - len(self.line) + 1))
             self.line[self.cursor] = char
+            if self.colors is not None:
+                self.colors[self.cursor] = (self.foreground, self.background)
             self.cursor += 1
 
-    def _write(self, text):
+    def _color(self, values):
+        codes = iter(values.split(";"))
+        for value in codes:
+            if value == "0" or not value:
+                self.foreground, self.background = 39, 49
+            elif value.isascii() and value.isdigit() and len(value) <= 3:
+                code = int(value)
+                if code in {38, 48, 58}:
+                    mode = next(codes, "")
+                    for _ in range({"2": 3, "5": 1}.get(mode, 0)):
+                        next(codes, None)
+                elif 30 <= code <= 37 or code == 39 or 90 <= code <= 97:
+                    self.foreground = code
+                elif 40 <= code <= 47 or code == 49 or 100 <= code <= 107:
+                    self.background = code
+
+    def _write(self, text, colors=None):
         if not text.strip():
             if not self.blank:
                 self.stream.write("\n")
             self.blank = True
             return
         self.blank = False
-        self.stream.write(text.rstrip() + "\n")
+        text = text.rstrip()
+        if colors and any(color != (39, 49) for color in colors):
+            index = 0
+            for (foreground, background), group in groupby(colors[: len(text)]):
+                end = index + sum(1 for _ in group)
+                self.stream.write(f"\x1b[{foreground};{background}m{text[index:end]}")
+                index = end
+            self.stream.write(f"\x1b[0m{text[index:]}\n")
+        else:
+            self.stream.write(text + "\n")
 
     def flush_line(self):
         text = "".join(self.line).rstrip()
+        colors = self.colors
+        if colors is not None:
+            self.colors = []
         self.line, self.cursor = [], 0
         if PAGER.search(text):
             self.pagers += 1
@@ -208,7 +255,8 @@ class Transcript:
                 or (reliable and echo.strip() == command.strip())
             ):
                 self.pending.popleft()
-                self._write(f"{self.prompt} {echo}".lstrip())
+                command_line = f"{self.prompt} {echo}".lstrip()
+                self._write(command_line, colors if command_line == text else None)
                 self.last_prompt = ""
                 return
             if match and not match["command"]:
@@ -232,7 +280,7 @@ class Transcript:
             self.last_prompt = text
         elif text.strip():
             self.last_prompt = ""
-        self._write(text)
+        self._write(text, colors)
 
     def finish(self):
         if self.line:
@@ -246,8 +294,8 @@ class Transcript:
                 self._write("[命令无法可靠还原：历史/补全未返回完整回显]")
 
 
-def render_events(events, destination):
-    transcript = Transcript(destination)
+def render_events(events, destination, *, retain_color=False):
+    transcript = Transcript(destination, retain_color=retain_color)
     for event in events:
         transcript.event(event)
     transcript.finish()
@@ -255,3 +303,24 @@ def render_events(events, destination):
         "uncertain_commands": transcript.uncertain_commands,
         "pagers_removed": transcript.pagers,
     }
+
+
+def render_colored_preview(events, limit=1_000_000):
+    class PreviewFull(Exception):
+        pass
+
+    class PreviewBuffer(StringIO):
+        def write(self, value):
+            remaining = limit - self.tell()
+            if len(value) > remaining:
+                if not value.startswith("\x1b["):
+                    super().write(value[:remaining])
+                raise PreviewFull
+            return super().write(value)
+
+    with PreviewBuffer() as stream:
+        try:
+            render_events(events, stream, retain_color=True)
+        except PreviewFull:
+            return stream.getvalue(), True
+        return stream.getvalue(), False

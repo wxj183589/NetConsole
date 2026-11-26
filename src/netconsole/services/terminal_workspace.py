@@ -35,7 +35,7 @@ from netconsole.services.terminal_serial import (
     SerialSessionAPI,
 )
 from netconsole.services.terminal_settings import TerminalSettingsService
-from netconsole.services.terminal_transcript import render_events
+from netconsole.services.terminal_transcript import render_colored_preview, render_events
 from netconsole.services.terminal_transports import (
     SerialInteractiveTransport,
     create_terminal_transport,
@@ -1348,6 +1348,11 @@ class TerminalSessionManager:
         if path.parent != session_directory or not path.is_file():
             raise KeyError("会话日志文件不存在")
         return path, filename
+
+    def recording_preview(self, session_id: str) -> tuple[str, bool]:
+        path = self._session_directory(session_id) / "events.jsonl"
+        with path.open("r", encoding="utf-8") as source:
+            return render_colored_preview(json.loads(line) for line in source if line.endswith("\n"))
 
     def export_path(self, session_id: str, export_format: str) -> tuple[Path, str]:
         fmt = str(export_format or "").strip().casefold()

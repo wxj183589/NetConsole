@@ -95,8 +95,15 @@ const browser = await chromium.connectOverCDP(cdpUrl)
 const context = browser.contexts()[0]
 const page = context.pages().find((candidate) => candidate.url().includes('127.0.0.1')) || context.pages()[0]
 const runtimeErrors = []
+let rejectSettingsReads = false
+let rejectSettingsSave = true
+let injectingSettingsFailures = false
+let savedSettings = terminalSettings
+const replayFixture = '设备就绪 · 192.0.2.10 · 0011-2233-4455 · [接口]+\nDisplay Version\ndisplay version\n' + '连续输出 1234567890\n'.repeat(45000)
+const coloredReplayFixture = replayFixture.replace('Display Version', '\x1b[31;49mDisplay\x1b[0m Version')
 page.on('pageerror', (error) => runtimeErrors.push(`pageerror: ${error.message}`))
 page.on('console', (message) => {
+  if (injectingSettingsFailures && new URL(message.location().url || rendererUrl).pathname === '/api/terminal/settings' && /status of 400/.test(message.text())) return
   if (message.type() === 'error') runtimeErrors.push(`console: ${message.text()}`)
 })
 
@@ -144,7 +151,18 @@ await page.route('**/*', async (route) => {
     return
   }
   if (url.pathname === '/api/terminal/settings') {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(terminalSettings) })
+    if (request.method() === 'PUT') {
+      if (rejectSettingsSave) {
+        rejectSettingsSave = false
+        await route.fulfill({ status: 400, json: { detail: '验收注入：设置写入失败' } })
+        return
+      }
+      savedSettings = { ...savedSettings, ...request.postDataJSON().values }
+    } else if (rejectSettingsReads) {
+      await route.fulfill({ status: 400, json: { detail: '验收注入：设置读取失败' } })
+      return
+    }
+    await route.fulfill({ json: savedSettings })
     return
   }
   if (url.pathname === '/api/terminal/rules/highlight') {
@@ -191,6 +209,10 @@ await page.route('**/*', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: sessions, total: sessions.length }) })
     return
   }
+  if (/\/api\/terminal\/history\/.+\/transcript$/.test(url.pathname)) {
+    await route.fulfill({ json: { text: coloredReplayFixture, truncated: false } })
+    return
+  }
   if (/\/api\/terminal\/history\/.+\/events$/.test(url.pathname)) {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ at_ms: Date.now(), event_type: 'OUTPUT', data: '<LAB-SW> display version\nH3C Comware Software, Version 7.1\n<LAB-SW>' }], has_more: false }) })
     return
@@ -229,7 +251,40 @@ await page.screenshot({ path: resolve(outputRoot, 'console-electron-1920x1080-bu
 
 await page.setViewportSize({ width: 2560, height: 1440 })
 await page.getByRole('button', { name: '会话记录' }).click()
-await page.waitForTimeout(300)
+await page.getByRole('button', { name: '查看', exact: true }).first().click()
+const replay = page.getByRole('dialog', { name: '会话记录与导出' })
+await replay.locator('.replay-output').filter({ hasText: '设备就绪' }).waitFor()
+if (await replay.locator('.replay-output span').filter({ hasText: /^Display$/ }).evaluate(element => getComputedStyle(element).color) !== 'rgb(248, 113, 113)') {
+  throw new Error('ANSI foreground color was lost')
+}
+await page.screenshot({ path: resolve(outputRoot, 'console-replay-2560x1440.png'), animations: 'disabled' })
+await replay.locator('.replay-output').focus()
+await page.keyboard.press('Control+f')
+const search = replay.getByRole('textbox', { name: '搜索关键字' })
+if (!(await search.evaluate(element => element === document.activeElement))) throw new Error('Ctrl+F did not focus search')
+for (const [keyword, expected] of [['设备就绪', '1/1'], ['192.0.2.10', '1/1'], ['0011-2233-4455', '1/1'], ['[接口]+', '1/1'], ['DISPLAY VERSION', '1/2']]) {
+  await search.fill(keyword)
+  await replay.locator('output').getByText(expected, { exact: true }).waitFor()
+}
+await search.press('Shift+Enter')
+await replay.locator('output').getByText('2/2', { exact: true }).waitFor()
+await search.press('Enter')
+await replay.locator('output').getByText('1/2', { exact: true }).waitFor()
+const searchRanges = await replay.evaluate(() => [
+  CSS.highlights.get('console-replay-match')?.size,
+  CSS.highlights.get('console-replay-active')?.size,
+])
+if (String(searchRanges) !== '2,1') throw new Error('Unexpected CSS highlight counts')
+await page.screenshot({ path: resolve(outputRoot, 'console-replay-match-2560x1440.png'), animations: 'disabled' })
+await page.setViewportSize({ width: 1920, height: 1080 })
+await search.fill('不存在的内容')
+await replay.locator('output').getByText('0 条', { exact: true }).waitFor()
+await page.screenshot({ path: resolve(outputRoot, 'console-replay-no-match-1920x1080.png'), animations: 'disabled' })
+await search.press('Escape')
+if (await search.inputValue()) throw new Error('Esc did not clear search')
+if (await replay.locator('.replay-output').textContent() !== replayFixture) throw new Error('Search modified the recorded text')
+await replay.getByRole('button', { name: 'Close this dialog' }).click()
+await replay.waitFor({ state: 'hidden' })
 await page.screenshot({ path: resolve(outputRoot, 'console-electron-2560x1440-history.png'), fullPage: false, animations: 'disabled' })
 
 await page.locator('.el-drawer:visible .el-drawer__close-btn').click()
@@ -249,18 +304,32 @@ if (process.env.NETCONSOLE_SKIP_SFTP !== '1') {
   await page.screenshot({ path: resolve(outputRoot, 'console-electron-1920x1080-sftp.png'), fullPage: false, animations: 'disabled' })
   await page.locator('.el-drawer:visible .el-drawer__close-btn').click()
 }
-await page.getByTitle('终端设置').click()
 const settingsDialog = page.getByRole('dialog', { name: '终端设置' })
 const settingsOpenMs = []
-await settingsDialog.waitFor()
+async function openSettings() {
+  const start = performance.now()
+  await page.getByTitle('终端设置').click()
+  await settingsDialog.waitFor()
+  const shell = performance.now() - start
+  await settingsDialog.locator('.settings-form').first().waitFor()
+  await settingsDialog.getByRole('button', { name: '保存', exact: true }).waitFor()
+  if (!await settingsDialog.getByRole('button', { name: '保存', exact: true }).isEnabled()) throw new Error('Settings were not interactive')
+  return { shell_ms: Math.round(shell), interactive_ms: Math.round(performance.now() - start) }
+}
+const firstOpen = await openSettings()
+const tabTimes = {}
+for (const [name, content] of [['关键字高亮', '.el-table__row'], ['高危命令', '.el-table__row'], ['日志', '.settings-form']]) {
+  const start = performance.now()
+  await settingsDialog.getByRole('tab', { name: new RegExp(name) }).click()
+  await settingsDialog.getByRole('tabpanel').locator(content).first().waitFor()
+  tabTimes[name] = Math.round(performance.now() - start)
+  await settingsDialog.screenshot({ path: resolve(outputRoot, `terminal-settings-${name}.png`), animations: 'disabled' })
+}
 await page.screenshot({ path: resolve(outputRoot, 'console-electron-1920x1080-settings.png'), fullPage: false, animations: 'disabled' })
 for (let index = 0; index < 30; index += 1) {
   await settingsDialog.getByRole('button', { name: '取消' }).click()
   await settingsDialog.waitFor({ state: 'detached' })
-  const startedAt = Date.now()
-  await page.getByTitle('终端设置').click()
-  await settingsDialog.waitFor()
-  settingsOpenMs.push(Date.now() - startedAt)
+  settingsOpenMs.push((await openSettings()).shell_ms)
 }
 await settingsDialog.getByRole('button', { name: '取消' }).click()
 const settingsPerformanceMeasures = await page.evaluate(() => performance.getEntriesByType('measure')
@@ -283,8 +352,32 @@ if (!serialDialogText.includes('H3C Console') || !serialDialogText.includes('960
 await page.screenshot({ path: resolve(outputRoot, 'console-electron-1920x1080-serial.png'), fullPage: false, animations: 'disabled' })
 await serialDialog.getByRole('button', { name: '取消' }).click()
 
+injectingSettingsFailures = true
+rejectSettingsReads = true
+await page.goto(`${rendererUrl}/console`, { waitUntil: 'domcontentloaded' })
+await page.locator('.console-workspace').waitFor()
+await page.getByTitle('终端设置').click()
+await settingsDialog.getByRole('alert').getByText(/终端设置未能加载/).waitFor()
+rejectSettingsReads = false
+await settingsDialog.getByRole('button', { name: '重新加载' }).click()
+const fontSize = settingsDialog.getByRole('spinbutton').first()
+await fontSize.fill('17')
+await fontSize.press('Tab')
+const save = settingsDialog.getByRole('button', { name: '保存', exact: true })
+await save.click()
+await page.getByText(/验收注入：设置写入失败/).last().waitFor()
+if (!(await settingsDialog.isVisible())) throw new Error('Settings closed after failed write')
+await save.click()
+await settingsDialog.waitFor({ state: 'hidden' })
+if (savedSettings.font_size !== 17) throw new Error('Settings retry did not save the original draft')
+injectingSettingsFailures = false
+
 await writeFile(resolve(outputRoot, 'serial-electron-evidence.json'), JSON.stringify({
   settings_reopen_cycles: 30,
+  first_settings_open: firstOpen,
+  settings_tab_ms: tabTimes,
+  replay: { size: replayFixture.length, searchRanges, text_unchanged: true },
+  settings_failure_injection: { read_retry: true, save_retry: true },
   settings_open_ms: {
     samples: settingsOpenMs,
     min: Math.min(...settingsOpenMs),
@@ -297,10 +390,9 @@ await writeFile(resolve(outputRoot, 'serial-electron-evidence.json'), JSON.strin
   enumerated_ports: serialOptions.split('\n'),
   serial_hardware_opened: false,
 }, null, 2) + '\n', 'utf8')
-console.log(`Console Electron acceptance PASS: settings reopen 30x median=${[...settingsOpenMs].sort((left, right) => left - right)[Math.floor(settingsOpenMs.length / 2)]}ms range=${Math.min(...settingsOpenMs)}-${Math.max(...settingsOpenMs)}ms, serial defaults H3C 9600 8N1, ports=${serialOptions.split('\n').join(',')}`)
-
 if (runtimeErrors.length) {
   throw new Error(`Electron Console runtime errors:\n${runtimeErrors.join('\n')}`)
 }
+console.log(`Console Electron acceptance PASS: settings reopen 30x median=${[...settingsOpenMs].sort((left, right) => left - right)[Math.floor(settingsOpenMs.length / 2)]}ms range=${Math.min(...settingsOpenMs)}-${Math.max(...settingsOpenMs)}ms, serial defaults H3C 9600 8N1, ports=${serialOptions.split('\n').join(',')}`)
 
 process.exit(0)

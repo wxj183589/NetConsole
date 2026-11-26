@@ -840,9 +840,12 @@ def delete_recording(session_id: str, request: Request):
 
 
 @router.get("/history/{session_id}/transcript")
-def recording_transcript(session_id: str, request: Request):
+def recording_transcript(session_id: str, request: Request, color: bool = False):
     try:
         manager = _manager(request)
+        if color:
+            text, truncated = manager.recording_preview(session_id)
+            return {"text": text, "truncated": truncated}
         metadata = manager.session_detail(session_id)
         path, _ = manager.export_path(
             session_id, "log" if metadata.get("recording_log_name") else "txt"

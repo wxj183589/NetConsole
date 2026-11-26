@@ -20,6 +20,7 @@ import {
 import TerminalPane from './TerminalPane.vue'
 import TerminalQuickConnectDialog from './TerminalQuickConnectDialog.vue'
 import TerminalSettingsDialog from './TerminalSettingsDialog.vue'
+import TerminalReplaySearch from './TerminalReplaySearch.vue'
 import TerminalSerialConnectDialog from './TerminalSerialConnectDialog.vue'
 import TerminalSftpPanel from './TerminalSftpPanel.vue'
 import ConsoleCommandBar from './ConsoleCommandBar.vue'
@@ -27,6 +28,7 @@ import { useConsoleWorkspace } from './useConsoleWorkspace'
 import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter } from '../../platform/runtime'
 const props = withDefaults(defineProps<{ workspaceVisible?: boolean }>(), { workspaceVisible: true })
+const replaySearch = ref<InstanceType<typeof TerminalReplaySearch> | null>(null)
 const externalTerminalAvailable = computed(() => getPlatformAdapter().hostType === 'electron' && isFeatureEnabled('capability.devices.desktop_actions'))
 
 const sftpWidth = ref(430)
@@ -190,6 +192,7 @@ const {
   formatTime,
   recordingText,
   replayText,
+  replayTruncated,
 } = useConsoleWorkspace()
 const sftpDevice = computed(() => {
   const id = activeTab.value?.session.device_uuid || selectedDeviceUuid.value
@@ -547,7 +550,8 @@ watch([showSftp, sftpWorkspaceId], () => {
       </el-table>
     </el-drawer>
 
-    <el-dialog v-model="replayVisible" width="min(980px, 92vw)" title="会话记录与导出">
+    <el-dialog v-model="replayVisible" width="min(980px, 92vw)" title="会话记录与导出" destroy-on-close :close-on-press-escape="false">
+      <div @keydown.capture="replaySearch?.handleKey($event, () => replayVisible = false)">
       <div v-if="replaySession" class="replay-summary">
         <strong>{{ replaySession.device_name }}</strong>
         <span>{{ replaySession.protocol }} · {{ sessionStatusText(replaySession.state) }}</span>
@@ -558,7 +562,11 @@ watch([showSftp, sftpWorkspaceId], () => {
         <el-button size="small" :disabled="!replaySession.recording_zip_name" @click="exportReplay('zip')"><el-icon><Download /></el-icon>ZIP</el-button>
         <el-button size="small" @click="exportReplay('jsonl')"><el-icon><Download /></el-icon>JSONL</el-button>
       </div>
-      <pre v-loading="replayLoading" class="replay-output">{{ replayText || '暂无可回放输出' }}</pre>
+      <div v-loading="replayLoading">
+        <TerminalReplaySearch v-if="replayVisible" :key="replaySession?.session_id" ref="replaySearch" :text="replayText" />
+      </div>
+      <p v-if="replayTruncated" role="status">预览已截断，完整记录可通过导出查看。</p>
+      </div>
     </el-dialog>
 
     <TerminalSettingsDialog v-model="settingsVisible" :initial-settings="terminalSettings" :initial-highlights="highlightRules" @saved="applyTerminalPreferences" />
@@ -696,7 +704,6 @@ watch([showSftp, sftpWorkspaceId], () => {
 .history-toolbar .console-search { flex: 1; margin: 0 0 12px; }
 .replay-summary { margin-bottom: 10px; color: var(--nc-text-secondary); font-size: 12px; }
 .replay-summary strong { color: var(--nc-text-primary); }
-.replay-output { min-height: 420px; max-height: 65vh; margin: 0; padding: 14px; overflow: auto; border-radius: 8px; color: var(--nc-text-code); background: var(--nc-bg-code); font: 13px/1.45 var(--nc-font-family-mono); white-space: pre-wrap; }
 
 @media (max-width: 1100px) {
   .console-body { grid-template-columns: 230px minmax(0, 1fr); }

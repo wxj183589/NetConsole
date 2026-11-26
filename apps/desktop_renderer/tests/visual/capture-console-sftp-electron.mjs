@@ -258,6 +258,28 @@ try {
     await new Promise(done => setTimeout(done, 100))
   }
   if (!(await api('sessions')).items.some(item => item.session_id === newId && item.state === 'RUNNING')) throw new Error('closing detached affected parent')
+  async function recordingHashes() {
+    const result = {}
+    for (const format of ['log', 'zip', 'jsonl']) {
+      const response = await fetch(`http://127.0.0.1:18021/api/terminal/history/${detachedId}/export/${format}`, { headers: { 'X-NetConsole-Session': token } })
+      if (!response.ok) throw new Error(`Recording ${format} export failed: ${response.status}`)
+      result[format] = createHash('sha256').update(Buffer.from(await response.arrayBuffer())).digest('hex')
+    }
+    return result
+  }
+  const exportBefore = await recordingHashes()
+  await page.getByRole('button', { name: '会话记录', exact: true }).click()
+  const history = page.getByRole('dialog', { name: '会话历史' })
+  const recordingRow = history.getByRole('row').filter({ hasText: '录制完成' }).first()
+  await recordingRow.getByRole('button', { name: '查看', exact: true }).click()
+  const replayDialog = page.getByRole('dialog', { name: '会话记录与导出' })
+  await replayDialog.getByRole('textbox', { name: '搜索关键字' }).fill('display detached')
+  await replayDialog.locator('output').getByText(/^1\/[1-9]/).waitFor()
+  const exportAfter = await recordingHashes()
+  if (JSON.stringify(exportBefore) !== JSON.stringify(exportAfter)) throw new Error('Search changed recording export hashes')
+  evidence.replayExport = { sessionId: detachedId, sha256: exportBefore, unchanged: true }
+  await replayDialog.getByRole('button', { name: 'Close this dialog' }).click()
+  await history.locator('.el-drawer__close-btn').click()
   evidence.tests.push('quick button, two selected sessions, new independent tag, detached window and independent close')
   await page.locator('.terminal-tab').nth(0).click()
   await page.getByRole('button', { name: '分屏', exact: true }).click()
