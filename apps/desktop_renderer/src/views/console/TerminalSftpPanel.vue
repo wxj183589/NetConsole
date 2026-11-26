@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { consoleSessionStatusLabel } from '../../i18n/runtime'
 import {
   Back,
   Close,
@@ -466,7 +467,7 @@ onBeforeUnmount(() => {
   <section class="sftp-panel" @click="contextMenu.visible = false" @keydown.esc="contextMenu.visible = false">
     <header class="sftp-header">
       <strong>{{ deviceName || 'SFTP' }}</strong>
-      <span v-if="session">{{ session.state }}</span>
+      <span v-if="session">{{ consoleSessionStatusLabel(session.state) }}</span>
       <el-button v-if="!session" type="primary" :loading="connecting" :disabled="!deviceUuid" @click="connect">连接 SFTP</el-button>
       <el-button v-else @click="disconnect"><el-icon><Close /></el-icon>断开</el-button>
     </header>

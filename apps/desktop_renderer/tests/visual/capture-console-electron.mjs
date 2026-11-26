@@ -1,5 +1,5 @@
 import { chromium } from '@playwright/test'
-import { mkdir, readFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -242,14 +242,62 @@ await page.getByTitle('终端设置').waitFor()
 await page.screenshot({ path: resolve(outputRoot, 'console-electron-1024x680-toolbar-end.png'), fullPage: false, animations: 'disabled' })
 
 await page.setViewportSize({ width: 1920, height: 1080 })
-await page.getByRole('button', { name: 'SFTP' }).click()
-await page.getByRole('button', { name: '连接 SFTP' }).click()
-await page.locator('.sftp-panel .el-table .cell').filter({ hasText: /^startup\.cfg$/ }).first().waitFor()
-await page.screenshot({ path: resolve(outputRoot, 'console-electron-1920x1080-sftp.png'), fullPage: false, animations: 'disabled' })
-await page.locator('.el-drawer:visible .el-drawer__close-btn').click()
+if (process.env.NETCONSOLE_SKIP_SFTP !== '1') {
+  await page.getByRole('button', { name: 'SFTP' }).click()
+  await page.getByRole('button', { name: '连接 SFTP' }).click()
+  await page.locator('.sftp-panel .el-table .cell').filter({ hasText: /^startup\.cfg$/ }).first().waitFor()
+  await page.screenshot({ path: resolve(outputRoot, 'console-electron-1920x1080-sftp.png'), fullPage: false, animations: 'disabled' })
+  await page.locator('.el-drawer:visible .el-drawer__close-btn').click()
+}
 await page.getByTitle('终端设置').click()
-await page.getByRole('dialog', { name: '终端设置' }).waitFor()
+const settingsDialog = page.getByRole('dialog', { name: '终端设置' })
+const settingsOpenMs = []
+await settingsDialog.waitFor()
 await page.screenshot({ path: resolve(outputRoot, 'console-electron-1920x1080-settings.png'), fullPage: false, animations: 'disabled' })
+for (let index = 0; index < 30; index += 1) {
+  await settingsDialog.getByRole('button', { name: '取消' }).click()
+  await settingsDialog.waitFor({ state: 'detached' })
+  const startedAt = Date.now()
+  await page.getByTitle('终端设置').click()
+  await settingsDialog.waitFor()
+  settingsOpenMs.push(Date.now() - startedAt)
+}
+await settingsDialog.getByRole('button', { name: '取消' }).click()
+const settingsPerformanceMeasures = await page.evaluate(() => performance.getEntriesByType('measure')
+  .filter(entry => entry.name.startsWith('console.settings.'))
+  .map(entry => ({ name: entry.name, duration_ms: Math.round(entry.duration) })))
+const rendererLongTaskMs = await page.evaluate(() => performance.getEntriesByType('longtask')
+  .reduce((total, entry) => total + entry.duration, 0))
+
+await page.getByRole('button', { name: '新建 COM 会话' }).click()
+const serialDialog = page.getByRole('dialog', { name: '新建 COM 串口会话' })
+await serialDialog.waitFor()
+await serialDialog.getByRole('button', { name: '刷新串口列表' }).click()
+await page.locator('.serial-form .el-select').first().click()
+await page.locator('.el-select-dropdown:visible').waitFor()
+const serialOptions = await page.locator('.el-select-dropdown:visible').innerText()
+const serialDialogText = await serialDialog.innerText()
+if (!serialDialogText.includes('H3C Console') || !serialDialogText.includes('9600') || !serialDialogText.includes('8')) {
+  throw new Error('H3C serial defaults are missing from the real Electron dialog')
+}
+await page.screenshot({ path: resolve(outputRoot, 'console-electron-1920x1080-serial.png'), fullPage: false, animations: 'disabled' })
+await serialDialog.getByRole('button', { name: '取消' }).click()
+
+await writeFile(resolve(outputRoot, 'serial-electron-evidence.json'), JSON.stringify({
+  settings_reopen_cycles: 30,
+  settings_open_ms: {
+    samples: settingsOpenMs,
+    min: Math.min(...settingsOpenMs),
+    median: [...settingsOpenMs].sort((left, right) => left - right)[Math.floor(settingsOpenMs.length / 2)],
+    max: Math.max(...settingsOpenMs),
+  },
+  settings_performance_measures: settingsPerformanceMeasures,
+  renderer_long_task_total_ms: Math.round(rendererLongTaskMs),
+  serial_defaults: 'H3C Console, 9600 8N1, no flow control, DTR/RTS KEEP',
+  enumerated_ports: serialOptions.split('\n'),
+  serial_hardware_opened: false,
+}, null, 2) + '\n', 'utf8')
+console.log(`Console Electron acceptance PASS: settings reopen 30x median=${[...settingsOpenMs].sort((left, right) => left - right)[Math.floor(settingsOpenMs.length / 2)]}ms range=${Math.min(...settingsOpenMs)}-${Math.max(...settingsOpenMs)}ms, serial defaults H3C 9600 8N1, ports=${serialOptions.split('\n').join(',')}`)
 
 if (runtimeErrors.length) {
   throw new Error(`Electron Console runtime errors:\n${runtimeErrors.join('\n')}`)

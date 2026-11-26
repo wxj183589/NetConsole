@@ -225,7 +225,7 @@ it('validates Send String before saving or sending a configured button', async (
   await wrapper.findAll('button').find(button => button.text() === '保存配置')!.trigger('click')
   await flushPromises()
   expect(mocks.api.mock.calls.some(call => call[0] === '/api/terminal/quick-buttons' && call[1]?.method === 'PUT')).toBe(false)
-  expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining('unsupported escape'))
+  expect(mocks.error).toHaveBeenCalledWith(expect.stringContaining('不支持的转义符'))
 
   const invalidImport = {
     version: 1,
@@ -266,5 +266,5 @@ it('offers retry only for a failed row and follows the new retry job', async () 
   await retryButton!.trigger('click')
   await flushPromises()
   expect(mocks.api.mock.calls.some(call => call[0] === '/api/terminal/batch-sends/first-job/retry/one' && call[1]?.method === 'POST')).toBe(true)
-  expect(wrapper.text()).toContain('SENT')
+  expect(wrapper.text()).toContain('已发送')
 })

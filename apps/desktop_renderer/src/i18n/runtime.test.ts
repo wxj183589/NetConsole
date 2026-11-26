@@ -30,6 +30,15 @@ describe('Desktop Renderer runtime i18n', () => {
     )
   })
 
+  it('localizes Console action names while preserving Chinese labels', () => {
+    setAppLocale('en_US')
+    expect(t('console.context.copy', '复制')).toBe('Copy')
+    expect(t('console.button.send_string', '发送字符串')).toBe('Send String')
+    expect(t('console.status.RUNNING', '运行中')).toBe('Running')
+    setAppLocale('zh_CN')
+    expect(t('console.context.copy', '复制')).toBe('复制')
+  })
+
   it('localizes task trigger sources and falls back safely for unknown values', () => {
     setAppLocale('zh_CN')
     expect(taskTriggerSourceLabel('api')).toBe('API 调用')

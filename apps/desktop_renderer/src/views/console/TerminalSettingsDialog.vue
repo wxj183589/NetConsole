@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Delete, Download, Plus, Upload } from '@element-plus/icons-vue'
 
@@ -17,13 +17,18 @@ import {
 } from '../../api/terminal'
 import { downloadBackendResource } from '../../platform/runtime'
 
-const props = defineProps<{ modelValue: boolean }>()
+const props = defineProps<{
+  modelValue: boolean
+  initialSettings?: TerminalSettings | null
+  initialHighlights?: TerminalHighlightRule[]
+}>()
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   saved: [settings: TerminalSettings, rules: TerminalHighlightRule[]]
 }>()
 
 const loading = ref(false)
+const rulesLoading = ref<Record<RuleKind, boolean>>({ highlight: false, dangerous: false })
 const saving = ref(false)
 const settings = ref<TerminalSettings | null>(null)
 const highlights = ref<TerminalHighlightRule[]>([])
@@ -37,31 +42,89 @@ const dangerousFile = ref<HTMLInputElement | null>(null)
 const importing = ref<RuleKind | null>(null)
 let settingsSnapshot = ''
 let loadGeneration = 0
+let performanceObserver: PerformanceObserver | null = null
+let longTaskDuration = 0
+let openStartedAt = 0
+
+async function withTimeout<T>(request: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      request,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}读取超时，请重试`)), 10000)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+function measure(name: string, startedAt: number): void {
+  const elapsed = Math.round(performance.now() - startedAt)
+  performance.mark(`console.settings.${name}`)
+  performance.measure(`console.settings.${name}`, { start: startedAt, end: performance.now() })
+  console.debug(`[console-settings-performance] ${name}=${elapsed}ms`)
+}
 
 async function load(): Promise<void> {
   const generation = ++loadGeneration
-  loading.value = true
+  if (!props.initialSettings) loading.value = true
+  const dataStartedAt = performance.now()
   try {
-    const [loadedSettings, loadedHighlights, loadedDangerous] = await Promise.allSettled([
-      getTerminalSettings(),
-      getTerminalHighlightRules(),
-      getTerminalDangerousRules(),
-    ])
+    const loadedSettings = props.initialSettings
+      ? JSON.parse(JSON.stringify(props.initialSettings)) as TerminalSettings
+      : await withTimeout(getTerminalSettings(), '终端设置')
     if (generation !== loadGeneration) return
-    settings.value = loadedSettings.status === 'fulfilled' ? loadedSettings.value : null
-    if (loadedSettings.status === 'rejected') ElMessage.error(errorText(loadedSettings.reason))
-    highlights.value = loadedHighlights.status === 'fulfilled' ? loadedHighlights.value.rules : []
-    dangerous.value = loadedDangerous.status === 'fulfilled' ? loadedDangerous.value.rules : []
-    ruleErrors.value.highlight = loadedHighlights.status === 'rejected' ? errorText(loadedHighlights.reason) : ''
-    ruleErrors.value.dangerous = loadedDangerous.status === 'rejected' ? errorText(loadedDangerous.reason) : ''
+    settings.value = loadedSettings
+    highlights.value = JSON.parse(JSON.stringify(props.initialHighlights || [])) as TerminalHighlightRule[]
     settingsSnapshot = JSON.stringify(settings.value)
     ruleSnapshots.highlight = JSON.stringify(highlights.value)
-    ruleSnapshots.dangerous = JSON.stringify(dangerous.value)
     repairing.highlight = false
     repairing.dangerous = false
+    measure('settings-read', dataStartedAt)
+    const renderStartedAt = performance.now()
+    await nextTick()
+    if (generation === loadGeneration) measure('form-render', renderStartedAt)
+  } catch (cause) {
+    if (generation === loadGeneration) {
+      settings.value = null
+      ElMessage.error(errorText(cause))
+    }
   } finally {
     if (generation === loadGeneration) loading.value = false
   }
+}
+
+async function loadRules(kind: RuleKind): Promise<void> {
+  if ((kind === 'highlight' && ruleSnapshots.highlight) || (kind === 'dangerous' && ruleSnapshots.dangerous)) return
+  const generation = loadGeneration
+  const startedAt = performance.now()
+  rulesLoading.value[kind] = true
+  ruleErrors.value[kind] = ''
+  try {
+    if (kind === 'highlight') {
+      const document = await withTimeout(getTerminalHighlightRules(), '关键字规则')
+      if (generation !== loadGeneration) return
+      highlights.value = document.rules
+      ruleSnapshots.highlight = JSON.stringify(highlights.value)
+    } else {
+      const document = await withTimeout(getTerminalDangerousRules(), '高危命令规则')
+      if (generation !== loadGeneration) return
+      dangerous.value = document.rules
+      ruleSnapshots.dangerous = JSON.stringify(dangerous.value)
+    }
+    measure(`${kind}-rules-read`, startedAt)
+  } catch (cause) {
+    if (generation === loadGeneration) ruleErrors.value[kind] = errorText(cause)
+  } finally {
+    if (generation === loadGeneration) rulesLoading.value[kind] = false
+  }
+}
+
+function handleTabChange(name: string | number): void {
+  if (name === 'highlight') void loadRules('highlight')
+  else if (name === 'dangerous') void loadRules('dangerous')
 }
 
 function errorText(error: unknown): string {
@@ -72,12 +135,13 @@ async function save(): Promise<void> {
   if (!settings.value) return
   saving.value = true
   try {
-    if (!ruleErrors.value.highlight && (repairing.highlight || ruleSnapshots.highlight !== JSON.stringify(highlights.value))) {
+    const saveStartedAt = performance.now()
+    if (ruleSnapshots.highlight && !ruleErrors.value.highlight && (repairing.highlight || ruleSnapshots.highlight !== JSON.stringify(highlights.value))) {
       highlights.value = (await replaceTerminalHighlightRules(highlights.value, repairing.highlight)).rules
       ruleSnapshots.highlight = JSON.stringify(highlights.value)
       repairing.highlight = false
     }
-    if (!ruleErrors.value.dangerous && (repairing.dangerous || ruleSnapshots.dangerous !== JSON.stringify(dangerous.value))) {
+    if (ruleSnapshots.dangerous && !ruleErrors.value.dangerous && (repairing.dangerous || ruleSnapshots.dangerous !== JSON.stringify(dangerous.value))) {
       dangerous.value = (await replaceTerminalDangerousRules(dangerous.value, repairing.dangerous)).rules
       ruleSnapshots.dangerous = JSON.stringify(dangerous.value)
       repairing.dangerous = false
@@ -86,7 +150,8 @@ async function save(): Promise<void> {
       settings.value = await updateTerminalSettings(settings.value)
       settingsSnapshot = JSON.stringify(settings.value)
     }
-    if (!ruleErrors.value.highlight) emit('saved', settings.value, highlights.value)
+    emit('saved', settings.value, highlights.value.length ? highlights.value : props.initialHighlights || [])
+    measure('save', saveStartedAt)
     emit('update:modelValue', false)
     ElMessage.success('终端设置已保存')
   } catch (error) {
@@ -157,9 +222,25 @@ function addDangerous(): void {
 }
 
 watch(() => props.modelValue, (visible) => {
-  if (visible) void load()
-  else loadGeneration += 1
+  if (visible) {
+    openStartedAt = performance.now()
+    void nextTick().then(() => measure('dialog-shell', openStartedAt))
+    if (typeof PerformanceObserver !== 'undefined') {
+      longTaskDuration = 0
+      performanceObserver = new PerformanceObserver(entries => {
+        longTaskDuration += entries.getEntries().reduce((total, entry) => total + entry.duration, 0)
+      })
+      try { performanceObserver.observe({ type: 'longtask', buffered: false }) } catch { performanceObserver = null }
+    }
+    void load()
+  } else {
+    loadGeneration += 1
+    performanceObserver?.disconnect()
+    performanceObserver = null
+    if (openStartedAt) console.debug(`[console-settings-performance] renderer-long-tasks=${Math.round(longTaskDuration)}ms`)
+  }
 }, { immediate: true })
+onBeforeUnmount(() => performanceObserver?.disconnect())
 </script>
 
 <template>
@@ -170,9 +251,13 @@ watch(() => props.modelValue, (visible) => {
     top="5vh"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <div v-loading="loading" class="terminal-settings">
-      <el-tabs v-if="settings">
-        <el-tab-pane label="样式">
+    <div class="terminal-settings">
+      <div v-if="loading" class="terminal-settings-state terminal-settings-load-state" role="status">正在读取终端设置…</div>
+      <div v-else-if="!settings" class="terminal-settings-state terminal-settings-load-error" role="alert">
+        <span>终端设置未能加载</span><el-button :loading="loading" @click="load">重新加载</el-button>
+      </div>
+      <el-tabs v-else @tab-change="handleTabChange">
+        <el-tab-pane name="style" label="样式">
           <el-form label-width="100px" class="settings-form">
             <el-form-item label="字体">
               <el-select v-model="settings.font_family">
@@ -195,8 +280,11 @@ GigabitEthernet1/0/1     UP    1000M
 Error: packet loss detected</pre>
         </el-tab-pane>
 
-        <el-tab-pane :label="`关键字高亮 (${highlights.length})`">
+        <el-tab-pane name="highlight" lazy :label="`关键字高亮${ruleSnapshots.highlight ? ` (${highlights.length})` : ''}`">
           <el-alert v-if="ruleErrors.highlight" :title="ruleErrors.highlight" type="error" :closable="false" />
+          <div v-if="rulesLoading.highlight" class="terminal-settings-state terminal-rules-loading" role="status">正在读取关键字规则…</div>
+          <el-button v-if="ruleErrors.highlight" @click="loadRules('highlight')">重新加载规则</el-button>
+          <template v-if="ruleSnapshots.highlight">
           <div class="rule-toolbar">
             <el-button :icon="Plus" :disabled="!!ruleErrors.highlight" @click="addHighlight">新增规则</el-button>
             <el-button :icon="Upload" :loading="importing === 'highlight'" :disabled="!!importing || saving" @click="highlightFile?.click()">导入 JSON</el-button>
@@ -210,10 +298,14 @@ Error: packet loss detected</pre>
             <el-table-column label="颜色" width="100"><template #default="scope"><el-color-picker v-model="scope.row.color" /></template></el-table-column>
             <el-table-column width="55"><template #default="scope"><el-button link type="danger" title="删除" @click="highlights.splice(scope.$index, 1)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
           </el-table>
+          </template>
         </el-tab-pane>
 
-        <el-tab-pane :label="`高危命令 (${dangerous.length})`">
+        <el-tab-pane name="dangerous" lazy :label="`高危命令${ruleSnapshots.dangerous ? ` (${dangerous.length})` : ''}`">
           <el-alert v-if="ruleErrors.dangerous" :title="ruleErrors.dangerous" type="error" :closable="false" />
+          <div v-if="rulesLoading.dangerous" class="terminal-settings-state terminal-rules-loading" role="status">正在读取高危命令规则…</div>
+          <el-button v-if="ruleErrors.dangerous" @click="loadRules('dangerous')">重新加载规则</el-button>
+          <template v-if="ruleSnapshots.dangerous">
           <div class="rule-toolbar">
             <el-button :icon="Plus" :disabled="!!ruleErrors.dangerous" @click="addDangerous">新增规则</el-button>
             <el-button :icon="Upload" :loading="importing === 'dangerous'" :disabled="!!importing || saving" @click="dangerousFile?.click()">导入 JSON</el-button>
@@ -229,9 +321,10 @@ Error: packet loss detected</pre>
             <el-table-column label="厂商" width="110"><template #default="scope"><el-input v-model="scope.row.vendor" /></template></el-table-column>
             <el-table-column width="55"><template #default="scope"><el-button link type="danger" title="删除" @click="dangerous.splice(scope.$index, 1)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
           </el-table>
+          </template>
         </el-tab-pane>
 
-        <el-tab-pane label="日志">
+        <el-tab-pane name="logs" label="日志">
           <el-form label-width="150px" class="settings-form">
             <el-form-item label="自动操作日志"><el-switch v-model="settings.automatic_recording" /></el-form-item>
             <el-form-item label="保留天数"><el-input-number v-model="settings.automatic_log_retention_days" :min="1" :max="3650" /></el-form-item>
@@ -248,7 +341,9 @@ Error: packet loss detected</pre>
 </template>
 
 <style scoped>
-.terminal-settings { min-height: 590px; }
+.terminal-settings { min-height: 360px; }
+.terminal-settings-state { display: flex; min-height: 120px; align-items: center; justify-content: center; gap: 14px; }
+.terminal-settings-error { color: var(--nc-danger); }
 .settings-form { max-width: 460px; }
 .terminal-preview { min-height: 150px; margin: 14px 0 0; padding: 16px; border-radius: 6px; line-height: 1.6; }
 .rule-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }

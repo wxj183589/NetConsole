@@ -6,15 +6,15 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import threading
 import time
 import uuid
-import shutil
-from datetime import datetime
-from zipfile import ZipFile, ZIP_DEFLATED
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from netconsole.core import app_logger
 from netconsole.core.database import Database
@@ -28,10 +28,18 @@ from netconsole.services.netmiko_connection import ConnectionTarget, connection_
 from netconsole.services.site_manager import SiteManager
 from netconsole.services.site_ssh_relay import active_site_id
 from netconsole.services.terminal_profiles import TerminalProfileStore
+from netconsole.services.terminal_serial import (
+    SerialConnectionOptions,
+    SerialPortService,
+    SerialProfileStore,
+    SerialSessionAPI,
+)
 from netconsole.services.terminal_settings import TerminalSettingsService
-from netconsole.services.terminal_transports import create_terminal_transport
 from netconsole.services.terminal_transcript import render_events
-
+from netconsole.services.terminal_transports import (
+    SerialInteractiveTransport,
+    create_terminal_transport,
+)
 
 TERMINAL_STATES = frozenset(
     {
@@ -136,6 +144,13 @@ class TerminalSessionSnapshot:
     automation_write_active: bool = False
     automation_write_task_id: str = ""
     automation_write_task_name: str = ""
+    serial_port: str = ""
+    baud_rate: int = 0
+    data_bits: int = 0
+    parity: str = ""
+    stop_bits: float = 0
+    flow_control: str = ""
+    line_ending: str = ""
 
     def to_public_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -504,8 +519,9 @@ class _TerminalSession:
     paths: PathResolver
     recording: TerminalRecordingWriter
     requested_protocol: str
-    target: ConnectionTarget
+    target: ConnectionTarget | None
     managed_device: bool
+    serial_options: SerialConnectionOptions | None = None
     input_queue: queue.Queue[tuple[str, Any]] = field(
         default_factory=lambda: queue.Queue(maxsize=256)
     )
@@ -524,6 +540,10 @@ class _TerminalSession:
     risk_escape_state: str = ""
     risk_last_was_cr: bool = False
     manual_log: TerminalManualLogWriter | None = None
+    receive_condition: threading.Condition = field(default_factory=threading.Condition)
+    receive_buffer: bytearray = field(default_factory=bytearray)
+    receive_base_offset: int = 0
+    receive_total: int = 0
 
     MAX_DISPLAY_BACKLOG_CHARS = 1_000_000
 
@@ -582,6 +602,10 @@ class TerminalSessionManager:
         self.manual_log_root.mkdir(parents=True, exist_ok=True)
         self.settings = TerminalSettingsService(paths)
         self.profiles = TerminalProfileStore(paths)
+        self.serial_profiles = SerialProfileStore(paths)
+        self.serial_ports = SerialPortService()
+        self.serial = SerialSessionAPI(self)
+        self._serial_ports_in_use: dict[str, str] = {}
         self.tickets = TerminalTicketStore()
         self._sessions: dict[str, _TerminalSession] = {}
         self._lock = threading.RLock()
@@ -715,20 +739,55 @@ class TerminalSessionManager:
             address_role=address_role,
         )
 
+    def create_serial_session(
+        self,
+        values: dict[str, Any],
+        *,
+        cols: int = 120,
+        rows: int = 32,
+    ) -> tuple[dict[str, Any], TerminalTicket]:
+        options = SerialConnectionOptions.from_mapping(values)
+        identifier = uuid.uuid4().hex
+        device = Device(
+            device_uuid=f"terminal-serial-{identifier}",
+            name=options.port,
+            primary_address="",
+            device_vendor="Other",
+            device_type="Other",
+            ssh_enabled=0,
+            telnet_enabled=0,
+            snmp_enabled=0,
+        )
+        return self._create_runtime(
+            device,
+            None,
+            requested_protocol="SERIAL",
+            cols=cols,
+            rows=rows,
+            managed_device=False,
+            encoding=options.encoding,
+            serial_options=options,
+        )
+
     def _create_runtime(
         self,
         device: Device,
-        target: ConnectionTarget,
+        target: ConnectionTarget | None,
         *,
         requested_protocol: str,
         cols: int,
         rows: int,
         managed_device: bool,
         encoding: str,
+        serial_options: SerialConnectionOptions | None = None,
     ) -> tuple[dict[str, Any], TerminalTicket]:
         site_id = active_site_id(self.paths)
         site_name = SiteManager(self.paths).get_current_site()
         with self._lock:
+            if serial_options is not None:
+                port_key = serial_options.port.casefold()
+                if port_key in self._serial_ports_in_use:
+                    raise RuntimeError("此串口已在当前 Console 会话中打开")
             same_device = [
                 item
                 for item in self._sessions.values()
@@ -740,7 +799,7 @@ class TerminalSessionManager:
                 (candidate for candidate in connection_targets(device)
                  if candidate.target_role == "backup"),
                 None,
-            )
+            ) if target is not None else None
             snapshot = TerminalSessionSnapshot(
                 session_id=session_id,
                 device_uuid=str(device.device_uuid),
@@ -749,18 +808,25 @@ class TerminalSessionManager:
                 ),
                 site_id=site_id,
                 site_name=site_name,
-                protocol=target.protocol.upper(),
+                protocol="SERIAL" if serial_options else target.protocol.upper(),
                 encoding=str(encoding or "utf-8"),
                 mode="INTERACTIVE",
                 state="CREATED",
-                address=str(target.host),
-                port=int(target.port),
+                address=str(target.host) if target else "",
+                port=int(target.port) if target else 0,
                 created_at_ms=now,
                 updated_at_ms=now,
-                address_role=target.target_role,
-                username=target.username,
+                address_role=target.target_role if target else "primary",
+                username=target.username if target else "",
                 backup_address=backup_target.host if backup_target else "",
                 backup_port=backup_target.port if backup_target else 0,
+                serial_port=serial_options.port if serial_options else "",
+                baud_rate=serial_options.baud_rate if serial_options else 0,
+                data_bits=serial_options.data_bits if serial_options else 0,
+                parity=serial_options.parity if serial_options else "",
+                stop_bits=serial_options.stop_bits if serial_options else 0,
+                flow_control=serial_options.flow_control if serial_options else "",
+                line_ending=serial_options.line_ending if serial_options else "",
                 session_name=f"{device.name or device.system_name or device.primary_address}-{len(same_device) + 1:02}",
             )
             recording = TerminalRecordingWriter(self.recording_root, snapshot)
@@ -774,10 +840,13 @@ class TerminalSessionManager:
                 requested_protocol,
                 target,
                 managed_device,
+                serial_options=serial_options,
                 terminal_cols=terminal_cols,
                 terminal_rows=terminal_rows,
             )
             self._sessions[session_id] = session
+            if serial_options is not None:
+                self._serial_ports_in_use[serial_options.port.casefold()] = session_id
             session.thread = threading.Thread(
                 target=self._run_session,
                 args=(session,),
@@ -790,6 +859,8 @@ class TerminalSessionManager:
 
     def clone_session(self, session_id: str):
         previous = self.get_runtime(session_id)
+        if previous.serial_options is not None:
+            return self.create_serial_session(asdict(previous.serial_options), cols=previous.terminal_cols, rows=previous.terminal_rows)
         if previous.snapshot.site_name != SiteManager(self.paths).get_current_site():
             raise ValueError("会话不属于当前局点")
         return self._create_runtime(
@@ -801,6 +872,76 @@ class TerminalSessionManager:
             managed_device=previous.managed_device,
             encoding=previous.snapshot.encoding,
         )
+
+    def send_serial_bytes(self, session_id: str, data: bytes) -> None:
+        session = self.get_runtime(session_id)
+        if session.serial_options is None:
+            raise ValueError("二进制发送只支持 COM 串口会话")
+        if len(data) > self.MAX_MESSAGE_CHARS:
+            raise ValueError("串口发送字节数无效")
+        if session.close_event.is_set() or session.snapshot.state not in {"CONNECTED", "RUNNING"}:
+            raise ValueError("串口会话当前不可输入")
+        receipt = {"done": threading.Event(), "error": ""}
+        session.input_queue.put_nowait(("write_bytes", {"data": bytes(data), "receipt": receipt}))
+        if not receipt["done"].wait(15):
+            raise TimeoutError("串口写入尚未确认，请检查端口后再继续")
+        if receipt["error"]:
+            raise ConnectionError(f"串口写入失败：{receipt['error']}")
+
+    def receive_serial_bytes(self, session_id: str, offset: int = 0, timeout_seconds: float = 0):
+        session = self.get_runtime(session_id)
+        if session.serial_options is None:
+            raise ValueError("接收字节只支持 COM 串口会话")
+        deadline = time.monotonic() + max(0, min(float(timeout_seconds), 30))
+        with session.receive_condition:
+            while offset >= session.receive_total and not session.close_event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                session.receive_condition.wait(remaining)
+            requested = max(int(offset), session.receive_base_offset)
+            start = max(0, requested - session.receive_base_offset)
+            data = bytes(session.receive_buffer[start : start + 65536])
+            next_offset = requested + len(data)
+            return {
+                "data": data,
+                "offset": next_offset,
+                "truncated": int(offset) < session.receive_base_offset,
+                "state": session.snapshot.state,
+            }
+
+    def wait_for_serial_pattern(self, session_id: str, pattern: bytes, timeout_seconds: float):
+        session = self.get_runtime(session_id)
+        if session.serial_options is None:
+            raise ValueError("串口模式匹配只支持 COM 会话")
+        if not pattern or len(pattern) > 4096:
+            raise ValueError("匹配内容长度无效")
+        deadline = time.monotonic() + max(0.01, min(float(timeout_seconds), 300))
+        with session.receive_condition:
+            while True:
+                index = session.receive_buffer.find(pattern)
+                if index >= 0:
+                    absolute = session.receive_base_offset + index
+                    return {"matched": True, "offset": absolute, "state": session.snapshot.state}
+                if session.close_event.is_set():
+                    return {"matched": False, "offset": session.receive_total, "state": session.snapshot.state}
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return {"matched": False, "offset": session.receive_total, "state": session.snapshot.state}
+                session.receive_condition.wait(remaining)
+
+    def flush_serial(self, session_id: str, direction: str = "both") -> None:
+        if direction not in {"input", "output", "both"}:
+            raise ValueError("清理方向无效")
+        session = self.get_runtime(session_id)
+        if session.serial_options is None or session.snapshot.state not in {"CONNECTED", "RUNNING"}:
+            raise ValueError("串口会话当前不可清理")
+        receipt = {"done": threading.Event(), "error": ""}
+        session.input_queue.put_nowait(("flush", (direction, receipt)))
+        if not receipt["done"].wait(3):
+            raise TimeoutError("串口缓冲区清理超时")
+        if receipt["error"]:
+            raise ConnectionError(f"串口缓冲区清理失败：{receipt['error']}")
 
     def claim_detached_window(self, session_id: str):
         runtime = self.get_runtime(session_id)
@@ -906,6 +1047,14 @@ class TerminalSessionManager:
             replacement = self._sessions.get(previous.replacement_session_id)
             if replacement is not None and replacement.snapshot.state in TERMINAL_LIVE_STATES:
                 raise ValueError("会话已有正在连接或使用中的重连")
+            if previous.serial_options is not None:
+                snapshot, ticket = self.create_serial_session(
+                    asdict(previous.serial_options),
+                    cols=previous.terminal_cols,
+                    rows=previous.terminal_rows,
+                )
+                previous.replacement_session_id = ticket.session_id
+                return snapshot, ticket
             snapshot, ticket = self._create_runtime(
                 previous.device,
                 previous.target,
@@ -951,6 +1100,11 @@ class TerminalSessionManager:
 
     def _refresh_automation_write_status(self, session: _TerminalSession) -> None:
         snapshot = session.snapshot
+        if session.serial_options is not None:
+            snapshot.automation_write_active = False
+            snapshot.automation_write_task_id = ""
+            snapshot.automation_write_task_name = ""
+            return
         snapshot.automation_write_active = False
         snapshot.automation_write_task_id = ""
         snapshot.automation_write_task_name = ""
@@ -1057,7 +1211,7 @@ class TerminalSessionManager:
         with session.state_lock:
             if session.close_event.is_set() or session.snapshot.state not in {"CONNECTED", "RUNNING"}:
                 raise ValueError("终端会话当前不可输入")
-            for command in self._risk_commands(session, data):
+            for command in ([] if session.serial_options else self._risk_commands(session, data)):
                 matches = self.settings.match_dangerous_command(command, session.device)
                 if not matches:
                     continue
@@ -1085,6 +1239,8 @@ class TerminalSessionManager:
             session.snapshot.command_count += data.count("\r") + data.count("\n")
 
     def send_confirmed(self, session_id, data, *, scope, cancel_event=None):
+        if self.get_runtime(session_id).serial_options is not None:
+            raise ValueError("批量命令不能发送到 COM 串口会话")
         receipt = {
             "done": threading.Event(),
             "error": "",
@@ -1241,19 +1397,24 @@ class TerminalSessionManager:
                     self._transition(session, "CLOSED", reason="USER_REQUEST")
                     return
                 self._transition(session, "CONNECTING")
-            target = session.target
-            encoding = session.snapshot.encoding
-            target = replace(
-                target, encoding="mbcs" if encoding == "ansi" else encoding
-            )
-            transport = create_terminal_transport(
-                self.paths,
-                session.device,
-                target,
-                site_name=session.snapshot.site_name,
-                site_id=session.snapshot.site_id,
-                managed_device=session.managed_device,
-            )
+            if session.serial_options is not None:
+                transport = SerialInteractiveTransport(session.serial_options)
+            else:
+                target = session.target
+                if target is None:
+                    raise RuntimeError("终端传输目标缺失")
+                encoding = session.snapshot.encoding
+                target = replace(
+                    target, encoding="mbcs" if encoding == "ansi" else encoding
+                )
+                transport = create_terminal_transport(
+                    self.paths,
+                    session.device,
+                    target,
+                    site_name=session.snapshot.site_name,
+                    site_id=session.snapshot.site_id,
+                    managed_device=session.managed_device,
+                )
             transport.connect(session.terminal_cols, session.terminal_rows)
             if session.close_event.is_set() or session.snapshot.state in {
                 "CANCELLED",
@@ -1265,8 +1426,8 @@ class TerminalSessionManager:
             self._record(
                 session,
                 "SESSION_START",
-                address=session.target.host,
-                port=session.target.port,
+                address=session.serial_options.port if session.serial_options else session.target.host,
+                port=session.serial_options.baud_rate if session.serial_options else session.target.port,
             )
             self._transition(session, "CONNECTED")
             self._transition(session, "RUNNING")
@@ -1299,6 +1460,12 @@ class TerminalSessionManager:
                             continue
                         transport.write(data)
                         self._record(session, "INPUT", data=data)
+                        if (
+                            isinstance(transport, SerialInteractiveTransport)
+                            and session.serial_options is not None
+                            and session.serial_options.local_echo
+                        ):
+                            session.publish({"type": "local_echo", "data": transport.last_written_text})
                         if receipt:
                             self._record(
                                 session,
@@ -1327,13 +1494,44 @@ class TerminalSessionManager:
                             receipt["done"].set()
                 elif action == "resize" and not session.close_event.is_set():
                     transport.resize(*value)
+                elif action == "write_bytes" and not session.close_event.is_set():
+                    if not isinstance(transport, SerialInteractiveTransport):
+                        raise ValueError("二进制发送只支持 COM 串口会话")
+                    receipt = value["receipt"]
+                    try:
+                        transport.write_bytes(value["data"])
+                        self._record(session, "INPUT_BYTES", data_hex=value["data"].hex())
+                    except Exception as exc:
+                        receipt["error"] = str(exc)
+                        raise
+                    finally:
+                        receipt["done"].set()
+                elif action == "flush" and not session.close_event.is_set():
+                    direction, receipt = value
+                    if not isinstance(transport, SerialInteractiveTransport):
+                        raise ValueError("缓冲区清理只支持 COM 串口会话")
+                    try:
+                        transport.flush(direction)
+                    except Exception as exc:
+                        receipt["error"] = str(exc)
+                        raise
+                    finally:
+                        receipt["done"].set()
                 elif action == "close":
                     break
                 output = str(transport.read() or "")
                 if output and not session.close_event.is_set():
-                    session.snapshot.output_bytes += len(
-                        output.encode("utf-8", errors="replace")
-                    )
+                    received = transport.last_read_bytes if isinstance(transport, SerialInteractiveTransport) else b""
+                    session.snapshot.output_bytes += len(received) if received else len(output.encode("utf-8", errors="replace"))
+                    if received:
+                        with session.receive_condition:
+                            session.receive_buffer.extend(received)
+                            session.receive_total += len(received)
+                            overflow = len(session.receive_buffer) - 1_048_576
+                            if overflow > 0:
+                                del session.receive_buffer[:overflow]
+                                session.receive_base_offset += overflow
+                            session.receive_condition.notify_all()
                     self._record(session, "OUTPUT", data=output)
                     session.publish({"type": "output", "data": output})
             if session.snapshot.state != "CLOSING":
@@ -1392,6 +1590,10 @@ class TerminalSessionManager:
                 if action == "write" and isinstance(value, dict) and (receipt := value.get("receipt")):
                     receipt["error"] = "会话已结束，命令未发送"
                     receipt["done"].set()
+                elif action in {"flush", "write_bytes"}:
+                    receipt = value[1] if action == "flush" else value["receipt"]
+                    receipt["error"] = "会话已结束，串口操作未完成"
+                    receipt["done"].set()
             if transport is not None:
                 try:
                     transport.close()
@@ -1408,6 +1610,13 @@ class TerminalSessionManager:
             session.publish(
                 {"type": "state", "session": session.snapshot.to_public_dict()}
             )
+            if session.serial_options is not None:
+                with self._lock:
+                    port_key = session.serial_options.port.casefold()
+                    if self._serial_ports_in_use.get(port_key) == session.snapshot.session_id:
+                        self._serial_ports_in_use.pop(port_key, None)
+                with session.receive_condition:
+                    session.receive_condition.notify_all()
 
     def _transition(
         self,

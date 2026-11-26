@@ -29,6 +29,18 @@
 
 本次固定 DTO 改造后的定向回归为 Renderer Console/API 31 项、Electron External Tool/IPC 18 项、Python Console/Session 26 项通过；Renderer 与 Electron 类型检查及 Python Ruff 通过。覆盖 v1 配置自动迁移、固定上下文 DTO 校验、中文/空格参数模板展开、密码临时提示以及日志和存储不泄漏密码。实际 Electron 复合验收通过隔离 SSH/SFTP 列表与下载、映射按钮、批量写入、独立会话标签和窗口、80 次页面切换及生命周期；证据位于 Workspace `reports/tests/console-1.5.19-resume-20261126/electron-sftp-fix-20261126/`。2560×1440 实际显示器验收 PASS，1920×1080 仅验证窗口尺寸。原生 Windows 文件对话框、Explorer 拖放和外部真实终端客户端认证仍未验证。
 
+### Console 专项续作三：中文化、设置性能与串口
+
+Console 自有映射按钮、按钮管理、脚本、终端右键菜单、SFTP 面板及状态文案接入现有 i18n。终端设置复用已缓存的设置与规则，危险命令规则按需读取，失败显示错误和重试入口，并记录弹窗、读取、表单渲染、保存和 Renderer long-task 性能指标。
+
+串口使用锁定的 pySerial 3.5，由 Python Backend 的 `TerminalSessionManager` 管理 `SerialInteractiveTransport`，与 SSH/Telnet 共用会话、WebSocket、xterm.js、终端标签、分屏、录制和关闭生命周期。串口 API 包含端口枚举、会话开关、文本/字节收发、接收缓冲、模式等待、flush、cancel 和配置模板导入导出。新会话默认 H3C Console `9600 8N1`、无流控、UTF-8、CR、关闭本地回显及 DTR/RTS 保持原状态。当前批量命令不发送到串口。
+
+本轮定向结果为 Python 串口/Session 32 项、Renderer 38 项、Electron 328 项、PyInstaller artifact inventory 22 项通过，Electron TypeScript 检查通过。新串口 Service 和测试的定向 Ruff 检查通过。SBOM 定向测试组合中 9 项因环境缺少 `pyftpdlib` 失败；完整运行时锁定环境检查也未通过，现有 Python 环境 FastAPI、python-multipart、matplotlib、tzdata 版本与 constraints 不符，并缺少 Jinja2、pyftpdlib、pyOpenSSL、XlsxWriter、pip-licenses、cyclonedx-bom；没有安装或替换环境依赖。pySerial 3.5 已在 `constraints.txt` 和 PyInstaller 批准分发清单中，但本轮未重新构建冻结 Worker、NSIS 或 Portable。真实 Electron 在混合 SSH 标签和分屏中验证了 COM 窗口、H3C 默认值、系统端口枚举和终端设置反复开关。设置弹窗连续重开 30 次，实测中位数 28 ms、范围 24–32 ms；外壳测量 6–44 ms，缓存设置读取 0 ms，表单渲染 6–43 ms（常见 6 ms），采集到的 Renderer long-task 合计 0 ms。上述结果和截图位于 Workspace `reports/tests/console-1.5.19-resume-20261126/console-serial-electron-20261126/`。
+
+环境枚举到 COM3/COM4，描述均为 Microsoft 蓝牙串口。本轮没有打开这些端口，也未进行 USB 串口硬件通信；真实设备收发、拔插、占用冲突、实际 Windows DTR/RTS 电气状态及硬件断连处理保持 NOT VERIFIED。`node_modules/.vite/vitest` 生成缓存导致 Workspace Layout 检查失败，精确清理请求被自动审查拒绝；构建环境锁定检查也失败。因此冻结 Worker、NSIS、Portable 重建及包级 pySerial 收集验收为 NOT RUN。现有 v1.5.19 包证据不能代表本轮代码。
+
+架构与参数说明见[串口会话架构与参数](./CONSOLE_SERIAL_TRANSPORT.md)，设置性能数据见[终端设置性能报告](./CONSOLE_TERMINAL_SETTINGS_PERFORMANCE_20261126.md)。
+
 数据影响：仅使用 Workspace 隔离 Console 测试根。`PRODUCTION_DATA_MODIFIED=0`、`DEV_REAL_BUSINESS_DATA_MODIFIED=0`、`DATABASES_REMOVED=0`、`REAL_DEVICE_CONFIGURATION_WRITES=0`。
 
 实验室授权变更：AC 进入 `probe` 后执行 `wlan ap-execute all exec-console enable`，随后 FIT-AP Telnet 连通。未执行保存配置，也未验证重启后的状态。

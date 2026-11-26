@@ -22,7 +22,7 @@ describe('Send String parser', () => {
   })
 
   it.each([String.raw`bad\q`, 'trailing\\'])('rejects unsupported or incomplete escapes in %j', value => {
-    expect(() => parseSendString(value)).toThrow(/escape/)
+    expect(() => parseSendString(value)).toThrow(/转义/)
   })
 
   it('bounds text before parsing', () => {
@@ -69,7 +69,7 @@ describe('button-bar schema', () => {
   it('rejects unknown actions rather than implying their support', () => {
     const input = structuredClone(document)
     input.groups[0]!.buttons[0]!.action = 'SHELL'
-    expect(() => validateConsoleButtonBar(input)).toThrow('unsupported action')
+    expect(() => validateConsoleButtonBar(input)).toThrow('不支持的按钮动作')
   })
 
   it('accepts only registered Menu Function actions', () => {
@@ -78,7 +78,7 @@ describe('button-bar schema', () => {
     input.groups[0]!.buttons[0]!.text = 'clear-screen'
     expect(validateConsoleButtonBar(input)).toEqual(input)
     input.groups[0]!.buttons[0]!.text = 'run-arbitrary-code'
-    expect(() => validateConsoleButtonBar(input)).toThrow('unsupported menu function')
+    expect(() => validateConsoleButtonBar(input)).toThrow('不支持的菜单功能')
   })
 
   it('accepts bounded Run Script JSON and rejects malformed scripts', () => {
@@ -87,7 +87,7 @@ describe('button-bar schema', () => {
     input.groups[0]!.buttons[0]!.text = JSON.stringify({ version: 1, steps: [{ type: 'SEND_STRING', text: String.raw`display version\r` }] })
     expect(validateConsoleButtonBar(input)).toEqual(input)
     input.groups[0]!.buttons[0]!.text = '{'
-    expect(() => validateConsoleButtonBar(input)).toThrow('valid JSON')
+    expect(() => validateConsoleButtonBar(input)).toThrow('有效 JSON')
   })
 
   it('limits Launch Application buttons to registered External Tool ids', () => {
@@ -96,14 +96,14 @@ describe('button-bar schema', () => {
     input.groups[0]!.buttons[0]!.text = '7c890030-3a3f-4d6b-b58e-7624d21daff9'
     expect(validateConsoleButtonBar(input)).toEqual(input)
     input.groups[0]!.buttons[0]!.text = 'C:\\arbitrary.exe'
-    expect(() => validateConsoleButtonBar(input)).toThrow('registered External Tool')
+    expect(() => validateConsoleButtonBar(input)).toThrow('已登记的外部程序')
   })
 
   it('rejects duplicate identifiers and schema versions', () => {
     const duplicate = structuredClone(document)
     duplicate.groups[0]!.buttons[0]!.id = 'h3c'
-    expect(() => validateConsoleButtonBar(duplicate)).toThrow('unique')
-    expect(() => validateConsoleButtonBar({ ...document, version: 3 })).toThrow('version 1 or 2')
+    expect(() => validateConsoleButtonBar(duplicate)).toThrow('无效或重复')
+    expect(() => validateConsoleButtonBar({ ...document, version: 3 })).toThrow('版本必须为 1 或 2')
   })
 })
 

@@ -20,6 +20,7 @@ import {
 import TerminalPane from './TerminalPane.vue'
 import TerminalQuickConnectDialog from './TerminalQuickConnectDialog.vue'
 import TerminalSettingsDialog from './TerminalSettingsDialog.vue'
+import TerminalSerialConnectDialog from './TerminalSerialConnectDialog.vue'
 import TerminalSftpPanel from './TerminalSftpPanel.vue'
 import ConsoleCommandBar from './ConsoleCommandBar.vue'
 import { useConsoleWorkspace } from './useConsoleWorkspace'
@@ -113,6 +114,7 @@ const {
   profileContextMenu,
   collapsedProfileGroups,
   settingsVisible,
+  serialConnectVisible,
   sftpVisible,
   quickConnectVisible,
   quickConnectLoading,
@@ -129,6 +131,7 @@ const {
   paneClass,
   setTerminalRef,
   openDevice,
+  openSerialTab,
   openDeviceExternalTerminal,
   copyConnectionAddress,
   externalTerminalBusy,
@@ -179,6 +182,7 @@ const {
   importProfiles,
   exportProfiles,
   sessionStatusClass,
+  sessionStatusText,
   showDeviceMenu,
   showSessionMenu,
   openDeviceDetail,
@@ -221,6 +225,7 @@ watch([showSftp, sftpWorkspaceId], () => {
       <el-button size="small" :disabled="!selectedDeviceUuid" :loading="Boolean(openingDeviceUuid)" @click="openDevice(devices.find((item) => item.device_uuid === selectedDeviceUuid)!)">
         <el-icon><Connection /></el-icon>新建会话
       </el-button>
+      <el-button size="small" @click="serialConnectVisible = true">新建 COM 会话</el-button>
       <el-button size="small" :disabled="!selectedDeviceUuids.length" @click="openSelectedDevices">批量打开</el-button>
       <el-button size="small" :disabled="!activeTab || closingTabIds.has(activeTab.id)" @click="activeTab && cloneSession(activeTab.session)">克隆会话</el-button>
       <el-button size="small" :disabled="!activeTab || closingTabIds.has(activeTab.id)" @click="terminateActiveSession">
@@ -382,7 +387,7 @@ watch([showSftp, sftpWorkspaceId], () => {
             <span class="session-row__state" :class="sessionStatusClass(session.state)" />
             <span>
               <strong>{{ session.session_name || session.device_name }}</strong>
-              <small>{{ session.protocol }} · {{ session.state }} · {{ formatTime(session.created_at_ms) }}</small>
+              <small>{{ session.protocol }} · {{ sessionStatusText(session.state) }} · {{ formatTime(session.created_at_ms) }}</small>
             </span>
           </button>
           <div v-if="!filteredSessions.length" class="console-empty">暂无匹配会话</div>
@@ -434,8 +439,8 @@ watch([showSftp, sftpWorkspaceId], () => {
         <div v-if="tabs.length" ref="workspace" class="terminal-grid" :class="`is-${splitOrientation}`" :style="workspaceStyle">
           <div v-for="tab in tabs" :key="tab.id" :class="paneClass(tab.id)" @focusin="activeTabId = tab.id">
             <div class="terminal-pane__header">
-              <button class="terminal-pane__label" @click="selectTab(tab.id)">{{ tab.session.device_name }} · {{ tab.session.address }}:{{ tab.session.port }}</button>
-              <span :class="sessionStatusClass(tab.session.state)">{{ closingTabIds.has(tab.id) ? '正在结束' : tab.session.state }}</span>
+              <button class="terminal-pane__label" @click="selectTab(tab.id)">{{ tab.session.protocol === 'SERIAL' ? `${tab.session.serial_port} · ${tab.session.baud_rate} · ${tab.session.data_bits}${tab.session.parity}${tab.session.stop_bits}` : `${tab.session.device_name} · ${tab.session.address}:${tab.session.port}` }}</button>
+              <span :class="sessionStatusClass(tab.session.state)">{{ closingTabIds.has(tab.id) ? '正在结束' : sessionStatusText(tab.session.state) }}</span>
               <span v-if="tab.session.automation_write_active" class="is-warning" :title="tab.session.automation_write_task_name">自动化写任务运行中</span>
               <span>{{ recordingText(tab.session) }}</span>
             </div>
@@ -545,7 +550,7 @@ watch([showSftp, sftpWorkspaceId], () => {
     <el-dialog v-model="replayVisible" width="min(980px, 92vw)" title="会话记录与导出">
       <div v-if="replaySession" class="replay-summary">
         <strong>{{ replaySession.device_name }}</strong>
-        <span>{{ replaySession.protocol }} · {{ replaySession.state }}</span>
+        <span>{{ replaySession.protocol }} · {{ sessionStatusText(replaySession.state) }}</span>
         <span>{{ formatTime(replaySession.created_at_ms) }}</span>
         <span :class="replaySession.recording_status === 'INCOMPLETE' ? 'is-danger' : 'is-success'">{{ recordingText(replaySession) }}</span>
         <span class="console-toolbar__spacer" />
@@ -556,7 +561,8 @@ watch([showSftp, sftpWorkspaceId], () => {
       <pre v-loading="replayLoading" class="replay-output">{{ replayText || '暂无可回放输出' }}</pre>
     </el-dialog>
 
-    <TerminalSettingsDialog v-model="settingsVisible" @saved="applyTerminalPreferences" />
+    <TerminalSettingsDialog v-model="settingsVisible" :initial-settings="terminalSettings" :initial-highlights="highlightRules" @saved="applyTerminalPreferences" />
+    <TerminalSerialConnectDialog v-model="serialConnectVisible" @opened="openSerialTab" />
     <TerminalQuickConnectDialog
       v-model="quickConnectVisible"
       :folders="profileFolders"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { Terminal } from '@xterm/xterm'
@@ -7,6 +7,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import '@xterm/xterm/css/xterm.css'
 
 import { getPlatformAdapter } from '../../platform/runtime'
+import { t } from '../../i18n/runtime'
 
 import {
   issueTerminalTicket,
@@ -67,20 +68,20 @@ interface TerminalContextAction {
   needsConnection?: boolean
 }
 
-const contextActions: TerminalContextAction[] = [
-  { id: 'copy', label: 'Copy', shortcut: 'Ctrl+Shift+C', needsSelection: true },
-  { id: 'paste', label: 'Paste', shortcut: 'Ctrl+Shift+V', needsConnection: true },
-  { id: 'copy-paste', label: 'Copy and Paste', needsSelection: true, needsConnection: true },
-  { id: 'quoted-paste', label: 'Paste as Quoted', needsConnection: true },
-  { id: 'open-url', label: 'Open URL', needsUrl: true },
-  { id: 'add-keyword', label: 'Add Keyword', needsSelection: true },
-  { id: 'find', label: 'Find', shortcut: 'Ctrl+F' },
-  { id: 'select-all', label: 'Select All', shortcut: 'Ctrl+Shift+A' },
-  { id: 'print', label: 'Print Selection', needsSelection: true },
-  { id: 'clear-scrollback', label: 'Clear Scrollback' },
-  { id: 'clear-screen', label: 'Clear Screen' },
-  { id: 'clear-all', label: 'Clear Screen and Scrollback' },
-]
+const contextActions = computed<TerminalContextAction[]>(() => [
+  { id: 'copy', label: t('console.context.copy', '复制'), shortcut: 'Ctrl+Shift+C', needsSelection: true },
+  { id: 'paste', label: t('console.context.paste', '粘贴'), shortcut: 'Ctrl+Shift+V', needsConnection: true },
+  { id: 'copy-paste', label: t('console.context.copy_paste', '复制并粘贴'), needsSelection: true, needsConnection: true },
+  { id: 'quoted-paste', label: t('console.context.quoted_paste', '粘贴为引用'), needsConnection: true },
+  { id: 'open-url', label: t('console.context.open_url', '打开链接'), needsUrl: true },
+  { id: 'add-keyword', label: t('console.context.add_keyword', '添加关键词'), needsSelection: true },
+  { id: 'find', label: t('console.context.find', '查找'), shortcut: 'Ctrl+F' },
+  { id: 'select-all', label: t('console.context.select_all', '全选'), shortcut: 'Ctrl+Shift+A' },
+  { id: 'print', label: t('console.context.print', '打印选中内容'), needsSelection: true },
+  { id: 'clear-scrollback', label: t('console.context.clear_scrollback', '清除回滚缓冲区') },
+  { id: 'clear-screen', label: t('console.context.clear_screen', '清屏') },
+  { id: 'clear-all', label: t('console.context.clear_all', '清屏并清除回滚缓冲区') },
+])
 
 function openContextMenu(event: MouseEvent): void {
   event.preventDefault()

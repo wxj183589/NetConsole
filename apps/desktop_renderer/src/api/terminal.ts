@@ -1,7 +1,7 @@
 import { apiRequest } from './client'
 import { resolveApiUrl } from '../platform/runtime'
 
-export type TerminalProtocol = 'AUTO' | 'SSH' | 'TELNET'
+export type TerminalProtocol = 'AUTO' | 'SSH' | 'TELNET' | 'SERIAL'
 export type TerminalState =
   | 'CREATED'
   | 'CONNECTING'
@@ -34,6 +34,13 @@ export interface TerminalSession {
   username?: string
   backup_address?: string
   backup_port?: number
+  serial_port?: string
+  baud_rate?: number
+  data_bits?: number
+  parity?: string
+  stop_bits?: number
+  flow_control?: string
+  line_ending?: string
   created_at_ms: number
   updated_at_ms: number
   connected_at_ms: number | null
@@ -62,6 +69,36 @@ export interface TerminalSessionConnection {
   ticket_expires_at_ms: number
 }
 
+export interface SerialConnectionOptions {
+  port: string
+  baud_rate: number
+  data_bits: number
+  parity: 'N' | 'O' | 'E' | 'M' | 'S'
+  stop_bits: 1 | 1.5 | 2
+  flow_control: 'none' | 'rtscts' | 'dsrdtr' | 'xonxoff'
+  encoding: string
+  line_ending: 'CR' | 'LF' | 'CRLF'
+  local_echo: boolean
+  dtr: 'KEEP' | 'ON' | 'OFF'
+  rts: 'KEEP' | 'ON' | 'OFF'
+  timeout_seconds: number
+}
+
+export interface SerialProfile {
+  profile_id: string
+  name: string
+  built_in?: boolean
+  options: SerialConnectionOptions
+}
+
+export interface SerialPortInfo {
+  port: string
+  name: string
+  description: string
+  manufacturer: string
+  hardware_id: string
+}
+
 export interface TerminalProfileFolder {
   folder_id: string
   name: string
@@ -74,7 +111,7 @@ export interface TerminalProfile {
   backup_host: string
   backup_port: number
   port: number
-  protocol: Exclude<TerminalProtocol, 'AUTO'>
+  protocol: 'SSH' | 'TELNET'
   username: string
   encoding: string
   vendor: string
@@ -94,7 +131,7 @@ export interface TerminalProfileValues {
   backup_host?: string
   backup_port?: number | null
   port: number
-  protocol: Exclude<TerminalProtocol, 'AUTO'>
+  protocol: 'SSH' | 'TELNET'
   username: string
   encoding: string
   vendor: string
@@ -226,6 +263,67 @@ export function createTerminalSession(
     method: 'POST',
     body: JSON.stringify({ device_uuid: deviceUuid, protocol, cols, rows, address_role: addressRole }),
   })
+}
+
+export function listSerialPorts(): Promise<{ items: SerialPortInfo[] }> {
+  return apiRequest('/api/terminal/serial/ports')
+}
+
+export function listSerialProfiles(): Promise<{ schema_version: 1; profiles: SerialProfile[] }> {
+  return apiRequest('/api/terminal/serial/profiles')
+}
+
+export function saveSerialProfiles(profiles: SerialProfile[]): Promise<{ schema_version: 1; profiles: SerialProfile[] }> {
+  return apiRequest('/api/terminal/serial/profiles', {
+    method: 'PUT',
+    body: JSON.stringify({ profiles: profiles.filter(profile => !profile.built_in).map(({ profile_id, name, options }) => ({ profile_id, name, options })) }),
+  })
+}
+
+export function importSerialProfiles(document: unknown): Promise<{ schema_version: 1; profiles: SerialProfile[] }> {
+  return apiRequest('/api/terminal/serial/profiles/import', {
+    method: 'POST',
+    body: JSON.stringify({ document }),
+  })
+}
+
+export function createSerialSession(options: SerialConnectionOptions, cols = 120, rows = 32): Promise<TerminalSessionConnection> {
+  return apiRequest('/api/terminal/serial/sessions', {
+    method: 'POST',
+    body: JSON.stringify({ ...options, cols, rows }),
+  })
+}
+
+export function sendSerialBytes(sessionId: string, data: Uint8Array): Promise<void> {
+  let binary = ''
+  for (const byte of data) binary += String.fromCharCode(byte)
+  return apiRequest(`/api/terminal/serial/sessions/${encodeURIComponent(sessionId)}/send-bytes`, {
+    method: 'POST',
+    body: JSON.stringify({ data: btoa(binary) }),
+  })
+}
+
+export function receiveSerialBytes(sessionId: string, offset = 0, timeoutMs = 0): Promise<{ data: string; offset: number; truncated: boolean; state: TerminalState }> {
+  const params = new URLSearchParams({ offset: String(offset), timeout_ms: String(timeoutMs) })
+  return apiRequest(`/api/terminal/serial/sessions/${encodeURIComponent(sessionId)}/receive?${params}`)
+}
+
+export function waitForSerialPattern(sessionId: string, pattern: string, timeoutMs: number): Promise<{ matched: boolean; offset: number; state: TerminalState }> {
+  return apiRequest(`/api/terminal/serial/sessions/${encodeURIComponent(sessionId)}/wait-for-pattern`, {
+    method: 'POST',
+    body: JSON.stringify({ pattern, timeout_ms: timeoutMs }),
+  })
+}
+
+export function flushSerialSession(sessionId: string, direction: 'input' | 'output' | 'both' = 'both'): Promise<void> {
+  return apiRequest(`/api/terminal/serial/sessions/${encodeURIComponent(sessionId)}/flush`, {
+    method: 'POST',
+    body: JSON.stringify({ direction }),
+  })
+}
+
+export function cancelSerialSession(sessionId: string): Promise<TerminalSession> {
+  return apiRequest(`/api/terminal/serial/sessions/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST' })
 }
 
 export function quickConnectTerminalSession(

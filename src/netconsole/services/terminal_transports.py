@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import os
 import re
 import socket
 import struct
@@ -15,8 +16,12 @@ from netconsole.services.host_key_trust_service import (
     finalize_managed_host_key,
     install_managed_host_key_policy,
 )
-from netconsole.services.netmiko_connection import ConnectionTarget, prepared_connection_target
+from netconsole.services.netmiko_connection import (
+    ConnectionTarget,
+    prepared_connection_target,
+)
 from netconsole.services.site_ssh_relay import SiteSSHRelayService
+from netconsole.services.terminal_serial import SerialConnectionOptions
 
 
 class TerminalTransport(Protocol):
@@ -310,6 +315,109 @@ class TelnetInteractiveTransport:
         return self._socket
 
 
+class SerialInteractiveTransport:
+    def __init__(self, options: SerialConnectionOptions, *, serial_factory=None) -> None:
+        self.options = options
+        self._serial_factory = serial_factory
+        self._serial = None
+        self.last_written_text = ""
+        self._decoder = codecs.getincrementaldecoder(
+            "mbcs" if options.encoding == "ansi" else options.encoding
+        )(errors="replace")
+        self.last_read_bytes = b""
+
+    def connect(self, cols: int, rows: int) -> None:
+        try:
+            if self._serial_factory is None:
+                import ctypes
+
+                import serial
+                from serial import win32
+                from serial.serialwin32 import Serial as WindowsSerial
+
+                serial_factory = serial.Serial
+                if os.name == "nt":
+                    options_snapshot = self.options
+
+                    class PreserveUnspecifiedLinesSerial(WindowsSerial):
+                        def _reconfigure_port(self):
+                            handle = getattr(self, "_port_handle", None)
+                            if handle is not None:
+                                state = win32.DCB()
+                                win32.GetCommState(handle, ctypes.byref(state))
+                                if options_snapshot.dtr == "KEEP" and options_snapshot.flow_control != "dsrdtr":
+                                    self._dtr_state = state.fDtrControl == win32.DTR_CONTROL_ENABLE
+                                if options_snapshot.rts == "KEEP" and options_snapshot.flow_control != "rtscts":
+                                    self._rts_state = state.fRtsControl == win32.RTS_CONTROL_ENABLE
+                            super()._reconfigure_port()
+
+                    serial_factory = PreserveUnspecifiedLinesSerial
+            else:
+                serial_factory = self._serial_factory
+            options = self.options
+            port = serial_factory(
+                port=None,
+                baudrate=options.baud_rate,
+                bytesize=options.data_bits,
+                parity=options.parity,
+                stopbits=options.stop_bits,
+                timeout=options.timeout_seconds,
+                write_timeout=2,
+                xonxoff=options.flow_control == "xonxoff",
+                rtscts=options.flow_control == "rtscts",
+                dsrdtr=options.flow_control == "dsrdtr",
+            )
+            if options.dtr != "KEEP":
+                port.dtr = options.dtr == "ON"
+            if options.rts != "KEEP":
+                port.rts = options.rts == "ON"
+            port.port = options.port
+            port.open()
+            self._serial = port
+        except Exception:
+            self.close()
+            raise
+
+    def read(self, maximum: int = 65536) -> str:
+        if self._serial is None or not self._serial.is_open:
+            raise ConnectionError("串口已断开")
+        waiting = int(self._serial.in_waiting or 0)
+        data = self._serial.read(min(maximum, max(1, waiting)))
+        self.last_read_bytes = bytes(data)
+        return self._decoder.decode(data, final=False)
+
+    def write(self, data: str) -> None:
+        options = self.options
+        value = re.sub(
+            r"\r\n|\r|\n",
+            {"CR": "\r", "LF": "\n", "CRLF": "\r\n"}[options.line_ending],
+            str(data),
+        )
+        self.last_written_text = value
+        self.write_bytes(value.encode("mbcs" if options.encoding == "ansi" else options.encoding, errors="replace"))
+
+    def write_bytes(self, data: bytes) -> None:
+        if self._serial is None or not self._serial.is_open:
+            raise ConnectionError("串口已断开")
+        self._serial.write(bytes(data))
+
+    def resize(self, cols: int, rows: int) -> None:
+        return None
+
+    def flush(self, direction: str = "both") -> None:
+        if self._serial is None or not self._serial.is_open:
+            raise ConnectionError("串口已断开")
+        if direction in {"input", "both"}:
+            self._serial.reset_input_buffer()
+        if direction in {"output", "both"}:
+            self._serial.reset_output_buffer()
+
+    def close(self) -> None:
+        port, self._serial = self._serial, None
+        if port is not None and port.is_open:
+            port.close()
+
+
 def create_terminal_transport(
     paths: PathResolver,
     device: Device,
@@ -331,4 +439,10 @@ def create_terminal_transport(
     return TelnetInteractiveTransport(paths, target, site_id=site_id)
 
 
-__all__ = ["SshInteractiveTransport", "TelnetInteractiveTransport", "TerminalTransport", "create_terminal_transport"]
+__all__ = [
+    "SerialInteractiveTransport",
+    "SshInteractiveTransport",
+    "TelnetInteractiveTransport",
+    "TerminalTransport",
+    "create_terminal_transport",
+]

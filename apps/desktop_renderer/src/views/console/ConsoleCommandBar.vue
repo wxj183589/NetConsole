@@ -8,6 +8,7 @@ import { launchExternalTool, listExternalTools } from '../../api/externalTools'
 import type { ExternalToolView } from '../../types/externalTools'
 import { consoleToolNeedsPassword, MENU_FUNCTIONS, parseSendString, validateConsoleButtonBar, type ConsoleButtonBarDocument } from './consoleButtonBar'
 import { parseConsoleRunScriptJson } from './consoleRunScript'
+import { consoleBatchStatusLabel, t } from '../../i18n/runtime'
 
 const props = defineProps<{ sessions: TerminalSession[]; active: TerminalSession | null; selected: string[]; selectedDevices: Array<{ device_uuid: string; name: string }> }>()
 const emit = defineEmits<{ opened: [value: TerminalSessionConnection]; selection: [ids: string[]]; menuAction: [id: typeof MENU_FUNCTIONS[number]] }>()
@@ -57,6 +58,7 @@ const chosen = computed(() => target.value === 'all' ? activeSessions.value : ta
 const filteredButtons = computed(() => (group.value?.buttons || [])
   .filter(button => button.enabled && `${button.name} ${button.text}`.toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase()))
   .sort((left, right) => left.order - right.order))
+const consoleText = (key: string, fallback: string) => t(`console.${key}`, fallback)
 async function load() {
   config.value = validateConsoleButtonBar(await apiRequest<unknown>('/api/terminal/quick-buttons'))
   if (!group.value) groupId.value = config.value.groups[0]?.id || ''
@@ -427,7 +429,7 @@ async function newGroup() { const { value } = await ElMessageBox.prompt('按钮�
       <div class="batch-actions"><button type="button" :disabled="!batchActive && !batchPaused" @click="toggleBatchPause">{{ batchPaused ? '恢复' : '暂停' }}</button><button type="button" :disabled="!batchActive && !batchPaused" @click="cancelBatch">取消剩余发送</button><button type="button" @click="exportBatch('csv')">导出 CSV</button><button type="button" @click="exportBatch('txt')">导出 TXT</button></div>
       <ul>
         <li v-for="row in latestBatch.rows" :key="row.session_id">
-          <details><summary>{{ row.name || row.session_id }} · {{ row.address }} · {{ row.state }} · {{ row.duration_ms ?? '—' }} ms</summary><p>{{ row.command }}</p><pre>{{ row.output || row.error || '等待设备回显' }}</pre><button v-if="row.state === 'FAILED' && !row.sent_segments" type="button" @click="retryRow(row)">重试该设备</button></details>
+          <details><summary>{{ row.name || row.session_id }} · {{ row.address }} · {{ consoleBatchStatusLabel(row.state) }} · {{ row.duration_ms ?? '—' }} ms</summary><p>{{ row.command }}</p><pre>{{ row.output || row.error || '等待设备回显' }}</pre><button v-if="row.state === 'FAILED' && !row.sent_segments" type="button" @click="retryRow(row)">重试该设备</button></details>
         </li>
       </ul>
     </section>
@@ -439,7 +441,42 @@ async function newGroup() { const { value } = await ElMessageBox.prompt('按钮�
       <div class="quick-buttons">
         <button v-for="button in filteredButtons" :key="button.id" type="button" :disabled="busy" :style="{ borderColor: button.color, color: button.color }" :title="button.disable_tooltip ? undefined : button.tooltip" @click="activateButton(button)">{{ button.name }}</button>
       </div>
-      <div class="manage-toolbar"><select v-model="groupId"><option v-for="item in config.groups" :key="item.id" :value="item.id">{{ item.name }}</option></select><el-button @click="newGroup">新增组</el-button><el-input v-if="group" v-model="group.name" style="width:160px" /><el-button @click="newButton">新增按钮</el-button><el-button @click="importInput?.click()">导入 JSON</el-button><input ref="importInput" hidden type="file" accept=".json" @change="importConfig" /><el-button @click="exportConfig">导出 JSON</el-button><el-button @click="reset">恢复默认</el-button></div><div class="button-editor" v-for="(button,index) in group?.buttons" :key="button.id"><input v-model="button.name" aria-label="按钮名称" /><select v-model="button.action"><option value="SEND_STRING">Send String</option><option value="MENU_FUNCTION">Menu Function</option><option value="LAUNCH_APPLICATION">Launch Application</option><option value="RUN_SCRIPT">Run Script</option></select><textarea v-if="button.action === 'SEND_STRING'" v-model="button.text" aria-label="发送字符串" rows="2" /><select v-else-if="button.action === 'MENU_FUNCTION'" v-model="button.text" aria-label="菜单功能"><option v-for="id in MENU_FUNCTIONS" :key="id" :value="id">{{ ({ find: 'Find', 'select-all': 'Select All', 'clear-scrollback': 'Clear Scrollback', 'clear-screen': 'Clear Screen', 'clear-all': 'Clear Screen and Scrollback' } as Record<string, string>)[id] }}</option></select><select v-else-if="button.action === 'LAUNCH_APPLICATION'" v-model="button.text" aria-label="外部应用"><option v-for="tool in externalTools" :key="tool.id" :value="tool.id">{{ tool.name }}</option></select><label v-if="button.action === 'LAUNCH_APPLICATION'"><input v-model="button.launch_with_session_context" type="checkbox" />传递当前会话参数</label><div v-if="button.action === 'RUN_SCRIPT'" class="script-editor"><textarea v-model="button.text" aria-label="脚本 JSON" rows="2" /><button type="button" @click="selectedScriptButton = button; scriptInput?.click()">选择脚本 JSON</button></div><input v-model="button.color" type="color" aria-label="按钮颜色" /><input v-model="button.tooltip" placeholder="Tooltip" /><label><input v-model="button.disable_tooltip" type="checkbox" />不提示</label><label><input v-model="button.enabled" type="checkbox" />启用</label><button @click="duplicate(button)">复制</button><button @click="reorder(index,-1)">↑</button><button @click="reorder(index,1)">↓</button><button @click="group?.buttons.splice(index,1)">删除</button></div><input ref="scriptInput" hidden type="file" accept=".json,application/json" @change="importScript" /><template #footer><el-button @click="managing = false">关闭</el-button><el-button type="primary" @click="save">保存配置</el-button></template>
+      <div class="manage-toolbar">
+        <select v-model="groupId"><option v-for="item in config.groups" :key="item.id" :value="item.id">{{ item.name }}</option></select>
+        <el-button @click="newGroup">新增组</el-button>
+        <el-input v-if="group" v-model="group.name" aria-label="分组名称" style="width:160px" />
+        <el-button @click="newButton">{{ consoleText('button.add', '新增按钮') }}</el-button>
+        <el-button @click="importInput?.click()">{{ consoleText('button.import', '导入配置') }}</el-button>
+        <input ref="importInput" hidden type="file" accept=".json" @change="importConfig" />
+        <el-button @click="exportConfig">{{ consoleText('button.export', '导出配置') }}</el-button>
+        <el-button @click="reset">{{ consoleText('button.reset', '恢复默认') }}</el-button>
+      </div>
+      <div class="button-editor" v-for="(button,index) in group?.buttons" :key="button.id">
+        <input v-model="button.name" aria-label="按钮名称" />
+        <select v-model="button.action">
+          <option value="SEND_STRING">{{ consoleText('button.send_string', '发送字符串') }}</option>
+          <option value="MENU_FUNCTION">{{ consoleText('button.menu_function', '菜单功能') }}</option>
+          <option value="LAUNCH_APPLICATION">{{ consoleText('button.launch_application', '启动外部程序') }}</option>
+          <option value="RUN_SCRIPT">{{ consoleText('button.run_script', '运行脚本') }}</option>
+        </select>
+        <textarea v-if="button.action === 'SEND_STRING'" v-model="button.text" aria-label="发送字符串" rows="2" />
+        <select v-else-if="button.action === 'MENU_FUNCTION'" v-model="button.text" aria-label="菜单功能">
+          <option v-for="id in MENU_FUNCTIONS" :key="id" :value="id">{{ consoleText(`button.${id.replaceAll('-', '_')}`, ({ find: '查找', 'select-all': '全选', 'clear-scrollback': '清除回滚缓冲区', 'clear-screen': '清屏', 'clear-all': '清屏并清除回滚缓冲区' } as Record<string, string>)[id]!) }}</option>
+        </select>
+        <select v-else-if="button.action === 'LAUNCH_APPLICATION'" v-model="button.text" aria-label="外部应用"><option v-for="tool in externalTools" :key="tool.id" :value="tool.id">{{ tool.name }}</option></select>
+        <label v-if="button.action === 'LAUNCH_APPLICATION'"><input v-model="button.launch_with_session_context" type="checkbox" />传递当前会话参数</label>
+        <div v-if="button.action === 'RUN_SCRIPT'" class="script-editor"><textarea v-model="button.text" aria-label="脚本 JSON" rows="2" /><button type="button" @click="selectedScriptButton = button; scriptInput?.click()">选择脚本 JSON</button></div>
+        <input v-model="button.color" type="color" aria-label="按钮颜色" />
+        <input v-model="button.tooltip" :placeholder="consoleText('button.tooltip', '提示文本')" aria-label="提示文本" />
+        <label><input v-model="button.disable_tooltip" type="checkbox" />{{ consoleText('button.no_tooltip', '不提示') }}</label>
+        <label><input v-model="button.enabled" type="checkbox" />{{ consoleText('button.enabled', '启用') }}</label>
+        <button @click="duplicate(button)">复制</button>
+        <button @click="reorder(index,-1)" aria-label="上移">↑</button>
+        <button @click="reorder(index,1)" aria-label="下移">↓</button>
+        <button @click="group?.buttons.splice(index,1)">{{ consoleText('button.delete', '删除') }}</button>
+      </div>
+      <input ref="scriptInput" hidden type="file" accept=".json,application/json" @change="importScript" />
+      <template #footer><el-button @click="managing = false">关闭</el-button><el-button type="primary" @click="save">保存配置</el-button></template>
     </el-dialog>
   </section>
 </template>

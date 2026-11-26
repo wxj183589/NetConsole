@@ -558,3 +558,55 @@ def test_quick_connect_uses_an_unmanaged_interactive_transport_and_reconnects(
     assert len(transports) == 2
     manager.close_session(second_id)
     manager.close()
+
+
+def test_serial_sessions_share_terminal_lifecycle_and_release_exclusive_port(tmp_path, monkeypatch):
+    import serial
+
+    from netconsole.services.terminal_transports import SerialInteractiveTransport
+
+    manager, device, _ssh_transport = _manager_fixture(tmp_path, monkeypatch)
+    real_serial_transport = SerialInteractiveTransport
+
+    def loop_factory(**kwargs):
+        kwargs.pop("port")
+        return serial.serial_for_url("loop://", do_not_open=True, **kwargs)
+
+    class LoopSerialTransport(real_serial_transport):
+        def __init__(self, options):
+            super().__init__(replace(options, port="loop://"), serial_factory=loop_factory)
+
+    monkeypatch.setattr("netconsole.services.terminal_workspace.SerialInteractiveTransport", LoopSerialTransport)
+    try:
+        ssh, _ = manager.create_session(str(device.device_uuid))
+        _wait_until(lambda: manager.get_runtime(ssh["session_id"]).snapshot.state == "RUNNING")
+        options = {
+            "port": "COM-SIM-1", "baud_rate": 9600, "data_bits": 8, "parity": "N",
+            "stop_bits": 1, "flow_control": "none", "encoding": "utf-8", "line_ending": "CRLF",
+            "local_echo": False, "dtr": "KEEP", "rts": "KEEP", "timeout_seconds": 0.01,
+        }
+        created, _ = manager.serial.open_session(options)
+        session_id = created["session_id"]
+        try:
+            _wait_until(lambda: manager.get_runtime(session_id).snapshot.state == "RUNNING")
+            with pytest.raises(RuntimeError, match="已在当前 Console 会话中打开"):
+                manager.serial.open_session(options)
+
+            manager.serial.send_text(session_id, "设备状态\r")
+            received = manager.serial.receive(session_id, offset=0, timeout_seconds=2)
+            assert received["data"] == "设备状态\r\n".encode()
+            assert manager.serial.wait_for_pattern(session_id, "设备状态".encode(), 1)["matched"]
+
+            manager.serial.send_bytes(session_id, b"\x00\xff")
+            raw = manager.serial.receive(session_id, offset=received["offset"], timeout_seconds=2)
+            assert raw["data"] == b"\x00\xff"
+            manager.serial.flush(session_id)
+            assert manager.get_runtime(ssh["session_id"]).snapshot.state == "RUNNING"
+        finally:
+            manager.serial.cancel(session_id)
+        _wait_until(lambda: session_id not in manager._serial_ports_in_use.values())
+        reopened, _ = manager.serial.open_session(options)
+        _wait_until(lambda: manager.get_runtime(reopened["session_id"]).snapshot.state == "RUNNING")
+        manager.serial.cancel(reopened["session_id"])
+    finally:
+        manager.close()

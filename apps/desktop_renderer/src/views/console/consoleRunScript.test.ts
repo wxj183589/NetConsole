@@ -29,20 +29,20 @@ describe('Console Run Script DSL', () => {
       steps: [{ type: 'SEND_STRING', text: String.raw`display version\r` }],
     }))
     expect(script.steps[0]).toMatchObject({ type: 'SEND_STRING', segments: [{ kind: 'write', text: 'display version\r' }] })
-    expect(() => parseConsoleRunScriptJson('{')).toThrow('valid JSON')
-    expect(() => validateConsoleRunScript({ version: 1, steps: [{ type: 'SEND_STRING', text: String.raw`bad\q` }] })).toThrow('unsupported escape')
+    expect(() => parseConsoleRunScriptJson('{')).toThrow('有效 JSON')
+    expect(() => validateConsoleRunScript({ version: 1, steps: [{ type: 'SEND_STRING', text: String.raw`bad\q` }] })).toThrow('不支持的转义符')
   })
 
   it('rejects unknown actions, extra fields, and unsupported schema versions', () => {
-    expect(() => validateConsoleRunScript({ version: 1, steps: [{ type: 'JAVASCRIPT', source: 'alert(1)' }] })).toThrow('unsupported action')
-    expect(() => validateConsoleRunScript({ version: 1, steps: [{ type: 'WAIT', milliseconds: 10, callback: 'x' }] })).toThrow('only type and milliseconds')
-    expect(() => validateConsoleRunScript({ version: 2, steps: [{ type: 'WAIT', milliseconds: 10 }] })).toThrow('version 1')
+    expect(() => validateConsoleRunScript({ version: 1, steps: [{ type: 'JAVASCRIPT', source: 'alert(1)' }] })).toThrow('不支持的动作')
+    expect(() => validateConsoleRunScript({ version: 1, steps: [{ type: 'WAIT', milliseconds: 10, callback: 'x' }] })).toThrow('只能包含动作类型')
+    expect(() => validateConsoleRunScript({ version: 2, steps: [{ type: 'WAIT', milliseconds: 10 }] })).toThrow('版本 1')
   })
 
   it('enforces step, per-wait, and cumulative wait bounds', () => {
-    expect(() => validateConsoleRunScript({ version: 1, steps: Array.from({ length: 101 }, () => ({ type: 'WAIT', milliseconds: 1 })) })).toThrow('1 to 100')
-    expect(() => validateConsoleRunScript({ version: 1, steps: [{ type: 'WAIT', milliseconds: 60_001 }] })).toThrow('from 1 to 60000')
-    expect(() => validateConsoleRunScript({ version: 1, steps: Array.from({ length: 11 }, () => ({ type: 'WAIT', milliseconds: 60_000 })) })).toThrow('total wait')
-    expect(() => validateConsoleRunScript({ version: 1, steps: [] })).toThrow('1 to 100')
+    expect(() => validateConsoleRunScript({ version: 1, steps: Array.from({ length: 101 }, () => ({ type: 'WAIT', milliseconds: 1 })) })).toThrow('1 至 100')
+    expect(() => validateConsoleRunScript({ version: 1, steps: [{ type: 'WAIT', milliseconds: 60_001 }] })).toThrow('1 至 60000')
+    expect(() => validateConsoleRunScript({ version: 1, steps: Array.from({ length: 11 }, () => ({ type: 'WAIT', milliseconds: 60_000 })) })).toThrow('累计等待时间')
+    expect(() => validateConsoleRunScript({ version: 1, steps: [] })).toThrow('1 至 100')
   })
 })

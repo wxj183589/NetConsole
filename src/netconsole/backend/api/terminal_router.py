@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import queue
 from typing import Any, Literal
@@ -23,10 +25,9 @@ from pydantic import BaseModel, Field
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.services.file_management_service import FileReferenceNotFound
 from netconsole.services.sftp_text_editor import MAX_TEXT_BYTES, TextRevision
-from netconsole.services.terminal_workspace import TerminalSessionManager
-from netconsole.services.terminal_sftp import TerminalSftpManager
 from netconsole.services.terminal_settings import MAX_RULE_FILE_BYTES
-
+from netconsole.services.terminal_sftp import TerminalSftpManager
+from netconsole.services.terminal_workspace import TerminalSessionManager
 
 router = APIRouter(prefix="/terminal", tags=["terminal"])
 ws_router = APIRouter()
@@ -38,6 +39,45 @@ class TerminalCreateRequest(BaseModel):
     address_role: Literal["primary", "backup"] | None = None
     cols: int = Field(default=120, ge=20, le=400)
     rows: int = Field(default=32, ge=5, le=200)
+
+
+class SerialSessionCreateRequest(BaseModel):
+    port: str = Field(min_length=1, max_length=260)
+    baud_rate: int = Field(default=9600, ge=50, le=4_000_000)
+    data_bits: int = Field(default=8, ge=5, le=8)
+    parity: str = Field(default="N", pattern="^[NOEMS]$")
+    stop_bits: float = Field(default=1, ge=1, le=2)
+    flow_control: str = Field(default="none", pattern="^(none|rtscts|dsrdtr|xonxoff)$")
+    encoding: str = Field(default="utf-8", min_length=1, max_length=32)
+    line_ending: str = Field(default="CR", pattern="^(CR|LF|CRLF)$")
+    local_echo: bool = False
+    dtr: str = Field(default="KEEP", pattern="^(KEEP|ON|OFF)$")
+    rts: str = Field(default="KEEP", pattern="^(KEEP|ON|OFF)$")
+    timeout_seconds: float = Field(default=0.05, ge=0.01, le=2)
+    cols: int = Field(default=120, ge=20, le=400)
+    rows: int = Field(default=32, ge=5, le=200)
+
+
+class SerialProfilesUpdateRequest(BaseModel):
+    profiles: list[dict[str, Any]] = Field(max_length=100)
+
+
+class SerialProfilesImportRequest(BaseModel):
+    document: dict[str, Any]
+
+
+class SerialBytesRequest(BaseModel):
+    data: str = Field(min_length=1, max_length=87384)
+
+
+class SerialPatternRequest(BaseModel):
+    pattern: str = Field(min_length=1, max_length=4096)
+    encoding: str = Field(default="utf-8", min_length=1, max_length=32)
+    timeout_ms: int = Field(default=10000, ge=10, le=300000)
+
+
+class SerialFlushRequest(BaseModel):
+    direction: Literal["input", "output", "both"] = "both"
 
 
 class TerminalProfileValues(BaseModel):
@@ -486,6 +526,119 @@ def connect_terminal_profile(
         }
     except BaseException as exc:
         raise _translate_error(exc, sensitive_values=(payload.password,)) from exc
+
+
+@router.get("/serial/ports")
+def enumerate_serial_ports(request: Request) -> dict[str, Any]:
+    try:
+        return {"items": _manager(request).serial.enumerate_ports()}
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/serial/profiles")
+def list_serial_profiles(request: Request) -> dict[str, Any]:
+    try:
+        return _manager(request).serial_profiles.document()
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.put("/serial/profiles")
+def save_serial_profiles(payload: SerialProfilesUpdateRequest, request: Request) -> dict[str, Any]:
+    try:
+        return _manager(request).serial_profiles.save_custom_profiles(payload.profiles)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/serial/profiles/import")
+def import_serial_profiles(payload: SerialProfilesImportRequest, request: Request) -> dict[str, Any]:
+    try:
+        return _manager(request).serial_profiles.import_document(payload.document)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/serial/profiles/export", response_class=Response)
+def export_serial_profiles(request: Request):
+    try:
+        document = _manager(request).serial_profiles.document()
+        custom = {"schema_version": 1, "profiles": [item for item in document["profiles"] if not item.get("built_in")]}
+        return Response(
+            content=json.dumps(custom, ensure_ascii=False, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="console-serial-profiles.json"'},
+        )
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/serial/sessions")
+def create_serial_session(payload: SerialSessionCreateRequest, request: Request) -> dict[str, Any]:
+    try:
+        session, ticket = _manager(request).serial.open_session(
+            payload.model_dump(exclude={"cols", "rows"}), cols=payload.cols, rows=payload.rows,
+        )
+        return {"session": session, "ticket": ticket.ticket, "ticket_expires_at_ms": ticket.expires_at_ms}
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/serial/sessions/{session_id}/send-bytes")
+def send_serial_bytes(session_id: str, payload: SerialBytesRequest, request: Request) -> dict[str, bool]:
+    try:
+        data = base64.b64decode(payload.data, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(status_code=422, detail="串口二进制数据不是有效的 Base64") from exc
+    try:
+        _manager(request).serial.send_bytes(session_id, data)
+        return {"queued": True}
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/serial/sessions/{session_id}/receive")
+def receive_serial_bytes(
+    session_id: str,
+    request: Request,
+    offset: int = Query(default=0, ge=0),
+    timeout_ms: int = Query(default=0, ge=0, le=30000),
+) -> dict[str, Any]:
+    try:
+        result = _manager(request).serial.receive(session_id, offset, timeout_ms / 1000)
+        return {**result, "data": base64.b64encode(result["data"]).decode("ascii")}
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/serial/sessions/{session_id}/wait-for-pattern")
+def wait_for_serial_pattern(session_id: str, payload: SerialPatternRequest, request: Request) -> dict[str, Any]:
+    try:
+        return _manager(request).serial.wait_for_pattern(
+            session_id, payload.pattern.encode(payload.encoding), payload.timeout_ms / 1000,
+        )
+    except (LookupError, UnicodeError) as exc:
+        raise HTTPException(status_code=422, detail="匹配内容编码无效") from exc
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/serial/sessions/{session_id}/flush")
+def flush_serial_session(session_id: str, payload: SerialFlushRequest, request: Request) -> dict[str, bool]:
+    try:
+        _manager(request).serial.flush(session_id, payload.direction)
+        return {"flushed": True}
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/serial/sessions/{session_id}/cancel")
+def cancel_serial_session(session_id: str, request: Request) -> dict[str, Any]:
+    try:
+        return _manager(request).serial.cancel(session_id)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.post("/profile-folders")

@@ -297,6 +297,46 @@ def test_batch_http_controls_and_export(tmp_path, monkeypatch):
         manager.close()
 
 
+def test_serial_http_contract_and_profile_configuration(tmp_path, monkeypatch):
+    manager, _device, _ = _manager_fixture(tmp_path, monkeypatch)
+    manager.serial_ports.enumerate_ports = lambda: [{
+        "port": "COM9", "name": "COM9", "description": "USB 串口",
+        "manufacturer": "测试设备", "hardware_id": "USB VID:PID",
+    }]
+    app = FastAPI()
+    app.state.terminal_session_manager = manager
+    app.include_router(router, prefix="/api")
+    client = TestClient(app)
+    try:
+        ports = client.get("/api/terminal/serial/ports")
+        assert ports.status_code == 200
+        assert ports.json()["items"][0]["port"] == "COM9"
+
+        profiles = client.get("/api/terminal/serial/profiles")
+        assert profiles.status_code == 200
+        assert [item["options"]["baud_rate"] for item in profiles.json()["profiles"]] == [9600, 115200]
+        assert not manager.serial_profiles.path.exists()
+
+        custom = {
+            "profile_id": "cbbe3c0f-99ce-4e4d-856f-e93d2df1cda5",
+            "name": "现场 38400",
+            "options": {"port": "", "baud_rate": 38400},
+        }
+        saved = client.put("/api/terminal/serial/profiles", json={"profiles": [custom]})
+        assert saved.status_code == 200
+        assert len(saved.json()["profiles"]) == 3
+        exported = client.get("/api/terminal/serial/profiles/export")
+        assert exported.status_code == 200
+        assert exported.json()["profiles"] == [custom | {"options": manager.serial_profiles.document()["profiles"][2]["options"]}]
+
+        invalid = client.post("/api/terminal/serial/sessions", json={"port": "COM9", "data_bits": 9})
+        assert invalid.status_code == 422
+        invalid_import = client.post("/api/terminal/serial/profiles/import", json={"document": {"schema_version": 99, "profiles": []}})
+        assert invalid_import.status_code == 422
+    finally:
+        manager.close()
+
+
 def test_dispatch_failed_session_retry_does_not_modify_other_session(
     tmp_path, monkeypatch
 ):

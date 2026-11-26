@@ -3,6 +3,7 @@ import { engineeringContextEn } from './engineeringContext'
 import { railRelationshipsEn } from './railRelationships'
 import { meshBusinessEn } from './meshBusinessLabels'
 import { groundUnattendedEn } from './groundUnattended'
+import { consoleEn } from './console'
 import type { SystemLanguage } from '../types/systemSettings'
 
 const locale = ref<SystemLanguage>('zh_CN')
@@ -58,6 +59,7 @@ const en: Record<string, string> = {
   ...engineeringContextEn,
   ...railRelationshipsEn,
   ...groundUnattendedEn,
+  ...consoleEn,
   ...meshBusinessEn,
   'trackside_ap.import.mainline_rows': 'Mainline',
   'trackside_ap.import.depot_rows': 'Depot',
@@ -516,6 +518,23 @@ const en: Record<string, string> = {
 export function setAppLocale(value: SystemLanguage): void { locale.value = value }
 export function currentAppLocale(): SystemLanguage { return locale.value }
 export function t(key: string, fallback = key): string { void locale.value; return locale.value === 'en_US' ? (en[key] ?? fallback) : fallback }
+
+const CONSOLE_SESSION_STATUS_ZH: Record<string, string> = {
+  CREATED: '已创建', CONNECTING: '连接中', CONNECTED: '已连接', RUNNING: '运行中',
+  DISCONNECTED: '已断开', RECONNECTING: '重连中', CLOSING: '正在关闭', CLOSED: '已关闭',
+  FAILED: '失败', CANCELLED: '已取消',
+}
+const CONSOLE_BATCH_STATUS_ZH: Record<string, string> = {
+  WAITING: '等待中', RUNNING: '执行中', SENT: '已发送', FAILED: '失败', CANCELLED: '已取消', SKIPPED: '已跳过',
+}
+
+export function consoleSessionStatusLabel(value: string): string {
+  return t(`console.status.${value}`, CONSOLE_SESSION_STATUS_ZH[value] || value)
+}
+
+export function consoleBatchStatusLabel(value: string): string {
+  return t(`console.batch_status.${value}`, CONSOLE_BATCH_STATUS_ZH[value] || value)
+}
 export function navigationTitle(id: string, fallback: string): string { return t(`nav.${id}`, fallback) }
 
 const TASK_TRIGGER_SOURCE_LABELS: Record<string, readonly [string, string]> = {

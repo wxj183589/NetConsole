@@ -41,6 +41,7 @@ import {
   type TerminalSettings,
 } from '../../api/terminal'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
+import { consoleSessionStatusLabel } from '../../i18n/runtime'
 import { prepareLocalSaveDestination } from '../../composables/useUserSelectedExport'
 import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import type { DeviceListItem } from '../../types/deviceManagement'
@@ -95,6 +96,7 @@ export function useConsoleWorkspace() {
   const contextSession = ref<TerminalSession | null>(null)
   const sessionContextMenu = ref({ visible: false, x: 0, y: 0 })
   const settingsVisible = ref(false)
+  const serialConnectVisible = ref(false)
   const sftpVisible = ref(false)
   const quickConnectVisible = ref(false)
   const quickConnectLoading = ref(false)
@@ -286,6 +288,11 @@ export function useConsoleWorkspace() {
     }
     tabs.value.push(tab)
     selectTab(tab.id)
+  }
+
+  async function openSerialTab(created: { session: TerminalSession; ticket: string }): Promise<void> {
+    addTerminalTab(created)
+    await loadSessions()
   }
 
   async function openDevice(device: DeviceListItem, addressRole?: 'primary' | 'backup'): Promise<void> {
@@ -979,6 +986,10 @@ export function useConsoleWorkspace() {
     return 'is-warning'
   }
 
+  function sessionStatusText(state: string): string {
+    return consoleSessionStatusLabel(state)
+  }
+
   function showDeviceMenu(event: MouseEvent, device: DeviceListItem): void {
     event.preventDefault()
     hideContextMenu()
@@ -1099,6 +1110,7 @@ export function useConsoleWorkspace() {
     profileContextMenu,
     collapsedProfileGroups,
     settingsVisible,
+    serialConnectVisible,
     sftpVisible,
     quickConnectVisible,
     quickConnectLoading,
@@ -1115,6 +1127,7 @@ export function useConsoleWorkspace() {
     paneClass,
     setTerminalRef,
     openDevice,
+    openSerialTab,
     openDeviceExternalTerminal,
     copyConnectionAddress,
     externalTerminalBusy: externalTerminalLauncher.busy,
@@ -1165,6 +1178,7 @@ export function useConsoleWorkspace() {
     showReplay,
     exportReplay,
     sessionStatusClass,
+    sessionStatusText,
     showDeviceMenu,
     showSessionMenu,
     openDeviceDetail,
