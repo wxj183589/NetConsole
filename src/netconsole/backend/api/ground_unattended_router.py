@@ -341,11 +341,13 @@ def history(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=500),
     cursor: str = Query(default="", max_length=4096),
+    include_total: bool = True,
 ) -> GroundHistoryPageDTO:
     return _call(lambda: _service(request).history(
         _site_id(request), data_type=data_type, run_id=run_id, train_id=train_id, mr_id=mr_id,
         mr_role=mr_role, event_type=event_type, start_at=start_at, end_at=end_at,
         page=page, page_size=page_size, sort_order=sort_order, cursor=cursor,
+        include_total=include_total,
     ))
 
 

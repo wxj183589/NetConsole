@@ -1339,6 +1339,7 @@ class GroundHistoryRecordDTO(ApiModel):
 class GroundHistoryPageDTO(ApiModel):
     items: list[GroundHistoryRecordDTO] = Field(default_factory=list)
     total: int = 0
+    total_exact: bool = True
     page: int = 1
     page_size: int = 100
     sources: dict[str, str] = Field(default_factory=dict)

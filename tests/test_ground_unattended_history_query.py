@@ -71,6 +71,18 @@ def test_all_durable_sources_identity_and_raw_integrity(indexed):
     assert service.query(event_type="RADIO_DOWN")["total"] == 2
 
 
+def test_cursor_pages_can_skip_exact_total(indexed):
+    _, service = indexed
+    expected = service.query(page_size=1)
+    first = service.query(page_size=1, include_total=False)
+    second = service.query(page_size=1, cursor=first["next_cursor"], include_total=False)
+    assert first["items"] == expected["items"]
+    assert first["next_cursor"] == expected["next_cursor"]
+    assert first["total"] == second["total"] == 0
+    assert not first["total_exact"]
+    assert second["items"] == service.query(page=2, page_size=1)["items"]
+
+
 def test_pagination_timezone_and_export_consistent_snapshot(indexed):
     path, service = indexed
     with sqlite3.connect(path) as conn:

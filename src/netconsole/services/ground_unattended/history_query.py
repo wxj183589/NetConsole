@@ -405,18 +405,19 @@ class GroundHistoryQueryService:
         self, *, data_type: str = "", run_id: str = "", train_id: str = "", mr_id: str = "",
         mr_role: str = "", event_type: str = "", start_at: str = "", end_at: str = "",
         sort_order: str = "desc",
-        page: int = 1, page_size: int = 100, cursor: str = "",
+        page: int = 1, page_size: int = 100, cursor: str = "", include_total: bool = True,
     ) -> dict[str, Any]:
-        filters = {name: value for name, value in locals().items() if name not in {"self", "page", "page_size", "cursor"}}
+        filters = {name: value for name, value in locals().items() if name not in {"self", "page", "page_size", "cursor", "include_total"}}
         self._validate(filters)
         page, page_size = max(1, int(page)), max(1, min(500, int(page_size)))
         anchor = self._decode_cursor(cursor, filters=filters, page_size=page_size) if cursor else None
         result: dict[str, Any] = {"items": [], "total": 0, "page": page, "page_size": page_size, "sources": {name: "UNAVAILABLE" for name in HISTORY_DATA_TYPES}, "has_more": False, "next_cursor": ""}
+        result["total_exact"] = include_total
         with self._read_snapshot() as conn:
             if conn is None:
                 return result
             sql, params, counts, result["sources"] = self._plan(conn, filters, keys_only=True)
-            if counts:
+            if include_total and counts:
                 count_parts = [
                     query.replace("SELECT COUNT(*)", "SELECT COUNT(*) AS item_count", 1)
                     for query, _values in counts
@@ -445,11 +446,13 @@ class GroundHistoryQueryService:
                     has_more = len(rows) > page_size
                     rows = rows[:page_size]
                 else:
+                    offset = (page - 1) * page_size
                     rows = conn.execute(
                         query_sql + " ORDER BY " + self._order_clause(sort_order) + " LIMIT ? OFFSET ?",
-                        (*query_params, page_size, (page - 1) * page_size),
+                        (*query_params, page_size + 1, offset),
                     ).fetchall()
-                    has_more = page * page_size < int(result["total"])
+                    has_more = len(rows) > page_size
+                    rows = rows[:page_size]
                 result["has_more"] = has_more
                 result["items"] = self._items(conn, rows, keys_only=True)
                 if rows and has_more:

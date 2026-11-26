@@ -6,6 +6,7 @@
 - 实时页面仅选取活动 Run，空闲时跳过 Syslog、时间轴和深度采集查询。Run 切换取消旧查询并清空相应结果。历史回放过滤活动和收尾中的 Run，并提供历史 Syslog 查询和保留既有删除校验的入口。
 - Renderer 定向 61 项通过，Vue 类型检查通过。TCP、UDP 和共享投影已有实现的定向验证 12 项通过。
 - 已复核两份历史归档的 SHA-256 与既有记录一致。本阶段的真实 Electron 回放、独立数据集导入、设备配置闭环、性能优化与负载验收，以及 Full Gate 和制品均待完成。
+- 混合历史分页 API 提供跳过精确总数选项。HZL10 25 条查询中位数从 1,276.9 ms 降到 807.0 ms，仍高于目标。[SQL 查询审计](./real-data-20261125/SQL_QUERY_AUDIT.md)
 
 整体状态为 **PARTIAL**。开发继续使用 `codex-A/organization-task-network-services-phase6`。集成提交 `f55e75b1` 同时包含 `42709227`、`fd8f6e58` 和 `d1c4b65f`。真实数据专项见 [Phase 8.1 总验收](./PHASE8_1_ACCEPTANCE.md)，前期结果见 [Phase 8 验收](./PHASE8_ACCEPTANCE.md) 与 [Phase 7.1 Windows 验收](../../../investigations/netconsole-phase7-20261125/PHASE7_WINDOWS_VM_ACCEPTANCE.md)。
 

@@ -436,6 +436,7 @@ class GroundUnattendedApplicationService:
         self, site_id: str, *, data_type: str = "", run_id: str = "", train_id: str = "",
         mr_id: str = "", mr_role: str = "", event_type: str = "", start_at: str = "", end_at: str = "",
         page: int = 1, page_size: int = 100, sort_order: str = "desc", cursor: str = "",
+        include_total: bool = True,
     ) -> GroundHistoryPageDTO:
         self._require_site(site_id)
         try:
@@ -443,6 +444,7 @@ class GroundUnattendedApplicationService:
                 data_type=data_type, run_id=run_id, train_id=train_id, mr_id=mr_id,
                 mr_role=mr_role, event_type=event_type, start_at=start_at, end_at=end_at,
                 page=page, page_size=page_size, sort_order=sort_order, cursor=cursor,
+                include_total=include_total,
             )
         except GroundHistoryQueryError as exc:
             raise GroundUnattendedError(exc.code, exc.message, status_code=exc.status_code) from exc
