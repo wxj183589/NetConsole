@@ -30,6 +30,8 @@
 
 ## 证据路径
 
+- Console v1.5.19 专项为 PARTIAL。真实 AC SSH、FIT-AP Telnet 单次回车及 Electron 双会话退出清理通过；SW 认证与完整客户端矩阵仍待验收。[Console 专项验收](./CONSOLE_1_5_19_ACCEPTANCE.md)
+
 - 产品前期证据在 [Phase 8 验收](./PHASE8_ACCEPTANCE.md) 和 [Phase 7 历史报告](../../../investigations/netconsole-phase7-20261125/PHASE7_ACCEPTANCE.md)。
 - 真实数据副本启动日志位于 Workspace 的 `test-data/NetConsole/phase8-replay-hz9/runtime/logs/electron.log` 和 `test-data/NetConsole/phase8-replay-hz10/runtime/logs/electron.log`。应用时间从 Electron 进程启动计时，以日志中的 `STARTUP_PERFORMANCE_SUMMARY` 为准。
 - 业务截图和 Ground 导航记录位于 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`，其中 `hz10-ground-idle-after.png` 记录陈旧失败提示修复后的实时空闲态。

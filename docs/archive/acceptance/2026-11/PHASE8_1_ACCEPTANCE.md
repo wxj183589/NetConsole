@@ -87,6 +87,8 @@ OpenSSH 与设备超时见同一目录下 `phase8-integrated-11061806/external-o
 
 ## 数据安全
 
+Console v1.5.19 专项在隔离数据根验证，记录了用户授权的实验室 AC 远程登录配置变更。下列数据指标适用于此前 Phase 8 验收。[Console 专项验收](./CONSOLE_1_5_19_ACCEPTANCE.md)
+
 `PRODUCTION_DATA_MODIFIED=0`、`DEV_REAL_BUSINESS_DATA_MODIFIED=0`、`DATABASES_REMOVED=0`、`REAL_DEVICE_CONFIGURATION_WRITES=0`、`MAINTENANCE_AUTHORIZED=NO`。
 
 验证数据仅位于 Workspace 的 `test-data/NetConsole/real-data-20261125-hz9` 和 `real-data-20261125-hzl10`，未纳入 Git。

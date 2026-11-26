@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import codecs
+import re
 import socket
 import struct
 from contextlib import ExitStack
@@ -165,6 +166,7 @@ class TelnetInteractiveTransport:
         self._application_buffer = bytearray()
         self._iac_buffer = bytearray()
         self._cols, self._rows = 120, 32
+        self._previous_write_ended_with_cr = False
 
     def connect(self, cols: int, rows: int) -> None:
         self._cols, self._rows = int(cols), int(rows)
@@ -181,7 +183,6 @@ class TelnetInteractiveTransport:
             raise
 
     def _login(self) -> None:
-        import re
         import time
 
         deadline = time.monotonic() + 15
@@ -221,7 +222,16 @@ class TelnetInteractiveTransport:
         return self._decoder.decode(self._process_iac(chunk), final=False)
 
     def write(self, data: str) -> None:
-        self._send_bytes(str(data).encode(self.encoding, errors="replace").replace(b"\xff", b"\xff\xff"))
+        if not data:
+            return
+        # xterm emits CR for Enter. Encode each logical newline once for Telnet,
+        # including a CRLF pair split across consecutive input messages.
+        previous_cr = self._previous_write_ended_with_cr
+        self._previous_write_ended_with_cr = data.endswith("\r")
+        if previous_cr and data.startswith("\n"):
+            data = data[1:]
+        data = re.sub(r"\r\n|\r|\n", "\r\n", data)
+        self._send_bytes(data.encode(self.encoding, errors="replace").replace(b"\xff", b"\xff\xff"))
 
     def resize(self, cols: int, rows: int) -> None:
         self._cols, self._rows = int(cols), int(rows)

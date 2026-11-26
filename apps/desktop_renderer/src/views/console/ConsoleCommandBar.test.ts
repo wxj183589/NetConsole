@@ -16,11 +16,14 @@ beforeEach(() => {
   mocks.api.mockImplementation(async (url: string) => url === '/api/terminal/quick-buttons' ? { version: 1, groups: [{ id: 'group-0', name: 'H3C', buttons: [{ id: 'version', name: '版本', action: 'SEND_STRING', text: 'display version\\r', color: '#409eff', order: 0, enabled: true }] }] } : { id: 'job-one', rows: [] })
 })
 afterEach(() => { wrappers.splice(0).forEach(item => item.unmount()); vi.useRealTimers() })
-async function bar() { const wrapper = mount(ConsoleCommandBar, { props: { sessions, active: sessions[0]!, selected: ['two'], selectedDevices: [] }, global: { stubs: { ElDialog: true, ElTable: true, ElTableColumn: true } } }); wrappers.push(wrapper); await flushPromises(); return wrapper }
+async function bar() { const wrapper = mount(ConsoleCommandBar, { props: { sessions, active: sessions[0]!, selected: ['two'], selectedDevices: [] }, global: { stubs: { ElDialog: { template: '<div><slot /><slot name="footer" /></div>' }, ElTable: true, ElTableColumn: true } } }); wrappers.push(wrapper); await flushPromises(); return wrapper }
 describe('console commands keep explicit target semantics', () => {
   it('defaults to current session and sends a saved quick button only there', async () => {
     const wrapper = await bar()
     expect(wrapper.get('select[aria-label="发送目标"]').element).toHaveProperty('value', 'current')
+    expect(wrapper.get('.command-bar > .quick-buttons').text()).toBe('管理按钮')
+    expect((wrapper.get('.command-input').element as HTMLElement).style.display).toBe('none')
+    await wrapper.get('.command-bar > .quick-buttons button').trigger('click')
     await wrapper.findAll('.quick-buttons button').find(button => button.text() === '版本')!.trigger('click')
     await flushPromises()
     const call = mocks.api.mock.calls.find(call => call[0] === '/api/terminal/batch-sends')!

@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -94,6 +97,96 @@ def _manager_fixture(
         lambda *_args, **_kwargs: transport,
     )
     return TerminalSessionManager(paths), device, transport
+
+
+def test_explicit_backup_address_creates_an_independent_session(tmp_path, monkeypatch) -> None:
+    manager, device, transport = _manager_fixture(tmp_path, monkeypatch)
+    from netconsole.services import terminal_workspace
+
+    primary = terminal_workspace.connection_targets(device)[0]
+    backup = replace(primary, host="192.0.2.20", port=2222, target_role="backup")
+    monkeypatch.setattr(terminal_workspace, "connection_targets", lambda _device: [primary, backup])
+    try:
+        snapshot, _ = manager.create_session(str(device.device_uuid), protocol="SSH", address_role="backup", cols=144, rows=45)
+        _wait_until(lambda: transport.connected_with is not None)
+        assert transport.connected_with == (144, 45)
+        assert (snapshot["address"], snapshot["port"], snapshot["address_role"]) == ("192.0.2.20", 2222, "backup")
+        assert device.primary_address == primary.host
+        with pytest.raises(ValueError, match="备用"):
+            manager.create_session(str(device.device_uuid), protocol="TELNET", address_role="backup")
+    finally:
+        manager.close()
+
+
+def test_closing_session_drains_queued_writes_without_sending_them(tmp_path, monkeypatch) -> None:
+    manager, device, transport = _manager_fixture(tmp_path, monkeypatch)
+    ready, release = threading.Event(), threading.Event()
+    write = transport.write
+
+    def blocking_write(value: str) -> None:
+        ready.set()
+        assert release.wait(3)
+        write(value)
+
+    monkeypatch.setattr(transport, "write", blocking_write)
+    snapshot, _ = manager.create_session(str(device.device_uuid))
+    session_id = snapshot["session_id"]
+    runtime = manager.get_runtime(session_id)
+    receipt = {"done": threading.Event(), "error": "", "scope": "single"}
+    try:
+        _wait_until(lambda: runtime.snapshot.state == "RUNNING")
+        manager.input(session_id, "in flight\r")
+        assert ready.wait(3)
+        manager.input(session_id, "queued\r", receipt=receipt)
+        assert manager.close_session(session_id)["state"] == "CLOSING"
+        assert manager.close_session(session_id)["state"] == "CLOSING"
+        with pytest.raises(ValueError):
+            manager.input(session_id, "too late\r")
+        assert runtime.snapshot.command_count == 2
+        release.set()
+        assert receipt["done"].wait(3)
+        assert "未发送" in receipt["error"]
+    finally:
+        release.set()
+        manager.close()
+    assert runtime.snapshot.state == "CLOSED"
+    assert transport.closed
+    assert transport.writes == ["in flight\r"]
+
+
+def test_repeated_close_during_connection_setup_closes_transport_once(tmp_path, monkeypatch) -> None:
+    manager, device, _transport_value = _manager_fixture(tmp_path, monkeypatch)
+    started, release = threading.Event(), threading.Event()
+    created = []
+
+    class _DelayedConnectTransport(_FakeTransport):
+        def connect(self, cols: int, rows: int) -> None:
+            started.set()
+            assert release.wait(3)
+            super().connect(cols, rows)
+
+    def make_transport(*_args, **_kwargs):
+        transport = _DelayedConnectTransport()
+        created.append(transport)
+        return transport
+
+    monkeypatch.setattr("netconsole.services.terminal_workspace.create_terminal_transport", make_transport)
+    snapshot, ticket = manager.create_session(str(device.device_uuid))
+    session_id = snapshot["session_id"]
+    try:
+        assert started.wait(3)
+        cancelled = manager.close_session(session_id)
+        assert cancelled["state"] == "CLOSING"
+        assert ticket.ticket
+        with pytest.raises(ValueError):
+            manager.issue_ticket(session_id)
+        manager.close_session(session_id)
+    finally:
+        release.set()
+        manager.close()
+    assert manager.get_runtime(session_id).snapshot.state == "CLOSED"
+    assert len(created) == 1
+    assert created[0].closed
 
 
 def test_terminal_ticket_is_single_use() -> None:
@@ -458,5 +551,8 @@ def test_quick_connect_uses_an_unmanaged_interactive_transport_and_reconnects(
     assert second_id != session_id
     assert len(transports) == 2
     assert calls[1]["managed_device"] is False
+    with pytest.raises(ValueError, match="已有"):
+        manager.reconnect(session_id)
+    assert len(transports) == 2
     manager.close_session(second_id)
     manager.close()

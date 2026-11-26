@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 from netconsole.core.paths import PathResolver
 from netconsole.models.device import Device
 
 
 RuleKind = Literal["highlight", "dangerous"]
+MAX_RULE_FILE_BYTES = 2 * 1024 * 1024
 
 _RESOURCE_ROOT = Path(__file__).resolve().parents[1] / "resources" / "terminal_rules"
 _RESOURCE_FILES: dict[RuleKind, str] = {
@@ -78,23 +81,71 @@ class TerminalSettingsService:
     def rule_document(self, kind: RuleKind) -> dict[str, Any]:
         path = self._rule_path(kind)
         with self._lock:
-            if path.is_file():
-                value = self._read_json(path, {})
-            else:
-                value = self._read_json(_RESOURCE_ROOT / _RESOURCE_FILES[kind], {})
-            return self._validate_rule_document(kind, value)
+            if not path.exists():
+                path = _RESOURCE_ROOT / _RESOURCE_FILES[kind]
+            try:
+                with path.open("rb") as stream:
+                    content = stream.read(MAX_RULE_FILE_BYTES + 1)
+            except OSError as exc:
+                raise TerminalSettingsError(f"{path.name} 无法读取终端规则文件") from exc
+            return self.read_rule_file(kind, content, filename=path.name)
 
-    def replace_rules(self, kind: RuleKind, rules: list[dict[str, Any]]) -> dict[str, Any]:
+    def read_rule_file(
+        self, kind: RuleKind, content: bytes, *, filename: str,
+    ) -> dict[str, Any]:
+        self._rule_path(kind)
+        if len(content) > MAX_RULE_FILE_BYTES:
+            raise TerminalSettingsError(f"{filename} 规则文件超过 2 MiB")
+        encoding = "utf-16" if content.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig"
+        try:
+            try:
+                decoded = content.decode(encoding)
+            except UnicodeDecodeError:
+                if encoding != "utf-8-sig":
+                    raise
+                decoded = content.decode("gb18030")
+            value = json.loads(decoded)
+            return self._validate_rule_document(kind, value)
+        except json.JSONDecodeError as exc:
+            raise TerminalSettingsError(
+                f"{filename} JSON 第 {exc.lineno} 行第 {exc.colno} 列无效"
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise TerminalSettingsError(f"{filename} 文件编码无效") from exc
+        except TerminalSettingsError as exc:
+            raise TerminalSettingsError(f"{filename} {exc}") from exc
+
+    def replace_rules(
+        self, kind: RuleKind, rules: list[dict[str, Any]], *, repair_invalid: bool = False,
+    ) -> dict[str, Any]:
+        path = self._rule_path(kind)
         with self._lock:
-            current = self.rule_document(kind)
+            try:
+                current = self.rule_document(kind)
+            except TerminalSettingsError:
+                if not repair_invalid or not path.is_file():
+                    raise
+                current = {}
             payload = {
                 **{key: value for key, value in current.items() if key != "rules"},
                 "actual_rule_count": len(rules),
                 "rules": deepcopy(rules),
             }
-            validated = self._validate_rule_document(kind, payload)
-            self._write_json(self._rule_path(kind), validated)
+            try:
+                validated = self._validate_rule_document(kind, payload)
+            except TerminalSettingsError as exc:
+                raise TerminalSettingsError(f"{path.name} {exc}") from exc
+            if not current:
+                backup = path.with_name(f"{path.stem}.invalid-{uuid4().hex}{path.suffix}")
+                shutil.copyfile(path, backup)
+            self._write_json(path, validated)
             return validated
+
+    def export_rules(self, kind: RuleKind) -> bytes:
+        payload = json.dumps(
+            self.rule_document(kind), ensure_ascii=False, indent=2,
+        ) + "\n"
+        return payload.encode("utf-8")
 
     def match_dangerous_command(self, command: str, device: Device) -> list[dict[str, Any]]:
         text = str(command or "").strip()
@@ -102,8 +153,13 @@ class TerminalSettingsService:
             return []
         device_scope = _DEVICE_TYPE_SCOPE.get(str(device.device_type or "").strip().upper(), "")
         vendor = str(device.device_vendor or "").strip().casefold()
+        try:
+            rules = self.rule_document("dangerous")["rules"]
+        except TerminalSettingsError:
+            # An unreadable advisory rule file must not suppress terminal input.
+            return []
         matches: list[dict[str, Any]] = []
-        for rule in self.rule_document("dangerous")["rules"]:
+        for rule in rules:
             if not rule["enabled"]:
                 continue
             if rule["device_type"] not in {"", "通用", device_scope}:
@@ -120,17 +176,23 @@ class TerminalSettingsService:
                 matches.append(deepcopy(rule))
         return matches
 
-    def _validate_rule_document(self, kind: RuleKind, value: dict[str, Any]) -> dict[str, Any]:
+    def _validate_rule_document(self, kind: RuleKind, value: Any) -> dict[str, Any]:
+        if isinstance(value, list):
+            value = {"rules": value}
         if not isinstance(value, dict) or not isinstance(value.get("rules"), list):
-            raise TerminalSettingsError("终端规则文件格式无效")
+            raise TerminalSettingsError("rules 字段必须是规则数组")
+        if value.get("schema_version", 1) != 1:
+            raise TerminalSettingsError("schema_version 字段不受支持")
+        if len(value["rules"]) > 5000:
+            raise TerminalSettingsError("rules 字段最多允许 5000 条规则")
         rules: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         for index, raw in enumerate(value["rules"], start=1):
             if not isinstance(raw, dict):
-                raise TerminalSettingsError(f"第 {index} 条终端规则格式无效")
+                raise TerminalSettingsError(f"rules[{index}] 必须是规则对象")
             rule = self._validate_rule(kind, raw, index)
             if rule["id"] in seen_ids:
-                raise TerminalSettingsError(f"终端规则 ID 重复: {rule['id']}")
+                raise TerminalSettingsError(f"rules[{index}].id 重复：{rule['id']}")
             seen_ids.add(rule["id"])
             rules.append(rule)
         result = deepcopy(value)
@@ -143,27 +205,31 @@ class TerminalSettingsService:
     def _validate_rule(kind: RuleKind, raw: dict[str, Any], index: int) -> dict[str, Any]:
         pattern = str(raw.get("pattern") or "").strip()
         if not pattern:
-            raise TerminalSettingsError(f"第 {index} 条终端规则缺少匹配内容")
+            raise TerminalSettingsError(f"rules[{index}].pattern 缺少匹配内容")
         match_type = str(raw.get("match_type") or "TEXT").strip().upper()
         if match_type not in {"TEXT", "REGEX"}:
-            raise TerminalSettingsError(f"第 {index} 条终端规则匹配类型无效")
+            raise TerminalSettingsError(f"rules[{index}].match_type 匹配类型无效")
         if match_type == "REGEX":
             try:
                 re.compile(pattern)
             except re.error as exc:
-                raise TerminalSettingsError(f"第 {index} 条正则无效: {exc}") from exc
+                raise TerminalSettingsError(f"rules[{index}].pattern 正则无效：{exc}") from exc
+        try:
+            source_row = int(raw.get("source_row") or 0)
+        except (TypeError, ValueError) as exc:
+            raise TerminalSettingsError(f"rules[{index}].source_row 必须是整数") from exc
         prefix = "highlight" if kind == "highlight" else "danger"
         rule: dict[str, Any] = {
             "id": str(raw.get("id") or f"{prefix}-{index:03d}"),
             "pattern": pattern,
             "match_type": match_type,
             "enabled": bool(raw.get("enabled", True)),
-            "source_row": int(raw.get("source_row") or 0),
+            "source_row": source_row,
         }
         if kind == "highlight":
             color = str(raw.get("color") or "#ffffff").strip()
             if re.fullmatch(r"#[0-9a-fA-F]{6}", color) is None:
-                raise TerminalSettingsError(f"第 {index} 条高亮规则颜色无效")
+                raise TerminalSettingsError(f"rules[{index}].color 颜色无效")
             rule["color"] = color.lower()
         else:
             rule["device_type"] = str(raw.get("device_type") or "通用").strip()
@@ -211,7 +277,7 @@ class TerminalSettingsService:
         if not path.is_file():
             return deepcopy(default)
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError, TypeError) as exc:
             raise TerminalSettingsError(f"无法读取终端配置: {path.name}") from exc
         if not isinstance(value, dict):

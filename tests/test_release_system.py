@@ -518,6 +518,11 @@ def test_clean_build_runtime_subset_copies_only_imported_modules_and_assets(
     assert all("tests" not in path.parts for path in staged_relative)
     assert all("project" not in path.parts for path in staged_relative)
     datas = clean_build_spec.build_runtime_datas_from_import_graph()
+    assert {
+        Path(source).name
+        for source, destination in datas
+        if destination == "netconsole/resources/terminal_rules"
+    } == {"highlight_rules.json", "dangerous_command_rules.json"}
     assert all(not destination.startswith("tools/") for _source, destination in datas)
     assert any(
         destination == "netconsole/assets/desktop_renderer" and Path(source).name == "dist"

@@ -215,7 +215,7 @@ def test_ssh_transport_uses_real_interactive_shell_and_pty(tmp_path) -> None:
     assert (160, 48) in server.resize_requests
 
 
-def _start_telnet_server() -> tuple[int, list[bytes], threading.Thread]:
+def _start_telnet_server(*, password_only: bool = False) -> tuple[int, list[bytes], threading.Thread]:
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
@@ -237,13 +237,15 @@ def _start_telnet_server() -> tuple[int, list[bytes], threading.Thread]:
         try:
             client.sendall(bytes((255,)))
             client.sendall(bytes((253, 24)))
-            client.sendall(b"login: ")
-            received.append(recv_until(client, b"operator\r\n"))
+            if not password_only:
+                client.sendall(b"login: ")
+                received.append(recv_until(client, b"operator\r\n"))
             client.sendall(b"Password: ")
             received.append(recv_until(client, b"secret\r\n"))
             client.sendall(b"\r\n<LAB-TELNET>")
-            received.append(recv_until(client, b"system-view\r"))
+            received.append(recv_until(client, b"system-view\r\n"))
             client.sendall(b"system-view\r\n[LAB-TELNET]")
+            received.append(recv_until(client, b"\x03"))
         finally:
             client.close()
             listener.close()
@@ -281,9 +283,33 @@ def test_telnet_transport_uses_real_iac_login_and_interactive_stream(tmp_path, m
     assert "<LAB-TELNET>" in _wait_for_output(transport, "<LAB-TELNET>")
     transport.write("system-view\r")
     assert "[LAB-TELNET]" in _wait_for_output(transport, "[LAB-TELNET]")
-    transport.close()
+    transport.write("\n中文\r\nnext\n\r")
+    transport.write("\r\x03")
     thread.join(timeout=3)
+    transport.close()
 
     assert b"operator\r\n" in received[0]
     assert b"secret\r\n" in received[1]
-    assert b"system-view\r" in received[2]
+    assert received[2] == b"system-view\r\n"
+    assert received[3] == "中文\r\nnext\r\n\r\n\r\n\x03".encode(target.encoding)
+
+
+def test_telnet_transport_logs_in_with_password_only(tmp_path) -> None:
+    port, received, thread = _start_telnet_server(password_only=True)
+    paths = PathResolver(data_root=tmp_path / "data")
+    target = ConnectionTarget(
+        protocol="Telnet", device_type="hp_comware_telnet", host="127.0.0.1",
+        port=port, username="", password="secret",
+    )
+    transport = TelnetInteractiveTransport(paths, target, site_id="test")
+    try:
+        transport.connect(120, 32)
+        _wait_for_output(transport, "<LAB-TELNET>")
+        transport.write("system-view\r")
+        _wait_for_output(transport, "[LAB-TELNET]")
+        transport.write("\x03")
+        thread.join(timeout=3)
+    finally:
+        transport.close()
+    assert not thread.is_alive()
+    assert received == [b"\xff\xfb\x18secret\r\n", b"system-view\r\n", b"\x03"]

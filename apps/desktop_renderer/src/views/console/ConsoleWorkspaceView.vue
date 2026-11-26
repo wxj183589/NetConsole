@@ -24,7 +24,9 @@ import TerminalSftpPanel from './TerminalSftpPanel.vue'
 import ConsoleCommandBar from './ConsoleCommandBar.vue'
 import { useConsoleWorkspace } from './useConsoleWorkspace'
 import { isFeatureEnabled } from '../../features'
+import { getPlatformAdapter } from '../../platform/runtime'
 const props = withDefaults(defineProps<{ workspaceVisible?: boolean }>(), { workspaceVisible: true })
+const externalTerminalAvailable = computed(() => getPlatformAdapter().hostType === 'electron' && isFeatureEnabled('capability.devices.desktop_actions'))
 
 const sftpWidth = ref(430)
 const sidebarWidth = ref(270)
@@ -87,6 +89,7 @@ const {
   selectedDeviceUuids,
   selectedSessionIds,
   activeTabId,
+  closingTabIds,
   secondaryTabId,
   navigationMode,
   deviceSearch,
@@ -105,7 +108,10 @@ const {
   contextDevice,
   contextMenu,
   contextSession,
+  contextProfile,
   sessionContextMenu,
+  profileContextMenu,
+  collapsedProfileGroups,
   settingsVisible,
   sftpVisible,
   quickConnectVisible,
@@ -123,9 +129,17 @@ const {
   paneClass,
   setTerminalRef,
   openDevice,
+  openDeviceExternalTerminal,
+  copyConnectionAddress,
+  externalTerminalBusy,
   quickConnect,
   openProfile,
   editProfile,
+  saveProfileAction,
+  toggleProfileGroup,
+  showProfileMenu,
+  startProfileDrag,
+  dropProfileOnFolder,
   createProfileFolder,
   renameProfileFolder,
   removeProfileFolder,
@@ -189,7 +203,6 @@ watch([showSftp, sftpWorkspaceId], () => {
       <div class="console-toolbar__title">
         <Monitor :size="18" />
         <strong>设备控制台</strong>
-        <span>INTERACTIVE</span>
       </div>
       <el-button size="small" @click="quickConnectVisible = true">
         <el-icon><Connection /></el-icon>快速连接
@@ -198,7 +211,8 @@ watch([showSftp, sftpWorkspaceId], () => {
         <el-icon><Connection /></el-icon>新建会话
       </el-button>
       <el-button size="small" :disabled="!selectedDeviceUuids.length" @click="openSelectedDevices">批量打开</el-button>
-      <el-button size="small" :disabled="!activeTab" @click="terminateActiveSession">
+      <el-button size="small" :disabled="!activeTab || closingTabIds.has(activeTab.id)" @click="activeTab && cloneSession(activeTab.session)">克隆会话</el-button>
+      <el-button size="small" :disabled="!activeTab || closingTabIds.has(activeTab.id)" @click="terminateActiveSession">
         <el-icon><Delete /></el-icon>结束会话
       </el-button>
       <el-button size="small" :disabled="!activeTab || !['DISCONNECTED', 'FAILED', 'CLOSED'].includes(activeTab.session.state)" @click="reconnectActiveSession">
@@ -237,6 +251,8 @@ watch([showSftp, sftpWorkspaceId], () => {
       <el-button size="small" @click="showHistory">
         <el-icon><FullScreen /></el-icon>会话记录
       </el-button>
+      <el-button size="small" title="导出当前会话录制" :disabled="!activeTab" @click="activeTab && exportReplay('jsonl', activeTab.session)"><el-icon><Download /></el-icon>导出</el-button>
+      <el-button size="small" @click="navigationMode = 'profiles'; createProfileFolder()"><el-icon><FolderOpened /></el-icon>新建文件夹</el-button>
       <el-button size="small" title="终端设置" @click="settingsVisible = true"><el-icon><Setting /></el-icon></el-button>
       <span class="console-toolbar__spacer" />
       <span class="console-toolbar__summary">{{ tabs.length }} 个标签 · {{ sessions.filter((item) => ['CONNECTED', 'RUNNING'].includes(item.state)).length }} 个活动会话</span>
@@ -300,23 +316,30 @@ watch([showSftp, sftpWorkspaceId], () => {
             <el-button link title="快速连接" @click="quickConnectVisible = true"><el-icon><Plus /></el-icon></el-button>
             <el-button link @click="createProfileFolder">新建文件夹</el-button>
           </div>
-          <section v-for="group in groupedProfiles" :key="group.id || 'root'" class="device-group">
+          <section v-for="group in groupedProfiles" :key="group.id || 'root'" class="device-group" @dragover.prevent @drop.prevent="dropProfileOnFolder(group.id)">
             <div class="device-group__title">
-              <span>{{ group.name }}</span><small>{{ group.items.length }}</small>
+              <button class="profile-group-toggle" :aria-expanded="!collapsedProfileGroups.includes(group.id)" @click="toggleProfileGroup(group.id)">
+                {{ collapsedProfileGroups.includes(group.id) ? '▸' : '▾' }} {{ group.name }}
+              </button>
+              <small>{{ group.items.length }}</small>
               <template v-if="group.id">
                 <el-button link title="重命名文件夹" @click.stop="renameProfileFolder(profileFolders.find((item) => item.folder_id === group.id)!)">编辑</el-button>
                 <el-button link type="danger" title="删除文件夹" @click.stop="removeProfileFolder(profileFolders.find((item) => item.folder_id === group.id)!)"><el-icon><Delete /></el-icon></el-button>
               </template>
             </div>
             <div
-              v-for="profile in group.items"
+              v-for="profile in (sessionSearch.trim() || !collapsedProfileGroups.includes(group.id)) ? group.items : []"
               :key="profile.profile_id"
               class="profile-row"
               role="button"
               tabindex="0"
+              draggable="true"
               :title="`${profile.host}:${profile.port} · ${profile.username} · ${profile.encoding.toUpperCase()}`"
               @dblclick="openProfile(profile)"
-              @keyup.enter="openProfile(profile)"
+              @keydown.enter.self.prevent="openProfile(profile)"
+              @contextmenu="showProfileMenu($event, profile)"
+              @dragstart="startProfileDrag(profile); $event.dataTransfer?.setData('text/plain', profile.profile_id)"
+              @dragend="startProfileDrag(null)"
             >
               <span class="profile-row__favorite">{{ profile.favorite ? '★' : '☆' }}</span>
               <span class="profile-row__body">
@@ -325,6 +348,7 @@ watch([showSftp, sftpWorkspaceId], () => {
               </span>
               <el-button link title="连接" @click.stop="openProfile(profile)"><el-icon><Connection /></el-icon></el-button>
               <el-button link title="编辑" @click.stop="editProfile(profile)"><el-icon><Setting /></el-icon></el-button>
+              <el-button link title="连接操作" @click.stop="showProfileMenu($event, profile)">⋯</el-button>
               <el-button link type="danger" title="删除" @click.stop="removeProfile(profile)"><el-icon><Delete /></el-icon></el-button>
             </div>
           </section>
@@ -371,21 +395,20 @@ watch([showSftp, sftpWorkspaceId], () => {
             @dragover.prevent
             @drop="dropTab(tab.id)"
           >
-            <button class="terminal-tab" :class="{ active: visibleTabIds.has(tab.id) }" @click="selectTab(tab.id)">
+            <div class="terminal-tab" :class="{ active: activeTabId === tab.id, visible: visibleTabIds.has(tab.id) }">
+              <button class="terminal-tab__select" :aria-pressed="activeTabId === tab.id" :disabled="closingTabIds.has(tab.id)" @click="selectTab(tab.id)">
               <span class="terminal-tab__state" :class="sessionStatusClass(tab.session.state)" />
               <span>{{ tab.session.session_name || tab.session.device_name }}</span>
               <small>{{ tab.session.protocol }}</small>
-              <Close class="terminal-tab__close" :size="13" @click.stop="closeTab(tab.id)" />
-            </button>
+              </button>
+              <button class="terminal-tab__close" aria-label="关闭标签并结束会话" :disabled="closingTabIds.has(tab.id)" @click.stop="closeTab(tab.id)"><Close :size="13" /></button>
+            </div>
             <template #dropdown>
               <el-dropdown-menu>
-                <el-dropdown-item @click="cloneSession(tab.session)">新建终端会话</el-dropdown-item>
                 <el-dropdown-item @click="cloneSession(tab.session)">克隆会话</el-dropdown-item>
-                <el-dropdown-item @click="cloneSession(tab.session)">在新标签打开</el-dropdown-item>
                 <el-dropdown-item @click="renameSession(tab.session)">重命名</el-dropdown-item>
                 <el-dropdown-item @click="saveConnectionTemplate(tab.session)">保存为连接模板</el-dropdown-item>
-                <el-dropdown-item @click="terminateSession(tab.session)">结束当前会话</el-dropdown-item>
-                <el-dropdown-item @click="closeTab(tab.id)">关闭标签（保留会话）</el-dropdown-item>
+                <el-dropdown-item :disabled="closingTabIds.has(tab.id)" @click="closeTab(tab.id)">关闭标签并结束会话</el-dropdown-item>
                 <el-dropdown-item @click="closeOtherTabs(tab.id)">关闭其他标签</el-dropdown-item>
                 <el-dropdown-item @click="closeAllTabs">关闭全部标签</el-dropdown-item>
               </el-dropdown-menu>
@@ -395,10 +418,10 @@ watch([showSftp, sftpWorkspaceId], () => {
         </div>
 
         <div v-if="tabs.length" ref="workspace" class="terminal-grid" :class="`is-${splitOrientation}`" :style="workspaceStyle">
-          <div v-for="tab in tabs" :key="tab.id" :class="paneClass(tab.id)">
+          <div v-for="tab in tabs" :key="tab.id" :class="paneClass(tab.id)" @focusin="activeTabId = tab.id">
             <div class="terminal-pane__header">
-              <span>{{ tab.session.device_name }} · {{ tab.session.address }}:{{ tab.session.port }}</span>
-              <span :class="sessionStatusClass(tab.session.state)">{{ tab.session.state }}</span>
+              <button class="terminal-pane__label" @click="selectTab(tab.id)">{{ tab.session.device_name }} · {{ tab.session.address }}:{{ tab.session.port }}</button>
+              <span :class="sessionStatusClass(tab.session.state)">{{ closingTabIds.has(tab.id) ? '正在结束' : tab.session.state }}</span>
               <span v-if="tab.session.automation_write_active" class="is-warning" :title="tab.session.automation_write_task_name">自动化写任务运行中</span>
               <span>{{ recordingText(tab.session) }}</span>
             </div>
@@ -407,6 +430,8 @@ watch([showSftp, sftpWorkspaceId], () => {
               :session="tab.session"
               :ticket="tab.ticket"
               :active="visibleTabIds.has(tab.id)"
+              :focused="activeTabId === tab.id"
+              :closing="closingTabIds.has(tab.id)"
               :workspace-visible="props.workspaceVisible"
               :settings="terminalSettings"
               :highlight-rules="highlightRules"
@@ -432,6 +457,9 @@ watch([showSftp, sftpWorkspaceId], () => {
       @click.stop
     >
       <button @click="openDevice(contextDevice); hideContextMenu()">打开终端</button>
+      <button v-if="contextDevice.backup_address && contextDevice.backup_address !== contextDevice.primary_address" @click="openDevice(contextDevice, 'backup'); hideContextMenu()">使用备用地址连接</button>
+      <button v-if="externalTerminalAvailable" :disabled="externalTerminalBusy" @click="openDeviceExternalTerminal(contextDevice); hideContextMenu()">打开外部终端</button>
+      <button :disabled="!contextDevice.primary_address" @click="copyConnectionAddress(contextDevice.primary_address); hideContextMenu()">复制连接地址</button>
       <button @click="openDeviceDetail(contextDevice)">查看设备详情</button>
       <button @click="selectedDeviceUuids = [contextDevice.device_uuid]; openSelectedDevices(); hideContextMenu()">作为批量目标打开</button>
     </div>
@@ -443,9 +471,7 @@ watch([showSftp, sftpWorkspaceId], () => {
       @click.stop
     >
       <button @click="showReplay(contextSession); hideContextMenu()">查看会话记录</button>
-      <button @click="cloneSession(contextSession); hideContextMenu()">新建终端会话</button>
       <button @click="cloneSession(contextSession); hideContextMenu()">克隆会话</button>
-      <button @click="cloneSession(contextSession); hideContextMenu()">在新标签打开</button>
       <button @click="closeTab(contextSession.session_id); hideContextMenu()">关闭当前标签</button>
       <button @click="closeOtherTabs(contextSession.session_id); hideContextMenu()">关闭其他标签</button>
       <button @click="renameSession(contextSession); hideContextMenu()">重命名</button>
@@ -462,6 +488,28 @@ watch([showSftp, sftpWorkspaceId], () => {
         v-if="['DISCONNECTED', 'FAILED', 'CLOSED'].includes(contextSession.state)"
         @click="reconnectSession(contextSession); hideContextMenu()"
       >重连为新会话</button>
+    </div>
+
+    <div
+      v-if="profileContextMenu.visible && contextProfile"
+      class="console-context-menu"
+      :style="{ left: `${profileContextMenu.x}px`, top: `${profileContextMenu.y}px` }"
+      @click.stop
+    >
+      <button @click="openProfile(contextProfile); hideContextMenu()">连接</button>
+      <button @click="editProfile(contextProfile); hideContextMenu()">编辑</button>
+      <button @click="saveProfileAction(contextProfile, 'copy'); hideContextMenu()">复制连接</button>
+      <button @click="saveProfileAction(contextProfile, 'rename'); hideContextMenu()">重命名</button>
+      <button @click="copyConnectionAddress(`${contextProfile.host}:${contextProfile.port}`); hideContextMenu()">复制连接地址</button>
+      <button @click="createProfileFolder(); hideContextMenu()">新建文件夹</button>
+      <label class="profile-move">
+        移动至
+        <select :value="contextProfile.folder_id" @change="saveProfileAction(contextProfile, 'move', ($event.target as HTMLSelectElement).value); hideContextMenu()">
+          <option value="">未分组</option>
+          <option v-for="folder in profileFolders" :key="folder.folder_id" :value="folder.folder_id">{{ folder.name }}</option>
+        </select>
+      </label>
+      <button @click="removeProfile(contextProfile); hideContextMenu()">删除</button>
     </div>
 
     <el-drawer v-model="historyVisible" title="会话历史" size="720px" @open="showHistory">
@@ -533,7 +581,6 @@ watch([showSftp, sftpWorkspaceId], () => {
 }
 
 .console-toolbar__title { display: flex; align-items: center; gap: 7px; margin-right: 6px; white-space: nowrap; }
-.console-toolbar__title span { color: var(--nc-text-secondary); font-size: 10px; letter-spacing: .04em; }
 .console-toolbar__spacer { flex: 1; }
 .console-toolbar__summary { color: var(--nc-text-secondary); font-size: 12px; white-space: nowrap; }
 .console-toolbar > :deep(.el-button), .console-toolbar__title, .console-toolbar__summary { flex: 0 0 auto; }
@@ -562,6 +609,9 @@ watch([showSftp, sftpWorkspaceId], () => {
 .device-tree-actions { display: flex; align-items: center; gap: 3px; min-height: 30px; padding: 0 4px; border-bottom: 1px solid var(--console-border); }
 .device-group__title { display: flex; align-items: center; width: 100%; padding: 8px 8px 4px; border: 0; color: var(--nc-text-secondary); background: transparent; font-size: 11px; cursor: pointer; }
 .device-group__title small { margin-left: auto; }
+.profile-group-toggle { border: 0; padding: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
+.profile-move { display: grid; gap: 4px; padding: 7px 9px; }
+.profile-move select { width: 100%; color: inherit; background: var(--nc-bg-panel); }
 .device-row, .session-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; text-align: left; color: inherit; background: transparent; cursor: pointer; }
 .device-row:hover, .device-row.active, .session-row:hover { background: var(--nc-bg-active); }
 .profile-row { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; padding: 5px 6px; border: 0; border-radius: 6px; color: inherit; text-align: left; background: transparent; cursor: pointer; }
@@ -591,6 +641,9 @@ watch([showSftp, sftpWorkspaceId], () => {
 .terminal-tabs > span { align-self: center; padding: 0 12px; font-size: 12px; }
 .terminal-tab { display: flex; align-items: center; gap: 7px; height: 35px; padding: 0 10px; border: 0; border-right: 1px solid var(--nc-border-code); color: var(--nc-text-code-muted); background: var(--nc-bg-code-header); white-space: nowrap; cursor: pointer; }
 .terminal-tab.active { color: var(--nc-text-code); background: var(--nc-bg-code); }
+.terminal-tab.visible { border-bottom: 1px solid var(--nc-border-strong); }
+.terminal-tab__select, .terminal-tab__close, .terminal-pane__label { display: inline-flex; align-items: center; gap: 7px; border: 0; padding: 0; color: inherit; background: transparent; cursor: pointer; }
+.terminal-tab button:disabled { cursor: wait; }
 .terminal-tab small { color: var(--nc-text-code-muted); font-size: 9px; }
 .terminal-tab__close { opacity: .55; }
 .terminal-tab__close:hover { opacity: 1; color: var(--nc-text-code-danger); }
@@ -604,6 +657,8 @@ watch([showSftp, sftpWorkspaceId], () => {
 .terminal-pane__header { display: flex; align-items: center; gap: 12px; padding: 0 10px; border-bottom: 1px solid var(--nc-border-code); color: var(--nc-text-code-muted); background: var(--nc-bg-code-header); font-size: 11px; }
 .terminal-pane__header span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .terminal-pane__header span:nth-child(2) { margin-left: auto; }
+.terminal-pane__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.terminal-grid__pane.is-focused .terminal-pane__header { box-shadow: inset 2px 0 var(--nc-primary); }
 .terminal-divider { z-index: 2; padding: 0; border: 0; background: var(--nc-border-strong); }
 .terminal-grid.is-horizontal .terminal-divider { grid-column: 2; grid-row: 1; cursor: col-resize; }
 .terminal-grid.is-vertical .terminal-divider { grid-column: 1; grid-row: 2; cursor: row-resize; }

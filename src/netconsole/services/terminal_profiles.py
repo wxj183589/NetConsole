@@ -169,7 +169,7 @@ class TerminalProfileStore:
         if port < 1 or port > 65535:
             raise TerminalProfileError("快速连接端口无效")
         username = str(values.get("username") or "").strip()
-        if not username or len(username) > 256:
+        if (protocol == "SSH" and not username) or len(username) > 256:
             raise TerminalProfileError("快速连接用户名无效")
         encoding = str(values.get("encoding") or "utf-8").strip().casefold()
         if encoding not in _ENCODINGS:

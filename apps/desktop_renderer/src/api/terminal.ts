@@ -209,10 +209,11 @@ export function createTerminalSession(
   protocol: TerminalProtocol = 'AUTO',
   cols = 120,
   rows = 32,
+  addressRole?: 'primary' | 'backup',
 ): Promise<TerminalSessionConnection> {
   return apiRequest('/api/terminal/sessions', {
     method: 'POST',
-    body: JSON.stringify({ device_uuid: deviceUuid, protocol, cols, rows }),
+    body: JSON.stringify({ device_uuid: deviceUuid, protocol, cols, rows, address_role: addressRole }),
   })
 }
 
@@ -363,20 +364,31 @@ export function getTerminalDangerousRules(): Promise<TerminalRuleDocument<Termin
 
 export function replaceTerminalHighlightRules(
   rules: TerminalHighlightRule[],
+  repairInvalid = false,
 ): Promise<TerminalRuleDocument<TerminalHighlightRule>> {
   return apiRequest('/api/terminal/rules/highlight', {
     method: 'PUT',
-    body: JSON.stringify({ rules }),
+    body: JSON.stringify(repairInvalid ? { rules, repair_invalid: true } : { rules }),
   })
 }
 
 export function replaceTerminalDangerousRules(
   rules: TerminalDangerousRule[],
+  repairInvalid = false,
 ): Promise<TerminalRuleDocument<TerminalDangerousRule>> {
   return apiRequest('/api/terminal/rules/dangerous', {
     method: 'PUT',
-    body: JSON.stringify({ rules }),
+    body: JSON.stringify(repairInvalid ? { rules, repair_invalid: true } : { rules }),
   })
+}
+
+export function previewTerminalRulesImport(
+  kind: 'highlight' | 'dangerous', file: File,
+): Promise<TerminalRuleDocument<TerminalHighlightRule | TerminalDangerousRule>> {
+  const body = new FormData()
+  body.set('kind', kind)
+  body.set('file', file, file.name)
+  return apiRequest('/api/terminal/rules/import', { method: 'POST', body })
 }
 
 export function startTerminalManualLog(

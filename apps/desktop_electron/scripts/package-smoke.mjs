@@ -609,6 +609,22 @@ async function validateFrozenGroundUnattendedStatus(dataRoot) {
       throw new Error(`冻结 Backend /api/features 请求失败：HTTP ${featuresResponse.status}, body=${featuresBody}`)
     }
     const effectiveFeatures = JSON.parse(featuresBody)
+    const consoleEnabled = effectiveFeatures?.items?.find(
+      (item) => item?.feature_id === 'module.console',
+    )?.enabled
+    if (consoleEnabled) {
+      for (const [kind, expectedCount] of [['highlight', 22], ['dangerous', 226]]) {
+        const rulesResponse = await fetch(`http://127.0.0.1:${port}/api/terminal/rules/${kind}`, {
+          headers: { 'X-NetConsole-Session': token },
+          signal: AbortSignal.timeout(10_000),
+        })
+        const rules = await rulesResponse.json()
+        if (rulesResponse.status !== 200 || rules?.rules?.length !== expectedCount) {
+          throw new Error(`冻结 Backend 终端规则加载失败 (${kind})：HTTP ${rulesResponse.status}`)
+        }
+      }
+      console.log('PACKAGED_TERMINAL_RULES=PASS')
+    }
     const effectiveWpsSync = effectiveFeatures?.items?.find(
       (item) => item?.feature_id === 'capability.trackside_ap.wps_sync',
     )

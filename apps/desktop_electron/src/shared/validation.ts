@@ -97,6 +97,7 @@ const GROUND_ARCHIVE_ID = String.raw`[A-Za-z0-9][A-Za-z0-9_-]{0,159}`
 const DOWNLOAD_ENDPOINTS = [
   { pattern: /^\/api\/file-management\/workspace\/files\/[a-f0-9]{32}$/, query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/terminal\/quick-buttons\/export$/, query: new Set<string>(), required: new Set<string>() },
+  { pattern: /^\/api\/terminal\/rules\/(?:highlight|dangerous)\/export$/, query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/terminal\/sftp\/transfers\/[a-f0-9]{32}\/file$/, query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/terminal\/sftp\/transfer-log$/, query: new Set<string>(), required: new Set<string>() },
   { pattern: /^\/api\/terminal\/history\/[a-f0-9]{32}\/export\/(?:txt|jsonl|log|zip)$/, query: new Set<string>(), required: new Set<string>() },

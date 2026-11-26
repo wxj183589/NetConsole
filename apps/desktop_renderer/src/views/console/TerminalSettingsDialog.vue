@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Delete, Plus } from '@element-plus/icons-vue'
+import { Delete, Download, Plus, Upload } from '@element-plus/icons-vue'
 
 import {
   getTerminalDangerousRules,
   getTerminalHighlightRules,
   getTerminalSettings,
+  previewTerminalRulesImport,
   replaceTerminalDangerousRules,
   replaceTerminalHighlightRules,
   updateTerminalSettings,
@@ -14,6 +15,7 @@ import {
   type TerminalHighlightRule,
   type TerminalSettings,
 } from '../../api/terminal'
+import { downloadBackendResource } from '../../platform/runtime'
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{
@@ -26,43 +28,108 @@ const saving = ref(false)
 const settings = ref<TerminalSettings | null>(null)
 const highlights = ref<TerminalHighlightRule[]>([])
 const dangerous = ref<TerminalDangerousRule[]>([])
+type RuleKind = 'highlight' | 'dangerous'
+const ruleErrors = ref<Record<RuleKind, string>>({ highlight: '', dangerous: '' })
+const repairing = { highlight: false, dangerous: false }
+const ruleSnapshots = { highlight: '', dangerous: '' }
+const highlightFile = ref<HTMLInputElement | null>(null)
+const dangerousFile = ref<HTMLInputElement | null>(null)
+const importing = ref<RuleKind | null>(null)
+let settingsSnapshot = ''
+let loadGeneration = 0
 
 async function load(): Promise<void> {
+  const generation = ++loadGeneration
   loading.value = true
   try {
-    const [loadedSettings, loadedHighlights, loadedDangerous] = await Promise.all([
+    const [loadedSettings, loadedHighlights, loadedDangerous] = await Promise.allSettled([
       getTerminalSettings(),
       getTerminalHighlightRules(),
       getTerminalDangerousRules(),
     ])
-    settings.value = loadedSettings
-    highlights.value = loadedHighlights.rules
-    dangerous.value = loadedDangerous.rules
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '终端设置读取失败')
+    if (generation !== loadGeneration) return
+    settings.value = loadedSettings.status === 'fulfilled' ? loadedSettings.value : null
+    if (loadedSettings.status === 'rejected') ElMessage.error(errorText(loadedSettings.reason))
+    highlights.value = loadedHighlights.status === 'fulfilled' ? loadedHighlights.value.rules : []
+    dangerous.value = loadedDangerous.status === 'fulfilled' ? loadedDangerous.value.rules : []
+    ruleErrors.value.highlight = loadedHighlights.status === 'rejected' ? errorText(loadedHighlights.reason) : ''
+    ruleErrors.value.dangerous = loadedDangerous.status === 'rejected' ? errorText(loadedDangerous.reason) : ''
+    settingsSnapshot = JSON.stringify(settings.value)
+    ruleSnapshots.highlight = JSON.stringify(highlights.value)
+    ruleSnapshots.dangerous = JSON.stringify(dangerous.value)
+    repairing.highlight = false
+    repairing.dangerous = false
   } finally {
-    loading.value = false
+    if (generation === loadGeneration) loading.value = false
   }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 async function save(): Promise<void> {
   if (!settings.value) return
   saving.value = true
   try {
-    const [savedSettings, savedHighlights] = await Promise.all([
-      updateTerminalSettings(settings.value),
-      replaceTerminalHighlightRules(highlights.value),
-      replaceTerminalDangerousRules(dangerous.value),
-    ])
-    settings.value = savedSettings
-    highlights.value = savedHighlights.rules
-    emit('saved', savedSettings, savedHighlights.rules)
+    if (!ruleErrors.value.highlight && (repairing.highlight || ruleSnapshots.highlight !== JSON.stringify(highlights.value))) {
+      highlights.value = (await replaceTerminalHighlightRules(highlights.value, repairing.highlight)).rules
+      ruleSnapshots.highlight = JSON.stringify(highlights.value)
+      repairing.highlight = false
+    }
+    if (!ruleErrors.value.dangerous && (repairing.dangerous || ruleSnapshots.dangerous !== JSON.stringify(dangerous.value))) {
+      dangerous.value = (await replaceTerminalDangerousRules(dangerous.value, repairing.dangerous)).rules
+      ruleSnapshots.dangerous = JSON.stringify(dangerous.value)
+      repairing.dangerous = false
+    }
+    if (settingsSnapshot !== JSON.stringify(settings.value)) {
+      settings.value = await updateTerminalSettings(settings.value)
+      settingsSnapshot = JSON.stringify(settings.value)
+    }
+    if (!ruleErrors.value.highlight) emit('saved', settings.value, highlights.value)
     emit('update:modelValue', false)
     ElMessage.success('终端设置已保存')
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '终端设置保存失败')
   } finally {
     saving.value = false
+  }
+}
+
+async function importRules(kind: RuleKind, event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (file.size > 2 * 1024 * 1024) {
+    ElMessage.error(`${file.name} 规则文件超过 2 MiB`)
+    return
+  }
+  const generation = loadGeneration
+  importing.value = kind
+  try {
+    const document = await previewTerminalRulesImport(kind, file)
+    if (generation !== loadGeneration) return
+    if (kind === 'highlight') highlights.value = document.rules as TerminalHighlightRule[]
+    else dangerous.value = document.rules as TerminalDangerousRule[]
+    repairing[kind] ||= !!ruleErrors.value[kind]
+    ruleErrors.value[kind] = ''
+    ElMessage.success(`已读取 ${document.actual_rule_count} 条规则`)
+  } catch (error) {
+    if (generation === loadGeneration) ElMessage.error(errorText(error))
+  } finally {
+    importing.value = null
+  }
+}
+
+async function exportRules(kind: RuleKind): Promise<void> {
+  try {
+    await downloadBackendResource({
+      apiPath: `/api/terminal/rules/${kind}/export`,
+      suggestedName: `terminal-${kind}-rules.json`,
+    })
+  } catch (error) {
+    ElMessage.error(errorText(error))
   }
 }
 
@@ -91,7 +158,8 @@ function addDangerous(): void {
 
 watch(() => props.modelValue, (visible) => {
   if (visible) void load()
-})
+  else loadGeneration += 1
+}, { immediate: true })
 </script>
 
 <template>
@@ -128,8 +196,14 @@ Error: packet loss detected</pre>
         </el-tab-pane>
 
         <el-tab-pane :label="`关键字高亮 (${highlights.length})`">
-          <div class="rule-toolbar"><el-button @click="addHighlight"><el-icon><Plus /></el-icon>新增规则</el-button></div>
-          <el-table :data="highlights" height="520px">
+          <el-alert v-if="ruleErrors.highlight" :title="ruleErrors.highlight" type="error" :closable="false" />
+          <div class="rule-toolbar">
+            <el-button :icon="Plus" :disabled="!!ruleErrors.highlight" @click="addHighlight">新增规则</el-button>
+            <el-button :icon="Upload" :loading="importing === 'highlight'" :disabled="!!importing || saving" @click="highlightFile?.click()">导入 JSON</el-button>
+            <el-button :icon="Download" :disabled="!!ruleErrors.highlight" @click="exportRules('highlight')">导出已保存规则</el-button>
+            <input ref="highlightFile" type="file" accept=".json" hidden @change="importRules('highlight', $event)" />
+          </div>
+          <el-table v-if="!ruleErrors.highlight" :data="highlights" height="520px">
             <el-table-column width="65"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column>
             <el-table-column label="匹配内容" min-width="400"><template #default="scope"><el-input v-model="scope.row.pattern" /></template></el-table-column>
             <el-table-column label="类型" width="110"><template #default="scope"><el-select v-model="scope.row.match_type"><el-option label="文本" value="TEXT" /><el-option label="正则" value="REGEX" /></el-select></template></el-table-column>
@@ -139,11 +213,15 @@ Error: packet loss detected</pre>
         </el-tab-pane>
 
         <el-tab-pane :label="`高危命令 (${dangerous.length})`">
+          <el-alert v-if="ruleErrors.dangerous" :title="ruleErrors.dangerous" type="error" :closable="false" />
           <div class="rule-toolbar">
-            <el-button @click="addDangerous"><el-icon><Plus /></el-icon>新增规则</el-button>
+            <el-button :icon="Plus" :disabled="!!ruleErrors.dangerous" @click="addDangerous">新增规则</el-button>
+            <el-button :icon="Upload" :loading="importing === 'dangerous'" :disabled="!!importing || saving" @click="dangerousFile?.click()">导入 JSON</el-button>
+            <el-button :icon="Download" :disabled="!!ruleErrors.dangerous" @click="exportRules('dangerous')">导出已保存规则</el-button>
+            <input ref="dangerousFile" type="file" accept=".json" hidden @change="importRules('dangerous', $event)" />
             <el-switch v-model="settings.dangerous_command_warning" active-text="输入时提示" />
           </div>
-          <el-table :data="dangerous" height="520px">
+          <el-table v-if="!ruleErrors.dangerous" :data="dangerous" height="520px">
             <el-table-column width="65"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column>
             <el-table-column label="命令" min-width="330"><template #default="scope"><el-input v-model="scope.row.pattern" /></template></el-table-column>
             <el-table-column label="类型" width="100"><template #default="scope"><el-select v-model="scope.row.match_type"><el-option label="文本" value="TEXT" /><el-option label="正则" value="REGEX" /></el-select></template></el-table-column>
@@ -164,7 +242,7 @@ Error: packet loss detected</pre>
     </div>
     <template #footer>
       <el-button @click="emit('update:modelValue', false)">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+      <el-button type="primary" :loading="saving" :disabled="loading || !settings || !!importing" @click="save">保存</el-button>
     </template>
   </el-dialog>
 </template>
@@ -173,5 +251,5 @@ Error: packet loss detected</pre>
 .terminal-settings { min-height: 590px; }
 .settings-form { max-width: 460px; }
 .terminal-preview { min-height: 150px; margin: 14px 0 0; padding: 16px; border-radius: 6px; line-height: 1.6; }
-.rule-toolbar { display: flex; align-items: center; gap: 18px; margin-bottom: 10px; }
+.rule-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
 </style>

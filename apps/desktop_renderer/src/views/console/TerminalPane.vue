@@ -17,6 +17,8 @@ const props = defineProps<{
   session: TerminalSession
   ticket?: string
   active?: boolean
+  focused?: boolean
+  closing?: boolean
   workspaceVisible?: boolean
   settings?: TerminalSettings | null
   highlightRules?: TerminalHighlightRule[]
@@ -40,6 +42,9 @@ let initialTicket = props.ticket || ''
 let reconnectAttempts = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let lastDimensions = ''
+let opening = false
+const terminalEnded = () => props.closing || ['CLOSING', 'CLOSED', 'FAILED', 'CANCELLED', 'DISCONNECTED'].includes(props.session.state)
+const mayFocus = () => props.focused !== false && props.active !== false && props.workspaceVisible !== false
 
 function createTerminal(): void {
   if (!host.value || terminal) return
@@ -71,7 +76,7 @@ function createTerminal(): void {
   terminal.open(host.value)
   terminal.writeln('\x1b[1;36mNetConsole Interactive Console\x1b[0m')
   terminal.onData((data) => {
-    if (socket?.readyState !== WebSocket.OPEN) return
+    if (terminalEnded() || socket?.readyState !== WebSocket.OPEN) return
     socket.send(JSON.stringify({ type: 'input', data }))
   })
   terminal.onResize(({ cols, rows }) => {
@@ -87,20 +92,26 @@ function createTerminal(): void {
 }
 
 async function openSocket(): Promise<void> {
-  if (disposed || socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return
+  if (disposed || opening || terminalEnded() || socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING) return
+  opening = true
   try {
     const ticket = initialTicket || (await issueTerminalTicket(props.session.session_id)).ticket
     initialTicket = ''
-    socket = new WebSocket(terminalWebSocketUrl(props.session.session_id, ticket))
+    if (disposed || terminalEnded()) return
+    const connection = new WebSocket(terminalWebSocketUrl(props.session.session_id, ticket))
+    socket = connection
     connectionMessage.value = '正在建立终端通道…'
-    socket.addEventListener('open', () => {
+    connection.addEventListener('open', () => {
+      if (disposed || socket !== connection) return
       connected.value = true
       reconnectAttempts = 0
+      lastDimensions = ''
       connectionMessage.value = '终端通道已连接'
       fit()
-      terminal?.focus()
+      if (mayFocus()) terminal?.focus()
     })
-    socket.addEventListener('message', (event) => {
+    connection.addEventListener('message', (event) => {
+      if (disposed || socket !== connection) return
       const message = JSON.parse(String(event.data || '{}')) as Record<string, unknown>
       if (message.type === 'output' || message.type === 'local_echo' || message.type === 'backlog') {
         terminal?.write(highlightOutput(String(message.data || '')))
@@ -113,20 +124,23 @@ async function openSocket(): Promise<void> {
         connectionMessage.value = String(message.message || '终端通道发生错误')
       }
     })
-    socket.addEventListener('close', () => {
+    connection.addEventListener('close', () => {
+      if (disposed || socket !== connection) return
       connected.value = false
       socket = null
       connectionMessage.value = '终端通道已断开，会话历史仍保留'
-      if (!disposed && !['CLOSED', 'FAILED', 'CANCELLED'].includes(props.session.state) && reconnectAttempts < 3) {
+      if (!terminalEnded() && reconnectAttempts < 3) {
         reconnectAttempts += 1
         reconnectTimer = setTimeout(() => void openSocket(), reconnectAttempts * 800)
       }
     })
-    socket.addEventListener('error', () => {
-      connectionMessage.value = '终端通道连接失败'
+    connection.addEventListener('error', () => {
+      if (!disposed && socket === connection) connectionMessage.value = '终端通道连接失败'
     })
   } catch (error) {
-    connectionMessage.value = error instanceof Error ? error.message : '终端通道连接失败'
+    if (!disposed) connectionMessage.value = error instanceof Error ? error.message : '终端通道连接失败'
+  } finally {
+    opening = false
   }
 }
 
@@ -201,12 +215,8 @@ function highlightOutput(data: string): string {
   }).join('')
 }
 
-watch(() => props.active, (active) => {
-  if (active) {
-    fit()
-    terminal?.focus()
-  }
-})
+watch(() => props.active, (active) => { if (active) fit() })
+watch(mayFocus, (focused) => { if (focused) terminal?.focus() })
 
 watch(() => props.settings, (value) => {
   if (!terminal || !value) return

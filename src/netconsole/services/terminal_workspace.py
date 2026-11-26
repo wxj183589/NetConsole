@@ -108,6 +108,7 @@ class TerminalSessionSnapshot:
     port: int
     created_at_ms: int
     updated_at_ms: int
+    address_role: str = "primary"
     connected_at_ms: int | None = None
     ended_at_ms: int | None = None
     disconnect_reason: str = ""
@@ -509,6 +510,7 @@ class _TerminalSession:
     dispatch_lock: threading.Lock = field(default_factory=threading.Lock)
     close_event: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
+    replacement_session_id: str = ""
     display_backlog: list[str] = field(default_factory=list)
     display_backlog_chars: int = 0
     terminal_cols: int = 120
@@ -588,12 +590,15 @@ class TerminalSessionManager:
         device_uuid: str,
         *,
         protocol: str = "AUTO",
+        address_role: str | None = None,
         cols: int = 120,
         rows: int = 32,
     ) -> tuple[dict[str, Any], TerminalTicket]:
         requested = str(protocol or "AUTO").strip().upper()
         if requested not in {"AUTO", "SSH", "TELNET"}:
             raise ValueError("终端协议只支持 AUTO、SSH 或 TELNET")
+        if address_role not in {None, "primary", "backup"}:
+            raise ValueError("终端地址只支持主地址或备用地址")
         site_name = SiteManager(self.paths).get_current_site()
         repository = DeviceRepository(Database(self.paths.site_db_path(site_name)))
         device = repository.get_by_uuid(str(device_uuid or "").strip())
@@ -602,6 +607,11 @@ class TerminalSessionManager:
         targets = connection_targets(device)
         if requested != "AUTO":
             targets = [item for item in targets if item.protocol.upper() == requested]
+        if address_role is not None:
+            targets = [item for item in targets if item.target_role == address_role]
+            if not targets:
+                address_name = "备用" if address_role == "backup" else "主"
+                raise ValueError(f"设备未配置可用的{address_name}地址连接")
         if not targets:
             raise ValueError("设备未配置可用的 SSH/Telnet 凭据或连接方式")
         return self._create_runtime(
@@ -723,6 +733,7 @@ class TerminalSessionManager:
                 port=int(target.port),
                 created_at_ms=now,
                 updated_at_ms=now,
+                address_role=target.target_role,
                 session_name=f"{device.name or device.system_name or device.primary_address}-{len(same_device) + 1:02}",
             )
             recording = TerminalRecordingWriter(self.recording_root, snapshot)
@@ -861,24 +872,31 @@ class TerminalSessionManager:
         return {"deleted": True, "session_id": session_id}
 
     def reconnect(self, session_id: str) -> tuple[dict[str, Any], TerminalTicket]:
-        previous = self.get_runtime(session_id)
-        if previous.snapshot.state not in {"DISCONNECTED", "FAILED", "CLOSED"}:
-            raise ValueError("只有已断开或失败的会话可以重连")
-        return self._create_runtime(
-            previous.device,
-            previous.target,
-            requested_protocol=previous.requested_protocol,
-            cols=previous.terminal_cols,
-            rows=previous.terminal_rows,
-            managed_device=previous.managed_device,
-            encoding=previous.snapshot.encoding,
-        )
+        with self._lock:
+            previous = self.get_runtime(session_id)
+            if previous.snapshot.state not in {"DISCONNECTED", "FAILED", "CLOSED"}:
+                raise ValueError("只有已断开或失败的会话可以重连")
+            replacement = self._sessions.get(previous.replacement_session_id)
+            if replacement is not None and replacement.snapshot.state in TERMINAL_LIVE_STATES:
+                raise ValueError("会话已有正在连接或使用中的重连")
+            snapshot, ticket = self._create_runtime(
+                previous.device,
+                previous.target,
+                requested_protocol=previous.requested_protocol,
+                cols=previous.terminal_cols,
+                rows=previous.terminal_rows,
+                managed_device=previous.managed_device,
+                encoding=previous.snapshot.encoding,
+            )
+            previous.replacement_session_id = ticket.session_id
+            return snapshot, ticket
 
     def issue_ticket(self, session_id: str) -> TerminalTicket:
         session = self.get_runtime(session_id)
-        if session.snapshot.state in TERMINAL_FINAL_STATES:
-            raise ValueError("终态会话不能创建新的连接票据")
-        return self.tickets.issue(session_id)
+        with session.state_lock:
+            if session.close_event.is_set() or session.snapshot.state in TERMINAL_FINAL_STATES:
+                raise ValueError("已关闭或正在关闭的会话不能创建新的连接票据")
+            return self.tickets.issue(session_id)
 
     def get_runtime(self, session_id: str) -> _TerminalSession:
         with self._lock:
@@ -982,17 +1000,20 @@ class TerminalSessionManager:
 
     def close_session(self, session_id: str) -> dict[str, Any]:
         session = self.get_runtime(session_id)
-        if session.snapshot.state not in TERMINAL_FINAL_STATES:
-            target_state = (
-                "CANCELLED" if session.snapshot.state == "CREATED" else "CLOSING"
-            )
-            self._transition(session, target_state, reason="USER_REQUEST")
-            session.close_event.set()
-            try:
-                session.input_queue.put_nowait(("close", None))
-            except queue.Full:
-                pass
-        return session.snapshot.to_public_dict()
+        with session.state_lock:
+            if session.snapshot.state == "DISCONNECTED":
+                self._transition(session, "CLOSED", reason="USER_REQUEST")
+            elif session.snapshot.state not in TERMINAL_FINAL_STATES and not session.close_event.is_set():
+                session.close_event.set()
+                target_state = (
+                    "CANCELLED" if session.snapshot.state == "CREATED" else "CLOSING"
+                )
+                self._transition(session, target_state, reason="USER_REQUEST")
+                try:
+                    session.input_queue.put_nowait(("close", None))
+                except queue.Full:
+                    pass
+            return session.snapshot.to_public_dict()
 
     def resize(self, session_id: str, cols: int, rows: int) -> None:
         session = self.get_runtime(session_id)
@@ -1004,36 +1025,37 @@ class TerminalSessionManager:
 
     def input(self, session_id: str, data: str, *, receipt=None) -> None:
         session = self.get_runtime(session_id)
-        if session.snapshot.state not in {"CONNECTED", "RUNNING"}:
-            raise ValueError("终端会话当前不可输入")
         if len(data) > self.MAX_MESSAGE_CHARS:
             raise ValueError("终端输入消息超过大小限制")
-        session.snapshot.command_count += data.count("\r") + data.count("\n")
-        for command in self._risk_commands(session, data):
-            matches = self.settings.match_dangerous_command(command, session.device)
-            if not matches:
-                continue
-            safe_command = _sanitize_terminal_data(command, session.device)
-            rule_ids = [str(item["id"]) for item in matches]
-            self._record(
-                session,
-                "RISK",
-                command=safe_command,
-                rule_ids=rule_ids,
-                severity="WARNING",
-            )
-            if self.settings.settings()["dangerous_command_warning"]:
-                session.publish(
-                    {
-                        "type": "risk_warning",
-                        "command": safe_command,
-                        "rule_ids": rule_ids,
-                        "message": "检测到高危命令，请确认当前设备和操作意图。",
-                    }
+        with session.state_lock:
+            if session.close_event.is_set() or session.snapshot.state not in {"CONNECTED", "RUNNING"}:
+                raise ValueError("终端会话当前不可输入")
+            for command in self._risk_commands(session, data):
+                matches = self.settings.match_dangerous_command(command, session.device)
+                if not matches:
+                    continue
+                safe_command = _sanitize_terminal_data(command, session.device)
+                rule_ids = [str(item["id"]) for item in matches]
+                self._record(
+                    session,
+                    "RISK",
+                    command=safe_command,
+                    rule_ids=rule_ids,
+                    severity="WARNING",
                 )
-        session.input_queue.put_nowait(
-            ("write", {"data": data, "receipt": receipt} if receipt else data)
-        )
+                if self.settings.settings()["dangerous_command_warning"]:
+                    session.publish(
+                        {
+                            "type": "risk_warning",
+                            "command": safe_command,
+                            "rule_ids": rule_ids,
+                            "message": "检测到高危命令，请确认当前设备和操作意图。",
+                        }
+                    )
+            session.input_queue.put_nowait(
+                ("write", {"data": data, "receipt": receipt} if receipt else data)
+            )
+            session.snapshot.command_count += data.count("\r") + data.count("\n")
 
     def send_confirmed(self, session_id, data, *, scope, cancel_event=None):
         receipt = {
@@ -1231,10 +1253,11 @@ class TerminalSessionManager:
                     data = value["data"] if isinstance(value, dict) else str(value)
                     try:
                         if (
-                            receipt
-                            and receipt.get("cancel")
-                            and receipt["cancel"].is_set()
+                            session.close_event.is_set()
+                            or (receipt and receipt.get("cancel") and receipt["cancel"].is_set())
                         ):
+                            if not receipt:
+                                continue
                             receipt["error"] = "发送前已取消"
                             self._record(
                                 session,
@@ -1275,12 +1298,12 @@ class TerminalSessionManager:
                     finally:
                         if receipt:
                             receipt["done"].set()
-                elif action == "resize":
+                elif action == "resize" and not session.close_event.is_set():
                     transport.resize(*value)
                 elif action == "close":
                     break
                 output = str(transport.read() or "")
-                if output:
+                if output and not session.close_event.is_set():
                     session.snapshot.output_bytes += len(
                         output.encode("utf-8", errors="replace")
                     )
@@ -1334,6 +1357,14 @@ class TerminalSessionManager:
                 }
             )
         finally:
+            while True:
+                try:
+                    action, value = session.input_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if action == "write" and isinstance(value, dict) and (receipt := value.get("receipt")):
+                    receipt["error"] = "会话已结束，命令未发送"
+                    receipt["done"].set()
             if transport is not None:
                 try:
                     transport.close()

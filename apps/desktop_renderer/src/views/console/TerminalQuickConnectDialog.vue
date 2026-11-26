@@ -163,7 +163,7 @@ function submit(): void {
       <el-button
         type="primary"
         :loading="loading"
-        :disabled="!form.host.trim() || !form.username.trim() || (!profile && !form.password)"
+        :disabled="!form.host.trim() || (form.protocol === 'SSH' && !form.username.trim()) || (!profile && !form.password)"
         @click="submit"
       >{{ profile ? '保存' : '连接' }}</el-button>
     </template>

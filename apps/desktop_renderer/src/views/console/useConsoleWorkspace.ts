@@ -40,10 +40,12 @@ import {
 } from '../../api/terminal'
 import { downloadBackendResource, getPlatformAdapter } from '../../platform/runtime'
 import { prepareLocalSaveDestination } from '../../composables/useUserSelectedExport'
+import { useExternalTerminalLauncher } from '../../composables/useExternalTerminalLauncher'
 import type { DeviceListItem } from '../../types/deviceManagement'
 import TerminalPane from './TerminalPane.vue'
 
 type SplitOrientation = 'none' | 'horizontal' | 'vertical'
+const endedStates = ['CLOSED', 'FAILED', 'CANCELLED', 'DISCONNECTED']
 
 interface TerminalTab {
   id: string
@@ -54,6 +56,7 @@ interface TerminalTab {
 
 export function useConsoleWorkspace() {
   const router = useRouter()
+  const externalTerminalLauncher = useExternalTerminalLauncher()
   const devices = ref<DeviceListItem[]>([])
   const sessions = ref<TerminalSession[]>([])
   const profiles = ref<TerminalProfile[]>([])
@@ -64,7 +67,10 @@ export function useConsoleWorkspace() {
   const selectedDeviceUuids = ref<string[]>([])
   const selectedSessionIds = ref<string[]>([])
   const activeTabId = ref('')
+  const primaryTabId = ref('')
   const secondaryTabId = ref('')
+  const closingTabIds = ref(new Set<string>())
+  const reconnectingIds = new Set<string>()
   const navigationMode = ref<'devices' | 'profiles' | 'sessions'>('devices')
   const deviceSearch = ref('')
   const sessionSearch = ref('')
@@ -91,9 +97,16 @@ export function useConsoleWorkspace() {
   const quickConnectVisible = ref(false)
   const quickConnectLoading = ref(false)
   const editingProfile = ref<TerminalProfile | null>(null)
+  const contextProfile = ref<TerminalProfile | null>(null)
+  const profileContextMenu = ref({ visible: false, x: 0, y: 0 })
+  const collapsedProfileGroups = ref<string[]>([])
+  const draggedProfile = ref<TerminalProfile | null>(null)
   const draggedTabId = ref('')
   const manualLogTargets = new Map<string, { destinationPath: string; suggestedName: string }>()
   let activityTimer: ReturnType<typeof setInterval> | undefined
+  let stopDividerDrag: (() => void) | undefined
+  let refreshingSessions = false
+  let disposed = false
   const terminalSettings = ref<TerminalSettings | null>(null)
   const highlightRules = ref<TerminalHighlightRule[]>([])
   const expandedGroups = ref<string[]>([])
@@ -137,7 +150,7 @@ export function useConsoleWorkspace() {
       items: visible.filter((profile) => profile.folder_id === folder.folder_id),
     }))
     const root = visible.filter((profile) => !profile.folder_id)
-    return root.length ? [{ id: '', name: '未分组', items: root }, ...groups] : groups
+    return profiles.value.length ? [{ id: '', name: '未分组', items: root }, ...groups] : groups
   })
 
   function syncExpandedGroups(): void {
@@ -161,14 +174,14 @@ export function useConsoleWorkspace() {
   const secondaryTab = computed(() => tabs.value.find((tab) => tab.id === secondaryTabId.value) || null)
   const visibleTabIds = computed(() => {
     const result = new Set<string>()
-    if (activeTabId.value) result.add(activeTabId.value)
+    if (primaryTabId.value) result.add(primaryTabId.value)
     if (splitOrientation.value !== 'none' && secondaryTabId.value) result.add(secondaryTabId.value)
     return result
   })
 
   const workspaceStyle = computed(() => {
-    const primary = `${Math.round(splitRatio.value * 1000) / 10}%`
-    const secondary = `${Math.round((1 - splitRatio.value) * 1000) / 10}%`
+    const primary = `minmax(0, ${splitRatio.value}fr)`
+    const secondary = `minmax(0, ${1 - splitRatio.value}fr)`
     if (splitOrientation.value === 'horizontal') {
       return { gridTemplateColumns: `${primary} 5px ${secondary}`, gridTemplateRows: 'minmax(0, 1fr)' }
     }
@@ -179,8 +192,9 @@ export function useConsoleWorkspace() {
   })
 
   function paneClass(tabId: string): string[] {
-    if (tabId === activeTabId.value) return ['terminal-grid__pane', 'is-primary']
-    if (splitOrientation.value !== 'none' && tabId === secondaryTabId.value) return ['terminal-grid__pane', 'is-secondary']
+    const focusClass = tabId === activeTabId.value ? 'is-focused' : ''
+    if (tabId === primaryTabId.value) return ['terminal-grid__pane', 'is-primary', focusClass]
+    if (splitOrientation.value !== 'none' && tabId === secondaryTabId.value) return ['terminal-grid__pane', 'is-secondary', focusClass]
     return ['terminal-grid__pane', 'is-hidden']
   }
 
@@ -217,16 +231,26 @@ export function useConsoleWorkspace() {
   }
 
   async function refreshActiveSessions(): Promise<void> {
+    if (refreshingSessions) return
+    refreshingSessions = true
     try {
       const active = await listTerminalSessions()
       const byId = new Map(active.items.map((item) => [item.session_id, item]))
-      for (const tab of tabs.value) {
+      for (const tab of [...tabs.value]) {
         const updated = byId.get(tab.id)
-        if (updated) tab.session = updated
+        if (updated) updateSession(tab.id, updated)
       }
       sessions.value = sessions.value.map((item) => byId.get(item.session_id) || item)
+      if (tabs.value.some((tab) => !byId.has(tab.id) && !endedStates.includes(tab.session.state))) {
+        const recent = await listTerminalHistory('', 50)
+        for (const session of recent.items) {
+          if (!byId.has(session.session_id) && endedStates.includes(session.state)) updateSession(session.session_id, session)
+        }
+      }
     } catch {
       // The WebSocket owns terminal connectivity; status polling is best effort.
+    } finally {
+      refreshingSessions = false
     }
   }
 
@@ -241,6 +265,14 @@ export function useConsoleWorkspace() {
   }
 
   function addTerminalTab(created: { session: TerminalSession; ticket: string }): void {
+    if (disposed) {
+      void closeTerminalSession(created.session.session_id).catch(() => undefined)
+      return
+    }
+    if (tabs.value.some((tab) => tab.id === created.session.session_id)) {
+      selectTab(created.session.session_id)
+      return
+    }
     if (!sessions.value.some(item => item.session_id === created.session.session_id)) sessions.value.push(created.session)
     const tab: TerminalTab = {
       id: created.session.session_id,
@@ -248,15 +280,14 @@ export function useConsoleWorkspace() {
       ticket: created.ticket,
     }
     tabs.value.push(tab)
-    activeTabId.value = tab.id
-    if (splitOrientation.value !== 'none' && !secondaryTabId.value) secondaryTabId.value = tab.id
+    selectTab(tab.id)
   }
 
-  async function openDevice(device: DeviceListItem): Promise<void> {
+  async function openDevice(device: DeviceListItem, addressRole?: 'primary' | 'backup'): Promise<void> {
     selectedDeviceUuid.value = device.device_uuid
     openingDeviceUuid.value = device.device_uuid
     try {
-      const created = await createTerminalSession(device.device_uuid, 'AUTO')
+      const created = await createTerminalSession(device.device_uuid, 'AUTO', 120, 32, addressRole)
       addTerminalTab(created)
       await loadSessions()
     } catch (error) {
@@ -264,6 +295,27 @@ export function useConsoleWorkspace() {
     } finally {
       openingDeviceUuid.value = ''
     }
+  }
+
+  async function openDeviceExternalTerminal(device: DeviceListItem): Promise<void> {
+    try {
+      const preflight = await externalTerminalLauncher.preflightDeviceTerminalTargets([device.device_uuid])
+      if (!preflight) return
+      if (!preflight.launchableDevices.length) {
+        externalTerminalLauncher.showPreflightSkipped(preflight.skippedDevices)
+        return
+      }
+      const result = await externalTerminalLauncher.launchDeviceTerminalTargets(preflight.launchableDevices, preflight.terminalType)
+      if (result) externalTerminalLauncher.showLaunchResult(result)
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '打开外部终端失败')
+    }
+  }
+
+  async function copyConnectionAddress(address: string): Promise<void> {
+    const result = await getPlatformAdapter().writeClipboardText(address)
+    if (result.success) ElMessage.success('已复制连接地址')
+    else ElMessage.error(result.error || '复制连接地址失败')
   }
 
   async function quickConnect(
@@ -408,6 +460,53 @@ export function useConsoleWorkspace() {
     }
   }
 
+  function toggleProfileGroup(folderId: string): void {
+    collapsedProfileGroups.value = collapsedProfileGroups.value.includes(folderId)
+      ? collapsedProfileGroups.value.filter((value) => value !== folderId)
+      : [...collapsedProfileGroups.value, folderId]
+  }
+
+  async function saveProfileAction(profile: TerminalProfile, action: 'rename' | 'copy' | 'move', folderId = ''): Promise<void> {
+    try {
+      let name = profile.name
+      if (action !== 'move') {
+        const copy = action === 'copy'
+        const result = await ElMessageBox.prompt('连接名称', copy ? '复制保存连接' : '重命名保存连接', {
+          inputValue: copy ? `${profile.name} 副本` : profile.name,
+          confirmButtonText: copy ? '复制' : '保存',
+          cancelButtonText: '取消',
+        })
+        name = result.value
+      }
+      const { host, port, protocol, username, encoding, vendor, device_type, favorite } = profile
+      await saveTerminalProfile({
+        name, host, port, protocol, username, encoding, vendor, device_type, favorite,
+        folder_id: action === 'move' ? folderId : profile.folder_id,
+        remember_password: action === 'copy' ? false : null,
+      }, action === 'copy' ? undefined : profile.profile_id)
+      await loadProfiles()
+    } catch (error) {
+      if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '保存连接操作失败')
+    }
+  }
+
+  function showProfileMenu(event: MouseEvent, profile: TerminalProfile): void {
+    event.preventDefault()
+    hideContextMenu()
+    contextProfile.value = profile
+    profileContextMenu.value = { visible: true, x: event.clientX, y: event.clientY }
+  }
+
+  function startProfileDrag(profile: TerminalProfile | null): void {
+    draggedProfile.value = profile
+  }
+
+  function dropProfileOnFolder(folderId: string): void {
+    const profile = draggedProfile.value
+    draggedProfile.value = null
+    if (profile && profile.folder_id !== folderId) void saveProfileAction(profile, 'move', folderId)
+  }
+
   async function openSelectedDevices(): Promise<void> {
     const selected = devices.value.filter((device) => selectedDeviceUuids.value.includes(device.device_uuid))
     for (const device of selected) await openDevice(device)
@@ -429,8 +528,7 @@ export function useConsoleWorkspace() {
     }
     try {
       const ticket = await issueTerminalTicket(session.session_id)
-      tabs.value.push({ id: session.session_id, session, ticket: ticket.ticket })
-      activeTabId.value = session.session_id
+      if (!disposed) addTerminalTab({ session, ticket: ticket.ticket })
     } catch (error) {
       ElMessage.error(error instanceof Error ? error.message : '活动会话重新打开失败')
     }
@@ -473,38 +571,64 @@ export function useConsoleWorkspace() {
   }
 
   function selectTab(tabId: string): void {
-    if (splitOrientation.value !== 'none' && tabId !== activeTabId.value && activeTabId.value) {
-      secondaryTabId.value = tabId
-    } else {
-      activeTabId.value = tabId
+    if (!tabs.value.some((tab) => tab.id === tabId) || closingTabIds.value.has(tabId)) return
+    if (splitOrientation.value === 'none') {
+      primaryTabId.value = tabId
+    } else if (tabId !== primaryTabId.value && tabId !== secondaryTabId.value) {
+      if (activeTabId.value === primaryTabId.value) secondaryTabId.value = tabId
+      else primaryTabId.value = tabId
     }
+    activeTabId.value = tabId
     nextTick(() => terminalRefs.value[tabId]?.focus())
   }
 
-  function closeTab(tabId: string): void {
+  function removeTab(tabId: string): void {
+    closingTabIds.value.delete(tabId)
     const index = tabs.value.findIndex((tab) => tab.id === tabId)
     if (index < 0) return
     tabs.value.splice(index, 1)
-    if (activeTabId.value === tabId) activeTabId.value = tabs.value[Math.max(0, index - 1)]?.id || ''
-    if (secondaryTabId.value === tabId) secondaryTabId.value = tabs.value.find((tab) => tab.id !== activeTabId.value)?.id || ''
-    if (tabs.value.length < 2) splitOrientation.value = 'none'
+    if (primaryTabId.value === tabId) {
+      primaryTabId.value = tabs.value.find((tab) => tab.id !== secondaryTabId.value)?.id || secondaryTabId.value
+    }
+    if (secondaryTabId.value === tabId) secondaryTabId.value = tabs.value.find((tab) => tab.id !== primaryTabId.value)?.id || ''
+    const focusRemoved = activeTabId.value === tabId
+    if (focusRemoved) activeTabId.value = primaryTabId.value || tabs.value[0]?.id || ''
+    if (tabs.value.length < 2 || primaryTabId.value === secondaryTabId.value || !secondaryTabId.value) closeSplit()
+    if (focusRemoved && activeTabId.value) nextTick(() => terminalRefs.value[activeTabId.value]?.focus())
   }
 
-  function closeOtherTabs(tabId: string): void {
+  async function closeTab(tabId: string): Promise<void> {
+    const tab = tabs.value.find((item) => item.id === tabId)
+    if (!tab || closingTabIds.value.has(tabId)) return
+    if (['CLOSED', 'FAILED', 'CANCELLED'].includes(tab.session.state)) {
+      removeTab(tabId)
+      return
+    }
+    closingTabIds.value.add(tabId)
+    try {
+      updateSession(tabId, await closeTerminalSession(tabId))
+    } catch (error) {
+      closingTabIds.value.delete(tabId)
+      ElMessage.error(error instanceof Error ? error.message : '结束终端会话失败')
+    }
+  }
+
+  async function closeOtherTabs(tabId: string): Promise<void> {
     if (!tabs.value.some(tab => tab.id === tabId)) return
-    tabs.value = tabs.value.filter((tab) => tab.id === tabId)
-    activeTabId.value = tabId
-    secondaryTabId.value = ''
-    splitOrientation.value = 'none'
+    const removed = tabs.value.filter((tab) => tab.id !== tabId)
+    await Promise.all(removed.map((tab) => closeTab(tab.id)))
+    if (tabs.value.some((tab) => tab.id === tabId)) {
+      activeTabId.value = tabId
+      primaryTabId.value = tabId
+      secondaryTabId.value = ''
+      splitOrientation.value = 'none'
+    }
   }
 
   async function closeAllTabs(): Promise<void> {
-    try { await ElMessageBox.confirm('关闭所有终端标签？后端终端会话和 SFTP 任务继续运行，可从终端会话重新打开。', '关闭所有标签', { confirmButtonText: '关闭标签', cancelButtonText: '取消' }) }
+    try { await ElMessageBox.confirm('关闭所有标签并结束对应终端会话？', '关闭所有标签', { confirmButtonText: '关闭并结束', cancelButtonText: '取消' }) }
     catch { return }
-    tabs.value = []
-    activeTabId.value = ''
-    secondaryTabId.value = ''
-    splitOrientation.value = 'none'
+    await Promise.all(tabs.value.map((tab) => closeTab(tab.id)))
   }
 
   function startTabDrag(tabId: string): void {
@@ -531,9 +655,7 @@ export function useConsoleWorkspace() {
         '结束会话',
         { type: 'warning', confirmButtonText: '结束会话', cancelButtonText: '取消' },
       )
-      const session = await closeTerminalSession(tab.id)
-      updateSession(tab.id, session)
-      await loadSessions()
+      await closeTab(tab.id)
     } catch (error) {
       if (error !== 'cancel' && error !== 'close') ElMessage.error(error instanceof Error ? error.message : '会话关闭失败')
     }
@@ -546,18 +668,25 @@ export function useConsoleWorkspace() {
   }
 
   async function reconnectSession(session: TerminalSession, closeExistingTab = false): Promise<void> {
+    if (reconnectingIds.has(session.session_id) || closingTabIds.value.has(session.session_id)) return
+    reconnectingIds.add(session.session_id)
     try {
       const created = await reconnectTerminalSession(session.session_id)
-      if (closeExistingTab) closeTab(session.session_id)
-      tabs.value.push({ id: created.session.session_id, session: created.session, ticket: created.ticket })
-      activeTabId.value = created.session.session_id
+      if (closeExistingTab) removeTab(session.session_id)
+      addTerminalTab(created)
       await loadSessions()
     } catch (error) {
       ElMessage.error(error instanceof Error ? error.message : '会话重连失败')
+    } finally {
+      reconnectingIds.delete(session.session_id)
     }
   }
 
   async function terminateSession(session: TerminalSession): Promise<void> {
+    if (tabs.value.some((tab) => tab.id === session.session_id)) {
+      await closeTab(session.session_id)
+      return
+    }
     if (['CLOSED', 'FAILED', 'CANCELLED'].includes(session.state)) return
     try {
       const closed = await closeTerminalSession(session.session_id)
@@ -569,6 +698,8 @@ export function useConsoleWorkspace() {
   }
 
   function updateSession(tabId: string, session: TerminalSession): void {
+    if (session.state === 'CLOSED' || session.state === 'CANCELLED'
+      || (closingTabIds.value.has(tabId) && endedStates.includes(session.state))) removeTab(tabId)
     const tab = tabs.value.find((item) => item.id === tabId)
     if (tab) tab.session = session
     const stored = sessions.value.findIndex((item) => item.session_id === session.session_id)
@@ -580,19 +711,24 @@ export function useConsoleWorkspace() {
       ElMessage.info('至少打开两个终端后才能分屏')
       return
     }
+    if (splitOrientation.value === 'none') {
+      secondaryTabId.value = tabs.value.find((tab) => tab.id !== primaryTabId.value)?.id || ''
+    }
     splitOrientation.value = orientation
-    secondaryTabId.value = tabs.value.find((tab) => tab.id !== activeTabId.value)?.id || ''
     splitRatio.value = 0.5
-    nextTick(() => {
-      terminalRefs.value[activeTabId.value]?.fit()
-      terminalRefs.value[secondaryTabId.value]?.fit()
-    })
+    void nextTick(fitVisibleTerminals)
   }
 
   function closeSplit(): void {
+    stopDividerDrag?.()
     splitOrientation.value = 'none'
     secondaryTabId.value = ''
-    nextTick(() => terminalRefs.value[activeTabId.value]?.fit())
+    primaryTabId.value = activeTabId.value || primaryTabId.value
+    void nextTick(fitVisibleTerminals)
+  }
+
+  function fitVisibleTerminals(): void {
+    for (const id of visibleTabIds.value) terminalRefs.value[id]?.fit()
   }
 
   function startDividerDrag(event: PointerEvent): void {
@@ -605,15 +741,19 @@ export function useConsoleWorkspace() {
         ? (moveEvent.clientX - rect.left) / rect.width
         : (moveEvent.clientY - rect.top) / rect.height
       splitRatio.value = Math.max(0.2, Math.min(0.8, ratio))
-      terminalRefs.value[activeTabId.value]?.fit()
-      terminalRefs.value[secondaryTabId.value]?.fit()
+      void nextTick(fitVisibleTerminals)
     }
+    stopDividerDrag?.()
     const stop = () => {
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+      stopDividerDrag = undefined
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', stop, { once: true })
+    window.addEventListener('pointercancel', stop, { once: true })
+    stopDividerDrag = stop
   }
 
   function clearActiveTerminal(): void {
@@ -771,11 +911,11 @@ export function useConsoleWorkspace() {
     }
   }
 
-  async function exportReplay(format: 'txt' | 'jsonl' | 'log' | 'zip'): Promise<void> {
-    if (!replaySession.value) return
+  async function exportReplay(format: 'txt' | 'jsonl' | 'log' | 'zip', session = replaySession.value): Promise<void> {
+    if (!session) return
     try {
-      const name = format === 'log' ? replaySession.value.recording_log_name : format === 'zip' ? replaySession.value.recording_zip_name : undefined
-      const result = await downloadBackendResource(terminalExportDownloadRequest(replaySession.value.session_id, format, name))
+      const name = format === 'log' ? session.recording_log_name : format === 'zip' ? session.recording_zip_name : undefined
+      const result = await downloadBackendResource(terminalExportDownloadRequest(session.session_id, format, name))
       if (result.status === 'saved') ElMessage.success('会话记录已保存')
       else if (result.status === 'started') ElMessage.info('浏览器已开始下载')
       else if (result.status === 'failed') ElMessage.error(result.error || '保存失败')
@@ -793,6 +933,7 @@ export function useConsoleWorkspace() {
 
   function showDeviceMenu(event: MouseEvent, device: DeviceListItem): void {
     event.preventDefault()
+    hideContextMenu()
     selectedDeviceUuid.value = device.device_uuid
     contextDevice.value = device
     contextMenu.value = { visible: true, x: event.clientX, y: event.clientY }
@@ -801,6 +942,7 @@ export function useConsoleWorkspace() {
 
   function showSessionMenu(event: MouseEvent, session: TerminalSession): void {
     event.preventDefault()
+    hideContextMenu()
     contextSession.value = session
     sessionContextMenu.value = { visible: true, x: event.clientX, y: event.clientY }
     contextMenu.value.visible = false
@@ -814,6 +956,7 @@ export function useConsoleWorkspace() {
   function hideContextMenu(): void {
     contextMenu.value.visible = false
     sessionContextMenu.value.visible = false
+    profileContextMenu.value.visible = false
   }
 
   function formatTime(value: number | null): string {
@@ -832,6 +975,7 @@ export function useConsoleWorkspace() {
   onMounted(async () => {
     window.addEventListener('click', hideContextMenu)
     await Promise.all([loadDevices(), loadSessions(), loadProfiles(), loadTerminalPreferences()])
+    if (disposed) return
     const detachedId = String(router.currentRoute.value.query.terminal_session || '')
     if (/^[a-f0-9]{32}$/.test(detachedId)) {
       try {
@@ -848,12 +992,14 @@ export function useConsoleWorkspace() {
       if (requestedDevice) await openDevice(requestedDevice)
       else ElMessage.warning('设备已不存在或不属于当前局点')
     }
-    activityTimer = setInterval(() => void refreshActiveSessions(), 3000)
+    if (!disposed) activityTimer = setInterval(() => void refreshActiveSessions(), 3000)
   })
 
   onBeforeUnmount(() => {
+    disposed = true
     window.removeEventListener('click', hideContextMenu)
     if (activityTimer) clearInterval(activityTimer)
+    stopDividerDrag?.()
   })
   watch(() => router.currentRoute.value.query.device_uuid, async value => {
     if (router.currentRoute.value.name !== 'device-console' || !value) return
@@ -881,6 +1027,7 @@ export function useConsoleWorkspace() {
     selectedDeviceUuid,
     selectedDeviceUuids,
     activeTabId,
+    closingTabIds,
     secondaryTabId,
     navigationMode,
     deviceSearch,
@@ -899,7 +1046,10 @@ export function useConsoleWorkspace() {
     contextDevice,
     contextMenu,
     contextSession,
+    contextProfile,
     sessionContextMenu,
+    profileContextMenu,
+    collapsedProfileGroups,
     settingsVisible,
     sftpVisible,
     quickConnectVisible,
@@ -917,9 +1067,17 @@ export function useConsoleWorkspace() {
     paneClass,
     setTerminalRef,
     openDevice,
+    openDeviceExternalTerminal,
+    copyConnectionAddress,
+    externalTerminalBusy: externalTerminalLauncher.busy,
     quickConnect,
     openProfile,
     editProfile,
+    saveProfileAction,
+    toggleProfileGroup,
+    showProfileMenu,
+    startProfileDrag,
+    dropProfileOnFolder,
     createProfileFolder,
     renameProfileFolder,
     removeProfileFolder,

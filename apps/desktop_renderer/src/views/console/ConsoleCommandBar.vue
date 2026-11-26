@@ -10,7 +10,7 @@ const emit = defineEmits<{ opened: [value: TerminalSessionConnection]; selection
 type Button = { id: string; name: string; action: string; text: string; color: string; tooltip: string; disable_tooltip: boolean; order: number; enabled: boolean }
 type Group = { id: string; name: string; buttons: Button[] }
 type Document = { version: number; groups: Group[] }
-type Job = { id: string; rows: Array<{ state: string }> }
+type Job = { id: string; rows: Array<{ state: string; session_id?: string; name?: string; sent_segments?: number; error?: string }> }
 const config = ref<Document>({ version: 1, groups: [] })
 const groupId = ref('group-0')
 const group = computed(() => config.value.groups.find(item => item.id === groupId.value))
@@ -18,9 +18,11 @@ const text = ref('')
 const target = ref('current')
 const mode = ref('lines')
 const interval = ref(200)
-const collapsed = ref(false)
 const batchExpanded = ref(false)
 const managing = ref(false)
+const query = ref('')
+const latestBatch = ref<Job | null>(null)
+const batchActive = computed(() => latestBatch.value?.rows.some(row => ['WAITING', 'RUNNING'].includes(row.state)))
 const preview = ref(false)
 const pendingButton = ref<Button | null>(null)
 const busy = ref(false)
@@ -31,6 +33,9 @@ let refreshing = false
 let disposed = false
 const activeSessions = computed(() => props.sessions.filter(item => ['CONNECTED', 'RUNNING'].includes(item.state)))
 const chosen = computed(() => target.value === 'all' ? activeSessions.value : target.value === 'selected' ? props.sessions.filter(item => props.selected.length ? props.selected.includes(item.session_id) : props.selectedDevices.some(device => device.device_uuid === item.device_uuid)) : props.active ? [props.active] : [])
+const filteredButtons = computed(() => (group.value?.buttons || [])
+  .filter(button => button.enabled && `${button.name} ${button.text}`.toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase()))
+  .sort((left, right) => left.order - right.order))
 async function load() { config.value = await apiRequest<Document>('/api/terminal/quick-buttons'); if (!group.value) groupId.value = config.value.groups[0]?.id || '' }
 onMounted(() => { void load().catch(error => ElMessage.error(String(error))) })
 onBeforeUnmount(() => { disposed = true; pendingJobs.clear(); if (poll) clearInterval(poll) })
@@ -56,14 +61,31 @@ async function importConfig(event: Event) {
   } catch (error) { ElMessage.error(String(error)) } finally { input.value = '' }
 }
 async function exportConfig() { try { await downloadBackendResource({ apiPath: '/api/terminal/quick-buttons/export', suggestedName: 'console-quick-buttons.json' }) } catch (error) { ElMessage.error(String(error)) } }
-function requestSend(button: Button | null = null) { pendingButton.value = button; if (button && target.value === 'current') void send(); else preview.value = true }
+function requestSend(button: Button | null = null) {
+  pendingButton.value = button
+  if (button && !batchExpanded.value) {
+    target.value = 'current'
+    void send()
+  } else preview.value = true
+}
+async function cancelBatch() {
+  const id = latestBatch.value?.id
+  if (!id || !batchActive.value) return
+  try {
+    const updated = await apiRequest<Job>(`/api/terminal/batch-sends/${id}/cancel`, { method: 'POST' })
+    if (latestBatch.value?.id === id) latestBatch.value = updated
+  } catch (error) { ElMessage.error(String(error)) }
+}
 function reportCompletion(job: Job): boolean {
   if (job.rows.some(item => ['WAITING', 'RUNNING'].includes(item.state))) return false
   const sent = job.rows.filter(item => item.state === 'SENT').length
   const remaining = job.rows.length - sent
   if (!remaining && sent) ElMessage.success(`命令已写入 ${sent} 个终端`)
   else if (sent) ElMessage.warning(`命令已写入 ${sent} 个终端，${remaining} 个目标未确认发送`)
-  else ElMessage.error('命令未确认写入终端，请检查连接状态')
+  else if (remaining) {
+    const reason = job.rows.find(item => item.error)?.error
+    ElMessage.error(reason || (job.rows.every(item => item.state === 'CANCELLED_PENDING') ? '发送已取消' : '发送失败'))
+  }
   return true
 }
 async function refreshJobs() {
@@ -74,6 +96,7 @@ async function refreshJobs() {
       try {
         const result = await apiRequest<Job>(`/api/terminal/batch-sends/${id}`)
         if (disposed) return
+        if (latestBatch.value?.id === id) latestBatch.value = result
         pendingJobs.set(id, 0)
         if (reportCompletion(result)) pendingJobs.delete(id)
       } catch {
@@ -136,12 +159,14 @@ async function send() {
       for (const created of createdSessions) {
         try { await waitConnected(created) }
         catch (error) { ElMessage.error(`${created.session.device_name}: ${String(error)}`) }
+        if (disposed) return
         ids.push(created.session.session_id)
       }
     }
     if (!ids.length) throw new Error('未选择终端或没有可发送的目标')
     const button = pendingButton.value
     const submitted = await apiRequest<Job>('/api/terminal/batch-sends', { method: 'POST', body: JSON.stringify({ session_ids: ids, text: text.value, mode: mode.value, interval_ms: interval.value, scope: ['new', 'window'].includes(target.value) ? 'new' : target.value, ...(button ? { group_id: groupId.value, button_id: button.id } : {}) }) })
+    if (batchExpanded.value) latestBatch.value = submitted
     preview.value = false
     if (!disposed && !reportCompletion(submitted)) {
       ElMessage.info('命令发送中')
@@ -155,11 +180,29 @@ async function newGroup() { const { value } = await ElMessageBox.prompt('按钮�
 
 <template>
   <section class="command-bar">
-    <div class="quick-buttons"><button title="折叠快捷按钮" @click="collapsed = !collapsed">{{ collapsed ? '▸' : '▾' }}</button><select v-model="groupId" aria-label="快捷按钮组"><option v-for="item in config.groups" :key="item.id" :value="item.id">{{ item.name }}</option></select><template v-if="!collapsed"><button v-for="button in [...(group?.buttons || [])].sort((a,b) => a.order - b.order)" v-show="button.enabled" :key="button.id" :style="{ borderColor: button.color, color: button.color }" :title="button.disable_tooltip ? undefined : button.tooltip" @click="requestSend(button)">{{ button.name }}</button></template><button @click="managing = true">管理按钮</button></div>
-    <div class="quick-buttons__batch-toggle"><button type="button" @click="batchExpanded = !batchExpanded">{{ batchExpanded ? '收起批量发送' : '批量发送' }}</button></div>
+    <div class="quick-buttons"><button type="button" @click="managing = true">管理按钮</button></div>
     <div v-show="batchExpanded" class="command-input"><select v-model="target" aria-label="发送目标"><option value="current">当前会话</option><option value="selected">选中会话</option><option value="all">所有已连接会话</option><option value="new">新建终端标签</option><option value="window">独立终端窗口</option></select><textarea v-model="text" rows="2" aria-label="批量命令" placeholder="输入或粘贴命令" @keydown.enter.exact.prevent="requestSend()" /><select v-model="mode" aria-label="发送模式"><option value="block">整段发送</option><option value="lines">逐行 + CR</option></select><select v-if="mode === 'lines'" v-model="interval" aria-label="发送间隔"><option :value="0">立即</option><option :value="200">200ms</option><option :value="500">500ms</option><option :value="1000">1000ms</option></select><el-button type="primary" :loading="busy" @click="requestSend()">预览发送</el-button></div>
     <el-dialog v-model="preview" title="发送预览" width="min(700px,90vw)"><p>{{ target }} · {{ target === 'new' && selectedDevices.length ? selectedDevices.length : chosen.length }} 个目标</p><div>{{ target === 'new' && selectedDevices.length ? selectedDevices.map(item => item.name).join('、') : chosen.map(item => item.session_name || item.device_name).join('、') }}</div><pre>{{ pendingButton?.text || text }}</pre><template #footer><el-button @click="preview = false">取消</el-button><el-button type="primary" :loading="busy" @click="send">确认发送</el-button></template></el-dialog>
-    <el-dialog v-model="managing" title="快捷按钮管理" width="min(1100px,96vw)"><div class="manage-toolbar"><select v-model="groupId"><option v-for="item in config.groups" :key="item.id" :value="item.id">{{ item.name }}</option></select><el-button @click="newGroup">新增组</el-button><el-input v-if="group" v-model="group.name" style="width:160px" /><el-button @click="newButton">新增按钮</el-button><el-button @click="importInput?.click()">导入 JSON</el-button><input ref="importInput" hidden type="file" accept=".json" @change="importConfig" /><el-button @click="exportConfig">导出 JSON</el-button><el-button @click="reset">恢复默认</el-button></div><div class="button-editor" v-for="(button,index) in group?.buttons" :key="button.id"><input v-model="button.name" aria-label="按钮名称" /><select v-model="button.action"><option value="SEND_STRING">Send String</option></select><textarea v-model="button.text" aria-label="发送字符串" rows="2" /><input v-model="button.color" type="color" aria-label="按钮颜色" /><input v-model="button.tooltip" placeholder="Tooltip" /><label><input v-model="button.disable_tooltip" type="checkbox" />不提示</label><label><input v-model="button.enabled" type="checkbox" />启用</label><button @click="duplicate(button)">复制</button><button @click="reorder(index,-1)">↑</button><button @click="reorder(index,1)">↓</button><button @click="group?.buttons.splice(index,1)">删除</button></div><template #footer><el-button @click="managing = false">关闭</el-button><el-button type="primary" @click="save">保存配置</el-button></template></el-dialog>
+    <section v-if="batchExpanded && latestBatch" class="dispatch-results" aria-label="批量写入状态">
+      <button type="button" :disabled="!batchActive" @click="cancelBatch">取消剩余发送</button>
+      <ul>
+        <li v-for="row in latestBatch.rows" :key="row.session_id">
+          <span>{{ row.name || row.session_id }}</span>
+          <span>{{ row.state }} · {{ row.sent_segments || 0 }}</span>
+          <span v-if="row.error">{{ row.error }}</span>
+        </li>
+      </ul>
+    </section>
+    <el-dialog v-model="managing" title="快捷按钮管理" width="min(1100px,96vw)">
+      <div class="manage-toolbar">
+        <input v-model="query" aria-label="搜索快捷命令" placeholder="搜索快捷命令" />
+        <el-button @click="batchExpanded = !batchExpanded; managing = false">{{ batchExpanded ? '收起批量命令' : '批量命令' }}</el-button>
+      </div>
+      <div class="quick-buttons">
+        <button v-for="button in filteredButtons" :key="button.id" type="button" :disabled="busy" :style="{ borderColor: button.color, color: button.color }" :title="button.disable_tooltip ? undefined : button.tooltip" @click="requestSend(button)">{{ button.name }}</button>
+      </div>
+      <div class="manage-toolbar"><select v-model="groupId"><option v-for="item in config.groups" :key="item.id" :value="item.id">{{ item.name }}</option></select><el-button @click="newGroup">新增组</el-button><el-input v-if="group" v-model="group.name" style="width:160px" /><el-button @click="newButton">新增按钮</el-button><el-button @click="importInput?.click()">导入 JSON</el-button><input ref="importInput" hidden type="file" accept=".json" @change="importConfig" /><el-button @click="exportConfig">导出 JSON</el-button><el-button @click="reset">恢复默认</el-button></div><div class="button-editor" v-for="(button,index) in group?.buttons" :key="button.id"><input v-model="button.name" aria-label="按钮名称" /><select v-model="button.action"><option value="SEND_STRING">Send String</option></select><textarea v-model="button.text" aria-label="发送字符串" rows="2" /><input v-model="button.color" type="color" aria-label="按钮颜色" /><input v-model="button.tooltip" placeholder="Tooltip" /><label><input v-model="button.disable_tooltip" type="checkbox" />不提示</label><label><input v-model="button.enabled" type="checkbox" />启用</label><button @click="duplicate(button)">复制</button><button @click="reorder(index,-1)">↑</button><button @click="reorder(index,1)">↓</button><button @click="group?.buttons.splice(index,1)">删除</button></div><template #footer><el-button @click="managing = false">关闭</el-button><el-button type="primary" @click="save">保存配置</el-button></template>
+    </el-dialog>
   </section>
 </template>
 <style scoped>
@@ -172,4 +215,6 @@ textarea,select,input { background:var(--nc-bg-panel);color:var(--nc-text-primar
 .button-editor { display:flex;align-items:center;gap:5px;min-width:950px;padding:8px 0; }
 .button-editor textarea { flex:1; }.button-editor input:not([type]) { width:110px; }
 pre { white-space:pre-wrap;max-height:50vh;overflow:auto; }
+.dispatch-results { max-height: 9rem; overflow: auto; }
+.dispatch-results li { display: flex; flex-wrap: wrap; gap: 8px; }
 </style>

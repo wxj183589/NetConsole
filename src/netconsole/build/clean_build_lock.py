@@ -43,6 +43,8 @@ ALLOWED_RUNTIME = (
     "src/netconsole/assets/licenses/cryptography_license.bsd.txt",
     "src/netconsole/assets/licenses/pyopenssl_apache_license.txt",
     "src/netconsole/resources/log_policy.json",
+    "src/netconsole/resources/terminal_rules/highlight_rules.json",
+    "src/netconsole/resources/terminal_rules/dangerous_command_rules.json",
     "apps/desktop_renderer/dist",
     "resources/device_command_profiles.json",
     "resources/device_compatibility_profiles.json",
@@ -85,6 +87,7 @@ ALLOWED_RUNTIME = (
     "netconsole/assets/desktop_renderer",
     "netconsole/resources",
     "netconsole/resources/log_policy.json",
+    "netconsole/resources/terminal_rules",
 )
 ALLOWED_DIST_ROOT = (EXE_NAME, INTERNAL_DIR, "tools")
 REQUIRED_PYINSTALLER_ARGS = (

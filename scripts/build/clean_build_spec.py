@@ -69,6 +69,10 @@ SRC_ROOT = ROOT / "src"
 DEVICE_COMMAND_PROFILES_SOURCE = "resources/device_command_profiles.json"
 DEVICE_COMPATIBILITY_PROFILES_SOURCE = "resources/device_compatibility_profiles.json"
 LOG_POLICY_SOURCE = "src/netconsole/resources/log_policy.json"
+TERMINAL_RULE_SOURCES = (
+    "src/netconsole/resources/terminal_rules/highlight_rules.json",
+    "src/netconsole/resources/terminal_rules/dangerous_command_rules.json",
+)
 PACKAGED_DEVICE_COMMAND_PROFILES = BUILD_ROOT / "packaged_assets" / "device_command_profiles.json"
 PACKAGED_CHANGELOG = BUILD_ROOT / "packaged_assets" / "changelog.md"
 PACKAGED_RUNTIME_ROOT = BUILD_ROOT / "packaged_assets" / "runtime"
@@ -96,6 +100,7 @@ ANALYSIS_TOC = BUILD_ROOT / "NetConsoleBackend" / "Analysis-00.toc"
 ALLOWED_DATA = [
     ("src/netconsole", "netconsole"),
     (LOG_POLICY_SOURCE, "netconsole/resources"),
+    *((source, "netconsole/resources/terminal_rules") for source in TERMINAL_RULE_SOURCES),
     ("apps/desktop_renderer/dist", "netconsole/assets/desktop_renderer"),
     ("src/netconsole/assets/open_source_notices.json", "netconsole/assets"),
     ("src/netconsole/assets/THIRD_PARTY_COMPONENTS.md", "netconsole/assets"),
@@ -387,6 +392,8 @@ def build_runtime_datas_from_import_graph() -> list[tuple[str, str]]:
             source_path = write_packaged_runtime_feature_policy()[source]
         else:
             source_path = ROOT / source
+        if source in TERMINAL_RULE_SOURCES and not source_path.is_file():
+            raise CleanBuildLockError(f"required terminal rule resource is missing: {source}")
         if (
             source == "apps/desktop_renderer/dist" and source_path.is_dir()
         ) or source_path.is_file():

@@ -17,7 +17,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from netconsole.backend.api.feature_access import require_feature
@@ -25,6 +25,7 @@ from netconsole.services.file_management_service import FileReferenceNotFound
 from netconsole.services.sftp_text_editor import MAX_TEXT_BYTES, TextRevision
 from netconsole.services.terminal_workspace import TerminalSessionManager
 from netconsole.services.terminal_sftp import TerminalSftpManager
+from netconsole.services.terminal_settings import MAX_RULE_FILE_BYTES
 
 
 router = APIRouter(prefix="/terminal", tags=["terminal"])
@@ -34,6 +35,7 @@ ws_router = APIRouter()
 class TerminalCreateRequest(BaseModel):
     device_uuid: str = Field(min_length=1, max_length=128)
     protocol: Literal["AUTO", "SSH", "TELNET"] = "AUTO"
+    address_role: Literal["primary", "backup"] | None = None
     cols: int = Field(default=120, ge=20, le=400)
     rows: int = Field(default=32, ge=5, le=200)
 
@@ -43,7 +45,7 @@ class TerminalProfileValues(BaseModel):
     host: str = Field(min_length=1, max_length=255)
     port: int = Field(ge=1, le=65535)
     protocol: Literal["SSH", "TELNET"] = "SSH"
-    username: str = Field(min_length=1, max_length=256)
+    username: str = Field(default="", max_length=256)
     encoding: str = Field(default="utf-8", min_length=1, max_length=32)
     vendor: str = Field(default="Other", max_length=80)
     device_type: str = Field(default="Other", max_length=40)
@@ -161,6 +163,34 @@ class TerminalSettingsUpdateRequest(BaseModel):
 
 class TerminalRulesReplaceRequest(BaseModel):
     rules: list[dict[str, Any]] = Field(max_length=5000)
+    repair_invalid: bool = False
+
+
+@router.get("/rules/{kind}/export", response_class=Response)
+def export_terminal_rules(kind: Literal["highlight", "dangerous"], request: Request):
+    try:
+        content = _manager(request).settings.export_rules(kind)
+        return Response(
+            content=content, media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="terminal-{kind}-rules.json"'},
+        )
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/rules/import")
+def import_terminal_rules(
+    request: Request, kind: Literal["highlight", "dangerous"] = Form(...),
+    file: UploadFile = File(...),
+):
+    try:
+        content = file.file.read(MAX_RULE_FILE_BYTES + 1)
+        filename = (file.filename or "导入规则.json").replace("\\", "/").rsplit("/", 1)[-1]
+        return _manager(request).settings.read_rule_file(
+            kind, content, filename=filename,
+        )
+    except (OSError, ValueError) as exc:
+        raise _translate_error(exc) from exc
 
 
 class TerminalManualLogStartRequest(BaseModel):
@@ -261,6 +291,7 @@ def create_session(payload: TerminalCreateRequest, request: Request) -> dict[str
         session, ticket = _manager(request).create_session(
             payload.device_uuid,
             protocol=payload.protocol,
+            address_role=payload.address_role,
             cols=payload.cols,
             rows=payload.rows,
         )
@@ -505,7 +536,9 @@ def replace_terminal_rules(
     request: Request,
 ) -> dict[str, Any]:
     try:
-        return _manager(request).settings.replace_rules(kind, payload.rules)
+        return _manager(request).settings.replace_rules(
+            kind, payload.rules, repair_invalid=payload.repair_invalid,
+        )
     except BaseException as exc:
         raise _translate_error(exc) from exc
 
