@@ -66,6 +66,29 @@ describe('Ground history playback isolation', () => {
     wrapper.unmount()
   })
 
+  it('aborts an in-flight MR replay when the selected run changes', async () => {
+    const first = { run_id: 'first', actual_started_at: '2026-11-07T00:00:00Z', actual_ended_at: '2026-11-07T01:00:00Z' } as GroundRun
+    const second = { ...first, run_id: 'second' }
+    api.heartbeat.mockResolvedValue({ mrs: [{ mr_uuid: 'mr', train_id: 'train', role: 'CT' }] })
+    let finish!: () => void
+    api.monitor.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+    const wrapper = shallowMount(GroundHistoryPlayback, {
+      props: { siteId: 'demo', runs: [first, second], trains: [], active: true },
+      global: { stubs: { ElSelect: true, ElOption: true, ElDatePicker: true, ElButton: true, ElAlert: true } },
+    })
+    await flushPromises()
+    const view = wrapper.vm as unknown as { selectedRunId: string; query: () => Promise<void>; result: unknown; loading: boolean }
+    const pending = view.query()
+    const signal = api.monitor.mock.calls[0]![2].signal as AbortSignal
+    view.selectedRunId = 'second'
+    expect(signal.aborted).toBe(true)
+    finish()
+    await pending
+    expect(view.result).toBeNull()
+    expect(view.loading).toBe(false)
+    wrapper.unmount()
+  })
+
   it('puts one navigator before five independently collapsible chart regions', async () => {
     const run = { run_id: 'run-1', actual_started_at: '2026-11-07T00:00:00Z', actual_ended_at: '2026-11-07T01:00:00Z' } as unknown as GroundRun
     const train = { train_id: 'train-1', train_no: '001', endpoints: [{ mr_id: 'mr-1', endpoint: 'CT', mr_name: 'MR-1' }] } as unknown as GroundTrain

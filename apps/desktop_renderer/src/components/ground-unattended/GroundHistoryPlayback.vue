@@ -129,7 +129,21 @@ function applyRunRange(): void {
 watch(() => props.runs, (rows) => {
   if (!rows.some((row) => row.run_id === selectedRunId.value)) selectedRunId.value = rows[0]?.run_id || ''
 }, { immediate: true })
-watch(selectedRunId, (runId) => { emit('view-syslog', ''); applyRunRange(); result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }; quickError.value = ''; selectedMrId.value = mrOptions.value[0]?.id || ''; void loadHistoricalMrs(runId) }, { immediate: true })
+watch(selectedRunId, (runId) => {
+  stopRequests()
+  emit('view-syslog', '')
+  applyRunRange()
+  result.value = null
+  eventResult.value = null
+  loading.value = false
+  quickLoading.value = false
+  error.value = ''
+  quickError.value = ''
+  quickRows.value = { primary: [], backup: [] }
+  quickBuckets.value = { primary: [], backup: [] }
+  selectedMrId.value = mrOptions.value[0]?.id || ''
+  void loadHistoricalMrs(runId)
+}, { immediate: true, flush: 'sync' })
 watch(mrOptions, (rows) => { if (historyLoading.value) return; if (!rows.some((row) => row.id === selectedMrId.value)) selectedMrId.value = rows[0]?.id || '' }, { immediate: true })
 
 async function query(): Promise<void> {
