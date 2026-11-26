@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from netconsole.repositories.ground_unattended_repository import GroundUnattendedRepository
+from netconsole.services.ground_unattended.raw_query import GroundRawStreamQueryService
 from netconsole.services.ground_unattended.syslog_runtime import (
     RawCompressionWorker,
     RawStreamWriter,
@@ -30,7 +31,7 @@ def _wait(predicate, timeout: float = 60) -> None:
         time.sleep(0.01)
 
 
-def _receiver(tmp_path: Path) -> SyslogUdpReceiver:
+def _receiver(tmp_path: Path, *, tcp_enabled: bool = False) -> SyslogUdpReceiver:
     repository = GroundUnattendedRepository(tmp_path / "ground" / "index.sqlite", site_id="site-a")
     receiver = SyslogUdpReceiver(repository=repository, site_id="site-a")
     receiver.start(
@@ -39,8 +40,49 @@ def _receiver(tmp_path: Path) -> SyslogUdpReceiver:
         listen_host="127.0.0.1", listen_port=0, queue_capacity=100,
         flush_records=100, flush_interval_seconds=0.05,
         event_batch_size=500, event_batch_interval_seconds=0.05,
+        tcp_enabled=tcp_enabled,
     )
     return receiver
+
+
+def test_ground_syslog_tcp_and_udp_share_one_persistence_pipeline(tmp_path, caplog):
+    receiver = _receiver(tmp_path, tcp_enabled=True)
+    host, port_text = receiver.health_snapshot()["tcp_listen_address"].split(":")
+    address = host, int(port_text)
+    chinese = "<134>UNKNOWN/6/TEST: 中文日志".encode()
+    first = str(len(chinese)).encode() + b" " + chinese
+    second = b"<134>UNKNOWN/6/TEST: second"
+    udp = b"<134>UNKNOWN/6/TEST: UDP"
+    try:
+        with (
+            socket.create_connection(address) as client,
+            socket.create_connection(address) as other,
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as datagram,
+        ):
+            client.sendall(first[:-2])
+            other.sendall(b"9 short")
+            other.shutdown(socket.SHUT_WR)
+            _wait(lambda: "frame is truncated" in caplog.text, timeout=5)
+            assert receiver.health_snapshot()["received"] == 0
+            client.sendall(first[-2:] + second + b"\n")
+            datagram.sendto(udp, address)
+            _wait(lambda: receiver.health_snapshot()["parsed"] == 3, timeout=10)
+        with socket.socket() as competing:
+            with pytest.raises(OSError):
+                competing.bind(address)
+    finally:
+        stopped = receiver.stop()
+    assert stopped["success"] and stopped["data_complete"], stopped
+    records = []
+    for row in receiver.repository.list_raw_files(data_type="syslog"):
+        path = receiver.repository.db_path.parent / row["relative_path"]
+        records.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+    assert sorted(base64.b64decode(row["raw_bytes_base64"]) for row in records) == sorted([chinese, second, udp])
+    history = GroundRawStreamQueryService(receiver.repository).syslog_records(run_id="stress")
+    assert history["total"] == 3
+    assert any("中文日志" in row["raw_text"] for row in history["items"])
+    with socket.socket() as rebound:
+        rebound.bind(address)
 
 
 def test_existing_projection_history_gains_indexed_raw_replay_lookup(tmp_path: Path) -> None:

@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from netconsole import entrypoint
-from netconsole.core import data_root_configuration, paths as paths_module, runtime_environment
+from netconsole.core import admin, data_root_configuration, paths as paths_module, runtime_environment
+from netconsole.core.storage_manifest import prepare_storage_manifest
 from netconsole.services import site_storage
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,73 @@ def test_installation_data_root_import_does_not_load_storage_graph_before_bindin
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "False"
+
+
+@pytest.mark.parametrize("registry_bits", [32, 64])
+def test_installer_migrates_registered_production_root_and_preserves_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registry_bits: int
+) -> None:
+    _allow_isolated_install_root(monkeypatch, tmp_path)
+    source = tmp_path / "现有 数据"
+    target = tmp_path / "迁移 目标"
+    paths = paths_module.PathResolver(data_root=source)
+    site_storage.SiteApplicationService(paths).create_site("sample", "测试站点")
+    prepare_storage_manifest(paths)
+    (source / "runtime_mode.json").write_text(
+        '{"mode":"production","readonly_warning":true}', encoding="utf-8"
+    )
+    manifest = paths.storage_manifest_path.read_bytes()
+    monkeypatch.setattr(admin, "is_admin", lambda: True)
+    monkeypatch.setattr(
+        data_root_configuration, "read_machine_data_root",
+        lambda *, use_32bit_view=False: source if use_32bit_view == (registry_bits == 32) else None,
+    )
+    target.mkdir()
+    sentinel = target / "sentinel.txt"
+    sentinel.write_text("untouched", encoding="utf-8")
+    args = ["--source", str(source), "--target", str(target)]
+
+    with pytest.raises(site_storage.SiteStorageError, match="目标数据根必须为空"):
+        entrypoint._migrate_data_root_from_installer(args)
+    assert list(target.iterdir()) == [sentinel]
+    assert sentinel.read_text(encoding="utf-8") == "untouched"
+    sentinel.unlink()
+
+    assert entrypoint._migrate_data_root_from_installer(args) == 0
+    assert paths.storage_manifest_path.read_bytes() == manifest
+    assert paths.site_db_path("sample").is_file()
+    assert (target / "sites" / "sample" / "db" / "devices.db").is_file()
+    assert json.loads(
+        (target / "config" / "storage-manifest.json").read_text(encoding="utf-8")
+    )["data_root"] == str(target)
+
+
+@pytest.mark.parametrize(
+    ("elevated", "registry_roots", "error"),
+    [
+        (False, ("source", None), "DATA_ROOT_INSTALLER_ELEVATION_REQUIRED"),
+        (True, (None, None), "DATA_ROOT_INSTALLER_SOURCE_MISMATCH"),
+        (True, ("other", None), "DATA_ROOT_INSTALLER_SOURCE_MISMATCH"),
+        (True, ("source", "other"), "DATA_ROOT_INSTALLER_SOURCE_MISMATCH"),
+    ],
+)
+def test_installer_migration_rejects_untrusted_source_before_touching_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys,
+    elevated: bool, registry_roots: tuple[str | None, str | None], error: str,
+) -> None:
+    source, target = tmp_path / "source", tmp_path / "target"
+    monkeypatch.setattr(admin, "is_admin", lambda: elevated)
+
+    def read_root(*, use_32bit_view=False):
+        name = registry_roots[use_32bit_view]
+        return tmp_path / name if name else None
+
+    monkeypatch.setattr(data_root_configuration, "read_machine_data_root", read_root)
+    assert entrypoint._migrate_data_root_from_installer(
+        ["--source", str(source), "--target", str(target)]
+    ) == 2
+    assert capsys.readouterr().err.strip() == error
+    assert not target.exists()
 
 
 def test_backend_diagnostic_records_success_and_install_mode(

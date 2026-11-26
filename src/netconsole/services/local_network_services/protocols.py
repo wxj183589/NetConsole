@@ -144,7 +144,10 @@ class SyslogTcpHandler(socketserver.StreamRequestHandler):
             if frame is None:
                 return
             if frame:
-                self.server.log_syslog(frame, peer)
+                self.deliver_frame(frame)
+
+    def deliver_frame(self, frame: bytes) -> None:
+        self.server.log_syslog(frame, self.client_address[0])
 
     def _read_frame(self, peer: str) -> bytes | None:
         first = self.rfile.read(1)

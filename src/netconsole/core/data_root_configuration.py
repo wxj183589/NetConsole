@@ -49,7 +49,7 @@ class DataRootConfiguration:
     source: str
 
 
-def read_machine_data_root() -> Path | None:
+def read_machine_data_root(*, use_32bit_view: bool = False) -> Path | None:
     """Read the installer-owned, machine-wide storage pointer on Windows.
 
     The registry contains only the root path.  It is deliberately not used by
@@ -61,7 +61,8 @@ def read_machine_data_root() -> Path | None:
     try:
         import winreg
 
-        access = winreg.KEY_READ | getattr(winreg, "KEY_WOW64_64KEY", 0)
+        view = winreg.KEY_WOW64_32KEY if use_32bit_view else winreg.KEY_WOW64_64KEY
+        access = winreg.KEY_READ | view
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE, DATA_ROOT_REGISTRY_KEY, 0, access
         ) as key:

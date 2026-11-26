@@ -4,25 +4,25 @@
 
 | ID | 原始工作项 | 当前实现 | 已有证据 | 剩余缺口和下一步 | 验证入口 | 实施 | 验收状态与阻塞 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P8-01 | Comware V5/V7/V9 无线 AC 兼容 | 版本能力族及 V5 降级已有代码 | Phase 8 定向回归 | 执行设备版本识别、只读 WLAN 命令及多 AC 隔离验证 | pytest tests/test_device_command_profile_service.py | 部分 | 实验版本矩阵待确认 |
-| P8-02 | Syslog TCP/UDP 完整链路 | 网络服务已有 RFC 6587，Ground 接收器仅 UDP | Phase 8 与 socket 回归 | 复用分帧器接入 Ground 队列并验证 MR 位置、回放和端口释放 | pytest tests/test_local_network_services.py tests/test_ground_unattended_syslog_v2_stress.py | 部分 | Ground TCP 尚待实施 |
-| P8-03 | Heartbeat 自然秒与丢包真实性 | 单调调度和图表故障点已有修订 | Phase 8 与调度回归 | 受控网络测试超时、错误、缺样、主备切换及多 MR，核对持久化曲线 | pytest tests/test_heartbeat_scheduler_timing.py | 部分 | 真实故障注入待执行 |
+| P8-01 | Comware V5/V7/V9 无线 AC 兼容 | 版本能力族及 V5 降级已有代码 | 能力族定向回归通过 | 实验 AC 和 AC2 TCP 超时。等待可达的 V5/V7/V9 设备 | tests/test_device_command_profile_service.py | 部分 | 实际 WLAN 采集 NOT VERIFIED |
+| P8-02 | Syslog TCP/UDP 完整链路 | Ground 默认 UDP，显式开启同端口 TCP；使用单条持久化管线 | 回环 RFC 6587、半包、粘包、中文、截断、MR 隔离、SQLite、历史及端口重绑 | 复验真实 Electron 实时 Syslog 与实验设备 | tests/test_ground_unattended_syslog_v2_stress.py | 已实施 | 隔离 Socket PASS，现场与实时页面待验收 |
+| P8-03 | Heartbeat 自然秒与丢包真实性 | 单调调度和图表缺样处理 | 真实 fping 双目标、定向故障状态与 Renderer 回归 | 网络层故障时序和主备切换实测 | tests/test_ground_unattended_heartbeat_resident.py | 部分 | 真实故障注入待执行 |
 | P8-04 | Quick Ping Portable 首次写入 | 已有目录初始化与独占文件创建 | Quick Ping 定向回归、Portable 中文空格路径冷启动 | 冻结程序测试新根、长路径、中文路径和并发轮转 | pytest tests/test_ground_unattended_quick_ping.py | 部分 | 并发轮转与完整迁移矩阵待现场验收 |
 | P8-05 | Quick Ping 大数据分页与曲线 | 有游标和扫描预算，晚时间窗增加无关分区跳过 | Quick Ping 定向回归 | 独立曲线查询与明细，补任意定位及百万级数据压测 | pytest tests/test_ground_unattended_quick_ping.py tests/test_ground_unattended_quick_ping_repository.py | 部分 | 真实 HZL9 查询与百万级采样待完成 |
-| P8-06 | 外部终端自动认证 | 已有客户端相关入口与 OpenSSH 工具支持 | Phase 8、外部工具回归 | 核对各 Provider 能力并实测登录、特殊字符和主机校验 | node node_modules/vitest/vitest.mjs run tests/external-tool-store.test.ts | 部分 | 客户端版本、认证环境待确认 |
+| P8-06 | 外部终端自动认证 | OpenSSH 实际运行；修复 Xshell URL 凭据保留字符 | OpenSSH 回环认证、失败、中文空格、备用地址；其他 Provider 参数定向回归 | SecureCRT、PuTTY、Xshell 和 WinSCP 客户端实测 | external-openssh-loopback.log | 部分 | Windows OpenSSH 公钥 PASS，其余客户端未安装 |
 | P8-07 | Ground 实时与历史回放 | 已隔离陈旧归档失败提示，完整统一回放待实施 | Ground 37 项定向测试及 HZL10 Electron 复测 | 隔离运行会话、订阅和历史查询，再实现统一时间轴、导航及导出 | vitest run GroundUnattendedView.behavior | 部分 | 当前实时空闲态已验，完整回放待实施 |
 | P8-08 | 控制台成熟终端交互 | 现有 xterm.js 与 SSH/Telnet 通道 | Phase 8 | 验证键盘、分页、大输出和会话关闭并修复重现问题 | vitest run src/views/console | 部分 | 实连和视觉矩阵待执行 |
 | P8-09 | 管理按钮与批量命令 | 控制台已有命令栏 | Phase 8 | 验证普通布局、显式批量模式、逐会话状态和取消 | vitest run src/views/console | 部分 | 待继续实施 |
 | P8-10 | 终端规则文件兼容 | 现有规则加载器，旧格式兼容待核对 | Phase 8 | 用历史样本复现校验失败，验证迁移、默认恢复及导入导出 | python -m scripts.quality.local_gate --mode auto | 部分 | 样本及现有行为待核对 |
 | P8-11 | 备用地址连接 | Phase 8 已传递备用地址字段 | Phase 8 | 核对手工 backup_host 和各入口的真实目标地址与端口 | pytest tests/test_device_management_table_rules.py | 部分 | 实际连接待验收 |
-| P8-12 | Portable 完整产品能力 | 已有独立数据根与 ZIP 路径 | Portable ZIP 冷启动、中文空格路径、package smoke | 从冻结程序验证空库、外部根、移动、升级及排他锁 | 按制品 smoke 与冷启动矩阵 | 部分 | 移动、升级及排他锁现场矩阵待验收 |
-| P8-13 | 数据迁移、校验与回滚 | 有清单、SHA-256、SQLite 检查与源保留 | Phase 8 数据迁移 | 执行 HZL9 隔离迁移、失败回滚、跨盘和 DPAPI 迁移 | pytest tests/test_site_storage.py | 部分 | 写入迁移待执行 |
+| P8-12 | Portable 完整产品能力 | 独立数据根及 ZIP | 实际外部 DataRoot 初始化、程序换路径复用、冻结 Worker、退出重绑 | 复核升级、迁移和新候选 | phase8-portable-external-20261126 | 部分 | 旧候选两次运行 PASS，跨版本待验收 |
+| P8-13 | 数据迁移、校验与回滚 | 保留清单、SHA-256、SQLite 校验、源根；修复 NSIS 提升权限并核验 HKLM 来源 | 合成已配置根实迁移及目标非空保护通过 | 执行受支持 Windows Guest 的 GUI 迁移及回滚 | tests/test_installer_backend_diagnostics.py | 部分 | 安装态 NOT VERIFIED |
 | P8-14 | 外部工具配置迁移 | V1 升级及 IPOP 去重和失败重试保留 | 16 个 Electron 迁移相关测试通过 | 验证现有客户端路径和真实启动 | node node_modules/vitest/vitest.mjs run tests/external-tool-store.test.ts | 已有 | 真实工具启动待验收 |
 | P8-15 | HZL9 真实业务回放 | 隔离副本已启动 Backend 与 Electron | HZL9 专项与真实 Electron 启动记录 | 核验历史 Run、Quick Ping 故障点和实际分页 | 运行 Electron 隔离回放 | 部分 | 完整业务矩阵待验收 |
 | P8-16 | HZL10 大规模真实回放 | 隔离副本已启动 Backend 与 Electron | HZL10 专项与真实 Electron 启动记录 | 核验 Ground、AC 快照、MESH 和 Online MR；真实 Quick Ping 缺失 | 运行 Electron 隔离回放 | 部分 | 完整业务矩阵待验收 |
 | P8-17 | 性能与长时间稳定性 | 有首轮进程就绪计时和 Quick Ping 局部优化 | 真实 Electron 启动记录 | 建立重复基准，采集各页面与查询分位数、资源及前后对照 | 运行 Electron 隔离回放及规模压测 | 部分 | 长稳、分位数待测 |
 | P8-18 | Electron 视觉与交互 | 实际 Electron 已启动两套隔离数据 | 真实 Electron 启动记录 | 完成 1920×1080 和 2560×1440 的完整交互矩阵 | 运行 Electron 并操作业务页面 | 部分 | 完整交互与尺寸待验收 |
-| P8-19 | Windows 安装、升级、卸载 | Phase 7.1 有静态检查 | Phase 7.1 VM | 在支持版本 Guest 实测安装、升级及保留数据卸载 | 运行 NSIS 安装态矩阵 | 部分 | 历史 Guest 未登录且为 Windows 10 1909 |
+| P8-19 | Windows 安装、升级、卸载 | Full NSIS 候选构建 | VM 清单仅发现 Windows 10 1909 原机和隔离克隆 | 使用可登录且受支持的 Windows Guest | NSIS 安装态矩阵 | 部分 | 支持版本 Guest 与登录环境缺失 |
 | P8-20 | Full Gate | 项目现有 FULL 入口 | 11061806 Full Gate 日志 | 最终代码提交运行 FULL，验证制品及消费者 | python -m scripts.quality.local_gate --mode full | 已有 | PASS，外部现场缺口仍见 P8-01 至 P8-19 |
 | P8-21 | Full NSIS 安装包 | 已有 Full 打包入口 | `NetConsole-Full-1.5.19.0-11061806-x64-setup.exe`，SHA-256 `410a592a3190e05cc45281be53ece605067558f8e793207e9f0e669493195462` | 最终源码构建、离线 smoke、清单和 SHA-256 | scripts/build/package_local.ps1 -Edition full | 已有 | 构建与 smoke PASS，真实安装升级卸载待验收 |
 | P8-22 | Portable ZIP | 已有 Portable 打包入口 | `NetConsole-1.5.19-portable.zip`，SHA-256 `19D4ADA01654DB6EF0FEE7AF1A756362F396CE3AD77C1CE35AAF14FF5715B4D0` | 与 NSIS 使用同一源码，验证冻结 Worker 与迁移 | 按项目 Portable 打包入口 | 已有 | 构建、package smoke、中文空格路径冷启动 PASS，迁移现场矩阵待验收 |

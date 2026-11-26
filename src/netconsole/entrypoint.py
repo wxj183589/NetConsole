@@ -136,19 +136,40 @@ def _migrate_data_root_from_installer(arguments: list[str]) -> int:
     parser.add_argument("--target", required=True, type=Path)
     parser.add_argument("--installation-root", type=Path)
     values = parser.parse_args(arguments)
+    from netconsole.core.admin import is_admin
     from netconsole.core.backend_instance_lock import BackendInstanceLock
-    from netconsole.core.data_root_configuration import validate_installation_data_root
+    from netconsole.core.data_root_configuration import (
+        read_machine_data_root,
+        validate_installation_data_root,
+    )
     from netconsole.core.paths import PathResolver
+    from netconsole.services.site_operation_authority import (
+        DATA_ROOT_HTTP_MIGRATION_AUTHORIZED,
+    )
     from netconsole.services.site_storage import DataRootApplicationService
 
-    # The installer owns the pointer update.  This helper only migrates a
-    # configured source after proving the selected target is safe.
+    # Match the elevated installer and its 64-bit/legacy 32-bit source lookup.
+    # An arbitrary CLI source must never acquire the migration capability.
+    if not is_admin():
+        print("DATA_ROOT_INSTALLER_ELEVATION_REQUIRED", file=sys.stderr)
+        return 2
+    configured_roots = {
+        read_machine_data_root(),
+        read_machine_data_root(use_32bit_view=True),
+    } - {None}
+    if configured_roots != {values.source}:
+        print("DATA_ROOT_INSTALLER_SOURCE_MISMATCH", file=sys.stderr)
+        return 2
+
+    # The installer owns the pointer update after this copy has passed validation.
     os.environ["NETCONSOLE_DATA_ROOT"] = str(values.source)
     os.environ["NETCONSOLE_RUNTIME_MODE"] = "desktop-packaged"
     validate_installation_data_root(values.target, installation_root=values.installation_root)
     paths = PathResolver()
     with BackendInstanceLock(paths):
-        DataRootApplicationService(paths).migrate(values.target)
+        DataRootApplicationService(paths).migrate(
+            values.target, authorization_token=DATA_ROOT_HTTP_MIGRATION_AUTHORIZED
+        )
     return 0
 
 

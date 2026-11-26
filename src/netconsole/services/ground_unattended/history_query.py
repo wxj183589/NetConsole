@@ -58,7 +58,9 @@ _SOURCES = (
     _Source("timeline", "events", "CAST(s.id AS TEXT)", "s.ts", train="s.train_id", mr="s.mr_id", role="COALESCE(NULLIF(json_extract(s.details_json,'$.mr_role'),''),json_extract(s.details_json,'$.mr_position_code'),'')", status="s.severity", summary="s.title || ' ' || s.message", event="s.event_type"),
 )
 
-_SOURCE_TABLES = frozenset("ground_unattended_" + source.table for source in _SOURCES)
+_SOURCE_BY_TABLE = {"ground_unattended_" + source.table: source for source in _SOURCES}
+_SOURCE_TABLES = frozenset(_SOURCE_BY_TABLE)
+_DETAIL_FIELDS = ("run_id", "train_id", "mr_id", "mr_role", "status", "summary", "event_type")
 
 _CURSOR_FILTER_KEYS = (
     "data_type", "run_id", "train_id", "mr_id", "mr_role", "event_type",
@@ -133,7 +135,13 @@ class GroundHistoryQueryService:
         """Validate export submission without opening/counting the index."""
         GroundHistoryQueryService._validate(dict(locals()))
 
-    def _plan(self, conn: sqlite3.Connection, filters: dict[str, Any]) -> tuple[str, list[Any], list[tuple[str, list[Any]]], dict[str, str]]:
+    @staticmethod
+    def _detail_expressions(source: _Source) -> tuple[str, ...]:
+        return ("s.run_id", source.train, source.mr, source.role, source.status, source.summary, source.event)
+
+    def _plan(
+        self, conn: sqlite3.Connection, filters: dict[str, Any], *, keys_only: bool = False,
+    ) -> tuple[str, list[Any], list[tuple[str, list[Any]]], dict[str, str]]:
         tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         sources = {name: "UNAVAILABLE" for name in HISTORY_DATA_TYPES}
         queries: list[str] = []
@@ -161,13 +169,17 @@ class GroundHistoryQueryService:
             self._identity_filter(source, filters, where, values)
             base = f"FROM {table} s WHERE " + " AND ".join(where)
             counts.append(("SELECT COUNT(*) " + base, values))
-            queries.append(
+            projection = (
                 f"SELECT s.rowid AS source_rowid, '{table}' AS source_table, "
                 f"'{source.data_type}' AS data_type, {source.identity} AS source_identity, "
-                f"{source.timestamp} AS ts, s.run_id, {source.train} AS train_id, "
-                f"{source.mr} AS mr_id, {source.role} AS mr_role, {source.status} AS status, "
-                f"{source.summary} AS summary, {source.event} AS event_type " + base
+                f"{source.timestamp} AS ts"
             )
+            if not keys_only:
+                projection += ", " + ", ".join(
+                    f"{expr} AS {name}"
+                    for name, expr in zip(_DETAIL_FIELDS, self._detail_expressions(source), strict=True)
+                )
+            queries.append(f"{projection} {base}")
             params.extend(values)
         return " UNION ALL ".join(queries), params, counts, sources
 
@@ -217,30 +229,47 @@ class GroundHistoryQueryService:
         ).fetchone()
         return self._project_item(row, raw)
 
-    def _items(self, conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    def _items(
+        self, conn: sqlite3.Connection, rows: list[sqlite3.Row], *, keys_only: bool = False,
+    ) -> list[dict[str, Any]]:
         """Load page details per source table instead of once per result row."""
-        raw_by_source: dict[str, dict[int, sqlite3.Row]] = {}
+        raw_by_source: dict[str, dict[int, dict[str, Any]]] = {}
+        projected_by_source: dict[str, dict[int, dict[str, Any]]] = {}
         for source_table, source_rows in _group_rows_by_source(rows).items():
             row_ids = sorted({int(row["source_rowid"]) for row in source_rows})
             if not row_ids:
                 continue
             placeholders = ", ".join("?" for _ in row_ids)
+            fields = ", ".join(
+                f"{expr} AS _history_{name}"
+                for name, expr in zip(_DETAIL_FIELDS, self._detail_expressions(_SOURCE_BY_TABLE[source_table]), strict=True)
+            ) + ", " if keys_only else ""
             raw_rows = conn.execute(
-                f"SELECT rowid AS _source_rowid, * FROM {source_table} WHERE site_id=? AND rowid IN ({placeholders})",
+                f"SELECT {fields}s.rowid AS _source_rowid, s.* FROM {source_table} s "
+                f"WHERE s.site_id=? AND s.rowid IN ({placeholders})",
                 (self.site_id, *row_ids),
-            ).fetchall()
-            raw_by_source[source_table] = {
-                int(raw["_source_rowid"]): raw for raw in raw_rows
-            }
-        return [
-            self._project_item(
-                row,
-                raw_by_source.get(str(row["source_table"]), {}).get(int(row["source_rowid"])),
             )
-            for row in rows
-        ]
+            raw_by_source[source_table] = raw_map = {}
+            projected_by_source[source_table] = projected_map = {}
+            for raw in raw_rows:
+                values = dict(raw)
+                row_id = int(values["_source_rowid"])
+                if keys_only:
+                    projected_map[row_id] = {name: values.pop(f"_history_{name}") for name in _DETAIL_FIELDS}
+                raw_map[row_id] = values
+        items = []
+        for row in rows:
+            table = str(row["source_table"])
+            row_id = int(row["source_rowid"])
+            values = dict(row)
+            if keys_only:
+                values.update(projected_by_source[table][row_id])
+            items.append(self._project_item(values, raw_by_source[table].get(row_id)))
+        return items
 
-    def _project_item(self, row: sqlite3.Row, raw: sqlite3.Row | None) -> dict[str, Any]:
+    def _project_item(
+        self, row: sqlite3.Row | dict[str, Any], raw: sqlite3.Row | dict[str, Any] | None,
+    ) -> dict[str, Any]:
         details: dict[str, Any] = {}
         for key, value in dict(raw or {}).items():
             if key.endswith("_json"):
@@ -386,7 +415,7 @@ class GroundHistoryQueryService:
         with self._read_snapshot() as conn:
             if conn is None:
                 return result
-            sql, params, counts, result["sources"] = self._plan(conn, filters)
+            sql, params, counts, result["sources"] = self._plan(conn, filters, keys_only=True)
             if counts:
                 count_parts = [
                     query.replace("SELECT COUNT(*)", "SELECT COUNT(*) AS item_count", 1)
@@ -422,7 +451,7 @@ class GroundHistoryQueryService:
                     ).fetchall()
                     has_more = page * page_size < int(result["total"])
                 result["has_more"] = has_more
-                result["items"] = self._items(conn, rows)
+                result["items"] = self._items(conn, rows, keys_only=True)
                 if rows and has_more:
                     result["next_cursor"] = self._encode_cursor(
                         filters=filters, page_size=page_size, row=rows[-1],

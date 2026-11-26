@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import inspect
 import logging
+import os
 import shutil
 import sqlite3
 import threading
@@ -3248,6 +3249,7 @@ class GroundUnattendedSupervisor:
                 ),
                 listen_host=profile.syslog_server_ip,
                 listen_port=profile.syslog_server_port,
+                tcp_enabled=os.environ.get("NETCONSOLE_GROUND_SYSLOG_TCP") == "1",
                 queue_capacity=profile.udp_queue_capacity,
                 flush_records=profile.raw_flush_record_count,
                 flush_interval_seconds=profile.raw_flush_interval_seconds,

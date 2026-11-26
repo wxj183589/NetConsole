@@ -4,6 +4,7 @@ import base64
 import gzip
 import hashlib
 import json
+import logging
 import os
 import queue
 import re
@@ -33,6 +34,7 @@ from netconsole.services.ground_unattended.radio_control import (
     control_event_dedup_key,
 )
 from netconsole.services.ground_unattended.position_engine import PositionEngine
+from netconsole.services.local_network_services.protocols import SyslogTcpHandler, TcpServer
 
 _WMESH_EVENT_RE = re.compile(
     r"WMESH/\d+/(?P<event>MESH_LINKUP|MESH_LINKDOWN|MESH_ACTIVELINK_SWITCH)\s*:",
@@ -1070,8 +1072,16 @@ class WmeshRealtimeParser:
         }
 
 
+class _GroundTcpHandler(SyslogTcpHandler):
+    sequence = 0
+
+    def deliver_frame(self, frame: bytes) -> None:
+        self.sequence += 1
+        self.server.enqueue(frame, self.client_address, self.sequence)
+
+
 class SyslogUdpReceiver:
-    """一个局点一个 UDP socket；recv 与解析/落盘严格分线程。"""
+    """局点 UDP 与可选 TCP 接入共用 Raw Writer 和 Parser。"""
 
     _SPOOL_FLUSH_BATCH_SIZE = 64
     _SPOOL_GUARD_REFRESH_INTERVAL_SECONDS = 1.0
@@ -1092,6 +1102,9 @@ class SyslogUdpReceiver:
         self._parser_queue: queue.Queue[_PersistedEnvelope] = queue.Queue(maxsize=20_000)
         self._stop = threading.Event()
         self._socket: socket.socket | None = None
+        self._tcp_server: TcpServer | None = None
+        self._tcp_thread: threading.Thread | None = None
+        self._ingress_lock = threading.Lock()
         self._recv_thread: threading.Thread | None = None
         self._writer_thread: threading.Thread | None = None
         self._process_thread: threading.Thread | None = None
@@ -1204,6 +1217,7 @@ class SyslogUdpReceiver:
         event_batch_size: int,
         event_batch_interval_seconds: float,
         storage_profile: StorageIOProfile | None = None,
+        tcp_enabled: bool = False,
         spool_warning_percent: float = 70.0,
         spool_critical_percent: float = 85.0,
         spool_emergency_percent: float = 95.0,
@@ -1327,8 +1341,20 @@ class SyslogUdpReceiver:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
             sock.settimeout(0.5)
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             sock.bind((listen_host, int(listen_port)))
+            if tcp_enabled:
+                tcp = self._tcp_server = TcpServer(sock.getsockname(), _GroundTcpHandler)
+                tcp.stopping = self._stop
+                tcp.log = logging.getLogger(__name__)
+                tcp.slots = threading.BoundedSemaphore(32)
+                tcp.max_packet_size = 65_535
+                tcp.enqueue = self._enqueue_frame
         except Exception:
+            if self._tcp_server is not None:
+                self._tcp_server.server_close()
+                self._tcp_server = None
             if sock is not None:
                 sock.close()
             if self._compression_worker is not None:
@@ -1366,6 +1392,14 @@ class SyslogUdpReceiver:
         self._recv_thread.start()
         self._writer_thread.start()
         self._process_thread.start()
+        if self._tcp_server is not None:
+            self._tcp_thread = threading.Thread(
+                target=self._tcp_server.serve_forever,
+                kwargs={"poll_interval": 0.1},
+                name=f"ground-syslog-tcp-{self.site_id}",
+                daemon=True,
+            )
+            self._tcp_thread.start()
 
     @property
     def running(self) -> bool:
@@ -1373,12 +1407,19 @@ class SyslogUdpReceiver:
 
     def stop(self, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
         """Stop receiver, writer and parser in bounded dependency order."""
-        self._stop.set()
+        with self._ingress_lock:
+            self._stop.set()
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        if self._tcp_server is not None:
+            self._tcp_server.shutdown()
+            self._tcp_server.server_close()
+            if self._tcp_thread is not None:
+                self._tcp_thread.join()
+            self._tcp_server = self._tcp_thread = None
         sock = self._socket
         self._socket = None
         if sock is not None:
             sock.close()
-        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
         if self._recv_thread is not None:
             self._recv_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         writer_thread = self._writer_thread
@@ -1573,6 +1614,7 @@ class SyslogUdpReceiver:
         return {
             "udp_running": self.running,
             "udp_listen_address": self._listen_address,
+            "tcp_listen_address": self._listen_address if self._tcp_server is not None else "",
             "udp_receive_rate_per_second": round(self._received_count / elapsed, 3),
             "udp_received_count": self._received_count,
             "udp_unidentified_count": self._unidentified_count,
@@ -1827,12 +1869,20 @@ class SyslogUdpReceiver:
                     self._udp_receive_error_count += 1
                     self._last_error = f"{exc.__class__.__name__}: {exc}"
                 return
+            self._enqueue_frame(payload, address)
+
+    def _enqueue_frame(
+        self, payload: bytes, address: tuple[str, int], source_sequence: int | None = None,
+    ) -> None:
+        with self._ingress_lock:
+            if self._stop.is_set():
+                return
             envelope = UdpEnvelope(
                 source_ip=str(address[0]),
                 source_port=int(address[1]),
                 receive_time=datetime.now().astimezone().isoformat(timespec="milliseconds"),
                 global_receive_sequence=self._next_global_receive_sequence(),
-                source_receive_sequence=self._next_source_receive_sequence(
+                source_receive_sequence=source_sequence or self._next_source_receive_sequence(
                     str(address[0]), int(address[1])
                 ),
                 payload=payload,

@@ -130,9 +130,13 @@ def test_history_page_batches_detail_reads_and_keeps_site_filter(indexed):
 
     assert page["total"] == 9
     assert len(page["items"]) == 9
-    detail_queries = [trace for trace in traces if "SELECT rowid AS _source_rowid" in trace]
+    detail_queries = [trace for trace in traces if "AS _source_rowid" in trace]
     assert len(detail_queries) == 1
     assert "rowid IN (" in detail_queries[0]
+    assert "s.site_id='demo'" in detail_queries[0]
+    ranking_query, = [trace for trace in traces if " AS cursor_ts_is_null" in trace]
+    assert "details_json" not in ranking_query
+    assert "_history_summary" in detail_queries[0]
     assert not any("WHERE rowid=?" in trace for trace in traces)
     assert sum("COUNT(*) AS item_count" in trace for trace in traces) == 1
     assert all(item["details"].get("site_id") == "demo" for item in page["items"])

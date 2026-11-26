@@ -121,9 +121,11 @@ def build_external_terminal_command(
                 args.extend(["/PASSWORD", password])
             return args
         if terminal == ExternalTerminalType.XSHELL:
-            if include_password and username and password:
-                return [exe, "-url", f"ssh://{quote(username)}:{quote(password)}@{host}:{port}"]
-            return [exe, "-url", f"ssh://{login_host}:{port}"]
+            auth = quote(username, safe="")
+            if auth and include_password and password:
+                auth = f"{auth}:{quote(password, safe='')}"
+            prefix = f"{auth}@" if auth else ""
+            return [exe, "-url", f"ssh://{prefix}{host}:{port}"]
         if terminal == ExternalTerminalType.PUTTY:
             args = [exe, "-ssh", login_host, "-P", port]
             if include_password and password:

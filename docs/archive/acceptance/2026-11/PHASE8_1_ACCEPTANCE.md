@@ -19,7 +19,26 @@
 
 截图和 Ground 导航记录见 Workspace 的 `reports/diagnostic/phase8-real-replay/pages/`。最终 Full Gate 日志见 `reports/tests/phase8-integrated-11061806/full-gate.log`，首次 Gate 发现的 Renderer 类型错误、文档目录缺失和 Syslog 端口回归均已修复。
 
-## 历史审计证据
+## 2026-11-26 续作验收
+
+| 项目 | 当前证据 | 待验收 |
+| --- | --- | --- |
+| Ground Syslog | Windows 回环 TCP/UDP 实际收包。验证 RFC 6587、半包、粘包、多连接、截断诊断、中文原文、两台 MR 和未知来源隔离、SQLite 投影、原始历史查询及停止后重绑 | Electron 实时页面与真实设备 TCP 回传 |
+| Heartbeat / Quick Ping | Windows fping 回环真实采集两个目标，两轮启停，每轮每目标保存 8 个成功样本。调度、丢包状态、缺样及页面用定向回归补齐 | 网络层丢包、主备故障切换及长稳 |
+| 外部终端 | Windows OpenSSH 9.5p2 在回环 fixture 上实际完成公钥认证，验证备用地址、中文空格用户名、失败反馈。修复 Xshell SSH URL 的凭据编码，SecureCRT 和 PuTTY 明文 argv 通过构造回归 | SecureCRT、PuTTY、Xshell 和 WinSCP 实机启动与认证 |
+| Portable | 从 `11061806` ZIP 在两个中文空格程序路径实际启动全新外部 DataRoot 及复用场景，交互就绪 5.187 秒与 5.170 秒。冻结 Worker、Backend 退出及端口重绑通过 | 最新候选复核与跨版本迁移 |
+| 安装迁移 | 复现安装器迁移入口的授权错误。修复提升权限和 HKLM 来源核验后调用现有迁移服务。合成已配置根实迁移与目标非空保护通过 | 受支持 Windows Guest 的 GUI 安装、升级、卸载、数据保留和回滚 |
+| Comware | 已授权实验 AC 和 AC2 在 TCP 建连阶段超时。协议/能力矩阵通过脱敏 fixture 验证 | 真实 Comware V5/V7/V9 设备版本识别与只读 WLAN 采集 |
+| Ground 历史性能 | HZL10 同一隔离索引的 25 条混合历史查询，三次测量从 38.74、6.20、6.07 秒降为 1.94、1.00、0.97 秒。先排序标识和时间，再批量投影当前页详情 | 完整业务页面与连续运行性能矩阵 |
+
+定向结果及运行证据位于 Workspace 的 `reports/tests/phase8-continuation-gate.log`、
+`phase8-tcp-mr.log`、`phase8-continuation-scale.log`、`phase8-continuation-renderer.log`、
+`phase8-fping-quick-ping-service.log`、`phase8-heartbeat-faults.log` 和
+`phase8-portable-external-20261126/`。
+OpenSSH 与设备超时见同一目录下 `phase8-integrated-11061806/external-openssh-loopback.log`
+及 `phase8-integrated-11061806/comware-lab-readonly.json`。
+
+## 真实数据历史审计
 
 本阶段完成杭州地铁 9 号线和 10 号线真实运行数据的本地隔离解压、压缩包 SHA-256 核对、DataRoot 结构审计、SQLite 只读 Schema/行数审计和对比报告。原始压缩包保持原位，未上传、未修改或删除。
 

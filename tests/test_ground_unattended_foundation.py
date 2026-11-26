@@ -659,7 +659,10 @@ def test_boot_session_detects_restart_during_gap_even_when_previous_uptime_is_lo
     assert restarted["boot_session_id"] != first["boot_session_id"]
 
 
-def test_udp_receiver_routes_multiple_mrs_and_keeps_unidentified_separate(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tcp_enabled", [False, True])
+def test_syslog_receiver_routes_multiple_mrs_and_keeps_unidentified_separate(
+    tmp_path: Path, tcp_enabled: bool,
+) -> None:
     repository = GroundUnattendedRepository(tmp_path / "ground" / "index.sqlite", site_id="site-a")
     repository.sync_inventory(
         trains=[
@@ -698,6 +701,7 @@ def test_udp_receiver_routes_multiple_mrs_and_keeps_unidentified_separate(tmp_pa
         flush_interval_seconds=0.1,
         event_batch_size=1,
         event_batch_interval_seconds=0.1,
+        tcp_enabled=tcp_enabled,
     )
     _host, port_text = receiver.health_snapshot()["udp_listen_address"].rsplit(":", 1)
     message = (
@@ -707,16 +711,21 @@ def test_udp_receiver_routes_multiple_mrs_and_keeps_unidentified_separate(tmp_pa
     ).encode()
     unknown = b"%Jul  3 19:19:27:496 2026 OTHER WMESH/5/MESH_LINKUP: peer AP-X_0000-0000-0003"
     second = b"%Jul  3 19:19:27:496 2026 MR-CW-02 WMESH/5/MESH_LINKDOWN: peer AP-X_0000-0000-0003"
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
-        sender.sendto(message, ("127.0.0.1", int(port_text)))
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
-        sender.bind(("127.0.0.3", 0))
-        sender.sendto(second, ("127.0.0.1", int(port_text)))
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
-        sender.bind(("127.0.0.2", 0))
-        sender.sendto(unknown, ("127.0.0.1", int(port_text)))
-    _wait_until(lambda: len(repository.list_wmesh_events(run_id="run-1")) == 3)
-    stop_result = receiver.stop()
+    address = ("127.0.0.1", int(port_text))
+    try:
+        for source, payload in (
+            ("127.0.0.1", message), ("127.0.0.3", second), ("127.0.0.2", unknown),
+        ):
+            if tcp_enabled:
+                with socket.create_connection(address, timeout=2, source_address=(source, 0)) as sender:
+                    sender.sendall(str(len(payload)).encode() + b" " + payload)
+            else:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                    sender.bind((source, 0))
+                    sender.sendto(payload, address)
+        _wait_until(lambda: len(repository.list_wmesh_events(run_id="run-1")) == 3)
+    finally:
+        stop_result = receiver.stop()
     assert stop_result["success"] is True
     assert stop_result["udp_port_released"] is True
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:

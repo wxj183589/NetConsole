@@ -133,6 +133,11 @@ UDP、Informational，不启用 Debugging、不添加 Trap/TCP、不执行 `save
 设备回传地址与本机监听地址分开校验；`0.0.0.0` 只能用于监听。
 自动测试不连接或配置真实设备。
 
+Ground 默认监听 UDP。显式设置 Backend 进程环境变量 `NETCONSOLE_GROUND_SYSLOG_TCP=1`
+后，在相同监听地址和端口同时接收 TCP，支持 RFC 6587 octet-counting 和换行分帧。
+两种传输共用 Raw Writer、Parser、MR 识别及历史索引。相同 TCP 地址和端口只能由
+Ground 或独立网络服务其中之一绑定。设备侧配置仍使用上述 UDP 命令。
+
 ```text
 UDP Receiver → 有界 Raw Queue → Raw Writer → 原始 NDJSON
                                           ↓

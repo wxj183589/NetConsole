@@ -1,4 +1,5 @@
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
 import paramiko
 
@@ -70,6 +71,30 @@ def test_securecrt_command_includes_password_only_when_enabled():
     assert "/PASSWORD" in args
     assert "secret" in args
     assert "secret" not in _safe_command(args, device)
+
+
+def test_xshell_escapes_ssh_url_credentials_and_redacts_encoded_password():
+    device = Device(
+        name="SW1",
+        primary_address="192.0.2.10",
+        ssh_username="轨交 / admin",
+        ssh_password="密码 /#?@%",
+        ssh_port=2222,
+    )
+    target = choose_connection_target(device)
+    exe = r"C:\Program Files\Xshell\Xshell.exe"
+    args = build_external_terminal_command(device, target, "xshell", exe, include_password=True)
+    assert args[:2] == [exe, "-url"]
+    url = urlsplit(args[2])
+    assert (url.scheme, url.hostname, url.port) == ("ssh", "192.0.2.10", 2222)
+    assert unquote(url.username) == device.ssh_username
+    assert unquote(url.password) == device.ssh_password
+    assert quote(device.ssh_password, safe="") not in _safe_command(args, device)
+
+    args = build_external_terminal_command(device, target, "xshell", exe)
+    url = urlsplit(args[2])
+    assert unquote(url.username) == device.ssh_username
+    assert url.password is None
 
 
 def test_external_terminal_missing_exe_returns_failure():
