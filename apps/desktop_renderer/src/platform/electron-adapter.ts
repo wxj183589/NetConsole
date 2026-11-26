@@ -43,6 +43,8 @@ export function createElectronAdapter(bridge: NetConsoleDesktopBridge): Platform
     openPath: (capabilityId) => bridge.openPath(capabilityId),
     showItemInFolder: (capabilityId) => bridge.showItemInFolder(capabilityId),
     openExternalUrl: (url) => bridge.openExternalUrl(url),
+    readClipboardText: () => bridge.readClipboardText?.()
+      ?? Promise.resolve({ success: false, error: '当前桌面版本不支持读取剪贴板' }),
     writeClipboardText: (text) => bridge.writeClipboardText?.(text)
       ?? Promise.resolve({ success: false, error: 'Electron 剪贴板组件未加载，请重启 NetConsole' }),
     onBackendStatusChanged: (listener) => bridge.onBackendStatusChanged((status) => {

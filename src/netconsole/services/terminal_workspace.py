@@ -631,6 +631,7 @@ class TerminalSessionManager:
         password: str,
         cols: int = 120,
         rows: int = 32,
+        address_role: str = "primary",
     ) -> tuple[dict[str, Any], TerminalTicket]:
         connection = self.profiles.connection_values(values)
         secret = str(password or "")
@@ -672,6 +673,7 @@ class TerminalSessionManager:
             if connection["encoding"] == "ansi"
             else str(connection["encoding"]),
             method="terminal_quick_connect",
+            target_role=address_role,
         )
         return self._create_runtime(
             device,
@@ -690,10 +692,22 @@ class TerminalSessionManager:
         password_override: str = "",
         cols: int = 120,
         rows: int = 32,
+        address_role: str = "primary",
     ) -> tuple[dict[str, Any], TerminalTicket]:
         profile, password = self.profiles.resolve(profile_id, password_override)
+        if address_role not in {"primary", "backup"}:
+            raise ValueError("连接地址角色无效")
+        if address_role == "backup":
+            if not profile["backup_host"]:
+                raise ValueError("保存会话未配置备用地址")
+            profile = {
+                **profile,
+                "host": profile["backup_host"],
+                "port": profile["backup_port"],
+            }
         return self.create_quick_session(
-            profile, password=password, cols=cols, rows=rows
+            profile, password=password, cols=cols, rows=rows,
+            address_role=address_role,
         )
 
     def _create_runtime(

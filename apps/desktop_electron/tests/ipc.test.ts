@@ -51,6 +51,7 @@ function createHarness(overrides: {
   fetchImpl?: typeof fetch
   externalToolService?: ExternalToolServiceLike
   clipboardWriteText?: (text: string) => void
+  clipboardReadText?: () => string
   artifactLstat?: (path: string) => Promise<{
     isFile(): boolean
     isDirectory?(): boolean
@@ -68,7 +69,10 @@ function createHarness(overrides: {
     showItemInFolder: vi.fn(),
     openExternal: vi.fn(async () => undefined),
   }
-  const clipboard = { writeText: vi.fn(overrides.clipboardWriteText ?? (() => undefined)) }
+  const clipboard = {
+    readText: vi.fn(overrides.clipboardReadText ?? (() => 'display version\r')),
+    writeText: vi.fn(overrides.clipboardWriteText ?? (() => undefined)),
+  }
   const dialog = {
     showOpenDialog: vi.fn(async (_window, options) => options.properties.includes('openDirectory')
       ? { canceled: false, filePaths: [selectedDirectory] }
@@ -159,6 +163,19 @@ describe('desktop IPC', () => {
     expect(() => handler({ sender: {} }, 'blocked')).toThrow('未知渲染进程')
     expect(handler({ sender }, '')).toMatchObject({ success: false })
     expect(clipboard.writeText).toHaveBeenCalledOnce()
+  })
+
+  it('reads clipboard text only through the trusted handler and bounds the returned value', () => {
+    const { ipcMain, sender, clipboard } = createHarness()
+    const handler = ipcMain.handlers.get(DESKTOP_IPC.readClipboardText)!
+
+    expect(handler({ sender })).toEqual({ success: true, text: 'display version\r' })
+    expect(clipboard.readText).toHaveBeenCalledOnce()
+    expect(() => handler({ sender: {} })).toThrow('未知渲染进程')
+
+    const oversized = createHarness({ clipboardReadText: () => 'x'.repeat(1_048_577) })
+    expect(oversized.ipcMain.handlers.get(DESKTOP_IPC.readClipboardText)!({ sender: oversized.sender }))
+      .toEqual({ success: false, error: '剪贴板内容超过 1 MiB，未粘贴' })
   })
 
   it('opens workspace windows only through validated trusted requests', async () => {

@@ -1,6 +1,6 @@
 # NetConsole v1.5.19 Console 专项验收
 
-状态：PARTIAL。产品分支 `codex-A/organization-task-network-services-phase6`，起点 `f77f4e42`。
+状态：PARTIAL。产品分支 `codex-A/organization-task-network-services-phase6`，已推送起点 `bd42e924`，当前续作尚未提交。
 
 | 项目 | 状态 | 实际结果 |
 | --- | --- | --- |
@@ -14,6 +14,16 @@
 | 输入与会话扩展矩阵 | PARTIAL | SSH 原样转发、Telnet CRLF、拆分 CRLF 和关闭并发有专项回归。真实界面的全部控制键、多行粘贴、备用地址及重连组合待验收 |
 | 规则文件 | PARTIAL | 旧 Portable 缺少两个默认 JSON。修复资源清单和白名单后，实际 Electron 面板与冻结 API 均显示 22 条高亮规则、226 条高危命令规则。历史数组和编码、导入及错误诊断有专项测试，真实界面导入导出待验收 |
 | 终端设置与保存连接 | PARTIAL | 已登记设备可用备用地址及已配置的外部终端。保存连接的备用地址字段及外部启动仍待实现。完整终端设置矩阵待验收 |
+
+## 2026-11-26 Console 功能续作
+
+映射按钮栏现可收起/展开、切换已保存按钮组并在栏内执行 Send String。Menu Function 复用当前 TerminalPane 已有的查找、全选、清屏及清除滚动缓冲区动作。Run Script 使用版本化 JSON DSL，只支持 Send String 和等待步骤，最多 100 步、单步等待不超过 60 秒、累计等待不超过 10 分钟；脚本经确认后顺序调用现有批量 Session API，显示设备输出、支持停止，页面卸载时请求取消。Launch Application 只允许引用已经登记的 External Tool ID，并复用 Electron 现有启动服务。
+
+本轮定向结果为 Renderer Console 42 项、Electron IPC/Preload 44 项、Python Console API/Service 19 项通过；Ruff、Renderer 类型检查、Electron 类型检查和 Renderer/Electron 构建通过。证据日志和隔离 Electron 截图位于 Workspace `reports/tests/console-1.5.19-resume-20261126/`。真实 Electron 采集到 1920×1080 和 2560×1440 分屏、窄窗口及按钮栏截图。现有复合视觉脚本在 SFTP 文件行选择器超时退出，该 SFTP 检查未通过，本轮截图不作为 SFTP 验收证据。
+
+Button Bar 配置当前仍使用 schema version 1。新增动作会由旧版客户端判为未知动作。Launch Application 目前只复用登记工具的静态参数，活动会话变量展开及用户名/凭据注入尚未实现。外部客户端认证矩阵、完整真实键盘/粘贴矩阵和本机 GUI 全项验收仍待完成。
+
+数据影响：仅使用 Workspace 隔离 Console 测试根。`PRODUCTION_DATA_MODIFIED=0`、`DEV_REAL_BUSINESS_DATA_MODIFIED=0`、`DATABASES_REMOVED=0`、`REAL_DEVICE_CONFIGURATION_WRITES=0`。
 
 实验室授权变更：AC 进入 `probe` 后执行 `wlan ap-execute all exec-console enable`，随后 FIT-AP Telnet 连通。未执行保存配置，也未验证重启后的状态。
 

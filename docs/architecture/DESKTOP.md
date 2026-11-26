@@ -238,6 +238,8 @@ Renderer 当前只能调用：
 - `openPath`
 - `showItemInFolder`
 - `openExternalUrl`
+- `readClipboardText`（用户触发、受信 sender、文本格式及 1 MiB 上限）
+- `writeClipboardText`
 - `onBackendStatusChanged`
 - 内部开发冒烟用 `reportRendererReady`
 - MESH 轨旁图诊断用单向 `reportRendererWorkload`，只接受固定模块、路由、阶段和有界标量

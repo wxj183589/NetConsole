@@ -262,6 +262,9 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike, droppedFilePat
       DESKTOP_IPC.openExternalUrl,
       validateExternalUrl(url),
     ) as ReturnType<NetConsoleDesktopBridge['openExternalUrl']>,
+    readClipboardText: () => ipcRenderer.invoke(
+      DESKTOP_IPC.readClipboardText,
+    ) as ReturnType<NonNullable<NetConsoleDesktopBridge['readClipboardText']>>,
     writeClipboardText: (text) => ipcRenderer.invoke(
       DESKTOP_IPC.writeClipboardText,
       validateClipboardText(text),

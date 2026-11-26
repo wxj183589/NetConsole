@@ -22,6 +22,8 @@ const emit = defineEmits<{
 const form = reactive({
   name: '',
   host: '',
+  backup_host: '',
+  backup_port: null as number | null,
   port: 22,
   protocol: 'SSH' as 'SSH' | 'TELNET',
   username: '',
@@ -31,6 +33,8 @@ const form = reactive({
   device_type: 'SW',
   folder_id: '',
   favorite: false,
+  notes: '',
+  tagsText: '',
   save_profile: false,
   remember_password: false,
 })
@@ -57,6 +61,8 @@ watch(
       Object.assign(form, {
         name: profile.name,
         host: profile.host,
+        backup_host: profile.backup_host || '',
+        backup_port: profile.backup_host ? profile.backup_port : null,
         port: profile.port,
         protocol: profile.protocol,
         username: profile.username,
@@ -66,15 +72,17 @@ watch(
         device_type: profile.device_type,
         folder_id: profile.folder_id,
         favorite: profile.favorite,
+        notes: profile.notes || '',
+        tagsText: (profile.tags || []).join(', '),
         save_profile: true,
         remember_password: profile.password_configured,
       })
       return
     }
     Object.assign(form, {
-      name: '', host: '', port: 22, protocol: 'SSH', username: '', password: '',
+      name: '', host: '', backup_host: '', backup_port: null, port: 22, protocol: 'SSH', username: '', password: '',
       encoding: 'utf-8', vendor: 'H3C', device_type: 'SW', folder_id: '',
-      favorite: false, save_profile: false, remember_password: false,
+      favorite: false, notes: '', tagsText: '', save_profile: false, remember_password: false,
     })
   },
 )
@@ -90,6 +98,8 @@ function submit(): void {
   emit('submit', {
     name: form.name.trim() || form.host.trim(),
     host: form.host.trim(),
+    backup_host: form.backup_host.trim(),
+    backup_port: form.backup_port,
     port: Number(form.port),
     protocol: form.protocol,
     username: form.username.trim(),
@@ -99,6 +109,8 @@ function submit(): void {
     device_type: form.device_type,
     folder_id: form.folder_id,
     favorite: form.favorite,
+    notes: form.notes.trim(),
+    tags: form.tagsText.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean),
     save_profile: form.save_profile,
     remember_password: rememberPassword,
   })
@@ -127,6 +139,12 @@ function submit(): void {
         <el-form-item label="主机" class="is-wide">
           <el-input v-model="form.host" placeholder="IP 地址或主机名" maxlength="255" />
         </el-form-item>
+        <el-form-item label="备用主机" class="is-wide">
+          <el-input v-model="form.backup_host" placeholder="可选，故障切换时单独连接" maxlength="255" />
+        </el-form-item>
+        <el-form-item label="备用端口">
+          <el-input-number v-model="form.backup_port" :min="1" :max="65535" controls-position="right" :disabled="!form.backup_host.trim()" placeholder="沿用主端口" />
+        </el-form-item>
         <el-form-item label="用户名">
           <el-input v-model="form.username" maxlength="256" autocomplete="username" />
         </el-form-item>
@@ -147,6 +165,12 @@ function submit(): void {
           <el-select v-model="form.device_type">
             <el-option v-for="value in ['SW', 'AC', 'FW', 'Route', 'Cloud-AP', 'FAT-AP', 'MR', 'Other']" :key="value" :value="value" :label="value" />
           </el-select>
+        </el-form-item>
+        <el-form-item label="备注" class="is-wide">
+          <el-input v-model="form.notes" type="textarea" :rows="2" maxlength="2000" show-word-limit />
+        </el-form-item>
+        <el-form-item label="标签" class="is-wide">
+          <el-input v-model="form.tagsText" placeholder="逗号分隔" maxlength="1400" />
         </el-form-item>
       </div>
       <el-checkbox v-if="!profile" v-model="form.save_profile">保存为会话</el-checkbox>

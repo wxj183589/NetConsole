@@ -18,14 +18,22 @@ describe('browser platform adapter', () => {
 
   it('uses the browser clipboard capability and reports permission failures', async () => {
     const writeText = vi.fn(async () => undefined)
-    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const readText = vi.fn(async () => 'display version\r')
+    vi.stubGlobal('navigator', { clipboard: { readText, writeText } })
     const adapter = createBrowserAdapter()
 
     await expect(adapter.writeClipboardText('AirScript source')).resolves.toEqual({ success: true })
     expect(writeText).toHaveBeenCalledWith('AirScript source')
+    await expect(adapter.readClipboardText()).resolves.toEqual({ success: true, text: 'display version\r' })
+    expect(readText).toHaveBeenCalledOnce()
 
     writeText.mockRejectedValueOnce(new Error('denied'))
     await expect(adapter.writeClipboardText('AirScript source')).resolves.toEqual({
+      success: false,
+      error: '浏览器剪贴板权限不可用',
+    })
+    readText.mockRejectedValueOnce(new Error('denied'))
+    await expect(adapter.readClipboardText()).resolves.toEqual({
       success: false,
       error: '浏览器剪贴板权限不可用',
     })

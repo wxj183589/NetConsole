@@ -139,6 +139,42 @@ def test_password_is_redacted_from_terminal_api_error_detail(
     assert password not in response.text
 
 
+def test_saved_profile_import_and_export_keep_v1_compatibility_and_redact_secrets(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    client, manager = _client(tmp_path, monkeypatch)
+    response = client.post("/api/terminal/profiles/import", json={
+        "document": {
+            "schema_version": 1,
+            "folders": [{"folder_id": "c" * 32, "name": "实验室"}],
+            "profiles": [{
+                **PROFILE_VALUES,
+                "profile_id": "d" * 32,
+                "folder_id": "c" * 32,
+                "backup_host": "192.0.2.11",
+                "backup_port": 2222,
+                "notes": "只读验收",
+                "tags": ["AC"],
+                "password": "never-export-this",
+            }],
+        },
+    })
+
+    assert response.status_code == 200
+    imported = response.json()
+    assert imported["schema_version"] == 2
+    assert imported["profiles"][0]["backup_host"] == "192.0.2.11"
+    assert imported["profiles"][0]["backup_port"] == 2222
+    assert "never-export-this" not in response.text
+
+    exported = client.get("/api/terminal/profiles/export")
+    assert exported.status_code == 200
+    assert exported.headers["content-type"].startswith("application/json")
+    assert "never-export-this" not in exported.text
+    assert manager.profiles.document()["profiles"][0]["tags"] == ["AC"]
+
+
 def test_console_feature_gate_is_independent_from_device_management(tmp_path: Path) -> None:
     app = create_app(
         RuntimeMode.SERVER,

@@ -91,6 +91,7 @@ interface ShellLike {
 }
 
 interface ClipboardLike {
+  readText?(): string
   writeText(text: string): void
 }
 
@@ -652,6 +653,23 @@ export function registerDesktopIpc(
       try {
         await dependencies.shell.openExternal(validateExternalUrl(value))
         return { success: true }
+      } catch (cause) {
+        return { success: false, error: safeActionError(cause) }
+      }
+    }),
+  )
+  dependencies.ipcMain.handle(
+    DESKTOP_IPC.readClipboardText,
+    trusted(() => {
+      if (!dependencies.clipboard?.readText) {
+        return { success: false, error: '系统剪贴板读取不可用' }
+      }
+      try {
+        const text = dependencies.clipboard.readText()
+        if (text.length > 1_048_576) {
+          return { success: false, error: '剪贴板内容超过 1 MiB，未粘贴' }
+        }
+        return { success: true, text }
       } catch (cause) {
         return { success: false, error: safeActionError(cause) }
       }

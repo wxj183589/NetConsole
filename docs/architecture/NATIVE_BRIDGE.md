@@ -52,6 +52,8 @@ Electron-only E1 已删除无生产调用者的 `QtDesktopAdapter`。Python `Des
 | `openOnlineMrSessionLocation` | 稳定 Online MR `session_id` | preload/main 双重字符白名单；main 只调用当前受管回环后端的固定 `desktop-location` 端点并注入内存令牌；后端只返回 `PathResolver` 管理根内的文件/目录，路径不返回 Renderer | 打开车载 MR 会话包、raw 或受管会话目录 |
 | `openMeshAnalysisSessionLocation` | 稳定 MESH `mr_id:source_file_id` 会话 ID | preload/main 双重字符白名单；main 只调用当前受管回环后端的固定 `desktop-location` 端点并注入内存令牌；后端仅解析当前局点 MESH raw 管理根内的普通文件/目录，路径不返回 Renderer | 定位当前离线 MESH 原始日志；文件缺失时打开仍存在的受管父目录 |
 | `openExternalUrl` | 后端设备详情 DTO 返回的 Web 管理地址 | 仅无用户名/密码的绝对 HTTPS URL；拒绝 HTTP、文件协议和畸形 URL | 交给系统默认浏览器打开设备管理页 |
+| `readClipboardText` | 无 | 仅可信受管 Renderer 可调用；Main 读取文本剪贴板并限制为 1 MiB，不返回其他剪贴板格式 | 用户触发的终端粘贴 |
+| `writeClipboardText` | 有界纯文本 | Main 校验长度、控制字符和 sender | 终端内容与连接地址复制 |
 | `selectSettingsTool` | `iperf3/fping/securecrt/xshell/putty` 之一 | main 按 tool ID 固定文件名集合，复验绝对路径与 basename；FastAPI 保存与真实执行点再次校验存在性、普通文件和非符号链接 | 网络测试组件与外部终端的原生 EXE 选择 |
 | `selectSettingsDirectory` | `securecrt_sessions_root` | main 只接受语义 ID，返回值必须为绝对路径；FastAPI 保存时复验已存在目录和非符号链接 | SecureCRT 会话根目录选择 |
 | `selectSettingsColor` | 无 | 只返回系统设置契约允许的受控主题色之一 | 原生主题色选择 |

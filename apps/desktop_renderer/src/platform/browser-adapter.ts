@@ -46,6 +46,15 @@ export function createBrowserAdapter(apiBaseUrl = '', developmentToken = ''): Pl
     openPath: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     showItemInFolder: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
     openExternalUrl: async () => ({ success: false, error: DESKTOP_ONLY_MESSAGE }),
+    readClipboardText: async () => {
+      try {
+        const text = await navigator.clipboard.readText()
+        if (text.length > 1_048_576) return { success: false, error: '剪贴板内容超过 1 MiB，未粘贴' }
+        return { success: true, text }
+      } catch {
+        return { success: false, error: '浏览器剪贴板权限不可用' }
+      }
+    },
     writeClipboardText: async (text) => {
       try {
         await navigator.clipboard.writeText(text)

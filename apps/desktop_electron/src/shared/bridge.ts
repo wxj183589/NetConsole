@@ -54,6 +54,10 @@ export interface NativeActionResult {
   availability?: 'AVAILABLE' | 'MISSING' | 'INVALID'
 }
 
+export type ClipboardReadResult =
+  | { success: true; text: string }
+  | { success: false; error: string }
+
 export type ExternalToolStatus = 'AVAILABLE' | 'MISSING' | 'INVALID' | 'WORKDIR_MISSING'
 export type ExternalToolIconMode = 'auto' | 'default' | 'custom'
 export type ExternalToolLaunchMode = 'normal' | 'administrator'
@@ -472,6 +476,7 @@ export interface NetConsoleDesktopBridge {
   openPath(capabilityId: string): Promise<NativeActionResult>
   showItemInFolder(capabilityId: string): Promise<NativeActionResult>
   openExternalUrl(url: string): Promise<NativeActionResult>
+  readClipboardText?(): Promise<ClipboardReadResult>
   writeClipboardText?(text: string): Promise<NativeActionResult>
   onBackendStatusChanged(listener: (status: BackendStatus) => void): () => void
   /** One-way, strictly validated renderer lifecycle or resolved-theme report. */
@@ -542,6 +547,7 @@ export const DESKTOP_IPC = Object.freeze({
   openPath: 'netconsole:desktop:open-path',
   showItemInFolder: 'netconsole:desktop:show-item-in-folder',
   openExternalUrl: 'netconsole:desktop:open-external-url',
+  readClipboardText: 'netconsole:desktop:read-clipboard-text',
   writeClipboardText: 'netconsole:desktop:write-clipboard-text',
   backendStatusChanged: 'netconsole:desktop:backend-status-changed',
   rendererReady: 'netconsole:desktop:renderer-ready',
@@ -605,6 +611,7 @@ export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
   DESKTOP_IPC.openPath,
   DESKTOP_IPC.showItemInFolder,
   DESKTOP_IPC.openExternalUrl,
+  DESKTOP_IPC.readClipboardText,
   DESKTOP_IPC.writeClipboardText,
   DESKTOP_IPC.rendererRecoveryState,
 ])

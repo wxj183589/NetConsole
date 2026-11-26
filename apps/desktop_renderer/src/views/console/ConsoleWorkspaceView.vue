@@ -162,6 +162,7 @@ const {
   closeSplit,
   startDividerDrag,
   clearActiveTerminal,
+  executeActiveTerminalMenuFunction,
   searchActiveTerminal,
   toggleGroup,
   expandAllGroups,
@@ -174,6 +175,9 @@ const {
   showHistory,
   showReplay,
   exportReplay,
+  connectProfileAtAddress,
+  importProfiles,
+  exportProfiles,
   sessionStatusClass,
   showDeviceMenu,
   showSessionMenu,
@@ -191,6 +195,13 @@ const sftpAvailable = computed(() => activeTab.value ? activeTab.value.session.p
 const showSftp = computed(() => sftpVisible.value && sftpAvailable.value)
 const sftpWorkspaces = ref<Array<{ id: string; deviceUuid: string; name: string }>>([])
 const sftpWorkspaceId = computed(() => activeTab.value?.id || sftpDevice.value?.device_uuid || '')
+const profileImportInput = ref<HTMLInputElement | null>(null)
+async function onProfileImport(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+  input.value = ''
+  await importProfiles(file)
+}
 watch([showSftp, sftpWorkspaceId], () => {
   if (showSftp.value && sftpDevice.value && !sftpWorkspaces.value.some(item => item.id === sftpWorkspaceId.value)) sftpWorkspaces.value.push({ id: sftpWorkspaceId.value, deviceUuid: sftpDevice.value.device_uuid, name: sftpDevice.value.name })
 }, { immediate: true })
@@ -315,6 +326,9 @@ watch([showSftp, sftpWorkspaceId], () => {
           <div class="device-tree-actions">
             <el-button link title="快速连接" @click="quickConnectVisible = true"><el-icon><Plus /></el-icon></el-button>
             <el-button link @click="createProfileFolder">新建文件夹</el-button>
+            <el-button link title="导入会话配置 JSON" @click="profileImportInput?.click()">导入</el-button>
+            <el-button link title="导出会话配置 JSON" @click="exportProfiles">导出</el-button>
+            <input ref="profileImportInput" class="visually-hidden" type="file" accept=".json,application/json" @change="onProfileImport" />
           </div>
           <section v-for="group in groupedProfiles" :key="group.id || 'root'" class="device-group" @dragover.prevent @drop.prevent="dropProfileOnFolder(group.id)">
             <div class="device-group__title">
@@ -334,7 +348,7 @@ watch([showSftp, sftpWorkspaceId], () => {
               role="button"
               tabindex="0"
               draggable="true"
-              :title="`${profile.host}:${profile.port} · ${profile.username} · ${profile.encoding.toUpperCase()}`"
+              :title="`${profile.host}:${profile.port}${profile.backup_host ? ` · 备用 ${profile.backup_host}:${profile.backup_port}` : ''} · ${profile.username} · ${profile.encoding.toUpperCase()}${profile.notes ? ` · ${profile.notes}` : ''}${profile.tags?.length ? ` · ${profile.tags.join(', ')}` : ''}`"
               @dblclick="openProfile(profile)"
               @keydown.enter.self.prevent="openProfile(profile)"
               @contextmenu="showProfileMenu($event, profile)"
@@ -446,7 +460,7 @@ watch([showSftp, sftpWorkspaceId], () => {
           <strong>尚未打开终端会话</strong>
           <span>设备凭据由后端受控引用，终端页面不会接收密码或私钥。</span>
         </div>
-        <ConsoleCommandBar :sessions="sessions" :active="activeTab?.session || null" :selected="selectedSessionIds" :selected-devices="devices.filter(item => selectedDeviceUuids.includes(item.device_uuid))" @opened="addTerminalTab" />
+        <ConsoleCommandBar :sessions="sessions" :active="activeTab?.session || null" :selected="selectedSessionIds" :selected-devices="devices.filter(item => selectedDeviceUuids.includes(item.device_uuid))" @opened="addTerminalTab" @menu-action="executeActiveTerminalMenuFunction" />
       </main>
     </div>
 
@@ -497,6 +511,7 @@ watch([showSftp, sftpWorkspaceId], () => {
       @click.stop
     >
       <button @click="openProfile(contextProfile); hideContextMenu()">连接</button>
+      <button v-if="contextProfile.backup_host" @click="connectProfileAtAddress(contextProfile, 'backup'); hideContextMenu()">使用备用地址连接</button>
       <button @click="editProfile(contextProfile); hideContextMenu()">编辑</button>
       <button @click="saveProfileAction(contextProfile, 'copy'); hideContextMenu()">复制连接</button>
       <button @click="saveProfileAction(contextProfile, 'rename'); hideContextMenu()">重命名</button>
@@ -615,6 +630,7 @@ watch([showSftp, sftpWorkspaceId], () => {
 .device-row, .session-row { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 6px; text-align: left; color: inherit; background: transparent; cursor: pointer; }
 .device-row:hover, .device-row.active, .session-row:hover { background: var(--nc-bg-active); }
 .profile-row { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; padding: 5px 6px; border: 0; border-radius: 6px; color: inherit; text-align: left; background: transparent; cursor: pointer; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .profile-row:hover { background: var(--nc-bg-active); }
 .profile-row__favorite { flex: 0 0 14px; color: var(--nc-warning); }
 .profile-row__body { display: grid; min-width: 0; flex: 1; gap: 2px; }

@@ -48,6 +48,7 @@ describe('preload bridge', () => {
       'openTerminalWindow',
       'openWorkspaceWindow',
       'prepareSftpDrag',
+      'readClipboardText',
       'refreshExternalToolStatuses',
       'refreshSiteContext',
       'renameExternalToolCategory',
@@ -117,6 +118,8 @@ describe('preload bridge', () => {
     expect(invocations).toContainEqual([DESKTOP_IPC.refreshSiteContext, undefined])
     bridge.reportSiteSwitchState?.(true)
     expect(ipcRenderer.send).toHaveBeenCalledWith(DESKTOP_IPC.siteSwitchState, true)
+    await bridge.readClipboardText?.()
+    expect(invocations).toContainEqual([DESKTOP_IPC.readClipboardText, undefined])
     await bridge.writeClipboardText?.('AirScript source')
     expect(invocations).toContainEqual([DESKTOP_IPC.writeClipboardText, 'AirScript source'])
   })

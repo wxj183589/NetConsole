@@ -36,7 +36,7 @@ class TerminalProfileStore:
         with self._lock:
             value = self._read_json(
                 self.path,
-                {"schema_version": 1, "folders": [], "profiles": []},
+                {"schema_version": 2, "folders": [], "profiles": []},
             )
             folders = [self._folder(item) for item in value.get("folders", [])]
             folder_ids = {item["folder_id"] for item in folders}
@@ -45,7 +45,7 @@ class TerminalProfileStore:
                 self._profile(item, folder_ids=folder_ids, password_configured=str(item.get("profile_id") or "") in secrets)
                 for item in value.get("profiles", [])
             ]
-            return {"schema_version": 1, "folders": folders, "profiles": profiles}
+            return {"schema_version": 2, "folders": folders, "profiles": profiles}
 
     def save_profile(
         self,
@@ -157,8 +157,8 @@ class TerminalProfileStore:
                     profile["folder_id"] = ""
             self._write_document({**document, "folders": folders})
 
-    @staticmethod
-    def connection_values(values: dict[str, Any]) -> dict[str, Any]:
+    @classmethod
+    def connection_values(cls, values: dict[str, Any]) -> dict[str, Any]:
         protocol = str(values.get("protocol") or "SSH").strip().upper()
         if protocol not in _PROTOCOLS:
             raise TerminalProfileError("快速连接协议只支持 SSH 或 TELNET")
@@ -177,13 +177,98 @@ class TerminalProfileStore:
         return {
             "name": str(values.get("name") or host).strip()[:160] or host,
             "host": host,
+            "backup_host": cls._optional_host(values.get("backup_host"), "备用主机"),
+            "backup_port": cls._optional_port(values.get("backup_port"), port, "备用端口"),
             "port": port,
             "protocol": protocol,
             "username": username,
             "encoding": encoding,
             "vendor": str(values.get("vendor") or "Other").strip()[:80] or "Other",
             "device_type": str(values.get("device_type") or "Other").strip()[:40] or "Other",
+            "notes": str(values.get("notes") or "").strip()[:2000],
+            "tags": cls._tags(values.get("tags", [])),
         }
+
+    @staticmethod
+    def _optional_host(value: Any, label: str) -> str:
+        host = str(value or "").strip()
+        if host and (len(host) > 255 or any(char.isspace() or char in "/\\" for char in host)):
+            raise TerminalProfileError(f"{label}无效")
+        return host
+
+    @staticmethod
+    def _optional_port(value: Any, default: int, label: str) -> int:
+        port = int(value or default)
+        if not 1 <= port <= 65535:
+            raise TerminalProfileError(f"{label}无效")
+        return port
+
+    @staticmethod
+    def _tags(value: Any) -> list[str]:
+        if not isinstance(value, list) or len(value) > 32:
+            raise TerminalProfileError("会话标签格式无效")
+        tags = []
+        for item in value:
+            tag = str(item).strip()
+            if not tag or len(tag) > 40:
+                raise TerminalProfileError("会话标签长度无效")
+            if tag.casefold() not in {existing.casefold() for existing in tags}:
+                tags.append(tag)
+        return tags
+
+    def import_document(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict) or value.get("schema_version") not in {1, 2}:
+            raise TerminalProfileError("会话配置版本无效")
+        imported_folders = value.get("folders", [])
+        imported_profiles = value.get("profiles", [])
+        if not isinstance(imported_folders, list) or not isinstance(imported_profiles, list):
+            raise TerminalProfileError("会话配置结构无效")
+        with self._lock:
+            current = self.document()
+            folder_map: dict[str, str] = {}
+            folders = list(current["folders"])
+            for raw in imported_folders:
+                folder = self._folder(raw)
+                original_id = folder["folder_id"]
+                existing = next((item for item in folders if item["name"].casefold() == folder["name"].casefold()), None)
+                if existing:
+                    folder_map[original_id] = existing["folder_id"]
+                    continue
+                folder["folder_id"] = uuid.uuid4().hex
+                folder_map[original_id] = folder["folder_id"]
+                folders.append(folder)
+            folder_ids = {folder["folder_id"] for folder in folders}
+            profiles = list(current["profiles"])
+            now = int(time.time() * 1000)
+            for raw in imported_profiles:
+                if not isinstance(raw, dict):
+                    raise TerminalProfileError("保存会话格式无效")
+                old_folder_id = str(raw.get("folder_id") or "")
+                if old_folder_id and old_folder_id not in folder_map:
+                    raise TerminalProfileError("导入会话引用的文件夹不存在")
+                values = self.connection_values(raw)
+                folder_id = folder_map.get(old_folder_id, "")
+                existing = next((
+                    profile for profile in profiles
+                    if profile["name"].casefold() == values["name"].casefold()
+                    and profile["host"] == values["host"]
+                ), None)
+                profile = self._profile({
+                    **values,
+                    "profile_id": existing["profile_id"] if existing else uuid.uuid4().hex,
+                    "folder_id": folder_id,
+                    "favorite": raw.get("favorite", False),
+                    "notes": raw.get("notes", ""),
+                    "tags": raw.get("tags", []),
+                    "created_at_ms": existing["created_at_ms"] if existing else now,
+                    "updated_at_ms": now,
+                }, folder_ids=folder_ids, password_configured=bool(existing and existing["password_configured"]))
+                profiles = [item for item in profiles if item["profile_id"] != profile["profile_id"]]
+                profiles.append(profile)
+            profiles.sort(key=lambda item: (not item["favorite"], item["name"].casefold()))
+            merged = {"schema_version": 2, "folders": folders, "profiles": profiles}
+            self._write_document(merged)
+            return self.document()
 
     def _profile(
         self,
@@ -203,6 +288,8 @@ class TerminalProfileStore:
             **connection,
             "folder_id": folder_id,
             "favorite": bool(value.get("favorite", False)),
+            "notes": str(value.get("notes") or "")[:2000],
+            "tags": self._tags(value.get("tags", [])),
             "password_configured": bool(password_configured),
             "created_at_ms": max(0, int(value.get("created_at_ms") or 0)),
             "updated_at_ms": max(0, int(value.get("updated_at_ms") or 0)),
@@ -251,7 +338,7 @@ class TerminalProfileStore:
         self._write_json(
             self.path,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "folders": value.get("folders", []),
                 "profiles": [
                     {key: item for key, item in profile.items() if key != "password_configured"}

@@ -15,6 +15,7 @@ import {
   getTerminalHighlightRules,
   getTerminalHistoryEvents,
   getTerminalSettings,
+  importTerminalProfiles,
   issueTerminalTicket,
   listTerminalHistory,
   listTerminalProfiles,
@@ -34,6 +35,7 @@ import {
   type TerminalProfile,
   type TerminalProfileFolder,
   type TerminalProfileValues,
+  type TerminalProfileDocument,
   type TerminalRecordingEvent,
   type TerminalSession,
   type TerminalSettings,
@@ -140,9 +142,12 @@ export function useConsoleWorkspace() {
     const visible = profiles.value.filter((profile) => !needle || [
       profile.name,
       profile.host,
+      profile.backup_host,
       profile.username,
       profile.vendor,
       profile.device_type,
+      profile.notes,
+      ...(profile.tags || []),
     ].join(' ').toLowerCase().includes(needle))
     const groups = profileFolders.value.map((folder) => ({
       id: folder.folder_id,
@@ -377,23 +382,61 @@ export function useConsoleWorkspace() {
   }
 
   async function openProfile(profile: TerminalProfile): Promise<void> {
+    return connectProfileAtAddress(profile, 'primary')
+  }
+
+  async function connectProfileAtAddress(profile: TerminalProfile, addressRole: 'primary' | 'backup'): Promise<void> {
+    if (addressRole === 'backup' && !profile.backup_host) return
     try {
       let password = ''
       if (!profile.password_configured) {
         const result = await ElMessageBox.prompt(
-          `输入 ${profile.name} 的登录密码`,
-          '连接保存会话',
+          `输入 ${profile.name} 的登录密码${addressRole === 'backup' ? '（备用地址）' : ''}`,
+          addressRole === 'backup' ? '连接备用地址' : '连接保存会话',
           { inputType: 'password', confirmButtonText: '连接', cancelButtonText: '取消' },
         )
         password = result.value
       }
-      const created = await connectTerminalProfile(profile.profile_id, password)
+      const created = await connectTerminalProfile(profile.profile_id, password, addressRole)
       addTerminalTab(created)
       await loadSessions()
     } catch (error) {
       if (error !== 'cancel' && error !== 'close') {
         ElMessage.error(error instanceof Error ? error.message : '保存会话连接失败')
       }
+    }
+  }
+
+  async function importProfiles(file: File | null): Promise<void> {
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) {
+      ElMessage.error(`${file.name} 会话配置文件超过 2 MiB`)
+      return
+    }
+    try {
+      const parsed: unknown = JSON.parse(await file.text())
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('会话配置文件根节点必须是 JSON 对象')
+      }
+      const result = await importTerminalProfiles(parsed as TerminalProfileDocument)
+      profiles.value = result.profiles
+      profileFolders.value = result.folders
+      ElMessage.success(`已导入配置，当前共 ${result.profiles.length} 个保存会话`)
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '会话配置导入失败')
+    }
+  }
+
+  async function exportProfiles(): Promise<void> {
+    try {
+      const result = await downloadBackendResource({
+        apiPath: '/api/terminal/profiles/export',
+        suggestedName: 'console-sessions.json',
+      })
+      if (result.status === 'saved') ElMessage.success('会话配置已保存')
+      else if (result.status === 'failed') ElMessage.error(result.error || '会话配置保存失败')
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '会话配置导出失败')
     }
   }
 
@@ -760,6 +803,11 @@ export function useConsoleWorkspace() {
     if (activeTabId.value) terminalRefs.value[activeTabId.value]?.clear()
   }
 
+  function executeActiveTerminalMenuFunction(id: 'find' | 'select-all' | 'clear-scrollback' | 'clear-screen' | 'clear-all'): void {
+    if (!activeTabId.value) return
+    void terminalRefs.value[activeTabId.value]?.executeMenuFunction(id)
+  }
+
   function searchActiveTerminal(backwards = false): void {
     if (!activeTabId.value || !terminalSearch.value) return
     const found = terminalRefs.value[activeTabId.value]?.search(terminalSearch.value, backwards)
@@ -1072,6 +1120,9 @@ export function useConsoleWorkspace() {
     externalTerminalBusy: externalTerminalLauncher.busy,
     quickConnect,
     openProfile,
+    connectProfileAtAddress,
+    importProfiles,
+    exportProfiles,
     editProfile,
     saveProfileAction,
     toggleProfileGroup,
@@ -1100,6 +1151,7 @@ export function useConsoleWorkspace() {
     closeSplit,
     startDividerDrag,
     clearActiveTerminal,
+    executeActiveTerminalMenuFunction,
     searchActiveTerminal,
     toggleGroup,
     expandAllGroups,

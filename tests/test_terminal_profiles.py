@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+
+import pytest
 
 from netconsole.core.paths import PathResolver
 from netconsole.services.terminal_profiles import TerminalProfileStore
@@ -83,3 +86,51 @@ def test_deleting_profile_folder_keeps_sessions_at_root(tmp_path: Path) -> None:
     assert document["folders"] == []
     assert document["profiles"][0]["profile_id"] == profile["profile_id"]
     assert document["profiles"][0]["folder_id"] == ""
+
+
+def test_import_accepts_schema_one_and_preserves_backup_metadata_without_secrets(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    document = store.import_document({
+        "schema_version": 1,
+        "folders": [{"folder_id": "a" * 32, "name": "核心设备"}],
+        "profiles": [{
+            "profile_id": "b" * 32,
+            "name": "LAB-AC",
+            "host": "192.0.2.10",
+            "backup_host": "192.0.2.11",
+            "backup_port": 2222,
+            "port": 22,
+            "protocol": "SSH",
+            "username": "operator",
+            "encoding": "utf-8",
+            "vendor": "H3C",
+            "device_type": "AC",
+            "folder_id": "a" * 32,
+            "favorite": True,
+            "notes": "实验室控制器",
+            "tags": ["无线", "核心"],
+            "password": "must-not-be-imported",
+        }],
+    })
+
+    profile = document["profiles"][0]
+    stored = json.loads(store.path.read_text(encoding="utf-8"))
+
+    assert document["schema_version"] == 2
+    assert profile["backup_host"] == "192.0.2.11"
+    assert profile["backup_port"] == 2222
+    assert profile["notes"] == "实验室控制器"
+    assert profile["tags"] == ["无线", "核心"]
+    assert profile["folder_id"] == document["folders"][0]["folder_id"]
+    assert profile["password_configured"] is False
+    assert "must-not-be-imported" not in json.dumps(stored, ensure_ascii=False)
+
+
+def test_import_rejects_invalid_documents_without_mutating_store(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    before = store.document()
+
+    with pytest.raises(ValueError, match="会话配置版本无效"):
+        store.import_document({"schema_version": 99, "folders": [], "profiles": []})
+
+    assert store.document() == before

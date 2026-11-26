@@ -68,6 +68,8 @@ export interface TerminalProfile {
   profile_id: string
   name: string
   host: string
+  backup_host: string
+  backup_port: number
   port: number
   protocol: Exclude<TerminalProtocol, 'AUTO'>
   username: string
@@ -76,6 +78,8 @@ export interface TerminalProfile {
   device_type: string
   folder_id: string
   favorite: boolean
+  notes: string
+  tags: string[]
   password_configured: boolean
   created_at_ms: number
   updated_at_ms: number
@@ -84,6 +88,8 @@ export interface TerminalProfile {
 export interface TerminalProfileValues {
   name: string
   host: string
+  backup_host?: string
+  backup_port?: number | null
   port: number
   protocol: Exclude<TerminalProtocol, 'AUTO'>
   username: string
@@ -92,6 +98,8 @@ export interface TerminalProfileValues {
   device_type: string
   folder_id: string
   favorite: boolean
+  notes?: string
+  tags?: string[]
 }
 
 export interface TerminalProfileDocument {
@@ -236,6 +244,13 @@ export function listTerminalProfiles(): Promise<TerminalProfileDocument> {
   return apiRequest('/api/terminal/profiles')
 }
 
+export function importTerminalProfiles(document: TerminalProfileDocument): Promise<TerminalProfileDocument> {
+  return apiRequest('/api/terminal/profiles/import', {
+    method: 'POST',
+    body: JSON.stringify({ document }),
+  })
+}
+
 export function saveTerminalProfile(
   values: TerminalProfileValues & {
     password?: string
@@ -256,10 +271,11 @@ export function deleteTerminalProfile(profileId: string): Promise<{ deleted: boo
 export function connectTerminalProfile(
   profileId: string,
   password = '',
+  addressRole: 'primary' | 'backup' = 'primary',
 ): Promise<TerminalSessionConnection> {
   return apiRequest(`/api/terminal/profiles/${encodeURIComponent(profileId)}/connect`, {
     method: 'POST',
-    body: JSON.stringify({ password }),
+    body: JSON.stringify({ password, address_role: addressRole }),
   })
 }
 

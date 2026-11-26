@@ -43,6 +43,8 @@ class TerminalCreateRequest(BaseModel):
 class TerminalProfileValues(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     host: str = Field(min_length=1, max_length=255)
+    backup_host: str = Field(default="", max_length=255)
+    backup_port: int | None = Field(default=None, ge=1, le=65535)
     port: int = Field(ge=1, le=65535)
     protocol: Literal["SSH", "TELNET"] = "SSH"
     username: str = Field(default="", max_length=256)
@@ -51,6 +53,8 @@ class TerminalProfileValues(BaseModel):
     device_type: str = Field(default="Other", max_length=40)
     folder_id: str = Field(default="", max_length=32)
     favorite: bool = False
+    notes: str = Field(default="", max_length=2000)
+    tags: list[str] = Field(default_factory=list, max_length=32)
 
 
 class TerminalQuickConnectRequest(TerminalProfileValues):
@@ -70,6 +74,11 @@ class TerminalProfileConnectRequest(BaseModel):
     password: str = Field(default="", max_length=4096)
     cols: int = Field(default=120, ge=20, le=400)
     rows: int = Field(default=32, ge=5, le=200)
+    address_role: Literal["primary", "backup"] = "primary"
+
+
+class TerminalProfileImportRequest(BaseModel):
+    document: dict[str, Any]
 
 
 class TerminalFolderRequest(BaseModel):
@@ -81,13 +90,20 @@ class TerminalSessionNameRequest(BaseModel):
 
 
 class TerminalBatchRequest(BaseModel):
-    session_ids: list[str] = Field(min_length=1)
+    session_ids: list[str] = Field(min_length=1, max_length=128)
     text: str = Field(default="", max_length=65536)
     mode: Literal["block", "lines", "escaped"] = "block"
     interval_ms: Literal[0, 200, 500, 1000] = 0
     scope: Literal["current", "selected", "all", "new"] = "current"
     group_id: str = ""
     button_id: str = ""
+    execution_mode: Literal["sequential", "concurrent"] = "concurrent"
+    max_concurrency: int = Field(default=4, ge=1, le=16)
+    device_timeout: float = Field(default=15, ge=1, le=300)
+    total_timeout: float = Field(default=300, ge=1, le=3600)
+    max_retries: int = Field(default=0, ge=0, le=3)
+    fail_policy: Literal["continue", "stop"] = "continue"
+    output_wait_timeout: float = Field(default=1, ge=0, le=10)
 
 
 @router.get("/quick-buttons")
@@ -128,6 +144,13 @@ def batch_send(request: Request, payload: TerminalBatchRequest):
             payload.interval_ms,
             payload.scope,
             (payload.group_id, payload.button_id) if payload.button_id else None,
+            payload.execution_mode,
+            payload.max_concurrency,
+            payload.device_timeout,
+            payload.total_timeout,
+            payload.max_retries,
+            payload.fail_policy,
+            payload.output_wait_timeout,
         )
     except BaseException as exc:
         raise _translate_error(exc) from exc
@@ -145,6 +168,36 @@ def batch_status(request: Request, job_id: str):
 def batch_cancel(request: Request, job_id: str):
     try:
         return _manager(request).dispatcher.cancel(job_id)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/batch-sends/{job_id}/pause")
+def batch_pause(request: Request, job_id: str):
+    try:
+        return _manager(request).dispatcher.set_paused(job_id, True)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/batch-sends/{job_id}/resume")
+def batch_resume(request: Request, job_id: str):
+    try:
+        return _manager(request).dispatcher.set_paused(job_id, False)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/batch-sends/{job_id}/export")
+def batch_export(request: Request, job_id: str, format: Literal["csv", "txt"] = "csv"):
+    try:
+        content = _manager(request).dispatcher.export(job_id, format)
+        media_type = "text/csv; charset=utf-8" if format == "csv" else "text/plain; charset=utf-8"
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="console-batch-{job_id}.{format}"'},
+        )
     except BaseException as exc:
         raise _translate_error(exc) from exc
 
@@ -345,6 +398,30 @@ def list_terminal_profiles(request: Request) -> dict[str, Any]:
         raise _translate_error(exc) from exc
 
 
+@router.get("/profiles/export", response_class=Response)
+def export_terminal_profiles(request: Request):
+    try:
+        document = _manager(request).profiles.document()
+        return Response(
+            content=json.dumps(document, ensure_ascii=False, indent=2),
+            media_type="application/json",
+            headers={"Content-Disposition": 'attachment; filename="console-sessions.json"'},
+        )
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/profiles/import")
+def import_terminal_profiles(payload: TerminalProfileImportRequest, request: Request):
+    try:
+        raw = json.dumps(payload.document, ensure_ascii=False)
+        if len(raw.encode("utf-8")) > 2 * 1024 * 1024:
+            raise ValueError("会话配置文件超过 2 MiB")
+        return _manager(request).profiles.import_document(payload.document)
+    except BaseException as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.post("/profiles")
 def create_terminal_profile(
     payload: TerminalProfileSaveRequest,
@@ -400,6 +477,7 @@ def connect_terminal_profile(
             password_override=payload.password,
             cols=payload.cols,
             rows=payload.rows,
+            address_role=payload.address_role,
         )
         return {
             "session": session,
