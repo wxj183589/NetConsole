@@ -7,12 +7,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from uvicorn.server import ServerState
+from websockets.protocol import State
 
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, DesktopShutdownAdmissionMiddleware
 from netconsole.backend.electron_runtime import (
     ElectronRuntimeOptions,
+    _DesktopWebSocketProtocol,
     build_app,
     emit_shutdown_ack,
     emit_shutdown_complete,
@@ -34,6 +38,25 @@ from netconsole.services.ap_identity import ApIdentityQueryService
 
 
 TOKEN = "electron-test-token-abcdefghijklmnopqrstuvwxyz"
+
+
+@pytest.mark.parametrize("state", [State.OPEN, State.CLOSING, State.CLOSED])
+def test_desktop_websocket_shutdown_closes_transport_during_peer_close(state) -> None:
+    async def exercise() -> None:
+        closed = []
+        writes = []
+        protocol = _DesktopWebSocketProtocol(uvicorn.Config(FastAPI()), ServerState(), {})
+        protocol.transport = SimpleNamespace(close=lambda: closed.append(True), write=writes.append)
+        protocol.handshake_complete = True
+        protocol.conn.state = state
+
+        protocol.shutdown()
+
+        assert closed == [True]
+        assert bool(writes) is (state is State.OPEN)
+        assert protocol.queue.get_nowait() == {"type": "websocket.disconnect", "code": 1012}
+
+    asyncio.run(exercise())
 
 
 def test_electron_runtime_accepts_only_loopback_configuration() -> None:

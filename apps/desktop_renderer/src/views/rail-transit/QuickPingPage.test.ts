@@ -14,6 +14,7 @@ vi.mock('../../api/groundUnattended', () => ({
 
 const stats = { sent: 2, received: 1, lost: 1, loss_rate_percent: 50, min_rtt_ms: 4, avg_rtt_ms: 4, max_rtt_ms: 4, jitter_ms: 0, current_consecutive_loss: 1, max_consecutive_loss: 1 }
 const run = { run_id: 'run-1', state: 'RUNNING', targets: [], stats, target_stats: {}, recent_samples: [], started_at: '2026-01-01', ended_at: '', error: '' }
+const completedRun = { ...run, state: 'COMPLETED', ended_at: '2026-01-01T00:10:00Z', targets: [{ target_ip: '192.0.2.1' }] }
 const trains = [{ train_id: 't1', train_no: '001', endpoints: [{ endpoint: 'CT', mr_id: 'm1', mr_name: 'MR1', management_ip: '192.0.2.1', backup_management_ip: '192.0.2.2' }] }]
 
 beforeEach(() => setRendererFeaturesForTest({ 'capability.ground_unattended.quick_ping': { visible: true, enabled: true } }))
@@ -100,6 +101,80 @@ describe('QuickPingPage', () => {
     expect(vm.sampleRows).toHaveLength(1)
     wrapper.unmount()
   })
+
+  it('continues empty budget pages to the first populated historical window page', async () => {
+    api.samples.mockReset()
+      .mockResolvedValueOnce({ items: [], next_cursor: 'scan-1', scan_budget_exhausted: true })
+      .mockResolvedValueOnce({ items: [{ received_at: 'first' }], next_cursor: 'scan-2', scan_budget_exhausted: true })
+      .mockResolvedValueOnce({ items: [{ received_at: 'next' }], next_cursor: '', scan_budget_exhausted: false })
+    const wrapper = shallowMount(QuickPingPage, { props: { trains: [], active: false } })
+    const vm = wrapper.vm as unknown as {
+      selected: unknown; sampleTarget: string; loadSamples: (next?: boolean) => Promise<void>
+      samplePage: number; sampleCursor: string; sampleRows: unknown[]
+    }
+    vm.selected = completedRun
+    vm.sampleTarget = '192.0.2.1'
+    await flushPromises()
+    await vm.loadSamples()
+    expect(api.samples).toHaveBeenCalledTimes(2)
+    const [, query, options] = api.samples.mock.calls[0]!
+    expect(query).toEqual(expect.objectContaining({
+      start_time: '2026-01-01T00:05:00.000Z', end_time: '2026-01-01T00:10:00.000Z', cursor: '',
+    }))
+    expect(api.samples).toHaveBeenNthCalledWith(2, 'run-1', { ...query, cursor: 'scan-1' }, options)
+    expect(vm.sampleRows).toEqual([{ received_at: 'first' }])
+    expect(vm.samplePage).toBe(1)
+    expect(vm.sampleCursor).toBe('scan-2')
+    await vm.loadSamples(true)
+    expect(api.samples).toHaveBeenLastCalledWith('run-1', { ...query, cursor: 'scan-2' }, expect.any(Object))
+    expect(vm.samplePage).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('keeps a manual continuation after the historical scan cap', async () => {
+    api.samples.mockReset().mockImplementation((_runId, { cursor }) => Promise.resolve({
+      items: [], next_cursor: String(Number(cursor) + 1), scan_budget_exhausted: true,
+    }))
+    const wrapper = shallowMount(QuickPingPage, { props: { trains: [], active: false } })
+    const vm = wrapper.vm as unknown as {
+      selected: unknown; sampleTarget: string; loadSamples: (next?: boolean) => Promise<void>
+      sampleCursor: string; sampleBudgetExhausted: boolean
+    }
+    vm.selected = completedRun
+    vm.sampleTarget = '192.0.2.1'
+    await flushPromises()
+    await vm.loadSamples()
+    expect(api.samples).toHaveBeenCalledTimes(32)
+    expect(vm.sampleCursor).toBe('32')
+    expect(vm.sampleBudgetExhausted).toBe(true)
+    await vm.loadSamples(true)
+    expect(api.samples).toHaveBeenCalledTimes(33)
+    wrapper.unmount()
+  })
+
+  it('does not follow a historical cursor after a newer range aborts the request', async () => {
+    let finishOld!: (value: unknown) => void
+    api.samples.mockReset().mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve }))
+      .mockResolvedValueOnce({ items: [{ received_at: 'new' }], next_cursor: '', scan_budget_exhausted: false })
+    const wrapper = shallowMount(QuickPingPage, { props: { trains: [], active: false } })
+    const vm = wrapper.vm as unknown as {
+      selected: unknown; sampleTarget: string; sampleRange: string
+      loadSamples: () => Promise<void>; sampleRows: unknown[]
+    }
+    vm.selected = completedRun
+    vm.sampleTarget = '192.0.2.1'
+    await flushPromises()
+    const old = vm.loadSamples()
+    vm.sampleRange = 'all'
+    await vm.loadSamples()
+    finishOld({ items: [], next_cursor: 'old-cursor', scan_budget_exhausted: true })
+    await old
+    expect(api.samples).toHaveBeenCalledTimes(2)
+    expect(api.samples.mock.calls[0]?.[2].signal.aborted).toBe(true)
+    expect(vm.sampleRows).toEqual([{ received_at: 'new' }])
+    wrapper.unmount()
+  })
+
   it('uses unlimited duration by default and sends the API null contract', async () => {
     api.list.mockResolvedValue({ items: [run], total: 1 })
     api.get.mockResolvedValue(run)

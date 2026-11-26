@@ -26,6 +26,7 @@ const historyPageSize = 50
 const sampleTarget = ref('')
 const ALL_SAMPLE_TARGET = '__all__'
 const MAX_COMPARE_TARGETS = 32
+const MAX_EMPTY_HISTORY_SCAN_PAGES = 32
 const sampleRange = ref<number | 'all' | 'custom'>(5)
 const customSampleRange = ref<Date[]>([])
 const sampleRows = ref<Array<Record<string, unknown>>>([])
@@ -160,14 +161,30 @@ async function loadSamples(next = false): Promise<void> {
   }
   sampleLoading.value = true
   try {
-    const compareTargets = sampleTarget.value === ALL_SAMPLE_TARGET ? run.targets.slice(0, MAX_COMPARE_TARGETS) : []
-    const result = compareTargets.length
+    const targetIp = sampleTarget.value
+    const bounds = sampleBounds
+    const compareTargets = targetIp === ALL_SAMPLE_TARGET ? run.targets.slice(0, MAX_COMPARE_TARGETS) : []
+    const fetchSamples = (cursor: string) => getGroundQuickPingSamples(run.run_id, {
+      target_ip: targetIp, ...bounds, limit: 1000, cursor,
+    }, { signal: request.signal })
+    let result = compareTargets.length
       ? await Promise.all(compareTargets.map((target) => getGroundQuickPingSamples(run.run_id, {
-        target_ip: target.target_ip, ...sampleBounds, limit: Math.max(1, Math.floor(1000 / compareTargets.length)), cursor: '',
+        target_ip: target.target_ip, ...bounds, limit: Math.max(1, Math.floor(1000 / compareTargets.length)), cursor: '',
       }, { signal: request.signal })))
-      : await getGroundQuickPingSamples(run.run_id, {
-        target_ip: sampleTarget.value, ...sampleBounds, limit: 1000, cursor: next ? sampleCursor.value : '',
-      }, { signal: request.signal })
+      : await fetchSamples(next ? sampleCursor.value : '')
+    if (!Array.isArray(result) && !next && targetIp !== ALL_SAMPLE_TARGET && !isRunning(run) && bounds.start_time && bounds.end_time) {
+      // A stored segment can spend a scan page reaching the requested window.
+      // Keep the first populated page and its cursor for normal pagination.
+      const visitedCursors = new Set<string>()
+      while (current === sampleGeneration && !request.signal.aborted
+        && visitedCursors.size < MAX_EMPTY_HISTORY_SCAN_PAGES - 1
+        && !result.items.length && result.scan_budget_exhausted && result.next_cursor
+        && !visitedCursors.has(result.next_cursor)) {
+        const cursor = result.next_cursor
+        visitedCursors.add(cursor)
+        result = await fetchSamples(cursor)
+      }
+    }
     if (current !== sampleGeneration || request.signal.aborted) return
     if (Array.isArray(result)) {
       const merged: Array<Record<string, unknown>> = result.flatMap((page, index) => page.items.map((row) => ({

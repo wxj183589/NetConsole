@@ -23,7 +23,7 @@
 
 | 项目 | 当前证据 | 待验收 |
 | --- | --- | --- |
-| Ground Syslog | Windows 回环 TCP/UDP 实际收包。验证 RFC 6587、半包、粘包、多连接、截断诊断、中文原文、两台 MR 和未知来源隔离、SQLite 投影、原始历史查询及停止后重绑 | Electron 实时页面与真实设备 TCP 回传 |
+| Ground Syslog | Windows 回环 TCP/UDP 实际收包。验证 RFC 6587、半包、粘包、多连接、截断诊断、中文原文、两台 MR 和未知来源隔离、SQLite 投影、原始历史查询、独占绑定和停止后重绑。实际 Electron 显示测试 WMESH 事件，同一记录在显式停止后可按 run 查询 | 真实设备 TCP 回传 |
 | Heartbeat / Quick Ping | Windows fping 回环真实采集两个目标，两轮启停，每轮每目标保存 8 个成功样本。调度、丢包状态、缺样及页面用定向回归补齐 | 网络层丢包、主备故障切换及长稳 |
 | 外部终端 | Windows OpenSSH 9.5p2 在回环 fixture 上实际完成公钥认证，验证备用地址、中文空格用户名、失败反馈。修复 Xshell SSH URL 的凭据编码，SecureCRT 和 PuTTY 明文 argv 通过构造回归 | SecureCRT、PuTTY、Xshell 和 WinSCP 实机启动与认证 |
 | Portable | 从 `11061806` ZIP 在两个中文空格程序路径实际启动全新外部 DataRoot 及复用场景，交互就绪 5.187 秒与 5.170 秒。冻结 Worker、Backend 退出及端口重绑通过 | 最新候选复核与跨版本迁移 |
@@ -31,9 +31,25 @@
 | Comware | 已授权实验 AC 和 AC2 在 TCP 建连阶段超时。协议/能力矩阵通过脱敏 fixture 验证 | 真实 Comware V5/V7/V9 设备版本识别与只读 WLAN 采集 |
 | Ground 历史性能 | HZL10 同一隔离索引的 25 条混合历史查询，三次测量从 38.74、6.20、6.07 秒降为 1.94、1.00、0.97 秒。先排序标识和时间，再批量投影当前页详情 | 完整业务页面与连续运行性能矩阵 |
 
+HZL9 与 HZL10 实际源码 Electron 的 Backend 健康 / 首屏分别为 4.992 / 5.030 秒、
+4.423 / 6.919 秒。HZL9 的 Quick Ping 两页各 25 条且无重复，窗口查询 200 条，五次请求
+最大 38.87 ms。独立百万行 fixture 的起始两页耗时 3.58–4.47 ms，末端两页
+73.35–79.65 ms，两处均保留失败点。实际 Ground CSV 导出在两线分别完成 2 条和 7 条，
+下载内容与 Artifact SHA-256 一致。真实光模块资源已查询，光衰明细时序仍待验收。
+
+HZL9 长任务的末五分钟此前停在空扫描页。历史单目标初次加载现在可在收到空扫描页后
+继续使用原查询游标，最多 32 页，切窗时取消。复测首屏 3.513 秒显示 1,000 个样本，
+第二页 492 个，截图可见 RTT、成功点和丢包点。多目标对比和任意时间定位仍待验收。
+
+两线短时回放约 79 / 96 秒，Backend RSS 峰值 263.5 / 317.9 MiB，最大 Electron 子进程
+RSS 峰值 803.4 / 745.1 MiB，退出码均为 0，四个回环端口均关闭。独立 TCP 120 秒
+负载写入并解析 3,600 条，应用丢弃 0，写入与解析队列排空，观察到的句柄数为 164。
+回放测量、截图和下载结果位于 `reports/diagnostic/phase8-real-replay/PHASE8_REPLAY_PERFORMANCE.md`。
+
 定向结果及运行证据位于 Workspace 的 `reports/tests/phase8-continuation-gate.log`、
 `phase8-tcp-mr.log`、`phase8-continuation-scale.log`、`phase8-continuation-renderer.log`、
-`phase8-fping-quick-ping-service.log`、`phase8-heartbeat-faults.log` 和
+`phase8-fping-quick-ping-service.log`、`phase8-heartbeat-faults.log`、
+`phase8-quick-ping-million.log`、`phase8-syslog-bind-conflict.log`、`phase8-syslog-soak.log` 和
 `phase8-portable-external-20261126/`。
 OpenSSH 与设备超时见同一目录下 `phase8-integrated-11061806/external-openssh-loopback.log`
 及 `phase8-integrated-11061806/comware-lab-readonly.json`。

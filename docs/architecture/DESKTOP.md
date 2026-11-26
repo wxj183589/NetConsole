@@ -159,6 +159,8 @@ Electron Builder 目录包/NSIS 与 PyInstaller 受管 Backend 的构建链已�
 6. stdout 只消费受管启动/退出协议；生产仅将结构化 lifecycle 事件提升为 INFO，其余 stdout 保持 DEBUG。stderr 先移除令牌和常见敏感字段，再按受控警告/错误事件写入 Electron 日志。
 7. 正常退出时 Main 通过同一 stdin 控制管道发送 `shutdown`，Python 控制线程据此请求 Uvicorn 优雅退出；父进程异常导致管道 EOF 时，Python 同样请求退出。
 8. Python 收到命令后立即发送 `netconsole.electron_backend.shutdown_received`；只在 Uvicorn 与 FastAPI lifespan 完全退出后发送 `shutdown_complete`，随后等待 Main 的 `exit`。协议事件不能替代 OS 进程退出。
+
+Renderer 在退出页切换时可能已发起 WebSocket 关闭。受管 Backend 直接收口已经关闭或正在关闭的连接，使 FastAPI 继续执行 lifespan 清理并完成退出协议。
 9. Main 始终等待 child `exit/close`，超时后按 `SIGTERM -> SIGKILL -> Windows 当前 owned PID 的 taskkill /T /F` 有界升级；不按进程名扫描或误杀其他 Python/外部工具。
 10. 只有 child 实际退出才能转为 `stopped`。后端意外退出或最终升级仍未退出时状态变为 `failed`，只向当前受信 Renderer 发送脱敏状态事件，不谎报 `stopped`。
 11. 正式默认阶段 watchdog 为 30 秒，整体启动 hard deadline 为 60 秒；监听握手与 health ready 分开计时，合法阶段进展可刷新 watchdog，但不能无限等待。

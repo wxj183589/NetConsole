@@ -15,6 +15,9 @@ from urllib.parse import urlsplit
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from uvicorn.protocols.websockets.websockets_sansio_impl import WebSocketsSansIOProtocol
+from websockets.exceptions import InvalidState
+from websockets.protocol import State
 
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, create_app
 from netconsole.core.backend_instance_lock import BackendInstanceLock
@@ -30,6 +33,18 @@ from netconsole.core.runtime_profile import read_host_environment_profile
 
 _SESSION_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 _WARM_HANDOFF_OWNER_RE = re.compile(r"^[a-f0-9]{32}$")
+
+
+class _DesktopWebSocketProtocol(WebSocketsSansIOProtocol):
+    def shutdown(self) -> None:
+        try:
+            super().shutdown()
+        except InvalidState:
+            # The renderer can start the close handshake before Uvicorn's
+            # shutdown sweep. A second close frame must not abort lifespan.
+            if self.conn.state not in (State.CLOSING, State.CLOSED):
+                raise
+            self.transport.close()
 
 
 def data_environment(data_root):
@@ -194,6 +209,7 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:
                         port=actual_port,
                         log_level="warning",
                         access_log=False,
+                        ws=_DesktopWebSocketProtocol,
                     )
                 )
                 control_thread = threading.Thread(
