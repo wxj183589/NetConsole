@@ -3,11 +3,17 @@ from __future__ import annotations
 import hashlib
 import io
 from pathlib import Path
+from threading import Event
 from zipfile import ZipFile
 
 import pytest
 
-from netconsole.services.terminal_transcript import InputEditor, render_colored_preview, render_events
+from netconsole.services.terminal_transcript import (
+    InputEditor,
+    render_colored_preview,
+    render_events,
+    search_transcript,
+)
 from test_terminal_workspace import _manager_fixture, _wait_until
 
 
@@ -15,11 +21,40 @@ def test_colored_preview_preserves_text_and_leaves_plain_transcript_unchanged():
     events = [{"event_type": "OUTPUT", "data": "\x1b[31mDisplay\x1b[0m Version\r\n"}]
     colored, truncated = render_colored_preview(events)
     assert not truncated
-    assert colored == "\x1b[31;49mDisplay\x1b[39;49m Version\x1b[0m\n"
+    assert colored == "\x1b[0;31;49mDisplay\x1b[0;39;49m Version\x1b[0m\n"
     plain = io.StringIO()
     render_events(events, plain)
     assert plain.getvalue() == "Display Version\n"
     assert render_colored_preview(events, limit=8)[1]
+
+
+def test_full_recording_search_crosses_events_and_color_sequences():
+    def events():
+        for _ in range(3400):
+            yield {"event_type": "OUTPUT", "data": "x" * 300 + "\n"}
+        yield {"event_type": "OUTPUT", "data": "\x1b[38;5;208m设备["}
+        yield {"event_type": "OUTPUT", "data": "\x1b[48;2;12;34;56mIP]\n设备[IP]\n"}
+
+    cancel = Event()
+    result = search_transcript(events(), "设备[ip]", 2, cancel)
+    assert result["total"] == 2
+    assert result["match"]["offset"] > 1_000_000
+    match = result["match"]
+    assert match["text"][match["start"]:match["start"] + match["length"]] == "设备[IP]"
+    count = search_transcript(events(), "设备[ip]\n设备", 1, cancel)
+    assert count["total"] == 1
+    cancel.set()
+    assert search_transcript(events(), "设备", 1, cancel) is None
+
+
+def test_extended_sgr_is_carried_between_recorded_events():
+    events = [
+        {"event_type": "OUTPUT", "data": "\x1b[1;38;5;208;48;2;12;34;56mfirst\n"},
+        {"event_type": "OUTPUT", "data": "second\n\x1b[0mplain\n"},
+    ]
+    text, _ = render_colored_preview(events)
+    assert text.count("\x1b[0;38;5;208;48;2;12;34;56;1m") == 2
+    assert text.endswith("\x1b[0m\nplain\n")
 
 
 def transcript(*events):

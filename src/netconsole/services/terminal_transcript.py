@@ -11,6 +11,8 @@ PROMPT = re.compile(
     r"^(?P<prompt><[^<>\r\n]{1,160}>|\[[^\[\]\r\n]{1,160}\]|[\w.@:/~-]+[#$>])\s*(?P<command>.*)$"
 )
 PAGER = re.compile(r"^\s*-{2,}\s*More\s*-{2,}\s*$", re.I)
+SGR = re.compile(r"\x1b\[[0-9;]*m")
+DEFAULT_STYLE = ("39", "49", ())
 
 
 class InputEditor:
@@ -84,8 +86,9 @@ class Transcript:
         self.pending = deque()
         self.line = []
         self.colors = [] if retain_color else None
-        self.foreground = 39
-        self.background = 49
+        self.foreground, self.background, _ = DEFAULT_STYLE
+        self.attributes = set()
+        self.style = DEFAULT_STYLE
         self.cursor = 0
         self.escape = ""
         self.prompt = ""
@@ -145,7 +148,7 @@ class Transcript:
                                 self.cursor, len(self.line)
                             )
                             if self.colors is not None:
-                                self.colors[: self.cursor] = [(39, 49)] * min(self.cursor, len(self.line))
+                                self.colors[: self.cursor] = [DEFAULT_STYLE] * min(self.cursor, len(self.line))
                         else:
                             self.line = self.line[: self.cursor]
                             if self.colors is not None:
@@ -183,28 +186,45 @@ class Transcript:
         for char in text:
             if self.cursor >= len(self.line):
                 if self.colors is not None:
-                    self.colors.extend([(39, 49)] * (self.cursor - len(self.line) + 1))
+                    self.colors.extend([DEFAULT_STYLE] * (self.cursor - len(self.line) + 1))
                 self.line.extend([" "] * (self.cursor - len(self.line) + 1))
             self.line[self.cursor] = char
             if self.colors is not None:
-                self.colors[self.cursor] = (self.foreground, self.background)
+                self.colors[self.cursor] = self.style
             self.cursor += 1
 
     def _color(self, values):
         codes = iter(values.split(";"))
         for value in codes:
             if value == "0" or not value:
-                self.foreground, self.background = 39, 49
+                self.foreground, self.background, _ = DEFAULT_STYLE
+                self.attributes.clear()
             elif value.isascii() and value.isdigit() and len(value) <= 3:
                 code = int(value)
                 if code in {38, 48, 58}:
                     mode = next(codes, "")
-                    for _ in range({"2": 3, "5": 1}.get(mode, 0)):
-                        next(codes, None)
+                    size = {"2": 3, "5": 1}.get(mode, 0)
+                    channels = [next(codes, "") for _ in range(size)]
+                    if code != 58 and size and all(
+                        part.isascii() and part.isdigit() and len(part) <= 3
+                        and int(part) <= 255 for part in channels
+                    ):
+                        color = ";".join([str(code), mode, *channels])
+                        if code == 38:
+                            self.foreground = color
+                        else:
+                            self.background = color
                 elif 30 <= code <= 37 or code == 39 or 90 <= code <= 97:
-                    self.foreground = code
+                    self.foreground = str(code)
                 elif 40 <= code <= 47 or code == 49 or 100 <= code <= 107:
-                    self.background = code
+                    self.background = str(code)
+                elif code in {1, 2, 3, 4, 7, 8, 9}:
+                    self.attributes.add(code)
+                else:
+                    self.attributes.difference_update({
+                        22: (1, 2), 23: (3,), 24: (4,), 27: (7,), 28: (8,), 29: (9,),
+                    }.get(code, ()))
+        self.style = (self.foreground, self.background, tuple(sorted(self.attributes)))
 
     def _write(self, text, colors=None):
         if not text.strip():
@@ -214,11 +234,12 @@ class Transcript:
             return
         self.blank = False
         text = text.rstrip()
-        if colors and any(color != (39, 49) for color in colors):
+        if colors and any(color != DEFAULT_STYLE for color in colors):
             index = 0
-            for (foreground, background), group in groupby(colors[: len(text)]):
+            for (foreground, background, attributes), group in groupby(colors[: len(text)]):
                 end = index + sum(1 for _ in group)
-                self.stream.write(f"\x1b[{foreground};{background}m{text[index:end]}")
+                codes = ";".join(["0", foreground, background, *map(str, attributes)])
+                self.stream.write(f"\x1b[{codes}m{text[index:end]}")
                 index = end
             self.stream.write(f"\x1b[0m{text[index:]}\n")
         else:
@@ -324,3 +345,51 @@ def render_colored_preview(events, limit=1_000_000):
         except PreviewFull:
             return stream.getvalue(), True
         return stream.getvalue(), False
+
+
+def search_transcript(events, keyword, ordinal, cancelled, *, count_all=True):
+    pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+    tail = ""
+    offset = 0
+    consumed = 0
+    total = 0
+    selected = None
+
+    class SearchComplete(Exception):
+        pass
+
+    class SearchBuffer:
+        def write(self, value):
+            nonlocal tail, offset, consumed, total, selected
+            plain = SGR.sub("", value)
+            text = tail + plain
+            start = offset - len(tail)
+            for match in pattern.finditer(text, max(0, consumed - start)):
+                if match.end() <= len(tail):
+                    continue
+                total += 1
+                consumed = start + match.end()
+                if total == ordinal:
+                    left = max(0, match.start() - 160)
+                    right = min(len(text), match.end() + 160)
+                    selected = {
+                        "text": text[left:right],
+                        "start": match.start() - left,
+                        "length": len(match.group()),
+                        "offset": start + match.start(),
+                    }
+                    if not count_all:
+                        raise SearchComplete
+            offset += len(plain)
+            tail = text[-(len(keyword) + 159):]
+
+    transcript = Transcript(SearchBuffer())
+    try:
+        for event in events:
+            if cancelled.is_set():
+                return None
+            transcript.event(event)
+        transcript.finish()
+    except SearchComplete:
+        pass
+    return {"total": total, "match": selected}

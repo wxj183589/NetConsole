@@ -251,6 +251,10 @@ try {
   if (evidence.sessionIds.includes(detachedId)) throw new Error('detached window reused existing shell')
   await detached.screenshot({ path: resolve(output, 'detached-terminal.png') })
   evidence.detachedWindow = { sessionId: detachedId, parentSessionId: newId }
+  await detached.locator('.xterm-helper-textarea').focus()
+  await detached.keyboard.type('display replay-fixture')
+  await detached.keyboard.press('Enter')
+  await detached.waitForFunction(() => document.querySelector('.xterm-screen')?.textContent?.includes('replay-needle'), { timeout: 45000 })
   await detached.close()
   for (let attempt = 0; attempt < 40; attempt++) {
     const value = await api(`history/${detachedId}`)
@@ -273,8 +277,10 @@ try {
   const recordingRow = history.getByRole('row').filter({ hasText: '录制完成' }).first()
   await recordingRow.getByRole('button', { name: '查看', exact: true }).click()
   const replayDialog = page.getByRole('dialog', { name: '会话记录与导出' })
-  await replayDialog.getByRole('textbox', { name: '搜索关键字' }).fill('display detached')
-  await replayDialog.locator('output').getByText(/^1\/[1-9]/).waitFor()
+  await replayDialog.getByRole('textbox', { name: '搜索关键字' }).fill('replay-needle')
+  await replayDialog.locator('output').getByText('1/1', { exact: true }).waitFor()
+  await replayDialog.locator('mark').getByText('replay-needle', { exact: true }).waitFor()
+  await replayDialog.screenshot({ path: resolve(output, 'full-recording-match.png') })
   const exportAfter = await recordingHashes()
   if (JSON.stringify(exportBefore) !== JSON.stringify(exportAfter)) throw new Error('Search changed recording export hashes')
   evidence.replayExport = { sessionId: detachedId, sha256: exportBefore, unchanged: true }

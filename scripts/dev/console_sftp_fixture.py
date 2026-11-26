@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import threading
+import time
 from pathlib import Path
 
 import paramiko
@@ -64,6 +65,14 @@ class Authentication(paramiko.ServerInterface):
                             + line
                             + b"\r\n<LAB-SW> "
                         )
+                        if line == b"display replay-fixture":
+                            block = (b"recording filler " + b"x" * 280 + b"\r\n") * 20
+                            for _ in range(175):
+                                channel.sendall(block)
+                            channel.sendall(
+                                b"\x1b[38;5;208;48;2;12;34;56m"
+                                b"replay-\x1b[0mneedle\r\n<LAB-SW> "
+                            )
                         if b"watch" in line:
 
                             def ticker():

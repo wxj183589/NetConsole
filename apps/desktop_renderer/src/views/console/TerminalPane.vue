@@ -604,7 +604,7 @@ defineExpose({ clear, fit, focus, search, inspect, executeMenuFunction })
   border: 1px solid var(--nc-border);
   border-radius: 7px;
   background: var(--nc-bg-panel);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  box-shadow: var(--nc-shadow-floating);
 }
 
 .terminal-context-menu button {

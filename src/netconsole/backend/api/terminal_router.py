@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import queue
+from threading import Event
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -855,6 +856,32 @@ def recording_transcript(session_id: str, request: Request, color: bool = False)
         return {"text": value[:1_000_000], "truncated": len(value) > 1_000_000}
     except BaseException as exc:
         raise _translate_error(exc) from exc
+
+
+@router.get("/history/{session_id}/search")
+async def search_recording(
+    session_id: str,
+    request: Request,
+    keyword: str = Query(min_length=1, max_length=512),
+    ordinal: int = Query(default=1, ge=1),
+    count_all: bool = True,
+):
+    cancel = Event()
+    manager = _manager(request)
+    scan = asyncio.create_task(asyncio.to_thread(
+        manager.search_recording, session_id, keyword, ordinal, cancel, count_all=count_all,
+    ))
+    try:
+        while not scan.done():
+            await asyncio.wait({scan}, timeout=0.1)
+            if not scan.done() and await request.is_disconnected():
+                cancel.set()
+                break
+        return await scan
+    except Exception as exc:
+        raise _translate_error(exc) from exc
+    finally:
+        cancel.set()
 
 
 @router.post("/sessions/{session_id}/save-profile")

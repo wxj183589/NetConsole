@@ -563,9 +563,9 @@ watch([showSftp, sftpWorkspaceId], () => {
         <el-button size="small" @click="exportReplay('jsonl')"><el-icon><Download /></el-icon>JSONL</el-button>
       </div>
       <div v-loading="replayLoading">
-        <TerminalReplaySearch v-if="replayVisible" :key="replaySession?.session_id" ref="replaySearch" :text="replayText" />
+        <TerminalReplaySearch v-if="replayVisible" :key="replaySession?.session_id" ref="replaySearch" :text="replayText" :session-id="replaySession?.session_id" :truncated="replayTruncated" />
       </div>
-      <p v-if="replayTruncated" role="status">预览已截断，完整记录可通过导出查看。</p>
+      <p v-if="replayTruncated" role="status">预览已截断，搜索覆盖完整录制。</p>
       </div>
     </el-dialog>
 

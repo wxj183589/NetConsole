@@ -43,7 +43,6 @@ const repairing = { highlight: false, dangerous: false }
 const ruleSnapshots = ref({ highlight: '', dangerous: '' })
 const highlightPage = computed(() => highlights.value.slice((pages.value.highlight - 1) * pageSize, pages.value.highlight * pageSize))
 const dangerousPage = computed(() => dangerous.value.slice((pages.value.dangerous - 1) * pageSize, pages.value.dangerous * pageSize))
-let cachedDangerous: TerminalDangerousRule[] | undefined
 let reads: AbortController | undefined
 const highlightFile = ref<HTMLInputElement | null>(null)
 const dangerousFile = ref<HTMLInputElement | null>(null)
@@ -100,14 +99,13 @@ async function loadRules(kind: RuleKind): Promise<void> {
   ruleErrors.value[kind] = ''
   try {
     if (kind === 'highlight') {
-      const rules = props.initialHighlights ?? (await getTerminalHighlightRules(reads?.signal)).rules
+      const rules = (await getTerminalHighlightRules(reads?.signal)).rules
       if (generation !== loadGeneration) return
       highlights.value = rules.map(rule => ({ ...rule }))
       ruleSnapshots.value.highlight = JSON.stringify(highlights.value)
     } else {
-      const rules = cachedDangerous ?? (await getTerminalDangerousRules(reads?.signal)).rules
+      const rules = (await getTerminalDangerousRules(reads?.signal)).rules
       if (generation !== loadGeneration) return
-      cachedDangerous = rules
       dangerous.value = rules.map(rule => ({ ...rule }))
       ruleSnapshots.value.dangerous = JSON.stringify(dangerous.value)
     }
@@ -147,7 +145,6 @@ async function save(): Promise<void> {
     }
     if (ruleSnapshots.value.dangerous && !ruleErrors.value.dangerous && (repairing.dangerous || ruleSnapshots.value.dangerous !== JSON.stringify(dangerous.value))) {
       dangerous.value = (await replaceTerminalDangerousRules(dangerous.value, repairing.dangerous)).rules
-      cachedDangerous = dangerous.value.map(rule => ({ ...rule }))
       ruleSnapshots.value.dangerous = JSON.stringify(dangerous.value)
       repairing.dangerous = false
     }
@@ -328,10 +325,10 @@ Error: packet loss detected</pre>
             <input ref="highlightFile" type="file" accept=".json" hidden @change="importRules('highlight', $event)" />
           </div>
           <el-table v-if="activeTab === 'highlight' && !ruleErrors.highlight" :data="highlightPage" row-key="id" height="min(520px, 53vh)">
-            <el-table-column width="65"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column>
-            <el-table-column label="匹配内容" min-width="400"><template #default="scope"><el-input v-model="scope.row.pattern" /></template></el-table-column>
-            <el-table-column label="类型" width="110"><template #default="scope"><el-select v-model="scope.row.match_type"><el-option label="文本" value="TEXT" /><el-option label="正则" value="REGEX" /></el-select></template></el-table-column>
-            <el-table-column label="颜色" width="100"><template #default="scope"><el-color-picker v-model="scope.row.color" /></template></el-table-column>
+            <el-table-column width="65"><template #default="scope"><input v-model="scope.row.enabled" type="checkbox" aria-label="启用规则" /></template></el-table-column>
+            <el-table-column label="匹配内容" min-width="220"><template #default="scope"><input v-model="scope.row.pattern" class="rule-input" aria-label="匹配内容" /></template></el-table-column>
+            <el-table-column label="类型" width="110"><template #default="scope"><select v-model="scope.row.match_type" class="rule-input" aria-label="匹配类型"><option value="TEXT">文本</option><option value="REGEX">正则</option></select></template></el-table-column>
+            <el-table-column label="颜色" width="100"><template #default="scope"><input v-model="scope.row.color" type="color" aria-label="高亮颜色" /></template></el-table-column>
             <el-table-column width="55"><template #default="scope"><el-button link type="danger" title="删除" @click="highlights.splice(highlights.indexOf(scope.row), 1)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
           </el-table>
           <el-pagination v-model:current-page="pages.highlight" :page-size="pageSize" :total="highlights.length" layout="prev, pager, next" />
@@ -351,11 +348,11 @@ Error: packet loss detected</pre>
             <el-switch v-model="settings.dangerous_command_warning" active-text="输入时提示" />
           </div>
           <el-table v-if="activeTab === 'dangerous' && !ruleErrors.dangerous" :data="dangerousPage" row-key="id" height="min(520px, 53vh)">
-            <el-table-column width="65"><template #default="scope"><el-switch v-model="scope.row.enabled" /></template></el-table-column>
-            <el-table-column label="命令" min-width="330"><template #default="scope"><el-input v-model="scope.row.pattern" /></template></el-table-column>
-            <el-table-column label="类型" width="100"><template #default="scope"><el-select v-model="scope.row.match_type"><el-option label="文本" value="TEXT" /><el-option label="正则" value="REGEX" /></el-select></template></el-table-column>
-            <el-table-column label="设备类型" width="120"><template #default="scope"><el-input v-model="scope.row.device_type" /></template></el-table-column>
-            <el-table-column label="厂商" width="110"><template #default="scope"><el-input v-model="scope.row.vendor" /></template></el-table-column>
+            <el-table-column width="65"><template #default="scope"><input v-model="scope.row.enabled" type="checkbox" aria-label="启用规则" /></template></el-table-column>
+            <el-table-column label="命令" min-width="220"><template #default="scope"><input v-model="scope.row.pattern" class="rule-input" aria-label="匹配命令" /></template></el-table-column>
+            <el-table-column label="类型" width="100"><template #default="scope"><select v-model="scope.row.match_type" class="rule-input" aria-label="匹配类型"><option value="TEXT">文本</option><option value="REGEX">正则</option></select></template></el-table-column>
+            <el-table-column label="设备类型" width="120"><template #default="scope"><input v-model="scope.row.device_type" class="rule-input" aria-label="设备类型" /></template></el-table-column>
+            <el-table-column label="厂商" width="110"><template #default="scope"><input v-model="scope.row.vendor" class="rule-input" aria-label="厂商" /></template></el-table-column>
             <el-table-column width="55"><template #default="scope"><el-button link type="danger" title="删除" @click="dangerous.splice(dangerous.indexOf(scope.row), 1)"><el-icon><Delete /></el-icon></el-button></template></el-table-column>
           </el-table>
           <el-pagination v-model:current-page="pages.dangerous" :page-size="pageSize" :total="dangerous.length" layout="prev, pager, next" />
@@ -385,4 +382,5 @@ Error: packet loss detected</pre>
 .settings-form { max-width: 460px; }
 .terminal-preview { min-height: 150px; margin: 14px 0 0; padding: 16px; border-radius: 6px; line-height: 1.6; }
 .rule-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.rule-input { width: 100%; min-width: 0; color: inherit; background: var(--el-bg-color); border: 1px solid var(--el-border-color); border-radius: 4px; padding: 4px 6px; }
 </style>
