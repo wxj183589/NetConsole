@@ -4,7 +4,11 @@
 
 终端设置首屏与规则请求解耦，规则表按页签和分页挂载，配置服务复用未变化的文件版本。真实 Electron 记录了首次与重复打开、页签切换及录制搜索，测量条件见[续作四性能报告](./CONSOLE_SETTINGS_REPLAY_20261127.md)。会话回放支持普通文本关键字搜索、匹配计数、循环定位和 ANSI 基础色。真实隔离 SSH 录制的 LOG、ZIP、JSONL 搜索前后 SHA-256 一致。
 
-Full Gate、冻结 Worker、NSIS 和 Portable 本轮未生成。工作树仍有旧的 `node_modules/.vite/vitest` 缓存，Workspace Layout 检查失败。现有 Python 3.13 构建虚拟环境已通过锁定依赖检查。实际 Telnet/COM 并发设置场景待验收。
+全量测试按用户要求未在最终提交后重跑。前一次 Full Gate 对未提交代码运行得到 Python 5916 passed / 3 skipped，但架构守卫有 3 项失败，后已修复分类、主题 token 和 fixture Ruff。当前已单独确认架构 12/12、Ruff、Renderer 及 Electron 定向回归通过。
+
+产品提交 `fb883f37e43d49fb26c229c655a5dddbac3c306f` 构建 Full NSIS 和 Portable 候选。NSIS package smoke PASS，CycloneDX 1.5 有 68 个组件，SHA-256 `ca8708f09139c7a1d3bac44ab3e7a1edfb12fc2986dd0a0bb1bd0157f84bdde3`。Portable package/runtime smoke PASS，CycloneDX 1.5 有 68 个组件，外部 DataRoot 冷启动 8.49 秒、冻结 Worker 退出和端口重绑通过，SHA-256 `2a5d9b51a98e6c56ed909b9da107d37b6512594081802870cdf066435b8f756a`。候选和验证日志位于 Workspace `temp/build/phase8-final-package/build-fb883f37-20261127-020625/candidates/` 与 `reports/build/phase8-final-package-build-fb883f37-20261127-020625/`。
+
+Full Gate 状态保留 FAIL（此前运行、提交前代码组合）；最终 commit 全量测试 NOT RUN（按用户要求）。Full/Portable package smoke 是候选构建链的一部分，已执行。Windows GUI 安装/升级/卸载、真实 Telnet/COM 并发仍 NOT VERIFIED。
 
 状态：PARTIAL。产品分支 `codex-A/organization-task-network-services-phase6`，已推送起点 `bd42e924`，当前续作尚未提交。
 

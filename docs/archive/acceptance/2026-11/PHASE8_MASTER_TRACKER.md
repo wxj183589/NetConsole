@@ -30,6 +30,8 @@
 
 ## 证据路径
 
+- Console v1.5.19 续作五制品以 `fb883f37e43d49fb26c229c655a5dddbac3c306f` 为源码身份。Full NSIS SHA-256 `ca8708f09139c7a1d3bac44ab3e7a1edfb12fc2986dd0a0bb1bd0157f84bdde3`，Portable ZIP SHA-256 `2a5d9b51a98e6c56ed909b9da107d37b6512594081802870cdf066435b8f756a`；双方 CycloneDX 1.5 各 68 components，package smoke PASS。Full Gate 最终提交后按用户要求未重跑，前一次代码组合的 Full Gate 有 3 条架构失败，修复后架构、Ruff 和定向回归通过。安装态 GUI 和实体 Telnet/COM 未验收。
+
 - Console 续作四在 P8-08 下继续追踪。设置首屏解耦和规则轻量分页、完整录制流式搜索、ANSI 256/True Color 已实施。实际 Electron 验证大于 1 MiB 录制和三种导出 SHA 一致。Workspace Layout 已通过；首轮 Full Gate 架构/Ruff/包 smoke 失败项修复后，需提交源码再跑最终门禁。[专项报告](./CONSOLE_SETTINGS_REPLAY_20261127.md)
 
 - Console v1.5.19 专项为 PARTIAL。历史真实 AC SSH、FIT-AP Telnet 单次回车、批量发送及 Portable/NSIS 证据仍绑定旧候选。本轮新增 pySerial 3.5 串口会话、中文化和设置性能修复通过定向测试，实际 Electron 设置重开 30 次中位数 30 ms；枚举到的 COM3/COM4 为蓝牙端口，没有执行硬件读写。当前源码的 Full Gate、冻结 Worker、NSIS 与 Portable 尚未构建验收。外部客户端认证及真实 USB 串口仍待完成。[Console 专项验收](./CONSOLE_1_5_19_ACCEPTANCE.md)
