@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GroundMrMonitoring, GroundRun, GroundTrain } from '../../types/groundUnattended'
 import GroundHistoryPlayback from './GroundHistoryPlayback.vue'
 
-const api = vi.hoisted(() => ({ heartbeat: vi.fn(), monitor: vi.fn(), quickRuns: vi.fn(), quickSamples: vi.fn() }))
-vi.mock('../../api/groundUnattended', () => ({ getGroundHeartbeat: api.heartbeat, getGroundMrMonitoring: api.monitor, listGroundQuickPing: api.quickRuns, getGroundQuickPingSamples: api.quickSamples }))
+const api = vi.hoisted(() => ({ heartbeat: vi.fn(), monitor: vi.fn(), timeline: vi.fn(), quickRuns: vi.fn(), quickSamples: vi.fn() }))
+vi.mock('../../api/groundUnattended', () => ({ getGroundHeartbeat: api.heartbeat, getGroundMrMonitoring: api.monitor, listGroundHistory: api.timeline, listGroundQuickPing: api.quickRuns, getGroundQuickPingSamples: api.quickSamples }))
 afterEach(() => vi.resetAllMocks())
 
 describe('Ground history playback isolation', () => {
@@ -34,6 +34,35 @@ describe('Ground history playback isolation', () => {
       expect.objectContaining({ data_mode: 'HISTORICAL_PLAYBACK' }),
     )
     expect((wrapper.vm as unknown as { mrOptions: Array<{ id: string }> }).mrOptions).toEqual([{ id: 'mr-archive', role: 'CT', name: 'MR archive', trainId: 'train-archive', trainNo: '009' }])
+    wrapper.unmount()
+  })
+
+  it('queries the selected run by cursor and abandons its result when playback closes', async () => {
+    const run = { run_id: 'run-archive', actual_started_at: '2026-11-07T00:00:00Z', actual_ended_at: '2026-11-07T01:00:00Z' } as GroundRun
+    api.heartbeat.mockResolvedValue({ mrs: [] })
+    api.timeline.mockResolvedValueOnce({ items: [], has_more: true, next_cursor: 'next' })
+    const wrapper = shallowMount(GroundHistoryPlayback, {
+      props: { siteId: 'hzdt-09', runs: [run], trains: [], active: true },
+      global: { stubs: { ElSelect: true, ElOption: true, ElDatePicker: true, ElButton: true, ElAlert: true, ElTable: true, ElTableColumn: true } },
+    })
+    const view = wrapper.vm as unknown as { loadTimeline: (cursor?: string) => Promise<void>; timelinePage: unknown }
+    await view.loadTimeline()
+    expect(api.timeline).toHaveBeenNthCalledWith(1, {
+      run_id: 'run-archive', data_type: 'timeline', start_at: '2026-11-07T00:00:00.000Z',
+      end_at: '2026-11-07T01:00:00.000Z', page_size: 25, include_total: false, cursor: '',
+    }, { signal: expect.any(AbortSignal) })
+    let finish!: () => void
+    api.timeline.mockImplementationOnce(() => new Promise((resolve) => {
+      finish = () => resolve({ items: [], has_more: false })
+    }))
+    const pending = view.loadTimeline('next')
+    const signal = api.timeline.mock.calls[1]![1].signal as AbortSignal
+    expect(api.timeline.mock.calls[1]![0]).toMatchObject({ run_id: 'run-archive', cursor: 'next' })
+    await wrapper.setProps({ active: false })
+    expect(signal.aborted).toBe(true)
+    finish()
+    await pending
+    expect(view.timelinePage).toBeNull()
     wrapper.unmount()
   })
 

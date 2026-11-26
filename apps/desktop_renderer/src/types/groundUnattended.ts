@@ -247,6 +247,7 @@ export interface GroundHistoryRecord {
 }
 export interface GroundHistoryPage {
   items: GroundHistoryRecord[]; total: number; page: number; page_size: number; sources: Record<string, string>; has_more: boolean; next_cursor: string
+  total_exact?: boolean
 }
 export interface GroundHistoryFilters {
   sort_order?: 'asc' | 'desc'

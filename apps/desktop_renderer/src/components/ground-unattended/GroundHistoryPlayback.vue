@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { getGroundHeartbeat, getGroundMrMonitoring, getGroundQuickPingSamples, listGroundQuickPing } from '../../api/groundUnattended'
-import type { GroundHeartbeatMr, GroundMrMonitoring, GroundRun, GroundTrain } from '../../types/groundUnattended'
+import { getGroundHeartbeat, getGroundMrMonitoring, getGroundQuickPingSamples, listGroundHistory, listGroundQuickPing } from '../../api/groundUnattended'
+import type { GroundHeartbeatMr, GroundHistoryPage, GroundMrMonitoring, GroundRun, GroundTrain } from '../../types/groundUnattended'
 import MrMonitoringChart from './MrMonitoringChart.vue'
 import QuickPingChart from './QuickPingChart.vue'
 import { heartbeatStatusStatistics } from './pingChartStatus'
@@ -12,6 +12,10 @@ const emit = defineEmits<{ 'delete-run': [run: GroundRun]; 'view-syslog': [runId
 interface MrOption { id: string; role: string; name: string; trainId: string; trainNo: string }
 const selectedRunId = ref(''), selectedMrId = ref(''), range = ref<Date[]>([])
 const result = ref<GroundMrMonitoring | null>(null), loading = ref(false), error = ref('')
+const timelinePage = ref<GroundHistoryPage | null>(null)
+const timelineError = ref('')
+const timelineLoading = ref(false)
+let timelineRequest: AbortController | null = null
 const historyMrs = ref<GroundHeartbeatMr[]>([]), historyLoading = ref(false), historyError = ref('')
 const quickRows = ref<Record<'primary' | 'backup', Array<Record<string, unknown>>>>({ primary: [], backup: [] })
 const quickBuckets = ref<Record<'primary' | 'backup', Array<Record<string, unknown>>>>({ primary: [], backup: [] })
@@ -220,7 +224,44 @@ function locate(value: string): void {
   changeViewport({ start: new Date(start).toISOString(), end: new Date(Math.min(fullFinish, start + span)).toISOString() })
   cursorTime.value = value
 }
-onBeforeUnmount(stopRequests)
+function clearTimeline(): void {
+  timelineRequest?.abort()
+  timelineRequest = null
+  timelinePage.value = null
+  timelineError.value = ''
+  timelineLoading.value = false
+}
+
+async function loadTimeline(cursor = ''): Promise<void> {
+  const [start, end] = range.value
+  if (!props.active || !selectedRunId.value || !start || !end || !(start < end)) return
+  timelineRequest?.abort()
+  const request = new AbortController()
+  timelineRequest = request
+  timelineLoading.value = true
+  timelineError.value = ''
+  try {
+    const page = await listGroundHistory({
+      run_id: selectedRunId.value,
+      data_type: 'timeline',
+      start_at: start.toISOString(),
+      end_at: end.toISOString(),
+      page_size: 25,
+      include_total: false,
+      cursor,
+    }, { signal: request.signal })
+    if (!request.signal.aborted) timelinePage.value = page
+  } catch (reason) {
+    if (!request.signal.aborted) timelineError.value = reason instanceof Error ? reason.message : String(reason)
+  } finally {
+    if (timelineRequest === request) {
+      timelineRequest = null
+      timelineLoading.value = false
+    }
+  }
+}
+watch([selectedRunId, range, () => props.active], clearTimeline, { flush: 'sync' })
+onBeforeUnmount(() => { stopRequests(); clearTimeline() })
 </script>
 
 <template>
@@ -237,9 +278,19 @@ onBeforeUnmount(stopRequests)
       <el-date-picker v-model="range" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
       <el-button type="primary" :loading="loading" @click="query">查询回放</el-button>
       <el-button @click="applyRunRange">重置时间</el-button>
+      <el-button v-if="selectedRun" :loading="timelineLoading" @click="loadTimeline()">查询时间轴</el-button>
       <el-button v-if="selectedRun" @click="emit('view-syslog', selectedRun.run_id)">查看历史 Syslog</el-button>
       <el-button v-if="selectedRun" type="danger" plain :loading="deleting" @click="emit('delete-run', selectedRun)">删除历史记录</el-button>
     </div>
+    <el-alert v-if="timelineError" :title="timelineError" type="error" :closable="false" />
+    <section v-if="timelinePage" aria-label="历史时间轴">
+      <el-table :data="timelinePage.items" row-key="record_id" empty-text="当前时间范围没有事件">
+        <el-table-column prop="ts" label="时间" min-width="170" />
+        <el-table-column prop="event_type" label="事件" min-width="120" />
+        <el-table-column prop="summary" label="详情" min-width="200" />
+      </el-table>
+      <el-button v-if="timelinePage.has_more" :loading="timelineLoading" @click="loadTimeline(timelinePage.next_cursor)">下一页</el-button>
+    </section>
     <el-alert v-if="historyError" :title="historyError" type="warning" :closable="false" />
     <p class="playback-boundary">历史回放只读取已落盘数据，不启动采集、不访问设备、不补造缺失字段。所选运行仅定义回放时间上下文，各数据源按实际时间戳对齐。</p>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />

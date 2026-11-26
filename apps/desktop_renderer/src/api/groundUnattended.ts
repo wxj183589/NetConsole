@@ -108,7 +108,7 @@ export function getGroundQuickPingSamples(runId: string, filters: {
   return apiRequest(`${root}/quick-ping/${encodeURIComponent(runId)}/samples?${query}`, options)
 }
 export const getGroundQuickPing = (runId: string, options: RequestInit = {}): Promise<GroundQuickPingRun> => apiRequest(`${root}/quick-ping/${encodeURIComponent(runId)}`, options)
-export function listGroundHistory(filters: GroundHistoryFilters & { page?: number; page_size?: number; cursor?: string } = {}, options: RequestInit = {}): Promise<GroundHistoryPage> {
+export function listGroundHistory(filters: GroundHistoryFilters & { page?: number; page_size?: number; include_total?: boolean } = {}, options: RequestInit = {}): Promise<GroundHistoryPage> {
   const query = new URLSearchParams()
   Object.entries(filters).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
   return apiRequest(`${root}/history?${query}`, options)
