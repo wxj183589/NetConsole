@@ -7,6 +7,7 @@
 - Renderer 定向 61 项通过，Vue 类型检查通过。TCP、UDP 和共享投影已有实现的定向验证 12 项通过。
 - 已复核两份历史归档的 SHA-256 与既有记录一致。使用已有隔离回放副本，以 `6adc5a15` 启动真实 Electron，关闭采集。HZL9、HZL10 时间轴均返回 25 条首屏事件，下一页首条记录变化，切回实时后历史表格退出。点击至完成截图的单次计时分别为 309 ms、898 ms。四张截图位于 Workspace 的 `reports/diagnostic/ground-unattended-r3-20261127`。退出后六个测试监听端口均释放。
 - TCP 空行处理已修复，回环验证长度帧、换行帧、UDP 数据报共用持久化链路。独立数据集导入、完整 Electron 回放矩阵、设备配置闭环、混合负载与长稳、Full Gate 和制品仍待完成。
+- 回放切换 Run 时取消上一 Run 的 MR、图表和时间轴查询。Renderer 定向 63 项与 Vue 类型检查通过，源码提交 `379b02b2`。
 - 混合历史分页 API 提供跳过精确总数选项。HZL10 25 条查询中位数从 1,276.9 ms 降到 807.0 ms，仍高于目标。[SQL 查询审计](./real-data-20261125/SQL_QUERY_AUDIT.md)
 
 整体状态为 **PARTIAL**。开发继续使用 `codex-A/organization-task-network-services-phase6`。集成提交 `f55e75b1` 同时包含 `42709227`、`fd8f6e58` 和 `d1c4b65f`。真实数据专项见 [Phase 8.1 总验收](./PHASE8_1_ACCEPTANCE.md)，前期结果见 [Phase 8 验收](./PHASE8_ACCEPTANCE.md) 与 [Phase 7.1 Windows 验收](../../../investigations/netconsole-phase7-20261125/PHASE7_WINDOWS_VM_ACCEPTANCE.md)。
