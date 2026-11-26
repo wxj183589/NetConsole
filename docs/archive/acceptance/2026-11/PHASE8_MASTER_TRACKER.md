@@ -12,7 +12,7 @@
 | P8-06 | 外部终端自动认证 | OpenSSH 实际运行；修复 Xshell URL 凭据保留字符 | OpenSSH 回环认证、失败、中文空格、备用地址；其他 Provider 参数定向回归 | SecureCRT、PuTTY、Xshell 和 WinSCP 客户端实测 | external-openssh-loopback.log | 部分 | Windows OpenSSH 公钥 PASS，其余客户端未安装 |
 | P8-07 | Ground 实时与历史回放 | 已隔离陈旧归档失败提示，完整统一回放待实施 | Ground 37 项定向测试及 HZL10 Electron 复测 | 隔离运行会话、订阅和历史查询，再实现统一时间轴、导航及导出 | vitest run GroundUnattendedView.behavior | 部分 | 当前实时空闲态已验，完整回放待实施 |
 | P8-08 | 控制台成熟终端交互 | 现有 xterm.js 与 SSH/Telnet 通道 | Phase 8 | 验证键盘、分页、大输出和会话关闭并修复重现问题 | vitest run src/views/console | 部分 | 实连和视觉矩阵待执行 |
-| P8-09 | 管理按钮与批量命令 | 映射按钮栏、Send String、受限 Menu Function、受限 Run Script、登记工具启动和批量调度已实现 | Renderer Console 42 项、Electron IPC/Preload 44 项、Python 19 项定向测试通过；真实 Electron 截图保存在 Workspace reports/tests/console-1.5.19-resume-20261126 | 补齐会话变量启动参数、按钮动作完整矩阵、真实设备与最终发行验收 | vitest run apps/desktop_renderer/src/views/console；tests/test_terminal_controls.py | 部分 | 代码测试通过；外部终端参数矩阵和 Console 全功能 GUI 验收仍待完成 |
+| P8-09 | 管理按钮与批量命令 | 映射按钮栏、Send String、受限 Menu Function/Run Script、登记工具启动、批量调度及受限 Launch Application 会话变量已实现；按钮配置 v1 兼容迁移到 v2。Renderer 仅传固定限长会话 DTO，Main 使用登记参数模板展开 argv | 本次固定 DTO 改造后的 Renderer Console/API 31 项、Electron External Tool/IPC 18 项、Python Console/Session 26 项通过；Renderer/Electron 类型检查和 Python Ruff 通过；Electron 隔离 SSH/SFTP 与复合 GUI 验收通过，证据在 Workspace reports/tests/console-1.5.19-resume-20261126/electron-sftp-fix-20261126 | 完成真实客户端参数/认证兼容、按钮动作全矩阵和原生对话框/拖放验收 | Console 定向 Renderer/Electron/Python 测试及隔离 Electron 复合验收 | 部分 | 源码与隔离 GUI 定向验证 PASS；SecureCRT/PuTTY/Xshell/WinSCP 实机认证、原生对话框和 Explorer 拖放仍未验收 |
 | P8-10 | 终端规则文件兼容 | 现有规则加载器，旧格式兼容待核对 | Phase 8 | 用历史样本复现校验失败，验证迁移、默认恢复及导入导出 | python -m scripts.quality.local_gate --mode auto | 部分 | 样本及现有行为待核对 |
 | P8-11 | 备用地址连接 | Phase 8 已传递备用地址字段 | Phase 8 | 核对手工 backup_host 和各入口的真实目标地址与端口 | pytest tests/test_device_management_table_rules.py | 部分 | 实际连接待验收 |
 | P8-12 | Portable 完整产品能力 | 独立数据根及 ZIP | 实际外部 DataRoot 初始化、程序换路径复用、冻结 Worker、退出重绑 | 复核升级、迁移和新候选 | phase8-portable-external-20261126 | 部分 | 旧候选两次运行 PASS，跨版本待验收 |
@@ -30,7 +30,7 @@
 
 ## 证据路径
 
-- Console v1.5.19 专项为 PARTIAL。真实 AC SSH、FIT-AP Telnet 单次回车、实际批量发送及 Electron 会话隔离通过。按钮栏、Menu Function、受限 Run Script 和登记工具启动已补齐定向测试。源码 `39eaa4ac` 的 Full Gate、双包身份及 Portable 冷启动属于此前基线证据。SW 认证、外部客户端参数矩阵和 Console 全功能验收仍待完成。[Console 专项验收](./CONSOLE_1_5_19_ACCEPTANCE.md)
+- Console v1.5.19 专项为 PARTIAL。真实 AC SSH、FIT-AP Telnet 单次回车、实际批量发送及 Electron 会话隔离通过。按钮栏 schema v1→v2 兼容迁移、固定 IPC 会话上下文 DTO、登记参数模板展开和临时密码提示已通过本轮定向回归。源码 `39eaa4ac` 的 Full Gate、双包身份及 Portable 冷启动属于此前基线证据。SW 认证、外部客户端参数矩阵和 Console 全功能 GUI 验收仍待完成。[Console 专项验收](./CONSOLE_1_5_19_ACCEPTANCE.md)
 
 - 产品前期证据在 [Phase 8 验收](./PHASE8_ACCEPTANCE.md) 和 [Phase 7 历史报告](../../../investigations/netconsole-phase7-20261125/PHASE7_ACCEPTANCE.md)。
 - 真实数据副本启动日志位于 Workspace 的 `test-data/NetConsole/phase8-replay-hz9/runtime/logs/electron.log` 和 `test-data/NetConsole/phase8-replay-hz10/runtime/logs/electron.log`。应用时间从 Electron 进程启动计时，以日志中的 `STARTUP_PERFORMANCE_SUMMARY` 为准。

@@ -7,6 +7,7 @@ export type {
   ExternalToolIconSelectionResult,
   ExternalToolLaunchResult,
   ExternalToolLaunchMode,
+  ExternalToolLaunchContext,
   ExternalToolLaunchPrivilege,
   ExternalToolLaunchRequest,
   ExternalToolListResult,

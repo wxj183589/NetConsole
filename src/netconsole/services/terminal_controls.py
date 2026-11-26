@@ -69,6 +69,7 @@ class QuickButtonStore:
                             "name": "版本",
                             "action": "SEND_STRING",
                             "text": r"display version\r",
+                            "launch_with_session_context": False,
                             "color": "#409eff",
                             "tooltip": "显示设备版本",
                             "disable_tooltip": False,
@@ -80,6 +81,7 @@ class QuickButtonStore:
                             "name": "接口",
                             "action": "SEND_STRING",
                             "text": r"display interface brief\r",
+                            "launch_with_session_context": False,
                             "color": "#67c23a",
                             "tooltip": "显示接口摘要",
                             "disable_tooltip": False,
@@ -89,24 +91,27 @@ class QuickButtonStore:
                     ],
                 }
             )
-        return {"version": 1, "groups": groups}
+        return {"version": 2, "groups": groups}
 
     def read(self):
         with self.lock:
-            return (
-                self.validate(json.loads(self.path.read_text(encoding="utf-8")))
-                if self.path.exists()
-                else self.defaults()
-            )
+            if not self.path.exists():
+                return self.defaults()
+            source = json.loads(self.path.read_text(encoding="utf-8"))
+            document = self.validate(source)
+            if source.get("version") != document["version"]:
+                self.save(document)
+            return document
 
     @staticmethod
     def validate(value):
         if (
             not isinstance(value, dict)
-            or value.get("version") != 1
+            or value.get("version") not in {1, 2}
             or set(value) != {"version", "groups"}
         ):
             raise ValueError("按钮配置版本或结构无效")
+        source_version = value["version"]
         groups = value["groups"]
         if not isinstance(groups, list) or not 1 <= len(groups) <= 32:
             raise ValueError("按钮组数量无效")
@@ -144,10 +149,16 @@ class QuickButtonStore:
                         "disable_tooltip",
                         "order",
                         "enabled",
-                    }
+                    } | ({"launch_with_session_context"} if source_version == 2 else set())
                     or button["action"] not in {"SEND_STRING", "MENU_FUNCTION", "LAUNCH_APPLICATION", "RUN_SCRIPT"}
                 ):
                     raise ValueError("按钮动作无效")
+                launch_context = button.get(
+                    "launch_with_session_context",
+                    button["action"] == "LAUNCH_APPLICATION",
+                )
+                if type(launch_context) is not bool:
+                    raise ValueError("外部应用会话变量设置无效")
                 if (
                     not isinstance(button["text"], str)
                     or len(button["text"]) > 65536
@@ -196,7 +207,15 @@ class QuickButtonStore:
                             raise ValueError("Console 脚本步骤动作或参数无效")
                     if total_wait > 600_000:
                         raise ValueError("Console 脚本等待总时长不能超过 600000 毫秒")
-        return deepcopy(value)
+        document = deepcopy(value)
+        document["version"] = 2
+        for group in document["groups"]:
+            for button in group["buttons"]:
+                button.setdefault(
+                    "launch_with_session_context",
+                    button["action"] == "LAUNCH_APPLICATION",
+                )
+        return document
 
     def save(self, value):
         document = self.validate(value)

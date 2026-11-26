@@ -31,6 +31,9 @@ export interface TerminalSession {
   state: TerminalState
   address: string
   port: number
+  username?: string
+  backup_address?: string
+  backup_port?: number
   created_at_ms: number
   updated_at_ms: number
   connected_at_ms: number | null

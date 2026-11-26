@@ -229,6 +229,10 @@ export class ExternalToolService implements ExternalToolServiceLike {
       ? await this.readSystemSettings()
       : undefined
     const resolved = resolveTool(tool, settings)
+    const terminalContext = request.terminalContext
+    const launchArguments = tool.arguments.map((argument) => terminalContext
+      ? argument.replace(/\{(host|address|backup_host|backup_address|port|username|password)\}/g, (_match, key: keyof typeof terminalContext) => String(terminalContext[key]))
+      : argument)
     const inspected = await inspectToolStatus(resolved)
     if (inspected.status !== 'AVAILABLE') {
       return { success: false, toolId: tool.id, status: inspected.status, error: inspected.message }
@@ -243,7 +247,7 @@ export class ExternalToolService implements ExternalToolServiceLike {
         }
         const result = await this.dependencies.elevatedLaunch({
           executablePath: resolved.executablePath,
-          arguments: [...tool.arguments],
+          arguments: launchArguments,
           workingDirectory: resolved.workingDirectory,
         })
         if (result === 'cancelled') {
@@ -257,7 +261,7 @@ export class ExternalToolService implements ExternalToolServiceLike {
           }
         }
       } else {
-        const child = this.dependencies.spawn(resolved.executablePath, tool.arguments, {
+        const child = this.dependencies.spawn(resolved.executablePath, launchArguments, {
           shell: false,
           detached: true,
           stdio: 'ignore',

@@ -5,6 +5,7 @@ import type {
   ExternalToolIconSelectionResult,
   ExternalToolLaunchResult,
   ExternalToolLaunchMode,
+  ExternalToolLaunchContext,
   ExternalToolListResult,
   ExternalToolMutationResult,
   ExternalToolReorderRequest,
@@ -87,8 +88,9 @@ export function deleteExternalToolCategory(request: ExternalToolDeleteCategoryRe
 export function launchExternalTool(
   toolId: string,
   launchMode: ExternalToolLaunchMode,
+  terminalContext?: ExternalToolLaunchContext,
 ): Promise<ExternalToolLaunchResult> {
-  return bridge().launchExternalTool({ toolId, launchMode })
+  return bridge().launchExternalTool({ toolId, launchMode, ...(terminalContext ? { terminalContext } : {}) })
 }
 
 export function revealExternalTool(toolId: string): Promise<ExternalToolLaunchResult> {

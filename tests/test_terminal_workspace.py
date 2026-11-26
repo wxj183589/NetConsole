@@ -111,6 +111,8 @@ def test_explicit_backup_address_creates_an_independent_session(tmp_path, monkey
         _wait_until(lambda: transport.connected_with is not None)
         assert transport.connected_with == (144, 45)
         assert (snapshot["address"], snapshot["port"], snapshot["address_role"]) == ("192.0.2.20", 2222, "backup")
+        assert snapshot["username"] == primary.username
+        assert (snapshot["backup_address"], snapshot["backup_port"]) == ("192.0.2.20", 2222)
         assert device.primary_address == primary.host
         with pytest.raises(ValueError, match="备用"):
             manager.create_session(str(device.device_uuid), protocol="TELNET", address_role="backup")

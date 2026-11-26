@@ -6,7 +6,7 @@ import { cloneTerminalSession, createTerminalSession, type TerminalSession, type
 import { downloadBackendResource } from '../../platform/runtime'
 import { launchExternalTool, listExternalTools } from '../../api/externalTools'
 import type { ExternalToolView } from '../../types/externalTools'
-import { MENU_FUNCTIONS, parseSendString, validateConsoleButtonBar, type ConsoleButtonBarDocument } from './consoleButtonBar'
+import { consoleToolNeedsPassword, MENU_FUNCTIONS, parseSendString, validateConsoleButtonBar, type ConsoleButtonBarDocument } from './consoleButtonBar'
 import { parseConsoleRunScriptJson } from './consoleRunScript'
 
 const props = defineProps<{ sessions: TerminalSession[]; active: TerminalSession | null; selected: string[]; selectedDevices: Array<{ device_uuid: string; name: string }> }>()
@@ -15,7 +15,7 @@ type Button = ConsoleButtonBarDocument['groups'][number]['buttons'][number]
 type Group = ConsoleButtonBarDocument['groups'][number]
 type Document = ConsoleButtonBarDocument
 type Job = { id: string; state?: string; rows: Array<{ state: string; session_id?: string; name?: string; address?: string; sent_segments?: number; error?: string; command?: string; output?: string; duration_ms?: number }> }
-const config = ref<Document>({ version: 1, groups: [] })
+const config = ref<Document>({ version: 2, groups: [] })
 const externalTools = ref<ExternalToolView[]>([])
 const groupId = ref('group-0')
 const group = computed(() => config.value.groups.find(item => item.id === groupId.value))
@@ -72,7 +72,7 @@ onBeforeUnmount(() => {
   if (scriptRunning.value) void stopScript()
 })
 function newButton() {
-  group.value?.buttons.push({ id: crypto.randomUUID(), name: '新按钮', action: 'SEND_STRING', text: 'display version\\r', color: '#409eff', tooltip: '', disable_tooltip: false, order: group.value.buttons.length, enabled: true })
+  group.value?.buttons.push({ id: crypto.randomUUID(), name: '新按钮', action: 'SEND_STRING', text: 'display version\\r', launch_with_session_context: false, color: '#409eff', tooltip: '', disable_tooltip: false, order: group.value.buttons.length, enabled: true })
 }
 function duplicate(button: Button) { group.value?.buttons.push({ ...button, id: crypto.randomUUID(), name: `${button.name} 副本`, order: group.value.buttons.length }) }
 function reorder(index: number, delta: number) {
@@ -107,7 +107,7 @@ function activateButton(button: Button) {
     return
   }
   if (button.action === 'LAUNCH_APPLICATION') {
-    void launchApplication(button.text)
+    void launchApplication(button)
     return
   }
   if (button.action === 'RUN_SCRIPT') {
@@ -116,14 +116,36 @@ function activateButton(button: Button) {
   }
   requestSend(button)
 }
-async function launchApplication(toolId: string) {
+async function launchApplication(button: Button) {
   try {
     if (!window.netconsoleDesktop?.launchExternalTool) throw new Error('启动外部应用需要 Electron')
-    if (!externalTools.value.some(tool => tool.id === toolId)) throw new Error('映射按钮引用的 External Tool 不存在')
-    const result = await launchExternalTool(toolId, 'normal')
+    if (button.launch_with_session_context && !props.active) throw new Error('请先打开一个终端会话')
+    const toolId = button.text
+    const tool = externalTools.value.find(item => item.id === toolId)
+    if (!tool) throw new Error('映射按钮引用的 External Tool 不存在')
+    const context = button.launch_with_session_context ? {
+      host: props.active?.address || '',
+      address: props.active?.address || '',
+      backup_host: props.active?.backup_address || '',
+      backup_address: props.active?.backup_address || '',
+      port: props.active?.port || 0,
+      username: props.active?.username || '',
+      password: '',
+    } : undefined
+    let password = ''
+    if (context && consoleToolNeedsPassword(tool.arguments)) {
+      const { value } = await ElMessageBox.prompt('密码仅用于本次外部程序启动，不会保存或写入日志。', '输入外部终端密码', {
+        inputType: 'password',
+        confirmButtonText: '启动',
+        cancelButtonText: '取消',
+      })
+      password = value
+    }
+    const result = await launchExternalTool(toolId, 'normal', context ? { ...context, password } : undefined)
     if (!result.success) throw new Error(result.error || '外部应用启动失败')
     ElMessage.success('外部应用已启动')
   } catch (error) {
+    if (error === 'cancel' || error === 'close') return
     ElMessage.error(error instanceof Error ? error.message : String(error))
   }
 }
@@ -417,7 +439,7 @@ async function newGroup() { const { value } = await ElMessageBox.prompt('按钮�
       <div class="quick-buttons">
         <button v-for="button in filteredButtons" :key="button.id" type="button" :disabled="busy" :style="{ borderColor: button.color, color: button.color }" :title="button.disable_tooltip ? undefined : button.tooltip" @click="activateButton(button)">{{ button.name }}</button>
       </div>
-      <div class="manage-toolbar"><select v-model="groupId"><option v-for="item in config.groups" :key="item.id" :value="item.id">{{ item.name }}</option></select><el-button @click="newGroup">新增组</el-button><el-input v-if="group" v-model="group.name" style="width:160px" /><el-button @click="newButton">新增按钮</el-button><el-button @click="importInput?.click()">导入 JSON</el-button><input ref="importInput" hidden type="file" accept=".json" @change="importConfig" /><el-button @click="exportConfig">导出 JSON</el-button><el-button @click="reset">恢复默认</el-button></div><div class="button-editor" v-for="(button,index) in group?.buttons" :key="button.id"><input v-model="button.name" aria-label="按钮名称" /><select v-model="button.action"><option value="SEND_STRING">Send String</option><option value="MENU_FUNCTION">Menu Function</option><option value="LAUNCH_APPLICATION">Launch Application</option><option value="RUN_SCRIPT">Run Script</option></select><textarea v-if="button.action === 'SEND_STRING'" v-model="button.text" aria-label="发送字符串" rows="2" /><select v-else-if="button.action === 'MENU_FUNCTION'" v-model="button.text" aria-label="菜单功能"><option v-for="id in MENU_FUNCTIONS" :key="id" :value="id">{{ ({ find: 'Find', 'select-all': 'Select All', 'clear-scrollback': 'Clear Scrollback', 'clear-screen': 'Clear Screen', 'clear-all': 'Clear Screen and Scrollback' } as Record<string, string>)[id] }}</option></select><select v-else-if="button.action === 'LAUNCH_APPLICATION'" v-model="button.text" aria-label="外部应用"><option v-for="tool in externalTools" :key="tool.id" :value="tool.id">{{ tool.name }}</option></select><div v-else class="script-editor"><textarea v-model="button.text" aria-label="脚本 JSON" rows="2" /><button type="button" @click="selectedScriptButton = button; scriptInput?.click()">选择脚本 JSON</button></div><input v-model="button.color" type="color" aria-label="按钮颜色" /><input v-model="button.tooltip" placeholder="Tooltip" /><label><input v-model="button.disable_tooltip" type="checkbox" />不提示</label><label><input v-model="button.enabled" type="checkbox" />启用</label><button @click="duplicate(button)">复制</button><button @click="reorder(index,-1)">↑</button><button @click="reorder(index,1)">↓</button><button @click="group?.buttons.splice(index,1)">删除</button></div><input ref="scriptInput" hidden type="file" accept=".json,application/json" @change="importScript" /><template #footer><el-button @click="managing = false">关闭</el-button><el-button type="primary" @click="save">保存配置</el-button></template>
+      <div class="manage-toolbar"><select v-model="groupId"><option v-for="item in config.groups" :key="item.id" :value="item.id">{{ item.name }}</option></select><el-button @click="newGroup">新增组</el-button><el-input v-if="group" v-model="group.name" style="width:160px" /><el-button @click="newButton">新增按钮</el-button><el-button @click="importInput?.click()">导入 JSON</el-button><input ref="importInput" hidden type="file" accept=".json" @change="importConfig" /><el-button @click="exportConfig">导出 JSON</el-button><el-button @click="reset">恢复默认</el-button></div><div class="button-editor" v-for="(button,index) in group?.buttons" :key="button.id"><input v-model="button.name" aria-label="按钮名称" /><select v-model="button.action"><option value="SEND_STRING">Send String</option><option value="MENU_FUNCTION">Menu Function</option><option value="LAUNCH_APPLICATION">Launch Application</option><option value="RUN_SCRIPT">Run Script</option></select><textarea v-if="button.action === 'SEND_STRING'" v-model="button.text" aria-label="发送字符串" rows="2" /><select v-else-if="button.action === 'MENU_FUNCTION'" v-model="button.text" aria-label="菜单功能"><option v-for="id in MENU_FUNCTIONS" :key="id" :value="id">{{ ({ find: 'Find', 'select-all': 'Select All', 'clear-scrollback': 'Clear Scrollback', 'clear-screen': 'Clear Screen', 'clear-all': 'Clear Screen and Scrollback' } as Record<string, string>)[id] }}</option></select><select v-else-if="button.action === 'LAUNCH_APPLICATION'" v-model="button.text" aria-label="外部应用"><option v-for="tool in externalTools" :key="tool.id" :value="tool.id">{{ tool.name }}</option></select><label v-if="button.action === 'LAUNCH_APPLICATION'"><input v-model="button.launch_with_session_context" type="checkbox" />传递当前会话参数</label><div v-if="button.action === 'RUN_SCRIPT'" class="script-editor"><textarea v-model="button.text" aria-label="脚本 JSON" rows="2" /><button type="button" @click="selectedScriptButton = button; scriptInput?.click()">选择脚本 JSON</button></div><input v-model="button.color" type="color" aria-label="按钮颜色" /><input v-model="button.tooltip" placeholder="Tooltip" /><label><input v-model="button.disable_tooltip" type="checkbox" />不提示</label><label><input v-model="button.enabled" type="checkbox" />启用</label><button @click="duplicate(button)">复制</button><button @click="reorder(index,-1)">↑</button><button @click="reorder(index,1)">↓</button><button @click="group?.buttons.splice(index,1)">删除</button></div><input ref="scriptInput" hidden type="file" accept=".json,application/json" @change="importScript" /><template #footer><el-button @click="managing = false">关闭</el-button><el-button type="primary" @click="save">保存配置</el-button></template>
     </el-dialog>
   </section>
 </template>

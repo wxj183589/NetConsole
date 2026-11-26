@@ -4,11 +4,11 @@ import { flushPromises, mount } from '@vue/test-utils'
 import ConsoleCommandBar from './ConsoleCommandBar.vue'
 import type { TerminalSession } from '../../api/terminal'
 
-const mocks = vi.hoisted(() => ({ api: vi.fn(), save: vi.fn(), clone: vi.fn(), error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn(), confirm: vi.fn(async () => undefined) }))
+const mocks = vi.hoisted(() => ({ api: vi.fn(), save: vi.fn(), clone: vi.fn(), error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn(), confirm: vi.fn(async () => undefined), prompt: vi.fn(async () => ({ value: 'secret value' })) }))
 vi.mock('../../api/client', () => ({ apiRequest: mocks.api }))
 vi.mock('../../api/terminal', async original => ({ ...await original<object>(), cloneTerminalSession: mocks.clone }))
 vi.mock('../../platform/runtime', () => ({ downloadBackendResource: mocks.save }))
-vi.mock('element-plus', async original => ({ ...await original<object>(), ElMessage: { error: mocks.error, success: mocks.success, info: mocks.info, warning: mocks.warning }, ElMessageBox: { confirm: mocks.confirm } }))
+vi.mock('element-plus', async original => ({ ...await original<object>(), ElMessage: { error: mocks.error, success: mocks.success, info: mocks.info, warning: mocks.warning }, ElMessageBox: { confirm: mocks.confirm, prompt: mocks.prompt } }))
 const sessions = [{ session_id: 'one', state: 'RUNNING', device_name: 'AC1' }, { session_id: 'two', state: 'RUNNING', device_name: 'AC2' }] as TerminalSession[]
 const wrappers: ReturnType<typeof mount>[] = []
 beforeEach(() => {
@@ -52,8 +52,8 @@ it('keeps every script step on its initially confirmed terminal', async () => {
   expect(sends).toHaveLength(2)
   expect(sends.map(call => JSON.parse(call[1].body).session_ids)).toEqual([['one'], ['one']])
 })
-afterEach(() => { wrappers.splice(0).forEach(item => item.unmount()); vi.useRealTimers() })
-async function bar() { const wrapper = mount(ConsoleCommandBar, { props: { sessions, active: sessions[0]!, selected: ['two'], selectedDevices: [] }, global: { stubs: { ElDialog: { template: '<div><slot /><slot name="footer" /></div>' }, ElTable: true, ElTableColumn: true } } }); wrappers.push(wrapper); await flushPromises(); return wrapper }
+afterEach(() => { wrappers.splice(0).forEach(item => item.unmount()); vi.useRealTimers(); Reflect.deleteProperty(window, 'netconsoleDesktop') })
+async function bar(overrides: { active?: TerminalSession } = {}) { const wrapper = mount(ConsoleCommandBar, { props: { sessions, active: overrides.active || sessions[0]!, selected: ['two'], selectedDevices: [] }, global: { stubs: { ElDialog: { template: '<div><slot /><slot name="footer" /></div>' }, ElTable: true, ElTableColumn: true } } }); wrappers.push(wrapper); await flushPromises(); return wrapper }
 describe('console commands keep explicit target semantics', () => {
   it('defaults to current session and sends a saved quick button only there', async () => {
     const wrapper = await bar()
@@ -98,6 +98,41 @@ it('routes Menu Function buttons through the active terminal action event', asyn
   await wrapper.get('.mapped-button-bar button').trigger('click')
   expect(wrapper.emitted('menuAction')).toEqual([['clear-screen']])
   expect(mocks.api.mock.calls.some(call => call[0] === '/api/terminal/batch-sends')).toBe(false)
+})
+
+it('launches a registered external tool with active-session variables as argv and prompts for password only when requested', async () => {
+  const toolId = '7c890030-3a3f-4d6b-b58e-7624d21daff9'
+  const launch = vi.fn(async () => ({ success: true, toolId }))
+  Object.defineProperty(window, 'netconsoleDesktop', {
+    configurable: true,
+    value: {
+      listExternalTools: async () => ({ tools: [{ id: toolId, name: 'SecureCRT', arguments: ['-ssh', '{host}', '{backup_address}', '{port}', '{username}', '{password}'] }] }),
+      launchExternalTool: launch,
+    },
+  })
+  mocks.api.mockImplementation(async (url: string) => url === '/api/terminal/quick-buttons' ? {
+    version: 2,
+    groups: [{ id: 'group-0', name: 'H3C', buttons: [{ id: 'securecrt', name: 'SecureCRT', action: 'LAUNCH_APPLICATION', text: toolId, launch_with_session_context: true, color: '#409eff', tooltip: '', disable_tooltip: false, order: 0, enabled: true }] }],
+  } : { id: 'job-one', rows: [] })
+  const active = { ...sessions[0]!, address: '192.0.2.10', backup_address: '192.0.2.11', port: 2222, username: '维护 user' } as TerminalSession
+  const wrapper = await bar({ active })
+  await wrapper.findAll('.command-bar > .quick-buttons button').find(button => button.text() === '显示按钮栏')!.trigger('click')
+  await wrapper.get('.mapped-button-bar button').trigger('click')
+  await flushPromises()
+  expect(mocks.prompt).toHaveBeenCalledOnce()
+  expect(launch).toHaveBeenCalledWith({
+    toolId,
+    launchMode: 'normal',
+    terminalContext: {
+      host: '192.0.2.10',
+      address: '192.0.2.10',
+      backup_host: '192.0.2.11',
+      backup_address: '192.0.2.11',
+      port: 2222,
+      username: '维护 user',
+      password: 'secret value',
+    },
+  })
 })
 
 describe('release command sending without a details interface', () => {

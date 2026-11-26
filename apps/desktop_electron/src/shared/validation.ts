@@ -504,11 +504,34 @@ export function validateExternalToolSystemReferenceCreateRequest(
 
 export function validateExternalToolLaunchRequest(value: unknown): ExternalToolLaunchRequest {
   const record = asRecord(value, 'external tool launch request')
-  rejectUnknownKeys(record, ['toolId', 'launchMode'])
-  return {
+  rejectUnknownKeys(record, ['toolId', 'launchMode', 'terminalContext'])
+  const request: ExternalToolLaunchRequest = {
     toolId: validateExternalToolId(record.toolId),
     launchMode: validateExternalToolLaunchMode(record.launchMode),
   }
+  if (record.terminalContext !== undefined) {
+    const context = asRecord(record.terminalContext, 'terminal context')
+    rejectUnknownKeys(context, ['host', 'address', 'backup_host', 'backup_address', 'port', 'username', 'password'])
+    const textFields = ['host', 'address', 'backup_host', 'backup_address', 'username', 'password'] as const
+    for (const field of textFields) {
+      if (typeof context[field] !== 'string' || context[field].length > (field === 'password' ? 1024 : 512)) {
+        throw new TypeError(`terminalContext.${field} is invalid`)
+      }
+    }
+    if (typeof context.port !== 'number' || !Number.isInteger(context.port) || context.port < 0 || context.port > 65535) {
+      throw new TypeError('terminalContext.port is invalid')
+    }
+    request.terminalContext = {
+      host: context.host as string,
+      address: context.address as string,
+      backup_host: context.backup_host as string,
+      backup_address: context.backup_address as string,
+      port: context.port,
+      username: context.username as string,
+      password: context.password as string,
+    }
+  }
+  return request
 }
 
 export function validateExternalToolFavoriteRequest(value: unknown): { toolId: string; favorite: boolean } {

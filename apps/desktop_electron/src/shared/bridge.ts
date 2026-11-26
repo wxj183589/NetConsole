@@ -128,6 +128,17 @@ export interface ExternalToolSystemReferenceCreateRequest {
 export interface ExternalToolLaunchRequest {
   toolId: string
   launchMode: ExternalToolLaunchMode
+  terminalContext?: ExternalToolLaunchContext
+}
+
+export interface ExternalToolLaunchContext {
+  host: string
+  address: string
+  backup_host: string
+  backup_address: string
+  port: number
+  username: string
+  password: string
 }
 
 export interface ExternalToolReorderRequest {

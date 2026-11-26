@@ -42,6 +42,7 @@ def test_button_store_roundtrip_five_buttons_and_validation(tmp_path, monkeypatc
                     "name": f"按钮{index}",
                     "action": "SEND_STRING",
                     "text": rf"display {index}\r",
+                    "launch_with_session_context": False,
                     "color": "#123abc",
                     "tooltip": "提示",
                     "disable_tooltip": False,
@@ -57,6 +58,7 @@ def test_button_store_roundtrip_five_buttons_and_validation(tmp_path, monkeypatc
                 "name": "清屏",
                 "action": "MENU_FUNCTION",
                 "text": "clear-screen",
+                "launch_with_session_context": False,
                 "color": "#123abc",
                 "tooltip": "清除终端屏幕",
                 "disable_tooltip": False,
@@ -75,6 +77,7 @@ def test_button_store_roundtrip_five_buttons_and_validation(tmp_path, monkeypatc
                 "text": json.dumps(
                     {"version": 1, "steps": [{"type": "SEND_STRING", "text": r"display version\r"}]}
                 ),
+                "launch_with_session_context": False,
                 "color": "#123abc",
                 "tooltip": "执行受限脚本",
                 "disable_tooltip": False,
@@ -91,6 +94,7 @@ def test_button_store_roundtrip_five_buttons_and_validation(tmp_path, monkeypatc
                 "name": "外部终端",
                 "action": "LAUNCH_APPLICATION",
                 "text": "7c890030-3a3f-4d6b-b58e-7624d21daff9",
+                "launch_with_session_context": True,
                 "color": "#123abc",
                 "tooltip": "启动已登记外部工具",
                 "disable_tooltip": False,
@@ -108,6 +112,41 @@ def test_button_store_roundtrip_five_buttons_and_validation(tmp_path, monkeypatc
             QuickButtonStore(manager.paths).read()["groups"][4]["buttons"][0]["action"]
             == "SEND_STRING"
         )
+    finally:
+        manager.close()
+
+
+def test_button_store_migrates_legacy_schema_without_dropping_buttons(tmp_path, monkeypatch):
+    manager, _, _ = _manager_fixture(tmp_path, monkeypatch)
+    try:
+        store = manager.dispatcher.buttons
+        legacy = {
+            "version": 1,
+            "groups": [{
+                "id": "custom",
+                "name": "自定义",
+                "buttons": [{
+                    "id": "launch",
+                    "name": "外部终端",
+                    "action": "LAUNCH_APPLICATION",
+                    "text": "7c890030-3a3f-4d6b-b58e-7624d21daff9",
+                    "color": "#123abc",
+                    "tooltip": "",
+                    "disable_tooltip": False,
+                    "order": 0,
+                    "enabled": True,
+                }],
+            }],
+        }
+        store.path.parent.mkdir(parents=True, exist_ok=True)
+        store.path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        migrated = store.read()
+
+        assert migrated["version"] == 2
+        assert migrated["groups"][0]["buttons"][0]["text"] == legacy["groups"][0]["buttons"][0]["text"]
+        assert migrated["groups"][0]["buttons"][0]["launch_with_session_context"] is True
+        assert json.loads(store.path.read_text(encoding="utf-8"))["version"] == 2
     finally:
         manager.close()
 

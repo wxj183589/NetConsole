@@ -202,7 +202,14 @@ def main():
         while not stop.wait(0.1):
             temporary = metrics_path.with_suffix(".part")
             temporary.write_text(json.dumps(metrics), encoding="utf-8")
-            temporary.replace(metrics_path)
+            for attempt in range(5):
+                try:
+                    temporary.replace(metrics_path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.02)
 
     metrics_thread = threading.Thread(target=publish_metrics, daemon=True)
     metrics_thread.start()

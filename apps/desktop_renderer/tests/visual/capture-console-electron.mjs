@@ -159,6 +159,10 @@ await page.route('**/*', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(sftpSession) })
     return
   }
+  if (url.pathname === '/api/terminal/sftp/sessions' && request.method() === 'GET') {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [] }) })
+    return
+  }
   if (/\/api\/terminal\/sftp\/sessions\/.+\/entries$/.test(url.pathname)) {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ session: sftpSession, path: '/', items: sftpEntries }) })
     return

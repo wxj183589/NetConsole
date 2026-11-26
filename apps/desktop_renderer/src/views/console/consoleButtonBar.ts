@@ -14,6 +14,7 @@ export type ConsoleMappedButton = {
   name: string
   action: 'SEND_STRING' | 'MENU_FUNCTION' | 'LAUNCH_APPLICATION' | 'RUN_SCRIPT'
   text: string
+  launch_with_session_context: boolean
   color: string
   tooltip: string
   disable_tooltip: boolean
@@ -29,7 +30,7 @@ export type ConsoleButtonGroup = {
 
 /** Matches the persisted Backend quick-button document contract. */
 export type ConsoleButtonBarDocument = {
-  version: 1
+  version: 2
   groups: ConsoleButtonGroup[]
 }
 
@@ -119,9 +120,10 @@ function assertId(value: unknown, ids: Set<string>, label: string): asserts valu
 
 /** Validates imported or API-provided data without silently repairing it. */
 export function validateConsoleButtonBar(value: unknown): ConsoleButtonBarDocument {
-  if (!isRecord(value) || value.version !== 1 || Object.keys(value).length !== 2) {
-    throw new Error('Button bar document must use schema version 1')
+  if (!isRecord(value) || ![1, 2].includes(Number(value.version)) || Object.keys(value).length !== 2) {
+    throw new Error('Button bar document must use schema version 1 or 2')
   }
+  const sourceVersion = Number(value.version)
   if (!Array.isArray(value.groups) || value.groups.length < 1 || value.groups.length > MAX_GROUPS) {
     throw new Error(`Button bar must contain 1 to ${MAX_GROUPS} groups`)
   }
@@ -143,7 +145,8 @@ export function validateConsoleButtonBar(value: unknown): ConsoleButtonBarDocume
     const buttons = rawGroup.buttons.map((rawButton, buttonIndex): ConsoleMappedButton => {
       const label = `Group ${groupIndex + 1}, button ${buttonIndex + 1}`
       const fields = ['id', 'name', 'action', 'text', 'color', 'tooltip', 'disable_tooltip', 'order', 'enabled']
-      if (!isRecord(rawButton) || Object.keys(rawButton).length !== fields.length || fields.some(field => !(field in rawButton))) {
+      const expectedFields = sourceVersion === 1 ? fields : [...fields, 'launch_with_session_context']
+      if (!isRecord(rawButton) || Object.keys(rawButton).length !== expectedFields.length || expectedFields.some(field => !(field in rawButton))) {
         throw new Error(`${label} has an invalid structure`)
       }
       assertId(rawButton.id, ids, `${label} id`)
@@ -152,6 +155,12 @@ export function validateConsoleButtonBar(value: unknown): ConsoleButtonBarDocume
       }
       if (typeof rawButton.text !== 'string' || rawButton.text.length > MAX_TEXT_LENGTH) {
         throw new Error(`${label} text exceeds ${MAX_TEXT_LENGTH} characters`)
+      }
+      const launchWithSessionContext = sourceVersion === 1
+        ? rawButton.action === 'LAUNCH_APPLICATION'
+        : rawButton.launch_with_session_context
+      if (typeof launchWithSessionContext !== 'boolean') {
+        throw new Error(`${label} launch session context must be a boolean`)
       }
       if (rawButton.action === 'SEND_STRING') parseSendString(rawButton.text)
       else if (rawButton.action === 'MENU_FUNCTION') {
@@ -177,11 +186,15 @@ export function validateConsoleButtonBar(value: unknown): ConsoleButtonBarDocume
       if (!Number.isInteger(rawButton.order) || Number(rawButton.order) < 0 || Number(rawButton.order) > 10_000) {
         throw new Error(`${label} order must be an integer from 0 to 10000`)
       }
-      return rawButton as ConsoleMappedButton
+      return { ...rawButton, launch_with_session_context: launchWithSessionContext } as ConsoleMappedButton
     })
 
     return { id: rawGroup.id, name: rawGroup.name, buttons }
   })
 
-  return { version: 1, groups }
+  return { version: 2, groups }
+}
+
+export function consoleToolNeedsPassword(arguments_: string[]): boolean {
+  return arguments_.some(argument => argument.includes('{password}'))
 }

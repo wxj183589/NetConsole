@@ -34,6 +34,21 @@ describe('external tools desktop API', () => {
     expect(launch).toHaveBeenCalledOnce()
   })
 
+  it('passes only the fixed terminal context DTO without changing tool selection', async () => {
+    const launch = vi.fn(async (request: { toolId: string; launchMode: string; terminalContext?: { host: string; address: string; backup_host: string; backup_address: string; port: number; username: string; password: string } }) => ({
+      success: true,
+      toolId: request.toolId,
+    }))
+    Object.defineProperty(window, 'netconsoleDesktop', {
+      configurable: true,
+      value: { launchExternalTool: launch },
+    })
+    const id = '7c890030-3a3f-4d6b-b58e-7624d21daff9'
+    const terminalContext = { host: '中文 host', address: '中文 host', backup_host: '', backup_address: '', port: 22, username: 'admin', password: 'secret' }
+    await launchExternalTool(id, 'normal', terminalContext)
+    expect(launch).toHaveBeenCalledWith({ toolId: id, launchMode: 'normal', terminalContext })
+  })
+
   it('converts quoted text to argv and rejects shell syntax', () => {
     expect(splitExternalToolArguments('--profile "现场 维护" --read-only')).toEqual([
       '--profile', '现场 维护', '--read-only',

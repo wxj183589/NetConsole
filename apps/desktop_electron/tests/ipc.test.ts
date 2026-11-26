@@ -212,18 +212,28 @@ describe('desktop IPC', () => {
     const service = externalToolService()
     const { ipcMain, sender } = createHarness({ externalToolService: service })
     const event = { sender }
+    const terminalContext = {
+      host: '设备 1', address: '设备 1', backup_host: '', backup_address: '',
+      port: 22, username: '维护 user', password: 'secret',
+    }
 
     await ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, {
       toolId,
       launchMode: 'normal',
+      terminalContext,
     })
     await ipcMain.handlers.get(DESKTOP_IPC.revealExternalTool)?.(event, toolId)
-    expect(service.launch).toHaveBeenCalledWith({ toolId, launchMode: 'normal' })
+    expect(service.launch).toHaveBeenCalledWith({ toolId, launchMode: 'normal', terminalContext })
     expect(service.reveal).toHaveBeenCalledWith(toolId)
     expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, {
       toolId,
       launchMode: 'normal',
       executablePath: 'C:\\Temp\\evil.exe',
+    })).toThrow('unsupported field')
+    expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, {
+      toolId,
+      launchMode: 'normal',
+      arguments: ['arbitrary argv'],
     })).toThrow('unsupported field')
     expect(() => ipcMain.handlers.get(DESKTOP_IPC.launchExternalTool)?.(event, {
       toolId,

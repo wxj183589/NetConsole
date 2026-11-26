@@ -21,7 +21,13 @@
 
 本轮定向结果为 Renderer Console 42 项、Electron IPC/Preload 44 项、Python Console API/Service 19 项通过；Ruff、Renderer 类型检查、Electron 类型检查和 Renderer/Electron 构建通过。证据日志和隔离 Electron 截图位于 Workspace `reports/tests/console-1.5.19-resume-20261126/`。真实 Electron 采集到 1920×1080 和 2560×1440 分屏、窄窗口及按钮栏截图。现有复合视觉脚本在 SFTP 文件行选择器超时退出，该 SFTP 检查未通过，本轮截图不作为 SFTP 验收证据。
 
-Button Bar 配置当前仍使用 schema version 1。新增动作会由旧版客户端判为未知动作。Launch Application 目前只复用登记工具的静态参数，活动会话变量展开及用户名/凭据注入尚未实现。外部客户端认证矩阵、完整真实键盘/粘贴矩阵和本机 GUI 全项验收仍待完成。
+该段记录的是本节开始前的历史状态。后续“Console 专项续作二”记录了 schema version 2、会话上下文模板及本轮更新后的 GUI 验收结果。外部客户端认证矩阵、原生文件对话框/拖放和完整真实键盘/粘贴矩阵仍待完成。
+
+### Console 专项续作二
+
+按钮栏配置已升级为 schema version 2。Backend 首次读取旧版配置时保留原按钮及顺序，补齐新字段并原子写回；Renderer 导入也兼容 v1 并规范化为 v2。用户在已登记 External Tool 的参数中配置 `{host}`、`{address}`、`{backup_host}`、`{backup_address}`、`{port}`、`{username}` 或 `{password}` 模板，并在映射按钮启用“传递当前会话参数”后，Main 进程从登记参数生成最终 argv。Renderer 只能发送固定且限长的终端上下文 DTO，不能传任意 argv。配置包含 `{password}` 时点击按钮会单独提示密码，用户授权的明文参数仅用于本次外部进程启动；启动日志、按钮配置和 Session 录制元数据不保存密码或用户名，进程使用 `shell: false`。
+
+本次固定 DTO 改造后的定向回归为 Renderer Console/API 31 项、Electron External Tool/IPC 18 项、Python Console/Session 26 项通过；Renderer 与 Electron 类型检查及 Python Ruff 通过。覆盖 v1 配置自动迁移、固定上下文 DTO 校验、中文/空格参数模板展开、密码临时提示以及日志和存储不泄漏密码。实际 Electron 复合验收通过隔离 SSH/SFTP 列表与下载、映射按钮、批量写入、独立会话标签和窗口、80 次页面切换及生命周期；证据位于 Workspace `reports/tests/console-1.5.19-resume-20261126/electron-sftp-fix-20261126/`。2560×1440 实际显示器验收 PASS，1920×1080 仅验证窗口尺寸。原生 Windows 文件对话框、Explorer 拖放和外部真实终端客户端认证仍未验证。
 
 数据影响：仅使用 Workspace 隔离 Console 测试根。`PRODUCTION_DATA_MODIFIED=0`、`DEV_REAL_BUSINESS_DATA_MODIFIED=0`、`DATABASES_REMOVED=0`、`REAL_DEVICE_CONFIGURATION_WRITES=0`。
 

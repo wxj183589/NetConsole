@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSendString, validateConsoleButtonBar } from './consoleButtonBar'
+import { consoleToolNeedsPassword, parseSendString, validateConsoleButtonBar } from './consoleButtonBar'
 
 describe('Send String parser', () => {
   it('decodes supported escapes and preserves exact CR/LF bytes', () => {
@@ -32,7 +32,7 @@ describe('Send String parser', () => {
 
 describe('button-bar schema', () => {
   const document = {
-    version: 1,
+    version: 2,
     groups: [{
       id: 'h3c',
       name: 'H3C',
@@ -46,12 +46,24 @@ describe('button-bar schema', () => {
         disable_tooltip: false,
         order: 0,
         enabled: true,
+        launch_with_session_context: false,
       }],
     }],
   }
 
   it('accepts the persisted API schema and keeps its data', () => {
     expect(validateConsoleButtonBar(document)).toEqual(document)
+  })
+
+  it('migrates version 1 buttons without changing their action or text', () => {
+    const legacy = structuredClone(document)
+    legacy.version = 1
+    const { launch_with_session_context: _launchWithSessionContext, ...legacyButton } = legacy.groups[0]!.buttons[0]!
+    legacy.groups[0]!.buttons[0] = legacyButton as typeof legacy.groups[0]['buttons'][number]
+    expect(validateConsoleButtonBar(legacy)).toMatchObject({
+      version: 2,
+      groups: [{ buttons: [{ action: 'SEND_STRING', text: String.raw`display version\r`, launch_with_session_context: false }] }],
+    })
   })
 
   it('rejects unknown actions rather than implying their support', () => {
@@ -91,6 +103,13 @@ describe('button-bar schema', () => {
     const duplicate = structuredClone(document)
     duplicate.groups[0]!.buttons[0]!.id = 'h3c'
     expect(() => validateConsoleButtonBar(duplicate)).toThrow('unique')
-    expect(() => validateConsoleButtonBar({ ...document, version: 2 })).toThrow('version 1')
+    expect(() => validateConsoleButtonBar({ ...document, version: 3 })).toThrow('version 1 or 2')
+  })
+})
+
+describe('Launch Application password prompt', () => {
+  it('prompts only when a registered argument template requests a password', () => {
+    expect(consoleToolNeedsPassword(['-ssh', '{host}', '{username}', '{password}'])).toBe(true)
+    expect(consoleToolNeedsPassword(['-ssh', '{host}', '{username}'])).toBe(false)
   })
 })

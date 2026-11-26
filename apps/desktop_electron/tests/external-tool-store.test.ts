@@ -14,6 +14,7 @@ import {
 } from '../src/main/external-tool-store'
 import { ExternalToolService } from '../src/main/external-tool-service'
 import type { ExternalToolCreateRequest } from '../src/shared/bridge'
+import { validateExternalToolLaunchRequest } from '../src/shared/validation'
 
 const roots: string[] = []
 
@@ -43,6 +44,25 @@ async function fixture() {
 
 afterEach(async () => {
   for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true })
+})
+
+describe('external tool launch request validation', () => {
+  it('accepts the bounded terminal context and rejects arbitrary argv', () => {
+    const request = {
+      toolId: '7c890030-3a3f-4d6b-b58e-7624d21daff9',
+      launchMode: 'normal',
+      terminalContext: {
+        host: '设备 1', address: '设备 1', backup_host: '', backup_address: '',
+        port: 22, username: '维护 user', password: 'secret',
+      },
+    }
+    expect(validateExternalToolLaunchRequest(request)).toEqual(request)
+    expect(() => validateExternalToolLaunchRequest({ ...request, arguments: ['arbitrary.exe'] })).toThrow()
+    expect(() => validateExternalToolLaunchRequest({
+      ...request,
+      terminalContext: { ...request.terminalContext, password: 'x'.repeat(1025) },
+    })).toThrow('terminalContext.password is invalid')
+  })
 })
 
 describe('ExternalToolStore', () => {
@@ -200,14 +220,16 @@ describe('ExternalToolStore', () => {
 })
 
 describe('ExternalToolService launcher', () => {
-  it('spawns only the stored executable and argv with shell disabled, then records success', async () => {
+  it('expands stored templates from the fixed terminal context with shell disabled', async () => {
     const { store, request } = await fixture()
+    request.arguments = ['-ssh', '{host}', '{backup_address}', '{port}', '{username}', '{password}']
     const tool = await store.create(request)
     const child = Object.assign(new EventEmitter(), { unref: vi.fn() })
     const spawn = vi.fn(() => {
       queueMicrotask(() => child.emit('spawn'))
       return child
     })
+    const logger = vi.fn()
     const service = new ExternalToolService({
       store,
       spawn,
@@ -219,19 +241,29 @@ describe('ExternalToolService launcher', () => {
         terminalPaths: { securecrt: '', xshell: '', putty: '' },
       })),
       elevatedLaunch: vi.fn(async () => 'launched' as const),
+      logger,
     })
 
-    await expect(service.launch({ toolId: tool.id, launchMode: 'normal' })).resolves.toEqual({
+    await expect(service.launch({
+      toolId: tool.id,
+      launchMode: 'normal',
+      terminalContext: {
+        host: '设备 1', address: '设备 1', backup_host: '备用 2', backup_address: '备用 2',
+        port: 2222, username: '维护 user', password: 'secret value',
+      },
+    })).resolves.toEqual({
       success: true,
       toolId: tool.id,
     })
-    expect(spawn).toHaveBeenCalledWith(tool.executable_path, tool.arguments, {
+    expect(spawn).toHaveBeenCalledWith(tool.executable_path, ['-ssh', '设备 1', '备用 2', '2222', '维护 user', 'secret value'], {
       shell: false,
       detached: true,
       stdio: 'ignore',
       cwd: tool.working_directory,
       windowsHide: false,
     })
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('secret value')
+    expect(await fs.readFile(store.path, 'utf8')).not.toContain('secret value')
     expect(child.unref).toHaveBeenCalledOnce()
     expect((await store.get(tool.id))?.launch_count).toBe(1)
   })

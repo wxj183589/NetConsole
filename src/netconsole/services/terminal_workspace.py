@@ -111,6 +111,9 @@ class TerminalSessionSnapshot:
     address_role: str = "primary"
     connected_at_ms: int | None = None
     ended_at_ms: int | None = None
+    username: str = ""
+    backup_address: str = ""
+    backup_port: int = 0
     disconnect_reason: str = ""
     error_code: str = ""
     error_message: str = ""
@@ -342,8 +345,10 @@ class TerminalRecordingWriter:
     def _write_metadata(self, snapshot: TerminalSessionSnapshot) -> None:
         with self._metadata_lock:
             temporary = self.metadata_path.with_suffix(".json.tmp")
+            metadata = snapshot.to_public_dict()
+            metadata.pop("username", None)
             temporary.write_text(
-                json.dumps(snapshot.to_public_dict(), ensure_ascii=False, indent=2),
+                json.dumps(metadata, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             os.replace(temporary, self.metadata_path)
@@ -731,6 +736,11 @@ class TerminalSessionManager:
             ]
             session_id = uuid.uuid4().hex
             now = _utc_ms()
+            backup_target = next(
+                (candidate for candidate in connection_targets(device)
+                 if candidate.target_role == "backup"),
+                None,
+            )
             snapshot = TerminalSessionSnapshot(
                 session_id=session_id,
                 device_uuid=str(device.device_uuid),
@@ -748,6 +758,9 @@ class TerminalSessionManager:
                 created_at_ms=now,
                 updated_at_ms=now,
                 address_role=target.target_role,
+                username=target.username,
+                backup_address=backup_target.host if backup_target else "",
+                backup_port=backup_target.port if backup_target else 0,
                 session_name=f"{device.name or device.system_name or device.primary_address}-{len(same_device) + 1:02}",
             )
             recording = TerminalRecordingWriter(self.recording_root, snapshot)

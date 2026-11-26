@@ -11,7 +11,10 @@ const workspace = resolve(repository, repository.replaceAll('\\', '/').includes(
 const electronRoot = resolve(repository, 'apps/desktop_electron')
 const require = createRequire(resolve(electronRoot, 'package.json'))
 const { build } = require('esbuild')
-const output = resolve(workspace, 'reports/build/release-v1.5.18-20261123/electron')
+const output = resolve(
+  process.env.NETCONSOLE_CONSOLE_VISUAL_OUTPUT
+    || 'reports/tests/console-1.5.19-resume-20261126/electron-sftp-fix-20261126',
+)
 await mkdir(output, { recursive: true })
 const runRoot = await mkdtemp(resolve(workspace, 'test-data/NetConsole/console-sftp-electron-'))
 const dataRoot = resolve(runRoot, 'data')
@@ -24,7 +27,7 @@ await writeFile(resolve(appRoot, 'package.json'), JSON.stringify({ name: 'netcon
 // Build into a new isolated app; no cleanup/build script touches existing dist.
 for (const entry of ['main', 'preload']) await build({ entryPoints: [resolve(electronRoot, `src/${entry}/index.ts`)], outfile: resolve(appRoot, `${entry}/index.cjs`), bundle: true, platform: 'node', format: 'cjs', target: 'node24', external: ['electron'] })
 const token = randomBytes(32).toString('hex')
-const env = { ...process.env, NETCONSOLE_PROJECT_ROOT: repository, NETCONSOLE_PYTHON: resolve(repository, '.venv/Scripts/python.exe'), PYTHONPATH: resolve(repository, 'src'), NETCONSOLE_DATA_ROOT: dataRoot, NETCONSOLE_RUNTIME_ROOT: resolve(runRoot, 'runtime'), NETCONSOLE_RUNTIME_MODE: 'test', NETCONSOLE_STORAGE_MODE: 'isolated_test', NETCONSOLE_DEV_TEMP_DATA_ROOT: '1', NETCONSOLE_ISOLATED_SMOKE: '1', NETCONSOLE_DEV_MODE: '1', NETCONSOLE_DEV_BACKEND_PORT: '18021', NETCONSOLE_DEV_SESSION_TOKEN: token, NETCONSOLE_RENDERER_DEV_URL: 'http://127.0.0.1:5181', VITE_API_BASE: 'http://127.0.0.1:18021', VITE_DEV_SESSION_TOKEN: token }
+const env = { ...process.env, NETCONSOLE_PROJECT_ROOT: repository, NETCONSOLE_PYTHON: process.env.NETCONSOLE_PYTHON || resolve(repository, '.venv/Scripts/python.exe'), PYTHONPATH: resolve(repository, 'src'), NETCONSOLE_DATA_ROOT: dataRoot, NETCONSOLE_RUNTIME_ROOT: resolve(runRoot, 'runtime'), NETCONSOLE_RUNTIME_MODE: 'test', NETCONSOLE_STORAGE_MODE: 'isolated_test', NETCONSOLE_DEV_TEMP_DATA_ROOT: '1', NETCONSOLE_ISOLATED_SMOKE: '1', NETCONSOLE_DEV_MODE: '1', NETCONSOLE_DEV_BACKEND_PORT: '18021', NETCONSOLE_DEV_SESSION_TOKEN: token, NETCONSOLE_RENDERER_DEV_URL: 'http://127.0.0.1:5181', VITE_API_BASE: 'http://127.0.0.1:18021', VITE_DEV_SESSION_TOKEN: token }
 delete env.ELECTRON_RUN_AS_NODE
 let fixture, vite, app, page
 const nativeDialog = process.env.NETCONSOLE_NATIVE_DIALOG === '1'
@@ -77,6 +80,10 @@ try {
   await page.waitForFunction(() => document.querySelector('.xterm-screen')?.textContent?.includes('fixture interactive response'))
   if (!await page.locator('.sftp-panel').isVisible()) await page.getByRole('button', { name: 'SFTP', exact: true }).click()
   await page.locator('.sftp-panel').getByRole('button', { name: '连接 SFTP', exact: true }).click()
+  await page.waitForTimeout(500)
+  const sftpSession = (await api('sftp/sessions')).items.find(item => item.device_uuid === evidence.fixture.device_uuid)
+  evidence.sftpListing = await api(`sftp/sessions/${sftpSession.session_id}/entries?path=.`)
+  process.stdout.write(`SFTP fixture listing: ${JSON.stringify(evidence.sftpListing.items.map(item => item.name))}\n`)
   await page.locator('.sftp-files tr').filter({ hasText: 'startup.cfg' }).waitFor()
   evidence.tests.push('real SSH shell and SFTP listing connected to isolated server')
   const row = page.locator('.sftp-files tr').filter({ hasText: 'startup.cfg' })
@@ -203,12 +210,17 @@ try {
   if (before[0].state.cursorX !== after[0].state.cursorX) throw new Error('cursor changed across routes')
   evidence.sessionIds = ids
   // Exercise actual UI -> Python dispatcher -> independent interactive shells.
-  await page.locator('.quick-buttons').getByRole('button', { name: '版本', exact: true }).click()
+  await page.getByRole('button', { name: '显示按钮栏', exact: true }).click()
+  await page.locator('.mapped-button-bar').getByRole('button', { name: '版本', exact: true }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('.el-message')].some(item => item.textContent.includes('命令已写入')))
-  await page.getByRole('button', { name: '终端会话', exact: true }).click()
+  await page.getByRole('button', { name: '展开或收起左侧列表', exact: true }).click()
+  await page.locator('.console-icon-rail').getByTitle('终端会话').click()
   const sessionRows = page.locator('.session-row')
   await sessionRows.filter({ hasText: 'LAB-SFTP-SW-01' }).locator('input[type=checkbox]').check()
   await sessionRows.filter({ hasText: 'LAB-SFTP-SW-02' }).locator('input[type=checkbox]').check()
+  await page.getByRole('button', { name: '展开或收起左侧列表', exact: true }).click()
+  await page.getByRole('button', { name: '管理按钮', exact: true }).click()
+  await page.getByRole('button', { name: '批量命令', exact: true }).click()
   await page.getByLabel('发送目标', { exact: true }).selectOption('selected')
   await page.getByLabel('批量命令', { exact: true }).fill('display batch-one\n\ndisplay batch-two')
   await page.getByRole('button', { name: '预览发送', exact: true }).click()
