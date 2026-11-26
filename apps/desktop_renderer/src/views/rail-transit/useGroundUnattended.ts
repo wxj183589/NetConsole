@@ -151,6 +151,8 @@ const latestTerminalOperation = ref<GroundOperation | null>(null)
 const runs = ref<GroundRun[]>([])
 
 const selectedRunId = ref('')
+const historySyslogRunId = ref('')
+const syslogRunId = computed(() => historySyslogRunId.value || selectedRunId.value)
 
 const runHistoryDeleteLoading = ref(false)
 
@@ -334,7 +336,7 @@ const visibleOperation = computed(() => activeOperation.value ?? latestTerminalO
 
 const selectedRun = computed(() => runs.value.find((row) => row.run_id === selectedRunId.value) ?? null)
 
-const historicalRun = computed(() => Boolean(selectedRunId.value && selectedRunId.value !== status.value?.active_run_id))
+const historicalRun = computed(() => Boolean(syslogRunId.value && syslogRunId.value !== status.value?.active_run_id))
 
 const runHistoryDeleteBlocked = computed(() => (
   !selectedRun.value
@@ -344,10 +346,11 @@ const runHistoryDeleteBlocked = computed(() => (
 
 const selectedPingHistorical = computed(() => Boolean(selectedPingTarget.value?.run_id && selectedPingTarget.value.run_id !== status.value?.active_run_id))
 
-const syslogDeleteBlocked = computed(() => (
-  !selectedRun.value
-  || ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING', 'ERROR'].includes(selectedRun.value.state)
-))
+const syslogDeleteBlocked = computed(() => {
+  const run = runs.value.find((row) => row.run_id === historySyslogRunId.value)
+  return !run || run.run_id === status.value?.active_run_id
+    || ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING', 'ERROR'].includes(run.state)
+})
 
 function hasSyslogFilterValue(value: unknown): boolean {
   if (Array.isArray(value)) {
@@ -706,7 +709,7 @@ const loadStatus = (silent = true) => {
   lastPollAt.set('status', Date.now())
   return latestRequest('status', '运行状态', (signal) => getGroundStatus({ signal }), (value) => {
   status.value = value
-  if (!selectedRunId.value) selectedRunId.value = value.active_run_id || value.latest_run_id
+  selectedRunId.value = value.active_run_id || ''
   }, silent)
 }
 
@@ -720,11 +723,6 @@ const loadAcBasicCollection = (silent = true) => latestRequest('ac-basic-collect
 
 const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signal) => listGroundRuns({ signal }), (value) => {
   runs.value = value.items
-  if (!value.items.some((row) => row.run_id === selectedRunId.value)) {
-    selectedRunId.value = status.value
-      ? status.value.active_run_id || value.items[0]?.run_id || ''
-      : ''
-  }
 }, silent)
 
 const applyRendererPositionTiming = (items: GroundTrain[]): void => {
@@ -754,11 +752,11 @@ const applyRendererPositionTiming = (items: GroundTrain[]): void => {
 
 const loadTrains = (silent = true) => latestRequest('trains', '正线车辆', (signal) => listGroundTrains({ signal }), (value) => { applyRendererPositionTiming(value.items) }, silent)
 
-const loadPingTargets = (silent = true) => latestRequest('ping', t('ground.heartbeat', '心跳检测'), (signal) => listGroundPingTargets(selectedRunId.value, { signal }), (value) => { pingTargets.value = value.items }, silent)
+const loadPingTargets = async (silent = true) => selectedRunId.value ? latestRequest('ping', t('ground.heartbeat', '心跳检测'), (signal) => listGroundPingTargets(selectedRunId.value, { signal }), (value) => { pingTargets.value = value.items }, silent) : false
 
-const loadDeep = (silent = true) => latestRequest('deep', '深度采集', (signal) => listGroundDeepCollections(selectedRunId.value, { signal }), (value) => { deepCollections.value = value.items }, silent)
+const loadDeep = async (silent = true) => selectedRunId.value ? latestRequest('deep', '深度采集', (signal) => listGroundDeepCollections(selectedRunId.value, { signal }), (value) => { deepCollections.value = value.items }, silent) : false
 
-const loadTimelineData = (silent = true) => latestRequest(
+const loadTimelineData = (silent = true) => selectedRunId.value && latestRequest(
   'timeline',
   '时间轴',
   (signal) => listGroundTimeline(
@@ -945,9 +943,6 @@ async function loadAll(silent = false): Promise<void> {
     await loadStatus(silent)
     await loadRuns(silent)
     if (!profile.value || activeTab.value === 'settings') await loadProfile(silent)
-    if (!selectedRunId.value) {
-      selectedRunId.value = status.value?.active_run_id || status.value?.latest_run_id || runs.value[0]?.run_id || ''
-    }
     await loadOperation(silent)
     await loadActiveTab(silent)
   } finally {
@@ -992,9 +987,6 @@ function schedulePoll(): void {
         } else if (activeTab.value === 'ac-mesh-link') pollDue('ac-mesh', 15_000, () => loadAcMesh())
         else if (activeTab.value === 'deep') pollDue('deep', 4_000, () => loadDeep())
         else if (activeTab.value === 'syslog' && syslogAutoRefresh.value && !historicalRun.value) pollDue('syslog', 8_000, () => loadSyslog(true))
-      }
-      if (activeTab.value === 'syslog' && syslogAutoRefresh.value && historicalRun.value) {
-        pollDue('syslog', 30_000, () => loadSyslog(true))
       }
       if (
         pingWindowOpen.value
@@ -1406,10 +1398,11 @@ function currentSyslogDeleteFilters(): GroundSyslogDeleteFilters {
 }
 
 async function loadSyslog(silent = false): Promise<void> {
+  if (!syslogRunId.value) return
   if (!silent) syslogLoading.value = true
   const filters = currentSyslogDeleteFilters()
   const params = {
-      run_id: selectedRunId.value || undefined,
+      run_id: syslogRunId.value,
       ...filters,
       page: syslogFilter.page,
       page_size: syslogFilter.pageSize,
@@ -1489,7 +1482,7 @@ function handleSyslogSelection(rows: GroundSyslogRecord[]): void {
 async function deleteSyslog(
   mode: 'SELECTED' | 'FILTERED' | 'RUN_ALL',
 ): Promise<void> {
-  if (!selectedRunId.value) {
+  if (syslogDeleteBlocked.value) {
     ElMessage.warning('请先选择需要清理的运行')
     return
   }
@@ -1504,7 +1497,7 @@ async function deleteSyslog(
   syslogDeleteLoading.value = true
   try {
     const preview = await previewGroundSyslogDelete({
-      run_id: selectedRunId.value,
+      run_id: historySyslogRunId.value,
       mode,
       record_keys: recordKeys,
       filters: mode === 'FILTERED' ? currentSyslogDeleteFilters() : {},
@@ -1685,13 +1678,12 @@ async function removeSelectedArchives(rows: GroundArchive[] = selectedArchives.v
   } catch (reason) { ElMessage.error(errorText(reason, '批量归档删除失败')) }
 }
 
-async function deleteSelectedRunHistory(): Promise<void> {
-  const row = selectedRun.value
+async function deleteSelectedRunHistory(row = selectedRun.value): Promise<void> {
   if (!row) {
     ElMessage.warning('请先选择需要删除的运行历史')
     return
   }
-  if (runHistoryDeleteBlocked.value) {
+  if (row.run_id === status.value?.active_run_id || ['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(row.state)) {
     ElMessage.warning('只能删除非活动的历史运行')
     return
   }
@@ -1707,14 +1699,8 @@ async function deleteSelectedRunHistory(): Promise<void> {
       pingWindowOpen.value = false
       handlePingWindowClosed()
     }
-    selectedSyslogRecords.value = []
-    syslogRecords.value = []
-    pingTargets.value = []
-    deepCollections.value = []
-    timeline.value = []
     ElMessage.success('运行历史已删除')
-    await Promise.allSettled([loadStatus(true), loadRuns(true)])
-    await loadActiveTab(true)
+    await loadRuns(true)
   } catch (reason) {
     if (!isDialogCancellation(reason)) {
       ElMessage.error(errorText(reason, '运行历史删除失败'))
@@ -1887,6 +1873,7 @@ function resetPageStateForSiteContext(): void {
   latestTerminalOperation.value = null
   runs.value = []
   selectedRunId.value = ''
+  historySyslogRunId.value = ''
   pingSeries.value = null
   selectedPingTarget.value = null
   pingWindowOpen.value = false
@@ -2139,17 +2126,33 @@ watch(activeTab, () => {
   void loadActiveTab(true)
 })
 
+watch(syslogRunId, () => {
+  requestControllers.get('syslog')?.abort()
+  syslogRecords.value = []
+  syslogTotal.value = 0
+  syslogStatistics.value = {}
+  syslogDiagnostics.value = null
+  syslogDetailDrawer.value = false
+  selectedSyslogRecord.value = null
+  selectedSyslogRecords.value = []
+  syslogFilter.page = 1
+  if (historySyslogRunId.value || activeTab.value === 'syslog') void loadSyslog(true)
+})
+
 watch(selectedRunId, () => {
+  for (const key of ['ping', 'deep', 'timeline']) requestControllers.get(key)?.abort()
   if (selectedPingTarget.value?.run_id !== selectedRunId.value) {
     pingWindowOpen.value = false
     handlePingWindowClosed()
   }
-  syslogRecords.value = []
-  selectedSyslogRecords.value = []
-  syslogFilter.page = 1
+  pingTargets.value = []
+  deepCollections.value = []
+  deepWindowOpen.value = false
+  timeline.value = []
+  timelineTotal.value = 0
   timelinePage.value = 1
   if (historicalRun.value) syslogAutoRefresh.value = false
-  if (runScopedTab.value) void loadActiveTab(true)
+  if (runScopedTab.value && activeTab.value !== 'syslog') void loadActiveTab(true)
 })
 
 onDeactivated(() => {
@@ -2313,6 +2316,7 @@ activeOperation,
 latestTerminalOperation,
 runs,
 selectedRunId,
+historySyslogRunId,
 runHistoryDeleteLoading,
 pingSeries,
 selectedPingTarget,

@@ -22,6 +22,8 @@ defineExpose(groundContext)
 const { Box, CopyDocument, Delete, Refresh, SwitchButton, VideoPause, VideoPlay, pauseGroundRun, resumeGroundRun, startGroundRun, GroundPingChart, NcFloatingWindow, t, groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel, groundStopTriggerLabel, groundSourceLabel, groundStatusLabel, groundTransitionContextLabel, activeTab, pageVisible, pageActivated, quickContextRevision, loading, action, status, profile, trains, positionRendererTiming, pingTargets, selectedDeepCollector, deepRecords, deepWindowOpen, deepRecordsLoading, deepCategory, deepKeyword, deepPaused, deepAutoRefresh, acMeshSummary, acMeshLinks, acMeshMrs, acMeshSnapshots, acMeshRawTail, acMeshLoading, acControllers, selectedAcControllerId, acControllersLoading, acControllersError, runs, selectedRunId, runHistoryDeleteLoading, pingSeries, selectedPingTarget, pingWindowOpen, pingSeriesLoading, pingIncrementalLoading, includeWarmup, pingRange, pingCustomRange, pingAutoRefresh, pingPaused, pingFollowLatest, pingInitialLoadSucceeded, pingBackendState, pingRequestId, pingErrorCode, selectedSyslogRecord, syslogDetailDrawer, selectedArchive, archiveDetailTab, selectedTrain, archiveDialog, trainDialog, openingSessionId, trainFilter, pingFilter, generalLoadIssues, pingIssue, loadIssueDescription, running, operationActive, visibleOperation, selectedRun, historicalRun, runHistoryDeleteBlocked, selectedPingHistorical, runScopedTab, archiveRecordCount, selectedTrainCollection, trainTableMaxHeight, pingTableMaxHeight, startBlockedReason, pingAvailability, pingEmptyDescription, pingLiveStats, locationStats, trainColumns, pingColumns, refreshAcMesh, dismissOperation, loadAll, runAction, submitStop, showPingSeries, openPingBackendLogs, togglePriority, syncInventory, updatePolicy, checkConfigs, confirmTargetPortChange, showTrain, showTrainPing, showTrainTimeline, openDeepSession, deleteSelectedRunHistory, downloadArchiveSummary, downloadArchiveZip, verifyArchive, endpoint, groundControlSourceLabel, endpointRadioTooltip, duration, metric, bytes, statusType, useFullPingRange, togglePingPaused, returnPingToLive, copyPingDiagnostics, handlePingDialogClosed, loadDeepRecords, toggleDeepPaused, handleDeepWindowClosed, copyDeepRecords } = groundContext
 const quickPingMrId = ref('')
 const workspace = ref<'collection' | 'playback'>('collection')
+const { historySyslogRunId } = groundContext
+watch(workspace, () => { historySyslogRunId.value = '' }, { flush: 'sync' })
 async function copySyslogRaw() {
   try {
     await navigator.clipboard.writeText(selectedSyslogRecord.value?.raw_text || '')
@@ -108,28 +110,9 @@ function openQuickPing(mrId: string) {
     </section>
 
     <section v-if="workspace === 'collection' && runScopedTab" class="run-context-bar">
-      <div>
-        <b>数据运行上下文</b>
-        <span>深度采集、时间轴与 Syslog 使用所选运行；心跳检测始终展示常驻监测状态。</span>
-      </div>
-      <el-select v-model="selectedRunId" filterable placeholder="选择运行日期">
-        <el-option
-          v-for="row in runs"
-          :key="row.run_id"
-          :value="row.run_id"
-          :label="`${row.run_date} · ${groundStatusLabel(row.state)} · ${groundStatusLabel(row.data_availability)}`"
-        />
-      </el-select>
-      <el-tag :type="historicalRun ? 'info' : 'success'">{{ historicalRun ? '历史运行' : '当前活动运行' }}</el-tag>
-      <el-button
-        :icon="Delete"
-        type="danger"
-        plain
-        :loading="runHistoryDeleteLoading"
-        :disabled="runHistoryDeleteBlocked"
-        @click="deleteSelectedRunHistory"
-      >删除历史记录</el-button>
-      <span class="muted">{{ selectedRun?.actual_started_at || selectedRun?.scheduled_start_at || '—' }} 至 {{ selectedRun?.actual_ended_at || '进行中' }}</span>
+      <el-tag v-if="selectedRunId" type="success">{{ t('ground.active_run', '当前活动运行') }}</el-tag>
+      <el-tag v-else type="info">{{ t('ground.no_active_run', '暂无运行') }}</el-tag>
+      <span v-if="selectedRun" class="muted">{{ selectedRun.actual_started_at || selectedRun.scheduled_start_at }}</span>
     </section>
 
     <el-tabs v-if="workspace === 'collection'" v-model="activeTab" class="ground-tabs">
@@ -213,10 +196,14 @@ function openQuickPing(mrId: string) {
     <GroundHistoryPlayback
       v-else
       :site-id="profile?.site_id || ''"
-      :runs="runs"
+      :runs="runs.filter((run) => run.run_id !== status?.active_run_id && !['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(run.state))"
       :trains="trains"
       :active="pageVisible && pageActivated && workspace === 'playback'"
+      :deleting="runHistoryDeleteLoading"
+      @delete-run="deleteSelectedRunHistory"
+      @view-syslog="historySyslogRunId = $event"
     />
+    <SyslogPage v-if="workspace === 'playback' && historySyslogRunId && tabVisible('syslog') && tabEnabled('syslog')" />
 
     <NcFloatingWindow
       v-model="pingWindowOpen"

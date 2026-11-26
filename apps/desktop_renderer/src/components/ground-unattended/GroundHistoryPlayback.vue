@@ -7,7 +7,8 @@ import QuickPingChart from './QuickPingChart.vue'
 import { heartbeatStatusStatistics } from './pingChartStatus'
 import { selectedQuickPingStatistics } from './quickPingStatistics'
 
-const props = defineProps<{ siteId: string; runs: GroundRun[]; trains: GroundTrain[]; active: boolean }>()
+const props = defineProps<{ siteId: string; runs: GroundRun[]; trains: GroundTrain[]; active: boolean; deleting?: boolean }>()
+const emit = defineEmits<{ 'delete-run': [run: GroundRun]; 'view-syslog': [runId: string] }>()
 interface MrOption { id: string; role: string; name: string; trainId: string; trainNo: string }
 const selectedRunId = ref(''), selectedMrId = ref(''), range = ref<Date[]>([])
 const result = ref<GroundMrMonitoring | null>(null), loading = ref(false), error = ref('')
@@ -122,9 +123,9 @@ function applyRunRange(): void {
   range.value = [start, new Date(Math.min(end.getTime(), start.getTime() + 86_400_000))]
 }
 watch(() => props.runs, (rows) => {
-  if (!selectedRunId.value && rows.length) { selectedRunId.value = rows[0]!.run_id; applyRunRange() }
+  if (!rows.some((row) => row.run_id === selectedRunId.value)) selectedRunId.value = rows[0]?.run_id || ''
 }, { immediate: true })
-watch(selectedRunId, (runId) => { applyRunRange(); result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }; quickError.value = ''; selectedMrId.value = mrOptions.value[0]?.id || ''; void loadHistoricalMrs(runId) }, { immediate: true })
+watch(selectedRunId, (runId) => { emit('view-syslog', ''); applyRunRange(); result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }; quickError.value = ''; selectedMrId.value = mrOptions.value[0]?.id || ''; void loadHistoricalMrs(runId) }, { immediate: true })
 watch(mrOptions, (rows) => { if (historyLoading.value) return; if (!rows.some((row) => row.id === selectedMrId.value)) selectedMrId.value = rows[0]?.id || '' }, { immediate: true })
 
 async function query(): Promise<void> {
@@ -236,6 +237,8 @@ onBeforeUnmount(stopRequests)
       <el-date-picker v-model="range" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
       <el-button type="primary" :loading="loading" @click="query">查询回放</el-button>
       <el-button @click="applyRunRange">重置时间</el-button>
+      <el-button v-if="selectedRun" @click="emit('view-syslog', selectedRun.run_id)">查看历史 Syslog</el-button>
+      <el-button v-if="selectedRun" type="danger" plain :loading="deleting" @click="emit('delete-run', selectedRun)">删除历史记录</el-button>
     </div>
     <el-alert v-if="historyError" :title="historyError" type="warning" :closable="false" />
     <p class="playback-boundary">历史回放只读取已落盘数据，不启动采集、不访问设备、不补造缺失字段。所选运行仅定义回放时间上下文，各数据源按实际时间戳对齐。</p>

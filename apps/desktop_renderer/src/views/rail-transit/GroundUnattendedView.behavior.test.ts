@@ -425,7 +425,7 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
-  it('keeps initial run history when switching to heartbeat before it resolves', async () => {
+  it('keeps archived runs available without querying them from the idle live workspace', async () => {
     let resolveRuns!: (value: { items: Array<{ run_id: string; run_date: string }>; total: number }) => void
     let historySignal: AbortSignal | undefined
     api.listGroundRuns.mockImplementationOnce((options: { signal: AbortSignal }) => {
@@ -447,7 +447,14 @@ describe('Ground unattended page loading behavior', () => {
       resolveRuns({ items: [{ run_id: 'run-history', run_date: '2026-11-06' }], total: 1 })
       await flushPromises()
       expect(view.runs.map((run) => run.run_id)).toEqual(['run-history'])
-      expect(view.selectedRunId).toBe('run-history')
+      expect(view.selectedRunId).toBe('')
+      for (const tab of ['syslog', 'timeline', 'deep']) {
+        view.activeTab = tab
+        await flushPromises()
+      }
+      expect(api.listGroundSyslogRecords).not.toHaveBeenCalled()
+      expect(api.listGroundTimeline).not.toHaveBeenCalled()
+      expect(api.listGroundDeepCollections).not.toHaveBeenCalled()
       expect(api.listGroundRuns).toHaveBeenCalledTimes(1)
     } finally {
       wrapper.unmount()
@@ -849,6 +856,7 @@ describe('Ground unattended page loading behavior', () => {
   })
 
   it('keeps initial Syslog failure local and confirms Backend remains online', async () => {
+    api.getGroundStatus.mockResolvedValue({ ...status(), active_run_id: 'run-active' })
     const message = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
     api.listGroundSyslogRecords.mockRejectedValue(
       new ApiRequestError(
@@ -878,6 +886,7 @@ describe('Ground unattended page loading behavior', () => {
   })
 
   it('only reports Backend unreachable when the health recheck also fails', async () => {
+    api.getGroundStatus.mockResolvedValue({ ...status(), active_run_id: 'run-active' })
     api.listGroundSyslogRecords.mockRejectedValue(
       new ApiRequestError(
         'Backend 连接中断，请重试。',
@@ -903,6 +912,7 @@ describe('Ground unattended page loading behavior', () => {
   })
 
   it('shows one Toast for a manual Syslog failure', async () => {
+    api.getGroundStatus.mockResolvedValue({ ...status(), active_run_id: 'run-active' })
     const message = vi.spyOn(ElMessage, 'error').mockImplementation(() => undefined as never)
     api.listGroundSyslogRecords.mockRejectedValue(
       new ApiRequestError('查询失败', 500, 'GROUND_SYSLOG_QUERY_FAILED'),
@@ -969,8 +979,11 @@ describe('Ground unattended page loading behavior', () => {
     await flushPromises()
     const view = wrapper.vm as unknown as {
       handleSyslogSelection: (rows: Array<Record<string, unknown>>) => void
+      historySyslogRunId: string
       deleteSyslog: (mode: 'SELECTED') => Promise<void>
     }
+    view.historySyslogRunId = 'run-delete'
+    await flushPromises()
     view.handleSyslogSelection([{
       raw_file_id: 'raw-1',
       global_receive_sequence: 10,
@@ -1057,7 +1070,10 @@ describe('Ground unattended page loading behavior', () => {
         eventType: string
       }
       deleteSyslog: (mode: 'FILTERED') => Promise<void>
+      historySyslogRunId: string
     }
+    view.historySyslogRunId = 'run-delete'
+    await flushPromises()
     view.syslogFilter.keyword = 'WMESH'
     view.syslogFilter.mrRole = 'CT'
     view.syslogFilter.sourceIp = '192.0.2.3'
@@ -1124,8 +1140,11 @@ describe('Ground unattended page loading behavior', () => {
     await flushPromises()
     const view = wrapper.vm as unknown as {
       deleteSyslog: (mode: 'RUN_ALL') => Promise<void>
+      historySyslogRunId: string
     }
 
+    view.historySyslogRunId = 'run-ready'
+    await flushPromises()
     await view.deleteSyslog('RUN_ALL')
 
     expect(alert).toHaveBeenCalledWith(
@@ -1168,15 +1187,15 @@ describe('Ground unattended page loading behavior', () => {
   it('loads timeline search with the selected server page and size', async () => {
     api.getGroundStatus.mockResolvedValue({
       ...status(),
-      latest_run_id: 'run-timeline',
-      latest_run_state: 'COMPLETED',
+      active_run_id: 'run-timeline',
+      active_run_state: 'RUNNING',
       latest_run_date: '2026-07-29',
     })
     api.listGroundRuns.mockResolvedValue({
       items: [{
         run_id: 'run-timeline',
         run_date: '2026-07-29',
-        state: 'COMPLETED',
+        state: 'RUNNING',
       }],
       total: 1,
     })
@@ -1216,6 +1235,7 @@ describe('Ground unattended page loading behavior', () => {
   })
 
   it('reuses an in-flight Syslog request with the same fingerprint', async () => {
+    api.getGroundStatus.mockResolvedValue({ ...status(), active_run_id: 'run-active' })
     let resolveRequest!: (value: { items: []; total: number; page: number; page_size: number }) => void
     api.listGroundSyslogRecords.mockImplementation(() => new Promise((resolve) => {
       resolveRequest = resolve
@@ -1235,6 +1255,7 @@ describe('Ground unattended page loading behavior', () => {
   })
 
   it('cancels changed Syslog parameters and ignores the old response', async () => {
+    api.getGroundStatus.mockResolvedValue({ ...status(), active_run_id: 'run-active' })
     const requests: Array<{
       signal: AbortSignal
       resolve: (value: { items: Array<{ raw_text: string }>; total: number; page: number; page_size: number }) => void
@@ -1269,6 +1290,7 @@ describe('Ground unattended page loading behavior', () => {
   })
 
   it('clears the Syslog issue and reports recovery once', async () => {
+    api.getGroundStatus.mockResolvedValue({ ...status(), active_run_id: 'run-active' })
     const success = vi.spyOn(ElMessage, 'success').mockImplementation(() => undefined as never)
     api.listGroundSyslogRecords
       .mockRejectedValueOnce(new ApiRequestError(

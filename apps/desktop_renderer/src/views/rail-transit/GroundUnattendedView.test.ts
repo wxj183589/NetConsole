@@ -6,6 +6,7 @@ import runtimeSource from './useGroundUnattended.ts?raw'
 import apiSource from '../../api/groundUnattended.ts?raw'
 import meshPageSource from './AcMeshLinkPage.vue?raw'
 import heartbeatSettingsSource from './HeartbeatSettings.vue?raw'
+import playbackSource from '../../components/ground-unattended/GroundHistoryPlayback.vue?raw'
 const pageSources = import.meta.glob('./*Page.vue', { query: '?raw', import: 'default', eager: true })
 const styleSource = readFileSync(new URL('./groundUnattended.css', import.meta.url), 'utf8')
 const source = [viewSource, runtimeSource, styleSource, heartbeatSettingsSource, ...Object.values(pageSources)].join('\n')
@@ -82,7 +83,8 @@ describe('Ground unattended page', () => {
     expect(apiSource).toContain('/runs/${encodeURIComponent(runId)}')
     expect(source).toContain('deleteSelectedRunHistory')
     expect(source).toContain('runHistoryDeleteBlocked')
-    expect(source).toContain('删除历史记录')
+    expect(viewSource).toContain('@delete-run="deleteSelectedRunHistory"')
+    expect(playbackSource).toContain('删除历史记录')
   })
 
   it('links train details to ping, timeline and existing session analysis', () => {
