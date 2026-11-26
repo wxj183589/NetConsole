@@ -64,7 +64,7 @@ def test_ground_syslog_tcp_and_udp_share_one_persistence_pipeline(tmp_path, capl
             other.shutdown(socket.SHUT_WR)
             _wait(lambda: "frame is truncated" in caplog.text, timeout=5)
             assert receiver.health_snapshot()["received"] == 0
-            client.sendall(first[-2:] + second + b"\n")
+            client.sendall(first[-2:] + b"\n" + second + b"\r\n")
             datagram.sendto(udp, address)
             _wait(lambda: receiver.health_snapshot()["parsed"] == 3, timeout=10)
         with socket.socket() as competing:

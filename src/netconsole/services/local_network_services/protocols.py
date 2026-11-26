@@ -153,6 +153,8 @@ class SyslogTcpHandler(socketserver.StreamRequestHandler):
         first = self.rfile.read(1)
         if not first:
             return None
+        if first == b"\n":
+            return b""
         if not first.isdigit():
             return self._read_line_frame(first, peer)
 
