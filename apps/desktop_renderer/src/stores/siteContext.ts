@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 
-import { getActiveSite, type SiteRecord } from '../api/siteStorage'
+import { getActiveSiteRuntimeContext } from '../api/siteStorage'
 
 export type SiteContextState = 'loading' | 'switching' | 'ready' | 'error'
 
@@ -64,9 +64,13 @@ export async function refreshSiteContext(): Promise<SiteContext | null> {
   if (refreshPromise) return refreshPromise
   const generation = ++refreshGeneration
   siteContextState.value = 'loading'
-  const request = getActiveSite()
-    .then((record: SiteRecord) => {
-      const context = siteContextFromRecord(record)
+  const request = getActiveSiteRuntimeContext()
+    .then((record) => {
+      const context = siteContextFromRecord({
+        site_id: record.active_site_id,
+        display_name: record.sites.find((site) => site.active)?.display_name || '',
+        registry_revision: record.registry_revision,
+      })
       if (generation === refreshGeneration) {
         activeSiteContext.value = context
         // An empty active-site response is a valid "not selected" state;

@@ -1041,6 +1041,24 @@ class SiteApplicationService:
         ]
         return result
 
+    def get_runtime_context(self) -> dict[str, object]:
+        """Return the active site and tray summaries without scanning site data."""
+
+        active = self.active_site_id()
+        sites = self.registry.refresh()
+        return {
+            "active_site_id": active,
+            "registry_revision": self.registry.revision(),
+            "sites": [
+                {
+                    "site_id": item.site_id,
+                    "display_name": item.display_name,
+                    "active": item.site_id == active,
+                }
+                for item in sites
+            ],
+        }
+
     def get_site(self, site_id: str) -> dict[str, object]:
         item = self.registry.get(site_id)
         from netconsole.services.site_lifecycle import SiteAuditService

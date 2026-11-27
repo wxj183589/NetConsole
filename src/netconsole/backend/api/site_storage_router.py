@@ -121,6 +121,15 @@ def list_sites(request: Request) -> list[dict[str, object]]:
     return _call(_sites(request).list_sites)
 
 
+@router.get(
+    "/sites/runtime-context",
+    summary="读取轻量局点运行上下文",
+    dependencies=[Depends(_desktop)],
+)
+def site_runtime_context(request: Request) -> dict[str, object]:
+    return _call(_sites(request).get_runtime_context)
+
+
 @router.post(
     "/sites",
     status_code=status.HTTP_201_CREATED,

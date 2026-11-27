@@ -300,7 +300,12 @@ async function startDesktop(): Promise<void> {
   logger('ELECTRON_RUNTIME_CONTRACT', `data_root=${desktopStorageContext.dataRoot} runtime_root=${desktopStorageContext.runtimeRoot}`)
   logger('NETCONSOLE_STORAGE_ROOT_SELECTED', `data_root=${config.dataRoot} source=${desktopDataRootResolution.source} fallback_used=false`)
   if (bootstrapResult.rejectedEphemeralRoot) logger('ELECTRON_BOOTSTRAP_EPHEMERAL_ROOT_REJECTED')
-  startupTimeline = new StartupTimeline(logger, startupStartedAt)
+  startupTimeline = new StartupTimeline(
+    logger,
+    startupStartedAt,
+    () => process.hrtime.bigint(),
+    process.env.NETCONSOLE_ELECTRON_STARTUP_PROFILE === '1',
+  )
   startupTimeline.mark('electron.app_ready')
   createManagedBackend = (dataRoot, activeSiteId, warmReplacement = false) => new PythonBackendManager({
     executable: config.backendExecutable,
@@ -566,7 +571,17 @@ async function startDesktop(): Promise<void> {
     startupProgressPage.update('backend.spawn_started')
     const runtime = await backend.start()
     startupProgressPage.update('backend.health_ready')
-    const startupSiteContext = await refreshTraySiteState(runtime)
+    startupTimeline.mark('backend.health_ready')
+    const finishTrayContextStage = startupTimeline.beginStage(
+      'startup.tray_context',
+      'GET /api/v1/sites/runtime-context',
+    )
+    let startupSiteContext: DesktopSiteContext | null
+    try {
+      startupSiteContext = await refreshTraySiteState(runtime)
+    } finally {
+      finishTrayContextStage()
+    }
     const backendOrigin = new URL(runtime.baseUrl).origin
     rendererUrl = config.devServerUrl ?? runtime.baseUrl
     const rendererOrigin = new URL(rendererUrl).origin
@@ -574,15 +589,23 @@ async function startDesktop(): Promise<void> {
     connectionOrigins.add(rendererOrigin)
     connectionOrigins.add(backendOrigin)
     const cookiePath = desktopSessionCookiePath(Boolean(config.devServerUrl))
-    await mainWindow.webContents.session.cookies.set({
-      url: new URL(cookiePath, `${runtime.baseUrl}/`).toString(),
-      name: DESKTOP_SESSION_COOKIE,
-      value: runtime.apiToken,
-      httpOnly: true,
-      sameSite: 'strict',
-      secure: false,
-      path: cookiePath,
-    })
+    const finishCookieStage = startupTimeline.beginStage(
+      'startup.session_cookie',
+      'Electron session.cookies.set',
+    )
+    try {
+      await mainWindow.webContents.session.cookies.set({
+        url: new URL(cookiePath, `${runtime.baseUrl}/`).toString(),
+        name: DESKTOP_SESSION_COOKIE,
+        value: runtime.apiToken,
+        httpOnly: true,
+        sameSite: 'strict',
+        secure: false,
+        path: cookiePath,
+      })
+    } finally {
+      finishCookieStage()
+    }
     if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST === '1') {
       await runManagedBackendWorkerTextSmoke(runtime)
     }
@@ -595,7 +618,16 @@ async function startDesktop(): Promise<void> {
       })
     }
     trayController?.updateContext({ siteSwitching: false })
-    const restoredMainState = workspaceWindowController.getWindowState(mainWindow)
+    const finishWorkspaceRestoreStage = startupTimeline.beginStage(
+      'startup.workspace_state',
+      'Electron WorkspaceWindowController.getWindowState',
+    )
+    let restoredMainState: ReturnType<WorkspaceWindowController['getWindowState']>
+    try {
+      restoredMainState = workspaceWindowController.getWindowState(mainWindow)
+    } finally {
+      finishWorkspaceRestoreStage()
+    }
     const restoredMainRoute = restoredMainState.snapshot?.tabs.find(
       (tab) => tab.id === restoredMainState.snapshot?.activeTabId,
     )?.routeFullPath || '/'
@@ -1079,18 +1111,19 @@ async function readBackendSiteContext(
   apiToken: string,
 ): Promise<DesktopSiteContext | null> {
   const headers = { [DESKTOP_SESSION_HEADER]: apiToken }
-  const [activeResponse, sitesResponse] = await Promise.all([
-    fetch(`${baseUrl}/api/v1/sites/active`, { cache: 'no-store', headers }),
-    fetch(`${baseUrl}/api/v1/sites`, { cache: 'no-store', headers }),
-  ])
-  if (!activeResponse.ok || !sitesResponse.ok) return null
-  const active = toTraySiteSummary(await activeResponse.json())
-  const payload = await sitesResponse.json()
-  if (!active || !Array.isArray(payload)) return null
-  const sites = payload.flatMap((item) => {
+  const response = await fetch(`${baseUrl}/api/v1/sites/runtime-context`, { cache: 'no-store', headers })
+  if (!response.ok) return null
+  const payload = await response.json()
+  if (!payload || typeof payload !== 'object') return null
+  const record = payload as { active_site_id?: unknown; sites?: unknown }
+  if (!Array.isArray(record.sites)) return null
+  const activeSiteId = typeof record.active_site_id === 'string' ? record.active_site_id : ''
+  const sites = record.sites.flatMap((item) => {
     const site = toTraySiteSummary(item)
     return site ? [site] : []
   })
+  const active = sites.find((site) => site.siteId === activeSiteId)
+  if (!active) return null
   return {
     activeSiteId: active.siteId,
     activeSiteName: active.displayName,

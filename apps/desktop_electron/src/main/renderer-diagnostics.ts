@@ -65,7 +65,15 @@ export function installRendererDiagnostics(
     )
   })
   window.webContents.on('console-message', (event) => {
-    const details = event as unknown as { level?: string }
+    const details = event as unknown as { level?: string; message?: string }
+    const message = details.message || ''
+    if (
+      process.env.NETCONSOLE_ELECTRON_STARTUP_PROFILE === '1'
+      && message.startsWith('NETCONSOLE_STARTUP_STAGE ')
+    ) {
+      options.logger('ELECTRON_RENDERER_STARTUP_STAGE', message.slice('NETCONSOLE_STARTUP_STAGE '.length))
+      return
+    }
     if (details.level !== 'error') return
     options.logger('ELECTRON_RENDERER_CONSOLE_ERROR')
   })

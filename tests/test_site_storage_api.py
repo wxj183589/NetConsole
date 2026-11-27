@@ -126,6 +126,26 @@ def test_site_registry_create_list_and_activate(tmp_path: Path) -> None:
     assert client.get("/api/v1/sites/active").json()["site_id"] == "line-12"
 
 
+def test_site_runtime_context_does_not_scan_site_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client(tmp_path)
+
+    def reject_directory_size(_root: Path) -> int:
+        raise AssertionError("runtime context must not calculate directory sizes")
+
+    monkeypatch.setattr("netconsole.services.site_storage._directory_size", reject_directory_size)
+    response = client.get("/api/v1/sites/runtime-context")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["active_site_id"] == "demo"
+    assert payload["registry_revision"]
+    assert payload["sites"] == [
+        {"site_id": "demo", "display_name": "演示局点", "active": True}
+    ]
+
+
 def test_runtime_rebind_closes_old_jump_manager_before_starting_new_site(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

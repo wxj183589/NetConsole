@@ -24,7 +24,32 @@ export class StartupTimeline {
     private readonly logger: DesktopLogger,
     private readonly startedAt = process.hrtime.bigint(),
     private readonly now = () => process.hrtime.bigint(),
+    private readonly stageTracingEnabled = false,
   ) {}
+
+  beginStage(stage: string, request?: string): () => void {
+    if (!this.stageTracingEnabled) return () => undefined
+    const startedAt = this.now()
+    const elapsedMs = Number(startedAt - this.startedAt) / 1_000_000
+    this.logger('ELECTRON_STARTUP_STAGE', JSON.stringify({
+      stage,
+      phase: 'start',
+      elapsed_ms: Number(elapsedMs.toFixed(1)),
+      ...(request ? { request } : {}),
+    }))
+    return () => {
+      const endedAt = this.now()
+      const endedElapsedMs = Number(endedAt - this.startedAt) / 1_000_000
+      const durationMs = Number(endedAt - startedAt) / 1_000_000
+      this.logger('ELECTRON_STARTUP_STAGE', JSON.stringify({
+        stage,
+        phase: 'end',
+        elapsed_ms: Number(endedElapsedMs.toFixed(1)),
+        duration_ms: Number(durationMs.toFixed(1)),
+        ...(request ? { request } : {}),
+      }))
+    }
+  }
 
   mark(event: StartupMilestone): StartupTimelineEntry {
     const existing = this.entries.get(event)

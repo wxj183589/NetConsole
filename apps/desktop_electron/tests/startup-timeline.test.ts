@@ -38,4 +38,24 @@ describe('StartupTimeline', () => {
       total_ms: 2400,
     })
   })
+
+  it('records profiled stage boundaries with request correlation', () => {
+    const logger = vi.fn()
+    const ticks = [1_100_000_000n, 1_350_000_000n]
+    const timeline = new StartupTimeline(logger, 1_000_000_000n, () => ticks.shift()!, true)
+
+    const finish = timeline.beginStage('startup.tray_context', 'GET /api/v1/sites/runtime-context')
+    finish()
+
+    expect(logger).toHaveBeenNthCalledWith(
+      1,
+      'ELECTRON_STARTUP_STAGE',
+      JSON.stringify({ stage: 'startup.tray_context', phase: 'start', elapsed_ms: 100, request: 'GET /api/v1/sites/runtime-context' }),
+    )
+    expect(logger).toHaveBeenNthCalledWith(
+      2,
+      'ELECTRON_STARTUP_STAGE',
+      JSON.stringify({ stage: 'startup.tray_context', phase: 'end', elapsed_ms: 350, duration_ms: 250, request: 'GET /api/v1/sites/runtime-context' }),
+    )
+  })
 })

@@ -389,6 +389,7 @@ try {
     cwd: rendererRoot,
     env: {
       ...process.env,
+      ...(startupProfile ? { VITE_NETCONSOLE_STARTUP_PROFILE: '1' } : {}),
       ...(codex ? {
         VITE_API_BASE: codexBackendUrl,
         VITE_DEV_SESSION_TOKEN: codexSessionToken,

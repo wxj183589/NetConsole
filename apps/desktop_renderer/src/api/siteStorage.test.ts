@@ -6,6 +6,7 @@ vi.mock('./client', () => ({ apiRequest: apiRequestMock }))
 
 import {
   applySiteRetention,
+  getActiveSiteRuntimeContext,
   getLatestSiteRetention,
   scanSiteRetention,
 } from './siteStorage'
@@ -43,5 +44,11 @@ describe('site storage retention API', () => {
         }),
       },
     )
+  })
+
+  it('loads the lightweight active-site runtime context', async () => {
+    await getActiveSiteRuntimeContext()
+
+    expect(apiRequestMock).toHaveBeenCalledWith('/api/v1/sites/runtime-context')
   })
 })

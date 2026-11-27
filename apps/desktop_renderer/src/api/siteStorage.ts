@@ -219,6 +219,11 @@ export const SITE_OPERATION_AUTHORIZATION = {
 
 export const listSites = () => apiRequest<SiteRecord[]>('/api/v1/sites')
 export const getActiveSite = () => apiRequest<SiteRecord>('/api/v1/sites/active')
+export const getActiveSiteRuntimeContext = () => apiRequest<{
+  active_site_id: string
+  registry_revision: string
+  sites: Array<{ site_id: string; display_name: string; active: boolean }>
+}>('/api/v1/sites/runtime-context')
 export const getDataRoot = () => apiRequest<DataRootSnapshot>('/api/v1/storage/data-root')
 export const updateSite = (siteId: string, payload: { display_name: string; line_name: string | null; project_type: string | null }, authorizationToken = SITE_OPERATION_AUTHORIZATION.update) => apiRequest<SiteRecord>(`/api/v1/sites/${encodeURIComponent(siteId)}`, { method: 'PATCH', body: JSON.stringify({ ...payload, authorization_token: authorizationToken }) })
 export const getSiteSSHRelay = (siteId: string) => apiRequest<SiteSSHRelay>(`/api/v1/sites/${encodeURIComponent(siteId)}/ssh-relay`)
