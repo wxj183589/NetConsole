@@ -444,13 +444,12 @@ class GroundHistoryQueryService:
                     + ")",
                     count_params,
                 ).fetchone()[0])
-            if queries and run_id and len(queries) > 1:
+            if queries and run_id and len(queries) > 1 and (cursor or page == 1):
                 candidate_rows: list[sqlite3.Row] = []
                 predicate, cursor_params = (
                     self._cursor_predicate(sort_order=sort_order, anchor=anchor)
                     if cursor and anchor is not None else ("", [])
                 )
-                offset = 0 if cursor else (page - 1) * page_size
                 for source_sql, source_params in queries:
                     query_sql = (
                         "SELECT *, julianday(ts) IS NULL AS cursor_ts_is_null, "
@@ -463,11 +462,9 @@ class GroundHistoryQueryService:
                     query_sql += " ORDER BY " + self._order_clause(sort_order) + " LIMIT ?"
                     candidate_rows.extend(conn.execute(
                         query_sql,
-                        (*query_params, offset + page_size + 1),
+                        (*query_params, page_size + 1),
                     ).fetchall())
                 candidate_rows.sort(key=lambda row: self._page_sort_key(row, sort_order))
-                if offset:
-                    candidate_rows = candidate_rows[offset:]
                 has_more = len(candidate_rows) > page_size
                 rows = candidate_rows[:page_size]
                 result["has_more"] = has_more
@@ -488,10 +485,11 @@ class GroundHistoryQueryService:
                     query_sql += " WHERE " + predicate
                     query_params.extend(cursor_params)
                 query_sql += " ORDER BY " + self._order_clause(sort_order) + " LIMIT ?"
-                limit = page_size + 1 if cursor else (page - 1) * page_size + page_size + 1
-                rows = conn.execute(query_sql, (*query_params, limit)).fetchall()
-                offset = 0 if cursor else (page - 1) * page_size
-                rows = rows[offset:]
+                query_params.append(page_size + 1)
+                if not cursor and page > 1:
+                    query_sql += " OFFSET ?"
+                    query_params.append((page - 1) * page_size)
+                rows = conn.execute(query_sql, query_params).fetchall()
                 has_more = len(rows) > page_size
                 rows = rows[:page_size]
                 result["has_more"] = has_more
