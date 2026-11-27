@@ -10,6 +10,7 @@
   {"path":"scripts/dev/ground_r3_short_stress.py","classification":"TEST_ONLY","owner":"ground","reason":"Synthetic bounded pressure harness creates only its own storage.sqlite under a unique canonical test root to exercise competing writers and integrity; it does not read business data or configured runtime roots."},
   {"path":"src/netconsole/services/ground_unattended/history_query.py","classification":"READ_ONLY_DATA_GATEWAY","owner":"ground","reason":"地面历史工作台与Export Process共享的只读查询网关，以mode=ro/query_only和单个read transaction读取既有Ground索引；不建库、不建表、不迁移或更新数据。"},
   {"path":"tests/test_ground_unattended_history_query.py","classification":"TEST_ONLY","owner":"ground","reason":"仅在pytest隔离测试根使用真实Ground schema构造历史查询fixture，并发写入验证导出快照一致性及只读连接契约；不访问真实业务数据。"},
+  {"path":"tests/test_electron_runtime.py","classification":"TEST_ONLY","owner":"electron","reason":"Electron runtime startup profiling contract test creates an isolated SQLite fixture under pytest tmp_path; no configured business DataRoot is opened."},
   {"path":"src/netconsole/core/sqlite_utils.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"统一 SQLite 连接工厂。"},
   {"path":"src/netconsole/core/database.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"主数据库兼容 facade 通过统一连接工厂获取连接。"},
   {"path":"src/netconsole/core/data_root_configuration.py","classification":"REPOSITORY_REQUIRED","owner":"data","reason":"安装数据根能力探针仅在候选根创建随机临时 SQLite，验证写锁后关闭连接并清理全部 sidecar，不访问业务数据库。"},
