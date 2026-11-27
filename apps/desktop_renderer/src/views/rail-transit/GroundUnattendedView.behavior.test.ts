@@ -446,6 +446,20 @@ describe('Ground unattended page loading behavior', () => {
     }
   })
 
+  it('defers Ping preset loading until the settings tab is opened', async () => {
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      expect(api.getOnlineMrControlPresets).not.toHaveBeenCalled()
+      const view = wrapper.vm as unknown as { activeTab: string }
+      view.activeTab = 'settings'
+      await flushPromises()
+      expect(api.getOnlineMrControlPresets).toHaveBeenCalledTimes(1)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('keeps archived runs available without querying them from the idle live workspace', async () => {
     let resolveRuns!: (value: { items: Array<{ run_id: string; run_date: string }>; total: number }) => void
     let historySignal: AbortSignal | undefined

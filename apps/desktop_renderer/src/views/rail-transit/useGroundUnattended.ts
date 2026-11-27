@@ -929,7 +929,10 @@ async function loadActiveTab(silent = true): Promise<void> {
   else if (activeTab.value === 'syslog') await loadSyslog(silent)
   else if (activeTab.value === 'health') await loadHealth(silent)
   else if (activeTab.value === 'archives') await loadArchives(silent)
-  else if (activeTab.value === 'settings') await Promise.all([loadProfile(silent), loadTrains(silent), loadAcBasicCollection(silent), loadArpSourceSwitches(silent)])
+  else if (activeTab.value === 'settings') {
+    if (!pingPresets.value.length) await loadPingPresets()
+    await Promise.all([loadProfile(silent), loadTrains(silent), loadAcBasicCollection(silent), loadArpSourceSwitches(silent)])
+  }
   else if (activeTab.value === 'ac-mesh-link') await Promise.all([loadAcMesh(silent), loadAcControllers(silent)])
 }
 
@@ -2103,7 +2106,6 @@ onMounted(() => {
   window.addEventListener(LEGACY_SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   void loadAll()
   void loadLocalAddresses()
-  void loadPingPresets()
   schedulePoll()
 })
 
