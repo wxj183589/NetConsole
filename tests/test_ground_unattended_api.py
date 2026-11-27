@@ -1768,7 +1768,7 @@ def test_target_port_change_requires_single_mr_confirmation_and_is_audited(
         explicit_confirmation=True,
     )
 
-    assert supervisor.config_checks == [("mr-ct", False, True)]
+    assert supervisor.config_checks == [("mr-ct", False, True, "UDP")]
     with pytest.raises(GroundUnattendedError) as repair_error:
         service.request_config_check(
             "site-a",
@@ -1776,7 +1776,7 @@ def test_target_port_change_requires_single_mr_confirmation_and_is_audited(
             mode="AUTO_REPAIR",
         )
     assert repair_error.value.code == "CONFIG_CHECK_READ_ONLY"
-    assert supervisor.config_checks == [("mr-ct", False, True)]
+    assert supervisor.config_checks == [("mr-ct", False, True, "UDP")]
     events = repository.list_events(
         "run-port-change",
         event_type="mr_loghost_port_change_authorized",
@@ -2208,9 +2208,10 @@ class _Supervisor:
         *,
         repair_enabled=True,
         allow_target_port_change=False,
+        syslog_transport="UDP",
     ):
         self.config_checks.append(
-            (device_uuid, repair_enabled, allow_target_port_change)
+            (device_uuid, repair_enabled, allow_target_port_change, syslog_transport)
         )
 
 

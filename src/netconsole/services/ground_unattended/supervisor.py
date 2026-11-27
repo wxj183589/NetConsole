@@ -217,7 +217,7 @@ class GroundUnattendedSupervisor:
         # Supervisor process.  Backend initialization must not consume it.
         self._arp_startup_session_id = ""
         self._arp_last_error = ""
-        self._manual_config_checks: dict[str, tuple[bool, bool]] = {}
+        self._manual_config_checks: dict[str, tuple[bool, bool, str]] = {}
         self._manual_config_task_ids: dict[str, str] = {}
         self._manual_syslog_exits: set[str] = set()
         self._manual_syslog_exit_task_ids: dict[str, str] = {}
@@ -364,6 +364,7 @@ class GroundUnattendedSupervisor:
         *,
         repair_enabled: bool = False,
         allow_target_port_change: bool = False,
+        syslog_transport: str = "UDP",
         task_id: str = "",
     ) -> None:
         with self._lock:
@@ -371,6 +372,7 @@ class GroundUnattendedSupervisor:
             options = (
                 bool(allow_target_port_change),
                 bool(repair_enabled),
+                "TCP" if str(syslog_transport).upper() == "TCP" else "UDP",
             )
             self._manual_config_checks[key] = options
             if task_id:
@@ -381,6 +383,7 @@ class GroundUnattendedSupervisor:
                 "task_id": str(task_id or ""),
                 "allow_target_port_change": options[0],
                 "repair_enabled": options[1],
+                "syslog_transport": options[2],
             })
         self._wake_event.set()
 
@@ -3249,7 +3252,10 @@ class GroundUnattendedSupervisor:
                 ),
                 listen_host=profile.syslog_server_ip,
                 listen_port=profile.syslog_server_port,
-                tcp_enabled=os.environ.get("NETCONSOLE_GROUND_SYSLOG_TCP") == "1",
+                tcp_enabled=(
+                    profile.syslog_transport == "TCP"
+                    or os.environ.get("NETCONSOLE_GROUND_SYSLOG_TCP") == "1"
+                ),
                 queue_capacity=profile.udp_queue_capacity,
                 flush_records=profile.raw_flush_record_count,
                 flush_interval_seconds=profile.raw_flush_interval_seconds,
@@ -3384,6 +3390,7 @@ class GroundUnattendedSupervisor:
                         function = self.config_service.check
                         kwargs = {
                             **common,
+                            "syslog_transport": str(item.get("syslog_transport") or profile.syslog_transport),
                             "boot_tolerance_seconds": profile.boot_time_tolerance_seconds,
                             "repair_enabled": bool(item.get("repair_enabled", True)),
                             "allow_target_port_change": bool(item.get("allow_target_port_change", False)),
@@ -3447,6 +3454,11 @@ class GroundUnattendedSupervisor:
                 "device_uuid": device_uuid,
                 "target_ip": target_ip,
                 "target_port": profile.syslog_server_port,
+                "syslog_transport": (
+                    manual[device_uuid][2]
+                    if device_uuid in manual
+                    else profile.syslog_transport
+                ),
                 "boot_tolerance_seconds": profile.boot_time_tolerance_seconds,
                 "repair_enabled": (
                     bool(manual[device_uuid][1])

@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_profiles (
     config_check_cooldown_seconds INTEGER NOT NULL DEFAULT 1800,
     syslog_server_ip TEXT NOT NULL DEFAULT '',
     syslog_server_port INTEGER NOT NULL DEFAULT 514,
+    syslog_transport TEXT NOT NULL DEFAULT 'UDP',
     syslog_receiver_auto_start_enabled INTEGER NOT NULL DEFAULT 0,
     boot_check_auto_start_enabled INTEGER NOT NULL DEFAULT 0,
     syslog_auto_repair_enabled INTEGER NOT NULL DEFAULT 0,
@@ -550,6 +551,7 @@ CREATE TABLE IF NOT EXISTS ground_unattended_syslog_config_audits (
     checked_at TEXT NOT NULL,
     target_ip TEXT NOT NULL DEFAULT '',
     target_port INTEGER,
+    target_transport TEXT NOT NULL DEFAULT 'UDP',
     status TEXT NOT NULL,
     missing_commands_json TEXT NOT NULL DEFAULT '[]',
     applied_commands_json TEXT NOT NULL DEFAULT '[]',
@@ -951,6 +953,7 @@ _PROFILE_MIGRATION_COLUMNS = {
     "config_check_cooldown_seconds": "INTEGER NOT NULL DEFAULT 1800",
     "syslog_server_ip": "TEXT NOT NULL DEFAULT ''",
     "syslog_server_port": "INTEGER NOT NULL DEFAULT 514",
+    "syslog_transport": "TEXT NOT NULL DEFAULT 'UDP'",
     "syslog_receiver_auto_start_enabled": "INTEGER NOT NULL DEFAULT 0",
     "boot_check_auto_start_enabled": "INTEGER NOT NULL DEFAULT 0",
     "syslog_auto_repair_enabled": "INTEGER NOT NULL DEFAULT 0",
@@ -1079,6 +1082,7 @@ _EVENT_MIGRATION_COLUMNS = {
 }
 
 _CONFIG_AUDIT_MIGRATION_COLUMNS = {
+    "target_transport": "TEXT NOT NULL DEFAULT 'UDP'",
     "managed_profile_version": "INTEGER NOT NULL DEFAULT 2",
     "managed_by_netconsole": "INTEGER NOT NULL DEFAULT 0",
     "created_by_netconsole": "INTEGER NOT NULL DEFAULT 0",
@@ -5474,6 +5478,7 @@ class GroundUnattendedRepository:
             "checked_at",
             "target_ip",
             "target_port",
+            "target_transport",
             "status",
             "missing_commands_json",
             "applied_commands_json",

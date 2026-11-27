@@ -714,7 +714,7 @@ const loadStatus = (silent = true) => {
   }, silent)
 }
 
-const loadProfile = (silent = true) => latestRequest('profile', '无人值守配置', (signal) => getGroundProfile({ signal }), (value) => { profile.value = value }, silent)
+const loadProfile = (silent = true) => latestRequest('profile', '无人值守配置', (signal) => getGroundProfile({ signal }), (value) => { profile.value = { ...value, syslog_transport: value.syslog_transport || 'UDP' } }, silent)
 
 const loadArpSourceSwitches = (silent = true) => latestRequest('arp-source-switches', 'ARP 源交换机', () => listDevices({ page: 1, page_size: 200, work_scope_status: 'all' }), (value) => {
   arpSourceSwitches.value = value.items.filter((item) => ['sw', 'switch', '交换机'].includes(String(item.device_type || '').trim().toLocaleLowerCase()))
@@ -1012,11 +1012,12 @@ async function saveProfile(message = t('ground.profile_saved', '无人值守配�
   saving.value = true
   try {
     if (profile.value.enabled && !profile.value.syslog_server_ip.trim()) throw new Error('启用无人值守前必须选择具体的 MR 日志回传地址')
-    if (profile.value.syslog_server_ip && !returnAddressIsLocal.value) throw new Error('Syslog IP 不属于本机，无法作为本地 UDP 监听地址')
+    if (profile.value.syslog_server_ip && !returnAddressIsLocal.value) throw new Error('Syslog IP 不属于本机，无法作为本机监听地址')
     profile.value = await saveGroundProfile({
       ...profile.value,
       udp_listen_host: profile.value.syslog_server_ip,
       udp_listen_port: profile.value.syslog_server_port,
+      syslog_transport: profile.value.syslog_transport || 'UDP',
       allow_external_syslog_address: false,
       external_syslog_address_confirmation: false,
       syslog_receiver_auto_start_enabled: profile.value.enabled,

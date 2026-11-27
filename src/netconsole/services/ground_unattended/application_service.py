@@ -1932,6 +1932,7 @@ class GroundUnattendedApplicationService:
             device_uuid,
             repair_enabled=False,
             allow_target_port_change=allow_target_port_change,
+            syslog_transport=profile.syslog_transport,
         )
         return GroundActionResponseDTO(
             state=str(run["state"]),
@@ -1947,10 +1948,25 @@ class GroundUnattendedApplicationService:
         self._require_collection_enabled()
         run = self._active(site_id)
         profile = self.repository.get_profile()
+        syslog_transport = str(
+            getattr(profile, "syslog_transport", "UDP") or "UDP"
+        ).upper()
         self._validate_network_profile(profile, require_syslog=True)
         requested = list(dict.fromkeys(str(item).strip() for item in payload.device_uuids if str(item).strip()))
         if not requested:
             raise GroundUnattendedError("MR_REQUIRED", "至少选择一台 MR", status_code=422)
+        if (
+            payload.mode == "JOIN"
+            and syslog_transport == "TCP"
+        ):
+            receiver = getattr(self.supervisor, "syslog_receiver", None)
+            health = receiver.health_snapshot() if receiver is not None else {}
+            if not str(health.get("tcp_listen_address") or ""):
+                raise GroundUnattendedError(
+                    "SYSLOG_TCP_RECEIVER_NOT_READY",
+                    "TCP Syslog 监听器尚未启动；请在选择 TCP 后启动新的无人值守运行",
+                    status_code=409,
+                )
         inventory = {str(row.get("device_uuid") or ""): row for row in self.repository.list_inventory() for row in row.get("endpoints", [])}
         selected: list[str] = []
         live_mrs: dict[str, Any] = {}
@@ -2064,7 +2080,10 @@ class GroundUnattendedApplicationService:
                     )
                 try:
                     self.supervisor.request_config_check(
-                        device_uuid, repair_enabled=True, task_id=task_id
+                        device_uuid,
+                        repair_enabled=True,
+                        syslog_transport=syslog_transport,
+                        task_id=task_id,
                     )
                 except TypeError as exc:
                     if "task_id" not in str(exc):
@@ -2353,9 +2372,12 @@ class GroundUnattendedApplicationService:
             allow_external_address=False,
             listen_host=profile.syslog_server_ip,
             listen_port=profile.syslog_server_port,
+            syslog_transport=profile.syslog_transport,
             receiver_running=receiver_running,
             receiver_state=receiver_state,  # type: ignore[arg-type]
             actual_listen_address=actual_listen,
+            tcp_receiver_running=bool(health.get("tcp_listen_address")),
+            tcp_listen_address=str(health.get("tcp_listen_address") or ""),
             port_state=port_state,  # type: ignore[arg-type]
             port_message=port_message,
             ports_match=ports_match,

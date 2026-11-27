@@ -154,6 +154,7 @@ class GroundUnattendedProfileDTO(ApiModel):
     config_check_cooldown_seconds: int = Field(default=1800, ge=30, le=86_400)
     syslog_server_ip: str = Field(default="", max_length=255)
     syslog_server_port: int = Field(default=514, ge=1, le=65_535)
+    syslog_transport: Literal["UDP", "TCP"] = "UDP"
     syslog_receiver_auto_start_enabled: bool = False
     boot_check_auto_start_enabled: bool = False
     syslog_auto_repair_enabled: bool = False
@@ -887,9 +888,12 @@ class GroundSyslogTransportStatusDTO(ApiModel):
     allow_external_address: bool = False
     listen_host: str = "0.0.0.0"
     listen_port: int = Field(default=514, ge=1, le=65_535)
+    syslog_transport: Literal["UDP", "TCP"] = "UDP"
     receiver_running: bool = False
     receiver_state: GroundSyslogReceiverState = "STOPPED"
     actual_listen_address: str = ""
+    tcp_receiver_running: bool = False
+    tcp_listen_address: str = ""
     port_state: GroundSyslogPortState = "NOT_CHECKED"
     port_message: str = ""
     ports_match: bool | None = None

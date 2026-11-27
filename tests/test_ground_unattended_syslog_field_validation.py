@@ -22,6 +22,7 @@ from netconsole.services.ground_unattended.boot_config import (
     MrBootSessionService,
     MrSyslogConfigService,
     analyze_syslog_config,
+    build_syslog_loghost_command,
     sanitize_syslog_evidence,
     verify_syslog_profile,
 )
@@ -45,11 +46,16 @@ FULL_CONFIG_514 = "\n".join(
 )
 SOURCE_RULES_CONFIG = "\n".join(
     (
+        f"info-center loghost {TARGET_IP}",
         "info-center source default loghost deny",
         "info-center source WMESH loghost level notification",
         "info-center source IFNET loghost level notification",
         "info-center source CFGMAN loghost level notification",
     )
+)
+SOURCE_RULES_CONFIG_5514 = SOURCE_RULES_CONFIG.replace(
+    f"info-center loghost {TARGET_IP}",
+    f"info-center loghost {TARGET_IP} port 5514",
 )
 DEFAULT_OMITTED_CONFIG_514 = "\n".join(
     (
@@ -127,6 +133,49 @@ def test_info_center_runtime_parser_and_default_port_normalization() -> None:
     assert wrong_runtime_target.repair_commands == ()
 
 
+def test_syslog_transport_command_and_configuration_readback() -> None:
+    assert build_syslog_loghost_command(TARGET_IP, 15514) == (
+        f"info-center loghost {TARGET_IP} port 15514"
+    )
+    tcp_command = build_syslog_loghost_command(TARGET_IP, 15514, "TCP")
+    assert tcp_command == f"info-center loghost {TARGET_IP} port 15514 tcp"
+
+    runtime = FULL_RUNTIME_514.replace(
+        "port number: 514", "port number: 15514",
+    )
+    tcp_config = f"info-center loghost {TARGET_IP} port 15514 tcp"
+    verified = verify_syslog_profile(
+        runtime,
+        tcp_config,
+        target_ip=TARGET_IP,
+        target_port=15514,
+        syslog_transport="TCP",
+    )
+    assert verified.complete
+    assert verified.config.target_transport == "TCP"
+    assert verified.config.target_status == "TARGET_PRESENT"
+
+    protocol_conflict = verify_syslog_profile(
+        runtime,
+        f"info-center loghost {TARGET_IP} port 15514",
+        target_ip=TARGET_IP,
+        target_port=15514,
+        syslog_transport="TCP",
+    )
+    assert not protocol_conflict.complete
+    assert "TARGET_TRANSPORT_CONFLICT" in protocol_conflict.target_statuses
+    assert protocol_conflict.repair_commands == ()
+
+    missing = verify_syslog_profile(
+        runtime,
+        "info-center enable",
+        target_ip=TARGET_IP,
+        target_port=15514,
+        syslog_transport="TCP",
+    )
+    assert missing.repair_commands == ("info-center enable", tcp_command)
+
+
 def test_multiple_log_hosts_are_preserved_and_managed_target_uses_ip_and_port() -> None:
     runtime = parse_info_center_runtime(MULTI_RUNTIME_5514)
 
@@ -136,7 +185,7 @@ def test_multiple_log_hosts_are_preserved_and_managed_target_uses_ip_and_port() 
     ]
     present = verify_syslog_profile(
         MULTI_RUNTIME_5514,
-        SOURCE_RULES_CONFIG,
+        SOURCE_RULES_CONFIG_5514,
         target_ip=TARGET_IP,
         target_port=5514,
     )
@@ -256,6 +305,7 @@ def test_runtime_without_target_uses_exact_join_profile() -> None:
         (
             "\n".join(
                 (
+                    f"info-center loghost {TARGET_IP}",
                     "info-center source WMESH loghost level notification",
                     "info-center source IFNET loghost level notification",
                     "info-center source CFGMAN loghost level notification",
@@ -266,6 +316,7 @@ def test_runtime_without_target_uses_exact_join_profile() -> None:
         (
             "\n".join(
                 (
+                    f"info-center loghost {TARGET_IP}",
                     "info-center source default loghost deny",
                     "info-center source IFNET loghost level notification",
                     "info-center source CFGMAN loghost level notification",
@@ -361,6 +412,7 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
             "loghost_enabled",
             "loghost_target",
         ],
+        "configuration": "TARGET_MISSING",
         "source_rules": [],
         "target_statuses": ["TARGET_MISSING"],
     }
@@ -376,6 +428,7 @@ def test_config_check_verifies_after_writes_and_records_evidence(tmp_path: Path)
     ]
     assert evidence["missing_after"] == {
         "runtime": [],
+        "configuration": "TARGET_PRESENT",
         "source_rules": [],
         "target_statuses": ["TARGET_PRESENT"],
     }
@@ -427,7 +480,7 @@ def test_auto_repair_disabled_keeps_incomplete_profile_read_only(
         )
     )
     assert evidence["syslog_auto_repair_enabled"] is False
-    assert evidence["managed_profile_version"] == 2
+    assert evidence["managed_profile_version"] == 3
 
 
 def test_expected_internal_change_uses_a_bounded_window(
@@ -569,8 +622,8 @@ def test_config_write_failure_and_post_read_failure_never_report_success(tmp_pat
 def test_source_rules_are_never_written_or_used_as_success_gate(tmp_path: Path) -> None:
     paths, repository, device_uuid = _context(tmp_path)
     connection = _ConfigConnection(
-        config_before="info-center source default loghost deny",
-        config_after="info-center source default loghost deny",
+        config_before=f"info-center loghost {TARGET_IP}\ninfo-center source default loghost deny",
+        config_after=f"info-center loghost {TARGET_IP}\ninfo-center source default loghost deny",
         info_before=FULL_RUNTIME_514,
         info_after=FULL_RUNTIME_514,
     )
@@ -592,6 +645,7 @@ def test_source_rules_are_never_written_or_used_as_success_gate(tmp_path: Path) 
     )
     assert evidence["missing_after"] == {
         "runtime": [],
+        "configuration": "TARGET_PRESENT",
         "source_rules": [],
         "target_statuses": ["TARGET_PRESENT"],
     }
@@ -915,8 +969,8 @@ def test_multi_target_order_does_not_change_configuration_fingerprint(
     fingerprints = []
     for runtime in (MULTI_RUNTIME_5514, reversed_runtime):
         connection = _ConfigConnection(
-            config_before=SOURCE_RULES_CONFIG,
-            config_after=SOURCE_RULES_CONFIG,
+            config_before=SOURCE_RULES_CONFIG_5514,
+            config_after=SOURCE_RULES_CONFIG_5514,
             info_before=runtime,
             info_after=runtime,
         )
@@ -982,6 +1036,7 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
             ALTER TABLE ground_unattended_boot_sessions DROP COLUMN info_center_metrics_json;
             ALTER TABLE ground_unattended_wmesh_events DROP COLUMN clock_offset_ms;
             ALTER TABLE ground_unattended_profiles DROP COLUMN allow_external_syslog_address;
+            ALTER TABLE ground_unattended_profiles DROP COLUMN syslog_transport;
             ALTER TABLE ground_unattended_operations DROP COLUMN stop_trigger;
             ALTER TABLE ground_unattended_operations DROP COLUMN stop_reason;
             ALTER TABLE ground_unattended_operations DROP COLUMN requested_by;
@@ -1027,6 +1082,7 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
     assert {"last_syslog_source_ip", "syslog_hostname", "last_syslog_identity_verified_at"} <= endpoint_columns
     assert {
         "allow_external_syslog_address",
+        "syslog_transport",
         "deep_collection_master_enabled",
         "fleet_ping_warmup_seconds",
         "ping_depot_trains_enabled",
@@ -1085,6 +1141,7 @@ def test_repository_additively_migrates_syslog_runtime_columns(tmp_path: Path) -
     } <= operation_columns
     assert legacy_operation == ("UNKNOWN", "", "", "", "", "", "")
     assert schema_version == "16"
+    assert repository.get_profile().syslog_transport == "UDP"
 
 
 def test_real_syslog_shapes_keep_parser_fields_and_clock_semantics(tmp_path: Path) -> None:

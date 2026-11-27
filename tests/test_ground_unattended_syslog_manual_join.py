@@ -16,12 +16,28 @@ class _JoinHarness:
 
     task_service = None
 
-    def __init__(self, *, status: str = "ONLINE", data_state: str = "RUNNING") -> None:
+    def __init__(
+        self,
+        *,
+        status: str = "ONLINE",
+        data_state: str = "RUNNING",
+        transport: str = "UDP",
+        tcp_listen_address: str = "",
+    ) -> None:
         self.audit = []
         self.status = status
         self.data_state = data_state
+
+        def record_config_check(
+            device_uuid: str,
+            repair_enabled: bool,
+            syslog_transport: str = "UDP",
+            task_id: str = "",
+        ) -> None:
+            self.audit.append((device_uuid, repair_enabled, syslog_transport, task_id))
+
         self.repository = SimpleNamespace(
-            get_profile=lambda: SimpleNamespace(),
+            get_profile=lambda: SimpleNamespace(syslog_transport=transport),
             list_inventory=lambda: [{
                 "endpoints": [{
                     "device_uuid": "mr-online",
@@ -33,7 +49,10 @@ class _JoinHarness:
         self.supervisor = SimpleNamespace(
             # FleetPing summaries intentionally have NO "status" field.
             fleet_ping=SimpleNamespace(target_summaries=lambda: [{"mr_id": "mr-online", "success_count": 5}]),
-            request_config_check=lambda device_uuid, repair_enabled, task_id: self.audit.append((device_uuid, repair_enabled)),
+            syslog_receiver=SimpleNamespace(
+                health_snapshot=lambda: {"tcp_listen_address": tcp_listen_address}
+            ),
+            request_config_check=record_config_check,
         )
 
     def _active(self, site_id: str):
@@ -60,7 +79,36 @@ def test_manual_syslog_join_uses_online_heartbeat_not_fleet_ping_summary() -> No
         harness, "demo", GroundSyslogControlRequestDTO(device_uuids=["mr-online"], mode="JOIN")
     )
     assert result.task_id.startswith("ground-syslog-")
-    assert harness.audit == [("mr-online", True)]
+    assert harness.audit == [("mr-online", True, "UDP", result.task_id)]
+
+
+def test_tcp_syslog_join_requires_a_listening_tcp_receiver() -> None:
+    harness = _JoinHarness(transport="TCP")
+
+    with pytest.raises(GroundUnattendedError) as exc:
+        GroundUnattendedApplicationService.request_syslog_control(
+            harness,
+            "demo",
+            GroundSyslogControlRequestDTO(device_uuids=["mr-online"], mode="JOIN"),
+        )
+
+    assert exc.value.code == "SYSLOG_TCP_RECEIVER_NOT_READY"
+    assert harness.audit == []
+
+
+def test_tcp_syslog_join_passes_transport_to_device_configuration_task() -> None:
+    harness = _JoinHarness(
+        transport="TCP",
+        tcp_listen_address="127.0.0.1:15514",
+    )
+
+    result = GroundUnattendedApplicationService.request_syslog_control(
+        harness,
+        "demo",
+        GroundSyslogControlRequestDTO(device_uuids=["mr-online"], mode="JOIN"),
+    )
+
+    assert harness.audit == [("mr-online", True, "TCP", result.task_id)]
 
 
 @pytest.mark.parametrize("status,data_state,code", [

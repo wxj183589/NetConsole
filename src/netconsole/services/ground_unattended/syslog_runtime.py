@@ -117,6 +117,7 @@ class UdpEnvelope:
     global_receive_sequence: int
     source_receive_sequence: int
     payload: bytes
+    transport: str = "UDP"
 
 
 @dataclass(frozen=True)
@@ -1125,6 +1126,8 @@ class SyslogUdpReceiver:
         self._inventory_loaded_at = 0.0
         self._inventory_refresh_lock = threading.Lock()
         self._received_count = 0
+        self._udp_received_count = 0
+        self._tcp_received_count = 0
         self._unidentified_count = 0
         self._identity_conflict_count = 0
         self._dropped_count = 0
@@ -1132,6 +1135,8 @@ class SyslogUdpReceiver:
         self._reported_raw_write_failed_count = 0
         self._raw_write_error = ""
         self._last_received_at = ""
+        self._udp_last_received_at = ""
+        self._tcp_last_received_at = ""
         self._started_monotonic = 0.0
         self._last_error = ""
         self._event_batch: list[dict[str, Any]] = []
@@ -1240,10 +1245,12 @@ class SyslogUdpReceiver:
         self._compression_worker = None
         self._stop.clear()
         self._received_count = self._unidentified_count = self._dropped_count = 0
+        self._udp_received_count = self._tcp_received_count = 0
         self._raw_write_failed_count = self._reported_raw_write_failed_count = 0
         self._raw_write_error = ""
         self._identity_conflict_count = 0
         self._last_received_at = ""
+        self._udp_last_received_at = self._tcp_last_received_at = ""
         self._global_receive_sequence = 0
         self._source_receive_sequences = {}
         self._last_clock_offset_ms = {}
@@ -1355,7 +1362,7 @@ class SyslogUdpReceiver:
                 tcp.request_timeout = SYSLOG_TCP_IDLE_TIMEOUT_SECONDS
                 tcp.slots = threading.BoundedSemaphore(32)
                 tcp.max_packet_size = 65_535
-                tcp.enqueue = self._enqueue_frame
+                tcp.enqueue = self._enqueue_tcp_frame
         except Exception:
             if self._tcp_server is not None:
                 self._tcp_server.server_close()
@@ -1620,11 +1627,16 @@ class SyslogUdpReceiver:
             "udp_running": self.running,
             "udp_listen_address": self._listen_address,
             "tcp_listen_address": self._listen_address if self._tcp_server is not None else "",
-            "udp_receive_rate_per_second": round(self._received_count / elapsed, 3),
-            "udp_received_count": self._received_count,
+            "udp_receive_rate_per_second": round(self._udp_received_count / elapsed, 3),
+            "udp_received_count": self._udp_received_count,
+            "udp_last_received_at": self._udp_last_received_at,
+            "tcp_receive_rate_per_second": round(self._tcp_received_count / elapsed, 3),
+            "tcp_received_count": self._tcp_received_count,
+            "tcp_last_received_at": self._tcp_last_received_at,
             "udp_unidentified_count": self._unidentified_count,
             "udp_identity_conflict_count": self._identity_conflict_count,
-            "udp_last_received_at": self._last_received_at,
+            "received_count": self._received_count,
+            "last_received_at": self._last_received_at,
             "udp_queue_length": self._queue.qsize(),
             "udp_queue_capacity": self._queue.maxsize,
             "udp_queue_pressure": round(self._queue.qsize() / self._queue.maxsize, 4),
@@ -1874,10 +1886,25 @@ class SyslogUdpReceiver:
                     self._udp_receive_error_count += 1
                     self._last_error = f"{exc.__class__.__name__}: {exc}"
                 return
-            self._enqueue_frame(payload, address)
+            self._enqueue_frame(payload, address, transport="UDP")
+
+    def _enqueue_tcp_frame(
+        self,
+        payload: bytes,
+        address: tuple[str, int],
+        source_sequence: int | None = None,
+    ) -> None:
+        self._enqueue_frame(
+            payload, address, source_sequence=source_sequence, transport="TCP",
+        )
 
     def _enqueue_frame(
-        self, payload: bytes, address: tuple[str, int], source_sequence: int | None = None,
+        self,
+        payload: bytes,
+        address: tuple[str, int],
+        source_sequence: int | None = None,
+        *,
+        transport: str = "UDP",
     ) -> None:
         with self._ingress_lock:
             if self._stop.is_set():
@@ -1891,9 +1918,16 @@ class SyslogUdpReceiver:
                     str(address[0]), int(address[1])
                 ),
                 payload=payload,
+                transport=transport,
             )
             self._received_count += 1
             self._last_received_at = envelope.receive_time
+            if transport == "TCP":
+                self._tcp_received_count += 1
+                self._tcp_last_received_at = envelope.receive_time
+            else:
+                self._udp_received_count += 1
+                self._udp_last_received_at = envelope.receive_time
             self._track_pending(envelope)
             try:
                 self._queue.put_nowait(envelope)
@@ -1912,6 +1946,7 @@ class SyslogUdpReceiver:
             "source_ip": envelope.source_ip,
             "source_port": envelope.source_port,
             "receive_time": envelope.receive_time,
+            "transport": envelope.transport,
             "global_receive_sequence": envelope.global_receive_sequence,
             "source_receive_sequence": envelope.source_receive_sequence,
             "payload": base64.b64encode(envelope.payload).decode("ascii"),
@@ -1958,6 +1993,7 @@ class SyslogUdpReceiver:
                 global_receive_sequence=int(value["global_receive_sequence"]),
                 source_receive_sequence=int(value["source_receive_sequence"]),
                 payload=base64.b64decode(str(value["payload"])),
+                transport=str(value.get("transport") or "UDP"),
             )
             self._track_pending(envelope)
             return envelope
@@ -2058,6 +2094,7 @@ class SyslogUdpReceiver:
                 "receive_time": persisted.envelope.receive_time,
                 "global_receive_sequence": persisted.envelope.global_receive_sequence,
                 "source_receive_sequence": persisted.envelope.source_receive_sequence,
+                "transport": persisted.envelope.transport,
                 "payload": base64.b64encode(persisted.envelope.payload).decode("ascii"),
             },
             "record": persisted.record,
@@ -2110,6 +2147,7 @@ class SyslogUdpReceiver:
                 global_receive_sequence=int(env["global_receive_sequence"]),
                 source_receive_sequence=int(env["source_receive_sequence"]),
                 payload=base64.b64decode(str(env["payload"])),
+                transport=str(env.get("transport") or "UDP"),
             )
             return _PersistedEnvelope(
                 envelope, dict(value.get("record") or {}),
@@ -2192,6 +2230,7 @@ class SyslogUdpReceiver:
             "raw_bytes_base64": base64.b64encode(envelope.payload).decode("ascii"),
             "raw_text": raw_text,
             "receive_time": envelope.receive_time,
+            "transport": envelope.transport,
             "global_receive_sequence": envelope.global_receive_sequence,
             "source_receive_sequence": envelope.source_receive_sequence,
             "device_time": "",

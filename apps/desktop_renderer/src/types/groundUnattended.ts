@@ -18,7 +18,7 @@ export interface GroundProfile {
   ping_depot_trains_enabled: boolean
   udp_listen_host: string; udp_listen_port: number; udp_queue_capacity: number; raw_flush_interval_seconds: number; raw_flush_record_count: number
   event_batch_size: number; event_batch_interval_seconds: number; boot_time_tolerance_seconds: number; config_check_cooldown_seconds: number
-  syslog_server_ip: string; syslog_server_port: number; ping_raw_retention_days: number; syslog_raw_retention_days: number
+  syslog_server_ip: string; syslog_server_port: number; syslog_transport?: 'UDP' | 'TCP'; ping_raw_retention_days: number; syslog_raw_retention_days: number
   allow_external_syslog_address: boolean; syslog_auto_repair_enabled: boolean
   syslog_receiver_auto_start_enabled: boolean; boot_check_auto_start_enabled: boolean
   ac_mesh_link_auto_collection_enabled: boolean
@@ -425,9 +425,10 @@ export interface GroundSyslogTransportStatus {
   configured_return_ip: string; configured_return_port: number
   return_address_status: 'LOCAL_ADDRESS' | 'EXTERNAL_CONFIRMED' | 'NOT_LOCAL' | 'EMPTY' | 'INVALID'
   return_address_is_local: boolean; allow_external_address: boolean
-  listen_host: string; listen_port: number; receiver_running: boolean
+  listen_host: string; listen_port: number; syslog_transport?: 'UDP' | 'TCP'; receiver_running: boolean
   receiver_state: 'LISTENING' | 'STOPPED' | 'STARTING' | 'ERROR'
   actual_listen_address: string
+  tcp_receiver_running?: boolean; tcp_listen_address?: string
   port_state: 'NETCONSOLE_LISTENING' | 'AVAILABLE' | 'OCCUPIED_BY_OTHER' | 'ADDRESS_NOT_LOCAL' | 'NOT_CHECKED' | 'UNKNOWN'
   port_message: string; ports_match: boolean | null; target_port_message: string
   last_received_at: string; received_count: number; active_mr_count: number

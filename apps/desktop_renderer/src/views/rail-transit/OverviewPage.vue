@@ -142,9 +142,14 @@ onBeforeUnmount(stopPolling)
                 <small>{{ syslogTransport?.listen_host === '0.0.0.0' ? t('ground.v2.overview_all_adapters', '监听全部本机网卡') : syslogTransport?.actual_listen_address || t('ground.v2.overview_selected_adapter', '指定网卡地址') }}</small>
               </article>
               <article>
-                <span>UDP Receiver</span>
+                <span>{{ t('ground.v2.syslog_udp', 'UDP Receiver') }}</span>
                 <strong>{{ groundStatusLabel(syslogTransport?.receiver_state) }}</strong>
                 <small>{{ syslogTransport?.actual_listen_address || t('ground.v2.overview_currently_not_listening', '当前未监听') }}</small>
+              </article>
+              <article>
+                <span>{{ t('ground.v2.syslog_tcp', 'TCP Receiver') }}</span>
+                <strong>{{ syslogTransport?.tcp_receiver_running ? t('ground.v2.syslog_listening', 'Listening') : t('ground.v2.syslog_stopped', 'Stopped') }}</strong>
+                <small>{{ syslogTransport?.tcp_listen_address || t('ground.v2.overview_currently_not_listening', '当前未监听') }}</small>
               </article>
               <article>
                 <span>{{ t('ground.v2.listener_port', '本机监听端口') }}</span>

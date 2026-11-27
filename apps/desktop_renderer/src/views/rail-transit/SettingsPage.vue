@@ -89,7 +89,7 @@ async function requestArpRefresh() {
             <el-form-item :label="t('ground.warning_space', '空间预警阈值（GB）')"><el-input-number v-model="profile.storage_warning_free_gb" :min="0.1" :max="1024" /></el-form-item>
             <el-form-item :label="t('ground.critical_space', '严重空间阈值（GB）')"><el-input-number v-model="profile.storage_critical_free_gb" :min="0.1" :max="1024" /></el-form-item>
           </div><p class="muted">{{ t('ground.storage_path', '存储路径：当前局点 / files / rail_transit / ground_unattended。深度会话 ZIP 仍保存在既有 Online MR 目录，每日归档只保存引用。') }}</p></section>
-          <section><h2>{{ t('ground.v2.settings_udp_boot', 'UDP Syslog 与上电检查') }}</h2>
+          <section><h2>{{ t('ground.v2.settings_udp_boot', 'Syslog TCP/UDP 与上电检查') }}</h2>
             <el-alert :title="t('ground.v2.settings_udp_note', 'Syslog Receiver 严格跟随无人值守主开关启停，并使用 MR 日志回传 IP 与端口监听；这里没有第二套监听生命周期或地址。')" type="info" :closable="false" show-icon />
             <div class="network-actions">
               <el-button :icon="Refresh" :loading="networkLoading" @click="loadLocalAddresses">{{ t('ground.v2.settings_refresh_addresses', '刷新本机地址') }}</el-button>
@@ -107,6 +107,13 @@ async function requestArpRefresh() {
               <span v-if="profile.syslog_server_ip" :class="returnAddressIsLocal ? 'network-ok' : 'network-error'">{{ returnAddressIsLocal ? t('ground.v2.settings_return_local', '当前地址属于本机') : t('ground.v2.settings_return_external', '当前地址不属于本机') }}</span>
             </el-form-item>
             <el-form-item :label="t('ground.v2.settings_server_port', 'Syslog 服务器端口')"><el-input-number v-model="profile.syslog_server_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item :label="t('ground.v2.settings_syslog_transport', 'MR Syslog 传输方式')">
+              <el-radio-group v-model="profile.syslog_transport">
+                <el-radio-button value="UDP">{{ t('ground.v2.syslog_udp', 'UDP') }}</el-radio-button>
+                <el-radio-button value="TCP">{{ t('ground.v2.syslog_tcp', 'TCP') }}</el-radio-button>
+              </el-radio-group>
+              <small>{{ t('ground.v2.syslog_transport_note', '默认 UDP。明确选择 TCP 后使用相同监听端口。') }}</small>
+            </el-form-item>
             <el-form-item :label="t('ground.v2.settings_queue_capacity', 'UDP 队列容量')"><el-input-number v-model="profile.udp_queue_capacity" :min="100" :max="500000" /></el-form-item>
             <el-form-item :label="t('ground.v2.settings_batch_size', '批量事件数')"><el-input-number v-model="profile.event_batch_size" :min="1" :max="5000" /></el-form-item>
             <el-form-item :label="t('ground.v2.settings_check_cooldown', '配置检查冷却（秒）')"><el-input-number v-model="profile.config_check_cooldown_seconds" :min="30" :max="86400" /></el-form-item>

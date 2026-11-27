@@ -49,7 +49,7 @@ CONFIG_FAILURE_MARKERS = (
     "permission denied",
 )
 SOURCE_RULE_COMMANDS: tuple[str, ...] = ()
-MANAGED_PROFILE_VERSION = 2
+MANAGED_PROFILE_VERSION = 3
 RUNTIME_REQUIREMENTS = (
     "information_center_enabled",
     "loghost_enabled",
@@ -57,6 +57,10 @@ RUNTIME_REQUIREMENTS = (
 )
 SENSITIVE_EVIDENCE_LINE_RE = re.compile(
     r"\b(?:password|passwd|secret|community|token|private[-_ ]?key|cipher)\b",
+    re.IGNORECASE,
+)
+_LOGHOST_CONFIG_RE = re.compile(
+    r"^\s*info-center\s+loghost\s+(?P<ip>\S+)(?P<options>.*)$",
     re.IGNORECASE,
 )
 
@@ -72,6 +76,8 @@ class SyslogConfigDiff:
     complete: bool
     source_rule_missing: tuple[str, ...]
     source_rules: tuple[str, ...]
+    target_status: str = "MISSING"
+    target_transport: str = "UDP"
 
     @property
     def missing_commands(self) -> tuple[str, ...]:
@@ -285,12 +291,14 @@ class MrSyslogConfigService:
         target_ip: str,
         target_port: int,
         boot_tolerance_seconds: int,
+        syslog_transport: str = "UDP",
         repair_enabled: bool = True,
         allow_target_port_change: bool = False,
         progress_callback: Callable[[str, str], None] | None = None,
     ) -> MrConfigCheckResult:
         target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
         target_port = int(target_port)
+        syslog_transport = _normalize_syslog_transport(syslog_transport)
         if not 1 <= target_port <= 65_535:
             raise ValueError("Syslog 目标端口必须在 1～65535 之间")
         endpoint = self.repository.get_inventory_endpoint(device_uuid)
@@ -450,6 +458,7 @@ class MrSyslogConfigService:
                 config_before,
                 target_ip=target_ip,
                 target_port=target_port,
+                syslog_transport=syslog_transport,
                 allow_target_port_change=allow_target_port_change,
             )
             evidence["missing_before"] = _verification_evidence(before)
@@ -467,6 +476,8 @@ class MrSyslogConfigService:
                 and not allow_target_port_change
             ):
                 status = "TARGET_PORT_CONFLICT"
+            elif "TARGET_TRANSPORT_CONFLICT" in before.target_statuses:
+                status = "TARGET_TRANSPORT_CONFLICT"
             elif not repair_enabled:
                 status = "AUTO_REPAIR_DISABLED"
             else:
@@ -474,7 +485,12 @@ class MrSyslogConfigService:
                 applied = build_syslog_config_commands(before.repair_commands)
                 evidence["applied_commands"] = list(applied)
                 if applied:
-                    _validate_syslog_write_commands(applied, target_ip=target_ip, target_port=target_port)
+                    _validate_syslog_write_commands(
+                        applied,
+                        target_ip=target_ip,
+                        target_port=target_port,
+                        syslog_transport=syslog_transport,
+                    )
                     expected_until = self.now_provider() + timedelta(seconds=15)
                     self.repository.mark_expected_config_change(
                         device_uuid=device_uuid,
@@ -511,6 +527,7 @@ class MrSyslogConfigService:
                     config_after,
                     target_ip=target_ip,
                     target_port=target_port,
+                    syslog_transport=syslog_transport,
                     allow_target_port_change=allow_target_port_change,
                 )
                 verified = after.complete
@@ -524,6 +541,7 @@ class MrSyslogConfigService:
                 config_after,
                 target_ip=target_ip,
                 target_port=target_port,
+                syslog_transport=syslog_transport,
                 allow_target_port_change=allow_target_port_change,
             )
             evidence["display_info_center_after"] = info_after
@@ -543,11 +561,13 @@ class MrSyslogConfigService:
                 after,
                 target_ip=target_ip,
                 target_port=target_port,
+                syslog_transport=syslog_transport,
             )
             metrics = after.runtime.as_dict()
             metrics["managed_target"] = {
                 "ip": target_ip,
                 "port": target_port,
+                "transport": syslog_transport,
                 "statuses": list(after.target_statuses),
             }
             previous_metrics = dict(boot.get("info_center_metrics") or {})
@@ -572,7 +592,9 @@ class MrSyslogConfigService:
             prior_ownership = self.repository.active_syslog_config_ownership(
                 device_uuid, target_ip, target_port
             )
-            loghost_command = f"info-center loghost {target_ip} port {target_port}"
+            loghost_command = build_syslog_loghost_command(
+                target_ip, target_port, syslog_transport,
+            )
             newly_owned = bool(verified and loghost_command in applied)
             ownership = {
                 "managed_by_netconsole": int(newly_owned or prior_ownership is not None),
@@ -593,6 +615,7 @@ class MrSyslogConfigService:
                     "checked_at": checked_at.isoformat(timespec="milliseconds"),
                     "target_ip": target_ip,
                     "target_port": target_port,
+                    "target_transport": syslog_transport,
                     "status": status,
                     "missing_commands": list(before.repair_commands),
                     "applied_commands": list(applied),
@@ -979,24 +1002,76 @@ class MrSyslogConfigService:
         return path.relative_to(self.repository.db_path.parent).as_posix()
 
 
-def analyze_syslog_config(output: str, *, target_ip: str, target_port: int) -> SyslogConfigDiff:
+def _normalize_syslog_transport(value: str) -> str:
+    normalized = str(value or "UDP").strip().upper()
+    if normalized not in {"UDP", "TCP"}:
+        raise ValueError("Syslog 传输方式必须为 UDP 或 TCP")
+    return normalized
+
+
+def analyze_syslog_config(
+    output: str,
+    *,
+    target_ip: str,
+    target_port: int,
+    syslog_transport: str = "UDP",
+) -> SyslogConfigDiff:
     """Validate the target without inventing source-rule policy.
 
     NetConsole owns only ``info-center enable`` and its exact loghost endpoint.
     Existing source filters are customer/device policy and are strictly read-only.
     """
 
-    del output
-    _ = str(ipaddress.ip_address(str(target_ip).strip()))
+    target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
     port = int(target_port)
+    syslog_transport = _normalize_syslog_transport(syslog_transport)
     if not 1 <= port <= 65_535:
         raise ValueError("Syslog 目标端口必须在 1～65535 之间")
     present: tuple[str, ...] = ()
     missing: tuple[str, ...] = ()
+    matching_target = False
+    same_ip_other_port = False
+    same_endpoint_other_transport = False
+    for line in str(output or "").splitlines():
+        match = _LOGHOST_CONFIG_RE.match(line)
+        if match is None:
+            continue
+        try:
+            configured_ip = str(ipaddress.ip_address(match.group("ip")))
+        except ValueError:
+            continue
+        options = match.group("options")
+        port_match = re.search(r"\bport\s+(\d+)\b", options, re.IGNORECASE)
+        configured_port = int(port_match.group(1)) if port_match else 514
+        configured_transport = (
+            "TCP" if re.search(r"(?:^|\s)tcp(?:\s|$)", options, re.IGNORECASE)
+            else "UDP"
+        )
+        if configured_ip != target_ip:
+            continue
+        if configured_port != port:
+            same_ip_other_port = True
+            continue
+        if configured_transport != syslog_transport:
+            same_endpoint_other_transport = True
+            continue
+        matching_target = True
+        break
+    target_status = (
+        "TARGET_PRESENT"
+        if matching_target
+        else "TARGET_TRANSPORT_CONFLICT"
+        if same_endpoint_other_transport
+        else "TARGET_PORT_CONFLICT"
+        if same_ip_other_port
+        else "TARGET_MISSING"
+    )
     return SyslogConfigDiff(
-        complete=not missing,
+        complete=matching_target,
         source_rule_missing=missing,
         source_rules=present,
+        target_status=target_status,
+        target_transport=syslog_transport,
     )
 
 
@@ -1006,12 +1081,14 @@ def verify_syslog_profile(
     *,
     target_ip: str,
     target_port: int,
+    syslog_transport: str = "UDP",
     allow_target_port_change: bool = False,
 ) -> SyslogProfileVerification:
     """Require the runtime delivery state; source rules remain read-only."""
 
     target_ip = str(ipaddress.ip_address(str(target_ip).strip()))
     target_port = int(target_port)
+    syslog_transport = _normalize_syslog_transport(syslog_transport)
     runtime = parse_info_center_runtime(info_center_output)
     missing_runtime: list[str] = []
     if runtime.information_center_enabled is not True:
@@ -1035,23 +1112,33 @@ def verify_syslog_profile(
     ]
     if any(host.ip != target_ip for host in runtime.log_hosts):
         target_statuses.append("OTHER_TARGETS_PRESENT")
-    if not exact_target:
-        missing_runtime.append("loghost_target")
     config = analyze_syslog_config(
         configuration_output,
         target_ip=target_ip,
         target_port=target_port,
+        syslog_transport=syslog_transport,
     )
+    if (
+        config.target_status != "TARGET_PRESENT"
+        and config.target_status not in target_statuses
+    ):
+        target_statuses.append(config.target_status)
+    if not exact_target:
+        missing_runtime.append("loghost_target")
     runtime_missing = tuple(missing_runtime)
     repair_commands: list[str] = []
-    port_conflict_blocked = same_ip_other_port and not allow_target_port_change
-    if runtime_missing and not port_conflict_blocked:
+    port_conflict_blocked = (
+        same_ip_other_port or config.target_status == "TARGET_PORT_CONFLICT"
+    ) and not allow_target_port_change
+    transport_conflict_blocked = config.target_status == "TARGET_TRANSPORT_CONFLICT"
+    if (runtime_missing or not config.complete) and not port_conflict_blocked and not transport_conflict_blocked:
         # JOIN has one auditable, device-safe command profile.  Do not derive
         # source filters from display output and do not emit partial variants.
-        repair_commands.extend((
-            "info-center enable",
-            f"info-center loghost {target_ip} port {target_port}",
-        ))
+        repair_commands.append("info-center enable")
+        if not exact_target or not config.complete:
+            repair_commands.append(
+                build_syslog_loghost_command(target_ip, target_port, syslog_transport)
+            )
     return SyslogProfileVerification(
         complete=config.complete and not runtime_missing,
         config=config,
@@ -1066,6 +1153,7 @@ def verify_syslog_profile(
 def _verification_evidence(verification: SyslogProfileVerification) -> dict[str, Any]:
     return {
         "runtime": list(verification.runtime_missing),
+        "configuration": verification.config.target_status,
         "source_rules": list(verification.source_rule_missing),
         "target_statuses": list(verification.target_statuses),
     }
@@ -1083,11 +1171,16 @@ def _syslog_config_fingerprint(
     *,
     target_ip: str,
     target_port: int,
+    syslog_transport: str,
 ) -> str:
     runtime = verification.runtime
     payload = {
         "managed_profile_version": MANAGED_PROFILE_VERSION,
-        "target": {"ip": target_ip, "port": target_port},
+        "target": {
+            "ip": target_ip,
+            "port": target_port,
+            "transport": syslog_transport,
+        },
         "runtime": {
             "information_center_enabled": runtime.information_center_enabled,
             "loghost_enabled": runtime.loghost_enabled,
@@ -1130,6 +1223,20 @@ def build_syslog_config_commands(repair_commands: tuple[str, ...]) -> tuple[str,
     return ("system-view", *repair_commands, "return", "quit")
 
 
+def build_syslog_loghost_command(
+    target_ip: str,
+    target_port: int,
+    syslog_transport: str = "UDP",
+) -> str:
+    normalized_ip = str(ipaddress.ip_address(str(target_ip).strip()))
+    port = int(target_port)
+    if not 1 <= port <= 65_535:
+        raise ValueError("Syslog 目标端口必须在 1～65535 之间")
+    transport = _normalize_syslog_transport(syslog_transport)
+    suffix = " tcp" if transport == "TCP" else ""
+    return f"info-center loghost {normalized_ip} port {port}{suffix}"
+
+
 def build_syslog_exit_commands(target_ip: str, target_port: int) -> tuple[str, ...]:
     normalized_ip = str(ipaddress.ip_address(str(target_ip).strip()))
     port = int(target_port)
@@ -1152,14 +1259,15 @@ def _validate_syslog_exit_commands(
 
 
 def _validate_syslog_write_commands(
-    commands: tuple[str, ...], *, target_ip: str, target_port: int
+    commands: tuple[str, ...], *, target_ip: str, target_port: int,
+    syslog_transport: str = "UDP",
 ) -> None:
     allowed = {
         "system-view",
         "return",
         "quit",
         "info-center enable",
-        f"info-center loghost {target_ip} port {target_port}",
+        build_syslog_loghost_command(target_ip, target_port, syslog_transport),
     }
     if (
         not commands
@@ -1267,6 +1375,7 @@ __all__ = [
     "analyze_syslog_config",
     "build_syslog_config_commands",
     "build_syslog_exit_commands",
+    "build_syslog_loghost_command",
     "sanitize_syslog_evidence",
     "verify_syslog_profile",
 ]

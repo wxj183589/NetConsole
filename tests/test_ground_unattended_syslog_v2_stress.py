@@ -68,6 +68,9 @@ def test_ground_syslog_tcp_and_udp_share_one_persistence_pipeline(tmp_path, capl
             client.sendall(first[-2:] + b"\r\n" + numeric + b"\n" + second + b"\r\n")
             datagram.sendto(udp, address)
             _wait(lambda: receiver.health_snapshot()["parsed"] == 4, timeout=10)
+        health = receiver.health_snapshot()
+        assert health["tcp_received_count"] == 3
+        assert health["udp_received_count"] == 1
         with socket.socket() as competing:
             with pytest.raises(OSError):
                 competing.bind(address)

@@ -158,11 +158,12 @@ async function controlSyslog(mode: 'JOIN' | 'EXIT', quickMr?: GroundHeartbeatMr)
     : selectableSyslogRows.value.filter((mr) => selectedSyslogMrs.value.includes(mr.mr_uuid) && (mode === 'JOIN' ? mr.status === 'ONLINE' : true))
   if (!eligible.length) return
   if (quickMr) closeMenu()
+  const transport = profile.value?.syslog_transport || 'UDP'
   const target = mode === 'JOIN'
     ? `${profile.value?.syslog_server_ip || '未配置'}:${profile.value?.syslog_server_port || 514}`
     : '各 MR 最近一次由 NetConsole 成功加入的历史目标'
   const commands = mode === 'JOIN'
-    ? `system-view\ninfo-center enable\ninfo-center loghost ${target.replace(':', ' port ')}\nreturn\nquit`
+    ? `system-view\ninfo-center enable\ninfo-center loghost ${target.replace(':', ' port ')}${transport === 'TCP' ? ' tcp' : ''}\nreturn\nquit`
     : 'system-view\nundo info-center loghost <历史 IP> port <历史端口>\nreturn\nquit'
   try {
     await ElMessageBox.confirm(
