@@ -53,6 +53,7 @@ def test_ground_syslog_tcp_and_udp_share_one_persistence_pipeline(tmp_path, capl
     first = str(len(chinese)).encode() + b" " + chinese
     second = b"<134>UNKNOWN/6/TEST: second"
     udp = b"<134>UNKNOWN/6/TEST: UDP"
+    numeric = b"123"
     try:
         with (
             socket.create_connection(address) as client,
@@ -64,9 +65,9 @@ def test_ground_syslog_tcp_and_udp_share_one_persistence_pipeline(tmp_path, capl
             other.shutdown(socket.SHUT_WR)
             _wait(lambda: "frame is truncated" in caplog.text, timeout=5)
             assert receiver.health_snapshot()["received"] == 0
-            client.sendall(first[-2:] + b"\n" + second + b"\r\n")
+            client.sendall(first[-2:] + b"\r\n" + numeric + b"\n" + second + b"\r\n")
             datagram.sendto(udp, address)
-            _wait(lambda: receiver.health_snapshot()["parsed"] == 3, timeout=10)
+            _wait(lambda: receiver.health_snapshot()["parsed"] == 4, timeout=10)
         with socket.socket() as competing:
             with pytest.raises(OSError):
                 competing.bind(address)
@@ -77,9 +78,9 @@ def test_ground_syslog_tcp_and_udp_share_one_persistence_pipeline(tmp_path, capl
     for row in receiver.repository.list_raw_files(data_type="syslog"):
         path = receiver.repository.db_path.parent / row["relative_path"]
         records.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
-    assert sorted(base64.b64decode(row["raw_bytes_base64"]) for row in records) == sorted([chinese, second, udp])
+    assert sorted(base64.b64decode(row["raw_bytes_base64"]) for row in records) == sorted([chinese, numeric, second, udp])
     history = GroundRawStreamQueryService(receiver.repository).syslog_records(run_id="stress")
-    assert history["total"] == 3
+    assert history["total"] == 4
     assert any("中文日志" in row["raw_text"] for row in history["items"])
     with socket.socket() as rebound:
         rebound.bind(address)

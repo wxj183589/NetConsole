@@ -184,8 +184,10 @@ class SyslogTcpHandler(socketserver.StreamRequestHandler):
         return None
 
     def _read_line_frame(self, prefix: bytes, peer: str) -> bytes | None:
-        remaining = self.server.max_packet_size + 1 - len(prefix)
-        frame = prefix + self.rfile.readline(max(0, remaining))
+        frame = prefix
+        if not frame.endswith(b"\n"):
+            remaining = self.server.max_packet_size + 1 - len(frame)
+            frame += self.rfile.readline(max(0, remaining))
         if len(frame) > self.server.max_packet_size:
             self.server.log.warning("Syslog message exceeded size limit from %s", peer)
             return None
