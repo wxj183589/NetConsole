@@ -4,6 +4,7 @@
 
 - 选定 Run 的多来源历史页改为每个来源有界取候选，再执行全局时间合并。源导出、分页、API、归档查询、规模和时间轴定向回归共 95 passed / 1 skipped。32 次真实库测量中，HZL10 最新 Run 多源页 P95 首屏/游标分别为 65.3/69.5 ms，时间轴 125.4/127.5 ms。未选 Run 的 807 ms 跨历史查询没有优化，保留原路径并记录为待处理项。见 [SQL 查询审计](./real-data-20261125/SQL_QUERY_AUDIT.md)。
 - Ground 与通用 Syslog TCP Handler 的 idle socket timeout 从 3 秒改为共享 300 秒上限；连接数仍受现有 bounded semaphore 限制。Ground 与通用服务分别验证 3.2 秒空闲后同连接成功收报，停机后端口释放。Syslog loopback 14 passed。真实设备保活/重连仍 `NOT VERIFIED`。
+- 1 小时隔离组件 soak PASS，实际 3,606 秒，100 synthetic MR，Syslog 4,634/4,634 收到并落 Raw，dropped=0，最终队列排空，UDP 端口释放；RSS 峰值 93.2 MiB，位置 P95/P99 为 991/1,064 ms。未覆盖 TCP、Quick Ping、Electron 或并发历史查询。[详细报告](./GROUND_UNATTENDED_R3_ONE_HOUR_SOAK.md)
 
 - 状态 `PARTIAL`。从 `1d47344a` 建立独立开发工作树 `worktrees/ground-unattended-r3-20261127`，工作树内布局检查通过。主工作区已有的根目录 `build`、未登记旧工作树目录和三项历史临时输出继续保留，主工作区布局检查仍失败。
 - 实时页面仅选取活动 Run，空闲时跳过 Syslog、时间轴和深度采集查询。Run 切换取消旧查询并清空相应结果。历史回放过滤活动和收尾中的 Run，并提供历史 Syslog 查询和保留既有删除校验的入口。
