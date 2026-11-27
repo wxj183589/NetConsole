@@ -961,6 +961,29 @@ _PROFILE_MIGRATION_COLUMNS = {
     "storage_io_profile": "TEXT NOT NULL DEFAULT 'AUTO'",
 }
 
+_HISTORY_QUERY_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_runs_time_desc "
+    "ON ground_unattended_runs(site_id, julianday(COALESCE(NULLIF(actual_started_at,''),created_at)) DESC, run_id ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_train_runs_time_desc "
+    "ON ground_unattended_train_runs(site_id, julianday(updated_at) DESC, run_id || ':' || train_id ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_ping_summaries_time_desc "
+    "ON ground_unattended_ping_summaries(site_id, julianday(bucket_start) DESC, CAST(id AS TEXT) ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_heartbeat_states_time_desc "
+    "ON ground_unattended_heartbeat_states(site_id, julianday(updated_at) DESC, run_id || ':' || entity_id ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_quick_ping_runs_time_desc "
+    "ON ground_unattended_quick_ping_runs(site_id, julianday(started_at) DESC, run_id ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_raw_files_time_desc "
+    "ON ground_unattended_raw_files(site_id, julianday(start_time) DESC, file_id ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_wmesh_events_time_desc "
+    "ON ground_unattended_wmesh_events(site_id, julianday(receive_time) DESC, CAST(id AS TEXT) ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_ac_snapshots_time_desc "
+    "ON ground_unattended_ac_snapshots(site_id, julianday(received_at) DESC, CAST(id AS TEXT) ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_deep_operations_time_desc "
+    "ON ground_unattended_deep_operations(site_id, julianday(started_at) DESC, operation_id ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_ground_history_events_time_desc "
+    "ON ground_unattended_events(site_id, julianday(ts) DESC, CAST(id AS TEXT) ASC)",
+)
+
 _PING_LOSS_MIGRATION_COLUMNS = {
     "mr_role": "TEXT NOT NULL DEFAULT ''",
     "event_key": "TEXT NOT NULL DEFAULT ''",
@@ -1281,6 +1304,8 @@ class GroundUnattendedRepository:
                 """,
                 (_now(),),
             )
+            for statement in _HISTORY_QUERY_INDEXES:
+                conn.execute(statement)
 
     @staticmethod
     def _migrate_legacy_ac_poll_interval(conn: sqlite3.Connection) -> None:

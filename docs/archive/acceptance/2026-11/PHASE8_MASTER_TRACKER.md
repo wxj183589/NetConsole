@@ -19,6 +19,9 @@
 - TCP 空行处理已修复，回环验证长度帧、换行帧、UDP 数据报共用持久化链路。独立数据集导入、完整 Electron 回放矩阵、设备配置闭环、混合负载与长稳、Full Gate 和制品仍待完成。
 - 回放切换 Run 时取消上一 Run 的 MR、图表和时间轴查询。Renderer 定向 63 项与 Vue 类型检查通过，源码提交 `379b02b2`。
 - 混合历史分页 API 提供跳过精确总数选项。HZL10 25 条查询中位数从 1,276.9 ms 降到 807.0 ms，仍高于目标。[SQL 查询审计](./real-data-20261125/SQL_QUERY_AUDIT.md)
+- 全历史分页新增十个幂等表达式索引，并按每来源有界 keyset 查询后合并。HZL10 隔离单库候选增加 56,520,704 bytes，32 次查询首屏 P50/P95/P99 为 39.9/44.7/45.8 ms，游标页为 43.1/45.1/46.3 ms；首屏及连续两页与原始全局排序逐条一致。来源数据库哈希与原记录一致，真实来源保持只读。SQL 报告补充了执行计划、空间和长时间写入成本待验收项。
+- HZL10 单库候选同库混合回归持续 120 秒，Ground Syslog TCP/UDP 共发送、接收、Raw 落盘及解析 22,922 条，丢弃 0；并发历史查询 3,672 次，P95 50.6 ms；队列排空、无残留线程，TCP/UDP 端口重绑通过。22,922 条 Raw 行及唯一序号复核通过，来源数据库哈希未变。详见 [SQL 查询审计](./real-data-20261125/SQL_QUERY_AUDIT.md)。
+- 本批次历史查询、归档查询、时间轴及 TCP/UDP 定向回归 86 passed；Ruff 与 Python 编译检查通过。当前 6 小时隔离长稳仍在运行；独立历史数据集导入、Syslog 设备配置下发、Full Gate 和正式制品仍待验收。
 
 整体状态为 **PARTIAL**。开发继续使用 `codex-A/organization-task-network-services-phase6`。集成提交 `f55e75b1` 同时包含 `42709227`、`fd8f6e58` 和 `d1c4b65f`。真实数据专项见 [Phase 8.1 总验收](./PHASE8_1_ACCEPTANCE.md)，前期结果见 [Phase 8 验收](./PHASE8_ACCEPTANCE.md) 与 [Phase 7.1 Windows 验收](../../../investigations/netconsole-phase7-20261125/PHASE7_WINDOWS_VM_ACCEPTANCE.md)。
 

@@ -71,6 +71,27 @@ def test_all_durable_sources_identity_and_raw_integrity(indexed):
     assert service.query(event_type="RADIO_DOWN")["total"] == 2
 
 
+def test_mixed_history_timeline_page_uses_global_timestamp_index(indexed):
+    path, service = indexed
+    with sqlite3.connect(path) as conn:
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT id FROM ground_unattended_events "
+            "WHERE site_id=? ORDER BY julianday(ts) DESC, CAST(id AS TEXT) ASC, "
+            "rowid ASC LIMIT 3",
+            ("demo",),
+        ).fetchall()
+    details = [str(row[3]) for row in plan]
+    assert any("idx_ground_history_events_time_desc" in detail for detail in details), details
+    assert not any("TEMP B-TREE" in detail for detail in details), details
+
+    first = service.query(page_size=1, include_total=False)
+    assert first["next_cursor"]
+    second = service.query(
+        page_size=1, include_total=False, cursor=first["next_cursor"],
+    )
+    assert first["items"][0]["record_id"] != second["items"][0]["record_id"]
+
+
 def test_cursor_pages_can_skip_exact_total(indexed):
     _, service = indexed
     expected = service.query(page_size=1)

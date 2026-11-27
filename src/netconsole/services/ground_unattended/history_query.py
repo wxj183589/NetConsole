@@ -444,6 +444,70 @@ class GroundHistoryQueryService:
         ]
         return predicate, params
 
+    @staticmethod
+    def _sql_literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    def _indexed_source_page(
+        self,
+        conn: sqlite3.Connection,
+        queries: list[tuple[str, list[Any]]],
+        *,
+        sort_order: str,
+        page_size: int,
+        cursor: str,
+        anchor: dict[str, Any] | None,
+    ) -> list[sqlite3.Row]:
+        candidate_rows: list[sqlite3.Row] = []
+        predicate, cursor_params = (
+            self._cursor_predicate(sort_order=sort_order, anchor=anchor)
+            if cursor and anchor is not None else ("", [])
+        )
+        for source_sql, source_params in queries:
+            source_table = next(
+                table for table in _SOURCE_BY_TABLE
+                if f"'{table}' AS source_table" in source_sql
+            )
+            source = _SOURCE_BY_TABLE[source_table]
+            index_name = f"idx_ground_history_{source.table}_time_desc"
+            indexed_sql = source_sql.replace(
+                f"FROM {source_table} s",
+                f"FROM {source_table} s INDEXED BY {index_name}",
+                1,
+            )
+            if indexed_sql == source_sql:
+                raise GroundHistoryQueryError(
+                    "GROUND_HISTORY_SOURCE_INVALID", "历史来源查询无效", status_code=500,
+                )
+            query_params = list(source_params)
+            if cursor:
+                source_predicate = predicate.replace(
+                    "julianday(ts)", f"julianday({source.timestamp})",
+                )
+                source_predicate = source_predicate.replace(
+                    "data_type", self._sql_literal(source.data_type),
+                ).replace(
+                    "source_table", self._sql_literal(source_table),
+                ).replace(
+                    "source_identity", source.identity,
+                ).replace(
+                    "source_rowid", "s.rowid",
+                )
+                indexed_sql += " AND (" + source_predicate + ")"
+                query_params.extend(cursor_params)
+            indexed_sql += (
+                f" ORDER BY julianday({source.timestamp}) {sort_order.upper()}, "
+                f"{source.identity} ASC, s.rowid ASC LIMIT ?"
+            )
+            query_params.append(page_size + 1)
+            candidate_rows.extend(conn.execute(
+                "SELECT *, julianday(ts) IS NULL AS cursor_ts_is_null, "
+                "julianday(ts) AS cursor_julian_day FROM (" + indexed_sql + ")",
+                query_params,
+            ).fetchall())
+        candidate_rows.sort(key=lambda row: self._page_sort_key(row, sort_order))
+        return candidate_rows[:page_size + 1]
+
     def query(
         self, *, data_type: str = "", run_id: str = "", train_id: str = "", mr_id: str = "",
         mr_role: str = "", event_type: str = "", start_at: str = "", end_at: str = "",
@@ -474,8 +538,41 @@ class GroundHistoryQueryService:
                     + ")",
                     count_params,
                 ).fetchone()[0])
-            if queries and run_id and len(queries) > 1 and (cursor or page == 1):
-                candidate_rows: list[sqlite3.Row] = []
+            history_indexes = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                )
+            }
+            indexed_sources_ready = bool(queries) and not run_id
+            for source_sql, _source_params in queries:
+                source_table = next(
+                    table for table in _SOURCE_BY_TABLE
+                    if f"'{table}' AS source_table" in source_sql
+                )
+                source = _SOURCE_BY_TABLE[source_table]
+                if f"idx_ground_history_{source.table}_time_desc" not in history_indexes:
+                    indexed_sources_ready = False
+                    break
+            if indexed_sources_ready and not run_id and (cursor or page == 1):
+                candidate_rows = self._indexed_source_page(
+                    conn,
+                    queries,
+                    sort_order=sort_order,
+                    page_size=page_size,
+                    cursor=cursor,
+                    anchor=anchor,
+                )
+                has_more = len(candidate_rows) > page_size
+                rows = candidate_rows[:page_size]
+                result["has_more"] = has_more
+                result["items"] = self._items(conn, rows, keys_only=True)
+                if rows and has_more:
+                    result["next_cursor"] = self._encode_cursor(
+                        filters=filters, page_size=page_size, row=rows[-1],
+                    )
+            elif queries and run_id and len(queries) > 1 and (cursor or page == 1):
+                candidate_rows = []
                 predicate, cursor_params = (
                     self._cursor_predicate(sort_order=sort_order, anchor=anchor)
                     if cursor and anchor is not None else ("", [])
