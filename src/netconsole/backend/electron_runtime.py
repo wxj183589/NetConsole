@@ -22,6 +22,7 @@ from websockets.protocol import State
 from netconsole.backend.api.main import DESKTOP_SESSION_HEADER, create_app
 from netconsole.core.backend_instance_lock import BackendInstanceLock
 from netconsole.core.paths import PathResolver
+from netconsole.core.performance_profiling import begin_request_profile, end_request_profile
 from netconsole.core.runtime_environment import (
     is_packaged_runtime,
     prepare_startup_environment,
@@ -126,19 +127,37 @@ def build_app(
 ) -> FastAPI:
     if _SESSION_TOKEN_RE.fullmatch(session_token) is None:
         raise ValueError("invalid Electron runtime session token")
-    app = create_app(
-        RuntimeMode.DESKTOP,
-        paths=paths,
-        desktop_session_token=session_token,
-        rail_base_data_write_feature_enabled=True,
-        rail_base_data_desktop_write_enabled=True,
-        online_mr_web_control_enabled=True,
-        api_documentation_enabled=options.development,
-        development_api_enabled=options.development,
-        development_runtime_label="electron-development" if options.development else "electron-production",
-        development_frontend_mode="vite" if options.renderer_origin else "dist",
-        startup_stage=startup_stage,
-    )
+    startup_profile_enabled = os.environ.get("NETCONSOLE_STARTUP_SQL_PROFILE") == "1"
+    profile = token = None
+    profile_started = monotonic()
+    if startup_profile_enabled:
+        profile, token = begin_request_profile(
+            "startup-app-build", "STARTUP", "/__startup__",
+        )
+    try:
+        app = create_app(
+            RuntimeMode.DESKTOP,
+            paths=paths,
+            desktop_session_token=session_token,
+            rail_base_data_write_feature_enabled=True,
+            rail_base_data_desktop_write_enabled=True,
+            online_mr_web_control_enabled=True,
+            api_documentation_enabled=options.development,
+            development_api_enabled=options.development,
+            development_runtime_label="electron-development" if options.development else "electron-production",
+            development_frontend_mode="vite" if options.renderer_origin else "dist",
+            startup_stage=startup_stage,
+        )
+    except Exception:
+        if profile is not None:
+            _emit_startup_sql_profile(profile, profile_started, "failed")
+        raise
+    else:
+        if profile is not None:
+            _emit_startup_sql_profile(profile, profile_started, "complete")
+    finally:
+        if token is not None:
+            end_request_profile(token)
     if options.renderer_origin:
         app.add_middleware(
             CORSMiddleware,
@@ -148,6 +167,20 @@ def build_app(
             allow_headers=["Content-Type", DESKTOP_SESSION_HEADER],
         )
     return app
+
+
+def _emit_startup_sql_profile(profile, started_at: float, status: str) -> None:
+    print(json.dumps({
+        "event": "netconsole.electron_backend.startup_sql_profile",
+        "status": status,
+        "duration_ms": round((monotonic() - started_at) * 1000, 3),
+        "sql_count": profile.sql_count,
+        "sql_ms": round(profile.sql_ms, 3),
+        "slowest_sql": [
+            {"elapsed_ms": round(elapsed_ms, 3), "statement": statement}
+            for elapsed_ms, statement in profile.slowest_sql
+        ],
+    }, separators=(",", ":")), flush=True)
 
 
 def main(argv: list[str] | None = None, *, stdin: TextIO | None = None) -> int:

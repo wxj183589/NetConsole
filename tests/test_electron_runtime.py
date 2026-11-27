@@ -228,6 +228,30 @@ def test_build_app_forwards_startup_stage_callback(monkeypatch) -> None:
     assert captured["startup_stage"] == stages.append
 
 
+def test_build_app_emits_opt_in_startup_sql_profile(monkeypatch, tmp_path, capsys) -> None:
+    from netconsole.backend import electron_runtime
+    from netconsole.core.performance_profiling import current_request_profile
+    from netconsole.core.sqlite_utils import connect_sqlite
+
+    def profiled_create_app(*_args, **_kwargs):
+        with connect_sqlite(tmp_path / 'startup-profile.sqlite') as connection:
+            connection.execute('CREATE TABLE startup_profile (value INTEGER)')
+            connection.execute('SELECT COUNT(*) FROM startup_profile').fetchone()
+        return FastAPI()
+
+    monkeypatch.setattr(electron_runtime, 'create_app', profiled_create_app)
+    monkeypatch.setenv('NETCONSOLE_STARTUP_SQL_PROFILE', '1')
+
+    build_app(ElectronRuntimeOptions(host='127.0.0.1', port=0), 'a' * 32)
+
+    event = json.loads(capsys.readouterr().out)
+    assert event['event'] == 'netconsole.electron_backend.startup_sql_profile'
+    assert event['status'] == 'complete'
+    assert event['sql_count'] == 3
+    assert event['sql_ms'] >= 0
+    assert current_request_profile() is None
+
+
 def test_desktop_shutdown_admission_rejects_new_mutating_requests() -> None:
     app = FastAPI()
     app.state.accepting_work = False

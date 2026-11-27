@@ -1282,7 +1282,21 @@ function handleRendererReady(report: RendererHostReport, sourceWindow: unknown):
     startupTimeline?.mark('desktop.interactive')
     const summary = startupTimeline?.performanceSummary()
     if (summary) logger('STARTUP_PERFORMANCE_SUMMARY', JSON.stringify(summary))
+    if (process.env.NETCONSOLE_ELECTRON_STARTUP_PROFILE === '1') {
+      const processMetrics = app.getAppMetrics().map((metric) => ({
+        type: metric.type,
+        pid: metric.pid,
+        working_set_bytes: metric.memory.workingSetSize * 1024,
+        peak_working_set_bytes: metric.memory.peakWorkingSetSize * 1024,
+        cpu_percent: metric.cpu.percentCPUUsage,
+      }))
+      logger('ELECTRON_STARTUP_PROCESS_METRICS', JSON.stringify(processMetrics))
+    }
     void logTraySyncDiagnostic(report.siteId)
+    if (process.env.NETCONSOLE_ELECTRON_STARTUP_PROFILE === '1') {
+      logger('ELECTRON_STARTUP_PROFILE_COMPLETE')
+      setTimeout(() => requestExit(0), 250)
+    }
   }
   if (process.env.NETCONSOLE_ELECTRON_SMOKE_TEST !== '1' || report.phase === 'mounted') return
   if (!smokeMainWindowStartupValidated) {

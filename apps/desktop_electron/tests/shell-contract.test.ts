@@ -22,6 +22,14 @@ const devSource = readFileSync(
 )
 
 describe('Electron shell product contract', () => {
+  it('allows startup profiling only against an explicitly selected real-data site', () => {
+    expect(devSource).toContain("process.argv.includes('--profile-startup')")
+    expect(devSource).toContain('--profile-startup requires --real-dev with an isolated DataRoot')
+    expect(devSource).toContain('NETCONSOLE_DEV_REAL_SITE_ID')
+    expect(devSource).toContain("NETCONSOLE_ELECTRON_STARTUP_PROFILE: '1'")
+    expect(source).toContain("logger('ELECTRON_STARTUP_PROFILE_COMPLETE')")
+  })
+
   it('keeps renderer loading and reload visibility changes from requesting application exit', () => {
     const start = source.indexOf('function handleVisibleBusinessWindowCount(')
     const end = source.indexOf('function getCloseToTrayState(', start)

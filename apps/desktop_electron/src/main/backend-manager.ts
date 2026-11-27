@@ -780,20 +780,38 @@ function logBackendOutput(
   if (!safe) return
   if (source === 'stdout') {
     let event = ''
+    let startupSqlSummary = ''
     try {
-      const payload = JSON.parse(safe) as { event?: unknown }
+      const payload = JSON.parse(safe) as {
+        event?: unknown
+        duration_ms?: unknown
+        sql_count?: unknown
+        sql_ms?: unknown
+      }
       event = typeof payload.event === 'string' ? payload.event : ''
+      if (event === 'netconsole.electron_backend.startup_sql_profile') {
+        startupSqlSummary = JSON.stringify({
+          duration_ms: payload.duration_ms,
+          sql_count: payload.sql_count,
+          sql_ms: payload.sql_ms,
+        })
+      }
     } catch {
       // Non-JSON stdout is useful only in explicitly enabled development logging.
     }
     const lifecycleEvents = new Set([
       'netconsole.electron_backend.startup_stage',
+      'netconsole.electron_backend.startup_sql_profile',
       'netconsole.electron_backend.listening',
       'netconsole.electron_backend.startup_failed',
       'netconsole.electron_backend.shutdown_received',
       'netconsole.electron_backend.shutdown_complete',
     ])
-    logger('ELECTRON_BACKEND_STDOUT', event ? `event=${event}` : safe, lifecycleEvents.has(event) ? 'INFO' : 'DEBUG')
+    logger(
+      event === 'netconsole.electron_backend.startup_sql_profile' ? 'ELECTRON_BACKEND_STARTUP_SQL_PROFILE' : 'ELECTRON_BACKEND_STDOUT',
+      startupSqlSummary || (event ? `event=${event}` : safe),
+      lifecycleEvents.has(event) ? 'INFO' : 'DEBUG',
+    )
     return
   }
   const level = /^LOG_WRITE_RECOVERED\b/.test(safe)

@@ -25,11 +25,16 @@ const taskCenterSmoke = process.argv.includes('--task-center') || process.argv.i
 const workspaceTraySmoke = process.argv.includes('--workspace-tray')
 const codex = process.argv.includes('--codex')
 const realDev = process.argv.includes('--real-dev')
+const startupProfile = process.argv.includes('--profile-startup')
 if (realDev && (codex || smoke || taskCenterSmoke || workspaceTraySmoke)) {
   throw new Error('--real-dev cannot be combined with isolated smoke modes')
 }
+if (startupProfile && !realDev) {
+  throw new Error('--profile-startup requires --real-dev with an isolated DataRoot')
+}
 const realDevDataRoot = realDev ? resolve(process.env.NETCONSOLE_DEV_REAL_DATA_ROOT || 'D:\\NetConsoleData-dev') : ''
-const realDevSite = realDev ? resolve(realDevDataRoot, 'sites', 'hzdt-09') : ''
+const realDevSiteId = realDev ? resolveRealDevSiteId(process.env.NETCONSOLE_DEV_REAL_SITE_ID) : ''
+const realDevSite = realDev ? resolve(realDevDataRoot, 'sites', realDevSiteId) : ''
 const realDevRuntimeRoot = realDev ? resolve(process.env.NETCONSOLE_DEV_RUNTIME_ROOT || 'D:\\NetConsoleRuntime-dev\\R5.0.1') : ''
 if (realDev) validateRealDevPaths(realDevDataRoot, realDevSite, realDevRuntimeRoot)
 const isolatedDataArgument = process.argv.indexOf('--isolated-test-data')
@@ -89,6 +94,14 @@ function resolveOptionalPort(value, name) {
   const port = Number(value)
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error(`${name} must be between 1 and 65535`)
   return port
+}
+
+function resolveRealDevSiteId(value) {
+  const siteId = value?.trim() || 'hzdt-09'
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(siteId)) {
+    throw new Error('NETCONSOLE_DEV_REAL_SITE_ID must be a safe site ID')
+  }
+  return siteId
 }
 
 function resolveCodexSessionToken(value) {
@@ -339,7 +352,7 @@ try {
     process.stdout.write(`Temporary Root: ${resolve(isolatedRuntime.dataRoot, 'runtime', 'temp')}\n`)
   } else if (realDev) {
     process.stdout.write('DataRoot: D:\\NetConsoleData-dev\n')
-    process.stdout.write('Site: hzdt-09\n')
+    process.stdout.write(`Site: ${realDevSiteId}\n`)
     process.stdout.write(`RuntimeRoot: ${realDevRuntimeRoot}\n`)
     process.stdout.write('SiteDataMode: READ_ONLY (business playback)\n')
     process.stdout.write('CollectionMode: DISABLED\n')
@@ -399,12 +412,16 @@ try {
       ...(realDev ? {
         NETCONSOLE_DATA_ROOT: realDevDataRoot,
         NETCONSOLE_RUNTIME_ROOT: realDevRuntimeRoot,
-        NETCONSOLE_ACTIVE_SITE_ID: 'hzdt-09',
+        NETCONSOLE_ACTIVE_SITE_ID: realDevSiteId,
         NETCONSOLE_ACTIVE_SITE_MODE: 'bootstrap',
         NETCONSOLE_COLLECTION_MODE: 'disabled',
         NETCONSOLE_PLAYBACK_MODE: 'enabled',
         NETCONSOLE_SITE_DATA_MODE: 'read_only',
         NETCONSOLE_DEV_REAL_DATA: '1',
+        ...(startupProfile ? {
+          NETCONSOLE_STARTUP_SQL_PROFILE: '1',
+          NETCONSOLE_ELECTRON_STARTUP_PROFILE: '1',
+        } : {}),
       } : {}),
       ...(isolated ? {
         NETCONSOLE_DATA_ROOT: isolatedRuntime.dataRoot,
