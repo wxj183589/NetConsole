@@ -44,7 +44,7 @@ describe('Ground settings language switching', () => {
     expect(wrapper.text()).toContain('Beijing time (Asia/Shanghai)')
     setAppLocale('zh_CN')
     await nextTick()
-    expect(wrapper.text()).toContain('UDP Syslog 与上电检查')
+    expect(wrapper.text()).toContain('Syslog TCP/UDP 与上电检查')
     expect(wrapper.text()).toContain('MR 日志回传地址')
     expect(wrapper.text()).not.toContain('本机监听地址')
     expect(wrapper.text()).toContain('30 天')

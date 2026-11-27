@@ -3448,17 +3448,19 @@ class GroundUnattendedSupervisor:
                 ):
                     continue
             check_function = self.config_service.check
+            manual_options = manual.get(device_uuid)
+            syslog_transport = profile.syslog_transport
+            if manual_options is not None:
+                syslog_transport = (
+                    manual_options[2] if len(manual_options) > 2 else "UDP"
+                )
             check_kwargs = {
                 "run_id": str(run["run_id"]),
                 "run_date": str(run["run_date"]),
                 "device_uuid": device_uuid,
                 "target_ip": target_ip,
                 "target_port": profile.syslog_server_port,
-                "syslog_transport": (
-                    manual[device_uuid][2]
-                    if device_uuid in manual
-                    else profile.syslog_transport
-                ),
+                "syslog_transport": syslog_transport,
                 "boot_tolerance_seconds": profile.boot_time_tolerance_seconds,
                 "repair_enabled": (
                     bool(manual[device_uuid][1])

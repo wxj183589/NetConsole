@@ -24,6 +24,7 @@
 - 使用当前 Worktree 的 `GroundHistoryQueryService` 对 HZL9/HZL10 SQL 候选进行真实数据首屏和游标复核，每页 25 条、跳过总数统计。HZL9 Heartbeat、Syslog Parsed、Timeline 首屏/下一页单次耗时为 3.55/3.72、2.82/2.87、7.52/8.24 ms；Quick Ping 实际返回 2 条。HZL10 对应单次耗时为 38.71/38.25、22.04/21.01、40.66/39.86 ms；Quick Ping 为 0 条，保持无数据语义。候选主库与空 WAL 的大小/时间戳未变，SQLite 只读查询刷新了 `-shm` 时间戳；该观测不是原始压缩包校验，也不是 P95 基准。
 - HZL10 单库候选同库混合回归持续 120 秒，Ground Syslog TCP/UDP 共发送、接收、Raw 落盘及解析 22,922 条，丢弃 0；并发历史查询 3,672 次，P95 50.6 ms；队列排空、无残留线程，TCP/UDP 端口重绑通过。22,922 条 Raw 行及唯一序号复核通过，来源数据库哈希未变。详见 [SQL 查询审计](./real-data-20261125/SQL_QUERY_AUDIT.md)。
 - Ground Syslog Profile 增加默认 UDP、显式 TCP 配置、运行状态和分协议接收计数。TCP/UDP 仍共用分帧后的事件队列、Raw spool、解析器、SQLite 投影及历史查询；配置审计包含传输方式，并要求配置回读匹配后才算完成。TCP JOIN 在 TCP listener 未就绪时拒绝排队设备任务。后端定向 90 passed，Renderer Ground 58 passed，Vue 类型检查、Ruff 和 diff-check 通过。Comware V5/V7/V9 命令能力矩阵、真实设备写入/回传及正式包仍 `NOT VERIFIED`，未对真实设备执行命令。
+- Full Gate 首轮发现一项历史测试注入旧二元组队列形状及一项过时的 Renderer 标题断言；产品调度现对旧形状默认 UDP，locale 测试更新到 TCP/UDP 标题。对应 Python 回归 39 passed，Renderer locale/Ground 59 passed，Ruff、Vue 类型检查和 diff-check PASS；修复后的完整 Full Gate 正在复验。
 - 本批次历史查询、归档查询、时间轴及 TCP/UDP 定向回归 86 passed；Ruff 与 Python 编译检查通过。当前 6 小时隔离长稳仍在运行；独立历史数据集导入、Syslog 设备配置下发、Full Gate 和正式制品仍待验收。
 
 整体状态为 **PARTIAL**。开发继续使用 `codex-A/organization-task-network-services-phase6`。集成提交 `f55e75b1` 同时包含 `42709227`、`fd8f6e58` 和 `d1c4b65f`。真实数据专项见 [Phase 8.1 总验收](./PHASE8_1_ACCEPTANCE.md)，前期结果见 [Phase 8 验收](./PHASE8_ACCEPTANCE.md) 与 [Phase 7.1 Windows 验收](../../../investigations/netconsole-phase7-20261125/PHASE7_WINDOWS_VM_ACCEPTANCE.md)。
