@@ -33,6 +33,9 @@ if (startupProfile && !realDev) {
   throw new Error('--profile-startup requires --real-dev with an isolated DataRoot')
 }
 const realDevDataRoot = realDev ? resolve(process.env.NETCONSOLE_DEV_REAL_DATA_ROOT || 'D:\\NetConsoleData-dev') : ''
+if (startupProfile && (!process.env.NETCONSOLE_DEV_REAL_DATA_ROOT?.trim() || isProtectedDataRoot(realDevDataRoot))) {
+  throw new Error('--profile-startup requires an explicit isolated NETCONSOLE_DEV_REAL_DATA_ROOT')
+}
 const realDevSiteId = realDev ? resolveRealDevSiteId(process.env.NETCONSOLE_DEV_REAL_SITE_ID) : ''
 const realDevSite = realDev ? resolve(realDevDataRoot, 'sites', realDevSiteId) : ''
 const realDevRuntimeRoot = realDev ? resolve(process.env.NETCONSOLE_DEV_RUNTIME_ROOT || 'D:\\NetConsoleRuntime-dev\\R5.0.1') : ''
@@ -78,6 +81,14 @@ function validateRealDevPaths(dataRoot, siteRoot, runtimeRoot) {
 function isWithin(candidate, parent) {
   const child = relative(parent, candidate)
   return child !== '' && child !== '..' && !child.startsWith(`..${sep}`)
+}
+
+function isProtectedDataRoot(dataRoot) {
+  return ['D:\\NetConsoleData', 'D:\\NetConsoleData-dev'].some((protectedRoot) => {
+    const normalizedRoot = resolve(protectedRoot)
+    return dataRoot.toLowerCase() === normalizedRoot.toLowerCase()
+      || isWithin(dataRoot, normalizedRoot)
+  })
 }
 
 function resolveCodexBackendPort(value) {

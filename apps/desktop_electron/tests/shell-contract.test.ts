@@ -25,6 +25,9 @@ describe('Electron shell product contract', () => {
   it('allows startup profiling only against an explicitly selected real-data site', () => {
     expect(devSource).toContain("process.argv.includes('--profile-startup')")
     expect(devSource).toContain('--profile-startup requires --real-dev with an isolated DataRoot')
+    expect(devSource).toContain('--profile-startup requires an explicit isolated NETCONSOLE_DEV_REAL_DATA_ROOT')
+    expect(devSource).toContain('isProtectedDataRoot(realDevDataRoot)')
+    expect(devSource).toContain('NetConsoleData-dev')
     expect(devSource).toContain('NETCONSOLE_DEV_REAL_SITE_ID')
     expect(devSource).toContain("NETCONSOLE_ELECTRON_STARTUP_PROFILE: '1'")
     expect(source).toContain("logger('ELECTRON_STARTUP_PROFILE_COMPLETE')")
