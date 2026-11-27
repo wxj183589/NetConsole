@@ -31,3 +31,5 @@ HZL10 混合历史当前仍高于 500 ms 目标。五次采样仅作为阶段基
 | HZL10 最新 Run 多源混合 | 分批合并 | 63.0 / 65.3 / 66.6 ms | 67.3 / 69.5 / 69.9 ms |
 
 优化只应用于明确指定 Run 且包含多个来源的请求。未选 Run 的跨历史范围查询保留旧执行路径。HZL10 先前未限定 Run 的 25 条长时间范围首屏约 807 ms，仍未解决 `julianday(timestamp)` 对大型时间范围扫描的成本，继续标记 `PARTIAL`。当前 Run 实测四类 P95 均低于 500 ms。32 轮微基准不代表并行采集压力下的性能，也未测 CPU/RSS。
+
+针对 HZL10 最新 Run 执行 `EXPLAIN QUERY PLAN`，Ground、Heartbeat、MESH、AC、Raw、Deep 来源都通过现有 `(site_id, run_id, ...)` 索引进行 SEARCH，没有来源全表 SCAN。由于时间排序按 `julianday(ts)` 保持不同 offset 的正确顺序，每个被触发的来源仍出现局部 `USE TEMP B-TREE FOR ORDER BY`。后续若要消除该排序，需引入能保留时区语义的可迁移排序键或派生只读索引，并先验证旧库兼容和采集写入成本。
