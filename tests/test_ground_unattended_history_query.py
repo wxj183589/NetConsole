@@ -216,6 +216,33 @@ def test_history_gateway_snapshot_rejects_database_writes(indexed):
     assert service.query()["total"] == before
 
 
+def test_history_pages_reject_saturation_without_blocking_exports(indexed):
+    _, service = indexed
+    with service._interactive_snapshot(), service._interactive_snapshot():
+        with pytest.raises(GroundHistoryQueryError) as rejected:
+            service.query()
+        assert rejected.value.code == "GROUND_HISTORY_BUSY"
+        assert list(service.iter_export_rows())
+    assert service.query()["items"]
+
+
+def test_history_query_timeout_releases_snapshot_and_slot(indexed, monkeypatch):
+    _, service = indexed
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "netconsole.services.ground_unattended.history_query._INTERACTIVE_READ_TIMEOUT_SECONDS", 0,
+        )
+        with pytest.raises(GroundHistoryQueryError) as timed_out:
+            with service._interactive_snapshot() as connection:
+                assert connection is not None
+                connection.execute(
+                    "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL "
+                    "SELECT n+1 FROM seq WHERE n<10000) SELECT sum(n) FROM seq"
+                ).fetchall()
+        assert timed_out.value.code == "GROUND_HISTORY_TIMEOUT"
+    assert service.query()["items"]
+
+
 @pytest.mark.parametrize("filters", [
     {"sort_order": "desc; DROP TABLE events"}, {"data_type": "arbitrary"}, {"mr_role": "mr1"}, {"start_at": "2026-11-07T10:00:00"},
     {"start_at": "2026-11-08T00:00:00Z", "end_at": "2026-11-07T00:00:00Z"},

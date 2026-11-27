@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import BoundedSemaphore
+from time import monotonic
 from typing import Any, Iterator
 
 
@@ -22,6 +24,8 @@ HISTORY_DATA_TYPES = (
     "run", "train", "heartbeat", "quick_ping", "syslog_raw", "syslog_parsed",
     "ac_snapshot", "deep", "timeline",
 )
+_INTERACTIVE_READ_SLOTS = BoundedSemaphore(2)
+_INTERACTIVE_READ_TIMEOUT_SECONDS = 5
 
 
 class GroundHistoryQueryError(ValueError):
@@ -101,6 +105,32 @@ class GroundHistoryQueryService:
         finally:
             connection.rollback()
             connection.close()
+
+    @contextmanager
+    def _interactive_snapshot(self) -> Iterator[sqlite3.Connection | None]:
+        if not _INTERACTIVE_READ_SLOTS.acquire(blocking=False):
+            raise GroundHistoryQueryError(
+                "GROUND_HISTORY_BUSY", "历史查询繁忙，请稍后重试", status_code=503,
+            )
+        try:
+            deadline = monotonic() + _INTERACTIVE_READ_TIMEOUT_SECONDS
+            with self._read_snapshot() as connection:
+                if connection is not None:
+                    connection.execute("PRAGMA busy_timeout=1000")
+                    connection.set_progress_handler(lambda: int(monotonic() >= deadline), 1000)
+                try:
+                    yield connection
+                except sqlite3.OperationalError as exc:
+                    if exc.sqlite_errorcode == sqlite3.SQLITE_INTERRUPT:
+                        raise GroundHistoryQueryError(
+                            "GROUND_HISTORY_TIMEOUT", "历史查询超时，请缩小查询范围", status_code=503,
+                        ) from exc
+                    raise
+                finally:
+                    if connection is not None:
+                        connection.set_progress_handler(None, 0)
+        finally:
+            _INTERACTIVE_READ_SLOTS.release()
 
     @staticmethod
     def _validate(filters: dict[str, Any]) -> None:
@@ -426,7 +456,7 @@ class GroundHistoryQueryService:
         anchor = self._decode_cursor(cursor, filters=filters, page_size=page_size) if cursor else None
         result: dict[str, Any] = {"items": [], "total": 0, "page": page, "page_size": page_size, "sources": {name: "UNAVAILABLE" for name in HISTORY_DATA_TYPES}, "has_more": False, "next_cursor": ""}
         result["total_exact"] = include_total
-        with self._read_snapshot() as conn:
+        with self._interactive_snapshot() as conn:
             if conn is None:
                 return result
             queries, counts, result["sources"] = self._plan(conn, filters, keys_only=True)
