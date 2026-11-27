@@ -37,6 +37,6 @@ Status: `PASS` for the isolated synthetic Ground component scope. Field acceptan
 
 ## Boundary
 
-The run confirms six-hour UDP component stability with synthetic Heartbeat and AC workloads. It does not verify TCP, concurrent history queries, Quick Ping, Electron rendering, network disconnect/reconnect, abnormal process termination, device behavior, or field acceptance. The second independent six-hour Run `r2_3_2-long-20261127-r3-6h-02` is still running.
+The run confirms six-hour UDP component stability with synthetic Heartbeat and AC workloads. It does not verify TCP, concurrent history queries, Quick Ping, Electron rendering, network disconnect/reconnect, abnormal process termination, device behavior, or field acceptance. The second independent six-hour Run `r2_3_2-long-20261127-r3-6h-02` also completed with `PASS`; see [Run 02](./GROUND_UNATTENDED_R3_SIX_HOUR_SOAK_02.md).
 
 No Production data, real development business data, source archive or device configuration was modified. The run root and its evidence remain in the isolated Workspace test-data container.
