@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { defineComponent, h, useAttrs, type Component } from 'vue'
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises as flushVuePromises, mount } from '@vue/test-utils'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -19,6 +19,7 @@ const api = vi.hoisted(() => ({
   groundArchiveZipDownloadRequest: vi.fn(),
   listGroundArchives: vi.fn(),
   getGroundHealth: vi.fn(),
+  getGroundHeartbeat: vi.fn(),
   getActiveGroundOperation: vi.fn(),
   getGroundOperation: vi.fn(),
   getGroundPingSeries: vi.fn(),
@@ -168,6 +169,12 @@ const stubs: Record<string, Component> = {
   ElTableColumn: tableColumnStub,
   ElTabs: passthrough,
   ElTag: passthrough,
+}
+
+async function flushPromises(): Promise<void> {
+  await flushVuePromises()
+  await vi.dynamicImportSettled()
+  await flushVuePromises()
 }
 
 function profile() {
@@ -366,6 +373,10 @@ beforeEach(() => {
   api.listGroundTimeline.mockResolvedValue({ items: [], total: 0 })
   api.listGroundArchives.mockResolvedValue({ items: [], total: 0 })
   api.getGroundHealth.mockResolvedValue({ site_id: 'line-12', status: 'HEALTHY' })
+  api.getGroundHeartbeat.mockResolvedValue({
+    items: [], total: 0, mrs: [], trains: [], data_state: 'STOPPED', run_id: '', run_state: 'STOPPED',
+    mr_counts: {}, train_counts: {},
+  })
   api.getGroundSyslogTransportStatus.mockResolvedValue({
     configured_return_ip: '10.8.0.4',
     configured_return_port: 5514,
@@ -443,6 +454,7 @@ describe('Ground unattended page loading behavior', () => {
       return new Promise((resolve) => { resolveRuns = resolve })
     })
     const wrapper = mountPage()
+    ;(wrapper.vm as unknown as { activeTab: string }).activeTab = 'health'
     try {
       await flushPromises()
       expect(api.listGroundRuns).not.toHaveBeenCalled()
@@ -1615,6 +1627,7 @@ describe('Ground unattended page loading behavior', () => {
     })
 
     const wrapper = mountPage()
+    ;(wrapper.vm as unknown as { activeTab: string }).activeTab = 'health'
     await flushPromises()
     await vi.advanceTimersByTimeAsync(30_000)
     await flushPromises()

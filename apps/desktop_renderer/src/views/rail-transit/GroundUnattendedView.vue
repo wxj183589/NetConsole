@@ -1,22 +1,23 @@
 <script setup lang="ts">
 import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
-import { ref, watch, watchEffect } from 'vue'
+import { defineAsyncComponent, ref, watch, watchEffect } from 'vue'
 import { ElMessage } from 'element-plus'
 import { syslogVisibleDetails } from './groundSyslogPresentation'
 import { isFeatureVisible, isFeatureEnabled } from '../../features'
 import { GROUND_TAB_FEATURES } from './groundFeatures'
-import HeartbeatPage from './HeartbeatPage.vue'
-import AcMeshLinkPage from './AcMeshLinkPage.vue'
-import QuickPingPage from './QuickPingPage.vue'
-import OverviewPage from './OverviewPage.vue'
-import DeepCollectionPage from './DeepTasksPage.vue'
-import TimelinePage from './TimelinePage.vue'
-import SyslogPage from './SyslogPage.vue'
-import SystemHealthPage from './SystemHealthPage.vue'
-import ArchivePage from './ArchivePage.vue'
-import SettingsPage from './SettingsPage.vue'
-import GroundHistoryPlayback from '../../components/ground-unattended/GroundHistoryPlayback.vue'
 import { provideGroundContext } from './useGroundUnattended'
+
+const HeartbeatPage = defineAsyncComponent(() => import('./HeartbeatPage.vue'))
+const AcMeshLinkPage = defineAsyncComponent(() => import('./AcMeshLinkPage.vue'))
+const QuickPingPage = defineAsyncComponent(() => import('./QuickPingPage.vue'))
+const OverviewPage = defineAsyncComponent(() => import('./OverviewPage.vue'))
+const DeepCollectionPage = defineAsyncComponent(() => import('./DeepTasksPage.vue'))
+const TimelinePage = defineAsyncComponent(() => import('./TimelinePage.vue'))
+const SyslogPage = defineAsyncComponent(() => import('./SyslogPage.vue'))
+const SystemHealthPage = defineAsyncComponent(() => import('./SystemHealthPage.vue'))
+const ArchivePage = defineAsyncComponent(() => import('./ArchivePage.vue'))
+const SettingsPage = defineAsyncComponent(() => import('./SettingsPage.vue'))
+const GroundHistoryPlayback = defineAsyncComponent(() => import('../../components/ground-unattended/GroundHistoryPlayback.vue'))
 const groundContext = provideGroundContext()
 defineExpose(groundContext)
 const { Box, CopyDocument, Delete, Refresh, SwitchButton, VideoPause, VideoPlay, pauseGroundRun, resumeGroundRun, startGroundRun, GroundPingChart, NcFloatingWindow, t, groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel, groundStopTriggerLabel, groundSourceLabel, groundStatusLabel, groundTransitionContextLabel, activeTab, pageVisible, pageActivated, quickContextRevision, loading, action, status, profile, trains, positionRendererTiming, pingTargets, selectedDeepCollector, deepRecords, deepWindowOpen, deepRecordsLoading, deepCategory, deepKeyword, deepPaused, deepAutoRefresh, acMeshSummary, acMeshLinks, acMeshMrs, acMeshSnapshots, acMeshRawTail, acMeshLoading, acControllers, selectedAcControllerId, acControllersLoading, acControllersError, runs, selectedRunId, runHistoryDeleteLoading, pingSeries, selectedPingTarget, pingWindowOpen, pingSeriesLoading, pingIncrementalLoading, includeWarmup, pingRange, pingCustomRange, pingAutoRefresh, pingPaused, pingFollowLatest, pingInitialLoadSucceeded, pingBackendState, pingRequestId, pingErrorCode, selectedSyslogRecord, syslogDetailDrawer, selectedArchive, archiveDetailTab, selectedTrain, archiveDialog, trainDialog, openingSessionId, trainFilter, pingFilter, generalLoadIssues, pingIssue, loadIssueDescription, running, operationActive, visibleOperation, selectedRun, historicalRun, runHistoryDeleteBlocked, selectedPingHistorical, runScopedTab, archiveRecordCount, selectedTrainCollection, trainTableMaxHeight, pingTableMaxHeight, startBlockedReason, pingAvailability, pingEmptyDescription, pingLiveStats, locationStats, trainColumns, pingColumns, refreshAcMesh, dismissOperation, loadAll, runAction, submitStop, showPingSeries, openPingBackendLogs, togglePriority, syncInventory, updatePolicy, checkConfigs, confirmTargetPortChange, showTrain, showTrainPing, showTrainTimeline, openDeepSession, deleteSelectedRunHistory, downloadArchiveSummary, downloadArchiveZip, verifyArchive, endpoint, groundControlSourceLabel, endpointRadioTooltip, duration, metric, bytes, statusType, useFullPingRange, togglePingPaused, returnPingToLive, copyPingDiagnostics, handlePingDialogClosed, loadDeepRecords, toggleDeepPaused, handleDeepWindowClosed, copyDeepRecords } = groundContext
