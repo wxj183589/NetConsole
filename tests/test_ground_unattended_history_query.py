@@ -83,6 +83,33 @@ def test_cursor_pages_can_skip_exact_total(indexed):
     assert second["items"] == service.query(page=2, page_size=1)["items"]
 
 
+def test_cursor_page_bounds_each_source_before_merging(indexed):
+    path, service = indexed
+    statements: list[str] = []
+
+    @contextmanager
+    def traced_snapshot():
+        connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        connection.row_factory = sqlite3.Row
+        connection.set_trace_callback(statements.append)
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            connection.execute("BEGIN")
+            yield connection
+        finally:
+            connection.rollback()
+            connection.close()
+
+    service._read_snapshot = traced_snapshot  # type: ignore[method-assign]
+    page = service.query(run_id="run-1", page_size=2, include_total=False)
+    source_queries = [sql for sql in statements if "cursor_julian_day" in sql]
+    assert len(source_queries) == 10
+    assert all("UNION ALL" not in sql for sql in source_queries)
+    assert all("LIMIT 3" in sql for sql in source_queries)
+    assert not any("COUNT(*) AS item_count" in sql for sql in statements)
+    assert page["has_more"]
+
+
 def test_pagination_timezone_and_export_consistent_snapshot(indexed):
     path, service = indexed
     with sqlite3.connect(path) as conn:
@@ -98,6 +125,22 @@ def test_pagination_timezone_and_export_consistent_snapshot(indexed):
         insert(conn, "events", site_id="demo", run_id="run-1", ts=STAMP, event_type="late")
     assert len([first, *rows]) == 621
     assert service.query(**filters)["total"] == 622
+    expected_ids = [
+        row["record_id"]
+        for row in service.iter_export_rows(**filters)
+    ]
+    actual_ids = []
+    cursor = ""
+    while True:
+        page = service.query(
+            **filters, page_size=100, cursor=cursor,
+            include_total=False,
+        )
+        actual_ids.extend(row["record_id"] for row in page["items"])
+        if not page["has_more"]:
+            break
+        cursor = page["next_cursor"]
+    assert actual_ids == expected_ids
 
 
 def test_history_page_batches_detail_reads_and_keeps_site_filter(indexed):

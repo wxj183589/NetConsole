@@ -141,11 +141,10 @@ class GroundHistoryQueryService:
 
     def _plan(
         self, conn: sqlite3.Connection, filters: dict[str, Any], *, keys_only: bool = False,
-    ) -> tuple[str, list[Any], list[tuple[str, list[Any]]], dict[str, str]]:
+    ) -> tuple[list[tuple[str, list[Any]]], list[tuple[str, list[Any]]], dict[str, str]]:
         tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         sources = {name: "UNAVAILABLE" for name in HISTORY_DATA_TYPES}
-        queries: list[str] = []
-        params: list[Any] = []
+        queries: list[tuple[str, list[Any]]] = []
         counts: list[tuple[str, list[Any]]] = []
         for source in _SOURCES:
             table = "ground_unattended_" + source.table
@@ -179,9 +178,23 @@ class GroundHistoryQueryService:
                     f"{expr} AS {name}"
                     for name, expr in zip(_DETAIL_FIELDS, self._detail_expressions(source), strict=True)
                 )
-            queries.append(f"{projection} {base}")
-            params.extend(values)
-        return " UNION ALL ".join(queries), params, counts, sources
+            queries.append((f"{projection} {base}", values))
+        return queries, counts, sources
+
+    @staticmethod
+    def _page_sort_key(row: sqlite3.Row, sort_order: str) -> tuple[Any, ...]:
+        null_rank = 1 if sort_order == "desc" else 0
+        non_null_rank = 0 if sort_order == "desc" else 1
+        is_null = bool(row["cursor_ts_is_null"])
+        timestamp = float(row["cursor_julian_day"] or 0.0)
+        return (
+            null_rank if is_null else non_null_rank,
+            -timestamp if sort_order == "desc" else timestamp,
+            str(row["data_type"]),
+            str(row["source_table"]),
+            str(row["source_identity"]),
+            int(row["source_rowid"]),
+        )
 
     @staticmethod
     def _identity_filter(source: _Source, filters: dict[str, Any], where: list[str], params: list[Any]) -> None:
@@ -416,7 +429,7 @@ class GroundHistoryQueryService:
         with self._read_snapshot() as conn:
             if conn is None:
                 return result
-            sql, params, counts, result["sources"] = self._plan(conn, filters, keys_only=True)
+            queries, counts, result["sources"] = self._plan(conn, filters, keys_only=True)
             if include_total and counts:
                 count_parts = [
                     query.replace("SELECT COUNT(*)", "SELECT COUNT(*) AS item_count", 1)
@@ -431,28 +444,56 @@ class GroundHistoryQueryService:
                     + ")",
                     count_params,
                 ).fetchone()[0])
-            if sql:
+            if queries and run_id and len(queries) > 1:
+                candidate_rows: list[sqlite3.Row] = []
+                predicate, cursor_params = (
+                    self._cursor_predicate(sort_order=sort_order, anchor=anchor)
+                    if cursor and anchor is not None else ("", [])
+                )
+                offset = 0 if cursor else (page - 1) * page_size
+                for source_sql, source_params in queries:
+                    query_sql = (
+                        "SELECT *, julianday(ts) IS NULL AS cursor_ts_is_null, "
+                        "julianday(ts) AS cursor_julian_day FROM (" + source_sql + ")"
+                    )
+                    query_params = list(source_params)
+                    if cursor:
+                        query_sql += " WHERE " + predicate
+                        query_params.extend(cursor_params)
+                    query_sql += " ORDER BY " + self._order_clause(sort_order) + " LIMIT ?"
+                    candidate_rows.extend(conn.execute(
+                        query_sql,
+                        (*query_params, offset + page_size + 1),
+                    ).fetchall())
+                candidate_rows.sort(key=lambda row: self._page_sort_key(row, sort_order))
+                if offset:
+                    candidate_rows = candidate_rows[offset:]
+                has_more = len(candidate_rows) > page_size
+                rows = candidate_rows[:page_size]
+                result["has_more"] = has_more
+                result["items"] = self._items(conn, rows, keys_only=True)
+                if rows and has_more:
+                    result["next_cursor"] = self._encode_cursor(
+                        filters=filters, page_size=page_size, row=rows[-1],
+                    )
+            elif queries:
+                sql = " UNION ALL ".join(query for query, _values in queries)
+                query_params = [value for _query, values in queries for value in values]
                 query_sql = "SELECT *, julianday(ts) IS NULL AS cursor_ts_is_null FROM (" + sql + ")"
-                query_params: list[Any] = list(params)
                 if cursor:
                     assert anchor is not None
-                    predicate, cursor_params = self._cursor_predicate(sort_order=sort_order, anchor=anchor)
+                    predicate, cursor_params = self._cursor_predicate(
+                        sort_order=sort_order, anchor=anchor,
+                    )
                     query_sql += " WHERE " + predicate
                     query_params.extend(cursor_params)
-                    rows = conn.execute(
-                        query_sql + " ORDER BY " + self._order_clause(sort_order) + " LIMIT ?",
-                        (*query_params, page_size + 1),
-                    ).fetchall()
-                    has_more = len(rows) > page_size
-                    rows = rows[:page_size]
-                else:
-                    offset = (page - 1) * page_size
-                    rows = conn.execute(
-                        query_sql + " ORDER BY " + self._order_clause(sort_order) + " LIMIT ? OFFSET ?",
-                        (*query_params, page_size + 1, offset),
-                    ).fetchall()
-                    has_more = len(rows) > page_size
-                    rows = rows[:page_size]
+                query_sql += " ORDER BY " + self._order_clause(sort_order) + " LIMIT ?"
+                limit = page_size + 1 if cursor else (page - 1) * page_size + page_size + 1
+                rows = conn.execute(query_sql, (*query_params, limit)).fetchall()
+                offset = 0 if cursor else (page - 1) * page_size
+                rows = rows[offset:]
+                has_more = len(rows) > page_size
+                rows = rows[:page_size]
                 result["has_more"] = has_more
                 result["items"] = self._items(conn, rows, keys_only=True)
                 if rows and has_more:
@@ -472,9 +513,11 @@ class GroundHistoryQueryService:
         with self._read_snapshot() as conn:
             if conn is None:
                 return
-            sql, params, _counts, _sources = self._plan(conn, filters)
-            if not sql:
+            queries, _counts, _sources = self._plan(conn, filters)
+            if not queries:
                 return
+            sql = " UNION ALL ".join(query for query, _values in queries)
+            params = [value for _query, values in queries for value in values]
             cursor = conn.execute(
                 "SELECT * FROM (" + sql + ") ORDER BY " + self._order_clause(sort_order),
                 params,
