@@ -58,6 +58,7 @@ export interface LoadIssue {
 
 export function createGroundContext() {
 const activeTab = ref('overview')
+const workspaceMode = ref<'collection' | 'playback'>('collection')
 
 const pageVisible = ref(!document.hidden)
 
@@ -897,7 +898,6 @@ function applyOperation(value: { active: GroundOperation | null; terminal: Groun
       return
     }
     latestTerminalOperation.value = terminal
-    void loadRuns(true)
     if (terminal.operation_type === 'STOP_AND_ARCHIVE' && activeTab.value === 'archives') void loadArchives(true)
     completedOperationTimer = window.setTimeout(() => {
       dismissedTerminalOperationIds.add(terminal.operation_id)
@@ -941,8 +941,8 @@ async function loadAll(silent = false): Promise<void> {
     // it before loading dependent data so first entry does not create a burst
     // of synchronous backend queries.
     await loadStatus(silent)
-    await loadRuns(silent)
     if (!profile.value || activeTab.value === 'settings') await loadProfile(silent)
+    if (workspaceMode.value === 'playback') await loadRuns(silent)
     await loadOperation(silent)
     await loadActiveTab(silent)
   } finally {
@@ -2114,6 +2114,12 @@ onActivated(() => {
   void loadAll(true)
 })
 
+watch(workspaceMode, (mode) => {
+  historySyslogRunId.value = ''
+  if (mode === 'playback') void loadRuns()
+  else requestControllers.get('runs')?.abort()
+}, { flush: 'sync' })
+
 watch(activeTab, () => {
   requestControllers.forEach((controller, key) => {
     if (
@@ -2176,6 +2182,7 @@ onBeforeUnmount(() => {
   }
 })
 return {
+workspaceMode,
 computed,
 onActivated,
 onBeforeUnmount,

@@ -21,9 +21,7 @@ const groundContext = provideGroundContext()
 defineExpose(groundContext)
 const { Box, CopyDocument, Delete, Refresh, SwitchButton, VideoPause, VideoPlay, pauseGroundRun, resumeGroundRun, startGroundRun, GroundPingChart, NcFloatingWindow, t, groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel, groundStopTriggerLabel, groundSourceLabel, groundStatusLabel, groundTransitionContextLabel, activeTab, pageVisible, pageActivated, quickContextRevision, loading, action, status, profile, trains, positionRendererTiming, pingTargets, selectedDeepCollector, deepRecords, deepWindowOpen, deepRecordsLoading, deepCategory, deepKeyword, deepPaused, deepAutoRefresh, acMeshSummary, acMeshLinks, acMeshMrs, acMeshSnapshots, acMeshRawTail, acMeshLoading, acControllers, selectedAcControllerId, acControllersLoading, acControllersError, runs, selectedRunId, runHistoryDeleteLoading, pingSeries, selectedPingTarget, pingWindowOpen, pingSeriesLoading, pingIncrementalLoading, includeWarmup, pingRange, pingCustomRange, pingAutoRefresh, pingPaused, pingFollowLatest, pingInitialLoadSucceeded, pingBackendState, pingRequestId, pingErrorCode, selectedSyslogRecord, syslogDetailDrawer, selectedArchive, archiveDetailTab, selectedTrain, archiveDialog, trainDialog, openingSessionId, trainFilter, pingFilter, generalLoadIssues, pingIssue, loadIssueDescription, running, operationActive, visibleOperation, selectedRun, historicalRun, runHistoryDeleteBlocked, selectedPingHistorical, runScopedTab, archiveRecordCount, selectedTrainCollection, trainTableMaxHeight, pingTableMaxHeight, startBlockedReason, pingAvailability, pingEmptyDescription, pingLiveStats, locationStats, trainColumns, pingColumns, refreshAcMesh, dismissOperation, loadAll, runAction, submitStop, showPingSeries, openPingBackendLogs, togglePriority, syncInventory, updatePolicy, checkConfigs, confirmTargetPortChange, showTrain, showTrainPing, showTrainTimeline, openDeepSession, deleteSelectedRunHistory, downloadArchiveSummary, downloadArchiveZip, verifyArchive, endpoint, groundControlSourceLabel, endpointRadioTooltip, duration, metric, bytes, statusType, useFullPingRange, togglePingPaused, returnPingToLive, copyPingDiagnostics, handlePingDialogClosed, loadDeepRecords, toggleDeepPaused, handleDeepWindowClosed, copyDeepRecords } = groundContext
 const quickPingMrId = ref('')
-const workspace = ref<'collection' | 'playback'>('collection')
-const { historySyslogRunId } = groundContext
-watch(workspace, () => { historySyslogRunId.value = '' }, { flush: 'sync' })
+const { historySyslogRunId, workspaceMode: workspace } = groundContext
 async function copySyslogRaw() {
   try {
     await navigator.clipboard.writeText(selectedSyslogRecord.value?.raw_text || '')
@@ -112,7 +110,7 @@ function openQuickPing(mrId: string) {
     <section v-if="workspace === 'collection' && runScopedTab" class="run-context-bar">
       <el-tag v-if="selectedRunId" type="success">{{ t('ground.active_run', '当前活动运行') }}</el-tag>
       <el-tag v-else type="info">{{ t('ground.no_active_run', '暂无运行') }}</el-tag>
-      <span v-if="selectedRun" class="muted">{{ selectedRun.actual_started_at || selectedRun.scheduled_start_at }}</span>
+      <span v-if="status?.active_run_started_at" class="muted">{{ status.active_run_started_at }}</span>
     </section>
 
     <el-tabs v-if="workspace === 'collection'" v-model="activeTab" class="ground-tabs">
@@ -470,7 +468,7 @@ function openQuickPing(mrId: string) {
     <el-drawer v-model="syslogDetailDrawer" title="Syslog 原始记录详情" size="min(720px, 92vw)" destroy-on-close>
       <template v-if="selectedSyslogRecord">
         <el-descriptions :column="1" border>
-          <el-descriptions-item label="运行上下文">{{ selectedRun?.run_date || '—' }} · {{ selectedRunId || '—' }}</el-descriptions-item>
+          <el-descriptions-item label="运行上下文">{{ status?.active_run_date || '—' }} · {{ selectedRunId || '—' }}</el-descriptions-item>
           <el-descriptions-item label="接收 / 设备时间">{{ selectedSyslogRecord.receive_time }} / {{ selectedSyslogRecord.device_time || '—' }}</el-descriptions-item>
           <el-descriptions-item label="时间差">{{ selectedSyslogRecord.clock_offset_ms == null ? '—' : `${selectedSyslogRecord.clock_offset_ms} ms` }}</el-descriptions-item>
           <el-descriptions-item label="列车 / MR">{{ selectedSyslogRecord.train_no || '未识别' }}（{{ selectedSyslogRecord.train_id || '—' }}）/ {{ selectedSyslogRecord.mr_name || selectedSyslogRecord.source_ip }}（{{ selectedSyslogRecord.device_uuid || '—' }}）</el-descriptions-item>

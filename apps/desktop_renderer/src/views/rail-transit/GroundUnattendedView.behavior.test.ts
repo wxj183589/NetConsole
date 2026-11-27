@@ -435,19 +435,25 @@ describe('Ground unattended page loading behavior', () => {
     const wrapper = mountPage()
     try {
       await flushPromises()
-      expect(historySignal).toBeDefined()
+      expect(api.listGroundRuns).not.toHaveBeenCalled()
       const view = wrapper.vm as unknown as {
         activeTab: string
         runs: Array<{ run_id: string }>
         selectedRunId: string
+        workspaceMode: 'collection' | 'playback'
       }
       view.activeTab = 'heartbeat'
       await flushPromises()
+      expect(api.listGroundRuns).not.toHaveBeenCalled()
+      view.workspaceMode = 'playback'
+      await flushPromises()
+      expect(historySignal).toBeDefined()
       expect(historySignal?.aborted).toBe(false)
       resolveRuns({ items: [{ run_id: 'run-history', run_date: '2026-11-06' }], total: 1 })
       await flushPromises()
       expect(view.runs.map((run) => run.run_id)).toEqual(['run-history'])
       expect(view.selectedRunId).toBe('')
+      view.workspaceMode = 'collection'
       for (const tab of ['syslog', 'timeline', 'deep']) {
         view.activeTab = tab
         await flushPromises()
@@ -980,8 +986,10 @@ describe('Ground unattended page loading behavior', () => {
     const view = wrapper.vm as unknown as {
       handleSyslogSelection: (rows: Array<Record<string, unknown>>) => void
       historySyslogRunId: string
+      loadRuns: () => Promise<boolean>
       deleteSyslog: (mode: 'SELECTED') => Promise<void>
     }
+    await view.loadRuns()
     view.historySyslogRunId = 'run-delete'
     await flushPromises()
     view.handleSyslogSelection([{
@@ -1071,7 +1079,9 @@ describe('Ground unattended page loading behavior', () => {
       }
       deleteSyslog: (mode: 'FILTERED') => Promise<void>
       historySyslogRunId: string
+      loadRuns: () => Promise<boolean>
     }
+    await view.loadRuns()
     view.historySyslogRunId = 'run-delete'
     await flushPromises()
     view.syslogFilter.keyword = 'WMESH'
@@ -1141,8 +1151,10 @@ describe('Ground unattended page loading behavior', () => {
     const view = wrapper.vm as unknown as {
       deleteSyslog: (mode: 'RUN_ALL') => Promise<void>
       historySyslogRunId: string
+      loadRuns: () => Promise<boolean>
     }
 
+    await view.loadRuns()
     view.historySyslogRunId = 'run-ready'
     await flushPromises()
     await view.deleteSyslog('RUN_ALL')
