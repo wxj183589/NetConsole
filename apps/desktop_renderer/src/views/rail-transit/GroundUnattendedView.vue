@@ -114,11 +114,11 @@ function openQuickPing(mrId: string) {
     </section>
 
     <el-tabs v-if="workspace === 'collection'" v-model="activeTab" class="ground-tabs">
-      <el-tab-pane v-if="tabVisible('overview')" :disabled="!tabEnabled('overview')" :label="t('ground.overview', '运行概览')" name="overview">
+      <el-tab-pane v-if="tabVisible('overview')" :disabled="!tabEnabled('overview')" :label="t('ground.overview', '运行概览')" name="overview" lazy>
         <OverviewPage />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('heartbeat')" :disabled="!tabEnabled('heartbeat')" :label="t('ground.heartbeat', '心跳检测')" name="heartbeat">
+      <el-tab-pane v-if="tabVisible('heartbeat')" :disabled="!tabEnabled('heartbeat')" :label="t('ground.heartbeat', '心跳检测')" name="heartbeat" lazy>
         <HeartbeatPage
           :trains="trains"
           :ping-targets="pingTargets"
@@ -145,7 +145,7 @@ function openQuickPing(mrId: string) {
         />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('ac-mesh-link')" :disabled="!tabEnabled('ac-mesh-link')" :label="t('ground.ac_mesh_link', 'AC-Mesh-Link')" name="ac-mesh-link">
+      <el-tab-pane v-if="tabVisible('ac-mesh-link')" :disabled="!tabEnabled('ac-mesh-link')" :label="t('ground.ac_mesh_link', 'AC-Mesh-Link')" name="ac-mesh-link" lazy>
         <AcMeshLinkPage
           :summary="acMeshSummary"
           :links="acMeshLinks"
@@ -162,31 +162,31 @@ function openQuickPing(mrId: string) {
         />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('quick-ping')" :disabled="!tabEnabled('quick-ping')" :label="t('ground.quick_ping', '快速 Ping')" name="quick-ping">
+      <el-tab-pane v-if="tabVisible('quick-ping')" :disabled="!tabEnabled('quick-ping')" :label="t('ground.quick_ping', '快速 Ping')" name="quick-ping" lazy>
         <QuickPingPage :mr-id="quickPingMrId" :key="quickContextRevision" :trains="trains" :active="pageVisible && pageActivated && activeTab === 'quick-ping'" />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('syslog')" :disabled="!tabEnabled('syslog')" :label="t('ground.syslog', 'Syslog 日志')" name="syslog" class="log-console-pane">
+      <el-tab-pane v-if="tabVisible('syslog')" :disabled="!tabEnabled('syslog')" :label="t('ground.syslog', 'Syslog 日志')" name="syslog" class="log-console-pane" lazy>
         <SyslogPage />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('deep')" :disabled="!tabEnabled('deep')" :label="t('ground.deep_collection', '深度采集')" name="deep">
+      <el-tab-pane v-if="tabVisible('deep')" :disabled="!tabEnabled('deep')" :label="t('ground.deep_collection', '深度采集')" name="deep" lazy>
         <DeepCollectionPage />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('timeline')" :disabled="!tabEnabled('timeline')" :label="t('ground.timeline', '时间轴')" name="timeline" class="log-console-pane">
+      <el-tab-pane v-if="tabVisible('timeline')" :disabled="!tabEnabled('timeline')" :label="t('ground.timeline', '时间轴')" name="timeline" class="log-console-pane" lazy>
         <TimelinePage />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('health')" :disabled="!tabEnabled('health')" :label="t('ground.health', '系统健康')" name="health">
+      <el-tab-pane v-if="tabVisible('health')" :disabled="!tabEnabled('health')" :label="t('ground.health', '系统健康')" name="health" lazy>
         <SystemHealthPage />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('archives')" :disabled="!tabEnabled('archives')" :label="t('ground.archives', '历史归档')" name="archives">
+      <el-tab-pane v-if="tabVisible('archives')" :disabled="!tabEnabled('archives')" :label="t('ground.archives', '历史归档')" name="archives" lazy>
         <ArchivePage />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('settings')" :disabled="!tabEnabled('settings')" :label="t('ground.settings', '设置')" name="settings">
+      <el-tab-pane v-if="tabVisible('settings')" :disabled="!tabEnabled('settings')" :label="t('ground.settings', '设置')" name="settings" lazy>
         <SettingsPage />
       </el-tab-pane>
     </el-tabs>

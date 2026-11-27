@@ -425,6 +425,16 @@ afterEach(() => {
 })
 
 describe('Ground unattended page loading behavior', () => {
+  it('defers mounting every Ground tab until it is selected', async () => {
+    const wrapper = mountPage()
+    try {
+      await flushPromises()
+      expect(wrapper.findAll('.ground-tabs [lazy]')).toHaveLength(10)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it('keeps archived runs available without querying them from the idle live workspace', async () => {
     let resolveRuns!: (value: { items: Array<{ run_id: string; run_date: string }>; total: number }) => void
     let historySignal: AbortSignal | undefined
