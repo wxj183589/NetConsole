@@ -259,6 +259,26 @@ def test_syslog_tcp_supports_rfc6587_octet_counting_and_isolates_clients(manager
         probe.bind(("127.0.0.1", port))
 
 
+def test_syslog_tcp_keeps_idle_client_connected_for_long_lived_devices(manager):
+    port = free_port(udp=True)
+    manager.configure("syslog", ServiceConfig(port=port, max_connections=2, timeout=1))
+    assert manager.action("syslog", "start")["status"] == "running"
+    marker = "long-lived idle connection"
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=2) as client:
+            client.settimeout(2)
+            time.sleep(3.2)
+            client.sendall(f"<14>Nov 25 10:04:00 host-5 app: {marker}\n".encode())
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if marker in "\n".join(manager.logs("syslog", history=True)):
+                    break
+                time.sleep(0.02)
+        assert marker in "\n".join(manager.logs("syslog", history=True))
+    finally:
+        assert manager.action("syslog", "stop")["status"] == "stopped"
+
+
 def test_syslog_burst_does_not_block_http_service(manager):
     http_port = free_port()
     while True:

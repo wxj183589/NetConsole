@@ -34,7 +34,11 @@ from netconsole.services.ground_unattended.radio_control import (
     control_event_dedup_key,
 )
 from netconsole.services.ground_unattended.position_engine import PositionEngine
-from netconsole.services.local_network_services.protocols import SyslogTcpHandler, TcpServer
+from netconsole.services.local_network_services.protocols import (
+    SYSLOG_TCP_IDLE_TIMEOUT_SECONDS,
+    SyslogTcpHandler,
+    TcpServer,
+)
 
 _WMESH_EVENT_RE = re.compile(
     r"WMESH/\d+/(?P<event>MESH_LINKUP|MESH_LINKDOWN|MESH_ACTIVELINK_SWITCH)\s*:",
@@ -1348,6 +1352,7 @@ class SyslogUdpReceiver:
                 tcp = self._tcp_server = TcpServer(sock.getsockname(), _GroundTcpHandler)
                 tcp.stopping = self._stop
                 tcp.log = logging.getLogger(__name__)
+                tcp.request_timeout = SYSLOG_TCP_IDLE_TIMEOUT_SECONDS
                 tcp.slots = threading.BoundedSemaphore(32)
                 tcp.max_packet_size = 65_535
                 tcp.enqueue = self._enqueue_frame

@@ -85,6 +85,26 @@ def test_ground_syslog_tcp_and_udp_share_one_persistence_pipeline(tmp_path, capl
         rebound.bind(address)
 
 
+def test_ground_syslog_tcp_keeps_idle_device_connection(tmp_path):
+    receiver = _receiver(tmp_path, tcp_enabled=True)
+    host, port_text = receiver.health_snapshot()["tcp_listen_address"].split(":")
+    marker = b"<134>UNKNOWN/6/TEST: long-lived idle connection"
+    try:
+        with socket.create_connection((host, int(port_text))) as client:
+            time.sleep(3.2)
+            client.sendall(marker + b"\n")
+            _wait(lambda: receiver.health_snapshot()["parsed"] == 1, timeout=10)
+        assert receiver.health_snapshot()["received"] == 1
+    finally:
+        stopped = receiver.stop()
+    assert stopped["success"] and stopped["data_complete"], stopped
+    records = []
+    for row in receiver.repository.list_raw_files(data_type="syslog"):
+        path = receiver.repository.db_path.parent / row["relative_path"]
+        records.extend(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+    assert [base64.b64decode(row["raw_bytes_base64"]) for row in records] == [marker]
+
+
 def test_existing_projection_history_gains_indexed_raw_replay_lookup(tmp_path: Path) -> None:
     repository = GroundUnattendedRepository(tmp_path / "index.sqlite", site_id="site-a")
     # Simulate an existing database, including duplicate legacy raw identities:

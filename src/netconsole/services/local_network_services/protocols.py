@@ -20,6 +20,8 @@ from urllib.parse import unquote, urlsplit
 
 from netconsole.services.system_maintenance_redaction import redact_system_maintenance_text
 
+SYSLOG_TCP_IDLE_TIMEOUT_SECONDS = 300
+
 
 def shared_path(root: Path, name: str) -> Path:
     parts = name.split("/")
@@ -497,6 +499,7 @@ def create_syslog_server(config, log, stopping):
         tcp = TcpServer((config.address, config.port), SyslogTcpHandler, bind_and_activate=False)
         servers.append(tcp)
         initialize(tcp)
+        tcp.request_timeout = SYSLOG_TCP_IDLE_TIMEOUT_SECONDS
     except OSError:
         for server in servers:
             server.server_close()
