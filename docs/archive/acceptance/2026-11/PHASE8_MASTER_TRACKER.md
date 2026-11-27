@@ -2,6 +2,12 @@
 
 ## 2026-11-27 地面无人值守 R3.0 阶段验证
 
+- `b40b2d86` 恢复旧客户端深分页的 SQLite OFFSET，首屏及游标按来源有界合并。历史查询及导出 22 项通过。
+- `2cd19458` 修复 TCP 空 CRLF 与数字开头的换行报文误合并，14 项回环回归通过。
+- `ff76655c` 将历史 Run 列表移到回放按需加载，实时页使用状态接口提供的活动 Run 时间。Renderer 定向 58 项及类型检查通过。
+- `29a8dd2a` 为交互历史分页设定两条并发上限和 5 秒 SQLite 执行时限。历史查询及导出 24 项通过，独立导出快照不占交互名额。
+- 125 秒跨进程压力抽样在合成 UDP/Heartbeat/AC 持续采集时读取真实 HZL10 隔离数据库。922 次多源查询 P95 147.0 ms，511 次时间轴查询 P95 265.3 ms，另流式读取 440 条导出行。采集侧两次分钟采样之间新增接收和落盘各 137 条，丢弃及投影失败均为 0。该测试未覆盖同库读写竞争、TCP 和 Quick Ping。
+
 - 选定 Run 的多来源历史页改为每个来源有界取候选，再执行全局时间合并。源导出、分页、API、归档查询、规模和时间轴定向回归共 95 passed / 1 skipped。32 次真实库测量中，HZL10 最新 Run 多源页 P95 首屏/游标分别为 65.3/69.5 ms，时间轴 125.4/127.5 ms。未选 Run 的 807 ms 跨历史查询没有优化，保留原路径并记录为待处理项。见 [SQL 查询审计](./real-data-20261125/SQL_QUERY_AUDIT.md)。
 - Ground 与通用 Syslog TCP Handler 的 idle socket timeout 从 3 秒改为共享 300 秒上限；连接数仍受现有 bounded semaphore 限制。Ground 与通用服务分别验证 3.2 秒空闲后同连接成功收报，停机后端口释放。Syslog loopback 14 passed。真实设备保活/重连仍 `NOT VERIFIED`。
 - 1 小时隔离组件 soak PASS，实际 3,606 秒，100 synthetic MR，Syslog 4,634/4,634 收到并落 Raw，dropped=0，最终队列排空，UDP 端口释放；RSS 峰值 93.2 MiB，位置 P95/P99 为 991/1,064 ms。未覆盖 TCP、Quick Ping、Electron 或并发历史查询。[详细报告](./GROUND_UNATTENDED_R3_ONE_HOUR_SOAK.md)
