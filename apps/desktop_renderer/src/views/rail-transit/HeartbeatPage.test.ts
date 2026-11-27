@@ -256,6 +256,7 @@ describe('persisted heartbeat UI', () => {
 
   it('polls only the active page and stops both page requests after deactivation', async () => {
     vi.useFakeTimers()
+    ;(injected.current.status as { value: unknown }).value = { active_run_id: 'run-1' }
     const heartbeat = shallowMount(HeartbeatPage, { props: props as never, global })
     const overview = shallowMount(OverviewPage, { global })
     await flushPromises()
@@ -273,5 +274,23 @@ describe('persisted heartbeat UI', () => {
     expect(api.heartbeat).toHaveBeenCalledTimes(2)
     expect(api.timeline).toHaveBeenCalledTimes(1)
     heartbeat.unmount(); overview.unmount()
+  })
+
+  it('does not query the latest historical run from the live overview when no run is active', async () => {
+    vi.useFakeTimers()
+    ;(injected.current.activeTab as { value: string }).value = 'overview'
+    ;(injected.current.status as { value: unknown }).value = {
+      state: 'STOPPED', active_run_id: '', latest_run_id: 'run-latest',
+    }
+
+    const overview = shallowMount(OverviewPage, { global })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+
+    expect(api.heartbeat).not.toHaveBeenCalled()
+    expect(api.timeline).not.toHaveBeenCalled()
+    expect(overview.findComponent({ name: 'ElAlert' }).exists()).toBe(false)
+    overview.unmount()
   })
 })

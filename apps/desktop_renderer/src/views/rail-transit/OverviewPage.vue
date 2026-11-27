@@ -11,7 +11,7 @@ const active = computed(() => mounted.value && pageVisible.value && pageActivate
 const heartbeat = ref<GroundHeartbeatPage | null>(null)
 const recentExceptions = ref<GroundTimelineEvent[]>([])
 const loadError = ref('')
-const runId = computed(() => status.value?.active_run_id || status.value?.latest_run_id || '')
+const runId = computed(() => status.value?.active_run_id || '')
 const trainOnline = computed(() => (heartbeat.value?.train_counts.BOTH_ONLINE || 0) + (heartbeat.value?.train_counts.SINGLE_ONLINE || 0))
 const trainPartial = computed(() => (heartbeat.value?.train_counts.CT_ONLY || 0) + (heartbeat.value?.train_counts.CW_ONLY || 0))
 const trainOffline = computed(() => (heartbeat.value?.train_counts.TRAIN_OFFLINE || 0) + (heartbeat.value?.train_counts.SINGLE_OFFLINE || 0))
@@ -20,6 +20,12 @@ let controller: AbortController | null = null
 let timer: ReturnType<typeof setInterval> | undefined
 async function loadV2(): Promise<void> {
   if (!active.value || controller) return
+  if (!runId.value) {
+    heartbeat.value = null
+    recentExceptions.value = []
+    loadError.value = ''
+    return
+  }
   const current = generation
   const request = new AbortController()
   controller = request
@@ -43,7 +49,7 @@ function stopPolling(): void {
 }
 watch([active, runId, quickContextRevision], () => {
   stopPolling(); heartbeat.value = null; recentExceptions.value = []; loadError.value = ''
-  if (active.value) { void loadV2(); timer = setInterval(() => { void loadV2() }, 5000) }
+  if (active.value && runId.value) { void loadV2(); timer = setInterval(() => { void loadV2() }, 5000) }
 })
 onMounted(() => { mounted.value = true })
 onBeforeUnmount(stopPolling)
