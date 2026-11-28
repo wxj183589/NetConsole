@@ -266,6 +266,10 @@ def config_web_snapshot_fetch(context: JobContext) -> dict[str, object]:
         "timestamp": result.timestamp,
         "snapshot_ids": [snapshot.id for snapshot in result.snapshots if snapshot.id is not None],
         "snapshot_types": [snapshot.type for snapshot in result.snapshots],
+        "snapshot_versions": [
+            service.snapshot_version_metadata(snapshot)
+            for snapshot in result.snapshots if snapshot.id is not None
+        ],
         "warning_message": result.warning_message or "",
     }
 
