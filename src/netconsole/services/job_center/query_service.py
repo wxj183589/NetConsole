@@ -221,24 +221,10 @@ class JobCenterQueryService:
         with closing(self._connect(db_path)) as conn:
             if not self._table_exists(conn, "task_snapshots"):
                 return []
-            clauses = []
-            params: list[object] = []
-            if self._column_exists(conn, "task_snapshots", "dismissed_at"):
-                clauses.append("task.dismissed_at = ''")
-            if device_only:
-                pairs = [
-                    (owner, task_type)
-                    for owner, task_types in self._DEVICE_TASK_TYPES_BY_OWNER.items()
-                    for task_type in task_types
-                ]
-                placeholders = ", ".join("(?, ?)" for _ in pairs)
-                clauses.append(f"(task.owner, task.task_type) IN (VALUES {placeholders})")
-                params.extend(value for pair in pairs for value in pair)
-            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            statement, params = self._visible_tasks_query(conn, device_only=device_only)
             params.extend((max(1, min(int(limit), 1000)), max(0, int(offset))))
             rows = conn.execute(
-                self._task_select(conn, detail=False) + where
-                + " ORDER BY task.updated_time DESC, task.task_id DESC LIMIT ? OFFSET ?",
+                statement + " ORDER BY task.updated_time DESC, task.task_id DESC LIMIT ? OFFSET ?",
                 params,
             ).fetchall()
         values = [dict(row) for row in rows]
@@ -256,6 +242,25 @@ class JobCenterQueryService:
         if keyword:
             tasks = [task for task in tasks if keyword in self._search_text(task)]
         return tasks
+
+    def _visible_tasks_query(
+        self, conn: sqlite3.Connection, *, device_only: bool,
+    ) -> tuple[str, list[object]]:
+        clauses = []
+        params: list[object] = []
+        if self._column_exists(conn, "task_snapshots", "dismissed_at"):
+            clauses.append("task.dismissed_at = ''")
+        if device_only:
+            pairs = [
+                (owner, task_type)
+                for owner, task_types in self._DEVICE_TASK_TYPES_BY_OWNER.items()
+                for task_type in task_types
+            ]
+            placeholders = ", ".join("(?, ?)" for _ in pairs)
+            clauses.append(f"(task.owner, task.task_type) IN (VALUES {placeholders})")
+            params.extend(value for pair in pairs for value in pair)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        return self._task_select(conn, detail=False) + where, params
 
     def get_task(self, site_id: str, task_id: str) -> JobCenterTaskDTO | None:
         db_path = self._db_path(site_id)
@@ -379,7 +384,26 @@ class JobCenterQueryService:
         ]
 
     def get_summary(self, site_id: str, *, device_only: bool = False) -> JobCenterSummaryDTO:
-        tasks = self.list_tasks(site_id, limit=1000, device_only=device_only)
+        if device_only:
+            summary = JobCenterSummaryDTO()
+            db_path = self._db_path(site_id)
+            if not db_path.is_file():
+                return summary
+            with closing(self._connect(db_path)) as conn:
+                if not self._table_exists(conn, "task_snapshots"):
+                    return summary
+                statement, params = self._visible_tasks_query(conn, device_only=True)
+                cursor = conn.execute(statement, params)
+                while rows := cursor.fetchmany(256):
+                    values = [dict(row) for row in rows]
+                    self._hydrate_result_references(db_path, values, include_result=False)
+                    batch = self._summarize_tasks([self._task_from_row(row) for row in values])
+                    for field, count in batch.model_dump().items():
+                        setattr(summary, field, getattr(summary, field) + count)
+            return summary
+        return self._summarize_tasks(self.list_tasks(site_id, limit=1000))
+
+    def _summarize_tasks(self, tasks: list[JobCenterTaskDTO]) -> JobCenterSummaryDTO:
         return JobCenterSummaryDTO(
             total=len(tasks),
             active=sum(task.status.upper() in self._ACTIVE_STATES for task in tasks),

@@ -412,6 +412,22 @@ def test_device_task_scope_filters_owner_and_type_before_pagination(tmp_path: Pa
     assert len(query.list_tasks(SITE_A)) == 4
 
 
+def test_device_summary_counts_history_beyond_list_limit(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    service = _service(tmp_path)
+    first = service.create_external_task(
+        task_id="first", task_name="Device job", task_type="device_maintenance_collection",
+        source="local", owner="web_device_task_center", site_name=SITE_A,
+    )
+    repo = service.repository(SITE_A)
+    for index in range(1000):
+        repo.save(replace(first, task_id=f"history-{index}"))
+    query = JobCenterQueryService(service.paths)
+    assert len(query.list_tasks(SITE_A, limit=1000, device_only=True)) == 1000
+    assert query.get_summary(SITE_A, device_only=True).total == 1001
+
+
 def test_cleanup_with_explicit_site_does_not_delete_same_id_from_other_site(
     tmp_path: Path,
 ) -> None:
