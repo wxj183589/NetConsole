@@ -36,7 +36,7 @@ describe('workspace validation', () => {
       expect(validateWorkspaceWindowSnapshot(snapshot(path)).tabs[0].routeFullPath).toBe(path)
     }
     expect(() => validateWorkspaceRoute('/tasks/unknown')).toThrow()
-    for (const path of ['/file-manager', '/device-files/diagnostics', '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components', '/tools/network-services']) {
+    for (const path of ['/devices/archive', '/rail-transit/ground-unattended-replay', '/feature-flags', '/file-manager', '/device-files/diagnostics', '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components', '/tools/network-services']) {
       expect(validateWorkspaceRoute(path)).toBe(path)
       expect(validateWorkspaceWindowSnapshot(snapshot(path)).tabs[0].routeFullPath).toBe(path)
     }

@@ -44,3 +44,5 @@ node scripts/dev.mjs --codex
 ```
 
 启动完成后用 Node 执行 [截图脚本](../../../reports/tests/legacy-ui-ux/capture.cjs)。[首批 36 张测量](../../../reports/tests/legacy-ui-ux/capture-all.json)与补拍索引合计覆盖 19 个场景。
+
+[Phase 2 独立截图索引](UI_UX_PHASE2_SCREENSHOT_INDEX.md)记录后续路由和工作流证据。

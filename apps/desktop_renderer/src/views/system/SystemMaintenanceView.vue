@@ -67,6 +67,8 @@ const rawLog = ref<LogEntry>()
 const page = ref(1)
 const pageSize = ref<50 | 100 | 200 | 500>(200)
 const total = ref(0)
+const logError = ref(false)
+let logGeneration = 0
 const logSummary = ref<RuntimeLogSummary>()
 const tasks = ref<MaintenanceTask[]>([])
 const currentTask = ref<MaintenanceTask>()
@@ -120,6 +122,7 @@ function errorMessage(cause: unknown): string {
 }
 
 async function loadLogs(reset = false): Promise<void> {
+  const generation = ++logGeneration
   if (reset) {
     appliedLogFilters.value = {
       ...logFilters.value, keyword: keyword.value.trim(), level: level.value || '',
@@ -129,21 +132,24 @@ async function loadLogs(reset = false): Promise<void> {
   }
   if (reset) page.value = 1
   loading.value = true
+  logError.value = false
   try {
     const query = { page: page.value, page_size: pageSize.value, keyword: '', level: '', ...appliedLogFilters.value }
     let result = await getLogs(query)
     const lastPage = Math.max(1, result.total_pages || Math.ceil(result.total / result.page_size))
     if (query.page > lastPage && result.page > lastPage) {
+      if (generation !== logGeneration) return
       result = await getLogs({ ...query, page: lastPage })
     }
+    if (generation !== logGeneration) return
     logs.value = result.items
     page.value = Math.min(Math.max(1, result.page), Math.max(1, result.total_pages))
     pageSize.value = result.page_size
     total.value = result.total
-  } catch (cause) {
-    ElMessage.error(errorMessage(cause))
+  } catch {
+    if (generation === logGeneration) logError.value = true
   } finally {
-    loading.value = false
+    if (generation === logGeneration) loading.value = false
   }
 }
 
@@ -449,6 +455,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  logGeneration++
   if (pollTimer) clearTimeout(pollTimer)
 })
 </script>
@@ -511,14 +518,23 @@ onBeforeUnmount(() => {
           </el-dropdown>
         </div>
         <div v-if="logSummary" class="log-summary" aria-label="日志摘要"><span>目录：{{ logSummary.directory }}</span><span>总量：{{ formatBytes(logSummary.total_bytes) }} / 上限 {{ formatBytes(logSummary.max_total_bytes) }}</span><span>可清理：{{ formatBytes(logSummary.candidate_bytes) }}（{{ logSummary.candidate_files }} 个）</span><span>受保护：{{ formatBytes(logSummary.protected_bytes) }}（{{ logSummary.protected_files }} 个，含数据库升级审计）</span><span>未知：{{ formatBytes(logSummary.unknown_bytes) }}（{{ logSummary.unknown_files }} 个）</span><span>保留 {{ logSummary.retention_days }} 天，目标水位 {{ formatBytes(logSummary.target_total_bytes) }}</span></div>
+        <el-alert v-if="logError" title="日志暂时无法读取，请重试。表格保留上次结果。" type="error" :closable="false" />
         <div class="log-table-host">
           <NcDataTable v-loading="loading" :data="logs" :columns="logColumns" table-id="system-log-entries" route-key="/logs" height="100%" empty-text="暂无日志记录" @cell-contextmenu="copyCell">
             <template #cell-actions="{ row }"><el-button link @click="rawLog = row">详情</el-button><el-button link @click="copyLogRow(row)">整行</el-button></template>
           </NcDataTable>
         </div>
-        <el-dialog :model-value="Boolean(rawLog)" title="原始日志" width="min(760px, 94vw)" @close="rawLog = undefined">
-          <strong>{{ rawLog?.raw_event }}</strong>
-          <pre class="raw-log-detail">{{ rawLog?.raw_detail }}</pre>
+        <el-dialog :model-value="Boolean(rawLog)" title="日志详情" width="min(760px, 94vw)" @close="rawLog = undefined">
+          <template v-if="rawLog">
+            <strong>{{ rawLog.display_event }}</strong>
+            <p>{{ rawLog.time }} · {{ rawLog.display_level }}</p>
+            <pre class="raw-log-detail">{{ rawLog.display_detail }}</pre>
+            <details>
+              <summary>技术详情</summary>
+              <strong>{{ rawLog.raw_event }}</strong>
+              <pre class="raw-log-detail">{{ rawLog.raw_detail }}</pre>
+            </details>
+          </template>
         </el-dialog>
         <div class="pagination"><span>共 {{ total }} 条</span><el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[50, 100, 200, 500]" layout="sizes, prev, pager, next" :total="total" @change="loadLogs()" /></div>
         <p class="hint">右键任意表格单元格可复制该单元格；Web 展示与导出会隐藏秘密、私有地址和本机绝对路径。</p>

@@ -19,7 +19,9 @@ beforeEach(() => { setActivePinia(createPinia()); setActiveSiteContext({site_id:
 describe('independent rail modules', () => {
   it('has sibling navigation and separate feature-controlled routes', async () => {
     const rail = navigationRegistry.find(n => n.navigation_id === 'rail')!
-    expect(rail.children.slice(0,2).map(n=>n.navigation_id)).toEqual(['rail.infrastructure','rail.base-data'])
+    expect(rail.children.slice(0, 3).map(item => item.navigation_id)).toEqual([
+      'rail.infrastructure', 'rail.trackside-ap-business', 'rail.base-data',
+    ])
     const routes = appRoutes[0]!.children!
     const base = routes.find(r=>r.name==='rail-transit-base-data')!, infra = routes.find(r=>r.name==='rail-transit-infrastructure')!
     expect(base.component).not.toBe(infra.component)

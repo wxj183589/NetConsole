@@ -54,6 +54,7 @@ const EXTERNAL_TOOL_SHELL_TOKEN_RE = /(?:&&|\|\||[|<>])/
 const WORKSPACE_ALLOWED_PATHS = new Set([
   '/',
   '/network/devices',
+  '/devices/archive',
   '/console',
   '/tools',
   '/ac-management',
@@ -64,6 +65,7 @@ const WORKSPACE_ALLOWED_PATHS = new Set([
   '/rail-transit/infrastructure',
   '/rail-transit/train-online',
   '/rail-transit/ground-unattended',
+  '/rail-transit/ground-unattended-replay',
   '/rail-transit/trackside-ap-business',
   '/rail-transit/mesh-analysis',
   '/rail-transit/online-mr',
@@ -86,6 +88,7 @@ const WORKSPACE_ALLOWED_PATHS = new Set([
   '/tasks/upgrade_lab',
   '/tasks/config_generate',
   '/settings',
+  '/feature-flags',
   '/command-reference',
   '/logs',
 ])
