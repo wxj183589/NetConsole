@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from netconsole.models.task_state import TERMINAL_TASK_STATES
 from netconsole.services.device_task_service import DEVICE_TASK_OWNER, DeviceTaskApplicationService
-from netconsole.services.export.export_task_builders import table_xlsx_spec
+from netconsole.services.export.export_task_builders import markdown_text_spec, table_xlsx_spec
 from netconsole.services.job_center.local_process_adapter import LocalProcessCompletion
 from netconsole.services.web_artifacts import WebArtifactError, WebArtifactStore
 from netconsole.services.web_export_process_adapter import WebExportProcessAdapter
@@ -26,6 +26,11 @@ class DeviceTaskExportService:
         snapshot = self.devices.task_service.repository(site).get(task_id)
         if snapshot.status not in TERMINAL_TASK_STATES:
             raise ValueError("任务结束后才能导出结果")
+        if result.get("kind") == "config_generate":
+            commands = result.get("commands", [])
+            if result.get("business_status") != "SUCCESS" or not commands:
+                raise ValueError("只有成功生成的配置可以另存")
+            return self._export_configuration(site, commands)
         rows = []
         for item in result.get("items", [])[:64]:
             # Keep every bounded output, splitting text across Excel's cell limit.
@@ -77,5 +82,41 @@ class DeviceTaskExportService:
             )
         except Exception:
             self.artifacts.fail(reservation, "设备任务结果导出启动失败")
+            raise
+        return {"task_id": export_id}
+
+    def _export_configuration(self, site: str, commands: list[str]) -> dict[str, str]:
+        export_id = f"device-task-export-{uuid4().hex}"
+        title = "待审阅配置"
+        name = f"{title}.txt"
+        reservation = self.artifacts.reserve(
+            site_id=site, owner=DEVICE_TASK_OWNER, source="device_task_results", artifact_type="txt",
+            task_id=export_id, task_type="web_export_markdown_text",
+            output_root=self.devices.paths.site_files_dir(site) / "web_artifacts" / "device_tasks",
+            preferred_name=name,
+        )
+        try:
+            job = markdown_text_spec(
+                reservation.output_path, text="\n".join(commands) + "\n", title=title,
+                open_dir_on_success=False, inline_reason="Bounded rendered template from persisted device task",
+            ).to_job(export_id)
+
+            def completed(value: LocalProcessCompletion) -> None:
+                if value.exit_code == 0 and not value.cancelled:
+                    try:
+                        self.artifacts.complete(reservation)
+                        return
+                    except WebArtifactError:
+                        pass
+                self.artifacts.fail(reservation, "配置另存失败")
+
+            self.adapter.start_export(
+                replace(job, site_name=site), task_name=title, owner=DEVICE_TASK_OWNER,
+                public_result={"artifact_id": reservation.artifact_id, "artifact_name": name,
+                               "artifact_source": "device_task_results", "artifact_type": "txt"},
+                on_complete=completed,
+            )
+        except Exception:
+            self.artifacts.fail(reservation, "配置另存启动失败")
             raise
         return {"task_id": export_id}

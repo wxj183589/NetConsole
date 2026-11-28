@@ -423,6 +423,52 @@ def test_saved_template_versions_preview_and_parameter_binding(runtime):
     assert client.get(f"{template_path}/versions").status_code == 404
 
 
+def test_configuration_generation_freezes_preview_without_connecting(runtime, monkeypatch):
+    from time import monotonic, sleep
+
+    from netconsole.services.device_task_export_service import DeviceTaskExportService
+    from netconsole.services.web_artifacts import WebArtifactStore
+    from netconsole.services.web_export_process_adapter import WebExportProcessAdapter
+
+    client, adapter, sw_a, _ = runtime
+    definition = {"name": "配置草稿", "source": "sysname {{ name }}",
+                  "command_type": "configuration_change", "schema_fields": {"name": {"type": "string"}}}
+    saved = client.post("/device-operations/templates?offline_configuration=true", json=definition)
+    assert saved.status_code == 201, saved.text
+    selection = {"template_id": saved.json()["template_id"], "version": 1, "values": {"name": "review-switch"}}
+    preview = client.post("/device-operations/templates/saved-preview", json=selection)
+    assert preview.status_code == 200, preview.text
+    payload = {"kind": "config_generate", "device_uuids": [sw_a.device_uuid],
+               "saved_template": {**selection, "preview_digest": "0" * 64}}
+    assert client.post("/device-operations/tasks", json=payload).status_code == 422
+    payload["saved_template"]["preview_digest"] = preview.json()["preview_digest"]
+    response = client.post("/device-operations/tasks", json=payload)
+    assert response.status_code == 202, response.text
+    def unexpected(*args, **kwargs):
+        pytest.fail("Configuration generation must not enter collection")
+
+    monkeypatch.setattr(device_task_service, "_collect_device", unexpected)
+    job = adapter.jobs[response.json()["task_id"]]
+    result = get_handler(job.task_type)(JobContext.from_job(job))
+    assert result["commands"] == ["sysname review-switch"]
+    assert result["business_status"] == "SUCCESS"
+    adapter.complete(job.job_id, result)
+    devices = client.app.state.device_task_application_service
+    artifacts = WebArtifactStore(devices.paths, devices.task_service)
+    exporter = DeviceTaskExportService(devices, WebExportProcessAdapter(devices.task_service), artifacts)
+    exported = exporter.start("demo", job.job_id)
+    deadline = monotonic() + 20
+    while monotonic() < deadline:
+        snapshot = devices.task_service.repository("demo").get(exported["task_id"])
+        if snapshot and snapshot.result.get("sha256"):
+            break
+        sleep(0.1)
+    assert snapshot.status.value == "COMPLETED", snapshot
+    path, name, _ = artifacts.open_public(site_id="demo", artifact_id=snapshot.result["artifact_id"])
+    assert name.endswith(".txt")
+    assert path.read_text(encoding="utf-8") == "sysname review-switch\n"
+
+
 def test_saved_template_allows_configuration_preview_only(runtime):
     from netconsole.services.command_template_library import CommandTemplateDefinition
 

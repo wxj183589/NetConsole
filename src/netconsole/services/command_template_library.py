@@ -69,13 +69,14 @@ class CommandTemplateLibrary:
     def versions(self, template_id: str) -> list[CommandTemplateRevision]:
         return [CommandTemplateRevision.model_validate(record) for record in self.repository.list_versions(template_id)]
 
-    def save(self, definition: CommandTemplateDefinition, *, template_id: str | None = None, expected_version: int | None = None) -> CommandTemplateRevision:
+    def save(self, definition: CommandTemplateDefinition, *, template_id: str | None = None, expected_version: int | None = None, offline_configuration: bool = False) -> CommandTemplateRevision:
         if not definition.name.strip() or not definition.category.strip():
             raise ValueError("模板名称和分类不能为空")
         validate_command_template(definition.source, definition.schema_fields)
-        if definition.command_type != "read_only":
+        if definition.command_type != "read_only" and not offline_configuration:
             raise ValueError("仅可保存只读查询模板")
-        validate_read_only_command_template(definition.source)
+        if definition.command_type == "read_only":
+            validate_read_only_command_template(definition.source)
         record = self.repository.save(
             definition.model_dump(mode="json"), template_id=template_id, expected_version=expected_version,
         )

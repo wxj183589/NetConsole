@@ -8,6 +8,7 @@ export const deviceTaskLabels = {
   optical: '光衰收集', lldp: 'LLDP 收集', version: '版本检查', custom: '自定义命令采集',
   wireless: '无线信息收集', mesh: 'MESH 收集',
   config_diff: '配置快照差异', config_preview: '已保存配置快照', health: '设备健康检查',
+  config_generate: '生成待审阅配置',
 } as const
 
 export type DeviceTaskKind = keyof typeof deviceTaskLabels
@@ -82,6 +83,7 @@ export interface DeviceExecution {
 }
 
 export interface DeviceTaskResult {
+  kind?: DeviceTaskKind
   task_id?: string
   run_id?: string
   template?: { template_id?: string }
@@ -104,9 +106,9 @@ export function getCommandTemplateVersions(templateId: string): Promise<SavedTem
   return apiRequest(`${root}/templates/${encodeURIComponent(templateId)}/versions`)
 }
 
-export function saveCommandTemplate(definition: SavedTemplateDefinition, current?: SavedTemplate): Promise<SavedTemplate> {
-  if (!current) return post('/templates', definition)
-  return apiRequest(`${root}/templates/${encodeURIComponent(current.template_id)}?expected_version=${current.version}`, {
+export function saveCommandTemplate(definition: SavedTemplateDefinition, current?: SavedTemplate, offline = false): Promise<SavedTemplate> {
+  if (!current) return post(offline ? '/templates?offline_configuration=true' : '/templates', definition)
+  return apiRequest(`${root}/templates/${encodeURIComponent(current.template_id)}?expected_version=${current.version}${offline ? '&offline_configuration=true' : ''}`, {
     method: 'PUT', body: JSON.stringify(definition),
   })
 }
