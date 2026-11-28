@@ -32,8 +32,11 @@ def _service(request: Request) -> DeviceTaskApplicationService:
     return request.app.state.device_task_application_service
 
 
-def _site(request: Request) -> str:
-    return request.app.state.device_management_service.current_site_id()
+def _site(request: Request, expected_site: str = "") -> str:
+    site = request.app.state.device_management_service.current_site_id()
+    if expected_site and expected_site != site:
+        raise HTTPException(status_code=409, detail="当前局点已切换，请重新打开任务")
+    return site
 
 
 def _library(request: Request) -> CommandTemplateLibrary:
@@ -130,12 +133,12 @@ def update_template(
 
 @router.post("/tasks", response_model=DeviceTaskReference, status_code=202,
              dependencies=[Depends(require_feature("module.devices"))])
-def start_device_task(request: Request, payload: DeviceTaskRequest) -> DeviceTaskReference:
+def start_device_task(request: Request, payload: DeviceTaskRequest, expected_site: str = "") -> DeviceTaskReference:
     _require_task_kind(request, payload.kind)
     if payload.organization_uid is not None:
         require_feature("module.rail_infrastructure")(request)
     try:
-        return _service(request).start(_site(request), payload)
+        return _service(request).start(_site(request, expected_site), payload)
     except TaskResourceConflictError as exc:
         raise HTTPException(status_code=409, detail="已有设备任务正在处理一个或多个目标") from exc
     except KeyError as exc:
@@ -183,9 +186,9 @@ def export_device_task(request: Request, task_id: str) -> dict[str, str]:
 
 @router.post("/tasks/{task_id}/retry", response_model=DeviceTaskReference, status_code=202,
              dependencies=[Depends(require_feature("module.devices"))])
-def retry_device_task(request: Request, task_id: str) -> DeviceTaskReference:
+def retry_device_task(request: Request, task_id: str, expected_site: str = "") -> DeviceTaskReference:
     service = _service(request)
-    site = _site(request)
+    site = _site(request, expected_site)
     try:
         _require_task_kind(request, service.result(site, task_id).get("kind"))
         return service.retry(site, task_id)

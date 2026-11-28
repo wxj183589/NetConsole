@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { activeSiteContext } from '../../stores/siteContext'
 import { computed, ref, watch } from 'vue'
 
 import { listDeviceGroups, listDevices } from '../../api/deviceManagement'
@@ -74,8 +75,10 @@ const draftChanged = computed(() => {
     return true
   }
 })
+const dialogSite = ref('')
 const canSubmit = computed(() =>
-  kindAvailable.value
+  !waiting.value && Boolean(dialogSite.value) && dialogSite.value === activeSiteContext.value?.siteId
+  && kindAvailable.value
   && (scope.value === 'devices' ? targets.value.length > 0 : scope.value === 'group' ? targetGroup.value !== null : Boolean(organizationUid.value))
   && (kind.value !== 'custom' || commandPreviewReady.value)
   && (kind.value !== 'config_generate' || savedPreview.value?.risk === 'configuration_change')
@@ -205,7 +208,7 @@ async function submit(): Promise<void> {
         template_id: chosen.template_id, version: chosen.version,
         values: JSON.parse(values.value), preview_digest: chosen.preview_digest,
       } : undefined,
-    })
+    }, dialogSite.value)
     open.value = false
     if (result.scheduled_at) emit('scheduled')
     else emit('submitted', result.task_id)
@@ -224,6 +227,7 @@ watch([source, schema, values, currentTemplate, templateName, templateCategory, 
 
 watch(open, (visible) => {
   if (!visible) return
+  dialogSite.value = activeSiteContext.value?.siteId || ''
   void getDeviceTaskCapabilities().then(
     (capabilities) => { upgradeLabEnabled.value = capabilities.upgrade_lab },
     () => { upgradeLabEnabled.value = false },

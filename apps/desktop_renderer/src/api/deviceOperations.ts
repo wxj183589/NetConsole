@@ -134,8 +134,8 @@ export function startDeviceTask(payload: {
   scheduled_at?: string
   template?: CommandTemplate
   saved_template?: SavedTemplateParameters & { preview_digest: string }
-}): Promise<DeviceTaskReference> {
-  return post('/tasks', payload)
+}, expectedSite = ''): Promise<DeviceTaskReference> {
+  return post('/tasks' + (expectedSite ? `?expected_site=${encodeURIComponent(expectedSite)}` : ''), payload)
 }
 
 export interface DeviceTaskSchedule {
@@ -158,8 +158,8 @@ export function getDeviceTaskResult(id: string): Promise<DeviceTaskResult> {
   return apiRequest(`${root}/tasks/${encodeURIComponent(id)}/result`)
 }
 
-export function retryDeviceTask(id: string): Promise<DeviceTaskReference> {
-  return post(`/tasks/${encodeURIComponent(id)}/retry`)
+export function retryDeviceTask(id: string, expectedSite = ''): Promise<DeviceTaskReference> {
+  return post(`/tasks/${encodeURIComponent(id)}/retry` + (expectedSite ? `?expected_site=${encodeURIComponent(expectedSite)}` : ''))
 }
 
 export function listTaskOrganizations(): Promise<{ uid: string; name: string; parent_uid: string }[]> {

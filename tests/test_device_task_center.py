@@ -94,6 +94,16 @@ def runtime(tmp_path: Path):
     return TestClient(app), adapter, sw_a, sw_b
 
 
+def test_task_mutations_reject_stale_site_before_dispatch(runtime):
+    client, adapter, sw_a, _ = runtime
+    root = "/device-operations/tasks"
+    assert client.post(root + "?expected_site=other", json={
+        "kind": "diagnostic", "device_uuids": [str(sw_a.device_uuid)],
+    }).status_code == 409
+    assert client.post(root + "/unknown/retry?expected_site=other").status_code == 409
+    assert not adapter.jobs
+
+
 def test_local_snapshot_tasks_resolve_current_site_device_and_latest_snapshot(runtime):
     from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { activeSiteContext } from '../../stores/siteContext'
 import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 
@@ -19,9 +20,12 @@ const exporting = ref(false)
 const userSelectedExport = useUserSelectedExport()
 const hasRetry = computed(() => items.value.some((item) => ['partial', 'failed'].includes(item.status)))
 let loadGeneration = 0
+let resultSite = ''
 
 async function load(): Promise<void> {
   const generation = ++loadGeneration
+  resultSite = activeSiteContext.value?.siteId || ''
+  items.value = []
   busy.value = true
   error.value = ''
   try {
@@ -38,10 +42,11 @@ async function load(): Promise<void> {
 }
 
 async function retry(): Promise<void> {
+  if (busy.value || !hasRetry.value || !resultSite || resultSite !== activeSiteContext.value?.siteId) return
   busy.value = true
   error.value = ''
   try {
-    const result = await retryDeviceTask(props.taskId)
+    const result = await retryDeviceTask(props.taskId, resultSite)
     open.value = false
     emit('submitted', result.task_id)
   } catch (cause) {

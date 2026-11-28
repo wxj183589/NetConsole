@@ -6,7 +6,7 @@ import re
 _DETAIL_TOKEN_RE = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)=(?P<value>\"[^\"]*\"|'[^']*'|[^\s,;]+)")
 
 _EVENT_PREFIXES = {
-    "startup": ("APP_START", "BOOT_", "STARTUP", "UI_STARTUP", "HOST_ENVIRONMENT", "DATA_ROOT_CONTEXT", "FEATURE_GATE_LOADED", "RUNTIME_CAPABILITY_POLICY", "FULL_EDITION_FEATURE_GATE_ACTIVATED", "PACKAGED_FEATURE_POLICY_LOADED"),
+    "startup": ("APP_START", "BOOT_", "STARTUP", "UI_STARTUP", "HOST_ENVIRONMENT", "DATA_ROOT_CONTEXT", "BUILD_IDENTITY", "FEATURE_GATE_LOADED", "RUNTIME_CAPABILITY_POLICY", "FULL_EDITION_FEATURE_GATE_ACTIVATED", "PACKAGED_FEATURE_POLICY_LOADED"),
     "api_error": ("API_REQUEST_FAILED", "API_EXCEPTION", "HTTP_ERROR"),
     "api_request": ("API_", "HTTP_REQUEST"),
     "ssh": ("SSH_",),
@@ -15,7 +15,7 @@ _EVENT_PREFIXES = {
     "connection": ("TEST_CONNECTION_", "DEVICE_CONNECTION_"),
     "collection": ("DEVICE_COLLECT", "FIT_AP_", "AP_OPTICAL_", "TRACKSIDE_AP_", "GROUND_", "MESH_", "ONLINE_MR_"),
     "task": ("TASK_", "BACKGROUND_TASK_", "JOB_", "WEB_EXPORT_"),
-    "database": ("DATABASE_", "DB_", "SQLITE_"),
+    "database": ("DATABASE_", "DB_", "SQLITE_", "DEVICE_TYPE_MIGRATION_"),
     "files": ("FILE_", "DEVICE_FILE_", "SFTP_"),
     "syslog": ("SYSLOG_",),
     "heartbeat": ("HEARTBEAT_",),
