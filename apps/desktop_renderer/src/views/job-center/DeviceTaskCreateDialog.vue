@@ -283,9 +283,12 @@ watch(open, (visible) => {
         </el-select>
       </el-form-item>
       <div class="template-fields">
-        <el-form-item v-if="!snapshotTask" label="并发设备数（1 为串行）"><el-input-number v-model="concurrency" :min="1" :max="8" /></el-form-item>
+      <details v-if="!snapshotTask" class="execution-settings">
+        <summary>执行设置</summary>
+        <el-form-item label="并发设备数（1 为串行）"><el-input-number v-model="concurrency" :min="1" :max="8" /></el-form-item>
         <el-form-item v-if="!immediateTask" label="定时执行"><input v-model="scheduledAt" type="datetime-local" aria-label="执行时间（本地）" /></el-form-item>
         <el-form-item v-if="!immediateTask && !['configuration', 'backup', 'optical'].includes(kind)" label="查询命令超时（秒）"><el-input-number v-model="commandTimeout" :min="5" :max="120" /></el-form-item>
+      </details>
       </div>
       <template v-if="kind === 'custom' || kind === 'config_generate'">
         <el-form-item label="局点模板">
@@ -345,6 +348,7 @@ watch(open, (visible) => {
 <style scoped>
 .task-form { max-height: 63vh; padding: 2px; overflow: auto; }
 .template-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 8px; }
+.execution-settings summary { cursor: pointer; margin-bottom: 8px; font-weight: 600; }
 .template-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .preview { max-height: 180px; padding: 8px; overflow: auto; background: var(--el-fill-color-light); white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

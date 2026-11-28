@@ -2356,12 +2356,12 @@ function deviceListErrorMessage(cause: unknown): string {
           </section>
         </div>
 
-        <section class="form-section full-width"><h3>SSH 隧道</h3><div class="form-grid two-columns">
+        <details class="form-section full-width"><summary>SSH 隧道</summary><div class="form-grid two-columns">
           <div><h4>第一跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel1_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel1_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel1_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel1_password" :type="secretVisible.tunnel1_password ? 'text' : 'password'" autocomplete="new-password" :disabled="secretClears.tunnel1_password" :placeholder="writeMode === 'edit' && detail?.tunnel1_secret_configured ? '已配置；留空保留' : ''"><template #suffix><el-button link :icon="secretVisible.tunnel1_password ? Hide : View" :loading="secretRevealLoading.tunnel1_password" aria-label="查看或隐藏第一跳密码" @click="toggleSecretVisibility('tunnel1_password')" /></template></el-input><el-checkbox v-if="writeMode === 'edit' && detail?.tunnel1_secret_configured" :model-value="secretClears.tunnel1_password" @change="setSecretCleared('tunnel1_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
           <div><h4>第二跳</h4><el-form-item label="主机"><el-input v-model="writeForm.tunnel2_host" /></el-form-item><el-form-item label="端口"><el-input-number v-model="writeForm.tunnel2_port" :min="1" :max="65535" /></el-form-item><el-form-item label="用户名"><el-input v-model="writeForm.tunnel2_username" /></el-form-item><el-form-item label="密码"><el-input v-model="writeForm.tunnel2_password" :type="secretVisible.tunnel2_password ? 'text' : 'password'" autocomplete="new-password" :disabled="secretClears.tunnel2_password" :placeholder="writeMode === 'edit' && detail?.tunnel2_secret_configured ? '已配置；留空保留' : ''"><template #suffix><el-button link :icon="secretVisible.tunnel2_password ? Hide : View" :loading="secretRevealLoading.tunnel2_password" aria-label="查看或隐藏第二跳密码" @click="toggleSecretVisibility('tunnel2_password')" /></template></el-input><el-checkbox v-if="writeMode === 'edit' && detail?.tunnel2_secret_configured" :model-value="secretClears.tunnel2_password" @change="setSecretCleared('tunnel2_password', Boolean($event))">清除已保存值</el-checkbox></el-form-item></div>
-        </div></section>
+        </div></details>
 
-        <section class="form-section full-width"><h3>SNMP</h3><div class="form-grid two-columns">
+        <details class="form-section full-width"><summary>SNMP</summary><div class="form-grid two-columns">
           <div>
             <el-form-item label="启用"><el-checkbox v-model="writeForm.snmp_enabled">SNMP</el-checkbox><el-checkbox v-model="writeForm.snmp_v1_enabled">v1</el-checkbox><el-checkbox v-model="writeForm.snmp_v2c_enabled">v2c</el-checkbox></el-form-item>
             <el-form-item label="端口"><el-input-number v-model="writeForm.snmp_port" :min="1" :max="65535" /></el-form-item>
@@ -2369,7 +2369,7 @@ function deviceListErrorMessage(cause: unknown): string {
             <el-form-item label="重试"><el-input-number v-model="writeForm.snmp_retries" :min="0" :max="10" /></el-form-item>
             <el-form-item label="只读团体字"><el-input v-model="writeForm.snmp_ro_community" :type="secretVisible.snmp_ro_community ? 'text' : 'password'" autocomplete="new-password" :disabled="secretClears.snmp_ro_community" :placeholder="writeMode === 'edit' && detail?.snmp_ro_secret_configured ? '已配置；留空保留' : ''"><template #suffix><el-button link :icon="secretVisible.snmp_ro_community ? Hide : View" :loading="secretRevealLoading.snmp_ro_community" aria-label="查看或隐藏 SNMP 团体字" @click="toggleSecretVisibility('snmp_ro_community')" /></template></el-input><el-checkbox v-if="writeMode === 'edit' && detail?.snmp_ro_secret_configured" :model-value="secretClears.snmp_ro_community" @change="setSecretCleared('snmp_ro_community', Boolean($event))">清除已保存值</el-checkbox></el-form-item>
           </div>
-        </div></section>
+        </div></details>
       </el-form>
       <template #footer><div class="write-footer"><div class="write-test-actions"><el-select v-model="writeTestProtocol" style="width:120px"><el-option v-for="protocol in availableWriteTestProtocols" :key="protocol" :label="protocol" :value="protocol" /></el-select><el-tooltip :content="writeConnectionDisabledReason" :disabled="!writeConnectionDisabledReason"><span><el-button data-testid="form-connection-test" :icon="Connection" :loading="writeConnectionBusy" :disabled="!!writeConnectionDisabledReason" @click="testWriteConnection">测试表单连接</el-button></span></el-tooltip><span v-if="writeConnectionDisabledReason && !writeConnectionBusy" data-testid="form-connection-disabled-reason" class="field-warning">{{ writeConnectionDisabledReason }}</span><el-button v-if="writeConnectionTest" data-testid="form-connection-task" plain @click="openWriteConnectionTestTask">打开任务中心</el-button></div><div><el-button data-testid="device-form-cancel" @click="cancelWriteDialog">取消</el-button><el-button data-testid="device-save" type="primary" :loading="writeLoading" :disabled="editingProfileLoading || !isFeatureEnabled('capability.devices.write')" @click="saveWrite">保存</el-button></div></div></template>
     </el-dialog>
@@ -2550,6 +2550,8 @@ function deviceListErrorMessage(cause: unknown): string {
 .form-grid.two-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .form-section { padding: 14px; border: 1px solid var(--el-border-color-lighter); border-radius: 8px; }
 .form-section.full-width { margin-top: 14px; }
+.form-section summary { cursor: pointer; font-weight: 600; }
+.form-section[open] summary { margin-bottom: 14px; }
 .form-section h3, .form-section h4 { margin: 0 0 14px; }
 .terminal-settings-form { margin-top: 18px; }
 .field-warning { margin-left: 10px; color: var(--el-color-warning); font-size: 12px; }

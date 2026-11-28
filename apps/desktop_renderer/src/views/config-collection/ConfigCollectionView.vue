@@ -633,14 +633,6 @@ function formatBytes(value: number | null): string {
 
 <template>
   <section class="config-collection">
-    <el-alert
-      title="配置采集中心"
-       description="采集、保存、比较、删除和导出均进入持久 Task；下载只接受服务端 Artifact ID，不接收本机路径。"
-      type="info"
-      :closable="false"
-      show-icon
-      class="page-alert"
-    />
 
     <div class="toolbar content-card">
       <el-input v-model="search" :prefix-icon="Search" clearable placeholder="搜索设备名称、系统名或站点" @keyup.enter="loadDevices" />
@@ -722,7 +714,7 @@ function formatBytes(value: number | null): string {
 
 <style scoped>
 .config-collection { display: flex; width: 100%; height: 100%; max-width: none; min-width: 0; min-height: 0; flex-direction: column; margin: 0; overflow: auto; }
-.page-alert, .page-error { margin-bottom: 16px; }
+.page-error { margin-bottom: 16px; }
 .content-card { overflow: hidden; background: var(--nc-bg-panel); border: 1px solid var(--nc-border); border-radius: 10px; }
 .toolbar { display: grid; flex: none; grid-template-columns: minmax(260px, 1fr) 210px minmax(520px, auto); gap: 10px; padding: 14px 16px; margin-bottom: 16px; }
 .toolbar-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
