@@ -16,9 +16,18 @@ const emit = defineEmits<{ submitted: [id: string]; scheduled: [] }>()
 const scheduledAt = ref('')
 const configCollectionEnabled = computed(() => isFeatureEnabled('capability.config_collection.fetch'))
 const kinds = computed(() => Object.entries(deviceTaskLabels).filter(
-  ([value]) => configCollectionEnabled.value ? value !== 'configuration' : !['configuration', 'backup'].includes(value),
+  ([value]) => {
+    if (value === 'configuration') return false
+    if (value === 'backup') return configCollectionEnabled.value
+    if (value === 'health') return isFeatureEnabled('capability.devices.collect')
+    if (value === 'config_preview') return isFeatureEnabled('capability.config_collection.export')
+    if (value === 'config_diff') return isFeatureEnabled('capability.config_collection.diff') && isFeatureEnabled('capability.config_collection.export')
+    return true
+  },
 ))
 const kind = ref<DeviceTaskKind>(configCollectionEnabled.value ? 'backup' : 'diagnostic')
+const snapshotTask = computed(() => ['config_diff', 'config_preview'].includes(kind.value))
+const immediateTask = computed(() => snapshotTask.value || kind.value === 'health')
 const scope = ref<'devices' | 'group' | 'organization'>('devices')
 const organizations = ref<{ uid: string; name: string; parent_uid: string }[]>([])
 const organizationUid = ref('')
@@ -63,7 +72,8 @@ const draftChanged = computed(() => {
 })
 const canSubmit = computed(() =>
   (scope.value === 'devices' ? targets.value.length > 0 : scope.value === 'group' ? targetGroup.value !== null : Boolean(organizationUid.value))
-  && (kind.value !== 'custom' || commandPreviewReady.value),
+  && (kind.value !== 'custom' || commandPreviewReady.value)
+  && (!snapshotTask.value || (scope.value === 'devices' && targets.value.length === 1)),
 )
 
 function template(): CommandTemplate {
@@ -182,7 +192,7 @@ async function submit(): Promise<void> {
       organization_uid: scope.value === 'organization' ? organizationUid.value : null,
       concurrency: concurrency.value,
       command_timeout: commandTimeout.value,
-      scheduled_at: scheduledAt.value ? new Date(scheduledAt.value).toISOString() : undefined,
+      scheduled_at: !immediateTask.value && scheduledAt.value ? new Date(scheduledAt.value).toISOString() : undefined,
       template: kind.value === 'custom' && !chosen ? template() : undefined,
       saved_template: kind.value === 'custom' && chosen ? {
         template_id: chosen.template_id, version: chosen.version,
@@ -260,9 +270,9 @@ watch(open, (visible) => {
         </el-select>
       </el-form-item>
       <div class="template-fields">
-        <el-form-item label="并发设备数（1 为串行）"><el-input-number v-model="concurrency" :min="1" :max="8" /></el-form-item>
-        <el-form-item label="定时执行"><input v-model="scheduledAt" type="datetime-local" aria-label="执行时间（本地）" /></el-form-item>
-        <el-form-item v-if="!['configuration', 'backup', 'optical'].includes(kind)" label="查询命令超时（秒）"><el-input-number v-model="commandTimeout" :min="5" :max="120" /></el-form-item>
+        <el-form-item v-if="!snapshotTask" label="并发设备数（1 为串行）"><el-input-number v-model="concurrency" :min="1" :max="8" /></el-form-item>
+        <el-form-item v-if="!immediateTask" label="定时执行"><input v-model="scheduledAt" type="datetime-local" aria-label="执行时间（本地）" /></el-form-item>
+        <el-form-item v-if="!immediateTask && !['configuration', 'backup', 'optical'].includes(kind)" label="查询命令超时（秒）"><el-input-number v-model="commandTimeout" :min="5" :max="120" /></el-form-item>
       </div>
       <template v-if="kind === 'custom'">
         <el-form-item label="局点模板">
@@ -314,7 +324,7 @@ watch(open, (visible) => {
     </el-form>
     <template #footer>
       <el-button @click="open = false">取消</el-button>
-      <el-button type="primary" :disabled="!canSubmit" :loading="waiting" @click="submit">{{ scheduledAt ? '保存计划' : '开始采集' }}</el-button>
+      <el-button type="primary" :disabled="!canSubmit" :loading="waiting" @click="submit">{{ !immediateTask && scheduledAt ? '保存计划' : immediateTask ? '创建任务' : '开始采集' }}</el-button>
     </template>
   </el-dialog>
 </template>
