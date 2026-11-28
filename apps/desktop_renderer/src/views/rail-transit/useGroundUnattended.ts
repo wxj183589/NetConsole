@@ -723,8 +723,7 @@ const loadArpSourceSwitches = (silent = true) => latestRequest('arp-source-switc
 const loadAcBasicCollection = (silent = true) => latestRequest('ac-basic-collection', 'AC 基础采集', (signal) => listGroundAcBasicCollection({ signal }), (value) => { acBasicCollection.value = value.items }, silent)
 
 const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signal) => listGroundRuns({ signal }), (value) => {
-  runs.value = value.items.filter((run) => run.archive_status === 'READY'
-    && !['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(run.state))
+  runs.value = value.items
   if (!runs.value.some((run) => run.run_id === historySyslogRunId.value)) historySyslogRunId.value = ''
 }, silent)
 
@@ -2153,6 +2152,7 @@ watch(syslogRunId, () => {
   selectedSyslogRecord.value = null
   selectedSyslogRecords.value = []
   syslogFilter.page = 1
+  if (historicalRun.value) syslogAutoRefresh.value = false
   if (historySyslogRunId.value || activeTab.value === 'syslog') void loadSyslog(true)
 })
 
