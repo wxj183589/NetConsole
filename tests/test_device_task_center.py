@@ -158,12 +158,22 @@ def test_upgrade_lab_uses_device_job_path_and_retries_failed_result(runtime, mon
 
 
 def test_upgrade_lab_persists_result_from_real_worker(runtime, monkeypatch):
+    from zipfile import ZipFile
+
+    from netconsole.services.device_task_export_service import DeviceTaskExportService
     from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
+    from netconsole.services.web_artifacts import WebArtifactStore
+    from netconsole.services.web_export_process_adapter import WebExportProcessAdapter
 
     client, _, device, _ = runtime
     tasks = client.app.state.task_service
     adapter = LocalProcessAdapter(tasks)
+    exporter = WebExportProcessAdapter(tasks)
+    artifacts = WebArtifactStore(tasks.paths, tasks)
     client.app.state.device_task_application_service = device_task_service.DeviceTaskApplicationService(tasks, adapter)
+    client.app.state.device_task_export_service = DeviceTaskExportService(
+        client.app.state.device_task_application_service, exporter, artifacts,
+    )
     monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
     monkeypatch.setenv("NETCONSOLE_DEVICE_UPGRADE_LAB", "1")
     try:
@@ -175,7 +185,16 @@ def test_upgrade_lab_persists_result_from_real_worker(runtime, monkeypatch):
         assert adapter.wait(task_id, timeout=20)
         result = client.get(f"/device-operations/tasks/{task_id}/result").json()
         assert result["items"][0]["upgrade_status"] == "verified"
+        response = client.post(f"/device-operations/tasks/{task_id}/exports")
+        assert response.status_code == 202, response.text
+        export_id = response.json()["task_id"]
+        assert exporter.wait(export_id, timeout=20)
+        snapshot = tasks.repository("demo").get(export_id)
+        path, _, _ = artifacts.open_public(site_id="demo", artifact_id=snapshot.result["artifact_id"])
+        with ZipFile(path) as workbook:
+            assert any(b"upgrade_lab" in workbook.read(name) for name in workbook.namelist() if name.endswith(".xml"))
     finally:
+        exporter.shutdown()
         adapter.shutdown()
 
 
