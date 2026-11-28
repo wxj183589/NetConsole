@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { Terminal } from '@xterm/xterm'
@@ -18,7 +18,7 @@ import {
   getTerminalHighlightRules,
   replaceTerminalHighlightRules,
 } from '../../api/terminal'
-import { extractTerminalUrl, isMultilinePaste, quotePastedLines } from './terminalContextActions'
+import { describeTerminalPaste, extractTerminalUrl, isMultilinePaste, quotePastedLines } from './terminalContextActions'
 
 const props = defineProps<{
   session: TerminalSession
@@ -126,19 +126,39 @@ async function readClipboard(): Promise<string | null> {
 
 async function pasteText(text: string, quoted = false): Promise<void> {
   if (!terminal || terminalEnded() || !connected.value) return
-  if (isMultilinePaste(text)) {
+  const target = terminal
+  const connection = socket
+  const sessionId = props.session.session_id
+  const preference = 'netconsole.console.skipMultilinePasteConfirmation'
+  if (isMultilinePaste(text) && localStorage.getItem(preference) !== '1') {
+    const summary = describeTerminalPaste(text)
+    let skipNext = false
     try {
       await ElMessageBox.confirm(
-        `剪贴板包含多行内容，共 ${text.split(/\r\n?|\n/).length} 行。确认发送到 ${props.session.device_name}？`,
+        h('div', [
+          h('p', [props.session.device_name, props.session.session_name || sessionId, props.session.address].filter(Boolean).join(' · ')),
+          h('p', [summary.lineCount + ' 行', summary.hasEmptyLine ? '含空行' : '无空行', summary.hasConfigCommand ? '含常见配置或危险命令特征' : '未匹配常见危险命令特征'].join(' · ')),
+          h('pre', { style: { maxHeight: '32vh', overflow: 'auto', whiteSpace: 'pre-wrap' } }, summary.preview),
+          h('label', [h('input', { type: 'checkbox', onChange: (event: Event) => { skipNext = (event.target as HTMLInputElement).checked } }), ' 不再提示多行粘贴']),
+        ]),
         '确认多行粘贴',
-        { type: 'warning', confirmButtonText: '发送', cancelButtonText: '取消' },
+        { type: 'warning', confirmButtonText: '粘贴', cancelButtonText: '取消' },
       )
+      if (skipNext) localStorage.setItem(preference, '1')
     } catch {
       return
     }
   }
-  terminal.paste(quoted ? quotePastedLines(text) : text)
-  terminal.focus()
+  if (disposed || terminalEnded() || !connected.value || !mayFocus() || socket !== connection || terminal !== target || props.session.session_id !== sessionId) return
+  target.paste(quoted ? quotePastedLines(text) : text)
+  target.focus()
+}
+
+function handleNativePaste(event: ClipboardEvent): void {
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  const text = event.clipboardData?.getData('text/plain')
+  if (text) void pasteText(text)
 }
 
 function showFind(): void {
@@ -348,6 +368,7 @@ function createTerminal(): void {
   terminal.loadAddon(fitAddon)
   terminal.loadAddon(searchAddon)
   terminal.open(host.value)
+  host.value.addEventListener('paste', handleNativePaste, true)
   host.value.addEventListener('contextmenu', openContextMenu)
   host.value.addEventListener('keydown', handleTerminalKeydown, true)
   terminal.writeln('\x1b[1;36mNetConsole Interactive Console\x1b[0m')
@@ -526,6 +547,7 @@ onBeforeUnmount(() => {
   if (reconnectTimer) clearTimeout(reconnectTimer)
   removeContextDismiss?.()
   host.value?.removeEventListener('contextmenu', openContextMenu)
+  host.value?.removeEventListener('paste', handleNativePaste, true)
   host.value?.removeEventListener('keydown', handleTerminalKeydown, true)
   resizeObserver?.disconnect()
   socket?.close()

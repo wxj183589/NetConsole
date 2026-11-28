@@ -16,3 +16,13 @@ export function quotePastedLines(text: string): string {
 export function isMultilinePaste(text: string): boolean {
   return /[\r\n]/.test(text)
 }
+
+export function describeTerminalPaste(text: string) {
+  const lines = text.split(/\r\n?|\n/)
+  return {
+    lineCount: lines.length,
+    hasEmptyLine: lines.some(line => !line.trim()),
+    hasConfigCommand: lines.some(line => /^\s*(?:system-view|configure\s+terminal|undo|delete|reset|reboot|format|shutdown|erase|reload)\b/i.test(line)),
+    preview: text.length > 2048 ? text.slice(0, 2048) + '…' : text,
+  }
+}

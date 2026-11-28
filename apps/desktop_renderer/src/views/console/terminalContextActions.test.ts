@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractTerminalUrl, isMultilinePaste, quotePastedLines } from './terminalContextActions'
+import { describeTerminalPaste, extractTerminalUrl, isMultilinePaste, quotePastedLines } from './terminalContextActions'
 
 describe('terminal context action helpers', () => {
   it('extracts HTTP links and trims terminal punctuation', () => {
@@ -15,5 +15,12 @@ describe('terminal context action helpers', () => {
   it('detects multiline clipboard content', () => {
     expect(isMultilinePaste('one\ntwo')).toBe(true)
     expect(isMultilinePaste('one')).toBe(false)
+  })
+
+  it('checks lines beyond the preview for empty lines and configuration commands', () => {
+    const text = 'x'.repeat(2500) + '\r\n \nreboot\rdisplay clock'
+    expect(describeTerminalPaste(text)).toEqual({
+      lineCount: 4, hasEmptyLine: true, hasConfigCommand: true, preview: 'x'.repeat(2048) + '…',
+    })
   })
 })
