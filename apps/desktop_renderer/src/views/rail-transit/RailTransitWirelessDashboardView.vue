@@ -217,7 +217,7 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
 <template>
   <section class="dashboard-page">
     <header class="page-heading">
-      <div><p class="eyebrow">RAIL TRANSIT · READ ONLY</p><h1>轨道交通无线综合看板</h1><p>聚合轨旁 AP、AC Mesh-Link、在线列车通信、任务与 Mesh 离线分析；所有结论均来自既有只读服务。</p></div>
+      <h1>轨道交通无线综合看板</h1>
       <div class="heading-actions"><el-tag type="info">只读聚合</el-tag><el-button :loading="loading" @click="initialLoad">刷新</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="warning" show-icon :closable="false" />
@@ -242,7 +242,7 @@ onBeforeUnmount(() => { document.removeEventListener('visibilitychange', handleV
 
     <div class="two-columns">
       <article class="panel">
-        <div class="panel-title"><div><h2>基础设施状态</h2><p>FIT-AP、光衰与最新 Mesh-Link 快照</p></div><el-button link type="primary" @click="go('/ac-management')">查看 AC 管理</el-button></div>
+        <div class="panel-title"><h2>基础设施状态</h2><div class="heading-actions"><el-button link type="primary" @click="go('/ac-management')">AC 管理</el-button><el-button link type="primary" @click="go('/rail-transit/trackside-ap-business')">轨旁 AP 与光衰</el-button></div></div>
         <div class="mini-grid">
           <span>AP 在线 <b>{{ metric(data?.infrastructure.ac.online_aps) }}</b></span><span>AP 离线 <b>{{ metric(data?.infrastructure.ac.offline_aps) }}</b></span>
           <span>光衰异常 <b>{{ metric(data?.infrastructure.ac.optical_anomalies) }}</b></span><span>活动链路 <b>{{ metric(data?.infrastructure.mesh_link.active_links) }}</b></span>

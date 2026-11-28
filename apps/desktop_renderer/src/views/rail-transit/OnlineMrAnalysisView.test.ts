@@ -698,7 +698,8 @@ describe('Online MR analysis view behavior', () => {
 
     expect(wrapper.find('[data-testid="table-row-A"]').exists()).toBe(true)
     expect(wrapper.find('[data-current-row-key="A"]').exists()).toBe(true)
-    expect(wrapper.find('[title="会话资源正在使用，无法删除"]').exists()).toBe(true)
+    const errorDetails = wrapper.findAll('details').find(item => item.text().includes('归档会话处理失败'))
+    expect(errorDetails?.get('pre').text()).toBe('会话资源正在使用，无法删除')
     expect(wrapper.get('[data-testid="delete-session"]').attributes('loading')).toBe('false')
     wrapper.unmount()
   })

@@ -2889,13 +2889,17 @@ function openApAc(ap: TracksideAp): void {
       : '未在当前局点的 AC FIT-AP 资源中找到该 AP，请先采集或刷新 AC FIT-AP 数据。')
     return
   }
-  router.push({ path: '/ac-management', query: { ac_id: ap.runtime.fit_ap_ac_id || undefined, ap: ap.runtime.fit_ap_id } })
+  router.push({ name: 'ac-fit-aps', query: { ac_id: ap.runtime.fit_ap_ac_id || undefined, ap: ap.runtime.fit_ap_id } })
 }
 function openMrMesh(mr: VehicleMr): void {
   router.push({ path: '/rail-transit/ground-unattended', query: { query: mr.name } })
 }
 function openMrSession(mr: VehicleMr): void {
-  router.push({ path: '/rail-transit/online-mr', query: { session_id: mr.runtime.latest_session_id || undefined, device_id: mr.id } })
+  if (mr.runtime.latest_session_id && isFeatureEnabled('module.online_mr_analysis')) {
+    router.push({ name: 'online-mr-analysis', query: { session_id: mr.runtime.latest_session_id } })
+  } else {
+    router.push({ name: 'online-mr-realtime', query: { device_id: mr.id } })
+  }
 }
 function issueType(value: string): 'danger' | 'warning' | 'info' {
   return value === 'error' ? 'danger' : value === 'warning' ? 'warning' : 'info'

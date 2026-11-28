@@ -24,7 +24,7 @@ const { archives: archiveFeature, syslog: syslogFeature } = GROUND_TAB_FEATURES
   <main v-loading="loading" class="ground-page">
     <header class="page-heading">
       <h1>{{ t('ground.replay_title', '地面无人值守 · 归档回放') }}</h1>
-      <el-button :icon="Refresh" :aria-label="t('common.refresh', '刷新')" @click="loadAll()" />
+      <el-button :icon="Refresh" :loading="loading" @click="loadAll()">{{ t('common.refresh', '刷新') }}</el-button>
     </header>
     <details v-if="generalLoadIssues.length" class="load-warning">
       <summary>{{ t('ground.replay_load_failed', '归档数据读取失败') }}</summary>

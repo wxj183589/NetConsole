@@ -398,7 +398,6 @@ onBeforeUnmount(() => {
   <div class="online-mr-web" v-loading="store.loading">
     <header class="page-heading">
       <div>
-        <p class="eyebrow">轨道交通</p>
         <h2>车载 MR 实时采集</h2>
         <p>仅展示当前正在运行的实时采集任务；历史 Session、日志下载和分析报告统一进入“车载 MR 收集分析”。</p>
       </div>
@@ -423,7 +422,7 @@ onBeforeUnmount(() => {
       <el-empty v-else description="当前局点没有已登记且绑定设备的 MR" />
     </section>
 
-    <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon />
+    <details v-if="store.error"><summary>实时采集状态读取失败</summary><pre class="raw-output">{{ store.error }}</pre></details>
     <el-empty v-if="!store.current && !store.loading" description="当前无实时采集任务，请选择列车启动采集" class="current-empty" />
 
     <template v-if="store.current">

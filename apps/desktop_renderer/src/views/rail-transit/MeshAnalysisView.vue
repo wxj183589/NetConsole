@@ -4555,7 +4555,7 @@ function exportTimestamp(now = new Date()): string {
       <div class="pagination"><span>共 {{ parseIssuesTotal }} 条</span><el-pagination :current-page="parseIssuesPage" :page-size="parseIssuesPageSize" layout="prev, pager, next" :total="parseIssuesTotal" @current-change="loadParseIssues" /></div>
     </el-dialog>
     <el-dialog v-model="localScanVisible" title="扫描本地 MESH 日志" width="min(1280px, 96vw)" :close-on-click-modal="false">
-      <el-alert v-if="localScanError" :title="localScanError" type="error" :closable="false" show-icon />
+      <details v-if="localScanError"><summary>本地日志扫描失败</summary><pre>{{ localScanError }}</pre></details>
       <el-alert v-if="!localScanResult" title="扫描任务完成后将在此显示当前局点 raw 目录中的新增日志。" type="info" :closable="false" show-icon />
       <template v-if="localScanResult">
         <div class="jump-actions local-scan-stats">
