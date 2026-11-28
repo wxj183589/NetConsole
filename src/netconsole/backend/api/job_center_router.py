@@ -69,6 +69,13 @@ def _site_id(request: Request) -> str:
     return _service(request).current_site_id()
 
 
+def _query_site(request: Request, expected_site: str | None) -> str:
+    site_id = _site_id(request)
+    if expected_site is not None and expected_site != site_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="当前局点已切换")
+    return site_id
+
+
 def _cleanup_conflict_message(result: dict[str, object]) -> str:
     reasons: set[str] = set()
     for item in result.get("skipped", []):
@@ -104,21 +111,32 @@ def list_tasks(
     search: str = Query(default="", max_length=200),
     warning_only: bool = False,
     limit: int = Query(default=500, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    device_only: bool = False,
+    expected_site: str | None = Query(default=None, max_length=200),
 ) -> list[JobCenterTaskDTO]:
     return _query(
         lambda: _service(request).list_tasks(
-            _site_id(request),
+            _query_site(request, expected_site),
             statuses=set(task_status or ()),
             search=search,
             warning_only=warning_only,
             limit=limit,
+            offset=offset,
+            device_only=device_only,
         )
     )
 
 
 @router.get("/summary", response_model=JobCenterSummaryDTO)
-def summary(request: Request) -> JobCenterSummaryDTO:
-    return _query(lambda: _service(request).get_summary(_site_id(request)))
+def summary(
+    request: Request,
+    device_only: bool = False,
+    expected_site: str | None = Query(default=None, max_length=200),
+) -> JobCenterSummaryDTO:
+    return _query(lambda: _service(request).get_summary(
+        _query_site(request, expected_site), device_only=device_only,
+    ))
 
 
 @router.post("/cleanup", response_model=JobCenterCleanupResultDTO)

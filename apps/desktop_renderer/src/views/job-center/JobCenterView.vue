@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Refresh, View } from '@element-plus/icons-vue'
@@ -9,8 +9,9 @@ import NcDataTable from '../../components/table/NcDataTable.vue'
 import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
 import type { NcTableColumn } from '../../components/table/NcTableColumn'
 import TaskDetailDrawer from '../../task-center/components/TaskDetailDrawer.vue'
-import { useTaskStore } from '../../stores/tasks'
-import type { TaskItem } from '../../types/task'
+import { activeSiteContext, siteContextState } from '../../stores/siteContext'
+import { apiRequest } from '../../api/client'
+import type { TaskItem, TaskSummary } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
 import { formatTaskDateTime } from '../../utils/dateTime'
 import { deviceMaintenanceTask } from '../../api/deviceOperations'
@@ -19,7 +20,6 @@ import { isFeatureEnabled } from '../../features'
 const DeviceTaskCreateDialog = defineAsyncComponent(() => import('./DeviceTaskCreateDialog.vue'))
 const DeviceTaskResultDialog = defineAsyncComponent(() => import('./DeviceTaskResultDialog.vue'))
 
-const store = useTaskStore()
 const route = useRoute()
 const selectedStatuses = ref<string[]>([])
 const selectedModules = ref<string[]>([])
@@ -28,7 +28,7 @@ const taskStatusLabels: Record<string, string> = {
   active: '运行中', completed: '已完成', failed: '失败', stopped: '已停止',
   aborted: '已中断', warning: '有告警', attention: '未处理失败/告警',
 }
-const taskModuleOptions = ['devices', 'ac', 'rail', 'config', 'files', 'network', 'command-reference', 'logs']
+const taskModuleOptions = ['devices', 'config', 'files']
 const taskModuleLabels: Record<string, string> = {
   devices: '设备管理', ac: 'AC 管理', rail: '轨道交通', config: '配置采集',
   files: '文件管理', network: '网络工具', 'command-reference': '命令说明', logs: '日志维护',
@@ -40,12 +40,16 @@ const taskContextError = ref('')
 const createVisible = ref(false)
 const resultVisible = ref(false)
 const resultTaskId = ref('')
-const pollingConsumer = 'job-center-view'
-let pollingAcquired = false
+const tasks = ref<TaskItem[]>([])
+const summary = ref<TaskSummary | null>(null)
+const loading = ref(false)
+const error = ref('')
+let pollingTimer: ReturnType<typeof setInterval> | undefined
+let generation = 0
 
 const visibleTasks = computed(() => {
   const search = keyword.value.trim().toLowerCase()
-  return store.tasks.filter((task) => (
+  return tasks.value.filter((task) => (
     matchesFilter(task)
     && (!selectedModules.value.length || selectedModules.value.includes(task.module || ''))
     && (!search || taskSearchText(task).includes(search))
@@ -92,21 +96,56 @@ onBeforeUnmount(() => {
 })
 
 function startPolling(): void {
-  if (pollingAcquired) return
-  pollingAcquired = true
-  try {
-    store.acquirePolling(pollingConsumer)
-  } catch {
-    taskContextError.value = '任务列表自动刷新启动失败，可手动刷新后重试。'
-    ElMessage.error(taskContextError.value)
-  }
+  if (pollingTimer !== undefined || document.hidden) return
+  void refreshTasks()
+  pollingTimer = setInterval(() => { if (!loading.value) void refreshTasks() }, 5000)
 }
 
 function stopPolling(): void {
-  if (!pollingAcquired) return
-  pollingAcquired = false
-  store.releasePolling(pollingConsumer)
+  clearInterval(pollingTimer)
+  pollingTimer = undefined
+  generation += 1
+  loading.value = false
 }
+
+async function refreshTasks(): Promise<void> {
+  const site = activeSiteContext.value?.siteId
+  if (!site || siteContextState.value !== 'ready') return
+  const requestGeneration = ++generation
+  const query = new URLSearchParams({ device_only: 'true', expected_site: site })
+  loading.value = true
+  try {
+    const [nextTasks, nextSummary] = await Promise.all([
+      apiRequest<TaskItem[]>(`/api/job-center/tasks?${query}`),
+      apiRequest<TaskSummary>(`/api/job-center/summary?${query}`),
+    ])
+    if (requestGeneration !== generation) return
+    tasks.value = nextTasks
+    summary.value = nextSummary
+    error.value = ''
+  } catch (cause) {
+    if (requestGeneration === generation) {
+      error.value = cause instanceof Error ? cause.message : '设备任务加载失败'
+    }
+  } finally {
+    if (requestGeneration === generation) loading.value = false
+  }
+}
+
+watch([activeSiteContext, siteContextState], () => {
+  generation += 1
+  tasks.value = []
+  summary.value = null
+  loading.value = false
+  error.value = ''
+  taskContextError.value = ''
+  detailVisible.value = false
+  detailTaskId.value = ''
+  createVisible.value = false
+  resultVisible.value = false
+  resultTaskId.value = ''
+  if (pollingTimer !== undefined) void refreshTasks()
+}, { flush: 'sync' })
 
 function handleVisibility(): void {
   if (document.hidden) stopPolling()
@@ -125,8 +164,9 @@ function openDeviceResults(id: string): void {
 }
 
 async function trackSubmittedTask(id: string): Promise<void> {
-  await store.manualRefresh()
-  openTaskDetail(id)
+  await refreshTasks()
+  const task = tasks.value.find((item) => item.id === id)
+  if (task) openTaskDetail(task)
 }
 
 function handleDetailLoadError(taskId: string): void {
@@ -214,41 +254,32 @@ function residentProgressLabel(task: TaskItem): string {
 
 <template>
   <section class="job-center">
-    <el-alert
-      title="统一任务中心"
-      description="任务动作由后端 owner/capability 授权；不支持的动作会禁用并说明原因。关闭窗口不会停止后台任务。"
-      type="info"
-      :closable="false"
-      show-icon
-      class="readonly-alert"
-    />
     <el-alert v-if="taskContextError" :title="taskContextError" type="warning" :closable="false" show-icon class="context-alert" />
 
     <div class="job-metrics">
-      <article><span>任务总数</span><strong>{{ store.tasks.length }}</strong></article>
-      <article class="active"><span>运行中</span><strong>{{ store.runningCount }}</strong></article>
-      <article class="success"><span>已完成</span><strong>{{ store.completedCount }}</strong></article>
-      <article class="danger"><span>失败</span><strong>{{ store.failedCount }}</strong></article>
-      <article class="warning"><span>有告警</span><strong>{{ store.warningCount }}</strong></article>
+      <article><span>任务总数</span><strong>{{ summary?.total ?? '—' }}</strong></article>
+      <article class="active"><span>运行中</span><strong>{{ summary?.active ?? '—' }}</strong></article>
+      <article class="success"><span>已完成</span><strong>{{ summary?.completed ?? '—' }}</strong></article>
+      <article class="danger"><span>失败</span><strong>{{ summary?.failed ?? '—' }}</strong></article>
+      <article class="warning"><span>有告警</span><strong>{{ summary?.warning ?? '—' }}</strong></article>
     </div>
 
     <div class="content-card job-table-card">
       <div class="job-toolbar">
         <div>
           <h2>任务列表</h2>
-          <p>{{ store.runningCount ? '存在运行任务，每 2 秒刷新' : '每 5 秒刷新' }} · 连续失败后降为 10 秒</p>
         </div>
         <div class="job-toolbar-actions">
           <el-input v-model="keyword" clearable placeholder="搜索任务、Session、设备或错误" style="width: 290px" />
           <NcMultiValueFilter v-model="selectedStatuses" :options="taskStatusOptions" :labels="taskStatusLabels" placeholder="全部状态" style="width: 155px" />
           <NcMultiValueFilter v-model="selectedModules" :options="taskModuleOptions" :labels="taskModuleLabels" placeholder="全部模块" style="width: 150px" />
-          <el-button :icon="Refresh" :loading="store.loading" @click="store.manualRefresh">刷新</el-button>
+          <el-button :icon="Refresh" :loading="loading" @click="refreshTasks">刷新</el-button>
           <el-button v-if="isFeatureEnabled('module.devices')" type="primary" @click="createVisible = true">创建设备任务</el-button>
         </div>
       </div>
 
-      <el-alert v-if="store.error" :title="store.error" type="error" show-icon :closable="false" class="job-error" />
-      <NcDataTable v-loading="store.loading" table-id="job-center-tasks" route-key="/tasks" :data="visibleTasks" :columns="columns" empty-text="暂无任务记录" height="calc(100vh - 390px)">
+      <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="job-error" />
+      <NcDataTable v-loading="loading" table-id="job-center-tasks" route-key="/tasks" :data="visibleTasks" :columns="columns" empty-text="暂无任务记录" height="calc(100vh - 390px)">
         <template #cell-task="{ row }">
           <strong class="cell-title">{{ row.name }}</strong>
           <small class="cell-subtitle">{{ row.type }} · {{ row.id }}</small>

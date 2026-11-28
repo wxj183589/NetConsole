@@ -1,5 +1,9 @@
 # Job Center 使用说明
 
+`/tasks` 的设备任务列表和统计按当前 Site 查询，按 owner 与任务类型的组合在 SQLite 分页前筛选。设备采集与诊断、配置采集和比较、设备下载与终端 SFTP 传输进入此列表。MESH 导入、数据库维护、软件内部作业和通用导出仍由通用任务入口跟踪。设备任务页面切换 Site 时清空列表与详情并丢弃旧请求响应。
+
+设备集中采集使用 Site 内的设备 UUID，已保存模板可按 ID 与版本追溯，运行参数和结果随任务实例记录。现有重试入口支持部分失败的设备集中采集，已保存模板需要重新预览。调度器的设备资源键与 worker 并发上限适用于设备集中采集。配置和文件传输仍通过各自现有入口提交。
+
 Vue 根布局持有全局任务入口、右侧任务中心抽屉、可复用的完整任务详情抽屉和单个合并进度浮层。通知、全局任务列表、悬浮卡片及携带 `taskId` 的 Electron 事件会在当前页面直接打开同一个 `TaskDetailDrawer`，展示完整详情、日志和 Artifact，不切换路由；只有用户明确点击“进入完整任务中心”时才进入主工作区 `/tasks` 的完整历史、筛选和搜索页面。设备管理等业务页不再保留常驻任务状态条。`useTaskStore` 通过 REST 快照恢复状态，并由根布局持有唯一 `/ws/tasks` 消费者；WebSocket 事件只触发 300ms 合并刷新，断线或 Backend 重启后继续用 REST 补偿，不让每个业务页面各建连接。
 
 Electron 不再创建任务专用 `BrowserWindow`，`/desktop/tasks`、`TaskWindowLayout` 和窗口控制器已经删除。历史调用保留 `openTaskWindow({taskId,module,status})` 兼容契约，但 Main 只恢复主窗口并向根布局发送任务中心事件：无 `taskId` 时打开任务列表抽屉，有 `taskId` 时直接打开完整任务详情抽屉。前台终态只显示 Vue Notification，程序化 Message/Notification 样式由 Web 入口显式按需加载；通知使用受控 VNode 内容和“查看详情”按钮并挂载到 `document.body`。窗口隐藏、最小化或失焦时才请求 Windows 原生通知，同一终态按任务状态去重，点击通知恢复主窗口并直接定位 `task_id` 详情。托盘只接收运行、失败和部分成功数量，不接收任务对象或查询数据库。

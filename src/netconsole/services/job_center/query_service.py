@@ -172,6 +172,19 @@ class JobCenterQueryService:
     """Web 任务中心的 SQLite 只读查询边界。"""
 
     _ACTIVE_STATES = {"PENDING", "STARTING", "RUNNING", "STOPPING"}
+    _DEVICE_TASK_TYPES_BY_OWNER = {
+        "web_device_task_center": ("device_maintenance_collection",),
+        "web_device_management": (
+            "device_connection_test", "device_detail_collect",
+            "device_optical_refresh", "device_diagnostic_download",
+        ),
+        "web_config_collection": (
+            "config_web_snapshot_fetch", "config_compare_latest_snapshots",
+            "config_compare_latest_running_between_devices", "config_compare_snapshot_pair",
+        ),
+        "web_file_management": ("file_management_download", "device_sftp_enable"),
+        "terminal_sftp": ("terminal_sftp_transfer",),
+    }
 
     def __init__(
         self,
@@ -199,6 +212,8 @@ class JobCenterQueryService:
         search: str = "",
         warning_only: bool = False,
         limit: int = 500,
+        offset: int = 0,
+        device_only: bool = False,
     ) -> list[JobCenterTaskDTO]:
         db_path = self._db_path(site_id)
         if not db_path.is_file():
@@ -206,19 +221,32 @@ class JobCenterQueryService:
         with closing(self._connect(db_path)) as conn:
             if not self._table_exists(conn, "task_snapshots"):
                 return []
+            clauses = []
+            params: list[object] = []
+            if self._column_exists(conn, "task_snapshots", "dismissed_at"):
+                clauses.append("task.dismissed_at = ''")
+            if device_only:
+                pairs = [
+                    (owner, task_type)
+                    for owner, task_types in self._DEVICE_TASK_TYPES_BY_OWNER.items()
+                    for task_type in task_types
+                ]
+                placeholders = ", ".join("(?, ?)" for _ in pairs)
+                clauses.append(f"(task.owner, task.task_type) IN (VALUES {placeholders})")
+                params.extend(value for pair in pairs for value in pair)
+            where = " WHERE " + " AND ".join(clauses) if clauses else ""
+            params.extend((max(1, min(int(limit), 1000)), max(0, int(offset))))
             rows = conn.execute(
-                self._task_select(conn, detail=False)
-                + (
-                    " WHERE task.dismissed_at = ''"
-                    if self._column_exists(conn, "task_snapshots", "dismissed_at")
-                    else ""
-                )
-                + " ORDER BY task.updated_time DESC, task.task_id DESC LIMIT ?",
-                (max(1, min(int(limit), 1000)),),
+                self._task_select(conn, detail=False) + where
+                + " ORDER BY task.updated_time DESC, task.task_id DESC LIMIT ? OFFSET ?",
+                params,
             ).fetchall()
         values = [dict(row) for row in rows]
         self._hydrate_result_references(db_path, values, include_result=False)
-        tasks = [self._task_from_row(row) for row in values if not (row.get("owner") == "terminal_sftp" and row.get("task_type") == "terminal_sftp_transfer")]
+        tasks = [
+            self._task_from_row(row) for row in values
+            if device_only or (row.get("owner"), row.get("task_type")) != ("terminal_sftp", "terminal_sftp_transfer")
+        ]
         normalized_statuses = {str(value).upper() for value in statuses or set() if value}
         if normalized_statuses:
             tasks = [task for task in tasks if task.status.upper() in normalized_statuses]
@@ -350,8 +378,8 @@ class JobCenterQueryService:
             for row in values
         ]
 
-    def get_summary(self, site_id: str) -> JobCenterSummaryDTO:
-        tasks = self.list_tasks(site_id, limit=1000)
+    def get_summary(self, site_id: str, *, device_only: bool = False) -> JobCenterSummaryDTO:
+        tasks = self.list_tasks(site_id, limit=1000, device_only=device_only)
         return JobCenterSummaryDTO(
             total=len(tasks),
             active=sum(task.status.upper() in self._ACTIVE_STATES for task in tasks),

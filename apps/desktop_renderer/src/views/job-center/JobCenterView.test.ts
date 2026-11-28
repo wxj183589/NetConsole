@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useTaskStore } from '../../stores/tasks'
+import { clearSiteContext, markSiteContextSwitching, setActiveSiteContext } from '../../stores/siteContext'
 import type { TaskItem } from '../../types/task'
 import JobCenterView from './JobCenterView.vue'
 import source from './JobCenterView.vue?raw'
@@ -47,6 +48,11 @@ const platformMocks = vi.hoisted(() => ({
   reportReady: vi.fn(),
 }))
 const routeState = vi.hoisted(() => ({ query: {} as Record<string, string>, path: '', name: undefined as string | undefined }))
+const taskApi = vi.hoisted(() => ({ request: vi.fn() }))
+vi.mock('../../api/client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../api/client')>(),
+  apiRequest: taskApi.request,
+}))
 const messageMocks = vi.hoisted(() => ({
   error: vi.fn(),
   info: vi.fn(),
@@ -728,24 +734,29 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.unmount()
   })
 
-  it('keeps the task center usable when polling cannot start', async () => {
-    routeState.query = { module: 'rail' }
-    routeState.path = '/tasks'
-    routeState.name = 'tasks'
+  it('discards previous-site responses after switching', async () => {
     const root = node('root')
-    const pinia = createPinia()
-    const store = useTaskStore(pinia)
-    vi.spyOn(store, 'acquirePolling').mockImplementation(() => { throw new Error('polling unavailable') })
-    vi.spyOn(store, 'releasePolling').mockImplementation(() => undefined)
-
+    const pending = new Map<string, (payload: unknown) => void>()
+    taskApi.request.mockImplementation((url: string) => new Promise((resolve) => pending.set(url, resolve)))
+    setActiveSiteContext({ site_id: 'alpha' })
     const app = renderer.createApp(JobCenterView)
-    app.use(pinia)
+    app.use(createPinia())
     app.mount(root)
-    await nextTick()
-
-    expect(messageMocks.error).toHaveBeenCalledWith('任务列表自动刷新启动失败，可手动刷新后重试。')
-    expect(alertTitles(root)).toContain('任务列表自动刷新启动失败，可手动刷新后重试。')
-    app.unmount()
-    expect(store.releasePolling).toHaveBeenCalledWith('job-center-view')
+    try {
+      markSiteContextSwitching()
+      setActiveSiteContext({ site_id: 'beta' })
+      for (const site of ['beta', 'alpha']) {
+        const query = `device_only=true&expected_site=${site}`
+        pending.get(`/api/job-center/tasks?${query}`)?.([])
+        pending.get(`/api/job-center/summary?${query}`)?.({ total: site === 'beta' ? 12 : 99 })
+        await Promise.resolve()
+        await nextTick()
+      }
+      await vi.waitFor(() => expect(textContent(root)).toContain('任务总数12'))
+      expect(textContent(root)).not.toContain('任务总数99')
+    } finally {
+      app.unmount()
+      clearSiteContext()
+    }
   })
 })

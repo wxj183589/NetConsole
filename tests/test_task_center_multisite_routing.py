@@ -389,6 +389,29 @@ def test_same_task_id_is_distinguished_by_site_scoped_repository_and_query(
     assert query.get_task(SITE_B, task_id).site_name == SITE_B
 
 
+def test_device_task_scope_filters_owner_and_type_before_pagination(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+    for task_id, site, owner, task_type in (
+        ("device-old", SITE_A, "web_device_task_center", "device_maintenance_collection"),
+        ("device-files", SITE_A, "web_file_management", "file_management_download"),
+        ("mesh-import", SITE_A, "web_file_management", "file_management_mesh_import"),
+        ("invalid-owner", SITE_A, "controller", "device_maintenance_collection"),
+        ("other-site", SITE_B, "web_device_task_center", "device_maintenance_collection"),
+    ):
+        service.create_external_task(
+            task_id=task_id, task_name="Identical display title", task_type=task_type,
+            source="local", owner=owner, site_name=site,
+        )
+    query = JobCenterQueryService(service.paths)
+    assert {task.id for task in query.list_tasks(SITE_A, limit=2, device_only=True)} == {
+        "device-old", "device-files",
+    }
+    assert len(query.list_tasks(SITE_A, limit=1, offset=1, device_only=True)) == 1
+    assert query.get_summary(SITE_A, device_only=True).total == 2
+    assert query.get_summary(SITE_B, device_only=True).total == 1
+    assert len(query.list_tasks(SITE_A)) == 4
+
+
 def test_cleanup_with_explicit_site_does_not_delete_same_id_from_other_site(
     tmp_path: Path,
 ) -> None:
