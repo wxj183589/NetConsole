@@ -43,5 +43,4 @@ $env:NETCONSOLE_PYTHON = 'D:/study/NetConsole-Workspace/NetConsole/.venv/Scripts
 node scripts/dev.mjs --codex
 ```
 
-启动完成后用 Node 执行 [截图脚本](../../../reports/tests/legacy-ui-ux/capture.cjs)。[最终 36 张测量](../../../reports/tests/legacy-ui-ux/capture-all.json)
-
+启动完成后用 Node 执行 [截图脚本](../../../reports/tests/legacy-ui-ux/capture.cjs)。[首批 36 张测量](../../../reports/tests/legacy-ui-ux/capture-all.json)与补拍索引合计覆盖 19 个场景。
