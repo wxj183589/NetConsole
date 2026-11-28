@@ -399,18 +399,18 @@ class JobCenterQueryService:
                 while rows := cursor.fetchmany(256):
                     values = [dict(row) for row in rows]
                     self._hydrate_result_references(db_path, values, include_result=False)
-                    batch = self._summarize_tasks([self._task_from_row(row) for row in values])
+                    batch = self._summarize_tasks([self._task_from_row(row) for row in values], device_only=True)
                     for field, count in batch.model_dump().items():
                         setattr(summary, field, getattr(summary, field) + count)
             return summary
         return self._summarize_tasks(self.list_tasks(site_id, limit=1000))
 
-    def _summarize_tasks(self, tasks: list[JobCenterTaskDTO]) -> JobCenterSummaryDTO:
+    def _summarize_tasks(self, tasks: list[JobCenterTaskDTO], *, device_only: bool = False) -> JobCenterSummaryDTO:
         return JobCenterSummaryDTO(
             total=len(tasks),
             active=sum(task.status.upper() in self._ACTIVE_STATES for task in tasks),
             completed=sum(task.status.upper() == "COMPLETED" for task in tasks),
-            failed=sum(task.status.upper() == "FAILED" for task in tasks),
+            failed=sum(task.status == "FAILED" or (device_only and task.business_status == "FAILED") for task in tasks),
             warning=sum(task.has_warning for task in tasks),
             unacknowledged_failed=sum(
                 task.status.upper() == "FAILED" and not task.acknowledged_at

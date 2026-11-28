@@ -211,15 +211,16 @@ function handleDetailLoadError(taskId: string): void {
 
 function matchesFilter(task: TaskItem): boolean {
   if (!selectedStatuses.value.length) return true
+  const failed = task.status === 'FAILED' || task.business_status === 'FAILED'
   return selectedStatuses.value.some((filter) => {
     if (filter === 'active') return activeTaskStatuses.includes(task.status)
     if (filter === 'completed') return task.status === 'COMPLETED'
-    if (filter === 'failed') return task.status === 'FAILED'
+    if (filter === 'failed') return failed
     if (filter === 'stopped') return ['CANCELLED', 'STOPPED'].includes(task.status)
     if (filter === 'aborted') return task.status === 'ABORTED' || ['TASK_ONLY_FAILED', 'STALE'].includes(task.mapping_state)
     if (filter === 'warning') return task.has_warning
     if (filter === 'attention') return !task.acknowledged_at && (
-      task.status === 'FAILED'
+      failed
       || task.status === 'ABORTED'
       || task.has_warning
     )
