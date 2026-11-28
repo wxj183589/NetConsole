@@ -76,6 +76,7 @@ from netconsole.services.mesh_catalog_index_service import MeshCatalogIndexServi
 from netconsole.services.mesh_storage_service import MeshStorageService
 from netconsole.services.mesh_derived_data_maintenance_service import MeshDerivedDataMaintenanceService
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
+from netconsole.services.job_center.task_application_service import TaskResourceConflictError
 from netconsole.services.netmiko_connection import sanitize_sensitive_text
 from netconsole.services.site_storage import SiteRegistryRepository, SiteStorageError
 
@@ -1248,14 +1249,17 @@ class FileManagementApplicationService:
             else:
                 try:
                     self._start_process_job(job, on_complete=self._on_download_complete)
+                except TaskResourceConflictError:
+                    self._persist_waiting_download(site, task_id, params, protected_descriptor)
                 except Exception as exc:
                     raise RuntimeError("文件下载任务启动失败") from exc
-                self._record_task_metadata(
-                    site,
-                    task_id,
-                    DOWNLOAD_DESCRIPTOR_EVENT,
-                    {"protected_descriptor": protected_descriptor},
-                )
+                else:
+                    self._record_task_metadata(
+                        site,
+                        task_id,
+                        DOWNLOAD_DESCRIPTOR_EVENT,
+                        {"protected_descriptor": protected_descriptor},
+                    )
         return self.download_task(site, task_id) or FileDownloadTaskDTO(
             task_id=task_id,
             site_id=site,
@@ -2545,6 +2549,8 @@ class FileManagementApplicationService:
             )
             try:
                 self._start_process_job(job, on_complete=self._on_download_complete)
+            except TaskResourceConflictError:
+                return
             except Exception:
                 self.task_service.record_external_event(
                     snapshot.task_id,
@@ -2552,20 +2558,19 @@ class FileManagementApplicationService:
                     {"message": "文件下载任务恢复启动失败"},
                     site_name=site,
                 )
-            finally:
-                latest = repository.get(snapshot.task_id)
-                if latest is not None:
-                    repository.record(
-                        latest,
-                        TaskEvent(
-                            event_id=uuid4().hex,
-                            task_id=snapshot.task_id,
-                            type=DOWNLOAD_WAITING_EVENT,
-                            time=utc_now_iso(),
-                            source="file_management",
-                            payload={"waiting": False},
-                        ),
-                    )
+            latest = repository.get(snapshot.task_id)
+            if latest is not None:
+                repository.record(
+                    latest,
+                    TaskEvent(
+                        event_id=uuid4().hex,
+                        task_id=snapshot.task_id,
+                        type=DOWNLOAD_WAITING_EVENT,
+                        time=utc_now_iso(),
+                        source="file_management",
+                        payload={"waiting": False},
+                    ),
+                )
 
     def _job_params(self, site: str, descriptor: dict[str, object]) -> dict[str, object]:
         return {
