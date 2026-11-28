@@ -34,6 +34,7 @@ const { archives: archiveFeature, syslog: syslogFeature } = GROUND_TAB_FEATURES
       <el-tab-pane :label="t('ground.replay_tab', '运行回放')" name="playback">
         <Playback
           v-if="profile?.site_id"
+          :key="profile.site_id"
           :site-id="profile.site_id"
           :runs="archivedRuns"
           :trains="[]"

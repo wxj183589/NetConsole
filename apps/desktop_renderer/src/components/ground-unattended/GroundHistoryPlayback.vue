@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { getGroundHeartbeat, getGroundMrMonitoring, getGroundQuickPingSamples, listGroundHistory, listGroundQuickPing } from '../../api/groundUnattended'
+import { ElMessage } from 'element-plus'
+import { getGroundHeartbeat, getGroundMrMonitoring, getGroundQuickPingSamples, listGroundHistory, listGroundQuickPing, startGroundHistoryExport } from '../../api/groundUnattended'
+import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
+import { isFeatureEnabled, isFeatureVisible } from '../../features'
 import type { GroundHeartbeatMr, GroundHistoryPage, GroundMrMonitoring, GroundRun, GroundTrain } from '../../types/groundUnattended'
 import MrMonitoringChart from './MrMonitoringChart.vue'
 import QuickPingChart from './QuickPingChart.vue'
@@ -15,6 +18,13 @@ const result = ref<GroundMrMonitoring | null>(null), loading = ref(false), error
 const timelinePage = ref<GroundHistoryPage | null>(null)
 const timelineError = ref('')
 const timelineLoading = ref(false)
+const timelineEventType = ref('')
+const timelineMrOnly = ref(false)
+const timelineCursors = ref([''])
+const timelinePageIndex = ref(0)
+const timelineExporting = ref(false)
+const { submitExportAfterDestinationSelected, hasActiveExportAction } = useUserSelectedExport()
+const historyExportFeature = 'capability.ground_unattended.history_export'
 let timelineRequest: AbortController | null = null
 const historyMrs = ref<GroundHeartbeatMr[]>([]), historyLoading = ref(false), historyError = ref('')
 const quickRows = ref<Record<'primary' | 'backup', Array<Record<string, unknown>>>>({ primary: [], backup: [] })
@@ -132,6 +142,7 @@ watch(() => props.runs, (rows) => {
 }, { immediate: true })
 watch(selectedRunId, (runId) => {
   stopRequests()
+  clearTimeline()
   emit('view-syslog', '')
   applyRunRange()
   result.value = null
@@ -149,7 +160,7 @@ watch(mrOptions, (rows) => { if (historyLoading.value) return; if (!rows.some((r
 
 async function query(): Promise<void> {
   stopRequests(); const current = generation; error.value = ''; quickError.value = ''; quickLoaded.value = false; quickLoading.value = false; result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }
-  if (!selectedMrId.value || range.value.length !== 2) { error.value = '请选择 MR 和时间范围'; return }
+  if (!selectedMrId.value || range.value?.length !== 2) { error.value = '请选择 MR 和时间范围'; return }
   const start = range.value[0]!, end = range.value[1]!
   if (!(start < end) || end.getTime() - start.getTime() > 86_400_000) { error.value = '时间范围必须为正且不超过 24 小时'; return }
   const request = new AbortController(); controller = request; loading.value = true
@@ -258,11 +269,30 @@ function clearTimeline(): void {
   timelinePage.value = null
   timelineError.value = ''
   timelineLoading.value = false
+  timelineCursors.value = ['']
+  timelinePageIndex.value = 0
 }
 
-async function loadTimeline(cursor = ''): Promise<void> {
-  const [start, end] = range.value
-  if (!props.active || !selectedRunId.value || !start || !end || !(start < end)) return
+const timelineFilters = computed(() => {
+  const [start, end] = range.value || []
+  if (!props.active || !selectedRunId.value || !start || !end || !(start < end)) return null
+  return {
+    run_id: selectedRunId.value,
+    data_type: 'timeline',
+    start_at: start.toISOString(),
+    end_at: end.toISOString(),
+    ...(timelineMrOnly.value && selectedMrId.value ? { mr_id: selectedMrId.value } : {}),
+    ...(timelineEventType.value.trim() ? { event_type: timelineEventType.value.trim() } : {}),
+  }
+})
+watch([timelineEventType, timelineMrOnly], clearTimeline, { flush: 'sync' })
+
+async function loadTimeline(cursor = '', pageIndex = 0): Promise<void> {
+  const filters = timelineFilters.value
+  if (!filters) {
+    timelineError.value = '请选择运行记录和有效的时间范围'
+    return
+  }
   timelineRequest?.abort()
   const request = new AbortController()
   timelineRequest = request
@@ -270,15 +300,16 @@ async function loadTimeline(cursor = ''): Promise<void> {
   timelineError.value = ''
   try {
     const page = await listGroundHistory({
-      run_id: selectedRunId.value,
-      data_type: 'timeline',
-      start_at: start.toISOString(),
-      end_at: end.toISOString(),
+      ...filters,
       page_size: 25,
       include_total: false,
       cursor,
     }, { signal: request.signal })
-    if (!request.signal.aborted) timelinePage.value = page
+    if (!request.signal.aborted) {
+      timelinePage.value = page
+      timelinePageIndex.value = pageIndex
+      timelineCursors.value[pageIndex] = cursor
+    }
   } catch (reason) {
     if (!request.signal.aborted) timelineError.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
@@ -288,6 +319,25 @@ async function loadTimeline(cursor = ''): Promise<void> {
     }
   }
 }
+async function exportTimeline(): Promise<void> {
+  const filters = timelineFilters.value
+  if (!filters || !isFeatureEnabled(historyExportFeature)) return
+  timelineExporting.value = true
+  try {
+    await submitExportAfterDestinationSelected({
+      action: 'rail.ground_history',
+      suggestedName: `ground_timeline_${filters.start_at.slice(0, 10)}.csv`,
+      context: filters,
+      submit: () => startGroundHistoryExport(filters),
+      taskId: (task) => task.task_id,
+    })
+  } catch (reason) {
+    ElMessage.error(reason instanceof Error ? reason.message : String(reason))
+  } finally {
+    timelineExporting.value = false
+  }
+}
+watch([range, () => props.active, () => timelineMrOnly.value ? selectedMrId.value : ''], clearTimeline, { flush: 'sync' })
 watch([selectedMrId, range, () => props.active], () => {
   generation++
   controller?.abort()
@@ -303,7 +353,6 @@ watch([selectedMrId, range, () => props.active], () => {
   quickRows.value = { primary: [], backup: [] }
   quickBuckets.value = { primary: [], backup: [] }
   cursorTime.value = ''
-  clearTimeline()
 }, { flush: 'sync' })
 onBeforeUnmount(() => { stopRequests(); clearTimeline() })
 </script>
@@ -322,18 +371,27 @@ onBeforeUnmount(() => { stopRequests(); clearTimeline() })
       <el-date-picker v-model="range" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" />
       <el-button type="primary" :loading="loading" @click="query">查询回放</el-button>
       <el-button @click="applyRunRange">重置时间</el-button>
-      <el-button v-if="selectedRun" :loading="timelineLoading" @click="loadTimeline()">查询时间轴</el-button>
       <el-button v-if="selectedRun" @click="emit('view-syslog', selectedRun.run_id)">查看历史 Syslog</el-button>
       <el-button v-if="selectedRun" type="danger" plain :loading="deleting" @click="emit('delete-run', selectedRun)">删除历史记录</el-button>
     </div>
+    <div v-if="selectedRun" class="timeline-controls">
+      <el-input v-model="timelineEventType" clearable aria-label="事件类型" placeholder="事件类型，如 mesh_linkup" @keyup.enter="loadTimeline()" />
+      <el-checkbox v-model="timelineMrOnly" :disabled="!selectedMrId">仅所选 MR</el-checkbox>
+      <el-button :loading="timelineLoading" @click="loadTimeline()">查询时间轴</el-button>
+      <el-button v-if="isFeatureVisible(historyExportFeature)" :loading="timelineExporting" :disabled="!timelinePage?.items.length || !isFeatureEnabled(historyExportFeature) || hasActiveExportAction('rail.ground_history')" @click="exportTimeline">导出时间轴</el-button>
+    </div>
     <el-alert v-if="timelineError" :title="timelineError" type="error" :closable="false" />
     <section v-if="timelinePage" aria-label="历史时间轴">
-      <el-table :data="timelinePage.items" row-key="record_id" empty-text="当前时间范围没有事件">
+      <el-table :data="timelinePage.items" row-key="record_id" max-height="360" empty-text="当前条件没有事件">
         <el-table-column prop="ts" label="时间" min-width="170" />
         <el-table-column prop="event_type" label="事件" min-width="120" />
         <el-table-column prop="summary" label="详情" min-width="200" />
       </el-table>
-      <el-button v-if="timelinePage.has_more" :loading="timelineLoading" @click="loadTimeline(timelinePage.next_cursor)">下一页</el-button>
+      <div class="timeline-controls">
+        <el-button :disabled="timelineLoading || timelinePageIndex === 0" @click="loadTimeline(timelineCursors[timelinePageIndex - 1], timelinePageIndex - 1)">上一页</el-button>
+        <span>第 {{ timelinePageIndex + 1 }} 页</span>
+        <el-button :disabled="timelineLoading || !timelinePage.has_more" @click="loadTimeline(timelinePage.next_cursor, timelinePageIndex + 1)">下一页</el-button>
+      </div>
     </section>
     <el-alert v-if="historyError" :title="historyError" type="warning" :closable="false" />
     <p class="playback-boundary">历史回放只读取已落盘数据，不启动采集、不访问设备、不补造缺失字段。所选运行仅定义回放时间上下文，各数据源按实际时间戳对齐。</p>
@@ -350,7 +408,7 @@ onBeforeUnmount(() => { stopRequests(); clearTimeline() })
       <section v-if="backupData" class="track backup-track"><button class="track-toggle" @click="backupPingExpanded = !backupPingExpanded"><b>备用管理 IP · 通断状态</b><span>{{ backupPingExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="backupPingExpanded" class="track-body"><div class="heartbeat-stats"><span>正常连通 {{ backupHeartbeatStats.success }}</span><span>不通/超时 {{ backupHeartbeatStats.failure }}</span><span>未知 {{ backupHeartbeatStats.unknown }}</span><span>连通率 {{ backupHeartbeatStats.connectivityRate == null ? '暂无数据' : `${backupHeartbeatStats.connectivityRate.toFixed(2)}%` }}</span></div><MrMonitoringChart mode="heartbeat" :data="backupData" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="cursorTime" @viewport-change="changeViewport" @cursor-change="updateCursor" /><p v-if="!backupData.series.points.length" class="empty">当前时间范围没有 Heartbeat 采样数据</p></div></Transition></section>
       <el-button v-if="!quickLoaded" :loading="quickLoading" @click="queryQuickPing">加载归档 Quick Ping</el-button>
       <el-alert v-if="quickError" :title="quickError" type="error" :closable="false" />
-      <p v-if="quickLoaded && !primaryQuickRows.length && !backupQuickRows.length" class="empty">该归档没有 Quick Ping 记录。</p>
+      <p v-if="quickLoaded && !primaryQuickRows.length && !backupQuickRows.length" class="empty">所选 MR 和时间范围没有专用 Quick Ping 历史记录。</p>
       <section v-if="primaryQuickRows.length" class="track quick-replay-track"><button class="track-toggle track-heading" @click="primaryQuickExpanded = !primaryQuickExpanded"><h3>主地址 Quick Ping <el-tag size="small" type="success">真实归档数据</el-tag></h3><span>{{ primaryQuickExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="primaryQuickExpanded" class="track-body"><QuickPingChart :rows="primaryQuickRows" :second-loss-buckets="primaryQuickBuckets" :interval-ms="1000" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :selected-time="cursorTime" :active="active" @viewport-change="changeViewport" @cursor-change="updateCursor" /><div class="quick-stats"><span>Ping 总数 {{ primaryQuickStats.ping_total }}</span><span>成功 {{ primaryQuickStats.ping_success }}</span><span>丢包 {{ primaryQuickStats.ping_lost }} ({{ primaryQuickStats.packet_loss_rate == null ? '无数据' : `${primaryQuickStats.packet_loss_rate.toFixed(2)}%` }})</span><span>平均 RTT {{ primaryQuickStats.average_rtt_ms == null ? '无数据' : `${primaryQuickStats.average_rtt_ms.toFixed(2)} ms` }}</span><span>最小 / 最大 RTT {{ primaryQuickStats.min_rtt_ms ?? '无数据' }} / {{ primaryQuickStats.max_rtt_ms ?? '无数据' }} ms</span></div></div></Transition></section>
       <section v-if="backupQuickRows.length" class="track quick-replay-track"><button class="track-toggle track-heading" @click="backupQuickExpanded = !backupQuickExpanded"><h3>备用地址 Quick Ping <el-tag size="small" type="success">真实归档数据</el-tag></h3><span>{{ backupQuickExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="backupQuickExpanded" class="track-body"><QuickPingChart :rows="backupQuickRows" :second-loss-buckets="backupQuickBuckets" :interval-ms="1000" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :selected-time="cursorTime" :active="active" @viewport-change="changeViewport" @cursor-change="updateCursor" /><div class="quick-stats"><span>Ping 总数 {{ backupQuickStats.ping_total }}</span><span>成功 {{ backupQuickStats.ping_success }}</span><span>丢包 {{ backupQuickStats.ping_lost }} ({{ backupQuickStats.packet_loss_rate == null ? '无数据' : `${backupQuickStats.packet_loss_rate.toFixed(2)}%` }})</span><span>平均 RTT {{ backupQuickStats.average_rtt_ms == null ? '无数据' : `${backupQuickStats.average_rtt_ms.toFixed(2)} ms` }}</span><span>最小 / 最大 RTT {{ backupQuickStats.min_rtt_ms ?? '无数据' }} / {{ backupQuickStats.max_rtt_ms ?? '无数据' }} ms</span></div></div></Transition></section>
       <section class="track"><button class="track-toggle" @click="peerExpanded = !peerExpanded"><b>Peer AP 主用区间 · 原始 RSSI</b><span>{{ peerExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="peerExpanded" class="track-body"><MrMonitoringChart mode="peer" :data="result" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="cursorTime" @viewport-change="changeViewport" @cursor-change="updateCursor" /><p v-if="!result.peer_intervals.length" class="empty">当前窗口无可由相邻切换记录证明的 Peer AP 区间。</p></div></Transition></section>
@@ -363,6 +421,8 @@ onBeforeUnmount(() => { stopRequests(); clearTimeline() })
 </template>
 
 <style scoped>
+.timeline-controls{display:flex;align-items:center;flex-wrap:wrap;gap:10px}
+.timeline-controls .el-input{width:270px}
 .playback-workspace{display:flex;flex-direction:column;gap:14px;min-width:0}.playback-toolbar{display:grid;grid-template-columns:140px 160px minmax(180px,1fr) minmax(220px,1.2fr) minmax(330px,1.4fr) auto;gap:10px;align-items:center}.playback-boundary,.empty{margin:0;color:var(--el-text-color-secondary);font-size:13px}.playback-identity{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding:12px;border:1px solid var(--el-border-color-light);border-radius:8px;background:var(--el-fill-color-lighter)}.track,.navigator,.event-grid>section{border:1px solid var(--el-border-color-light);border-radius:8px;padding:12px;min-width:0}.track h3,.navigator h3,.event-grid h3{margin:0 0 10px;font-size:14px}.track-toggle,summary{display:flex;width:100%;justify-content:space-between;border:0;background:transparent;color:inherit;padding:0;cursor:pointer}.track-heading{display:flex;justify-content:space-between;align-items:center;gap:10px}.track-heading h3{display:flex;align-items:center;gap:8px}.simulated-badge{font-size:11px;color:var(--el-color-warning)}.quick-stats,.heartbeat-stats{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--el-text-color-secondary)}.event-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.event-row{display:flex;width:100%;flex-direction:column;gap:4px;text-align:left;border:0;border-bottom:1px solid var(--el-border-color-lighter);background:transparent;color:inherit;padding:9px 4px;cursor:pointer}.event-row span,summary span{font-size:12px;color:var(--el-text-color-secondary)}@media(max-width:1200px){.playback-toolbar{grid-template-columns:1fr 1fr}.event-grid{grid-template-columns:1fr}}
 .navigator{border-color:var(--el-color-primary-light-5);background:var(--el-fill-color-lighter);box-shadow:0 0 0 1px color-mix(in srgb,var(--el-color-primary),transparent 82%)}.navigator-range{margin:-4px 0 4px;color:var(--el-color-primary);font-size:12px;font-weight:600}.track-body{min-width:0}.chart-collapse-enter-active,.chart-collapse-leave-active{max-height:920px;overflow:hidden;transition:max-height .22s ease,opacity .18s ease}.chart-collapse-enter-from,.chart-collapse-leave-to{max-height:0;opacity:0}
 </style>

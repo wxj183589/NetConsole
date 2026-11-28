@@ -32,6 +32,7 @@ const COORDINATED_EXPORTS: CoordinatedExportEntry[] = [
     ['exportTracksideApBase', 'exportTracksideApImportIssues', 'exportTracksideApRenameCommands']),
   entry('views/rail-transit/OnlineMrAnalysisView.vue', ['rail.online_mr_report'], ['exportOnlineMrReport']),
   entry('views/rail-transit/TimelinePage.vue', ['rail.ground_history'], ['startGroundHistoryExport']),
+  entry('components/ground-unattended/GroundHistoryPlayback.vue', ['rail.ground_history'], ['startGroundHistoryExport']),
   entry('views/rail-transit/VehicleMrOnlineView.vue',
     ['rail.vehicle_history', 'rail.vehicle_mapping_template'],
     ['exportVehicleMrHistory', 'exportVehicleMrMappingTemplate']),
