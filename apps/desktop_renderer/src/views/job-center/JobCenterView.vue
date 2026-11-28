@@ -14,13 +14,14 @@ import { apiRequest } from '../../api/client'
 import type { TaskItem, TaskSummary } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
 import { formatTaskDateTime } from '../../utils/dateTime'
-import { cancelDeviceTaskSchedule, deviceMaintenanceTask, listDeviceTaskSchedules, type DeviceTaskSchedule } from '../../api/deviceOperations'
+import { cancelDeviceTaskSchedule, deviceMaintenanceTask, listDeviceTaskSchedules, type DeviceTaskKind, type DeviceTaskSchedule } from '../../api/deviceOperations'
 import { isFeatureEnabled } from '../../features'
 
 const DeviceTaskCreateDialog = defineAsyncComponent(() => import('./DeviceTaskCreateDialog.vue'))
 const DeviceTaskResultDialog = defineAsyncComponent(() => import('./DeviceTaskResultDialog.vue'))
 
 const route = useRoute()
+const props = defineProps<{ initialKind?: DeviceTaskKind }>()
 const selectedStatuses = ref<string[]>([])
 const selectedModules = ref<string[]>([])
 const taskStatusOptions = ['active', 'completed', 'failed', 'stopped', 'aborted', 'warning', 'attention']
@@ -93,10 +94,9 @@ onMounted(() => {
   if (taskId) openTaskDetail(taskId)
 })
 
-watch(() => route.query.create_for_device, (value) => {
-  if (typeof value !== 'string' || !value.trim() || !isFeatureEnabled('module.devices')) return
-  initialDeviceUuid.value = value.trim()
-  createVisible.value = true
+watch([() => route.query.create_for_device, () => props.initialKind], ([value, kind]) => {
+  initialDeviceUuid.value = typeof value === 'string' ? value.trim() : ''
+  createVisible.value = Boolean(initialDeviceUuid.value || kind) && isFeatureEnabled('module.devices')
 }, { immediate: true })
 onActivated(startPolling)
 onDeactivated(stopPolling)
@@ -303,6 +303,9 @@ function residentProgressLabel(task: TaskItem): string {
       <div class="job-toolbar">
         <div>
           <h2>任务列表</h2>
+          <router-link v-if="initialKind === 'diagnostic' && isFeatureEnabled('capability.devices.collect')" :to="{ name: 'device-diagnostic-downloads' }">设备诊断下载</router-link>
+          <router-link v-if="initialKind === 'backup' && isFeatureEnabled('module.config_collection')" :to="{ name: 'config-collection' }">配置采集中心</router-link>
+          <router-link v-if="!initialKind && isFeatureEnabled('module.file_management')" :to="{ name: 'device-file-downloads' }">设备文件传输</router-link>
         </div>
         <div class="job-toolbar-actions">
           <el-input v-model="keyword" clearable placeholder="搜索任务、Session、设备或错误" style="width: 290px" />
@@ -338,7 +341,7 @@ function residentProgressLabel(task: TaskItem): string {
       source="job-center"
       @load-error="handleDetailLoadError"
     />
-    <DeviceTaskCreateDialog v-if="createVisible" v-model="createVisible" :initial-device-uuid="initialDeviceUuid" @submitted="trackSubmittedTask" @scheduled="showSchedules" />
+    <DeviceTaskCreateDialog v-if="createVisible" :key="initialKind" v-model="createVisible" :initial-kind="initialKind" :initial-device-uuid="initialDeviceUuid" @submitted="trackSubmittedTask" @scheduled="showSchedules" />
     <el-dialog v-model="schedulesVisible" title="定时计划" width="min(720px, 92vw)">
       <el-button :icon="Refresh" @click="showSchedules">刷新</el-button>
       <ul v-if="schedules.length">

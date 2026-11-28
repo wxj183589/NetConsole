@@ -12,7 +12,7 @@ import type { DeviceGroup, DeviceListItem } from '../../types/deviceManagement'
 import { isFeatureEnabled } from '../../features'
 
 const open = defineModel<boolean>({ required: true })
-const props = defineProps<{ initialDeviceUuid?: string }>()
+const props = defineProps<{ initialDeviceUuid?: string; initialKind?: DeviceTaskKind }>()
 const emit = defineEmits<{ submitted: [id: string]; scheduled: [] }>()
 const scheduledAt = ref('')
 const upgradeLabEnabled = ref(false)
@@ -28,7 +28,8 @@ const kinds = computed(() => Object.entries(deviceTaskLabels).filter(
     return true
   },
 ))
-const kind = ref<DeviceTaskKind>(configCollectionEnabled.value ? 'backup' : 'diagnostic')
+const kind = ref<DeviceTaskKind>(props.initialKind ?? (configCollectionEnabled.value ? 'backup' : 'diagnostic'))
+const kindAvailable = computed(() => kinds.value.some(([value]) => value === kind.value))
 const snapshotTask = computed(() => ['config_diff', 'config_preview'].includes(kind.value))
 const immediateTask = computed(() => snapshotTask.value || ['health', 'config_generate', 'upgrade_lab'].includes(kind.value))
 const scope = ref<'devices' | 'group' | 'organization'>('devices')
@@ -74,7 +75,8 @@ const draftChanged = computed(() => {
   }
 })
 const canSubmit = computed(() =>
-  (scope.value === 'devices' ? targets.value.length > 0 : scope.value === 'group' ? targetGroup.value !== null : Boolean(organizationUid.value))
+  kindAvailable.value
+  && (scope.value === 'devices' ? targets.value.length > 0 : scope.value === 'group' ? targetGroup.value !== null : Boolean(organizationUid.value))
   && (kind.value !== 'custom' || commandPreviewReady.value)
   && (kind.value !== 'config_generate' || savedPreview.value?.risk === 'configuration_change')
   && (!snapshotTask.value || (scope.value === 'devices' && targets.value.length === 1)),
@@ -247,10 +249,12 @@ watch(open, (visible) => {
   <el-dialog v-model="open" title="创建设备任务" width="min(740px, 94vw)" :close-on-click-modal="false">
     <el-form label-position="top" class="task-form">
       <el-form-item label="任务模板">
-        <el-select v-model="kind" aria-label="任务模板">
+        <span v-if="initialKind">{{ deviceTaskLabels[kind] }}</span>
+        <el-select v-else v-model="kind" aria-label="任务模板">
           <el-option v-for="[value, label] in kinds" :key="value" :value="value" :label="label" />
         </el-select>
       </el-form-item>
+      <el-alert v-if="initialKind && !kindAvailable" type="info" :closable="false" :title="kind === 'upgrade_lab' ? '当前环境未启用模拟升级' : '当前环境未启用此任务模板'" />
       <el-form-item label="目标范围">
         <el-radio-group v-model="scope">
           <el-radio-button value="devices">选择设备</el-radio-button>

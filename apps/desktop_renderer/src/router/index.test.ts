@@ -27,7 +27,7 @@ describe('Web route ownership', () => {
   })
 
   it('keeps legacy AC, train-online, and toolbox redirects', () => {
-    expect(routes.find((route) => route.path === 'ac-management')?.redirect).toEqual({ name: 'ac-fit-aps' })
+    expect(routes.find((route) => route.path === 'ac-management')?.name).toBe('ac-controllers')
     expect(routes.find((route) => route.path === 'ac-management/optical')?.redirect).toEqual({ name: 'ac-fit-aps' })
     const meshRedirect = routes.find((route) => route.path === 'ac-management/mesh-links')?.redirect
     const monitorRedirect = routes.find((route) => route.path === 'ac/mesh-link-monitor')?.redirect

@@ -14,7 +14,7 @@ import {
 describe('Web navigation registry', () => {
   it('keeps the fixed top-level order', () => {
     expect(navigationRegistry.map((item) => item.title)).toEqual([
-      'Dashboard', '设备资料', '控制台', '无线管理', '轨道交通', '设备任务', '工具集',
+      'Dashboard', '设备资料', '控制台', '无线管理', '轨道交通', '任务中心', '工具集',
       '文件管理', '网络服务', '软件说明与维护',
     ])
   })
@@ -37,12 +37,12 @@ describe('Web navigation registry', () => {
 
   it('registers the fixed child ordering without exposing unfinished routes', () => {
     expect(navigationRegistry.find((item) => item.navigation_id === 'ac')?.children.map((item) => item.title)).toEqual([
-      'AP 在线概览', 'FIT-AP 资源', 'AP 扩展信息', 'AC 配置快照与对比',
+      'AC 管理', 'AP 在线概览', 'FIT-AP 资源', 'AC 配置快照与对比',
     ])
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.mesh-links')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.optical')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'rail')?.children.map((item) => item.title)).toEqual([
-      '组织结构', '基础资料', '轨道交通无线看板', '地面无人值守 · 实时采集', '地面无人值守 · 归档回放', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时采集', '车载 MR 归档回放',
+      '组织结构', '轨旁 AP 业务', '基础资料', '轨道交通无线看板', '地面无人值守 · 实时采集', '地面无人值守 · 归档回放', 'MR 原始 MESH 日志分析', '车载 MR 实时采集', '车载 MR 归档回放',
     ])
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.train-online')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'files')?.children.map((item) => item.title)).toEqual([
@@ -88,12 +88,10 @@ describe('Web navigation registry', () => {
     else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
   })
 
-  it('groups configuration collection with device tasks and honors its feature gate', () => {
-    const entry = flattenNavigation().find((item) => item.navigation_id === 'files.config-collection')
-    expect(entry).toMatchObject({ route_path: '/config-center', feature_id: 'module.config_collection' })
-    expect(entry?.parent_id).toBe('device-tasks')
-    expect(flattenNavigation(visibleNavigation((id) => id !== 'module.config_collection')).some((item) => item.navigation_id === entry?.navigation_id)).toBe(false)
-    expect(flattenNavigation(visibleNavigation(() => true)).some((item) => item.navigation_id === entry?.navigation_id)).toBe(true)
+  it('exposes the device task workflows under the task center feature gate', () => {
+    const group = visibleNavigation(() => true).find((entry) => entry.navigation_id === 'device-tasks')
+    expect(group?.children.map((entry) => entry.title)).toEqual(['诊断收集', '配置备份', '版本升级', '配置生成', '其他网络设备任务'])
+    expect(visibleNavigation((id) => id !== 'module.task_center').some((entry) => entry.navigation_id === 'device-tasks')).toBe(false)
   })
 
   it('keeps the device console on an independent feature gate', () => {

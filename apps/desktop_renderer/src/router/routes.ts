@@ -1,4 +1,5 @@
 import type { RouteRecordRaw } from 'vue-router'
+import { deviceTaskEntries } from '../navigation/deviceTaskEntries'
 
 
 export const appRoutes: RouteRecordRaw[] = [
@@ -11,7 +12,7 @@ export const appRoutes: RouteRecordRaw[] = [
       { path: 'devices/archive', name: 'device-archives', component: () => import('../views/devices/DeviceArchiveListView.vue'), meta: { navigationId: 'device-archives', featureId: 'module.devices', moduleId: 'devices', title: '设备档案', tabTitle: '设备档案', desktopOnly: false, workspace: { identity: 'singleton', cache: false, allowDuplicate: false } } },
       { path: 'console', name: 'device-console', component: () => import('../views/console/ConsoleWorkspaceView.vue'), meta: { navigationId: 'device-console', featureId: 'module.console', moduleId: 'console', title: '控制台', tabTitle: '控制台', desktopOnly: false, workspace: { identity: 'singleton', cache: true, allowDuplicate: false } } },
       { path: 'devices/:deviceId', name: 'device-detail', component: () => import('../views/devices/DeviceDetailView.vue'), meta: { navigationId: 'device-archives', featureId: 'module.devices', moduleId: 'devices', title: '设备档案', desktopOnly: false, hiddenRoute: true, workspace: { identity: 'resource', resourceParams: ['deviceId'], allowDuplicate: false } } },
-      { path: 'ac-management', redirect: { name: 'ac-fit-aps' }, meta: { moduleId: 'ac', title: 'AC 管理', desktopOnly: false, hiddenRoute: true } },
+      { path: 'ac-management', name: 'ac-controllers', component: () => import('../views/ac-management/AcControllersView.vue'), meta: { navigationId: 'ac.controllers', featureId: 'module.ac', moduleId: 'ac', title: 'AC 管理', desktopOnly: false, workspace: { cache: false } } },
       { path: 'ac-management/fit-aps', name: 'ac-fit-aps', component: () => import('../views/ac-management/AcManagementView.vue'), meta: { navigationId: 'ac.fit-aps', featureId: 'module.fit_ap', moduleId: 'ac', title: '无线管理 / FIT-AP 资源', tabTitle: 'FIT-AP 资源', desktopOnly: false } },
       { path: 'ac-management/optical', name: 'ac-optical', redirect: { name: 'ac-fit-aps' }, meta: { moduleId: 'ac', title: '无线管理 / FIT-AP 资源', desktopOnly: false, hiddenRoute: true } },
       { path: 'ac-management/extensions', name: 'ac-extensions', component: () => import('../views/ac-management/AcWebParityView.vue'), meta: { navigationId: 'ac.extensions', featureId: 'capability.ac.extensions', moduleId: 'ac', title: '无线管理 / AP 扩展信息', tabTitle: 'AP 扩展信息', desktopOnly: false } },
@@ -44,6 +45,11 @@ export const appRoutes: RouteRecordRaw[] = [
       { path: 'network-tools/wireless-scan', name: 'network-tools-wireless-scan-legacy', redirect: (to) => ({ name: 'tools-wireless-scan', query: to.query, hash: to.hash }), meta: { moduleId: 'tools', title: '网络服务 / 无线扫描', desktopOnly: false, hiddenRoute: true } },
       { path: 'network-tools/overview', redirect: { name: 'tools-connectivity' }, meta: { moduleId: 'tools', title: '网络服务 / 网络测试与计算', desktopOnly: false, hiddenRoute: true } },
       { path: 'tools', name: 'tool-collection', component: () => import('../views/tools/ToolCollectionView.vue'), meta: { navigationId: 'tools.external-tools', featureId: 'module.tools', moduleId: 'tools', title: '工具集 / 外部工具', tabTitle: '外部工具', desktopOnly: true, workspace: { identity: 'singleton', cache: true, allowDuplicate: false } } },
+      ...deviceTaskEntries.map(({ kind, title }) => ({
+        path: `tasks/${kind}`, name: `tasks-${kind}`, props: { initialKind: kind },
+        component: () => import('../views/job-center/JobCenterView.vue'),
+        meta: { navigationId: `tasks.${kind}`, featureId: 'module.task_center', moduleId: 'tasks', title, desktopOnly: false, workspace: { cache: false } },
+      })),
       { path: 'tasks', name: 'tasks', component: () => import('../views/job-center/JobCenterView.vue'), meta: { navigationId: 'tasks', featureId: 'module.task_center', moduleId: 'tasks', title: '任务中心', tabTitle: '任务中心', desktopOnly: false } },
       { path: 'storage-management', redirect: { name: 'system-settings', query: { section: 'site-storage' } }, meta: { moduleId: 'settings', title: '局点存储', desktopOnly: true, hiddenRoute: true } },
       { path: 'settings', name: 'system-settings', component: () => import('../views/settings/SystemSettingsView.vue'), meta: { navigationId: 'settings', featureId: 'module.system_settings', moduleId: 'settings', title: '系统设置', tabTitle: '系统设置', desktopOnly: true, workspace: { cache: false, allowDuplicate: false } } },
