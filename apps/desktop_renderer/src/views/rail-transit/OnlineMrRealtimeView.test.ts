@@ -31,7 +31,7 @@ import OnlineMrRealtimeView from './OnlineMrRealtimeView.vue'
 
 describe('Online MR realtime collection view', () => {
   it('shows only the current collection session and moves history to analysis', () => {
-    expect(source).toContain('车载 MR 实时收集')
+    expect(source).toContain('车载 MR 实时采集')
     expect(source).toContain('listTrainCommunications')
     expect(source).toContain('<OnlineMrLocalControl')
     expect(source).not.toContain('<OnlineMrAgentControlPanel')

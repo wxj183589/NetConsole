@@ -1,7 +1,8 @@
 import type { IpcRendererEvent } from 'electron'
 
-import type { BackendStatus, NetConsoleDesktopBridge, RendererRecoveryState } from '../shared/bridge'
+import type { BackendStatus, NetConsoleDesktopBridge, RendererRecoveryState, TerminalSyncEvent, TerminalSyncTarget } from '../shared/bridge'
 import { DESKTOP_IPC } from '../shared/bridge'
+import { validateTerminalSyncRequest } from '../shared/terminal-sync'
 import {
   validateCapabilityId,
   validateExternalUrl,
@@ -51,6 +52,12 @@ export function createDesktopBridge(ipcRenderer: IpcRendererLike, droppedFilePat
       return ipcRenderer.invoke(DESKTOP_IPC.validateDroppedFiles, files.map(file => droppedFilePath(file))) as Promise<void>
     },
     openTerminalWindow: (id) => { if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('终端标识无效'); return ipcRenderer.invoke(DESKTOP_IPC.openTerminalWindow, id) as Promise<import('../shared/bridge').NativeActionResult> },
+    terminalSync: (request) => ipcRenderer.invoke(DESKTOP_IPC.terminalSync, validateTerminalSyncRequest(request)) as Promise<TerminalSyncTarget[]>,
+    onTerminalSync: (listener) => {
+      const wrapped = (_event: IpcRendererEvent, value: unknown) => listener(value as TerminalSyncEvent)
+      ipcRenderer.on(DESKTOP_IPC.terminalSyncEvent, wrapped)
+      return () => ipcRenderer.removeListener(DESKTOP_IPC.terminalSyncEvent, wrapped)
+    },
     prepareSftpDrag: (requests) => ipcRenderer.invoke(DESKTOP_IPC.prepareSftpDrag, requests.map(validateBackendDownloadRequest)) as Promise<{ dragId: string }>,
     startSftpDrag: (dragId) => { ipcRenderer.send(DESKTOP_IPC.startSftpDrag, dragId) },
     getAppInfo: () => ipcRenderer.invoke(DESKTOP_IPC.getAppInfo) as ReturnType<NetConsoleDesktopBridge['getAppInfo']>,

@@ -151,6 +151,7 @@ export interface DesktopIpcDependencies {
   sftpDragRoot?: string
   startNativeDrag?: (event: IpcEventLike, files: string[]) => void
   openTerminalWindow?: (sessionId: string) => Promise<NativeActionResult>
+  terminalSync?: (value: unknown, sender: unknown, url: string) => unknown
 }
 
 export interface DesktopIpcRegistration {
@@ -187,6 +188,10 @@ export function registerDesktopIpc(
   dependencies.ipcMain.handle(DESKTOP_IPC.openTerminalWindow, trusted(value => {
     if (typeof value !== 'string' || !/^[a-f0-9]{32}$/.test(value) || !dependencies.openTerminalWindow) throw new Error('独立终端不可用')
     return dependencies.openTerminalWindow(value)
+  }))
+  dependencies.ipcMain.handle(DESKTOP_IPC.terminalSync, trusted((value, event) => {
+    if (!dependencies.terminalSync) throw new Error('终端同步不可用')
+    return dependencies.terminalSync(value, event.sender, event.senderFrame?.url || '')
   }))
   dependencies.ipcMain.handle(DESKTOP_IPC.validateDroppedFiles, trusted(value => validateDroppedFilePaths(value)))
   dependencies.ipcMain.on(DESKTOP_IPC.startSftpDrag, (event, value) => {

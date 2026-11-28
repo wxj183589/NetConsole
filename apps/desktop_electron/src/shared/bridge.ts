@@ -429,6 +429,8 @@ export type UiPreferenceKey = typeof UI_PREFERENCE_KEYS[number]
 export interface NetConsoleDesktopBridge {
   validateDroppedFiles?(files: File[]): Promise<void>
   openTerminalWindow?(sessionId: string): Promise<NativeActionResult>
+  terminalSync?(request: TerminalSyncRequest): Promise<TerminalSyncTarget[]>
+  onTerminalSync?(listener: (event: TerminalSyncEvent) => void): () => void
   prepareSftpDrag?(requests: BackendDownloadRequest[]): Promise<{ dragId: string }>
   startSftpDrag?(dragId: string): void
   getAppInfo(): Promise<AppInfo>
@@ -498,7 +500,20 @@ export interface NetConsoleDesktopBridge {
   getRendererRecoveryState?(): Promise<RendererRecoveryState | null>
 }
 
+export type TerminalSyncTarget = { id: string; ready: boolean }
+export type TerminalSyncRequest =
+  | { action: 'list' }
+  | { action: 'ready'; ready: boolean }
+  | { action: 'select'; ids: string[] }
+  | { action: 'input'; kind: 'keys' | 'paste'; data: string }
+export type TerminalSyncEvent =
+  | { type: 'targets'; targets: TerminalSyncTarget[] }
+  | { type: 'member'; selected: boolean }
+  | { type: 'input'; kind: 'keys' | 'paste'; data: string; origin?: string }
+
 export const DESKTOP_IPC = Object.freeze({
+  terminalSync: 'netconsole:desktop:terminal-sync',
+  terminalSyncEvent: 'netconsole:desktop:terminal-sync-event',
   validateDroppedFiles: 'netconsole:desktop:validate-dropped-files',
   openTerminalWindow: 'netconsole:desktop:open-terminal-window',
   prepareSftpDrag: 'netconsole:desktop:prepare-sftp-drag',
@@ -570,6 +585,7 @@ export const DESKTOP_SESSION_HEADER = 'X-NetConsole-Session'
 export const DESKTOP_SESSION_COOKIE = 'netconsole_desktop_session'
 
 export const DESKTOP_HANDLED_CHANNELS = Object.freeze([
+  DESKTOP_IPC.terminalSync,
   DESKTOP_IPC.validateDroppedFiles,
   DESKTOP_IPC.openTerminalWindow,
   DESKTOP_IPC.prepareSftpDrag,
