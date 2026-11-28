@@ -135,10 +135,13 @@ def get_heartbeat_runtime(request: Request) -> HeartbeatRuntimeDTO:
     status_code=status.HTTP_202_ACCEPTED,
     dependencies=[Depends(require_feature("capability.ground_unattended.history_export"))],
 )
-def export_history(request: Request, payload: GroundHistoryExportRequestDTO) -> RailTransitTaskDTO:
+def export_history(request: Request, payload: GroundHistoryExportRequestDTO, expected_site: str | None = None) -> RailTransitTaskDTO:
+    site = _site_id(request)
+    if expected_site is not None and expected_site != site:
+        raise HTTPException(status_code=409, detail="局点已切换，请重新查询后再导出")
     try:
         return request.app.state.rail_transit_web_application_service.start_ground_history_export(
-            _site_id(request), filters=payload.model_dump(),
+            site, filters=payload.model_dump(),
         )
     except RailTransitWebError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": str(exc)}) from exc

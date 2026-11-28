@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { getGroundHeartbeat, getGroundMrMonitoring, getGroundQuickPingSamples, listGroundHistory, listGroundQuickPing, startGroundHistoryExport } from '../../api/groundUnattended'
 import { useUserSelectedExport } from '../../composables/useUserSelectedExport'
 import { isFeatureEnabled, isFeatureVisible } from '../../features'
+import { activeSiteContext } from '../../stores/siteContext'
 import type { GroundHeartbeatMr, GroundHistoryPage, GroundMrMonitoring, GroundRun, GroundTrain } from '../../types/groundUnattended'
 import MrMonitoringChart from './MrMonitoringChart.vue'
 import QuickPingChart from './QuickPingChart.vue'
@@ -321,14 +322,15 @@ async function loadTimeline(cursor = '', pageIndex = 0): Promise<void> {
 }
 async function exportTimeline(): Promise<void> {
   const filters = timelineFilters.value
-  if (!filters || !isFeatureEnabled(historyExportFeature)) return
+  const site = activeSiteContext.value?.siteId
+  if (!filters || !site || timelineExporting.value || !isFeatureEnabled(historyExportFeature)) return
   timelineExporting.value = true
   try {
     await submitExportAfterDestinationSelected({
       action: 'rail.ground_history',
       suggestedName: `ground_timeline_${filters.start_at.slice(0, 10)}.csv`,
       context: filters,
-      submit: () => startGroundHistoryExport(filters),
+      submit: () => startGroundHistoryExport(filters, site),
       taskId: (task) => task.task_id,
     })
   } catch (reason) {

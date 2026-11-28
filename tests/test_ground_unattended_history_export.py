@@ -56,6 +56,8 @@ def test_history_export_api_process_artifact_and_filter_validation(tmp_path: Pat
     app = create_app(paths=paths)
     _seed(paths.ground_unattended_db_path("demo"), 3)
     with TestClient(app) as client:
+        stale_site = client.post("/api/rail-transit/ground-unattended/history/export", params={"expected_site": "previous-site"}, json={"data_type": "timeline"})
+        assert stale_site.status_code == 409
         invalid = client.post("/api/rail-transit/ground-unattended/history/export", json={"start_at": "invalid"})
         assert invalid.status_code == 422, invalid.text
         invalid_sort = client.get("/api/rail-transit/ground-unattended/history", params={"sort_order": "invalid"})

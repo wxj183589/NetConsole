@@ -282,6 +282,7 @@ export const checkGroundUdpPort = (listenHost: string, listenPort: number): Prom
   body: JSON.stringify({ listen_host: listenHost, listen_port: listenPort }),
 })
 
-export function startGroundHistoryExport(filters: Record<string, string>): Promise<RailTransitTask> {
-  return apiRequest(`${root}/history/export`, { method: 'POST', body: JSON.stringify(filters) })
+export function startGroundHistoryExport(filters: Record<string, string>, expectedSite?: string): Promise<RailTransitTask> {
+  const query = expectedSite ? '?' + new URLSearchParams({ expected_site: expectedSite }).toString() : ''
+  return apiRequest(`${root}/history/export${query}`, { method: 'POST', body: JSON.stringify(filters) })
 }
