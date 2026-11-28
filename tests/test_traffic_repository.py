@@ -45,6 +45,36 @@ def _run(
     )
 
 
+def test_reopen_initialized_repository_during_active_write(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "traffic.sqlite"
+    repo = TrafficRunRepository(path)
+    original_connect = TrafficRunRepository._connect
+
+    def connect_without_lock_wait(repository):
+        conn = original_connect(repository)
+        conn.execute("PRAGMA busy_timeout = 0")
+        return conn
+
+    monkeypatch.setattr(TrafficRunRepository, "_connect", connect_without_lock_wait)
+    with repo._connect() as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            TrafficRunRepository(path)
+        finally:
+            writer.rollback()
+
+
+def test_reopen_repairs_missing_schema_object(tmp_path) -> None:
+    repo = TrafficRunRepository(tmp_path / "traffic.sqlite")
+    with repo._connect() as conn:
+        conn.execute("DROP INDEX idx_traffic_ping_run_time")
+    repo.initialize()
+    with repo._connect() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_traffic_ping_run_time'"
+        ).fetchone()
+
+
 def test_traffic_paths_and_config_contract(tmp_path) -> None:
     paths = PathResolver(tmp_path)
     root = tmp_path / "sites" / "site-a" / "files" / "network_tools" / "traffic"

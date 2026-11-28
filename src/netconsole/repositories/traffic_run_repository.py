@@ -19,6 +19,11 @@ from netconsole.models.traffic_test import (
 
 
 TRAFFIC_SCHEMA_VERSION = 1
+_V1_OBJECTS = {
+    "traffic_schema_meta", "traffic_runs", "traffic_agent_tasks", "traffic_ping_samples",
+    "idx_traffic_runs_status_updated", "idx_traffic_runs_agent_sync", "idx_traffic_runs_correlation",
+    "idx_traffic_agent_tasks_recovery", "idx_traffic_ping_run_time",
+}
 
 _SECRET_KEYS = frozenset({"authorization", "credential", "password", "secret", "token", "x-agent-token"})
 
@@ -34,6 +39,12 @@ class TrafficRunRepository:
     def initialize(self) -> None:
         def operation() -> None:
             with self._connect() as conn:
+                if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).casefold() == "wal":
+                    objects = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','index')")}
+                    if _V1_OBJECTS.issubset(objects):
+                        version = conn.execute("SELECT value FROM traffic_schema_meta WHERE key='schema_version'").fetchone()
+                        if version and version[0] == str(TRAFFIC_SCHEMA_VERSION):
+                            return
                 initialize_sqlite_wal(conn)
                 mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).casefold()
                 if mode != "wal":
