@@ -24,6 +24,7 @@ import {
 import { GrantedPathRegistry } from './path-access'
 import { UiPreferenceStore } from './ui-preferences'
 import { DetachedTerminalWindowManager } from './terminal-window-manager'
+import { TerminalSync } from './terminal-sync'
 import { ExternalToolStore } from './external-tool-store'
 import { ExternalToolService } from './external-tool-service'
 import { launchExternalToolElevated } from './elevated-tool-launcher'
@@ -479,7 +480,21 @@ async function startDesktop(): Promise<void> {
     closeToTrayEnabled,
     visibleWindowCount: 1,
   })
+  const terminalSync = new TerminalSync({
+    owner: sender => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === sender),
+    detached: sender => [...(terminalWindowManager?.bySession || [])].find(([, window]) => !window.isDestroyed() && window.webContents === sender)?.[0],
+    ids: () => [...(terminalWindowManager?.bySession.keys() || [])],
+    sendOwner: event => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(DESKTOP_IPC.terminalSyncEvent, event) },
+    sendDetached: (id, event) => {
+      const window = terminalWindowManager?.bySession.get(id)
+      if (window && !window.isDestroyed()) window.webContents.send(DESKTOP_IPC.terminalSyncEvent, event)
+    },
+  })
+  mainWindow.webContents.on('did-start-navigation', () => terminalSync.clear())
+  mainWindow.webContents.on('render-process-gone', () => terminalSync.clear())
+  mainWindow.once('closed', () => terminalSync.clear())
   terminalWindowManager = new DetachedTerminalWindowManager({
+    onWindowChange: id => terminalSync.changed(id),
     create: () => {
       const window = createMainWindow(Boolean(config.devServerUrl), developmentMenu, 'NetConsole 终端')
       installManagedWindowDiagnostics(window, false)
@@ -491,7 +506,15 @@ async function startDesktop(): Promise<void> {
       target.searchParams.set('netconsole_host', 'electron')
       return target.toString()
     },
-    prepare: (window, target) => { rememberManagedRendererTarget(window, target); armRendererThemeDisplay(window) },
+    prepare: (window, target) => {
+      rememberManagedRendererTarget(window, target)
+      armRendererThemeDisplay(window)
+      const id = new URL(target).searchParams.get('terminal_session')
+      if (id) {
+        window.webContents.on('render-process-gone', () => terminalSync.disconnected(id))
+        window.webContents.on('did-start-navigation', () => terminalSync.disconnected(id))
+      }
+    },
     verify: async id => {
       const runtime = requireManagedBackend().getRuntimeInfo()
       const response = await fetch(`${runtime.baseUrl}/api/terminal/sessions/${id}/window-claim`, { method: 'POST', headers: { [DESKTOP_SESSION_HEADER]: runtime.apiToken } })
@@ -503,6 +526,7 @@ async function startDesktop(): Promise<void> {
     },
   })
   desktopIpc = registerDesktopIpc({
+    terminalSync: (request, sender, url) => terminalSync.request(request, sender, url),
     openTerminalWindow: id => terminalWindowManager!.open(id),
     downloadsDirectory: () => app.getPath('downloads'),
     sftpDragRoot: join(desktopStorageContext.tempRoot, 'sftp-drag'),

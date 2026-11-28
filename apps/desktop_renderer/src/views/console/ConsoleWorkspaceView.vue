@@ -29,6 +29,8 @@ import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter } from '../../platform/runtime'
 import { describeTerminalPaste } from './terminalContextActions'
 import { t } from '../../i18n/runtime'
+import { useRoute } from 'vue-router'
+import type { TerminalSyncRequest, TerminalSyncTarget } from '../../../../desktop_electron/src/shared/bridge'
 const props = withDefaults(defineProps<{ workspaceVisible?: boolean }>(), { workspaceVisible: true })
 const replaySearch = ref<InstanceType<typeof TerminalReplaySearch> | null>(null)
 const externalTerminalAvailable = computed(() => getPlatformAdapter().hostType === 'electron' && isFeatureEnabled('capability.devices.desktop_actions'))
@@ -201,14 +203,40 @@ const {
 const syncSelection = ref<string[]>([])
 const connectedTabs = ref(new Set<string>())
 const syncEnabled = ref(false)
+const detachedId = computed(() => String(useRouteSnapshot.query.terminal_session || ''))
+const useRouteSnapshot = useRoute()
+const detachedTargets = ref<TerminalSyncTarget[]>([])
+const detachedSelected = ref(false)
+const bridge = window.netconsoleDesktop
 let syncRevision = 0
+let unsubscribeSync: (() => void) | undefined
 const syncTargets = computed(() => tabs.value.filter((tab) =>
   syncSelection.value.includes(tab.id) && connectedTabs.value.has(tab.id) && !closingTabIds.value.has(tab.id)))
-const syncEnabledFor = (id: string) => props.workspaceVisible && syncEnabled.value && syncTargets.value.some((tab) => tab.id === id)
+const remoteIds = computed(() => detachedTargets.value.filter(target => target.ready && syncSelection.value.includes(target.id)).map(target => target.id))
+const targetCount = computed(() => syncTargets.value.length + remoteIds.value.length)
+const showSyncToolbar = computed(() => !detachedId.value && tabs.value.length + detachedTargets.value.length > 1)
+const syncEnabledFor = (id: string) => props.workspaceVisible && (detachedId.value
+  ? detachedSelected.value && id === detachedId.value && connectedTabs.value.has(id)
+  : syncEnabled.value && syncTargets.value.some((tab) => tab.id === id))
 const syncTargetLabel = (tab: typeof tabs.value[number]) =>
   [tab.session.session_name || tab.session.device_name, tab.session.address || tab.session.serial_port].filter(Boolean).join(' · ')
+const remoteLabel = (id: string) => {
+  const session = sessions.value.find(item => item.session_id === id)
+  return session ? syncTargetLabel({ id, session } as typeof tabs.value[number]) : `独立终端 · ${id.slice(0, 8)}`
+}
+const targetLabels = computed(() => [...syncTargets.value.map(syncTargetLabel), ...remoteIds.value.map(remoteLabel)])
+
+function relay(request: TerminalSyncRequest): void {
+  void bridge?.terminalSync?.(request).catch(() => {
+    if (request.action === 'input') ElMessage.error(t('console.sync.channel_error', '独立终端同步失败'))
+  })
+}
 
 function clearSync(): void {
+  if (detachedId.value) {
+    detachedSelected.value = false
+    relay({ action: 'ready', ready: false })
+  } else if (syncEnabled.value) relay({ action: 'select', ids: [] })
   syncEnabled.value = false
   syncSelection.value = []
   syncRevision++
@@ -217,15 +245,16 @@ function clearSync(): void {
 function setSocketConnection(id: string, connected: boolean): void {
   if (connected) connectedTabs.value.add(id)
   else connectedTabs.value.delete(id)
+  if (id === detachedId.value) relay({ action: 'ready', ready: connected && props.workspaceVisible })
 }
 
 async function enableSync(): Promise<void> {
-  if (syncTargets.value.length < 2) return
+  if (targetCount.value < 2) return
   const revision = syncRevision
   try {
     await ElMessageBox.confirm(
       h('div', [
-        h('p', syncTargets.value.map(syncTargetLabel).join('、')),
+        h('p', targetLabels.value.join('、')),
         h('p', t('console.sync.enable_warning', '键盘输入将同步发送到以上终端，包括配置修改命令。')),
       ]),
       t('console.sync.start', '开启同步输入'),
@@ -234,21 +263,45 @@ async function enableSync(): Promise<void> {
   } catch {
     return
   }
-  if (props.workspaceVisible && revision === syncRevision && syncTargets.value.length > 1) syncEnabled.value = true
+  if (props.workspaceVisible && revision === syncRevision && targetCount.value > 1) {
+    syncEnabled.value = true
+    relay({ action: 'select', ids: remoteIds.value })
+  }
 }
 
-watch(() => syncTargets.value.map((tab) => tab.id), (ids) => {
+watch(() => [...syncTargets.value.map((tab) => tab.id), ...remoteIds.value], (ids) => {
   if (ids.length !== syncSelection.value.length) syncSelection.value = ids
-  if (ids.length < 2) syncEnabled.value = false
+  if (ids.length < 2 && syncEnabled.value) clearSync()
+  else if (syncEnabled.value) relay({ action: 'select', ids: remoteIds.value })
   syncRevision++
 }, { flush: 'sync' })
-watch(() => props.workspaceVisible, (visible) => { if (!visible) clearSync() }, { flush: 'sync' })
+watch(() => props.workspaceVisible, (visible) => {
+  if (!visible) clearSync()
+  else if (detachedId.value && connectedTabs.value.has(detachedId.value)) relay({ action: 'ready', ready: true })
+}, { flush: 'sync' })
 onDeactivated(clearSync)
-onBeforeUnmount(clearSync)
+onBeforeUnmount(() => { clearSync(); unsubscribeSync?.() })
+onMounted(() => {
+  unsubscribeSync = bridge?.onTerminalSync?.((event) => {
+    if (event.type === 'member') detachedSelected.value = event.selected
+    else if (event.type === 'targets' && !detachedId.value) detachedTargets.value = event.targets
+    else if (event.type === 'input' && props.workspaceVisible) {
+      const ids = detachedId.value
+        ? (detachedSelected.value ? [detachedId.value] : [])
+        : (syncEnabled.value && event.origin && remoteIds.value.includes(event.origin) ? syncTargets.value.map(tab => tab.id) : [])
+      for (const id of ids) {
+        if (event.kind === 'keys') terminalRefs.value[id]?.sendInput(event.data)
+        else terminalRefs.value[id]?.receiveSynchronizedPaste(event.data)
+      }
+    }
+  })
+  if (!detachedId.value) void bridge?.terminalSync?.({ action: 'list' }).then(targets => { detachedTargets.value = targets }).catch(() => undefined)
+})
 
 function broadcastInput(source: string, data: string): void {
   if (!syncEnabledFor(source)) return
-  for (const tab of syncTargets.value) terminalRefs.value[tab.id]?.sendInput(data)
+  if (!detachedId.value) for (const tab of syncTargets.value) terminalRefs.value[tab.id]?.sendInput(data)
+  if (detachedId.value || remoteIds.value.length) relay({ action: 'input', kind: 'keys', data })
 }
 
 async function previewBroadcast(source: string, paste: string): Promise<void> {
@@ -259,7 +312,7 @@ async function previewBroadcast(source: string, paste: string): Promise<void> {
   try {
     await ElMessageBox.confirm(
       h('div', [
-        h('p', targets.map(syncTargetLabel).join('、')),
+        h('p', detachedId.value ? t('console.sync.detached_active', '同步输入已开启') : targetLabels.value.join('、')),
         summary.hasConfigCommand ? h('p', t('console.sync.config_warning', '这些命令含配置或危险操作，将同时发送到多个设备。')) : null,
         h('pre', { style: { maxHeight: '32vh', overflow: 'auto', whiteSpace: 'pre-wrap' } }, summary.preview),
       ]),
@@ -271,6 +324,7 @@ async function previewBroadcast(source: string, paste: string): Promise<void> {
   }
   if (revision !== syncRevision || !syncEnabledFor(source)) return
   for (const tab of targets) terminalRefs.value[tab.id]?.receiveSynchronizedPaste(paste)
+  if (detachedId.value || remoteIds.value.length) relay({ action: 'input', kind: 'paste', data: paste })
 }
 const sftpDevice = computed(() => {
   const id = activeTab.value?.session.device_uuid || selectedDeviceUuid.value
@@ -484,7 +538,7 @@ watch([showSftp, sftpWorkspaceId], () => {
         </div>
       </aside>
       <div v-show="showSftp" class="sftp-resizer" role="separator" aria-label="调整 SFTP 面板宽度" aria-orientation="vertical" @pointerdown.prevent="resizeSftp" />
-      <main class="console-main" :class="{ 'has-sync-toolbar': tabs.length > 1 }">
+      <main class="console-main" :class="{ 'has-sync-toolbar': showSyncToolbar || detachedSelected }">
         <div class="terminal-tabs">
           <el-dropdown
             v-for="tab in tabs"
@@ -517,14 +571,19 @@ watch([showSftp, sftpWorkspaceId], () => {
           <span v-if="!tabs.length">双击左侧设备打开受控终端</span>
         </div>
 
-        <div v-if="tabs.length > 1" class="terminal-sync-toolbar">
+        <div v-if="showSyncToolbar" class="terminal-sync-toolbar">
           <el-select v-model="syncSelection" multiple clearable collapse-tags :placeholder="t('console.sync.targets', '选择同步终端')" :aria-label="t('console.sync.targets', '选择同步终端')">
             <el-option v-for="tab in tabs" :key="tab.id" :value="tab.id" :label="syncTargetLabel(tab)" :disabled="!connectedTabs.has(tab.id) || closingTabIds.has(tab.id)" />
+            <el-option v-for="target in detachedTargets" :key="target.id" :value="target.id" :label="remoteLabel(target.id)" :disabled="!target.ready" />
           </el-select>
-          <el-button :disabled="!syncEnabled && syncTargets.length < 2" :type="syncEnabled ? 'warning' : 'default'" @click="syncEnabled ? clearSync() : enableSync()">
+          <el-button :disabled="!syncEnabled && targetCount < 2" :type="syncEnabled ? 'warning' : 'default'" @click="syncEnabled ? clearSync() : enableSync()">
             {{ syncEnabled ? t('console.sync.stop', '关闭同步输入') : t('console.sync.start', '开启同步输入') }}
           </el-button>
-          <span v-if="syncEnabled" role="status">{{ t('console.sync.active_warning', '输入及配置命令将发往') }} {{ syncTargets.map(syncTargetLabel).join('、') }}</span>
+          <span v-if="syncEnabled" role="status">{{ t('console.sync.active_warning', '输入及配置命令将发往') }} {{ targetLabels.join('、') }}</span>
+        </div>
+        <div v-else-if="detachedSelected" class="terminal-sync-toolbar">
+          <span role="status">{{ t('console.sync.detached_active', '同步输入已开启') }}</span>
+          <el-button @click="clearSync(); relay({ action: 'ready', ready: true })">{{ t('console.sync.stop', '关闭同步输入') }}</el-button>
         </div>
         <div v-if="tabs.length" ref="workspace" class="terminal-grid" :class="`is-${splitOrientation}`" :style="workspaceStyle">
           <div v-for="tab in tabs" :key="tab.id" :class="paneClass(tab.id)" @focusin="activeTabId = tab.id">
