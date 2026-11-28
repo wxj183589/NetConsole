@@ -288,7 +288,7 @@ class GroundHistoryQueryService:
                 for name, expr in zip(_DETAIL_FIELDS, self._detail_expressions(_SOURCE_BY_TABLE[source_table]), strict=True)
             ) + ", " if keys_only else ""
             raw_rows = conn.execute(
-                f"SELECT {fields}s.rowid AS _source_rowid, s.* FROM {source_table} s "
+                f"SELECT {fields}s.rowid AS _source_rowid, s.* FROM {source_table} s NOT INDEXED "
                 f"WHERE s.site_id=? AND s.rowid IN ({placeholders})",
                 (self.site_id, *row_ids),
             )
