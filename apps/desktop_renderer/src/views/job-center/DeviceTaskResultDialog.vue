@@ -16,8 +16,7 @@ const error = ref('')
 const busy = ref(false)
 const exporting = ref(false)
 const userSelectedExport = useUserSelectedExport()
-const usesSavedTemplate = ref(false)
-const hasRetry = computed(() => !usesSavedTemplate.value && items.value.some((item) => ['partial', 'failed'].includes(item.status)))
+const hasRetry = computed(() => items.value.some((item) => ['partial', 'failed'].includes(item.status)))
 let loadGeneration = 0
 
 async function load(): Promise<void> {
@@ -28,7 +27,6 @@ async function load(): Promise<void> {
     const result = await getDeviceTaskResult(props.taskId)
     if (generation === loadGeneration) {
       items.value = result.items ?? []
-      usesSavedTemplate.value = Boolean(result.template?.template_id)
     }
   } catch (cause) {
     if (generation === loadGeneration) error.value = cause instanceof Error ? cause.message : '读取执行结果失败'
@@ -71,7 +69,6 @@ watch([open, () => props.taskId], ([visible, id]) => {
   busy.value = false
   error.value = ''
   items.value = []
-  usesSavedTemplate.value = false
   if (visible && id) void load()
 }, { immediate: true })
 </script>

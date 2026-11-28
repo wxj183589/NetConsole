@@ -130,6 +130,33 @@ def test_task_rejects_unknown_target_and_configuration_commands(runtime):
     assert response.status_code == 422
 
 
+def test_device_workers_share_site_and_uuid_resource_guard(runtime):
+    from netconsole.services.background_job import BackgroundJob
+    from netconsole.services.job_center.task_application_service import TaskResourceConflictError
+
+    client, adapter, sw_a, sw_b = runtime
+    service = client.app.state.task_service
+    adapter.start_job(BackgroundJob(
+        job_id="config-owner", task_type="config_web_snapshot_fetch",
+        params={"site_name": "demo", "owner": "web_config_collection", "device_uuid": sw_a.device_uuid},
+    ))
+    with pytest.raises(TaskResourceConflictError):
+        service.prepare(BackgroundJob(
+            job_id="diagnostic-owner", task_type="device_diagnostic_download",
+            params={"site_name": "demo", "owner": "web_device_management", "device_uuids": [sw_a.device_uuid]},
+        ))
+    assert client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [sw_a.device_uuid],
+    }).status_code == 409
+    assert client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [sw_b.device_uuid],
+    }).status_code == 202
+    adapter.complete("config-owner", {})
+    assert client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [sw_a.device_uuid],
+    }).status_code == 202
+
+
 def test_task_scope_limits_and_settings(runtime, monkeypatch):
     client, adapter, sw_a, sw_b = runtime
     service = client.app.state.device_task_application_service
@@ -273,6 +300,17 @@ def test_saved_template_versions_preview_and_parameter_binding(runtime):
     frozen = adapter.jobs[response.json()["task_id"]].params
     assert frozen["template"] == {"template_id": template_id, "version": 1, "device_roles": ["switch"]}
     assert frozen["commands"] == preview.json()["commands"]
+    task_id = response.json()["task_id"]
+    adapter.complete(task_id, {
+        "kind": "custom", "commands": frozen["commands"], "template": frozen["template"],
+        "items": [{"device_uuid": sw_a.device_uuid, "status": "failed"}],
+    })
+    retry = client.post(f"/device-operations/tasks/{task_id}/retry")
+    assert retry.status_code == 202, retry.text
+    retry_job = adapter.jobs[retry.json()["task_id"]]
+    assert retry_job.params["commands"] == frozen["commands"]
+    assert retry_job.params["template"] == frozen["template"]
+    assert retry_job.retry_of_task_id == task_id
 
     template_path = f"/device-operations/templates/{template_id}"
     disabled = client.put(f"{template_path}?expected_version=1", json={**definition, "enabled": False})
@@ -281,6 +319,7 @@ def test_saved_template_versions_preview_and_parameter_binding(runtime):
     assert client.put(f"{template_path}?expected_version=1", json=definition).status_code == 409
     assert client.post("/device-operations/templates/saved-preview", json=parameters).status_code == 409
     assert client.post("/device-operations/tasks", json={**task, "saved_template": good}).status_code == 409
+    assert client.post(f"/device-operations/tasks/{task_id}/retry").status_code == 422
 
     client.app.state.device_management_service = SimpleNamespace(current_site_id=lambda: "another")
     assert client.get("/device-operations/templates").json() == []

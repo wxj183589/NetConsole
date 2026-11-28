@@ -144,6 +144,20 @@ class TaskApplicationService:
         params = dict(runtime_job.params or {})
         site_name = str(params.get("site_name") or self.site_name or "demo")
         resource_keys = self._resource_keys(params)
+        owner_and_type = (params.get("owner"), runtime_job.task_type)
+        if owner_and_type in (
+            ("web_device_task_center", "device_maintenance_collection"),
+            ("web_device_management", "device_diagnostic_download"),
+            ("web_device_management", "device_connection_test"),
+            ("web_config_collection", "config_web_snapshot_fetch"),
+        ):
+            device_ids = params.get("device_uuids") or [params.get("device_uuid")]
+            resource_keys.extend(
+                f"device-collection:v1:{site_name.casefold()}:{device_id.strip().casefold()}"
+                for device_id in device_ids if isinstance(device_id, str) and device_id.strip()
+            )
+            resource_keys = list(dict.fromkeys(resource_keys))
+            params.setdefault("resource_conflict_message", "该局点已有任务正在使用目标设备，请稍后重试")
         now = utc_now_iso()
         initial_result: dict[str, object] = {}
         if (

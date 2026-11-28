@@ -10,6 +10,8 @@ from typing import TypeAlias
 
 from fastapi import HTTPException, status
 
+from netconsole.services.job_center.task_application_service import TaskResourceConflictError
+
 
 DatabaseErrorContext: TypeAlias = (
     Mapping[str, object] | Callable[[], Mapping[str, object]]
@@ -47,6 +49,8 @@ def map_api_errors(
 ) -> Iterator[None]:
     try:
         yield
+    except TaskResourceConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except sqlite3.Error as exc:
         if structured_database_errors:
             context = _resolve_database_context(database_context)
