@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -128,3 +129,24 @@ def test_task_repository_filters_device_aliases_status_and_count_in_sql(
         )
         == 1
     )
+
+
+def test_device_task_history_page_with_ten_thousand_rows(tmp_path: Path) -> None:
+    repository = TaskRepository(tmp_path / "tasks.db")
+    timestamp = "2026-11-28T12:00:00"
+    for index in range(10_000):
+        repository.save(TaskSnapshot(
+            task_id=f"task-{index:05d}", task_type="device_detail_collect",
+            task_name="Device archive fixture", status=TaskState.COMPLETED,
+            created_time=timestamp, updated_time=timestamp,
+            device="target" if index % 2 == 0 else "other",
+        ))
+    started = perf_counter()
+    page = repository.list_filtered(device="target", limit=50, offset=4_950)
+    total = repository.count_filtered(device="target")
+    elapsed_ms = (perf_counter() - started) * 1000
+    print(f"DEVICE_TASK_HISTORY rows=10000 matched={total} page_size={len(page)} query_ms={elapsed_ms:.2f}")
+    assert total == 5_000
+    assert len(page) == 50
+    assert all(task.device == "target" for task in page)
+    assert page[0].task_id == "task-00098"
