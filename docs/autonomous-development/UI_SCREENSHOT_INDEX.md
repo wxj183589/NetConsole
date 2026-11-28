@@ -18,6 +18,12 @@
 | 日志中心 | [1920×1080](../../../reports/tests/legacy-ui-ux/12-logs-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/12-logs-2560x1440.png) | 0 px / 0 px |
 | 网络工具 | [1920×1080](../../../reports/tests/legacy-ui-ux/13-network-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/13-network-2560x1440.png) | 0 px / 0 px |
 | 任务弹窗 | [1920×1080](../../../reports/tests/legacy-ui-ux/14-dialog-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/14-dialog-2560x1440.png) | 0 px / 0 px |
+| AC 管理 | [1920×1080](../../../reports/tests/legacy-ui-ux/15-ac-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/15-ac-2560x1440.png) | 0 px / 0 px |
+| 地面实时采集 | [1920×1080](../../../reports/tests/legacy-ui-ux/16-ground-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/16-ground-2560x1440.png) | 0 px / 0 px |
+| 配置采集 | [1920×1080](../../../reports/tests/legacy-ui-ux/17-config-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/17-config-2560x1440.png) | 0 px / 0 px |
+| 任务执行设置 | [1920×1080](../../../reports/tests/legacy-ui-ux/18-task-settings-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/18-task-settings-2560x1440.png) | 0 px / 0 px |
+
+最终采集运行在 `2a286abb` 的源码工作区，应用标记为 dirty。首页显示设备总数 5、在线 AP 2、已汇报控制器 1。组织结构来自 `/rail-transit/infrastructure`，本地文件来自 `/file-manager` 双栏。文件右栏 HTTP 服务未初始化。运行日志非空，截图显示 20 条。任务弹窗实际展开执行设置。文件目录为空，未执行传输。
 
 脚本实际导航到各页面，从档案列表打开 SW01 并切换到接口页，在任务中心打开创建设备任务弹窗。首轮 2K 档案点击命中隐藏缓存项，限定可见项后补拍通过。主窗口与侧栏以设备管理为上下文。页面根测量不覆盖表格内部滚动、文字裁切和控件遮挡。
 
@@ -34,5 +40,5 @@ $env:NETCONSOLE_PYTHON = 'D:/study/NetConsole-Workspace/NetConsole/.venv/Scripts
 node scripts/dev.mjs --codex
 ```
 
-启动完成后用 Node 执行 [截图脚本](../../../reports/tests/legacy-ui-ux/capture.cjs)。[首轮测量](../../../reports/tests/legacy-ui-ux/capture-all.json) · [档案补拍测量](../../../reports/tests/legacy-ui-ux/capture-05-detail.json)
+启动完成后用 Node 执行 [截图脚本](../../../reports/tests/legacy-ui-ux/capture.cjs)。[最终 36 张测量](../../../reports/tests/legacy-ui-ux/capture-all.json)
 
