@@ -364,7 +364,8 @@ watch(
     if (!normalizedTaskId) return
     ownsDetailContext = true
     store.setDetailVisible(true)
-    void store.selectTask(normalizedTaskId).catch((cause) => {
+    const selection = props.source === 'job-center' ? store.selectTask(normalizedTaskId, true) : store.selectTask(normalizedTaskId)
+    void selection.catch((cause) => {
       if (!props.modelValue || props.taskId.trim() !== normalizedTaskId) return
       const message = cause instanceof Error ? cause.message : '任务详情加载失败'
       emit('load-error', normalizedTaskId, message)

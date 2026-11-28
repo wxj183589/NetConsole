@@ -729,7 +729,7 @@ describe('Job Center saved artifact capability lifecycle', () => {
     app.use(pinia)
     app.mount(root)
 
-    await vi.waitFor(() => expect(store.selectTask).toHaveBeenCalledWith('missing-task'))
+    await vi.waitFor(() => expect(store.selectTask).toHaveBeenCalledWith('missing-task', true))
     await vi.waitFor(() => expect(messageMocks.warning).toHaveBeenCalledWith('未找到任务 missing-task，已保留当前任务列表。'))
     await nextTick()
     expect(alertTitles(root)).toContain('未找到任务 missing-task，已保留当前任务列表。')

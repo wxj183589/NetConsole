@@ -189,8 +189,8 @@ def acknowledge_tasks(
 
 
 @router.get("/tasks/{task_id}", response_model=JobCenterTaskDTO)
-def detail(request: Request, task_id: str, expected_site: str | None = None) -> JobCenterTaskDTO:
-    task = _query(lambda: _service(request).get_task(_query_site(request, expected_site), task_id))
+def detail(request: Request, task_id: str, expected_site: str | None = None, device_only: bool = False) -> JobCenterTaskDTO:
+    task = _query(lambda: _service(request).get_task(_query_site(request, expected_site), task_id, device_only=device_only))
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return task

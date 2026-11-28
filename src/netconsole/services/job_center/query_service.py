@@ -262,7 +262,7 @@ class JobCenterQueryService:
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         return self._task_select(conn, detail=False) + where, params
 
-    def get_task(self, site_id: str, task_id: str) -> JobCenterTaskDTO | None:
+    def get_task(self, site_id: str, task_id: str, *, device_only: bool = False) -> JobCenterTaskDTO | None:
         db_path = self._db_path(site_id)
         if not db_path.is_file():
             return None
@@ -276,6 +276,8 @@ class JobCenterQueryService:
             if row is None:
                 return None
             values = dict(row)
+            if device_only and values.get("task_type") not in self._DEVICE_TASK_TYPES_BY_OWNER.get(values.get("owner"), ()):
+                return None
             progress_rows: list[dict[str, object]] = []
             if self._table_exists(conn, "task_events"):
                 progress_rows = [

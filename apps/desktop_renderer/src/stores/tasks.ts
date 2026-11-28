@@ -38,6 +38,7 @@ export const useTaskStore = defineStore('tasks', () => {
   const pollingConsumers = new Set<string>()
   let detailVisible = false
   let detailSite = ''
+  let deviceDetailOnly = false
   let listRefreshInFlight: Promise<void> | null = null
   let detailBusy = false
   let detailContextGeneration = 0
@@ -90,11 +91,17 @@ export const useTaskStore = defineStore('tasks', () => {
     }
   }
 
-  async function selectTask(id: string): Promise<void> {
+  function readDetail(taskId: string): Promise<TaskItem> {
+    if (deviceDetailOnly) return getTask(taskId, detailSite, true)
+    return detailSite ? getTask(taskId, detailSite) : getTask(taskId)
+  }
+
+  async function selectTask(id: string, deviceOnly = false): Promise<void> {
     const taskId = id.trim()
     const generation = ++detailContextGeneration
     detailVisible = true
     detailSite = activeSiteContext.value?.siteId || ''
+    deviceDetailOnly = deviceOnly
     detailError.value = ''
     detailLoading.value = true
     selected.value = null
@@ -107,7 +114,7 @@ export const useTaskStore = defineStore('tasks', () => {
     logPollingStopped = false
     setLogsExpanded(false)
     try {
-      const detail = await (detailSite ? getTask(taskId, detailSite) : getTask(taskId))
+      const detail = await readDetail(taskId)
       if (generation !== detailContextGeneration || !detailVisible) return
       selected.value = detail
       if (isTerminalSnapshot(detail)) {
@@ -132,7 +139,7 @@ export const useTaskStore = defineStore('tasks', () => {
     const taskId = selected.value.id
     detailBusy = true
     try {
-      const detail = await (detailSite ? getTask(taskId, detailSite) : getTask(taskId))
+      const detail = await readDetail(taskId)
       if (
         generation !== detailContextGeneration
         || !detailVisible

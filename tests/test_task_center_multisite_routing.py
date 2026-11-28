@@ -410,6 +410,11 @@ def test_device_task_scope_filters_owner_and_type_before_pagination(tmp_path: Pa
     assert query.get_summary(SITE_A, device_only=True).total == 2
     assert query.get_summary(SITE_B, device_only=True).total == 1
     assert len(query.list_tasks(SITE_A)) == 4
+    assert query.get_task(SITE_A, "device-old", device_only=True).id == "device-old"
+    assert query.get_task(SITE_A, "mesh-import", device_only=True) is None
+    assert query.get_task(SITE_A, "invalid-owner", device_only=True) is None
+    assert query.get_task(SITE_A, "other-site", device_only=True) is None
+    assert query.get_task(SITE_A, "mesh-import").id == "mesh-import"
 
 
 def test_detail_routes_reject_previous_site_before_access(tmp_path: Path, monkeypatch) -> None:

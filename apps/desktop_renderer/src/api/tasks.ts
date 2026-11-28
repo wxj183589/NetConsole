@@ -16,8 +16,11 @@ function siteQuery(site: string, separator = '?'): string {
   return site ? `${separator}expected_site=${encodeURIComponent(site)}` : ''
 }
 
-export function getTask(id: string, site = ''): Promise<TaskItem> {
-  return apiRequest<TaskItem>(`/api/job-center/tasks/${encodeURIComponent(id)}${siteQuery(site)}`)
+export function getTask(id: string, site = '', deviceOnly = false): Promise<TaskItem> {
+  const query = new URLSearchParams()
+  if (site) query.set('expected_site', site)
+  if (deviceOnly) query.set('device_only', 'true')
+  return apiRequest<TaskItem>(`/api/job-center/tasks/${encodeURIComponent(id)}${query.size ? '?' + query : ''}`)
 }
 
 export function getTaskLogs(id: string, tail = 300, site = ''): Promise<TaskLogTail> {
