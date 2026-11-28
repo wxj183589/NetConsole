@@ -70,6 +70,7 @@ const en: Record<string, string> = {
   'device_archive.search_action': 'Search',
   'device_archive.load_failed': 'Unable to load device archives',
   'device_archive.empty': 'No matching devices',
+  'device_archive.section_unavailable': 'No data source is available for this device',
   'device_archive.name': 'Device name',
   'device_archive.address': 'Management IP',
   'device_archive.group': 'Group',
