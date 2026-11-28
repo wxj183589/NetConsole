@@ -253,6 +253,24 @@ def test_device_detail_lazy_api_contract_and_refresh(tmp_path: Path) -> None:
     assert "C:\\private" not in combined
 
 
+def test_device_archive_reads_nonempty_saved_interface_history(tmp_path: Path) -> None:
+    client, _app, _adapter, device = _client(tmp_path)
+    paths = PathResolver(app_root=Path(__file__).parents[1], data_root=tmp_path / "runtime")
+    repository = DeviceFactRepository(Database(paths.site_db_path("demo")))
+    timestamp = "2026-07-19T09:00:00"
+    repository.append_interface_history({
+        "device_uuid": str(device.device_uuid), "interface_name": "GE1/0/1",
+        "collected_at": timestamp, "link_status": "DOWN",
+    })
+    response = client.get(
+        f"/api/device-management/devices/{device.device_uuid}/history",
+        params={"kind": "interface", "object_name": "GE1/0/1"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] >= 1
+    assert timestamp in response.text
+
+
 def test_unsupported_vendor_refresh_is_skipped_without_submitting_a_job(
     tmp_path: Path,
 ) -> None:

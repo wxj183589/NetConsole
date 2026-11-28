@@ -974,6 +974,8 @@ def test_ac_and_mr_business_associations_are_real_named_summaries(
     }.isdisjoint(ac_page.items[0].fit_ap.model_dump())
     assert mr_page.source.available is True
     assert mr_page.items[0].association_type == "online_mr_session"
+    assert mr_page.items[0].association_id == "online-mr-session:session-1"
+    assert mr_page.items[0].updated_at
     assert mr_page.items[0].online_mr_session is not None
     assert mr_page.items[0].online_mr_session.mesh_available is True
     assert mr_page.items[0].online_mr_session.rssi_available is True
