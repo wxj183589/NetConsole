@@ -4,6 +4,14 @@ const root = '/api/system-maintenance'
 
 export interface LogEntry {
   time: string
+  category: string
+  event_code: string
+  source: string
+  module: string
+  site_id: string
+  device_id: string
+  request_id: string
+  task_id: string
   level: string
   display_level: string
   display_event: string
@@ -96,8 +104,24 @@ export interface AboutInfo {
   repositories: Array<{ link_id: string; label: string }>
 }
 
-export function getLogs(query: { page: number; page_size: number; keyword: string; level: string }): Promise<LogPage> {
-  return apiRequest<LogPage>(`${root}/logs?${new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]))}`)
+export interface LogFilters {
+  category?: string
+  module?: string
+  site_id?: string
+  device_id?: string
+  request_id?: string
+  task_id?: string
+  start_time?: string
+  end_time?: string
+  important?: boolean
+}
+
+export function getLogs(query: LogFilters & { page: number; page_size: number; keyword: string; level: string }): Promise<LogPage> {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null) params.set(key, String(value))
+  }
+  return apiRequest<LogPage>(`${root}/logs?${params}`)
 }
 
 export function getRuntimeLogSummary(): Promise<RuntimeLogSummary> {
@@ -121,7 +145,7 @@ export function startOpenSourceScan(): Promise<MaintenanceTask> {
   return apiRequest(`${root}/open-source/tasks`, { method: 'POST', body: '{}' })
 }
 
-export function startLogExport(payload: {
+export function startLogExport(payload: LogFilters & {
   scope: 'current' | 'all'
   keyword: string
   level: string

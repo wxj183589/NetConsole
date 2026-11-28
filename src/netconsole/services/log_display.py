@@ -147,6 +147,63 @@ LOG_LEVEL_ZH_MAP = {
 
 _DETAIL_TOKEN_RE = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)=(?P<value>\"[^\"]*\"|'[^']*'|[^\s,;]+)")
 
+_EVENT_PREFIXES = {
+    "startup": ("APP_START", "BOOT_", "STARTUP", "UI_STARTUP", "HOST_ENVIRONMENT", "DATA_ROOT_CONTEXT", "FEATURE_GATE_LOADED", "RUNTIME_CAPABILITY_POLICY", "FULL_EDITION_FEATURE_GATE_ACTIVATED", "PACKAGED_FEATURE_POLICY_LOADED"),
+    "api_error": ("API_REQUEST_FAILED", "API_EXCEPTION", "HTTP_ERROR"),
+    "api_request": ("API_", "HTTP_REQUEST"),
+    "ssh": ("SSH_",),
+    "telnet": ("TELNET_",),
+    "serial": ("COM_", "SERIAL_"),
+    "connection": ("TEST_CONNECTION_", "DEVICE_CONNECTION_"),
+    "collection": ("DEVICE_COLLECT", "FIT_AP_", "AP_OPTICAL_", "TRACKSIDE_AP_", "GROUND_", "MESH_", "ONLINE_MR_"),
+    "task": ("TASK_", "BACKGROUND_TASK_", "JOB_", "WEB_EXPORT_"),
+    "database": ("DATABASE_", "DB_", "SQLITE_"),
+    "files": ("FILE_", "DEVICE_FILE_", "SFTP_"),
+    "syslog": ("SYSLOG_",),
+    "heartbeat": ("HEARTBEAT_",),
+    "network": ("NETWORK_SERVICE_", "LOCAL_SERVICE_"),
+    "security": ("SECURITY_", "COMMAND_ALLOWED", "HOST_KEY_"),
+    "update": ("UPDATE_", "INSTALL_", "INSTALLER_"),
+    "application": ("APP_", "LOGS_", "UI_", "PAGE_", "DESKTOP_", "SYSTEM_", "OPEN_SOURCE_"),
+}
+_ROUTINE_EVENTS = frozenset({"API_REQUEST", "API_REQUEST_COMPLETED", "API_PERFORMANCE_PROFILE", "TRACKSIDE_AP_SNAPSHOT_BUILT"})
+_CONTEXT_KEYS = {
+    "source": ("source",),
+    "module": ("module",),
+    "site_id": ("site_id", "site_name", "site", "current_site"),
+    "device_id": ("device_id", "device_uuid"),
+    "request_id": ("request_id",),
+    "task_id": ("task_id", "job_id"),
+}
+
+
+def log_context(row: dict[str, str]) -> dict[str, str]:
+    event = row.get("event", "").partition(":")[0].upper()
+    category = next((name for name, prefixes in _EVENT_PREFIXES.items() if event.startswith(prefixes)), "other")
+    tokens = {match["key"].lower(): _strip_quotes(match["value"]) for match in _DETAIL_TOKEN_RE.finditer(row.get("detail", ""))}
+    context = {
+        key: next((tokens[alias] for alias in aliases if tokens.get(alias)), "")
+        for key, aliases in _CONTEXT_KEYS.items()
+    }
+    return {**context, "category": category, "event_code": event, "source": context["source"] or "backend"}
+
+
+def matches_log_filters(row: dict[str, str], filters: dict[str, str | bool]) -> bool:
+    if filters.get("important") and row.get("level") in {"DEBUG", "INFO"} and (
+        row.get("level") == "DEBUG" or row.get("event", "").partition(":")[0] in _ROUTINE_EVENTS
+    ):
+        return False
+    timestamp = row.get("time", "")
+    start = str(filters.get("start_time") or "")
+    end = str(filters.get("end_time") or "")
+    if (start and timestamp < start.replace("T", " ")) or (end and timestamp > end.replace("T", " ")):
+        return False
+    fields = [key for key in ("category", "module", "site_id", "device_id", "request_id", "task_id") if filters.get(key)]
+    if not fields:
+        return True
+    context = log_context(row)
+    return all(context[key].casefold() == str(filters[key]).strip().casefold() for key in fields)
+
 
 def display_log_event(event: str) -> str:
     code = str(event or "").strip()
@@ -157,7 +214,7 @@ def display_log_event(event: str) -> str:
     prefix, separator, suffix = code.partition(":")
     if separator and prefix in LOG_EVENT_ZH_MAP:
         return f"{LOG_EVENT_ZH_MAP[prefix]}：{suffix}"
-    return "未分类事件"
+    return code
 
 
 def display_log_level(level: str) -> str:
@@ -193,6 +250,7 @@ def display_log_row(row: dict[str, str]) -> dict[str, str]:
     raw_level = row.get("level", "")
     return {
         **row,
+        **log_context(row),
         "display_level": display_log_level(raw_level),
         "display_event": display_log_event(raw_event),
         "display_detail": display_log_detail(raw_detail),

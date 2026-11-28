@@ -643,6 +643,7 @@ def app_logs_csv_spec(
     log_paths: Iterable[str | Path] | None = None,
     keyword: str | None = None,
     level: str | None = None,
+    filters: dict[str, str | bool] | None = None,
     offset: int = 0,
     limit: int = 0,
     snapshot_size: int | None = None,
@@ -671,6 +672,7 @@ def app_logs_csv_spec(
         open_dir_on_success=open_dir_on_success,
         payload={
             "log_path": str(source_path),
+            "filters": dict(filters or {}),
             "log_files": snapshots,
             "keyword": keyword or "",
             "level": level or "",

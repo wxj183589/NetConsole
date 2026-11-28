@@ -9,6 +9,14 @@ from netconsole.models.api.common import ApiModel
 
 class LogEntryDTO(ApiModel):
     time: str
+    category: str = ""
+    event_code: str = ""
+    source: str = ""
+    module: str = ""
+    site_id: str = ""
+    device_id: str = ""
+    request_id: str = ""
+    task_id: str = ""
     level: str
     display_level: str
     display_event: str
@@ -111,10 +119,22 @@ class CleanupStartRequest(ApiModel):
         return self
 
 
-class LogExportRequest(ApiModel):
-    scope: Literal["current", "all"]
+class LogFilters(ApiModel):
     keyword: str = Field(default="", max_length=200)
     level: Literal["", "INFO", "WARNING", "ERROR", "DEBUG", "CRITICAL"] = ""
+    category: str = Field(default="", max_length=32)
+    module: str = Field(default="", max_length=120)
+    site_id: str = Field(default="", max_length=120)
+    device_id: str = Field(default="", max_length=120)
+    request_id: str = Field(default="", max_length=120)
+    task_id: str = Field(default="", max_length=160)
+    start_time: str = Field(default="", pattern=r"^(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})?$")
+    end_time: str = Field(default="", pattern=r"^(?:\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})?$")
+    important: bool = False
+
+
+class LogExportRequest(LogFilters):
+    scope: Literal["current", "all"]
     page: int = Field(default=1, ge=1, le=1_000_000)
     page_size: Literal[50, 100, 200, 500] = 200
 

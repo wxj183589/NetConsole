@@ -44,6 +44,7 @@ def get_logs_from_paths(
     keyword: str | None = None,
     level: str | None = None,
     parser: Callable[[str], dict[str, str] | None] | None = None,
+    predicate: Callable[[dict[str, str]], bool] | None = None,
 ) -> LogPage:
     size = page_size if page_size in LOG_PAGE_SIZE_OPTIONS else PAGE_SIZE
     requested_page = max(int(page or 1), 1)
@@ -66,6 +67,8 @@ def get_logs_from_paths(
                 continue
             if keyword_text and keyword_text not in " ".join(parsed.values()).casefold():
                 continue
+            if predicate is not None and not predicate(parsed):
+                continue
             if offset <= total < offset + size:
                 rows.append(parsed)
             total += 1
@@ -73,7 +76,7 @@ def get_logs_from_paths(
     total_pages = max(ceil(total / size), 1)
     current_page = min(requested_page, total_pages)
     if current_page != requested_page:
-        return get_logs_from_paths(paths, current_page, size, keyword, level, parser)
+        return get_logs_from_paths(paths, current_page, size, keyword, level, parser, predicate)
     return LogPage(
         rows=rows,
         state=PaginationState(
@@ -107,6 +110,7 @@ def iter_logs_from_paths(
     level: str | None = None,
     parser: Callable[[str], dict[str, str] | None] | None = None,
     max_bytes_by_path: dict[Path, int | None] | None = None,
+    predicate: Callable[[dict[str, str]], bool] | None = None,
 ) -> Iterator[dict[str, str]]:
     keyword_text = keyword.strip().casefold() if keyword else None
     level_text = level.strip().upper() if level else None
@@ -123,6 +127,8 @@ def iter_logs_from_paths(
             if level_text and parsed.get("level") != level_text:
                 continue
             if keyword_text and keyword_text not in " ".join(parsed.values()).casefold():
+                continue
+            if predicate is not None and not predicate(parsed):
                 continue
             yield parsed
 
