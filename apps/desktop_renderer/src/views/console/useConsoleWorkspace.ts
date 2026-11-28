@@ -1081,6 +1081,7 @@ export function useConsoleWorkspace() {
   })
 
   return {
+    terminalRefs,
     addTerminalTab,
     selectedSessionIds,
     sessionStateFilter,

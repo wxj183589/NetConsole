@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiRequest } from '../../api/client'
 import { cloneTerminalSession, createTerminalSession, type TerminalSession, type TerminalSessionConnection } from '../../api/terminal'
@@ -7,7 +7,7 @@ import { downloadBackendResource } from '../../platform/runtime'
 import { launchExternalTool, listExternalTools } from '../../api/externalTools'
 import type { ExternalToolView } from '../../types/externalTools'
 import { consoleToolNeedsPassword, MENU_FUNCTIONS, parseSendString, validateConsoleButtonBar, type ConsoleButtonBarDocument } from './consoleButtonBar'
-import { parseConsoleRunScriptJson } from './consoleRunScript'
+import { parseConsoleRunScriptJson, resolveConsoleScriptSteps } from './consoleRunScript'
 import { consoleBatchStatusLabel, t } from '../../i18n/runtime'
 
 const props = defineProps<{ sessions: TerminalSession[]; active: TerminalSession | null; selected: string[]; selectedDevices: Array<{ device_uuid: string; name: string }> }>()
@@ -177,11 +177,23 @@ async function runScript(source: string) {
     ElMessage.error('请先打开并连接目标终端')
     return
   }
+  let steps
   try {
-    await ElMessageBox.confirm(`脚本将向 ${session.device_name} 发送 ${script.steps.filter(step => step.type === 'SEND_STRING').length} 个命令，确认继续？`, '运行 Console 脚本', { type: 'warning' })
+    steps = resolveConsoleScriptSteps(script, { protocol: session.protocol, address: session.address, port: String(session.port || '') })
+    if (!steps.some(step => step.type === 'SEND_STRING')) throw new Error(t('console.script.no_matching_commands', '当前会话没有匹配的命令步骤'))
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+    return
+  }
+  try {
+    await ElMessageBox.confirm(h('div', [
+      h('p', [session.device_name, session.address, session.session_name].filter(Boolean).join(' · ')),
+      h('pre', { style: { maxHeight: '42vh', overflow: 'auto', whiteSpace: 'pre-wrap' } }, steps.map(step => step.type === 'WAIT' ? `等待 ${step.milliseconds} ms` : step.text).join('\n')),
+    ]), '运行 Console 脚本', { type: 'warning' })
   } catch {
     return
   }
+  if (disposed || props.active?.session_id !== session.session_id || !['RUNNING', 'CONNECTED'].includes(props.active.state)) return
 
   scriptDialog.value = true
   scriptRunning.value = true
@@ -191,11 +203,11 @@ async function runScript(source: string) {
   activeScriptJobId = ''
   const deadline = Date.now() + 900_000
   try {
-    for (const [index, step] of script.steps.entries()) {
+    for (const [index, step] of steps.entries()) {
       if (stopScriptRequested) break
       if (Date.now() >= deadline) throw new Error('脚本运行超过 15 分钟')
       if (step.type === 'WAIT') {
-        scriptStatus.value = `等待 ${step.milliseconds} ms（${index + 1}/${script.steps.length}）`
+        scriptStatus.value = `等待 ${step.milliseconds} ms（${index + 1}/${steps.length}）`
         await waitForScriptDelay(step.milliseconds, deadline)
         continue
       }
@@ -465,7 +477,7 @@ async function newGroup() { const { value } = await ElMessageBox.prompt('按钮�
         </select>
         <select v-else-if="button.action === 'LAUNCH_APPLICATION'" v-model="button.text" aria-label="外部应用"><option v-for="tool in externalTools" :key="tool.id" :value="tool.id">{{ tool.name }}</option></select>
         <label v-if="button.action === 'LAUNCH_APPLICATION'"><input v-model="button.launch_with_session_context" type="checkbox" />传递当前会话参数</label>
-        <div v-if="button.action === 'RUN_SCRIPT'" class="script-editor"><textarea v-model="button.text" aria-label="脚本 JSON" rows="2" /><button type="button" @click="selectedScriptButton = button; scriptInput?.click()">选择脚本 JSON</button></div>
+        <div v-if="button.action === 'RUN_SCRIPT'" class="script-editor"><textarea v-model="button.text" aria-label="脚本 JSON" rows="2" :title="t('console.script.template_help', '脚本为版本 1 的 JSON。发送步骤支持 {{address}}、{{port}}、{{protocol}} 和可选的 when_protocol 条件（SSH / TELNET / SERIAL）。')" /><button type="button" @click="selectedScriptButton = button; scriptInput?.click()">选择脚本 JSON</button></div>
         <input v-model="button.color" type="color" aria-label="按钮颜色" />
         <input v-model="button.tooltip" :placeholder="consoleText('button.tooltip', '提示文本')" aria-label="提示文本" />
         <label><input v-model="button.disable_tooltip" type="checkbox" />{{ consoleText('button.no_tooltip', '不提示') }}</label>

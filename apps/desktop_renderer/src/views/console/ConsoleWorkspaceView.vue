@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, h, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Close,
   Connection,
@@ -27,6 +27,8 @@ import ConsoleCommandBar from './ConsoleCommandBar.vue'
 import { useConsoleWorkspace } from './useConsoleWorkspace'
 import { isFeatureEnabled } from '../../features'
 import { getPlatformAdapter } from '../../platform/runtime'
+import { describeTerminalPaste } from './terminalContextActions'
+import { t } from '../../i18n/runtime'
 const props = withDefaults(defineProps<{ workspaceVisible?: boolean }>(), { workspaceVisible: true })
 const replaySearch = ref<InstanceType<typeof TerminalReplaySearch> | null>(null)
 const externalTerminalAvailable = computed(() => getPlatformAdapter().hostType === 'electron' && isFeatureEnabled('capability.devices.desktop_actions'))
@@ -132,6 +134,7 @@ const {
   workspaceStyle,
   paneClass,
   setTerminalRef,
+  terminalRefs,
   openDevice,
   openSerialTab,
   openDeviceExternalTerminal,
@@ -194,6 +197,81 @@ const {
   replayText,
   replayTruncated,
 } = useConsoleWorkspace()
+
+const syncSelection = ref<string[]>([])
+const connectedTabs = ref(new Set<string>())
+const syncEnabled = ref(false)
+let syncRevision = 0
+const syncTargets = computed(() => tabs.value.filter((tab) =>
+  syncSelection.value.includes(tab.id) && connectedTabs.value.has(tab.id) && !closingTabIds.value.has(tab.id)))
+const syncEnabledFor = (id: string) => props.workspaceVisible && syncEnabled.value && syncTargets.value.some((tab) => tab.id === id)
+const syncTargetLabel = (tab: typeof tabs.value[number]) =>
+  [tab.session.session_name || tab.session.device_name, tab.session.address || tab.session.serial_port].filter(Boolean).join(' · ')
+
+function clearSync(): void {
+  syncEnabled.value = false
+  syncSelection.value = []
+  syncRevision++
+}
+
+function setSocketConnection(id: string, connected: boolean): void {
+  if (connected) connectedTabs.value.add(id)
+  else connectedTabs.value.delete(id)
+}
+
+async function enableSync(): Promise<void> {
+  if (syncTargets.value.length < 2) return
+  const revision = syncRevision
+  try {
+    await ElMessageBox.confirm(
+      h('div', [
+        h('p', syncTargets.value.map(syncTargetLabel).join('、')),
+        h('p', t('console.sync.enable_warning', '键盘输入将同步发送到以上终端，包括配置修改命令。')),
+      ]),
+      t('console.sync.start', '开启同步输入'),
+      { type: 'warning' },
+    )
+  } catch {
+    return
+  }
+  if (props.workspaceVisible && revision === syncRevision && syncTargets.value.length > 1) syncEnabled.value = true
+}
+
+watch(() => syncTargets.value.map((tab) => tab.id), (ids) => {
+  if (ids.length !== syncSelection.value.length) syncSelection.value = ids
+  if (ids.length < 2) syncEnabled.value = false
+  syncRevision++
+}, { flush: 'sync' })
+watch(() => props.workspaceVisible, (visible) => { if (!visible) clearSync() }, { flush: 'sync' })
+onDeactivated(clearSync)
+onBeforeUnmount(clearSync)
+
+function broadcastInput(source: string, data: string): void {
+  if (!syncEnabledFor(source)) return
+  for (const tab of syncTargets.value) terminalRefs.value[tab.id]?.sendInput(data)
+}
+
+async function previewBroadcast(source: string, paste: string): Promise<void> {
+  if (!syncEnabledFor(source)) return
+  const revision = syncRevision
+  const targets = syncTargets.value
+  const summary = describeTerminalPaste(paste)
+  try {
+    await ElMessageBox.confirm(
+      h('div', [
+        h('p', targets.map(syncTargetLabel).join('、')),
+        summary.hasConfigCommand ? h('p', t('console.sync.config_warning', '这些命令含配置或危险操作，将同时发送到多个设备。')) : null,
+        h('pre', { style: { maxHeight: '32vh', overflow: 'auto', whiteSpace: 'pre-wrap' } }, summary.preview),
+      ]),
+      t('console.sync.preview', '同步粘贴预览'),
+      { type: 'warning', confirmButtonText: t('console.sync.paste', '向选定终端粘贴'), cancelButtonText: t('common.cancel', '取消') },
+    )
+  } catch {
+    return
+  }
+  if (revision !== syncRevision || !syncEnabledFor(source)) return
+  for (const tab of targets) terminalRefs.value[tab.id]?.receiveSynchronizedPaste(paste)
+}
 const sftpDevice = computed(() => {
   const id = activeTab.value?.session.device_uuid || selectedDeviceUuid.value
   return devices.value.find(item => item.device_uuid === id)
@@ -406,7 +484,7 @@ watch([showSftp, sftpWorkspaceId], () => {
         </div>
       </aside>
       <div v-show="showSftp" class="sftp-resizer" role="separator" aria-label="调整 SFTP 面板宽度" aria-orientation="vertical" @pointerdown.prevent="resizeSftp" />
-      <main class="console-main">
+      <main class="console-main" :class="{ 'has-sync-toolbar': tabs.length > 1 }">
         <div class="terminal-tabs">
           <el-dropdown
             v-for="tab in tabs"
@@ -439,6 +517,15 @@ watch([showSftp, sftpWorkspaceId], () => {
           <span v-if="!tabs.length">双击左侧设备打开受控终端</span>
         </div>
 
+        <div v-if="tabs.length > 1" class="terminal-sync-toolbar">
+          <el-select v-model="syncSelection" multiple clearable collapse-tags :placeholder="t('console.sync.targets', '选择同步终端')" :aria-label="t('console.sync.targets', '选择同步终端')">
+            <el-option v-for="tab in tabs" :key="tab.id" :value="tab.id" :label="syncTargetLabel(tab)" :disabled="!connectedTabs.has(tab.id) || closingTabIds.has(tab.id)" />
+          </el-select>
+          <el-button :disabled="!syncEnabled && syncTargets.length < 2" :type="syncEnabled ? 'warning' : 'default'" @click="syncEnabled ? clearSync() : enableSync()">
+            {{ syncEnabled ? t('console.sync.stop', '关闭同步输入') : t('console.sync.start', '开启同步输入') }}
+          </el-button>
+          <span v-if="syncEnabled" role="status">{{ t('console.sync.active_warning', '输入及配置命令将发往') }} {{ syncTargets.map(syncTargetLabel).join('、') }}</span>
+        </div>
         <div v-if="tabs.length" ref="workspace" class="terminal-grid" :class="`is-${splitOrientation}`" :style="workspaceStyle">
           <div v-for="tab in tabs" :key="tab.id" :class="paneClass(tab.id)" @focusin="activeTabId = tab.id">
             <div class="terminal-pane__header">
@@ -457,6 +544,10 @@ watch([showSftp, sftpWorkspaceId], () => {
               :workspace-visible="props.workspaceVisible"
               :settings="terminalSettings"
               :highlight-rules="highlightRules"
+              :sync-input="syncEnabledFor(tab.id)"
+              @connection="setSocketConnection(tab.id, $event)"
+              @input="broadcastInput(tab.id, $event)"
+              @synchronized-paste="previewBroadcast(tab.id, $event)"
               @session="updateSession(tab.id, $event)"
               @notice="ElMessage.info($event)"
             />
@@ -667,6 +758,10 @@ watch([showSftp, sftpWorkspaceId], () => {
 .console-empty { padding: 32px 12px; color: var(--nc-text-secondary); text-align: center; font-size: 12px; }
 
 .console-main { display: grid; grid-template-rows: 36px minmax(0, 1fr) auto; min-width: 0; min-height: 0; background: var(--nc-bg-code); }
+.console-main.has-sync-toolbar { grid-template-rows: 36px auto minmax(0, 1fr) auto; }
+.terminal-sync-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 8px; background: var(--nc-bg-panel); }
+.terminal-sync-toolbar .el-select { width: min(320px, 100%); }
+.terminal-sync-toolbar [role="status"] { min-width: 0; overflow-wrap: anywhere; }
 .terminal-tabs { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; border-bottom: 1px solid var(--nc-border-code); color: var(--nc-text-code-muted); background: var(--nc-bg-code-header); }
 .terminal-tabs > span { align-self: center; padding: 0 12px; font-size: 12px; }
 .terminal-tab { display: flex; align-items: center; gap: 7px; height: 35px; padding: 0 10px; border: 0; border-right: 1px solid var(--nc-border-code); color: var(--nc-text-code-muted); background: var(--nc-bg-code-header); white-space: nowrap; cursor: pointer; }

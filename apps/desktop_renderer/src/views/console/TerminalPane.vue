@@ -29,15 +29,20 @@ const props = defineProps<{
   workspaceVisible?: boolean
   settings?: TerminalSettings | null
   highlightRules?: TerminalHighlightRule[]
+  syncInput?: boolean
 }>()
 
 const emit = defineEmits<{
   session: [value: TerminalSession]
   notice: [message: string]
+  connection: [connected: boolean]
+  input: [data: string]
+  synchronizedPaste: [text: string]
 }>()
 
 const host = ref<HTMLElement | null>(null)
 const connected = ref(false)
+let receivingSynchronizedPaste = false
 const connectionMessage = ref('正在建立终端通道…')
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
@@ -126,6 +131,10 @@ async function readClipboard(): Promise<string | null> {
 
 async function pasteText(text: string, quoted = false): Promise<void> {
   if (!terminal || terminalEnded() || !connected.value) return
+  if (props.syncInput) {
+    emit('synchronizedPaste', quoted ? quotePastedLines(text) : text)
+    return
+  }
   const target = terminal
   const connection = socket
   const sessionId = props.session.session_id
@@ -373,8 +382,8 @@ function createTerminal(): void {
   host.value.addEventListener('keydown', handleTerminalKeydown, true)
   terminal.writeln('\x1b[1;36mNetConsole Interactive Console\x1b[0m')
   terminal.onData((data) => {
-    if (terminalEnded() || socket?.readyState !== WebSocket.OPEN) return
-    socket.send(JSON.stringify({ type: 'input', data }))
+    if (props.syncInput && !receivingSynchronizedPaste) emit('input', data)
+    else sendInput(data)
   })
   terminal.onResize(({ cols, rows }) => {
     const dimensions = `${cols}:${rows}`
@@ -386,6 +395,21 @@ function createTerminal(): void {
   resizeObserver = new ResizeObserver(() => fit())
   resizeObserver.observe(host.value)
   fit()
+}
+
+function sendInput(data: string): void {
+  if (terminalEnded() || socket?.readyState !== WebSocket.OPEN) return
+  socket.send(JSON.stringify({ type: 'input', data }))
+}
+
+function receiveSynchronizedPaste(text: string): void {
+  if (!terminal || terminalEnded() || socket?.readyState !== WebSocket.OPEN) return
+  receivingSynchronizedPaste = true
+  try {
+    terminal.paste(text)
+  } finally {
+    receivingSynchronizedPaste = false
+  }
 }
 
 async function openSocket(): Promise<void> {
@@ -541,6 +565,7 @@ onMounted(() => {
   void openSocket()
 })
 watch(() => props.workspaceVisible, visible => { if (visible) fit() })
+watch(connected, (value) => emit('connection', value), { flush: 'sync' })
 
 onBeforeUnmount(() => {
   disposed = true
@@ -560,7 +585,7 @@ function inspect() {
   const buffer = terminal.buffer.active
   return { lines: Array.from({ length: buffer.length }, (_, index) => buffer.getLine(index)?.translateToString(true) || ''), cursorX: buffer.cursorX, cursorY: buffer.cursorY, viewportY: buffer.viewportY, cols: terminal.cols, rows: terminal.rows, connected: connected.value }
 }
-defineExpose({ clear, fit, focus, search, inspect, executeMenuFunction })
+defineExpose({ clear, fit, focus, search, inspect, executeMenuFunction, sendInput, receiveSynchronizedPaste })
 </script>
 
 <template>
