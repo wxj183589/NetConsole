@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { ApiRequestError } from '../../api/client'
 
 import {
   calculateIpv4,
@@ -28,6 +29,12 @@ import { buildSubnetStatusGrid } from './subnetStatusGrid'
 
 const taskStore = useTaskStore()
 const userSelectedExport = useUserSelectedExport()
+
+function networkActionError(cause: unknown, fallback: string): string {
+  return cause instanceof ApiRequestError && cause.status === 422
+    ? cause.message
+    : `${fallback}，请稍后重试。`
+}
 
 const calculator = ref('ipv4')
 const text = ref('192.168.1.10/24')
@@ -165,7 +172,7 @@ async function startProbe(): Promise<void> {
     await refreshTasks()
     ElMessage.success(`网络任务已提交：${response.task.id}`)
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '网络任务启动失败')
+    ElMessage.error(networkActionError(cause, '网络任务启动失败'))
   }
 }
 
@@ -188,7 +195,7 @@ async function refreshTasks(): Promise<void> {
       }
     }
   } catch (cause) {
-    ElMessage.error(cause instanceof Error ? cause.message : '网络任务加载失败')
+    ElMessage.error(networkActionError(cause, '网络任务加载失败'))
   }
 }
 
