@@ -19,6 +19,16 @@ from netconsole.services.ground_unattended.history_query import (
 STAMP = "2026-11-07T10:00:00+08:00"
 
 
+def test_read_only_repository_skips_initialization_and_refuses_writes(tmp_path):
+    db_path = tmp_path / "history.sqlite"
+    GroundUnattendedRepository(db_path, site_id="demo")
+    read_only = GroundUnattendedRepository(db_path, site_id="demo", read_only=True)
+    assert read_only.list_runs() == []
+    with pytest.raises(sqlite3.OperationalError, match="readonly"):
+        with read_only._connection() as connection:
+            connection.execute("CREATE TABLE unexpected(value INTEGER)")
+
+
 def insert(conn: sqlite3.Connection, table: str, **values: object) -> None:
     """Use the real schema, filling only required fixture columns."""
     table = "ground_unattended_" + table

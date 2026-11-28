@@ -618,6 +618,11 @@ def create_app(
         repository = GroundUnattendedRepository(
             paths.ground_unattended_db_path(target_site_name),
             site_id=target_site_name,
+            read_only=(
+                collection_disabled
+                and os.environ.get("NETCONSOLE_SITE_DATA_MODE", "").strip().casefold() == "read_only"
+                and paths.ground_unattended_db_path(target_site_name).is_file()
+            ),
         )
         ap_identity_query = ApIdentityQueryService(
             Database(paths.site_db_path(target_site_name))

@@ -1125,9 +1125,10 @@ _RUN_STATES_ACTIVE = {
 
 
 class GroundUnattendedRepository:
-    def __init__(self, db_path: Path, *, site_id: str) -> None:
+    def __init__(self, db_path: Path, *, site_id: str, read_only: bool = False) -> None:
         self.db_path = Path(db_path)
         self.site_id = str(site_id)
+        self.read_only = read_only
         self._inventory_lock = threading.RLock()
         self._inventory_snapshot: SiteInventorySnapshot | None = None
         self._inventory_loaded_at = 0.0
@@ -1136,8 +1137,9 @@ class GroundUnattendedRepository:
         self._transaction_metrics: Counter[str] = Counter()
         self._transaction_durations_ms: deque[float] = deque(maxlen=5000)
         self._transaction_metrics_lock = threading.Lock()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.initialize()
+        if not self.read_only:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self.initialize()
 
     def set_transaction_observability(self, enabled: bool) -> None:
         """Enable bounded, in-memory SQL and transaction counters for profiling."""
@@ -6242,6 +6244,10 @@ class GroundUnattendedRepository:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
+        if self.read_only:
+            with self._read_connection() as conn:
+                yield conn
+            return
         conn = Database(self.db_path).connect()
         if self._observe_transactions:
             with self._transaction_metrics_lock:
