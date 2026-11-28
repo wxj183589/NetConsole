@@ -273,6 +273,17 @@ def test_saved_template_versions_preview_and_parameter_binding(runtime):
     frozen = adapter.jobs[response.json()["task_id"]].params
     assert frozen["template"] == {"template_id": template_id, "version": 1, "device_roles": ["switch"]}
     assert frozen["commands"] == preview.json()["commands"]
+    task_id = response.json()["task_id"]
+    adapter.complete(task_id, {
+        "kind": "custom", "commands": frozen["commands"], "template": frozen["template"],
+        "items": [{"device_uuid": sw_a.device_uuid, "status": "failed"}],
+    })
+    retry = client.post(f"/device-operations/tasks/{task_id}/retry")
+    assert retry.status_code == 202, retry.text
+    retry_job = adapter.jobs[retry.json()["task_id"]]
+    assert retry_job.params["commands"] == frozen["commands"]
+    assert retry_job.params["template"] == frozen["template"]
+    assert retry_job.retry_of_task_id == task_id
 
     template_path = f"/device-operations/templates/{template_id}"
     disabled = client.put(f"{template_path}?expected_version=1", json={**definition, "enabled": False})
@@ -281,6 +292,7 @@ def test_saved_template_versions_preview_and_parameter_binding(runtime):
     assert client.put(f"{template_path}?expected_version=1", json=definition).status_code == 409
     assert client.post("/device-operations/templates/saved-preview", json=parameters).status_code == 409
     assert client.post("/device-operations/tasks", json={**task, "saved_template": good}).status_code == 409
+    assert client.post(f"/device-operations/tasks/{task_id}/retry").status_code == 422
 
     client.app.state.device_management_service = SimpleNamespace(current_site_id=lambda: "another")
     assert client.get("/device-operations/templates").json() == []

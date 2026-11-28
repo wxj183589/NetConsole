@@ -145,7 +145,15 @@ class DeviceTaskApplicationService:
                 "template_id": record.template_id, "version": record.version,
                 "device_roles": record.device_roles,
             }
-        if len(commands) > 8 or any(not is_read_only_h3c_command(command) for command in commands):
+        return self._submit_resolved(site, request, ids, commands, template_info, retry_of_task_id)
+
+    def _submit_resolved(
+        self, site: str, request: DeviceTaskRequest, ids: list[str],
+        commands: tuple[str, ...], template_info: dict[str, object], retry_of_task_id: str,
+    ) -> DeviceTaskReference:
+        if request.kind == "custom" and (
+            not 1 <= len(commands) <= 8 or any(not is_read_only_h3c_command(command) for command in commands)
+        ):
             raise ValueError("自定义采集只允许 1 至 8 条已登记的只读查询命令")
         task_id = f"device-task-{uuid4().hex}"
         self.process_adapter.start_job(BackgroundJob(
@@ -191,23 +199,36 @@ class DeviceTaskApplicationService:
         ]
 
     def retry(self, site: str, task_id: str) -> DeviceTaskReference:
-        result = self.result(site, task_id)
-        if self.task_service.repository(site).get(task_id).status not in TERMINAL_TASK_STATES:
+        site = SiteManager(self.paths).validate_site_name(site)
+        snapshot = self.task_service.repository(site).get(task_id)
+        if snapshot is None or snapshot.task_type != DEVICE_TASK_TYPE or snapshot.owner != DEVICE_TASK_OWNER:
+            raise KeyError(task_id)
+        if snapshot.status not in TERMINAL_TASK_STATES:
             raise ValueError("任务结束后才能重试失败设备")
+        result = snapshot.result or {}
         kind = result.get("kind")
-        ids = [str(item["device_uuid"]) for item in result.get("items", []) if item.get("status") in {"failed", "partial"}]
+        ids = list(dict.fromkeys(
+            str(item["device_uuid"]) for item in result.get("items", [])
+            if item.get("device_uuid") and item.get("status") in {"failed", "partial"}
+        ))
         if kind not in DEVICE_TASK_LABELS or not ids:
             raise ValueError("没有可重试的设备结果")
-        commands = result.get("commands", [])
-        if result.get("template"):
-            raise ValueError("请在任务中心用当前模板版本重新预览后执行")
-        template = CommandTemplatePreviewRequest(source="\n".join(commands)) if kind == "custom" else None
-        return self.start(
-            site, DeviceTaskRequest(
-                kind=kind, device_uuids=ids, template=template,
-                concurrency=int(result.get("concurrency") or 4),
-                command_timeout=int(result.get("command_timeout") or 40),
-            ), retry_of_task_id=task_id,
+        repository = DeviceRepository(Database(self.paths.site_db_path(site)))
+        if set(ids) != repository.get_by_uuids(ids).keys():
+            raise ValueError("目标设备已不存在或不属于当前局点")
+        request = DeviceTaskRequest(
+            kind=kind, device_uuids=ids,
+            concurrency=int(result.get("concurrency") or 4),
+            command_timeout=int(result.get("command_timeout") or 40),
+        )
+        template_info = dict(result.get("template") or {})
+        if template_id := template_info.get("template_id"):
+            versions = self.template_library(site).versions(str(template_id))
+            if not versions or not versions[0].enabled:
+                raise ValueError("模板已停用，不能重放历史实例")
+        return self._submit_resolved(
+            site, request, ids, tuple(result.get("commands", [])) if kind == "custom" else (),
+            template_info, task_id,
         )
 
 
