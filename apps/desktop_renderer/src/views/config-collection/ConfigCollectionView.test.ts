@@ -349,7 +349,7 @@ describe('ConfigCollectionView mounted workflow', () => {
     ])
     await vi.advanceTimersByTimeAsync(2000)
     await flushPromises()
-    await button(wrapper, '下载 Artifact').trigger('click')
+    await button(wrapper, '下载文件').trigger('click')
     await flushPromises()
     expect(api.configArtifactDownloadRequest).toHaveBeenCalledWith('export-artifact', 'SW-A_to_SW-B.diff')
     expect(downloadBackendResource).toHaveBeenCalledTimes(1)

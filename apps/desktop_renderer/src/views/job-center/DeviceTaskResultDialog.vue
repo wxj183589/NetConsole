@@ -106,8 +106,11 @@ watch([open, () => props.taskId], ([visible, id]) => {
             <h4>{{ line.command }} · {{ commandLabels[line.status] || line.status }}</h4>
             <pre v-if="line.output">{{ line.output }}</pre>
           </template>
-          <pre v-if="item.records?.length">{{ JSON.stringify(item.records, null, 2) }}</pre>
-          <pre v-if="item.wireless_summary">{{ JSON.stringify(item.wireless_summary, null, 2) }}</pre>
+          <details v-if="item.records?.length || item.wireless_summary">
+            <summary>查看原始采集内容</summary>
+            <pre v-if="item.records?.length">{{ JSON.stringify(item.records, null, 2) }}</pre>
+            <pre v-if="item.wireless_summary">{{ JSON.stringify(item.wireless_summary, null, 2) }}</pre>
+          </details>
           <p v-if="item.records_truncated">结果保留前 128 条解析记录，共 {{ item.record_count }} 条。</p>
         </el-collapse-item>
       </el-collapse>

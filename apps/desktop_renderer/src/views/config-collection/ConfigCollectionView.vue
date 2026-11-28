@@ -326,11 +326,11 @@ async function downloadResultArtifact(): Promise<void> {
     const result = await downloadBackendResource(
       configArtifactDownloadRequest(resultArtifactId.value, resultArtifactName.value || 'config-artifact.zip'),
     )
-    if (result.status === 'failed') ElMessage.error(result.error || 'Artifact 下载失败')
-    else if (result.status === 'saved') ElMessage.success('Artifact 已保存')
+    if (result.status === 'failed') ElMessage.error(result.error || '文件下载失败')
+    else if (result.status === 'saved') ElMessage.success('文件已保存')
     else if (result.status === 'started') ElMessage.success('浏览器已开始下载')
   } catch {
-    ElMessage.error('Artifact 下载失败')
+    ElMessage.error('文件下载失败')
   }
 }
 
@@ -567,8 +567,8 @@ function showTaskResult(task: ConfigTaskStatus): void {
     resultText.value = ''
     resultKind.value = 'diff'
   } else if (resultArtifactId.value) {
-    resultTitle.value = 'Artifact 已生成'
-    resultText.value = 'Artifact 已生成，可下载。'
+    resultTitle.value = '文件已生成'
+    resultText.value = ''
     resetDiffResult()
     resultKind.value = 'content'
   }
@@ -701,7 +701,7 @@ function formatBytes(value: number | null): string {
           <p v-else>内容由后台任务返回，未暴露本机绝对路径</p>
         </div>
         <div class="heading-actions">
-          <el-button v-if="resultArtifactId" @click="downloadResultArtifact">下载 Artifact</el-button>
+          <el-button v-if="resultArtifactId" @click="downloadResultArtifact">下载文件</el-button>
           <el-button @click="clearResult">清空</el-button>
         </div>
       </div>
