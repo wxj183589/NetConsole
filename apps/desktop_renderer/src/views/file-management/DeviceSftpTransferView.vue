@@ -238,11 +238,16 @@ watch(() => route.query.device_uuid, openRequestedDevice)
         <el-pagination v-if="page && page.total > page.limit" small layout="prev, pager, next" :current-page="page.page" :page-size="page.limit" :total="page.total" @current-change="browse(page?.current_entry_id, $event)" />
       </section>
       <section v-if="canConnect" class="remote-pane" :aria-label="t('remoteFiles')">
+        <header class="local-toolbar"><strong>{{ t('remoteFiles') }}</strong></header>
         <el-tabs v-if="tabs.length" v-model="deviceId" type="card" closable @tab-remove="closeTab">
           <el-tab-pane v-for="tab in tabs" :key="tab.device_id" :name="tab.device_id" :label="tab.name" />
         </el-tabs>
         <TerminalSftpPanel v-if="deviceId || !tabs.length" :key="siteId" workspace-id="file-manager" :device-uuid="deviceId" :device-name="tabs.find(tab => tab.device_id === deviceId)?.name || ''" all-workspace-transfers @managed-download="browse(page?.current_entry_id, page?.page)">
           <template #managed-actions="{ sessionId, directory, selectedRemote, selectedEntries = [], refreshTransfers }">
+            <div v-if="page" class="transfer-endpoints">
+              <span>{{ t('localFiles') }} <strong>{{ page.current_label }}</strong></span>
+              <span>{{ t('remoteFiles') }} <strong>{{ tabs.find(tab => tab.device_id === deviceId)?.name }} · {{ directory }}</strong></span>
+            </div>
             <el-button :icon="Upload" :loading="uploading" :disabled="!selected.length" @click="uploadLocal(sessionId, directory, refreshTransfers)">{{ t('uploadSelectedLocal') }}</el-button>
             <el-button v-if="isFeatureEnabled('capability.file_management.download')" :icon="Download" :loading="downloading" :disabled="!page || !selectedRemote.length" @click="downloadToLocal(sessionId, selectedRemote, refreshTransfers)">{{ t('downloadToLocal') }}</el-button>
             <el-button :disabled="selectedEntries.length !== 1 || selectedEntries[0].is_dir || editorBusy" @click="editRemoteFile(sessionId, selectedEntries[0]?.remote_path || '')">{{ t('editRemote') }}</el-button>
@@ -262,6 +267,7 @@ watch(() => route.query.device_uuid, openRequestedDevice)
 </template>
 
 <style scoped>
+.transfer-endpoints { display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 4px 12px; overflow-wrap: anywhere; }
 .file-manager-workspace { display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; overflow: auto; }
 .file-manager-command, .local-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .file-manager-command .el-select { width: min(360px, 100%); }

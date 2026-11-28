@@ -1261,11 +1261,6 @@ function errorMessage(cause: unknown, fallback: string): string {
               </section>
 
               <section class="detail-section">
-                <h3>数据元信息</h3>
-                <div class="metadata-row"><span>刷新时间：{{ formatTime(overview.snapshot.collected_at) }}</span><span>来源：{{ sourceLabel(overview.snapshot) }}</span><span>可用：{{ formatValue(overview.snapshot.available) }}</span><span>原因：{{ formatValue(overview.snapshot.reason) }}</span></div>
-              </section>
-
-              <section class="detail-section">
                 <h3>计数与任务事实</h3>
                 <el-descriptions :column="2" border>
                   <el-descriptions-item label="接口数">{{ formatValue(overview.counts.interfaces) }}</el-descriptions-item>
@@ -1282,7 +1277,9 @@ function errorMessage(cause: unknown, fallback: string): string {
                 </el-descriptions>
               </section>
 
-              <section class="detail-section">
+              <details class="detail-section technical-facts">
+                <summary>采集与能力详情</summary>
+                <div class="metadata-row"><span>刷新时间：{{ formatTime(overview.snapshot.collected_at) }}</span><span>来源：{{ sourceLabel(overview.snapshot) }}</span><span>可用：{{ formatValue(overview.snapshot.available) }}</span><span>原因：{{ formatValue(overview.snapshot.reason) }}</span></div>
                 <h3>命令画像</h3>
                 <el-descriptions :column="2" border>
                   <el-descriptions-item label="画像标识">{{ formatValue(overview.command_profile.capability_id) }}</el-descriptions-item>
@@ -1296,9 +1293,6 @@ function errorMessage(cause: unknown, fallback: string): string {
                   <el-descriptions-item label="设备状态">{{ formatValue(overview.command_profile.real_device_status) }}</el-descriptions-item>
                   <el-descriptions-item label="原因">{{ formatValue(overview.command_profile.reason) }}</el-descriptions-item>
                 </el-descriptions>
-              </section>
-
-              <section class="detail-section">
                 <h3>能力事实</h3>
                 <NcDataTable
                   table-id="device-detail-capabilities"
@@ -1308,7 +1302,7 @@ function errorMessage(cause: unknown, fallback: string): string {
                   :show-column-settings="false"
                   empty-text="暂无能力事实"
                 />
-              </section>
+              </details>
 
               <section v-if="connectionTest" class="detail-section">
                 <h3>连接测试</h3>
@@ -1402,6 +1396,8 @@ function errorMessage(cause: unknown, fallback: string): string {
 </template>
 
 <style scoped>
+.technical-facts > summary { cursor: pointer; font-weight: 600; padding-block: 8px; }
+.technical-facts > h3 { margin-block: 12px 6px; }
 .device-detail-panel { display: flex; min-width: 0; min-height: 0; height: 100%; flex-direction: column; overflow: hidden; }
 .device-detail-content { display: flex; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .detail-heading { position: sticky; z-index: 5; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: -1px 0 16px; padding: 10px 0; background: var(--nc-bg-card); border-bottom: 1px solid var(--nc-border-light); }
