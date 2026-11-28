@@ -42,7 +42,7 @@ def _issue(row) -> dict:
     operations = evidence.get(AUDIT_FIELD, [])
     return {
         **{field: row[field] for field in (
-            "event_uuid", "ap_name", "ap_uuid", "station_name", "switch_name",
+            "event_uuid", "ap_name", "ap_uuid", "station_name", "switch_name", "switch_device_id",
             "switch_interface", "issue_type", "first_detected_at", "last_abnormal_at",
             "first_ap_rx_dbm", "first_switch_rx_dbm", "event_status", "resolved_at",
             "recovered_ap_rx_dbm", "recovered_switch_rx_dbm", "evidence_quality",

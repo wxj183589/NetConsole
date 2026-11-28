@@ -30,12 +30,26 @@ function nextAction(item: TracksideIssue): TracksideIssueAction | undefined {
   return actions[item.operations.length]
 }
 
+function hasRecovery(item: TracksideIssue): boolean {
+  return item.event_status === 'RESOLVED' && Boolean(item.resolved_at
+    && (item.recovered_ap_rx_dbm || item.recovered_switch_rx_dbm))
+}
+
+function lifecycleLabel(item: TracksideIssue): string {
+  switch (nextAction(item)) {
+    case 'confirm': return '已发现'
+    case 'handle': return '已确认'
+    case 'verify': return hasRecovery(item) ? '恢复待验证' : '处理中'
+    case 'close': return '已恢复'
+    default: return '已关闭'
+  }
+}
+
 function actionDisabled(item: TracksideIssue): boolean {
   const action = nextAction(item)
   return pending.value
     || (action === 'handle' && !notes.value[item.event_uuid]?.trim())
-    || (action === 'verify' && (item.event_status !== 'RESOLVED' || !item.resolved_at
-      || !(item.recovered_ap_rx_dbm || item.recovered_switch_rx_dbm)))
+    || (action === 'verify' && !hasRecovery(item))
 }
 
 async function advance(item: TracksideIssue) {
@@ -67,14 +81,20 @@ async function advance(item: TracksideIssue) {
         <el-collapse-item v-for="item in items" :key="item.event_uuid" :name="item.event_uuid">
           <template #title>
             {{ item.first_detected_at || '发现时间缺失' }} · {{ issueLabels[item.issue_type] || item.issue_type || '光衰' }}
-            · {{ item.operations.length === actions.length ? '已关闭' : (item.event_status === 'RESOLVED' ? '已采集到恢复' : '未采集到恢复') }}
+            · {{ lifecycleLabel(item) }}
           </template>
           <el-descriptions :column="2" border>
             <el-descriptions-item label="站点">{{ item.station_name || '—' }}</el-descriptions-item>
             <el-descriptions-item label="交换机端口">{{ [item.switch_name, item.switch_interface].filter(Boolean).join(' / ') || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="AP UUID">{{ item.ap_uuid || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="交换机 UUID">{{ item.switch_device_id || '—' }}</el-descriptions-item>
             <el-descriptions-item label="首次 AP / 交换机收光 (dBm)">{{ item.first_ap_rx_dbm || '—' }} / {{ item.first_switch_rx_dbm || '—' }}</el-descriptions-item>
             <el-descriptions-item label="恢复 AP / 交换机收光 (dBm)">{{ item.recovered_ap_rx_dbm || '—' }} / {{ item.recovered_switch_rx_dbm || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="最后异常时间">{{ item.last_abnormal_at || '—' }}</el-descriptions-item>
             <el-descriptions-item label="恢复时间">{{ item.resolved_at || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="证据来源" :span="2">{{ item.evidence_quality || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="首次异常来源版本">{{ item.source_revision_first || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="最近事件来源版本">{{ item.source_revision_last || '—' }}</el-descriptions-item>
           </el-descriptions>
           <ul v-if="item.operations.length">
             <li v-for="operation in item.operations" :key="operation.action">
