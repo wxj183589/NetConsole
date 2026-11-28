@@ -94,6 +94,8 @@ watch([open, () => props.taskId], ([visible, id]) => {
             <dt>完成时间</dt><dd>{{ item.finished_at }}</dd>
             <template v-if="item.elapsed_ms !== undefined"><dt>耗时</dt><dd>{{ (item.elapsed_ms / 1000).toFixed(2) }} 秒</dd></template>
             <template v-if="item.software_version"><dt>软件版本</dt><dd>{{ item.software_version }}</dd></template>
+            <template v-if="item.previous_version"><dt>升级前版本</dt><dd>{{ item.previous_version }}</dd></template>
+            <template v-if="item.upgrade_status"><dt>升级结果</dt><dd>{{ { verified: '版本核验通过', rolled_back: '已回滚', already_current: '已是目标版本' }[item.upgrade_status] }}</dd></template>
             <template v-if="item.device_model"><dt>设备型号</dt><dd>{{ item.device_model }}</dd></template>
             <template v-if="item.collect_run_uuid"><dt>采集 ID</dt><dd>{{ item.collect_run_uuid }}</dd></template>
             <template v-if="item.snapshot_ids?.length"><dt>配置快照</dt><dd>{{ item.snapshot_ids.join('、') }}</dd></template>

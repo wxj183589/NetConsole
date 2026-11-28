@@ -75,8 +75,12 @@ DEVICE_TASK_LABELS = {
 _LAB_IMAGE = b"NetConsole simulated firmware 2.0"
 
 
+def upgrade_lab_enabled() -> bool:
+    return os.environ.get("NETCONSOLE_RUNTIME_MODE") == "test" and os.environ.get("NETCONSOLE_DEVICE_UPGRADE_LAB") == "1"
+
+
 def _require_upgrade_lab() -> None:
-    if os.environ.get("NETCONSOLE_RUNTIME_MODE") != "test" or os.environ.get("NETCONSOLE_DEVICE_UPGRADE_LAB") != "1":
+    if not upgrade_lab_enabled():
         raise ValueError("模拟升级需要显式启用隔离测试环境")
 _COMMANDS = {
     "diagnostic": ("display version", "display cpu-usage", "display memory", "display interface brief"),

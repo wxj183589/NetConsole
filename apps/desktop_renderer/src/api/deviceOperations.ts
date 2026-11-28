@@ -3,12 +3,17 @@ import { apiRequest } from './client'
 export const deviceMaintenanceTask = 'device_maintenance_collection'
 const root = '/api/device-operations'
 
+export function getDeviceTaskCapabilities(): Promise<{ upgrade_lab: boolean }> {
+  return apiRequest(root + '/capabilities')
+}
+
 export const deviceTaskLabels = {
   configuration: '配置收集', backup: '配置备份', diagnostic: '诊断收集',
   optical: '光衰收集', lldp: 'LLDP 收集', version: '版本检查', custom: '自定义命令采集',
   wireless: '无线信息收集', mesh: 'MESH 收集',
   config_diff: '配置快照差异', config_preview: '已保存配置快照', health: '设备健康检查',
   config_generate: '生成待审阅配置',
+  upgrade_lab: '模拟版本升级',
 } as const
 
 export type DeviceTaskKind = keyof typeof deviceTaskLabels
@@ -61,6 +66,8 @@ export interface DeviceTaskReference {
 }
 
 export interface DeviceExecution {
+  upgrade_status?: 'verified' | 'rolled_back' | 'already_current'
+  previous_version?: string
   device_uuid: string
   device_name?: string
   status: 'success' | 'failed' | 'partial' | 'skipped'

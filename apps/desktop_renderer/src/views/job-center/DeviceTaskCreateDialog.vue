@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { listDeviceGroups, listDevices } from '../../api/deviceManagement'
 import {
   deviceTaskLabels, getCommandTemplateVersions, listCommandTemplates, previewCommandTemplate,
-  previewSavedTemplate, saveCommandTemplate, startDeviceTask, listTaskOrganizations,
+  previewSavedTemplate, saveCommandTemplate, startDeviceTask, listTaskOrganizations, getDeviceTaskCapabilities,
   type CommandPreview, type CommandTemplate, type DeviceTaskKind, type SavedTemplate,
   type SavedTemplateDefinition, type SavedTemplatePreview, type TargetGroup,
 } from '../../api/deviceOperations'
@@ -15,10 +15,12 @@ const open = defineModel<boolean>({ required: true })
 const props = defineProps<{ initialDeviceUuid?: string }>()
 const emit = defineEmits<{ submitted: [id: string]; scheduled: [] }>()
 const scheduledAt = ref('')
+const upgradeLabEnabled = ref(false)
 const configCollectionEnabled = computed(() => isFeatureEnabled('capability.config_collection.fetch'))
 const kinds = computed(() => Object.entries(deviceTaskLabels).filter(
   ([value]) => {
     if (value === 'configuration') return false
+    if (value === 'upgrade_lab') return upgradeLabEnabled.value
     if (value === 'backup') return configCollectionEnabled.value
     if (value === 'health') return isFeatureEnabled('capability.devices.collect')
     if (value === 'config_preview' || value === 'config_generate') return isFeatureEnabled('capability.config_collection.export')
@@ -28,7 +30,7 @@ const kinds = computed(() => Object.entries(deviceTaskLabels).filter(
 ))
 const kind = ref<DeviceTaskKind>(configCollectionEnabled.value ? 'backup' : 'diagnostic')
 const snapshotTask = computed(() => ['config_diff', 'config_preview'].includes(kind.value))
-const immediateTask = computed(() => snapshotTask.value || kind.value === 'health' || kind.value === 'config_generate')
+const immediateTask = computed(() => snapshotTask.value || ['health', 'config_generate', 'upgrade_lab'].includes(kind.value))
 const scope = ref<'devices' | 'group' | 'organization'>('devices')
 const organizations = ref<{ uid: string; name: string; parent_uid: string }[]>([])
 const organizationUid = ref('')
@@ -220,6 +222,10 @@ watch([source, schema, values, currentTemplate, templateName, templateCategory, 
 
 watch(open, (visible) => {
   if (!visible) return
+  void getDeviceTaskCapabilities().then(
+    (capabilities) => { upgradeLabEnabled.value = capabilities.upgrade_lab },
+    () => { upgradeLabEnabled.value = false },
+  )
   targets.value = props.initialDeviceUuid ? [props.initialDeviceUuid] : []
   targetGroup.value = null
   error.value = ''

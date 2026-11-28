@@ -14,6 +14,7 @@ from netconsole.services.device_task_service import (
     DeviceTaskReference,
     DeviceTaskRequest,
     DeviceTaskSchedule,
+    upgrade_lab_enabled,
 )
 from netconsole.services.h3c_command_template import (
     CommandTemplatePreview,
@@ -54,6 +55,11 @@ def _require_task_kind(request: Request, kind: object) -> None:
 def target_organizations(request: Request) -> list[dict[str, str]]:
     require_feature("module.rail_infrastructure")(request)
     return _service(request).organizations(_site(request))
+
+
+@router.get("/capabilities", dependencies=[Depends(require_feature("module.devices"))])
+def device_task_capabilities() -> dict[str, bool]:
+    return {"upgrade_lab": upgrade_lab_enabled()}
 
 
 @router.post("/templates/preview", response_model=CommandTemplatePreview)
