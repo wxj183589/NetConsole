@@ -15,6 +15,8 @@ const {
   groundRunModeLabel, bytes, verifyArchive, downloadArchiveSummary, downloadArchiveZip,
 } = provideGroundContext('replay')
 const active = computed(() => activeTab.value === 'playback' && pageVisible.value && pageActivated.value)
+const archivedRuns = computed(() => runs.value.filter((run) => run.archive_status === 'READY'
+  && !['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(run.state)))
 const { archives: archiveFeature, syslog: syslogFeature } = GROUND_TAB_FEATURES
 </script>
 
@@ -33,7 +35,7 @@ const { archives: archiveFeature, syslog: syslogFeature } = GROUND_TAB_FEATURES
         <Playback
           v-if="profile?.site_id"
           :site-id="profile.site_id"
-          :runs="runs"
+          :runs="archivedRuns"
           :trains="[]"
           :active="active"
           :deleting="runHistoryDeleteLoading"

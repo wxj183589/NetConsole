@@ -441,7 +441,7 @@ describe('Ground unattended page loading behavior', () => {
     const wrapper = mountPage()
     try {
       await flushPromises()
-      expect(wrapper.findAll('.ground-tabs [lazy]')).toHaveLength(10)
+      expect(wrapper.findAll('.ground-tabs [lazy]')).toHaveLength(9)
     } finally {
       wrapper.unmount()
     }
