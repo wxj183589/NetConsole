@@ -479,10 +479,15 @@ onBeforeUnmount(() => {
     <el-tabs v-model="activeTab" type="border-card" class="maintenance-tabs">
       <el-tab-pane label="运行日志" name="logs" class="maintenance-tab-pane log-tab-pane">
         <div class="toolbar">
+          <el-popover trigger="click" :width="330">
+            <template #reference><el-button>维护操作</el-button></template>
+            <div class="log-filter-fields">
           <el-select v-model="diagnosticDuration" style="width: 150px" :disabled="taskBusy" aria-label="诊断采样时长"><el-option label="诊断：立即快照" :value="0" /><el-option label="诊断：1分钟" :value="1" /><el-option label="诊断：5分钟" :value="5" /><el-option label="诊断：15分钟" :value="15" /><el-option label="诊断：30分钟" :value="30" /></el-select>
           <el-select v-model="diagnosticLogWindow" style="width: 140px" :disabled="taskBusy" aria-label="诊断日志范围"><el-option label="日志10分钟" :value="10" /><el-option label="日志30分钟" :value="30" /><el-option label="日志60分钟" :value="60" /></el-select>
           <el-checkbox v-model="diagnosticRawSample" :disabled="taskBusy">包含 Raw 样本（敏感）</el-checkbox>
           <el-button type="primary" :disabled="taskBusy" @click="runFieldDiagnostic">导出现场诊断包</el-button>
+            </div>
+          </el-popover>
           <el-input v-model="keyword" clearable placeholder="搜索事件或详情" @keyup.enter="loadLogs(true)" />
           <el-select v-model="level" clearable placeholder="全部级别"><el-option label="信息" value="INFO" /><el-option label="警告" value="WARNING" /><el-option label="错误" value="ERROR" /><el-option label="调试" value="DEBUG" /><el-option label="严重" value="CRITICAL" /></el-select>
           <el-select v-model="logFilters.category" clearable placeholder="全部分类" aria-label="日志分类"><el-option v-for="(label, code) in logCategories" :key="code" :label="label" :value="code" /></el-select>
@@ -497,8 +502,13 @@ onBeforeUnmount(() => {
           <el-button @click="loadLogs(true)">查询</el-button>
           <el-button :disabled="!isFeatureEnabled('capability.desktop_native_integration')" @click="openDirectory('logs')">打开日志目录</el-button>
           <el-button type="danger" plain :disabled="taskBusy || !isFeatureEnabled('system.disk_cleanup')" @click="confirmHistoryCleanup">清理历史日志</el-button>
-          <el-button :disabled="taskBusy || !isFeatureEnabled('capability.logs.export')" @click="runLogExport('current')">导出当前页</el-button>
-          <el-button :disabled="taskBusy || !isFeatureEnabled('capability.logs.export')" @click="runLogExport('all')">导出全部筛选结果</el-button>
+          <el-dropdown trigger="click" :disabled="taskBusy || !isFeatureEnabled('capability.logs.export')">
+            <el-button :disabled="taskBusy || !isFeatureEnabled('capability.logs.export')">导出</el-button>
+            <template #dropdown><el-dropdown-menu>
+              <el-dropdown-item @click="runLogExport('current')">导出当前页</el-dropdown-item>
+              <el-dropdown-item @click="runLogExport('all')">导出全部筛选结果</el-dropdown-item>
+            </el-dropdown-menu></template>
+          </el-dropdown>
         </div>
         <div v-if="logSummary" class="log-summary" aria-label="日志摘要"><span>目录：{{ logSummary.directory }}</span><span>总量：{{ formatBytes(logSummary.total_bytes) }} / 上限 {{ formatBytes(logSummary.max_total_bytes) }}</span><span>可清理：{{ formatBytes(logSummary.candidate_bytes) }}（{{ logSummary.candidate_files }} 个）</span><span>受保护：{{ formatBytes(logSummary.protected_bytes) }}（{{ logSummary.protected_files }} 个，含数据库升级审计）</span><span>未知：{{ formatBytes(logSummary.unknown_bytes) }}（{{ logSummary.unknown_files }} 个）</span><span>保留 {{ logSummary.retention_days }} 天，目标水位 {{ formatBytes(logSummary.target_total_bytes) }}</span></div>
         <div class="log-table-host">

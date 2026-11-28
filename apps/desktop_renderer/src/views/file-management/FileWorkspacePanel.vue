@@ -186,7 +186,10 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer) })
           <el-button @click="browse(side, directory(side)?.directory_id)">{{ t('refresh') }}</el-button>
           <el-button v-if="desktopAvailable && isFeatureEnabled('capability.file_management.desktop_actions')" :disabled="!directory(side) || busy[side] || openingFolder" @click="openFolder(side)">{{ t('openFolder') }}</el-button>
         </header>
-        <span>{{ directory(side)?.label }}</span>
+        <div class="workspace-location">
+          <strong>{{ directory(side)?.label === '.' ? t('fileRoot') : directory(side)?.label }}</strong>
+          <el-tag v-if="directory(side) && !directory(side)?.writable" size="small" type="info">{{ t('readOnly') }}</el-tag>
+        </div>
         <el-input v-model="search[side]" clearable :placeholder="t('filter')" :aria-label="t('filter')" @input="selected[side] = null" />
         <el-alert v-if="errors[side]" :title="errors[side]" type="error" :closable="false" />
         <div class="workspace-file-actions">
@@ -203,7 +206,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer) })
             <el-button type="danger" :disabled="!selected[side] || !directory(side)?.writable" @click="operate(side, 'delete')">{{ t('deleteLocal') }}</el-button>
           </template>
         </div>
-        <el-table v-loading="busy[side]" :data="visibleEntries(side)" height="100%" highlight-current-row @current-change="selected[side] = $event" @row-dblclick="(row: WorkspaceEntry) => row.directory && browse(side, row.id)">
+        <el-table v-loading="busy[side]" :data="visibleEntries(side)" height="100%" highlight-current-row @current-change="selected[side] = $event" @row-dblclick="(row: WorkspaceEntry) => row.directory ? browse(side, row.id) : preview(row)">
           <el-table-column prop="name" :label="t('name')" min-width="130" sortable show-overflow-tooltip />
           <el-table-column prop="size" :label="t('size')" width="110" sortable />
           <el-table-column prop="mode" :label="t('permissions')" width="110" />
@@ -228,6 +231,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer) })
 </template>
 
 <style scoped>
+.workspace-location { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
 .file-preview { max-height: 55vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workspace-file-panel { display: flex; flex-direction: column; gap: 12px; min-height: 0; height: 100%; }
 .workspace-file-panes { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; flex: 1; min-height: 400px; }

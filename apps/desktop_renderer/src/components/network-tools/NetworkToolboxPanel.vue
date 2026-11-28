@@ -346,7 +346,7 @@ function clearTaskResults(): void {
 
 <template>
   <el-card shadow="never">
-    <template #header><div class="header"><div><h2>网络小工具</h2><p>算法由 Python Service 执行，结果可进入任务中心与导出。</p></div><el-button :loading="loadingTasks" @click="refreshTasks">刷新</el-button></div></template>
+    <template #header><div class="header"><h2>地址计算</h2></div></template>
     <el-tabs v-model="calculator">
       <el-tab-pane label="IPv4" name="ipv4" />
       <el-tab-pane label="IPv6" name="ipv6" />
@@ -379,7 +379,7 @@ function clearTaskResults(): void {
   </el-card>
 
   <el-card shadow="never">
-    <template #header><div class="header"><div><h2>连通性检测</h2><p>单次、持续、批量、网段 Ping 与 TCP Ping 均进入任务链。</p></div><el-button :loading="loadingTasks" @click="refreshTasks">刷新历史</el-button></div></template>
+    <template #header><div class="header"><h2>网络诊断</h2><el-button :loading="loadingTasks" @click="refreshTasks">刷新历史</el-button></div></template>
     <el-alert v-if="taskStore.error" :title="taskStore.error" type="error" show-icon :closable="false" />
     <el-form label-position="top">
       <div class="inline-form"><el-form-item label="类型"><el-select v-model="taskKind"><el-option label="单个 Ping" value="single_ping" /><el-option label="持续 Ping" value="continuous_ping" /><el-option label="批量 Ping" value="batch_ping" /><el-option label="网段 Ping" value="subnet_ping" /><el-option label="TCP Ping" value="tcp_ping" /><el-option label="Traceroute" value="traceroute" /><el-option label="DNS 查询" value="dns" /></el-select></el-form-item><el-form-item label="目标"><el-input v-model="probe.target" placeholder="主机、IP 或 IPv4 网段" /></el-form-item><el-form-item v-if="taskKind === 'tcp_ping'" label="端口"><el-input-number v-model="probe.port" :min="1" :max="65535" /></el-form-item></div>

@@ -360,12 +360,15 @@ watch([showSftp, sftpWorkspaceId], () => {
       <el-button size="small" :disabled="!selectedDeviceUuid" :loading="Boolean(openingDeviceUuid)" @click="openDevice(devices.find((item) => item.device_uuid === selectedDeviceUuid)!)">
         <el-icon><Connection /></el-icon>新建会话
       </el-button>
-      <el-button size="small" @click="serialConnectVisible = true">新建 COM 会话</el-button>
-      <el-button size="small" :disabled="!selectedDeviceUuids.length" @click="openSelectedDevices">批量打开</el-button>
-      <el-button size="small" :disabled="!activeTab || closingTabIds.has(activeTab.id)" @click="activeTab && cloneSession(activeTab.session)">克隆会话</el-button>
-      <el-button size="small" :disabled="!activeTab || closingTabIds.has(activeTab.id)" @click="terminateActiveSession">
-        <el-icon><Delete /></el-icon>结束会话
-      </el-button>
+      <el-dropdown trigger="click">
+        <el-button size="small"><el-icon><Connection /></el-icon>会话操作</el-button>
+        <template #dropdown><el-dropdown-menu>
+          <el-dropdown-item @click="serialConnectVisible = true">新建 COM 会话</el-dropdown-item>
+          <el-dropdown-item :disabled="!selectedDeviceUuids.length" @click="openSelectedDevices">批量打开</el-dropdown-item>
+          <el-dropdown-item :disabled="!activeTab || closingTabIds.has(activeTab.id)" @click="activeTab && cloneSession(activeTab.session)">克隆会话</el-dropdown-item>
+          <el-dropdown-item :disabled="!activeTab || closingTabIds.has(activeTab.id)" divided @click="terminateActiveSession">结束会话</el-dropdown-item>
+        </el-dropdown-menu></template>
+      </el-dropdown>
       <el-button size="small" :disabled="!activeTab || !['DISCONNECTED', 'FAILED', 'CLOSED'].includes(activeTab.session.state)" @click="reconnectActiveSession">
         <el-icon><Refresh /></el-icon>重连
       </el-button>
