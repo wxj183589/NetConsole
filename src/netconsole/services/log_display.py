@@ -182,10 +182,10 @@ def log_context(row: dict[str, str]) -> dict[str, str]:
     category = next((name for name, prefixes in _EVENT_PREFIXES.items() if event.startswith(prefixes)), "other")
     tokens = {match["key"].lower(): _strip_quotes(match["value"]) for match in _DETAIL_TOKEN_RE.finditer(row.get("detail", ""))}
     context = {
-        key: next((tokens[alias] for alias in aliases if tokens.get(alias)), "")
+        key: row.get(key) or next((tokens[alias] for alias in aliases if tokens.get(alias)), "")
         for key, aliases in _CONTEXT_KEYS.items()
     }
-    return {**context, "category": category, "event_code": event, "source": context["source"] or "backend"}
+    return {**context, "category": row.get("category") or category, "event_code": row.get("event_code") or event, "source": context["source"] or "backend"}
 
 
 def matches_log_filters(row: dict[str, str], filters: dict[str, str | bool]) -> bool:

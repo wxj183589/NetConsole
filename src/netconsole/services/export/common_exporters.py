@@ -217,7 +217,6 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
                 log_paths,
                 keyword=keyword,
                 level=level,
-                parser=_parse_log_line,
                 max_bytes_by_path=snapshot_sizes,
                 predicate=lambda row: matches_log_filters(row, filters) if filters else True,
             )
@@ -1284,14 +1283,6 @@ def _effective_suffix(path: Path) -> str:
     if suffix == ".tmp" and path.stem:
         return Path(path.stem).suffix.lower()
     return suffix
-
-
-def _parse_log_line(line: str) -> dict[str, str] | None:
-    parts = line.split(" | ", 3)
-    if len(parts) != 4:
-        return None
-    time, level, event, detail = parts
-    return {"time": time, "level": level, "event": event, "detail": detail}
 
 
 def _emit(progress: ProgressCallback | None, stage: str, current: int, total: int, message: str) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ from netconsole.core.log_pagination import (
     get_logs_from_paths,
     iter_logs_from_paths,
 )
+from netconsole.services.log_display import log_context
 
 
 _paths = PathResolver()
@@ -113,14 +115,13 @@ def get_logs(
         page_size=page_size,
         keyword=keyword,
         level=level,
-        parser=_parse_line,
         predicate=predicate,
     )
 
 
 def iter_logs(keyword: str | None = None, level: str | None = None) -> Iterator[dict[str, str]]:
     path = _log_path()
-    return iter_logs_from_paths(log_files(path), keyword=keyword, level=level, parser=_parse_line)
+    return iter_logs_from_paths(log_files(path), keyword=keyword, level=level)
 
 
 def clear_logs(log_path: Path | None = None) -> None:
@@ -164,7 +165,15 @@ def _write_log(level: str, event: str, detail: str = "", *, log_path: Path | Non
         timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
         safe_event = _clean_cell(event).upper()
         safe_detail = _truncate_detail(_sanitize_detail(detail))
-        line = f"{timestamp} | {level} | {safe_event} | {safe_detail}\n"
+        context = log_context({"event": safe_event, "detail": safe_detail})
+        record = json.dumps({"format": "netconsole-event-v1", "details": safe_detail, **context},
+                            ensure_ascii=False, separators=(",", ":"))
+        if len(record.encode("utf-8")) > APPLICATION_LOG_MAX_BYTES:
+            summary = f"payload_truncated=true original_bytes={len(safe_detail.encode('utf-8'))}"
+            record = json.dumps({"format": "netconsole-event-v1", "details": summary,
+                                 **{key: value[:160] for key, value in context.items()}},
+                                ensure_ascii=False, separators=(",", ":"))
+        line = f"{timestamp} | {level} | {safe_event} | {record}\n"
         with interprocess_file_lock(log_lock_path(path)):
             _rotate_if_needed(path, now, len(line.encode("utf-8")))
             with path.open("a", encoding="utf-8") as file:
@@ -359,14 +368,6 @@ def _clear_log_failure_incident(incident: _LogWriteFailureIncident) -> None:
     incident.last_summary_at = 0.0
     incident.repeated_since_summary = 0
     incident.total_failures = 0
-
-
-def _parse_line(line: str) -> dict[str, str] | None:
-    parts = line.split(" | ", 3)
-    if len(parts) != 4:
-        return None
-    time, level, event, detail = parts
-    return {"time": time, "level": level, "event": event, "detail": detail}
 
 
 def _sanitize_detail(detail: object) -> str:

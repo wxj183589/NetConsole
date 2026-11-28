@@ -36,6 +36,7 @@ def test_app_logger_writes_and_reads_levels_keyword_and_export(tmp_path):
     assert [item["event"] for item in app_logger.read_logs()] == ["ERROR_EVENT", "WARN_EVENT", "APP_START"]
     assert [item["event"] for item in app_logger.read_logs(keyword="check")] == ["WARN_EVENT"]
     assert [item["event"] for item in app_logger.read_logs(level="ERROR")] == ["ERROR_EVENT"]
+    assert '"format":"netconsole-event-v1"' in paths.app_log_path.read_text(encoding="utf-8")
 
     target = tmp_path / "exported.txt"
     app_logger.export_logs(target)

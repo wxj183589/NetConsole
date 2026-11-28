@@ -25,6 +25,10 @@ export function startTcpPortTest(value: TcpPortTestRequest): Promise<TcpPortTest
   })
 }
 
+export function diagnoseHost(kind: 'traceroute' | 'dns', text: string): Promise<{ output: string }> {
+  return apiRequest(`/api/network-tools/diagnostics/${kind}`, { method: 'POST', body: JSON.stringify({ text }) })
+}
+
 export function calculateIpv4(text: string): Promise<ToolboxResult> {
   return apiRequest<ToolboxResult>('/api/network-tools/toolbox/ipv4', { method: 'POST', body: JSON.stringify({ text }) })
 }

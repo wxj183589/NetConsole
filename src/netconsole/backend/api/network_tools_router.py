@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
@@ -30,6 +31,7 @@ from netconsole.models.task_snapshot import TaskSnapshot
 from netconsole.models.task_state import TaskState
 from netconsole.models.traffic_test import TcpPortTestConfig
 from netconsole.services.network_tools.application_service import NetworkToolsApplicationService
+from netconsole.services.network_tools.host_diagnostics import run_host_diagnostic
 
 
 router = APIRouter(prefix="/network-tools", tags=["network-tools"])
@@ -60,6 +62,16 @@ async def start_tcp_port_test(body: TcpPortTestStartRequest, request: Request) -
         execution_target_from_request(body.execution_target),
     )
     return TrafficStartResponse(run=traffic_run_dto(run))
+
+
+@router.post("/diagnostics/{kind}", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])
+def diagnose_host(kind: Literal["traceroute", "dns"], body: ToolboxTextRequest) -> dict[str, str]:
+    if len(body.text) > 255:
+        raise HTTPException(status_code=422, detail="目标长度超出限制")
+    try:
+        return {"output": run_host_diagnostic(kind, body.text)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/toolbox/ipv4", dependencies=[Depends(require_feature("capability.network_tools.toolbox"))])

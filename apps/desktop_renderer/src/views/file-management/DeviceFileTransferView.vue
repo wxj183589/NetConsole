@@ -23,7 +23,7 @@ function changeView(value: string | number | boolean | undefined): void {
       <el-radio-button value="downloads">{{ t('managedDownloads') }}</el-radio-button>
       <el-radio-button value="sftp">{{ t('sftpTransfer') }}</el-radio-button>
     </el-radio-group>
-    <DeviceSftpTransferView v-if="view === 'sftp'" class="transfer-content" />
+    <div v-if="view === 'sftp'" class="transfer-content"><DeviceSftpTransferView /></div>
     <FileManagementView v-else class="transfer-content" />
   </section>
 </template>

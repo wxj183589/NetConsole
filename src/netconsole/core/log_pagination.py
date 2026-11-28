@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from math import ceil
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
@@ -51,7 +52,7 @@ def get_logs_from_paths(
     offset = (requested_page - 1) * size
     keyword_text = keyword.strip().casefold() if keyword else None
     level_text = level.strip().upper() if level else None
-    parse = parser or _default_parse_line
+    parse = parser or parse_log_line
     rows: list[dict[str, str]] = []
     total = 0
 
@@ -114,7 +115,7 @@ def iter_logs_from_paths(
 ) -> Iterator[dict[str, str]]:
     keyword_text = keyword.strip().casefold() if keyword else None
     level_text = level.strip().upper() if level else None
-    parse = parser or _default_parse_line
+    parse = parser or parse_log_line
     limits = max_bytes_by_path or {}
     for raw_path in log_paths:
         log_path = Path(raw_path)
@@ -158,9 +159,18 @@ def _read_lines_reversed(
             yield decode_bytes_with_fallback(buffer).text.rstrip("\r\n")
 
 
-def _default_parse_line(line: str) -> dict[str, str] | None:
+def parse_log_line(line: str) -> dict[str, str] | None:
     parts = line.split(" | ", 3)
     if len(parts) != 4:
         return None
     time, level, event, detail = parts
-    return {"time": time, "level": level, "event": event, "detail": detail}
+    row = {"time": time, "level": level, "event": event, "detail": detail}
+    if detail.startswith('{"format":"netconsole-event-v1",'):
+        try:
+            record = json.loads(detail)
+        except ValueError:
+            return row
+        row["detail"] = str(record.get("details") or "")
+        row.update({key: value for key, value in record.items()
+                    if key not in {"format", "details"} and isinstance(value, str)})
+    return row
