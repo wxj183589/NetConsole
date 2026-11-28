@@ -17,7 +17,7 @@ interface CoordinatedExportEntry {
 }
 
 const COORDINATED_EXPORTS: CoordinatedExportEntry[] = [
-  entry('views/job-center/DeviceTaskResultDialog.vue', ['devices.task_results'], ['startDeviceTaskResultExport']),
+  entry('views/job-center/DeviceTaskResultDialog.vue', ['devices.task_results', 'devices.generated_config'], ['startDeviceTaskResultExport']),
   entry('views/devices/DeviceManagementView.vue',
     ['devices.csv', 'devices.template', 'devices.securecrt', 'devices.diagnostics'],
     ['startDeviceCsvExport', 'startDeviceTemplateExport', 'startSecureCrtExport', 'startSecureCrtExportWithTemplate', 'startDeviceDiagnosticDownload']),
