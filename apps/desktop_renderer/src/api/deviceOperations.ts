@@ -80,6 +80,7 @@ export interface DeviceExecution {
   software_version?: string
   device_model?: string
   snapshot_ids?: number[]
+  snapshot_versions?: { id: number; type: string; timestamp: string; content_sha256: string; file_sha256: string | null }[]
   snapshot_types?: string[]
   record_count?: number
   records_truncated?: boolean

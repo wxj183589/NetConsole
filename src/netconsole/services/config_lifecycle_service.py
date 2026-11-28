@@ -176,10 +176,12 @@ class ConfigLifecycleService:
             saved_output = str(saved_result["output"])
             clean_running = self._snapshot_body_text(device, "running", running_output)
             clean_saved = self._snapshot_body_text(device, "saved", saved_output)
-            running_snapshot = self._write_snapshot(device, "running", timestamp, clean_running, raw_log_path=relative_raw_log_path)
-            saved_snapshot = self._write_snapshot(device, "saved", timestamp, clean_saved, raw_log_path=relative_raw_log_path)
+            if not clean_running.strip() or not clean_saved.strip():
+                raise ValueError("配置采集返回空内容")
+            running_snapshot = self._record_collected_snapshot(device, "running", timestamp, clean_running, relative_raw_log_path)
+            saved_snapshot = self._record_collected_snapshot(device, "saved", timestamp, clean_saved, relative_raw_log_path)
             diff = compare_config_text(clean_running, clean_saved)
-            diff_snapshot = self._write_snapshot(device, "diff", timestamp, diff.raw_diff, raw_log_path=relative_raw_log_path)
+            diff_snapshot = self._record_collected_snapshot(device, "diff", timestamp, diff.raw_diff, relative_raw_log_path)
             warning_message = "配置正文裁剪失败，已保留原始输出用于排查" if not (has_complete_config_body(running_output) and has_complete_config_body(saved_output)) else None
             app_logger.log_info("CONFIG_FETCH_SUCCESS", self._detail(device, raw_log_path=raw_log_file))
             return ConfigOperationResult(True, str(device.device_uuid), timestamp, [running_snapshot, saved_snapshot, diff_snapshot], diff, str(raw_log_file), warning_message=warning_message)
@@ -333,6 +335,35 @@ class ConfigLifecycleService:
 
     def device_config_dir(self, device: Device) -> Path:
         return self._device_config_dir(device)
+
+    def _record_collected_snapshot(
+        self, device: Device, snapshot_type: str, timestamp: str, text: str, raw_log_path: str,
+    ) -> ConfigSnapshot:
+        latest = self.repository.list_for_device_page(str(device.device_uuid), snapshot_type, limit=1)
+        normalized = clean_h3c_device_text(text)
+        if latest and latest[0].hash == sha256_text(normalized):
+            path = self._safe_managed_file(latest[0].file_path, self._device_config_dir(device))
+            if path is not None:
+                try:
+                    if path.read_text(encoding="utf-8") == normalized:
+                        return latest[0]
+                except (OSError, UnicodeError):
+                    pass
+        return self._write_snapshot(device, snapshot_type, timestamp, normalized, raw_log_path=raw_log_path)
+
+    def snapshot_version_metadata(self, snapshot: ConfigSnapshot) -> dict[str, object]:
+        path = self._safe_managed_file(snapshot.file_path, self.paths.config_center_root(self.site_name))
+        byte_hash = None
+        if path is not None:
+            try:
+                with path.open("rb") as stream:
+                    byte_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+            except OSError:
+                pass
+        return {
+            "id": snapshot.id, "type": snapshot.type, "timestamp": snapshot.timestamp,
+            "content_sha256": snapshot.hash, "file_sha256": byte_hash,
+        }
 
     def _write_snapshot(self, device: Device, snapshot_type: str, timestamp: str, text: str, raw_log_path: str | None = None) -> ConfigSnapshot:
         directory = self._device_config_dir(device) / snapshot_type

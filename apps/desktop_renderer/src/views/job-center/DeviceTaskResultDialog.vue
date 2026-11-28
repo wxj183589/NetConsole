@@ -104,7 +104,10 @@ watch([open, () => props.taskId], ([visible, id]) => {
             <template v-if="item.upgrade_status"><dt>升级结果</dt><dd>{{ { verified: '版本核验通过', rolled_back: '已回滚', already_current: '已是目标版本' }[item.upgrade_status] }}</dd></template>
             <template v-if="item.device_model"><dt>设备型号</dt><dd>{{ item.device_model }}</dd></template>
             <template v-if="item.collect_run_uuid"><dt>采集 ID</dt><dd>{{ item.collect_run_uuid }}</dd></template>
-            <template v-if="item.snapshot_ids?.length"><dt>配置快照</dt><dd>{{ item.snapshot_ids.join('、') }}</dd></template>
+            <template v-if="item.snapshot_versions?.length">
+              <dt>配置版本</dt><dd>{{ item.snapshot_versions.map((version) => `#${version.id} ${version.type} · ${version.timestamp}`).join('、') }}</dd>
+            </template>
+            <template v-else-if="item.snapshot_ids?.length"><dt>配置快照</dt><dd>{{ item.snapshot_ids.join('、') }}</dd></template>
             <template v-if="item.record_count !== undefined"><dt>采集记录</dt><dd>{{ item.record_count }}</dd></template>
             <template v-if="item.ac_time"><dt>AC 时间</dt><dd>{{ item.ac_time }}</dd></template>
           </dl>

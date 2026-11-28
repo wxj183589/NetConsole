@@ -404,12 +404,24 @@ def test_fetch_configs_is_read_only_and_never_runs_save_force(tmp_path, monkeypa
     monkeypatch.setattr(service_module, "safe_send_command", fake_send)
 
     device = Device(id=1, device_uuid=Device.new_uuid(), name="SW01", ip_address="192.0.2.10")
-    result = ConfigLifecycleService("demo", db, paths).fetch_configs(device)
+    service = ConfigLifecycleService("demo", db, paths)
+    result = service.fetch_configs(device)
 
     assert result.success is True
     assert commands == ["screen-length disable", "display current-configuration", "display saved-configuration"]
     assert "save force" not in commands
     assert [snapshot.type for snapshot in result.snapshots] == ["running", "saved", "diff"]
+    repeated = service.fetch_configs(device)
+    assert repeated.success
+    assert [snapshot.id for snapshot in repeated.snapshots] == [snapshot.id for snapshot in result.snapshots]
+    assert repeated.raw_log_path != result.raw_log_path
+    assert Path(repeated.raw_log_path).is_file()
+    from hashlib import sha256
+
+    metadata = service.snapshot_version_metadata(result.snapshots[0])
+    snapshot_path = paths.site_dir("demo") / result.snapshots[0].file_path
+    assert metadata["content_sha256"] == result.snapshots[0].hash
+    assert metadata["file_sha256"] == sha256(snapshot_path.read_bytes()).hexdigest()
     running_text = (paths.site_dir("demo") / result.snapshots[0].file_path).read_text(encoding="utf-8")
     saved_text = (paths.site_dir("demo") / result.snapshots[1].file_path).read_text(encoding="utf-8")
     assert running_text.splitlines()[0] == "#"
