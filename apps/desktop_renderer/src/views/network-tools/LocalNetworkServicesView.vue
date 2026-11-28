@@ -163,6 +163,9 @@ onUnmounted(deactivate)
       <el-button :loading="refreshing" @click="refresh">{{ label('refresh') }}</el-button>
     </header>
     <el-alert v-if="error && !dialogOpen" :title="error" type="error" show-icon @close="error = ''" />
+    <el-empty v-else-if="!refreshing && !services.length" :image-size="64" description="暂无监听服务状态">
+      <el-button @click="refresh">{{ label('refresh') }}</el-button>
+    </el-empty>
 
     <section v-for="group in services.length ? groups : []" :key="group">
       <h2>{{ label(group) }}</h2>

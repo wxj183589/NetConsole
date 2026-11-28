@@ -296,10 +296,15 @@ function message(cause: unknown, fallback: string): string { return cause instan
       <div><h1>{{ t('settings.title', '系统设置') }}</h1></div>
       <div class="settings-actions">
         <el-tag v-if="anyDirty" type="warning">{{ t('settings.unsaved', '未保存修改') }}</el-tag>
-        <el-button data-testid="defaults" @click="resetDefaults">{{ t('settings.defaults', '恢复表单默认值') }}</el-button>
         <el-button data-testid="cancel" :disabled="!anyDirty" @click="cancelChanges">{{ t('settings.cancel', '取消修改') }}</el-button>
-        <el-button data-testid="reload" @click="reload">{{ t('settings.reload', '重载') }}</el-button>
-        <el-button data-testid="open-settings-config" @click="nativeAction('open_settings_config')">打开配置目录</el-button>
+        <el-dropdown trigger="click">
+          <el-button data-testid="settings-more">更多设置操作</el-button>
+          <template #dropdown><el-dropdown-menu>
+            <el-dropdown-item data-testid="defaults" @click="resetDefaults">{{ t('settings.defaults', '恢复表单默认值') }}</el-dropdown-item>
+            <el-dropdown-item data-testid="reload" @click="reload">{{ t('settings.reload', '重载') }}</el-dropdown-item>
+            <el-dropdown-item data-testid="open-settings-config" @click="nativeAction('open_settings_config')">打开配置目录</el-dropdown-item>
+          </el-dropdown-menu></template>
+        </el-dropdown>
         <el-button data-testid="save" type="primary" :loading="saving" :disabled="!anyDirty" @click="save">{{ t('settings.save', '保存') }}</el-button>
       </div>
     </header>

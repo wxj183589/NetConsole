@@ -434,7 +434,6 @@ function cloneSystemSettingsValues(value: SystemSettingsValues): SystemSettingsV
       <header class="collection-header">
         <div>
           <h1>工具集</h1>
-          <p>集中管理并启动本机第三方运维工具，工具路径仅保存在当前电脑。</p>
         </div>
         <div class="header-actions">
           <el-button type="primary" :icon="Plus" @click="openEditor()">添加工具</el-button>
@@ -460,7 +459,9 @@ function cloneSystemSettingsValues(value: SystemSettingsValues): SystemSettingsV
         </el-empty>
 
         <template v-else-if="activeTab === 'all'">
-          <el-empty v-if="groupedTools.length === 0" description="没有符合搜索条件的工具" />
+          <el-empty v-if="groupedTools.length === 0" description="没有符合搜索条件的工具">
+            <el-button v-if="search" @click="search = ''">清除搜索</el-button>
+          </el-empty>
           <section v-for="group in groupedTools" :key="group.category.id" class="tool-group">
             <div class="group-heading">
               <h2>{{ group.category.name }}</h2>

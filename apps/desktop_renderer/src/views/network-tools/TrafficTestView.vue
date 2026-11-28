@@ -197,7 +197,7 @@ function clearCurrentView(): void {
       <el-card class="control-card" shadow="never">
         <template #header>
           <div class="card-header">
-            <div><h2>流量测试</h2><p>本机执行，统一关联任务中心</p></div>
+            <div><h2>流量测试</h2></div>
             <el-button :icon="Refresh" :loading="store.loading" @click="refreshAll">刷新</el-button>
           </div>
         </template>
@@ -302,7 +302,7 @@ function clearCurrentView(): void {
           <TrafficBandwidthChart v-else :events="latestEvents" />
           <TrafficLogViewer :events="latestEvents" />
         </template>
-        <el-empty v-else description="选择或启动一个流量任务查看实时状态" />
+        <el-empty v-else :image-size="64" description="暂无选中的测试。启动测试或从历史选择记录。" />
       </el-card>
     </div>
 

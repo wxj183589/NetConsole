@@ -89,7 +89,18 @@ async function mounted(): Promise<{ wrapper: VueWrapper; router: ReturnType<type
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/settings', component: SystemSettingsView }, { path: '/tools', component: defineComponent({ template: '<div>tools</div>' }) }, { path: '/feature-flags', component: defineComponent({ template: '<div>feature delivery</div>' }) }, { path: '/other', component: defineComponent({ template: '<div>other</div>' }) }] })
   await router.push('/settings'); await router.isReady()
   const wrapper = mount(defineComponent({ template: '<RouterView />' }), {
-    global: { plugins: [router], stubs: { SiteStoragePanel: SiteStoragePanelStub } },
+    global: {
+      plugins: [router],
+      stubs: {
+        SiteStoragePanel: SiteStoragePanelStub,
+        ElDropdown: defineComponent({
+          data: () => ({ open: false }),
+          template: '<div><div @click="open = !open"><slot /></div><slot v-if="open" name="dropdown" /></div>',
+        }),
+        ElDropdownMenu: defineComponent({ template: '<div><slot /></div>' }),
+        ElDropdownItem: defineComponent({ template: '<button><slot /></button>' }),
+      },
+    },
   })
   await flushPromises()
   return { wrapper, router }
@@ -245,6 +256,8 @@ describe('SystemSettingsView mounted behavior', () => {
 
     await wrapper.find('[data-testid="select-color"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('color bridge failed')
+    await wrapper.get('[data-testid="settings-more"]').trigger('click')
+    await flushPromises()
     await wrapper.find('[data-testid="open-settings-config"]').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('action bridge failed')
     wrapper.unmount()

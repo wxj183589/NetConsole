@@ -395,7 +395,7 @@ function showDetail(row: Record<string, unknown>): void {
 
 <template>
   <el-card shadow="never">
-    <template #header><div class="header"><div><h2>无线扫描</h2><p>扫描本机 WLAN 网络并保存可导出的历史结果。</p></div><el-button :loading="loading" @click="refresh">刷新</el-button></div></template>
+    <template #header><div class="header"><h2>无线扫描</h2><el-button :loading="loading" @click="refresh">刷新</el-button></div></template>
     <el-alert v-if="taskStore.error" :title="taskStore.error" type="error" show-icon :closable="false" />
     <div class="toolbar">
       <el-select v-model="form.adapter_guid" clearable placeholder="选择无线网卡"><el-option v-for="adapter in adapters" :key="adapter.guid || adapter.name" :label="adapter.display_name" :value="adapter.guid" /></el-select>
@@ -415,7 +415,7 @@ function showDetail(row: Record<string, unknown>): void {
     <div v-if="selectedTaskSummary" class="actions"><span>{{ selectedTaskSummary.name }}：{{ selectedTaskSummary.status }}</span><el-button v-if="selectedTaskRunning" link type="danger" @click="cancelSelectedTask">停止任务</el-button><el-button v-if="selectedExportCompleted" link type="primary" @click="downloadExport">下载 Artifact</el-button></div>
 
     <el-divider content-position="left">扫描历史与结果</el-divider>
-    <NcDataTable v-loading="loading" :data="runs" :columns="runColumns" table-id="wireless-scan-runs" route-key="/network-tools" empty-text="暂无无线扫描记录" @row-click="selectRun" />
+    <NcDataTable v-loading="loading" :data="runs" :columns="runColumns" table-id="wireless-scan-runs" route-key="/network-tools" empty-text="暂无扫描记录。选择网卡并开始扫描。" @row-click="selectRun" />
     <el-pagination v-if="runTotal > runPageSize" v-model:current-page="runPage" :total="runTotal" :page-size="runPageSize" layout="prev, pager, next, total" @current-change="changeRunPage" />
     <div class="actions"><el-button v-if="runs.length" link type="primary" @click="exportRun('csv')">导出 CSV</el-button><el-button v-if="runs.length" link type="primary" @click="exportRun('xlsx')">导出 XLSX</el-button></div>
 

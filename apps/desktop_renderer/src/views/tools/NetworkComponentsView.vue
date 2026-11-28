@@ -107,12 +107,14 @@ function message(cause: unknown, fallback: string): string {
     <header class="page-heading">
       <div>
         <h1>{{ t('tools.network_components.title', '网络测试组件') }}</h1>
-        <p>{{ t('tools.network_components.subtitle', '统一管理流量测试与连通性检测使用的 iperf3、fping 组件。') }}</p>
       </div>
       <el-button :icon="Refresh" :loading="loading" @click="reload">{{ t('common.refresh', '刷新') }}</el-button>
     </header>
 
     <el-alert v-if="error" type="error" :title="error" show-icon :closable="false" />
+    <el-empty v-else-if="!loading && !components.length" :image-size="64" :description="t('tools.network_components.empty', '暂无组件状态')">
+      <el-button @click="reload">{{ t('common.refresh', '刷新') }}</el-button>
+    </el-empty>
 
     <div v-loading="loading" class="component-list">
       <article v-for="component in components" :key="component.component_name" class="component-row">

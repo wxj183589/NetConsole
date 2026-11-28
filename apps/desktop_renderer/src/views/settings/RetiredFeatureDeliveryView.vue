@@ -8,11 +8,11 @@ const router = useRouter()
 <template>
   <NcLayout
     title="版本与功能交付已退役"
-    description="正式产品统一使用 Full Installer 与 Full Portable；旧版本功能矩阵不再提供运行时编辑或客户版解锁入口。"
+    description="此版本随安装包交付功能。"
   >
     <section class="retired-card">
-      <p>如需调整已验收功能，请通过源码、Feature Registry 和正式构建门禁完成变更。</p>
       <el-button type="primary" @click="router.push('/settings')">返回系统设置</el-button>
+      <el-button @click="router.push({ name: 'logs', query: { tab: 'about' } })">查看版本信息</el-button>
     </section>
   </NcLayout>
 </template>
