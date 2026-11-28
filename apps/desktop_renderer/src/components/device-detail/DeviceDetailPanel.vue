@@ -572,6 +572,9 @@ function mapBusinessAssociation(item: DeviceBusinessAssociationRecord): DeviceDe
   if (item.association_type === 'online_mr_session') {
     return {
       ...base,
+      mr_session_id: item.association_id.startsWith('online-mr-session:')
+        ? item.association_id.slice('online-mr-session:'.length)
+        : undefined,
       mr_site_id: item.online_mr_session?.site_id,
       mr_started_at: item.online_mr_session?.started_at,
       mr_stopped_at: item.online_mr_session?.stopped_at,
@@ -1360,6 +1363,7 @@ function errorMessage(cause: unknown, fallback: string): string {
                       </template>
                       <el-button v-if="section !== 'tasks'" link :icon="CopyDocument" @click="openRowDetail(section, row)">详情</el-button>
                       <el-button v-if="section === 'tasks'" link @click="openTaskWindow(recordText(row, 'task_id'))">任务中心</el-button>
+                      <el-button v-if="section === 'business' && row.mr_session_id && isFeatureEnabled('module.online_mr_analysis')" link @click="router.push({ name: 'online-mr-analysis', query: { session_id: String(row.mr_session_id) } })">打开归档</el-button>
                       <el-button v-if="section === 'configuration'" link @click="downloadConfigurationArtifact(row)">下载</el-button>
                     </template>
                   </NcDataTable>
