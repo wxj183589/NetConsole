@@ -277,10 +277,10 @@ const currentColumns = computed(() => {
   ))
 })
 const currentRows = computed(() => currentPage.value?.items ?? [])
-const actionSections: DeviceDetailSection[] = ['interfaces', 'optical', 'lldp', 'configuration', 'tasks']
+const actionSections: DeviceDetailSection[] = ['interfaces', 'optical', 'lldp', 'configuration', 'tasks', 'business']
 const currentTableColumns = computed<NcTableColumn<DeviceDetailRecord>[]>(() => [
   ...(selectedSection.value === 'configuration' ? [{
-    key: 'selection', label: '', type: 'selection' as const, valueType: 'selection' as const, fixed: 'left' as const, hideable: false,
+    key: 'selection', label: '', valueType: 'selection' as const, fixed: 'left' as const, hideable: false,
   }] : []),
   ...currentColumns.value,
   ...(actionSections.includes(selectedSection.value) ? [{
