@@ -288,7 +288,23 @@ async function loadTimeline(cursor = ''): Promise<void> {
     }
   }
 }
-watch([selectedRunId, range, () => props.active], clearTimeline, { flush: 'sync' })
+watch([selectedMrId, range, () => props.active], () => {
+  generation++
+  controller?.abort()
+  eventController?.abort()
+  if (eventTimer) clearTimeout(eventTimer)
+  loading.value = false
+  quickLoading.value = false
+  quickLoaded.value = false
+  error.value = ''
+  quickError.value = ''
+  result.value = null
+  eventResult.value = null
+  quickRows.value = { primary: [], backup: [] }
+  quickBuckets.value = { primary: [], backup: [] }
+  cursorTime.value = ''
+  clearTimeline()
+}, { flush: 'sync' })
 onBeforeUnmount(() => { stopRequests(); clearTimeline() })
 </script>
 
