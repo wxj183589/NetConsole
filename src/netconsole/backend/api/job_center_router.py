@@ -189,8 +189,8 @@ def acknowledge_tasks(
 
 
 @router.get("/tasks/{task_id}", response_model=JobCenterTaskDTO)
-def detail(request: Request, task_id: str) -> JobCenterTaskDTO:
-    task = _query(lambda: _service(request).get_task(_site_id(request), task_id))
+def detail(request: Request, task_id: str, expected_site: str | None = None) -> JobCenterTaskDTO:
+    task = _query(lambda: _service(request).get_task(_query_site(request, expected_site), task_id))
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return task
@@ -203,8 +203,9 @@ def detail(request: Request, task_id: str) -> JobCenterTaskDTO:
 def acknowledge_task(
     request: Request,
     task_id: str,
+    expected_site: str | None = None,
 ) -> JobCenterAcknowledgeResultDTO:
-    task = _service(request).get_task(_site_id(request), task_id)
+    task = _service(request).get_task(_query_site(request, expected_site), task_id)
     if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -229,8 +230,9 @@ def acknowledge_task(
 def dismiss_task(
     request: Request,
     task_id: str,
+    expected_site: str | None = None,
 ) -> JobCenterCleanupResultDTO:
-    task = _service(request).get_task(_site_id(request), task_id)
+    task = _service(request).get_task(_query_site(request, expected_site), task_id)
     if task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -260,18 +262,20 @@ def logs(
     request: Request,
     task_id: str,
     tail: int = Query(default=300, ge=1, le=300),
+    expected_site: str | None = None,
 ) -> JobCenterLogTailDTO:
-    result = _query(lambda: _service(request).get_logs(_site_id(request), task_id, tail=tail))
+    result = _query(lambda: _service(request).get_logs(_query_site(request, expected_site), task_id, tail=tail))
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return result
 
 
 @router.get("/artifacts/{artifact_id}")
-def download_artifact(request: Request, artifact_id: str) -> FileResponse:
+def download_artifact(request: Request, artifact_id: str, expected_site: str | None = None) -> FileResponse:
+    site_id = _query_site(request, expected_site)
     try:
         path, display_name, _manifest = _artifact_store(request).open_public(
-            site_id=_site_id(request),
+            site_id=site_id,
             artifact_id=artifact_id,
         )
     except WebArtifactError as exc:
@@ -287,8 +291,9 @@ def download_artifact(request: Request, artifact_id: str) -> FileResponse:
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=JobCenterTaskDTO)
-async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
-    task = _service(request).get_task(_site_id(request), task_id)
+async def cancel(request: Request, task_id: str, expected_site: str | None = None) -> JobCenterTaskDTO:
+    site_id = _query_site(request, expected_site)
+    task = _service(request).get_task(site_id, task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     if not task.cancellable:
@@ -369,7 +374,7 @@ async def cancel(request: Request, task_id: str) -> JobCenterTaskDTO:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    updated = _service(request).get_task(_site_id(request), task_id)
+    updated = _service(request).get_task(site_id, task_id)
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     if updated.status not in {"STOPPING", "CANCELLED"}:

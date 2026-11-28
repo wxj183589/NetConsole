@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 
 import {
@@ -20,6 +20,7 @@ import type {
   TaskLogLine,
 } from '../types/task'
 import { activeTaskStatuses } from '../utils/taskStatus'
+import { activeSiteContext, siteContextState } from './siteContext'
 
 export const useTaskStore = defineStore('tasks', () => {
   const tasks = ref<TaskItem[]>([])
@@ -36,6 +37,7 @@ export const useTaskStore = defineStore('tasks', () => {
   const logsExpanded = ref(true)
   const pollingConsumers = new Set<string>()
   let detailVisible = false
+  let detailSite = ''
   let listRefreshInFlight: Promise<void> | null = null
   let detailBusy = false
   let detailContextGeneration = 0
@@ -92,6 +94,7 @@ export const useTaskStore = defineStore('tasks', () => {
     const taskId = id.trim()
     const generation = ++detailContextGeneration
     detailVisible = true
+    detailSite = activeSiteContext.value?.siteId || ''
     detailError.value = ''
     detailLoading.value = true
     selected.value = null
@@ -104,7 +107,7 @@ export const useTaskStore = defineStore('tasks', () => {
     logPollingStopped = false
     setLogsExpanded(false)
     try {
-      const detail = await getTask(taskId)
+      const detail = await (detailSite ? getTask(taskId, detailSite) : getTask(taskId))
       if (generation !== detailContextGeneration || !detailVisible) return
       selected.value = detail
       if (isTerminalSnapshot(detail)) {
@@ -129,7 +132,7 @@ export const useTaskStore = defineStore('tasks', () => {
     const taskId = selected.value.id
     detailBusy = true
     try {
-      const detail = await getTask(taskId)
+      const detail = await (detailSite ? getTask(taskId, detailSite) : getTask(taskId))
       if (
         generation !== detailContextGeneration
         || !detailVisible
@@ -165,7 +168,7 @@ export const useTaskStore = defineStore('tasks', () => {
     const request = { generation, taskId }
     activeLogRequest = request
     try {
-      const payload = await getTaskLogs(taskId, 300)
+      const payload = await (detailSite ? getTaskLogs(taskId, 300, detailSite) : getTaskLogs(taskId, 300))
       if (
         generation !== logContextGeneration
         || selected.value?.id !== taskId
@@ -201,12 +204,16 @@ export const useTaskStore = defineStore('tasks', () => {
 
   async function requestCancel(): Promise<void> {
     if (!selected.value?.cancellable) return
+    const generation = detailContextGeneration
     try {
-      const updated = await cancelTask(selected.value.id)
+      const updated = await (detailSite ? cancelTask(selected.value.id, detailSite) : cancelTask(selected.value.id))
+      if (generation !== detailContextGeneration) return
       detailError.value = ''
       await refresh()
+      if (generation !== detailContextGeneration) return
       selected.value = updated
     } catch (cause) {
+      if (generation !== detailContextGeneration) return
       detailError.value = cause instanceof Error ? cause.message : '停止任务失败'
       throw cause
     }
@@ -239,15 +246,16 @@ export const useTaskStore = defineStore('tasks', () => {
     return result
   }
 
-  async function dismissHistoryTask(id: string): Promise<TaskCleanupResult> {
-    const result = await dismissTask(id)
-    applyDismissed(result.task_ids)
+  async function dismissHistoryTask(id: string, site = activeSiteContext.value?.siteId || ''): Promise<TaskCleanupResult> {
+    const result = await (site ? dismissTask(id, site) : dismissTask(id))
+    if (!site || activeSiteContext.value?.siteId === site) applyDismissed(result.task_ids)
     return result
   }
 
   async function acknowledgeHistoryTask(id: string): Promise<void> {
-    const result = await acknowledgeTask(id)
-    applyAcknowledged(result.task_ids, result.acknowledged_at)
+    const site = activeSiteContext.value?.siteId || ''
+    const result = await (site ? acknowledgeTask(id, site) : acknowledgeTask(id))
+    if (!site || activeSiteContext.value?.siteId === site) applyAcknowledged(result.task_ids, result.acknowledged_at)
   }
 
   async function acknowledgeAllAlerts(): Promise<number> {
@@ -259,6 +267,7 @@ export const useTaskStore = defineStore('tasks', () => {
   function setDetailVisible(value: boolean): void {
     detailVisible = value
     if (!value) {
+      detailSite = ''
       detailContextGeneration += 1
       logContextGeneration += 1
       activeLogRequest = null
@@ -273,6 +282,14 @@ export const useTaskStore = defineStore('tasks', () => {
       logError.value = ''
     }
   }
+
+  watch(
+    [() => activeSiteContext.value?.siteId, siteContextState],
+    ([site, state], [previousSite]) => {
+      if (state === 'switching' || site !== previousSite) setDetailVisible(false)
+    },
+    { flush: 'sync' },
+  )
 
   function setLogsExpanded(value: boolean): void {
     logsExpanded.value = value

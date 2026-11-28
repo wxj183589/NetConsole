@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
 import { useTaskStore } from './tasks'
+import { clearSiteContext, markSiteContextSwitching, setActiveSiteContext } from './siteContext'
 import {
   acknowledgeAllTaskAlerts,
   acknowledgeTask,
@@ -362,6 +363,25 @@ describe('Job Center polling store', () => {
     await taskA
     expect(store.selected?.id).toBe('task-B')
     expect(store.detailLoading).toBe(false)
+  })
+
+  it('drops a pending detail when the same ID exists at the next Site', async () => {
+    const store = useTaskStore()
+    let resolveOld!: (task: TaskItem) => void
+    vi.mocked(getTask).mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve }))
+    setActiveSiteContext({ site_id: 'alpha' })
+    try {
+      const request = store.selectTask('shared-id')
+      expect(getTask).toHaveBeenCalledWith('shared-id', 'alpha')
+      markSiteContextSwitching()
+      setActiveSiteContext({ site_id: 'beta' })
+      resolveOld({ id: 'shared-id', site_name: 'alpha' } as TaskItem)
+      await request
+      expect(store.selected).toBeNull()
+      expect(store.detailLoading).toBe(false)
+    } finally {
+      clearSiteContext()
+    }
   })
 
   it('clears selected detail and logs when the detail drawer closes', async () => {

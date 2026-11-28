@@ -12,16 +12,20 @@ export function listTasks(): Promise<TaskItem[]> {
   return apiRequest<TaskItem[]>('/api/job-center/tasks')
 }
 
-export function getTask(id: string): Promise<TaskItem> {
-  return apiRequest<TaskItem>(`/api/job-center/tasks/${encodeURIComponent(id)}`)
+function siteQuery(site: string, separator = '?'): string {
+  return site ? `${separator}expected_site=${encodeURIComponent(site)}` : ''
 }
 
-export function getTaskLogs(id: string, tail = 300): Promise<TaskLogTail> {
-  return apiRequest<TaskLogTail>(`/api/job-center/tasks/${encodeURIComponent(id)}/logs?tail=${tail}`)
+export function getTask(id: string, site = ''): Promise<TaskItem> {
+  return apiRequest<TaskItem>(`/api/job-center/tasks/${encodeURIComponent(id)}${siteQuery(site)}`)
 }
 
-export function cancelTask(id: string): Promise<TaskItem> {
-  return apiRequest<TaskItem>(`/api/job-center/tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+export function getTaskLogs(id: string, tail = 300, site = ''): Promise<TaskLogTail> {
+  return apiRequest<TaskLogTail>(`/api/job-center/tasks/${encodeURIComponent(id)}/logs?tail=${tail}${siteQuery(site, '&')}`)
+}
+
+export function cancelTask(id: string, site = ''): Promise<TaskItem> {
+  return apiRequest<TaskItem>(`/api/job-center/tasks/${encodeURIComponent(id)}/cancel${siteQuery(site)}`, { method: 'POST' })
 }
 
 export function getTaskSummary(): Promise<TaskSummary> {
@@ -42,15 +46,15 @@ export function cleanupTasks(
   })
 }
 
-export function dismissTask(id: string): Promise<TaskCleanupResult> {
-  return apiRequest<TaskCleanupResult>(`/api/job-center/tasks/${encodeURIComponent(id)}/dismiss`, {
+export function dismissTask(id: string, site = ''): Promise<TaskCleanupResult> {
+  return apiRequest<TaskCleanupResult>(`/api/job-center/tasks/${encodeURIComponent(id)}/dismiss${siteQuery(site)}`, {
     method: 'POST',
   })
 }
 
-export function acknowledgeTask(id: string): Promise<TaskAcknowledgeResult> {
+export function acknowledgeTask(id: string, site = ''): Promise<TaskAcknowledgeResult> {
   return apiRequest<TaskAcknowledgeResult>(
-    `/api/job-center/tasks/${encodeURIComponent(id)}/acknowledge`,
+    `/api/job-center/tasks/${encodeURIComponent(id)}/acknowledge${siteQuery(site)}`,
     { method: 'POST' },
   )
 }

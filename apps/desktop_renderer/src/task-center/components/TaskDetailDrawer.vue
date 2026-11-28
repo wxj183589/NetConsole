@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { activeSiteContext, siteContextState } from '../../stores/siteContext'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, CopyDocument, Delete } from '@element-plus/icons-vue'
@@ -372,6 +373,12 @@ watch(
   { immediate: true },
 )
 watch(() => store.selected?.id, clearSavedCapability)
+watch([() => activeSiteContext.value?.siteId, siteContextState], ([site, state], [previousSite]) => {
+  if (ownsDetailContext && (state === 'switching' || site !== previousSite)) {
+    clearSavedCapability()
+    detailVisible.value = false
+  }
+}, { flush: 'sync' })
 watch(() => store.logs.at(-1)?.sequence, () => {
   if (!followLatestLogs.value) return
   void nextTick(() => {
@@ -420,18 +427,22 @@ async function cancelSelected(): Promise<void> {
 async function downloadArtifact(): Promise<void> {
   if (!store.selected?.artifact_download) return
   const taskId = store.selected.id
+  const site = activeSiteContext.value?.siteId
+  const original = store.selected.artifact_download
+  const artifact = site && original.api_path.startsWith('/api/job-center/artifacts/')
+    ? { ...original, query: { ...original.query, expected_site: site } }
+    : original
   if (selectedExportBinding.value?.state === 'save_failed') {
     await userSelectedExport.retryArtifactSave(taskId)
     return
   }
   if (['task_running', 'artifact_ready'].includes(selectedExportBinding.value?.state || '')) {
-    await userSelectedExport.saveReadyArtifact(taskId, store.selected.artifact_download)
+    await userSelectedExport.saveReadyArtifact(taskId, artifact)
     return
   }
   clearSavedCapability()
   const generation = downloadGeneration
   const tracksideArtifact = isTracksideApBusinessArtifactTask(store.selected)
-  const artifact = store.selected.artifact_download
   const result = tracksideArtifact
     ? await saveTracksideApBusinessArtifact(store.selected)
     : await downloadBackendResource({
@@ -476,6 +487,8 @@ async function acknowledgeSelected(): Promise<void> {
 async function dismissSelected(): Promise<void> {
   if (!store.selected || !selectedCanDismiss.value) return
   const taskId = store.selected.id
+  const generation = downloadGeneration
+  const site = activeSiteContext.value?.siteId || ''
   try {
     await ElMessageBox.confirm(
       t('job_center.cleanup.dismiss_single', '仅从任务中心移除此记录，不会删除日志、采集文件或导出结果。'),
@@ -486,7 +499,9 @@ async function dismissSelected(): Promise<void> {
         type: 'warning',
       },
     )
-    await store.dismissHistoryTask(taskId)
+    if (generation !== downloadGeneration || !detailVisible.value) return
+    await store.dismissHistoryTask(taskId, site)
+    if (generation !== downloadGeneration || !detailVisible.value) return
     detailVisible.value = false
     ElMessage.success(t('job_center.cleanup.dismissed', '任务记录已从列表移除'))
   } catch (cause) {
