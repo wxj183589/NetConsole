@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from time import perf_counter
+from netconsole.repositories.device_detail_repository import resolve_lldp_neighbors
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -129,6 +130,27 @@ def test_task_repository_filters_device_aliases_status_and_count_in_sql(
         )
         == 1
     )
+
+
+def test_lldp_resolves_only_unique_inventory_identity() -> None:
+    devices = [
+        Device(device_uuid="local", primary_address="192.0.2.1"),
+        Device(device_uuid="peer", primary_address="192.0.2.2", mac_address="00:11:22:33:44:55"),
+        Device(device_uuid="other", primary_address="192.0.2.3"),
+    ]
+    rows = [
+        {"neighbor_device_uuid": "peer"},
+        {"neighbor_mac": "0011-2233-4455"},
+        {"neighbor_ip": "192.0.2.2"},
+        {"neighbor_mac": "0011-2233-4455", "neighbor_ip": "192.0.2.3"},
+        {"neighbor_device_uuid": "missing", "neighbor_sysname": "peer"},
+        {"neighbor_ip": "192.0.2.1"},
+    ]
+    results = resolve_lldp_neighbors(rows, devices, "local")
+    assert [(row["neighbor_device_uuid"], row["association_source"]) for row in results] == [
+        ("peer", "recorded_uuid"), ("peer", "mac"), ("peer", "management_address"),
+        (None, "ambiguous"), (None, ""), (None, ""),
+    ]
 
 
 def test_device_task_history_page_with_ten_thousand_rows(tmp_path: Path) -> None:

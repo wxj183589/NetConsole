@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from typing import Protocol
+from ipaddress import ip_address
+
+from netconsole.core.ap_identity.normalizers import normalize_mac_key
 
 from netconsole.core.database import Database
 from netconsole.core.paths import PathResolver
@@ -10,6 +13,42 @@ from netconsole.models.device import Device
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
 from netconsole.repositories.device_group_repository import DeviceGroupRepository
 from netconsole.repositories.device_repository import DeviceRepository
+
+
+def _address(value: object) -> str | None:
+    try:
+        return str(ip_address(str(value or "").strip()))
+    except ValueError:
+        return None
+
+
+def resolve_lldp_neighbors(
+    rows: Iterable[dict[str, object | None]], devices: Iterable[Device], local_uuid: str,
+) -> list[dict[str, object | None]]:
+    by_uuid = {str(device.device_uuid): device for device in devices if device.device_uuid}
+    by_mac: dict[str, set[str]] = {}
+    by_address: dict[str, set[str]] = {}
+    for uuid, device in by_uuid.items():
+        if mac := normalize_mac_key(device.mac_address):
+            by_mac.setdefault(mac, set()).add(uuid)
+        for value in (device.primary_address, device.backup_address):
+            if address := _address(value):
+                by_address.setdefault(address, set()).add(uuid)
+    results = []
+    for row in rows:
+        recorded = str(row.get("neighbor_device_uuid") or "").strip()
+        mac = normalize_mac_key(row.get("neighbor_mac"))
+        address = _address(row.get("neighbor_ip"))
+        candidates = by_mac.get(mac or "", set()) | by_address.get(address or "", set())
+        if recorded in by_uuid and recorded != local_uuid:
+            uuid, source = recorded, "recorded_uuid"
+        elif len(candidates) == 1 and local_uuid not in candidates:
+            uuid, = candidates
+            source = "mac" if mac and uuid in by_mac.get(mac, set()) else "management_address"
+        else:
+            uuid, source = None, "ambiguous" if len(candidates) > 1 else ""
+        results.append({**row, "neighbor_device_uuid": uuid, "association_source": source})
+    return results
 
 
 class DeviceDetailDataGateway(Protocol):
@@ -266,22 +305,48 @@ class DeviceDetailRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, object | None]], int]:
-        return self._facts().list_lldp_neighbors_page(
+        repositories = self._repositories()
+        if repositories is None:
+            raise KeyError("设备数据库不存在")
+        devices, facts = repositories
+        inventory = devices.list()
+        rows, total = facts.list_lldp_neighbors_page(
             device_uuid,
             search=search,
-            linked_only=linked_only,
+            linked_only=False,
             sort_by=sort_by,
             sort_order=sort_order,
             limit=limit,
-            offset=offset,
+            offset=0 if linked_only else offset,
         )
+        if not linked_only:
+            return resolve_lldp_neighbors(rows, inventory, device_uuid), total
+        matches: list[dict[str, object | None]] = []
+        matched_total = 0
+        for batch_offset in range(0, total, limit):
+            if batch_offset:
+                rows, _ = facts.list_lldp_neighbors_page(
+                    device_uuid, search=search, sort_by=sort_by, sort_order=sort_order,
+                    limit=limit, offset=batch_offset,
+                )
+            for row in resolve_lldp_neighbors(rows, inventory, device_uuid):
+                if row["neighbor_device_uuid"]:
+                    if offset <= matched_total < offset + limit:
+                        matches.append(row)
+                    matched_total += 1
+        return matches, matched_total
 
     def list_lldp_for_interface(
         self, device_uuid: str, interface_name: str, *, limit: int = 200
     ) -> tuple[list[dict[str, object | None]], int, bool]:
-        return self._facts().list_lldp_neighbors_for_interface(
+        repositories = self._repositories()
+        if repositories is None:
+            raise KeyError("设备数据库不存在")
+        devices, facts = repositories
+        rows, total, truncated = facts.list_lldp_neighbors_for_interface(
             device_uuid, interface_name, limit=limit
         )
+        return resolve_lldp_neighbors(rows, devices.list(), device_uuid), total, truncated
 
     def _repositories(
         self,

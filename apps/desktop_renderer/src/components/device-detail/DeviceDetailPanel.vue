@@ -456,11 +456,11 @@ function clearSectionState(): void {
   for (const key of Object.keys(sectionErrors)) delete sectionErrors[key]
 }
 
-async function activateSection(name: string | number): Promise<void> {
+async function activateSection(name: string | number, search = ''): Promise<void> {
   const section = String(name) as DeviceDetailSection
   if (section === 'overview' || !visibleSections.value.includes(section)) return
   selectedSection.value = section
-  sectionQuery.search = ''
+  sectionQuery.search = search
   sectionQuery.status = []
   sectionQuery.severity = []
   sectionQuery.interface_type = []
@@ -1359,6 +1359,9 @@ function errorMessage(cause: unknown, fallback: string): string {
                       <el-button v-if="section !== 'tasks'" link :icon="CopyDocument" @click="openRowDetail(section, row)">详情</el-button>
                       <el-button v-if="section === 'tasks'" link @click="openTaskWindow(recordText(row, 'task_id'))">任务中心</el-button>
                       <RouterLink v-if="section === 'lldp' && row.neighbor_device_uuid" :to="{ name: 'device-detail', params: { deviceId: String(row.neighbor_device_uuid) } }">对端设备档案</RouterLink>
+                      <el-button v-if="section === 'lldp' && row.local_interface && visibleSections.includes('interfaces')" link @click="activateSection('interfaces', String(row.local_interface))">定位本端接口</el-button>
+                      <el-button v-if="section === 'interfaces' && row.interface_name && visibleSections.includes('optical')" link @click="activateSection('optical', String(row.interface_name))">查找光模块</el-button>
+                      <el-button v-if="section === 'optical' && row.interface_name && visibleSections.includes('interfaces')" link @click="activateSection('interfaces', String(row.interface_name))">查找接口</el-button>
                       <el-button v-if="section === 'business' && row.mr_session_id && isFeatureEnabled('module.online_mr_analysis')" link @click="router.push({ name: 'online-mr-analysis', query: { session_id: String(row.mr_session_id) } })">打开归档</el-button>
                       <el-button v-if="section === 'configuration'" link @click="downloadConfigurationArtifact(row)">下载</el-button>
                     </template>

@@ -268,6 +268,7 @@ class DeviceLldpNeighborDTO(ApiModel):
     max_frame_size: int | None = None
     neighbor_device_uuid: str | None = None
     association_status: Literal["matched", "unresolved"] = "unresolved"
+    association_source: str = ""
     collected_at: str | None = None
 
 

@@ -1073,6 +1073,7 @@ class DeviceDetailQueryService:
             max_frame_size=_integer(row.get("max_frame_size")),
             neighbor_device_uuid=linked,
             association_status="matched" if linked else "unresolved",
+            association_source=str(row.get("association_source") or ""),
             collected_at=_text(row.get("collected_at")),
         )
 
