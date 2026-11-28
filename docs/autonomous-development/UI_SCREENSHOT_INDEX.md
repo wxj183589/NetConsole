@@ -22,6 +22,9 @@
 | 地面实时采集 | [1920×1080](../../../reports/tests/legacy-ui-ux/16-ground-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/16-ground-2560x1440.png) | 0 px / 0 px |
 | 配置采集 | [1920×1080](../../../reports/tests/legacy-ui-ux/17-config-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/17-config-2560x1440.png) | 0 px / 0 px |
 | 任务执行设置 | [1920×1080](../../../reports/tests/legacy-ui-ux/18-task-settings-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/18-task-settings-2560x1440.png) | 0 px / 0 px |
+| 设备文件传输（SFTP） | [1920×1080](../../../reports/tests/legacy-ui-ux/19-sftp-1920x1080.png) | [2560×1440](../../../reports/tests/legacy-ui-ux/19-sftp-2560x1440.png) | 0 px / 0 px |
+
+侧栏、设备详情、本地文件双栏和 SFTP 页已在 `16eca155` 上补拍，两个尺寸均通过。[8 张补拍测量](../../../reports/tests/legacy-ui-ux/capture-02-navigation-05-detail-11-files-19-sftp.json)
 
 最终采集运行在 `2a286abb` 的源码工作区，应用标记为 dirty。首页显示设备总数 5、在线 AP 2、已汇报控制器 1。组织结构来自 `/rail-transit/infrastructure`，本地文件来自 `/file-manager` 双栏。文件右栏 HTTP 服务未初始化。运行日志非空，截图显示 20 条。任务弹窗实际展开执行设置。文件目录为空，未执行传输。
 
