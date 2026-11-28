@@ -113,6 +113,13 @@ describe('Dashboard home page', () => {
   it('navigates to the existing command reference and task center routes without a blank failure state', async () => {
     const wrapper = await mountView()
     await flushPromises()
+    expect(mocks.compatibility).not.toHaveBeenCalled()
+    const reference = wrapper.get('details.reference')
+    ;(reference.element as HTMLDetailsElement).open = true
+    await reference.trigger('toggle')
+    await flushPromises()
+    expect(mocks.compatibility).toHaveBeenCalledTimes(1)
+    await reference.trigger('toggle')
     expect(mocks.compatibility).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('当前代码内置兼容基线主要面向 H3C Comware V7 / Comware V9')
     const buttons = wrapper.findAll('.reference button')

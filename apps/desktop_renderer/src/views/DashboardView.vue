@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { CircleCheckFilled, InfoFilled, Lock, WarningFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 
@@ -100,19 +100,25 @@ async function openNavigation(navigationId: string, fallbackName: string, messag
   }
 }
 
-onMounted(async () => {
+let compatibilityLoading = false
+async function loadCompatibility(event: Event): Promise<void> {
+  if (!(event.currentTarget as HTMLDetailsElement).open || compatibility.value || compatibilityLoading) return
+  compatibilityLoading = true
+  compatibilityError.value = ''
   try {
     compatibility.value = await getDeviceCompatibilitySummary()
-  } catch (reason) {
+  } catch {
     compatibilityError.value = '设备兼容性说明暂时无法读取'
+  } finally {
+    compatibilityLoading = false
   }
-})
+}
 </script>
 
 <template>
   <section class="dashboard-page">
     <OperationsOverview />
-    <details class="reference"><summary>当前版本功能状态与操作说明</summary>
+    <details class="reference" @toggle="loadCompatibility"><summary>当前版本功能状态与操作说明</summary>
 
     <el-alert v-if="navigationError" type="warning" :title="navigationError" show-icon :closable="false" class="dashboard-alert" />
     <el-alert v-if="compatibilityError" type="warning" :title="compatibilityError" show-icon :closable="false" class="dashboard-alert" />

@@ -5,3 +5,5 @@
 [旧版软件功能完善进度](LEGACY_FUNCTIONAL_COMPLETION_PROGRESS.md)记录本轮功能、数据来源、开发验收与现场缺口。
 
 [旧版 UI/UX 实施记录](UI_UX_IMPLEMENTATION_PROGRESS.md)汇总页面审计、开源对标、设计规范、截图和验收结果。
+
+[旧版 UI/UX Phase 3](UI_UX_PHASE3_PROGRESS.md)记录真实线路数据、性能复测与闭环改进。
