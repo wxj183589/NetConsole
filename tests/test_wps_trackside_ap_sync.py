@@ -442,6 +442,32 @@ def test_wps_can_disable_an_unconfigured_target_without_urls(tmp_path: Path) -> 
     assert target["token_configured"] is False
 
 
+def test_wps_legacy_consent_resets_once_without_replacing_configuration(tmp_path: Path) -> None:
+    service = TracksideApWpsSyncService(PathResolver(tmp_path))
+    site = "migration-fixture"
+    target, = service.list_targets(site)
+    assert target["enabled"] is False
+    repository = service._repository(site)
+    original = repository.get_target(TRACKSIDE_AP_WPS_BUSINESS_KEY, STANDARD_TARGET_CODE)
+    with sqlite3.connect(repository.path) as connection:
+        connection.execute("PRAGMA user_version = 0")
+        connection.execute("UPDATE wps_sync_targets SET enabled = 1")
+        connection.execute("UPDATE wps_credentials SET encrypted_token = X'010203'")
+
+    assert service.list_targets(site)[0]["enabled"] is False
+    with pytest.raises(WpsSyncError) as blocked:
+        service.connection_test(site, STANDARD_TARGET_CODE)
+    assert blocked.value.code == "WPS_TARGET_DISABLED"
+    with sqlite3.connect(repository.path) as connection:
+        assert connection.execute("SELECT credential_id, encrypted_token FROM wps_credentials").fetchone() == (
+            original.credential_id, bytes.fromhex("010203"),
+        )
+    service.configure_target(site, STANDARD_TARGET_CODE, enabled=True)
+    current = service.list_targets(site)[0]
+    assert current["enabled"] is True
+    assert current["target_id"] == original.target_id
+
+
 def test_wps_production_rejects_uninitialized_site_without_creating_sync_storage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1908,6 +1934,7 @@ def test_cloud_document_sync_uses_single_standard_workbook_payload(
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task",
     )
@@ -2029,6 +2056,7 @@ def test_wps_sync_aggregates_noncritical_format_warnings(
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task",
     )
@@ -3034,6 +3062,7 @@ def test_wps_operation_diagnostics_keep_old_connection_failure_separate_from_new
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
         token="test-token",
@@ -3101,6 +3130,7 @@ def test_wps_runtime_probe_visibility_warning_keeps_core_verified_and_diagnostic
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
         token="test-token",
@@ -3152,6 +3182,7 @@ def test_wps_sheet_tab_color_probe_is_independent_and_persists_verification(
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
         token="test-token",
@@ -3205,6 +3236,7 @@ def test_wps_column_width_probe_is_independent_and_persists_verification(
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
         token="test-token",
@@ -3263,6 +3295,7 @@ def test_wps_runtime_probe_core_failure_persists_each_capability(
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
         token="test-token",
@@ -3310,6 +3343,7 @@ def test_wps_successful_connection_test_persists_identity_and_diagnostic_atomica
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
         token="test-token",
@@ -3374,6 +3408,7 @@ def test_wps_revalidate_deployment_runs_all_probes_and_restores_verified(
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/script-one/sync_task",
         token="test-token",
@@ -3515,6 +3550,7 @@ def test_wps_legacy_binding_migration_rechecks_identity_and_runs_verification_ch
     service.configure_target(
         "hzl10",
         STANDARD_TARGET_CODE,
+        enabled=True,
         document_open_url="https://www.kdocs.cn/l/standard",
         webhook_url="https://www.kdocs.cn/api/v3/ide/file/standard/script/test/sync_task",
     )

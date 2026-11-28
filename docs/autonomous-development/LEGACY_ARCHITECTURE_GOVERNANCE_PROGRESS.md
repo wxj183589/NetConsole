@@ -10,7 +10,7 @@
 | D 控制台 | A | PARTIAL | Python 执行与 Vue 预览统一支持空格、默认暂停和 1–60000 毫秒的参数暂停。修正脚本累计等待的单位。13 项 Python 测试、31 项 Renderer 测试及 Renderer 构建通过。粘贴、同步目标与真实会话待验收 |
 | E 设备资料 | B | NOT VERIFIED | 验证同一设备 ID 的台账、技术事实及工程关联 |
 | F 设备任务中心 | B、E | NOT VERIFIED | 验证列表、详情、取消、重试、导出均在 Site 与设备任务域内 |
-| G 轨交与无人值守 | A | NOT VERIFIED | 验证活动 Run、回放、云同步 opt-in、通断状态与统计 |
+| G 轨交与无人值守 | A | PARTIAL | WPS 新目标默认关闭；旧配置一次性关闭，重新启用后跨重启保留。关闭时拒绝连接、探针及同步。WPS 后端 115 项、轨旁业务页 72 项通过。活动 Run、回放和通断统计待验 |
 | H 日志与文件 | B、F | NOT VERIFIED | 结构化事件、受管 Explorer、传输记录及网络服务 |
 | I 全局菜单 | B、D–H | NOT VERIFIED | 逐项检查 Feature、深链接、旧导航与交付配置 |
 | J 集成验收 | C–I | NOT VERIFIED | 完整回归、真实 Electron 截图、Installer、Portable、升级、重启、校验和均待验收 |
@@ -23,3 +23,7 @@
 - L4 共享契约涉及 Desktop 生命周期、安装事务、DataRoot 和 API 组装。写入端为 Backend 阶段协议，读取端为 Electron Main 和启动页。未改协议字段、Schema、业务路径或恢复流程。主仓库只有一个已注册工作树。集成后需复跑 architecture-guards、electron-contract、main-contract-smoke、python-full、renderer-full。
 - 工作区布局检查发现 6 项历史例外，用户确认保留并允许在规范路径生成本专项产物。此次测试使用隔离测试根。
 - 发布状态为未发布，生产数据修改 0，删除数据库 0。
+
+## WPS 局点配置迁移
+
+局点专用 wps_sync.sqlite 从 user_version 0 迁移至 1。初始化事务持有写锁，同时重置历史默认开关并更新版本；异常时 SQLite 回滚事务。配置 URL、凭据密文、绑定、任务与历史表结构保留。旧版仍可读取配置，降级后保留关闭状态；如需恢复同步由用户在目标局点显式启用。Installer、Portable 共用 Repository，已在隔离 fixture 验证重复启动、凭据及目标 ID，安装态升级仍待验收。此次没有连接真实 WPS。

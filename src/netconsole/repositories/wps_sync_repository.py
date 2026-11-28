@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS wps_sync_targets (
     document_open_url TEXT NOT NULL,
     webhook_url TEXT NOT NULL,
     expected_document_id TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 0,
     protocol_version INTEGER NOT NULL DEFAULT 2,
     timeout_seconds INTEGER NOT NULL DEFAULT 30,
     last_test_at TEXT NOT NULL DEFAULT '',
@@ -146,6 +146,11 @@ class WpsSyncRepository:
         with self._connect() as connection:
             initialize_sqlite_wal(connection)
             connection.executescript(WPS_SYNC_SCHEMA)
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute("PRAGMA user_version").fetchone()[0] == 0:
+                # Legacy enabled flags included implicit defaults. Require fresh consent.
+                connection.execute("UPDATE wps_sync_targets SET enabled = 0 WHERE enabled != 0")
+                connection.execute("PRAGMA user_version = 1")
             self._ensure_target_columns(connection)
             self._ensure_target_run_columns(connection)
             self._remove_retired_wps_features(connection)
@@ -390,7 +395,7 @@ class WpsSyncRepository:
         document_open_url: str,
         webhook_url: str,
         expected_document_id: str,
-        enabled: bool = True,
+        enabled: bool = False,
         timeout_seconds: int = 30,
         token: str | None = None,
         credential_id: str | None = None,

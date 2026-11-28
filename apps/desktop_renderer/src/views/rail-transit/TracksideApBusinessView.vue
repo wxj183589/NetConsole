@@ -859,6 +859,11 @@ async function prepareWpsSync(): Promise<{ expectedRevision: string; initializeB
     wpsConfigVisible.value = true
     return null
   }
+  if (!target.enabled) {
+    actionError.value = '云文档同步未启用，请先在“配置云文档”中启用'
+    wpsConfigVisible.value = true
+    return null
+  }
   if (target.binding_status === 'UNKNOWN') {
     try {
       await testTracksideWpsTarget(target.target_code)

@@ -51,7 +51,7 @@ class WpsSyncTarget:
     webhook_url: str
     expected_document_id: str
     binding_id: str = ""
-    enabled: bool = True
+    enabled: bool = False
     protocol_version: int = WPS_SYNC_PROTOCOL_VERSION
     timeout_seconds: int = 30
     token_configured: bool = False

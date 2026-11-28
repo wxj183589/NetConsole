@@ -725,10 +725,10 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
         <div class="deployment-actions">
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target, 'probe')">复制连接测试脚本</el-button>
           <el-button :icon="CopyDocument" @click="copyAirScript(row.target, 'sync')">复制正式同步脚本</el-button>
-          <el-button :loading="probingCode === row.target.target_code" :disabled="Boolean(probingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
-          <el-button :loading="syncTestingCode === row.target.target_code" :disabled="Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
-          <el-button :loading="sheetTabColorProbingCode === row.target.target_code" :disabled="Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetTabColorProbe(row.target.target_code)">测试标签颜色</el-button>
-          <el-button :loading="columnWidthProbingCode === row.target.target_code" :disabled="Boolean(columnWidthProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="columnWidthProbe(row.target.target_code)">复查列宽能力</el-button>
+          <el-button :loading="probingCode === row.target.target_code" :disabled="!row.draft.enabled || Boolean(probingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="runtimeWriteProbe(row.target.target_code)">测试写入能力</el-button>
+          <el-button :loading="syncTestingCode === row.target.target_code" :disabled="!row.draft.enabled || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="syncTestSheet(row.target.target_code)">测试同步 Sheet</el-button>
+          <el-button :loading="sheetTabColorProbingCode === row.target.target_code" :disabled="!row.draft.enabled || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="sheetTabColorProbe(row.target.target_code)">测试标签颜色</el-button>
+          <el-button :loading="columnWidthProbingCode === row.target.target_code" :disabled="!row.draft.enabled || Boolean(columnWidthProbingCode) || Boolean(sheetTabColorProbingCode) || Boolean(syncTestingCode) || Boolean(probingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)" @click="columnWidthProbe(row.target.target_code)">复查列宽能力</el-button>
           <el-button :icon="Guide" @click="toggleDeploymentSteps(row.target.target_code)">查看部署步骤</el-button>
         </div>
 
@@ -796,13 +796,13 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
             v-if="row.target.binding_status === 'LEGACY_BINDING_ID_MISMATCH'"
             type="warning"
             :loading="upgradingBindingCode === row.target.target_code"
-            :disabled="Boolean(upgradingBindingCode) || Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode)"
+            :disabled="!row.draft.enabled || Boolean(upgradingBindingCode) || Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode)"
             @click="migrateLegacyBinding(row.target.target_code)"
           >升级旧版绑定标识</el-button>
           <el-button
             :icon="Refresh"
             :loading="revalidatingCode === row.target.target_code"
-            :disabled="Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(upgradingBindingCode)"
+            :disabled="!row.draft.enabled || Boolean(revalidatingCode) || Boolean(savingCode) || Boolean(testingCode) || Boolean(probingCode) || Boolean(syncTestingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(upgradingBindingCode)"
             @click="revalidateDeployment(row.target.target_code)"
           >重新验证当前部署</el-button>
           <el-button
@@ -813,7 +813,7 @@ async function openDocument(target: WpsTracksideTarget): Promise<void> {
           >保存</el-button>
           <el-button
             :loading="testingCode === row.target.target_code"
-            :disabled="Boolean(testingCode) || Boolean(savingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)"
+            :disabled="!row.draft.enabled || Boolean(testingCode) || Boolean(savingCode) || Boolean(sheetTabColorProbingCode) || Boolean(columnWidthProbingCode) || Boolean(revalidatingCode) || Boolean(upgradingBindingCode)"
             @click="testConnection(row.target.target_code)"
           >测试连接</el-button>
           <el-button link type="primary" :icon="Document" @click="openDocument(row.target)">打开云文档</el-button>

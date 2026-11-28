@@ -3835,6 +3835,8 @@ def _require_standard_target_code(target_code: str) -> None:
 
 
 def _validate_target_configuration(target: WpsSyncTarget) -> None:
+    if not target.enabled:
+        raise WpsSyncError("WPS_TARGET_DISABLED", "请先启用云文档同步并保存配置")
     _validate_wps_url(target.document_open_url, kind="document")
     webhook = _validate_wps_url(target.webhook_url, kind="webhook")
     if _document_id_from_webhook(webhook) != target.expected_document_id:
