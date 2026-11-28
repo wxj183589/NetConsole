@@ -238,9 +238,15 @@ def test_task_executes_registered_worker_and_retries_failed_device(runtime, monk
     task_id = response.json()["task_id"]
     assert response.json()["run_id"] == task_id
     job = adapter.jobs[task_id]
-    result = get_handler(job.task_type)(JobContext.from_job(job))
+    progress = []
+    result = get_handler(job.task_type)(JobContext.from_job(
+        job, progress_callback=lambda stage, current, total, payload: progress.append((current, total, payload)),
+    ))
     assert {item[2] for item in collected} == {sw_a.device_uuid, sw_b.device_uuid}
     assert result["business_status"] == "PARTIAL_SUCCESS"
+    assert [(current, total) for current, total, _ in progress] == [(0, 2), (1, 2), (2, 2)]
+    assert progress[-1][2]["success_count"] == 1
+    assert progress[-1][2]["failed_count"] == 1
     adapter.complete(task_id, result)
     assert client.get(f"/device-operations/tasks/{task_id}/result").json()["items"] == result["items"]
     response = client.post(f"/device-operations/tasks/{task_id}/retry")
@@ -248,6 +254,32 @@ def test_task_executes_registered_worker_and_retries_failed_device(runtime, monk
     retry = adapter.jobs[response.json()["task_id"]]
     assert retry.retry_of_task_id == task_id
     assert retry.params["device_uuids"] == [sw_b.device_uuid]
+
+
+@pytest.mark.parametrize(("target_count", "fail", "business_status"), [
+    (1, False, "SUCCESS"),
+    (2, False, "SUCCESS"),
+    (2, True, "FAILED"),
+])
+def test_device_task_terminal_outcome_matrix(runtime, monkeypatch, target_count, fail, business_status):
+    client, adapter, first, second = runtime
+
+    def collect(_context, _site, _kind, device, _facts, _commands):
+        if fail:
+            raise TimeoutError(f"fixture timeout for {device.name}")
+        return {"status": "success"}
+
+    monkeypatch.setattr(device_task_service, "_collect_device", collect)
+    response = client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [first.device_uuid, second.device_uuid][:target_count],
+    })
+    assert response.status_code == 202, response.text
+    job = adapter.jobs[response.json()["task_id"]]
+    result = get_handler(job.task_type)(JobContext.from_job(job))
+    assert result["business_status"] == business_status
+    assert result["failed" if fail else "success"] == target_count
+    if fail:
+        assert result["primary_failure_reason"] == f"fixture timeout for {first.name}"
 
 
 def test_task_rejects_unknown_target_and_configuration_commands(runtime):
