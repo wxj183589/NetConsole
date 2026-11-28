@@ -795,7 +795,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
       </div>
     </div>
 
-    <el-alert v-if="store.error" :title="store.error" type="error" :closable="false" show-icon class="page-error" />
+    <details v-if="store.error" class="page-error"><summary>无线数据加载失败</summary><pre>{{ store.error }}</pre></details>
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
     <div v-else-if="store.activeAc" class="ac-info-strip">

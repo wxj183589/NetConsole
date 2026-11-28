@@ -668,7 +668,10 @@ function handleClosed(): void {
         </div>
 
         <el-alert v-if="store.detailError" :title="store.detailError" type="error" :closable="false" show-icon />
-        <el-alert v-if="store.selected.error_summary" :title="store.selected.error_summary" :type="store.selected.status === 'FAILED' ? 'error' : 'warning'" :closable="false" show-icon class="detail-alert" />
+        <details v-if="store.selected.error_summary" class="detail-alert">
+          <summary>{{ store.selected.status === 'FAILED' ? '任务执行失败' : '任务有异常记录' }}</summary>
+          <pre>{{ store.selected.error_summary }}</pre>
+        </details>
         <el-alert
           v-if="historicalTextDamaged"
           title="该历史日志由旧版本生成，文字已经发生编码损坏；没有原始字节时无法恢复。"

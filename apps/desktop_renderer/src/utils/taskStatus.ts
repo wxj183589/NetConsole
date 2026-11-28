@@ -8,7 +8,7 @@ export function taskStatusLabel(status: TaskStatus): string {
     QUEUED: '排队中',
     PENDING: '等待中',
     STARTING: '启动中',
-    RUNNING: '运行中',
+    RUNNING: '执行中',
     STOPPING: '停止中',
     COMPLETED: '已完成',
     FAILED: '失败',

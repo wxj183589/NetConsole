@@ -742,7 +742,7 @@ function terminalTitle(task: TaskItem, kind: 'success' | 'warning' | 'failure'):
               <small :title="taskDateTimeTitle(task.updated_time || task.created_time)">{{ taskStatusLabel(task.status) }} · {{ formatTaskDateTime(task.updated_time || task.created_time) }}</small>
             </div>
             <el-tag :type="task.has_warning ? 'warning' : taskStatusType(task.status)" size="small">
-              {{ task.has_warning ? '部分完成' : taskStatusLabel(task.status) }}
+              {{ task.business_status === 'PARTIAL_SUCCESS' ? '部分成功' : taskStatusLabel(task.status) }}
             </el-tag>
             <el-dropdown trigger="click" @command="(command: string) => handleTaskMenu(command, task)">
               <el-tooltip :content="t('job_center.action.menu', '任务操作')" placement="top">

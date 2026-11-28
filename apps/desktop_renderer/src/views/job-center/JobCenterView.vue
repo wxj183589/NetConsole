@@ -12,7 +12,7 @@ import TaskDetailDrawer from '../../task-center/components/TaskDetailDrawer.vue'
 import { activeSiteContext, siteContextState } from '../../stores/siteContext'
 import { apiRequest } from '../../api/client'
 import type { TaskItem, TaskSummary } from '../../types/task'
-import { activeTaskStatuses } from '../../utils/taskStatus'
+import { activeTaskStatuses, taskStatusLabel } from '../../utils/taskStatus'
 import { formatTaskDateTime } from '../../utils/dateTime'
 import { cancelDeviceTaskSchedule, deviceMaintenanceTask, listDeviceTaskSchedules, type DeviceTaskKind, type DeviceTaskSchedule } from '../../api/deviceOperations'
 import { isFeatureEnabled } from '../../features'
@@ -63,7 +63,7 @@ const visibleTasks = computed(() => {
 
 const columns: NcTableColumn<TaskItem>[] = [
   { key: 'task', label: '任务', valueType: 'name', fixed: 'left' },
-  { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag' },
+  { key: 'status', label: '状态', valueType: 'status', cellKind: 'tag', displayValue: (row) => taskStatusLabel(row.status) },
   { key: 'business_status', label: '业务结果', valueType: 'status', displayValue: (row) => businessResultText(row) },
   { key: 'progress', label: '进度', valueType: 'percentage' },
   { key: 'site_name', label: '局点', valueType: 'text' },
@@ -72,7 +72,7 @@ const columns: NcTableColumn<TaskItem>[] = [
   { key: 'started_time', label: '开始时间', valueType: 'datetime', displayValue: (row) => formatTaskDateTime(row.started_time || row.created_time) },
   { key: 'duration_seconds', label: '持续时间', valueType: 'duration', displayValue: (row) => formatDuration(row.duration_seconds) },
   { key: 'session_id', label: 'Session', valueType: 'text' },
-  { key: 'error_summary', label: '错误 / 告警', valueType: 'error', align: 'left', alignmentReason: 'long-text' },
+  { key: 'error_summary', label: '错误 / 告警', valueType: 'error', displayValue: (row) => row.error_summary ? '查看详情' : '—' },
   { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '执行结果'] },
 ]
 
@@ -317,7 +317,7 @@ function residentProgressLabel(task: TaskItem): string {
         </div>
       </div>
 
-      <el-alert v-if="error" :title="error" type="error" show-icon :closable="false" class="job-error" />
+      <details v-if="error" class="job-error"><summary>任务列表加载失败</summary><pre>{{ error }}</pre></details>
       <NcDataTable v-loading="loading" table-id="job-center-tasks" route-key="/tasks" :data="visibleTasks" :columns="columns" empty-text="暂无任务记录" height="calc(100vh - 390px)">
         <template #cell-task="{ row }">
           <strong class="cell-title">{{ row.name }}</strong>
