@@ -767,7 +767,6 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
 
 <template>
   <section class="ac-management">
-    <EngineeringContextPanel v-if="store.activeAc" :context="store.activeAc.engineering_context" />
     <div class="page-toolbar page-toolbar--compact">
       <div>
         <h2>{{ store.activeAc?.name || 'AC 管理' }}</h2>
@@ -800,7 +799,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
     <el-empty v-if="store.summary?.message && !store.summary.acs.length" :description="store.summary.message" />
 
     <div v-else-if="store.activeAc" class="ac-info-strip">
-      <div class="ac-info-summary"><span>型号 {{ display(store.activeAc.model) }}</span><span>版本 {{ display(store.activeAc.software_version) }}</span><span>管理地址 {{ display(store.activeAc.management_ip) }}:{{ display(store.activeAc.https_port) }}</span><el-button link type="primary" @click="acDetailsExpanded = !acDetailsExpanded">{{ acDetailsExpanded ? '收起 AC 详情' : '展开 AC 详情' }}</el-button></div>
+      <div class="ac-info-summary"><span>管理地址 {{ display(store.activeAc.management_ip) }}:{{ display(store.activeAc.https_port) }}</span><el-button link type="primary" :aria-expanded="acDetailsExpanded" @click="acDetailsExpanded = !acDetailsExpanded">{{ acDetailsExpanded ? '收起 AC 详情' : '展开 AC 详情' }}</el-button></div>
       <el-descriptions v-if="acDetailsExpanded" :column="4" border class="ac-info-details">
         <el-descriptions-item label="AC 型号">{{ display(store.activeAc.model) }}</el-descriptions-item>
         <el-descriptions-item label="软件版本">{{ display(store.activeAc.software_version) }}</el-descriptions-item>
@@ -809,6 +808,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
         <el-descriptions-item label="管理地址">{{ display(store.activeAc.management_ip) }}</el-descriptions-item>
         <el-descriptions-item label="HTTPS 端口">{{ display(store.activeAc.https_port) }}</el-descriptions-item>
       </el-descriptions>
+      <EngineeringContextPanel v-if="acDetailsExpanded" :context="store.activeAc.engineering_context" />
     </div>
 
     <div v-if="store.activeAc" class="summary-grid summary-grid--compact">

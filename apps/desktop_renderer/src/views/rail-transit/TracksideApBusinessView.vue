@@ -1237,7 +1237,7 @@ onBeforeUnmount(() => {
   <section class="trackside-page">
     <TracksideApEngineeringEditor v-if="typeof route?.query.engineering_ap === 'string'" :key="route.query.engineering_ap" :ap-id="route.query.engineering_ap" @saved="refreshBusinessProjection({ forceNewRevision: true })" />
     <header class="page-heading">
-      <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>AP 与交换机两侧接收光功率沿用各自既有业务门限；交换机接口 DOWN 优先显示链路状态，当前光功率无效时显示未知。</p></div>
+      <h1>轨旁 AP 业务</h1>
       <div class="actions">
         <el-button :loading="refreshing" :disabled="initialLoading" @click="refreshBusinessProjection({ forceNewRevision: true })">刷新</el-button>
         <el-button

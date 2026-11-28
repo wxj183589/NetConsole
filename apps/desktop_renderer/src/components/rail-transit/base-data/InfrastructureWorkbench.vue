@@ -200,7 +200,7 @@ defineExpose({ confirmRelationshipNavigation: mayLeaveRelationship })
         <div><dt>车站</dt><dd>{{ stationCount }}</dd></div>
         <div><dt>车辆段与停车场</dt><dd>{{ depotCount }}</dd></div>
         <div><dt>列车</dt><dd>{{ trainCount }}</dd></div>
-        <div><dt>关联异常</dt><dd>{{ snapshot.unresolved_binding_count }}</dd></div>
+        <div><dt>关联异常</dt><dd><el-tag :type="snapshot.unresolved_binding_count ? 'warning' : 'info'">{{ snapshot.unresolved_binding_count }}</el-tag></dd></div>
       </dl>
       <label class="workbench-search">
         <span class="visually-hidden">搜索组织树</span>

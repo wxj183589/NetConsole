@@ -96,14 +96,20 @@ onUnmounted(() => {
         </template>
       </el-table-column>
       <el-table-column prop="management_ip" :label="local('管理 IP', 'Management IP')" min-width="130" />
-      <el-table-column prop="model" :label="local('型号', 'Model')" min-width="120" />
-      <el-table-column prop="software_version" :label="local('软件版本', 'Software version')" min-width="160" show-overflow-tooltip />
       <el-table-column prop="updated_at" :label="local('采集时间', 'Collected at')" min-width="160" />
       <el-table-column :label="local('登记部署', 'Deployment')" min-width="160"><template #default="{ row }">
         {{ membership.has(row.id) ? modes[membership.get(row.id)!.mode] + ' · ' + membership.get(row.id)!.name : local('未登记', 'Unassigned') }}
       </template></el-table-column>
       <el-table-column v-if="isFeatureEnabled('module.fit_ap')" width="130">
         <template #default="{ row }"><RouterLink :to="{ name: 'ac-fit-aps', query: { ac_id: row.id } }">{{ local('FIT-AP 资源', 'FIT-AP resources') }}</RouterLink></template>
+      </el-table-column>
+      <el-table-column type="expand">
+        <template #default="{ row }">
+          <el-descriptions :column="2" border>
+            <el-descriptions-item :label="local('型号', 'Model')">{{ row.model || '—' }}</el-descriptions-item>
+            <el-descriptions-item :label="local('软件版本', 'Software version')">{{ row.software_version || '—' }}</el-descriptions-item>
+          </el-descriptions>
+        </template>
       </el-table-column>
     </el-table>
     <el-dialog v-model="editing" :title="local('登记无线部署关系', 'Wireless deployments')" width="min(840px, 94vw)" destroy-on-close>

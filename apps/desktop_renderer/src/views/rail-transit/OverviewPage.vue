@@ -100,10 +100,10 @@ onBeforeUnmount(stopPolling)
             <article><span>{{ t('ground.v2.last_snmp_radio', '最近 SNMP 射频操作') }}</span><strong>{{ status?.last_snmp_radio_control_at || '—' }}</strong></article>
             <article><span>{{ t('ground.v2.udp_queue_drops', 'UDP 队列 / 丢弃') }}</span><strong>{{ health?.udp_queue_length ?? 0 }} / {{ health?.udp_dropped_count ?? 0 }}</strong><small>{{ health?.udp_listen_address || t('ground.v2.overview_not_listening', '未监听') }}</small></article>
           </div>
-          <section class="syslog-transport-band" v-loading="syslogTransportLoading">
+          <details class="syslog-transport-band" v-loading="syslogTransportLoading">
+            <summary>{{ t('ground.v2.syslog_transport', 'UDP Syslog 与 MR 日志回传') }}</summary>
             <div class="transport-heading">
               <div>
-                <h2>{{ t('ground.v2.syslog_transport', 'UDP Syslog 与 MR 日志回传') }}</h2>
                 <p>{{ t('ground.v2.transport_note', 'MR 目标地址与 NetConsole 本机监听是两条独立配置。') }}</p>
               </div>
               <div class="row-actions">
@@ -181,7 +181,7 @@ onBeforeUnmount(stopPolling)
                 <small>{{ t('ground.v2.dropped', '已丢弃') }} {{ syslogTransport?.dropped_count ?? 0 }} {{ t('ground.v2.overview_records', '条') }}</small>
               </article>
             </div>
-          </section>
+          </details>
         </section>
 
 </section>
