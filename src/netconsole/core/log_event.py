@@ -19,7 +19,7 @@ _EVENT_PREFIXES = {
     "files": ("FILE_", "DEVICE_FILE_", "SFTP_"),
     "syslog": ("SYSLOG_",),
     "heartbeat": ("HEARTBEAT_",),
-    "network": ("NETWORK_SERVICE_", "LOCAL_SERVICE_"),
+    "network": ("NETWORK_SERVICE_", "LOCAL_SERVICE_", "LOCAL_NETWORK_SERVICE_"),
     "security": ("SECURITY_", "COMMAND_ALLOWED", "HOST_KEY_"),
     "update": ("UPDATE_", "INSTALL_", "INSTALLER_"),
     "application": ("APP_", "LOGS_", "UI_", "PAGE_", "DESKTOP_", "SYSTEM_", "OPEN_SOURCE_"),
@@ -42,7 +42,8 @@ def log_context(row: dict[str, str]) -> dict[str, str]:
         key: row.get(key) or next((tokens[alias] for alias in aliases if tokens.get(alias)), "")
         for key, aliases in _CONTEXT_KEYS.items()
     }
-    return {**context, "category": row.get("category") or category, "event_code": row.get("event_code") or event, "source": context["source"] or "backend"}
+    stored_category = row.get("category")
+    return {**context, "category": stored_category if stored_category and stored_category != "other" else category, "event_code": row.get("event_code") or event, "source": context["source"] or "backend"}
 
 
 

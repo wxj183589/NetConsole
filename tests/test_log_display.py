@@ -42,6 +42,14 @@ def test_common_request_details_are_localized() -> None:
     assert row["category"] == "api_request"
 
 
+def test_local_network_service_uses_network_category_for_old_and_new_records() -> None:
+    row = {"event": "LOCAL_NETWORK_SERVICE_STOPPED", "detail": "module=listener"}
+    for record in (row, {**row, "category": "other", "module": "listener", "source": "backend"}):
+        assert matches_log_filters(record, {"category": "network", "module": "listener"})
+        assert display_log_row(record)["category"] == "network"
+        assert display_log_row(record)["source"] == "backend"
+
+
 def test_important_filter_keeps_errors_and_filters_context_and_time() -> None:
     row = {"time": "2026-07-21 10:00:00", "level": "INFO", "event": "API_REQUEST_COMPLETED",
            "detail": "request_id=abc site_id=demo"}

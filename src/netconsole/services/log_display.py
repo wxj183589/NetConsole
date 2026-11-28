@@ -161,7 +161,8 @@ def matches_log_filters(row: dict[str, str], filters: dict[str, str | bool]) -> 
     fields = [key for key in ("category", "module", "site_id", "device_id", "request_id", "task_id") if filters.get(key)]
     if not fields:
         return True
-    context = log_context(row)
+    needs_category = "category" in fields and row.get("category") == "other"
+    context = row if not needs_category and all(key in row for key in fields) else log_context(row)
     return all(context[key].casefold() == str(filters[key]).strip().casefold() for key in fields)
 
 
