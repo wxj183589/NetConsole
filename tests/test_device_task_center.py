@@ -256,6 +256,32 @@ def test_task_executes_registered_worker_and_retries_failed_device(runtime, monk
     assert retry.params["device_uuids"] == [sw_b.device_uuid]
 
 
+@pytest.mark.parametrize(("target_count", "fail", "business_status"), [
+    (1, False, "SUCCESS"),
+    (2, False, "SUCCESS"),
+    (2, True, "FAILED"),
+])
+def test_device_task_terminal_outcome_matrix(runtime, monkeypatch, target_count, fail, business_status):
+    client, adapter, first, second = runtime
+
+    def collect(_context, _site, _kind, device, _facts, _commands):
+        if fail:
+            raise TimeoutError(f"fixture timeout for {device.name}")
+        return {"status": "success"}
+
+    monkeypatch.setattr(device_task_service, "_collect_device", collect)
+    response = client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [first.device_uuid, second.device_uuid][:target_count],
+    })
+    assert response.status_code == 202, response.text
+    job = adapter.jobs[response.json()["task_id"]]
+    result = get_handler(job.task_type)(JobContext.from_job(job))
+    assert result["business_status"] == business_status
+    assert result["failed" if fail else "success"] == target_count
+    if fail:
+        assert result["primary_failure_reason"] == f"fixture timeout for {first.name}"
+
+
 def test_task_rejects_unknown_target_and_configuration_commands(runtime):
     client, adapter, sw_a, _ = runtime
     request = {"kind": "custom", "device_uuids": [sw_a.device_uuid]}
