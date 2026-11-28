@@ -1,7 +1,7 @@
 import { parseSendString, type SendStringSegment } from './consoleButtonBar'
 
 export type ConsoleRunScriptStep =
-  | { type: 'SEND_STRING'; text: string }
+  | { type: 'SEND_STRING'; text: string; when_protocol?: 'SSH' | 'TELNET' | 'SERIAL' }
   | { type: 'WAIT'; milliseconds: number }
 
 export type ConsoleRunScript = {
@@ -10,7 +10,7 @@ export type ConsoleRunScript = {
 }
 
 export type ValidatedConsoleRunScriptStep =
-  | { type: 'SEND_STRING'; text: string; segments: SendStringSegment[] }
+  | { type: 'SEND_STRING'; text: string; segments: SendStringSegment[]; when_protocol?: 'SSH' | 'TELNET' | 'SERIAL' }
   | { type: 'WAIT'; milliseconds: number }
 
 export type ValidatedConsoleRunScript = {
@@ -45,15 +45,18 @@ export function validateConsoleRunScript(value: unknown): ValidatedConsoleRunScr
       throw new Error(`Console 脚本第 ${index + 1} 步结构无效`)
     }
     if (rawStep.type === 'SEND_STRING') {
-      if (Object.keys(rawStep).length !== 2 || typeof rawStep.text !== 'string') {
-        throw new Error(`Console 脚本第 ${index + 1} 步只能包含动作类型和文本`)
+      const protocol = rawStep.when_protocol
+      if (Object.keys(rawStep).some(key => !['type', 'text', 'when_protocol'].includes(key))
+        || typeof rawStep.text !== 'string'
+        || (protocol !== undefined && protocol !== 'SSH' && protocol !== 'TELNET' && protocol !== 'SERIAL')) {
+        throw new Error(`Console 脚本第 ${index + 1} 步的文本或协议条件无效`)
       }
       const parsed = parseSendString(rawStep.text)
       totalWaitMilliseconds += parsed.segments.reduce(
         (wait, segment) => wait + (segment.kind === 'pause' ? segment.milliseconds : 0),
         0,
       )
-      return { type: 'SEND_STRING', text: rawStep.text, segments: parsed.segments }
+      return { type: 'SEND_STRING', text: rawStep.text, segments: parsed.segments, ...(protocol ? { when_protocol: protocol } : {}) }
     }
     if (rawStep.type === 'WAIT') {
       if (Object.keys(rawStep).length !== 2) {
@@ -82,4 +85,26 @@ export function parseConsoleRunScriptJson(source: string): ValidatedConsoleRunSc
     throw new Error('Console 脚本必须是有效 JSON')
   }
   return validateConsoleRunScript(value)
+}
+
+/** Substitutions are literal characters and can't introduce Send String controls. */
+export function resolveConsoleScriptSteps(
+  script: ValidatedConsoleRunScript,
+  variables: { protocol: string; address: string; port: string },
+): ValidatedConsoleRunScriptStep[] {
+  return script.steps.flatMap((step): ValidatedConsoleRunScriptStep[] => {
+    if (step.type === 'WAIT') return [step]
+    if (step.when_protocol && step.when_protocol !== variables.protocol) return []
+    const text = step.text.replace(/\{\{([a-z_]+)\}\}/g, (_match, variable: string) => {
+      if (!Object.hasOwn(variables, variable)) throw new Error(`未识别的脚本变量 ${variable}`)
+      const value = variables[variable as keyof typeof variables]
+      if (!/^[\w.:%-]*$/.test(value)) throw new Error(`脚本变量 ${variable} 含有不支持的字符`)
+      return value
+    })
+    const segments = parseSendString(text).segments
+    const originalPauses = step.segments.flatMap(segment => segment.kind === 'pause' ? [segment.milliseconds] : [])
+    const resolvedPauses = segments.flatMap(segment => segment.kind === 'pause' ? [segment.milliseconds] : [])
+    if (originalPauses.join(',') !== resolvedPauses.join(',')) throw new Error('脚本变量不能用作暂停时长')
+    return [{ ...step, text, segments }]
+  })
 }
