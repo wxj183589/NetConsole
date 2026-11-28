@@ -505,3 +505,10 @@ def test_fit_ap_metadata_save_validates_ac_scope_and_persists_through_job(tmp_pa
     assert metadata["mileage"] == "1200"
     assert metadata["location_note"] == "站台"
     assert metadata["direction"] == "上行"
+    from netconsole.services.ac.query_service import AcManagementQueryService
+
+    detail = AcManagementQueryService(paths).get_ap_detail("demo", "ap-online")
+    assert detail is not None
+    assert detail.ap.id == "ap-online"
+    assert detail.ap.mileage == "YDK1+200"
+    assert detail.ap.location_note == "站台"
