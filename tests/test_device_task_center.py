@@ -157,6 +157,28 @@ def test_upgrade_lab_uses_device_job_path_and_retries_failed_result(runtime, mon
     assert result["items"][0]["upgrade_status"] == "verified"
 
 
+def test_upgrade_lab_persists_result_from_real_worker(runtime, monkeypatch):
+    from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
+
+    client, _, device, _ = runtime
+    tasks = client.app.state.task_service
+    adapter = LocalProcessAdapter(tasks)
+    client.app.state.device_task_application_service = device_task_service.DeviceTaskApplicationService(tasks, adapter)
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
+    monkeypatch.setenv("NETCONSOLE_DEVICE_UPGRADE_LAB", "1")
+    try:
+        response = client.post("/device-operations/tasks", json={
+            "kind": "upgrade_lab", "device_uuids": [device.device_uuid],
+        })
+        assert response.status_code == 202, response.text
+        task_id = response.json()["task_id"]
+        assert adapter.wait(task_id, timeout=20)
+        result = client.get(f"/device-operations/tasks/{task_id}/result").json()
+        assert result["items"][0]["upgrade_status"] == "verified"
+    finally:
+        adapter.shutdown()
+
+
 def test_task_executes_registered_worker_and_retries_failed_device(runtime, monkeypatch):
     client, adapter, sw_a, sw_b = runtime
     collected = []
