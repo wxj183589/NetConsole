@@ -67,6 +67,13 @@ def workspace_entries(
     ))
 
 
+@router.get("/workspace/files/{entry_id}/preview")
+def workspace_preview(entry_id: str, request: Request):
+    return _workspace_call(lambda: _service(request).workspace_operations.preview(
+        request.app.state.local_network_services, entry_id,
+    ))
+
+
 @router.get("/workspace/files/{entry_id}")
 def workspace_download(entry_id: str, request: Request):
     path = _workspace_call(lambda: _service(request).workspace_operations.download(

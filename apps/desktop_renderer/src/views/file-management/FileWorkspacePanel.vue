@@ -4,6 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { browseFileWorkspace, cancelFileWorkspaceTask, listFileWorkspaceTasks, operateFileWorkspace, uploadFileWorkspace, workspaceFileRequest, type FileRoot, type WorkspaceDirectory, type WorkspaceEntry, type WorkspaceFileTask } from '../../api/fileWorkspace'
 import { downloadBackendResource } from '../../platform/runtime'
 import { prepareFileDesktopAction } from '../../api/fileManagement'
+import { previewWorkspaceFile } from '../../api/fileWorkspace'
 import { isFeatureEnabled } from '../../features'
 import { createFileManagerTranslator } from './fileManagementI18n'
 
@@ -15,6 +16,9 @@ const selected = ref<[WorkspaceEntry | null, WorkspaceEntry | null]>([null, null
 const busy = ref<[boolean, boolean]>([false, false])
 const errors = ref<[string, string]>(['', ''])
 const openingFolder = ref(false)
+const search = ref(['', ''])
+const filePreview = ref<{ name: string; text: string; truncated: boolean }>()
+const previewBusy = ref(false)
 const desktopAvailable = Boolean(window.netconsoleDesktop)
 const tasks = ref<WorkspaceFileTask[]>([])
 const sha = new Map<string, string>()
@@ -23,6 +27,23 @@ let disposed = false
 const generation = [0, 0]
 
 function directory(side: number) { return side ? right.value : left.value }
+function visibleEntries(side: number) {
+  const text = search.value[side]?.trim().toLocaleLowerCase() || ''
+  return (directory(side)?.items || []).filter(entry => entry.name.toLocaleLowerCase().includes(text))
+}
+
+async function preview(entry: WorkspaceEntry): Promise<void> {
+  if (previewBusy.value) return
+  previewBusy.value = true
+  try {
+    const result = await previewWorkspaceFile(entry.id)
+    if (!disposed) filePreview.value = result
+  } catch (cause) {
+    if (!disposed) ElMessage.error(cause instanceof Error ? cause.message : t('fileOperationFailed'))
+  } finally {
+    previewBusy.value = false
+  }
+}
 async function browse(side: number, id = '') {
   const request = ++generation[side]!
   busy.value[side] = true
@@ -165,10 +186,12 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer) })
           <el-button v-if="desktopAvailable && isFeatureEnabled('capability.file_management.desktop_actions')" :disabled="!directory(side) || busy[side] || openingFolder" @click="openFolder(side)">{{ t('openFolder') }}</el-button>
         </header>
         <span>{{ directory(side)?.label }}</span>
+        <el-input v-model="search[side]" clearable :placeholder="t('filter')" :aria-label="t('filter')" @input="selected[side] = null" />
         <el-alert v-if="errors[side]" :title="errors[side]" type="error" :closable="false" />
         <div class="workspace-file-actions">
           <el-button :disabled="!selected[side]" @click="operate(side, 'checksum')">SHA-256</el-button>
           <el-button :disabled="!selected[side] || selected[side]?.directory" @click="selected[side] && download(selected[side]!)">{{ t('saveFile') }}</el-button>
+          <el-button :disabled="!selected[side] || selected[side]?.directory" :loading="previewBusy" @click="selected[side] && preview(selected[side]!)">{{ t('previewFile') }}</el-button>
           <template v-if="isFeatureEnabled('capability.file_management.local_write')">
             <label v-if="directory(side)?.writable">{{ t('uploadSelectedLocal') }}<input type="file" multiple @change="upload(side, $event)" /></label>
             <el-button :disabled="!selected[side] || !directory(1-side)?.writable" @click="operate(side, 'copy')">{{ t('copyLocal') }}</el-button>
@@ -178,7 +201,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer) })
             <el-button type="danger" :disabled="!selected[side] || !directory(side)?.writable" @click="operate(side, 'delete')">{{ t('deleteLocal') }}</el-button>
           </template>
         </div>
-        <el-table v-loading="busy[side]" :data="directory(side)?.items || []" height="100%" highlight-current-row @current-change="selected[side] = $event" @row-dblclick="(row: WorkspaceEntry) => row.directory && browse(side, row.id)">
+        <el-table v-loading="busy[side]" :data="visibleEntries(side)" height="100%" highlight-current-row @current-change="selected[side] = $event" @row-dblclick="(row: WorkspaceEntry) => row.directory && browse(side, row.id)">
           <el-table-column prop="name" :label="t('name')" min-width="130" sortable show-overflow-tooltip />
           <el-table-column prop="size" :label="t('size')" width="110" sortable />
           <el-table-column prop="mode" :label="t('permissions')" width="110" />
@@ -195,10 +218,15 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer) })
         <el-button v-if="task.action === 'checksum' && task.sha256 && sha.has(task.task_id)" @click="verifiedDelete(task)">{{ t('deleteVerified') }}</el-button>
       </article>
     </section>
+    <el-dialog :model-value="Boolean(filePreview)" :title="filePreview?.name" @close="filePreview = undefined">
+      <el-alert v-if="filePreview?.truncated" :title="t('previewTruncated')" :closable="false" />
+      <pre class="file-preview">{{ filePreview?.text }}</pre>
+    </el-dialog>
   </section>
 </template>
 
 <style scoped>
+.file-preview { max-height: 55vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .workspace-file-panel { display: flex; flex-direction: column; gap: 12px; min-height: 0; height: 100%; }
 .workspace-file-panes { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 12px; flex: 1; min-height: 400px; }
 .workspace-file-pane { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: hidden; }

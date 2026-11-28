@@ -14,6 +14,7 @@ import {
   getNetworkExportArtifact,
   getNetworkTask,
   listNetworkTaskResults,
+  listNetworkTasks,
   startNetworkTask,
   summarizeRoutes,
 } from '../../api/networkTools'
@@ -22,8 +23,7 @@ import { downloadBackendResource } from '../../platform/runtime'
 import NcDataTable from '../table/NcDataTable.vue'
 import type { NcTableColumn } from '../table/NcTableColumn'
 import { useTaskStore } from '../../stores/tasks'
-import type { NetworkAdapter, NetworkProbeEnvironment, NetworkToolTask, ToolboxResult } from '../../types/networkTools'
-import type { TaskItem } from '../../types/task'
+import type { NetworkAdapter, NetworkProbeEnvironment, NetworkTaskStartRequest, NetworkToolTask, ToolboxResult } from '../../types/networkTools'
 import { buildSubnetStatusGrid } from './subnetStatusGrid'
 
 const taskStore = useTaskStore()
@@ -38,25 +38,29 @@ const page = ref(1)
 const pageSize = ref(50)
 const result = ref<ToolboxResult>({ rows: [], summary: {}, errors: [] })
 const calculating = ref(false)
-const taskKind = ref<'single_ping' | 'continuous_ping' | 'batch_ping' | 'subnet_ping' | 'tcp_ping'>('single_ping')
+const taskKind = ref<NetworkTaskStartRequest['kind']>('single_ping')
 const probe = reactive({ target: '127.0.0.1', targets: '', port: 443, count: 4, timeout_ms: 1500, interval_ms: 1000, packet_size: 32, concurrency: 100, source_ip: '', usable_only: true })
 const probeEnvironment = ref<NetworkProbeEnvironment>({ adapters: [], scan_engine: '检测中', scan_engine_available: false, supports_source_ip: true, message: '' })
 const selectedAdapterIndex = ref<number | null>(null)
 const selectedTask = ref<NetworkToolTask | null>(null)
 const selectedSubnetResult = ref<Record<string, unknown> | null>(null)
+const selectedHostDiagnostic = computed(() => ['network_tools.traceroute', 'network_tools.dns'].includes(selectedTaskSummary.value?.type || ''))
 const taskResults = ref<Record<string, unknown>[]>([])
 const resultOffset = ref(0)
 const resultPageSize = 500
 const resultTotal = ref(0)
 const ACTIVE_STATUSES = ['PENDING', 'STARTING', 'RUNNING', 'STOPPING']
-const PROBE_TYPES = ['network_tools.single_ping', 'network_tools.continuous_ping', 'network_tools.batch_ping', 'network_tools.subnet_ping', 'network_tools.tcp_ping']
+const PROBE_TYPES = ['network_tools.single_ping', 'network_tools.continuous_ping', 'network_tools.batch_ping', 'network_tools.subnet_ping', 'network_tools.tcp_ping', 'network_tools.traceroute', 'network_tools.dns']
 const PROBE_POLL_INTERVAL_MS = 500
 let probePollTimer: number | null = null
 let probePollGeneration = 0
 let resultCursor = 0
 let nextResultOffset = 0
 let mounted = true
-const tasks = computed(() => taskStore.tasks.filter((item) => item.owner === 'web_network_tools' && (PROBE_TYPES.includes(item.type) || item.type === 'network_tools.toolbox_export')))
+const tasks = ref<NetworkToolTask[]>([])
+const historyOffset = ref(0)
+const historyPageSize = 30
+const hasNextHistoryPage = ref(false)
 const loadingTasks = computed(() => taskStore.loading)
 const selectedTaskSummary = computed(() => selectedTask.value)
 const selectedAdapter = computed<NetworkAdapter | null>(() => probeEnvironment.value.adapters.find((item) => item.interface_index === selectedAdapterIndex.value) || null)
@@ -80,7 +84,7 @@ const calculatorResultColumns = computed<NcTableColumn<Record<string, unknown>>[
   label: key,
   valueType: 'text',
 })))
-const taskColumns: NcTableColumn<TaskItem>[] = [
+const taskColumns: NcTableColumn<NetworkToolTask>[] = [
   { key: 'name', label: '任务', valueType: 'name' },
   { key: 'status', label: '状态', valueType: 'status' },
   { key: 'progress', label: '进度', valueType: 'percentage', displayValue: (row) => `${row.progress}%` },
@@ -93,7 +97,7 @@ const probeResultColumns = computed<NcTableColumn<Record<string, unknown>>[]>(()
 })))
 
 onMounted(async () => {
-  await Promise.all([taskStore.refresh(), loadProbeEnvironment()])
+  await Promise.all([refreshTasks(), loadProbeEnvironment()])
 })
 
 onBeforeUnmount(() => {
@@ -167,7 +171,11 @@ async function startProbe(): Promise<void> {
 
 async function refreshTasks(): Promise<void> {
   try {
-    await taskStore.refresh()
+    const offset = historyOffset.value
+    const rows = await listNetworkTasks(offset, historyPageSize + 1)
+    if (!mounted || offset !== historyOffset.value) return
+    hasNextHistoryPage.value = rows.length > historyPageSize
+    tasks.value = rows.slice(0, historyPageSize)
     if (selectedTask.value) {
       const previousStatus = selectedTask.value.status
       const current = await getNetworkTask(selectedTask.value.id)
@@ -184,7 +192,7 @@ async function refreshTasks(): Promise<void> {
   }
 }
 
-async function selectTask(task: TaskItem): Promise<void> {
+async function selectTask(task: NetworkToolTask): Promise<void> {
   stopProbeMonitor()
   selectedTask.value = await getNetworkTask(task.id)
   resultOffset.value = 0
@@ -303,6 +311,11 @@ async function pollProbeTask(taskId: string, generation: number): Promise<void> 
   }
 }
 
+function changeHistoryPage(step: number): void {
+  historyOffset.value = Math.max(0, historyOffset.value + step * historyPageSize)
+  void refreshTasks()
+}
+
 async function changeResultPage(page: number): Promise<void> {
   resultOffset.value = Math.max(0, page - 1) * resultPageSize
   await loadTaskResults()
@@ -369,24 +382,27 @@ function clearTaskResults(): void {
     <template #header><div class="header"><div><h2>连通性检测</h2><p>单次、持续、批量、网段 Ping 与 TCP Ping 均进入任务链。</p></div><el-button :loading="loadingTasks" @click="refreshTasks">刷新历史</el-button></div></template>
     <el-alert v-if="taskStore.error" :title="taskStore.error" type="error" show-icon :closable="false" />
     <el-form label-position="top">
-      <div class="inline-form"><el-form-item label="类型"><el-select v-model="taskKind"><el-option label="单个 Ping" value="single_ping" /><el-option label="持续 Ping" value="continuous_ping" /><el-option label="批量 Ping" value="batch_ping" /><el-option label="网段 Ping" value="subnet_ping" /><el-option label="TCP Ping" value="tcp_ping" /></el-select></el-form-item><el-form-item label="目标"><el-input v-model="probe.target" placeholder="主机、IP 或 IPv4 网段" /></el-form-item><el-form-item v-if="taskKind === 'tcp_ping'" label="端口"><el-input-number v-model="probe.port" :min="1" :max="65535" /></el-form-item></div>
+      <div class="inline-form"><el-form-item label="类型"><el-select v-model="taskKind"><el-option label="单个 Ping" value="single_ping" /><el-option label="持续 Ping" value="continuous_ping" /><el-option label="批量 Ping" value="batch_ping" /><el-option label="网段 Ping" value="subnet_ping" /><el-option label="TCP Ping" value="tcp_ping" /><el-option label="Traceroute" value="traceroute" /><el-option label="DNS 查询" value="dns" /></el-select></el-form-item><el-form-item label="目标"><el-input v-model="probe.target" placeholder="主机、IP 或 IPv4 网段" /></el-form-item><el-form-item v-if="taskKind === 'tcp_ping'" label="端口"><el-input-number v-model="probe.port" :min="1" :max="65535" /></el-form-item></div>
       <div v-if="taskKind === 'subnet_ping'" class="inline-form subnet-controls"><el-form-item label="网卡"><el-select v-model="selectedAdapterIndex" data-testid="network-adapter-select" clearable placeholder="自动选择" @change="selectAdapter"><el-option v-for="adapter in probeEnvironment.adapters" :key="adapter.interface_index" :label="adapter.display_name" :value="adapter.interface_index" /></el-select></el-form-item><el-form-item label="源地址"><el-input v-model="probe.source_ip" readonly data-testid="source-ip" /></el-form-item><el-form-item label="扫描范围"><el-checkbox v-model="probe.usable_only">只扫描可用主机</el-checkbox></el-form-item><el-button @click="loadProbeEnvironment">刷新网卡</el-button></div>
       <el-alert v-if="taskKind === 'subnet_ping'" :title="`当前引擎：${scanEngine}`" :description="probeEnvironment.message" type="info" :closable="false" />
       <el-form-item v-if="taskKind === 'batch_ping'" label="批量目标"><el-input v-model="probe.targets" type="textarea" :rows="2" placeholder="多个目标用空格、逗号或换行分隔" /></el-form-item>
-      <div class="inline-form"><el-form-item label="次数"><el-input-number v-model="probe.count" :min="1" :max="1000" /></el-form-item><el-form-item label="超时 ms"><el-input-number v-model="probe.timeout_ms" :min="1" :max="60000" /></el-form-item><el-form-item label="间隔 ms"><el-input-number v-model="probe.interval_ms" :min="1" :max="60000" /></el-form-item><el-form-item label="并发"><el-input-number v-model="probe.concurrency" :min="1" :max="500" /></el-form-item></div>
+      <div v-if="!['traceroute', 'dns'].includes(taskKind)" class="inline-form"><el-form-item label="次数"><el-input-number v-model="probe.count" :min="1" :max="1000" /></el-form-item><el-form-item label="超时 ms"><el-input-number v-model="probe.timeout_ms" :min="1" :max="60000" /></el-form-item><el-form-item label="间隔 ms"><el-input-number v-model="probe.interval_ms" :min="1" :max="60000" /></el-form-item><el-form-item label="并发"><el-input-number v-model="probe.concurrency" :min="1" :max="500" /></el-form-item></div>
       <el-button type="primary" data-testid="start-probe" @click="startProbe">开始检测</el-button>
     </el-form>
     <el-divider />
     <NcDataTable v-loading="loadingTasks" :data="tasks" :columns="taskColumns" table-id="network-toolbox-tasks" route-key="/network-tools" empty-text="暂无网络工具任务" @row-click="selectTask" />
+    <div class="task-detail"><el-button :disabled="!historyOffset" @click="changeHistoryPage(-1)">上一页</el-button><el-button :disabled="!hasNextHistoryPage" @click="changeHistoryPage(1)">下一页</el-button></div>
     <div v-if="selectedTaskSummary" class="task-detail"><span>{{ selectedTaskSummary.name }}：{{ selectedTaskSummary.status }}</span><el-button v-if="taskRunning" link type="danger" data-testid="stop-task" @click="cancelTask">停止</el-button><el-button v-if="selectedProbeHasResults" link data-testid="export-csv" @click="exportTask('csv')">导出 CSV</el-button><el-button v-if="selectedProbeHasResults" link data-testid="export-xlsx" @click="exportTask('xlsx')">导出 XLSX</el-button><el-button v-if="resultRows.length" link @click="clearTaskResults">清空显示</el-button><el-button v-if="selectedExportCompleted" link type="primary" @click="downloadExport">下载 Artifact</el-button></div>
     <div v-if="subnetGrid.length" class="subnet-grid" data-testid="subnet-status-grid"><button v-for="host in subnetGrid" :key="host.ip" type="button" class="subnet-host" :class="`is-${host.status}`" :disabled="!host.in_range" :title="host.ip" @click="selectSubnetResult(host.detail)">{{ host.host_number }}</button></div>
     <el-descriptions v-if="selectedSubnetResult" :column="3" border class="subnet-detail" data-testid="subnet-detail"><el-descriptions-item v-for="([key, value]) in Object.entries(selectedSubnetResult)" :key="key" :label="key">{{ value }}</el-descriptions-item></el-descriptions>
-    <NcDataTable v-if="resultRows.length" :data="resultRows" :columns="probeResultColumns" table-id="network-toolbox-probe-results" route-key="/network-tools" max-height="360" @row-click="selectSubnetResult" />
+    <pre v-if="selectedHostDiagnostic && resultRows.length" class="host-diagnostic-output">{{ resultRows[0]?.output }}</pre>
+    <NcDataTable v-else-if="resultRows.length" :data="resultRows" :columns="probeResultColumns" table-id="network-toolbox-probe-results" route-key="/network-tools" max-height="360" @row-click="selectSubnetResult" />
     <el-pagination v-if="resultTotal > resultPageSize" :total="resultTotal" :page-size="resultPageSize" layout="prev, pager, next, total" @current-change="changeResultPage" />
   </el-card>
 </template>
 
 <style scoped>
+.host-diagnostic-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 25rem; overflow: auto; }
 .header { align-items: center; display: flex; justify-content: space-between; gap: 16px; }
 .header h2 { margin: 0 0 4px; }
 .header p { color: var(--el-text-color-secondary); margin: 0; }

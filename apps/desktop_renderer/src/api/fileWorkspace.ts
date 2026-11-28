@@ -21,6 +21,9 @@ export function cancelFileWorkspaceTask(id: string): Promise<WorkspaceFileTask> 
 export function workspaceFileRequest(entry: WorkspaceEntry) {
   return { apiPath: `${base}/files/${encodeURIComponent(entry.id)}`, suggestedName: entry.name }
 }
+export function previewWorkspaceFile(entryId: string): Promise<{ name: string; text: string; truncated: boolean }> {
+  return apiRequest(`${base}/files/${encodeURIComponent(entryId)}/preview`)
+}
 export function uploadFileWorkspace(destination: string, file: File): Promise<WorkspaceFileTask> {
   const body = new FormData()
   body.set('destination', destination)

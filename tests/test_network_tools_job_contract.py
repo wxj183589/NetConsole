@@ -181,6 +181,31 @@ def _wait_task(service: NetworkToolsApplicationService, adapter: DispatchingProc
     return task
 
 
+def test_host_diagnostics_history_survives_service_restart_and_scopes_to_site(tmp_path: Path, monkeypatch) -> None:
+    from netconsole.services.network_tools import host_diagnostics
+
+    monkeypatch.setattr(host_diagnostics, "run_host_diagnostic", lambda kind, target: f"{kind} {target} fixture")
+    service, adapter = _service(tmp_path)
+    with TestClient(_app(tmp_path, service)) as client:
+        for kind, target in (("traceroute", "127.0.0.1"), ("dns", "localhost")):
+            response = client.post("/api/network-tools/tasks", json={"kind": kind, "target": target})
+            assert response.status_code == 202
+            task_id = response.json()["task"]["id"]
+            assert _wait_task(service, adapter, task_id).status == TaskState.COMPLETED
+    restarted, _ = _service(tmp_path)
+    with TestClient(_app(tmp_path, restarted)) as client:
+        history = client.get("/api/network-tools/runs", params={"offset": 0, "limit": 1}).json()
+        assert len(history) == 1
+        other = client.get("/api/network-tools/runs", params={"offset": 1, "limit": 1}).json()
+        assert {history[0]["type"], other[0]["type"]} == {"network_tools.traceroute", "network_tools.dns"}
+        assert client.get(f"/api/network-tools/runs/{task_id}/results").json()["items"] == [
+            {"target": "localhost", "output": "dns localhost fixture"},
+        ]
+        restarted.rebind_site("other")
+        assert client.get("/api/network-tools/runs").json() == []
+        assert client.get(f"/api/network-tools/runs/{task_id}/results").status_code == 404
+
+
 def test_registered_fake_probe_uses_worker_task_minimal_snapshot_paging_and_export(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
         job_handlers,

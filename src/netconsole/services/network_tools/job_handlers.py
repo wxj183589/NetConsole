@@ -36,6 +36,8 @@ NETWORK_CONTINUOUS_PING_TASK = "network_tools.continuous_ping"
 NETWORK_BATCH_PING_TASK = "network_tools.batch_ping"
 NETWORK_SUBNET_PING_TASK = "network_tools.subnet_ping"
 NETWORK_TCP_PING_TASK = "network_tools.tcp_ping"
+NETWORK_TRACEROUTE_TASK = "network_tools.traceroute"
+NETWORK_DNS_TASK = "network_tools.dns"
 NETWORK_WIRELESS_SCAN_TASK = "network_tools.wireless_scan"
 NETWORK_TOOLBOX_EXPORT_TASK = "network_tools.toolbox_export"
 NETWORK_WIRELESS_EXPORT_TASK = "network_tools.wireless_export"
@@ -47,6 +49,8 @@ NETWORK_PROBE_TASK_TYPES = frozenset(
         NETWORK_BATCH_PING_TASK,
         NETWORK_SUBNET_PING_TASK,
         NETWORK_TCP_PING_TASK,
+        NETWORK_TRACEROUTE_TASK,
+        NETWORK_DNS_TASK,
     }
 )
 NETWORK_TOOLBOX_TASK_TYPES = frozenset({*NETWORK_PROBE_TASK_TYPES, NETWORK_TOOLBOX_EXPORT_TASK})
@@ -62,6 +66,8 @@ _PROBE_KIND_BY_TASK = {
     NETWORK_BATCH_PING_TASK: "batch_ping",
     NETWORK_SUBNET_PING_TASK: "subnet_ping",
     NETWORK_TCP_PING_TASK: "tcp_ping",
+    NETWORK_TRACEROUTE_TASK: "traceroute",
+    NETWORK_DNS_TASK: "dns",
 }
 
 
@@ -75,7 +81,11 @@ def run_network_probe(context: JobContext) -> dict[str, object]:
     context.progress("network_probe", 0, 0, "网络探测任务执行中")
 
     engine = ""
-    if kind == "single_ping":
+    if kind in {"traceroute", "dns"}:
+        from netconsole.services.network_tools.host_diagnostics import run_host_diagnostic
+
+        rows = [{"target": params["target"], "output": run_host_diagnostic(kind, params["target"])}]
+    elif kind == "single_ping":
         rows = [_safe_probe_row(run_single_ping(
             params["target"],
             count=params["count"],

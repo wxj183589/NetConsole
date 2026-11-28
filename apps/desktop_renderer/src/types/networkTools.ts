@@ -40,7 +40,7 @@ export interface NetworkToolTask {
 }
 
 export interface NetworkTaskStartRequest {
-  kind: 'single_ping' | 'continuous_ping' | 'batch_ping' | 'subnet_ping' | 'tcp_ping'
+  kind: 'single_ping' | 'continuous_ping' | 'batch_ping' | 'subnet_ping' | 'tcp_ping' | 'traceroute' | 'dns'
   target?: string
   targets?: string[]
   port?: number

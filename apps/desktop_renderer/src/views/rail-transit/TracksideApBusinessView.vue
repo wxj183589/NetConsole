@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
+import TracksideApEngineeringEditor from './TracksideApEngineeringEditor.vue'
+import { inject } from 'vue'
+import { routeLocationKey } from 'vue-router'
 import { computed, h, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, ElTag } from 'element-plus'
 import { ApiRequestError } from '../../api/client'
@@ -93,6 +96,7 @@ const businessProjectionTaskTypes = new Set([
   'ac_fit_ap_verbose_selected_refresh',
   'ac_fit_ap_optical_refresh',
 ])
+const route = inject(routeLocationKey, undefined)
 const initialLoading = ref(false)
 const refreshing = ref(false)
 const taskSubmitting = ref(false)
@@ -1231,6 +1235,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="trackside-page">
+    <TracksideApEngineeringEditor v-if="typeof route?.query.engineering_ap === 'string'" :key="route.query.engineering_ap" :ap-id="route.query.engineering_ap" @saved="refreshBusinessProjection({ forceNewRevision: true })" />
     <header class="page-heading">
       <div><p class="eyebrow">RAIL TRANSIT · TRACKSIDE AP</p><h1>轨旁 AP 业务</h1><p>AP 与交换机两侧接收光功率沿用各自既有业务门限；交换机接口 DOWN 优先显示链路状态，当前光功率无效时显示未知。</p></div>
       <div class="actions">

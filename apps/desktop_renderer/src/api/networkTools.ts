@@ -61,8 +61,8 @@ export function getNetworkProbeEnvironment(): Promise<NetworkProbeEnvironment> {
   return apiRequest<NetworkProbeEnvironment>('/api/network-tools/toolbox/probe-environment')
 }
 
-export function listNetworkTasks(): Promise<NetworkToolTask[]> {
-  return apiRequest<NetworkToolTask[]>('/api/network-tools/runs?limit=200')
+export function listNetworkTasks(offset = 0, limit = 200): Promise<NetworkToolTask[]> {
+  return apiRequest<NetworkToolTask[]>(`/api/network-tools/runs?${new URLSearchParams({ limit: String(limit), ...(offset ? { offset: String(offset) } : {}) })}`)
 }
 
 export function getNetworkTask(id: string): Promise<NetworkToolTask> {

@@ -35,7 +35,7 @@ class SubnetSplitRequest(ApiModel):
 
 
 class NetworkTaskStartRequest(ApiModel):
-    kind: Literal["single_ping", "continuous_ping", "batch_ping", "subnet_ping", "tcp_ping"]
+    kind: Literal["single_ping", "continuous_ping", "batch_ping", "subnet_ping", "tcp_ping", "traceroute", "dns"]
     target: str = Field(default="", max_length=255)
     targets: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(default_factory=list, max_length=4096)
     port: int = Field(default=443, ge=1, le=65535)
