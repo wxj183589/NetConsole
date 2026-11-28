@@ -49,6 +49,7 @@ from netconsole.models.api.ac_management import (
     AcConnectionRecordDTO,
     AcCurrentLldpDTO,
     AcLldpDTO,
+    AcControllerDTO,
     AcManagementSummaryDTO,
     AcOpticalDTO,
     AcOverviewDTO,
@@ -195,6 +196,21 @@ class AcManagementQueryService:
             return SiteManager(self.paths).validate_site_name(site_id)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return default
+
+    def list_controllers(self, site_id: str) -> list[AcControllerDTO]:
+        path = self._db_path(site_id)
+        if not path.is_file():
+            return []
+        with closing(self._connect(path)) as conn:
+            rows = self._ac_rows(conn)
+        return [
+            AcControllerDTO(
+                id=row["device_uuid"], name=row["name"], management_ip=row["primary_address"],
+                model=row["model"], software_version=row["software_version"],
+                updated_at=self._latest_text(row["summary"].get("updated_at"), row["summary"].get("collected_at")),
+            )
+            for row in rows
+        ]
 
     def get_summary(self, site_id: str) -> AcManagementSummaryDTO:
         db_path = self._db_path(site_id)

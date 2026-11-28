@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse
 
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.backend.api.feature_access import require_feature
+from netconsole.services.ac.controller_deployments import ControllerDeployments, DeploymentConflict, DeploymentCorrupt
 from netconsole.models.api.ac_management import (
     AcApDetailDTO,
     AcApHistoryPageDTO,
@@ -19,6 +20,8 @@ from netconsole.models.api.ac_management import (
     AcConfigSnapshotPageDTO,
     AcCurrentLldpDTO,
     AcLldpDTO,
+    AcControllerDTO,
+    AcDeploymentsDTO,
     AcManagementSummaryDTO,
     AcOpticalDTO,
     AcRadioDTO,
@@ -65,6 +68,41 @@ def _web_service(request: Request) -> AcWebApplicationService:
 
 def _web_site_id(request: Request) -> str:
     return _web_service(request).current_site_id()
+
+
+@router.get("/controllers", dependencies=[Depends(require_feature("module.ac"))])
+def controllers(request: Request, expected_site: str | None = None) -> list[AcControllerDTO]:
+    site = _site_id(request)
+    if expected_site is not None and expected_site != site:
+        raise HTTPException(status_code=409, detail={"code": "AC_SITE_CHANGED"})
+    return _query(lambda: _service(request).list_controllers(site))
+
+
+@router.get("/deployments", dependencies=[Depends(require_feature("module.ac"))])
+def deployments(request: Request) -> AcDeploymentsDTO:
+    try:
+        return ControllerDeployments(_service(request).paths, _site_id(request)).read()
+    except DeploymentCorrupt as exc:
+        raise HTTPException(status_code=409, detail={"code": "AC_DEPLOYMENTS_CORRUPT"}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.put("/deployments", dependencies=[Depends(require_feature("capability.ac.open_management"))])
+def save_deployments(body: AcDeploymentsDTO, request: Request) -> AcDeploymentsDTO:
+    service = _service(request)
+    site = _site_id(request)
+    if site != body.site_id:
+        raise HTTPException(status_code=409, detail={"code": "AC_SITE_CHANGED"})
+    try:
+        controllers = service.list_controllers(site)
+        return ControllerDeployments(service.paths, site).save(body, {item.id for item in controllers}, service.current_site_id)
+    except DeploymentCorrupt as exc:
+        raise HTTPException(status_code=409, detail={"code": "AC_DEPLOYMENTS_CORRUPT"}) from exc
+    except DeploymentConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": "AC_DEPLOYMENT_CONFLICT"}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get(

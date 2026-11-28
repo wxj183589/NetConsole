@@ -30,6 +30,30 @@ export function getAcSummary(): Promise<AcManagementSummary> {
   return apiRequest<AcManagementSummary>(`${root}/summary`)
 }
 
+export type AcController = Pick<AcManagementSummary['acs'][number],
+  'id' | 'name' | 'management_ip' | 'model' | 'software_version' | 'updated_at'>
+
+export function listAcControllers(site: string, options: RequestInit = {}): Promise<AcController[]> {
+  return apiRequest<AcController[]>(`${root}/controllers${queryString({ expected_site: site })}`, options)
+}
+
+export interface AcDeployment {
+  name: string
+  mode: 'standalone' | 'stack' | 'cluster' | 'one_plus_one'
+  members: string[]
+}
+export interface AcDeployments {
+  site_id: string
+  revision: number
+  groups: AcDeployment[]
+}
+export function getAcDeployments(options: RequestInit = {}): Promise<AcDeployments> {
+  return apiRequest(`${root}/deployments`, options)
+}
+export function saveAcDeployments(value: AcDeployments): Promise<AcDeployments> {
+  return apiRequest(`${root}/deployments`, { method: 'PUT', body: JSON.stringify(value) })
+}
+
 export function listAcAps(values: AcApQuery): Promise<AcApPage> {
   return apiRequest<AcApPage>(`${root}/aps${queryString(values)}`)
 }

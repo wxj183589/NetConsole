@@ -240,6 +240,7 @@ async function openRouteApDetail(): Promise<void> {
   const apId = typeof route.query.ap === 'string' ? route.query.ap : ''
   if (!apId) {
     detailVisible.value = false
+    if (acId && store.filters.ac_id !== acId) store.setAcId(acId)
     return
   }
   if (acId && store.filters.ac_id !== acId) {

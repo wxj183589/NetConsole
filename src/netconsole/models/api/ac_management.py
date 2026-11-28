@@ -30,6 +30,27 @@ class AcOverviewDTO(ApiModel):
     data_source: str = "SQLite 已采集数据"
 
 
+class AcControllerDTO(ApiModel):
+    id: str
+    name: str
+    management_ip: str
+    model: str
+    software_version: str
+    updated_at: str
+
+
+class AcDeploymentDTO(ApiModel):
+    name: str = Field(min_length=1, max_length=80)
+    mode: Literal["standalone", "stack", "cluster", "one_plus_one"]
+    members: list[str] = Field(min_length=1, max_length=128)
+
+
+class AcDeploymentsDTO(ApiModel):
+    site_id: str
+    revision: int = Field(default=0, ge=0)
+    groups: list[AcDeploymentDTO] = Field(default_factory=list, max_length=512)
+
+
 class AcManagementSummaryDTO(ApiModel):
     site_id: str
     acs: list[AcOverviewDTO] = Field(default_factory=list)

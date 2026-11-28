@@ -35,6 +35,25 @@ def test_row_value_supports_sqlite_rows_dicts_and_missing_fields(tmp_path: Path)
     connection.close()
 
 
+def test_controller_directory_does_not_read_ap_detail_tables(tmp_path, monkeypatch):
+    paths, _, _ = build_ac_management_fixture(tmp_path)
+    service = AcManagementQueryService(paths)
+    statements = []
+    connect = service._connect
+
+    def traced(path):
+        connection = connect(path)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(service, "_connect", traced)
+    rows = service.list_controllers("demo")
+    assert [(row.name, row.management_ip) for row in rows] == [("测试 AC", "10.0.0.1")]
+    assert rows[0].id and rows[0].updated_at
+    assert all("ac_fit_ap_" not in sql.lower() for sql in statements)
+    assert service.list_controllers("empty-site") == []
+
+
 def test_ac_query_service_reads_summary_filters_and_details_without_writes(tmp_path: Path) -> None:
     paths, db_path, _files = build_ac_management_fixture(tmp_path)
     service = AcManagementQueryService(paths)
@@ -879,3 +898,33 @@ def test_ac_config_snapshot_content_diff_and_path_isolation(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="路径越界"):
         service._snapshot_path("demo", {"file_path": "../outside.txt"})
+def test_ac_deployment_conflicts_preserve_current_record(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    import pytest
+
+    from netconsole.models.api.ac_management import AcDeploymentDTO, AcDeploymentsDTO
+    from netconsole.services.ac.controller_deployments import ControllerDeployments, DeploymentConflict, DeploymentCorrupt
+
+    paths, _, _ = build_ac_management_fixture(tmp_path)
+    store = ControllerDeployments(paths, "demo")
+    update = AcDeploymentsDTO(
+        site_id="demo", groups=[AcDeploymentDTO(name="AC", mode="standalone", members=["controller"])],
+    )
+    with pytest.raises(DeploymentConflict):
+        store.save(update, {"controller"}, lambda: "other")
+    assert not store.path.exists()
+
+    def save():
+        try:
+            return store.save(update, {"controller"}).revision
+        except DeploymentConflict:
+            return 0
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(lambda _: save(), range(2))) == [0, 1]
+    bad_bytes = b'{"site_id":"other","revision":1}'
+    store.path.write_bytes(bad_bytes)
+    with pytest.raises(DeploymentCorrupt):
+        store.save(update, {"controller"})
+    assert store.path.read_bytes() == bad_bytes
