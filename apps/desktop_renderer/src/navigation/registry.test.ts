@@ -14,17 +14,8 @@ import {
 describe('Web navigation registry', () => {
   it('keeps the fixed top-level order', () => {
     expect(navigationRegistry.map((item) => item.title)).toEqual([
-      'Dashboard',
-      '设备管理',
-      '设备控制台',
-      'AC 管理',
-      '轨道交通',
-      '配置采集中心',
-      '文件管理',
-      '工具集',
-      '任务中心',
-      '日志中心',
-      '系统设置',
+      'Dashboard', '设备资料', '控制台', '无线管理', '轨道交通', '设备任务', '工具集',
+      '文件管理', '网络服务', '软件说明与维护',
     ])
   })
 
@@ -36,9 +27,9 @@ describe('Web navigation registry', () => {
     expect(parent('rail.online-mr')).toBe('rail')
     expect(parent('rail.online-mr-analysis')).toBe('rail')
     expect(parent('rail.ground-unattended')).toBe('rail')
-    expect(parent('tools.traffic')).toBe('tools')
-    expect(parent('tools.wireless-scan')).toBe('tools')
-    expect(parent('tools.network-components')).toBe('tools')
+    expect(parent('tools.traffic')).toBe('network-services')
+    expect(parent('tools.wireless-scan')).toBe('network-services')
+    expect(parent('tools.network-components')).toBe('network-services')
     expect(flat.some((item) => item.navigation_id === 'network')).toBe(false)
     expect(flat.find((item) => item.navigation_id === 'tools.external-tools')?.parent_id).toBe('tools')
     expect(flat.some((item) => /snmp|wifi-survey/.test(item.navigation_id))).toBe(false)
@@ -51,17 +42,17 @@ describe('Web navigation registry', () => {
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.mesh-links')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'ac.optical')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'rail')?.children.map((item) => item.title)).toEqual([
-      '组织结构', '基础资料', '轨道交通无线看板', '地面无人值守', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时收集', '车载 MR 收集分析',
+      '组织结构', '基础资料', '轨道交通无线看板', '地面无人值守 · 实时采集', '地面无人值守 · 归档回放', '轨旁 AP 业务', 'MR 原始 MESH 日志分析', '车载 MR 实时采集', '车载 MR 归档回放',
     ])
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.train-online')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'files')?.children.map((item) => item.title)).toEqual([
-      '文件管理', '设备文件下载', '设备诊断下载',
+      '本地受管文件', '设备文件传输',
     ])
     expect(flattenNavigation().some((item) => item.navigation_id === 'config')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.car-network-diagnostic')).toBe(false)
     expect(flattenNavigation().some((item) => item.navigation_id === 'rail.trackside-ap-plan')).toBe(false)
     expect(navigationRegistry.find((item) => item.navigation_id === 'tools')?.children.map((item) => item.navigation_id)).toEqual([
-      'tools.external-tools', 'tools.traffic', 'tools.connectivity', 'tools.wireless-scan', 'tools.network-components', 'tools.network-services',
+      'tools.external-tools',
     ])
     const visible = flattenNavigation(visibleNavigation(() => true))
     expect(visible.every((item) => item.children.length > 0 || Boolean(item.route_name && item.route_path))).toBe(true)
@@ -69,37 +60,40 @@ describe('Web navigation registry', () => {
     expect(visible.some((item) => item.navigation_id === 'command-reference' || item.navigation_id === 'storage-management')).toBe(false)
   })
 
-  it('shows the toolbox group between files and tasks in Electron', () => {
+  it('shows independent network service entries in Electron', () => {
     const previous = window.netconsoleDesktop
     Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: {} })
     const visible = visibleNavigation(() => true)
     const ids = visible.map((entry) => entry.navigation_id)
-    expect(ids.slice(ids.indexOf('files'), ids.indexOf('tasks') + 1)).toEqual(['files', 'tools', 'tasks'])
-    const tools = visible.find((entry) => entry.navigation_id === 'tools')
+    expect(ids).toContain('tools')
+    expect(ids).toContain('network-services')
+    const tools = visible.find((entry) => entry.navigation_id === 'network-services')
     expect(tools?.children.map((item) => item.route_path)).toEqual([
-      '/tools', '/tools/traffic', '/tools/connectivity', '/tools/wireless-scan', '/tools/network-components', '/tools/network-services',
+      '/tools/connectivity', '/tools/traffic', '/tools/wireless-scan', '/tools/network-services', '/tools/network-components',
     ])
     if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
     else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
   })
 
-  it('hides only desktop toolbox children in browser navigation', () => {
+  it('hides desktop-only tools and listener management in browser navigation', () => {
     const previous = window.netconsoleDesktop
     Reflect.deleteProperty(window, 'netconsoleDesktop')
-    const tools = visibleNavigation(() => true).find((entry) => entry.navigation_id === 'tools')
+    const visible = visibleNavigation(() => true)
+    expect(visible.some((entry) => entry.navigation_id === 'tools')).toBe(false)
+    const tools = visible.find((entry) => entry.navigation_id === 'network-services')
     expect(tools?.children.map((item) => item.navigation_id)).toEqual([
-      'tools.traffic', 'tools.connectivity', 'tools.wireless-scan',
+      'tools.connectivity', 'tools.traffic', 'tools.wireless-scan',
     ])
     if (previous === undefined) Reflect.deleteProperty(window, 'netconsoleDesktop')
     else Object.defineProperty(window, 'netconsoleDesktop', { configurable: true, value: previous })
   })
 
-  it('exposes configuration collection independently while honoring its feature gate', () => {
-    const entry = navigationRegistry.find((item) => item.navigation_id === 'files.config-collection')
+  it('groups configuration collection with device tasks and honors its feature gate', () => {
+    const entry = flattenNavigation().find((item) => item.navigation_id === 'files.config-collection')
     expect(entry).toMatchObject({ route_path: '/config-center', feature_id: 'module.config_collection' })
-    expect(entry?.parent_id).toBeUndefined()
-    expect(visibleNavigation((id) => id !== 'module.config_collection').some((item) => item.navigation_id === entry?.navigation_id)).toBe(false)
-    expect(visibleNavigation(() => true).some((item) => item.navigation_id === entry?.navigation_id)).toBe(true)
+    expect(entry?.parent_id).toBe('device-tasks')
+    expect(flattenNavigation(visibleNavigation((id) => id !== 'module.config_collection')).some((item) => item.navigation_id === entry?.navigation_id)).toBe(false)
+    expect(flattenNavigation(visibleNavigation(() => true)).some((item) => item.navigation_id === entry?.navigation_id)).toBe(true)
   })
 
   it('keeps the device console on an independent feature gate', () => {
@@ -157,7 +151,6 @@ describe('Web navigation registry', () => {
     expect(files?.children.map((item) => item.navigation_id)).toEqual([
       'files.manager',
       'files.downloads',
-      'files.device-diagnostics',
     ])
   })
 })

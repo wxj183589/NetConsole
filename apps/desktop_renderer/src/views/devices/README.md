@@ -2,15 +2,15 @@
 
 ## 当前状态
 
-设备管理由 Electron 唯一桌面宿主中的 Vue Renderer 提供。设备列表、快速详情抽屉和完整详情页已进入永久架构，但人工桌面操作和真实设备采集仍未完成，状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`，不得写成 `COMPLETE`。
+设备管理由 Electron 唯一桌面宿主中的 Vue Renderer 提供。基础台账和档案入口共用设备 UUID。人工桌面操作和真实设备采集状态保持 `IMPLEMENTED_UNVERIFIED / REAL_DEVICE_PENDING`。
 
 ## 页面入口
 
-- `DeviceManagementView.vue`：设备列表、筛选、批量选择和快速详情抽屉入口。
-- `DeviceDetailView.vue`：`/devices/:deviceId` 完整设备详情路由。
-- `../../components/device-detail/DeviceDetailPanel.vue`：快速抽屉和完整页共用的展示组件。
+- `DeviceManagementView.vue`：设备台账、筛选、批量选择和档案跳转入口。
+- `DeviceArchiveListView.vue`：`/devices/archive` 档案索引，复用设备管理的分页查询。
+- `DeviceDetailView.vue`：`/devices/:deviceId` 技术档案路由，使用现有 `DeviceDetailPanel.vue`。
 
-快速抽屉和完整页必须复用同一套 API、DTO 和 presentation 组件。Renderer 只负责布局、筛选、分页、展示和轻量交互，不识别设备版本、不判断设备能力、不选择设备命令，也不直接访问 SQLite、SSH、Agent 或 Electron Main。
+档案和设备管理复用设备 API 与 DTO。Renderer 只负责布局、筛选、分页、展示和轻量交互，不识别设备版本、不判断设备能力、不选择设备命令，也不直接访问 SQLite、SSH、Agent 或 Electron Main。
 
 设备主列表、能力事实、详情分区和历史表格已迁移到 `NcDataTable`。表头/内容默认居中，描述和错误等长文本按列类型明确左对齐；列宽由公共文本测量、字段类型基线和可视区剩余空间共同计算，分区/历史偏好按 section/kind 隔离。设备主列表的正式 Electron 偏好键为 `device-management.device-list`，与设备详情各分区键隔离；浏览器开发模式使用相同公共实现的 localStorage 回退。设备主列表由系统名、分组、站点和主备地址共同拉伸，站点优先；复选框、登录协议、时间、状态和操作列保持边界。页面不再散写 Element Plus 列宽、`header-align`、`measureText()` 或平均分配算法。
 
@@ -18,7 +18,7 @@
 
 ## 读取与刷新顺序
 
-1. 打开抽屉或完整页时只读取数据库中的最近 overview 快照，不立即连接设备。
+1. 打开档案时只读取数据库中的最近 overview 快照，不立即连接设备。
 2. 页签只按 overview 返回的 `visible_sections` 显示；接口、光模块、LLDP、配置、任务和关联业务在首次激活时懒加载。CPU/内存只保留在 overview 基础摘要中。
 3. 历史和大表使用服务端分页、筛选与受控详情接口，不一次性返回全量数据。
 4. “刷新全部”提交稳定 Operation ID `device.inventory.collect`，由 `DeviceOperationService` 进入现有 Task Center；页面不建立第二套任务状态。

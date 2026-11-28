@@ -48,7 +48,7 @@ import { getActiveSite } from '../../api/siteStorage'
 import { useDeviceManagementQueryStore } from '../../stores/deviceManagement'
 import { useTaskStore } from '../../stores/tasks'
 import { SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
-import DeviceDetailPanel from '../../components/device-detail/DeviceDetailPanel.vue'
+import { t } from '../../i18n/runtime'
 import { useConfirm } from '../../components/feedback/useConfirm'
 import NcDataTable from '../../components/table/NcDataTable.vue'
 import NcMultiValueFilter from '../../components/table/NcMultiValueFilter.vue'
@@ -132,14 +132,9 @@ const groupCounts = ref<DeviceGroup[]>([])
 const groupTotals = ref<{ total: number; ungrouped: number } | null>(null)
 const groupsExpanded = ref(true)
 let deviceRequestGeneration = 0
-const detailVisible = ref(false)
-const detailDeviceUuid = ref('')
-const detailDrawerWidthPx = ref(0)
-const detailDrawerDragging = ref(false)
 const detail = ref<DeviceEditProfileResponse | null>(null)
 const editingDeviceUuid = ref('')
 const editingProfileLoading = ref(false)
-const connectionTest = ref<DeviceConnectionTest | null>(null)
 const writeVisible = ref(false)
 const writeMode = ref<'create' | 'edit'>('create')
 const writeLoading = ref(false)
@@ -271,7 +266,6 @@ const deviceColumns: NcTableColumn<DeviceListItem>[] = [
   { key: 'device_vendor', label: '厂商', valueType: 'text', stretch: 'normal', displayValue: (row) => row.vendor_label || row.device_vendor || '未分类' },
   { key: 'device_subcategory', label: '设备子类', valueType: 'text', stretch: 'normal', displayValue: (row) => row.device_subcategory_label || '未分类' },
   { key: 'device_model', label: '设备型号', valueType: 'text', stretch: 'normal', displayValue: (row) => row.device_model || '—' },
-  { key: 'engineering_affiliation', label: '工程归属', valueType: 'text', stretch: 'priority', displayValue: (row) => row.engineering_affiliation || '未关联轨道交通基础设施' },
   { key: 'collection_support', label: '采集支持', valueType: 'status', cellKind: 'tag', stretch: 'none', displayValue: (row) => collectionSupportLabel(row.collection_support), visible: false },
   { key: 'project_phase', label: '建设阶段', valueType: 'status', cellKind: 'tag', stretch: 'none', visible: false },
   { key: 'work_scope_status', label: '当前工作状态', valueType: 'status', cellKind: 'tag', stretch: 'none', visible: false },
@@ -410,10 +404,7 @@ let editLoadGeneration = 0
 let editProfileAbortController: AbortController | null = null
 let componentActive = true
 const pollingConsumer = 'device-management-view'
-let drawerDragStartX = 0
-let drawerDragStartWidth = 0
 
-const detailDrawerWidth = computed(() => `${clampDrawerWidth(detailDrawerWidthPx.value || defaultDrawerWidth())}px`)
 
 const isEmpty = computed(() => !loading.value && !error.value && pageData.value.items.length === 0)
 const activeTaskStatuses = new Set<TaskStatus>(['PENDING', 'STARTING', 'RUNNING', 'STOPPING', 'CREATED', 'QUEUED'])
@@ -430,11 +421,6 @@ const latestDeviceTask = computed(() => {
   return (submittedId && publicDeviceTasks.value.find((task) => task.id === submittedId))
     || publicDeviceTasks.value[0]
     || null
-})
-const testActive = computed(() => {
-  const taskId = connectionTest.value?.task_id
-  const task = taskId ? publicDeviceTasks.value.find((item) => item.id === taskId) : null
-  return Boolean(task && activeTaskStatuses.has(task.status))
 })
 const writeTestActive = computed(() => {
   const taskId = writeConnectionTest.value?.task_id
@@ -589,7 +575,6 @@ watch(filterReloadKey, () => {
 })
 
 onMounted(async () => {
-  window.addEventListener('resize', resizeDetailDrawer)
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   taskStore.acquirePolling(pollingConsumer)
   await initializeSiteContext()
@@ -615,8 +600,6 @@ onBeforeUnmount(() => {
   clearEditingProfileState()
   savedArtifactCapability.value = ''
   taskStore.releasePolling(pollingConsumer)
-  endDrawerResize()
-  window.removeEventListener('resize', resizeDetailDrawer)
   window.removeEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
 })
 
@@ -719,11 +702,7 @@ function clearAdvancedFilters(): void {
 }
 
 function openDetail(item: DeviceListItem): void {
-  detailDeviceUuid.value = item.device_uuid
-  if (!detailDrawerWidthPx.value) detailDrawerWidthPx.value = defaultDrawerWidth()
-  detailVisible.value = true
-  detail.value = null
-  connectionTest.value = null
+  void router.push({ name: 'device-detail', params: { deviceId: item.device_uuid } })
 }
 
 function clearEditingProfileState(): void {
@@ -733,67 +712,6 @@ function clearEditingProfileState(): void {
   editingDeviceUuid.value = ''
   editingProfileLoading.value = false
   detail.value = null
-}
-
-function defaultDrawerWidth(): number {
-  const viewport = window.innerWidth || 1280
-  return clampDrawerWidth(Math.round(viewport * 0.55))
-}
-
-function clampDrawerWidth(value: number): number {
-  const viewport = window.innerWidth || 1280
-  const minimum = viewport < 900 ? 320 : 820
-  const maximum = Math.max(minimum, Math.min(1280, viewport - 24))
-  return Math.max(minimum, Math.min(maximum, Math.round(value || viewport * 0.55)))
-}
-
-function drawerMinWidth(): number {
-  return (window.innerWidth || 1280) < 900 ? 320 : 820
-}
-
-function drawerMaxWidth(): number {
-  return Math.max(drawerMinWidth(), Math.min(1280, (window.innerWidth || 1280) - 24))
-}
-
-function handleDrawerResizeKeydown(event: KeyboardEvent): void {
-  const current = detailDrawerWidthPx.value || defaultDrawerWidth()
-  if (event.key === 'ArrowLeft') detailDrawerWidthPx.value = clampDrawerWidth(current + 24)
-  else if (event.key === 'ArrowRight') detailDrawerWidthPx.value = clampDrawerWidth(current - 24)
-  else if (event.key === 'Home') detailDrawerWidthPx.value = drawerMinWidth()
-  else if (event.key === 'End') detailDrawerWidthPx.value = drawerMaxWidth()
-  else return
-  event.preventDefault()
-}
-
-function resizeDetailDrawer(): void {
-  detailDrawerWidthPx.value = clampDrawerWidth(detailDrawerWidthPx.value || defaultDrawerWidth())
-}
-
-function beginDrawerResize(event: PointerEvent): void {
-  if ((window.innerWidth || 1280) < 900) return
-  drawerDragStartX = event.clientX
-  drawerDragStartWidth = detailDrawerWidthPx.value || defaultDrawerWidth()
-  detailDrawerDragging.value = true
-  document.addEventListener('pointermove', handleDrawerResize)
-  document.addEventListener('pointerup', endDrawerResize)
-}
-
-function handleDrawerResize(event: PointerEvent): void {
-  if (!detailDrawerDragging.value) return
-  detailDrawerWidthPx.value = clampDrawerWidth(drawerDragStartWidth + drawerDragStartX - event.clientX)
-}
-
-function endDrawerResize(): void {
-  detailDrawerDragging.value = false
-  document.removeEventListener('pointermove', handleDrawerResize)
-  document.removeEventListener('pointerup', endDrawerResize)
-}
-
-function openFullDetail(): void {
-  const uuid = detailDeviceUuid.value
-  if (!uuid) return
-  detailVisible.value = false
-  void router.push({ name: 'device-detail', params: { deviceId: uuid }, query: { from: 'device-management' } })
 }
 
 async function openTaskWindow(
@@ -1064,7 +982,7 @@ function invertSelection(): void {
 }
 
 const deviceContextMenuItems = computed<NcDataTableContextMenuItem<DeviceListItem>[]>(() => [
-  { key: 'detail', label: '详情', action: ({ row }) => openDetail(row) },
+  { key: 'detail', label: t('nav.device-archives', '设备档案'), action: ({ row }) => openDetail(row) },
   {
     key: 'set-project-phase',
     label: '设置建设阶段',
@@ -1155,7 +1073,7 @@ function openEditForm(): void {
   writeVisible.value = true
 }
 
-async function openEdit(deviceUuid = detailDeviceUuid.value): Promise<void> {
+async function openEdit(deviceUuid: string): Promise<void> {
   if (!deviceUuid) return
   editLoadGeneration += 1
   const generation = editLoadGeneration
@@ -1360,7 +1278,7 @@ async function saveWrite(): Promise<void> {
 }
 
 async function duplicateSelected(): Promise<void> {
-  const uuid = selectedUuids.value[0] || detailDeviceUuid.value
+  const uuid = selectedUuids.value[0]
   if (!uuid) {
     ElMessage.warning('请先选择设备')
     return
@@ -1401,7 +1319,6 @@ async function duplicateByUuid(deviceUuid: string): Promise<void> {
 }
 
 async function editRow(row: DeviceListItem): Promise<void> {
-  openDetail(row)
   await openEdit(row.device_uuid)
 }
 
@@ -2009,13 +1926,7 @@ async function saveTerminalSettings(): Promise<void> {
 }
 
 async function requestTerminal(deviceUuid?: string): Promise<void> {
-  const targetUuids = deviceUuid
-    ? [deviceUuid]
-    : selectedUuids.value.length
-      ? [...selectedUuids.value]
-      : detailDeviceUuid.value
-        ? [detailDeviceUuid.value]
-        : []
+  const targetUuids = deviceUuid ? [deviceUuid] : [...selectedUuids.value]
   if (!targetUuids.length) {
     ElMessage.warning('请先选择设备')
     return
@@ -2260,7 +2171,7 @@ function deviceListErrorMessage(cause: unknown): string {
               </el-tag>
             </el-tooltip>
           </template>
-          <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">详情</el-button><el-button link :disabled="!isFeatureEnabled('capability.devices.write')" @click="editRow(row)">编辑</el-button><el-button link :icon="Connection" :disabled="!isFeatureEnabled('module.console')" @click="openInternalConsole(row.device_uuid)">控制台</el-button><el-button link type="danger" :disabled="!isFeatureEnabled('capability.devices.write')" @click="deleteRows([row.device_uuid])">删除</el-button></template>
+          <template #cell-actions="{ row }"><el-button link type="primary" :icon="View" @click="openDetail(row)">{{ t('nav.device-archives', '设备档案') }}</el-button><el-button link :disabled="!isFeatureEnabled('capability.devices.write')" @click="editRow(row)">编辑</el-button><el-button link :icon="Connection" :disabled="!isFeatureEnabled('module.console')" @click="openInternalConsole(row.device_uuid)">控制台</el-button><el-button link type="danger" :disabled="!isFeatureEnabled('capability.devices.write')" @click="deleteRows([row.device_uuid])">删除</el-button></template>
         </NcDataTable>
       </div>
       <el-pagination
@@ -2394,19 +2305,6 @@ function deviceListErrorMessage(cause: unknown): string {
         <el-button data-testid="confirm-device-export-scope" type="primary" :loading="csvExportSubmitting" @click="confirmCsvExportScope">选择保存位置</el-button>
       </template>
     </el-dialog>
-
-    <el-drawer v-model="detailVisible" title="设备详情" :size="detailDrawerWidth" class="device-detail-drawer" :class="{ 'is-detail-drawer-dragging': detailDrawerDragging }" @closed="endDrawerResize">
-      <div class="detail-drawer-resizer" role="separator" tabindex="0" aria-orientation="vertical" aria-label="调整设备详情宽度" :aria-valuenow="detailDrawerWidthPx || defaultDrawerWidth()" :aria-valuemin="drawerMinWidth()" :aria-valuemax="drawerMaxWidth()" @pointerdown="beginDrawerResize" @keydown="handleDrawerResizeKeydown" />
-      <DeviceDetailPanel
-        v-if="detailDeviceUuid"
-        :device-uuid="detailDeviceUuid"
-        mode="drawer"
-        :connection-test="connectionTest"
-        @full-detail="openFullDetail"
-        @edit="openEdit"
-        @terminal="requestTerminal"
-      />
-    </el-drawer>
 
     <el-dialog v-model="terminalLaunchVisible" title="选择外部终端" width="440px">
       <el-radio-group v-model="terminalSettings.terminal_type">
@@ -2659,10 +2557,6 @@ function deviceListErrorMessage(cause: unknown): string {
 .table-card strong, .table-card small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-card small { margin-top: 4px; color: var(--nc-text-tertiary); }
 .detail-body { min-height: 240px; }
-:global(.device-detail-drawer .el-drawer__body) { display: flex; min-height: 0; flex-direction: column; overflow: hidden; }
-.detail-drawer-resizer { position: absolute; z-index: 2; top: 0; bottom: 0; left: 0; width: 8px; cursor: col-resize; }
-.detail-drawer-resizer:hover { background: var(--el-color-primary-light-8); }
-.is-detail-drawer-dragging, .is-detail-drawer-dragging * { user-select: none; }
 .detail-section { margin-top: 22px; }
 .detail-section h3 { margin-bottom: 11px; font-size: 15px; }
 .action-row { display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 12px; }

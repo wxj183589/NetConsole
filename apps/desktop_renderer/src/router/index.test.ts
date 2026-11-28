@@ -83,11 +83,19 @@ describe('Web route ownership', () => {
     })
   })
 
-  it('registers the standalone device detail route with list navigation context', () => {
+  it('registers the standalone device detail route with archive navigation context', () => {
     const route = routes.find((item) => item.name === 'device-detail')
     expect(route?.path).toBe('devices/:deviceId')
-    expect(route?.meta?.navigationId).toBe('devices')
+    expect(route?.meta?.navigationId).toBe('device-archives')
     expect(route?.meta?.hiddenRoute).toBe(true)
+  })
+
+  it('gives live and archived ground runs different workspaces under the same feature gate', () => {
+    const live = routes.find((item) => item.name === 'ground-unattended')
+    const replay = routes.find((item) => item.name === 'ground-unattended-replay')
+    expect(replay?.path).toBe('rail-transit/ground-unattended-replay')
+    expect(replay?.meta?.featureId).toBe(live?.meta?.featureId)
+    expect(replay?.component).not.toBe(live?.component)
   })
 
   it('keeps one cached trackside AP business workspace', () => {

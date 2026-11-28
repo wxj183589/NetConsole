@@ -901,7 +901,7 @@ describe('DeviceManagementView mounted interactions', () => {
     }> }).contextMenuItems
 
     expect(items.map((item) => item.label)).toEqual([
-      '详情',
+      '设备档案',
       '设置建设阶段',
       '设置当前工作状态',
       '编辑',
