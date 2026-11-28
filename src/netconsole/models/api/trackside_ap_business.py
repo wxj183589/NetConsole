@@ -31,6 +31,7 @@ class TracksideApIssueDTO(ApiModel):
     ap_uuid: str
     station_name: str
     switch_name: str
+    switch_device_id: str
     switch_interface: str
     issue_type: str
     first_detected_at: str

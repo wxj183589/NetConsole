@@ -16,17 +16,23 @@ const wpsRoot = `${root}/wps`
 export type TracksideIssueAction = 'confirm' | 'handle' | 'verify' | 'close'
 export interface TracksideIssue {
   event_uuid: string
+  ap_uuid: string
   issue_type: string
   first_detected_at: string
   first_ap_rx_dbm: string
   first_switch_rx_dbm: string
   station_name: string
   switch_name: string
+  switch_device_id: string
   switch_interface: string
   event_status: 'OPEN' | 'RESOLVED'
   resolved_at: string
   recovered_ap_rx_dbm: string
   recovered_switch_rx_dbm: string
+  last_abnormal_at: string
+  evidence_quality: string
+  source_revision_first: string
+  source_revision_last: string
   operations: { action: TracksideIssueAction; at: string; note: string }[]
 }
 
