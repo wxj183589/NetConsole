@@ -237,6 +237,19 @@ async function renderPanel(withOverview = true) {
 }
 
 describe('Device detail recent-change states', () => {
+  it('loads optical history for the exact device and interface linked from Trackside AP', async () => {
+    mocks.getDeviceRecentChanges.mockResolvedValueOnce({ items: [], total: 0 })
+    const wrapper = mount(DeviceDetailPanel, {
+      props: { deviceUuid: 'device-1', mode: 'page', opticalHistoryInterface: 'GE1/0/23' },
+      global: { directives: { loading: () => undefined }, stubs: { ...elementStubs, RouterLink: true } },
+    })
+    await flushPromises()
+    expect(mocks.getDeviceRecentChanges).toHaveBeenCalledExactlyOnceWith('device-1', 'optical', 'GE1/0/23', 1, 10)
+    expect(wrapper.text()).toContain('共 0 条最近变化')
+    expect(mocks.refreshDeviceDetails).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   const sectionByKind = {
     interface: 'interfaces',
     optical: 'optical',

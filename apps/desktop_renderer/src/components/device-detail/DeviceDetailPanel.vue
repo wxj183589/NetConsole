@@ -46,6 +46,7 @@ type DetailMode = 'drawer' | 'page'
 interface Props {
   deviceUuid: string
   mode: DetailMode
+  opticalHistoryInterface?: string
   overview?: DeviceOverviewResponse | null
   connectionTest?: DeviceConnectionTest | null
 }
@@ -436,7 +437,14 @@ async function initialize(): Promise<void> {
   loading.value = true
   try {
     const result = await getDeviceOverview(props.deviceUuid)
-    if (generation === loadGeneration) overview.value = result
+    if (generation === loadGeneration) {
+      overview.value = result
+      const interfaceName = props.opticalHistoryInterface
+      if (interfaceName && visibleSections.value.includes('optical')) {
+        void activateSection('optical', interfaceName)
+        void loadRecentChanges('optical', interfaceName)
+      }
+    }
   } catch (cause) {
     if (generation === loadGeneration) error.value = errorMessage(cause, '设备详情加载失败')
   } finally {
@@ -770,6 +778,10 @@ async function openRecentChanges(section: DeviceDetailSection, row: DeviceDetail
   const objectName = recentObjectName(section, row)
   if (!kind || !objectName) return
   if (recentCount(section, row) <= 0) return
+  await loadRecentChanges(kind, objectName)
+}
+
+async function loadRecentChanges(kind: RecentChangesPage['kind'], objectName: string): Promise<void> {
   recentVisible.value = true
   recentLoading.value = true
   recentError.value = ''
@@ -1375,7 +1387,7 @@ function errorMessage(cause: unknown, fallback: string): string {
       </template>
     </div>
 
-    <el-dialog v-model="recentVisible" :title="`最近变化 · ${formatValue(recentPage?.object_name)}`" width="min(1180px, 96vw)">
+    <el-dialog v-model="recentVisible" :title="`${props.opticalHistoryInterface && selectedSection === 'optical' ? '交换机端口光模块历史' : '最近变化'} · ${formatValue(recentPage?.object_name || props.opticalHistoryInterface)}`" width="min(1180px, 96vw)">
       <div v-loading="recentLoading">
         <el-alert v-if="recentError" :title="recentError" type="error" show-icon :closable="false" />
         <NcDataTable

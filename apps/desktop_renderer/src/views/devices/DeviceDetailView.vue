@@ -9,6 +9,7 @@ import { t } from '../../i18n/runtime'
 const route = useRoute()
 const router = useRouter()
 const deviceUuid = computed(() => String(route.params.deviceId || ''))
+const opticalHistoryInterface = computed(() => typeof route.query.optical_history_interface === 'string' ? route.query.optical_history_interface : '')
 
 function backToDevices(): void {
   void router.push({ name: 'device-archives' })
@@ -24,7 +25,7 @@ function backToDevices(): void {
       </div>
       <RouterLink :to="{ name: 'device-management' }">{{ t('device_archive.manage', '设备管理') }}</RouterLink>
     </div>
-    <DeviceDetailPanel :device-uuid="deviceUuid" mode="page" />
+    <DeviceDetailPanel :key="opticalHistoryInterface" :device-uuid="deviceUuid" :optical-history-interface="opticalHistoryInterface" mode="page" />
   </section>
 </template>
 
