@@ -9,7 +9,7 @@ const base = '/api/file-management/workspace'
 export function browseFileWorkspace(kind: FileRoot, directoryId = ''): Promise<WorkspaceDirectory> {
   return apiRequest(`${base}/entries?${new URLSearchParams({ kind, directory_id: directoryId })}`, { coalesce: false })
 }
-export function operateFileWorkspace(body: { action: 'copy' | 'move' | 'rename' | 'delete' | 'mkdir' | 'checksum'; source?: string; destination?: string; name?: string; overwrite?: boolean; expected_sha256?: string }): Promise<WorkspaceFileTask> {
+export function operateFileWorkspace(body: { action: 'copy' | 'move' | 'rename' | 'delete' | 'mkdir' | 'checksum' | 'archive'; source?: string; destination?: string; name?: string; overwrite?: boolean; expected_sha256?: string }): Promise<WorkspaceFileTask> {
   return apiRequest(`${base}/operations`, { method: 'POST', body: JSON.stringify(body) })
 }
 export function listFileWorkspaceTasks(): Promise<{ items: WorkspaceFileTask[] }> {

@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import uuid
+from zipfile import ZIP_DEFLATED, ZipFile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
@@ -168,7 +169,7 @@ class FileWorkspaceOperations:
 
     def submit(self, manager, action, source="", destination="", name="", overwrite=False, expected_sha256=""):
         site = self._site()
-        if action not in {"copy", "move", "rename", "delete", "mkdir", "checksum"}:
+        if action not in {"copy", "move", "rename", "delete", "mkdir", "checksum", "archive"}:
             raise ValueError("文件操作无效")
         with self.lock:
             if self.closed or sum(item["status"] in {"WAITING", "RUNNING"} for item in self.tasks.values()) >= 20:
@@ -233,7 +234,7 @@ class FileWorkspaceOperations:
                 self._event(task, "state")
                 src = self._resolve(manager, source, task["site"], write=action in {"move", "rename", "delete"}) if source else None
                 dst = self._resolve(manager, destination, task["site"], write=True) if destination else None
-                if action in {"copy", "move", "rename", "mkdir"}:
+                if action in {"copy", "move", "rename", "mkdir", "archive"}:
                     name = TerminalSftpManager._safe_filename(name)
                     parent = src[2].parent if action == "rename" else dst[2]
                     if not parent.is_dir():
@@ -244,6 +245,10 @@ class FileWorkspaceOperations:
                     raise ValueError("不能操作受管根目录")
                 if action == "mkdir":
                     target.mkdir()
+                elif action == "archive":
+                    if src[0] not in self.ROOTS or dst[0] not in self.ROOTS:
+                        raise ValueError("归档必须使用受管文件目录")
+                    self._archive(src[2], target, task)
                 elif action == "checksum":
                     task["sha256"] = self._hash(src[2], task)
                 elif action == "delete":
@@ -280,6 +285,45 @@ class FileWorkspaceOperations:
                     self.refs.pop(source, None)
                     self.ref_ids.pop(entry, None)
             self._event(task, {"COMPLETED": "finished", "CANCELLED": "cancelled"}.get(task["status"], "error"))
+
+    def _archive(self, source, target, task):
+        if target == source or target.is_relative_to(source):
+            raise ValueError("归档目标必须位于源目录之外")
+        if target.suffix.casefold() != ".zip":
+            raise ValueError("归档文件必须使用 .zip 扩展名")
+        if target.exists():
+            raise FileExistsError("同名归档已存在")
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".file-archive-", suffix=".part", delete=False) as output:
+                temporary = Path(output.name)
+                with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
+                    pending = [source]
+                    while pending:
+                        self._check(task)
+                        path = pending.pop()
+                        self._plain_path(path)
+                        relative = path.relative_to(source.parent).as_posix()
+                        mode = path.stat().st_mode
+                        if stat.S_ISDIR(mode):
+                            archive.mkdir(relative)
+                            pending.extend(sorted(path.iterdir(), reverse=True))
+                        elif stat.S_ISREG(mode):
+                            with path.open("rb") as stream, archive.open(relative, "w", force_zip64=True) as entry:
+                                while chunk := stream.read(1024 * 1024):
+                                    self._check(task)
+                                    entry.write(chunk)
+                        else:
+                            raise ValueError("归档仅支持普通文件和目录")
+                output.flush()
+                os.fsync(output.fileno())
+            task["sha256"] = self._hash(temporary, task)
+            self._check(task)
+            self._plain_path(target.parent)
+            os.link(temporary, target)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _hash(self, path, task):
         if not path.is_file():

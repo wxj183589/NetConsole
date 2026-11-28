@@ -41,7 +41,7 @@ router = APIRouter(prefix="/file-management", tags=["file-management"])
 
 
 class WorkspaceFileOperation(BaseModel):
-    action: Literal["copy", "move", "rename", "delete", "mkdir", "checksum"]
+    action: Literal["copy", "move", "rename", "delete", "mkdir", "checksum", "archive"]
     source: str = Field(default="", max_length=64)
     destination: str = Field(default="", max_length=64)
     name: str = Field(default="", max_length=240)
