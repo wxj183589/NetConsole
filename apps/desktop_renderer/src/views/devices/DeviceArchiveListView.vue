@@ -67,6 +67,11 @@ onUnmounted(() => {
       </el-table-column>
       <el-table-column prop="primary_address" :label="t('device_archive.address', '管理 IP')" min-width="140" show-overflow-tooltip />
       <el-table-column prop="group_name" :label="t('device_archive.group', '分组')" min-width="120" show-overflow-tooltip />
+      <el-table-column label="操作" width="120">
+        <template #default="{ row }">
+          <RouterLink :to="{ name: 'device-detail', params: { deviceId: row.device_uuid } }">打开档案</RouterLink>
+        </template>
+      </el-table-column>
     </el-table>
     <el-pagination v-if="result" :current-page="result.page" :page-size="pageSize" :total="result.total" layout="prev, pager, next" @current-change="load" />
   </section>

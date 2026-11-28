@@ -108,6 +108,7 @@ async function downloadDiagnostics(): Promise<void> {
     })
     if (submitted.status === 'cancelled') return
     ElMessage.success('设备诊断下载任务已提交')
+    await router.push({ name: 'tasks', query: { module: 'devices', task_id: submitted.binding.taskId } })
   } catch (cause) {
     ElMessage.error(cause instanceof Error ? cause.message : '设备诊断下载失败')
   }

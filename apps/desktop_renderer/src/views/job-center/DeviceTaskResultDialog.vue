@@ -90,6 +90,7 @@ watch([open, () => props.taskId], ([visible, id]) => {
           <p v-if="item.message || item.warning_message">{{ item.message || item.warning_message }}</p>
           <dl>
             <dt>设备 UUID</dt><dd>{{ item.device_uuid }}</dd>
+            <dt>设备档案</dt><dd><RouterLink v-if="isFeatureEnabled('module.devices')" :to="{ name: 'device-detail', params: { deviceId: item.device_uuid } }" @click="open = false">打开设备档案</RouterLink></dd>
             <dt>开始时间</dt><dd>{{ item.started_at }}</dd>
             <dt>完成时间</dt><dd>{{ item.finished_at }}</dd>
             <template v-if="item.elapsed_ms !== undefined"><dt>耗时</dt><dd>{{ (item.elapsed_ms / 1000).toFixed(2) }} 秒</dd></template>

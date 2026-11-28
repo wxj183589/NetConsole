@@ -2065,6 +2065,7 @@ function deviceListErrorMessage(cause: unknown): string {
         <el-button :icon="MoreFilled">更多操作</el-button>
         <template #dropdown>
           <el-dropdown-menu>
+            <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('module.task_center')" @click="router.push({ name: 'tasks', query: { create_for_device: selectedUuids[0] } })">创建设备任务</el-dropdown-item>
             <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('module.console')" @click="openInternalConsole()">内置控制台</el-dropdown-item>
             <el-dropdown-item :disabled="!desktopHost || !isFeatureEnabled('capability.devices.desktop_actions')" @click="openTerminalSettings">外部终端配置</el-dropdown-item>
             <el-dropdown-item :disabled="selectedUuids.length !== 1 || !isFeatureEnabled('capability.devices.write')" @click="duplicateSelected">复制设备</el-dropdown-item>
