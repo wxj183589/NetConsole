@@ -9,3 +9,5 @@
 [旧版 UI/UX Phase 3](UI_UX_PHASE3_PROGRESS.md)记录真实线路数据、性能复测与闭环改进。
 
 [旧版 UI/UX Phase 4](UI_UX_PHASE4_PROGRESS.md)记录设备关联、两线回放、任务隔离和冷启动复测。
+
+[旧版 UI/UX Phase 5](UI_UX_PHASE5_PROGRESS.md)记录任务结果、多 Run、原生导出和光衰问题处理。

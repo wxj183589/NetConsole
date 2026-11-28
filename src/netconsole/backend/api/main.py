@@ -115,6 +115,7 @@ from netconsole.services.rail_transit.station_template_service import StationTem
 from netconsole.services.rail_transit.mesh_analysis_query_service import MeshAnalysisQueryService
 from netconsole.services.rail_transit.train_communication_query_service import TrainCommunicationQueryService
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
+from netconsole.services.rail_transit.trackside_ap_issues import TracksideIssueService
 from netconsole.services.rail_transit.vehicle_mr_online_query_service import VehicleMrOnlineQueryService
 from netconsole.services.rail_transit.wireless_dashboard_query_service import WirelessDashboardQueryService
 from netconsole.services.wps_trackside_ap_sync import TracksideApWpsSyncService
@@ -1165,6 +1166,7 @@ def create_app(
         vehicle_online_query=app.state.vehicle_mr_online_query_service,
     )
     app.state.trackside_ap_business_query_service = trackside_ap_business_query_service
+    app.state.trackside_issue_service = TracksideIssueService(paths)
     app.state.trackside_ap_wps_sync_service = trackside_ap_wps_sync_service
     app.state.mesh_analysis_query_service = MeshAnalysisQueryService(
         paths,

@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 
 from netconsole.core.database import Database
+from netconsole.core.paths import PathResolver
 from netconsole.repositories.ac_repository import AcRepository
 
 
@@ -13,6 +14,17 @@ AUDIT_FIELD = "trackside_issue_operations"
 
 class TracksideIssueConflict(ValueError):
     pass
+
+
+class TracksideIssueService:
+    def __init__(self, paths: PathResolver) -> None:
+        self.paths = paths
+
+    def list(self, site_id: str, ap_uuid: str) -> dict:
+        return list_trackside_issues(Database(self.paths.site_db_path(site_id)), site_id, ap_uuid)
+
+    def apply(self, site_id: str, event_uuid: str, action: str, note: str) -> dict:
+        return apply_trackside_issue_action(Database(self.paths.site_db_path(site_id)), site_id, event_uuid, action, note)
 
 
 def _evidence(row) -> dict:

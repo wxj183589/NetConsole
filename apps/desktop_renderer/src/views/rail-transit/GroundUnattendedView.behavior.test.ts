@@ -1703,6 +1703,10 @@ describe('Ground unattended page loading behavior', () => {
     expect(api.getGroundStatus.mock.calls.length).toBeLessThanOrEqual(370)
     expect(api.getGroundHealth.mock.calls.length).toBeGreaterThanOrEqual(350)
     expect(api.getGroundHealth.mock.calls.length).toBeLessThanOrEqual(370)
+    expect(api.getGroundHeartbeat).toHaveBeenCalledWith('', expect.objectContaining({
+      signal: expect.any(AbortSignal),
+    }), { data_mode: 'LIVE_COLLECTION' })
+    expect(api.getGroundHeartbeat.mock.calls.every(([runId]) => runId === '')).toBe(true)
 
     wrapper.unmount()
     const statusCalls = api.getGroundStatus.mock.calls.length

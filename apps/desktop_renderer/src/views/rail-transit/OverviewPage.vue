@@ -31,7 +31,7 @@ async function loadV2(): Promise<void> {
   controller = request
   try {
     const [snapshot, events] = await Promise.all([
-      getGroundHeartbeat(runId.value, { signal: request.signal }),
+      getGroundHeartbeat('', { signal: request.signal }, { data_mode: 'LIVE_COLLECTION' }),
       listGroundTimeline('', '', runId.value, { signal: request.signal }, 1, 50),
     ])
     if (current !== generation || !active.value) return

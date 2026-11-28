@@ -314,6 +314,9 @@ class Harness:
                         "fleet_ping_timeout_ms": 4000, "fleet_ping_packet_size": 64, "fleet_ping_shard_size": 32})
         self.api("/profile", "PUT", profile)
         self.summary["inventory"] = self.api("/inventory/sync", "POST")
+        heartbeat_config = self.api("/heartbeat/config")
+        heartbeat_config.update({"enabled": True, "backup_policy": "MONITOR", "shard_size": 32})
+        self.api("/heartbeat/config", "PUT", heartbeat_config)
         self.api("/start", "POST")
         def wait_for_ground_start():
             item = self.api("/health")
@@ -322,7 +325,9 @@ class Harness:
                 for key in ("status", "run_state", "ping_target_count", "ping_process_count", "udp_running",
                             "receiver_alive", "writer_alive", "parser_alive", "last_error")
             }
-            return item if item.get("ping_target_count") == 200 and item.get("udp_running") else None
+            resident = self.api("/heartbeat/runtime")
+            self.summary["last_start_heartbeat_probe"] = resident
+            return item if resident.get("target_count") == 200 and item.get("udp_running") else None
 
         health = self.wait(wait_for_ground_start, 60)
         self.summary["initial_health"] = health
@@ -358,7 +363,7 @@ class Harness:
                         "udp_sent": self.sent, "storage_bytes": storage_bytes(self.root)}
                 metrics.write(json.dumps(item, ensure_ascii=False) + "\n")
                 metrics.flush()
-                if electron.poll() is not None or health.get("ping_target_count") != 200:
+                if electron.poll() is not None or heartbeat.get("runtime", {}).get("target_count") != 200:
                     raise RuntimeError("Owned Electron exited or heartbeat lost targets")
                 time.sleep(min(10, max(0, self.args.seconds - (time.monotonic() - self.started))))
         self.summary["continuous_elapsed_seconds"] = time.monotonic() - self.started
@@ -383,14 +388,15 @@ class Harness:
         self.wait(lambda: not self.api("/status").get("active_run_id"), 90)
         self.summary["final_health_after_stop"] = self.api("/health")
         final_health = self.summary["final_health_after_stop"]
+        resident = self.api("/heartbeat/runtime")
         self.summary["heartbeat_resident_after_ground_stop"] = {
-            "target_count": final_health.get("ping_target_count"),
-            "process_count": final_health.get("ping_process_count"),
+            "target_count": resident.get("target_count"),
+            "process_count": resident.get("process_count"),
             "required": True,
         }
         if final_health.get("udp_running") or final_health.get("receiver_alive") or final_health.get("writer_alive") or final_health.get("parser_alive"):
             raise RuntimeError("Ground stop left Syslog pipeline resources active")
-        if final_health.get("ping_target_count") != 200 or final_health.get("ping_process_count", 0) <= 0:
+        if resident.get("target_count") != 200 or resident.get("process_count", 0) <= 0:
             raise RuntimeError("Ground stop did not preserve resident Heartbeat")
         self.summary["status"] = "COMPLETED"
         self.summary["db_path"] = str(db_path)

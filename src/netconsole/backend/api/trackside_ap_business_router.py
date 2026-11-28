@@ -15,7 +15,6 @@ from netconsole.application.rail_transit.web_application_service import RailTran
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.core import app_logger
-from netconsole.core.database import Database
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.trackside_ap_business import (
@@ -46,8 +45,6 @@ from netconsole.models.api.trackside_ap_business import (
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
 from netconsole.services.rail_transit.trackside_ap_issues import (
     TracksideIssueConflict,
-    apply_trackside_issue_action,
-    list_trackside_issues,
 )
 from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     TracksideApBusinessSnapshotError,
@@ -94,9 +91,8 @@ def issue_history(
     site_id = _site_id(request)
     if site_id != expected_site:
         raise HTTPException(status_code=409, detail="当前局点已切换，请重新打开问题记录")
-    database = Database(request.app.state.paths.site_db_path(site_id))
     try:
-        return list_trackside_issues(database, site_id, ap_uuid)
+        return request.app.state.trackside_issue_service.list(site_id, ap_uuid)
     except TracksideIssueConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -106,9 +102,8 @@ def issue_action(request: Request, event_uuid: str, payload: TracksideApIssueAct
     site_id = _site_id(request)
     if site_id != payload.expected_site:
         raise HTTPException(status_code=409, detail="当前局点已切换，请重新打开问题记录")
-    database = Database(request.app.state.paths.site_db_path(site_id))
     try:
-        return apply_trackside_issue_action(database, site_id, event_uuid, payload.action, payload.note)
+        return request.app.state.trackside_issue_service.apply(site_id, event_uuid, payload.action, payload.note)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="当前局点没有此问题记录") from exc
     except TracksideIssueConflict as exc:
