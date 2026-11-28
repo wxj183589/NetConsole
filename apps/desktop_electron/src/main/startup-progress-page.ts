@@ -48,6 +48,7 @@ export class StartupProgressPage {
 
 export function startupStagePercent(stage: string): number {
   const normalized = String(stage || '').trim()
+  if (['feature_services_initializing', 'platform_services_initializing', 'ground_runtime_initializing', 'routers_registering'].includes(normalized)) return 15
   if (['ready', 'renderer.ready', 'desktop.interactive'].includes(normalized)) return 100
   if (['loading_workspace', 'renderer.navigation_started', 'renderer.dom_ready'].includes(normalized)) return 78
   if (['backend_ready', 'backend.health_ready', 'backend.handshake_received', 'listener_ready'].includes(normalized)) return 55
@@ -73,6 +74,10 @@ export function startupStageLabel(stage: string): string {
     active_site_resolving: '正在读取当前局点',
     active_site_resolved: '正在读取当前局点',
     application_services_initializing: '正在配置本地服务',
+    feature_services_initializing: '正在加载功能配置与设备服务',
+    platform_services_initializing: '正在配置存储与网络服务',
+    ground_runtime_initializing: '正在初始化地面无人值守',
+    routers_registering: '正在注册本地服务接口',
     active_site_database_ready: '正在读取当前局点',
     active_site_database_initializing: '正在读取当前局点',
     ap_identity_index_ready: '正在初始化本地索引',

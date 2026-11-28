@@ -226,7 +226,8 @@ Function NetConsolePreflightExistingDataRoot
   ${EndIf}
   IfFileExists "$INSTDIR\resources\backend\NetConsoleBackend.exe" 0 NetConsolePreflightSkipped
   DetailPrint "安装前只读验证已有程序和 DataRoot，尚未复制新程序文件。"
-  ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId-preflight"' $0
+  nsExec::ExecToLog '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId-preflight"'
+  Pop $0
   ${If} $0 != 0
     StrCpy $NetConsoleInstallerDiagnosticMessage "stage=preinstall-data-root-validation result=failed exit_code=$0 registry=not-written program=unchanged action=select-fresh-or-repair"
     Call NetConsoleInstallerAbort
@@ -695,7 +696,8 @@ FunctionEnd
       Call NetConsoleInstallerAbort
     NetConsoleMigrationSourceAvailable:
     DetailPrint "正在迁移现有 NetConsole 数据；旧数据将保留为只读备份。"
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --migrate-data-root --source "$NetConsoleExistingDataRoot" --target "$NetConsoleDataRoot" --installation-root "$INSTDIR"' $0
+    nsExec::ExecToLog '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --migrate-data-root --source "$NetConsoleExistingDataRoot" --target "$NetConsoleDataRoot" --installation-root "$INSTDIR"'
+    Pop $0
     StrCpy $NetConsoleInstallerDiagnosticMessage "stage=data-root-migration exit_code=$0 registry=not-written"
     Call NetConsoleInstallerWriteDiagnostic
     ${If} $0 != 0
@@ -719,12 +721,16 @@ FunctionEnd
 
   ; Reuse validates the existing Production authority without creating a new
   ; site. Clean install initializes only the independently selected target.
+  DetailPrint "正在校验数据目录并初始化数据库。"
   ${If} $NetConsoleInstallMode == "REUSE_EXISTING_DATA"
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
+    nsExec::ExecToLog '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"'
+    Pop $0
   ${ElseIf} $NetConsoleInstallMode == "MIGRATE_EXISTING_DATA"
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
+    nsExec::ExecToLog '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode reuse --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"'
+    Pop $0
   ${Else}
-    ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode clean-install --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"' $0
+    nsExec::ExecToLog '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --validate-data-root "$NetConsoleDataRoot" --mode clean-install --installation-root "$INSTDIR" --diagnostic-log-path "$NetConsoleBackendDiagnosticLogPath" --diagnostic-id "$NetConsoleInstallerDiagnosticId"'
+    Pop $0
   ${EndIf}
   StrCpy $NetConsoleInstallerDiagnosticMessage "stage=backend-data-root-initialization mode=$NetConsoleInstallMode exit_code=$0 diagnostic_id=$NetConsoleInstallerDiagnosticId backend_diagnostic_log=$NetConsoleBackendDiagnosticLogPath registry=not-written"
   Call NetConsoleInstallerWriteDiagnostic
@@ -732,7 +738,9 @@ FunctionEnd
     StrCpy $NetConsoleInstallerDiagnosticMessage "stage=backend-data-root-initialization mode=$NetConsoleInstallMode result=failed exit_code=$0 message=Backend 数据根初始化或兼容性校验失败 diagnostic_id=$NetConsoleInstallerDiagnosticId backend_diagnostic_log=$NetConsoleBackendDiagnosticLogPath registry=not-written data-preserved=see-backend-diagnostic"
     Call NetConsoleInstallerAbort
   ${EndIf}
-  ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --set-runtime-performance-mode "$NetConsoleDataRoot" "$NetConsolePerformanceMode"' $0
+  DetailPrint "正在保存运行模式。"
+  nsExec::ExecToLog '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --set-runtime-performance-mode "$NetConsoleDataRoot" "$NetConsolePerformanceMode"'
+  Pop $0
   StrCpy $NetConsoleInstallerDiagnosticMessage "stage=runtime-performance-mode exit_code=$0 registry=not-written"
   Call NetConsoleInstallerWriteDiagnostic
   ${If} $0 != 0
@@ -741,7 +749,8 @@ FunctionEnd
   ${EndIf}
   ; Advisory only: bounded hardware collection must never make an otherwise
   ; valid install fail.  Normal startup reads this profile and never reruns WMI.
-  ExecWait '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --collect-host-profile "$NetConsoleDataRoot" --timeout-seconds 4' $0
+  nsExec::ExecToLog '"$INSTDIR\resources\backend\NetConsoleBackend.exe" --collect-host-profile "$NetConsoleDataRoot" --timeout-seconds 4'
+  Pop $0
   ${If} $0 != 0
     DetailPrint "Host environment profile collection skipped: exit_code=$0"
   ${EndIf}

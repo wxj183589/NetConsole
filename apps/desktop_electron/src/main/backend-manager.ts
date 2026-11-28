@@ -687,23 +687,25 @@ export class PythonBackendManager {
     return redactSensitiveText(message, [apiToken]) || 'Python backend failed'
   }
 
-  private startupTimeoutMessage(reason: string): string {
+  private startupTimeoutMessage(reason: string, now: number): string {
     const stage = this.startupStage ?? 'before first startup stage'
     const elapsed = this.startupStageElapsedMs == null ? 'unknown' : `${this.startupStageElapsedMs}ms`
-    return `Python backend startup timed out (${reason}); last_stage=${stage}; last_stage_elapsed=${elapsed}`
+    const startedAt = this.startupStartedAt ?? now
+    const idleMs = now - (this.startupLastProgressAt ?? startedAt)
+    return `Python backend startup timed out (${reason}); last_stage=${stage}; stage_reported_at=${elapsed}; no_progress=${idleMs}ms; startup_total=${now - startedAt}ms`
   }
 
   private currentStartupTimeoutError(now = Date.now()): Error | undefined {
     const startedAt = this.startupStartedAt ?? now
     if (now - startedAt >= this.options.startupHardTimeoutMs) {
-      return new Error(this.startupTimeoutMessage('hard deadline'))
+      return new Error(this.startupTimeoutMessage('hard deadline', now))
     }
     const lastProgressAt = this.startupLastProgressAt ?? startedAt
     const stageTimeoutMs = this.startupStage && DISK_HEAVY_STARTUP_STAGES.has(this.startupStage)
       ? Math.max(this.options.startupTimeoutMs, 45_000)
       : this.options.startupTimeoutMs
     if (now - lastProgressAt >= stageTimeoutMs) {
-      return new Error(this.startupTimeoutMessage('stage watchdog'))
+      return new Error(this.startupTimeoutMessage('stage watchdog', now))
     }
     return undefined
   }

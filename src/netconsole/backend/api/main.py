@@ -493,6 +493,7 @@ def create_app(
                 },
             ),
         )
+    _emit_startup_stage(startup_stage, "feature_services_initializing")
     feature_gate = FeatureGate(paths.app_root, runtime_path=paths.runtime_dir)
     ground_unattended_feature_enabled = feature_gate.is_enabled("module.ground_unattended")
     if (
@@ -1032,6 +1033,7 @@ def create_app(
         f"unattended_priority={capability_policy.unattended_priority}",
     )
     app.state.paths = paths
+    _emit_startup_stage(startup_stage, "platform_services_initializing")
     app.state.storage_audit_service = StorageAuditService(paths.data_root)
     app.state.local_network_services = LocalNetworkServiceManager(
         paths.runtime_dir / "local_network_services", iperf_path=find_iperf_tool(paths)
@@ -1235,6 +1237,7 @@ def create_app(
     app.state.ac_mesh_link_resident_service = ac_mesh_link_resident_service
     app.state.ground_unattended_startup_error = ""
     if ground_unattended_feature_enabled:
+        _emit_startup_stage(startup_stage, "ground_runtime_initializing")
         try:
             (
                 ground_unattended_repository,
@@ -1416,6 +1419,7 @@ def create_app(
             return JSONResponse(status_code=422, content=jsonable_encoder(payload))
         return JSONResponse(status_code=422, content=jsonable_encoder({"detail": exc.errors()}))
 
+    _emit_startup_stage(startup_stage, "routers_registering")
     app.include_router(api_router)
     app.include_router(ws_router)
     _emit_startup_stage(startup_stage, "routers_registered")

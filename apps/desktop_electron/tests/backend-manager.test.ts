@@ -388,7 +388,7 @@ describe('PythonBackendManager', () => {
       fetchImpl: vi.fn(async () => { throw new Error('not ready') }) as typeof fetch,
     })
 
-    await expect(manager.start()).rejects.toThrow('stage watchdog')
+    await expect(manager.start()).rejects.toThrow(/stage watchdog.*stage_reported_at=unknown; no_progress=\d+ms; startup_total=\d+ms/)
     expect(child.signals[0]).toBe('SIGTERM')
     expect(manager.getStatus().state).toBe('failed')
   })
