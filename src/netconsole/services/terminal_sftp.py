@@ -707,6 +707,7 @@ class TerminalSftpManager:
 
     def _run_transfer(self, task: _TransferTask) -> None:
         cancel = _TaskCancellation(task.cancel_event, self.paths.runtime_cache_dir / "background_jobs" / f"{task.snapshot.task_id}.cancel")
+        claimed_device = False
         def progress(transferred: int, total: int) -> None:
             check_cancel(cancel)
             task.snapshot.transferred_bytes = int(transferred)
@@ -729,6 +730,15 @@ class TerminalSftpManager:
                 check_cancel(cancel)
                 if session.snapshot.state != "CONNECTED":
                     raise ValueError("SFTP 会话已断开，请重新连接")
+                if self.task_service is not None:
+                    while not claimed_device:
+                        check_cancel(cancel)
+                        claimed_device = self.task_service.claim_terminal_sftp_device(
+                            task.snapshot.site_name, task.snapshot.task_id, task.snapshot.device_uuid,
+                        )
+                        if not claimed_device:
+                            task.cancel_event.wait(0.2)
+                    check_cancel(cancel)
                 task.snapshot.status = "RUNNING"
                 task.snapshot.started_at_ms = int(time.time() * 1000)
                 task.started_monotonic = time.monotonic()
@@ -825,6 +835,8 @@ class TerminalSftpManager:
             task.snapshot.error_code = exc.__class__.__name__.upper()[:64]
             task.snapshot.error_message = "远程文件已存在" if isinstance(exc, FileExistsError) else (str(exc) if isinstance(exc, ValueError) else "SFTP 传输失败，请检查连接、路径与访问权限")
         finally:
+            if claimed_device:
+                self.task_service.release_terminal_sftp_device(task.snapshot.site_name, task.snapshot.task_id)
             task.snapshot.ended_at_ms = int(time.time() * 1000)
             task.snapshot.bytes_per_second = 0
             task.snapshot.remaining_seconds = None

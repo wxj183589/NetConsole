@@ -373,6 +373,13 @@ class TaskRepository:
         run_sqlite_with_retry(operation)
         return conflict
 
+    def clear_task_resource_keys(self, task_id: str, *, owner: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE task_snapshots SET resource_keys_json = '[]' WHERE task_id = ? AND owner = ?",
+                (task_id, owner),
+            )
+
     def record(
         self,
         snapshot: TaskSnapshot,

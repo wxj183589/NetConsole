@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 import threading
 from collections.abc import Callable, Collection
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any
 
 from netconsole.core import app_logger
@@ -301,6 +301,23 @@ class TaskApplicationService:
         )
         self.events.publish_persisted(event.to_dict())
         return snapshot
+
+    def claim_terminal_sftp_device(self, site_name: str, task_id: str, device_uuid: str) -> bool:
+        repository = self.repository(site_name)
+        with self._resource_guard:
+            snapshot = repository.get(task_id)
+            if snapshot is None or snapshot.owner != "terminal_sftp" or snapshot.device != device_uuid:
+                raise ValueError("SFTP 传输任务身份无效")
+            if snapshot.status not in _ACTIVE_TASK_STATES:
+                return False
+            snapshot = replace(
+                snapshot, owner_pid=os.getpid(),
+                resource_keys=[f"device-collection:v1:{site_name.casefold()}:{device_uuid.strip().casefold()}"],
+            )
+            return repository.save_with_resource_guard(snapshot, active_statuses=_ACTIVE_TASK_STATES) is None
+
+    def release_terminal_sftp_device(self, site_name: str, task_id: str) -> None:
+        self.repository(site_name).clear_task_resource_keys(task_id, owner="terminal_sftp")
 
     def record_external_event(
         self,

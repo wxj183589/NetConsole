@@ -227,6 +227,31 @@ def _start_sftp_server(root: Path) -> tuple[int, threading.Thread, list[BaseExce
     return port, thread, errors
 
 
+def test_transfer_waits_for_device_worker_and_releases_before_save(tmp_path, monkeypatch):
+    from netconsole.services.background_job import BackgroundJob
+    from netconsole.services.job_center.task_application_service import TaskApplicationService
+
+    original, device = _manager(tmp_path, monkeypatch)
+    paths = original.paths
+    original.close()
+    service = TaskApplicationService(paths, site_name="terminal-sftp", reconcile_on_start=False)
+    manager = TerminalSftpManager(paths, service)
+    job = BackgroundJob(job_id="device-worker", task_type="device_maintenance_collection", params={
+        "site_name": "terminal-sftp", "owner": "web_device_task_center",
+        "device_uuids": [device.device_uuid],
+    })
+    try:
+        session = manager.connect(str(device.device_uuid))
+        service.prepare(job)
+        transfer = manager.submit_download(session["session_id"], "/config.cfg")
+        assert manager.task(transfer["task_id"])["status"] == "WAITING"
+        service.record_external_event(job.job_id, "finished", {}, site_name="terminal-sftp")
+        assert _wait_task(manager, transfer["task_id"])["status"] == "READY"
+        assert not service.repository("terminal-sftp").get(transfer["task_id"]).resource_keys
+    finally:
+        manager.close()
+
+
 def _wait_task(manager: TerminalSftpManager, task_id: str) -> dict:
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
