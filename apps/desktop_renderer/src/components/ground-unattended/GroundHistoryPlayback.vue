@@ -27,17 +27,17 @@ const lossPage = ref(1), eventResult = ref<GroundMrMonitoring | null>(null)
 let controller: AbortController | null = null, eventController: AbortController | null = null, historyController: AbortController | null = null, eventTimer: ReturnType<typeof setTimeout> | undefined, generation = 0
 
 const mrOptions = computed<MrOption[]>(() => {
-  const items: MrOption[] = []
+  const items = new Map<string, MrOption>()
   if (historyMrs.value.length) {
     for (const mr of historyMrs.value) {
-      if (!mr.mr_uuid || items.some((item) => item.id === mr.mr_uuid)) continue
-      items.push({ id: mr.mr_uuid, role: mr.role, name: mr.mr_name, trainId: mr.train_id, trainNo: mr.train_no })
+      if (!mr.mr_uuid || items.has(mr.mr_uuid)) continue
+      items.set(mr.mr_uuid, { id: mr.mr_uuid, role: mr.role, name: mr.mr_name, trainId: mr.train_id, trainNo: mr.train_no })
     }
   } else for (const train of props.trains) for (const endpoint of train.endpoints || []) {
-    if (!endpoint.mr_id || items.some((item) => item.id === endpoint.mr_id)) continue
-    items.push({ id: endpoint.mr_id, role: endpoint.endpoint, name: endpoint.mr_name, trainId: train.train_id, trainNo: train.train_no })
+    if (!endpoint.mr_id || items.has(endpoint.mr_id)) continue
+    items.set(endpoint.mr_id, { id: endpoint.mr_id, role: endpoint.endpoint, name: endpoint.mr_name, trainId: train.train_id, trainNo: train.train_no })
   }
-  return items.sort((a, b) => `${a.trainNo}-${a.role}`.localeCompare(`${b.trainNo}-${b.role}`, 'zh-CN', { numeric: true }))
+  return [...items.values()].sort((a, b) => `${a.trainNo}-${a.role}`.localeCompare(`${b.trainNo}-${b.role}`, 'zh-CN', { numeric: true }))
 })
 const selectedRun = computed(() => props.runs.find((item) => item.run_id === selectedRunId.value))
 const selectedMr = computed(() => mrOptions.value.find((item) => item.id === selectedMrId.value))
