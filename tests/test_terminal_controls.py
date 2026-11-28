@@ -27,6 +27,11 @@ def test_send_string_exact_escapes_and_pause():
     ]
     with pytest.raises(ValueError):
         list(send_segments(r"unsafe\q"))
+    assert list(send_segments(r"display\sclock\r\p250display\sversion\r")) == [
+        ("display clock\r", 0), ("", 0.25), ("display version\r", 0),
+    ]
+    with pytest.raises(ValueError, match="60000"):
+        list(send_segments(r"bad\p60001"))
 
 
 def test_button_store_roundtrip_five_buttons_and_validation(tmp_path, monkeypatch):

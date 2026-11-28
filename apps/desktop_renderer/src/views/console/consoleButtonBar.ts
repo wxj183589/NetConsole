@@ -2,7 +2,7 @@ import { parseConsoleRunScriptJson } from './consoleRunScript'
 
 export type SendStringSegment =
   | { kind: 'write'; text: string }
-  | { kind: 'pause'; milliseconds: 1000 }
+  | { kind: 'pause'; milliseconds: number }
 
 export type SendStringParseResult = {
   segments: SendStringSegment[]
@@ -53,12 +53,13 @@ const sendStringEscapes: Record<string, string> = {
   t: '\t',
   b: '\b',
   e: '\x1b',
+  s: ' ',
   '\\': '\\',
 }
 
 /**
  * Parses SecureCRT-style Send String escapes without changing the configured
- * text. A pause flushes preceding bytes and waits for one second before the
+ * text. A pause flushes preceding bytes and defaults to one second before the
  * following segment. The Backend dispatcher remains responsible for sending.
  */
 export function parseSendString(value: string): SendStringParseResult {
@@ -90,8 +91,16 @@ export function parseSendString(value: string): SendStringParseResult {
     }
     if (escape === 'p') {
       flush()
-      segments.push({ kind: 'pause', milliseconds: 1000 })
-      index += 1
+      const start = index + 2
+      let end = start
+      while (end < value.length && value[end]! >= '0' && value[end]! <= '9') end += 1
+      const digits = value.slice(start, end)
+      const milliseconds = digits ? Number(digits) : 1000
+      if (digits.length > 5 || milliseconds < 1 || milliseconds > 60_000) {
+        throw new Error('暂停时长须为 1 至 60000 毫秒')
+      }
+      segments.push({ kind: 'pause', milliseconds })
+      index = end - 1
       continue
     }
 

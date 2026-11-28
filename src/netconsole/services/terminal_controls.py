@@ -25,7 +25,7 @@ MENU_FUNCTIONS = {
 def send_segments(text: str):
     buffer = ""
     index = 0
-    escapes = {"r": "\r", "n": "\n", "e": "\x1b", "t": "\t", "b": "\b", "\\": "\\"}
+    escapes = {"r": "\r", "n": "\n", "e": "\x1b", "t": "\t", "b": "\b", "s": " ", "\\": "\\"}
     while index < len(text):
         char = text[index]
         if char == "\\":
@@ -36,7 +36,13 @@ def send_segments(text: str):
                 if buffer:
                     yield buffer, 0
                     buffer = ""
-                yield "", 1
+                start = index + 1
+                while index + 1 < len(text) and "0" <= text[index + 1] <= "9":
+                    index += 1
+                digits = text[start:index + 1]
+                if len(digits) > 5 or (digits and not 1 <= int(digits) <= 60_000):
+                    raise ValueError("暂停时长须为 1 至 60000 毫秒")
+                yield "", int(digits) / 1000 if digits else 1
             else:
                 buffer += escapes[text[index]]
         else:
@@ -200,7 +206,7 @@ class QuickButtonStore:
                         if not isinstance(step, dict):
                             raise ValueError("Console 脚本步骤无效")
                         if step.get("type") == "SEND_STRING" and set(step) == {"type", "text"} and isinstance(step["text"], str):
-                            total_wait += sum(delay for _, delay in send_segments(step["text"]))
+                            total_wait += sum(round(delay * 1000) for _, delay in send_segments(step["text"]))
                         elif step.get("type") == "WAIT" and set(step) == {"type", "milliseconds"} and type(step["milliseconds"]) is int and 1 <= step["milliseconds"] <= 60_000:
                             total_wait += step["milliseconds"]
                         else:

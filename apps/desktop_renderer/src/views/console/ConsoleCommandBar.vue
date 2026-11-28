@@ -459,7 +459,7 @@ async function newGroup() { const { value } = await ElMessageBox.prompt('按钮�
           <option value="LAUNCH_APPLICATION">{{ consoleText('button.launch_application', '启动外部程序') }}</option>
           <option value="RUN_SCRIPT">{{ consoleText('button.run_script', '运行脚本') }}</option>
         </select>
-        <textarea v-if="button.action === 'SEND_STRING'" v-model="button.text" aria-label="发送字符串" rows="2" />
+        <textarea v-if="button.action === 'SEND_STRING'" v-model="button.text" aria-label="发送字符串" rows="2" title="示例 display\sclock\r\p250display\sversion\r。支持 \r 回车、\n 换行、\s 空格、\t 制表、\e ESC、\b 退格、\\ 反斜杠。单独 \p 暂停 1 秒。" />
         <select v-else-if="button.action === 'MENU_FUNCTION'" v-model="button.text" aria-label="菜单功能">
           <option v-for="id in MENU_FUNCTIONS" :key="id" :value="id">{{ consoleText(`button.${id.replaceAll('-', '_')}`, ({ find: '查找', 'select-all': '全选', 'clear-scrollback': '清除回滚缓冲区', 'clear-screen': '清屏', 'clear-all': '清屏并清除回滚缓冲区' } as Record<string, string>)[id]!) }}</option>
         </select>

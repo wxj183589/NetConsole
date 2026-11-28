@@ -7,7 +7,7 @@
 | A 全面审计 | 基线 | PARTIAL | [实现清单](../architecture/LEGACY_IMPLEMENTATION_INVENTORY.md)逐项索引 API、页面、Store 和静态表声明，业务真机行为待核验 |
 | B 设计与开源研究 | A | PARTIAL | [源码研究](../architecture/OPEN_SOURCE_REFERENCE_STUDY.md)覆盖七个项目。设备详情复用 DeviceDetailApplicationService，文件与设备任务保留各自所有者 |
 | C 安装与启动 | A | PARTIAL | 修正七处 NSIS 子进程调用，保留退出码、诊断 ID、日志与安装事务。细分功能、平台、无人值守和路由初始化；看门狗分别记录阶段上报时刻、无进展时长和总时长，保留原有硬截止时间 |
-| D 控制台 | A | NOT VERIFIED | 检查粘贴、同步目标、前后端命令解析、断线清理 |
+| D 控制台 | A | PARTIAL | Python 执行与 Vue 预览统一支持空格、默认暂停和 1–60000 毫秒的参数暂停。修正脚本累计等待的单位。13 项 Python 测试、31 项 Renderer 测试及 Renderer 构建通过。粘贴、同步目标与真实会话待验收 |
 | E 设备资料 | B | NOT VERIFIED | 验证同一设备 ID 的台账、技术事实及工程关联 |
 | F 设备任务中心 | B、E | NOT VERIFIED | 验证列表、详情、取消、重试、导出均在 Site 与设备任务域内 |
 | G 轨交与无人值守 | A | NOT VERIFIED | 验证活动 Run、回放、云同步 opt-in、通断状态与统计 |

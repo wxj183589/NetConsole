@@ -26,6 +26,12 @@ describe('Send String parser', () => {
   })
 
   it('bounds text before parsing', () => {
+    expect(parseSendString('display\\sclock\\r\\p250done').segments).toEqual([
+      { kind: 'write', text: 'display clock\r' },
+      { kind: 'pause', milliseconds: 250 },
+      { kind: 'write', text: 'done' },
+    ])
+    expect(() => parseSendString('\\p60001')).toThrow('60000')
     expect(() => parseSendString('x'.repeat(65_537))).toThrow('65536')
   })
 })
