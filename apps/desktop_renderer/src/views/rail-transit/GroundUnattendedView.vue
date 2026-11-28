@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
 import { defineAsyncComponent, ref, watch, watchEffect } from 'vue'
-import { ElMessage } from 'element-plus'
-import { syslogVisibleDetails } from './groundSyslogPresentation'
+import GroundSyslogDetail from './GroundSyslogDetail.vue'
 import { isFeatureVisible, isFeatureEnabled } from '../../features'
 import { GROUND_TAB_FEATURES } from './groundFeatures'
 import { provideGroundContext } from './useGroundUnattended'
@@ -15,28 +14,17 @@ const DeepCollectionPage = defineAsyncComponent(() => import('./DeepTasksPage.vu
 const TimelinePage = defineAsyncComponent(() => import('./TimelinePage.vue'))
 const SyslogPage = defineAsyncComponent(() => import('./SyslogPage.vue'))
 const SystemHealthPage = defineAsyncComponent(() => import('./SystemHealthPage.vue'))
-const ArchivePage = defineAsyncComponent(() => import('./ArchivePage.vue'))
 const SettingsPage = defineAsyncComponent(() => import('./SettingsPage.vue'))
-const GroundHistoryPlayback = defineAsyncComponent(() => import('../../components/ground-unattended/GroundHistoryPlayback.vue'))
 const groundContext = provideGroundContext()
 defineExpose(groundContext)
 const { Box, CopyDocument, Delete, Refresh, SwitchButton, VideoPause, VideoPlay, pauseGroundRun, resumeGroundRun, startGroundRun, GroundPingChart, NcFloatingWindow, t, groundDisplayNameSourceLabel, groundEventLabel, groundOperationStageLabel, groundRunModeLabel, groundSeverityLabel, groundStopTriggerLabel, groundSourceLabel, groundStatusLabel, groundTransitionContextLabel, activeTab, pageVisible, pageActivated, quickContextRevision, loading, action, status, profile, trains, positionRendererTiming, pingTargets, selectedDeepCollector, deepRecords, deepWindowOpen, deepRecordsLoading, deepCategory, deepKeyword, deepPaused, deepAutoRefresh, acMeshSummary, acMeshLinks, acMeshMrs, acMeshSnapshots, acMeshRawTail, acMeshLoading, acControllers, selectedAcControllerId, acControllersLoading, acControllersError, runs, selectedRunId, runHistoryDeleteLoading, pingSeries, selectedPingTarget, pingWindowOpen, pingSeriesLoading, pingIncrementalLoading, includeWarmup, pingRange, pingCustomRange, pingAutoRefresh, pingPaused, pingFollowLatest, pingInitialLoadSucceeded, pingBackendState, pingRequestId, pingErrorCode, selectedSyslogRecord, syslogDetailDrawer, selectedArchive, archiveDetailTab, selectedTrain, archiveDialog, trainDialog, openingSessionId, trainFilter, pingFilter, generalLoadIssues, pingIssue, loadIssueDescription, running, operationActive, visibleOperation, selectedRun, historicalRun, runHistoryDeleteBlocked, selectedPingHistorical, runScopedTab, archiveRecordCount, selectedTrainCollection, trainTableMaxHeight, pingTableMaxHeight, startBlockedReason, pingAvailability, pingEmptyDescription, pingLiveStats, locationStats, trainColumns, pingColumns, refreshAcMesh, dismissOperation, loadAll, runAction, submitStop, showPingSeries, openPingBackendLogs, togglePriority, syncInventory, updatePolicy, checkConfigs, confirmTargetPortChange, showTrain, showTrainPing, showTrainTimeline, openDeepSession, deleteSelectedRunHistory, downloadArchiveSummary, downloadArchiveZip, verifyArchive, endpoint, groundControlSourceLabel, endpointRadioTooltip, duration, metric, bytes, statusType, useFullPingRange, togglePingPaused, returnPingToLive, copyPingDiagnostics, handlePingDialogClosed, loadDeepRecords, toggleDeepPaused, handleDeepWindowClosed, copyDeepRecords } = groundContext
 const quickPingMrId = ref('')
-const { historySyslogRunId, workspaceMode: workspace } = groundContext
-async function copySyslogRaw() {
-  try {
-    await navigator.clipboard.writeText(selectedSyslogRecord.value?.raw_text || '')
-    ElMessage.success(t('common.copied', '已复制'))
-  } catch {
-    ElMessage.error(t('ground.syslog.copy_failed', '复制失败，请选择原始报文手动复制'))
-  }
-}
 watch(quickContextRevision, () => { quickPingMrId.value = '' })
 const tabVisible = (name: string) => isFeatureVisible(GROUND_TAB_FEATURES[name] || '')
 const tabEnabled = (name: string) => isFeatureEnabled(GROUND_TAB_FEATURES[name] || '')
 watchEffect(() => {
-  if (tabVisible(activeTab.value) && tabEnabled(activeTab.value)) return
-  activeTab.value = Object.keys(GROUND_TAB_FEATURES).find((name) => tabVisible(name) && tabEnabled(name)) || ''
+  if (activeTab.value !== 'archives' && tabVisible(activeTab.value) && tabEnabled(activeTab.value)) return
+  activeTab.value = Object.keys(GROUND_TAB_FEATURES).find((name) => name !== 'archives' && tabVisible(name) && tabEnabled(name)) || ''
 })
 function openQuickPing(mrId: string) {
   if (!tabVisible('quick-ping') || !tabEnabled('quick-ping') || !isFeatureEnabled('capability.ground_unattended.quick_ping')) return
@@ -45,13 +33,12 @@ function openQuickPing(mrId: string) {
 </script>
 
 <template>
-  <main v-loading="workspace === 'collection' && loading" :class="['ground-page', { 'ground-page--log-view': workspace === 'collection' && ['timeline', 'syslog'].includes(activeTab) }]">
+  <main v-loading="loading" :class="['ground-page', { 'ground-page--log-view': ['timeline', 'syslog'].includes(activeTab) }]">
     <header class="page-heading">
       <div>
-        <p class="eyebrow">{{ t('ground.section', '轨道交通') }}</p>
-        <h1>{{ t('ground.title', '地面无人值守') }}</h1>
+        <h1>{{ t('ground.live_title', '地面无人值守 · 实时采集') }}</h1>
       </div>
-      <div v-if="workspace === 'collection'" class="heading-actions">
+      <div class="heading-actions">
         <el-button :icon="Refresh" circle :title="t('common.refresh', '刷新')" @click="loadAll()" />
         <el-button :icon="Refresh" :loading="action === 'sync'" @click="runAction('sync', syncInventory)">同步设备</el-button>
         <el-button :loading="action === 'config'" :disabled="!running || !profile?.syslog_server_ip" @click="runAction('config', () => checkConfigs())">检查 MR 配置</el-button>
@@ -71,14 +58,7 @@ function openQuickPing(mrId: string) {
       </div>
     </header>
 
-    <div class="workspace-switch" role="tablist" aria-label="地面无人值守工作区">
-      <el-radio-group v-model="workspace">
-        <el-radio-button value="collection">实时采集</el-radio-button>
-        <el-radio-button value="playback">历史回放</el-radio-button>
-      </el-radio-group>
-    </div>
-
-    <section v-if="workspace === 'collection' && visibleOperation" class="operation-band" :class="`operation-${visibleOperation.operation_state.toLocaleLowerCase()}`">
+    <section v-if="visibleOperation" class="operation-band" :class="`operation-${visibleOperation.operation_state.toLocaleLowerCase()}`">
       <div class="operation-heading">
         <div>
           <b>{{ visibleOperation.operation_type === 'STOP_AND_ARCHIVE' ? '停止并归档' : '运行停止' }}</b>
@@ -93,11 +73,14 @@ function openQuickPing(mrId: string) {
       </div>
       <el-progress :percentage="visibleOperation.progress_percent" :status="visibleOperation.operation_state === 'FAILED' ? 'exception' : visibleOperation.operation_state === 'COMPLETED' ? 'success' : undefined" />
       <p>{{ visibleOperation.message }}<span v-if="visibleOperation.failure_reason">：{{ visibleOperation.failure_reason }}</span></p>
-      <small>触发原因 {{ visibleOperation.stop_reason || groundStopTriggerLabel(visibleOperation.stop_trigger) }} · 触发时间 {{ visibleOperation.triggered_at || visibleOperation.started_at }}</small>
-      <small>操作编号 {{ visibleOperation.operation_id }}<template v-if="visibleOperation.request_id"> · 请求编号 {{ visibleOperation.request_id }}</template> · 最后更新 {{ visibleOperation.updated_at }}</small>
+      <details>
+        <summary>{{ t('ground.operation_details', '操作详情') }}</summary>
+        <small>触发原因 {{ visibleOperation.stop_reason || groundStopTriggerLabel(visibleOperation.stop_trigger) }} · 触发时间 {{ visibleOperation.triggered_at || visibleOperation.started_at }}</small>
+        <small>操作编号 {{ visibleOperation.operation_id }}<template v-if="visibleOperation.request_id"> · 请求编号 {{ visibleOperation.request_id }}</template> · 最后更新 {{ visibleOperation.updated_at }}</small>
+      </details>
     </section>
 
-    <section v-if="workspace === 'collection' && generalLoadIssues.length" class="load-warning">
+    <section v-if="generalLoadIssues.length" class="load-warning">
       <el-alert
         title="地面无人值守部分数据未加载"
         :description="loadIssueDescription"
@@ -108,13 +91,13 @@ function openQuickPing(mrId: string) {
       <el-button :icon="Refresh" :loading="loading" @click="loadAll()">重新加载</el-button>
     </section>
 
-    <section v-if="workspace === 'collection' && runScopedTab" class="run-context-bar">
+    <section v-if="runScopedTab" class="run-context-bar">
       <el-tag v-if="selectedRunId" type="success">{{ t('ground.active_run', '当前活动运行') }}</el-tag>
       <el-tag v-else type="info">{{ t('ground.no_active_run', '暂无运行') }}</el-tag>
       <span v-if="status?.active_run_started_at" class="muted">{{ status.active_run_started_at }}</span>
     </section>
 
-    <el-tabs v-if="workspace === 'collection'" v-model="activeTab" class="ground-tabs">
+    <el-tabs v-model="activeTab" class="ground-tabs">
       <el-tab-pane v-if="tabVisible('overview')" :disabled="!tabEnabled('overview')" :label="t('ground.overview', '运行概览')" name="overview" lazy>
         <OverviewPage />
       </el-tab-pane>
@@ -183,26 +166,10 @@ function openQuickPing(mrId: string) {
         <SystemHealthPage />
       </el-tab-pane>
 
-      <el-tab-pane v-if="tabVisible('archives')" :disabled="!tabEnabled('archives')" :label="t('ground.archives', '历史归档')" name="archives" lazy>
-        <ArchivePage />
-      </el-tab-pane>
-
       <el-tab-pane v-if="tabVisible('settings')" :disabled="!tabEnabled('settings')" :label="t('ground.settings', '设置')" name="settings" lazy>
         <SettingsPage />
       </el-tab-pane>
     </el-tabs>
-
-    <GroundHistoryPlayback
-      v-else
-      :site-id="profile?.site_id || ''"
-      :runs="runs.filter((run) => run.run_id !== status?.active_run_id && !['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(run.state))"
-      :trains="trains"
-      :active="pageVisible && pageActivated && workspace === 'playback'"
-      :deleting="runHistoryDeleteLoading"
-      @delete-run="deleteSelectedRunHistory"
-      @view-syslog="historySyslogRunId = $event"
-    />
-    <SyslogPage v-if="workspace === 'playback' && historySyslogRunId && tabVisible('syslog') && tabEnabled('syslog')" />
 
     <NcFloatingWindow
       v-model="pingWindowOpen"
@@ -374,130 +341,7 @@ function openQuickPing(mrId: string) {
       </section>
     </NcFloatingWindow>
 
-    <el-dialog v-model="archiveDialog" :title="t('ground.archive_summary', '无人值守归档汇总')" width="min(1100px, 96vw)" top="4vh">
-      <el-tabs v-if="selectedArchive" v-model="archiveDetailTab">
-        <el-tab-pane label="归档概览" name="overview">
-          <el-descriptions :column="2" border>
-            <el-descriptions-item :label="t('ground.run_date', '运行日期')">{{ selectedArchive.archive.run_date }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.archive_status', '归档状态')">{{ groundStatusLabel(selectedArchive.archive.archive_status) }}</el-descriptions-item>
-            <el-descriptions-item label="实际开始">{{ selectedArchive.archive.actual_started_at || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="实际结束">{{ selectedArchive.archive.actual_ended_at || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="运行模式">{{ groundRunModeLabel(selectedArchive.archive.summary.running_mode) }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.mainline_trains', '正线车辆')">{{ selectedArchive.archive.mainline_train_count }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.ping_targets', 'Ping 目标')">{{ selectedArchive.archive.ping_target_count }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.ping_samples', 'Ping 样本')">{{ selectedArchive.archive.ping_sample_count }}</el-descriptions-item>
-            <el-descriptions-item label="Syslog 记录">{{ selectedArchive.archive.summary.syslog_record_count || 0 }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.covered_trains', '覆盖列车')">{{ selectedArchive.archive.covered_train_count }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.run_sessions', '运行会话')">{{ selectedArchive.archive.session_count || selectedArchive.archive.summary.session_count || 0 }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.complete_sessions', '完整会话')">{{ selectedArchive.archive.complete_session_count }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.partial_sessions', '部分会话')">{{ selectedArchive.archive.partial_session_count }}</el-descriptions-item>
-            <el-descriptions-item :label="t('ground.archive_size', '归档大小')">{{ bytes(selectedArchive.archive.archive_size_bytes) }}</el-descriptions-item>
-            <el-descriptions-item label="归档 SHA-256" :span="2"><code>{{ selectedArchive.archive.sha256 }}</code></el-descriptions-item>
-          </el-descriptions>
-        </el-tab-pane>
-        <el-tab-pane label="运行会话" name="sessions">
-          <el-table :data="selectedArchive.archive.summary.sessions || []" size="small" empty-text="当天没有独立会话记录">
-            <el-table-column prop="session_id" label="会话 ID" min-width="220" />
-            <el-table-column prop="started_at" label="启动时间" min-width="190" />
-            <el-table-column prop="ended_at" label="停止时间" min-width="190" />
-            <el-table-column prop="state" label="状态" width="120" />
-            <el-table-column prop="stop_reason" label="停止原因" min-width="220" />
-          </el-table>
-        </el-tab-pane>
-        <el-tab-pane label="文件清单" name="files">
-          <el-table :data="selectedArchive.files" size="small" max-height="480" empty-text="归档没有可展示的文件成员">
-            <el-table-column prop="path" label="ZIP Entry" min-width="300" fixed />
-            <el-table-column prop="data_type" label="数据类型" width="110" />
-            <el-table-column prop="train_id" label="列车" width="120" />
-            <el-table-column prop="mr_id" label="MR" min-width="150" />
-            <el-table-column prop="mr_role" label="CT/CW" width="80" />
-            <el-table-column prop="hour" label="小时" width="90" />
-            <el-table-column prop="record_count" label="记录数" width="100" />
-            <el-table-column label="原始大小" width="120"><template #default="{ row }">{{ bytes(row.size_bytes) }}</template></el-table-column>
-            <el-table-column label="压缩大小" width="120"><template #default="{ row }">{{ bytes(row.compressed_size_bytes) }}</template></el-table-column>
-            <el-table-column prop="parse_status" label="解析状态" width="110" />
-            <el-table-column prop="sha256" label="SHA-256" min-width="260" show-overflow-tooltip />
-          </el-table>
-        </el-tab-pane>
-        <el-tab-pane label="Ping 汇总" name="ping">
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="Ping 目标">{{ selectedArchive.archive.ping_target_count }}</el-descriptions-item>
-            <el-descriptions-item label="Ping 样本">{{ selectedArchive.archive.ping_sample_count }}</el-descriptions-item>
-          </el-descriptions>
-        </el-tab-pane>
-        <el-tab-pane label="Syslog 汇总" name="syslog">
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="Syslog 记录">{{ selectedArchive.archive.summary.syslog_record_count || 0 }}</el-descriptions-item>
-            <el-descriptions-item label="Syslog 文件">{{ selectedArchive.files.filter((row) => row.data_type === 'syslog').length }}</el-descriptions-item>
-          </el-descriptions>
-        </el-tab-pane>
-        <el-tab-pane label="深度会话" name="deep">
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="完整会话">{{ selectedArchive.archive.complete_session_count }}</el-descriptions-item>
-            <el-descriptions-item label="部分会话">{{ selectedArchive.archive.partial_session_count }}</el-descriptions-item>
-            <el-descriptions-item label="覆盖列车">{{ selectedArchive.archive.covered_train_count }}</el-descriptions-item>
-          </el-descriptions>
-        </el-tab-pane>
-        <el-tab-pane label="完整性校验" name="integrity">
-          <el-descriptions :column="2" border>
-            <el-descriptions-item label="校验状态">{{ groundStatusLabel(selectedArchive.validation.status) }}</el-descriptions-item>
-            <el-descriptions-item label="最后校验">{{ selectedArchive.validation.checked_at || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="清单文件数">{{ selectedArchive.validation.file_count }}</el-descriptions-item>
-            <el-descriptions-item label="总记录数">{{ archiveRecordCount }}</el-descriptions-item>
-            <el-descriptions-item label="ZIP 大小">{{ bytes(selectedArchive.validation.archive_size_bytes) }}</el-descriptions-item>
-            <el-descriptions-item label="旧版 Manifest">{{ selectedArchive.validation.legacy_manifest ? '是' : '否' }}</el-descriptions-item>
-            <el-descriptions-item label="ZIP SHA-256" :span="2"><code>{{ selectedArchive.validation.archive_sha256 }}</code></el-descriptions-item>
-            <el-descriptions-item label="Manifest SHA-256" :span="2"><code>{{ selectedArchive.validation.manifest_sha256 }}</code></el-descriptions-item>
-            <el-descriptions-item label="校验说明" :span="2">{{ selectedArchive.validation.message }}</el-descriptions-item>
-          </el-descriptions>
-        </el-tab-pane>
-        <el-tab-pane label="保留策略" name="retention">
-          <el-descriptions :column="1" border>
-            <el-descriptions-item label="保留截止">{{ selectedArchive.archive.retention_until || '未设置' }}</el-descriptions-item>
-            <el-descriptions-item label="归档创建">{{ selectedArchive.archive.created_at || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="最近更新">{{ selectedArchive.archive.updated_at || '—' }}</el-descriptions-item>
-          </el-descriptions>
-        </el-tab-pane>
-      </el-tabs>
-      <template #footer>
-        <el-button v-if="selectedArchive" @click="verifyArchive">重新校验</el-button>
-        <el-button v-if="selectedArchive" @click="downloadArchiveSummary(selectedArchive.archive)">下载 JSON</el-button>
-        <el-button v-if="selectedArchive" type="primary" @click="downloadArchiveZip(selectedArchive.archive)">下载原始 ZIP</el-button>
-      </template>
-    </el-dialog>
-
-    <el-drawer v-model="syslogDetailDrawer" title="Syslog 原始记录详情" size="min(720px, 92vw)" destroy-on-close>
-      <template v-if="selectedSyslogRecord">
-        <el-descriptions :column="1" border>
-          <el-descriptions-item label="运行上下文">{{ status?.active_run_date || '—' }} · {{ selectedRunId || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="接收 / 设备时间">{{ selectedSyslogRecord.receive_time }} / {{ selectedSyslogRecord.device_time || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="时间差">{{ selectedSyslogRecord.clock_offset_ms == null ? '—' : `${selectedSyslogRecord.clock_offset_ms} ms` }}</el-descriptions-item>
-          <el-descriptions-item label="列车 / MR">{{ selectedSyslogRecord.train_no || '未识别' }}（{{ selectedSyslogRecord.train_id || '—' }}）/ {{ selectedSyslogRecord.mr_name || selectedSyslogRecord.source_ip }}（{{ selectedSyslogRecord.device_uuid || '—' }}）</el-descriptions-item>
-          <el-descriptions-item label="来源 / system_name">{{ selectedSyslogRecord.source_ip }}:{{ selectedSyslogRecord.source_port || '—' }} / {{ selectedSyslogRecord.system_name || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="Facility / 级别">{{ selectedSyslogRecord.facility || '—' }} / {{ groundSeverityLabel(selectedSyslogRecord.severity) }}</el-descriptions-item>
-          <el-descriptions-item label="事件族 / 事件">{{ selectedSyslogRecord.event_family || '—' }} / {{ groundEventLabel(selectedSyslogRecord.event_type) }}</el-descriptions-item>
-          <el-descriptions-item label="射频接口 / 状态">{{ selectedSyslogRecord.interface_name || '—' }} / {{ groundStatusLabel(selectedSyslogRecord.physical_state) }}</el-descriptions-item>
-          <el-descriptions-item label="CFG EventIndex / 来源">{{ selectedSyslogRecord.cfg_event_index || '—' }} / {{ groundControlSourceLabel(selectedSyslogRecord.cfg_command_source) }}</el-descriptions-item>
-          <el-descriptions-item label="配置来源 / 目标">{{ selectedSyslogRecord.cfg_source || '—' }} / {{ selectedSyslogRecord.cfg_destination || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="预期内部变更">{{ selectedSyslogRecord.expected_internal_change ? '是' : '否' }}</el-descriptions-item>
-          <el-descriptions-item label="关联状态">{{ groundStatusLabel(selectedSyslogRecord.correlation_status) }} / {{ groundStatusLabel(selectedSyslogRecord.correlation_confidence) }} / {{ selectedSyslogRecord.correlation_delta_ms == null ? '—' : `${selectedSyslogRecord.correlation_delta_ms} ms` }}</el-descriptions-item>
-          <el-descriptions-item label="综合事件">{{ selectedSyslogRecord.composite_event_type ? groundEventLabel(selectedSyslogRecord.composite_event_type) : '—' }}</el-descriptions-item>
-          <el-descriptions-item label="关联结构化事件 ID">{{ selectedSyslogRecord.correlated_event_ids.length ? selectedSyslogRecord.correlated_event_ids.join(', ') : '—' }}</el-descriptions-item>
-          <el-descriptions-item label="AP 切换">{{ selectedSyslogRecord.previous_peer_name || selectedSyslogRecord.previous_peer_mac || '—' }} → {{ selectedSyslogRecord.peer_name || selectedSyslogRecord.peer_mac || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="站点 / 区间">{{ selectedSyslogRecord.station || '—' }} / {{ selectedSyslogRecord.section || '—' }}</el-descriptions-item>
-          <el-descriptions-item label="AP 解析 / 名称来源">{{ groundStatusLabel(selectedSyslogRecord.resolution_status) }} / {{ groundDisplayNameSourceLabel(selectedSyslogRecord.parsed_details.display_name_source) }}</el-descriptions-item>
-          <el-descriptions-item label="身份 / 解析 / 质量">{{ groundStatusLabel(selectedSyslogRecord.identity_status) }} / {{ groundStatusLabel(selectedSyslogRecord.parse_status) }} / {{ groundStatusLabel(selectedSyslogRecord.data_quality) }}</el-descriptions-item>
-          <el-descriptions-item label="接收序号">{{ selectedSyslogRecord.global_receive_sequence ?? '—' }} / {{ selectedSyslogRecord.source_receive_sequence ?? '—' }}</el-descriptions-item>
-          <el-descriptions-item label="数据来源">{{ groundSourceLabel(selectedSyslogRecord.data_source) }}<span v-if="selectedSyslogRecord.archive_entry"> · {{ selectedSyslogRecord.archive_entry }}</span></el-descriptions-item>
-          <el-descriptions-item label="原始文件">{{ selectedSyslogRecord.raw_file_id }} · 行 {{ selectedSyslogRecord.raw_line_number ?? '—' }} · {{ groundStatusLabel(selectedSyslogRecord.raw_file_status) }}</el-descriptions-item>
-        </el-descriptions>
-        <h3>解析字段</h3>
-        <pre class="raw-record">{{ JSON.stringify(syslogVisibleDetails(selectedSyslogRecord.parsed_details), null, 2) }}</pre>
-        <h3>原始报文</h3>
-        <el-button @click="copySyslogRaw">{{ t('ground.syslog.copy_raw', '复制原始内容') }}</el-button>
-        <pre class="raw-record">{{ selectedSyslogRecord.raw_text }}</pre>
-      </template>
-    </el-drawer>
+    <GroundSyslogDetail />
 
     <el-dialog v-model="trainDialog" :title="t('ground.train_detail', '列车无人值守详情')" width="min(820px, 94vw)">
       <template v-if="selectedTrain">

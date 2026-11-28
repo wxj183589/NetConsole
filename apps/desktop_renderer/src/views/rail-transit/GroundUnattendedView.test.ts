@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 import viewSource from './GroundUnattendedView.vue?raw'
+import replaySource from './GroundUnattendedReplayView.vue?raw'
 import runtimeSource from './useGroundUnattended.ts?raw'
 import apiSource from '../../api/groundUnattended.ts?raw'
 import meshPageSource from './AcMeshLinkPage.vue?raw'
@@ -17,7 +18,7 @@ describe('Ground unattended page', () => {
     expect(source).toContain('不受 AC 位置、正线或车辆段分类影响')
     expect(source).not.toContain('v-model="profile.ping_depot_trains_enabled"')
     const tabs = [...viewSource.matchAll(/<el-tab-pane v-if="tabVisible\('([^']+)'\)"/g)].map((match) => match[1])
-    expect(tabs).toEqual(['overview', 'heartbeat', 'ac-mesh-link', 'quick-ping', 'syslog', 'deep', 'timeline', 'health', 'archives', 'settings'])
+    expect(tabs).toEqual(['overview', 'heartbeat', 'ac-mesh-link', 'quick-ping', 'syslog', 'deep', 'timeline', 'health', 'settings'])
   })
 
   it('requires a configured AC for Mesh-Link refresh', () => {
@@ -31,7 +32,7 @@ describe('Ground unattended page', () => {
   })
   it('is an independent unattended rail transit workflow', () => {
     for (const label of ['运行概览', '心跳检测', 'AC-Mesh-Link', '快速 Ping', 'Syslog 日志', '深度采集', '时间轴', '系统健康', '历史归档', '设置']) {
-      expect(source).toContain(label)
+      expect(source + replaySource).toContain(label)
     }
     expect(source).toContain('地面无人值守')
     expect(source).not.toContain('OnlineMrRealtimeView')
@@ -83,7 +84,8 @@ describe('Ground unattended page', () => {
     expect(apiSource).toContain('/runs/${encodeURIComponent(runId)}')
     expect(source).toContain('deleteSelectedRunHistory')
     expect(source).toContain('runHistoryDeleteBlocked')
-    expect(viewSource).toContain('@delete-run="deleteSelectedRunHistory"')
+    expect(viewSource).not.toContain('@delete-run="deleteSelectedRunHistory"')
+    expect(replaySource).toContain('@delete-run="deleteSelectedRunHistory"')
     expect(playbackSource).toContain('删除历史记录')
   })
 
@@ -218,10 +220,10 @@ describe('Ground unattended page', () => {
     expect(source).toContain('dismissedTerminalOperationIds')
     expect(source).not.toContain('currentOperation')
     for (const label of ['归档概览', '文件清单', 'Ping 汇总', 'Syslog 汇总', '深度会话', '完整性校验', '保留策略']) {
-      expect(source).toContain(label)
+      expect(replaySource).toContain(label)
     }
     for (const field of ['compressed_size_bytes', 'parse_status', 'manifest_sha256']) {
-      expect(source).toContain(field)
+      expect(replaySource).toContain(field)
     }
   })
 })

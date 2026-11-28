@@ -263,6 +263,7 @@ export interface GroundOperation {
   result_summary: Record<string, unknown>
 }
 export interface GroundPingSample {
+  error_reason?: string
   sample_id: string; ts: string; target_ip: string; train_id: string; train_no: string; mr_id: string; mr_name: string
   mr_position_code: string; seq: number | null; ok: boolean; normalized_status?: GroundPingStatus | null; status: GroundPingStatus; heartbeat_status: GroundPingStatus; loss_percent: number | null; rtt_display_ms: number | null; rtt_ms: number | null; timeout_ms: number | null; packet_size: number | null
   current_ap_identity: string; current_ap_name: string; current_ap_mac: string; station: string; section: string; mileage: string

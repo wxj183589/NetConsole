@@ -56,9 +56,9 @@ export interface LoadIssue {
   backendState?: 'ONLINE' | 'OFFLINE' | 'UNKNOWN'
 }
 
-export function createGroundContext() {
-const activeTab = ref('overview')
-const workspaceMode = ref<'collection' | 'playback'>('collection')
+export function createGroundContext(mode: 'live' | 'replay' = 'live') {
+const replay = mode === 'replay'
+const activeTab = ref(replay ? 'playback' : 'overview')
 
 const pageVisible = ref(!document.hidden)
 
@@ -723,7 +723,9 @@ const loadArpSourceSwitches = (silent = true) => latestRequest('arp-source-switc
 const loadAcBasicCollection = (silent = true) => latestRequest('ac-basic-collection', 'AC 基础采集', (signal) => listGroundAcBasicCollection({ signal }), (value) => { acBasicCollection.value = value.items }, silent)
 
 const loadRuns = (silent = true) => latestRequest('runs', '运行历史', (signal) => listGroundRuns({ signal }), (value) => {
-  runs.value = value.items
+  runs.value = value.items.filter((run) => run.archive_status === 'READY'
+    && !['STARTING', 'RUNNING', 'PAUSED', 'STOPPING', 'FINALIZING', 'ARCHIVING'].includes(run.state))
+  if (!runs.value.some((run) => run.run_id === historySyslogRunId.value)) historySyslogRunId.value = ''
 }, silent)
 
 const applyRendererPositionTiming = (items: GroundTrain[]): void => {
@@ -916,6 +918,11 @@ function dismissOperation(): void {
 }
 
 async function loadActiveTab(silent = true): Promise<void> {
+  if (replay) {
+    if (activeTab.value === 'archives') await loadArchives(silent)
+    else await loadRuns(silent)
+    return
+  }
   if (activeTab.value === 'overview') await Promise.all([loadHealth(silent), loadSyslogTransport(silent)])
   // HeartbeatPage owns the durable heartbeat projection and its refresh
   // cadence. Keep the stopped-state inventory read for the shared context,
@@ -928,7 +935,6 @@ async function loadActiveTab(silent = true): Promise<void> {
   else if (activeTab.value === 'timeline') await loadTimelineData(silent)
   else if (activeTab.value === 'syslog') await loadSyslog(silent)
   else if (activeTab.value === 'health') await loadHealth(silent)
-  else if (activeTab.value === 'archives') await loadArchives(silent)
   else if (activeTab.value === 'settings') {
     if (!pingPresets.value.length) await loadPingPresets()
     await Promise.all([loadProfile(silent), loadTrains(silent), loadAcBasicCollection(silent), loadArpSourceSwitches(silent)])
@@ -940,12 +946,17 @@ async function loadAll(silent = false): Promise<void> {
   if (!silent) loading.value = true
   loadAllInFlight = true
   try {
+    if (replay) {
+      if (!profile.value) await loadProfile(silent)
+      if (!disposed && pageActivated.value && pageVisible.value) await loadActiveTab(silent)
+      return
+    }
     // Status drives the run selection and is relatively expensive. Complete
     // it before loading dependent data so first entry does not create a burst
     // of synchronous backend queries.
     await loadStatus(silent)
     if (!profile.value || activeTab.value === 'settings') await loadProfile(silent)
-    if (workspaceMode.value === 'playback') await loadRuns(silent)
+    if (disposed || !pageActivated.value || !pageVisible.value) return
     await loadOperation(silent)
     await loadActiveTab(silent)
   } finally {
@@ -968,7 +979,7 @@ function pollDue(key: string, intervalMs: number, callback: () => Promise<unknow
 function schedulePoll(): void {
   if (pollTimer !== undefined) window.clearTimeout(pollTimer)
   pollTimer = window.setTimeout(() => {
-    if (!document.hidden) {
+    if (!document.hidden && pageActivated.value) {
       pollDue('status', monitoringRunning.value ? 5_000 : 20_000, () => loadStatus())
       if (operationActive.value || status.value?.active_operation_id) {
         pollDue('operation', 2_000, () => loadOperation())
@@ -1828,7 +1839,7 @@ function abortRequests(): void {
 function handleVisibilityChange(): void {
   pageVisible.value = !document.hidden
   if (document.hidden) abortRequests()
-  else {
+  else if (pageActivated.value) {
     siteContextReloadPending = false
     lastPollAt.clear()
     void loadAll(true)
@@ -1916,7 +1927,7 @@ function handleSiteContextChanged(): void {
   if (disposed) return
   siteContextReloadPending = true
   resetPageStateForSiteContext()
-  if (!document.hidden) {
+  if (!document.hidden && pageActivated.value) {
     siteContextReloadPending = false
     void loadAll(true)
   }
@@ -2105,8 +2116,10 @@ onMounted(() => {
   window.addEventListener(SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   window.addEventListener(LEGACY_SITE_CONTEXT_CHANGED_EVENT, handleSiteContextChanged)
   void loadAll()
-  void loadLocalAddresses()
-  schedulePoll()
+  if (!replay) {
+    void loadLocalAddresses()
+    schedulePoll()
+  }
 })
 
 onActivated(() => {
@@ -2117,13 +2130,8 @@ onActivated(() => {
   void loadAll(true)
 })
 
-watch(workspaceMode, (mode) => {
-  historySyslogRunId.value = ''
-  if (mode === 'playback') void loadRuns()
-  else requestControllers.get('runs')?.abort()
-}, { flush: 'sync' })
-
 watch(activeTab, () => {
+  if (replay) historySyslogRunId.value = ''
   requestControllers.forEach((controller, key) => {
     if (
       // These reads populate the shared run context, not an individual tab.
@@ -2166,6 +2174,8 @@ watch(selectedRunId, () => {
 
 onDeactivated(() => {
   pageActivated.value = false
+  siteContextReloadPending = true
+  abortRequests()
   pingWindowOpen.value = false
   handlePingWindowClosed()
 })
@@ -2185,7 +2195,6 @@ onBeforeUnmount(() => {
   }
 })
 return {
-workspaceMode,
 computed,
 onActivated,
 onBeforeUnmount,
@@ -2549,8 +2558,8 @@ restoreDeepPingDefault
 
 type GroundContext = ReturnType<typeof createGroundContext>
 const groundContextKey: InjectionKey<GroundContext> = Symbol('ground-unattended')
-export function provideGroundContext() {
-  const context = createGroundContext()
+export function provideGroundContext(mode: 'live' | 'replay' = 'live') {
+  const context = createGroundContext(mode)
   provide(groundContextKey, context)
   return context
 }
