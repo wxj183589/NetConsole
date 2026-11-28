@@ -94,6 +94,37 @@ def runtime(tmp_path: Path):
     return TestClient(app), adapter, sw_a, sw_b
 
 
+def test_local_snapshot_tasks_resolve_current_site_device_and_latest_snapshot(runtime):
+    from netconsole.repositories.config_snapshot_repository import ConfigSnapshot, ConfigSnapshotRepository
+
+    client, adapter, sw_a, sw_b = runtime
+    paths = adapter.tasks.paths
+    repository = ConfigSnapshotRepository(Database(paths.site_db_path("demo")))
+    def add(device, kind, stamp):
+        path = paths.config_center_root("demo") / f"{device.device_uuid}-{kind}-{stamp}.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#\nreturn\n", encoding="utf-8")
+        return repository.create(ConfigSnapshot(None, device.id, device.device_uuid, stamp, kind, str(path), "fixture"))
+
+    add(sw_a, "saved", "2026-01-01")
+    saved = add(sw_a, "saved", "2026-01-02")
+    running = add(sw_a, "running", "2026-01-03")
+    add(sw_b, "running", "2026-01-04")
+    for kind, expected in [
+        ("config_diff", {"left_snapshot_id": saved.id, "right_snapshot_id": running.id}),
+        ("config_preview", {"snapshot_ids": [saved.id]}),
+    ]:
+        response = client.post("/device-operations/tasks", json={"kind": kind, "device_uuids": [sw_a.device_uuid]})
+        assert response.status_code == 202, response.text
+        job = adapter.jobs[response.json()["task_id"]]
+        assert job.params["site_name"] == "demo"
+        assert {key: job.params[key] for key in expected} == expected
+    unknown = client.post("/device-operations/tasks", json={"kind": "config_diff", "device_uuids": ["other-site-uuid"]})
+    assert unknown.status_code == 422
+    missing = client.post("/device-operations/tasks", json={"kind": "config_diff", "device_uuids": [sw_b.device_uuid]})
+    assert missing.status_code == 422
+
+
 def test_task_executes_registered_worker_and_retries_failed_device(runtime, monkeypatch):
     client, adapter, sw_a, sw_b = runtime
     collected = []

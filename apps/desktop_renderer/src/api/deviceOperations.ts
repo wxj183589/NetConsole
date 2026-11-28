@@ -7,6 +7,7 @@ export const deviceTaskLabels = {
   configuration: '配置收集', backup: '配置备份', diagnostic: '诊断收集',
   optical: '光衰收集', lldp: 'LLDP 收集', version: '版本检查', custom: '自定义命令采集',
   wireless: '无线信息收集', mesh: 'MESH 收集',
+  config_diff: '配置快照差异', config_preview: '已保存配置快照', health: '设备健康检查',
 } as const
 
 export type DeviceTaskKind = keyof typeof deviceTaskLabels

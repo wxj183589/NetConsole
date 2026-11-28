@@ -42,6 +42,12 @@ def _library(request: Request) -> CommandTemplateLibrary:
 def _require_task_kind(request: Request, kind: object) -> None:
     if kind in {"configuration", "backup"}:
         require_feature("capability.config_collection.fetch")(request)
+    if kind == "config_diff":
+        require_feature("capability.config_collection.diff")(request)
+    if kind in {"config_diff", "config_preview"}:
+        require_feature("capability.config_collection.export")(request)
+    if kind == "health":
+        require_feature("capability.devices.collect")(request)
 
 
 @router.get("/organizations")

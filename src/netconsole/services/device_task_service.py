@@ -19,6 +19,7 @@ from netconsole.models.task_snapshot import utc_now_iso
 from netconsole.models.task_state import TERMINAL_TASK_STATES
 from netconsole.parsers.h3c.version_parser import parse_version
 from netconsole.repositories.device_fact_repository import DeviceFactRepository
+from netconsole.repositories.config_snapshot_repository import ConfigSnapshotRepository
 from netconsole.repositories.device_repository import DeviceRepository
 from netconsole.repositories.rail_infrastructure_repository import RailInfrastructureRepository
 from netconsole.services.background_job import BackgroundJob
@@ -29,6 +30,8 @@ from netconsole.services.device_command_profile_service import (
     device_cli_output_is_unsupported,
 )
 from netconsole.services.device_scope import is_current_debug_device
+from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
+from netconsole.services.device_health_check_application_service import DeviceHealthCheckApplicationService
 from netconsole.services.h3c_command_template import (
     CommandTemplatePreviewRequest,
     is_read_only_h3c_command,
@@ -49,7 +52,7 @@ from netconsole.services.site_manager import SiteManager
 
 DEVICE_TASK_TYPE = "device_maintenance_collection"
 DEVICE_TASK_OWNER = "web_device_task_center"
-DeviceTaskKind = Literal["configuration", "backup", "diagnostic", "optical", "lldp", "version", "custom", "wireless", "mesh"]
+DeviceTaskKind = Literal["configuration", "backup", "diagnostic", "optical", "lldp", "version", "custom", "wireless", "mesh", "config_diff", "config_preview", "health"]
 DEVICE_TASK_LABELS = {
     "configuration": "配置收集",
     "backup": "配置备份",
@@ -60,6 +63,9 @@ DEVICE_TASK_LABELS = {
     "custom": "自定义命令采集",
     "wireless": "无线信息收集",
     "mesh": "MESH 收集",
+    "config_diff": "配置快照差异",
+    "config_preview": "已保存配置快照",
+    "health": "设备健康检查",
 }
 _COMMANDS = {
     "diagnostic": ("display version", "display cpu-usage", "display memory", "display interface brief"),
@@ -144,6 +150,8 @@ class DeviceTaskApplicationService:
             raise ValueError(f"每次任务请选择 1 至 {_MAX_TARGETS} 台设备")
         if set(ids) != repository.get_by_uuids(ids).keys():
             raise ValueError("目标设备已不存在或不属于当前局点")
+        if request.kind in {"config_diff", "config_preview", "health"}:
+            return self._start_existing_read_only_task(site, request, ids, repository.database)
         if request.template is not None and request.saved_template is not None:
             raise ValueError("请选择临时模板或已保存的模板")
         if (request.kind == "custom") != (request.template is not None or request.saved_template is not None):
@@ -168,6 +176,32 @@ class DeviceTaskApplicationService:
                 raise ValueError("定时自定义任务仅支持已保存的只读模板")
             return self._save_schedule(site, request, ids, commands, template_info)
         return self._submit_resolved(site, request, ids, commands, template_info, retry_of_task_id)
+
+    def _start_existing_read_only_task(
+        self, site: str, request: DeviceTaskRequest, ids: list[str], database: Database,
+    ) -> DeviceTaskReference:
+        if request.scheduled_at or request.template or request.saved_template:
+            raise ValueError("该任务仅支持立即执行，且不接受命令模板")
+        if request.kind == "health":
+            health = DeviceHealthCheckApplicationService(self.paths, self.task_service, process_adapter=self.process_adapter)
+            task = health.start(ids, concurrency_limit=request.concurrency, site_name=site)
+            return DeviceTaskReference(task_id=task.task_id, run_id=task.task_id, target_count=len(ids))
+        if len(ids) != 1:
+            raise ValueError("请选择一台设备查看配置快照")
+        snapshots = ConfigSnapshotRepository(database, ensure_schema=False)
+        config = ConfigCollectionApplicationService(self.paths, self.task_service, self.process_adapter)
+        if request.kind == "config_diff":
+            left = snapshots.list_for_device_page(ids[0], "saved", limit=1)
+            right = snapshots.list_for_device_page(ids[0], "running", limit=1)
+            if not left or not right:
+                raise ValueError("该设备需要同时具有已保存和运行配置快照")
+            task = config.submit_diff_export(site, left[0].id, right[0].id)
+        else:
+            saved = snapshots.list_for_device_page(ids[0], "saved", limit=1)
+            if not saved:
+                raise ValueError("该设备没有已保存配置快照")
+            task = config.submit_snapshots_export(site, [saved[0].id])
+        return DeviceTaskReference(task_id=task.id, run_id=task.id, target_count=1)
 
     def _submit_resolved(
         self, site: str, request: DeviceTaskRequest, ids: list[str],
