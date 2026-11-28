@@ -7,11 +7,11 @@
 | A 全面审计 | 基线 | PARTIAL | [实现清单](../architecture/LEGACY_IMPLEMENTATION_INVENTORY.md)逐项索引 API、页面、Store 和静态表声明，业务真机行为待核验 |
 | B 设计与开源研究 | A | PARTIAL | [源码研究](../architecture/OPEN_SOURCE_REFERENCE_STUDY.md)覆盖七个项目。设备详情复用 DeviceDetailApplicationService，文件与设备任务保留各自所有者 |
 | C 安装与启动 | A | PARTIAL | 修正七处 NSIS 子进程调用，保留退出码、诊断 ID、日志与安装事务。细分功能、平台、无人值守和路由初始化；看门狗分别记录阶段上报时刻、无进展时长和总时长，保留原有硬截止时间 |
-| D 控制台 | A | PARTIAL | Python 执行与 Vue 预览统一支持空格、默认暂停和 1–60000 毫秒的参数暂停。修正脚本累计等待的单位。13 项 Python 测试、31 项 Renderer 测试及 Renderer 构建通过。粘贴、同步目标与真实会话待验收 |
+| D 控制台 | A | PARTIAL | Python 执行与 Vue 预览统一空格与参数暂停。终端支持多行确认、按会话变量预览、显式选定分屏和独立窗口。真实窗口验收进行中 |
 | E 设备资料 | B | PARTIAL | 设备档案入口按台账 UUID 分页，技术详情复用原聚合服务，详见[模块契约](../architecture/LEGACY_MODULE_CONTRACTS.md)。带历史事实的界面验收待验证 |
-| F 设备任务中心 | B、E | PARTIAL | 查询、统计、详情、日志、批量告警确认与清理按当前 Site 隔离。保留后台事件归属索引。多局点、Web API 和清理 79 项通过。设备任务域、模板、重试和 UI 切换竞态仍待验收 |
+| F 设备任务中心 | B、E | PARTIAL | 当前 Site 查询设备域实例，历史失败目标重试、设备级互斥、一次性计划与持久化恢复已接入。详情切换和真机执行仍需各自验证。见[设备任务审计](../job-center/device-task-release-audit.md) |
 | G 轨交与无人值守 | A | PARTIAL | WPS 新目标默认关闭；旧配置一次性关闭，重新启用后跨重启保留。关闭时拒绝连接、探针及同步。WPS 后端 115 项、轨旁业务页 72 项通过。活动 Run、回放和通断统计待验 |
-| H 日志与文件 | B、F | PARTIAL | 本地受管文件与设备传输分开，打开目录沿用当前局点受管令牌。结构化日志与最终桌面验证进行中 |
+| H 日志与文件 | B、F | PARTIAL | 本地受管文件与设备传输分开，打开目录沿用当前局点受管令牌。旧版日志读取时补齐事件类别和上下文字段，界面与导出使用同一组过滤条件 |
 | I 全局菜单 | B、D–H | PARTIAL | 已重组导航分区并保留旧路由与 Feature，导航、路由、设备、轨交和任务 116 项集成测试通过 |
 | J 集成验收 | C–I | PARTIAL | 52bc48ec 两个候选完成构建及哈希核验，Portable 解压后到达 Renderer stable。最终集成提交、安装态与覆盖升级仍需对应证据 |
 
@@ -33,6 +33,10 @@
 | `4b5697a5` | 合入 SQL 分页前设备域过滤、全历史统计、局点切换保护、设备档案入口、独立归档回放与通断状态。Renderer 定向 116 项和构建通过 |
 | `163de51d` | 失败目标按历史模板重试，配置采集、诊断、连接测试、集中采集及远程下载复用设备锁。归档的筛选和日志行为套件 39 项通过。打开受管目录与设备任务后端集成复验 43 项通过，Renderer 构建通过 |
 | `f5932d3b` | 选定终端同步输入和粘贴、脚本会话变量和协议条件。Sol 分支五组 Console 定向测试 41 项通过，独立 Electron 窗口和设备交互待验收 |
+| `b97405bd` | 合入日志、独立窗口输入、设备档案七分区、定时恢复和 SFTP 传输互斥。真实 Windows Electron 空隔离 Site 中验证台账行下钻到同 UUID 的档案及受管 Explorer 动作。导航截图在 Workspace 的 `reports/tests/legacy-governance-nav-20261128` |
+| `91d1fd0a` | 在持有 SQLite 写锁的隔离 fixture 上重现流量库构造时的写锁申请。已初始化 WAL 库启动时只读检查版本与所需对象，缺索引仍修复。流量库、应用与 API 共 18 项通过。现场截图与该锁竞争的对应关系待核实 |
+
+基线 `52bc48ec` 全量 Gate 结果为 FAIL。Python 5931 通过、3 跳过、1 失败，Renderer 1661 通过；Electron、架构、主契约、Ruff、diff 通过。Python 和文档套件共同指出专项进度目录缺 README，修复 `cce8f1dd` 后目录套件 9 项通过。基线 package-smoke 时远端已推进，正式打包器拒绝不同身份。Workspace 的 6 项既有目录例外获得保留授权。
 
 基线候选目录为 Workspace 下 `temp/build/legacy-governance-candidate-52bc48ec`。Installer SHA-256 为 `4aa0938c3964c982d2e70d0522997fc1784227295cea1fd99d2c7f74d1217af0`，Portable SHA-256 为 `f54a910ddfdcc9b83675ff3940c7b2833a3915c559afeebd5538f78e4f015593`。对应隔离启动、截图与构建日志位于 `reports/tests/legacy-governance-20261128`。这组制品早于 Sol 集成。
 
