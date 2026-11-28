@@ -20,14 +20,14 @@ const kinds = computed(() => Object.entries(deviceTaskLabels).filter(
     if (value === 'configuration') return false
     if (value === 'backup') return configCollectionEnabled.value
     if (value === 'health') return isFeatureEnabled('capability.devices.collect')
-    if (value === 'config_preview') return isFeatureEnabled('capability.config_collection.export')
+    if (value === 'config_preview' || value === 'config_generate') return isFeatureEnabled('capability.config_collection.export')
     if (value === 'config_diff') return isFeatureEnabled('capability.config_collection.diff') && isFeatureEnabled('capability.config_collection.export')
     return true
   },
 ))
 const kind = ref<DeviceTaskKind>(configCollectionEnabled.value ? 'backup' : 'diagnostic')
 const snapshotTask = computed(() => ['config_diff', 'config_preview'].includes(kind.value))
-const immediateTask = computed(() => snapshotTask.value || kind.value === 'health')
+const immediateTask = computed(() => snapshotTask.value || kind.value === 'health' || kind.value === 'config_generate')
 const scope = ref<'devices' | 'group' | 'organization'>('devices')
 const organizations = ref<{ uid: string; name: string; parent_uid: string }[]>([])
 const organizationUid = ref('')
@@ -73,6 +73,7 @@ const draftChanged = computed(() => {
 const canSubmit = computed(() =>
   (scope.value === 'devices' ? targets.value.length > 0 : scope.value === 'group' ? targetGroup.value !== null : Boolean(organizationUid.value))
   && (kind.value !== 'custom' || commandPreviewReady.value)
+  && (kind.value !== 'config_generate' || savedPreview.value?.risk === 'configuration_change')
   && (!snapshotTask.value || (scope.value === 'devices' && targets.value.length === 1)),
 )
 
@@ -118,7 +119,8 @@ async function saveTemplate(copy: boolean): Promise<void> {
   try {
     const definition = templateDefinition()
     if (copy) definition.name += '（副本）'
-    const saved = await saveCommandTemplate(definition, copy ? undefined : currentTemplate.value)
+    if (kind.value === 'config_generate') definition.command_type = 'configuration_change'
+    const saved = await saveCommandTemplate(definition, copy ? undefined : currentTemplate.value, kind.value === 'config_generate')
     savedTemplates.value = [saved, ...savedTemplates.value.filter((item) => item.template_id !== saved.template_id)]
     currentTemplateId.value = saved.template_id
     await pickSaved(saved.template_id)
@@ -194,7 +196,7 @@ async function submit(): Promise<void> {
       command_timeout: commandTimeout.value,
       scheduled_at: !immediateTask.value && scheduledAt.value ? new Date(scheduledAt.value).toISOString() : undefined,
       template: kind.value === 'custom' && !chosen ? template() : undefined,
-      saved_template: kind.value === 'custom' && chosen ? {
+      saved_template: (kind.value === 'custom' || kind.value === 'config_generate') && chosen ? {
         template_id: chosen.template_id, version: chosen.version,
         values: JSON.parse(values.value), preview_digest: chosen.preview_digest,
       } : undefined,
@@ -274,7 +276,7 @@ watch(open, (visible) => {
         <el-form-item v-if="!immediateTask" label="定时执行"><input v-model="scheduledAt" type="datetime-local" aria-label="执行时间（本地）" /></el-form-item>
         <el-form-item v-if="!immediateTask && !['configuration', 'backup', 'optical'].includes(kind)" label="查询命令超时（秒）"><el-input-number v-model="commandTimeout" :min="5" :max="120" /></el-form-item>
       </div>
-      <template v-if="kind === 'custom'">
+      <template v-if="kind === 'custom' || kind === 'config_generate'">
         <el-form-item label="局点模板">
           <el-select v-model="currentTemplateId" aria-label="局点模板" @change="pickSaved">
             <el-option label="临时模板" value="" />
@@ -295,7 +297,7 @@ watch(open, (visible) => {
             </el-select>
           </el-form-item>
           <el-form-item label="命令类型">
-            <el-input :model-value="templateCommandType === 'read_only' ? '只读' : '配置变更（仅历史模板）'" disabled />
+            <el-input :model-value="kind === 'config_generate' ? '待审阅配置' : '只读'" disabled />
           </el-form-item>
         </div>
         <el-form-item label="Jinja2 命令模板">
@@ -307,8 +309,8 @@ watch(open, (visible) => {
         </div>
         <div class="template-actions">
           <el-switch v-model="templateEnabled" aria-label="启用模板" active-text="启用模板" />
-          <el-button :loading="waiting" :disabled="templateCommandType !== 'read_only' || !source.trim() || !templateName.trim() || !templateCategory.trim()" @click="saveTemplate(false)">{{ currentTemplate ? '保存新版本' : '保存模板' }}</el-button>
-          <el-button v-if="currentTemplate" :disabled="waiting || templateCommandType !== 'read_only'" @click="saveTemplate(true)">复制模板</el-button>
+          <el-button :loading="waiting" :disabled="!source.trim() || !templateName.trim() || !templateCategory.trim()" @click="saveTemplate(false)">{{ currentTemplate ? '保存新版本' : '保存模板' }}</el-button>
+          <el-button v-if="currentTemplate" :disabled="waiting" @click="saveTemplate(true)">复制模板</el-button>
           <el-dropdown v-if="templateVersions.length > 1" @command="fillTemplate">
             <el-button>版本历史</el-button>
             <template #dropdown><el-dropdown-menu>
@@ -318,7 +320,7 @@ watch(open, (visible) => {
           <el-button :loading="waiting" :disabled="!source.trim() || draftChanged || (!!currentTemplate && !templateEnabled)" @click="render">预览命令</el-button>
         </div>
         <pre v-if="preview" class="preview">{{ preview.commands.join('\n') }}</pre>
-        <el-alert v-if="configurationPreview" title="含配置变更命令，当前预览不可提交为只读采集" type="warning" :closable="false" />
+        <el-alert v-if="configurationPreview && kind === 'custom'" title="含配置变更命令，当前预览不可提交为只读采集" type="warning" :closable="false" />
       </template>
       <el-alert v-if="error" :title="error" type="error" :closable="false" />
     </el-form>

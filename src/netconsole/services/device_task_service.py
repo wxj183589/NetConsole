@@ -52,7 +52,7 @@ from netconsole.services.site_manager import SiteManager
 
 DEVICE_TASK_TYPE = "device_maintenance_collection"
 DEVICE_TASK_OWNER = "web_device_task_center"
-DeviceTaskKind = Literal["configuration", "backup", "diagnostic", "optical", "lldp", "version", "custom", "wireless", "mesh", "config_diff", "config_preview", "health"]
+DeviceTaskKind = Literal["configuration", "backup", "diagnostic", "optical", "lldp", "version", "custom", "wireless", "mesh", "config_diff", "config_preview", "config_generate", "health"]
 DEVICE_TASK_LABELS = {
     "configuration": "配置收集",
     "backup": "配置备份",
@@ -65,6 +65,7 @@ DEVICE_TASK_LABELS = {
     "mesh": "MESH 收集",
     "config_diff": "配置快照差异",
     "config_preview": "已保存配置快照",
+    "config_generate": "生成待审阅配置",
     "health": "设备健康检查",
 }
 _COMMANDS = {
@@ -154,7 +155,9 @@ class DeviceTaskApplicationService:
             return self._start_existing_read_only_task(site, request, ids, repository.database)
         if request.template is not None and request.saved_template is not None:
             raise ValueError("请选择临时模板或已保存的模板")
-        if (request.kind == "custom") != (request.template is not None or request.saved_template is not None):
+        if request.kind == "config_generate" and (not request.saved_template or request.scheduled_at):
+            raise ValueError("生成配置需要预览已保存的模板，且仅支持立即执行")
+        if (request.kind in {"custom", "config_generate"}) != (request.template is not None or request.saved_template is not None):
             raise ValueError("只有自定义命令任务接受模板")
         template_info = {}
         commands = tuple(preview_command_template(request.template).commands) if request.template else ()
@@ -162,8 +165,10 @@ class DeviceTaskApplicationService:
             record, preview = self.template_library(site).preview(request.saved_template)
             if preview.preview_digest != request.saved_template.preview_digest:
                 raise ValueError("模板参数已更改，请重新预览")
-            if preview.risk != "read_only":
+            if request.kind == "custom" and preview.risk != "read_only":
                 raise ValueError("当前设备任务仅执行只读模板")
+            if request.kind == "config_generate" and preview.risk != "configuration_change":
+                raise ValueError("生成配置需要配置模板")
             commands = tuple(preview.commands)
             template_info = {
                 "template_id": record.template_id, "version": record.version,
@@ -378,6 +383,8 @@ class DeviceTaskApplicationService:
             raise ValueError("任务结束后才能重试失败设备")
         result = snapshot.result or {}
         kind = result.get("kind")
+        if kind == "config_generate":
+            raise ValueError("请重新预览配置模板后生成")
         ids = list(dict.fromkeys(
             str(item["device_uuid"]) for item in result.get("items", [])
             if item.get("device_uuid") and item.get("status") in {"failed", "partial"}
@@ -412,7 +419,7 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
     if kind == "custom":
         if not 1 <= len(commands) <= 8 or any(not is_read_only_h3c_command(command) for command in commands):
             raise ValueError("自定义采集命令未通过只读校验")
-    else:
+    elif kind != "config_generate":
         commands = _COMMANDS.get(kind, ())
     database = Database(context.paths.site_db_path(site))
     devices = DeviceRepository(database)
@@ -427,6 +434,8 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
         if device is None:
             return {**item, "status": "failed", "message": "设备不存在"}
         item["device_name"] = device.name
+        if kind == "config_generate":
+            return {**item, "status": "success"}
         if not is_current_debug_device(device):
             return {**item, "status": "skipped", "message": "当前设备不参与收集"}
         stored = facts.get_device_fact(device_uuid) or {}
@@ -482,7 +491,7 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
         business_status = "NO_EFFECTIVE_TARGET"
     return {
         "task_id": context.job_id, "run_id": context.job_id, "kind": kind,
-        "commands": list(commands) if kind == "custom" else [],
+        "commands": list(commands) if kind in {"custom", "config_generate"} else [],
         "template": context.params.get("template", {}),
         "concurrency": concurrency,
         "command_timeout": int(context.params.get("command_timeout") or 40),

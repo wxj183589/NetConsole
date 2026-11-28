@@ -44,7 +44,7 @@ def _require_task_kind(request: Request, kind: object) -> None:
         require_feature("capability.config_collection.fetch")(request)
     if kind == "config_diff":
         require_feature("capability.config_collection.diff")(request)
-    if kind in {"config_diff", "config_preview"}:
+    if kind in {"config_diff", "config_preview", "config_generate"}:
         require_feature("capability.config_collection.export")(request)
     if kind == "health":
         require_feature("capability.devices.collect")(request)
@@ -73,9 +73,11 @@ def list_templates(request: Request) -> list[CommandTemplateRevision]:
 
 
 @router.post("/templates", response_model=CommandTemplateRevision, status_code=201)
-def create_template(request: Request, payload: CommandTemplateDefinition) -> CommandTemplateRevision:
+def create_template(request: Request, payload: CommandTemplateDefinition, offline_configuration: bool = False) -> CommandTemplateRevision:
+    if offline_configuration:
+        _require_task_kind(request, "config_generate")
     try:
-        return _library(request).save(payload)
+        return _library(request).save(payload, offline_configuration=offline_configuration)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -106,9 +108,12 @@ def template_versions(request: Request, template_id: str) -> list[CommandTemplat
 def update_template(
     request: Request, template_id: str, payload: CommandTemplateDefinition,
     expected_version: int = Query(ge=1),
+    offline_configuration: bool = False,
 ) -> CommandTemplateRevision:
+    if offline_configuration:
+        _require_task_kind(request, "config_generate")
     try:
-        return _library(request).save(payload, template_id=template_id, expected_version=expected_version)
+        return _library(request).save(payload, template_id=template_id, expected_version=expected_version, offline_configuration=offline_configuration)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="模板不存在") from exc
     except TemplateRevisionConflict as exc:

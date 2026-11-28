@@ -12,6 +12,7 @@ const emit = defineEmits<{ submitted: [id: string] }>()
 const labels = { success: '成功', failed: '失败', partial: '部分成功', skipped: '已跳过' }
 const commandLabels: Record<string, string> = { success: '成功', unavailable: '未取得回显' }
 const items = ref<DeviceExecution[]>([])
+const generatedConfig = ref(false)
 const error = ref('')
 const busy = ref(false)
 const exporting = ref(false)
@@ -27,6 +28,7 @@ async function load(): Promise<void> {
     const result = await getDeviceTaskResult(props.taskId)
     if (generation === loadGeneration) {
       items.value = result.items ?? []
+      generatedConfig.value = result.kind === 'config_generate'
     }
   } catch (cause) {
     if (generation === loadGeneration) error.value = cause instanceof Error ? cause.message : '读取执行结果失败'
@@ -54,7 +56,8 @@ async function exportResults(): Promise<void> {
   error.value = ''
   try {
     await userSelectedExport.submitExportAfterDestinationSelected({
-      action: 'devices.task_results', suggestedName: '设备任务结果.xlsx',
+      action: generatedConfig.value ? 'devices.generated_config' : 'devices.task_results',
+      suggestedName: generatedConfig.value ? '待审阅配置.txt' : '设备任务结果.xlsx',
       submit: () => startDeviceTaskResultExport(props.taskId), taskId: (task) => task.task_id,
     })
   } catch (cause) {
@@ -69,6 +72,7 @@ watch([open, () => props.taskId], ([visible, id]) => {
   busy.value = false
   error.value = ''
   items.value = []
+  generatedConfig.value = false
   if (visible && id) void load()
 }, { immediate: true })
 </script>
@@ -110,7 +114,7 @@ watch([open, () => props.taskId], ([visible, id]) => {
       <div class="actions">
         <RouterLink v-if="isFeatureEnabled('module.logs')" :to="{ name: 'logs', query: { tab: 'task-logs', task_id: taskId } }" @click="open = false">任务日志</RouterLink>
         <el-button @click="load">刷新结果</el-button>
-        <el-button :disabled="!items.length || busy" :loading="exporting" @click="exportResults">导出结果</el-button>
+        <el-button :disabled="!items.length || busy" :loading="exporting" @click="exportResults">{{ generatedConfig ? '另存待审阅配置' : '导出结果' }}</el-button>
         <el-button v-if="hasRetry && isFeatureEnabled('module.devices')" type="primary" :loading="busy" @click="retry">重试失败设备</el-button>
       </div>
     </template>
