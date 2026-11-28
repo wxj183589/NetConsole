@@ -200,6 +200,29 @@ def test_cancel_pending_schedule_keeps_it_from_dispatch(runtime):
     assert task_id not in adapter.jobs
 
 
+def test_schedule_recovers_when_task_exists_before_plan_write(runtime, monkeypatch):
+    client, adapter, sw_a, _ = runtime
+    service = client.app.state.device_task_application_service
+    scheduled_at = datetime.now(UTC) + timedelta(minutes=1)
+    response = client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [sw_a.device_uuid], "scheduled_at": scheduled_at.isoformat(),
+    })
+    task_id = response.json()["task_id"]
+    with monkeypatch.context() as patch:
+        def fail_write(*_args):
+            raise OSError("simulated loss before plan update")
+
+        patch.setattr(service, "_write_schedules", fail_write)
+        with pytest.raises(OSError):
+            service.dispatch_schedules("demo", now=scheduled_at)
+    first_job = adapter.jobs[task_id]
+    assert service.list_schedules("demo")[0].status == "WAITING"
+    recovered = device_task_service.DeviceTaskApplicationService(client.app.state.task_service, adapter)
+    recovered.dispatch_schedules("demo", now=scheduled_at)
+    assert recovered.list_schedules("demo")[0].status == "SUBMITTED"
+    assert adapter.jobs[task_id] is first_job
+
+
 def test_task_scope_limits_and_settings(runtime, monkeypatch):
     client, adapter, sw_a, sw_b = runtime
     service = client.app.state.device_task_application_service
