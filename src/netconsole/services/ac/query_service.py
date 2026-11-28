@@ -51,6 +51,7 @@ from netconsole.models.api.ac_management import (
     AcLldpDTO,
     AcControllerDTO,
     AcManagementSummaryDTO,
+    AcOperationSummaryDTO,
     AcOpticalDTO,
     AcOverviewDTO,
     AcRadioDTO,
@@ -211,6 +212,38 @@ class AcManagementQueryService:
             )
             for row in rows
         ]
+
+    def get_operation_summary(self, site_id: str) -> AcOperationSummaryDTO:
+        db_path = self._db_path(site_id)
+        if not db_path.is_file():
+            return AcOperationSummaryDTO(site_id=site_id)
+        with closing(self._connect(db_path)) as conn:
+            if not self._table_exists(conn, "ac_ap_summary"):
+                return AcOperationSummaryDTO(site_id=site_id)
+            row = conn.execute("""
+                WITH reported AS (
+                    SELECT s.total_aps AS total,
+                           CASE WHEN s.online_aps BETWEEN 0 AND s.total_aps
+                                     AND COALESCE(s.offline_aps, 0) + s.online_aps <= s.total_aps
+                                THEN s.online_aps ELSE 0 END AS online,
+                           CASE WHEN s.offline_aps BETWEEN 0 AND s.total_aps
+                                     AND COALESCE(s.online_aps, 0) + s.offline_aps <= s.total_aps
+                                THEN s.offline_aps ELSE 0 END AS offline,
+                           s.collected_at
+                    FROM ac_ap_summary s
+                    JOIN devices d ON d.device_uuid = s.ac_device_uuid
+                    WHERE COALESCE(d.work_scope_status, 'included') = 'included'
+                      AND s.total_aps >= 0
+                )
+                SELECT COALESCE(SUM(total), 0) AS total,
+                       COALESCE(SUM(online), 0) AS online,
+                       COALESCE(SUM(offline), 0) AS offline,
+                       COALESCE(SUM(total - online - offline), 0) AS unknown,
+                       COUNT(*) AS reported_controllers,
+                       COALESCE(MAX(collected_at), '') AS updated_at
+                FROM reported
+            """).fetchone()
+        return AcOperationSummaryDTO(site_id=site_id, **dict(row))
 
     def get_summary(self, site_id: str) -> AcManagementSummaryDTO:
         db_path = self._db_path(site_id)

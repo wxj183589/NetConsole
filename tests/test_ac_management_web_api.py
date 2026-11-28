@@ -27,6 +27,23 @@ def _fingerprint(path: Path) -> tuple[str, int]:
     return hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns
 
 
+def test_operation_summary_uses_reported_totals_and_current_site(tmp_path: Path) -> None:
+    paths, db_path, _ = build_ac_management_fixture(tmp_path)
+    with Database(db_path).connect() as conn:
+        conn.execute("UPDATE ac_ap_summary SET total_aps = 5 WHERE ac_device_uuid = 'ac-1'")
+        conn.commit()
+    app = create_app(RuntimeMode.SERVER, paths=paths, frontend_dist=tmp_path / "missing")
+    with TestClient(app) as client:
+        response = client.get("/api/ac-management/operation-summary?expected_site=demo")
+        assert response.status_code == 200
+        result = response.json()
+        assert result["site_id"] == "demo"
+        assert (result["total"], result["online"], result["offline"], result["unknown"]) == (5, 2, 1, 2)
+        assert result["reported_controllers"] == 1
+        assert result["updated_at"]
+        assert client.get("/api/ac-management/operation-summary?expected_site=other").status_code == 409
+
+
 def test_ac_management_get_api_is_read_only_and_redacts_serial_number(tmp_path: Path) -> None:
     paths, db_path, files = build_ac_management_fixture(tmp_path)
     repository = AcRepository(Database(db_path))

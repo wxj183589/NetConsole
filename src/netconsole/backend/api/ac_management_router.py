@@ -23,6 +23,7 @@ from netconsole.models.api.ac_management import (
     AcControllerDTO,
     AcDeploymentsDTO,
     AcManagementSummaryDTO,
+    AcOperationSummaryDTO,
     AcOpticalDTO,
     AcRadioDTO,
     AcExtensionApplyRequestDTO,
@@ -103,6 +104,18 @@ def save_deployments(body: AcDeploymentsDTO, request: Request) -> AcDeploymentsD
         raise HTTPException(status_code=409, detail={"code": "AC_DEPLOYMENT_CONFLICT"}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get(
+    "/operation-summary",
+    response_model=AcOperationSummaryDTO,
+    dependencies=[Depends(require_feature("module.fit_ap"))],
+)
+def operation_summary(request: Request, expected_site: str | None = None) -> AcOperationSummaryDTO:
+    site = _site_id(request)
+    if expected_site is not None and expected_site != site:
+        raise HTTPException(status_code=409, detail={"code": "AC_SITE_CHANGED"})
+    return _query(lambda: _service(request).get_operation_summary(site))
 
 
 @router.get(

@@ -65,6 +65,16 @@ class AcManagementSummaryDTO(ApiModel):
     message: str = ""
 
 
+class AcOperationSummaryDTO(ApiModel):
+    site_id: str
+    total: int = 0
+    online: int = 0
+    offline: int = 0
+    unknown: int = 0
+    reported_controllers: int = 0
+    updated_at: str = ""
+
+
 class AcOpticalDTO(ApiModel):
     optical_applicable: bool = True
     optical_status: str = "no_data"
