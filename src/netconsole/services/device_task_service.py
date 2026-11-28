@@ -505,6 +505,7 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
                     "elapsed_ms": round((monotonic() - started) * 1000)}
 
     results: dict[str, dict[str, object]] = {}
+    counts = dict.fromkeys(("success", "failed", "partial", "skipped"), 0)
     context.progress(kind, 0, len(ids), DEVICE_TASK_LABELS[kind])
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         pending = {executor.submit(collect, device_uuid): device_uuid for device_uuid in ids}
@@ -515,11 +516,13 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
                 device_uuid = pending.pop(future)
                 result = {**future.result(), "finished_at": utc_now_iso()}
                 results[device_uuid] = result
+                counts[str(result["status"])] += 1
                 context.structured_progress(
                     kind, len(results), len(ids), f"{DEVICE_TASK_LABELS[kind]} {len(results)}/{len(ids)}",
                     device_uuid=device_uuid, status=result["status"],
+                    success_count=counts["success"], failed_count=counts["failed"],
+                    partial_count=counts["partial"], skipped_count=counts["skipped"],
                 )
-    counts = {status: sum(item["status"] == status for item in results.values()) for status in ("success", "failed", "partial", "skipped")}
     if counts["success"] == len(ids):
         business_status = "SUCCESS"
     elif counts["success"] or counts["partial"]:
@@ -544,7 +547,8 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
         "business_status": business_status,
         "warning_count": counts["partial"],
         "primary_failure_reason": next(
-            (str(item["message"]) for item in results.values() if item["status"] == "failed" and item.get("message")),
+            (str(results[device_uuid]["message"]) for device_uuid in ids
+             if results[device_uuid]["status"] == "failed" and results[device_uuid].get("message")),
             "",
         ),
     }

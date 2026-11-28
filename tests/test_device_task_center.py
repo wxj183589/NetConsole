@@ -238,9 +238,15 @@ def test_task_executes_registered_worker_and_retries_failed_device(runtime, monk
     task_id = response.json()["task_id"]
     assert response.json()["run_id"] == task_id
     job = adapter.jobs[task_id]
-    result = get_handler(job.task_type)(JobContext.from_job(job))
+    progress = []
+    result = get_handler(job.task_type)(JobContext.from_job(
+        job, progress_callback=lambda stage, current, total, payload: progress.append((current, total, payload)),
+    ))
     assert {item[2] for item in collected} == {sw_a.device_uuid, sw_b.device_uuid}
     assert result["business_status"] == "PARTIAL_SUCCESS"
+    assert [(current, total) for current, total, _ in progress] == [(0, 2), (1, 2), (2, 2)]
+    assert progress[-1][2]["success_count"] == 1
+    assert progress[-1][2]["failed_count"] == 1
     adapter.complete(task_id, result)
     assert client.get(f"/device-operations/tasks/{task_id}/result").json()["items"] == result["items"]
     response = client.post(f"/device-operations/tasks/{task_id}/retry")
