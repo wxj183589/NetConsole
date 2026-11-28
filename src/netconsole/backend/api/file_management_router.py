@@ -409,7 +409,9 @@ def execute_desktop_action(
     request: Request,
     action_ref: str,
 ) -> FileDesktopActionResultDTO:
-    return _call(lambda: _service(request).execute_desktop_action(action_ref))
+    return _call(lambda: _service(request).execute_desktop_action(
+        action_ref, local_network_services=getattr(request.app.state, "local_network_services", None),
+    ))
 
 
 def _remote_call(callback):

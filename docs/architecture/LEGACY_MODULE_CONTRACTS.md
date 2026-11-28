@@ -18,7 +18,7 @@ Renderer 侧栏由 [导航注册表](../../apps/desktop_renderer/src/navigation/
 
 - `/devices/archive`（`device-archives`）是档案索引。`/devices/:deviceId`（`device-detail`）是每台设备的档案页，工作区以设备 UUID 标识。设备管理行、双击和右键复用该入口。
 - `/rail-transit/ground-unattended` 与 `/rail-transit/ground-unattended-replay` 是独立路由和工作区，共用 `module.ground_unattended`。车载 MR 保留 `online-mr`、`online-mr-analysis` 路径，回放保留 `session_id` 工作区身份。
-- `/file-manager`（`device-file-manager`）归本地受管文件，组件为 `FileManagerWorkspaceView.vue`。`/device-files`（`device-file-downloads`）归设备文件传输，组件为 `FileManagementView.vue`。`/file-management` 保留传输兼容跳转。`/device-files/diagnostics` 路由归设备任务。
+- `/file-manager`（`device-file-manager`）归本地受管文件，组件为 `FileManagerWorkspaceView.vue`。`/device-files`（`device-file-downloads`）归设备文件传输，默认复用 `FileManagementView.vue`，用 `view=sftp` 打开原双向 SFTP 工作区。`/file-management` 与带 `device_uuid` 的旧本地文件深链保留传输兼容跳转。`/device-files/diagnostics` 路由归设备任务。
 - `/tools/connectivity`、`/tools/network-components` 和 `/tools/network-services` 等保留 URL 与独立 gate。已有浏览器入口继续走现有 API，桌面组件仍由 Electron 白名单管理。组件配置当前管理 fping 和 iPerf3，连通性与监听工作区各自复用原服务。
 - `/command-reference` 继续跳到维护页的命令参考，保留 query/hash。`/storage-management` 继续进入系统设置的局点存储。保留 AC、工具、原地面监控与旧看板兼容跳转。
 

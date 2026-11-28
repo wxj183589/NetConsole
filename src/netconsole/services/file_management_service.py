@@ -164,6 +164,7 @@ class FileDesktopActionCommand:
     site_id: str = ""
     path: Path | None = None
     device_id: str = ""
+    local_entry_id: str = ""
 
 
 @dataclass
@@ -981,6 +982,8 @@ class FileManagementApplicationService:
         elif selected == "open_local":
             entry = self._local_entry(site, local_entry_id)
             command = FileDesktopActionCommand(action=selected, site_id=site, path=entry.path)
+        elif selected == "open_workspace_dir":
+            command = FileDesktopActionCommand(action=selected, site_id=site, local_entry_id=local_entry_id)
         elif selected != "winscp":
             raise FileManagementError("不支持的桌面动作")
         expires_at = datetime.now(UTC) + timedelta(seconds=60)
@@ -1013,11 +1016,21 @@ class FileManagementApplicationService:
             raise FileReferenceNotFound("桌面动作引用不存在或已过期")
         return action.command
 
-    def execute_desktop_action(self, action_ref: str) -> FileDesktopActionResultDTO:
+    def execute_desktop_action(self, action_ref: str, *, local_network_services=None) -> FileDesktopActionResultDTO:
         command = self.consume_desktop_action(action_ref)
         service = self._desktop_action_service
         if service is None or service.runtime_mode is not RuntimeMode.DESKTOP:
             raise FileManagementError("当前运行模式不允许桌面动作")
+        if command.action == "open_workspace_dir":
+            try:
+                path = self.workspace_operations.desktop_directory(
+                    local_network_services, command.local_entry_id, command.site_id,
+                )
+            except (ValueError, OSError) as exc:
+                raise FileManagementError(str(exc)) from exc
+            return FileDesktopActionResultDTO(
+                action=command.action, success=True, message="已打开目录。", target_path=str(path),
+            )
         if command.action in {"open_local", "open_result", "open_result_dir"}:
             if command.path is None:
                 raise FileManagementError("桌面动作目标不存在")

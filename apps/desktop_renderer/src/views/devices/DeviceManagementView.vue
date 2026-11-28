@@ -1045,7 +1045,7 @@ function openInternalConsole(deviceUuid = selectedUuids.value[0] || ''): void {
 }
 
 function openDeviceFileManager(deviceUuid: string): void {
-  void router.push({ name: 'device-file-manager', query: { device_uuid: deviceUuid } })
+  void router.push({ name: 'device-file-downloads', query: { device_uuid: deviceUuid, view: 'sftp' } })
 }
 
 function openCreate(): void {

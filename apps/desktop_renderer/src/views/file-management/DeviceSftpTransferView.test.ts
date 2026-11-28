@@ -5,7 +5,7 @@ import { expect, it, vi } from 'vitest'
 
 import { activeSiteContext } from '../../stores/siteContext'
 import TerminalSftpPanel from '../console/TerminalSftpPanel.vue'
-import FileManagerWorkspaceView from './FileManagerWorkspaceView.vue'
+import DeviceSftpTransferView from './DeviceSftpTransferView.vue'
 
 const api = vi.hoisted(() => ({
   listLocalFiles: vi.fn(),
@@ -57,7 +57,7 @@ it('uses the active Site and attaches both panel directions to opaque local refe
   })
   api.uploadManagedSftpFile.mockResolvedValue({})
   api.startManagedSftpDownload.mockResolvedValue({})
-  const wrapper = mount(FileManagerWorkspaceView, {
+  const wrapper = mount(DeviceSftpTransferView, {
     global: {
       directives: { loading: () => undefined },
       stubs: {

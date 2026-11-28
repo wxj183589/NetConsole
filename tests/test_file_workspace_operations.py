@@ -92,6 +92,22 @@ def test_copy_verify_move_delete_and_task_link(workspace):
     assert any(event[0] == copied["task_id"] and event[1] == "finished" for event in history.events)
 
 
+def test_desktop_directory_accepts_only_current_managed_directory_references(workspace):
+    service, manager, _ = workspace
+    root = manager.root / "http"
+    (root / "archive").mkdir()
+    (root / "status.txt").write_text("ready", encoding="utf-8")
+    page = service.browse(manager, "http")
+    archive, file = page["items"]
+    assert service.desktop_directory(manager, archive["id"], "file-test") == root / "archive"
+    with pytest.raises(ValueError, match="受管目录"):
+        service.desktop_directory(manager, file["id"], "file-test")
+    with pytest.raises(ValueError, match="当前局点"):
+        service.desktop_directory(manager, archive["id"], "other-site")
+    with pytest.raises(ValueError, match="当前局点"):
+        service.desktop_directory(manager, "../archive", "file-test")
+
+
 def test_running_share_is_read_only_and_upload_staging_cleaned(workspace):
     service, manager, _ = workspace
     page = service.browse(manager, "tftp")

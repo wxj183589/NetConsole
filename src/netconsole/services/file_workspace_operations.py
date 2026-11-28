@@ -128,6 +128,14 @@ class FileWorkspaceOperations:
             raise ValueError("请选择普通文件")
         return path
 
+    def desktop_directory(self, manager, token, site):
+        if site != self._site():
+            raise ValueError("目录引用不属于当前局点")
+        kind, _, path = self._resolve(manager, token, site)
+        if kind not in self.ROOTS or not path.is_dir():
+            raise ValueError("请选择受管目录")
+        return path
+
     def upload(self, manager, destination, name, stream, overwrite=False, expected_sha256=""):
         site = self._site()
         self._resolve(manager, destination, site, write=True)

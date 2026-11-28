@@ -893,7 +893,7 @@ async function executeFileDesktopAction(
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const body = await response.json() as { action?: unknown; success?: unknown; target_path?: unknown }
     if (body.success !== true) throw new Error('action rejected')
-    if (body.action === 'open_local' || body.action === 'open_result' || body.action === 'open_result_dir') {
+    if (body.action === 'open_local' || body.action === 'open_result' || body.action === 'open_result_dir' || body.action === 'open_workspace_dir') {
       if (typeof body.target_path !== 'string' || !body.target_path) throw new Error('desktop action target missing')
       handoff = prepareExternalWindowHandoff(sourceWindow)
       const error = await shell.openPath(body.target_path)

@@ -12,9 +12,11 @@ const api = vi.hoisted(() => ({
   uploadFileWorkspace: vi.fn(),
   workspaceFileRequest: vi.fn(entry => ({ apiPath: `/api/file-management/workspace/files/${entry.id}`, suggestedName: entry.name })),
   downloadBackendResource: vi.fn(),
+  prepareFileDesktopAction: vi.fn(),
 }))
 vi.mock('../../api/fileWorkspace', () => api)
 vi.mock('../../platform/runtime', () => api)
+vi.mock('../../api/fileManagement', () => api)
 vi.mock('../../features', () => ({ isFeatureEnabled: () => true }))
 vi.mock('element-plus', async importOriginal => ({
   ...await importOriginal<typeof import('element-plus')>(),
@@ -62,6 +64,23 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 describe('service-root file panel', () => {
+  it('opens the active directory through an opaque desktop action after a click', async () => {
+    const executeFileDesktopAction = vi.fn(async () => ({ success: true }))
+    vi.stubGlobal('netconsoleDesktop', { executeFileDesktopAction })
+    api.prepareFileDesktopAction.mockResolvedValue({ action_ref: 'opaque-action' })
+    const wrapper = render()
+    try {
+      await flushPromises()
+      expect(api.prepareFileDesktopAction).not.toHaveBeenCalled()
+      await button(wrapper, 1, 'Open in Explorer').trigger('click')
+      await flushPromises()
+      expect(api.prepareFileDesktopAction).toHaveBeenCalledWith('open_workspace_dir', { local_entry_id: 'http-root' })
+      expect(executeFileDesktopAction).toHaveBeenCalledWith('opaque-action')
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
+  })
   it('copies opaque references, saves only after click, switches root and stops polling on unmount', async () => {
     const wrapper = render()
     await flushPromises()

@@ -154,7 +154,7 @@ class RemoteFilePageDTO(ApiModel):
 
 class FileDesktopActionRequestDTO(ApiModel):
     device_id: str = Field(default="", max_length=120)
-    local_entry_id: str = Field(default="", max_length=80, pattern=r"^(|fl1_[0-9a-f]{32})$")
+    local_entry_id: str = Field(default="", max_length=80, pattern=r"^(?:(?:fl1_)?[0-9a-f]{32})?$")
     task_id: str = Field(default="", max_length=160)
 
 
