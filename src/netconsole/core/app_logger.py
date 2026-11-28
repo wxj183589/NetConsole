@@ -21,7 +21,7 @@ from netconsole.core.log_pagination import (
     get_logs_from_paths,
     iter_logs_from_paths,
 )
-from netconsole.services.log_display import log_context
+from netconsole.core.log_event import log_context
 
 
 _paths = PathResolver()
