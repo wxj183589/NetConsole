@@ -115,7 +115,7 @@ describe('Dashboard home page', () => {
     await flushPromises()
     expect(mocks.compatibility).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('当前代码内置兼容基线主要面向 H3C Comware V7 / Comware V9')
-    const buttons = wrapper.findAll('button')
+    const buttons = wrapper.findAll('.reference button')
     expect(buttons[0].text()).toBe('查看命令说明')
     expect(buttons[1].text()).toBe('打开任务中心')
 

@@ -51,6 +51,7 @@ from netconsole.models.api.device_management import (
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
     DeviceGroupTotalsDTO,
+    DeviceConnectionOverviewDTO,
     DeviceGroupRequestDTO,
     DeviceHealthCheckRequestDTO,
     DeviceHealthCheckTaskDTO,
@@ -174,6 +175,11 @@ def list_devices(
         request=request,
         operation="list_devices",
     )
+
+
+@router.get("/connection-overview", response_model=DeviceConnectionOverviewDTO)
+def connection_overview(request: Request) -> DeviceConnectionOverviewDTO:
+    return _query(lambda: _service(request).connection_overview())
 
 
 @router.get("/groups/totals", response_model=DeviceGroupTotalsDTO)

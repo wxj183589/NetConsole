@@ -70,6 +70,7 @@ from netconsole.models.api.device_management import (
     DeviceGroupDeleteDTO,
     DeviceGroupDTO,
     DeviceGroupTotalsDTO,
+    DeviceConnectionOverviewDTO,
     DeviceGroupRequestDTO,
     DeviceImportConfirmRequestDTO,
     DeviceImportErrorDTO,
@@ -920,6 +921,28 @@ class DeviceManagementWebService:
         _devices, groups, _facts = self._repositories(self.current_site_id())
         total, ungrouped = groups.device_totals()
         return DeviceGroupTotalsDTO(total=total, ungrouped=ungrouped)
+
+    def connection_overview(self) -> DeviceConnectionOverviewDTO:
+        site = self.current_site_id()
+        devices, groups, _facts = self._repositories(site)
+        total, _ = groups.device_totals()
+        tests = self.task_service.repository(site).list_filtered(
+            site_name=site, owner=WEB_TASK_OWNER, source="local", task_types=[DEVICE_CONNECTION_TEST_TASK_TYPE], limit=1000,
+        )
+        latest = {}
+        for test in tests:
+            if test.device:
+                latest.setdefault(test.device, self._connection_status(test))
+        inventory = devices.inventory_metadata_by_uuids(latest)
+        counts = {"REACHABLE": 0, "UNREACHABLE": 0, "ERROR": 0, "AUTH_FAILED": 0, "TESTING": 0}
+        for device_id, state in latest.items():
+            if device_id in inventory and state in counts:
+                counts[state] += 1
+        return DeviceConnectionOverviewDTO(
+            site_id=site, total=total, reachable=counts["REACHABLE"], unreachable=counts["UNREACHABLE"],
+            error=counts["ERROR"] + counts["AUTH_FAILED"], testing=counts["TESTING"],
+            unknown=max(0, total - sum(counts.values())),
+        )
 
     def list_groups(self) -> list[DeviceGroupDTO]:
         _device_repository, group_repository, _facts = self._repositories(

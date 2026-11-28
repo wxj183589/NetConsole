@@ -50,7 +50,7 @@ export function normalizeNavigationItem(
 const item = normalizeNavigationItem
 
 export const navigationRegistry: NavigationItem[] = [
-  item({ navigation_id: 'dashboard', title: 'Dashboard', route_name: 'dashboard', route_path: '/', order: 10, icon: 'dashboard', parity_state: 'NOT_STARTED', desktop_only: false, internal_only: false, implemented: true }),
+  item({ navigation_id: 'dashboard', title: '运维工作台', route_name: 'dashboard', route_path: '/', order: 10, icon: 'dashboard', parity_state: 'IMPLEMENTED_UNVERIFIED', desktop_only: false, internal_only: false, implemented: true }),
   item({ navigation_id: 'device-records', title: '设备资料', order: 20, icon: 'devices', parity_state: 'IMPLEMENTED_UNVERIFIED', desktop_only: false, internal_only: false, implemented: true, children: [
     item({ navigation_id: 'devices', title: '设备管理', route_name: 'device-management', route_path: '/network/devices', feature_id: 'module.devices', parent_id: 'device-records', order: 10, icon: 'devices', legacy_page_id: 'devices', legacy_feature_id: 'module.devices', parity_state: 'IMPLEMENTED_UNVERIFIED', desktop_only: false, internal_only: false, implemented: true }),
     item({ navigation_id: 'device-archives', title: '设备档案', route_name: 'device-archives', route_path: '/devices/archive', feature_id: 'module.devices', parent_id: 'device-records', order: 20, icon: 'devices', parity_state: 'READ_ONLY', desktop_only: false, internal_only: false, implemented: true }),

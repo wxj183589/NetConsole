@@ -373,6 +373,16 @@ class DeviceGroupTotalsDTO(ApiModel):
     ungrouped: int = 0
 
 
+class DeviceConnectionOverviewDTO(ApiModel):
+    site_id: str
+    total: int
+    reachable: int
+    unreachable: int
+    error: int
+    testing: int
+    unknown: int
+
+
 class DeviceGroupRequestDTO(ApiModel):
     name: str = Field(min_length=1, max_length=64)
 

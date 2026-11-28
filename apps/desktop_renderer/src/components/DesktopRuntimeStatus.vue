@@ -20,10 +20,10 @@ const lastSavePath = ref('')
 let unsubscribe: (() => void) | undefined
 
 const stateText = computed(() => ({
-  starting: 'Backend 重新连接中',
-  ready: 'Electron 后端已就绪',
-  stopped: '后端已停止',
-  failed: '后端异常',
+  starting: '正在连接服务',
+  ready: '桌面服务已就绪',
+  stopped: '桌面服务已停止',
+  failed: '桌面服务异常',
 })[status.value.state])
 
 const stateType = computed(() => ({
@@ -78,14 +78,14 @@ function displayName(path: string): string {
       <el-tag class="desktop-runtime-tag" :type="stateType" effect="plain">{{ stateText }}</el-tag>
     </template>
     <div class="desktop-runtime-panel">
-      <strong>Electron Desktop 基础能力</strong>
-      <p>Python Core：{{ status.state === 'ready' ? '已连接' : status.error || stateText }}</p>
+      <strong>桌面服务</strong>
+      <p>{{ stateText }}</p>
+      <details v-if="status.error"><summary>技术详情</summary>{{ status.error }}</details>
       <div class="desktop-runtime-actions">
         <el-button size="small" :disabled="!bridgeEnabled" @click="selectFile">选择文件</el-button>
         <el-button size="small" :disabled="!bridgeEnabled" @click="selectDirectory">选择目录</el-button>
         <el-button size="small" :disabled="!bridgeEnabled" @click="chooseSavePath">另存为</el-button>
       </div>
-      <p class="desktop-runtime-hint">这里只验证桌面宿主能力；报告内容仍由 Python ApplicationService 生成。</p>
     </div>
   </el-popover>
 </template>

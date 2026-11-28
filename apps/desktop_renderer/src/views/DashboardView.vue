@@ -4,6 +4,7 @@ import { CircleCheckFilled, InfoFilled, Lock, WarningFilled } from '@element-plu
 import { useRouter } from 'vue-router'
 
 import { getDeviceCompatibilitySummary } from '../api/deviceCompatibility'
+import OperationsOverview from '../components/OperationsOverview.vue'
 import { findNavigation } from '../navigation/registry'
 import type { DeviceCompatibilitySummary } from '../types/deviceCompatibility'
 
@@ -103,20 +104,15 @@ onMounted(async () => {
   try {
     compatibility.value = await getDeviceCompatibilitySummary()
   } catch (reason) {
-    compatibilityError.value = reason instanceof Error ? reason.message : '设备兼容性基线暂时不可用'
+    compatibilityError.value = '设备兼容性说明暂时无法读取'
   }
 })
 </script>
 
 <template>
   <section class="dashboard-page">
-    <header class="dashboard-header">
-      <div>
-        <p class="dashboard-eyebrow">当前版本功能状态</p>
-        <h1>NetConsole</h1>
-        <p class="dashboard-subtitle">当前首页仅展示已重点完善功能、适配范围、测试免责声明和设备操作安全边界。</p>
-      </div>
-    </header>
+    <OperationsOverview />
+    <details class="reference"><summary>当前版本功能状态与操作说明</summary>
 
     <el-alert v-if="navigationError" type="warning" :title="navigationError" show-icon :closable="false" class="dashboard-alert" />
     <el-alert v-if="compatibilityError" type="warning" :title="compatibilityError" show-icon :closable="false" class="dashboard-alert" />
@@ -143,6 +139,7 @@ onMounted(async () => {
       <el-button type="primary" @click="openNavigation('command-reference', 'command-reference', '命令说明页面暂时无法打开，请从左侧菜单进入。')">查看命令说明</el-button>
       <el-button @click="openNavigation('tasks', 'tasks', '任务中心暂时无法打开，请从左侧菜单进入。')">打开任务中心</el-button>
     </footer>
+    </details>
   </section>
 </template>
 
@@ -185,4 +182,11 @@ onMounted(async () => {
   .dashboard-grid{flex:none;grid-template-columns:1fr;grid-template-rows:none;overflow:visible}
   .dashboard-card{min-height:220px}
 }
+</style>
+<style scoped>
+.dashboard-page{height:auto;overflow:visible}
+.reference{margin:0;padding:12px 0}
+.reference summary{cursor:pointer;color:var(--nc-text-secondary);font-weight:600}
+.reference .dashboard-grid{margin:16px 0;grid-template-rows:auto;overflow:visible}
+.reference .dashboard-card{min-height:0;overflow:visible}
 </style>

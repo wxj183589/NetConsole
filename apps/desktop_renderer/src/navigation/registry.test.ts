@@ -14,7 +14,7 @@ import {
 describe('Web navigation registry', () => {
   it('keeps the fixed top-level order', () => {
     expect(navigationRegistry.map((item) => item.title)).toEqual([
-      'Dashboard', '设备资料', '控制台', '无线管理', '轨道交通', '任务中心', '工具集',
+      '运维工作台', '设备资料', '控制台', '无线管理', '轨道交通', '任务中心', '工具集',
       '文件管理', '网络服务', '软件说明与维护',
     ])
   })

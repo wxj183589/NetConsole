@@ -229,7 +229,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="brand"
-        :aria-label="t('shell.open_dashboard', '打开 Dashboard')"
+        :aria-label="t('shell.open_dashboard', '打开运维工作台')"
         @click="workspace.openOrActivateRoute('/')"
       >
         <img class="brand-logo" :src="BRAND_LOGO_URL" alt="NetConsole" />
@@ -237,7 +237,7 @@ onBeforeUnmount(() => {
           <strong>NetConsole</strong>
         </div>
       </button>
-      <el-menu
+      <el-menu aria-label="主导航"
         :default-active="activeMenu"
         :default-openeds="openGroups"
         :collapse="sidebarCollapsed"
@@ -258,7 +258,8 @@ onBeforeUnmount(() => {
               :key="child.navigation_id"
               :index="child.route_path"
               :disabled="Boolean(child.feature_id && !isFeatureEnabled(child.feature_id))"
-            >{{ navigationTitle(child.navigation_id, child.title) }}</el-menu-item>
+              :title="navigationTitle(child.navigation_id, child.title)"
+            ><span class="child-menu-label">{{ navigationTitle(child.navigation_id, child.title) }}</span></el-menu-item>
           </el-sub-menu>
           <el-menu-item
             v-else
@@ -276,7 +277,7 @@ onBeforeUnmount(() => {
         <div class="header-leading">
           <el-button class="sidebar-toggle" text :icon="mobile ? MenuIcon : Fold" :aria-label="t('shell.toggle_navigation', '切换导航')" @click="toggleSidebar" />
           <div>
-            <div class="header-title">{{ workspace.activeTab?.title || route.meta.title || 'Dashboard' }}</div>
+            <div class="header-title">{{ route.name === 'dashboard' ? navigationTitle('dashboard','运维工作台') : workspace.activeTab?.title || route.meta.title }}</div>
           </div>
         </div>
         <div class="current-site-slot">
@@ -287,10 +288,10 @@ onBeforeUnmount(() => {
           <DesktopRuntimeStatus />
           <span
             :class="['status-dot', backendOnline ? 'online' : 'offline']"
-            :title="backendOnline ? t('shell.backend_online', 'Backend Online') : t('shell.backend_offline', 'Backend Offline')"
-            :aria-label="backendOnline ? t('shell.backend_online', 'Backend Online') : t('shell.backend_offline', 'Backend Offline')"
+            :title="backendOnline ? t('shell.backend_online', '服务已连接') : t('shell.backend_offline', '服务未连接')"
+            :aria-label="backendOnline ? t('shell.backend_online', '服务已连接') : t('shell.backend_offline', '服务未连接')"
           ></span>
-          <span v-if="!backendOnline" class="header-status-label">{{ t('shell.backend_offline', 'Backend Offline') }}</span>
+          <span v-if="!backendOnline" class="header-status-label">{{ t('shell.backend_offline', '服务未连接') }}</span>
           <el-divider direction="vertical" />
           <el-button
             text
@@ -314,3 +315,11 @@ onBeforeUnmount(() => {
     </el-container>
   </el-container>
 </template>
+<style scoped>
+.child-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>

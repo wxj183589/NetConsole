@@ -49,6 +49,7 @@ const en: Record<string, string> = {
   'infrastructure.section_ap_unconfirmed': 'No AP with a confirmed section point on this page',
   'infrastructure.select_engineering_node': 'Select engineering node',
   'nav.device-records': 'Device Records',
+  'nav.dashboard': 'Operations Dashboard',
   'nav.devices': 'Device Management',
   'nav.device-archives': 'Device Archives',
   'nav.device-console': 'Console',

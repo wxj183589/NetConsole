@@ -501,6 +501,19 @@ def test_group_totals_count_site_devices_including_excluded_and_update_on_move(t
     assert client.get("/api/device-management/groups/totals").json() == {"total": 2, "ungrouped": 1}
 
 
+def test_operations_overview_only_counts_current_inventory_and_scoped_test_results(tmp_path: Path) -> None:
+    client, service, _adapter, _devices, _facts, mr, _sw = _fixture(tmp_path)
+    repo = service.task_service.repository("demo")
+    repo.save(_task("overview-connected", str(mr.device_uuid), success=True))
+    repo.save(_task("overview-removed", "removed-device", success=False))
+    result = client.get("/api/device-management/connection-overview")
+    assert result.status_code == 200
+    assert result.json() == {
+        "site_id": "demo", "total": 2, "reachable": 1, "unreachable": 0,
+        "testing": 0, "error": 0, "unknown": 1,
+    }
+
+
 def test_group_count_includes_excluded_and_updates_after_move(tmp_path: Path) -> None:
     client, _service, _adapter, devices, _facts, mr, sw = _fixture(tmp_path)
     excluded = devices.get_by_uuid(str(sw.device_uuid))

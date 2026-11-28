@@ -7,7 +7,7 @@ export const appRoutes: RouteRecordRaw[] = [
     path: '/',
     component: () => import('../layouts/AppLayout.vue'),
     children: [
-      { path: '', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { navigationId: 'dashboard', moduleId: 'dashboard', title: 'Dashboard', tabTitle: 'Dashboard', desktopOnly: false } },
+      { path: '', name: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { navigationId: 'dashboard', moduleId: 'dashboard', title: '运维工作台', tabTitle: '运维工作台', desktopOnly: false } },
       { path: 'network/devices', name: 'device-management', component: () => import('../views/devices/DeviceManagementView.vue'), meta: { navigationId: 'devices', featureId: 'module.devices', moduleId: 'devices', title: '设备管理', tabTitle: '设备管理', desktopOnly: false, workspace: { identity: 'singleton', cache: true, allowDuplicate: false } } },
       { path: 'devices/archive', name: 'device-archives', component: () => import('../views/devices/DeviceArchiveListView.vue'), meta: { navigationId: 'device-archives', featureId: 'module.devices', moduleId: 'devices', title: '设备档案', tabTitle: '设备档案', desktopOnly: false, workspace: { identity: 'singleton', cache: false, allowDuplicate: false } } },
       { path: 'console', name: 'device-console', component: () => import('../views/console/ConsoleWorkspaceView.vue'), meta: { navigationId: 'device-console', featureId: 'module.console', moduleId: 'console', title: '控制台', tabTitle: '控制台', desktopOnly: false, workspace: { identity: 'singleton', cache: true, allowDuplicate: false } } },

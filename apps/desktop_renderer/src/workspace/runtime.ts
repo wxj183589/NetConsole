@@ -47,7 +47,7 @@ export function composeWorkspaceWindowTitle(
   context: WorkspaceWindowTitleContext = titleContext,
 ): string {
   const base = sanitizeWorkspaceTitle(pageTitle) || 'NetConsole'
-  const brandedPageTitle = base === 'Dashboard'
+  const brandedPageTitle = base === 'Dashboard' || base === '运维工作台'
     ? 'NetConsole'
     : base.endsWith(' - NetConsole') ? base : `${base} - NetConsole`
   const dataRoot = String(context.dataRoot || '').trim()
