@@ -100,8 +100,8 @@ function requestSend(button: Button | null = null) {
   pendingButton.value = button
   if (button && !batchExpanded.value) {
     target.value = 'current'
-    void send()
-  } else preview.value = true
+  }
+  preview.value = true
 }
 function activateButton(button: Button) {
   if (button.action === 'MENU_FUNCTION') {

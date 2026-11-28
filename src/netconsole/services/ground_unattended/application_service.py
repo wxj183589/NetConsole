@@ -1961,7 +1961,8 @@ class GroundUnattendedApplicationService:
         ):
             receiver = getattr(self.supervisor, "syslog_receiver", None)
             health = receiver.health_snapshot() if receiver is not None else {}
-            if not str(health.get("tcp_listen_address") or ""):
+            expected_listener = f"{profile.syslog_server_ip}:{profile.syslog_server_port}"
+            if health.get("tcp_listen_address") != expected_listener:
                 raise GroundUnattendedError(
                     "SYSLOG_TCP_RECEIVER_NOT_READY",
                     "TCP Syslog 监听器尚未启动；请在选择 TCP 后启动新的无人值守运行",

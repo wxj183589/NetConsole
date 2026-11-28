@@ -37,7 +37,9 @@ class _JoinHarness:
             self.audit.append((device_uuid, repair_enabled, syslog_transport, task_id))
 
         self.repository = SimpleNamespace(
-            get_profile=lambda: SimpleNamespace(syslog_transport=transport),
+            get_profile=lambda: SimpleNamespace(
+                syslog_transport=transport, syslog_server_ip="127.0.0.1", syslog_server_port=15514,
+            ),
             list_inventory=lambda: [{
                 "endpoints": [{
                     "device_uuid": "mr-online",
@@ -82,8 +84,9 @@ def test_manual_syslog_join_uses_online_heartbeat_not_fleet_ping_summary() -> No
     assert harness.audit == [("mr-online", True, "UDP", result.task_id)]
 
 
-def test_tcp_syslog_join_requires_a_listening_tcp_receiver() -> None:
-    harness = _JoinHarness(transport="TCP")
+@pytest.mark.parametrize("address", ["", "127.0.0.1:15515", "192.0.2.4:15514"])
+def test_tcp_syslog_join_requires_a_listening_tcp_receiver(address: str) -> None:
+    harness = _JoinHarness(transport="TCP", tcp_listen_address=address)
 
     with pytest.raises(GroundUnattendedError) as exc:
         GroundUnattendedApplicationService.request_syslog_control(

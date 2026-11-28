@@ -20,23 +20,24 @@ const historyMrs = ref<GroundHeartbeatMr[]>([]), historyLoading = ref(false), hi
 const quickRows = ref<Record<'primary' | 'backup', Array<Record<string, unknown>>>>({ primary: [], backup: [] })
 const quickBuckets = ref<Record<'primary' | 'backup', Array<Record<string, unknown>>>>({ primary: [], backup: [] })
 const quickLoading = ref(false), quickError = ref('')
+const quickLoaded = ref(false)
 const fullStart = ref(''), fullEnd = ref(''), visibleStart = ref(''), visibleEnd = ref(''), cursorTime = ref('')
 const primaryPingExpanded = ref(true), backupPingExpanded = ref(true), primaryQuickExpanded = ref(true), backupQuickExpanded = ref(true), peerExpanded = ref(true)
 const lossPage = ref(1), eventResult = ref<GroundMrMonitoring | null>(null)
 let controller: AbortController | null = null, eventController: AbortController | null = null, historyController: AbortController | null = null, eventTimer: ReturnType<typeof setTimeout> | undefined, generation = 0
 
 const mrOptions = computed<MrOption[]>(() => {
-  const items: MrOption[] = []
+  const items = new Map<string, MrOption>()
   if (historyMrs.value.length) {
     for (const mr of historyMrs.value) {
-      if (!mr.mr_uuid || items.some((item) => item.id === mr.mr_uuid)) continue
-      items.push({ id: mr.mr_uuid, role: mr.role, name: mr.mr_name, trainId: mr.train_id, trainNo: mr.train_no })
+      if (!mr.mr_uuid || items.has(mr.mr_uuid)) continue
+      items.set(mr.mr_uuid, { id: mr.mr_uuid, role: mr.role, name: mr.mr_name, trainId: mr.train_id, trainNo: mr.train_no })
     }
   } else for (const train of props.trains) for (const endpoint of train.endpoints || []) {
-    if (!endpoint.mr_id || items.some((item) => item.id === endpoint.mr_id)) continue
-    items.push({ id: endpoint.mr_id, role: endpoint.endpoint, name: endpoint.mr_name, trainId: train.train_id, trainNo: train.train_no })
+    if (!endpoint.mr_id || items.has(endpoint.mr_id)) continue
+    items.set(endpoint.mr_id, { id: endpoint.mr_id, role: endpoint.endpoint, name: endpoint.mr_name, trainId: train.train_id, trainNo: train.train_no })
   }
-  return items.sort((a, b) => `${a.trainNo}-${a.role}`.localeCompare(`${b.trainNo}-${b.role}`, 'zh-CN', { numeric: true }))
+  return [...items.values()].sort((a, b) => `${a.trainNo}-${a.role}`.localeCompare(`${b.trainNo}-${b.role}`, 'zh-CN', { numeric: true }))
 })
 const selectedRun = computed(() => props.runs.find((item) => item.run_id === selectedRunId.value))
 const selectedMr = computed(() => mrOptions.value.find((item) => item.id === selectedMrId.value))
@@ -147,7 +148,7 @@ watch(selectedRunId, (runId) => {
 watch(mrOptions, (rows) => { if (historyLoading.value) return; if (!rows.some((row) => row.id === selectedMrId.value)) selectedMrId.value = rows[0]?.id || '' }, { immediate: true })
 
 async function query(): Promise<void> {
-  stopRequests(); const current = generation; error.value = ''; quickError.value = ''; result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }
+  stopRequests(); const current = generation; error.value = ''; quickError.value = ''; quickLoaded.value = false; quickLoading.value = false; result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }
   if (!selectedMrId.value || range.value.length !== 2) { error.value = '请选择 MR 和时间范围'; return }
   const start = range.value[0]!, end = range.value[1]!
   if (!(start < end) || end.getTime() - start.getTime() > 86_400_000) { error.value = '时间范围必须为正且不超过 24 小时'; return }
@@ -160,9 +161,21 @@ async function query(): Promise<void> {
     if (current !== generation) return
     result.value = data; fullStart.value = data.queried_start; fullEnd.value = data.queried_end
     visibleStart.value = data.queried_start; visibleEnd.value = data.queried_end; lossPage.value = 1
-    await loadHistoricalQuickPing(start.toISOString(), end.toISOString(), current, request.signal)
   } catch (reason) { if (!request.signal.aborted) error.value = reason instanceof Error ? reason.message : String(reason) }
   finally { if (controller === request) controller = null; if (current === generation) loading.value = false }
+}
+
+async function queryQuickPing(): Promise<void> {
+  if (!result.value || quickLoading.value) return
+  const request = new AbortController()
+  controller = request
+  quickError.value = ''
+  try {
+    await loadHistoricalQuickPing(fullStart.value, fullEnd.value, generation, request.signal)
+    if (!request.signal.aborted && !quickError.value) quickLoaded.value = true
+  } finally {
+    if (controller === request) controller = null
+  }
 }
 
 async function loadHistoricalQuickPing(start: string, end: string, current: number, signal: AbortSignal): Promise<void> {
@@ -180,11 +193,12 @@ async function loadHistoricalQuickPing(start: string, end: string, current: numb
     const buckets: Record<'primary' | 'backup', Array<Record<string, unknown>>> = { primary: [], backup: [] }
     await Promise.all(addresses.map(async ({ key, ip }) => {
       const matchingRuns = completed.filter((run) => run.targets.some((target) => target.mr_id === mrId && target.target_ip === ip))
-      const pages = await Promise.all(matchingRuns.map(async (run) => {
+      for (const run of matchingRuns) {
+        if (signal.aborted) return
         const samplePage = await getGroundQuickPingSamples(run.run_id, {
           target_ip: ip, start_time: start, end_time: end, limit: 2000,
         }, { signal })
-        return {
+        const page = {
           rows: samplePage.items.map((sample) => ({
             ...sample,
             quick_run_id: run.run_id,
@@ -194,9 +208,9 @@ async function loadHistoricalQuickPing(start: string, end: string, current: numb
           })),
           buckets: (samplePage.second_loss_buckets || []).map((bucket) => ({ ...bucket, target_ip: ip })),
         }
-      }))
-      rows[key] = pages.flatMap((item) => item.rows)
-      buckets[key] = pages.flatMap((item) => item.buckets)
+        rows[key].push(...page.rows)
+        buckets[key].push(...page.buckets)
+      }
     }))
     if (current === generation && !signal.aborted) {
       quickRows.value = rows
@@ -274,7 +288,23 @@ async function loadTimeline(cursor = ''): Promise<void> {
     }
   }
 }
-watch([selectedRunId, range, () => props.active], clearTimeline, { flush: 'sync' })
+watch([selectedMrId, range, () => props.active], () => {
+  generation++
+  controller?.abort()
+  eventController?.abort()
+  if (eventTimer) clearTimeout(eventTimer)
+  loading.value = false
+  quickLoading.value = false
+  quickLoaded.value = false
+  error.value = ''
+  quickError.value = ''
+  result.value = null
+  eventResult.value = null
+  quickRows.value = { primary: [], backup: [] }
+  quickBuckets.value = { primary: [], backup: [] }
+  cursorTime.value = ''
+  clearTimeline()
+}, { flush: 'sync' })
 onBeforeUnmount(() => { stopRequests(); clearTimeline() })
 </script>
 
@@ -318,9 +348,9 @@ onBeforeUnmount(() => { stopRequests(); clearTimeline() })
       <section class="navigator"><h3>全局时间窗口</h3><p class="navigator-range">{{ format(visibleStart) }} — {{ format(visibleEnd) }}</p><MrMonitoringChart mode="navigator" :data="result" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="cursorTime" @viewport-change="changeViewport" @cursor-change="updateCursor" /></section>
       <section v-if="primaryData" class="track"><button class="track-toggle" @click="primaryPingExpanded = !primaryPingExpanded"><b>主用管理 IP · 通断状态</b><span>{{ primaryPingExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="primaryPingExpanded" class="track-body"><div class="heartbeat-stats"><span>正常连通 {{ primaryHeartbeatStats.success }}</span><span>不通/超时 {{ primaryHeartbeatStats.failure }}</span><span>未知 {{ primaryHeartbeatStats.unknown }}</span><span>连通率 {{ primaryHeartbeatStats.connectivityRate == null ? '暂无数据' : `${primaryHeartbeatStats.connectivityRate.toFixed(2)}%` }}</span></div><MrMonitoringChart mode="heartbeat" :data="primaryData" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="cursorTime" @viewport-change="changeViewport" @cursor-change="updateCursor" /><p v-if="!primaryData.series.points.length" class="empty">当前时间范围没有 Heartbeat 采样数据</p></div></Transition></section>
       <section v-if="backupData" class="track backup-track"><button class="track-toggle" @click="backupPingExpanded = !backupPingExpanded"><b>备用管理 IP · 通断状态</b><span>{{ backupPingExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="backupPingExpanded" class="track-body"><div class="heartbeat-stats"><span>正常连通 {{ backupHeartbeatStats.success }}</span><span>不通/超时 {{ backupHeartbeatStats.failure }}</span><span>未知 {{ backupHeartbeatStats.unknown }}</span><span>连通率 {{ backupHeartbeatStats.connectivityRate == null ? '暂无数据' : `${backupHeartbeatStats.connectivityRate.toFixed(2)}%` }}</span></div><MrMonitoringChart mode="heartbeat" :data="backupData" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="cursorTime" @viewport-change="changeViewport" @cursor-change="updateCursor" /><p v-if="!backupData.series.points.length" class="empty">当前时间范围没有 Heartbeat 采样数据</p></div></Transition></section>
-      <el-alert v-if="quickLoading" title="正在读取归档 Quick Ping" type="info" :closable="false" />
+      <el-button v-if="!quickLoaded" :loading="quickLoading" @click="queryQuickPing">加载归档 Quick Ping</el-button>
       <el-alert v-if="quickError" :title="quickError" type="error" :closable="false" />
-      <p v-if="!quickLoading && !quickError && !primaryQuickRows.length && !backupQuickRows.length" class="empty">该归档没有 Quick Ping 记录。</p>
+      <p v-if="quickLoaded && !primaryQuickRows.length && !backupQuickRows.length" class="empty">该归档没有 Quick Ping 记录。</p>
       <section v-if="primaryQuickRows.length" class="track quick-replay-track"><button class="track-toggle track-heading" @click="primaryQuickExpanded = !primaryQuickExpanded"><h3>主地址 Quick Ping <el-tag size="small" type="success">真实归档数据</el-tag></h3><span>{{ primaryQuickExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="primaryQuickExpanded" class="track-body"><QuickPingChart :rows="primaryQuickRows" :second-loss-buckets="primaryQuickBuckets" :interval-ms="1000" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :selected-time="cursorTime" :active="active" @viewport-change="changeViewport" @cursor-change="updateCursor" /><div class="quick-stats"><span>Ping 总数 {{ primaryQuickStats.ping_total }}</span><span>成功 {{ primaryQuickStats.ping_success }}</span><span>丢包 {{ primaryQuickStats.ping_lost }} ({{ primaryQuickStats.packet_loss_rate == null ? '无数据' : `${primaryQuickStats.packet_loss_rate.toFixed(2)}%` }})</span><span>平均 RTT {{ primaryQuickStats.average_rtt_ms == null ? '无数据' : `${primaryQuickStats.average_rtt_ms.toFixed(2)} ms` }}</span><span>最小 / 最大 RTT {{ primaryQuickStats.min_rtt_ms ?? '无数据' }} / {{ primaryQuickStats.max_rtt_ms ?? '无数据' }} ms</span></div></div></Transition></section>
       <section v-if="backupQuickRows.length" class="track quick-replay-track"><button class="track-toggle track-heading" @click="backupQuickExpanded = !backupQuickExpanded"><h3>备用地址 Quick Ping <el-tag size="small" type="success">真实归档数据</el-tag></h3><span>{{ backupQuickExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="backupQuickExpanded" class="track-body"><QuickPingChart :rows="backupQuickRows" :second-loss-buckets="backupQuickBuckets" :interval-ms="1000" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :selected-time="cursorTime" :active="active" @viewport-change="changeViewport" @cursor-change="updateCursor" /><div class="quick-stats"><span>Ping 总数 {{ backupQuickStats.ping_total }}</span><span>成功 {{ backupQuickStats.ping_success }}</span><span>丢包 {{ backupQuickStats.ping_lost }} ({{ backupQuickStats.packet_loss_rate == null ? '无数据' : `${backupQuickStats.packet_loss_rate.toFixed(2)}%` }})</span><span>平均 RTT {{ backupQuickStats.average_rtt_ms == null ? '无数据' : `${backupQuickStats.average_rtt_ms.toFixed(2)} ms` }}</span><span>最小 / 最大 RTT {{ backupQuickStats.min_rtt_ms ?? '无数据' }} / {{ backupQuickStats.max_rtt_ms ?? '无数据' }} ms</span></div></div></Transition></section>
       <section class="track"><button class="track-toggle" @click="peerExpanded = !peerExpanded"><b>Peer AP 主用区间 · 原始 RSSI</b><span>{{ peerExpanded ? '收起' : '展开' }}</span></button><Transition name="chart-collapse"><div v-if="peerExpanded" class="track-body"><MrMonitoringChart mode="peer" :data="result" :start="fullStart" :end="fullEnd" :visible-start="visibleStart" :visible-end="visibleEnd" :active="active" :selected-time="cursorTime" @viewport-change="changeViewport" @cursor-change="updateCursor" /><p v-if="!result.peer_intervals.length" class="empty">当前窗口无可由相邻切换记录证明的 Peer AP 区间。</p></div></Transition></section>

@@ -23,7 +23,7 @@ onMounted(async () => {
     import('echarts/core'), import('echarts/charts'), import('echarts/components'), import('echarts/renderers'),
   ])
   if (disposed || !container.value) return
-  core.use([charts.LineChart, components.GridComponent, components.TooltipComponent, components.LegendComponent, components.DataZoomComponent, components.TitleComponent, components.ToolboxComponent, renderers.CanvasRenderer])
+  core.use([charts.LineChart, charts.ScatterChart, components.GridComponent, components.TooltipComponent, components.LegendComponent, components.DataZoomComponent, components.TitleComponent, components.ToolboxComponent, components.MarkAreaComponent, components.MarkLineComponent, renderers.CanvasRenderer])
   chart = core.init(container.value, undefined, createTimeChartInitOptions(props.rows.length, { useDirtyRect: false }))
   chart.on('datazoom', (payload) => {
     const event = payload as { batch?: Array<{ start?: number; end?: number; startValue?: number; endValue?: number }>; start?: number; end?: number; startValue?: number; endValue?: number }
