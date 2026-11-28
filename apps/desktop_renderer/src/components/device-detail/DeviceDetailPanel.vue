@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { CopyDocument, Edit, FolderOpened, Refresh, View } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { isFeatureEnabled } from '../../features'
+import { t } from '../../i18n/runtime'
 
 import { configArtifactDownloadRequest, submitSnapshotConfigDiff } from '../../api/configCollection'
 import {
@@ -1209,7 +1210,7 @@ function errorMessage(cause: unknown, fallback: string): string {
         </header>
 
         <el-tabs v-model="selectedSection" class="device-detail-tabs" @tab-change="activateSection">
-          <el-tab-pane v-for="section in visibleSections" :key="section" :label="sectionLabels[section]" :name="section">
+          <el-tab-pane v-for="section in mode === 'page' ? detailSectionOrder : visibleSections" :key="section" :label="sectionLabels[section]" :name="section">
             <template v-if="section === 'overview'">
               <div class="device-detail-overview-pane">
                 <div class="section-actions">
@@ -1313,6 +1314,7 @@ function errorMessage(cause: unknown, fallback: string): string {
               </div>
             </template>
 
+            <p v-else-if="!visibleSections.includes(section)" role="status" class="empty">{{ t('device_archive.section_unavailable', '当前设备没有可用的分区数据源') }}</p>
             <template v-else>
               <div class="device-detail-section-pane">
                 <div class="section-toolbar">

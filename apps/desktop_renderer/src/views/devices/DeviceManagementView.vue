@@ -159,7 +159,6 @@ const groupName = ref('')
 const groupAssignVisible = ref(false)
 const groupAssignId = ref<number | null>(null)
 const classificationVisible = ref(false)
-const classificationMode = ref<'phase' | 'status'>('phase')
 const classificationValue = ref<ProjectPhase | WorkScopeStatus>('unspecified')
 const classificationReason = ref('')
 const classificationTargetUuids = ref<string[]>([])
@@ -984,15 +983,9 @@ function invertSelection(): void {
 const deviceContextMenuItems = computed<NcDataTableContextMenuItem<DeviceListItem>[]>(() => [
   { key: 'detail', label: t('nav.device-archives', '设备档案'), action: ({ row }) => openDetail(row) },
   {
-    key: 'set-project-phase',
-    label: '设置建设阶段',
-    action: ({ row }) => openClassificationDialog('phase', [row.device_uuid]),
-    disabled: !isFeatureEnabled('capability.devices.write'),
-  },
-  {
     key: 'set-work-scope-status',
     label: '设置当前工作状态',
-    action: ({ row }) => openClassificationDialog('status', [row.device_uuid]),
+    action: ({ row }) => openClassificationDialog([row.device_uuid]),
     disabled: !isFeatureEnabled('capability.devices.write'),
   },
   {
@@ -1453,14 +1446,10 @@ async function saveGroupAssignment(): Promise<void> {
   }
 }
 
-function openClassificationDialog(
-  mode: 'phase' | 'status',
-  targets = selectedUuids.value,
-): void {
+function openClassificationDialog(targets: string[]): void {
   if (!targets.length) return
-  classificationMode.value = mode
   classificationTargetUuids.value = [...targets]
-  classificationValue.value = mode === 'phase' ? 'unspecified' : 'included'
+  classificationValue.value = 'included'
   classificationReason.value = ''
   classificationVisible.value = true
 }
@@ -1469,9 +1458,7 @@ async function saveClassification(): Promise<void> {
   if (!classificationTargetUuids.value.length) return
   classificationLoading.value = true
   try {
-    const payload = classificationMode.value === 'phase'
-      ? { device_uuids: classificationTargetUuids.value, project_phase: classificationValue.value as ProjectPhase }
-      : { device_uuids: classificationTargetUuids.value, work_scope_status: classificationValue.value as WorkScopeStatus, reason: classificationReason.value }
+    const payload = { device_uuids: classificationTargetUuids.value, work_scope_status: classificationValue.value as WorkScopeStatus, reason: classificationReason.value }
     const result = await updateDeviceClassification(payload)
     classificationVisible.value = false
     ElMessage.success(`已更新 ${result.updated} 台设备`)
@@ -2407,21 +2394,14 @@ function deviceListErrorMessage(cause: unknown): string {
       <template #footer><el-button @click="groupAssignVisible = false">取消</el-button><el-button type="primary" :disabled="!isFeatureEnabled('capability.devices.write')" @click="saveGroupAssignment">确认</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="classificationVisible" :title="classificationMode === 'phase' ? '设置建设阶段' : '设置当前工作状态'" width="480px">
+    <el-dialog v-model="classificationVisible" title="设置当前工作状态" width="480px">
       <p>已选择 {{ classificationTargetUuids.length }} 台设备</p>
-      <el-select v-if="classificationMode === 'phase'" v-model="classificationValue" style="width:100%">
-        <el-option label="一期" value="phase_1" /><el-option label="二期" value="phase_2" />
-        <el-option label="三期" value="phase_3" /><el-option label="其他" value="other" />
-        <el-option label="未指定" value="unspecified" />
-      </el-select>
-      <template v-else>
         <el-select v-model="classificationValue" style="width:100%">
           <el-option label="参与当前调试" value="included" />
           <el-option label="暂不参与" value="excluded" />
         </el-select>
         <el-input v-model="classificationReason" type="textarea" :rows="3" maxlength="1000" show-word-limit placeholder="调整原因（可选）" class="classification-reason" />
         <el-alert :title="classificationValue === 'included' ? '设备将进入默认设备列表，并参与当前自动调试和采集任务候选。' : '设备将退出默认设备列表和自动任务候选范围，但不会被删除，历史数据、凭据和设备关联均会保留。'" type="info" :closable="false" show-icon />
-      </template>
       <template #footer><el-button @click="classificationVisible = false">取消</el-button><el-button type="primary" :loading="classificationLoading" @click="saveClassification">确认设置</el-button></template>
     </el-dialog>
 

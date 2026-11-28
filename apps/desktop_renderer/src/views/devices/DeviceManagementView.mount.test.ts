@@ -902,7 +902,6 @@ describe('DeviceManagementView mounted interactions', () => {
 
     expect(items.map((item) => item.label)).toEqual([
       '设备档案',
-      '设置建设阶段',
       '设置当前工作状态',
       '编辑',
       '复制设备',
