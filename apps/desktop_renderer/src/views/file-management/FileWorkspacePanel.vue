@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { browseFileWorkspace, cancelFileWorkspaceTask, listFileWorkspaceTasks, operateFileWorkspace, uploadFileWorkspace, workspaceFileRequest, type FileRoot, type WorkspaceDirectory, type WorkspaceEntry, type WorkspaceFileTask } from '../../api/fileWorkspace'
 import { downloadBackendResource } from '../../platform/runtime'
+import { prepareFileDesktopAction } from '../../api/fileManagement'
 import { isFeatureEnabled } from '../../features'
 import { createFileManagerTranslator } from './fileManagementI18n'
 
@@ -13,6 +14,8 @@ const roots = ref<[FileRoot, FileRoot]>(['downloads', 'http'])
 const selected = ref<[WorkspaceEntry | null, WorkspaceEntry | null]>([null, null])
 const busy = ref<[boolean, boolean]>([false, false])
 const errors = ref<[string, string]>(['', ''])
+const openingFolder = ref(false)
+const desktopAvailable = Boolean(window.netconsoleDesktop)
 const tasks = ref<WorkspaceFileTask[]>([])
 const sha = new Map<string, string>()
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -117,6 +120,23 @@ async function download(entry: WorkspaceEntry) {
     if (result.status === 'failed') ElMessage.error(result.error || t('downloadFailed'))
   } catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : t('downloadFailed')) }
 }
+
+async function openFolder(side: number): Promise<void> {
+  const entryId = directory(side)?.directory_id
+  const desktop = window.netconsoleDesktop
+  if (!entryId || !desktop || openingFolder.value) return
+  openingFolder.value = true
+  try {
+    const action = await prepareFileDesktopAction('open_workspace_dir', { local_entry_id: entryId })
+    if (disposed || directory(side)?.directory_id !== entryId) return
+    const result = await desktop.executeFileDesktopAction(action.action_ref)
+    if (!result.success) ElMessage.error(result.error || t('openFolderFailed'))
+  } catch (cause) {
+    if (!disposed) ElMessage.error(cause instanceof Error ? cause.message : t('openFolderFailed'))
+  } finally {
+    openingFolder.value = false
+  }
+}
 async function upload(side: number, event: Event) {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files || [])
@@ -142,6 +162,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer) })
           </el-select>
           <el-button :disabled="!directory(side)?.parent_id" @click="browse(side, directory(side)?.parent_id)">{{ t('up') }}</el-button>
           <el-button @click="browse(side, directory(side)?.directory_id)">{{ t('refresh') }}</el-button>
+          <el-button v-if="desktopAvailable && isFeatureEnabled('capability.file_management.desktop_actions')" :disabled="!directory(side) || busy[side] || openingFolder" @click="openFolder(side)">{{ t('openFolder') }}</el-button>
         </header>
         <span>{{ directory(side)?.label }}</span>
         <el-alert v-if="errors[side]" :title="errors[side]" type="error" :closable="false" />

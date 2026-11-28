@@ -129,7 +129,7 @@ export function localFileDownloadRequest(entryId: string, siteId: string, sugges
 }
 
 export function prepareFileDesktopAction(
-  action: 'winscp' | 'open_local' | 'open_result' | 'open_result_dir',
+  action: 'winscp' | 'open_local' | 'open_result' | 'open_result_dir' | 'open_workspace_dir',
   values: { site_id?: string; device_id?: string; local_entry_id?: string; task_id?: string },
 ): Promise<FileDesktopAction> {
   const { site_id, ...body } = values

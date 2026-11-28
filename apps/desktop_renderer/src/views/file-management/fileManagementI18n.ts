@@ -24,6 +24,9 @@ export function createFileManagementTranslator(language = typeof navigator === '
 const managerZh = {
   selectDevice: '选择设备',
   managedDownloads: '设备文件下载',
+  sftpTransfer: 'SFTP 工作区',
+  openFolder: '在资源管理器中打开',
+  openFolderFailed: '无法打开受管目录',
   localFiles: '本地受管目录',
   remoteFiles: '远程文件',
   up: '上级目录',
@@ -91,6 +94,9 @@ const managerZh = {
 const managerEn: Record<keyof typeof managerZh, string> = {
   selectDevice: 'Select device',
   managedDownloads: 'Device downloads',
+  sftpTransfer: 'SFTP workspace',
+  openFolder: 'Open in Explorer',
+  openFolderFailed: 'Unable to open the managed folder',
   localFiles: 'Managed local folder',
   remoteFiles: 'Remote files',
   up: 'Parent directory',
