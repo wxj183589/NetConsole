@@ -28,6 +28,7 @@ def test_status_classification_preserves_explicit_precedence_and_aliases() -> No
 def test_point_values_are_backend_display_contract() -> None:
     assert point_values({"ok": True, "rtt_ms": 2.5}) == {
         "normalized_status": None,
+        "error_reason": "",
         "status": "SUCCESS",
         "heartbeat_status": "SUCCESS",
         "loss_percent": 0.0,
@@ -35,6 +36,7 @@ def test_point_values_are_backend_display_contract() -> None:
     }
     assert point_values({"ok": False, "timeout": True, "rtt_ms": None})["rtt_display_ms"] is None
     assert point_values({"ok": False, "timeout": True, "rtt_ms": None})["loss_percent"] == 100.0
+    assert point_values({"ok": False, "error_code": "TIMED_OUT"})["error_reason"] == "TIMED_OUT"
 
 
 def test_natural_second_buckets_are_half_open_and_deduplicated() -> None:

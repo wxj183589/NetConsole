@@ -1774,7 +1774,7 @@ function linkDetailRowClass({ rowIndex }: { rowIndex: number }): string {
     <header class="page-heading">
       <div>
         <p class="eyebrow">RAIL TRANSIT · ONLINE MR ANALYSIS</p>
-        <h1>车载 MR 收集分析</h1>
+        <h1>车载 MR 归档回放</h1>
         <p>会话、原始日志与采集记录不依赖 parsed 数据库；业务表按解析结果结构化展示，主链路 RSSI 复用 MESH 动态图。</p>
       </div>
       <div class="actions">

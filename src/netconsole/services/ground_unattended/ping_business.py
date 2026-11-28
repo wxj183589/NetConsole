@@ -121,6 +121,14 @@ def point_values(sample: Mapping[str, Any]) -> dict[str, Any]:
     rtt = None if status in {"TIMEOUT", "UNKNOWN"} else _numeric(sample.get("rtt_ms"))
     return {
         "normalized_status": _explicit_status(sample),
+        "error_reason": str(
+            sample.get("error_reason")
+            or sample.get("error_code")
+            or sample.get("failure_code")
+            or sample.get("reason")
+            or sample.get("error")
+            or ""
+        ),
         "status": status,
         "heartbeat_status": classify_heartbeat_status(sample),
         "loss_percent": loss,

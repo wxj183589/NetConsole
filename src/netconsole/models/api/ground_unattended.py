@@ -1386,6 +1386,7 @@ class GroundOperationDTO(ApiModel):
 
 
 class GroundPingSampleDTO(ApiModel):
+    error_reason: str = ""
     sample_id: str = ""
     ts: str
     target_ip: str

@@ -112,6 +112,7 @@ vi.mock('../../components/workspace/NcFloatingWindow.vue', async () => {
 })
 
 import GroundUnattendedView from './GroundUnattendedView.vue'
+import GroundUnattendedReplayView from './GroundUnattendedReplayView.vue'
 import { ApiRequestError } from '../../api/client'
 import { SITE_CONTEXT_CHANGED_EVENT } from '../../workspace/site-switch'
 import { setRendererFeaturesForTest } from '../../features'
@@ -339,8 +340,8 @@ function pingPoint(sampleId: string, ts: string, seq: number) {
   }
 }
 
-function mountPage() {
-  return mount(GroundUnattendedView, {
+function mountPage(component = GroundUnattendedView) {
+  return mount(component, {
     global: { stubs, directives: { loading: {} } },
   })
 }
@@ -461,7 +462,7 @@ describe('Ground unattended page loading behavior', () => {
   })
 
   it('keeps archived runs available without querying them from the idle live workspace', async () => {
-    let resolveRuns!: (value: { items: Array<{ run_id: string; run_date: string }>; total: number }) => void
+    let resolveRuns!: (value: { items: Array<{ run_id: string; run_date: string; archive_status: string; state: string }>; total: number }) => void
     let historySignal: AbortSignal | undefined
     api.listGroundRuns.mockImplementationOnce((options: { signal: AbortSignal }) => {
       historySignal = options.signal
@@ -469,6 +470,7 @@ describe('Ground unattended page loading behavior', () => {
     })
     const wrapper = mountPage()
     ;(wrapper.vm as unknown as { activeTab: string }).activeTab = 'health'
+    let replay: ReturnType<typeof mountPage> | undefined
     try {
       await flushPromises()
       expect(api.listGroundRuns).not.toHaveBeenCalled()
@@ -476,20 +478,26 @@ describe('Ground unattended page loading behavior', () => {
         activeTab: string
         runs: Array<{ run_id: string }>
         selectedRunId: string
-        workspaceMode: 'collection' | 'playback'
       }
       view.activeTab = 'heartbeat'
       await flushPromises()
       expect(api.listGroundRuns).not.toHaveBeenCalled()
-      view.workspaceMode = 'playback'
+      api.getGroundStatus.mockClear()
+      replay = mountPage(GroundUnattendedReplayView as typeof GroundUnattendedView)
       await flushPromises()
       expect(historySignal).toBeDefined()
       expect(historySignal?.aborted).toBe(false)
-      resolveRuns({ items: [{ run_id: 'run-history', run_date: '2026-11-06' }], total: 1 })
+      resolveRuns({ items: [
+        { run_id: 'run-history', run_date: '2026-11-06', archive_status: 'READY', state: 'COMPLETED' },
+        { run_id: 'run-live', run_date: '2026-11-07', archive_status: 'READY', state: 'RUNNING' },
+        { run_id: 'run-unarchived', run_date: '2026-11-06', archive_status: 'NONE', state: 'COMPLETED' },
+      ], total: 3 })
       await flushPromises()
-      expect(view.runs.map((run) => run.run_id)).toEqual(['run-history'])
+      expect(api.getGroundStatus).not.toHaveBeenCalled()
+      expect(api.startGroundRun).not.toHaveBeenCalled()
+      expect(replay.text()).toContain('归档回放')
+      expect(view.runs).toEqual([])
       expect(view.selectedRunId).toBe('')
-      view.workspaceMode = 'collection'
       for (const tab of ['syslog', 'timeline', 'deep']) {
         view.activeTab = tab
         await flushPromises()
@@ -499,6 +507,7 @@ describe('Ground unattended page loading behavior', () => {
       expect(api.listGroundDeepCollections).not.toHaveBeenCalled()
       expect(api.listGroundRuns).toHaveBeenCalledTimes(1)
     } finally {
+      replay?.unmount()
       wrapper.unmount()
     }
   })

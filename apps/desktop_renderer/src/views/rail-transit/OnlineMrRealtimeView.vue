@@ -399,7 +399,7 @@ onBeforeUnmount(() => {
     <header class="page-heading">
       <div>
         <p class="eyebrow">轨道交通</p>
-        <h2>车载 MR 实时收集</h2>
+        <h2>车载 MR 实时采集</h2>
         <p>仅展示当前正在运行的实时采集任务；历史 Session、日志下载和分析报告统一进入“车载 MR 收集分析”。</p>
       </div>
       <el-button :icon="Refresh" @click="store.refreshOverview">刷新当前任务</el-button>

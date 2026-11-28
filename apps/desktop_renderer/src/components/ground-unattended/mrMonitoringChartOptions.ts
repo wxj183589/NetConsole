@@ -2,7 +2,7 @@ import type { GroundMrMonitoring } from '../../types/groundUnattended'
 import { t } from '../../i18n/runtime'
 import type { NetConsoleChartTokens } from '../../theme/echarts'
 import { createMultiSeriesTimeChartBaseOption } from '../charts/multiSeriesTimeChart'
-import { PING_CHART_COLORS, heartbeatPointValues, pingPointValues, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
+import { PING_CHART_COLORS, heartbeatPointValues, isPingFailureStatus, isPingUncertainStatus, pingPointValues, pingStatusLabel, pingTooltipFormatter, type PingChartPoint } from './pingChartStatus'
 
 const escape = (value: unknown): string => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
 const sourceLabel = (value: unknown): string => ({ SYSLOG: 'Syslog', AC: 'AC Mesh-Link' } as Record<string, string>)[String(value || '').toUpperCase()] || '无数据'
@@ -92,8 +92,8 @@ export function mrMonitoringChartOption(
       rows.forEach((row) => {
         const status = heartbeatPointValues(row as unknown as Record<string, unknown>).status
         online.push([Date.parse(row.ts), status === 'SUCCESS' ? 1 : null])
-        offline.push([Date.parse(row.ts), status === 'TIMEOUT' || status === 'PACKET_LOSS' ? 0 : null])
-        unknown.push([Date.parse(row.ts), status === 'UNKNOWN' ? 0.5 : null])
+        offline.push([Date.parse(row.ts), isPingFailureStatus(status) ? 0 : null])
+        unknown.push([Date.parse(row.ts), isPingUncertainStatus(status) ? 0.5 : null])
       })
       return [
         { id: `heartbeat-online:${ip}`, name: `正常连通${suffix}`, type: 'line', data: online, connectNulls: false, showSymbol: true, symbolSize: 7, lineStyle: { color: PING_CHART_COLORS.success, width: 2 }, itemStyle: { color: PING_CHART_COLORS.success } },
@@ -108,16 +108,18 @@ export function mrMonitoringChartOption(
       xAxis: { type: 'time', min: begin, max: finish, axisPointer: { show: true, snap: false } },
       yAxis: { type: 'value', min: 0, max: 1, interval: 1, name: '通断', axisLabel: { formatter: (value: number) => value === 1 ? '连通' : '不通' }, splitLine: { show: false } },
       dataZoom: dataZoom(),
-      tooltip: { trigger: 'axis', confine: true, appendToBody: false, formatter: (params: unknown) => {
+      tooltip: { trigger: 'axis', confine: true, appendToBody: false, extraCssText: 'pointer-events:none;max-width:360px;max-height:220px;overflow:hidden', formatter: (params: unknown) => {
         const rows = Array.isArray(params) ? params as Array<{ axisValue?: number | string; data?: [number, number | null] }> : []
         const time = Number(rows[0]?.axisValue)
         const samples = statusRows.filter((point) => Date.parse(point.ts) === time)
         const details = samples.length
           ? samples.map((point) => {
             const status = heartbeatPointValues(point as unknown as Record<string, unknown>).status
-            const label = status === 'SUCCESS' ? '正常连通' : status === 'UNKNOWN' ? '未知' : '超时/不通'
+            const label = pingStatusLabel(status)
             const rawResult = typeof point.ok === 'boolean' ? (point.ok ? '成功响应' : '失败/超时') : '状态缺失'
-            return `管理地址：${escape(point.target_ip)}<br>状态：${label}<br>原始采集结果：${rawResult}<br>采样来源：Heartbeat`
+            const latency = point.rtt_ms == null ? '无数据' : `${point.rtt_ms} ms`
+            const reason = point.error_reason ? `<br>原因：${escape(point.error_reason)}` : ''
+            return `管理地址：${escape(point.target_ip)}<br>状态：${label}<br>延迟：${escape(latency)}<br>原始采集结果：${rawResult}${reason}<br>采样来源：Heartbeat`
           }).join('<br>')
           : '管理地址：无数据<br>状态：未知<br>采样来源：Heartbeat'
         return `采样时间：${Number.isFinite(time) ? escape(new Date(time).toLocaleString()) : '无数据'}<br>${details}`
@@ -197,8 +199,8 @@ export function mrMonitoringChartOption(
       }
       rtt.push([time, values.rtt])
       success.push([time, values.status === 'SUCCESS' ? 0 : null])
-      failure.push([time, values.status === 'TIMEOUT' || values.status === 'PACKET_LOSS' ? values.loss : null])
-      if (values.status === 'UNKNOWN') unknown.push([time, 'UNKNOWN'])
+      failure.push([time, isPingFailureStatus(values.status) ? values.loss : null])
+      if (isPingUncertainStatus(values.status)) unknown.push([time, 'UNKNOWN'])
     }
     const suffix = ips.length > 1 ? ` · ${ip}` : ''
     series.push({ id: `rtt:${ip}`, name: `RTT（ms）${suffix}`, type: 'line', data: rtt, connectNulls: false, showSymbol: false, lineStyle: { color: PING_CHART_COLORS.rtt }, itemStyle: { color: PING_CHART_COLORS.rtt },

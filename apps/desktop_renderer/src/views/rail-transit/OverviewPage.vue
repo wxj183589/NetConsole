@@ -80,7 +80,6 @@ onBeforeUnmount(stopPolling)
           <div class="metric-grid">
             <article><span>{{ t('ground.v2.run_mode', '当前运行模式') }}</span><strong>{{ status ? groundRunModeLabel(status.running_mode) : '—' }}</strong><small>{{ !status ? t('ground.v2.overview_waiting_state', '等待运行状态加载') : status.running_mode === 'LIGHTWEIGHT' ? t('ground.v2.overview_lightweight', '不启动 SSH 深度 MR 采集') : t('ground.v2.overview_standard', '包含深度 MR 采集') }}</small></article>
             <article><span>{{ t('ground.v2.active_run', '当前活动运行') }}</span><strong>{{ status?.active_run_date || t('ground.v2.overview_none', '无') }}</strong><small>{{ status?.active_run_id || t('ground.v2.overview_no_active_run', '当前没有正在执行的运行') }}</small></article>
-            <article><span>{{ t('ground.v2.latest_run', '最近历史运行') }}</span><strong>{{ status?.latest_run_date || '—' }}</strong><small>{{ status?.latest_run_state ? groundStatusLabel(status.latest_run_state) : t('ground.v2.overview_no_history', '暂无历史运行') }}</small></article>
             <article><span>{{ t('ground.window', '配置运行时间') }}</span><strong>{{ status?.schedule_start_time }} - {{ status?.schedule_end_time }}</strong></article>
             <article><span>{{ t('ground.next_start', '下一次启动') }}</span><strong>{{ status?.next_start_at || '—' }}</strong></article>
             <article><span>{{ t('ground.next_end', '下一次结束') }}</span><strong>{{ status?.next_end_at || '—' }}</strong></article>
@@ -92,7 +91,6 @@ onBeforeUnmount(stopPolling)
             <article><span>{{ t('ground.active_deep', '当前深度采集车辆') }}</span><strong>{{ status?.active_deep_train_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.covered_today', '今日已完成 / 未完成') }}</span><strong>{{ status?.covered_train_count ?? 0 }} / {{ status?.incomplete_train_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.disk_usage', '当前占用 / 磁盘剩余') }}</span><strong>{{ bytes(status?.disk_used_bytes ?? 0) }} / {{ bytes(status?.disk_free_bytes ?? 0) }}</strong><el-tag size="small" :type="statusType(status?.disk_status || '')">{{ groundStatusLabel(status?.disk_status) }}</el-tag></article>
-            <article><span>{{ t('ground.latest_archive', '最近归档') }}</span><strong>{{ status?.latest_archive_status ? groundStatusLabel(status.latest_archive_status) : '—' }}</strong><small>{{ status?.latest_archive_message }}</small></article>
             <article><span>{{ t('ground.v2.syslog_active_errors', 'Syslog 活跃 / 配置异常') }}</span><strong>{{ status?.syslog_active_mr_count ?? 0 }} / {{ status?.config_abnormal_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.v2.radio_down_mr', '射频口关闭 MR') }}</span><strong>{{ status?.radio_down_mr_count ?? 0 }}</strong></article>
             <article><span>{{ t('ground.v2.radio_interruptions_today', '今日射频短暂中断') }}</span><strong>{{ status?.radio_bounce_today_count ?? 0 }}</strong></article>

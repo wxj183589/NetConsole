@@ -8,6 +8,7 @@ export const PING_CHART_COLORS = {
 } as const
 
 export interface PingChartPoint {
+  errorReason?: string
   target: string
   time: number
   rtt: number | null
@@ -49,8 +50,14 @@ export function isPingUncertainStatus(status: PingChartStatus): boolean {
   return status === 'ERROR' || status === 'NOT_SCHEDULED' || status === 'UNKNOWN'
 }
 
-export function pingPointValues(sample: Record<string, unknown>): { status: PingChartStatus; rtt: number | null; loss: number | null } {
-  return { status: (sample.status as PingChartStatus) || 'UNKNOWN', rtt: (sample.rtt_display_ms as number | null) ?? null, loss: (sample.loss_percent as number | null) ?? null }
+export function pingPointValues(sample: Record<string, unknown>): Pick<PingChartPoint, 'status' | 'rtt' | 'loss' | 'errorReason'> {
+  const errorReason = typeof sample.error_reason === 'string' ? sample.error_reason : ''
+  return {
+    status: (sample.status as PingChartStatus) || 'UNKNOWN',
+    rtt: (sample.rtt_display_ms as number | null) ?? null,
+    loss: (sample.loss_percent as number | null) ?? null,
+    ...(errorReason ? { errorReason } : {}),
+  }
 }
 
 /** Heartbeat reachability is based on the persisted probe result, not RTT. */
@@ -88,9 +95,10 @@ export function pingTooltipFormatter(points: PingChartPoint[], params: unknown):
   const atTime = targets.map((target) => points.find((point) => point.target === target && point.time === time)).filter((point): point is PingChartPoint => Boolean(point))
   const body = atTime.map((point) => [
     targets.length > 1 ? `目标：${escape(point.target)}` : '',
-    `RTT：${point.rtt === null ? (point.status === 'SUCCESS' || point.status === 'UNKNOWN' ? '无数据' : '超时') : `${escape(point.rtt)} ms`}`,
+    `RTT：${point.rtt === null ? '无数据' : `${escape(point.rtt)} ms`}`,
     `状态：${pingStatusLabel(point.status)}`,
     `丢包：${point.loss === null ? '无数据' : `${escape(point.loss)}%`}`,
+    point.errorReason ? `原因：${escape(point.errorReason)}` : '',
   ].filter(Boolean).join('<br>'))
   if (!body.length && rows[0]?.seriesName) {
     const target = targetFromSeries(rows[0].seriesName, targets)
