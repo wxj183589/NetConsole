@@ -150,8 +150,8 @@ class TaskApplicationService:
             ("web_device_management", "device_diagnostic_download"),
             ("web_device_management", "device_connection_test"),
             ("web_config_collection", "config_web_snapshot_fetch"),
-        ):
-            device_ids = params.get("device_uuids") or [params.get("device_uuid")]
+        ) or (owner_and_type == ("web_file_management", "file_management_download") and params.get("source_kind") == "remote"):
+            device_ids = params.get("device_uuids") or [params.get("device_uuid") or params.get("device_id")]
             resource_keys.extend(
                 f"device-collection:v1:{site_name.casefold()}:{device_id.strip().casefold()}"
                 for device_id in device_ids if isinstance(device_id, str) and device_id.strip()
