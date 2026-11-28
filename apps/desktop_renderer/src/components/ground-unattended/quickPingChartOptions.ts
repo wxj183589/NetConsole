@@ -28,6 +28,25 @@ export function quickPingChartOption(
   const renderedPoints = boundPointsByTime(points, targetKeys)
   const buildSeriesData = (target: string) => {
     const targetPoints = renderedPoints.filter((point) => point.target === target)
+    const failures: Array<[{ name: string; xAxis: number }, { xAxis: number }]> = []
+    let firstFailure: PingChartPoint | undefined
+    let lastFailure: PingChartPoint | undefined
+    function closeFailures(recovered?: PingChartPoint): void {
+      if (firstFailure && lastFailure && firstFailure.time !== lastFailure.time) {
+        const recovery = recovered ? new Date(recovered.time).toLocaleString() : '未观测到恢复'
+        failures.push([{ name: `连续失败 · ${recovery}`, xAxis: firstFailure.time }, { xAxis: recovered?.time ?? lastFailure.time }])
+      }
+      firstFailure = lastFailure = undefined
+    }
+    for (const point of points) {
+      if (point.target !== target) continue
+      if (lastFailure && point.time - lastFailure.time > Math.max(1000, intervalMs * 3)) closeFailures()
+      if (isPingFailureStatus(point.status)) {
+        firstFailure ??= point
+        lastFailure = point
+      } else closeFailures(point.status === 'SUCCESS' ? point : undefined)
+    }
+    closeFailures()
     const rtt: Array<[number, number | null]> = [], success: Array<[number, number | null]> = [], failure: Array<[number, number | null]> = [], unknown: Array<[number, string]> = []
     for (let index = 0; index < targetPoints.length; index++) {
       const point = targetPoints[index]!, previous = targetPoints[index - 1]
@@ -52,7 +71,7 @@ export function quickPingChartOption(
       if (previous && point[0] - previous[0] > 1_000) secondLoss.push([previous[0] + 1, null])
       secondLoss.push(point)
     })
-    return { rtt, success, failure, unknown, secondLoss }
+    return { rtt, success, failure, unknown, secondLoss, failures }
   }
   const metric = timelineMetricDefinition('ping_rtt')!
   const fallbackStart = points[0]?.time
@@ -85,7 +104,7 @@ export function quickPingChartOption(
       return [
         { id: `ping_rtt:${target}`, name: `RTT（ms）${suffix}`, type: 'line', showSymbol: false, ...gapPolicy, data: data.rtt, lineStyle: { color: PING_CHART_COLORS.rtt }, itemStyle: { color: PING_CHART_COLORS.rtt }, markLine: selectedTime ? { silent: true, symbol: 'none', data: [{ xAxis: Date.parse(selectedTime) }] } : { data: [] }, tooltip: { valueFormatter: (value: number | null) => formatTimelineMetricValue('ping_rtt', value) } },
         { id: `ping_success:${target}`, name: `连通${suffix}`, type: 'line', yAxisIndex: 1, showSymbol: true, symbolSize: 6, ...gapPolicy, data: data.success, lineStyle: { color: PING_CHART_COLORS.success, width: 2 }, itemStyle: { color: PING_CHART_COLORS.success }, tooltip: { valueFormatter: (value: number | null) => formatTimelineMetricValue('ping_loss', value) } },
-        { id: `ping_failure:${target}`, name: `丢包/超时${suffix}`, type: 'line', yAxisIndex: 1, showSymbol: true, symbolSize: 7, ...gapPolicy, data: data.failure, lineStyle: { color: PING_CHART_COLORS.failure, width: 2 }, itemStyle: { color: PING_CHART_COLORS.failure }, tooltip: { valueFormatter: (value: number | null) => formatTimelineMetricValue('ping_loss', value) } },
+        { id: `ping_failure:${target}`, name: `丢包/超时${suffix}`, type: 'line', yAxisIndex: 1, showSymbol: true, symbolSize: 7, ...gapPolicy, data: data.failure, lineStyle: { color: PING_CHART_COLORS.failure, width: 2 }, itemStyle: { color: PING_CHART_COLORS.failure }, markArea: { itemStyle: { color: PING_CHART_COLORS.failure, opacity: 0.12 }, label: { show: false }, data: data.failures }, tooltip: { valueFormatter: (value: number | null) => formatTimelineMetricValue('ping_loss', value) } },
         { id: `ping_loss_second:${target}`, name: `自然秒丢包率${suffix}`, type: 'line', yAxisIndex: 1, showSymbol: false, ...gapPolicy, data: data.secondLoss, lineStyle: { color: PING_CHART_COLORS.failure, width: 1, type: 'dashed' }, itemStyle: { color: PING_CHART_COLORS.failure }, tooltip: { valueFormatter: (value: number | null) => formatTimelineMetricValue('ping_loss', value) } },
         { id: `ping_unknown:${target}`, name: `未知${suffix}`, type: 'scatter', yAxisIndex: 2, symbol: 'diamond', symbolSize: 8, data: data.unknown, itemStyle: { color: PING_CHART_COLORS.unknown } },
       ]

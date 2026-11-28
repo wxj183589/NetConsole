@@ -4,6 +4,18 @@ import { quickPingChartOption } from './quickPingChartOptions'
 import { readNetConsoleChartTokens } from '../../theme/echarts'
 
 describe('Quick Ping chart semantics', () => {
+  it('ends consecutive failures only at observed recovery or an observation gap', () => {
+    const base = Date.parse('2026-11-07T00:00:00Z')
+    const rows = ['TIMEOUT', 'PACKET_LOSS', 'SUCCESS', 'TIMEOUT', 'TIMEOUT', 'UNKNOWN', 'SUCCESS']
+      .map((status, index) => ({ ts: new Date(base + index * 1000).toISOString(), status }))
+    const option = quickPingChartOption(rows, 1000, readNetConsoleChartTokens()) as {
+      series: Array<{ id: string; markArea?: { data: unknown[] } }>
+    }
+    expect(option.series.find(series => series.id.startsWith('ping_failure:'))?.markArea?.data).toEqual([
+      [{ name: expect.stringContaining('连续失败'), xAxis: base }, { xAxis: base + 2000 }],
+      [{ name: expect.stringContaining('未观测到恢复'), xAxis: base + 3000 }, { xAxis: base + 4000 }],
+    ])
+  })
   it('uses real timestamps and retains loss and collection gap breaks', () => {
     const rows = [
       { received_at: '2026-11-07T00:00:00Z', sample: { status: 'SUCCESS', rtt_display_ms: 280, loss_percent: 0 } },
