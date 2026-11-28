@@ -9,13 +9,15 @@
 | C 安装与启动 | A | PARTIAL | 修正七处 NSIS 子进程调用，保留退出码、诊断 ID、日志与安装事务。细分功能、平台、无人值守和路由初始化；看门狗分别记录阶段上报时刻、无进展时长和总时长，保留原有硬截止时间 |
 | D 控制台 | A | PARTIAL | Python 执行与 Vue 预览统一空格与参数暂停。终端支持多行确认、按会话变量预览、显式选定分屏和独立窗口。真实窗口验收进行中 |
 | E 设备资料 | B | PARTIAL | 设备档案入口按台账 UUID 分页，技术详情复用原聚合服务，详见[模块契约](../architecture/LEGACY_MODULE_CONTRACTS.md)。带历史事实的界面验收待验证 |
-| F 设备任务中心 | B、E | PARTIAL | 当前 Site 查询设备域实例，历史失败目标重试、设备级互斥、一次性计划与持久化恢复已接入。详情切换和真机执行仍需各自验证。见[设备任务审计](../job-center/device-task-release-audit.md) |
+| F 设备任务中心 | B、E | PARTIAL | 当前 Site 过滤、设备锁、一次性计划、历史重试和详情切换已接入。配置快照、配置差异、只读健康与配置模板本地生成已接入。设备升级未接入，真机执行待验。见[任务恢复审计](../archive/engineering/device-task-release-audit.md) |
 | G 轨交与无人值守 | A | PARTIAL | WPS 新目标默认关闭；旧配置一次性关闭，重新启用后跨重启保留。关闭时拒绝连接、探针及同步。WPS 后端 115 项、轨旁业务页 72 项通过。活动 Run、回放和通断统计待验 |
-| H 日志与文件 | B、F | PARTIAL | 本地受管文件与设备传输分开，打开目录沿用当前局点受管令牌。旧版日志读取时补齐事件类别和上下文字段，界面与导出使用同一组过滤条件 |
+| H 日志与文件 | B、F | PARTIAL | 受管文件和设备传输独立；新运行事件按版本化 JSON 保存，旧四字段记录可读，保留轮转与脱敏。网络服务接入单目标 DNS/Traceroute，真实 Windows 回环 Traceroute 完成一跳 |
 | I 全局菜单 | B、D–H | PARTIAL | 已重组导航分区并保留旧路由与 Feature，导航、路由、设备、轨交和任务 116 项集成测试通过 |
-| J 集成验收 | C–I | PARTIAL | 52bc48ec 两个候选完成构建及哈希核验，Portable 解压后到达 Renderer stable。最终集成提交、安装态与覆盖升级仍需对应证据 |
+| J 集成验收 | C–I | PARTIAL | 6c6085c3 安装器和 Portable 通过构建与隔离 smoke，真实 Electron 导航、日志、文件、跨窗输入和轨交分区通过。安装态新装、升级、非管理员和重启缺少隔离环境 |
 
 ## 安装和启动的验证记录
+
+最后一轮提交包括 `abe183b2` 的日志依赖分层、`20c43745` 的存档快照与健康检查，以及 `848c72c3` 的配置模板预览后生成本地 TXT。配置渲染和导出不连接设备。该轮定向测试包括设备任务 39 项、任务中心 Renderer 13 项、日志与诊断 Python 67 项。后续同源验收、包文件名与哈希记录在 Workspace 的 `reports/tests/legacy-governance-20261128/DELIVERY.md`。
 
 - Windows NSIS 与 Backend 定向验证：`pytest -q tests/test_installer_build.py tests/test_electron_runtime.py`，55 passed，含 NSIS include 编译。
 - Electron Backend 管理器和启动页：两个 Vitest 文件共 36 passed，Electron typecheck 通过。

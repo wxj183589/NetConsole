@@ -2262,6 +2262,9 @@ def test_edit_form_connection_test_resolves_saved_or_ephemeral_secret_without_wr
         )
         run_device_connection_test(context)  # type: ignore[arg-type]
 
+        # The capturing adapter executes the worker inline, outside LocalProcessAdapter.
+        adapter.tasks.complete(job.job_id, 0)
+
     cleared = client.post(
         "/api/device-management/connection-tests/form",
         json={**base, "clear_secret_fields": ["ssh_password"]},
