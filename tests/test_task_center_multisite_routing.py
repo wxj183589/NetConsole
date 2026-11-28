@@ -412,6 +412,30 @@ def test_device_task_scope_filters_owner_and_type_before_pagination(tmp_path: Pa
     assert len(query.list_tasks(SITE_A)) == 4
 
 
+def test_detail_routes_reject_previous_site_before_access(tmp_path: Path, monkeypatch) -> None:
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from netconsole.backend.api.job_center_router import router
+
+    service = _service(tmp_path)
+    app = FastAPI()
+    query = JobCenterQueryService(service.paths)
+    monkeypatch.setattr(query, "current_site_id", lambda: SITE_B)
+    app.state.job_center_query_service = query
+    app.include_router(router)
+    with TestClient(app) as client:
+        for method, path in (
+            ("GET", "tasks/same-id"),
+            ("GET", "tasks/same-id/logs"),
+            ("POST", "tasks/same-id/cancel"),
+            ("POST", "tasks/same-id/acknowledge"),
+            ("POST", "tasks/same-id/dismiss"),
+            ("GET", "artifacts/same-id"),
+        ):
+            result = client.request(method, f"/job-center/{path}", params={"expected_site": SITE_A})
+            assert result.status_code == 409, result.text
+
+
 def test_device_summary_counts_history_beyond_list_limit(tmp_path: Path) -> None:
     from dataclasses import replace
 
