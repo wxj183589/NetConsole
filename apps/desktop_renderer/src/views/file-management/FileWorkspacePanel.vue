@@ -82,11 +82,12 @@ async function refreshTasks() {
   }
 }
 
-async function operate(side: number, action: 'copy' | 'move' | 'rename' | 'delete' | 'mkdir' | 'checksum') {
+async function operate(side: number, action: 'copy' | 'move' | 'rename' | 'delete' | 'mkdir' | 'checksum' | 'archive') {
   const entry = selected.value[side]
   const destination = directory(action === 'copy' || action === 'move' ? 1 - side : side)
   try {
     let name = entry?.name || ''
+    if (action === 'archive') name += '.zip'
     let expected = ''
     let overwrite = false
     if (action === 'rename' || action === 'mkdir') name = (await ElMessageBox.prompt(t('name'), t(action === 'mkdir' ? 'newDirectory' : 'renameFile'))).value
@@ -198,6 +199,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer) })
             <el-button :disabled="!selected[side] || !directory(side)?.writable || !directory(1-side)?.writable" @click="operate(side, 'move')">{{ t('moveLocal') }}</el-button>
             <el-button :disabled="!selected[side] || !directory(side)?.writable" @click="operate(side, 'rename')">{{ t('renameFile') }}</el-button>
             <el-button :disabled="!directory(side)?.writable" @click="operate(side, 'mkdir')">{{ t('newDirectory') }}</el-button>
+            <el-button :disabled="!selected[side] || !directory(side)?.writable" @click="operate(side, 'archive')">{{ t('archiveZip') }}</el-button>
             <el-button type="danger" :disabled="!selected[side] || !directory(side)?.writable" @click="operate(side, 'delete')">{{ t('deleteLocal') }}</el-button>
           </template>
         </div>

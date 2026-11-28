@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from zipfile import ZipFile
 import io
 import socket
 import threading
@@ -118,6 +119,27 @@ def test_text_preview_limits_reads_and_rejects_unmanaged_references(workspace):
     }
     with pytest.raises(ValueError):
         service.preview(manager, "../sample.txt")
+
+
+def test_local_archive_publishes_complete_zip_without_overwriting(workspace):
+    service, manager, _ = workspace
+    root = manager.root / "http"
+    (root / "sample" / "empty").mkdir(parents=True)
+    (root / "sample" / "proof.txt").write_bytes(b"fixture")
+    page = service.browse(manager, "http")
+    reference = page["items"][0]["id"]
+    args = (manager, "archive", reference, page["directory_id"], "sample.zip")
+    result = wait(service, service.submit(*args))
+    assert result["status"] == "COMPLETED", result
+    target = root / "sample.zip"
+    original = target.read_bytes()
+    assert result["sha256"] == hashlib.sha256(original).hexdigest()
+    with ZipFile(target) as archive:
+        assert archive.read("sample/proof.txt") == b"fixture"
+        assert "sample/empty/" in archive.namelist()
+    assert wait(service, service.submit(*args, overwrite=True))["status"] == "FAILED"
+    assert target.read_bytes() == original
+    assert not list(root.glob("*.part"))
 
 
 def test_running_share_is_read_only_and_upload_staging_cleaned(workspace):
