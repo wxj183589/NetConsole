@@ -1,0 +1,3 @@
+# 专项开发进度
+
+[旧版架构治理进度](LEGACY_ARCHITECTURE_GOVERNANCE_PROGRESS.md)记录各阶段依赖、集成提交、测试结果、发布状态与待验收项。功能盘点和跨模块契约见[架构文档](../architecture/README.md)。
