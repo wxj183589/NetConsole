@@ -224,11 +224,10 @@ def test_task_authority_index_resolves_site_task_after_restart_and_site_switch(
 
     query = JobCenterQueryService(restarted.paths)
     assert [item.site_name for item in query.list_tasks(SITE_A)] == [SITE_A]
-    assert [item.site_name for item in query.list_tasks(
-        SITE_B, include_tasks_from_other_sites=True
-    )] == [SITE_A]
+    assert query.list_tasks(SITE_B) == []
     assert query.get_task(SITE_A, task_id) is not None
-    assert query.get_task(SITE_B, task_id).site_name == SITE_A
+    assert query.get_task(SITE_B, task_id) is None
+    assert query.get_summary(SITE_B).total == 0
 
 
 def test_site_import_recent_task_survives_active_site_switch_and_keeps_logs(
@@ -258,15 +257,15 @@ def test_site_import_recent_task_survives_active_site_switch_and_keeps_logs(
     service.rebind_site(SITE_B)
 
     query = JobCenterQueryService(service.paths)
-    task = query.get_task(SITE_B, task_id)
-    logs = query.get_logs(SITE_B, task_id)
+    assert query.get_task(SITE_B, task_id) is None
+    assert query.get_logs(SITE_B, task_id) is None
+    task = query.get_task(SITE_A, task_id)
+    logs = query.get_logs(SITE_A, task_id)
     assert task is not None
     assert task.status == TaskState.COMPLETED.value
     assert logs is not None
     assert any(line.type == "finished" for line in logs.lines)
-    assert [item.id for item in query.list_tasks(
-        SITE_B, include_tasks_from_other_sites=True
-    )] == [task_id]
+    assert [item.id for item in query.list_tasks(SITE_A)] == [task_id]
 
 
 def test_rebind_site_reconciles_target_site_orphaned_tasks(tmp_path: Path) -> None:

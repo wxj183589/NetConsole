@@ -50,7 +50,6 @@ from netconsole.services.network_tools.job_handlers import (
 )
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 from netconsole.services.device_task_service import DEVICE_TASK_OWNER, DEVICE_TASK_TYPE
-from netconsole.services.job_center.task_authority_index import TaskAuthorityIndex
 from netconsole.services.job_center.artifact_reconciliation import (
     ArtifactReconciliationService,
     ArtifactTaskBinding,
@@ -183,7 +182,6 @@ class JobCenterQueryService:
         self.paths = paths
         self._config_cancel_capability = config_cancel_capability
         self._artifact_reconciliation = ArtifactReconciliationService(paths)
-        self._task_authority_index = TaskAuthorityIndex(paths)
 
     def current_site_id(self, default: str = "demo") -> str:
         try:
@@ -201,41 +199,6 @@ class JobCenterQueryService:
         search: str = "",
         warning_only: bool = False,
         limit: int = 500,
-        include_tasks_from_other_sites: bool = False,
-    ) -> list[JobCenterTaskDTO]:
-        tasks = self._list_site_tasks(
-            site_id,
-            statuses=statuses,
-            search=search,
-            warning_only=warning_only,
-            limit=limit,
-        )
-        if not include_tasks_from_other_sites:
-            return tasks
-        current_site = self._validated_site_id(site_id)
-        for other_site in sorted(self._task_authority_index.sites() - {current_site}):
-            tasks.extend(
-                task
-                for task in self._list_site_tasks(
-                    other_site,
-                    statuses=statuses,
-                    search=search,
-                    warning_only=warning_only,
-                    limit=limit,
-                )
-                if self._task_authority_index.resolve(task.id) == other_site
-            )
-        tasks.sort(key=lambda item: (item.updated_time, item.id), reverse=True)
-        return tasks[: max(1, min(int(limit), 1000))]
-
-    def _list_site_tasks(
-        self,
-        site_id: str,
-        *,
-        statuses: set[str] | None,
-        search: str,
-        warning_only: bool,
-        limit: int,
     ) -> list[JobCenterTaskDTO]:
         db_path = self._db_path(site_id)
         if not db_path.is_file():
@@ -267,7 +230,7 @@ class JobCenterQueryService:
         return tasks
 
     def get_task(self, site_id: str, task_id: str) -> JobCenterTaskDTO | None:
-        db_path = self._db_path(site_id, task_id)
+        db_path = self._db_path(site_id)
         if not db_path.is_file():
             return None
         with closing(self._connect(db_path)) as conn:
@@ -388,9 +351,7 @@ class JobCenterQueryService:
         ]
 
     def get_summary(self, site_id: str) -> JobCenterSummaryDTO:
-        tasks = self.list_tasks(
-            site_id, limit=1000, include_tasks_from_other_sites=True
-        )
+        tasks = self.list_tasks(site_id, limit=1000)
         return JobCenterSummaryDTO(
             total=len(tasks),
             active=sum(task.status.upper() in self._ACTIVE_STATES for task in tasks),
@@ -407,7 +368,7 @@ class JobCenterQueryService:
         )
 
     def get_logs(self, site_id: str, task_id: str, *, tail: int = 300) -> JobCenterLogTailDTO | None:
-        db_path = self._db_path(site_id, task_id)
+        db_path = self._db_path(site_id)
         if not db_path.is_file():
             return None
         with closing(self._connect(db_path)) as conn:
@@ -454,21 +415,8 @@ class JobCenterQueryService:
         )
         return JobCenterLogTailDTO(task_id=task_id, lines=lines, message=message)
 
-    def _db_path(self, site_id: str, task_id: str = "") -> Path:
-        selected = self._validated_site_id(site_id)
-        selected_path = self.paths.site_tasks_db_path(selected)
-        if not task_id:
-            return selected_path
-        # The authority index is the cross-site routing boundary.  The old
-        # path first opened the selected tasks.db and issued a point lookup for
-        # every detail/log request, then consulted this index only on a miss.
-        # That made normal Job Center reads pay an avoidable second SQLite
-        # connection and schema probe.  A missing index entry still means the
-        # caller's selected site is authoritative, preserving legacy fixtures.
-        mapped_site = self._task_authority_index.resolve(task_id)
-        if mapped_site and mapped_site != selected:
-            return self.paths.site_tasks_db_path(self._validated_site_id(mapped_site))
-        return selected_path
+    def _db_path(self, site_id: str) -> Path:
+        return self.paths.site_tasks_db_path(self._validated_site_id(site_id))
 
     def _validated_site_id(self, site_id: str) -> str:
         return SiteManager(self.paths).validate_site_name(str(site_id or "demo"))

@@ -112,7 +112,6 @@ def list_tasks(
             search=search,
             warning_only=warning_only,
             limit=limit,
-            include_tasks_from_other_sites=True,
         )
     )
 
@@ -142,7 +141,7 @@ def cleanup_tasks(
             dismissed_by="local-user",
             dry_run=payload.dry_run,
             delete_artifacts=payload.delete_artifacts,
-            all_sites=not bool(payload.site_id),
+            all_sites=False,
         )
     except ValueError as exc:
         raise HTTPException(
@@ -166,7 +165,7 @@ def acknowledge_tasks(
         site_name=_site_id(request),
         task_ids=payload.task_ids,
         all_alerts=payload.all_alerts,
-        all_sites=payload.all_alerts,
+        all_sites=False,
     )
     return JobCenterAcknowledgeResultDTO.model_validate(result)
 
