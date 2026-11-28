@@ -724,6 +724,12 @@ def _apply_plan(conn: sqlite3.Connection, plan: dict[str, Any], now: str) -> Non
                 )
             else:
                 event = operation["event"]
+                current = conn.execute(
+                    f"SELECT evidence_json FROM {EVENT_TABLE} WHERE id=?",
+                    (operation["id"],),
+                ).fetchone()
+                evidence = _json_object(current[0] if current else None)
+                evidence.update(_json_object(event["evidence_json"]))
                 conn.execute(
                     f"UPDATE {EVENT_TABLE} SET backfill_key=?, backfill_source=?, evidence_quality=?, "
                     "source_revision_first=?, source_revision_last=?, evidence_json=?, updated_at=? WHERE id=?",
@@ -733,7 +739,7 @@ def _apply_plan(conn: sqlite3.Connection, plan: dict[str, Any], now: str) -> Non
                         event["evidence_quality"],
                         event["source_revision_first"],
                         event["source_revision_last"],
-                        event["evidence_json"],
+                        json.dumps(evidence, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                         now,
                         operation["id"],
                     ),

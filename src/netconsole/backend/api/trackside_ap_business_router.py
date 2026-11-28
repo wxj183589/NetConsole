@@ -15,6 +15,7 @@ from netconsole.application.rail_transit.web_application_service import RailTran
 from netconsole.backend.api.feature_access import require_feature
 from netconsole.backend.api.error_mapping import map_api_errors
 from netconsole.core import app_logger
+from netconsole.core.database import Database
 from netconsole.services.site_manager import SiteManager
 from netconsole.models.api.rail_transit_web import RailTransitTaskDTO
 from netconsole.models.api.trackside_ap_business import (
@@ -26,6 +27,9 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideApBusinessExportProposalDTO,
     TracksideApBusinessExportRequestDTO,
     TracksideApBusinessPageDTO,
+    TracksideApIssueActionDTO,
+    TracksideApIssueDTO,
+    TracksideApIssueHistoryDTO,
     TracksideApPlanDTO,
     TracksideApPlanExportRequestDTO,
     TracksideApOnlineStatusDTO,
@@ -40,6 +44,11 @@ from netconsole.models.api.trackside_ap_business import (
     TracksideSwitchSampleRequestDTO,
 )
 from netconsole.services.rail_transit.trackside_ap_business_query_service import TracksideApBusinessQueryService
+from netconsole.services.rail_transit.trackside_ap_issues import (
+    TracksideIssueConflict,
+    apply_trackside_issue_action,
+    list_trackside_issues,
+)
 from netconsole.services.rail_transit.trackside_ap_business_snapshot import (
     TracksideApBusinessSnapshotError,
 )
@@ -74,6 +83,36 @@ def _site_id(request: Request) -> str:
         return SiteManager(request.app.state.paths).validate_site_name(_query_service(request).current_site_id())
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="局点标识无效") from exc
+
+
+@router.get("/issues", response_model=TracksideApIssueHistoryDTO)
+def issue_history(
+    request: Request,
+    ap_uuid: str = Query(min_length=1, max_length=128),
+    expected_site: str = Query(min_length=1, max_length=100),
+) -> dict:
+    site_id = _site_id(request)
+    if site_id != expected_site:
+        raise HTTPException(status_code=409, detail="当前局点已切换，请重新打开问题记录")
+    database = Database(request.app.state.paths.site_db_path(site_id))
+    try:
+        return list_trackside_issues(database, site_id, ap_uuid)
+    except TracksideIssueConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/issues/{event_uuid}/actions", response_model=TracksideApIssueDTO)
+def issue_action(request: Request, event_uuid: str, payload: TracksideApIssueActionDTO) -> dict:
+    site_id = _site_id(request)
+    if site_id != payload.expected_site:
+        raise HTTPException(status_code=409, detail="当前局点已切换，请重新打开问题记录")
+    database = Database(request.app.state.paths.site_db_path(site_id))
+    try:
+        return apply_trackside_issue_action(database, site_id, event_uuid, payload.action, payload.note)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="当前局点没有此问题记录") from exc
+    except TracksideIssueConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/rows", response_model=TracksideApBusinessPageDTO)

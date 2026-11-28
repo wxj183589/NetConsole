@@ -4,5 +4,6 @@
 
 - [业务只读快照](./BUSINESS_SNAPSHOT.md)
 - [FIT-AP LLDP Canonical State 规范](./LLDP_CANONICAL_STATE_SPEC.md)
+- [光衰问题事件历史](./AP_OPTICAL_TREATMENT_EVENT_HISTORY.md)
 - [WPS 同步](./WPS_SYNC.md)
 - [ZTE 交换机适配](./ZTE_SWITCH_ADAPTER.md)

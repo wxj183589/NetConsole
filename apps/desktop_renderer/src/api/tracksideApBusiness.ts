@@ -12,6 +12,34 @@ import type { TracksideAp } from '../types/railTransitBaseData'
 
 const root = '/api/rail-transit/trackside-ap-business'
 const wpsRoot = `${root}/wps`
+
+export type TracksideIssueAction = 'confirm' | 'handle' | 'verify' | 'close'
+export interface TracksideIssue {
+  event_uuid: string
+  issue_type: string
+  first_detected_at: string
+  first_ap_rx_dbm: string
+  first_switch_rx_dbm: string
+  station_name: string
+  switch_name: string
+  switch_interface: string
+  event_status: 'OPEN' | 'RESOLVED'
+  resolved_at: string
+  recovered_ap_rx_dbm: string
+  recovered_switch_rx_dbm: string
+  operations: { action: TracksideIssueAction; at: string; note: string }[]
+}
+
+export function listTracksideIssues(site: string, apUuid: string) {
+  const params = new URLSearchParams({ expected_site: site, ap_uuid: apUuid })
+  return apiRequest<{ history_available: boolean; items: TracksideIssue[] }>(`${root}/issues?${params}`)
+}
+
+export function applyTracksideIssueAction(site: string, eventUuid: string, action: TracksideIssueAction, note: string) {
+  return apiRequest<TracksideIssue>(`${root}/issues/${encodeURIComponent(eventUuid)}/actions`, {
+    method: 'POST', body: JSON.stringify({ expected_site: site, action, note }),
+  })
+}
 const invalidArtifactNamePattern = /[\u0000-\u001f\u007f<>:"/\\|?*]/
 const tracksideBusinessArtifactNamePattern = /^.+_轨旁AP业务_\d{8}_\d{6}\.xlsx$/
 const switchSampleArtifactNamePattern = /^[a-z0-9._-]+-adapter-sample-[a-z0-9._-]+-\d{8}_\d{6}\.zip$/i

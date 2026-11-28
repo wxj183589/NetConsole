@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 
 from openpyxl import load_workbook
+import pytest
 
 from netconsole.core.database import Database
 from netconsole.repositories.ac_repository import AcRepository
@@ -20,6 +21,11 @@ from netconsole.services.trackside_ap_business import (
 )
 from netconsole.services.trackside_ap_export_service import (
     _export_persisted_optical_treatments,
+)
+from netconsole.services.rail_transit.trackside_ap_issues import (
+    TracksideIssueConflict,
+    apply_trackside_issue_action,
+    list_trackside_issues,
 )
 from netconsole.core.i18n import I18n
 from scripts.backfill_ap_optical_treatment_events import _apply_plan, _plan
@@ -59,6 +65,39 @@ def _payload(**values: object) -> dict[str, object]:
         "switch_rx_power": "-10",
         **values,
     }
+
+
+def test_manual_issue_workflow_uses_existing_events_and_recovery(tmp_path: Path) -> None:
+    database = Database(tmp_path / "demo" / "db" / "devices.db")
+    assert not list_trackside_issues(database, "demo", "ap-event-1")["history_available"]
+    database.initialize()
+    alarm = _payload(source_revision="alarm-1", ap_optical_status="alarm", rx_power="-20")
+    _record(database, alarm, "2026-09-01T00:01:00")
+    history = list_trackside_issues(database, "demo", "ap-event-1")
+    event_id = history["items"][0]["event_uuid"]
+    assert list_trackside_issues(database, "demo", "ap-event")["items"] == []
+    assert list_trackside_issues(database, "other", "ap-event-1")["items"] == []
+    with pytest.raises(LookupError):
+        apply_trackside_issue_action(database, "other", event_id, "confirm", "")
+    with pytest.raises(TracksideIssueConflict):
+        apply_trackside_issue_action(database, "demo", event_id, "close", "")
+    confirmed = apply_trackside_issue_action(database, "demo", event_id, "confirm", "")
+    assert apply_trackside_issue_action(database, "demo", event_id, "confirm", "") == confirmed
+    with pytest.raises(TracksideIssueConflict):
+        apply_trackside_issue_action(database, "demo", event_id, "handle", " ")
+    apply_trackside_issue_action(database, "demo", event_id, "handle", "更换跳纤")
+    _record(database, alarm, "2026-09-01T00:02:00")
+    with pytest.raises(TracksideIssueConflict):
+        apply_trackside_issue_action(database, "demo", event_id, "verify", "")
+    _record(database, _payload(source_revision="recover-1"), "2026-09-01T00:03:00")
+    verified = apply_trackside_issue_action(database, "demo", event_id, "verify", "")
+    assert verified["operations"][-1]["recovery"]["recovered_ap_rx_dbm"] == "-10"
+    closed = apply_trackside_issue_action(database, "demo", event_id, "close", "")
+    assert [step["action"] for step in closed["operations"]] == ["confirm", "handle", "verify", "close"]
+    _record(database, alarm, "2026-09-01T00:04:00")
+    recurrence, previous = list_trackside_issues(database, "demo", "ap-event-1")["items"]
+    assert recurrence["operations"] == []
+    assert previous == closed
 
 
 def test_event_lifecycle_keeps_history_and_summary_projection(tmp_path: Path) -> None:

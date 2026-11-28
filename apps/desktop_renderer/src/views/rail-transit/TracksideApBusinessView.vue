@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import EngineeringContextPanel from '../../components/rail-transit/EngineeringContextPanel.vue'
 import TracksideApEngineeringEditor from './TracksideApEngineeringEditor.vue'
+import TracksideApIssuesDialog from './TracksideApIssuesDialog.vue'
 import { inject } from 'vue'
 import { routeLocationKey } from 'vue-router'
 import { computed, h, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
@@ -123,6 +124,7 @@ const opticalUpdateTaskId = ref('')
 const wpsSyncTaskId = ref('')
 const selectedRows = ref<TracksideApBusinessRow[]>([])
 const engineeringRow = ref<TracksideApBusinessRow>()
+const issueTarget = ref<{ site: string; apUuid: string; apName: string }>()
 const selectedStationNames = ref<string[]>([])
 const filters = reactive({ station: '', query: '', optical_anomaly_only: false, page: 1, page_size: 50 })
 const pageActive = ref(true)
@@ -202,7 +204,7 @@ const businessColumns: NcTableColumn<TracksideApBusinessRow>[] = [
   { key: 'ap_business_reason', label: t('trackside.ap_business_reason', '双侧业务判定原因'), valueType: 'description', align: 'left', alignmentReason: 'long-text', minWidth: 360, showOverflowTooltip: true },
   { key: 'optical_severity', label: t('trackside.business_overall_status', '业务综合状态'), valueType: 'status', cellKind: 'tag' },
   { key: 'updated_at', label: t('trackside.snapshot.business_time', '业务更新时间'), valueType: 'datetime' },
-  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: [t('engineering.context', '工程上下文'), '端口光衰历史', '更新站点', '更新 AP'] },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: [t('engineering.context', '工程上下文'), '端口光衰历史', '问题记录', '更新站点', '更新 AP'] },
 ]
 
 const excludedColumns: NcTableColumn<TracksideApScopeExcluded>[] = [
@@ -1399,6 +1401,7 @@ onBeforeUnmount(() => {
               class="el-button el-button--primary is-link"
               :to="{ name: 'device-detail', params: { deviceId: row.switch_device_uuid }, query: { optical_history_interface: row.interface_name } }"
             >端口光衰历史</RouterLink>
+            <el-button v-if="page?.site_id && row.ap_uuid" link type="primary" @click="issueTarget = { site: page.site_id, apUuid: row.ap_uuid, apName: row.ap_name }">问题记录</el-button>
             <el-button link type="primary" :disabled="updateActionsDisabled || !row.site || !updateFeatureEnabled" @click="updateStation(row)">更新站点</el-button>
             <el-button link type="primary" :title="hasApIdentity(row) ? '' : '缺少 AP 身份，无法定向更新'" :disabled="updateActionsDisabled || !hasApIdentity(row) || !updateFeatureEnabled" @click="updateAp(row)">更新 AP</el-button>
           </template>
@@ -1410,6 +1413,7 @@ onBeforeUnmount(() => {
       <EngineeringContextPanel :context="engineeringRow?.point_engineering_context" />
       <EngineeringContextPanel :context="engineeringRow?.switch_engineering_context" />
     </el-drawer>
+    <TracksideApIssuesDialog v-if="issueTarget" v-bind="issueTarget" @close="issueTarget = undefined" />
     <el-dialog
       v-model="onlineStatusVisible"
       title="AP 上线情况概览"

@@ -9,6 +9,49 @@ from netconsole.models.api.device_detail import DeviceEngineeringContextDTO
 from netconsole.models.api.rail_transit_base_data import TracksideApDTO
 
 
+TracksideApIssueAction = Literal["confirm", "handle", "verify", "close"]
+
+
+class TracksideApIssueActionDTO(ApiModel):
+    expected_site: str = Field(min_length=1, max_length=100)
+    action: TracksideApIssueAction
+    note: str = Field(default="", max_length=1000)
+
+
+class TracksideApIssueOperationDTO(ApiModel):
+    action: TracksideApIssueAction
+    at: str
+    note: str
+    recovery: dict[str, str] | None = None
+
+
+class TracksideApIssueDTO(ApiModel):
+    event_uuid: str
+    ap_name: str
+    ap_uuid: str
+    station_name: str
+    switch_name: str
+    switch_interface: str
+    issue_type: str
+    first_detected_at: str
+    last_abnormal_at: str
+    first_ap_rx_dbm: str
+    first_switch_rx_dbm: str
+    event_status: Literal["OPEN", "RESOLVED"]
+    resolved_at: str
+    recovered_ap_rx_dbm: str
+    recovered_switch_rx_dbm: str
+    evidence_quality: str
+    source_revision_first: str
+    source_revision_last: str
+    operations: list[TracksideApIssueOperationDTO]
+
+
+class TracksideApIssueHistoryDTO(ApiModel):
+    history_available: bool
+    items: list[TracksideApIssueDTO]
+
+
 class TracksideApBusinessRowDTO(ApiModel):
     switch_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
     point_engineering_context: DeviceEngineeringContextDTO = Field(default_factory=DeviceEngineeringContextDTO)
