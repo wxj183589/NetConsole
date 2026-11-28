@@ -198,6 +198,21 @@ def test_upgrade_lab_persists_result_from_real_worker(runtime, monkeypatch):
         adapter.shutdown()
 
 
+def test_upgrade_lab_observes_worker_cancellation_before_transition(runtime, monkeypatch):
+    from netconsole.services.job_center.job_context import BackgroundTaskCancelled
+
+    client, adapter, device, _ = runtime
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
+    monkeypatch.setenv("NETCONSOLE_DEVICE_UPGRADE_LAB", "1")
+    response = client.post("/device-operations/tasks", json={
+        "kind": "upgrade_lab", "device_uuids": [device.device_uuid],
+    })
+    assert response.status_code == 202, response.text
+    job = adapter.jobs[response.json()["task_id"]]
+    with pytest.raises(BackgroundTaskCancelled):
+        get_handler(job.task_type)(JobContext.from_job(job, should_cancel=lambda: True))
+
+
 def test_task_executes_registered_worker_and_retries_failed_device(runtime, monkeypatch):
     client, adapter, sw_a, sw_b = runtime
     collected = []
