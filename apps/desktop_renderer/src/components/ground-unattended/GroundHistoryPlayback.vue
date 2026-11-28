@@ -138,6 +138,15 @@ function applyRunRange(): void {
   const end = Number.isFinite(rawEnd.getTime()) && rawEnd > start ? rawEnd : new Date(start.getTime() + 60 * 60 * 1000)
   range.value = [start, new Date(Math.min(end.getTime(), start.getTime() + 86_400_000))]
 }
+function selectedRange(): [Date, Date] | null {
+  const run = selectedRun.value
+  const [start, end] = range.value || []
+  if (!run || !start || !end || !(start < end)) return null
+  const runStart = Date.parse(run.actual_started_at || run.scheduled_start_at || run.created_at)
+  const runEnd = Date.parse(run.actual_ended_at || run.scheduled_end_at || run.updated_at)
+  if (start.getTime() < runStart || end.getTime() > runEnd || end.getTime() - start.getTime() > 86_400_000) return null
+  return [start, end]
+}
 watch(() => props.runs, (rows) => {
   if (!rows.some((row) => row.run_id === selectedRunId.value)) selectedRunId.value = rows[0]?.run_id || ''
 }, { immediate: true })
@@ -146,6 +155,7 @@ watch(selectedRunId, (runId) => {
   clearTimeline()
   emit('view-syslog', '')
   applyRunRange()
+  fullStart.value = fullEnd.value = visibleStart.value = visibleEnd.value = cursorTime.value = ''
   result.value = null
   eventResult.value = null
   loading.value = false
@@ -161,9 +171,9 @@ watch(mrOptions, (rows) => { if (historyLoading.value) return; if (!rows.some((r
 
 async function query(): Promise<void> {
   stopRequests(); const current = generation; error.value = ''; quickError.value = ''; quickLoaded.value = false; quickLoading.value = false; result.value = null; eventResult.value = null; quickRows.value = { primary: [], backup: [] }; quickBuckets.value = { primary: [], backup: [] }
-  if (!selectedMrId.value || range.value?.length !== 2) { error.value = '请选择 MR 和时间范围'; return }
-  const start = range.value[0]!, end = range.value[1]!
-  if (!(start < end) || end.getTime() - start.getTime() > 86_400_000) { error.value = '时间范围必须为正且不超过 24 小时'; return }
+  const selection = selectedRange()
+  if (!selectedMrId.value || !selection) { error.value = '请选择 MR，并在当前运行内选择不超过 24 小时的时间范围'; return }
+  const [start, end] = selection
   const request = new AbortController(); controller = request; loading.value = true
   try {
     const data = await getGroundMrMonitoring(selectedMrId.value, {
@@ -275,8 +285,9 @@ function clearTimeline(): void {
 }
 
 const timelineFilters = computed(() => {
-  const [start, end] = range.value || []
-  if (!props.active || !selectedRunId.value || !start || !end || !(start < end)) return null
+  const selection = selectedRange()
+  if (!props.active || !selection) return null
+  const [start, end] = selection
   return {
     run_id: selectedRunId.value,
     data_type: 'timeline',
@@ -291,7 +302,7 @@ watch([timelineEventType, timelineMrOnly], clearTimeline, { flush: 'sync' })
 async function loadTimeline(cursor = '', pageIndex = 0): Promise<void> {
   const filters = timelineFilters.value
   if (!filters) {
-    timelineError.value = '请选择运行记录和有效的时间范围'
+    timelineError.value = '请在当前运行内选择不超过 24 小时的时间范围'
     return
   }
   timelineRequest?.abort()
@@ -365,7 +376,7 @@ onBeforeUnmount(() => { stopRequests(); clearTimeline() })
       <el-select :model-value="siteId" disabled aria-label="Site"><el-option :label="siteId || '未注册 Site'" :value="siteId" /></el-select>
       <el-select :model-value="siteId" disabled aria-label="线路"><el-option label="当前 Site 注册线路" :value="siteId" /></el-select>
       <el-select v-model="selectedRunId" filterable placeholder="运行日期">
-        <el-option v-for="run in runs" :key="run.run_id" :label="`${run.run_date} · ${runStateLabel(run.state)}`" :value="run.run_id" />
+        <el-option v-for="run in runs" :key="run.run_id" :label="`${run.run_date} · ${runStateLabel(run.state)} · ${format(run.actual_started_at).split(' ').at(-1)}`" :value="run.run_id" />
       </el-select>
       <el-select v-model="selectedMrId" filterable :loading="historyLoading" placeholder="列车 / MR">
         <el-option v-for="mr in mrOptions" :key="mr.id" :label="`${mr.trainNo || mr.trainId} · ${mr.role} · ${mr.name || mr.id}`" :value="mr.id" />
@@ -396,7 +407,12 @@ onBeforeUnmount(() => { stopRequests(); clearTimeline() })
       </div>
     </section>
     <el-alert v-if="historyError" :title="historyError" type="warning" :closable="false" />
-    <p class="playback-boundary">历史回放只读取已落盘数据，不启动采集、不访问设备、不补造缺失字段。所选运行仅定义回放时间上下文，各数据源按实际时间戳对齐。</p>
+    <p v-if="selectedRun" class="playback-boundary">
+      {{ format(selectedRun.actual_started_at) }} 至 {{ format(selectedRun.actual_ended_at) }} ·
+      {{ selectedRun.archive_status === 'READY' ? '归档已就绪' : '持久化运行索引' }} ·
+      Run 登记 Ping 样本 {{ selectedRun.ping_sample_count ?? '—' }}
+    </p>
+    <p class="playback-boundary">历史回放只读取已落盘数据，不启动采集。独立采集流按所选 MR 和时间范围显示来源。</p>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
     <template v-if="result">
       <div class="playback-identity">

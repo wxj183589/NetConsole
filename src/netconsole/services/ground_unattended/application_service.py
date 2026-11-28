@@ -1185,7 +1185,7 @@ class GroundUnattendedApplicationService:
                                          queried_start=start.isoformat(), queried_end=end.isoformat())
         # Keep the requested playback boundary exact for events and charts while
         # retaining enough preceding Ping samples for the 60-minute statistics.
-        series_start = min(start, end - timedelta(hours=1))
+        series_start = start if data_mode == "HISTORICAL_PLAYBACK" else min(start, end - timedelta(hours=1))
         # Heartbeat samples are persisted in the resident stream. Older
         # unattended archives only contain the run context and Syslog/MESH
         # records, so querying that archive run directly incorrectly returns
