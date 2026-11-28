@@ -52,6 +52,7 @@ export interface SavedTemplatePreview extends CommandPreview {
 }
 
 export interface DeviceTaskReference {
+  scheduled_at?: string | null
   task_id: string
   run_id: string
   target_count: number
@@ -120,10 +121,27 @@ export function startDeviceTask(payload: {
   organization_uid?: string | null
   concurrency?: number
   command_timeout?: number
+  scheduled_at?: string
   template?: CommandTemplate
   saved_template?: SavedTemplateParameters & { preview_digest: string }
 }): Promise<DeviceTaskReference> {
   return post('/tasks', payload)
+}
+
+export interface DeviceTaskSchedule {
+  task_id: string
+  scheduled_at: string
+  request: { kind: DeviceTaskKind; device_uuids: string[] }
+  status: 'WAITING' | 'SUBMITTED' | 'FAILED' | 'CANCELLED'
+  error: string
+}
+
+export function listDeviceTaskSchedules(): Promise<DeviceTaskSchedule[]> {
+  return apiRequest(root + '/schedules')
+}
+
+export function cancelDeviceTaskSchedule(id: string): Promise<void> {
+  return apiRequest(`${root}/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 export function getDeviceTaskResult(id: string): Promise<DeviceTaskResult> {

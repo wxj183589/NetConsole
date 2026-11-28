@@ -13,6 +13,7 @@ from netconsole.services.device_task_service import (
     DeviceTaskApplicationService,
     DeviceTaskReference,
     DeviceTaskRequest,
+    DeviceTaskSchedule,
 )
 from netconsole.services.h3c_command_template import (
     CommandTemplatePreview,
@@ -126,6 +127,23 @@ def start_device_task(request: Request, payload: DeviceTaskRequest) -> DeviceTas
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/schedules", response_model=list[DeviceTaskSchedule],
+            dependencies=[Depends(require_feature("module.devices"))])
+def list_device_schedules(request: Request) -> list[DeviceTaskSchedule]:
+    return _service(request).list_schedules(_site(request))
+
+
+@router.delete("/schedules/{task_id}", status_code=204,
+               dependencies=[Depends(require_feature("module.devices"))])
+def cancel_device_schedule(request: Request, task_id: str) -> None:
+    try:
+        _service(request).cancel_schedule(_site(request), task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="任务计划不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}/result")

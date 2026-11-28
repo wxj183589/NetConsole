@@ -1,4 +1,5 @@
 from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -155,6 +156,48 @@ def test_device_workers_share_site_and_uuid_resource_guard(runtime):
     assert client.post("/device-operations/tasks", json={
         "kind": "version", "device_uuids": [sw_a.device_uuid],
     }).status_code == 202
+
+
+def test_persisted_one_time_schedule_recovers_and_dispatches_once(runtime):
+    client, adapter, sw_a, _ = runtime
+    tasks = client.app.state.task_service
+    scheduled_at = datetime.now(UTC) + timedelta(minutes=1)
+    request = {"kind": "version", "device_uuids": [sw_a.device_uuid], "scheduled_at": scheduled_at.isoformat()}
+    response = client.post("/device-operations/tasks", json=request)
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task_id"]
+    assert task_id not in adapter.jobs
+    restarted = device_task_service.DeviceTaskApplicationService(tasks, adapter)
+    assert restarted.list_schedules("demo")[0].status == "WAITING"
+    assert restarted.list_schedules("another") == []
+    restarted.dispatch_schedules("demo", now=scheduled_at - timedelta(seconds=1))
+    assert task_id not in adapter.jobs
+    manual = client.post("/device-operations/tasks", json={"kind": "version", "device_uuids": [sw_a.device_uuid]})
+    assert manual.status_code == 202
+    restarted.dispatch_schedules("demo", now=scheduled_at)
+    assert restarted.list_schedules("demo")[0].status == "WAITING"
+    adapter.complete(manual.json()["task_id"], {})
+    restarted.dispatch_schedules("demo", now=scheduled_at)
+    assert restarted.list_schedules("demo")[0].status == "SUBMITTED"
+    assert adapter.jobs[task_id].trigger_source == "scheduler"
+    assert adapter.jobs[task_id].params["device_uuids"] == [sw_a.device_uuid]
+    started = adapter.jobs[task_id]
+    restarted.dispatch_schedules("demo", now=scheduled_at)
+    assert adapter.jobs[task_id] is started
+
+
+def test_cancel_pending_schedule_keeps_it_from_dispatch(runtime):
+    client, adapter, sw_a, _ = runtime
+    scheduled_at = datetime.now(UTC) + timedelta(minutes=1)
+    response = client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [sw_a.device_uuid], "scheduled_at": scheduled_at.isoformat(),
+    })
+    task_id = response.json()["task_id"]
+    assert client.delete(f"/device-operations/schedules/{task_id}").status_code == 204
+    service = client.app.state.device_task_application_service
+    service.dispatch_schedules("demo", now=scheduled_at)
+    assert service.list_schedules("demo")[0].status == "CANCELLED"
+    assert task_id not in adapter.jobs
 
 
 def test_task_scope_limits_and_settings(runtime, monkeypatch):

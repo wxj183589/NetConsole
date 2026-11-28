@@ -14,7 +14,7 @@ import { apiRequest } from '../../api/client'
 import type { TaskItem, TaskSummary } from '../../types/task'
 import { activeTaskStatuses } from '../../utils/taskStatus'
 import { formatTaskDateTime } from '../../utils/dateTime'
-import { deviceMaintenanceTask } from '../../api/deviceOperations'
+import { cancelDeviceTaskSchedule, deviceMaintenanceTask, listDeviceTaskSchedules, type DeviceTaskSchedule } from '../../api/deviceOperations'
 import { isFeatureEnabled } from '../../features'
 
 const DeviceTaskCreateDialog = defineAsyncComponent(() => import('./DeviceTaskCreateDialog.vue'))
@@ -44,6 +44,9 @@ const tasks = ref<TaskItem[]>([])
 const summary = ref<TaskSummary | null>(null)
 const loading = ref(false)
 const error = ref('')
+const schedules = ref<DeviceTaskSchedule[]>([])
+const schedulesVisible = ref(false)
+const planStatus = { WAITING: '待执行', SUBMITTED: '已提交', FAILED: '失败', CANCELLED: '已取消' }
 let pollingTimer: ReturnType<typeof setInterval> | undefined
 let generation = 0
 
@@ -144,6 +147,8 @@ watch([activeSiteContext, siteContextState], () => {
   createVisible.value = false
   resultVisible.value = false
   resultTaskId.value = ''
+  schedules.value = []
+  schedulesVisible.value = false
   if (pollingTimer !== undefined) void refreshTasks()
 }, { flush: 'sync' })
 
@@ -167,6 +172,28 @@ async function trackSubmittedTask(id: string): Promise<void> {
   await refreshTasks()
   const task = tasks.value.find((item) => item.id === id)
   if (task) openTaskDetail(task)
+}
+
+async function showSchedules(): Promise<void> {
+  const site = activeSiteContext.value
+  if (!site || siteContextState.value !== 'ready') return
+  try {
+    const result = await listDeviceTaskSchedules()
+    if (site !== activeSiteContext.value || siteContextState.value !== 'ready') return
+    schedules.value = result
+    schedulesVisible.value = true
+  } catch (cause) {
+    if (site === activeSiteContext.value) ElMessage.error(cause instanceof Error ? cause.message : '读取任务计划失败')
+  }
+}
+
+async function cancelSchedule(task: DeviceTaskSchedule): Promise<void> {
+  try {
+    await cancelDeviceTaskSchedule(task.task_id)
+    if (schedulesVisible.value) await showSchedules()
+  } catch (cause) {
+    ElMessage.error(cause instanceof Error ? cause.message : '取消任务计划失败')
+  }
 }
 
 function handleDetailLoadError(taskId: string): void {
@@ -274,6 +301,7 @@ function residentProgressLabel(task: TaskItem): string {
           <NcMultiValueFilter v-model="selectedStatuses" :options="taskStatusOptions" :labels="taskStatusLabels" placeholder="全部状态" style="width: 155px" />
           <NcMultiValueFilter v-model="selectedModules" :options="taskModuleOptions" :labels="taskModuleLabels" placeholder="全部模块" style="width: 150px" />
           <el-button :icon="Refresh" :loading="loading" @click="refreshTasks">刷新</el-button>
+          <el-button v-if="isFeatureEnabled('module.devices')" @click="showSchedules">定时计划</el-button>
           <el-button v-if="isFeatureEnabled('module.devices')" type="primary" @click="createVisible = true">创建设备任务</el-button>
         </div>
       </div>
@@ -302,7 +330,19 @@ function residentProgressLabel(task: TaskItem): string {
       source="job-center"
       @load-error="handleDetailLoadError"
     />
-    <DeviceTaskCreateDialog v-if="createVisible" v-model="createVisible" @submitted="trackSubmittedTask" />
+    <DeviceTaskCreateDialog v-if="createVisible" v-model="createVisible" @submitted="trackSubmittedTask" @scheduled="showSchedules" />
+    <el-dialog v-model="schedulesVisible" title="定时计划" width="min(720px, 92vw)">
+      <el-button :icon="Refresh" @click="showSchedules">刷新</el-button>
+      <ul v-if="schedules.length">
+        <li v-for="plan in schedules" :key="plan.task_id">
+          {{ formatTaskDateTime(plan.scheduled_at) }} · {{ plan.request.kind }} · {{ plan.request.device_uuids.length }} 台 · {{ planStatus[plan.status] }}
+          <span v-if="plan.error">{{ plan.error }}</span>
+          <el-button v-if="plan.status === 'SUBMITTED'" link @click="openTaskDetail(plan.task_id)">详情</el-button>
+          <el-button link @click="cancelSchedule(plan)">{{ plan.status === 'WAITING' ? '取消' : '移除' }}</el-button>
+        </li>
+      </ul>
+      <el-empty v-else description="暂无定时计划" />
+    </el-dialog>
     <DeviceTaskResultDialog v-if="resultVisible" v-model="resultVisible" :task-id="resultTaskId" @submitted="trackSubmittedTask" />
   </section>
 </template>
