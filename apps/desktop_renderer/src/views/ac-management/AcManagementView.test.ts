@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import source from './AcManagementView.vue?raw'
 import omniPeekSource from './AcOmniPeekExportDialog.vue?raw'
+import editorSource from '../rail-transit/TracksideApEngineeringEditor.vue?raw'
 
 describe('AC Management resource view', () => {
   it('uses the full routed workspace width instead of centering a fixed-width shell', () => {
@@ -19,7 +20,8 @@ describe('AC Management resource view', () => {
     expect(source).toContain('更新光衰')
     expect(source).toContain('批量删除')
     expect(source).not.toContain('导入 AP 元数据')
-    expect(source).toContain('保存手工覆盖')
+    expect(source).toContain('在轨交中编辑工程关联')
+    expect(source).not.toContain('保存手工覆盖')
     expect(source).toContain("openRecentChanges('radio')")
     expect(source).toContain("openRecentChanges('lldp')")
     expect(source).toContain('getAcApRecentChanges')
@@ -148,8 +150,8 @@ describe('AC Management resource view', () => {
   })
 
   it('loads every station page within the backend contract and retains bounded export scopes', () => {
-    expect(source).toContain('listAllStations')
-    expect(source).toContain("filter((item) => item.enabled !== false)")
+    expect(editorSource).toContain('listAllStations')
+    expect(editorSource).toContain("filter(item => item.enabled !== false)")
     expect(source).not.toContain('page_size: 500')
     expect(source).toContain('导出当前筛选结果')
     expect(source).toContain('导出已选择 AP')
@@ -200,7 +202,7 @@ describe('AC Management resource view', () => {
     expect(source).toContain("sort_by: 'topology'")
     expect(source).toContain('displayInterfaceName')
     expect(source).toContain('自动关联信息（只读）')
-    expect(source).toContain('保存时只提交正式 station_id；自动关联、LLDP 建议和 AC 原始站点不会自动写入。')
+    expect(editorSource).toContain('saveAcFitApMetadata(ap.value.ac_id, ap.value.id, { ...form })')
   })
 
   it('stops polling when hidden and exposes no unapproved device write action', () => {

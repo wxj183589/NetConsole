@@ -31,13 +31,11 @@ import type { NcDataTableContextMenuItem } from '../../components/table/NcDataTa
 import type { NcColumnValueType, NcTableColumn } from '../../components/table/NcTableColumn'
 import AcOmniPeekExportDialog from './AcOmniPeekExportDialog.vue'
 import type { AcAp, AcApHistoryPage, AcConfigSnapshot, AcCurrentLldp, AcOptical, AcRadio } from '../../types/acManagement'
-import type { Station } from '../../types/railTransitBaseData'
 import type {
   AcActionAudit,
   AcActionPlan,
   AcWebTask,
 } from '../../types/acWebParity'
-import { listAllStations } from './stationPagination'
 import { displayInterfaceName } from '../../utils/interfaceName'
 import {
   apOpticalStatusPresentation,
@@ -73,8 +71,6 @@ const currentMatch = ref(-1)
 const selectedApIds = ref(new Set<string>())
 const desktopHost = computed(() => getRuntimeConfig().hostType === 'electron')
 const pollingConsumer = 'ac-management-view'
-const metadataForm = reactive({ station_id: '', station_override_enabled: false, site_name: '', mileage: '', location_note: '', direction: '' })
-const stations = ref<Station[]>([])
 const recentVisible = ref(false)
 const recentLoading = ref(false)
 const recentError = ref('')
@@ -257,7 +253,6 @@ onMounted(() => {
   taskStore.acquirePolling(pollingConsumer)
   void openRouteApDetail()
   void recoverActionPlan()
-  void loadStations()
 })
 
 onBeforeUnmount(() => {
@@ -424,10 +419,6 @@ async function openAcWeb(): Promise<void> {
   if (!result.success) ElMessage.error(result.error || '无法打开 AC Web 管理地址')
 }
 
-async function saveMetadata(): Promise<void> {
-  await store.startFitApMetadataSave({ ...metadataForm })
-}
-
 async function startVerboseRefresh(scope: 'all' | 'selected'): Promise<void> {
   const ids = scope === 'selected' ? [...selectedApIds.value] : []
   if (scope === 'selected' && !ids.length) {
@@ -442,28 +433,6 @@ async function startVerboseRefresh(scope: 'all' | 'selected'): Promise<void> {
     }
   }
   await store.startFitApVerbose(scope, ids)
-}
-
-async function loadStations(): Promise<void> {
-  try {
-    stations.value = (await listAllStations()).filter((item) => item.enabled !== false)
-  } catch {
-    stations.value = []
-  }
-}
-
-function adoptAutomaticStation(): void {
-  const ap = store.selected?.ap
-  if (!ap?.auto_station_id) return
-  metadataForm.station_id = ap.auto_station_id
-  metadataForm.station_override_enabled = true
-  metadataForm.site_name = ap.auto_station_name
-}
-
-function clearManualStationOverride(): void {
-  metadataForm.station_id = ''
-  metadataForm.station_override_enabled = false
-  metadataForm.site_name = ''
 }
 
 async function openRecentChanges(kind: 'radio' | 'lldp' | 'optical'): Promise<void> {
@@ -517,15 +486,6 @@ async function openDetailById(apId: string): Promise<void> {
   } finally {
     currentLldpLoading.value = false
   }
-  const ap = store.selected?.ap
-  if (ap) Object.assign(metadataForm, {
-    station_id: ap.manual_station_id || '',
-    station_override_enabled: ap.manual_override_enabled,
-    site_name: ap.manual_station_name || '',
-    mileage: ap.mileage || '',
-    location_note: ap.location_note || '',
-    direction: ap.direction || '',
-  })
 }
 
 async function openConfig(snapshot: AcConfigSnapshot): Promise<void> {
@@ -1037,22 +997,7 @@ function opticalEvidenceTitle(label: string, value: unknown, status: string, opt
               <el-descriptions-item label="LLDP 建议站点">{{ display(store.selected.ap.lldp_suggested_station_name) }}</el-descriptions-item>
               <el-descriptions-item label="AC 原始站点">{{ display(store.selected.ap.resource_station_text) }}</el-descriptions-item>
             </el-descriptions>
-            <div class="section-heading"><h3>手工站点覆盖</h3><div class="toolbar-actions"><el-button link type="primary" @click="adoptAutomaticStation" :disabled="!store.selected.ap.auto_station_id">采用自动关联结果</el-button><el-button link type="warning" @click="clearManualStationOverride" :disabled="!metadataForm.station_override_enabled">清除手工覆盖</el-button><el-button v-if="isFeatureEnabled('capability.ac.fit_ap.metadata_write')" type="primary" :loading="store.refreshStarting" :disabled="taskActive" @click="saveMetadata">保存手工覆盖</el-button></div></div>
-            <el-form :model="metadataForm" label-width="88px" :disabled="!isFeatureEnabled('capability.ac.fit_ap.metadata_write')">
-              <div class="metadata-grid">
-                <el-form-item label="归属站点">
-                  <div class="metadata-field">
-                    <el-select v-model="metadataForm.station_id" clearable filterable placeholder="选择正式站点" @change="metadataForm.station_override_enabled = Boolean(metadataForm.station_id)">
-                      <el-option v-for="station in stations" :key="station.id" :label="`${station.code || '--'}-${station.name}`" :value="station.id" />
-                    </el-select>
-                    <small>保存时只提交正式 station_id；自动关联、LLDP 建议和 AC 原始站点不会自动写入。</small>
-                  </div>
-                </el-form-item>
-                <el-form-item label="里程"><el-input v-model="metadataForm.mileage" maxlength="100" placeholder="例如 ZDK1+200" /></el-form-item>
-                <el-form-item label="线路方向"><el-select v-model="metadataForm.direction" clearable><el-option label="上行" value="上行" /><el-option label="下行" value="下行" /><el-option v-if="metadataForm.direction && !['上行', '下行'].includes(metadataForm.direction)" :label="metadataForm.direction" :value="metadataForm.direction" /></el-select></el-form-item>
-                <el-form-item label="点位说明"><el-input v-model="metadataForm.location_note" maxlength="500" /></el-form-item>
-              </div>
-            </el-form>
+            <RouterLink :to="{ name: 'rail-trackside-ap-business', query: { engineering_ap: store.selected.ap.id } }">在轨交中编辑工程关联</RouterLink>
           </div>
 
           <h3 class="detail-section-title">AC 连接记录</h3>
