@@ -12,7 +12,8 @@ import type { DeviceGroup, DeviceListItem } from '../../types/deviceManagement'
 import { isFeatureEnabled } from '../../features'
 
 const open = defineModel<boolean>({ required: true })
-const emit = defineEmits<{ submitted: [id: string] }>()
+const emit = defineEmits<{ submitted: [id: string]; scheduled: [] }>()
+const scheduledAt = ref('')
 const configCollectionEnabled = computed(() => isFeatureEnabled('capability.config_collection.fetch'))
 const kinds = computed(() => Object.entries(deviceTaskLabels).filter(
   ([value]) => configCollectionEnabled.value ? value !== 'configuration' : !['configuration', 'backup'].includes(value),
@@ -181,6 +182,7 @@ async function submit(): Promise<void> {
       organization_uid: scope.value === 'organization' ? organizationUid.value : null,
       concurrency: concurrency.value,
       command_timeout: commandTimeout.value,
+      scheduled_at: scheduledAt.value ? new Date(scheduledAt.value).toISOString() : undefined,
       template: kind.value === 'custom' && !chosen ? template() : undefined,
       saved_template: kind.value === 'custom' && chosen ? {
         template_id: chosen.template_id, version: chosen.version,
@@ -188,7 +190,8 @@ async function submit(): Promise<void> {
       } : undefined,
     })
     open.value = false
-    emit('submitted', result.task_id)
+    if (result.scheduled_at) emit('scheduled')
+    else emit('submitted', result.task_id)
   } catch (cause) {
     fail(cause)
   } finally {
@@ -258,6 +261,7 @@ watch(open, (visible) => {
       </el-form-item>
       <div class="template-fields">
         <el-form-item label="并发设备数（1 为串行）"><el-input-number v-model="concurrency" :min="1" :max="8" /></el-form-item>
+        <el-form-item label="定时执行"><input v-model="scheduledAt" type="datetime-local" aria-label="执行时间（本地）" /></el-form-item>
         <el-form-item v-if="!['configuration', 'backup', 'optical'].includes(kind)" label="查询命令超时（秒）"><el-input-number v-model="commandTimeout" :min="5" :max="120" /></el-form-item>
       </div>
       <template v-if="kind === 'custom'">
@@ -310,7 +314,7 @@ watch(open, (visible) => {
     </el-form>
     <template #footer>
       <el-button @click="open = false">取消</el-button>
-      <el-button type="primary" :disabled="!canSubmit" :loading="waiting" @click="submit">开始采集</el-button>
+      <el-button type="primary" :disabled="!canSubmit" :loading="waiting" @click="submit">{{ scheduledAt ? '保存计划' : '开始采集' }}</el-button>
     </template>
   </el-dialog>
 </template>

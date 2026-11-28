@@ -845,6 +845,25 @@ def create_app(
             )
         )
         deferred_start_task: asyncio.Task[None] | None = None
+        device_schedule_task: asyncio.Task[None] | None = None
+        device_schedule_stop = asyncio.Event()
+
+        async def dispatch_device_schedules() -> None:
+            service = app.state.device_task_application_service
+            while app.state.accepting_work:
+                try:
+                    await asyncio.to_thread(service.dispatch_schedules, site_application_service.active_site_id())
+                except Exception as exc:
+                    app_logger.log_error(
+                        "DEVICE_TASK_SCHEDULE_DISPATCH_FAILED",
+                        _safe_error_message(str(exc)),
+                    )
+                try:
+                    await asyncio.wait_for(device_schedule_stop.wait(), timeout=5)
+                except TimeoutError:
+                    continue
+                return
+
         try:
             if defer_runtime_start:
                 # Server/unattended mode publishes health only after the
@@ -867,6 +886,8 @@ def create_app(
                 app.state.runtime_services_status = "ready" if unattended_started else "degraded"
                 if not unattended_started:
                     app.state.runtime_services_error = app.state.unattended_error or "unavailable"
+            if not collection_disabled and app.state.device_task_application_service is not None:
+                device_schedule_task = asyncio.create_task(dispatch_device_schedules())
             yield
         finally:
             app.state.runtime_services_status = "stopping"
@@ -877,6 +898,9 @@ def create_app(
             begin_shutdown = getattr(task_service, "begin_shutdown", None)
             if callable(begin_shutdown):
                 begin_shutdown()
+            if device_schedule_task is not None:
+                device_schedule_stop.set()
+                await device_schedule_task
             if deferred_start_task is not None:
                 deferred_start_task.cancel()
                 await asyncio.gather(deferred_start_task, return_exceptions=True)

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
+from datetime import UTC, datetime
+import json
+from pathlib import Path
 from time import monotonic
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from netconsole.core.atomic_file import atomic_write_bytes, locked_file
 from netconsole.core.database import Database
 from netconsole.models.device import Device
 from netconsole.models.device_detail import identify_device_platform
@@ -33,7 +37,7 @@ from netconsole.services.h3c_command_template import (
 from netconsole.services.job_center.handlers.config_jobs import config_web_snapshot_fetch
 from netconsole.services.job_center.job_context import BackgroundTaskCancelled, JobContext
 from netconsole.services.job_center.local_process_adapter import LocalProcessAdapter
-from netconsole.services.job_center.task_application_service import TaskApplicationService
+from netconsole.services.job_center.task_application_service import TaskApplicationService, TaskResourceConflictError
 from netconsole.services.job_center.web_export_event_safety import redact_web_task_text
 from netconsole.services.netmiko_connection import (
     run_netmiko_with_retry,
@@ -76,12 +80,24 @@ class DeviceTaskRequest(BaseModel):
     command_timeout: int = Field(default=40, ge=5, le=120)
     template: CommandTemplatePreviewRequest | None = None
     saved_template: SavedTemplateExecution | None = None
+    scheduled_at: AwareDatetime | None = None
 
 
 class DeviceTaskReference(BaseModel):
     task_id: str
     run_id: str
     target_count: int
+    scheduled_at: AwareDatetime | None = None
+
+
+class DeviceTaskSchedule(BaseModel):
+    task_id: str = Field(pattern=r"^device-scheduled-[0-9a-f]{32}$")
+    scheduled_at: AwareDatetime
+    request: DeviceTaskRequest
+    commands: list[str] = Field(max_length=8)
+    template_info: dict[str, object]
+    status: Literal["WAITING", "SUBMITTED", "FAILED", "CANCELLED"] = "WAITING"
+    error: str = ""
 
 
 class DeviceTaskApplicationService:
@@ -145,17 +161,24 @@ class DeviceTaskApplicationService:
                 "template_id": record.template_id, "version": record.version,
                 "device_roles": record.device_roles,
             }
+        if request.scheduled_at is not None:
+            if request.scheduled_at <= datetime.now(UTC):
+                raise ValueError("请选择未来的执行时间")
+            if request.kind == "custom" and not request.saved_template:
+                raise ValueError("定时自定义任务仅支持已保存的只读模板")
+            return self._save_schedule(site, request, ids, commands, template_info)
         return self._submit_resolved(site, request, ids, commands, template_info, retry_of_task_id)
 
     def _submit_resolved(
         self, site: str, request: DeviceTaskRequest, ids: list[str],
         commands: tuple[str, ...], template_info: dict[str, object], retry_of_task_id: str,
+        *, scheduled_id: str = "",
     ) -> DeviceTaskReference:
         if request.kind == "custom" and (
             not 1 <= len(commands) <= 8 or any(not is_read_only_h3c_command(command) for command in commands)
         ):
             raise ValueError("自定义采集只允许 1 至 8 条已登记的只读查询命令")
-        task_id = f"device-task-{uuid4().hex}"
+        task_id = scheduled_id or f"device-task-{uuid4().hex}"
         self.process_adapter.start_job(BackgroundJob(
             job_id=task_id,
             task_type=DEVICE_TASK_TYPE,
@@ -177,10 +200,125 @@ class DeviceTaskApplicationService:
                     "group_id": request.group_id, "organization_uid": request.organization_uid,
                 },
             },
-            trigger_source="retry" if retry_of_task_id else "ui",
+            trigger_source="scheduler" if scheduled_id else "retry" if retry_of_task_id else "ui",
             retry_of_task_id=retry_of_task_id,
         ))
         return DeviceTaskReference(task_id=task_id, run_id=task_id, target_count=len(ids))
+
+    def _schedule_path(self, site: str) -> Path:
+        library_path = self.template_library(site).repository.path
+        path = library_path.with_name("device-task-schedules.json")
+        root = library_path.parent.resolve()
+        if not all(candidate.resolve().is_relative_to(root) for candidate in (
+            path, path.with_name(f".{path.name}.lock"),
+        )):
+            raise ValueError("任务计划存储路径越出局点边界")
+        return path
+
+    @staticmethod
+    def _read_schedules(path: Path) -> list[DeviceTaskSchedule]:
+        try:
+            with path.open("rb") as stream:
+                payload = stream.read(1_000_001)
+        except FileNotFoundError:
+            return []
+        if len(payload) > 1_000_000:
+            raise ValueError("任务计划文件过大")
+        data = json.loads(payload)
+        if not isinstance(data, dict) or data.get("schema") != 1 or not isinstance(data.get("schedules"), list):
+            raise ValueError("任务计划文件版本无效")
+        return [DeviceTaskSchedule.model_validate(item) for item in data["schedules"]]
+
+    @staticmethod
+    def _write_schedules(path: Path, schedules: list[DeviceTaskSchedule]) -> None:
+        payload = json.dumps({
+            "schema": 1, "schedules": [schedule.model_dump(mode="json") for schedule in schedules],
+        }, ensure_ascii=False).encode("utf-8")
+        if len(payload) > 1_000_000:
+            raise ValueError("任务计划文件过大")
+        atomic_write_bytes(path, payload)
+
+    def _save_schedule(
+        self, site: str, request: DeviceTaskRequest, ids: list[str],
+        commands: tuple[str, ...], template_info: dict[str, object],
+    ) -> DeviceTaskReference:
+        task_id = f"device-scheduled-{uuid4().hex}"
+        assert request.scheduled_at is not None
+        schedule = DeviceTaskSchedule(
+            task_id=task_id, scheduled_at=request.scheduled_at,
+            request=DeviceTaskRequest(
+                kind=request.kind, device_uuids=ids, concurrency=request.concurrency,
+                command_timeout=request.command_timeout,
+            ),
+            commands=list(commands), template_info=template_info,
+        )
+        path = self._schedule_path(site)
+        with locked_file(path):
+            records = self._read_schedules(path)
+            if len(records) >= 100:
+                raise ValueError("局点最多支持 100 项计划，请先移除已结束的计划")
+            self._write_schedules(path, [*records, schedule])
+        return DeviceTaskReference(
+            task_id=task_id, run_id=task_id, target_count=len(ids), scheduled_at=schedule.scheduled_at,
+        )
+
+    def list_schedules(self, site: str) -> list[DeviceTaskSchedule]:
+        return list(reversed(self._read_schedules(self._schedule_path(site))))
+
+    def cancel_schedule(self, site: str, task_id: str) -> None:
+        path = self._schedule_path(site)
+        with locked_file(path):
+            records = self._read_schedules(path)
+            record = next((item for item in records if item.task_id == task_id), None)
+            if record is None:
+                raise KeyError(task_id)
+            if record.status == "WAITING" and self.task_service.repository(site).get(task_id) is not None:
+                raise ValueError("任务已启动，请在任务详情停止执行")
+            if record.status == "WAITING":
+                record.status = "CANCELLED"
+            else:
+                records.remove(record)
+            self._write_schedules(path, records)
+
+    def dispatch_schedules(self, site: str, *, now: datetime | None = None) -> None:
+        path = self._schedule_path(site)
+        if not path.is_file():
+            return
+        now = now or datetime.now(UTC)
+        with locked_file(path):
+            records = self._read_schedules(path)
+            changed = False
+            for record in records:
+                if record.status != "WAITING" or record.scheduled_at > now:
+                    continue
+                try:
+                    self._launch_schedule(site, record)
+                except TaskResourceConflictError:
+                    continue
+                except (ValueError, KeyError) as exc:
+                    record.status = "FAILED"
+                    record.error = redact_web_task_text(str(exc))
+                else:
+                    record.status = "SUBMITTED"
+                changed = True
+            if changed:
+                self._write_schedules(path, records)
+
+    def _launch_schedule(self, site: str, record: DeviceTaskSchedule) -> None:
+        if self.task_service.repository(site).get(record.task_id) is not None:
+            return
+        ids = record.request.device_uuids
+        repository = DeviceRepository(Database(self.paths.site_db_path(site)))
+        if not ids or set(ids) != repository.get_by_uuids(ids).keys():
+            raise ValueError("目标设备已不存在或不属于当前局点")
+        if template_id := record.template_info.get("template_id"):
+            versions = self.template_library(site).versions(str(template_id))
+            if not versions or not versions[0].enabled:
+                raise ValueError("模板已停用，不能启动计划")
+        self._submit_resolved(
+            site, record.request, ids, tuple(record.commands), record.template_info, "",
+            scheduled_id=record.task_id,
+        )
 
     def result(self, site: str, task_id: str) -> dict[str, object]:
         snapshot = self.task_service.repository(site).get(task_id)
