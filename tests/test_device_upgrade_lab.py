@@ -2,7 +2,7 @@ from hashlib import sha256
 
 import pytest
 
-from tests.support.device_upgrade_lab import SimulatedDevice, simulate_upgrade
+from netconsole.services.device_upgrade_lab import SimulatedDevice, simulate_upgrade
 
 
 @pytest.mark.parametrize(("fail_boot", "status", "final_version"), [

@@ -1,4 +1,4 @@
-"""Firmware transition fixture for an isolated, in-memory device."""
+"""Firmware transition model for an isolated, in-memory device."""
 
 from dataclasses import dataclass
 from hashlib import sha256

@@ -125,6 +125,38 @@ def test_local_snapshot_tasks_resolve_current_site_device_and_latest_snapshot(ru
     assert missing.status_code == 422
 
 
+def test_upgrade_lab_uses_device_job_path_and_retries_failed_result(runtime, monkeypatch):
+    client, adapter, device, _ = runtime
+    request = {"kind": "upgrade_lab", "device_uuids": [device.device_uuid]}
+    assert client.post("/device-operations/tasks", json=request).status_code == 422
+    monkeypatch.setenv("NETCONSOLE_RUNTIME_MODE", "test")
+    monkeypatch.setenv("NETCONSOLE_DEVICE_UPGRADE_LAB", "1")
+    monkeypatch.setenv("NETCONSOLE_DEVICE_UPGRADE_LAB_SHA256", "0" * 64)
+    response = client.post("/device-operations/tasks", json=request)
+    assert response.status_code == 202, response.text
+    task_id = response.json()["task_id"]
+    job = adapter.jobs[task_id]
+    result = get_handler(job.task_type)(JobContext.from_job(job))
+    assert result["items"][0]["status"] == "failed"
+    adapter.complete(task_id, result)
+    monkeypatch.delenv("NETCONSOLE_DEVICE_UPGRADE_LAB_SHA256")
+    monkeypatch.setenv("NETCONSOLE_DEVICE_UPGRADE_LAB_ROLLBACK", "1")
+    retry = client.post(f"/device-operations/tasks/{task_id}/retry")
+    assert retry.status_code == 202, retry.text
+    rollback_id = retry.json()["task_id"]
+    job = adapter.jobs[rollback_id]
+    rollback = get_handler(job.task_type)(JobContext.from_job(job))
+    assert rollback["items"][0]["upgrade_status"] == "rolled_back"
+    assert rollback["items"][0]["software_version"] == "1.0"
+    adapter.complete(rollback_id, rollback)
+    monkeypatch.delenv("NETCONSOLE_DEVICE_UPGRADE_LAB_ROLLBACK")
+    retry = client.post(f"/device-operations/tasks/{task_id}/retry")
+    assert retry.status_code == 202, retry.text
+    job = adapter.jobs[retry.json()["task_id"]]
+    result = get_handler(job.task_type)(JobContext.from_job(job))
+    assert result["items"][0]["upgrade_status"] == "verified"
+
+
 def test_task_executes_registered_worker_and_retries_failed_device(runtime, monkeypatch):
     client, adapter, sw_a, sw_b = runtime
     collected = []

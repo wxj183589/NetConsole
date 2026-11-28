@@ -4,6 +4,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import replace
 from datetime import UTC, datetime
 import json
+import os
+from hashlib import sha256
 from pathlib import Path
 from time import monotonic
 from typing import Literal
@@ -32,6 +34,7 @@ from netconsole.services.device_command_profile_service import (
 from netconsole.services.device_scope import is_current_debug_device
 from netconsole.services.config_collection_web_service import ConfigCollectionApplicationService
 from netconsole.services.device_health_check_application_service import DeviceHealthCheckApplicationService
+from netconsole.services.device_upgrade_lab import SimulatedDevice, simulate_upgrade
 from netconsole.services.h3c_command_template import (
     CommandTemplatePreviewRequest,
     is_read_only_h3c_command,
@@ -52,7 +55,7 @@ from netconsole.services.site_manager import SiteManager
 
 DEVICE_TASK_TYPE = "device_maintenance_collection"
 DEVICE_TASK_OWNER = "web_device_task_center"
-DeviceTaskKind = Literal["configuration", "backup", "diagnostic", "optical", "lldp", "version", "custom", "wireless", "mesh", "config_diff", "config_preview", "config_generate", "health"]
+DeviceTaskKind = Literal["configuration", "backup", "diagnostic", "optical", "lldp", "version", "custom", "wireless", "mesh", "config_diff", "config_preview", "config_generate", "health", "upgrade_lab"]
 DEVICE_TASK_LABELS = {
     "configuration": "配置收集",
     "backup": "配置备份",
@@ -67,7 +70,14 @@ DEVICE_TASK_LABELS = {
     "config_preview": "已保存配置快照",
     "config_generate": "生成待审阅配置",
     "health": "设备健康检查",
+    "upgrade_lab": "模拟版本升级",
 }
+_LAB_IMAGE = b"NetConsole simulated firmware 2.0"
+
+
+def _require_upgrade_lab() -> None:
+    if os.environ.get("NETCONSOLE_RUNTIME_MODE") != "test" or os.environ.get("NETCONSOLE_DEVICE_UPGRADE_LAB") != "1":
+        raise ValueError("模拟升级需要显式启用隔离测试环境")
 _COMMANDS = {
     "diagnostic": ("display version", "display cpu-usage", "display memory", "display interface brief"),
     "lldp": ("display lldp neighbor-information list", "display lldp neighbor-information verbose"),
@@ -119,6 +129,10 @@ class DeviceTaskApplicationService:
     def start(
         self, site: str, request: DeviceTaskRequest, *, retry_of_task_id: str = "",
     ) -> DeviceTaskReference:
+        if request.kind == "upgrade_lab":
+            _require_upgrade_lab()
+            if request.scheduled_at:
+                raise ValueError("模拟升级仅支持立即执行")
         site = SiteManager(self.paths).validate_site_name(site)
         repository = DeviceRepository(Database(self.paths.site_db_path(site)))
         ids = list(dict.fromkeys(request.device_uuids))
@@ -213,6 +227,8 @@ class DeviceTaskApplicationService:
         commands: tuple[str, ...], template_info: dict[str, object], retry_of_task_id: str,
         *, scheduled_id: str = "",
     ) -> DeviceTaskReference:
+        if request.kind == "upgrade_lab":
+            _require_upgrade_lab()
         if request.kind == "custom" and (
             not 1 <= len(commands) <= 8 or any(not is_read_only_h3c_command(command) for command in commands)
         ):
@@ -415,6 +431,8 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
     kind = str(context.params["kind"])
     if kind not in DEVICE_TASK_LABELS:
         raise ValueError("设备任务类型无效")
+    if kind == "upgrade_lab":
+        _require_upgrade_lab()
     commands = tuple(str(command) for command in context.params.get("commands", []))
     if kind == "custom":
         if not 1 <= len(commands) <= 8 or any(not is_read_only_h3c_command(command) for command in commands):
@@ -434,6 +452,23 @@ def run_device_maintenance_collection(context: JobContext) -> dict[str, object]:
         if device is None:
             return {**item, "status": "failed", "message": "设备不存在"}
         item["device_name"] = device.name
+        if kind == "upgrade_lab":
+            context.structured_progress(kind, 0, len(ids), "校验模拟镜像", device_uuid=device_uuid)
+            context.check_cancelled()
+            digest = sha256(_LAB_IMAGE).hexdigest()
+            try:
+                result = simulate_upgrade(
+                    SimulatedDevice(device_uuid, "1.0", fail_boot=os.environ.get("NETCONSOLE_DEVICE_UPGRADE_LAB_ROLLBACK") == "1"),
+                    target_version="2.0", image=_LAB_IMAGE,
+                    expected_sha256=os.environ.get("NETCONSOLE_DEVICE_UPGRADE_LAB_SHA256", digest),
+                )
+            except ValueError as exc:
+                return {**item, "status": "failed", "message": str(exc)}
+            return {
+                **item, "status": "success" if result.status == "verified" else "failed",
+                "upgrade_status": result.status, "previous_version": result.previous_version,
+                "software_version": result.current_version, "image_sha256": digest,
+            }
         if kind == "config_generate":
             return {**item, "status": "success"}
         if not is_current_debug_device(device):
