@@ -128,6 +128,16 @@ class FileWorkspaceOperations:
             raise ValueError("请选择普通文件")
         return path
 
+    def preview(self, manager, token):
+        path = self.download(manager, token)
+        if path.suffix.casefold() not in {".txt", ".log", ".cfg", ".conf", ".ini", ".json", ".csv", ".md", ".xml", ".yaml", ".yml"}:
+            raise ValueError("当前文件类型不支持文本预览")
+        with path.open("rb") as handle:
+            raw = handle.read(65_537)
+        from netconsole.utils.text_encoding import decode_bytes_with_fallback
+
+        return {"name": path.name, "text": decode_bytes_with_fallback(raw[:65_536]).text, "truncated": len(raw) > 65_536}
+
     def desktop_directory(self, manager, token, site):
         if site != self._site():
             raise ValueError("目录引用不属于当前局点")

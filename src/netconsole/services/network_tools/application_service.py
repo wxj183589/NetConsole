@@ -84,6 +84,10 @@ class NetworkToolsApplicationService:
         if self._owns_process_adapter:
             self.process_adapter.shutdown()
 
+    def rebind_site(self, site: str) -> None:
+        self.site_name = SiteManager(self.paths).validate_site_name(site)
+        self._project_lock = _project_lock(self._project_path())
+
     async def start_tcp_port_test(
         self,
         config: TcpPortTestConfig,
@@ -166,7 +170,11 @@ class NetworkToolsApplicationService:
         return self._start_job(task_type, self._task_name(kind), params)
 
     def list_network_tasks(self, *, offset: int = 0, limit: int = 100) -> list[TaskSnapshot]:
-        return self._list_scoped_tasks(NETWORK_TOOLBOX_TASK_TYPES, offset=offset, limit=limit)
+        site = self.site_name
+        return self.task_service.repository(site).list_filtered(
+            site_name=site, owner=NETWORK_TOOL_OWNER, source=NETWORK_TASK_SOURCE,
+            task_types=NETWORK_TOOLBOX_TASK_TYPES, offset=max(0, offset), limit=max(1, min(500, limit)),
+        )
 
     def get_network_task(self, task_id: str) -> TaskSnapshot | None:
         return self._get_scoped_task(task_id, NETWORK_TOOLBOX_TASK_TYPES)
@@ -742,7 +750,7 @@ class NetworkToolsApplicationService:
         target = str(params.get("target") or "")
         if len(target) > 255:
             raise ValueError("Ping 目标最多 255 个字符")
-        if kind in {"single_ping", "continuous_ping", "subnet_ping", "tcp_ping"} and not target:
+        if kind in {"single_ping", "continuous_ping", "subnet_ping", "tcp_ping", "traceroute", "dns"} and not target:
             raise ValueError("请提供目标地址")
         source_ip = str(params.get("source_ip") or "").strip()
         if source_ip:
@@ -807,6 +815,8 @@ class NetworkToolsApplicationService:
             "batch_ping": "批量 Ping",
             "subnet_ping": "网段 Ping",
             "tcp_ping": "TCP Ping",
+            "traceroute": "Traceroute",
+            "dns": "DNS 查询",
         }.get(kind, "网络工具任务")
 
 

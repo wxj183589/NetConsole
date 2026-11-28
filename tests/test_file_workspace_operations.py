@@ -108,6 +108,18 @@ def test_desktop_directory_accepts_only_current_managed_directory_references(wor
         service.desktop_directory(manager, "../archive", "file-test")
 
 
+def test_text_preview_limits_reads_and_rejects_unmanaged_references(workspace):
+    service, manager, _ = workspace
+    root = manager.root / "http"
+    (root / "sample.txt").write_text("a" * 65_537, encoding="utf-8")
+    entry = service.browse(manager, "http")["items"][0]["id"]
+    assert service.preview(manager, entry) == {
+        "name": "sample.txt", "text": "a" * 65_536, "truncated": True,
+    }
+    with pytest.raises(ValueError):
+        service.preview(manager, "../sample.txt")
+
+
 def test_running_share_is_read_only_and_upload_staging_cleaned(workspace):
     service, manager, _ = workspace
     page = service.browse(manager, "tftp")

@@ -286,8 +286,11 @@ class RuntimeServicesAdmissionMiddleware:
 class PerformanceProfilingMiddleware:
     """Attach bounded API/SQL/Repository timings without logging query data."""
 
+    _SLOW_LOG_INTERVAL_SECONDS = 30
+
     def __init__(self, app) -> None:
         self.app = app
+        self._last_slow_log: dict[tuple[str, str], float] = {}
 
     async def __call__(self, scope, receive, send) -> None:
         if scope.get("type") != "http":
@@ -345,15 +348,23 @@ class PerformanceProfilingMiddleware:
             await self.app(scope, receive, send_profiled)
         finally:
             total_ms = (perf_counter() - profile.started_at) * 1000
-            if total_ms >= _SLOW_API_THRESHOLD_MS:
+            route = scope.get("route")
+            route_key = (profile.method, getattr(route, "path", None) or "unmatched")
+            now = perf_counter()
+            last_logged = self._last_slow_log.get(route_key, -self._SLOW_LOG_INTERVAL_SECONDS)
+            should_sample = now - last_logged >= self._SLOW_LOG_INTERVAL_SECONDS
+            if response_status >= 500 or (total_ms >= _SLOW_API_THRESHOLD_MS and should_sample):
+                if response_status < 500:
+                    self._last_slow_log[route_key] = now
                 repository_stages = ",".join(
                     f"{name}:{duration:.2f}"
                     for name, duration in sorted(profile.repository_calls.items())
                 )
-                app_logger.log_info(
-                    "API_PERFORMANCE_PROFILE",
+                log = app_logger.log_error if response_status >= 500 else app_logger.log_info
+                log(
+                    "API_REQUEST_FAILED" if response_status >= 500 else "API_PERFORMANCE_PROFILE",
                     (
-                        f"request_id={request_id} method={profile.method} path={profile.path} "
+                        f"request_id={request_id} module=api method={profile.method} path={route_key[1]} "
                         f"status={response_status} total_ms={total_ms:.2f} "
                         f"sql_count={profile.sql_count} sql_ms={profile.sql_ms:.2f} "
                         f"response_bytes={profile.response_bytes} "
@@ -1321,6 +1332,7 @@ def create_app(
         rebind = getattr(traffic_service, "rebind_site", None)
         if callable(rebind):
             rebind(target)
+        app.state.network_tools_service.rebind_site(target)
         rebind = getattr(file_management_service, "rebind_site", None)
         if callable(rebind):
             rebind(target)
