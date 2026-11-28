@@ -34,6 +34,7 @@ import {
   type CleanupItem,
   type CleanupItemId,
   type LogEntry,
+  type LogFilters,
   type MaintenanceTask,
   type OpenSourceComponent,
   type RuntimeLogSummary,
@@ -49,6 +50,20 @@ const loading = ref(false)
 const logs = ref<LogEntry[]>([])
 const keyword = ref('')
 const level = ref('')
+const logCategories: Record<string, string> = {
+  startup: '启动', application: '应用运行', api_request: 'API 请求', api_error: 'API 异常',
+  connection: '设备连接', ssh: 'SSH', telnet: 'Telnet', serial: '串口', collection: '设备采集',
+  task: '任务', database: '数据库', files: '文件', network: '网络服务', syslog: 'Syslog',
+  heartbeat: 'Heartbeat', security: '安全', update: '安装与更新', other: '其他',
+}
+const logFilterInputs = [
+  ['site_id', '局点'], ['module', '模块'], ['device_id', '设备 ID'],
+  ['request_id', '请求 ID'], ['task_id', '任务 ID'],
+] as const
+const logFilters = ref<LogFilters>({ important: true })
+const appliedLogFilters = ref({ important: true } as LogFilters & { keyword?: string; level?: string })
+const logTimeRange = ref<[string, string]>()
+const rawLog = ref<LogEntry>()
 const page = ref(1)
 const pageSize = ref<50 | 100 | 200 | 500>(200)
 const total = ref(0)
@@ -76,9 +91,10 @@ const taskSummary = computed(() => {
 const logColumns: NcTableColumn<LogEntry>[] = [
   { key: 'time', label: '时间', valueType: 'datetime', fixed: 'left' },
   { key: 'display_level', label: '级别', valueType: 'status' },
+  { key: 'category', label: '分类', valueType: 'status', displayValue: (row) => logCategories[row.category] || row.category },
   { key: 'display_event', label: '事件', valueType: 'description', alignmentReason: 'description' },
   { key: 'display_detail', label: '详情', valueType: 'description', alignmentReason: 'long-text' },
-  { key: 'actions', label: '复制', valueType: 'actions', cellKind: 'actions', actionLabels: ['整行', '原始事件', '原始详情'] },
+  { key: 'actions', label: '操作', valueType: 'actions', cellKind: 'actions', actionLabels: ['详情', '整行'] },
 ]
 const cleanupColumns: NcTableColumn<CleanupItem>[] = [
   { key: 'selected', label: '选择', valueType: 'selection', hideable: false },
@@ -104,10 +120,17 @@ function errorMessage(cause: unknown): string {
 }
 
 async function loadLogs(reset = false): Promise<void> {
+  if (reset) {
+    appliedLogFilters.value = {
+      ...logFilters.value, keyword: keyword.value.trim(), level: level.value || '',
+      important: Boolean(logFilters.value.important && !level.value),
+      start_time: logTimeRange.value?.[0] || '', end_time: logTimeRange.value?.[1] || '',
+    }
+  }
   if (reset) page.value = 1
   loading.value = true
   try {
-    const query = { page: page.value, page_size: pageSize.value, keyword: keyword.value.trim(), level: level.value }
+    const query = { page: page.value, page_size: pageSize.value, keyword: '', level: '', ...appliedLogFilters.value }
     let result = await getLogs(query)
     const lastPage = Math.max(1, result.total_pages || Math.ceil(result.total / result.page_size))
     if (query.page > lastPage && result.page > lastPage) {
@@ -260,8 +283,9 @@ async function runLogExport(scope: 'current' | 'all'): Promise<void> {
       context: { scope, page: page.value, pageSize: pageSize.value },
       submit: () => startLogExport({
         scope,
-        keyword: keyword.value.trim(),
-        level: level.value,
+        keyword: '',
+        level: '',
+        ...appliedLogFilters.value,
         page: page.value,
         page_size: pageSize.value,
       }),
@@ -461,6 +485,15 @@ onBeforeUnmount(() => {
           <el-button type="primary" :disabled="taskBusy" @click="runFieldDiagnostic">导出现场诊断包</el-button>
           <el-input v-model="keyword" clearable placeholder="搜索事件或详情" @keyup.enter="loadLogs(true)" />
           <el-select v-model="level" clearable placeholder="全部级别"><el-option label="信息" value="INFO" /><el-option label="警告" value="WARNING" /><el-option label="错误" value="ERROR" /><el-option label="调试" value="DEBUG" /><el-option label="严重" value="CRITICAL" /></el-select>
+          <el-select v-model="logFilters.category" clearable placeholder="全部分类" aria-label="日志分类"><el-option v-for="(label, code) in logCategories" :key="code" :label="label" :value="code" /></el-select>
+          <el-checkbox v-model="logFilters.important">仅重要事件</el-checkbox>
+          <el-popover trigger="click" :width="320">
+            <template #reference><el-button>更多筛选</el-button></template>
+            <div class="log-filter-fields">
+              <el-input v-for="[key, label] in logFilterInputs" :key="key" v-model="logFilters[key]" clearable :placeholder="label" :aria-label="label" @keyup.enter="loadLogs(true)" />
+              <el-date-picker v-model="logTimeRange" type="datetimerange" value-format="YYYY-MM-DD HH:mm:ss" start-placeholder="起始时间" end-placeholder="结束时间" />
+            </div>
+          </el-popover>
           <el-button @click="loadLogs(true)">查询</el-button>
           <el-button :disabled="!isFeatureEnabled('capability.desktop_native_integration')" @click="openDirectory('logs')">打开日志目录</el-button>
           <el-button type="danger" plain :disabled="taskBusy || !isFeatureEnabled('system.disk_cleanup')" @click="confirmHistoryCleanup">清理历史日志</el-button>
@@ -470,9 +503,13 @@ onBeforeUnmount(() => {
         <div v-if="logSummary" class="log-summary" aria-label="日志摘要"><span>目录：{{ logSummary.directory }}</span><span>总量：{{ formatBytes(logSummary.total_bytes) }} / 上限 {{ formatBytes(logSummary.max_total_bytes) }}</span><span>可清理：{{ formatBytes(logSummary.candidate_bytes) }}（{{ logSummary.candidate_files }} 个）</span><span>受保护：{{ formatBytes(logSummary.protected_bytes) }}（{{ logSummary.protected_files }} 个，含数据库升级审计）</span><span>未知：{{ formatBytes(logSummary.unknown_bytes) }}（{{ logSummary.unknown_files }} 个）</span><span>保留 {{ logSummary.retention_days }} 天，目标水位 {{ formatBytes(logSummary.target_total_bytes) }}</span></div>
         <div class="log-table-host">
           <NcDataTable v-loading="loading" :data="logs" :columns="logColumns" table-id="system-log-entries" route-key="/logs" height="100%" empty-text="暂无日志记录" @cell-contextmenu="copyCell">
-            <template #cell-actions="{ row }"><el-button link @click="copyLogRow(row)">整行</el-button><el-button link @click="copyText(row.raw_event, '原始事件已复制')">原始事件</el-button><el-button link @click="copyText(row.raw_detail, '原始详情已复制')">原始详情</el-button></template>
+            <template #cell-actions="{ row }"><el-button link @click="rawLog = row">详情</el-button><el-button link @click="copyLogRow(row)">整行</el-button></template>
           </NcDataTable>
         </div>
+        <el-dialog :model-value="Boolean(rawLog)" title="原始日志" width="min(760px, 94vw)" @close="rawLog = undefined">
+          <strong>{{ rawLog?.raw_event }}</strong>
+          <pre class="raw-log-detail">{{ rawLog?.raw_detail }}</pre>
+        </el-dialog>
         <div class="pagination"><span>共 {{ total }} 条</span><el-pagination v-model:current-page="page" v-model:page-size="pageSize" :page-sizes="[50, 100, 200, 500]" layout="sizes, prev, pager, next" :total="total" @change="loadLogs()" /></div>
         <p class="hint">右键任意表格单元格可复制该单元格；Web 展示与导出会隐藏秘密、私有地址和本机绝对路径。</p>
       </el-tab-pane>
@@ -522,6 +559,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.log-filter-fields { display: grid; gap: 8px; }
+.log-filter-fields :deep(.el-date-editor) { max-width: 100%; }
+.raw-log-detail { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
 .maintenance-page { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; flex-direction: column; gap: 16px; overflow: hidden; }
 .page-heading, .repository, .pagination { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 16px; }
 .page-heading h1 { margin: 2px 0 6px; }

@@ -25,6 +25,7 @@ from netconsole.models.api.system_maintenance import (
     DesktopActionDTO,
     ExternalLinkDTO,
     LogEntryDTO,
+    LogFilters,
     LogPageDTO,
     MaintenanceTaskDTO,
     OpenSourceComponentDTO,
@@ -44,7 +45,7 @@ from netconsole.services.job_center.local_process_adapter import LocalProcessAda
 from netconsole.services.job_center.task_application_service import TaskApplicationService
 from netconsole.services.job_center.web_export_event_safety import sanitize_web_export_snapshot
 from netconsole.services.system_maintenance_redaction import redact_system_maintenance_text
-from netconsole.services.log_display import display_log_row
+from netconsole.services.log_display import display_log_row, matches_log_filters
 from netconsole.services.log_housekeeper import LogHousekeeper
 from netconsole.services.job_center.system_maintenance_contract import (
     SYSTEM_MAINTENANCE_TASK_TYPES,
@@ -127,13 +128,15 @@ class SystemMaintenanceApplicationService:
             value = self.task_service.site_name
         return self._site(str(value or self.task_service.site_name or "demo"))
 
-    def list_logs(self, *, page: int, page_size: int, keyword: str = "", level: str = "") -> LogPageDTO:
+    def list_logs(self, *, page: int, page_size: int, keyword: str = "", level: str = "", filters: LogFilters | None = None) -> LogPageDTO:
+        selection = filters.model_dump(exclude_defaults=True) if filters else {}
         result = app_logger.get_logs(
             page=page,
             page_size=page_size,
             keyword=keyword or None,
             level=level or None,
             log_path=self.paths.app_log_path,
+            predicate=lambda row: matches_log_filters(row, selection) if selection else True,
         )
         items: list[LogEntryDTO] = []
         for row in result.rows:
@@ -141,6 +144,14 @@ class SystemMaintenanceApplicationService:
             items.append(
                 LogEntryDTO(
                     time=str(display.get("time") or ""),
+                    category=display["category"],
+                    event_code=display["event_code"],
+                    source=display["source"],
+                    module=display["module"],
+                    site_id=display["site_id"],
+                    device_id=display["device_id"],
+                    request_id=display["request_id"],
+                    task_id=display["task_id"],
                     level=str(display.get("raw_level") or ""),
                     display_level=str(display.get("display_level") or ""),
                     display_event=str(display.get("display_event") or ""),
@@ -274,6 +285,7 @@ class SystemMaintenanceApplicationService:
         level: str,
         page: int,
         page_size: int,
+        filters: LogFilters | None = None,
     ) -> MaintenanceTaskDTO:
         site_id = self._site(site_id)
         kind = "logs_current" if scope == "current" else "logs_all"
@@ -286,6 +298,7 @@ class SystemMaintenanceApplicationService:
             log_paths=app_logger.log_files(self.paths.app_log_path),
             keyword=keyword or None,
             level=level or None,
+            filters=filters.model_dump(include=set(LogFilters.model_fields), exclude_defaults=True) if filters else None,
             offset=(page - 1) * page_size if scope == "current" else 0,
             limit=page_size if scope == "current" else 0,
             redact_web=True,

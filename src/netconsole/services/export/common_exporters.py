@@ -189,12 +189,13 @@ def copy_file_export(path: Path, payload: Mapping[str, Any], progress: ProgressC
 
 
 def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: ProgressCallback | None = None, should_cancel: CancelCallback | None = None) -> int:
-    from netconsole.services.log_display import display_log_row
+    from netconsole.services.log_display import display_log_row, matches_log_filters
     from netconsole.core.log_pagination import iter_logs_from_paths
 
     log_path = Path(str(payload.get("log_path") or ""))
     keyword = str(payload.get("keyword") or "").strip() or None
     level = str(payload.get("level") or "").strip() or None
+    filters = dict(payload.get("filters") or {})
     offset = max(0, int(payload.get("offset") or 0))
     limit = max(0, int(payload.get("limit") or 0))
     snapshot_value = payload.get("snapshot_size")
@@ -218,6 +219,7 @@ def export_app_logs_csv(path: Path, payload: Mapping[str, Any], progress: Progre
                 level=level,
                 parser=_parse_log_line,
                 max_bytes_by_path=snapshot_sizes,
+                predicate=lambda row: matches_log_filters(row, filters) if filters else True,
             )
         ):
             if matched_index < offset:

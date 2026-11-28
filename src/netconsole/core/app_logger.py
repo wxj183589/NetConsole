@@ -10,7 +10,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from netconsole.core.interprocess_lock import interprocess_file_lock
 from netconsole.core.log_policy import LOG_POLICY
@@ -104,6 +104,7 @@ def get_logs(
     level: str | None = None,
     *,
     log_path: Path | None = None,
+    predicate: Callable[[dict[str, str]], bool] | None = None,
 ) -> LogPage:
     path = log_path or _log_path()
     return get_logs_from_paths(
@@ -113,6 +114,7 @@ def get_logs(
         keyword=keyword,
         level=level,
         parser=_parse_line,
+        predicate=predicate,
     )
 
 

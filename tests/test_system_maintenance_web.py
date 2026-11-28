@@ -528,7 +528,8 @@ def test_log_export_includes_current_and_rotated_runtime_logs(tmp_path: Path) ->
     active = tmp_path / "app.log"
     rotated = tmp_path / "app-20260720-120000-0001.log"
     active.write_text(
-        "2026-07-21 10:00:00 | INFO | CURRENT_EVENT | current\n",
+        "2026-07-21 10:00:00 | INFO | CURRENT_EVENT | current\n"
+        "2026-07-21 10:00:01 | INFO | API_REQUEST_COMPLETED | request_id=poll\n",
         encoding="utf-8",
     )
     rotated.write_text(
@@ -540,6 +541,7 @@ def test_log_export_includes_current_and_rotated_runtime_logs(tmp_path: Path) ->
         output,
         log_path=active,
         log_paths=[active, rotated],
+        filters={"important": True},
     ).to_job("logs-rotated")
 
     run_generic_export_handler(
@@ -549,6 +551,7 @@ def test_log_export_includes_current_and_rotated_runtime_logs(tmp_path: Path) ->
     content = output.read_text(encoding="utf-8-sig")
     assert "CURRENT_EVENT" in content
     assert "ROTATED_EVENT" in content
+    assert "API_REQUEST_COMPLETED" not in content
 
 
 def test_txt_artifact_download_uses_public_name_extension_and_mime(tmp_path: Path) -> None:

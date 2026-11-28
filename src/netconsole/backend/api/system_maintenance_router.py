@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse
@@ -13,6 +13,7 @@ from netconsole.models.api.system_maintenance import (
     DesktopActionDTO,
     ExternalLinkDTO,
     LogExportRequest,
+    LogFilters,
     LogPageDTO,
     RuntimeLogSummaryDTO,
     MaintenanceTaskDTO,
@@ -50,14 +51,13 @@ def _run(call):
 @router.get("/logs", response_model=LogPageDTO)
 def list_logs(
     request: Request,
+    filters: Annotated[LogFilters, Depends()],
     page: int = Query(default=1, ge=1, le=1_000_000),
     page_size: int = Query(default=200, ge=50, le=500),
-    keyword: str = Query(default="", max_length=200),
-    level: Literal["", "INFO", "WARNING", "ERROR", "DEBUG", "CRITICAL"] = Query(default=""),
 ) -> LogPageDTO:
     if page_size not in {50, 100, 200, 500}:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="分页大小无效")
-    return _run(lambda: _service(request).list_logs(page=page, page_size=page_size, keyword=keyword, level=level))
+    return _run(lambda: _service(request).list_logs(page=page, page_size=page_size, keyword=filters.keyword, level=filters.level, filters=filters))
 
 
 @router.get("/logs/summary", response_model=RuntimeLogSummaryDTO)
@@ -111,6 +111,7 @@ def start_log_export(request: Request, payload: LogExportRequest) -> Maintenance
             level=payload.level,
             page=payload.page,
             page_size=payload.page_size,
+            filters=payload,
         )
     )
 
