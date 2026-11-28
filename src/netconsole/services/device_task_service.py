@@ -168,7 +168,6 @@ class DeviceTaskApplicationService:
                 "task_source": "local",
                 "task_name": DEVICE_TASK_LABELS[request.kind],
                 "device_uuids": ids,
-                "resource_keys": [f"device-collection:v1:{site.casefold()}:{value.casefold()}" for value in ids],
                 "kind": request.kind,
                 "commands": list(commands),
                 "template": template_info,

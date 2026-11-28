@@ -130,6 +130,33 @@ def test_task_rejects_unknown_target_and_configuration_commands(runtime):
     assert response.status_code == 422
 
 
+def test_device_workers_share_site_and_uuid_resource_guard(runtime):
+    from netconsole.services.background_job import BackgroundJob
+    from netconsole.services.job_center.task_application_service import TaskResourceConflictError
+
+    client, adapter, sw_a, sw_b = runtime
+    service = client.app.state.task_service
+    adapter.start_job(BackgroundJob(
+        job_id="config-owner", task_type="config_web_snapshot_fetch",
+        params={"site_name": "demo", "owner": "web_config_collection", "device_uuid": sw_a.device_uuid},
+    ))
+    with pytest.raises(TaskResourceConflictError):
+        service.prepare(BackgroundJob(
+            job_id="diagnostic-owner", task_type="device_diagnostic_download",
+            params={"site_name": "demo", "owner": "web_device_management", "device_uuids": [sw_a.device_uuid]},
+        ))
+    assert client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [sw_a.device_uuid],
+    }).status_code == 409
+    assert client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [sw_b.device_uuid],
+    }).status_code == 202
+    adapter.complete("config-owner", {})
+    assert client.post("/device-operations/tasks", json={
+        "kind": "version", "device_uuids": [sw_a.device_uuid],
+    }).status_code == 202
+
+
 def test_task_scope_limits_and_settings(runtime, monkeypatch):
     client, adapter, sw_a, sw_b = runtime
     service = client.app.state.device_task_application_service
