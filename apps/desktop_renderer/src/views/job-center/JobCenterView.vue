@@ -38,6 +38,7 @@ const detailVisible = ref(false)
 const detailTaskId = ref('')
 const taskContextError = ref('')
 const createVisible = ref(false)
+const initialDeviceUuid = ref('')
 const resultVisible = ref(false)
 const resultTaskId = ref('')
 const tasks = ref<TaskItem[]>([])
@@ -91,6 +92,12 @@ onMounted(() => {
       : ''
   if (taskId) openTaskDetail(taskId)
 })
+
+watch(() => route.query.create_for_device, (value) => {
+  if (typeof value !== 'string' || !value.trim() || !isFeatureEnabled('module.devices')) return
+  initialDeviceUuid.value = value.trim()
+  createVisible.value = true
+}, { immediate: true })
 onActivated(startPolling)
 onDeactivated(stopPolling)
 onBeforeUnmount(() => {
@@ -145,6 +152,7 @@ watch([activeSiteContext, siteContextState], () => {
   detailVisible.value = false
   detailTaskId.value = ''
   createVisible.value = false
+  initialDeviceUuid.value = ''
   resultVisible.value = false
   resultTaskId.value = ''
   schedules.value = []
@@ -302,7 +310,7 @@ function residentProgressLabel(task: TaskItem): string {
           <NcMultiValueFilter v-model="selectedModules" :options="taskModuleOptions" :labels="taskModuleLabels" placeholder="全部模块" style="width: 150px" />
           <el-button :icon="Refresh" :loading="loading" @click="refreshTasks">刷新</el-button>
           <el-button v-if="isFeatureEnabled('module.devices')" @click="showSchedules">定时计划</el-button>
-          <el-button v-if="isFeatureEnabled('module.devices')" type="primary" @click="createVisible = true">创建设备任务</el-button>
+          <el-button v-if="isFeatureEnabled('module.devices')" type="primary" @click="initialDeviceUuid = ''; createVisible = true">创建设备任务</el-button>
         </div>
       </div>
 
@@ -330,7 +338,7 @@ function residentProgressLabel(task: TaskItem): string {
       source="job-center"
       @load-error="handleDetailLoadError"
     />
-    <DeviceTaskCreateDialog v-if="createVisible" v-model="createVisible" @submitted="trackSubmittedTask" @scheduled="showSchedules" />
+    <DeviceTaskCreateDialog v-if="createVisible" v-model="createVisible" :initial-device-uuid="initialDeviceUuid" @submitted="trackSubmittedTask" @scheduled="showSchedules" />
     <el-dialog v-model="schedulesVisible" title="定时计划" width="min(720px, 92vw)">
       <el-button :icon="Refresh" @click="showSchedules">刷新</el-button>
       <ul v-if="schedules.length">

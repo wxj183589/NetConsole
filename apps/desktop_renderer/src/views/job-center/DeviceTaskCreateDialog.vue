@@ -12,6 +12,7 @@ import type { DeviceGroup, DeviceListItem } from '../../types/deviceManagement'
 import { isFeatureEnabled } from '../../features'
 
 const open = defineModel<boolean>({ required: true })
+const props = defineProps<{ initialDeviceUuid?: string }>()
 const emit = defineEmits<{ submitted: [id: string]; scheduled: [] }>()
 const scheduledAt = ref('')
 const configCollectionEnabled = computed(() => isFeatureEnabled('capability.config_collection.fetch'))
@@ -33,7 +34,7 @@ const organizations = ref<{ uid: string; name: string; parent_uid: string }[]>([
 const organizationUid = ref('')
 const concurrency = ref(4)
 const commandTimeout = ref(40)
-const targets = ref<string[]>([])
+const targets = ref<string[]>(props.initialDeviceUuid ? [props.initialDeviceUuid] : [])
 const targetGroup = ref<TargetGroup | null>(null)
 const devices = ref<DeviceListItem[]>([])
 const groups = ref<DeviceGroup[]>([])
@@ -219,7 +220,7 @@ watch([source, schema, values, currentTemplate, templateName, templateCategory, 
 
 watch(open, (visible) => {
   if (!visible) return
-  targets.value = []
+  targets.value = props.initialDeviceUuid ? [props.initialDeviceUuid] : []
   targetGroup.value = null
   error.value = ''
   labels.clear()

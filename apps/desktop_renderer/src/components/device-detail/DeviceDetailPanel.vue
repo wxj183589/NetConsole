@@ -1203,6 +1203,7 @@ function errorMessage(cause: unknown, fallback: string): string {
           </div>
           <div class="heading-actions">
             <el-button v-if="isFeatureEnabled('capability.file_management.remote') && (!overview.work_scope_status || overview.work_scope_status === 'included')" :icon="FolderOpened" @click="router.push({ name: 'device-file-downloads', query: { device_uuid: overview.device_uuid, view: 'sftp' } })">设备文件传输</el-button>
+            <el-button v-if="mode === 'page' && isFeatureEnabled('module.task_center') && (!overview.work_scope_status || overview.work_scope_status === 'included')" @click="router.push({ name: 'tasks', query: { create_for_device: overview.device_uuid } })">创建设备任务</el-button>
             <el-button v-if="mode === 'drawer'" :icon="FolderOpened" @click="emit('terminal', overview.device_uuid)">外部终端</el-button>
             <el-button v-if="mode === 'drawer'" type="primary" :icon="Edit" @click="emit('edit', overview.device_uuid)">编辑</el-button>
             <el-button v-if="mode === 'drawer'" type="primary" plain @click="emit('full-detail')">完整详情</el-button>
