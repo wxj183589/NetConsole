@@ -63,6 +63,8 @@ describe('console commands keep explicit target semantics', () => {
     expect((wrapper.get('.command-input').element as HTMLElement).style.display).toBe('none')
     await wrapper.get('.command-bar > .quick-buttons button').trigger('click')
     await wrapper.findAll('.quick-buttons button').find(button => button.text() === '版本')!.trigger('click')
+    expect(mocks.api.mock.calls.some(call => call[0] === '/api/terminal/batch-sends')).toBe(false)
+    await wrapper.findAll('button').find(button => button.text() === '确认发送')!.trigger('click')
     await flushPromises()
     const call = mocks.api.mock.calls.find(call => call[0] === '/api/terminal/batch-sends')!
     expect(JSON.parse(call[1].body)).toMatchObject({ session_ids: ['one'], scope: 'current', group_id: 'group-0', button_id: 'version' })
@@ -83,6 +85,7 @@ it('shows the selected button group in the collapsible bar and sends from it', a
   await wrapper.findAll('.command-bar > .quick-buttons button').find(button => button.text() === '显示按钮栏')!.trigger('click')
   expect(wrapper.get('.mapped-button-bar').text()).toContain('版本')
   await wrapper.get('.mapped-button-bar button').trigger('click')
+  await wrapper.findAll('button').find(button => button.text() === '确认发送')!.trigger('click')
   await flushPromises()
   const call = mocks.api.mock.calls.find(call => call[0] === '/api/terminal/batch-sends')!
   expect(JSON.parse(call[1].body)).toMatchObject({ session_ids: ['one'], scope: 'current', button_id: 'version' })
